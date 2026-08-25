@@ -1111,8 +1111,6 @@ from pathlib import Path
 # staging, default ON, kill-switch SPARK_QWEN38_27B_WS_PLAIN=0) + consumer
 # acquire fence + publish barrier; bench ledger updated with the in-situ
 # A/B (kernel-level +10%, end-to-end neutral, bit-exact).
-<<<<<<< HEAD
-=======
 # 174145 (2026-08-23): incident fixes - pack-load device-memory preflight
 # (watchdog-restart SEGV -> clean capacity_exceeded), daemon client-session
 # submission-id reset on hello, engine prefill lane concentration (full-
@@ -1128,14 +1126,17 @@ from pathlib import Path
 # 174923 (2026-08-24): JIT-KV design contract + backing-store tier 1
 # (runtime/spark_kv_backing.c: slot file, alloc/free, 4 MiB block I/O,
 # horizon exhaustion -> backpressure signal; unit test ALL PASS).
-CEILING = 175261
->>>>>>> origin/main
 
 # +4239: consolidation merge (origin/main: WS kernel staging +10%, incident
 # fixes A/B/C) + peer iteration-2/3 delivery wave (prefix-cache core, fwrite
 # guards, k3 TP16 production scripts, glm52 shared-GEMM routing). tmp/ and
 # build/tmp/ experiment work-tree copies excluded from the count.
-CEILING = 189755
+# 191827 (2026-08-25): Route A merge of origin/main into unified - main's
+# API chain (node/model_api.c HTTP entry), JIT-KV backing store
+# (runtime/spark_kv_backing.c + test), daemon session-hardening and the
+# qwen38_27b resident-decode-stage promotion land on top of the unified
+# tree; ceiling raised by the audited delta.
+CEILING = 191827
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # .agents holds per-model agent worktrees (full clones of this tree);

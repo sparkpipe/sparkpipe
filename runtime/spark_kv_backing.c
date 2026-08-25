@@ -56,7 +56,11 @@ SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
 	descriptor = open(configuration->path,O_RDWR | O_CREAT,0644);
 	if ( descriptor < 0 )
 		return(SPARK_STATUS_IO_ERROR);
+#if defined(__linux__)
 	(void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
+#elif defined(__APPLE__)
+	(void)fcntl(descriptor,F_NOCACHE,1);
+#endif
 	if ( ftruncate(descriptor,SPARK_KV_BACKING_HEADER_BYTES +
 		(uint64_t)backing->slot_count * backing->slot_bytes) != 0 )
 	{

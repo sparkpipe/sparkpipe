@@ -5717,3 +5717,393 @@ efivarfs        256K   19K  238K   8% /sys/firmware/efi/efivars
 11G	/home/spark6/srcdata/dsv4_flash.fp8.pp13
 11G	/home/spark6/sparkdata/dsv4_flash.fp8.pp13.b8
 [0m
+spark6 has an extnvme mount with 558 GB free — that solves placement. Starting two tracks in parallel: (a) clean-source build of the k=7 spec driver from c834436 on spark4 (avoiding lane Q's dirty tree via git-archive export), (b) v4 pack distribution.
+[0m$ [0mSHA=$(git rev-parse c834436); git archive --format=tar.gz "$SHA" | ssh -o BatchMode=yes spark4 'rm -rf /tmp/sparkpipe-fclean && mkdir -p /tmp/sparkpipe-fclean && tar -xzf - -C /tmp/sparkpipe-fclean && ls /tmp/sparkpipe-fclean | head -5 && test -x /usr/local/cuda-13.0/bin/nvcc && echo nvcc-ok && test -f /tmp/sparkpipe_dsv4_devcycle_validator.sh && echo validator-ok'
+AGENTS.md
+ARCHITECTURE.md
+COORDINATION.md
+DSV4_TP4_B1_HANDOFF.md
+Makefile
+nvcc-ok
+validator-ok
+[0m
+[0m$ [0mssh -o BatchMode=yes spark4 'cd /tmp/sparkpipe-fclean && nohup bash tools/devcycle/build_remote.sh fdspark-k7 '"$(git rev-parse c834436)"' 8 7 > /tmp/build-fdspark-k7.log 2>&1 & echo build-launched'; ssh -o BatchMode=yes spark4 'ssh -o BatchMode=yes -o ConnectTimeout=5 spark5 true 2>&1 && echo host-to-host-ok || echo host-to-host-FAIL'
+build-launched
+host-to-host-ok
+[0m
+[0m$ [0mssh -o BatchMode=yes spark4 'S=/home/spark4/srcdata/dsv4_flash.fp8.pp13; ssh spark5 "mkdir -p /home/spark5/sparkdata/dsv4-staging/v4rankpacks"; ssh spark6 "mkdir -p /home/spark6/extnvme/dsv4-v4rankpacks"; ssh spark7 "mkdir -p /home/spark7/sparkdata/dsv4-staging/v4rankpacks"; nohup sh -c "scp -q $S/dsv4_flash_stage_v4.rank1.spstage spark5:/home/spark5/sparkdata/dsv4-staging/v4rankpacks/ && echo r1-done; scp -q $S/dsv4_flash_stage_v4.rank2.spstage spark6:/home/spark6/extnvme/dsv4-v4rankpacks/ && echo r2-done; scp -q $S/dsv4_flash_stage_v4.rank3.spstage spark7:/home/spark7/sparkdata/dsv4-staging/v4rankpacks/ && echo r3-done" > /tmp/v4copy.log 2>&1 & echo copies-launched'
+copies-launched
+[0m
+While build+copies run, checking runtime config differences between lean (no-spec) and the b8-era spec runtimes.
+[0m$ [0mssh -o BatchMode=yes spark4 'diff /tmp/dsv4-integrated-lean-3d962820-runtime/config/dsv4_flash_tp4_stage.json /tmp/dsv4-bucket8-runtime/config/dsv4_flash_tp4_stage.json; echo ===resident; diff /tmp/dsv4-integrated-lean-3d962820-runtime/config/model_resident.json /tmp/dsv4-bucket8-runtime/config/model_resident.json; echo ===commit; cat /tmp/dsv4-bucket8-runtime/SOURCE_COMMIT'
+===resident
+18,20c18,20
+<     "max_active_sequences": 1,
+<     "max_input_rows": 1,
+<     "resident_sequence_capacity": 1,
+---
+>     "max_active_sequences": 8,
+>     "max_input_rows": 8,
+>     "resident_sequence_capacity": 8,
+28c28
+<       "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+---
+>       "runtime_root": "/tmp/dsv4-bucket8-runtime",
+32c32
+<       "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+---
+>       "kv_backing_directory": "/tmp/dsv4-bucket8-runtime/kv",
+43c43
+<       "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+---
+>       "runtime_root": "/tmp/dsv4-bucket8-runtime",
+47c47
+<       "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+---
+>       "kv_backing_directory": "/tmp/dsv4-bucket8-runtime/kv",
+58c58
+<       "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+---
+>       "runtime_root": "/tmp/dsv4-bucket8-runtime",
+62c62
+<       "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+---
+>       "kv_backing_directory": "/tmp/dsv4-bucket8-runtime/kv",
+73c73
+<       "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+---
+>       "runtime_root": "/tmp/dsv4-bucket8-runtime",
+77c77
+<       "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+---
+>       "kv_backing_directory": "/tmp/dsv4-bucket8-runtime/kv",
+===commit
+cat: /tmp/dsv4-bucket8-runtime/SOURCE_COMMIT: No such file or directory
+[0m
+Spec runtime = lean config + capacity 8 + v4 packs + bucket-8 binaries. Checking build progress.
+[0m$ [0mssh -o BatchMode=yes spark4 'tail -5 /tmp/build-fdspark-k7.log 2>/dev/null; echo ===; tail -2 /tmp/v4copy.log 2>/dev/null; ls -la /home/spark5/sparkdata/dsv4-staging/v4rankpacks/ /home/spark7/sparkdata/dsv4-staging/v4rankpacks/ 2>/dev/null | grep spstage'
+module=spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.b8.v4 target=cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16 artifact=a3a0979f0998b5c5041e3b5226b5d16acde1e694ff386ebb2bc40be88e8ac0e1 validator=b0b39bec785e822a6df850e8635b7c4669ab4f8032028654a8a9652ae06bf97d kind=static_archive validation=executed link_unit=/tmp/devcycle-build-fdspark-k7-module-library/link_units/a3a0979f0998b5c5041e3b5226b5d16acde1e694ff386ebb2bc40be88e8ac0e1.a record=/tmp/devcycle-build-fdspark-k7-module-library/active/61c96d685c3968391d3acefa7531f215ce28db9961e673856f1a9cba5aed04df.json
+driver=/tmp/devcycle-build-fdspark-k7/model_driver.so manifest=/tmp/devcycle-build-fdspark-k7/compiled_manifest.json programs=1 operations=1 unique_link_units=1 model_sha256=fbd61a28aa5e5e871ec1b7222fe5cffb2ae2d164d66c18815757ed276700b056 compiled_program_sha256=f228e77b4dc820aea6d3c08b05fdb2cb5accc03b838647610e497c00e29fb3ca driver_sha256=e41645ab1417f4fca7e19d9a359b03c5e6036318f0f39256ad0d7365e983f54e
+build_remote fdspark-k7 done
+e41645ab1417f4fca7e19d9a359b03c5e6036318f0f39256ad0d7365e983f54e  /tmp/devcycle-build-fdspark-k7/model_driver.so
+62f23ef06320b1f7aeaba55e3daca8db6cfcc6d9cd79031bc87712c2f30f0841  /tmp/devcycle-build-fdspark-k7/sparkpipe_model_residentd
+===
+[0m
+k=7 driver built and validated (`e41645ab…`). Fetching artifacts while pack copies continue.
+[0m$ [0mmkdir -p tools/devcycle/drivers/fdspark-k7 && for a in model_driver.so model_serving_adapter.so hidden_transport.so sparkpipe_model_residentd sparkpipe_model_batch SOURCE_COMMIT; do scp -q -o BatchMode=yes spark4:/tmp/devcycle-build-fdspark-k7/$a tools/devcycle/drivers/fdspark-k7/$a || echo "missing $a"; done; ls -la tools/devcycle/drivers/fdspark-k7/; cat tools/devcycle/drivers/fdspark-k7/SOURCE_COMMIT
+total 16704
+drwxr-xr-x  8 mac  staff      256 Aug 25 18:02 .
+drwxr-xr-x  4 mac  staff      128 Aug 25 18:02 ..
+-rw-r--r--  1 mac  staff       41 Aug 25 18:02 SOURCE_COMMIT
+-rwxr-xr-x  1 mac  staff   200832 Aug 25 18:02 hidden_transport.so
+-rwxr-xr-x  1 mac  staff  6825896 Aug 25 18:02 model_driver.so
+-rwxr-xr-x  1 mac  staff   284688 Aug 25 18:02 model_serving_adapter.so
+-rwxr-xr-x  1 mac  staff   745728 Aug 25 18:02 sparkpipe_model_batch
+-rwxr-xr-x  1 mac  staff   476864 Aug 25 18:02 sparkpipe_model_residentd
+c8344362cb0577774585b383a071f57b10ecb168
+[0m
+[0m$ [0mjq '.nodes[0].runtime_limits, .nodes[0].adapter_configuration_path' tools/devcycle/templates/model_resident.template.json 2>/dev/null | head -20
+null
+"config/dsv4_flash_tp4_stage.json"
+[0m
+[0m$ [0mcat tools/devcycle/templates/model_resident.template.json
+{
+  "schema_version": 2,
+  "coordinator_rank_index": 0,
+  "adapter": {
+    "shared_object_path": "lib/model_serving_adapter.so"
+  },
+  "driver": {
+    "shared_object_path": "lib/model_driver.so",
+    "program_name": "resident_decode"
+  },
+  "transport": {
+    "shared_object_path": "lib/hidden_transport.so",
+    "mode": "host-rdma",
+    "control_port_base": 59700
+  },
+  "runtime_limits": {
+    "max_inflight_submissions": 1,
+    "max_active_sequences": 1,
+    "max_input_rows": 1,
+    "resident_sequence_capacity": 1,
+    "kv_logical_page_capacity": 32,
+    "kv_physical_page_capacity": 32
+  },
+  "nodes": [
+    {
+      "rank_index": 0,
+      "stage_index": 0,
+      "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+      "transport_host": "spark4",
+      "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
+      "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_backing_maximum_bytes": 1073741824,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark4",
+        "port": 18480
+      }
+    },
+    {
+      "rank_index": 1,
+      "stage_index": 1,
+      "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+      "transport_host": "spark5",
+      "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
+      "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_backing_maximum_bytes": 1073741824,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark5",
+        "port": 18480
+      }
+    },
+    {
+      "rank_index": 2,
+      "stage_index": 2,
+      "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+      "transport_host": "spark6",
+      "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
+      "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_backing_maximum_bytes": 1073741824,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark6",
+        "port": 18480
+      }
+    },
+    {
+      "rank_index": 3,
+      "stage_index": 3,
+      "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+      "transport_host": "spark7",
+      "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
+      "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_backing_maximum_bytes": 1073741824,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark7",
+        "port": 18480
+      }
+    }
+  ]
+}
+[0m
+[0m$ [0mssh -o BatchMode=yes spark4 'cat /tmp/v4copy.log 2>/dev/null; ls -la /home/spark5/sparkdata/dsv4-staging/v4rankpacks/ /home/spark6/extnvme/dsv4-v4rankpacks/ /home/spark7/sparkdata/dsv4-staging/v4rankpacks/ 2>/dev/null | grep -c spstage'
+0
+[0m
+[0m$ [0msleep 90; ssh -o BatchMode=yes spark4 'cat /tmp/v4copy.log 2>/dev/null; for h in spark5 spark6 spark7; do echo "== $h"; ssh $h "ls -la /home/spark*/dsv4*v4rankpacks/ /home/spark*/*/v4rankpacks/ 2>/dev/null" | grep spstage; done'
+r1-done
+== spark5
+== spark6
+== spark7
+[0m
+[0m$ [0msleep 120; ssh -o BatchMode=yes spark4 'cat /tmp/v4copy.log; echo ===; ssh spark5 "ls -la /home/spark5/sparkdata/dsv4-staging/v4rankpacks/"; ssh spark6 "ls -la /home/spark6/extnvme/dsv4-v4rankpacks/"; ssh spark7 "ls -la /home/spark7/sparkdata/dsv4-staging/v4rankpacks/"'
+r1-done
+===
+total 49801540
+drwxrwxr-x 2 spark5 spark5        4096 Aug 26 03:01 .
+drwxrwxr-x 6 spark5 spark5        4096 Aug 26 03:01 ..
+-rw------- 1 spark5 spark5 50996758576 Aug 26 03:03 dsv4_flash_stage_v4.rank1.spstage
+total 13995404
+drwxrwxr-x  2 spark6 spark6        4096 Aug 26 03:03 .
+drwxrwxr-x 13 spark6 spark6        4096 Aug 26 03:01 ..
+-rw-------  1 spark6 spark6 14331281408 Aug 26 03:06 dsv4_flash_stage_v4.rank2.spstage
+total 8
+drwxrwxr-x 2 spark7 spark7 4096 Aug 26 03:01 .
+drwxrwxr-x 6 spark7 spark7 4096 Aug 26 03:01 ..
+[0m
+rank1 landed; rank2 in flight; rank3 queued. Setting up the runtime skeleton meanwhile.
+[0m$ [0mtools/devcycle.sh setup fdspark-k7 2>&1 | tail -6
+setup spark4 rank0 dirs+pack-symlink ok
+setup spark5 rank1 dirs+pack-symlink ok
+setup spark6 rank2 dirs+pack-symlink ok
+setup spark7 rank3 dirs+pack-symlink ok
+setup configs ok
+[0m
+[0m$ [0msleep 180; ssh -o BatchMode=yes spark4 'cat /tmp/v4copy.log; ssh spark6 "ls -la /home/spark6/extnvme/dsv4-v4rankpacks/" | tail -2; ssh spark7 "ls -la /home/spark7/sparkdata/dsv4-staging/v4rankpacks/" | tail -2'
+r1-done
+drwxrwxr-x 13 spark6 spark6        4096 Aug 26 03:01 ..
+-rw-------  1 spark6 spark6 23188209664 Aug 26 03:09 dsv4_flash_stage_v4.rank2.spstage
+drwxrwxr-x 2 spark7 spark7 4096 Aug 26 03:01 .
+drwxrwxr-x 6 spark7 spark7 4096 Aug 26 03:01 ..
+[0m
+While rank2/3 copies finish, patching the new runtime's configs to verify-frame capacity (8 rows) per the b8 pattern.
+[0m$ [0mfor h in spark4 spark5 spark6 spark7; do ssh -o BatchMode=yes $h "sed -i 's/\"max_active_sequences\": 1,/\"max_active_sequences\": 8,/; s/\"max_input_rows\": 1,/\"max_input_rows\": 8,/; s/\"resident_sequence_capacity\": 1,/\"resident_sequence_capacity\": 8,/' /tmp/dsv4-fdspark-k7-runtime/config/model_resident.json"; done
+ssh -o BatchMode=yes spark4 'grep -A6 runtime_limits /tmp/dsv4-fdspark-k7-runtime/config/model_resident.json | head -8'
+"runtime_limits": {
+    "max_inflight_submissions": 1,
+    "max_active_sequences": 8,
+    "max_input_rows": 8,
+    "resident_sequence_capacity": 8,
+    "kv_logical_page_capacity": 32,
+    "kv_physical_page_capacity": 32
+[0m
+[0m$ [0msleep 300; ssh -o BatchMode=yes spark4 'cat /tmp/v4copy.log; ssh spark6 "ls -la /home/spark6/extnvme/dsv4-v4rankpacks/" | tail -1; ssh spark7 "ls -la /home/spark7/sparkdata/dsv4-staging/v4rankpacks/" | tail -1'
+r1-done
+-rw-------  1 spark6 spark6 37884788736 Aug 26 03:15 dsv4_flash_stage_v4.rank2.spstage
+drwxrwxr-x 6 spark7 spark7 4096 Aug 26 03:01 ..
+[0m
+[0m$ [0mgrep -n "dspark_accept\|dspark_round\|accepted=\|SparkDsv4ModuleDsparkDrive" modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c | head -12
+2390:static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
+2555:					SparkStatus dspark_status = SparkDsv4ModuleDsparkDrive(state,slot,
+3531:static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
+3607:			fprintf(stderr,"dspark_accept tp_rank=%u lane=%u accepted=%u rows=%u chain=%u\n",state->tp_rank,lane_index,accepted,continuation->rows,continuation->chain_step_count);
+4285:static SparkStatus SparkDsv4ModuleDsparkDrive(
+[0m
+~15–20 min of copying left. Studying the draft-drive path meanwhile to know which log counters the k-sweep should parse.
+[0m$ [0msed -n '3540,3615p' modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c
+continuation = (SparkDsv4TpFrameContinuation *)context;
+	if ( continuation == 0 || continuation->active == 0u )
+		return;
+	state = continuation->state;
+	slot = continuation->slot;
+	error = cudaSuccess;
+	if ( status == SPARK_STATUS_OK )
+		error = SparkDsv4LaunchHeadMaxlocUnpack(
+			(cudaStream_t)slot->cuda_stream,slot->head_maxloc_u64,
+			slot->output_token_ids,continuation->rows);
+	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
+		continuation->chain_step_count > 1u &&
+		continuation->chain_step_index + 1u <
+		continuation->chain_step_count )
+	{
+		status = SparkDsv4ModuleContinueResidentChain(continuation);
+		if ( status == SPARK_STATUS_OK )
+			return;
+	}
+	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
+		continuation->chain_step_count > 1u )
+		status = SparkDsv4ModuleRecordResidentToken(continuation,0u);
+	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
+		state->owns_final_head != 0u )
+		error = cudaMemcpyAsync(slot->host_output_token_ids,
+			continuation->chain_step_count > 1u ? slot->resident_token_ids :
+			slot->output_token_ids,(uint64_t)continuation->rows *
+			continuation->chain_step_count * sizeof(uint32_t),
+			cudaMemcpyDeviceToHost,(cudaStream_t)slot->cuda_stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
+			"tp_head_maxloc_finish");
+	/* DSpark acceptance reads the head tokens on the host: the D2H above
+	 * is asynchronous, so fence before touching host_output_token_ids. */
+	if ( status == SPARK_STATUS_OK && state->dspark_enabled != 0u )
+	{
+		cudaError_t sync_error = cudaStreamSynchronize(
+			(cudaStream_t)slot->cuda_stream);
+		if ( sync_error != cudaSuccess )
+			status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
+				sync_error,"dspark_head_sync");
+	}
+	/* DSpark: greedy Leviathan acceptance over the staged rows, burst
+	 * emission, and the anchor step's taps + token to the LANE store
+	 * (slots cycle across submissions, so the next draft runs from state,
+	 * not from this slot). The D2D tap copy rides the stream before the
+	 * completion callback fires. */
+	if ( status == SPARK_STATUS_OK &&
+		(continuation->rows == 1u || continuation->dspark_verify != 0u) &&
+		state->dspark_enabled != 0u )
+	{
+		SparkDsv4AsyncCompletion *async;
+		uint32_t slot_index = (uint32_t)(slot - state->slots);
+		uint32_t lane_index,accepted,layer;
+		async = &state->completions[slot_index];
+		lane_index = async->lane_indices[0];
+		accepted = 0u;
+		if ( continuation->dspark_verify != 0u )
+		{
+			if ( slot->dspark_verify_accept != 0u )
+			{
+				for (accepted = 0u;
+					accepted < SPARK_DSV4_MODEL_DSPARK_SPEC_STEP; accepted++)
+					if ( slot->host_output_token_ids[accepted] !=
+						slot->dspark_host_draft_tokens[accepted] )
+						break;
+			}
+			fprintf(stderr,"dspark_accept tp_rank=%u lane=%u accepted=%u rows=%u chain=%u\n",state->tp_rank,lane_index,accepted,continuation->rows,continuation->chain_step_count);
+			async->completion.accepted_token_count = 1u + accepted;
+			async->completion.tokens_per_sequence = 1u + accepted;
+			async->tokens_per_sequence = 1u + accepted;
+			async->emitted_token_count = 1u + accepted;
+			/* The completion emits 1 + accepted tokens. The anchor (the
+			 * "1") was ALREADY folded into lane_next_positions and the
+			 * cache lane's context_token_count by the 1-row submission's
+			 * frame-continuity advance, so only the accepted bonus drafts
+[0m
+[0m$ [0msleep 240; ssh -o BatchMode=yes spark4 'cat /tmp/v4copy.log; ssh spark6 "stat -c%s /home/spark6/extnvme/dsv4-v4rankpacks/dsv4_flash_stage_v4.rank2.spstage" 2>/dev/null; ssh spark7 "ls -la /home/spark7/sparkdata/dsv4-staging/v4rankpacks/" | tail -1'
+r1-done
+49189748736
+drwxrwxr-x 6 spark7 spark7 4096 Aug 26 03:01 ..
+[0m
+[0m$ [0msleep 180; ssh -o BatchMode=yes spark4 'cat /tmp/v4copy.log; ssh spark6 "stat -c%s /home/spark6/extnvme/dsv4-v4rankpacks/dsv4_flash_stage_v4.rank2.spstage"; ssh spark7 "stat -c%s /home/spark7/sparkdata/dsv4-staging/v4rankpacks/dsv4_flash_stage_v4.rank3.spstage" 2>/dev/null || echo r3-not-started'
+r1-done
+r2-done
+r3-done
+50995710000
+50995710000
+[0m
+All v4 packs in place with exact sizes. Wiring pack symlinks and deploying the k=7 spec stack.
+[0m$ [0mssh -o BatchMode=yes spark4 'ln -sfn /home/spark4/srcdata/dsv4_flash.fp8.pp13/dsv4_flash_stage_v4.rank0.spstage /tmp/dsv4-fdspark-k7-runtime/packs/dsv4_flash_stage.spstage'
+ssh -o BatchMode=yes spark5 'ln -sfn /home/spark5/sparkdata/dsv4-staging/v4rankpacks/dsv4_flash_stage_v4.rank1.spstage /tmp/dsv4-fdspark-k7-runtime/packs/dsv4_flash_stage.spstage'
+ssh -o BatchMode=yes spark6 'ln -sfn /home/spark6/extnvme/dsv4-v4rankpacks/dsv4_flash_stage_v4.rank2.spstage /tmp/dsv4-fdspark-k7-runtime/packs/dsv4_flash_stage.spstage'
+ssh -o BatchMode=yes spark7 'ln -sfn /home/spark7/sparkdata/dsv4-staging/v4rankpacks/dsv4_flash_stage_v4.rank3.spstage /tmp/dsv4-fdspark-k7-runtime/packs/dsv4_flash_stage.spstage'
+for h in spark4 spark5 spark6 spark7; do ssh -o BatchMode=yes $h 'readlink -f /tmp/dsv4-fdspark-k7-runtime/packs/dsv4_flash_stage.spstage'; done
+/home/spark4/srcdata/dsv4_flash.fp8.pp13/dsv4_flash_stage_v4.rank0.spstage
+/home/spark5/sparkdata/dsv4-staging/v4rankpacks/dsv4_flash_stage_v4.rank1.spstage
+/home/spark6/extnvme/dsv4-v4rankpacks/dsv4_flash_stage_v4.rank2.spstage
+/home/spark7/sparkdata/dsv4-staging/v4rankpacks/dsv4_flash_stage_v4.rank3.spstage
+[0m
+[0m$ [0mtools/devcycle.sh deploy fdspark-k7 tools/devcycle/drivers/fdspark-k7 2>&1 | tail -5
+deploy spark4 rank0 restarted
+deploy spark5 rank1 restarted
+deploy spark6 rank2 restarted
+deploy spark7 rank3 restarted
+deploy fdspark-k7 done (run: devcycle ready fdspark-k7)
+[0m
+[0m$ [0mtools/devcycle.sh ready fdspark-k7 2>&1 | tail -3
+ready spark5 rank1 DEAD
+[0m
+[0m$ [0mssh -o BatchMode=yes spark5 'tail -20 /tmp/devcycle-fdspark-k7-rank1.log'; echo ===r0; ssh -o BatchMode=yes spark4 'tail -6 /tmp/devcycle-fdspark-k7-rank0.log'
+hidden_spark_rdma_fabric_ready local_host=10.10.200.5 device=rocep1s0f0 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=10.10.200.5 device=rocep1s0f0 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=10.10.100.15 device=rocep1s0f1 port=1 gid_index=3
+model_residentd initialize=io_error status=4 phase=adapter_initialize rank=1 stage=1
+model_residentd route_failed status=4 reason=9 work_kind=0 submission=0
+===r0
+hidden_spark_rdma_fabric_ready local_host=10.10.200.4 device=rocep1s0f0 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=10.10.200.4 device=rocep1s0f0 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=10.10.100.14 device=rocep1s0f1 port=1 gid_index=3
+[0m
+[0m$ [0mssh -o BatchMode=yes spark5 'grep -v "fabric_ready" /tmp/devcycle-fdspark-k7-rank1.log | head -40'
+model_residentd initialize=io_error status=4 phase=adapter_initialize rank=1 stage=1
+model_residentd route_failed status=4 reason=9 work_kind=0 submission=0
+[0m
+[0m$ [0mfor i in 0 1 2 3; do h=$( [ $i = 0 ] && echo spark4 || ( [ $i = 1 ] && echo spark5 || ( [ $i = 2 ] && echo spark6 || echo spark7 ) ) ); echo "== rank$i $h"; ssh -o BatchMode=yes $h "pgrep -f 'rank-index $i' >/dev/null && echo alive || echo dead; grep -v fabric_ready /tmp/devcycle-fdspark-k7-rank$i.log | head -8"; done
+== rank0 spark4
+alive
+== rank1 spark5
+alive
+model_residentd initialize=io_error status=4 phase=adapter_initialize rank=1 stage=1
+model_residentd route_failed status=4 reason=9 work_kind=0 submission=0
+== rank2 spark6
+alive
+model_residentd initialize=io_error status=4 phase=adapter_initialize rank=2 stage=2
+model_residentd route_failed status=4 reason=9 work_kind=0 submission=0
+== rank3 spark7
+alive
+[0m
+[0m$ [0mssh -o BatchMode=yes spark5 'wc -l /tmp/devcycle-fdspark-k7-rank1.log; head -30 /tmp/devcycle-fdspark-k7-rank1.log'; echo =====RANK3; ssh -o BatchMode=yes spark7 'head -30 /tmp/devcycle-fdspark-k7-rank3.log'
+5 /tmp/devcycle-fdspark-k7-rank1.log
+hidden_spark_rdma_fabric_ready local_host=10.10.200.5 device=rocep1s0f0 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=10.10.200.5 device=rocep1s0f0 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=10.10.100.15 device=rocep1s0f1 port=1 gid_index=3
+model_residentd initialize=io_error status=4 phase=adapter_initialize rank=1 stage=1
+model_residentd route_failed status=4 reason=9 work_kind=0 submission=0
+=====RANK3
+hidden_spark_rdma_fabric_ready local_host=10.10.200.7 device=rocep1s0f0 port=1 gid_index=3
+[0m

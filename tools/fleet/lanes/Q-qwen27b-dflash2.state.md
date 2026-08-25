@@ -35,3 +35,4 @@
 [17:45:29] STEP 7: module content resolution DONE — 27B+Max module files overwritten with renamed unified consolidated content (superset proof: zero main-only fns), unified-only files ported (paged_kv x2, selector_host.h, 3 selector validations, kv_stale_row, preflight, ISLAND_MAPPING, READMEs, module Makefile), tap-ring constants ported into dspark_format.h, 4 UD old-named files removed
 [lane Q-qwen27b-dflash2] attempt 14 exited clean
 [lane Q-qwen27b-dflash2] attempt 15 17:48:59
+[18:00:34] STEP 8: Makefile resolved (4 hunks: renamed unified content onto qwen38_27b/qwen38_max paths, kept main API-chain infra auto-merge) + stray renames (test_qwen38_27b_prefix_cache target, stagepack parity drivers/fixtures/paths, model_descriptions git mv to qwen38_27b/qwen38_max firmware jsons, crosscheck includes) + gate script staged; merge committed dcf7091 on merge-main-into-unified

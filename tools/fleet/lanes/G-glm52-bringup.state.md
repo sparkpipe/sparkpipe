@@ -8,3 +8,5 @@
 [lane G-glm52-bringup] attempt 3 exited clean
 [lane G-glm52-bringup] attempt 4 17:40:41
 [2026-08-25 17:5x] STEP 4 (wip): solo boots spark8-rank0 & spark1-rank4 both fail schema_error(6) @adapter_initialize; deployed adapter==tp8 id, members/schema v4 walk clean -> instrumenting: traced adapter .so on sparke -> spark8-only redeploy + solo rerun; backups first
+[2026-08-25 18:4x] STEP 4: single-rank boot PASS on spark8 r0 after root-causing schema_error -> shared-reader ShapeWords stamped BF16 codec vs packs' CODEC_NONE on ROUTER_CORRECTION; fixed reader (words->NONE), rebuilt driver dd2ba28c via publish+GPU-validate, pack/caches/slots/RDMA all green, proc alive in peer-wait; artifact qualification/glm52/performance/tp8_bringup_20260825/step4_single_rank_boot.md
+[2026-08-25 19:0x] STEP 5: 8-rank bring-up PASS — deployed fixed driver+adapter to all band hosts (backups *.bringup-bak), staggered launch, 8/8 model_residentd ready (ranks 0-7, tcp 19480-19487, RDMA rocep1s0f1, tp_collective rc=0 incl spark1@r4); artifact qualification/glm52/performance/tp8_bringup_20260825/step5_8rank_bringup.md

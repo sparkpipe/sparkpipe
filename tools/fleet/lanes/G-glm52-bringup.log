@@ -4311,3 +4311,1749 @@ spark_glm52_resident_decode_stage_cuda_validation.cu
 validate_glm52_resident_decode_stage_cuda.sh
 [0m
 The validator is required by the tool — so use the proven `make publish` flow directly (validators included):
+[0m$ [0mtimeout 1700 ssh -o BatchMode=yes sparke 'cd ~/build/glm52_unified/modules/glm52_resident_decode_stage
+export PATH=/usr/local/cuda-13.0/bin:$PATH CUDA_HOME=/usr/local/cuda-13.0
+REV=b4734de4facf877f85769a911abafc5283eab3d9
+CONTRACT=ec5afd74d2ba0c913474f30d78209b4a49fa87667845f2968039fddad0fead7a
+PACK=/home/sparke/srcdata/glm52_tp8_packs/glm52_tp8_rank06.fp8.glms52sp
+COMMON="EXPERT_CODEC=fp8 MODEL_REVISION=$REV CONTRACT_SHA256=$CONTRACT STAGE_PACK_PATH=$PACK MAX_ACTIVE_SEQUENCES=16 MAX_SEQUENCE_POSITIONS=4096 EXECUTION_ROW_CAPACITY=16 PIPELINE_SLOT_COUNT=2"
+make publish_variants $COMMON MODULE_BATCH_VARIANT_BUCKETS="1 2 4 8 16" > /tmp/traced_publish_variants.log 2>&1
+echo PV_RC=$?
+make publish $COMMON > /tmp/traced_publish.log 2>&1
+echo PUB_RC=$?
+bash /tmp/glm52_compile_pkg.sh > /tmp/traced_pkg.log 2>&1
+echo PKG_RC=$?
+tail -5 /tmp/traced_pkg.log
+sha256sum ~/glm52_package/stages/stage_000/model_driver.so'
+PV_RC=0
+PUB_RC=0
+PKG_RC=0
++ export PATH=/usr/local/cuda-13.0/bin:/usr/local/cuda-13.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
++ PATH=/usr/local/cuda-13.0/bin:/usr/local/cuda-13.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
++ export CUDA_HOME=/usr/local/cuda-13.0
++ CUDA_HOME=/usr/local/cuda-13.0
++ exit 0
+4df087774c050ab1a037150341e2bce68a66a6e96a7fd9695ad8e871783d4248  /home/sparke/glm52_package/stages/stage_000/model_driver.so
+[0m
+Traced driver built (all GPU validations passed). Deploying to spark8 only + solo boot:
+[0m$ [0mtimeout 20 ssh -o BatchMode=yes spark8 'cp -p ~/sparkdata/glm52.tp8.fp8/lib/model_driver.so ~/sparkdata/glm52.tp8.fp8/lib/model_driver.so.bringup-bak' && timeout 120 scp -o BatchMode=yes sparke:/home/sparke/glm52_package/stages/stage_000/model_driver.so spark8:/home/spark8/sparkdata/glm52.tp8.fp8/lib/model_driver.so && timeout 30 ssh -o BatchMode=yes spark8 'chmod +x ~/sparkdata/glm52.tp8.fp8/lib/model_driver.so && rm -f /tmp/glm52-tp8-rank0.log && cd ~/sparkdata/glm52.tp8.fp8 && export LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH SPARKPIPE_RELEASE_GENERATION=20260825000000 SPARKPIPE_RELEASE_GIT_COMMIT=glm52-tp8-bringup SPARKPIPE_RELEASE_ID=glm52-tp8-bringup-r0solo-traced2; setsid -f bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index 0 >/tmp/glm52-tp8-rank0.log 2>&1 </dev/null; echo LAUNCHED'
+LAUNCHED
+[0m
+[0m$ [0msleep 30; timeout 20 ssh -o BatchMode=yes spark8 'cat /tmp/glm52-tp8-rank0.log | head -40; echo ---PROC---; pgrep -af "[b]in/sparkpipe_model_residentd" || echo PROC_GONE; echo ---PORT---; ss -ltnH | grep ":19480 " || echo NO_LISTENER'
+GLM52TRACE lc members_exact rc=0
+GLM52TRACE lc LoadTpCollective rc=0
+GLM52TRACE LoadConfiguration rc=0 tp_degree=8 tp_rank=0 max_seq=4096 row_cap=16 speculate=0
+GLM52TRACE init after_LoadConfiguration rc=0
+GLM52MODTRACE init configure rc=0
+GLM52MODTRACE PackLoad entry[65] kind=21 layer=3 rc=6
+GLM52MODTRACE init pack_load rc=6 path=/home/spark8/sparkdata/glm52.tp8.fp8/packs/glm52_tp8_rank00.fp8.glms52sp
+GLM52TRACE init after_LoadDriver rc=6
+model_residentd initialize=schema_error status=6 phase=adapter_initialize rank=0 stage=0
+model_residentd route_failed status=4 reason=9 work_kind=0 submission=0
+---PROC---
+PROC_GONE
+---PORT---
+NO_LISTENER
+[0m
+**Root cause localized**: module Configure + CUDA fine; pack load fails at **entry[65], tensor kind=21 (SHARED_GATE_UP), layer 3, SCHEMA_ERROR** — the new module's expected-shape table disagrees with the Aug-15 packs on the shared-expert tensors. Examining the shape resolver:
+[0m$ [0mtimeout 25 ssh -o BatchMode=yes sparke 'cd ~/build/glm52_unified && grep -rn "SparkGlm52StagePackExpectedShape" --include=*.c --include=*.h -l | head; grep -n "TENSOR_SHARED_GATE_UP\|TENSOR_KIND_COUNT\|TENSOR_EMBEDDING" modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h | head'
+tests/fixtures/stagepack_parity/glm52/spark_glm52_resident_decode_stage_internal.h
+tests/test_glm52_pp7_tap_transport.c
+tests/test_glm52_pp7_configure.c
+tests/test_stagepack_parity_glm52.c
+tests/test_glm52_stagepack.c
+tmp/aud_fixture_nobanner.h
+tmp/aud_expected_concat.h
+tmp/gate_tmp/spglm.fmt.h
+tmp/aud_head_fmt.h
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h
+191:	SPARK_GLM52_STAGEPACK_TENSOR_EMBEDDING = 0,
+215:	SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP = 24,
+217:	SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT = 26
+309:	case SPARK_GLM52_STAGEPACK_TENSOR_EMBEDDING:
+314:	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP:
+340:	if ( shape == 0 || tensor_kind >= SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT || tp_degree == 0u )
+352:	case SPARK_GLM52_STAGEPACK_TENSOR_EMBEDDING:
+385:	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP: SparkStagePackShapeBf16(shape,1u,2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+[0m
+[0m$ [0mtimeout 25 ssh -o BatchMode=yes sparke 'cd ~/build/glm52_unified && sed -n "185,220p" modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h && sed -n "300,420p" modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h'
+SPARK_GLM52_STAGEPACK_PAYLOAD_U32 = SPARK_STAGE_PACK_PAYLOAD_U32,
+	SPARK_GLM52_STAGEPACK_PAYLOAD_PACKED_WEIGHT = SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT
+} SparkGlm52StagePackPayloadType;
+
+typedef enum SparkGlm52StagePackTensorKind
+{
+	SPARK_GLM52_STAGEPACK_TENSOR_EMBEDDING = 0,
+	SPARK_GLM52_STAGEPACK_TENSOR_FINAL_NORM = 1,
+	SPARK_GLM52_STAGEPACK_TENSOR_LM_HEAD = 2,
+	SPARK_GLM52_STAGEPACK_TENSOR_ATTN_NORM = 3,
+	SPARK_GLM52_STAGEPACK_TENSOR_Q_A = 4,
+	SPARK_GLM52_STAGEPACK_TENSOR_Q_A_NORM = 5,
+	SPARK_GLM52_STAGEPACK_TENSOR_Q_B = 6,
+	SPARK_GLM52_STAGEPACK_TENSOR_KV_A = 7,
+	SPARK_GLM52_STAGEPACK_TENSOR_KV_A_NORM = 8,
+	SPARK_GLM52_STAGEPACK_TENSOR_KV_B_KEY_TRANSPOSED = 9,
+	SPARK_GLM52_STAGEPACK_TENSOR_KV_B_VALUE = 10,
+	SPARK_GLM52_STAGEPACK_TENSOR_ATTN_OUTPUT = 11,
+	SPARK_GLM52_STAGEPACK_TENSOR_POST_ATTN_NORM = 12,
+	SPARK_GLM52_STAGEPACK_TENSOR_INDEX_Q = 13,
+	SPARK_GLM52_STAGEPACK_TENSOR_INDEX_K = 14,
+	SPARK_GLM52_STAGEPACK_TENSOR_INDEX_HEAD = 15,
+	SPARK_GLM52_STAGEPACK_TENSOR_INDEX_NORM_WEIGHT = 16,
+	SPARK_GLM52_STAGEPACK_TENSOR_INDEX_NORM_BIAS = 17,
+	SPARK_GLM52_STAGEPACK_TENSOR_DENSE_GATE_UP = 18,
+	SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN = 19,
+	SPARK_GLM52_STAGEPACK_TENSOR_ROUTER = 20,
+	SPARK_GLM52_STAGEPACK_TENSOR_ROUTER_CORRECTION = 21,
+	SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE = 22,
+	SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN = 23,
+	SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP = 24,
+	SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN = 25,
+	SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT = 26
+} SparkGlm52StagePackTensorKind;
+
+typedef struct SparkGlm52StagePackHeader
+}
+
+/* TP sharding policy: which kinds are row- or column-sharded across ranks.
+ * Must match tools/glm52_resident_stagepack.py exactly; the mechanics live
+ * in the shared reader (SparkStagePackApplyShard). */
+static inline uint32_t SparkGlm52StagePackTpShardPolicy(uint32_t tensor_kind)
+{
+	switch ( tensor_kind )
+	{
+	case SPARK_GLM52_STAGEPACK_TENSOR_EMBEDDING:
+	case SPARK_GLM52_STAGEPACK_TENSOR_LM_HEAD:
+	case SPARK_GLM52_STAGEPACK_TENSOR_Q_B:
+	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_GATE_UP:
+	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE:
+	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP:
+		return(SPARK_STAGE_PACK_SHARD_ROWS);
+	case SPARK_GLM52_STAGEPACK_TENSOR_ATTN_OUTPUT:
+	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN:
+	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN:
+	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN:
+		return(SPARK_STAGE_PACK_SHARD_COLUMNS);
+	default:
+		return(SPARK_STAGE_PACK_SHARD_NONE);
+	}
+}
+
+/* Pack header TP identity: reserved0 = tp_degree, reserved1 = tp_rank. */
+static inline uint32_t SparkGlm52StagePackHeaderTpDegree(const SparkGlm52StagePackHeader *header)
+{
+	return(header != 0 ? header->reserved0 : 0u);
+}
+
+static inline uint32_t SparkGlm52StagePackHeaderTpRank(const SparkGlm52StagePackHeader *header)
+{
+	return(header != 0 ? header->reserved1 : 0u);
+}
+
+static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkGlm52StagePackTensorShape *shape)
+{
+	uint32_t global;
+	if ( shape == 0 || tensor_kind >= SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT || tp_degree == 0u )
+		return(-1);
+	memset(shape,0,sizeof(*shape));
+	global = SparkGlm52StagePackKindIsGlobal(tensor_kind);
+	if ( (global != 0u && layer_index != SPARK_GLM52_STAGEPACK_GLOBAL_LAYER) || (global == 0u && layer_index >= SPARK_GLM52_MODEL_LAYER_COUNT) )
+		return(-2);
+	if ( SparkGlm52StagePackKindIsIndexer(tensor_kind) != 0u && SparkGlm52StagePackLayerHasFullIndexer(layer_index) == 0u )
+		return(-3);
+	if ( SparkGlm52StagePackKindIsDense(tensor_kind) != SparkGlm52StagePackLayerIsDense(layer_index) && (SparkGlm52StagePackKindIsDense(tensor_kind) != 0u || SparkGlm52StagePackKindIsRouted(tensor_kind) != 0u) )
+		return(-4);
+	switch ( tensor_kind )
+	{
+	case SPARK_GLM52_STAGEPACK_TENSOR_EMBEDDING:
+	case SPARK_GLM52_STAGEPACK_TENSOR_LM_HEAD: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_FINAL_NORM:
+	case SPARK_GLM52_STAGEPACK_TENSOR_ATTN_NORM:
+	case SPARK_GLM52_STAGEPACK_TENSOR_POST_ATTN_NORM: SparkStagePackShapeBf16(shape,1u,1u,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_Q_A: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_QUERY_A_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_Q_A_NORM: SparkStagePackShapeBf16(shape,1u,1u,SPARK_GLM52_MODEL_QUERY_A_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_Q_B: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_QK_HEAD_DIMENSION,SPARK_GLM52_MODEL_QUERY_A_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_KV_A: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_KV_A_NORM: SparkStagePackShapeBf16(shape,1u,1u,SPARK_GLM52_MODEL_LATENT_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_KV_B_KEY_TRANSPOSED: SparkStagePackShapeBf16(shape,SPARK_GLM52_MODEL_HEAD_COUNT,SPARK_GLM52_MODEL_LATENT_DIMENSION,SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_KV_B_VALUE: SparkStagePackShapeBf16(shape,SPARK_GLM52_MODEL_HEAD_COUNT,SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION,SPARK_GLM52_MODEL_LATENT_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_INDEX_Q: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_DSA_INDEX_QUERY_DIMENSION,SPARK_GLM52_MODEL_QUERY_A_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_INDEX_K: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_INDEX_HEAD: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_DSA_INDEX_HEAD_COUNT,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_INDEX_NORM_WEIGHT:
+	case SPARK_GLM52_STAGEPACK_TENSOR_INDEX_NORM_BIAS: SparkStagePackShapeBf16(shape,1u,1u,SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_GATE_UP: SparkStagePackShapeBf16(shape,1u,2u * SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_ROUTER: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_ROUTER_CORRECTION: SparkStagePackShapeWords(shape,SPARK_GLM52_STAGEPACK_PAYLOAD_F32,1u,1u,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE:
+	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN:
+		if ( expert_codec < SPARK_WEIGHT_CODEC_INT6 || expert_codec > SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
+			return(-5);
+		shape->payload_type = SPARK_GLM52_STAGEPACK_PAYLOAD_PACKED_WEIGHT;
+		shape->weight_codec = expert_codec;
+		shape->scale_encoding = SparkWeightCodecScaleEncoding(expert_codec);
+		shape->group_count = SPARK_GLM52_MODEL_MOE_EXPERT_COUNT;
+		shape->rows = tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE ? 2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION : SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
+		shape->columns = tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE ? SPARK_GLM52_MODEL_HIDDEN_DIMENSION : SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION;
+		break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP: SparkStagePackShapeBf16(shape,1u,2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION); break;
+	default: return(-6);
+	}
+	if ( SparkStagePackApplyShard(shape,SparkGlm52StagePackTpShardPolicy(tensor_kind),tp_degree) != 0 )
+		return(-7);
+	return(0);
+}
+[0m
+kind 21 = **ROUTER_CORRECTION** (F32 words, 256 experts). Decoding the actual pack bytes directly (no rebuild) — fetching struct layouts:
+[0m$ [0mtimeout 25 ssh -o BatchMode=yes sparke 'cd ~/build/glm52_unified && sed -n "220,300p" modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h; grep -n "SparkStagePackShapeWords\|SparkStagePackShapeBf16\|KindIsDense\|KindIsRouted\|LayerIsDense\|LayerHasFullIndexer\|GLOBAL_LAYER" runtime/spark_stagepack_reader.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h 2>/dev/null | head -20'
+typedef struct SparkGlm52StagePackHeader
+{
+	uint32_t magic;
+	uint32_t format_version;
+	uint32_t header_bytes;
+	uint32_t directory_entry_bytes;
+	uint32_t codec_abi_version;
+	uint32_t flags;
+	uint32_t tensor_count;
+	uint32_t stage_count;
+	uint32_t stage_index;
+	uint32_t first_layer_index;
+	uint32_t layer_count;
+	uint32_t total_layer_count;
+	uint32_t hidden_dimension;
+	uint32_t vocab_count;
+	uint32_t routed_expert_count;
+	uint32_t linear_weight_codec;
+	uint32_t expert_weight_codec;
+	uint32_t kv_cache_codec;
+	uint32_t reserved0;
+	uint32_t reserved1;
+	uint64_t directory_offset;
+	uint64_t file_bytes;
+	char model_revision[SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES];
+	uint8_t contract_sha256[SPARK_GLM52_STAGEPACK_SHA256_BYTES];
+	uint8_t source_config_sha256[SPARK_GLM52_STAGEPACK_SHA256_BYTES];
+	uint8_t pack_recipe_sha256[SPARK_GLM52_STAGEPACK_SHA256_BYTES];
+} SparkGlm52StagePackHeader;
+
+typedef struct SparkGlm52StagePackEntry
+{
+	uint32_t tensor_kind;
+	uint32_t layer_index;
+	uint32_t payload_type;
+	uint32_t weight_codec;
+	uint32_t scale_encoding;
+	uint32_t group_count;
+	uint32_t rows;
+	uint32_t columns;
+	uint64_t payload_offset;
+	uint64_t payload_bytes;
+	uint64_t scale_offset;
+	uint64_t scale_bytes;
+} SparkGlm52StagePackEntry;
+
+/* The normalized reader shape, under this family's historical name. */
+typedef SparkStagePackShape SparkGlm52StagePackTensorShape;
+
+#define SPARK_GLM52_STAGEPACK_HEADER_BYTES ((uint32_t)sizeof(SparkGlm52StagePackHeader))
+#define SPARK_GLM52_STAGEPACK_ENTRY_BYTES ((uint32_t)sizeof(SparkGlm52StagePackEntry))
+
+static inline uint32_t SparkGlm52StagePackLayerIsDense(uint32_t layer_index)
+{
+	return(layer_index < SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER ? 1u : 0u);
+}
+
+static inline uint32_t SparkGlm52StagePackLayerHasFullIndexer(uint32_t layer_index)
+{
+	return(SPARK_GLM52_MODEL_LAYER_HAS_FULL_INDEXER(layer_index));
+}
+
+static inline uint32_t SparkGlm52StagePackKindIsGlobal(uint32_t tensor_kind)
+{
+	return(tensor_kind <= SPARK_GLM52_STAGEPACK_TENSOR_LM_HEAD ? 1u : 0u);
+}
+
+static inline uint32_t SparkGlm52StagePackKindIsIndexer(uint32_t tensor_kind)
+{
+	return(tensor_kind >= SPARK_GLM52_STAGEPACK_TENSOR_INDEX_Q && tensor_kind <= SPARK_GLM52_STAGEPACK_TENSOR_INDEX_NORM_BIAS ? 1u : 0u);
+}
+
+static inline uint32_t SparkGlm52StagePackKindIsDense(uint32_t tensor_kind)
+{
+	return(tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_DENSE_GATE_UP || tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN ? 1u : 0u);
+}
+
+static inline uint32_t SparkGlm52StagePackKindIsRouted(uint32_t tensor_kind)
+{
+	return(tensor_kind >= SPARK_GLM52_STAGEPACK_TENSOR_ROUTER && tensor_kind <= SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN ? 1u : 0u);
+}
+runtime/spark_stagepack_reader.h:46:static inline void SparkStagePackShapeBf16(SparkStagePackShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
+runtime/spark_stagepack_reader.h:56:static inline void SparkStagePackShapeWords(SparkStagePackShape *shape,uint32_t payload_type,uint32_t groups,uint32_t rows,uint32_t columns)
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:174:#define SPARK_GLM52_STAGEPACK_GLOBAL_LAYER UINT32_MAX
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:272:static inline uint32_t SparkGlm52StagePackLayerIsDense(uint32_t layer_index)
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:277:static inline uint32_t SparkGlm52StagePackLayerHasFullIndexer(uint32_t layer_index)
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:292:static inline uint32_t SparkGlm52StagePackKindIsDense(uint32_t tensor_kind)
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:297:static inline uint32_t SparkGlm52StagePackKindIsRouted(uint32_t tensor_kind)
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:344:	if ( (global != 0u && layer_index != SPARK_GLM52_STAGEPACK_GLOBAL_LAYER) || (global == 0u && layer_index >= SPARK_GLM52_MODEL_LAYER_COUNT) )
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:346:	if ( SparkGlm52StagePackKindIsIndexer(tensor_kind) != 0u && SparkGlm52StagePackLayerHasFullIndexer(layer_index) == 0u )
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:348:	if ( SparkGlm52StagePackKindIsDense(tensor_kind) != SparkGlm52StagePackLayerIsDense(layer_index) && (SparkGlm52StagePackKindIsDense(tensor_kind) != 0u || SparkGlm52StagePackKindIsRouted(tensor_kind) != 0u) )
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:353:	case SPARK_GLM52_STAGEPACK_TENSOR_LM_HEAD: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:356:	case SPARK_GLM52_STAGEPACK_TENSOR_POST_ATTN_NORM: SparkStagePackShapeBf16(shape,1u,1u,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:357:	case SPARK_GLM52_STAGEPACK_TENSOR_Q_A: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_QUERY_A_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:358:	case SPARK_GLM52_STAGEPACK_TENSOR_Q_A_NORM: SparkStagePackShapeBf16(shape,1u,1u,SPARK_GLM52_MODEL_QUERY_A_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:359:	case SPARK_GLM52_STAGEPACK_TENSOR_Q_B: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_QK_HEAD_DIMENSION,SPARK_GLM52_MODEL_QUERY_A_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:360:	case SPARK_GLM52_STAGEPACK_TENSOR_KV_A: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:361:	case SPARK_GLM52_STAGEPACK_TENSOR_KV_A_NORM: SparkStagePackShapeBf16(shape,1u,1u,SPARK_GLM52_MODEL_LATENT_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:362:	case SPARK_GLM52_STAGEPACK_TENSOR_KV_B_KEY_TRANSPOSED: SparkStagePackShapeBf16(shape,SPARK_GLM52_MODEL_HEAD_COUNT,SPARK_GLM52_MODEL_LATENT_DIMENSION,SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:363:	case SPARK_GLM52_STAGEPACK_TENSOR_KV_B_VALUE: SparkStagePackShapeBf16(shape,SPARK_GLM52_MODEL_HEAD_COUNT,SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION,SPARK_GLM52_MODEL_LATENT_DIMENSION); break;
+modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h:364:	case SPARK_GLM52_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkStagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION); break;
+[0m
+Writing a direct pack decoder on sparke to get exact failure semantics for entry[65]:
+[0m$ [0mtimeout 60 ssh -o BatchMode=yes sparke 'grep -rn "FIRST_ROUTED_LAYER\|LAYER_HAS_FULL_INDEXER\|DSA_INDEX" ~/build/glm52_unified/model-families/glm52/include/sparkpipe/spark_glm52_model.h | head -8'
+9:#define SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER 3u
+23:#define SPARK_GLM52_MODEL_DSA_INDEX_HEAD_COUNT 32u
+24:#define SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION 128u
+25:#define SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT 4u
+26:#define SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET 3u
+48:#define SPARK_GLM52_MODEL_DSA_INDEX_NORM_EPSILON 1e-06f
+52:#define SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE 0.0883883476f
+81:#define SPARK_GLM52_MODEL_DSA_INDEX_QUERY_DIMENSION \
+[0m
+[0m$ [0mtimeout 120 ssh -o BatchMode=yes sparke 'python3 - <<\EOF
+import struct
+P="/home/sparke/srcdata/glm52_tp8_packs/glm52_tp8_rank06.fp8.glms52sp"
+f=open(P,"rb"); data=f.read(64*3000)
+h=struct.unpack_from("<20I",data,0)
+magic,fv,hb,deb,cabi,flags,tc,sc,si,fli,lc,tlc,hid,voc,rec,lwc,ewc,kvc,r0,r1=h
+print("HEADER magic=%08x fv=%u hb=%u deb=%u cabi=%u flags=%x tensors=%u stage=%u/%u first_layer=%u layers=%u total=%u hidden=%u vocab=%u experts=%u codecs=%u/%u/%u reserved=%u/%u"%(magic,fv,hb,deb,cabi,flags,tc,sc,si,fli,lc,tlc,hid,voc,rec,lwc,ewc,kvc,r0,r1))
+dir_off,file_bytes=struct.unpack_from("<2Q",data,80)
+print("dir_off=%d file_bytes=%d"%(dir_off,file_bytes))
+import os
+file_bytes_real=os.path.getsize(P)
+print("real_size=%d"%file_bytes_real)
+names={0:"EMB",1:"FNORM",2:"LMHEAD",3:"ATTN_NORM",4:"Q_A",5:"Q_A_NORM",6:"Q_B",7:"KV_A",8:"KV_A_NORM",9:"KV_B_KT",10:"KV_B_V",11:"ATTN_OUT",12:"POST_NORM",13:"IDX_Q",14:"IDX_K",15:"IDX_HEAD",16:"IDX_NW",17:"IDX_NB",18:"DENSE_GU",19:"DENSE_D",20:"ROUTER",21:"RTR_CORR",22:"EXP_UG",23:"EXP_D",24:"SH_GU",25:"SH_D"}
+FIRST_ROUTED=3
+def dense(l): return 1 if l<FIRST_ROUTED else 0
+def is_dense_kind(k): return 1 if k in (18,19) else 0
+def is_routed_kind(k): return 1 if 20<=k<=25 else 0
+def is_indexer(k): return 1 if 13<=k<=17 else 0
+bad=[]
+for i in range(tc):
+    e=struct.unpack_from("<8I4Q",data,dir_off+i*deb)
+    k,l,pt,wcv,se,gc,r,c=e[0],e[1],e[2],e[3],e[4],e[5],e[6],e[7]
+    tag=names.get(k,str(k))
+    if k==21 or (l<6 and l!=0xffffffff):
+        print("entry[%3d] kind=%-2d %-8s layer=%-10s pt=%u codec=%u se=%u gc=%u rows=%u cols=%u off=%llu bytes=%llu soff=%llu sbytes=%llu"%(i,k,tag,l,pt,wcv,se,gc,r,c,e[8],e[9],e[10],e[11]))
+    # -4 rule check
+    g = 1 if k<=2 else 0
+    if (g and l!=0xffffffff) or ((not g) and l>=78): bad.append((i,"range"))
+    elif is_indexer(k) and l!=0xffffffff:
+        pass
+    elif (is_dense_kind(k)!=dense(l)) and (is_dense_kind(k) or is_routed_kind(k)): bad.append((i,"class4 kind=%d layer=%d"%(k,l)))
+print("CLASS_VIOLATIONS:",bad[:10])
+EOF'
+HEADER magic=32534c47 fv=3 hb=264 deb=64 cabi=1 flags=0 tensors=1344 stage=1/0 first_layer=0 layers=78 total=78 hidden=6144 vocab=154880 experts=256 codecs=1/5/1 reserved=8/6
+dir_off=512 file_bytes=102835957760
+real_size=102835957760
+Traceback (most recent call last):
+  File "<stdin>", line 24, in <module>
+ValueError: unsupported format character 'l' (0x6c) at index 87
+[0m
+[0m$ [0mtimeout 120 ssh -o BatchMode=yes sparke 'python3 - <<\EOF
+import struct
+P="/home/sparke/srcdata/glm52_tp8_packs/glm52_tp8_rank06.fp8.glms52sp"
+f=open(P,"rb"); data=f.read(64*3000)
+h=struct.unpack_from("<20I",data,0)
+tc=h[6]; dir_off,file_bytes=struct.unpack_from("<2Q",data,80); deb=h[3]
+names={0:"EMB",1:"FNORM",2:"LMHEAD",3:"ATTN_NORM",4:"Q_A",5:"Q_A_NORM",6:"Q_B",7:"KV_A",8:"KV_A_NORM",9:"KV_B_KT",10:"KV_B_V",11:"ATTN_OUT",12:"POST_NORM",13:"IDX_Q",14:"IDX_K",15:"IDX_HEAD",16:"IDX_NW",17:"IDX_NB",18:"DENSE_GU",19:"DENSE_D",20:"ROUTER",21:"RTR_CORR",22:"EXP_UG",23:"EXP_D",24:"SH_GU",25:"SH_D"}
+FIRST_ROUTED=3
+def dense(l): return 1 if l<FIRST_ROUTED else 0
+def is_dense_kind(k): return 1 if k in (18,19) else 0
+def is_routed_kind(k): return 1 if 20<=k<=25 else 0
+bad=[]
+for i in range(tc):
+    e=struct.unpack_from("<8I4Q",data,dir_off+i*deb)
+    k,l=e[0],e[1]
+    if k==21:
+        print("entry[%3d] %-8s layer=%-3d pt=%u codec=%u se=%u gc=%u rows=%u cols=%u bytes=%d"%(i,names.get(k,k),l,e[2],e[3],e[4],e[5],e[6],e[7],e[9]))
+    g = 1 if k<=2 else 0
+    if (g and l!=0xffffffff) or ((not g) and l>=78): bad.append((i,"range",k,l))
+    elif 13<=k<=17 and l!=0xffffffff: pass
+    elif (is_dense_kind(k)!=dense(l)) and (is_dense_kind(k) or is_routed_kind(k)): bad.append((i,"class4",k,l))
+print("CLASS_VIOLATIONS(first10):",bad[:10])
+# also show entries of layer 3 all kinds
+print("--- layer3 inventory ---")
+inv={}
+for i in range(tc):
+    e=struct.unpack_from("<8I4Q",data,dir_off+i*deb)
+    if e[1]==3: inv[names.get(e[0],e[0])]=(e[2],e[3],e[4],e[5],e[6],e[7],e[9])
+for k,v in sorted(inv.items(),key=lambda x:str(x[0])): print(k,v)
+EOF'
+entry[ 65] RTR_CORR layer=3   pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[ 81] RTR_CORR layer=4   pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[ 97] RTR_CORR layer=5   pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[118] RTR_CORR layer=6   pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[134] RTR_CORR layer=7   pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[150] RTR_CORR layer=8   pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[166] RTR_CORR layer=9   pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[187] RTR_CORR layer=10  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[203] RTR_CORR layer=11  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[219] RTR_CORR layer=12  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[235] RTR_CORR layer=13  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[256] RTR_CORR layer=14  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[272] RTR_CORR layer=15  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[288] RTR_CORR layer=16  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[304] RTR_CORR layer=17  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[325] RTR_CORR layer=18  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[341] RTR_CORR layer=19  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[357] RTR_CORR layer=20  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[373] RTR_CORR layer=21  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[394] RTR_CORR layer=22  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[410] RTR_CORR layer=23  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[426] RTR_CORR layer=24  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[442] RTR_CORR layer=25  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[463] RTR_CORR layer=26  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[479] RTR_CORR layer=27  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[495] RTR_CORR layer=28  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[511] RTR_CORR layer=29  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[532] RTR_CORR layer=30  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[548] RTR_CORR layer=31  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[564] RTR_CORR layer=32  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[580] RTR_CORR layer=33  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[601] RTR_CORR layer=34  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[617] RTR_CORR layer=35  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[633] RTR_CORR layer=36  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[649] RTR_CORR layer=37  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[670] RTR_CORR layer=38  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[686] RTR_CORR layer=39  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[702] RTR_CORR layer=40  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[718] RTR_CORR layer=41  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[739] RTR_CORR layer=42  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[755] RTR_CORR layer=43  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[771] RTR_CORR layer=44  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[787] RTR_CORR layer=45  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[808] RTR_CORR layer=46  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[824] RTR_CORR layer=47  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[840] RTR_CORR layer=48  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[856] RTR_CORR layer=49  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[877] RTR_CORR layer=50  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[893] RTR_CORR layer=51  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[909] RTR_CORR layer=52  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[925] RTR_CORR layer=53  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[946] RTR_CORR layer=54  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[962] RTR_CORR layer=55  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[978] RTR_CORR layer=56  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[994] RTR_CORR layer=57  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1015] RTR_CORR layer=58  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1031] RTR_CORR layer=59  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1047] RTR_CORR layer=60  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1063] RTR_CORR layer=61  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1084] RTR_CORR layer=62  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1100] RTR_CORR layer=63  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1116] RTR_CORR layer=64  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1132] RTR_CORR layer=65  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1153] RTR_CORR layer=66  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1169] RTR_CORR layer=67  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1185] RTR_CORR layer=68  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1201] RTR_CORR layer=69  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1222] RTR_CORR layer=70  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1238] RTR_CORR layer=71  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1254] RTR_CORR layer=72  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1270] RTR_CORR layer=73  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1291] RTR_CORR layer=74  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1307] RTR_CORR layer=75  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1323] RTR_CORR layer=76  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+entry[1339] RTR_CORR layer=77  pt=2 codec=0 se=0 gc=1 rows=1 cols=256 bytes=1024
+CLASS_VIOLATIONS(first10): []
+--- layer3 inventory ---
+ATTN_NORM (1, 1, 0, 1, 1, 6144, 12288)
+ATTN_OUT (1, 1, 0, 1, 6144, 2048, 25165824)
+EXP_D (4, 5, 1, 256, 6144, 256, 402653184)
+EXP_UG (4, 5, 1, 256, 512, 6144, 805306368)
+KV_A (1, 1, 0, 1, 576, 6144, 7077888)
+KV_A_NORM (1, 1, 0, 1, 1, 512, 1024)
+KV_B_KT (1, 1, 0, 64, 512, 192, 12582912)
+KV_B_V (1, 1, 0, 64, 256, 512, 16777216)
+POST_NORM (1, 1, 0, 1, 1, 6144, 12288)
+Q_A (1, 1, 0, 1, 2048, 6144, 25165824)
+Q_A_NORM (1, 1, 0, 1, 1, 2048, 4096)
+Q_B (1, 1, 0, 1, 2048, 2048, 8388608)
+ROUTER (1, 1, 0, 1, 256, 6144, 3145728)
+RTR_CORR (2, 0, 0, 1, 1, 256, 1024)
+SH_D (1, 1, 0, 1, 6144, 256, 3145728)
+SH_GU (1, 1, 0, 1, 512, 6144, 6291456)
+[0m
+Fetching the last pieces (ShapeWords body, CheckEntryBounds, enums) to complete an exact offline simulation:
+[0m$ [0mtimeout 25 ssh -o BatchMode=yes sparke 'sed -n "30,120p" ~/build/glm52_unified/runtime/spark_stagepack_reader.h; grep -n "PAYLOAD_BF16\|PAYLOAD_U32\|PAYLOAD_PACKED\|PAYLOAD_F32\|ALIGNMENT" ~/build/glm52_unified/runtime/spark_stagepack_reader.h | head'
+#define SPARK_STAGE_PACK_PAYLOAD_BF16 1u
+#define SPARK_STAGE_PACK_PAYLOAD_F32 2u
+#define SPARK_STAGE_PACK_PAYLOAD_U32 3u
+#define SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT 4u
+
+/* The normalized shape every geometry table emits. */
+typedef struct SparkStagePackShape
+{
+	uint32_t payload_type;
+	uint32_t weight_codec;      /* SparkWeightCodec; meaningful when packed */
+	uint32_t scale_encoding;    /* SparkWeightScaleEncoding; NONE unless packed */
+	uint32_t group_count;
+	uint32_t rows;
+	uint32_t columns;
+} SparkStagePackShape;
+
+static inline void SparkStagePackShapeBf16(SparkStagePackShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
+{
+	shape->payload_type = SPARK_STAGE_PACK_PAYLOAD_BF16;
+	shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
+	shape->group_count = groups;
+	shape->rows = rows;
+	shape->columns = columns;
+}
+
+static inline void SparkStagePackShapeWords(SparkStagePackShape *shape,uint32_t payload_type,uint32_t groups,uint32_t rows,uint32_t columns)
+{
+	shape->payload_type = payload_type;
+	shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
+	shape->group_count = groups;
+	shape->rows = rows;
+	shape->columns = columns;
+}
+
+/* Packed-expert shape: codec supplies scale encoding and grouping. */
+static inline int32_t SparkStagePackShapePacked(SparkStagePackShape *shape,uint32_t codec,uint32_t groups,uint32_t rows,uint32_t columns)
+{
+	if ( SparkWeightCodecIsKnown(codec) == 0u || codec == SPARK_WEIGHT_CODEC_BF16 || groups == 0u || rows == 0u || columns == 0u )
+		return(-1);
+	shape->payload_type = SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT;
+	shape->weight_codec = codec;
+	shape->scale_encoding = SparkWeightCodecScaleEncoding(codec);
+	shape->group_count = groups;
+	shape->rows = rows;
+	shape->columns = columns;
+	return(0);
+}
+
+static inline uint64_t SparkStagePackPayloadBytes(const SparkStagePackShape *shape)
+{
+	uint64_t elements;
+	if ( shape == 0 || shape->group_count == 0u || shape->rows == 0u || shape->columns == 0u || shape->group_count > UINT64_MAX / shape->rows || (uint64_t)shape->group_count * shape->rows > UINT64_MAX / shape->columns )
+		return(0u);
+	elements = (uint64_t)shape->group_count * shape->rows * shape->columns;
+	switch ( shape->payload_type )
+	{
+	case SPARK_STAGE_PACK_PAYLOAD_BF16: return(elements > UINT64_MAX / 2u ? 0u : elements * 2u);
+	case SPARK_STAGE_PACK_PAYLOAD_F32:
+	case SPARK_STAGE_PACK_PAYLOAD_U32: return(elements > UINT64_MAX / 4u ? 0u : elements * 4u);
+	default: return(shape->payload_type == SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecPayloadBytes(shape->weight_codec,(uint64_t)shape->group_count * shape->rows,shape->columns) : 0u);
+	}
+}
+
+static inline uint64_t SparkStagePackScaleBytes(const SparkStagePackShape *shape)
+{
+	return(shape != 0 && shape->payload_type == SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecScaleBytes(shape->weight_codec,shape->group_count,shape->rows,shape->columns) : 0u);
+}
+
+/* Row/column sharding policy application: a table declares which kinds
+ * shrink along which axis for a TP degree, and the mechanics enforce
+ * divisibility before dividing. Returns 0 or a negative schema code. */
+#define SPARK_STAGE_PACK_SHARD_NONE 0u
+#define SPARK_STAGE_PACK_SHARD_ROWS 1u
+#define SPARK_STAGE_PACK_SHARD_COLUMNS 2u
+
+static inline int32_t SparkStagePackApplyShard(SparkStagePackShape *shape,uint32_t shard_policy,uint32_t tp_degree)
+{
+	if ( shape == 0 || tp_degree == 0u )
+		return(-1);
+	if ( shard_policy == SPARK_STAGE_PACK_SHARD_NONE )
+		return(0);
+	if ( shard_policy == SPARK_STAGE_PACK_SHARD_ROWS )
+	{
+		if ( shape->rows == 0u || shape->rows % tp_degree != 0u )
+			return(-2);
+		shape->rows /= tp_degree;
+		return(0);
+	}
+	if ( shard_policy == SPARK_STAGE_PACK_SHARD_COLUMNS )
+30:#define SPARK_STAGE_PACK_PAYLOAD_BF16 1u
+31:#define SPARK_STAGE_PACK_PAYLOAD_F32 2u
+32:#define SPARK_STAGE_PACK_PAYLOAD_U32 3u
+33:#define SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT 4u
+48:	shape->payload_type = SPARK_STAGE_PACK_PAYLOAD_BF16;
+71:	shape->payload_type = SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT;
+88:	case SPARK_STAGE_PACK_PAYLOAD_BF16: return(elements > UINT64_MAX / 2u ? 0u : elements * 2u);
+89:	case SPARK_STAGE_PACK_PAYLOAD_F32:
+90:	case SPARK_STAGE_PACK_PAYLOAD_U32: return(elements > UINT64_MAX / 4u ? 0u : elements * 4u);
+91:	default: return(shape->payload_type == SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecPayloadBytes(shape->weight_codec,(uint64_t)shape->group_count * shape->rows,shape->columns) : 0u);
+[0m
+[0m$ [0mgrep -n "weight_codec" runtime/spark_stagepack_reader.h | head; echo ===; sed -n '/SparkStagePackShapeWords/,/^}/p' runtime/spark_stagepack_reader.h
+5:#include "sparkpipe/spark_weight_codec.h"
+39:	uint32_t weight_codec;      /* SparkWeightCodec; meaningful when packed */
+49:	shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
+59:	shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
+72:	shape->weight_codec = codec;
+91:	default: return(shape->payload_type == SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecPayloadBytes(shape->weight_codec,(uint64_t)shape->group_count * shape->rows,shape->columns) : 0u);
+97:	return(shape != 0 && shape->payload_type == SPARK_STAGE_PACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecScaleBytes(shape->weight_codec,shape->group_count,shape->rows,shape->columns) : 0u);
+===
+static inline void SparkStagePackShapeWords(SparkStagePackShape *shape,uint32_t payload_type,uint32_t groups,uint32_t rows,uint32_t columns)
+{
+	shape->payload_type = payload_type;
+	shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
+	shape->group_count = groups;
+	shape->rows = rows;
+	shape->columns = columns;
+}
+[0m
+[0m$ [0mgit log --oneline -3 -- runtime/spark_stagepack_reader.h; git diff HEAD --stat -- runtime/spark_stagepack_reader.h | tail -2
+2bc40c4 peer round-2 wave: qwen36 prefix caching + paged KV, shared stagepack reader, glm52 GPU validator restore, k3 TP16 production scripts
+[0m
+**ROOT CAUSE FOUND**: `SparkStagePackShapeWords()` (used for the F32 ROUTER_CORRECTION tensor) stamps `weight_codec = SPARK_WEIGHT_CODEC_BF16 (1)` into the expected shape, but the sha-gated Aug-15 packs store `weight_codec=0` for those entries → every router_correction entry fails the exact-shape compare (`entry->weight_codec != shape->weight_codec`) → SCHEMA_ERROR. Checking whether local repo master already fixed this shared-reader quirk:
+[0m$ [0mls tools/ | grep -i stagepack; grep -rn "router_correction\|ROUTER_CORRECTION" tools/glm52_resident_stagepack.py 2>/dev/null | head; grep -rn "weight_codec" tools/glm52_resident_stagepack.py 2>/dev/null | head -12
+dsv4_merge_stagepacks.py
+dsv4_pro_stagepack.py
+dsv4_stagepack.py
+dsv4_tp16_stagepack.py
+dsv4_tp4_pp4_stagepacks.py
+glm52_dspark_stagepack.py
+glm52_resident_stagepack.py
+glm52_stagepack.py
+qwen36_dspark_stagepack.py
+qwen36_stagepack.py
+qwen36_stagepack_mx_repack.py
+qwen36_stagepack_rans.c
+qwen38_stagepack.py
+tools/glm52_resident_stagepack.py:91:K_ROUTER_CORRECTION = 21
+tools/glm52_resident_stagepack.py:366:                self.add_f32(K_ROUTER_CORRECTION, layer,
+tools/glm52_resident_stagepack.py:142:    def __init__(self, kind: int, layer: int, payload_type: int, weight_codec: int,
+tools/glm52_resident_stagepack.py:147:        self.weight_codec = weight_codec
+tools/glm52_resident_stagepack.py:447:                    entry.kind, entry.layer, entry.payload_type, entry.weight_codec,
+[0m
+Same bug in local master — not yet fixed upstream. Checking what the pack **builder** writes (ground truth) and what other families' packs carry:
+[0m$ [0mgrep -n "def add_f32\|def add_u32\|def add_bf16" -A 8 tools/glm52_resident_stagepack.py | head -30
+201:    def add_bf16(self, kind: int, layer: int, tensor: torch.Tensor, groups: int = 1):
+202-        if tensor.dim() == 1:
+203-            tensor = tensor.unsqueeze(0)
+204-        if tensor.dtype != torch.bfloat16:
+205-            tensor = tensor.to(torch.bfloat16)
+206-        rows, cols = tensor.shape
+207-        if groups > 1:
+208-            if rows % groups != 0:
+209-                raise PackFailure(f"rows {rows} not divisible by groups {groups}")
+--
+217:    def add_f32(self, kind: int, layer: int, tensor: torch.Tensor):
+218-        if tensor.dim() == 1:
+219-            tensor = tensor.unsqueeze(0)
+220-        tensor = tensor.to(torch.float32)
+221-        rows, cols = tensor.shape
+222-        entry = Entry(kind, layer, PAYLOAD_F32, CODEC_NONE, SCALE_NONE,
+223-                      1, rows, cols)
+224-        payload_bytes = rows * cols * 4
+225-        blob = to_bytes(tensor)
+[0m
+[0m$ [0mgrep -n "CODEC_NONE\s*=\|PAYLOAD_F32\s*=\|SCALE_NONE\s*=" tools/glm52_resident_stagepack.py | head -5; echo ===DSV4===; grep -n "CODEC_NONE\|def add_f32" tools/dsv4_stagepack.py | head -6; grep -n "def add_f32" -A 5 tools/dsv4_stagepack.py | head -8; echo ===QWEN36===; grep -n "CODEC_NONE\|def add_f32" tools/qwen36_stagepack.py | head -4
+59:PAYLOAD_F32 = 2
+64:CODEC_NONE = 0
+66:SCALE_NONE = 0
+===DSV4===
+===QWEN36===
+[0m
+[0m$ [0mgrep -rn "SPARK_WEIGHT_CODEC_NONE\|WEIGHT_CODEC_NONE" include/sparkpipe/spark_weight_codec.h | head -4
+include/sparkpipe/spark_weight_codec.h:22:	SPARK_WEIGHT_CODEC_NONE = 0,
+[0m
+Builder ground truth confirmed: `add_f32` writes `CODEC_NONE`. Verifying the constant and whether sibling families' builders agree (shared-reader fix must not break them):
+[0m$ [0mgrep -ln "PAYLOAD_F32\|add_f32" tools/*stagepack*.py tools/dsv4_pro_stagepack.py 2>/dev/null; grep -n "def add_f32" -A 4 tools/qwen38_stagepack.py tools/dsv4_tp16_stagepack.py 2>/dev/null | head -12
+tools/glm52_resident_stagepack.py
+tools/glm52_stagepack.py
+[0m
+Only GLM52 families use word tensors — the shared-reader fix is safe. Applying the one-line semantic fix (`ShapeWords` → `CODEC_NONE`, matching builder + struct comment "meaningful when packed") in the sparke build tree and rebuilding:
+[0m$ [0mtimeout 30 ssh -o BatchMode=yes sparke 'cd ~/build/glm52_unified && cp runtime/spark_stagepack_reader.h /tmp/spark_stagepack_reader.h.orig && sed -i "s|^\tshape->weight_codec = SPARK_WEIGHT_CODEC_BF16;$|\tshape->weight_codec = SPARK_WEIGHT_CODEC_NONE;|" runtime/spark_stagepack_reader.h && sed -n "/SparkStagePackShapeWords/,/^}/p" runtime/spark_stagepack_reader.h && grep -rn "SPARK_WEIGHT_CODEC_NONE" include/sparkpipe/spark_weight_codec.h | head -2'
+static inline void SparkStagePackShapeWords(SparkStagePackShape *shape,uint32_t payload_type,uint32_t groups,uint32_t rows,uint32_t columns)
+{
+	shape->payload_type = payload_type;
+	shape->weight_codec = SPARK_WEIGHT_CODEC_NONE;
+	shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
+	shape->group_count = groups;
+	shape->rows = rows;
+	shape->columns = columns;
+}
+22:	SPARK_WEIGHT_CODEC_NONE = 0,
+[0m
+[0m$ [0mtimeout 1700 ssh -o BatchMode=yes sparke 'cd ~/build/glm52_unified/modules/glm52_resident_decode_stage
+export PATH=/usr/local/cuda-13.0/bin:$PATH CUDA_HOME=/usr/local/cuda-13.0
+REV=b4734de4facf877f85769a911abafc5283eab3d9
+CONTRACT=ec5afd74d2ba0c913474f30d78209b4a49fa87667845f2968039fddad0fead7a
+PACK=/home/sparke/srcdata/glm52_tp8_packs/glm52_tp8_rank06.fp8.glms52sp
+COMMON="EXPERT_CODEC=fp8 MODEL_REVISION=$REV CONTRACT_SHA256=$CONTRACT STAGE_PACK_PATH=$PACK MAX_ACTIVE_SEQUENCES=16 MAX_SEQUENCE_POSITIONS=4096 EXECUTION_ROW_CAPACITY=16 PIPELINE_SLOT_COUNT=2"
+make publish_variants $COMMON MODULE_BATCH_VARIANT_BUCKETS="1 2 4 8 16" > /tmp/fixed_publish_variants.log 2>&1
+echo PV_RC=$?
+make publish $COMMON > /tmp/fixed_publish.log 2>&1
+echo PUB_RC=$?
+bash /tmp/glm52_compile_pkg.sh > /tmp/fixed_pkg.log 2>&1
+echo PKG_RC=$?
+sha256sum ~/glm52_package/stages/stage_000/model_driver.so'
+PV_RC=0
+PUB_RC=0
+PKG_RC=0
+41b2121b4758da2b1adee2ed28a7dfe6b83c73d0fb3d3952a15ef52abf32acfb  /home/sparke/glm52_package/stages/stage_000/model_driver.so
+[0m
+Rebuilding complete with fix (GPU validations PASS). Deploying to spark8 and re-running solo boot:
+[0m$ [0mtimeout 120 scp -o BatchMode=yes sparke:/home/sparke/glm52_package/stages/stage_000/model_driver.so spark8:/home/spark8/sparkdata/glm52.tp8.fp8/lib/model_driver.so && timeout 30 ssh -o BatchMode=yes spark8 'chmod +x ~/sparkdata/glm52.tp8.fp8/lib/model_driver.so && rm -f /tmp/glm52-tp8-rank0.log && cd ~/sparkdata/glm52.tp8.fp8 && export LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH SPARKPIPE_RELEASE_GENERATION=20260825000000 SPARKPIPE_RELEASE_GIT_COMMIT=glm52-tp8-bringup SPARKPIPE_RELEASE_ID=glm52-tp8-bringup-r0solo; setsid -f bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index 0 >/tmp/glm52-tp8-rank0.log 2>&1 </dev/null; echo LAUNCHED'
+LAUNCHED
+[0m
+[0m$ [0msleep 45; timeout 20 ssh -o BatchMode=yes spark8 'head -30 /tmp/glm52-tp8-rank0.log; echo ---PROC---; pgrep -af "[b]in/sparkpipe_model_residentd" || echo PROC_GONE; echo ---PORTS---; ss -ltnH | grep -E ":(19480|63620) " || echo NO_LISTENERS'
+GLM52TRACE lc members_exact rc=0
+GLM52TRACE lc LoadTpCollective rc=0
+GLM52TRACE LoadConfiguration rc=0 tp_degree=8 tp_rank=0 max_seq=4096 row_cap=16 speculate=0
+GLM52TRACE init after_LoadConfiguration rc=0
+GLM52MODTRACE init configure rc=0
+GLM52MODTRACE PackLoad entry[0] kind=0 layer=4294967295 rc=6
+GLM52MODTRACE init pack_load rc=6 path=/home/spark8/sparkdata/glm52.tp8.fp8/packs/glm52_tp8_rank00.fp8.glms52sp
+GLM52TRACE init after_LoadDriver rc=6
+model_residentd initialize=schema_error status=6 phase=adapter_initialize rank=0 stage=0
+model_residentd route_failed status=4 reason=9 work_kind=0 submission=0
+---PROC---
+PROC_GONE
+---PORTS---
+NO_LISTENERS
+[0m
+router_correction fixed — now the **next** latent mismatch surfaced at entry[0] (EMBEDDING, global). Dumping its actual fields:
+[0m$ [0mtimeout 60 ssh -o BatchMode=yes sparke 'python3 - <<\EOF
+import struct
+P="/home/sparke/srcdata/glm52_tp8_packs/glm52_tp8_rank06.fp8.glms52sp"
+data=open(P,"rb").read(512+64*8)
+tc=struct.unpack_from("<I",data,24)[0]
+dir_off=struct.unpack_from("<Q",data,80)[0]
+deb=struct.unpack_from("<I",data,12)[0]
+names={0:"EMB",1:"FNORM",2:"LMHEAD"}
+for i in range(0,6):
+    e=struct.unpack_from("<8I4Q",data,dir_off+i*deb)
+    print(i,names.get(e[0],e[0]),"layer=%d pt=%d codec=%d se=%d gc=%d rows=%d cols=%d bytes=%d"%(e[1],e[2],e[3],e[4],e[5],e[6],e[7],e[9]))
+EOF'
+0 EMB layer=4294967295 pt=1 codec=1 se=0 gc=1 rows=19360 cols=6144 bytes=237895680
+1 FNORM layer=4294967295 pt=1 codec=1 se=0 gc=1 rows=1 cols=6144 bytes=12288
+2 LMHEAD layer=4294967295 pt=1 codec=1 se=0 gc=1 rows=19360 cols=6144 bytes=237895680
+3 3 layer=0 pt=1 codec=1 se=0 gc=1 rows=1 cols=6144 bytes=12288
+4 4 layer=0 pt=1 codec=1 se=0 gc=1 rows=2048 cols=6144 bytes=25165824
+5 5 layer=0 pt=1 codec=1 se=0 gc=1 rows=1 cols=2048 bytes=4096
+[0m
+EMB entry matches the resolver exactly — so the failure must be in `SparkStagePackCheckEntryBounds`. Reading it:
+[0m$ [0mtimeout 25 ssh -o BatchMode=yes sparke 'grep -n "CheckEntryBounds" -B 2 -A 40 ~/build/glm52_unified/runtime/spark_stagepack_reader.h | head -60; grep -n "STAGEPACK_ALIGNMENT\|ALIGNMENT_BYTES" ~/build/glm52_unified/modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h | head -3'
+163- * whose wire format relaxes any clause keeps its local checker.
+164- */
+165:static inline int32_t SparkStagePackCheckEntryBounds(uint32_t alignment_bytes,const SparkStagePackShape *shape,uint64_t minimum_offset,uint64_t file_bytes,uint64_t payload_offset,uint64_t payload_bytes,uint64_t scale_offset,uint64_t scale_bytes)
+166-{
+167-	uint64_t expected_payload,expected_scale;
+168-	if ( alignment_bytes == 0u || shape == 0 || file_bytes < minimum_offset )
+169-		return(-1);
+170-	expected_payload = SparkStagePackPayloadBytes(shape);
+171-	expected_scale = SparkStagePackScaleBytes(shape);
+172-	if ( expected_payload == 0u || payload_bytes != expected_payload || scale_bytes != expected_scale )
+173-		return(-2);
+174-	if ( payload_offset % alignment_bytes != 0u || payload_offset < minimum_offset || payload_offset > file_bytes || payload_bytes > file_bytes - payload_offset )
+175-		return(-3);
+176-	if ( expected_scale == 0u )
+177-	{
+178-		if ( scale_offset != 0u )
+179-			return(-4);
+180-	}
+181-	else if ( scale_offset % alignment_bytes != 0u || scale_offset < minimum_offset || scale_offset > file_bytes || scale_bytes > file_bytes - scale_offset )
+182-		return(-5);
+183-	return(0);
+184-}
+185-
+186-/*
+187- * Expected-inventory mask construction: for one layer, set the bit of every
+188- * kind whose geometry table resolves. `expected_shape` is the model's table
+189- * entry point; `context` carries whatever the table reads (codec, degree).
+190- * Kinds at or beyond 64 are skipped (they cannot ride a u64 mask); every
+191- * current family's kind space fits far below that bound.
+192- */
+193-typedef int32_t (*SparkStagePackShapeResolver)(void *context,uint32_t tensor_kind,uint32_t layer_index,SparkStagePackShape *shape);
+194-
+195-static inline uint64_t SparkStagePackExpectedLayerMask(void *resolver_context,SparkStagePackShapeResolver expected_shape,uint32_t first_tensor_kind,uint32_t tensor_kind_count,uint32_t layer_index)
+196-{
+197-	SparkStagePackShape shape;
+198-	uint64_t mask;
+199-	uint32_t kind;
+200-	mask = 0u;
+201-	for (kind = first_tensor_kind; kind < tensor_kind_count && kind < 64u; kind++)
+202-		if ( expected_shape(resolver_context,kind,layer_index,&shape) == 0 )
+203-			mask |= UINT64_C(1) << kind;
+204-	return(mask);
+205-}
+--
+531- *   -6 scale placement against the strict discipline (a zero-byte scale at
+532- *      a nonzero offset included)
+533: * The strict discipline restates CheckEntryBounds clause-for-clause so the
+534- * generation-3 function above remains untouched frozen contract.
+535- */
+536-static inline int32_t SparkStagePackV4ValidateEntryExtent(const SparkStagePackV4Accounting *accounting,uint32_t rows,uint32_t columns,uint64_t minimum_offset,uint32_t alignment_bytes,uint64_t file_bytes,uint64_t payload_offset,uint64_t payload_bytes,uint64_t scale_offset,uint64_t scale_bytes,uint32_t declared_scale_group_size)
+537-{
+538-	uint64_t expected_payload,expected_scale;
+539-	if ( accounting == 0 || alignment_bytes == 0u || rows == 0u || columns == 0u || minimum_offset > file_bytes )
+540-		return(-1);
+541-	expected_payload = SparkStagePackV4PayloadBytes(accounting,rows,columns);
+542-	if ( expected_payload == 0u )
+543-		return(-1);
+544-	if ( accounting->payload_class == SPARK_STAGE_PACK_WEIGHT_BF16_RANS )
+545-	{
+546-		if ( payload_bytes == 0u || payload_bytes > expected_payload )
+175:#define SPARK_GLM52_STAGEPACK_ALIGNMENT_BYTES 256u
+[0m
+[0m$ [0mtimeout 90 ssh -o BatchMode=yes sparke 'python3 - <<\EOF
+import struct,os
+P="/home/sparke/srcdata/glm52_tp8_packs/glm52_tp8_rank06.fp8.glms52sp"
+size=os.path.getsize(P)
+f=open(P,"rb"); hdr=f.read(512); 
+tc=struct.unpack_from("<I",hdr,24)[0]
+dir_off,file_bytes=struct.unpack_from("<2Q",hdr,80)
+deb=struct.unpack_from("<I",hdr,12)[0]
+min_off=dir_off+tc*deb
+print("tc=%d dir_off=%d min_off=%d file=%d"%(tc,dir_off,min_off,file_bytes))
+f.seek(dir_off); dirt=f.read(tc*deb)
+ALIGN=256
+bad=[]
+for i in range(tc):
+    k,l,pt,wcv,se,gc,r,c,po,pb,so,sb=struct.unpack_from("<8I4Q",dirt,i*deb)
+    # clause checks mirroring CheckEntryBounds for BF16 shapes (expected_scale=0 unless packed)
+    packed = (pt==4)
+    exp_scale_bytes = 1 if packed else 0  # nonzero only for packed; exact value irrelevant for these clauses
+    if po % ALIGN != 0: bad.append((i,k,l,"align",po))
+    elif po < min_off: bad.append((i,k,l,"below_min",po))
+    elif po > file_bytes or pb > file_bytes-po: bad.append((i,k,l,"oob",po,pb))
+    elif (not packed):
+        if so != 0: bad.append((i,k,l,"scale_nonzero",so))
+if bad: 
+    print("BOUNDS_VIOLATIONS:",len(bad)); 
+    for b in bad[:12]: print(b)
+else: print("ALL_BOUNDS_OK")
+# distribution of payload offsets below min?
+offs=[struct.unpack_from("<8I4Q",dirt,i*deb)[8] for i in range(tc)]
+print("min_po=%d max_po_end=%d n_below_min=%d"%(min(offs),max(o for o in offs),sum(1 for o in offs if o<min_off)))
+EOF'
+tc=1344 dir_off=512 min_off=86528 file=102835957760
+ALL_BOUNDS_OK
+min_po=86528 max_po_end=100001656832 n_below_min=0
+[0m
+rank06 audits clean — but the boot failed on **spark8's rank00** pack. Auditing that one directly on spark8:
+[0m$ [0mtimeout 90 ssh -o BatchMode=yes spark8 'python3 - <<\EOF
+import struct,os
+P="/home/spark8/sparkdata/glm52.tp8.fp8/packs/glm52_tp8_rank00.fp8.glms52sp"
+size=os.path.getsize(P)
+f=open(P,"rb"); hdr=f.read(512)
+h=struct.unpack_from("<20I",hdr,0)
+magic,fv,hb,deb,cabi,flags,tc,sc,si,fli,lc,tlc,hid,voc,rec,lwc,ewc,kvc,r0,r1=h
+dir_off,file_bytes=struct.unpack_from("<2Q",hdr,80)
+min_off=dir_off+tc*deb
+print("magic=%08x fv=%d tensors=%d tp=%d/%d min_off=%d file=%d real=%d"%(magic,fv,tc,r0,r1,min_off,file_bytes,size))
+f.seek(dir_off); dirt=f.read(tc*deb)
+ALIGN=256
+names={0:"EMB",1:"FNORM",2:"LMHEAD"}
+bad=[]
+for i in range(tc):
+    k,l,pt,wcv,se,gc,r,c,po,pb,so,sb=struct.unpack_from("<8I4Q",dirt,i*deb)
+    packed=(pt==4)
+    if po % ALIGN: bad.append((i,k,names.get(k,k),l,"align",po))
+    elif po < min_off: bad.append((i,k,names.get(k,k),l,"below_min",po))
+    elif po > file_bytes or pb > file_bytes-po: bad.append((i,k,names.get(k,k),l,"oob"))
+    elif not packed and so != 0: bad.append((i,k,names.get(k,k),l,"scale_nonzero",so,sb))
+print("first entries:")
+for i in range(3):
+    e=struct.unpack_from("<8I4Q",dirt,i*deb)
+    print(" ",i,e[:8],e[8:])
+if bad:
+    print("VIOLATIONS:",len(bad))
+    for b in bad[:10]: print(b)
+else: print("ALL_BOUNDS_OK")
+EOF'
+magic=32534c47 fv=3 tensors=1344 tp=8/0 min_off=86528 file=102835957760 real=102835957760
+first entries:
+  0 (0, 4294967295, 1, 1, 0, 1, 19360, 6144) (86528, 237895680, 0, 0)
+  1 (1, 4294967295, 1, 1, 0, 1, 1, 6144) (237982208, 12288, 0, 0)
+  2 (2, 4294967295, 1, 1, 0, 1, 19360, 6144) (237994496, 237895680, 0, 0)
+ALL_BOUNDS_OK
+[0m
+My sed was too greedy — it flipped **both** `ShapeBf16` and `ShapeWords` to CODEC_NONE, breaking every BF16 entry. Restoring and patching only `ShapeWords`:
+[0m$ [0mtimeout 30 ssh -o BatchMode=yes sparke 'cd ~/build/glm52_unified && cp /tmp/spark_stagepack_reader.h.orig runtime/spark_stagepack_reader.h && python3 - <<\EOF
+import re
+p="runtime/spark_stagepack_reader.h"
+s=open(p).read()
+i=s.index("SparkStagePackShapeWords")
+j=s.index("}",s.index("{",i))
+blk=s[i:j].replace("SPARK_WEIGHT_CODEC_BF16","SPARK_WEIGHT_CODEC_NONE")
+open(p,"w").write(s[:i]+blk+s[j:])
+EOF
+grep -n "weight_codec = SPARK" runtime/spark_stagepack_reader.h'
+49:	shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
+59:	shape->weight_codec = SPARK_WEIGHT_CODEC_NONE;
+[0m
+[0m$ [0mtimeout 1700 ssh -o BatchMode=yes sparke 'cd ~/build/glm52_unified/modules/glm52_resident_decode_stage
+export PATH=/usr/local/cuda-13.0/bin:$PATH CUDA_HOME=/usr/local/cuda-13.0
+REV=b4734de4facf877f85769a911abafc5283eab3d9
+CONTRACT=ec5afd74d2ba0c913474f30d78209b4a49fa87667845f2968039fddad0fead7a
+PACK=/home/sparke/srcdata/glm52_tp8_packs/glm52_tp8_rank06.fp8.glms52sp
+COMMON="EXPERT_CODEC=fp8 MODEL_REVISION=$REV CONTRACT_SHA256=$CONTRACT STAGE_PACK_PATH=$PACK MAX_ACTIVE_SEQUENCES=16 MAX_SEQUENCE_POSITIONS=4096 EXECUTION_ROW_CAPACITY=16 PIPELINE_SLOT_COUNT=2"
+make publish_variants $COMMON MODULE_BATCH_VARIANT_BUCKETS="1 2 4 8 16" > /tmp/fix2_publish_variants.log 2>&1
+echo PV_RC=$?
+make publish $COMMON > /tmp/fix2_publish.log 2>&1
+echo PUB_RC=$?
+bash /tmp/glm52_compile_pkg.sh > /tmp/fix2_pkg.log 2>&1
+echo PKG_RC=$?
+sha256sum ~/glm52_package/stages/stage_000/model_driver.so'
+PV_RC=0
+PUB_RC=0
+PKG_RC=0
+dd2ba28c7d936a48ac15dd95b2d235acd85521600bdd1c669d3d1ddaed27e13f  /home/sparke/glm52_package/stages/stage_000/model_driver.so
+[0m
+[0m$ [0mtimeout 120 scp -o BatchMode=yes sparke:/home/sparke/glm52_package/stages/stage_000/model_driver.so spark8:/home/spark8/sparkdata/glm52.tp8.fp8/lib/model_driver.so && timeout 40 ssh -o BatchMode=yes spark8 'chmod +x ~/sparkdata/glm52.tp8.fp8/lib/model_driver.so && rm -f /tmp/glm52-tp8-rank0.log && cd ~/sparkdata/glm52.tp8.fp8 && export LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH SPARKPIPE_RELEASE_GENERATION=20260825000000 SPARKPIPE_RELEASE_GIT_COMMIT=glm52-tp8-bringup SPARKPIPE_RELEASE_ID=glm52-tp8-bringup-r0solo; setsid -f bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index 0 >/tmp/glm52-tp8-rank0.log 2>&1 </dev/null; echo LAUNCHED' && sleep 50 && timeout 20 ssh -o BatchMode=yes spark8 'head -30 /tmp/glm52-tp8-rank0.log; echo ---PROC---; pgrep -af "[b]in/sparkpipe_model_residentd" || echo PROC_GONE; echo ---PORTS---; ss -ltnH | grep -E ":(19480|63620) " || echo NO_LISTENERS; nvidia-smi --query-gpu=memory.used --format=csv,noheader'
+LAUNCHED
+GLM52TRACE lc members_exact rc=0
+GLM52TRACE lc LoadTpCollective rc=0
+GLM52TRACE LoadConfiguration rc=0 tp_degree=8 tp_rank=0 max_seq=4096 row_cap=16 speculate=0
+GLM52TRACE init after_LoadConfiguration rc=0
+GLM52MODTRACE init configure rc=0
+---PROC---
+1812501 bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index 0
+---PORTS---
+NO_LISTENERS
+[N/A]
+[0m
+Process alive, mid-pack-load (~102 GB). Polling until ready or error:
+[0m$ [0mfor i in $(seq 1 20); do sleep 15; R=$(timeout 15 ssh -o BatchMode=yes spark8 'grep -cE "GLM52MODTRACE init pack_load rc|model_residentd (ready|initialize)" /tmp/glm52-tp8-rank0.log 2>/dev/null || echo 0'); if [ "$R" != "0" ]; then break; fi; done; timeout 20 ssh -o BatchMode=yes spark8 'cat /tmp/glm52-tp8-rank0.log; echo ---PROC---; pgrep -af "[b]in/sparkpipe_model_residentd" || echo PROC_GONE; echo ---PORTS---; ss -ltnH | grep -E ":(19480|63620) " || echo NO_LISTENERS'
+GLM52TRACE lc members_exact rc=0
+GLM52TRACE lc LoadTpCollective rc=0
+GLM52TRACE LoadConfiguration rc=0 tp_degree=8 tp_rank=0 max_seq=4096 row_cap=16 speculate=0
+GLM52TRACE init after_LoadConfiguration rc=0
+GLM52MODTRACE init configure rc=0
+---PROC---
+1812501 bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index 0
+---PORTS---
+NO_LISTENERS
+[0m
+Solo-boot doctrine: full `ready` needs peers; success = passing pack/CUDA init up to the peer-wait. Polling for the remaining modtrace milestones:
+[0m$ [0mfor i in $(seq 1 24); do sleep 15; R=$(timeout 15 ssh -o BatchMode=yes spark8 'grep -c "GLM52MODTRACE init pack_load rc" /tmp/glm52-tp8-rank0.log 2>/dev/null || echo 0'); if [ "$R" != "0" ]; then break; fi; done; timeout 20 ssh -o BatchMode=yes spark8 'cat /tmp/glm52-tp8-rank0.log; echo ---; pgrep -af "[b]in/sparkpipe_model_residentd" >/dev/null && echo PROC_ALIVE || echo PROC_GONE; nvidia-smi --query-gpu=memory.used --format=csv,noheader'
+GLM52TRACE lc members_exact rc=0
+GLM52TRACE lc LoadTpCollective rc=0
+GLM52TRACE LoadConfiguration rc=0 tp_degree=8 tp_rank=0 max_seq=4096 row_cap=16 speculate=0
+GLM52TRACE init after_LoadConfiguration rc=0
+GLM52MODTRACE init configure rc=0
+GLM52MODTRACE init pack_load rc=0 path=/home/spark8/sparkdata/glm52.tp8.fp8/packs/glm52_tp8_rank00.fp8.glms52sp
+GLM52MODTRACE init caches rc=0
+GLM52MODTRACE init slots rc=0
+hidden_spark_rdma_fabric_ready local_host=spark8 device=rocep1s0f1 port=1 gid_index=7
+---
+PROC_ALIVE
+[N/A]
+[0m
+[0m← [0mWrite qualification/glm52/performance/tp8_bringup_20260825/step4_single_rank_boot.md
+Wrote file successfully.
+[0m
+**Single-rank boot test PASSED**: pack_load rc=0 (102 GB validated+loaded), caches/slots OK, RDMA fabric up (`rocep1s0f1`), process alive in TP-collective peer-wait — exactly the expected solo-boot endpoint. Recording STEP 4 + artifact:
+[0m$ [0mcat >> tools/fleet/lanes/G-glm52-bringup.state.md <<'EOF'
+[2026-08-25 18:4x] STEP 4: single-rank boot PASS on spark8 r0 after root-causing schema_error -> shared-reader ShapeWords stamped BF16 codec vs packs' CODEC_NONE on ROUTER_CORRECTION; fixed reader (words->NONE), rebuilt driver dd2ba28c via publish+GPU-validate, pack/caches/slots/RDMA all green, proc alive in peer-wait; artifact qualification/glm52/performance/tp8_bringup_20260825/step4_single_rank_boot.md
+EOF
+(no output)
+[0m
+STEP 5 — 8-rank bring-up. Killing solo process, deploying fixed driver+adapter to the other 7 hosts, launching all 8 ranks staggered:
+[0m$ [0mtimeout 20 ssh -o BatchMode=yes spark8 'pkill -f "[b]in/sparkpipe_model_residentd" && sleep 2; pgrep -af "[b]in/sparkpipe_model_residentd" || echo KILLED_CLEAN'; for h in spark9 sparka sparkb spark1 sparkd sparke sparkf; do timeout 20 ssh -o BatchMode=yes "$h" 'cp -p ~/sparkdata/glm52.tp8.fp8/lib/model_driver.so ~/sparkdata/glm52.tp8.fp8/lib/model_driver.so.bringup-bak 2>/dev/null; cp -p ~/sparkdata/glm52.tp8.fp8/lib/model_serving_adapter.so ~/sparkdata/glm52.tp8.fp8/lib/model_serving_adapter.so.bringup-bak 2>/dev/null; echo backed' ; done
+1812501 bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index 0
+backed
+backed
+backed
+backed
+backed
+backed
+backed
+[0m
+[0m$ [0mtimeout 20 ssh -o BatchMode=yes spark8 'pkill -9 -f "bin/sparkpipe_model_residentd" ; sleep 2; pgrep -af "bin/sparkpipe_model_residentd" || echo KILLED_CLEAN'
+(no output)
+[0m
+[0m$ [0mtimeout 20 ssh -o BatchMode=yes spark8 'pgrep -af "residentd" | grep -v bash || echo NONE_ALIVE; ss -ltnH | grep -E ":19480|:63620" || echo PORTS_FREE'
+NONE_ALIVE
+PORTS_FREE
+[0m
+[0m$ [0mtimeout 300 scp -o BatchMode=yes sparke:/home/sparke/glm52_package/stages/stage_000/model_driver.so /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/glm52dbg/model_driver_fixed.so && for h in spark9 sparka sparkb spark1 sparkd sparke sparkf; do timeout 120 scp -o BatchMode=yes /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/glm52dbg/model_driver_fixed.so "$h":/home/"$h"/sparkdata/glm52.tp8.fp8/lib/model_driver.so && timeout 60 scp -o BatchMode=yes sparke:/tmp/libglm52_serving_adapter_fp8_traced.so "$h":/home/"$h"/sparkdata/glm52.tp8.fp8/lib/model_serving_adapter.so && timeout 20 ssh -o BatchMode=yes "$h" 'chmod +x ~/sparkdata/glm52.tp8.fp8/lib/model_driver.so ~/sparkdata/glm52.tp8.fp8/lib/model_serving_adapter.so && echo '"$h"'-DEPLOYED'; done
+spark9-DEPLOYED
+sparka-DEPLOYED
+sparkb-DEPLOYED
+spark1-DEPLOYED
+sparkd-DEPLOYED
+sparke-DEPLOYED
+sparkf-DEPLOYED
+[0m
+All deployed. Launching the 8-rank ring (staggered 6 s per devcycle convention):
+[0m$ [0mi=0; for h in spark8 spark9 sparka sparkb spark1 sparkd sparke sparkf; do timeout 20 ssh -o BatchMode=yes "$h" "cd ~/sparkdata/glm52.tp8.fp8 && export LD_LIBRARY_PATH=\$PWD/lib:\$LD_LIBRARY_PATH SPARKPIPE_RELEASE_GENERATION=20260825000000 SPARKPIPE_RELEASE_GIT_COMMIT=glm52-tp8-bringup SPARKPIPE_RELEASE_ID=glm52-tp8-bringup-r$i; setsid -f bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index $i >/tmp/glm52-tp8-rank$i.log 2>&1 </dev/null" && echo "$h r$i LAUNCHED"; i=$((i+1)); sleep 6; done
+spark8 r0 LAUNCHED
+spark9 r1 LAUNCHED
+sparka r2 LAUNCHED
+sparkb r3 LAUNCHED
+spark1 r4 LAUNCHED
+sparkd r5 LAUNCHED
+sparke r6 LAUNCHED
+sparkf r7 LAUNCHED
+[0m
+[0m$ [0msleep 120; for h in spark8 spark9 sparka sparkb spark1 sparkd sparke sparkf; do printf '%s: ' "$h"; timeout 15 ssh -o BatchMode=yes "$h" 'grep -E "model_residentd ready|initialize=|MODTRACE init (pack_load|tp_collective|speculator) rc|fabric_ready|refused|error" /tmp/glm52-tp8-rank*.log 2>/dev/null | tail -4 | tr "\n" " | "; echo' 2>&1; done
+spark8: hidden_spark_rdma_fabric_ready local_host=spark8 device=rocep1s0f1 port=1 gid_index=7 GLM52MODTRACE init tp_collective rc=0 GLM52MODTRACE init speculator rc=0 model_residentd ready rank=0 stage=0 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=spark8:19480 
+spark9: hidden_spark_rdma_fabric_ready local_host=spark9 device=rocep1s0f1 port=1 gid_index=7 GLM52MODTRACE init tp_collective rc=0 GLM52MODTRACE init speculator rc=0 model_residentd ready rank=1 stage=1 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=spark9:19481 
+sparka: hidden_spark_rdma_fabric_ready local_host=sparka device=rocep1s0f1 port=1 gid_index=7 GLM52MODTRACE init tp_collective rc=0 GLM52MODTRACE init speculator rc=0 model_residentd ready rank=2 stage=2 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=sparka:19482 
+sparkb: hidden_spark_rdma_fabric_ready local_host=sparkb device=rocep1s0f1 port=1 gid_index=7 GLM52MODTRACE init tp_collective rc=0 GLM52MODTRACE init speculator rc=0 model_residentd ready rank=3 stage=3 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=sparkb:19483 
+spark1: hidden_spark_rdma_fabric_ready local_host=spark1 device=rocep1s0f1 port=1 gid_index=3 GLM52MODTRACE init tp_collective rc=0 GLM52MODTRACE init speculator rc=0 model_residentd ready rank=4 stage=4 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=spark1:19484 
+sparkd: hidden_spark_rdma_fabric_ready local_host=sparkd device=rocep1s0f1 port=1 gid_index=3 GLM52MODTRACE init tp_collective rc=0 GLM52MODTRACE init speculator rc=0 model_residentd ready rank=5 stage=5 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=sparkd:19485 
+sparke: hidden_spark_rdma_fabric_ready local_host=sparke device=rocep1s0f1 port=1 gid_index=3 GLM52MODTRACE init tp_collective rc=0 GLM52MODTRACE init speculator rc=0 model_residentd ready rank=6 stage=6 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=sparke:19486 
+sparkf: hidden_spark_rdma_fabric_ready local_host=sparkf device=rocep1s0f1 port=1 gid_index=3 GLM52MODTRACE init tp_collective rc=0 GLM52MODTRACE init speculator rc=0 model_residentd ready rank=7 stage=7 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=sparkf:19487
+[0m
+[0m← [0mWrite qualification/glm52/performance/tp8_bringup_20260825/step5_8rank_bringup.md
+Wrote file successfully.
+[0m
+[0m$ [0mcat >> tools/fleet/lanes/G-glm52-bringup.state.md <<'EOF'
+[2026-08-25 19:0x] STEP 5: 8-rank bring-up PASS — deployed fixed driver+adapter to all band hosts (backups *.bringup-bak), staggered launch, 8/8 model_residentd ready (ranks 0-7, tcp 19480-19487, RDMA rocep1s0f1, tp_collective rc=0 incl spark1@r4); artifact qualification/glm52/performance/tp8_bringup_20260825/step5_8rank_bringup.md
+EOF
+(no output)
+[0m
+**ALL 8 RANKS READY** — GLM 5.2 TP8 ring is up end-to-end for the first time (spark1 substituting sparkc at rank 4). Recording STEP 5, then running the O128 gate:
+[0m$ [0msed -n '1,60p' tools/model_stream_decode_benchmark.py
+#!/usr/bin/env python3
+
+import argparse
+import json
+import statistics
+import subprocess
+import threading
+import time
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output",required=True)
+    parser.add_argument("command",nargs=argparse.REMAINDER)
+    arguments = parser.parse_args()
+    if not arguments.command:
+        parser.error("a benchmark command is required")
+    started = time.monotonic_ns()
+    process = subprocess.Popen(
+        arguments.command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    events = []
+    token_times = []
+    token_ids = []
+    stderr_lines = []
+
+    def drain_stderr():
+        assert process.stderr is not None
+        for line in process.stderr:
+            stderr_lines.append(line)
+
+    stderr_thread = threading.Thread(target=drain_stderr)
+    stderr_thread.start()
+    assert process.stdout is not None
+    for line in process.stdout:
+        observed = time.monotonic_ns()
+        event = json.loads(line)
+        events.append({
+            "elapsed_seconds": (observed - started) / 1e9,
+            "event": event,
+        })
+        if event.get("event") == "token":
+            token_times.append(observed)
+            token_ids.append(event["token_id"])
+    status = process.wait()
+    stderr_thread.join()
+    stderr = "".join(stderr_lines)
+    ended = time.monotonic_ns()
+    if status != 0 or len(token_times) < 2:
+        raise SystemExit(
+            f"benchmark failed status={status} tokens={len(token_times)} "
+            f"stderr={stderr}")
+    intervals = [(right - left) / 1e9
+                 for left,right in zip(token_times,token_times[1:])]
+    result = {
+        "schema_version": 1,
+[0m
+[0m$ [0mtimeout 20 ssh -o BatchMode=yes spark8 'ls -la ~/sparkdata/glm52.tp8.fp8/ | grep -iE "bench|batch|json"; echo ===; cat ~/sparkdata/glm52.tp8.fp8/bench_b1.json 2>/dev/null | head -30'
+-rw-r--r--  1 spark8 spark8  603 Aug 25 17:42 bench_b1.json
+-rw-r--r--  1 spark8 spark8 1511 Aug 25 14:45 glm52_stage.json
+-rw-r--r--  1 spark8 spark8 4736 Aug 25 14:45 model_resident.json
+===
+{
+  "schema_version": 1,
+  "connect_timeout_ms": 60000,
+  "request_capacity": 16,
+  "max_context_tokens": 4096,
+  "max_prefill_rows_per_submission": 256,
+  "maximum_messages_per_rank_per_progress": 64,
+  "maximum_new_submissions_per_progress": 4,
+  "stop_token_ids": [
+    154820
+  ],
+  "requests": [
+    {
+      "request_id": 1,
+      "sequence_id": 1,
+      "priority": 0,
+      "output_token_budget": 128,
+      "prompt_token_ids": [
+        154827,
+        40,
+        282,
+        949,
+        1212,
+        3290,
+        13,
+        10753,
+        11,
+        671,
+        949
+      ]
+[0m
+STEP 6 — O128 receipt via the ring:
+[0m$ [0mSTAMP=$(date +%Y%m%d-%H%M%S); timeout 900 python3 tools/model_stream_decode_benchmark.py --output "qualification/glm52/performance/tp8_bringup_20260825/glm52-o128-${STAMP}.json" -- ssh -o BatchMode=yes spark8 /home/spark8/sparkdata/glm52.tp8.fp8/bin/sparkpipe_model_batch --deployment /home/spark8/sparkdata/glm52.tp8.fp8/config/model_resident.json --runtime-root /home/spark8/sparkdata/glm52.tp8.fp8 --profile-stages --batch /home/spark8/sparkdata/glm52.tp8.fp8/bench_b1.json; echo RC=$?
+Traceback (most recent call last):
+  File "/Users/mac/sparkpipe/tools/model_stream_decode_benchmark.py", line 87, in <module>
+    main()
+    ~~~~^^
+  File "/Users/mac/sparkpipe/tools/model_stream_decode_benchmark.py", line 19, in main
+    process = subprocess.Popen(
+        arguments.command,
+    ...<3 lines>...
+        bufsize=1,
+    )
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 1990, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: '--'
+RC=1
+[0m
+[0m$ [0mSTAMP=$(date +%Y%m%d-%H%M%S); timeout 900 python3 tools/model_stream_decode_benchmark.py --output "qualification/glm52/performance/tp8_bringup_20260825/glm52-o128-${STAMP}.json" ssh -o BatchMode=yes spark8 /home/spark8/sparkdata/glm52.tp8.fp8/bin/sparkpipe_model_batch --deployment /home/spark8/sparkdata/glm52.tp8.fp8/config/model_resident.json --runtime-root /home/spark8/sparkdata/glm52.tp8.fp8 --profile-stages --batch /home/spark8/sparkdata/glm52.tp8.fp8/bench_b1.json; echo RC=$?
+benchmark failed status=1 tokens=0 stderr=sparkpipe_stage_profile_summary events=0 dropped=0
+sparkpipe_model_batch_status=2 terminal=0 requests=1
+
+RC=1
+[0m
+[0m$ [0mtimeout 300 ssh -o BatchMode=yes spark8 'cd ~/sparkdata/glm52.tp8.fp8 && export LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH; timeout 240 bin/sparkpipe_model_batch --deployment config/model_resident.json --runtime-root $PWD --profile-stages --batch bench_b1.json >/tmp/o128.out 2>/tmp/o128.err; echo RC=$?; echo ===OUT_HEAD===; head -6 /tmp/o128.out; echo ===ERR===; tail -12 /tmp/o128.err'
+RC=1
+===OUT_HEAD===
+===ERR===
+sparkpipe_stage_profile_summary events=0 dropped=0
+sparkpipe_model_batch_status=2 terminal=0 requests=1
+[0m
+[0m$ [0mtimeout 20 ssh -o BatchMode=yes spark8 'tail -25 /tmp/glm52-tp8-rank0.log; echo ===R1===; tail -6 /tmp/glm52-tp8-rank1.log'
+GLM52TRACE lc members_exact rc=0
+GLM52TRACE lc LoadTpCollective rc=0
+GLM52TRACE LoadConfiguration rc=0 tp_degree=8 tp_rank=0 max_seq=4096 row_cap=16 speculate=0
+GLM52TRACE init after_LoadConfiguration rc=0
+GLM52MODTRACE init configure rc=0
+GLM52MODTRACE init pack_load rc=0 path=/home/spark8/sparkdata/glm52.tp8.fp8/packs/glm52_tp8_rank00.fp8.glms52sp
+GLM52MODTRACE init caches rc=0
+GLM52MODTRACE init slots rc=0
+hidden_spark_rdma_fabric_ready local_host=spark8 device=rocep1s0f1 port=1 gid_index=7
+hidden_spark_rdma_fabric_ready local_host=spark8 device=rocep1s0f1 port=1 gid_index=7
+hidden_spark_rdma_fabric_ready local_host=spark8 device=rocep1s0f1 port=1 gid_index=7
+hidden_spark_rdma_fabric_ready local_host=spark8 device=rocep1s0f1 port=1 gid_index=7
+hidden_spark_rdma_fabric_ready local_host=spark8 device=rocep1s0f1 port=1 gid_index=7
+hidden_spark_rdma_fabric_ready local_host=spark8 device=rocep1s0f1 port=1 gid_index=7
+GLM52MODTRACE init tp_collective rc=0
+GLM52MODTRACE init speculator rc=0
+GLM52TRACE init after_LoadDriver rc=0
+GLM52TRACE init after_ArmSpeculation rc=0
+model_residentd ready rank=0 stage=0 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=spark8:19480
+===R1===
+tail: cannot open '/tmp/glm52-tp8-rank1.log' for reading: No such file or directory
+[0m
+[0m$ [0mtimeout 20 ssh -o BatchMode=yes spark8 'cd ~/sparkdata/glm52.tp8.fp8 && bin/sparkpipe_model_batch --help 2>&1 | head -30'; timeout 20 ssh -o BatchMode=yes spark9 'tail -4 /tmp/glm52-tp8-rank1.log'
+usage: sparkpipe_model_batch --deployment PATH --runtime-root PATH --batch PATH [--profile-stages]
+GLM52MODTRACE init speculator rc=0
+GLM52TRACE init after_LoadDriver rc=0
+GLM52TRACE init after_ArmSpeculation rc=0
+model_residentd ready rank=1 stage=1 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4facf877f85769a911abafc5283eab3d9 tcp=spark9:19481
+[0m
+[0m$ [0mhead -20 qualification/glm52/performance/tp8_b8_20260816/glm52-b8.stderr; echo ===; grep -rn "bench_b1\|o128\|batch" tools/devcycle/bbench.sh | head -12
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+GLM52-DBG vsub limits rc=0
+GLM52-DBG vsub submission rc=0
+===
+tools/devcycle/bbench.sh:3:# bbench.sh B — no-spec B-batch decode benchmark for the lean DSV4 TP4 driver.
+tools/devcycle/bbench.sh:21:BATCH_LOCAL="/tmp/bbench-b${B}-batch.json"
+tools/devcycle/bbench.sh:28:# ---- generate the B-request batch file from the pinned O128 batch ----
+tools/devcycle/bbench.sh:29:python3 - "$SCRIPT_DIR/batches/o128_batch.json" "$BATCH_LOCAL" "$B" <<'PYEOF'
+tools/devcycle/bbench.sh:43:print("batch", B, "requests ->", dst)
+tools/devcycle/bbench.sh:55:# batch with TARGET_MISMATCH)
+tools/devcycle/bbench.sh:102:scp -q -o BatchMode=yes "$BATCH_LOCAL" spark4:/tmp/bbench-batch.json
+tools/devcycle/bbench.sh:108:    ssh -o BatchMode=yes spark4 "$ROOT/bin/sparkpipe_model_batch" \
+tools/devcycle/bbench.sh:111:        --batch /tmp/bbench-batch.json >/dev/null 2>&1 || { echo "warmup failed" >&2; exit 6; }
+tools/devcycle/bbench.sh:115:    ssh -o BatchMode=yes spark4 "$ROOT/bin/sparkpipe_model_batch" \
+tools/devcycle/bbench.sh:118:        --batch /tmp/bbench-batch.json >/dev/null 2>&1 || { echo "run failed" >&2; exit 7; }
+[0m
+[0m$ [0msed -n '100,125p' tools/devcycle/bbench.sh; echo ===O128_HEAD===; head -25 tools/devcycle/batches/o128_batch.json
+echo "b$B all-4-ranks ready"
+
+scp -q -o BatchMode=yes "$BATCH_LOCAL" spark4:/tmp/bbench-batch.json
+sleep 45
+
+# ---- warm + measured ----
+python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" \
+    --output "/tmp/bbench-b$B-warm.json" \
+    ssh -o BatchMode=yes spark4 "$ROOT/bin/sparkpipe_model_batch" \
+        --deployment "$ROOT/config/model_resident.json" \
+        --runtime-root "$ROOT" \
+        --batch /tmp/bbench-batch.json >/dev/null 2>&1 || { echo "warmup failed" >&2; exit 6; }
+
+python3 "$REPO_ROOT/tools/model_stream_decode_benchmark.py" \
+    --output "/tmp/bbench-b$B-run.json" \
+    ssh -o BatchMode=yes spark4 "$ROOT/bin/sparkpipe_model_batch" \
+        --deployment "$ROOT/config/model_resident.json" \
+        --runtime-root "$ROOT" \
+        --batch /tmp/bbench-batch.json >/dev/null 2>&1 || { echo "run failed" >&2; exit 7; }
+
+python3 - "/tmp/bbench-b$B-run.json" "$B" <<'PYEOF'
+import json, sys
+r = json.load(open(sys.argv[1]))
+B = int(sys.argv[2])
+print(f"bbench B{B}: decode={r['decode_tokens_per_second']:.2f} tok/s "
+      f"tokens={r['token_count']} decode_s={r['decode_seconds_after_first']:.3f} "
+===O128_HEAD===
+{
+  "schema_version": 1,
+  "connect_timeout_ms": 30000,
+  "request_capacity": 1,
+  "max_context_tokens": 4096,
+  "max_prefill_rows_per_submission": 1,
+  "maximum_messages_per_rank_per_progress": 8,
+  "maximum_new_submissions_per_progress": 1,
+  "stop_token_ids": [],
+  "requests": [
+    {
+      "request_id": 760130,
+      "sequence_id": 760130,
+      "priority": 0,
+      "output_token_budget": 128,
+      "prompt_token_ids": [
+        0, 3476, 477, 18068, 260, 3375, 35312, 3417,
+        16, 38074, 13254, 16, 455, 4087, 3287, 2231,
+        1605, 270, 21361, 8786, 9045, 16, 128803, 79418,
+        2317, 566, 8130, 345, 14866, 3312, 2019, 16,
+        983, 1142, 469, 1142, 554, 6242, 260, 31191,
+        603, 19905, 418, 270, 4031, 2455, 2562, 1167,
+        1479, 270, 6074, 15398, 344, 10097, 16, 2052,
+        270, 15398, 344, 1353, 4521, 538, 260, 2395,
+        2740, 294, 18885, 6243, 14, 20430, 418, 270,
+[0m
+[0m$ [0mgrep -rn "model_batch_status\|terminal=" node/*.c src/*.c 2>/dev/null | head; grep -rln "sparkpipe_model_batch" node/ | head -3
+node/model_batch.c:661:	fprintf(stderr,"sparkpipe_model_batch_status=%u terminal=%u requests=%u\n",status,output.terminal_count,file.request_count);
+node//model_batch.c
+[0m
+[0m$ [0mgrep -n "status" node/model_batch.c | grep -iE "status =|status=|SPARK_STATUS" | head -25; grep -n "connect\|ControlSubmit\|route_failed\|timeout" node/model_batch.c | head -20
+135:	status = SPARK_STATUS_OK;
+136:	for (index=0u; status==SPARK_STATUS_OK && index<count; index++)
+137:		status = SparkJsonGetUInt32(document,SparkJsonGetArrayElement(document,array,index),&tokens[index]);
+138:	if ( status != SPARK_STATUS_OK )
+159:	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelBatchRequestMembers,(uint32_t)(sizeof(SparkModelBatchRequestMembers) / sizeof(SparkModelBatchRequestMembers[0])));
+164:	if ( status == SPARK_STATUS_OK )
+165:		status = SparkModelBatchJsonU64(document,object,"request_id",&request->request_id);
+166:	if ( status == SPARK_STATUS_OK )
+167:		status = SparkModelBatchJsonU64(document,object,"sequence_id",&request->sequence_id);
+168:	if ( status == SPARK_STATUS_OK )
+169:		status = SparkModelBatchJsonU32(document,object,"priority",&request->priority);
+170:	if ( status == SPARK_STATUS_OK )
+171:		status = SparkModelBatchJsonU32(document,object,"output_token_budget",&request->output_token_budget);
+172:	tokens = status == SPARK_STATUS_OK ? SparkModelBatchJsonMember(document,object,"prompt_token_ids") : -1;
+173:	if ( status == SPARK_STATUS_OK )
+174:		status = tokens < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkModelBatchParseTokenArray(document,tokens,max_context_tokens,&file_request->prompt_token_ids,&request->prompt_token_count);
+176:	if ( status == SPARK_STATUS_OK && (request->request_id == 0u || request->sequence_id == 0u || request->output_token_budget == 0u || request->output_token_budget > max_context_tokens - request->prompt_token_count) )
+177:		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+202:	status = SPARK_STATUS_OK;
+203:	for (index=1u; status==SPARK_STATUS_OK && index<file->request_count; index++)
+205:			status = SPARK_STATUS_DUPLICATE;
+226:	status = SPARK_STATUS_OK;
+227:	for (index=0u; status==SPARK_STATUS_OK && index<file->request_count; index++)
+228:		status = SparkModelBatchParseRequest(document,SparkJsonGetArrayElement(document,array,index),file->engine.max_context_tokens,&file->requests[index]);
+229:	return(status == SPARK_STATUS_OK ? SparkModelBatchValidateUniqueIds(file) : status);
+49:	"connect_timeout_ms",
+275:		status = SparkModelBatchJsonU32(&document,root,"connect_timeout_ms",&file->engine.connect_timeout_ms);
+[0m
+[0m$ [0msed -n '560,665p' node/model_batch.c
+const char **runtime_root,
+	const char **batch_path,
+	uint32_t *profile_stages)
+{
+	int32_t index;
+	*deployment_path = 0;
+	*runtime_root = 0;
+	*batch_path = 0;
+	*profile_stages = 0u;
+	for (index=1; index<argc; index++)
+	{
+		if ( strcmp(argv[index],"--deployment") == 0 && index + 1 < argc )
+			*deployment_path = argv[++index];
+		else if ( strcmp(argv[index],"--runtime-root") == 0 && index + 1 < argc )
+			*runtime_root = argv[++index];
+		else if ( strcmp(argv[index],"--batch") == 0 && index + 1 < argc )
+			*batch_path = argv[++index];
+		else if ( strcmp(argv[index],"--profile-stages") == 0 )
+			*profile_stages = 1u;
+		else
+			return(-1);
+	}
+	return(*deployment_path != 0 && *runtime_root != 0 && *batch_path != 0 ? 0 : -2);
+}
+
+int main(int argc,char **argv)
+{
+	const SparkModelServingAdapterDescriptor *descriptor;
+	SparkModelResidentDeployment deployment;
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView engine_view;
+	SparkModelBatchFile file;
+	SparkModelBatchOutput output;
+	const char *deployment_path,*runtime_root,*batch_path;
+	uint32_t failed_stage_index,profile_stages,view_valid;
+	SparkStatus status,destroy_status;
+	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&runtime_root,&batch_path,&profile_stages) < 0 )
+	{
+		fprintf(stderr,"usage: sparkpipe_model_batch --deployment PATH --runtime-root PATH --batch PATH [--profile-stages]\n");
+		return(2);
+	}
+	memset(&output,0,sizeof(output));
+	memset(&file,0,sizeof(file));
+	failed_stage_index = SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX;
+	view_valid = 0u;
+	engine = 0;
+	SparkModelResidentDeploymentReset(&deployment);
+	status = SparkModelResidentDeploymentLoad(deployment_path,&deployment);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelBatchLoadFile(batch_path,&file);
+	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_SEQUENTIAL") != 0 )
+		file.sequential_submissions = 1u;
+	if ( status == SPARK_STATUS_OK && profile_stages != 0u )
+		status = SparkModelBatchInitializeStageProfile(&file,deployment.node_count,&output);
+	if ( status == SPARK_STATUS_OK )
+	{
+		file.engine.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+		file.engine.descriptor_bytes = SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES;
+		file.engine.deployment = &deployment;
+		file.engine.runtime_root = runtime_root;
+		file.engine.event_function = SparkModelBatchWriteEvent;
+		file.engine.event_context = &output;
+		if ( profile_stages != 0u )
+		{
+			file.engine.stage_completion_function = SparkModelBatchRecordStageCompletion;
+			file.engine.stage_completion_context = &output;
+		}
+		status = SparkModelBatchEngineConnect(&file.engine,&engine);
+	}
+	descriptor = status == SPARK_STATUS_OK ? SparkModelBatchEngineGetAdapterDescriptor(engine) : 0;
+	if ( status == SPARK_STATUS_OK && (descriptor == 0 || SparkModelBatchWriteReady(descriptor) < 0) )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelBatchSubmitAll(engine,&file,0u,file.sequential_submissions != 0u ? 0u : file.request_count);
+	if ( status == SPARK_STATUS_OK && file.sequential_submissions == 0u )
+		status = SparkModelBatchEngineCloseAdmission(engine);
+	if ( status == SPARK_STATUS_OK )
+		(void)fcntl(STDOUT_FILENO,F_SETFL,fcntl(STDOUT_FILENO,F_GETFL,0) | O_NONBLOCK);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelBatchRun(engine,&file,&output);
+	/* Drain whatever the slow reader could not take during the run (now blocking). */
+	(void)fcntl(STDOUT_FILENO,F_SETFL,fcntl(STDOUT_FILENO,F_GETFL,0) & ~O_NONBLOCK);
+	SparkModelBatchFlushOutput(&output);
+	if ( engine != 0 && SparkModelBatchEngineGetView(engine,&engine_view) ==
+		SPARK_STATUS_OK )
+	{
+		view_valid = 1u;
+		if ( status != SPARK_STATUS_OK )
+			failed_stage_index = engine_view.pipeline.failed_stage_index;
+	}
+	destroy_status = SparkModelBatchEngineDestroy(engine);
+	if ( status == SPARK_STATUS_OK && destroy_status != SPARK_STATUS_OK )
+		status = destroy_status;
+	if ( profile_stages != 0u && output.stage_completions != 0 && SparkModelBatchWriteStageProfile(&output) < 0 && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK && output.error_count != 0u )
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	if ( status != SPARK_STATUS_OK && failed_stage_index != SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX )
+		fprintf(stderr,"sparkpipe_model_batch_failure status=%u stage=%u\n",status,failed_stage_index);
+	if ( view_valid != 0u )
+		fprintf(stderr,"sparkpipe_model_batch_pipeline submitted=%llu continued=%llu admitted=%llu rejected=%llu leases=%u\n",(unsigned long long)engine_view.pipeline.submitted_count,(unsigned long long)engine_view.pipeline.continued_count,(unsigned long long)engine_view.pipeline.admitted_count,(unsigned long long)engine_view.pipeline.rejected_count,engine_view.pipeline.active_continue_lease_count);
+	fprintf(stderr,"sparkpipe_model_batch_status=%u terminal=%u requests=%u\n",status,output.terminal_count,file.request_count);
+	SparkModelBatchFileDestroy(&file);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	free(output.stage_completions);
+	free(output.pending_output);
+[0m
+[0m$ [0mgrep -n "= [0-9]\|SPARK_STATUS_" include/sparkpipe/spark_status.h | head -25
+12:    SPARK_STATUS_OK = 0,
+13:    SPARK_STATUS_INVALID_ARGUMENT,
+14:    SPARK_STATUS_CAPACITY_EXCEEDED,
+15:    SPARK_STATUS_NOT_FOUND,
+16:    SPARK_STATUS_IO_ERROR,
+17:    SPARK_STATUS_PARSE_ERROR,
+18:    SPARK_STATUS_SCHEMA_ERROR,
+19:    SPARK_STATUS_HASH_MISMATCH,
+20:    SPARK_STATUS_MODULE_NOT_VALIDATED,
+21:    SPARK_STATUS_VALIDATION_FAILED,
+22:    SPARK_STATUS_ABI_MISMATCH,
+23:    SPARK_STATUS_TARGET_MISMATCH,
+24:    SPARK_STATUS_COMPILER_ERROR,
+25:    SPARK_STATUS_DRIVER_LOAD_ERROR,
+26:    SPARK_STATUS_ROUTE_NOT_FOUND,
+27:    SPARK_STATUS_BUSY,
+28:    SPARK_STATUS_DUPLICATE,
+29:    SPARK_STATUS_INTERNAL_ERROR,
+30:    SPARK_STATUS_PENDING,
+31:    SPARK_STATUS_UNSUPPORTED
+45:	if ( error_buffer != 0 && error_buffer_bytes != 0u )
+47:		if ( message == 0 )
+57:	return denominator == 0u ? 0u : (numerator + denominator - 1u) / denominator;
+62:	return denominator == 0u ? 0u : (numerator + denominator - 1u) / denominator;
+70:	for (byte_index = 0u; byte_index < data_bytes; ++byte_index)
+[0m
+[0m$ [0mgrep -n "SparkModelBatchMembers\|SparkModelBatchRequestMembers" -A 16 node/model_batch.c | sed -n '1,45p'
+59:static const char *const SparkModelBatchRequestMembers[] =
+60-{
+61-	"request_id",
+62-	"sequence_id",
+63-	"priority",
+64-	"output_token_budget",
+65-	"prompt_token_ids"
+66-};
+67-
+68-static int32_t SparkModelBatchJsonMember(
+69-	const SparkJsonDocument *document,
+70-	int32_t object,
+71-	const char *name)
+72-{
+73-	return(SparkJsonFindObjectMember(document,object,name));
+74-}
+75-
+--
+159:	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelBatchRequestMembers,(uint32_t)(sizeof(SparkModelBatchRequestMembers) / sizeof(SparkModelBatchRequestMembers[0])));
+160-	request = &file_request->request;
+161-	memset(request,0,sizeof(*request));
+162-	request->abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+163-	request->descriptor_bytes = SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES;
+164-	if ( status == SPARK_STATUS_OK )
+165-		status = SparkModelBatchJsonU64(document,object,"request_id",&request->request_id);
+166-	if ( status == SPARK_STATUS_OK )
+167-		status = SparkModelBatchJsonU64(document,object,"sequence_id",&request->sequence_id);
+168-	if ( status == SPARK_STATUS_OK )
+169-		status = SparkModelBatchJsonU32(document,object,"priority",&request->priority);
+170-	if ( status == SPARK_STATUS_OK )
+171-		status = SparkModelBatchJsonU32(document,object,"output_token_budget",&request->output_token_budget);
+172-	tokens = status == SPARK_STATUS_OK ? SparkModelBatchJsonMember(document,object,"prompt_token_ids") : -1;
+173-	if ( status == SPARK_STATUS_OK )
+174-		status = tokens < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkModelBatchParseTokenArray(document,tokens,max_context_tokens,&file_request->prompt_token_ids,&request->prompt_token_count);
+175-	request->prompt_token_ids = file_request->prompt_token_ids;
+[0m
+status 2 = CAPACITY_EXCEEDED, and it happens before any pipeline view — likely during **batch-file validation**. Comparing required members vs bench_b1.json:
+[0m$ [0mgrep -n "FileMembers\|EngineMembers\|\"requests\"\|\"stop_token_ids\"\|\"request_capacity\"" node/model_batch.c | head -12; grep -n "SparkModelBatchLoadFile" -A 40 node/model_batch.c | sed -n '1,45p'
+46:static const char *const SparkModelBatchFileMembers[] =
+50:	"request_capacity",
+55:	"stop_token_ids",
+56:	"requests"
+269:		status = SparkJsonValidateObjectMembersExact(&document,root,SparkModelBatchFileMembers,(uint32_t)(sizeof(SparkModelBatchFileMembers) / sizeof(SparkModelBatchFileMembers[0])));
+277:		status = SparkModelBatchJsonU32(&document,root,"request_capacity",&file->engine.request_capacity);
+286:	stop_tokens = status == SPARK_STATUS_OK ? SparkModelBatchJsonMember(&document,root,"stop_token_ids") : -1;
+289:	requests = status == SPARK_STATUS_OK ? SparkModelBatchJsonMember(&document,root,"requests") : -1;
+254:static SparkStatus SparkModelBatchLoadFile(
+255-	const char *path,
+256-	SparkModelBatchFile *file)
+257-{
+258-	SparkJsonDocument document;
+259-	uint32_t schema_version;
+260-	int32_t root,requests,stop_tokens;
+261-	SparkStatus status;
+262-	memset(file,0,sizeof(*file));
+263-	SparkJsonDocumentReset(&document);
+264-	status = SparkJsonLoadFile(path,&document);
+265-	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
+266-	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
+267-		status = SPARK_STATUS_SCHEMA_ERROR;
+268-	if ( status == SPARK_STATUS_OK )
+269-		status = SparkJsonValidateObjectMembersExact(&document,root,SparkModelBatchFileMembers,(uint32_t)(sizeof(SparkModelBatchFileMembers) / sizeof(SparkModelBatchFileMembers[0])));
+270-	if ( status == SPARK_STATUS_OK )
+271-		status = SparkModelBatchJsonU32(&document,root,"schema_version",&schema_version);
+272-	if ( status == SPARK_STATUS_OK && schema_version != SPARK_MODEL_BATCH_FILE_SCHEMA_VERSION )
+273-		status = SPARK_STATUS_SCHEMA_ERROR;
+274-	if ( status == SPARK_STATUS_OK )
+275-		status = SparkModelBatchJsonU32(&document,root,"connect_timeout_ms",&file->engine.connect_timeout_ms);
+276-	if ( status == SPARK_STATUS_OK )
+277-		status = SparkModelBatchJsonU32(&document,root,"request_capacity",&file->engine.request_capacity);
+278-	if ( status == SPARK_STATUS_OK )
+279-		status = SparkModelBatchJsonU32(&document,root,"max_context_tokens",&file->engine.max_context_tokens);
+280-	if ( status == SPARK_STATUS_OK )
+281-		status = SparkModelBatchJsonU32(&document,root,"max_prefill_rows_per_submission",&file->engine.max_prefill_rows_per_submission);
+282-	if ( status == SPARK_STATUS_OK )
+283-		status = SparkModelBatchJsonU32(&document,root,"maximum_messages_per_rank_per_progress",&file->engine.maximum_messages_per_rank_per_progress);
+284-	if ( status == SPARK_STATUS_OK )
+285-		status = SparkModelBatchJsonU32(&document,root,"maximum_new_submissions_per_progress",&file->maximum_new_submissions_per_progress);
+286-	stop_tokens = status == SPARK_STATUS_OK ? SparkModelBatchJsonMember(&document,root,"stop_token_ids") : -1;
+287-	if ( status == SPARK_STATUS_OK )
+288-		status = stop_tokens < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkModelBatchParseStopTokens(&document,stop_tokens,file);
+289-	requests = status == SPARK_STATUS_OK ? SparkModelBatchJsonMember(&document,root,"requests") : -1;
+290-	if ( status == SPARK_STATUS_OK )
+291-		status = requests < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkModelBatchParseRequests(&document,requests,file);
+292-	SparkJsonDocumentDestroy(&document);
+293-	if ( status != SPARK_STATUS_OK )
+294-		SparkModelBatchFileDestroy(file);
+--
+609:		status = SparkModelBatchLoadFile(batch_path,&file);
+610-	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_SEQUENTIAL") != 0 )
+611-		file.sequential_submissions = 1u;
+[0m
+[0m$ [0msed -n '46,58p' node/model_batch.c; grep -n "ParseStopTokens" -A 18 node/model_batch.c | sed -n '1,22p'
+static const char *const SparkModelBatchFileMembers[] =
+{
+	"schema_version",
+	"connect_timeout_ms",
+	"request_capacity",
+	"max_context_tokens",
+	"max_prefill_rows_per_submission",
+	"maximum_messages_per_rank_per_progress",
+	"maximum_new_submissions_per_progress",
+	"stop_token_ids",
+	"requests"
+};
+
+232:static SparkStatus SparkModelBatchParseStopTokens(
+233-	const SparkJsonDocument *document,
+234-	int32_t array,
+235-	SparkModelBatchFile *file)
+236-{
+237-	uint32_t index,left;
+238-	SparkStatus status;
+239-	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
+240-		return(SPARK_STATUS_SCHEMA_ERROR);
+241-	file->engine.stop_token_count = SparkJsonGetArrayElementCount(document,array);
+242-	if ( file->engine.stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
+243-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+244-	status = SPARK_STATUS_OK;
+245-	for (index=0u; status==SPARK_STATUS_OK && index<file->engine.stop_token_count; index++)
+246-		status = SparkJsonGetUInt32(document,SparkJsonGetArrayElement(document,array,index),&file->engine.stop_token_ids[index]);
+247-	for (index=0u; status==SPARK_STATUS_OK && index<file->engine.stop_token_count; index++)
+248-		for (left=0u; left<index; left++)
+249-			if ( file->engine.stop_token_ids[left] == file->engine.stop_token_ids[index] )
+250-				status = SPARK_STATUS_DUPLICATE;
+--
+288:		status = stop_tokens < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkModelBatchParseStopTokens(&document,stop_tokens,file);
+289-	requests = status == SPARK_STATUS_OK ? SparkModelBatchJsonMember(&document,root,"requests") : -1;
+[0m
+[0m$ [0mgrep -rln "SparkModelBatchEngineConnect" runtime/ node/ src/ 2>/dev/null | head -3
+runtime//model_batch_engine.c
+node//model_api.c
+node//model_batch.c
+[0m
+[0m$ [0mgrep -n "SparkModelBatchEngineConnect" -A 60 runtime/model_batch_engine.c | grep -nE "status =|return|CAPACITY|connect\(|socket|node_count" | head -25
+8:1095-		return(SPARK_STATUS_INVALID_ARGUMENT);
+10:1097-	status = SparkModelBatchValidateConfiguration(configuration);
+12:1099-		return(status);
+15:1102-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+16:1103-	status = SparkModelBatchInitialize(configuration,engine);
+20:1107-		return(status);
+23:1110-	return(SPARK_STATUS_OK);
+31:1118-		return(SPARK_STATUS_OK);
+33:1120-		return(SPARK_STATUS_BUSY);
+35:1122-		return(SPARK_STATUS_INTERNAL_ERROR);
+38:1125-		status = SparkModelPipelineClientGetView(engine->pipeline,&pipeline_view);
+40:1127-			return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_BUSY);
+[0m
+[0m$ [0msed -n '1090,1112p' runtime/model_batch_engine.c; sed -n '1,40p' runtime/model_batch_engine.c | grep -n "MAX_NODE\|MAX" ; grep -n "node_count" runtime/model_batch_engine.c | head -6
+SparkModelBatchEngine **engine_out)
+{
+	SparkModelBatchEngine *engine;
+	SparkStatus status;
+	if ( engine_out == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*engine_out = 0;
+	status = SparkModelBatchValidateConfiguration(configuration);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	engine = (SparkModelBatchEngine *)calloc(1u,sizeof(*engine));
+	if ( engine == 0 )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	status = SparkModelBatchInitialize(configuration,engine);
+	if ( status != SPARK_STATUS_OK )
+	{
+		(void)SparkModelBatchEngineDestroy(engine);
+		return(status);
+	}
+	*engine_out = engine;
+	return(SPARK_STATUS_OK);
+}
+
+18:#define SPARK_MODEL_BATCH_NO_SLOT UINT32_MAX
+[0m
+Static analysis is diverging — bisecting empirically instead: try the known-good `o128_batch.json` shape on spark8:
+[0m$ [0mtimeout 30 scp -o BatchMode=yes tools/devcycle/batches/o128_batch.json spark8:/tmp/o128_batch.json && timeout 300 ssh -o BatchMode=yes spark8 'cd ~/sparkdata/glm52.tp8.fp8 && export LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH; timeout 240 bin/sparkpipe_model_batch --deployment config/model_resident.json --runtime-root $PWD --batch /tmp/o128_batch.json >/tmp/o128b.out 2>/tmp/o128b.err; echo RC=$?; head -3 /tmp/o128b.out; tail -4 /tmp/o128b.err'
+RC=1
+{"schema_version":1,"event":"ready","adapter_id":"spark.glm52.serving-adapter.tp8.expert_fp8.v1","model_id":"zai-org/GLM-5.2","model_revision":"b4734de4facf877f85769a911abafc5283eab3d9","stage_count":8,"linear_weight_codec":1,"expert_weight_codec":5,"kv_cache_codec":1}
+{"schema_version":1,"event":"accepted","status":0,"request_id":760130,"sequence_id":760130,"request_handle":4294967297,"token_id":0,"token_index":0,"generated_token_count":0,"stop_token":false}
+{"schema_version":1,"event":"error","status":19,"request_id":760130,"sequence_id":760130,"request_handle":4294967297,"token_id":0,"token_index":0,"generated_token_count":0,"stop_token":false}
+batch_rejected status=19 kind=1 submission=1
+sparkpipe_model_batch_failure status=6 stage=6
+sparkpipe_model_batch_pipeline submitted=1 continued=0 admitted=0 rejected=1 leases=0
+sparkpipe_model_batch_status=6 terminal=1 requests=1
+[0m
+[0m$ [0mgrep -rn "batch_rejected" node/ runtime/ | head -4
+runtime//model_batch_engine.c:698:	fprintf(stderr,"batch_rejected status=%u kind=%u submission=%llu\n",
+[0m
+Client connects + submits now (bench_b1.json is a separate stale-file issue) but the ring **rejects with UNSUPPORTED(19)**. Checking ranks' logs and the reject semantics:
+[0m$ [0mfor h in spark8 spark9 sparka sparkb spark1 sparkd sparke sparkf; do printf '%s: ' "$h"; timeout 15 ssh -o BatchMode=yes "$h" 'grep -E "reject|refus|unsupported|error|status=19|Execute" /tmp/glm52-tp8-rank*.log 2>/dev/null | tail -2 | tr "\n" "|"; echo'; done
+spark8: model_residentd adapter_submit status=unsupported rank=0 stage=0 submission=1 kind=1 rows=1 lanes=1|
+spark9: model_residentd adapter_submit status=unsupported rank=1 stage=1 submission=1 kind=1 rows=1 lanes=1|
+sparka: model_residentd adapter_submit status=unsupported rank=2 stage=2 submission=1 kind=1 rows=1 lanes=1|
+sparkb: model_residentd adapter_submit status=unsupported rank=3 stage=3 submission=1 kind=1 rows=1 lanes=1|
+spark1: model_residentd adapter_submit status=unsupported rank=4 stage=4 submission=1 kind=1 rows=1 lanes=1|
+sparkd: model_residentd adapter_submit status=unsupported rank=5 stage=5 submission=1 kind=1 rows=1 lanes=1|
+sparke: model_residentd adapter_submit status=unsupported rank=6 stage=6 submission=1 kind=1 rows=1 lanes=1|
+sparkf: model_residentd adapter_submit status=unsupported rank=7 stage=7 submission=1 kind=1 rows=1 lanes=1|
+[0m
+[0m$ [0mgrep -n "SparkGlm52ServingSubmit\b" -A 40 /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/glm52dbg/spark_glm52_serving_adapter.c | sed -n '1,55p'
+1191:static SparkStatus SparkGlm52ServingSubmit(
+1192-	void *adapter_state,
+1193-	const SparkModelServingSubmission *submission)
+1194-{
+1195-	SparkGlm52ServingState *state;
+1196-	SparkGlm52ServingPending *pending;
+1197-	SparkGlm52ResidentDecodeStageBatchView batch;
+1198-	SparkGlm52ResidentDecodeStageFrameContext context;
+1199-	SparkModelDriverBuffer buffer;
+1200-	SparkModelDriverFrame frame;
+1201-	SparkStatus status;
+1202-	state = (SparkGlm52ServingState *)adapter_state;
+1203-	status = SparkGlm52ServingValidateSubmission(state,submission);
+1204-	if ( status != SPARK_STATUS_OK )
+1205-		return(status);
+1206-	pending = SparkGlm52ServingReservePending(state,submission);
+1207-	if ( pending == 0 )
+1208-		return(SPARK_STATUS_BUSY);
+1209-	if ( state->speculate != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->active_sequence_count >= 1u )
+1210-	{
+1211-		status = SparkGlm52ServingPrepareVerifyDrafts(state,submission);
+1212-		if ( status == SPARK_STATUS_OK )
+1213-			status = SparkGlm52ServingSubmitSpeculative(state,submission,pending);
+1214-		if ( status != SPARK_STATUS_OK )
+1215-			pending->core.active = 0u;
+1216-		return(status);
+1217-	}
+1218-	if ( state->speculate != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+1219-		SparkGlm52ServingForgetAllSpeculation(state,submission);
+1220-	SparkGlm52ServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
+1221-	status = SparkGlm52ServingAdmit(state,submission,&frame);
+1222-	if ( status == SPARK_STATUS_OK )
+1223-		status = state->common.program->submit(state->common.driver_instance,&frame);
+1224-	if ( status != SPARK_STATUS_OK )
+1225-		pending->core.active = 0u;
+1226-	return(status);
+1227-}
+1228-
+1229-/* Quiesce and snapshot are the shared lifecycle bodies over the common state. */
+1230-
+1231-static SparkStatus SparkGlm52ServingQuiesce(
+--
+1257:	.submit = SparkGlm52ServingSubmit,
+1258-	.progress = SparkModelServingAdapterStreamOrderedProgress,
+1259-	.quiesce = SparkGlm52ServingQuiesce,
+1260-	.snapshot = SparkGlm52ServingSnapshot
+1261-};
+1262-
+1263-__attribute__((visibility("default")))
+1264-const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
+1265-{
+1266-	return(&SparkGlm52ServingInterface);
+1267-}
+[0m
+[0m$ [0msed -n '/static SparkStatus SparkGlm52ServingValidateSubmission/,/^}/p' /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/glm52dbg/spark_glm52_serving_adapter.c
+static SparkStatus SparkGlm52ServingValidateSubmission(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission)
+{
+	SparkGlm52ServingState *state;
+	SparkStatus status;
+	state = (SparkGlm52ServingState *)adapter_state;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	/* Presence + quiescing gate + runtime-submission validation (shared).
+	 * The state check stays family-side: &state->common is a small non-NULL
+	 * offset even when state is NULL, so the shared helper's common==0 gate
+	 * cannot catch it. */
+	status = SparkAdapterValidateSubmissionOpen(&state->common,
+		&SparkGlm52ServingDescriptor,submission);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52ServingValidateBoundaries(submission);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52ServingValidateRowOrder(state,submission);
+	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
+		status = SPARK_STATUS_UNSUPPORTED;
+	return(status);
+}
+[0m
+The deployed glm52_unified adapter rejects submissions carrying `model_extension_bytes` (UNSUPPORTED) — the 14:38 client/residentd vintage sends extensions the snapshot-era adapter doesn't know. Checking whether canonical repo master's glm52 adapter accepts them:
+[0m$ [0mgrep -rn "model_extension_bytes" modules/glm52_resident_decode_stage/source/*.c | head -8; echo ===; git log --oneline -3 -- modules/glm52_resident_decode_stage/
+modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c:1077:	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
+===
+36cf768 peer iteration-3 delivery + fwrite null-guard sweep across cache-path dump sites
+7cfc7a6 qwen36: fix merge artifacts - remove orphaned duplicate tap-buffer alloc; de-indent GDN prefix snapshot transfer
+2bc40c4 peer round-2 wave: qwen36 prefix caching + paged KV, shared stagepack reader, glm52 GPU validator restore, k3 TP16 production scripts
+[0m
+[0m$ [0mgrep -n "model_extension" runtime/model_batch_engine.c node/model_residentd.c runtime/*.c 2>/dev/null | head -12
+runtime/model_batch_engine.c:47:	uint32_t model_extension_kind;
+runtime/model_batch_engine.c:524:	event.model_extension_kind = request->model_extension_kind;
+runtime/model_batch_engine.c:789:	if ( completion->model_extension_kind == 0x5136u && completion->model_extension_bytes >= 2u * sizeof(uint32_t) )
+runtime/model_batch_engine.c:791:		memcpy(&extension_miss, completion->model_extension, sizeof(extension_miss));
+runtime/model_batch_engine.c:792:		memcpy(&extension_policy, (const uint8_t *)completion->model_extension + sizeof(extension_miss), sizeof(extension_policy));
+runtime/model_batch_engine.c:800:		if ( completion->model_extension_kind == 0x5136u )
+runtime/model_batch_engine.c:802:			request->model_extension_kind = completion->model_extension_kind;
+runtime/model_batch_engine.c:47:	uint32_t model_extension_kind;
+runtime/model_batch_engine.c:524:	event.model_extension_kind = request->model_extension_kind;
+runtime/model_batch_engine.c:789:	if ( completion->model_extension_kind == 0x5136u && completion->model_extension_bytes >= 2u * sizeof(uint32_t) )
+runtime/model_batch_engine.c:791:		memcpy(&extension_miss, completion->model_extension, sizeof(extension_miss));
+runtime/model_batch_engine.c:792:		memcpy(&extension_policy, (const uint8_t *)completion->model_extension + sizeof(extension_miss), sizeof(extension_policy));
+[0m
+[0m$ [0mgrep -n "model_extension" runtime/model_serving_adapter.c include/sparkpipe/spark_model_serving_adapter.h 2>/dev/null | head -10; grep -rn "model_extension_bytes = \|model_extension_bytes=" runtime/ node/ | grep -v "!=\|==" | head -8
+runtime/model_serving_adapter.c:366:	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
+runtime/model_serving_adapter.c:538:	if ( completion->submission_id == 0u || completion->control_generation == 0u || completion->transaction_id == 0u || completion->dispatch_generation == 0u || completion->request_generation == 0u || completion->step_generation == 0u || completion->status > SPARK_STATUS_UNSUPPORTED || (completion->completion_flags & ~SPARK_MODEL_SERVING_COMPLETION_KNOWN_FLAGS) != 0u || completion->token_count > descriptor->max_output_token_count || completion->tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE || completion->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES )
+runtime/model_serving_adapter.c:542:	if ( has_tokens != (completion->token_count != 0u) || has_tokens != (completion->tokens_per_sequence != 0u) || (completion->tokens_per_sequence != 0u && completion->token_count % completion->tokens_per_sequence != 0u) || has_extension != (completion->model_extension_bytes != 0u) || (completion->model_extension_bytes == 0u && completion->model_extension_kind != 0u) )
+include/sparkpipe/spark_model_serving_adapter.h:200:	uint32_t model_extension_kind;
+include/sparkpipe/spark_model_serving_adapter.h:201:	uint32_t model_extension_bytes;
+include/sparkpipe/spark_model_serving_adapter.h:207:	const void *model_extension;
+include/sparkpipe/spark_model_serving_adapter.h:239:	uint32_t model_extension_kind;
+include/sparkpipe/spark_model_serving_adapter.h:240:	uint32_t model_extension_bytes;
+include/sparkpipe/spark_model_serving_adapter.h:241:	uint8_t model_extension[SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES];
+runtime//model_resident_ipc.c:372:	wire->model_extension_bytes = submission->model_extension_bytes;
+runtime//model_resident_ipc.c:530:	submission_out->model_extension_bytes = wire->model_extension_bytes;
+runtime//model_resident_ipc.c:595:	wire->model_extension_bytes = completion->model_extension_bytes;
+runtime//model_resident_ipc.c:646:	completion_out->model_extension_bytes = wire->model_extension_bytes;
+[0m

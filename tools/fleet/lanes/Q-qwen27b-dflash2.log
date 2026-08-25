@@ -6643,3 +6643,1969 @@ mkdir -p build/obj/runtime/ && cc -I. -Iinclude -Isrc  -std=c11 -Wall -Wextra -W
 mkdir -p build/obj/runtime/ && cc -I. -Iinclude -Isrc  -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native -fPIC -MMD -MP -c runtime/model_resident_deployment.c -o build/obj/runtime/model_resident_deployment.o
 EXIT=0
 [0m
+[0m$ [0mgit add -A && git status --porcelain | grep -c '^(UU|UD|DU|AA)' ; git commit -m "merge: origin/main into unified (Route A) — qwen38_27b/qwen38_max naming consolidated, main API chain (model_api, kv_backing_test) kept, unified paged-KV/prefix-cache/selector validations ported" 2>&1 | tail -3
+0
+[merge-main-into-unified dcf7091] merge: origin/main into unified (Route A) — qwen38_27b/qwen38_max naming consolidated, main API chain (model_api, kv_backing_test) kept, unified paged-KV/prefix-cache/selector validations ported
+[0m
+[0m$ [0mecho "[$(date +%H:%M:%S)] STEP 8: Makefile resolved (4 hunks: renamed unified content onto qwen38_27b/qwen38_max paths, kept main API-chain infra auto-merge) + stray renames (test_qwen38_27b_prefix_cache target, stagepack parity drivers/fixtures/paths, model_descriptions git mv to qwen38_27b/qwen38_max firmware jsons, crosscheck includes) + gate script staged; merge committed dcf7091 on merge-main-into-unified" >> tools/fleet/lanes/Q-qwen27b-dflash2.state.md && tail -1 tools/fleet/lanes/Q-qwen27b-dflash2.state.md
+[18:00:34] STEP 8: Makefile resolved (4 hunks: renamed unified content onto qwen38_27b/qwen38_max paths, kept main API-chain infra auto-merge) + stray renames (test_qwen38_27b_prefix_cache target, stagepack parity drivers/fixtures/paths, model_descriptions git mv to qwen38_27b/qwen38_max firmware jsons, crosscheck includes) + gate script staged; merge committed dcf7091 on merge-main-into-unified
+[0m
+STEP 9: host-side build + targeted tests.
+[0m$ [0mmake -j8 2>&1 | tail -15; echo "BUILD_EXIT=$?"
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: archive member: build/libsparkpipe_model_common.a(runtime__prefix_cache.o) cputype (16777223) does not match previous archive members cputype (16777228) (all members must match)
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: archive member: build/libsparkpipe_model_common.a(tests__cuda_stub__cuda_runtime_stub.o) cputype (16777223) does not match previous archive members cputype (16777228) (all members must match)
+warning: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: archive library: build/libsparkpipe_model_common.a will be fat and ar(1) will not be able to operate on it
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar: internal ranlib command failed
+make: *** [build/libsparkpipe_model_common.a] Error 1
+make: *** Waiting for unfinished jobs....
+make: *** [build/libglm52_host.a] Error 1
+runtime/spark_kv_backing.c:59:8: error: call to undeclared function 'posix_fadvise'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+   59 |         (void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
+      |               ^
+runtime/spark_kv_backing.c:59:37: error: use of undeclared identifier 'POSIX_FADV_RANDOM'
+   59 |         (void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
+      |                                            ^
+2 errors generated.
+make: *** [build/spark_kv_backing_test] Error 1
+BUILD_EXIT=0
+[0m
+[0m$ [0msed -n '50,70p' runtime/spark_kv_backing.c
+backing->slot_bytes = SPARK_KV_BACKING_SLOT_BYTES;
+	backing->slot_count = (uint32_t)(configuration->maximum_bytes /
+		backing->slot_bytes);
+	if ( backing->slot_count == 0u || backing->slot_count >
+		SPARK_KV_BACKING_MAX_SLOT_COUNT )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor = open(configuration->path,O_RDWR | O_CREAT,0644);
+	if ( descriptor < 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	(void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
+	if ( ftruncate(descriptor,SPARK_KV_BACKING_HEADER_BYTES +
+		(uint64_t)backing->slot_count * backing->slot_bytes) != 0 )
+	{
+		close(descriptor);
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	backing->file_descriptor = descriptor;
+	backing->slot_live = (uint8_t *)calloc((size_t)backing->slot_count,1u);
+	if ( backing->slot_live == 0 )
+	{
+		close(descriptor);
+[0m
+Two build issues: stale mixed-arch objects, and main's new `spark_kv_backing.c` uses Linux-only `posix_fadvise`. Fixing both:
+[0m← [0mEdit runtime/spark_kv_backing.c
+Index: /Users/mac/sparkpipe/runtime/spark_kv_backing.c
+===================================================================
+--- /Users/mac/sparkpipe/runtime/spark_kv_backing.c
++++ /Users/mac/sparkpipe/runtime/spark_kv_backing.c
+@@ -56,8 +56,11 @@
+ 	descriptor = open(configuration->path,O_RDWR | O_CREAT,0644);
+ 	if ( descriptor < 0 )
+ 		return(SPARK_STATUS_IO_ERROR);
+ 	(void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
++#elif defined(__APPLE__)
++	(void)fcntl(descriptor,F_NOCACHE,1);
++#endif
+ 	if ( ftruncate(descriptor,SPARK_KV_BACKING_HEADER_BYTES +
+ 		(uint64_t)backing->slot_count * backing->slot_bytes) != 0 )
+ 	{
+ 		close(descriptor);
+
+[0m
+[0m$ [0msed -n '55,66p' runtime/spark_kv_backing.c
+return(SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor = open(configuration->path,O_RDWR | O_CREAT,0644);
+	if ( descriptor < 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	(void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
+#elif defined(__APPLE__)
+	(void)fcntl(descriptor,F_NOCACHE,1);
+#endif
+	if ( ftruncate(descriptor,SPARK_KV_BACKING_HEADER_BYTES +
+		(uint64_t)backing->slot_count * backing->slot_bytes) != 0 )
+	{
+		close(descriptor);
+[0m
+That edit needs a matching `#if` — let me view and fix properly:
+[0m← [0mEdit runtime/spark_kv_backing.c
+Index: /Users/mac/sparkpipe/runtime/spark_kv_backing.c
+===================================================================
+--- /Users/mac/sparkpipe/runtime/spark_kv_backing.c
++++ /Users/mac/sparkpipe/runtime/spark_kv_backing.c
+@@ -55,8 +55,9 @@
+ 		return(SPARK_STATUS_INVALID_ARGUMENT);
+ 	descriptor = open(configuration->path,O_RDWR | O_CREAT,0644);
+ 	if ( descriptor < 0 )
+ 		return(SPARK_STATUS_IO_ERROR);
++#if defined(__linux__)
+ 	(void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
+ #elif defined(__APPLE__)
+ 	(void)fcntl(descriptor,F_NOCACHE,1);
+ #endif
+
+[0m
+[0m$ [0mmake clean >/dev/null 2>&1; make -j8 2>&1 | grep -E 'error|Error|warning: implicit' | head -10; echo "DONE rc=$?"
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tools/hardware/spark_model_kernel_characterize.c  -ldl -pthread -lm -o build/spark_model_kernel_characterize
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tools/hardware/spark_transport_characterize.c  -ldl -pthread -lm -o build/spark_transport_characterize
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tools/hardware/spark_topology_characterize.c  -ldl -pthread -lm -o build/spark_topology_characterize
+cc -Itools/hardware -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tools/hardware/spark_pmtu_characterize.c  -o build/spark_pmtu_characterize
+cc -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native -Iinclude tools/spark_kv_backing_test.c runtime/spark_kv_backing.c build/libsparkpipe_core.a  -ldl -pthread -o build/spark_kv_backing_test
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native deployment/tools/sparkpipe_release_manager.c build/libsparkpipe_deployment.a build/libsparkpipe_core.a  -ldl -pthread -o build/sparkpipe_release_manager
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tools/sparkpipe_module_publish.c build/libsparkpipe_compiler.a build/libsparkpipe_core.a  -ldl -pthread -o build/sparkpipe_module_publish
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tools/sparkpipe_model_compile.c build/libsparkpipe_compiler.a build/libsparkpipe_core.a  -ldl -pthread -o build/sparkpipe_model_compile
+cc -I. -Iinclude -Isrc -Itests/cuda_stub -Imodel-families/glm52/include -Imodel-families/common/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tools/sparkpipe_glm52_tokenize.c build/libglm52_host.a build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread -o build/sparkpipe_glm52_tokenize
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tools/sparkpipe_tokenize_prompt.c build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread -o build/sparkpipe_tokenize_prompt
+DONE rc=0
+[0m
+[0m$ [0mmake -j8 2>&1 | tail -3; ls -la build/libqwen38_27b_serving_adapter.dylib build/libqwen38_27b_serving_driver_module.dylib build/sparkpipe_model_api build/spark_kv_backing_test 2>&1
+nvcc -O3 -gencode arch=compute_121a,code=sm_121a -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC -dynamiclib modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/tp_collective.c build/libsparkpipe_runtime.a build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -Xcompiler -pthread -ldl  -o build/libk3_serving_adapter.dylib
+make: nvcc: No such file or directory
+make: *** [build/libk3_serving_adapter.dylib] Error 1
+ls: build/libqwen38_27b_serving_driver_module.dylib: No such file or directory
+-rwxr-xr-x  1 mac  staff  101976 Aug 25 18:01 build/libqwen38_27b_serving_adapter.dylib
+-rwxr-xr-x  1 mac  staff   14848 Aug 25 18:01 build/spark_kv_backing_test
+-rwxr-xr-x  1 mac  staff  150968 Aug 25 18:01 build/sparkpipe_model_api
+[0m
+Host build OK (k3 needs nvcc — GPU-box only, expected). Building the targeted test binaries:
+[0m$ [0mmake build/test_qwen38_27b_serving_adapter build/test_qwen38_27b_prefix_cache build/test_qwen38_max_prefix_cache build/test_prefix_cache_core build/test_modules/libqwen38_27b_serving_driver_module.dylib 2>&1 | grep -v '^mkdir\|^cc -' | head -10; echo "RC=$?"; ls build/test_qwen38_27b_serving_adapter build/test_qwen38_27b_prefix_cache build/test_modules/libqwen38_27b_serving_driver_module.dylib 2>&1
+make: *** No rule to make target `modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_serving_adapter.h', needed by `build/libqwen38_serving_adapter.dylib'.  Stop.
+RC=0
+build/test_modules/libqwen38_27b_serving_driver_module.dylib
+build/test_qwen38_27b_prefix_cache
+build/test_qwen38_27b_serving_adapter
+[0m
+[0m$ [0mperl -pi -e 's{include/sparkpipe/spark_qwen38_serving_adapter\.h}{include/sparkpipe/spark_qwen38_max_serving_adapter.h}g' Makefile && make build/libqwen38_serving_adapter.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -v '^mkdir\|^cc ' | head -5; ls build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1
+In file included from modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:46:
+modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h:300:51: error: use of undeclared identifier 'SPARK_QWEN38_MAX_MODEL_LAYER_COUNT'
+  300 |         const void *attention_norm_weights_by_layer_bf16[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT];
+      |                                                          ^
+modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h:63:60: note: expanded from macro 'SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT'
+ls: build/test_prefix_cache_core: No such file or directory
+ls: build/test_qwen38_max_prefix_cache: No such file or directory
+[0m
+[0m$ [0mgrep -n 'MODEL_LAYER_COUNT' modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h 2>/dev/null | head; echo '---27B-EQUIV---'; grep -rn 'MODEL_LAYER_COUNT\|RESIDENT_DECODE_STAGE_LAYER_COUNT' modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h | head -4
+modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h:63:#define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_QWEN38_MAX_MODEL_LAYER_COUNT
+model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h:9:#define SPARK_QWEN38_MODEL_LAYER_COUNT 92u
+---27B-EQUIV---
+modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h:72:#define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_QWEN38_27B_MODEL_LAYER_COUNT
+modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h:299:	const void *attention_norm_weights_by_layer_bf16[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT];
+modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h:300:	const void *mlp_norm_weights_by_layer_bf16[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT];
+[0m
+[0m$ [0mgrep -n '#define SPARK_QWEN38_' model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h; echo '---USAGE---'; grep -rln 'SPARK_QWEN38_MODEL_\|SPARK_QWEN38_HIDDEN\|SPARK_QWEN38_GDN' --include='*.c' --include='*.h' --include='*.cu' --include='*.cuh' . 2>/dev/null | grep -v build/ | head
+8:#define SPARK_QWEN38_MODEL_HIDDEN_DIMENSION 8192u
+9:#define SPARK_QWEN38_MODEL_LAYER_COUNT 92u
+10:#define SPARK_QWEN38_MODEL_VOCAB_COUNT 248320u
+11:#define SPARK_QWEN38_MODEL_ATTENTION_HEAD_COUNT 64u
+12:#define SPARK_QWEN38_MODEL_KV_HEAD_COUNT 4u
+13:#define SPARK_QWEN38_MODEL_HEAD_DIMENSION 256u
+14:#define SPARK_QWEN38_MODEL_GDN_KEY_HEAD_COUNT 16u
+15:#define SPARK_QWEN38_MODEL_GDN_VALUE_HEAD_COUNT 128u
+18:#define SPARK_QWEN38_MODEL_OUTPUT_VOCAB_COUNT SPARK_QWEN38_MODEL_VOCAB_COUNT
+19:#define SPARK_QWEN38_MODEL_MAXIMUM_CONTEXT_TOKENS 262144u
+20:#define SPARK_QWEN38_MODEL_RMS_NORM_EPSILON 1e-06f
+21:#define SPARK_QWEN38_MODEL_MTP_LAYER_COUNT 1u
+23:#define SPARK_QWEN38_MODEL_ATTENTION_PERIOD 4u
+24:#define SPARK_QWEN38_MODEL_FULL_ATTENTION_PHASE 3u
+25:#define SPARK_QWEN38_MODEL_LAYER_IS_GDN(layer_index) \
+27:#define SPARK_QWEN38_MODEL_GDN_LAYER_COUNT 69u
+28:#define SPARK_QWEN38_MODEL_FULL_ATTENTION_LAYER_COUNT 23u
+30:#define SPARK_QWEN38_MODEL_GDN_HEAD_KEY_DIMENSION 128u
+31:#define SPARK_QWEN38_MODEL_GDN_HEAD_VALUE_DIMENSION 128u
+32:#define SPARK_QWEN38_MODEL_GDN_VALUE_HEADS_PER_KEY_HEAD \
+34:#define SPARK_QWEN38_MODEL_GDN_CONV_KERNEL 4u
+35:#define SPARK_QWEN38_MODEL_GDN_QK_DIMENSION \
+37:#define SPARK_QWEN38_MODEL_GDN_VALUE_DIMENSION \
+39:#define SPARK_QWEN38_MODEL_GDN_CONV_CHANNELS \
+41:#define SPARK_QWEN38_MODEL_GDN_CONV_TAIL_COLUMNS (SPARK_QWEN38_MODEL_GDN_CONV_KERNEL - 1u)
+42:#define SPARK_QWEN38_MODEL_GDN_CHUNK_TOKENS 64u
+44:#define SPARK_QWEN38_MODEL_ATTN_QUERY_HEAD_COUNT SPARK_QWEN38_MODEL_ATTENTION_HEAD_COUNT
+45:#define SPARK_QWEN38_MODEL_ATTN_KV_HEAD_COUNT SPARK_QWEN38_MODEL_KV_HEAD_COUNT
+46:#define SPARK_QWEN38_MODEL_ATTN_HEAD_DIMENSION SPARK_QWEN38_MODEL_HEAD_DIMENSION
+47:#define SPARK_QWEN38_MODEL_ATTN_ROPE_DIMENSION 64u
+48:#define SPARK_QWEN38_MODEL_ATTN_ROPE_THETA 10000000.0f
+49:#define SPARK_QWEN38_MODEL_ATTN_QUERY_DIMENSION \
+51:#define SPARK_QWEN38_MODEL_ATTN_KV_DIMENSION \
+53:#define SPARK_QWEN38_MODEL_ATTN_CACHE_TOKEN_ELEMENTS \
+57:#define SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT 512u
+58:#define SPARK_QWEN38_MODEL_EXPERTS_PER_TOKEN 10u
+59:#define SPARK_QWEN38_MODEL_SHARED_EXPERT_COUNT 1u
+60:#define SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION 2048u
+61:#define SPARK_QWEN38_MODEL_MXFP4_GROUP_SIZE 32u
+62:#define SPARK_QWEN38_MODEL_SWIGLU_LIMIT 10.0f
+64:#define SPARK_QWEN38_MODEL_BF16_ELEMENT_BYTES 2u
+65:#define SPARK_QWEN38_MODEL_HIDDEN_BF16_BYTES \
+---USAGE---
+./tests/test_stagepack_parity_qwen38_max.c
+./tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h
+./tests/fixtures/qwen38_max_serving_adapter_driver.c
+./modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
+./model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h
+[0m
+Max family header kept old macro names — completing the rename consistently (option matching 27B pattern):
+[0m$ [0mperl -pi -e 's/SPARK_QWEN38_MODEL_/SPARK_QWEN38_MAX_MODEL_/g' model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h tests/test_stagepack_parity_qwen38_max.c tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h tests/fixtures/qwen38_max_serving_adapter_driver.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu && make build/libqwen38_serving_adapter.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -v '^mkdir\|^cc ' | head -6; ls build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:58:2: error: "QWEN38_MAX_MODEL_REVISION must name the exact source snapshot revision"
+   58 | #error "QWEN38_MAX_MODEL_REVISION must name the exact source snapshot revision"
+      |  ^
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:61:2: error: "QWEN38_MAX_CONTRACT_SHA256 must identify the exact package contract"
+   61 | #error "QWEN38_MAX_CONTRACT_SHA256 must identify the exact package contract"
+      |  ^
+ls: build/test_prefix_cache_core: No such file or directory
+ls: build/test_qwen38_max_prefix_cache: No such file or directory
+[0m
+[0m$ [0mgrep -rn 'QWEN38_MAX_MODEL_REVISION\|QWEN38_MAX_CONTRACT_SHA256\|TEST_QWEN38_MAX_\|QWEN38_MAX_SERVING' tests/test_qwen38_max_prefix_cache.c tests/fixtures/qwen38_max_serving_adapter_driver.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c 2>/dev/null | sed 's/:.*#define/: #define/' | head -20
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:57:#ifndef QWEN38_MAX_MODEL_REVISION
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:58:#error "QWEN38_MAX_MODEL_REVISION must name the exact source snapshot revision"
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:60:#ifndef QWEN38_MAX_CONTRACT_SHA256
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:61:#error "QWEN38_MAX_CONTRACT_SHA256 must identify the exact package contract"
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_ADAPTER_ID \
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_MODEL_ID "Qwen/Qwen3.8-2.4T-A95B"
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_DRIVER_MODEL_ID \
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_STAGE_NAME "qwen38_max_resident_decode_stage"
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_TARGET \
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_PROGRAM_NAME "resident_decode"
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_STAGE_COUNT 16u
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_DEFAULT_TP_DEGREE 4u
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_MAX_PP_STAGE_COUNT 4u
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_HYBRID_GROUP_SIZE 16u
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_DESCRIPTOR_STAGE_LAYER_COUNTS \
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_MAX_SEQUENCE_POSITIONS_CAP \
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_REQUIRED_PROGRAM_FLAGS \
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c: #define SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE_ENV "SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE"
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:123:	const char *value = getenv(SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE_ENV);
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:193:	uint32_t stage_layer_counts[SPARK_QWEN38_MAX_SERVING_MAX_PP_STAGE_COUNT];
+[0m
+[0m$ [0mgrep -n 'TEST_QWEN38[A-Z_]*PATH\|ifndef\|ifdef' tests/test_qwen38_max_prefix_cache.c | head; echo '---DRIVER---'; grep -n 'QWEN38.*REVISION\|TEST_QWEN38' tests/fixtures/qwen38_max_serving_adapter_driver.c | head
+18:#ifndef TEST_QWEN38_SERVING_ADAPTER_PATH
+19:#define TEST_QWEN38_SERVING_ADAPTER_PATH ""
+21:#ifndef TEST_QWEN38_SERVING_DRIVER_PATH
+22:#define TEST_QWEN38_SERVING_DRIVER_PATH ""
+24:#ifndef TEST_QWEN38_SERVING_CONFIG_PATH
+25:#define TEST_QWEN38_SERVING_CONFIG_PATH ""
+27:#ifndef TEST_QWEN38_SERVING_SQUEEZED_CONFIG_PATH
+28:#define TEST_QWEN38_SERVING_SQUEEZED_CONFIG_PATH ""
+35:#ifndef SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME
+38:#ifndef SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT
+---DRIVER---
+29:#ifndef QWEN38_MODEL_REVISION
+30:#error "QWEN38_MODEL_REVISION must match the adapter build"
+38:#define TEST_QWEN38_DRIVER_STAGE_COUNT 16u
+39:#define TEST_QWEN38_DRIVER_CAPTURE_ROWS 512u
+40:#define TEST_QWEN38_DRIVER_RECORD_CAPACITY 4096u
+54:	uint32_t token_ids[TEST_QWEN38_DRIVER_CAPTURE_ROWS];
+55:	uint32_t blocks[TEST_QWEN38_DRIVER_CAPTURE_ROWS];
+59:static TestQwen38DriverFrameRecord TestQwen38ServingDriverRecords[TEST_QWEN38_DRIVER_RECORD_CAPACITY];
+134:	.model_revision = QWEN38_MODEL_REVISION,
+177:	if ( TestQwen38ServingDriverEnvironmentUnsigned("SPARK_QWEN38_STAGE_COUNT",&stage_count) == 0u || stage_count != TEST_QWEN38_DRIVER_STAGE_COUNT || TestQwen38ServingDriverEnvironmentUnsigned("SPARK_QWEN38_STAGE_INDEX",&stage_index) == 0u || stage_index >= stage_count || TestQwen38ServingDriverEnvironmentUnsigned("SPARK_QWEN38_STAGE_KV_BLOCKS",&kv_blocks) == 0u || kv_blocks == 0u || TestQwen38ServingDriverEnvironmentUnsigned("SPARK_QWEN38_STAGE_PIPELINE_SLOTS",&pipeline_slots) == 0u || pipeline_slots == 0u )
+[0m
+[0m$ [0mgrep -n 'qwen38_max_serving_adapter\b\|test_qwen38_serving_adapter\|QWEN38_SERVING_ADAPTER)' Makefile | head; echo '---'; ls tests/ | grep 'serving_adapter'
+820:$(QWEN38_SERVING_ADAPTER): modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_paged_kv.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_paged_kv.h modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_serving_adapter.h modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h $(QWEN38_MODEL_DESCRIPTION) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+821:	$(CC) $(CPPFLAGS) $(QWEN38_INCLUDE_FLAGS) -Imodules/qwen38_max_resident_decode_stage/include $(CFLAGS) $(QWEN38_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_paged_kv.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+827:	$(CC) $(CPPFLAGS) $(QWEN38_INCLUDE_FLAGS) -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source -DTEST_QWEN38_SERVING_ADAPTER_PATH=\"$(QWEN38_SERVING_ADAPTER)\" -DTEST_QWEN38_SERVING_DRIVER_PATH=\"$(TEST_QWEN38_SERVING_DRIVER_MODULE)\" -DTEST_QWEN38_SERVING_CONFIG_PATH=\"tests/fixtures/qwen38_max_serving_adapter_config.json\" -DTEST_QWEN38_SERVING_SQUEEZED_CONFIG_PATH=\"tests/fixtures/qwen38_max_serving_adapter_config_squeezed.json\" $(CFLAGS) tests/test_qwen38_max_prefix_cache.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_paged_kv.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+---
+test_dsv4_serving_adapter.c
+test_dsv4_tp16_serving_adapter.c
+test_dsv4_tp4_pp4_serving_adapter.c
+test_k3_serving_adapter_smoke.c
+test_model_serving_adapter.c
+test_qwen38_27b_serving_adapter.c
+[0m
+[0m$ [0mperl -pi -e 's{-DQWEN38_MODEL_REVISION=\\\"\$\(QWEN38_MODEL_REVISION\)\\\" -DQWEN38_CONTRACT_SHA256}{-DQWEN38_MAX_MODEL_REVISION=\\"$(QWEN38_MODEL_REVISION)\\" -DQWEN38_MAX_CONTRACT_SHA256}' Makefile && grep -n 'QWEN38_SERVING_ADAPTER_FLAGS :=' Makefile && perl -pi -e 's/QWEN38_MODEL_REVISION/QWEN38_MAX_MODEL_REVISION/g' tests/fixtures/qwen38_max_serving_adapter_driver.c && make build/libqwen38_serving_adapter.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -viE '^mkdir|^cc |^ranlib|warning' | head -6; ls build/libqwen38_serving_adapter.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core
+171:QWEN38_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN38_MAX_MODEL_REVISION=\"20 20 12 61 79 80 81 98 398 399 702 33 100 204 250 395 400 701QWEN38_MODEL_REVISION)\" -DQWEN38_MAX_CONTRACT_SHA256=\"$(QWEN38_CONTRACT_SHA256)\"
+/bin/sh: -c: line 0: syntax error near unexpected token `)'
+/bin/sh: -c: line 0: `cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -I. -Iinclude -Isrc -Itests/cuda_stub -Imodel-families/qwen38_max/include -Iruntime -Imodules/qwen38_max_resident_decode_stage/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native -D_POSIX_C_SOURCE=200809L -DQWEN38_MAX_MODEL_REVISION=\"20 20 12 61 79 80 81 98 398 399 702 33 100 204 250 395 400 701QWEN38_MODEL_REVISION)\" -DQWEN38_MAX_CONTRACT_SHA256=\"48aed47704ab4c07428390bedda2f89daef8712d3893a02f850ae6ebec517a81\" -fPIC -dynamiclib modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_paged_kv.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_runtime.a build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread  -o build/libqwen38_serving_adapter.dylib'
+make: *** [build/libqwen38_serving_adapter.dylib] Error 2
+ls: build/libqwen38_serving_adapter.dylib: No such file or directory
+ls: build/test_prefix_cache_core: No such file or directory
+ls: build/test_qwen38_max_prefix_cache: No such file or directory
+[0m
+[0m→ [0mRead Makefile[90m [limit=6, offset=168][0m
+The perl mangled that line — fixing directly:
+[0m
+[0m← [0mEdit Makefile
+Index: /Users/mac/sparkpipe/Makefile
+===================================================================
+--- /Users/mac/sparkpipe/Makefile
++++ /Users/mac/sparkpipe/Makefile
+@@ -167,9 +167,9 @@
+ QWEN38_SERVING_ADAPTER := build/libqwen38_serving_adapter.$(SHARED_LIBRARY_EXT)
+ QWEN38_MODEL_DESCRIPTION := examples/model_descriptions/qwen38_max_resident_decode_stage_firmware.json
+ QWEN38_MODEL_REVISION ?= fp8-h8192-l92-gdn69-full23-e512k10-v248320-mtp1-d2dc3565-v1
+ QWEN38_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN38_MODEL_DESCRIPTION)"; else shasum -a 256 "$(QWEN38_MODEL_DESCRIPTION)"; fi | awk '{print $$1}')
+-QWEN38_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN38_MAX_MODEL_REVISION=\"20 20 12 61 79 80 81 98 398 399 702 33 100 204 250 395 400 701QWEN38_MODEL_REVISION)\" -DQWEN38_MAX_CONTRACT_SHA256=\"$(QWEN38_CONTRACT_SHA256)\"
++QWEN38_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN38_MAX_MODEL_REVISION=\"$(QWEN38_MODEL_REVISION)\" -DQWEN38_MAX_CONTRACT_SHA256=\"$(QWEN38_CONTRACT_SHA256)\"
+ 
+ TOOL_NAMES := \
+     sparkpipe_module_publish \
+     sparkpipe_model_compile \
+
+[0m
+[0m$ [0mmake build/libqwen38_serving_adapter.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -viE '^mkdir|^cc |^ranlib|warning:' | head -6; ls build/libqwen38_serving_adapter.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1
+tests/fixtures/qwen38_max_serving_adapter_driver.c:26:10: fatal error: 'sparkpipe/spark_qwen38_model.h' file not found
+   26 | #include "sparkpipe/spark_qwen38_model.h"
+      |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1 error generated.
+make: *** [build/test_modules/libqwen38_serving_driver_module.dylib] Error 1
+ls: build/test_prefix_cache_core: No such file or directory
+ls: build/test_qwen38_max_prefix_cache: No such file or directory
+build/libqwen38_serving_adapter.dylib
+[0m
+[0m$ [0mgrep -n '#include "sparkpipe/\|#include "' tests/fixtures/qwen38_max_serving_adapter_driver.c tests/test_qwen38_max_prefix_cache.c | grep -v 'qwen38_max\|qwen38_27b\|model_driver\|spark_status\|stdint\|stdio\|stdlib\|string' 
+(no output)
+[0m
+[0m$ [0mgrep -n '#include' tests/fixtures/qwen38_max_serving_adapter_driver.c tests/test_qwen38_max_prefix_cache.c
+tests/fixtures/qwen38_max_serving_adapter_driver.c:19:#include <stdlib.h>
+tests/fixtures/qwen38_max_serving_adapter_driver.c:20:#include <string.h>
+tests/fixtures/qwen38_max_serving_adapter_driver.c:22:#include <cuda_runtime.h>
+tests/fixtures/qwen38_max_serving_adapter_driver.c:24:#include "sparkpipe/spark_model_driver.h"
+tests/fixtures/qwen38_max_serving_adapter_driver.c:25:#include "sparkpipe/spark_model_driver_support.h"
+tests/fixtures/qwen38_max_serving_adapter_driver.c:26:#include "sparkpipe/spark_qwen38_model.h"
+tests/fixtures/qwen38_max_serving_adapter_driver.c:27:#include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
+tests/test_qwen38_max_prefix_cache.c:1:#include <assert.h>
+tests/test_qwen38_max_prefix_cache.c:2:#include <dlfcn.h>
+tests/test_qwen38_max_prefix_cache.c:3:#include <stdio.h>
+tests/test_qwen38_max_prefix_cache.c:4:#include <stdlib.h>
+tests/test_qwen38_max_prefix_cache.c:5:#include <string.h>
+tests/test_qwen38_max_prefix_cache.c:6:#include <unistd.h>
+tests/test_qwen38_max_prefix_cache.c:8:#include <cuda_runtime.h>
+tests/test_qwen38_max_prefix_cache.c:10:#include "sparkpipe/spark_model_serving_adapter.h"
+tests/test_qwen38_max_prefix_cache.c:11:#include "sparkpipe/spark_qwen38_model.h"
+tests/test_qwen38_max_prefix_cache.c:12:#include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
+tests/test_qwen38_max_prefix_cache.c:16:#include "spark_qwen38_paged_kv.h"
+[0m
+[0m$ [0mperl -pi -e 's{"sparkpipe/spark_qwen38_model\.h"}{"sparkpipe/spark_qwen38_max_model.h"}; s{"sparkpipe/spark_qwen38_resident_decode_stage_firmware\.h"}{"sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"}; s{"spark_qwen38_paged_kv\.h"}{"spark_qwen38_max_paged_kv.h"}' tests/fixtures/qwen38_max_serving_adapter_driver.c tests/test_qwen38_max_prefix_cache.c && make build/libqwen38_serving_driver_module.dylib build/test_modules/libqwen38_serving_driver_module.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -viE '^mkdir|^cc |^ranlib|warning:' | head -6; ls build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1
+make: *** No rule to make target `build/libqwen38_serving_driver_module.dylib'.  Stop.
+ls: build/test_prefix_cache_core: No such file or directory
+ls: build/test_qwen38_max_prefix_cache: No such file or directory
+[0m
+[0m$ [0mmake build/test_modules/libqwen38_serving_driver_module.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -viE '^mkdir|^cc |^ranlib|warning:' | head -8; ls build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1
+tests/fixtures/qwen38_max_serving_adapter_driver.c:33:2: error: "QWEN38_CONTRACT_SHA256 must match the adapter build"
+   33 | #error "QWEN38_CONTRACT_SHA256 must match the adapter build"
+      |  ^
+tests/fixtures/qwen38_max_serving_adapter_driver.c:112:18: error: use of undeclared identifier 'SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT'
+  112 |         .max_inflight = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
+      |                         ^
+tests/fixtures/qwen38_max_serving_adapter_driver.c:113:22: error: use of undeclared identifier 'SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT'
+  113 |         .max_active_slots = SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+ls: build/test_prefix_cache_core: No such file or directory
+ls: build/test_qwen38_max_prefix_cache: No such file or directory
+[0m
+[0m$ [0mgrep -c 'SPARK_QWEN38_RESIDENT_DECODE_STAGE_\|QWEN38_CONTRACT_SHA256' tests/fixtures/qwen38_max_serving_adapter_driver.c tests/test_qwen38_max_prefix_cache.c; perl -pi -e 's/QWEN38_CONTRACT_SHA256/QWEN38_MAX_CONTRACT_SHA256/g; s/SPARK_QWEN38_RESIDENT_DECODE_STAGE_/SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_/g' tests/fixtures/qwen38_max_serving_adapter_driver.c tests/test_qwen38_max_prefix_cache.c && make build/test_modules/libqwen38_serving_driver_module.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -viE '^mkdir|^cc |^ranlib|warning:' | head -8; ls build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1
+tests/fixtures/qwen38_max_serving_adapter_driver.c:16
+tests/test_qwen38_max_prefix_cache.c:14
+tests/fixtures/qwen38_max_serving_adapter_driver.c:220:2: error: unknown type name 'SparkQwen38ResidentDecodeStageFrameContext'; did you mean 'SparkQwen38MaxResidentDecodeStageFrameContext'?
+  220 |         SparkQwen38ResidentDecodeStageFrameContext *context;
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         SparkQwen38MaxResidentDecodeStageFrameContext
+modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h:464:3: note: 'SparkQwen38MaxResidentDecodeStageFrameContext' declared here
+  464 | } SparkQwen38MaxResidentDecodeStageFrameContext;
+      |   ^
+tests/fixtures/qwen38_max_serving_adapter_driver.c:229:57: error: expected expression
+ls: build/test_prefix_cache_core: No such file or directory
+ls: build/test_qwen38_max_prefix_cache: No such file or directory
+[0m
+[0m$ [0mperl -pi -e 's/SparkQwen38ResidentDecodeStage/SparkQwen38MaxResidentDecodeStage/g; s/SPARK_QWEN38_RESIDENT_DECODE_STAGE/SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE/g' tests/fixtures/qwen38_max_serving_adapter_driver.c tests/test_qwen38_max_prefix_cache.c && make build/test_modules/libqwen38_serving_driver_module.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -viE '^mkdir|^cc |^ranlib|warning:' | head -8; ls build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1
+tests/fixtures/qwen38_max_serving_adapter_driver.c:272:9: error: unknown type name 'SparkQwen38KvBlockTableView'; did you mean 'SparkQwen38MaxKvBlockTableView'?
+  272 |                 const SparkQwen38KvBlockTableView *table = context->kv_block_table;
+      |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |                       SparkQwen38MaxKvBlockTableView
+modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h:215:3: note: 'SparkQwen38MaxKvBlockTableView' declared here
+  215 | } SparkQwen38MaxKvBlockTableView;
+      |   ^
+1 error generated.
+ls: build/test_prefix_cache_core: No such file or directory
+ls: build/test_qwen38_max_prefix_cache: No such file or directory
+[0m
+[0m$ [0mperl -pi -e 's/SparkQwen38(?!Max)/SparkQwen38Max/g; s/SPARK_QWEN38_(?!MAX_)/SPARK_QWEN38_MAX_/g' tests/fixtures/qwen38_max_serving_adapter_driver.c tests/test_qwen38_max_prefix_cache.c && grep -nE 'SparkQwen38(?!Max)|SPARK_QWEN38_(?!MAX_)' -P tests/fixtures/qwen38_max_serving_adapter_driver.c tests/test_qwen38_max_prefix_cache.c | head -3; make build/test_modules/libqwen38_serving_driver_module.dylib build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1 | grep -viE '^mkdir|^cc |^ranlib|warning:' | head -6; ls build/test_qwen38_max_prefix_cache build/test_prefix_cache_core 2>&1
+grep: invalid option -- P
+usage: grep [-abcdDEFGHhIiJLlMmnOopqRSsUVvwXxZz] [-A num] [-B num] [-C[num]]
+	[-e pattern] [-f file] [--binary-files=value] [--color=when]
+	[--context[=num]] [--directories=action] [--label] [--line-buffered]
+	[--null] [pattern] [file ...]
+build/test_prefix_cache_core
+build/test_qwen38_max_prefix_cache
+[0m
+All built. Running the targeted host-side tests:
+[0m$ [0m./build/test_qwen38_27b_serving_adapter 2>&1 | tail -3; echo "27B_ADAPTER_RC=$?"; ./build/test_qwen38_27b_prefix_cache 2>&1 | tail -3; echo "27B_PFX_RC=$?"; ./build/test_prefix_cache_core 2>&1 | tail -2; echo "CORE_PFX_RC=$?"
+qwen38_27b_serving spec_method=mtp (SPARK_QWEN38_27B_SERVING_SPEC_METHOD=(unset))
+qwen38_27b_serving spec_method=mtp (SPARK_QWEN38_27B_SERVING_SPEC_METHOD=(unset))
+qwen38_27b_serving spec_method=mtp (SPARK_QWEN38_27B_SERVING_SPEC_METHOD=(unset))
+27B_ADAPTER_RC=0
+checkpoint_witness boundaries=3 resume_at=192 slot=2
+cross_cycle SKIP retention pending core witness-pin (see pccore_witness_pin_handoff.md)
+qwen38_27b prefix-cache gate PASS
+27B_PFX_RC=0
+PERF_SQUEEZE_RESULT b=512 pool_pct=25 savings_pct=55.7 hit_rate_pct=55.7 blocks_claimed=28773 evicted=17630
+prefix-cache-core PASS rows_verified=1803972 digest_checks=96363
+CORE_PFX_RC=0
+[0m
+[0m$ [0m./build/test_qwen38_max_prefix_cache 2>&1 | tail -2; echo "MAX_PFX_RC=$?"; ./build/spark_kv_backing_test 2>&1 | tail -2; echo "KV_RC=$?"
+init OFF failed status=11
+Assertion failed: (init_status == SPARK_STATUS_OK), function main, file test_qwen38_max_prefix_cache.c, line 1108.
+MAX_PFX_RC=0
+ok   foreign header refused
+ALL PASS
+KV_RC=0
+[0m
+[0m$ [0mgrep -n 'SPARK_STATUS' include/sparkpipe/spark_status.h | head -16; echo '---INIT-CALLSITE---'; sed -n '1090,1115p' tests/test_qwen38_max_prefix_cache.c
+12:    SPARK_STATUS_OK = 0,
+13:    SPARK_STATUS_INVALID_ARGUMENT,
+14:    SPARK_STATUS_CAPACITY_EXCEEDED,
+15:    SPARK_STATUS_NOT_FOUND,
+16:    SPARK_STATUS_IO_ERROR,
+17:    SPARK_STATUS_PARSE_ERROR,
+18:    SPARK_STATUS_SCHEMA_ERROR,
+19:    SPARK_STATUS_HASH_MISMATCH,
+20:    SPARK_STATUS_MODULE_NOT_VALIDATED,
+21:    SPARK_STATUS_VALIDATION_FAILED,
+22:    SPARK_STATUS_ABI_MISMATCH,
+23:    SPARK_STATUS_TARGET_MISMATCH,
+24:    SPARK_STATUS_COMPILER_ERROR,
+25:    SPARK_STATUS_DRIVER_LOAD_ERROR,
+26:    SPARK_STATUS_ROUTE_NOT_FOUND,
+27:    SPARK_STATUS_BUSY,
+---INIT-CALLSITE---
+
+		/* ======== CASES 1+2: B1 adoption + ON/OFF byte identity ====== */
+		{
+			GateRunObservation on,off;
+			static uint8_t seen_on[4096],seen_off[4096];
+			uint32_t donor_blocks[8],donor_count;
+			memset(&on,0,sizeof(on));
+			memset(&off,0,sizeof(off));
+			GateObservesReset();
+			donor_count = 0u;
+
+			setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE","0",1);
+			GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,4096u);
+			adapter_state = 0;
+			{
+				SparkStatus init_status = library.adapter_interface.initialize(&configuration,&adapter_state);
+				if ( init_status != SPARK_STATUS_OK )
+					fprintf(stderr,"init OFF failed status=%d\n",(int)init_status);
+				assert(init_status == SPARK_STATUS_OK);
+			}
+			pool_blocks = gate_kv_blocks();
+			printf("wiring kv_blocks=%u (resident 8 x blocks/lane 64)\n",pool_blocks);
+			assert(pool_blocks == 8u * 64u);
+			assert(pool_blocks <= sizeof(seen_off));
+			gate_record_reset();
+			assert(GatePrefill(adapter_state,&test_state,2u,1001u,prompt_a,200u,800u) == SPARK_STATUS_OK);
+[0m
+Max prefix-cache test fails at init (status=11) — investigating whether it's a rename artifact:
+[0m$ [0mgrep -n 'ABI_MISMATCH\|abi' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c | head -10
+241:	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
+243:	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
+799:	packet->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+850:	context->abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
+893:		prefill_view->abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
+909:		decode_batch->abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION;
+1017:	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+1194:	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+1357:	state->block_table.abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
+1376:	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
+[0m
+[0m$ [0msed -n '1370,1420p' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c
+static SparkStatus SparkQwen38MaxServingValidateConfiguration(
+	const SparkModelServingAdapterConfiguration *configuration)
+{
+	SparkStatus status;
+	if ( configuration == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkQwen38MaxServingDescriptor,&configuration->runtime_limits);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( configuration->stage_index >= SPARK_QWEN38_MAX_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_QWEN38_MAX_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen38MaxServingInitialize(
+	const SparkModelServingAdapterConfiguration *configuration,
+	void **adapter_state)
+{
+	SparkQwen38MaxServingState *state;
+	uint32_t max_sequence_positions;
+	SparkStatus status;
+	if ( adapter_state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*adapter_state = 0;
+	status = SparkQwen38MaxServingValidateConfiguration(configuration);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	state = (SparkQwen38MaxServingState *)calloc(1u,sizeof(*state));
+	if ( state == 0 )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	state->stage_index = configuration->stage_index;
+	state->tp_degree = SPARK_QWEN38_MAX_SERVING_DEFAULT_TP_DEGREE;
+	state->pipeline_slot_count = configuration->runtime_limits.max_inflight_submission_count;
+	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
+	state->max_input_row_count = configuration->runtime_limits.max_input_row_count;
+	state->resident_sequence_capacity = configuration->runtime_limits.resident_sequence_capacity;
+	state->prefix_enabled = SparkQwen38MaxServingPrefixCacheEnabled();
+	state->runtime_limits = configuration->runtime_limits;
+	state->completion_function = configuration->completion_function;
+	state->completion_context = configuration->completion_context;
+	state->wake_function = configuration->wake_function;
+	state->wake_context = configuration->wake_context;
+	state->execution_stream = configuration->execution_stream;
+	state->shim.execution_stream = configuration->execution_stream;
+	status = SparkQwen38MaxServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
+	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_QWEN38_MAX_SERVING_MAX_SEQUENCE_POSITIONS_CAP) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+	{
+[0m
+[0m$ [0mcat > /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check.c <<'EOF'
+#include <stdio.h>
+#include <dlfcn.h>
+#include "sparkpipe/spark_model_serving_adapter.h"
+int main(void){
+  void *h=dlopen("build/libqwen38_serving_adapter.dylib",RTLD_NOW);
+  if(!h){printf("dlopen fail: %s\n",dlerror());return 1;}
+  SparkModelServingAdapterDescriptor *d=(SparkModelServingAdapterDescriptor*)dlsym(h,"SparkQwen38MaxServingDescriptor");
+  if(!d){printf("dlsym fail: %s\n",dlerror());return 1;}
+  printf("host ABI=%u desc_bytes=%zu | dylib ABI=%u cap=%u\n",
+    (unsigned)SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,(size_t)SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES,
+    (unsigned)d->abi_version,(unsigned)d->capability_flags);
+  return 0;
+}
+EOF
+cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check.c -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check
+dlsym fail: dlsym(0x308eb7210, SparkQwen38MaxServingDescriptor): symbol not found
+[0m
+[0m$ [0mgrep -n 'SparkQwen38MaxServingDescriptor\|SPARK_EXPORT\|__attribute__((visibility))\|descriptor_interface' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c | head; echo '---TEST-LOOKUP---'; grep -n 'dlsym\|adapter_interface' tests/test_qwen38_max_prefix_cache.c | head
+239:static const SparkModelServingAdapterDescriptor SparkQwen38MaxServingDescriptor =
+453:	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkQwen38MaxServingDescriptor,&state->runtime_limits,submission);
+1378:	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkQwen38MaxServingDescriptor,&configuration->runtime_limits);
+1457:	.descriptor = &SparkQwen38MaxServingDescriptor,
+---TEST-LOOKUP---
+131:static const SparkModelServingAdapterInterface *adapter_interface_global;
+237:	return(adapter_interface_global->submit(adapter_state,&submission));
+293:	return(adapter_interface_global->submit(adapter_state,&submission));
+366:	return(adapter_interface_global->submit(adapter_state,&submission));
+1070:	gate_record_count = (GateRecordCountFunction)dlsym(driver_library,"TestQwen38ServingDriverRecordCount");
+1071:	gate_record_get = (GateRecordGetFunction)dlsym(driver_library,"TestQwen38ServingDriverRecord");
+1072:	gate_record_reset = (GateRecordResetFunction)dlsym(driver_library,"TestQwen38ServingDriverResetRecords");
+1073:	gate_kv_blocks = (GateKvBlockCountFunction)dlsym(driver_library,"TestQwen38ServingDriverKvBlockCount");
+1079:		adapter_interface_global = &library.adapter_interface;
+1105:				SparkStatus init_status = library.adapter_interface.initialize(&configuration,&adapter_state);
+[0m
+[0m$ [0msed -n '1445,1475p' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c; echo '---LIB-LOAD---'; sed -n '1040,1068p' tests/test_qwen38_max_prefix_cache.c
+{
+		SparkQwen38MaxServingDestroy(state);
+		return(status);
+	}
+	*adapter_state = state;
+	return(SPARK_STATUS_OK);
+}
+
+static const SparkModelServingAdapterInterface SparkQwen38MaxServingInterface =
+{
+	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
+	.interface_bytes = SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES,
+	.descriptor = &SparkQwen38MaxServingDescriptor,
+	.initialize = SparkQwen38MaxServingInitialize,
+	.destroy = SparkQwen38MaxServingDestroy,
+	.validate_submission = SparkQwen38MaxServingValidateSubmission,
+	.submit = SparkQwen38MaxServingSubmit,
+	.progress = SparkQwen38MaxServingProgress,
+	.quiesce = SparkQwen38MaxServingQuiesce,
+	.snapshot = SparkQwen38MaxServingSnapshot
+};
+
+__attribute__((visibility("default")))
+const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
+{
+	return(&SparkQwen38MaxServingInterface);
+}
+---LIB-LOAD---
+	SparkQwen38MaxPagedKvLaneReset(&cache,0u);
+	if ( GatePartitionAudit(&cache,&fixture) != 0u )
+	{
+		*reason = "partition broken after lane-0 reset";
+		return(GateWalkSkipConservationBroken);
+	}
+	SparkQwen38MaxPagedKvLaneReset(&cache,1u);
+	if ( GatePartitionAudit(&cache,&fixture) != 0u )
+	{
+		*reason = "partition broken after lane-1 reset (teardown not conserving)";
+		return(GateWalkSkipConservationBroken);
+	}
+	SparkQwen38MaxPagedKvDestroy(&cache);
+	return(verdict);
+}
+
+int main(void)
+{
+	SparkModelServingAdapterConfiguration configuration;
+	GateState test_state;
+	void *adapter_state;
+	void *driver_library;
+	char runtime_root[4096];
+	static uint32_t prompt_a[GATE_MAX_ROWS],prompt_c[GATE_MAX_ROWS],prompt_d[GATE_MAX_ROWS];
+	uint32_t row,pool_blocks;
+	memset(&test_state,0,sizeof(test_state));
+	assert(cudaStreamCreate((cudaStream_t *)&test_state.execution_stream) == cudaSuccess);
+	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
+	driver_library = dlopen(TEST_QWEN38_SERVING_DRIVER_PATH,RTLD_NOW);
+[0m
+[0m$ [0mcat > /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check2.c <<'EOF'
+#include <stdio.h>
+#include <dlfcn.h>
+#include <string.h>
+#include "sparkpipe/spark_model_serving_adapter.h"
+typedef const struct { uint32_t abi_version; size_t interface_bytes; const void *descriptor; } IfaceHead;
+int main(void){
+  void *h=dlopen("build/libqwen38_serving_adapter.dylib",RTLD_NOW);
+  if(!h){printf("dlopen fail: %s\n",dlerror());return 1;}
+  void *(*get)(void)=dlsym(h,"SparkModelServingAdapterGetInterface");
+  if(!get){printf("no get iface: %s\n",dlerror());return 1;}
+  IfaceHead *f=(IfaceHead*)get();
+  printf("dylib iface abi=%u bytes=%zu | host ABI=%u IFACE_BYTES=%zu CONF_BYTES=%zu\n",
+    f->abi_version,f->interface_bytes,
+    (unsigned)SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,(size_t)SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES,(size_t)SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES);
+  return 0;
+}
+EOF
+cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check2.c tests/cuda_stub/cuda_runtime_stub.c -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check2 -ldl && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check2
+dylib iface abi=20 bytes=4505866736 | host ABI=20 IFACE_BYTES=96 CONF_BYTES=168
+[0m
+[0m$ [0mgrep -n 'abi_version\|interface_bytes\|descriptor_bytes' include/sparkpipe/spark_model_serving_adapter.h | head -12; grep -n 'typedef struct' include/sparkpipe/spark_model_serving_adapter.h | head
+104:	uint32_t abi_version;
+105:	uint32_t descriptor_bytes;
+140:	uint32_t abi_version;
+141:	uint32_t descriptor_bytes;
+179:	uint32_t abi_version;
+180:	uint32_t descriptor_bytes;
+221:	uint32_t abi_version;
+222:	uint32_t descriptor_bytes;
+254:	uint32_t abi_version;
+255:	uint32_t descriptor_bytes;
+276:	uint32_t abi_version;
+277:	uint32_t descriptor_bytes;
+102:typedef struct SparkModelServingAdapterDescriptor
+138:typedef struct SparkModelServingRuntimeLimits
+155:typedef struct SparkModelServingCacheIdentity
+160:typedef struct SparkModelServingLane
+177:typedef struct SparkModelServingSubmission
+219:typedef struct SparkModelServingCompletion
+252:typedef struct SparkModelServingAdapterConfiguration
+274:typedef struct SparkModelServingAdapterSnapshot
+341:typedef struct SparkModelServingAdapterInterface
+361:typedef struct SparkModelServingAdapterDynamicLibrary
+[0m
+[0m→ [0mRead include/sparkpipe/spark_model_serving_adapter.h[90m [limit=25, offset=341][0m
+[0m
+[0m$ [0mnm -gU build/libqwen38_serving_adapter.dylib | grep -i 'interface\|descriptor' | head; cat > /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3.c <<'EOF'
+#include <stdio.h>
+#include <dlfcn.h>
+#include "sparkpipe/spark_model_serving_adapter.h"
+int main(void){
+  void *h=dlopen("build/libqwen38_serving_adapter.dylib",RTLD_NOW);
+  if(!h){printf("dlopen fail: %s\n",dlerror());return 1;}
+  SparkModelServingAdapterGetInterfaceFunction get=(SparkModelServingAdapterGetInterfaceFunction)dlsym(h,"SparkModelServingAdapterGetInterface");
+  const SparkModelServingAdapterInterface *f=get();
+  printf("abi=%u iface_bytes=%u desc=%p\n",f->abi_version,f->interface_bytes,(void*)f->descriptor);
+  if(f->descriptor) printf("desc.abi=%u desc.bytes=%u prog=%s stage=%s\n",f->descriptor->abi_version,f->descriptor->descriptor_bytes,f->descriptor->program_name?f->descriptor->program_name:"(null)",f->descriptor->stage_name?f->descriptor->stage_name:"(null)");
+  return 0;
+}
+EOF
+cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3.c tests/cuda_stub/cuda_runtime_stub.c -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3 -ldl && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3
+00000000000009b0 T _SparkModelServingAdapterGetInterface
+0000000000007230 T _SparkModelServingAdapterLoadInterfaceFromSharedObject
+0000000000007320 T _SparkModelServingAdapterUnloadInterface
+0000000000005880 T _SparkModelServingAdapterValidateDescriptor
+0000000000005e60 T _SparkModelServingAdapterValidateInterface
+/var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3.c:10:149: error: no member named 'program_name' in 'struct SparkModelServingAdapterDescriptor'
+   10 |   if(f->descriptor) printf("desc.abi=%u desc.bytes=%u prog=%s stage=%s\n",f->descriptor->abi_version,f->descriptor->descriptor_bytes,f->descriptor->program_name?f->descriptor->program_name:"(null)",f->descriptor->stage_name?f->descriptor->stage_name:"(null)");
+      |                                                                                                                                      ~~~~~~~~~~~~~  ^
+/var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3.c:10:177: error: no member named 'program_name' in 'struct SparkModelServingAdapterDescriptor'
+   10 |   if(f->descriptor) printf("desc.abi=%u desc.bytes=%u prog=%s stage=%s\n",f->descriptor->abi_version,f->descriptor->descriptor_bytes,f->descriptor->program_name?f->descriptor->program_name:"(null)",f->descriptor->stage_name?f->descriptor->stage_name:"(null)");
+      |                                                                                                                                                                  ~~~~~~~~~~~~~  ^
+/var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3.c:10:214: error: no member named 'stage_name' in 'struct SparkModelServingAdapterDescriptor'
+   10 |   if(f->descriptor) printf("desc.abi=%u desc.bytes=%u prog=%s stage=%s\n",f->descriptor->abi_version,f->descriptor->descriptor_bytes,f->descriptor->program_name?f->descriptor->program_name:"(null)",f->descriptor->stage_name?f->descriptor->stage_name:"(null)");
+      |                                                                                                                                                                                                       ~~~~~~~~~~~~~  ^
+/var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3.c:10:240: error: no member named 'stage_name' in 'struct SparkModelServingAdapterDescriptor'
+   10 |   if(f->descriptor) printf("desc.abi=%u desc.bytes=%u prog=%s stage=%s\n",f->descriptor->abi_version,f->descriptor->descriptor_bytes,f->descriptor->program_name?f->descriptor->program_name:"(null)",f->descriptor->stage_name?f->descriptor->stage_name:"(null)");
+      |                                                                                                                                                                                                                                 ~~~~~~~~~~~~~  ^
+4 errors generated.
+[0m
+[0m$ [0mperl -pi -e 's/desc\.abi=%u desc\.bytes=%u prog=%s stage=%s\\n",f->descriptor->abi_version,f->descriptor->descriptor_bytes,f->descriptor->program_name\?f->descriptor->program_name:"\(null\)",f->descriptor->stage_name\?f->descriptor->stage_name:"\(null\)"/desc.abi=%u desc.bytes=%u\\n",f->descriptor->abi_version,f->descriptor->descriptor_bytes/' /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3.c && cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3.c tests/cuda_stub/cuda_runtime_stub.c -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3 -ldl && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/abi_check3
+abi=20 iface_bytes=96 desc=0x1089211f0
+desc.abi=20 desc.bytes=320
+[0m
+[0m$ [0mgit show HEAD^1:tests/test_qwen38_prefix_cache.c 2>/dev/null | grep -n 'abi_version\|descriptor_bytes' | head -5; echo '---OLD-ADAPTER---'; git show HEAD^1:modules/qwen38_resident_decode_stage/source/spark_qwen38_serving_adapter.c 2>/dev/null | grep -n 'abi_version !=\|ABI_MISMATCH' | head -5
+155:	configuration->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+156:	configuration->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES;
+159:	configuration->runtime_limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+160:	configuration->runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
+210:	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+---OLD-ADAPTER---
+1376:	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
+1377:		return(SPARK_STATUS_ABI_MISMATCH);
+[0m
+[0m$ [0mgrep -n 'abi_version\|descriptor_bytes\|GateConfiguration' tests/test_qwen38_max_prefix_cache.c | head -12
+149:static void GateConfiguration(SparkModelServingAdapterConfiguration *configuration,
+155:	configuration->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+156:	configuration->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES;
+159:	configuration->runtime_limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+160:	configuration->runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
+210:	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+211:	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+265:	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+266:	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+340:	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+341:	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+1102:			GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,4096u);
+[0m
+[0m$ [0mgrep -n 'ABI_MISMATCH' runtime/model_serving_adapter.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_paged_kv.c 2>/dev/null
+runtime/model_serving_adapter.c:34:		return(SPARK_STATUS_ABI_MISMATCH);
+runtime/model_serving_adapter.c:160:		return(SPARK_STATUS_ABI_MISMATCH);
+runtime/model_serving_adapter.c:179:			return(SPARK_STATUS_ABI_MISMATCH);
+runtime/model_serving_adapter.c:191:		return(SPARK_STATUS_ABI_MISMATCH);
+runtime/model_serving_adapter.c:360:		return(SPARK_STATUS_ABI_MISMATCH);
+runtime/model_serving_adapter.c:446:		return(SPARK_STATUS_ABI_MISMATCH);
+runtime/model_serving_adapter.c:469:		return(SPARK_STATUS_ABI_MISMATCH);
+runtime/model_serving_adapter.c:537:		return(SPARK_STATUS_ABI_MISMATCH);
+modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c:1377:		return(SPARK_STATUS_ABI_MISMATCH);
+[0m
+[0m$ [0msed -n '150,195p' runtime/model_serving_adapter.c
+SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingRuntimeLimits *runtime_limits)
+{
+	SparkStatus status;
+	uint32_t index,jit_kv;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK || runtime_limits == 0 )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( runtime_limits->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || runtime_limits->descriptor_bytes != SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	if ( runtime_limits->max_inflight_submission_count == 0u || runtime_limits->max_inflight_submission_count > descriptor->max_inflight_submission_count || runtime_limits->max_active_sequence_count == 0u || runtime_limits->max_active_sequence_count > descriptor->max_active_sequence_count || runtime_limits->max_input_row_count < runtime_limits->max_active_sequence_count || runtime_limits->max_input_row_count > descriptor->max_input_row_count || runtime_limits->resident_sequence_capacity < runtime_limits->max_active_sequence_count || runtime_limits->resident_sequence_capacity > descriptor->max_resident_sequence_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	jit_kv = (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV) != 0u ? 1u : 0u;
+	if ( jit_kv != 0u &&
+		(runtime_limits->kv_physical_page_capacity <
+		 runtime_limits->max_active_sequence_count ||
+		 runtime_limits->kv_logical_page_capacity <
+		 runtime_limits->resident_sequence_capacity ||
+		 runtime_limits->kv_physical_page_capacity >
+		 runtime_limits->kv_logical_page_capacity) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( jit_kv == 0u &&
+		(runtime_limits->kv_logical_page_capacity != 0u ||
+		 runtime_limits->kv_physical_page_capacity != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (index=0u; index<4u; index++)
+		if ( runtime_limits->reserved[index] != 0u )
+			return(SPARK_STATUS_ABI_MISMATCH);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelServingAdapterValidateInterface(
+	const SparkModelServingAdapterInterface *adapter_interface,
+	uint32_t required_capability_flags)
+{
+	SparkStatus status;
+	if ( adapter_interface == 0 || (required_capability_flags & ~SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES) != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( adapter_interface->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || adapter_interface->interface_bytes != SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	status = SparkModelServingAdapterValidateDescriptor(adapter_interface->descriptor);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( (adapter_interface->descriptor->capability_flags & required_capability_flags) != required_capability_flags || adapter_interface->initialize == 0 || adapter_interface->destroy == 0 || adapter_interface->validate_submission == 0 || adapter_interface->submit == 0 || adapter_interface->progress == 0 || adapter_interface->quiesce == 0 || adapter_interface->snapshot == 0 )
+[0m
+[0m$ [0msed -n '128,175p' tests/test_qwen38_max_prefix_cache.c
+}
+GateFrameRecord;
+
+static const SparkModelServingAdapterInterface *adapter_interface_global;
+
+typedef struct GateState
+{
+	uint32_t completion_count;
+	void *execution_stream;
+	SparkModelServingCompletion completion;
+}
+GateState;
+
+static void GateCompletion(void *completion_context, const SparkModelServingCompletion *completion)
+{
+	GateState *state = (GateState *)completion_context;
+	assert(state != 0 && completion != 0);
+	state->completion = *completion;
+	state->completion_count++;
+}
+
+static void GateConfiguration(SparkModelServingAdapterConfiguration *configuration,
+	const char *config_path, const char *runtime_root, GateState *test_state,
+	uint32_t active_lanes, uint32_t resident_capacity,
+	uint32_t logical_pages)
+{
+	memset(configuration,0,sizeof(*configuration));
+	configuration->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	configuration->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES;
+	configuration->rank_index = 3u;
+	configuration->stage_index = 3u;
+	configuration->runtime_limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	configuration->runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
+	/* The qwen38 adapter advertises ONE inflight submission (the lean
+	 * module executes every frame on one slot, submit_return sync). */
+	configuration->runtime_limits.max_inflight_submission_count = 1u;
+	configuration->runtime_limits.max_active_sequence_count = active_lanes;
+	configuration->runtime_limits.max_input_row_count = GATE_MAX_ROWS;
+	configuration->runtime_limits.resident_sequence_capacity = resident_capacity;
+	/* The qwen38 descriptor carries no JIT_KV capability, so the shared
+	 * runtime-limit rule pins both page budgets at zero; the pool is
+	 * derived from resident capacity x blocks-per-lane instead. The
+	 * parameter below is kept as the intended pool-block budget for the
+	 * harness's own assertions. */
+	(void)logical_pages;
+	configuration->runtime_root = runtime_root;
+	configuration->node_id = "spark-test";
+	configuration->node_target = "cuda.sm121.qwen38.resident_decode_stage.fp8";
+[0m
+[0m$ [0msed -n '18,70p' runtime/model_serving_adapter.c; sed -n '430,480p' runtime/model_serving_adapter.c
+uint32_t index;
+	if ( sha256 == 0 )
+		return(0u);
+	for (index=0u; index<SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH; index++)
+		if ( !((sha256[index] >= '0' && sha256[index] <= '9') || (sha256[index] >= 'a' && sha256[index] <= 'f')) )
+			return(0u);
+	return(sha256[SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH] == '\0');
+}
+
+SparkStatus SparkModelServingAdapterValidateDescriptor(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	uint32_t group,group_count,hybrid,index,parallel,total;
+	if ( descriptor == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( descriptor->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || descriptor->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	if ( (descriptor->capability_flags & ~SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES) != 0u || descriptor->stage_count == 0u || descriptor->stage_count > SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT || descriptor->layer_count == 0u || descriptor->layer_count > SPARK_MODEL_SERVING_ADAPTER_MAX_LAYER_COUNT )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags &
+		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)) ==
+		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) &&
+		(descriptor->capability_flags &
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u &&
+		(descriptor->capability_flags &
+		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)) !=
+		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 || descriptor->boundary_element_count == 0u || descriptor->boundary_element_bytes != sizeof(uint16_t) || SparkWeightCodecIsKnown(descriptor->linear_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->expert_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->kv_cache_codec) == 0u || descriptor->max_inflight_submission_count == 0u || descriptor->max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || descriptor->max_active_sequence_count == 0u || descriptor->max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || descriptor->max_input_row_count < descriptor->max_active_sequence_count || descriptor->max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || descriptor->max_resident_sequence_count < descriptor->max_active_sequence_count || descriptor->max_resident_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT || descriptor->max_output_token_count == 0u || descriptor->max_output_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION) != 0u) != (descriptor->max_speculative_token_count != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( descriptor->resident_sequence_slot_reuse > SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV) != 0u) != (descriptor->resident_sequence_slot_reuse != SPARK_MODEL_SERVING_SLOT_REUSE_NONE) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u &&
+		(descriptor->capability_flags &
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u &&
+		descriptor->resident_sequence_slot_reuse ==
+}
+
+SparkStatus SparkModelServingAdapterPrepareSubmission(
+	const SparkModelServingAdapterInterface *adapter_interface,
+	void *adapter_state,
+	const SparkModelServingSubmission *submission)
+{
+	SparkStatus status;
+	if ( adapter_interface == 0 || adapter_interface->descriptor == 0 || adapter_interface->validate_submission == 0 || adapter_state == 0 || submission == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = adapter_interface->validate_submission(adapter_state,submission);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( (adapter_interface->descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) == 0u )
+		return(SPARK_STATUS_OK);
+	if ( adapter_interface->prefetch == 0 )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	return(adapter_interface->prefetch(adapter_state,submission,1u));
+}
+
+SparkStatus SparkModelServingAdapterResolvePrefetch(
+	const SparkModelServingAdapterInterface *adapter_interface,
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	SparkStatus status;
+	uint32_t required_capabilities;
+	if ( adapter_interface == 0 || adapter_interface->descriptor == 0 ||
+		adapter_state == 0 || submission == 0 ||
+		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	required_capabilities = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH;
+	if ( (adapter_interface->descriptor->capability_flags &
+		required_capabilities) != required_capabilities )
+		return(SPARK_STATUS_OK);
+	if ( adapter_interface->resolve_prefetch == 0 )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	status = adapter_interface->resolve_prefetch(adapter_state,submission,
+		resolution);
+	if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	return(status);
+}
+
+SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
+	const SparkModelServingSubmission *submission,
+	SparkModelDriverCacheLane *cache_lanes,
+	uint32_t cache_lane_capacity,
+[0m
+[0m$ [0mnm build/test_qwen38_max_prefix_cache 2>/dev/null | grep -i 'ValidateConfiguration\|ValidateRuntimeLimits' | head; xcrun lldb -b -o 'break set -n SparkQwen38MaxServingValidateConfiguration' -o 'run' -o 'finish' --build /dev/null ./build/test_qwen38_max_prefix_cache 2>&1 | grep -E 'return value|Status|stopped|Breakpoint' | head -8
+000000010000ce60 T _SparkModelServingAdapterValidateRuntimeLimits
+[0m
+[0m$ [0mfind modules/qwen38_max_resident_decode_stage modules/qwen38_27b_resident_decode_stage -name 'spark_model_serving_adapter.h' -o -name 'spark_model_driver*.h' | head; echo '---'; grep -rn 'SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES\|SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES' include/sparkpipe/spark_model_serving_adapter.h | head -4
+---
+include/sparkpipe/spark_model_serving_adapter.h:367:#define SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES \
+include/sparkpipe/spark_model_serving_adapter.h:377:#define SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES \
+[0m
+[0m$ [0msed -n '360,400p' include/sparkpipe/spark_model_serving_adapter.h
+typedef struct SparkModelServingAdapterDynamicLibrary
+{
+	void *dynamic_library;
+	SparkModelServingAdapterInterface adapter_interface;
+} SparkModelServingAdapterDynamicLibrary;
+
+#define SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES \
+	((uint32_t)sizeof(SparkModelServingAdapterDescriptor))
+#define SPARK_MODEL_SERVING_LANE_BYTES \
+	((uint32_t)sizeof(SparkModelServingLane))
+#define SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES \
+	((uint32_t)sizeof(SparkModelServingRuntimeLimits))
+#define SPARK_MODEL_SERVING_SUBMISSION_BYTES \
+	((uint32_t)sizeof(SparkModelServingSubmission))
+#define SPARK_MODEL_SERVING_COMPLETION_BYTES \
+	((uint32_t)sizeof(SparkModelServingCompletion))
+#define SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES \
+	((uint32_t)sizeof(SparkModelServingAdapterConfiguration))
+#define SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES \
+	((uint32_t)sizeof(SparkModelServingAdapterSnapshot))
+#define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES \
+	((uint32_t)sizeof(SparkModelServingAdapterInterface))
+
+SparkStatus SparkModelServingAdapterValidateDescriptor(
+	const SparkModelServingAdapterDescriptor *descriptor);
+SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingRuntimeLimits *runtime_limits);
+SparkStatus SparkModelServingAdapterValidateInterface(
+	const SparkModelServingAdapterInterface *adapter_interface,
+	uint32_t required_capability_flags);
+SparkStatus SparkModelServingAdapterValidateSubmission(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	const SparkModelServingSubmission *submission);
+/*
+ * The progress entry the ABI requires, for adapters whose driver completions
+[0m
+[0m$ [0mxcrun lldb -b -o 'settings set target.disable-aslr false' -o 'break set -n SparkQwen38MaxServingValidateConfiguration' -o 'run' -o 'bt 2' -o 'finish' -- ./build/test_qwen38_max_prefix_cache 2>&1 | tail -25
+(lldb) target create "./build/test_qwen38_max_prefix_cache"
+Current executable set to '/Users/mac/sparkpipe/build/test_qwen38_max_prefix_cache' (x86_64).
+(lldb) settings set target.disable-aslr false
+(lldb) break set -n SparkQwen38MaxServingValidateConfiguration
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) run
+error: process exited with status -1 (lost connection)
+[0m
+[0m$ [0mcat > /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe.c <<'EOF'
+#include <stdio.h>
+#include <dlfcn.h>
+#include <string.h>
+#include <assert.h>
+#include <cuda_runtime.h>
+#include "sparkpipe/spark_model_serving_adapter.h"
+typedef struct { void *completion_count_pad; void *stream; } GateState;
+static void GateCompletion(void *ctx,const SparkModelServingCompletion *c){(void)ctx;(void)c;}
+int main(void){
+  SparkModelServingAdapterDynamicLibrary library;
+  extern SparkStatus SparkModelServingAdapterLibraryLoad(SparkModelServingAdapterDynamicLibrary*,const char*,uint32_t);
+  memset(&library,0,sizeof(library));
+  SparkStatus st=SparkModelServingAdapterLibraryLoad(&library,"build/libqwen38_serving_adapter.dylib",SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL);
+  printf("library_load status=%d\n",(int)st);
+  if(st!=0) return 1;
+  SparkModelServingAdapterConfiguration c;
+  memset(&c,0,sizeof(c));
+  c.abi_version=SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+  c.descriptor_bytes=SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES;
+  c.rank_index=3u; c.stage_index=3u;
+  c.runtime_limits.abi_version=SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+  c.runtime_limits.descriptor_bytes=SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
+  c.runtime_limits.max_inflight_submission_count=1u;
+  c.runtime_limits.max_active_sequence_count=8u;
+  c.runtime_limits.max_input_row_count=4096u;
+  c.runtime_limits.resident_sequence_capacity=8u;
+  char root[512]; getcwd(root,sizeof(root));
+  c.runtime_root=root;
+  c.node_id="spark-test";
+  c.node_target="cuda.sm121.qwen38.resident_decode_stage.fp8";
+  c.adapter_configuration_path="tests/fixtures/qwen38_max_serving_adapter_config.json";
+  c.driver_shared_object_path="build/test_modules/libqwen38_serving_driver_module.dylib";
+  c.driver_program_name="resident_decode";
+  static cudaStream_t s; cudaStreamCreate((cudaStream_t*)&s);
+  c.execution_stream=(void*)s;
+  c.completion_function=GateCompletion;
+  c.completion_context=(void*)1;
+  void *state=0;
+  st=library.adapter_interface.initialize(&c,&state);
+  printf("initialize status=%d state=%p\n",(int)st,state);
+  return 0;
+}
+EOF
+cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_runtime.a -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe -ldl -lpthread && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe
+/var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe.c:27:19: error: call to undeclared function 'getcwd'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+   27 |   char root[512]; getcwd(root,sizeof(root));
+      |                   ^
+1 error generated.
+[0m
+[0m$ [0mperl -pi -e 's/#include <string.h>/#include <string.h>\n#include <unistd.h>/' /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe.c && cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_runtime.a -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe -ldl -lpthread && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe
+Undefined symbols for architecture x86_64:
+  "_SparkModelServingAdapterLibraryLoad", referenced from:
+      _main in init_probe-8c8adb.o
+ld: symbol(s) not found for architecture x86_64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+[0m
+[0m$ [0mgrep -n 'LibraryLoad\|LoadInterface' include/sparkpipe/spark_model_serving_adapter.h | head -5
+442:SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(
+[0m
+[0m$ [0msed -n '438,451p' include/sparkpipe/spark_model_serving_adapter.h
+uint32_t active_sequence_count,
+	uint32_t tokens_per_sequence,
+	const SparkModelDriverResidencyToken *expected_residency,
+	const SparkModelServingCompletion *completion);
+SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(
+	const char *shared_object_path,
+	uint32_t required_capability_flags,
+	SparkModelServingAdapterDynamicLibrary *library);
+void SparkModelServingAdapterUnloadInterface(
+	SparkModelServingAdapterDynamicLibrary *library);
+
+#ifdef __cplusplus
+}
+#endif
+[0m
+[0m$ [0mperl -pi -e 's/extern SparkStatus SparkModelServingAdapterLibraryLoad\(.*\n//; s/SparkStatus st=SparkModelServingAdapterLibraryLoad\(&library,"build\/libqwen38_serving_adapter.dylib",SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL\);/SparkStatus st=SparkModelServingAdapterLoadInterfaceFromSharedObject("build\/libqwen38_serving_adapter.dylib",SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL,&library);/' /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe.c && cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_runtime.a -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe -ldl -lpthread && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe
+library_load status=0
+initialize status=1 state=0x0
+[0m
+[0m$ [0mgrep -n 'max_inflight_submission_count =\|max_active_sequence_count =\|max_input_row_count =\|max_resident_sequence_count =\|max_output_token_count =\|capability_flags =\|boundary_format\|linear_weight_codec\|expert_weight_codec\|kv_cache_codec\|resident_sequence_slot_reuse\|max_speculative' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c | sed -n '1,14p'
+243:	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
+247:	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
+250:	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
+251:	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+252:	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
+256:	.max_inflight_submission_count = 1u,
+257:	.max_active_sequence_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+258:	.max_input_row_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+259:	.max_resident_sequence_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+260:	.max_output_token_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+261:	.max_speculative_token_count = 0u,
+262:	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
+1405:	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
+1406:	state->max_input_row_count = configuration->runtime_limits.max_input_row_count;
+[0m
+[0m$ [0mgrep -rn 'SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT\|MAX_PIPELINE_SLOT_COUNT' modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h | head -3; grep -n 'GATE_MAX_ROWS' tests/test_qwen38_max_prefix_cache.c | head -2
+modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h:66:#define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
+modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h:67:#define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT 512u
+101:#define GATE_MAX_ROWS 512u
+126:	uint32_t token_ids[GATE_MAX_ROWS];
+[0m
+[0m$ [0mcat >> /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe2.c <<'EOF'
+#include <stdio.h>
+#include <dlfcn.h>
+#include <string.h>
+#include <unistd.h>
+#include <cuda_runtime.h>
+#include "sparkpipe/spark_model_serving_adapter.h"
+static void GateCompletion(void *ctx,const SparkModelServingCompletion *c){(void)ctx;(void)c;}
+int main(void){
+  SparkModelServingAdapterDynamicLibrary library;
+  memset(&library,0,sizeof(library));
+  SparkStatus st=SparkModelServingAdapterLoadInterfaceFromSharedObject("build/libqwen38_serving_adapter.dylib",SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL,&library);
+  printf("load=%d\n",(int)st);
+  const SparkModelServingAdapterDescriptor *d=library.adapter_interface.descriptor;
+  printf("validate_descriptor=%d\n",(int)SparkModelServingAdapterValidateDescriptor(d));
+  SparkModelServingAdapterConfiguration c; memset(&c,0,sizeof(c));
+  c.abi_version=SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+  c.descriptor_bytes=SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES;
+  c.rank_index=3u; c.stage_index=3u;
+  c.runtime_limits.abi_version=SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+  c.runtime_limits.descriptor_bytes=SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
+  c.runtime_limits.max_inflight_submission_count=1u;
+  c.runtime_limits.max_active_sequence_count=8u;
+  c.runtime_limits.max_input_row_count=512u;
+  c.runtime_limits.resident_sequence_capacity=8u;
+  printf("validate_limits=%d\n",(int)SparkModelServingAdapterValidateRuntimeLimits(d,&c.runtime_limits));
+  char root[512]; getcwd(root,sizeof(root));
+  c.runtime_root=root; c.node_id="spark-test";
+  c.node_target="cuda.sm121.qwen38.resident_decode_stage.fp8";
+  c.adapter_configuration_path="tests/fixtures/qwen38_max_serving_adapter_config.json";
+  c.driver_shared_object_path="build/test_modules/libqwen38_serving_driver_module.dylib";
+  c.driver_program_name="resident_decode";
+  static cudaStream_t s; cudaStreamCreate((cudaStream_t*)&s);
+  c.execution_stream=(void*)s; c.completion_function=GateCompletion; c.completion_context=(void*)1;
+  void *state=0;
+  st=library.adapter_interface.initialize(&c,&state);
+  printf("initialize=%d state=%p\n",(int)st,state);
+  return 0;
+}
+EOF
+cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe2.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_runtime.a -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe2 -ldl -lpthread && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/init_probe2
+load=0
+validate_descriptor=0
+validate_limits=0
+initialize=11 state=0x0
+[0m
+[0m$ [0msed -n '28,40p' runtime/model_serving_adapter.c; sed -n '352,368p' runtime/model_serving_adapter.c; sed -n '530,545p' runtime/model_serving_adapter.c
+const SparkModelServingAdapterDescriptor *descriptor)
+{
+	uint32_t group,group_count,hybrid,index,parallel,total;
+	if ( descriptor == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( descriptor->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || descriptor->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	if ( (descriptor->capability_flags & ~SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES) != 0u || descriptor->stage_count == 0u || descriptor->stage_count > SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT || descriptor->layer_count == 0u || descriptor->layer_count > SPARK_MODEL_SERVING_ADAPTER_MAX_LAYER_COUNT )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags &
+		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)) ==
+		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+	SparkStatus status;
+	uint32_t required_capability,total_output_tokens;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( submission == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( submission->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || submission->descriptor_bytes != SPARK_MODEL_SERVING_SUBMISSION_BYTES )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	if ( submission->flags != 0u || submission->submission_id == 0u || submission->control_generation == 0u || submission->transaction_id == 0u || submission->dispatch_generation == 0u || submission->request_generation == 0u || submission->step_generation == 0u || submission->work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind > SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->lane_count == 0u || submission->lane_count > descriptor->max_active_sequence_count || submission->active_sequence_count == 0u || submission->active_sequence_count > submission->lane_count || submission->lanes == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	required_capability = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE : SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE;
+	if ( (descriptor->capability_flags & required_capability) == 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+{
+	SparkStatus status;
+	uint32_t has_tokens,has_extension;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK || completion == 0 )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( completion->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || completion->descriptor_bytes != SPARK_MODEL_SERVING_COMPLETION_BYTES )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	if ( completion->submission_id == 0u || completion->control_generation == 0u || completion->transaction_id == 0u || completion->dispatch_generation == 0u || completion->request_generation == 0u || completion->step_generation == 0u || completion->status > SPARK_STATUS_UNSUPPORTED || (completion->completion_flags & ~SPARK_MODEL_SERVING_COMPLETION_KNOWN_FLAGS) != 0u || completion->token_count > descriptor->max_output_token_count || completion->tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE || completion->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	has_tokens = (completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS) != 0u;
+	has_extension = (completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION) != 0u;
+	if ( has_tokens != (completion->token_count != 0u) || has_tokens != (completion->tokens_per_sequence != 0u) || (completion->tokens_per_sequence != 0u && completion->token_count % completion->tokens_per_sequence != 0u) || has_extension != (completion->model_extension_bytes != 0u) || (completion->model_extension_bytes == 0u && completion->model_extension_kind != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( completion->status != SPARK_STATUS_OK && (completion->completion_flags != 0u || completion->accepted_token_count != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+[0m
+[0m$ [0msed -n '1424,1447p' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c; echo '===LOADCONF==='; grep -n 'SparkQwen38MaxServingLoadConfiguration' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c | head -2
+state->pp_stage_count = SPARK_QWEN38_MAX_SERVING_STAGE_COUNT / state->tp_degree;
+		if ( state->pp_stage_count > SPARK_QWEN38_MAX_SERVING_MAX_PP_STAGE_COUNT )
+			state->pp_stage_count = SPARK_QWEN38_MAX_SERVING_MAX_PP_STAGE_COUNT;
+		base = SPARK_QWEN38_MAX_MODEL_LAYER_COUNT / state->pp_stage_count;
+		extra = SPARK_QWEN38_MAX_MODEL_LAYER_COUNT % state->pp_stage_count;
+		for (pp = 0u; pp < state->pp_stage_count; pp++)
+			state->stage_layer_counts[pp] = base + (pp < extra ? 1u : 0u);
+		state->first_layer_index = SparkQwen38MaxServingFirstLayer(state,configuration->stage_index);
+		state->stage_layer_count = state->stage_layer_counts[SparkQwen38MaxServingPpStageIndex(state,configuration->stage_index)];
+		state->stage_attn_layer_count = SparkQwen38MaxServingStageAttentionLayers(state->first_layer_index,state->stage_layer_count);
+		state->max_sequence_positions = max_sequence_positions;
+		state->blocks_per_lane = (max_sequence_positions + SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+		state->kv_block_count = state->resident_sequence_capacity * state->blocks_per_lane;
+		status = SparkQwen38MaxServingAllocatePools(state);
+		state->shim.input_scratch = state->gather_scratch;
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38MaxServingSetEnvironment(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38MaxServingLoadDriver(state,configuration);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkQwen38MaxServingDestroy(state);
+		return(status);
+===LOADCONF===
+291:static SparkStatus SparkQwen38MaxServingLoadConfiguration(
+1416:	status = SparkQwen38MaxServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
+[0m
+[0m$ [0mgrep -n 'SparkQwen38MaxServingLoadDriver' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c | head -1; awk '/static SparkStatus SparkQwen38MaxServingLoadDriver/,/^}/' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c | head -40
+1248:static SparkStatus SparkQwen38MaxServingLoadDriver(
+static SparkStatus SparkQwen38MaxServingLoadDriver(
+	SparkQwen38MaxServingState *state,
+	const SparkModelServingAdapterConfiguration *configuration)
+{
+	const SparkModelDriverDescriptor *descriptor;
+	SparkModelDriverCreateRequest request;
+	char error_buffer[512];
+	SparkStatus status;
+	SparkLoadedModelDriverReset(&state->driver);
+	status = SparkLoadModelDriver(configuration->driver_shared_object_path,configuration->node_target,&state->driver,error_buffer,sizeof(error_buffer));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	descriptor = state->driver.interface->descriptor;
+	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_QWEN38_MAX_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,QWEN38_MAX_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_QWEN38_MAX_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_QWEN38_MAX_SERVING_TARGET) != 0 || strcmp(descriptor->model_description_sha256,QWEN38_MAX_CONTRACT_SHA256) != 0 )
+		return(SPARK_STATUS_TARGET_MISMATCH);
+	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
+	if ( state->program == 0 )
+		return(SPARK_STATUS_NOT_FOUND);
+	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || (state->program->flags & SPARK_QWEN38_MAX_SERVING_REQUIRED_PROGRAM_FLAGS) != SPARK_QWEN38_MAX_SERVING_REQUIRED_PROGRAM_FLAGS || state->program->max_inflight < state->pipeline_slot_count || state->program->profile == 0 || state->program->profile->max_active_slots < state->max_active_sequence_count || state->program->profile->max_new_tokens < state->max_input_row_count )
+		return(SPARK_STATUS_TARGET_MISMATCH);
+	SparkModelDriverInitializeCreateRequest(&request);
+	request.node_id = configuration->node_id;
+	request.node_target = configuration->node_target;
+	request.kv_logical_page_capacity =
+		configuration->runtime_limits.kv_logical_page_capacity;
+	request.kv_physical_page_capacity =
+		configuration->runtime_limits.kv_physical_page_capacity;
+	request.kv_backing_directory = configuration->kv_backing_directory;
+	request.kv_backing_maximum_bytes =
+		configuration->kv_backing_maximum_bytes;
+	request.execution_stream = configuration->execution_stream;
+	request.completion_function = SparkQwen38MaxServingOrphanDriverCompletion;
+	request.completion_context = state;
+	request.wake_function = SparkQwen38MaxServingDriverWake;
+	request.wake_context = state;
+	status = state->driver.interface->create(&request,&state->driver_instance);
+	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
+}
+[0m
+[0m$ [0mgrep -rn 'ABI_MISMATCH' runtime/spark_model_driver_loader.c runtime/model_driver.c 2>/dev/null | head -5; ls runtime/ | grep -i driver; grep -n 'abi_version\|descriptor_bytes' tests/fixtures/qwen38_max_serving_adapter_driver.c | head -6
+110:	.descriptor_bytes = sizeof(SparkModelDriverProgramProfile),
+131:	.abi_version = SPARK_MODEL_DRIVER_ABI_VERSION,
+132:	.descriptor_bytes = sizeof(SparkModelDriverDescriptor),
+208:	decision->descriptor_bytes = sizeof(*decision);
+230:	if ( context->abi_version != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes < (uint32_t)sizeof(*context) )
+346:	snapshot->descriptor_bytes = sizeof(*snapshot);
+[0m
+[0m$ [0mgrep -rln 'SparkLoadModelDriver' runtime/ src/ | head -3; grep -rn 'ABI_MISMATCH\|abi_version' $(grep -rln 'SparkLoadedModelDriverReset' runtime/ src/ include/ | grep -v test | head -3) 2>/dev/null | grep -i 'abi\|MISMATCH' | head -8
+src//spark_orchestrator.c
+src//spark_driver_loader.c
+src//spark_driver_loader.c:68:        return SPARK_STATUS_ABI_MISMATCH;
+src//spark_driver_loader.c:85:        return SPARK_STATUS_ABI_MISMATCH;
+src//spark_driver_loader.c:95:        return SPARK_STATUS_ABI_MISMATCH;
+src//spark_driver_loader.c:105:        return SPARK_STATUS_ABI_MISMATCH;
+src//spark_driver_loader.c:115:        return SPARK_STATUS_ABI_MISMATCH;
+src//spark_driver_loader.c:125:        return SPARK_STATUS_ABI_MISMATCH;
+src//spark_driver_loader.c:140:        interface->abi_version != SPARK_MODEL_DRIVER_ABI_VERSION ||
+src//spark_driver_loader.c:149:        return SPARK_STATUS_ABI_MISMATCH;
+[0m
+[0m$ [0msed -n '55,150p' src/spark_driver_loader.c
+if (program->program_id == 0u ||
+        !SparkLoadedModelDriverTextIsValid(program->name) ||
+        program->submit == 0 ||
+        program->max_inflight == 0u ||
+        program->reserved != 0u ||
+        program->profile == 0 ||
+        (program->flags & ~SPARK_MODEL_DRIVER_KNOWN_PROGRAM_FLAGS) != 0u)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "driver program descriptor %u is invalid",
+            program_index);
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+
+    profile = program->profile;
+    profile_program_flags =
+        program->flags & ~SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION;
+    if (profile->descriptor_bytes < sizeof(*profile) ||
+        profile->reserved != 0u ||
+        profile->max_inflight != program->max_inflight ||
+        profile->profile_flags != profile_program_flags ||
+        (profile->profile_flags & ~SPARK_MODEL_DRIVER_KNOWN_PROGRAM_FLAGS) != 0u)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "driver program profile %u is inconsistent with its descriptor",
+            program_index);
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+    if ((program->flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_HOST_STAGING) != 0u &&
+        profile->host_staging_bytes_per_submit_ceiling != 0u)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "driver program '%s' claims no host staging but reports a nonzero staging ceiling",
+            program->name);
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+    if ((program->flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_DEVICE_MEMCPY) != 0u &&
+        profile->device_memcpy_bytes_per_submit_ceiling != 0u)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "driver program '%s' claims no device memcpy but reports a nonzero memcpy ceiling",
+            program->name);
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+    if ((program->flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_VALIDATED_LATENCY) != 0u &&
+        profile->validated_latency_ns == 0u)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "driver program '%s' claims validated latency without a validated latency value",
+            program->name);
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+    if ((program->flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_PRIVATE_QUEUE_PRESSURE) != 0u &&
+        profile->private_queue_count == 0u)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "driver program '%s' claims private queue pressure without private queues",
+            program->name);
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkValidateLoadedModelDriverInterface(
+    const SparkModelDriverInterface *interface,
+    const char *expected_target,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    const SparkModelDriverDescriptor *descriptor;
+    uint32_t program_index;
+
+    if (interface == 0 ||
+        interface->abi_version != SPARK_MODEL_DRIVER_ABI_VERSION ||
+        interface->interface_bytes < sizeof(*interface) ||
+        interface->descriptor == 0 ||
+        interface->create == 0 ||
+        interface->destroy == 0 ||
+        interface->admit == 0 ||
+        interface->snapshot == 0)
+    {
+        SparkSetError(error_buffer, error_buffer_bytes, "model driver interface ABI is invalid");
+        return SPARK_STATUS_ABI_MISMATCH;
+    }
+[0m
+The loader sets error messages — let me capture one directly:
+[0m$ [0mcat > /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe.c <<'EOF'
+#include <stdio.h>
+#include <string.h>
+#include "sparkpipe/spark_model_driver.h"
+int main(void){
+  SparkLoadedModelDriver driver; char err[512];
+  memset(&driver,0,sizeof(driver)); err[0]=0;
+  SparkStatus st=SparkLoadModelDriver("build/test_modules/libqwen38_serving_driver_module.dylib","cuda.sm121.qwen38.resident_decode_stage.fp8",&driver,err,sizeof(err));
+  printf("load=%d err=%s\n",(int)st,err);
+  return 0;
+}
+EOF
+grep -rn 'SparkLoadModelDriver' include/sparkpipe/*.h | head -2; cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_runtime.a src/spark_driver_loader.c -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe -ldl 2>&1 | head -3; /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe
+include/sparkpipe/spark_driver_loader.h:18:SparkStatus SparkLoadModelDriver(const char *driver_path, const char *expected_target, SparkLoadedModelDriver *driver, char *error_buffer, uint32_t error_buffer_bytes);
+/var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe.c:5:3: error: use of undeclared identifier 'SparkLoadedModelDriver'
+    5 |   SparkLoadedModelDriver driver; char err[512];
+      |   ^
+/bin/bash: line 12: /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe: No such file or directory
+[0m
+[0m$ [0mperl -pi -e 's/#include "sparkpipe\/spark_model_driver\.h"/#include "sparkpipe\/spark_model_driver.h"\n#include "sparkpipe\/spark_driver_loader.h"/; s/SparkLoadedModelDriver driver;/SparkLoadedModelDriver driver;/' /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe.c && cc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_runtime.a -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe -ldl && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe
+Undefined symbols for architecture x86_64:
+  "_SparkSetError", referenced from:
+      _SparkLoadModelDriver in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+      _SparkLoadModelDriver in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+      _SparkLoadModelDriver in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+      _SparkValidateLoadedModelDriverInterface in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+      _SparkValidateLoadedModelDriverInterface in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+      _SparkValidateLoadedModelDriverProgram in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+      _SparkValidateLoadedModelDriverProgram in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+      ...
+  "_SparkSha256HexIsValid", referenced from:
+      _SparkValidateLoadedModelDriverInterface in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+      _SparkValidateLoadedModelDriverInterface in libsparkpipe_runtime.a[2](spark_driver_loader.o)
+ld: symbol(s) not found for architecture x86_64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+[0m
+[0m$ [0mcc -I. -Iinclude -Itests/cuda_stub /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_core.a build/libsparkpipe_runtime.a -o /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe -ldl -lpthread && /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/drv_probe
+load=0 err=
+[0m
+[0m$ [0mgrep -n 'SPARK_QWEN38_MAX_SERVING_TARGET\|SPARK_QWEN38_MAX_SERVING_DRIVER_MODEL_ID\|SPARK_QWEN38_MAX_SERVING_STAGE_NAME' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c | head -5; echo '---DRIVER-SIDE---'; grep -n '\.model_id\|\.model_revision\|\.stage_name\|\.target\|\.model_description_sha256' tests/fixtures/qwen38_max_serving_adapter_driver.c | head -8
+67:#define SPARK_QWEN38_MAX_SERVING_DRIVER_MODEL_ID \
+69:#define SPARK_QWEN38_MAX_SERVING_STAGE_NAME "qwen38_max_resident_decode_stage"
+70:#define SPARK_QWEN38_MAX_SERVING_TARGET \
+1261:	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_QWEN38_MAX_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,QWEN38_MAX_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_QWEN38_MAX_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_QWEN38_MAX_SERVING_TARGET) != 0 || strcmp(descriptor->model_description_sha256,QWEN38_MAX_CONTRACT_SHA256) != 0 )
+---DRIVER-SIDE---
+133:	.model_id = "qwen38.2.4t-a95b.resident-decode-stage-firmware",
+134:	.model_revision = QWEN38_MAX_MODEL_REVISION,
+135:	.stage_name = "qwen38_resident_decode_stage",
+136:	.target = "cuda.sm121.qwen38.resident_decode_stage.fp8",
+137:	.model_description_sha256 = QWEN38_MAX_CONTRACT_SHA256,
+[0m
+Status 11 = TARGET_MISMATCH (miscounted earlier). Comparing adapter-vs-driver identity strings:
+[0m$ [0msed -n '66,72p' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c
+#define SPARK_QWEN38_MAX_SERVING_MODEL_ID "Qwen/Qwen3.8-2.4T-A95B"
+#define SPARK_QWEN38_MAX_SERVING_DRIVER_MODEL_ID \
+	"qwen38_max.2.4t-a95b.resident-decode-stage-firmware"
+#define SPARK_QWEN38_MAX_SERVING_STAGE_NAME "qwen38_max_resident_decode_stage"
+#define SPARK_QWEN38_MAX_SERVING_TARGET \
+	"cuda.sm121.qwen38_max.resident_decode_stage.fp8"
+#define SPARK_QWEN38_MAX_SERVING_PROGRAM_NAME "resident_decode"
+[0m
+[0m$ [0mperl -pi -e 's/\.model_id = "qwen38\.2\.4t-a95b\.resident-decode-stage-firmware"/.model_id = "qwen38_max.2.4t-a95b.resident-decode-stage-firmware"/; s/\.stage_name = "qwen38_resident_decode_stage"/.stage_name = "qwen38_max_resident_decode_stage"/; s/\.target = "cuda\.sm121\.qwen38\.resident_decode_stage\.fp8"/.target = "cuda.sm121.qwen38_max.resident_decode_stage.fp8"/' tests/fixtures/qwen38_max_serving_adapter_driver.c && make build/test_modules/libqwen38_serving_driver_module.dylib build/test_qwen38_max_prefix_cache 2>&1 | grep -c error; ./build/test_qwen38_max_prefix_cache 2>&1 | tail -3
+2
+init OFF failed status=11
+Assertion failed: (init_status == SPARK_STATUS_OK), function main, file test_qwen38_max_prefix_cache.c, line 1108.
+[0m
+[0m$ [0mmake build/test_modules/libqwen38_serving_driver_module.dylib build/test_qwen38_max_prefix_cache 2>&1 | grep -B2 'error' | head -12
+(no output)
+[0m
+[0m$ [0mtouch tests/fixtures/qwen38_max_serving_adapter_driver.c && make build/test_modules/libqwen38_serving_driver_module.dylib build/test_qwen38_max_prefix_cache 2>&1 | tail -3; ls -la build/test_modules/libqwen38_serving_driver_module.dylib; ./build/test_qwen38_max_prefix_cache 2>&1 | tail -2
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -I. -Iinclude -Isrc -Itests/cuda_stub -Imodel-families/qwen38_max/include -Iruntime -Imodules/qwen38_max_resident_decode_stage/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native -D_POSIX_C_SOURCE=200809L -DQWEN38_MAX_MODEL_REVISION=\"fp8-h8192-l92-gdn69-full23-e512k10-v248320-mtp1-d2dc3565-v1\" -DQWEN38_MAX_CONTRACT_SHA256=\"48aed47704ab4c07428390bedda2f89daef8712d3893a02f850ae6ebec517a81\" -fPIC -dynamiclib tests/fixtures/qwen38_max_serving_adapter_driver.c tests/cuda_stub/cuda_runtime_stub.c  -ldl -pthread  -o build/test_modules/libqwen38_serving_driver_module.dylib
+cc -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen38_27b/include -Imodel-families/qwen38_max/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -DSPARK_BATCH_BUCKET=1024u -I. -Iinclude -Isrc -Itests/cuda_stub -Imodel-families/qwen38_max/include -Iruntime -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source -DTEST_QWEN38_SERVING_ADAPTER_PATH=\"build/libqwen38_serving_adapter.dylib\" -DTEST_QWEN38_SERVING_DRIVER_PATH=\"build/test_modules/libqwen38_serving_driver_module.dylib\" -DTEST_QWEN38_SERVING_CONFIG_PATH=\"tests/fixtures/qwen38_max_serving_adapter_config.json\" -DTEST_QWEN38_SERVING_SQUEEZED_CONFIG_PATH=\"tests/fixtures/qwen38_max_serving_adapter_config_squeezed.json\" -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -march=native tests/test_qwen38_max_prefix_cache.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_paged_kv.c tests/cuda_stub/cuda_runtime_stub.c build/libsparkpipe_runtime.a build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread  -o build/test_qwen38_max_prefix_cache
+-rwxr-xr-x  1 mac  staff  18896 Aug 25 18:15 build/test_modules/libqwen38_serving_driver_module.dylib
+init OFF failed status=11
+Assertion failed: (init_status == SPARK_STATUS_OK), function main, file test_qwen38_max_prefix_cache.c, line 1108.
+[0m
+[0m$ [0mgrep -n 'TARGET_MISMATCH' src/spark_driver_loader.c | head -3; grep -n 'node_target\|qwen38' tests/fixtures/qwen38_max_serving_adapter_config.json tests/test_qwen38_max_prefix_cache.c | head -8
+178:        return SPARK_STATUS_TARGET_MISMATCH;
+tests/fixtures/qwen38_max_serving_adapter_config.json:4:  "stage_pack_path": "tests/fixtures/qwen38-stage.qwen38sp",
+tests/test_qwen38_max_prefix_cache.c:11:#include "sparkpipe/spark_qwen38_max_model.h"
+tests/test_qwen38_max_prefix_cache.c:12:#include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
+tests/test_qwen38_max_prefix_cache.c:16:#include "spark_qwen38_max_paged_kv.h"
+tests/test_qwen38_max_prefix_cache.c:31:/* CP-B walk-skip flag bits (CASE 11). The pccore_qwen38_walkskip.patch
+tests/test_qwen38_max_prefix_cache.c:33: * landed qwen38_27b flags; the local fallback keeps this gate compilable -
+tests/test_qwen38_max_prefix_cache.c:43: * Prefix-cache correctness gate for the qwen38 serving adapter (port 2
+tests/test_qwen38_max_prefix_cache.c:75: *      driving spark_qwen38_paged_kv.c through >64 simulated B1
+[0m
+[0m$ [0msed -n '170,182p' src/spark_driver_loader.c; grep -n 'node_target' tests/test_qwen38_max_prefix_cache.c; head -20 tests/fixtures/qwen38_max_serving_adapter_config.json
+strcmp(descriptor->target, expected_target) != 0)
+    {
+        SparkSetError(
+            error_buffer,
+            error_buffer_bytes,
+            "driver target '%s' does not match node target '%s'",
+            descriptor->target,
+            expected_target);
+        return SPARK_STATUS_TARGET_MISMATCH;
+    }
+
+    for (program_index = 0u; program_index < descriptor->program_count; ++program_index)
+    {
+175:	configuration->node_target = "cuda.sm121.qwen38.resident_decode_stage.fp8";
+{
+  "schema_version": 3,
+  "model_revision": "fp8-h8192-l92-gdn69-full23-e512k10-v248320-mtp1-d2dc3565-v1",
+  "stage_pack_path": "tests/fixtures/qwen38-stage.qwen38sp",
+  "max_sequence_positions": 4096,
+  "tp_degree": 16
+}
+[0m
+[0m$ [0mperl -pi -e 's/"cuda\.sm121\.qwen38\.resident_decode_stage\.fp8"/"cuda.sm121.qwen38_max.resident_decode_stage.fp8"/' tests/test_qwen38_max_prefix_cache.c && ls tests/fixtures/ | grep -i 'qwen38-stage\|qwen38sp'; make build/test_qwen38_max_prefix_cache 2>&1 | grep -c 'error'; ./build/test_qwen38_max_prefix_cache 2>&1 | tail -3
+1
+squeezed_matrix PASS (B1/B4/B25/B512 evicted>0)
+walk_skip SKIP: SPARK_QWEN38_MAX_GATE_WALK_SKIP unset - CP-B module-side landing not declared (pccore_qwen38_walkskip.patch pending); leg inert
+qwen38 prefix-cache gate PASS
+[0m
+Max gate passes. Now the remaining host checks: stagepack parity + code-size ratchet:
+[0m$ [0mpython3 tests/test_code_size.py 2>&1 | tail -5
+File "/Users/mac/sparkpipe/tests/test_code_size.py", line 1114
+    <<<<<<< HEAD
+    ^^
+SyntaxError: invalid syntax
+[0m
+[0m$ [0mpython3 tests/test_stagepack_parity.py 2>&1 | tail -6; echo "PARITY_RC=$?"
+|                                                         ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+
+
+4 leg(s) diverged from their frozen reference
+PARITY_RC=0
+[0m
+Conflict markers slipped into the merge commit. Scanning for all of them:
+[0m$ [0mgrep -rln '^<<<<<<< \|^>>>>>>> ' --include='*.py' --include='*.c' --include='*.h' --include='*.cu' --include='*.md' --include='*.json' --include='*.sh' --include='Makefile' . 2>/dev/null | grep -v '^\./build/\|\.git/' | head
+./tests/test_code_size.py
+[0m
+[0m$ [0mgrep -n '^<<<<<<< \|^=======$\|^>>>>>>> ' tests/test_code_size.py
+1114:<<<<<<< HEAD
+1132:>>>>>>> origin/main
+[0m
+[0m→ [0mRead tests/test_code_size.py[90m [limit=30, offset=1105][0m
+[0m
+[0m$ [0mgrep -n 'CEILING' tests/test_code_size.py | head; sed -n '1134,1174p' tests/test_code_size.py
+1131:CEILING = 175261
+1138:CEILING = 189755
+1161:    print(f"non-test authored lines: {total} (ceiling {CEILING})")
+1162:    if total > CEILING:
+1163:        print(f"\nFAIL authored code grew by {total - CEILING} over the ceiling; "
+1166:    if total < CEILING - 800:
+1167:        print(f"note: ceiling is {CEILING - total} above reality; "
+# +4239: consolidation merge (origin/main: WS kernel staging +10%, incident
+# fixes A/B/C) + peer iteration-2/3 delivery wave (prefix-cache core, fwrite
+# guards, k3 TP16 production scripts, glm52 shared-GEMM routing). tmp/ and
+# build/tmp/ experiment work-tree copies excluded from the count.
+CEILING = 189755
+ROOT = Path(__file__).resolve().parent.parent
+EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
+# .agents holds per-model agent worktrees (full clones of this tree);
+# their copies are tooling infrastructure, not authored source, and must
+# never move the counter.
+EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'tmp', 'qualification',
+                      '__pycache__', '.agents', 'devcycle'}
+# tools/devcycle holds host-recovery / fleet-ops scripts (GRUB staging,
+# fstab fastboot fix): operational infrastructure, not serving-engine
+# source, and must never consume the authored-code budget.
+
+
+def main():
+    total = 0
+    for path in ROOT.rglob('*'):
+        relative = path.relative_to(ROOT)
+        if not path.is_file():
+            continue
+        if any(component in EXCLUDED_COMPONENTS for component in relative.parts):
+            continue
+        if path.suffix in EXTENSIONS or path.name == 'Makefile':
+            total += sum(1 for _ in path.open(errors='surrogateescape'))
+    print(f"non-test authored lines: {total} (ceiling {CEILING})")
+    if total > CEILING:
+        print(f"\nFAIL authored code grew by {total - CEILING} over the ceiling; "
+              f"shrink it or justify a new ceiling in the same change")
+        return 1
+    if total < CEILING - 800:
+        print(f"note: ceiling is {CEILING - total} above reality; "
+              f"lower it with the next landing")
+    print("\nthe authored codebase did not grow")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+[0m
+[0m← [0mEdit tests/test_code_size.py
+Index: /Users/mac/sparkpipe/tests/test_code_size.py
+===================================================================
+--- /Users/mac/sparkpipe/tests/test_code_size.py
++++ /Users/mac/sparkpipe/tests/test_code_size.py
+@@ -1110,10 +1110,8 @@
+ # 174101 (2026-08-21): plain-B WS kernel variant (uint4 load+store B
+ # staging, default ON, kill-switch SPARK_QWEN38_27B_WS_PLAIN=0) + consumer
+ # acquire fence + publish barrier; bench ledger updated with the in-situ
+ # A/B (kernel-level +10%, end-to-end neutral, bit-exact).
+-<<<<<<< HEAD
+-=======
+ # 174145 (2026-08-23): incident fixes - pack-load device-memory preflight
+ # (watchdog-restart SEGV -> clean capacity_exceeded), daemon client-session
+ # submission-id reset on hello, engine prefill lane concentration (full-
+ # width frames instead of 1-row-per-lane at B>1).
+@@ -1127,10 +1125,8 @@
+ # = fwrite(NULL) SEGV on the first decode round).
+ # 174923 (2026-08-24): JIT-KV design contract + backing-store tier 1
+ # (runtime/spark_kv_backing.c: slot file, alloc/free, 4 MiB block I/O,
+ # horizon exhaustion -> backpressure signal; unit test ALL PASS).
+-CEILING = 175261
+->>>>>>> origin/main
+ 
+ # +4239: consolidation merge (origin/main: WS kernel staging +10%, incident
+ # fixes A/B/C) + peer iteration-2/3 delivery wave (prefix-cache core, fwrite
+ # guards, k3 TP16 production scripts, glm52 shared-GEMM routing). tmp/ and
+
+[0m
+[0m$ [0mpython3 tests/test_code_size.py 2>&1 | tail -3; echo "RATCHET_RC=$?"
+non-test authored lines: 191827 (ceiling 189755)
+
+FAIL authored code grew by 2072 over the ceiling; shrink it or justify a new ceiling in the same change
+RATCHET_RC=0
+[0m
+[0m$ [0mpython3 tests/test_stagepack_parity.py 2>&1 | grep -B4 'error' | head -30
+PASS dsv4/flash: 21969 verdicts byte-identical
+PASS dsv4/pro: 29244 verdicts byte-identical
+FAIL qwen38_27b/default: reference build: _27b/spark_qwen38_27b_stagepack_format.h:150:16: error: use of undeclared identifier 'SPARK_QWEN36_MODEL_GDN_QK_DIMENSION'
+  150 | _Static_assert(SPARK_QWEN36_MODEL_GDN_QK_DIMENSION == 2048u && SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION == 6144u,"qwen36 gdn projection widths per config");
+      |                ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+
+FAIL qwen38_max/default: reference build: ONV_WEIGHT,SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS,SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL),
+      |                                                                                                                    ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+
+FAIL glm52/default: live build: agePackExpectedShape'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+   43 |                                         code = SparkGlm52StagePackExpectedShape(kind,layers[i],codecs[f],degrees[r],&shape);
+      |                                                ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+
+FAIL v4/mechanics: v4 leg build failed: nting'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+   71 |                 const SparkStagePackV4Accounting *fp8 = SparkStagePackV4ClassAccounting(SPARK_STAGE_PACK_WEIGHT_FP8_E4M3_F32B128);
+      |                                                         ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+[0m
+[0m$ [0mgrep -rn 'SparkGlm52StagePackExpectedShape' --include='*.h' --include='*.c' . 2>/dev/null | grep -v build/ | head -5; grep -rn 'SparkStagePackV4ClassAccounting' --include='*.h' . 2>/dev/null | grep -v build/ | head -3
+./tests/test_stagepack_parity_glm52.c:23:	return(SparkGlm52StagePackExpectedShape(tensor_kind,layer_index,*(const uint32_t *)context,1u,shape));
+./tests/test_stagepack_parity_glm52.c:43:					code = SparkGlm52StagePackExpectedShape(kind,layers[i],codecs[f],degrees[r],&shape);
+./tests/fixtures/stagepack_parity/glm52/spark_glm52_resident_decode_stage_internal.h:339:static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkGlm52StagePackTensorShape *shape)
+./tests/test_glm52_pp7_configure.c:79:			assert(SparkGlm52StagePackExpectedShape(kind,SPARK_GLM52_STAGEPACK_GLOBAL_LAYER,GLM52_EXPERT_WEIGHT_CODEC,1u,&shape) == 0);
+./tests/test_glm52_pp7_configure.c:94:			assert(SparkGlm52StagePackExpectedShape(kind,layer,GLM52_EXPERT_WEIGHT_CODEC,1u,&shape) == 0);
+[0m
+[0m$ [0mgrep -rn 'StagePackExpectedShape' modules/glm52_resident_decode_stage/ model-families/glm52/ 2>/dev/null | head -4; echo '---V4---'; grep -rn 'ClassAccounting' runtime/spark_hybrid_stagepack_core.h include/sparkpipe/*.h 2>/dev/null | head -4; ls runtime/ | grep stagepack
+modules/glm52_resident_decode_stage//source/spark_glm52_resident_decode_stage_module.c:370:	if ( SparkGlm52StagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,shape) < 0 )
+modules/glm52_resident_decode_stage//source/spark_glm52_resident_decode_stage_module.c:508:	return(SparkGlm52StagePackExpectedShape(tensor_kind,layer_index,shape_context->expert_codec,shape_context->tp_degree,shape));
+modules/glm52_resident_decode_stage//source/spark_glm52_stagepack_format.h:175:static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkGlm52StagePackTensorShape *shape)
+---V4---
+spark_hybrid_stagepack_core.h
+spark_stagepack_reader.h
+[0m
+[0m$ [0mgrep -rln 'SparkStagePackV4ClassAccounting' --include='*.h' --include='*.c' . 2>/dev/null | grep -v build/ | head -5; echo '---'; git log --oneline -3 HEAD^1 -- tests/test_stagepack_parity_v4.c tests/fixtures/stagepack_parity/_mechanics 2>/dev/null; git stash list
+./tests/test_stagepack_parity_v4.c
+---
+a03b801 hwiface: FROZEN v1 hardware-agnostic model-device interface contract (579 lines, REV2 audit remediation)
+stash@{0}: On codex/generic-emit-row-compaction: emit-row-compaction-pre-rebase
+stash@{1}: On codex/dsv4-native-microbatch-scheduler: codex-scheduler-pre-8f650991
+stash@{2}: On codex/pp13-rank0-bulk-prefill: dsa-transport-flag-fix
+stash@{3}: On codex/pp13-rank-event-state: pp13-final-event-queue-wip
+stash@{4}: On codex/pp13-end-to-end: pp13-rank-event-state-wip
+[0m
+[0m$ [0mgit worktree add /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/unified_base HEAD^1 2>&1 | tail -1 && cd /var/folders/p8/d74_8vwn0_q8rkgfym3s623c0000gp/T/opencode/unified_base && python3 tests/test_stagepack_parity.py 2>&1 | tail -6
+HEAD is now at c834436 milestone: dsv4-flash serving restored + measured 40.67 tok/s B1 on spark4-7, hash 3/3 correct
+      |                                                         ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+
+
+2 leg(s) diverged from their frozen reference
+[0m
+[0m$ [0mpython3 tests/test_stagepack_parity.py 2>&1 | grep -E '^PASS|^FAIL' | head
+PASS dsv4/flash: 21969 verdicts byte-identical
+PASS dsv4/pro: 29244 verdicts byte-identical
+PASS qwen36/default: 29244 verdicts byte-identical
+PASS qwen38/default: 26811 verdicts byte-identical
+FAIL glm52/default: live build: agePackExpectedShape'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+FAIL v4/mechanics: v4 leg build failed: nting'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+[0m
+[0m$ [0mgrep -c 'SPARK_QWEN36_' tests/fixtures/stagepack_parity/qwen38_27b/spark_qwen38_27b_stagepack_format.h; grep -o 'SPARK_QWEN38_[A-Z_]*' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h | sort -u | head -20
+163
+SPARK_QWEN38_GEOM_ROW
+SPARK_QWEN38_MAX_MODEL_ATTENTION_PERIOD
+SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION
+SPARK_QWEN38_MAX_MODEL_ATTN_KV_DIMENSION
+SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT
+SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_DIMENSION
+SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT
+SPARK_QWEN38_MAX_MODEL_ATTN_ROPE_DIMENSION
+SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN
+SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION
+SPARK_QWEN38_MAX_MODEL_FULL_ATTENTION_LAYER_COUNT
+SPARK_QWEN38_MAX_MODEL_FULL_ATTENTION_PHASE
+SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS
+SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL
+SPARK_QWEN38_MAX_MODEL_GDN_HEAD_KEY_DIMENSION
+SPARK_QWEN38_MAX_MODEL_GDN_HEAD_VALUE_DIMENSION
+SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT
+SPARK_QWEN38_MAX_MODEL_GDN_LAYER_COUNT
+SPARK_QWEN38_MAX_MODEL_GDN_QK_DIMENSION
+SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION
+[0m
+glm52/v4 legs were already broken pre-merge (not my regression). Fixing my two renamed fixture headers:
+[0m$ [0mperl -pi -e 's/SPARK_QWEN36_MODEL_/SPARK_QWEN38_27B_MODEL_/g; s/SPARK_QWEN36_RESIDENT_DECODE_STAGE_/SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_/g' tests/fixtures/stagepack_parity/qwen38_27b/spark_qwen38_27b_stagepack_format.h && grep -o 'SPARK_QWEN36[A-Z_]*' tests/fixtures/stagepack_parity/qwen38_27b/spark_qwen38_27b_stagepack_format.h | sort -u | head -3; echo '---MAX-REMAINING---'; grep -oE 'SPARK_QWEN38_(?!MAX)[A-Z_]+' -P tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h | sort -u
+SPARK_QWEN36_STAGEPACK_CLASS_ATTN_LAYER
+SPARK_QWEN36_STAGEPACK_CLASS_EVERY_LAYER
+SPARK_QWEN36_STAGEPACK_CLASS_GDN_LAYER
+---MAX-REMAINING---
+grep: invalid option -- P
+usage: grep [-abcdDEFGHhIiJLlMmnOopqRSsUVvwXxZz] [-A num] [-B num] [-C[num]]
+	[-e pattern] [-f file] [--binary-files=value] [--color=when]
+	[--context[=num]] [--directories=action] [--label] [--line-buffered]
+	[--null] [pattern] [file ...]
+[0m
+[0m$ [0mgrep -rn 'STAGEPACK_CLASS_GDN_LAYER\|STAGEPACK_CLASS_ATTN_LAYER\|STAGEPACK_CLASS_EVERY_LAYER' modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h runtime/spark_hybrid_stagepack_core.h 2>/dev/null | head -6; grep -o 'SPARK_QWEN38_STAGEPACK[A-Z_]*' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h | sort -u | head; echo '---27B-STAGEPACK-DEF---'; grep -n '#define SPARK_QWEN38_27B_STAGEPACK_CLASS' modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h | head -5
+modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h:78:#define SPARK_QWEN38_27B_STAGEPACK_CLASS_EVERY_LAYER SPARK_HYBRID_STAGEPACK_CLASS_EVERY_LAYER
+modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h:79:#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER SPARK_HYBRID_STAGEPACK_CLASS_GDN_LAYER
+modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h:80:#define SPARK_QWEN38_27B_STAGEPACK_CLASS_ATTN_LAYER SPARK_HYBRID_STAGEPACK_CLASS_ATTN_LAYER
+modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h:294:	shape->layer_class = SPARK_QWEN38_27B_STAGEPACK_CLASS_EVERY_LAYER;
+modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h:320:	shape->layer_class = SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER;
+modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h:364:	shape->layer_class = SPARK_QWEN38_27B_STAGEPACK_CLASS_ATTN_LAYER;
+SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER
+SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER
+SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER
+SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL
+SPARK_QWEN38_STAGEPACK_COMPARE_U
+SPARK_QWEN38_STAGEPACK_ENTRY_BYTES
+SPARK_QWEN38_STAGEPACK_FORMAT_VERSION
+SPARK_QWEN38_STAGEPACK_GLOBAL_LAYER
+SPARK_QWEN38_STAGEPACK_HEADER_BYTES
+SPARK_QWEN38_STAGEPACK_KIND_GEOMETRY
+---27B-STAGEPACK-DEF---
+77:#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GLOBAL SPARK_HYBRID_STAGEPACK_CLASS_GLOBAL
+78:#define SPARK_QWEN38_27B_STAGEPACK_CLASS_EVERY_LAYER SPARK_HYBRID_STAGEPACK_CLASS_EVERY_LAYER
+79:#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER SPARK_HYBRID_STAGEPACK_CLASS_GDN_LAYER
+80:#define SPARK_QWEN38_27B_STAGEPACK_CLASS_ATTN_LAYER SPARK_HYBRID_STAGEPACK_CLASS_ATTN_LAYER
+[0m
+[0m$ [0mperl -ne 'print "$1\n" while /(SPARK_QWEN38_(?!MAX_)[A-Z_]+)/g' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h | sort -u | head -20
+SPARK_QWEN38_GEOM_ROW
+SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF
+SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F
+SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP
+SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP
+SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U
+SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER
+SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER
+SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER
+SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL
+SPARK_QWEN38_STAGEPACK_COMPARE_U
+SPARK_QWEN38_STAGEPACK_ENTRY_BYTES
+SPARK_QWEN38_STAGEPACK_FORMAT_VERSION
+SPARK_QWEN38_STAGEPACK_GLOBAL_LAYER
+SPARK_QWEN38_STAGEPACK_HEADER_BYTES
+SPARK_QWEN38_STAGEPACK_KIND_GEOMETRY
+SPARK_QWEN38_STAGEPACK_MAGIC
+SPARK_QWEN38_STAGEPACK_MTP_LAYER
+SPARK_QWEN38_STAGEPACK_PAYLOAD_ALIGNMENT
+SPARK_QWEN38_STAGEPACK_TENSOR_ATTENTION_NORM
+[0m
+[0m$ [0mgrep -c '#define SPARK_QWEN38_STAGEPACK_\|#define SPARK_QWEN38_GEOM_ROW\|#define SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h; grep -n 'SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16\b' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h | head -4
+13
+243:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_EMBEDDING,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+244:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_FINAL_NORM,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+245:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_LM_HEAD,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+246:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTENTION_NORM,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+[0m
+[0m$ [0mgrep -n 'WEIGHT_FORMAT' modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_stagepack_format.h | head -8; grep -n 'define SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h | head -3
+243:	SPARK_QWEN38_MAX_GEOM_ROW(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_EMBEDDING,SPARK_QWEN38_MAX_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+244:	SPARK_QWEN38_MAX_GEOM_ROW(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_FINAL_NORM,SPARK_QWEN38_MAX_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+245:	SPARK_QWEN38_MAX_GEOM_ROW(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_LM_HEAD,SPARK_QWEN38_MAX_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+246:	SPARK_QWEN38_MAX_GEOM_ROW(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM,SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+247:	SPARK_QWEN38_MAX_GEOM_ROW(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM,SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+248:	SPARK_QWEN38_MAX_GEOM_ROW(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE,SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+249:	SPARK_QWEN38_MAX_GEOM_ROW(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1,SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+250:	SPARK_QWEN38_MAX_GEOM_ROW(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3,SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION),
+[0m
+[0m$ [0mgrep -n '#define SPARK_QWEN38_' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h | head -20
+25:#define SPARK_QWEN38_STAGEPACK_MAGIC 0x50533851u /* 'Q8SP' little endian */
+26:#define SPARK_QWEN38_STAGEPACK_FORMAT_VERSION 1u
+27:#define SPARK_QWEN38_STAGEPACK_GLOBAL_LAYER UINT32_MAX
+28:#define SPARK_QWEN38_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
+29:#define SPARK_QWEN38_STAGEPACK_PAYLOAD_ALIGNMENT 256u
+70:#define SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL SPARK_HYBRID_STAGEPACK_CLASS_GLOBAL
+71:#define SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER SPARK_HYBRID_STAGEPACK_CLASS_EVERY_LAYER
+72:#define SPARK_QWEN38_STAGEPACK_CLASS_GDN_LAYER SPARK_HYBRID_STAGEPACK_CLASS_GDN_LAYER
+73:#define SPARK_QWEN38_STAGEPACK_CLASS_ATTN_LAYER SPARK_HYBRID_STAGEPACK_CLASS_ATTN_LAYER
+126:#define SPARK_QWEN38_STAGEPACK_HEADER_BYTES 120u
+127:#define SPARK_QWEN38_STAGEPACK_ENTRY_BYTES 56u
+207:#define SPARK_QWEN38_STAGEPACK_COMPARE_U32_FIELDS \
+238:#define SPARK_QWEN38_GEOM_ROW(kind,class,format,rows_expression,columns_expression) \
+[0m
+[0m$ [0mgrep -n 'WEIGHT_FORMAT' runtime/spark_hybrid_stagepack_core.h | head -6; grep -rn 'SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT' runtime/ modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cuh 2>/dev/null | head -4
+(no output)
+[0m
+[0m$ [0mgrep -rln 'SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16' --include='*.h' --include='*.cuh' . 2>/dev/null | grep -v build/ | head; git show HEAD^1:runtime/spark_hybrid_stagepack_core.h | grep -c 'WEIGHT_FORMAT'
+./tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h
+0
+[0m
+[0m$ [0mgit show HEAD^1:tests/fixtures/stagepack_parity/qwen38/spark_qwen38_stagepack_format.h | grep -n 'WEIGHT_FORMAT' | head -8
+243:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_EMBEDDING,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_OUTPUT_VOCAB_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+244:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_FINAL_NORM,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+245:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_LM_HEAD,SPARK_QWEN38_STAGEPACK_CLASS_GLOBAL,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_OUTPUT_VOCAB_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+246:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_ATTENTION_NORM,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+247:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MLP_NORM,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,1u,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+248:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_GATE,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+249:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_W1,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+250:	SPARK_QWEN38_GEOM_ROW(SPARK_QWEN38_STAGEPACK_TENSOR_MOE_W3,SPARK_QWEN38_STAGEPACK_CLASS_EVERY_LAYER,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128,SPARK_QWEN38_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MODEL_HIDDEN_DIMENSION),
+[0m
+[0m$ [0mgit show HEAD^1:tests/fixtures/stagepack_parity/qwen38/spark_qwen38_stagepack_format.h | grep -n 'define SPARK_QWEN38_RESIDENT\|#include' | head -8
+3:#include <stdint.h>
+5:#include "runtime/spark_hybrid_stagepack_core.h"
+6:#include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
+7:#include "sparkpipe/spark_status.h"
+[0m
+[0m$ [0mls include/sparkpipe/ | grep -i 'qwen\|firmware' | head; git show HEAD^1:tests/test_stagepack_parity.py | sed -n '85,100p'
+if frozen:
+        command += ["-I" + str(FIXTURES / family), "-I" + str(MECHANICS)]
+    command += ["-I" + str(ROOT), "-I" + str(ROOT / "include")]
+    for relative in FAMILY_INCLUDES[family]:
+        command += ["-I" + str(ROOT / relative)]
+    command += [str(driver), "-o", str(out)] + list(extra_flags)
+    return subprocess.run(command, capture_output=True, text=True)
+
+
+FAMILY_INCLUDES = {family["name"]: family["includes"] for family in FAMILIES}
+
+
+def driver_family(driver: Path) -> str:
+    return driver.stem.replace("test_stagepack_parity_", "")
+[0m
+[0m$ [0mgrep -n 'WEIGHT_FORMAT' modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h | head -3; perl -pi -e 's/SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_/SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_/g' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h && perl -pi -e 's/SPARK_QWEN36_STAGEPACK_/SPARK_QWEN38_27B_STAGEPACK_/g; s/SPARK_QWEN36_GEOM_ROW/SPARK_QWEN38_27B_GEOM_ROW/g' tests/fixtures/stagepack_parity/qwen38_27b/spark_qwen38_27b_stagepack_format.h && python3 tests/test_stagepack_parity.py 2>&1 | grep -E '^PASS|^FAIL|error:' | head -12
+72:#define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 0u
+73:#define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 1u
+74:#define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 2u
+PASS dsv4/flash: 21969 verdicts byte-identical
+PASS dsv4/pro: 29244 verdicts byte-identical
+FAIL qwen38_27b/default: reference build: f undeclared identifier 'SPARK_QWEN36_STAGEPACK_MTP_LAYER'
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+FAIL qwen38_max/default: reference build:                                                    ^
+/Users/mac/sparkpipe/tests/test_stagepack_parity_qwen38_max.c:56:40: error: invalid application of 'sizeof' to an incomplete type 'const uint32_t[]' (aka 'const unsigned int[]')
+FAIL glm52/default: live build: agePackExpectedShape'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+FAIL v4/mechanics: v4 leg build failed: nting'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+[0m
+[0m$ [0mgrep -oE 'SPARK_QWEN36[A-Z_]*' tests/fixtures/stagepack_parity/qwen38_27b/spark_qwen38_27b_stagepack_format.h | sort -u; echo '---MAX-ERR---'; python3 tests/test_stagepack_parity.py 2>&1 | grep -A6 'qwen38_max/default: reference build' | head -14
+---MAX-ERR---
+FAIL qwen38_max/default: reference build:                                                    ^
+/Users/mac/sparkpipe/tests/test_stagepack_parity_qwen38_max.c:56:40: error: invalid application of 'sizeof' to an incomplete type 'const uint32_t[]' (aka 'const unsigned int[]')
+   56 |         uint32_t fmt_count = (uint32_t)(sizeof(formats)/sizeof(formats[0]));
+      |                                               ^~~~~~~~~
+9 errors generated.
+
+FAIL glm52/default: live build: agePackExpectedShape'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+[0m
+[0m$ [0mgrep -oE 'SPARK_QWEN36[A-Z_]*' tests/test_stagepack_parity_qwen38_27b.c | sort -u | head; perl -pi -e 's/SPARK_QWEN36_MODEL_/SPARK_QWEN38_27B_MODEL_/g; s/SPARK_QWEN36_RESIDENT_DECODE_STAGE_/SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_/g; s/SPARK_QWEN36_STAGEPACK_/SPARK_QWEN38_27B_STAGEPACK_/g; s/SparkQwen36/SparkQwen38_27b/g' tests/test_stagepack_parity_qwen38_27b.c && echo FIXED
+SPARK_QWEN36_MODEL_ATTENTION_PERIOD
+SPARK_QWEN36_MODEL_LAYER_COUNT
+SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF
+SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F
+SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP
+SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP
+SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U
+SPARK_QWEN36_STAGEPACK_COMPARE_U
+SPARK_QWEN36_STAGEPACK_GLOBAL_LAYER
+SPARK_QWEN36_STAGEPACK_HEADER_BYTES
+FIXED
+[0m
+[0m$ [0mpython3 tests/test_stagepack_parity.py 2>&1 | grep -E '^PASS|^FAIL|error:' | head -14
+PASS dsv4/flash: 21969 verdicts byte-identical
+PASS dsv4/pro: 29244 verdicts byte-identical
+FAIL qwen38_27b/default: reference build: ~~~~~~~~~~~~~~~~~~~~~~~~
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+FAIL qwen38_max/default: reference build:                                                    ^
+/Users/mac/sparkpipe/tests/test_stagepack_parity_qwen38_max.c:56:40: error: invalid application of 'sizeof' to an incomplete type 'const uint32_t[]' (aka 'const unsigned int[]')
+FAIL glm52/default: live build: agePackExpectedShape'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+FAIL v4/mechanics: v4 leg build failed: nting'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+[0m
+[0m$ [0mpython3 tests/test_stagepack_parity.py 2>&1 | grep -A10 'qwen38_27b/default: reference build' | head -16
+FAIL qwen38_27b/default: reference build: ~~~~~~~~~~~~~~~~~~~~~~~~
+      |                 SparkQwen36StagePackTensorShape
+/Users/mac/sparkpipe/tests/fixtures/stagepack_parity/qwen38_27b/spark_qwen38_27b_stagepack_format.h:257:3: note: 'SparkQwen36StagePackTensorShape' declared here
+  257 | } SparkQwen36StagePackTensorShape;
+      |   ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+1 warning and 20 errors generated.
+
+FAIL qwen38_max/default: reference build:                                                    ^
+/Users/mac/sparkpipe/tests/test_stagepack_parity_qwen38_max.c:56:40: error: invalid application of 'sizeof' to an incomplete type 'const uint32_t[]' (aka 'const unsigned int[]')
+   56 |         uint32_t fmt_count = (uint32_t)(sizeof(formats)/sizeof(formats[0]));
+[0m
+[0m$ [0mperl -pi -e 's/SparkQwen36(?!Max)/SparkQwen38_27b/g' tests/fixtures/stagepack_parity/qwen38_27b/spark_qwen38_27b_stagepack_format.h tests/test_stagepack_parity_qwen38_27b.c && python3 tests/test_stagepack_parity.py 2>&1 | grep -B14 'qwen38_max/default: reference build' | head -20
+PASS dsv4/flash: 21969 verdicts byte-identical
+PASS dsv4/pro: 29244 verdicts byte-identical
+PASS qwen38_27b/default: 29244 verdicts byte-identical
+FAIL qwen38_max/default: reference build:                                                    ^
+[0m
+27B parity leg passes. Digging into the max leg's first error:
+[0m$ [0mpython3 tests/test_stagepack_parity.py 2>&1 | sed -n '/qwen38_max\/default: reference build/,/glm52/p' | head -30
+FAIL qwen38_max/default: reference build:                                                    ^
+/Users/mac/sparkpipe/tests/test_stagepack_parity_qwen38_max.c:56:40: error: invalid application of 'sizeof' to an incomplete type 'const uint32_t[]' (aka 'const unsigned int[]')
+   56 |         uint32_t fmt_count = (uint32_t)(sizeof(formats)/sizeof(formats[0]));
+      |                                               ^~~~~~~~~
+9 errors generated.
+
+FAIL glm52/default: live build: agePackExpectedShape'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+[0m
+[0m$ [0msed -n '30,60p' tests/test_stagepack_parity_qwen38_max.c
+if ( (shape.natural_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && shape.natural_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128) || weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+			return(1);
+	}
+	if ( SparkHybridStagePackScaleGroupSizeOk(SparkQwen38StagePackWeightClass(weight_format),scale_group_size) == 0u )
+		return(1);
+	if ( payload_bytes != SparkQwen38StagePackPayloadBytes(weight_format,rows,columns) || scale_bytes != SparkQwen38StagePackScaleBytes(weight_format,rows,columns) )
+		return(1);
+	if ( payload_offset > file_bytes || payload_bytes > file_bytes - payload_offset )
+		return(1);
+	if ( scale_bytes != 0u && (scale_offset > file_bytes || scale_bytes > file_bytes - scale_offset) )
+		return(1);
+	if ( layer_index == SPARK_QWEN38_STAGEPACK_MTP_LAYER || (global != 0u && (tensor_kind >= SPARK_QWEN38_STAGEPACK_TENSOR_MTP_FC && tensor_kind <= SPARK_QWEN38_STAGEPACK_TENSOR_MTP_FINAL_NORM)) )
+	{
+		if ( 0u == 1u ) /* owns_final_head pinned true */
+			return(1);
+	}
+	else if ( global == 0u && (layer_index < 0u || layer_index >= 0u + SPARK_QWEN38_MAX_MODEL_LAYER_COUNT) )
+		return(1);
+	return(0);
+}
+
+int main(void)
+{
+	static const uint32_t layers[] = {SPARK_QWEN38_STAGEPACK_GLOBAL_LAYER,SPARK_QWEN38_STAGEPACK_MTP_LAYER,0u,1u,2u,3u,7u,30u,31u,32u,100u,UINT32_MAX};
+	static const uint32_t formats[] = {SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32,SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32,5u,6u,UINT32_MAX};
+	static const uint32_t dims[] = {0u,1u,31u,32u,33u,63u,64u,127u,128u,129u,255u,256u,1024u,4096u,16384u,2147483647u,UINT32_MAX};
+	uint32_t fmt_count = (uint32_t)(sizeof(formats)/sizeof(formats[0]));
+	uint32_t dim_count = (uint32_t)(sizeof(dims)/sizeof(dims[0]));
+	char tag[96];
+	uint32_t kind,i,f,r,c;
+[0m
+[0m$ [0mperl -pi -e 's/SparkQwen38(?!Max)/SparkQwen38Max/g; s/SPARK_QWEN38_(?!MAX_|HYBRID)/SPARK_QWEN38_MAX_/g' tests/fixtures/stagepack_parity/qwen38_max/spark_qwen38_max_stagepack_format.h tests/test_stagepack_parity_qwen38_max.c && python3 tests/test_stagepack_parity.py 2>&1 | grep -E '^PASS|^FAIL' | head -8
+PASS dsv4/flash: 21969 verdicts byte-identical
+PASS dsv4/pro: 29244 verdicts byte-identical
+PASS qwen38_27b/default: 29244 verdicts byte-identical
+PASS qwen38_max/default: 26811 verdicts byte-identical
+FAIL glm52/default: live build: agePackExpectedShape'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+FAIL v4/mechanics: v4 leg build failed: nting'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+[0m
+[0m← [0mEdit tests/test_code_size.py
+Index: /Users/mac/sparkpipe/tests/test_code_size.py
+===================================================================
+--- /Users/mac/sparkpipe/tests/test_code_size.py
++++ /Users/mac/sparkpipe/tests/test_code_size.py
+@@ -1130,9 +1130,14 @@
+ # +4239: consolidation merge (origin/main: WS kernel staging +10%, incident
+ # fixes A/B/C) + peer iteration-2/3 delivery wave (prefix-cache core, fwrite
+ # guards, k3 TP16 production scripts, glm52 shared-GEMM routing). tmp/ and
+ # build/tmp/ experiment work-tree copies excluded from the count.
+-CEILING = 189755
++# 191827 (2026-08-25): Route A merge of origin/main into unified - main's
++# API chain (node/model_api.c HTTP entry), JIT-KV backing store
++# (runtime/spark_kv_backing.c + test), daemon session-hardening and the
++# qwen38_27b resident-decode-stage promotion land on top of the unified
++# tree; ceiling raised by the audited delta.
++CEILING = 191827
+ ROOT = Path(__file__).resolve().parent.parent
+ EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
+ # .agents holds per-model agent worktrees (full clones of this tree);
+ # their copies are tooling infrastructure, not authored source, and must
+
+[0m
+All qwen legs pass byte-identical to frozen references. Updating the ratchet ceiling for the merged tree:

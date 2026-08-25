@@ -8,12 +8,12 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_model_serving_adapter.h"
-#include "sparkpipe/spark_qwen38_model.h"
-#include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_qwen38_max_model.h"
+#include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 /* Compiled in for the conservation cases: the gate drives the paged-KV
  * unit directly, at the adapter's exact per-round call pattern, and
  * asserts free-list conservation after EVERY step (lessons 7+8). */
-#include "spark_qwen38_paged_kv.h"
+#include "spark_qwen38_max_paged_kv.h"
 
 #ifndef TEST_QWEN38_SERVING_ADAPTER_PATH
 #define TEST_QWEN38_SERVING_ADAPTER_PATH ""
@@ -32,18 +32,18 @@
  * pins these in the firmware header at the SAME bit positions as the
  * landed qwen38_27b flags; the local fallback keeps this gate compilable -
  * and the leg honestly inert - while the module side is unlanded. */
-#ifndef SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME
-#define SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME 0x00000400u
+#ifndef SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME
+#define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME 0x00000400u
 #endif
-#ifndef SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT
-#define SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT 0x00000800u
+#ifndef SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT
+#define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT 0x00000800u
 #endif
 
 /*
  * Prefix-cache correctness gate for the qwen38 serving adapter (port 2
  * of 4), run against the recording fixture driver. Matrix B1/B4/B25/B512
  * ONLY - the descriptor ceiling pins
- * SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT at 512u,
+ * SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT at 512u,
  * so B1024 cell claims from the core gate are NOT imported here.
  *
  * Proven at the serving boundary:
@@ -83,7 +83,7 @@
  *  10. Squeezed B-matrix cells B1/B4/B25/B512 at unit level: exact-fit
  *      pools, admit/release churn, evicted>0 in EVERY cell, conserving
  *      teardown.
- *  11. CP-B walk-skip A/B (env-guarded by SPARK_QWEN38_GATE_WALK_SKIP=1;
+ *  11. CP-B walk-skip A/B (env-guarded by SPARK_QWEN38_MAX_GATE_WALK_SKIP=1;
  *      SKIP exit-0 naming the absent module-side piece otherwise): unit
  *      half - witness clamp resumes with verbatim adoption, OFF pure
  *      scratch, partition conserved after every call; serving half -
@@ -172,7 +172,7 @@ static void GateConfiguration(SparkModelServingAdapterConfiguration *configurati
 	(void)logical_pages;
 	configuration->runtime_root = runtime_root;
 	configuration->node_id = "spark-test";
-	configuration->node_target = "cuda.sm121.qwen38.resident_decode_stage.fp8";
+	configuration->node_target = "cuda.sm121.qwen38_max.resident_decode_stage.fp8";
 	configuration->adapter_configuration_path = config_path;
 	configuration->driver_shared_object_path = TEST_QWEN38_SERVING_DRIVER_PATH;
 	configuration->driver_program_name = "resident_decode";
@@ -420,14 +420,14 @@ static void GateObserve(GateRunObservation *observation,uint32_t from,uint32_t t
 		observation->walk_digest = GateDigestMix(observation->walk_digest,record->base_position);
 		observation->walk_digest = GateDigestMix(observation->walk_digest,record->sequence_id);
 		observation->walk_digest = GateDigestMix(observation->walk_digest,record->block_count);
-		if ( (record->context_flags & SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME) != 0u )
+		if ( (record->context_flags & SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME) != 0u )
 		{
 			if ( observation->resume_seen == 0u ||
 				record->base_position < observation->resume_base )
 				observation->resume_base = record->base_position;
 			observation->resume_seen++;
 		}
-		if ( (record->context_flags & SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) != 0u )
+		if ( (record->context_flags & SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_CHECKPOINT) != 0u )
 			observation->checkpoint_seen++;
 		observation->rows_walked += record->rows;
 		assert(record->lane_index < GATE_CENSUS_LANES);
@@ -438,9 +438,9 @@ static void GateObserve(GateRunObservation *observation,uint32_t from,uint32_t t
 		{
 			uint64_t position = record->base_position + (uint64_t)row;
 			observation->walk_digest = GateDigestMix(observation->walk_digest,record->token_ids[row]);
-			assert(position / SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS < GATE_CENSUS_BLOCKS);
-			block_digests[record->lane_index][position / SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS] =
-				GateDigestMix(block_digests[record->lane_index][position / SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS],
+			assert(position / SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS < GATE_CENSUS_BLOCKS);
+			block_digests[record->lane_index][position / SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS] =
+				GateDigestMix(block_digests[record->lane_index][position / SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS],
 					(position << 32) | record->token_ids[row]);
 		}
 		for (row=0u; row<record->block_count && row<GATE_MAX_ROWS; row++)
@@ -597,7 +597,7 @@ UnitFixture;
  * it; semantic violations (block on the free list AND in use, orphaned
  * blocks) are COUNTED so the CASE 11 leg can name the failure instead
  * of aborting blind. Returns the violation count (0 = conserved). */
-static uint32_t GatePartitionAudit(const SparkQwen38PagedKv *cache,
+static uint32_t GatePartitionAudit(const SparkQwen38MaxPagedKv *cache,
 	const UnitFixture *fixture)
 {
 	uint8_t *in_free,*in_use;
@@ -627,10 +627,10 @@ static uint32_t GatePartitionAudit(const SparkQwen38PagedKv *cache,
 			uint32_t block = fixture->table[i * fixture->blocks_per_lane + ordinal];
 			if ( ordinal >= fixture->counts[i] )
 			{
-				assert(block == SPARK_QWEN38_PAGED_KV_NO_BLOCK); /* row hygiene */
+				assert(block == SPARK_QWEN38_MAX_PAGED_KV_NO_BLOCK); /* row hygiene */
 				continue;
 			}
-			assert(block != SPARK_QWEN38_PAGED_KV_NO_BLOCK && block < fixture->pool);
+			assert(block != SPARK_QWEN38_MAX_PAGED_KV_NO_BLOCK && block < fixture->pool);
 			in_use[block] = 1u;
 		}
 	for (i=0u; i<cache->core.max_sequence_count; i++)
@@ -657,7 +657,7 @@ static uint32_t GatePartitionAudit(const SparkQwen38PagedKv *cache,
 	return(violations);
 }
 
-static void UnitConservationCheck(const SparkQwen38PagedKv *cache,
+static void UnitConservationCheck(const SparkQwen38MaxPagedKv *cache,
 	const UnitFixture *fixture,const char *where,uint32_t step)
 {
 	uint32_t violations = GatePartitionAudit(cache,fixture);
@@ -680,7 +680,7 @@ static void UnitFixtureInit(UnitFixture *fixture,uint32_t *table,uint32_t *count
 	memset(counts,0,(size_t)lane_count * sizeof(counts[0]));
 }
 
-static void UnitConfiguration(SparkQwen38PagedKvConfiguration *configuration,
+static void UnitConfiguration(SparkQwen38MaxPagedKvConfiguration *configuration,
 	const UnitFixture *fixture,uint32_t checkpoint_slots)
 {
 	memset(configuration,0,sizeof(*configuration));
@@ -704,7 +704,7 @@ static void UnitFill(uint32_t *tokens,uint32_t base,uint32_t count)
  * publish boundary up to end_position so later admits can clamp to a
  * WITNESSED depth. Without this step the GDN law correctly refuses all
  * reuse (no donor recurrence anywhere). */
-static void UnitBindWitnesses(SparkQwen38PagedKv *cache,uint32_t lane,
+static void UnitBindWitnesses(SparkQwen38MaxPagedKv *cache,uint32_t lane,
 	uint64_t end_position)
 {
 	uint64_t boundary;
@@ -713,8 +713,8 @@ static void UnitBindWitnesses(SparkQwen38PagedKv *cache,uint32_t lane,
 		return;
 	boundary = U1_BLOCK_TOKENS;
 	for ( ; boundary <= end_position; boundary += U1_BLOCK_TOKENS)
-		if ( SparkQwen38PagedKvCheckpointOffer(cache,lane,boundary,&slot) != 0u )
-			SparkQwen38PagedKvCheckpointCommit(cache,lane,slot,boundary);
+		if ( SparkQwen38MaxPagedKvCheckpointOffer(cache,lane,boundary,&slot) != 0u )
+			SparkQwen38MaxPagedKvCheckpointCommit(cache,lane,slot,boundary);
 }
 
 /* CASE 8: the adapter's exact B1 speculative round shape - Cover(end =
@@ -727,32 +727,32 @@ static uint32_t u1_counts[2u];
 
 static int UnitSpecChurnReuse(uint32_t reuse_on)
 {
-	SparkQwen38PagedKv cache;
-	SparkQwen38PagedKvConfiguration configuration;
-	SparkQwen38PagedKvMatch match;
+	SparkQwen38MaxPagedKv cache;
+	SparkQwen38MaxPagedKvConfiguration configuration;
+	SparkQwen38MaxPagedKvMatch match;
 	UnitFixture fixture;
 	uint32_t prompt[256],i;
 	SparkStatus status;
 	UnitFixtureInit(&fixture,u1_table,u1_counts,2u,U1_BLOCKS_PER_LANE,U1_POOL);
 	UnitConfiguration(&configuration,&fixture,reuse_on != 0u ? 4u : 0u);
-	assert(SparkQwen38PagedKvInitialize(&cache,&configuration,u1_table,u1_counts) == SPARK_STATUS_OK);
+	assert(SparkQwen38MaxPagedKvInitialize(&cache,&configuration,u1_table,u1_counts) == SPARK_STATUS_OK);
 	UnitFill(prompt,10000u,130u); /* 130 tokens: 2 full blocks + 1 open */
-	status = SparkQwen38PagedKvAdmit(&cache,0u,prompt,130u,&match);
+	status = SparkQwen38MaxPagedKvAdmit(&cache,0u,prompt,130u,&match);
 	assert(status == SPARK_STATUS_OK);
 	UnitConservationCheck(&cache,&fixture,"spec/admit",0u);
 	for (i=0u; i<U1_ROUNDS; i++)
 	{
 		uint64_t pos = 131ull + i; /* D=4 draft depth */
-		status = SparkQwen38PagedKvCover(&cache,0u,pos + 1u,0,0);
+		status = SparkQwen38MaxPagedKvCover(&cache,0u,pos + 1u,0,0);
 		assert(status == SPARK_STATUS_OK);
 		UnitConservationCheck(&cache,&fixture,"spec/pre",i);
-		status = SparkQwen38PagedKvCover(&cache,0u,pos + 6u,0,0);
+		status = SparkQwen38MaxPagedKvCover(&cache,0u,pos + 6u,0,0);
 		assert(status == SPARK_STATUS_OK);
 		UnitConservationCheck(&cache,&fixture,"spec/ext",i);
 	}
-	SparkQwen38PagedKvLaneReset(&cache,0u);
+	SparkQwen38MaxPagedKvLaneReset(&cache,0u);
 	UnitConservationCheck(&cache,&fixture,"spec/reset",U1_ROUNDS);
-	SparkQwen38PagedKvDestroy(&cache);
+	SparkQwen38MaxPagedKvDestroy(&cache);
 	return(0);
 }
 
@@ -762,9 +762,9 @@ static int UnitSpecChurnReuse(uint32_t reuse_on)
  * population squeezed (evicted>0 via retire-and-readmit churn). */
 static void UnitSpecPopulation(uint32_t pool,uint32_t expect_evicted)
 {
-	SparkQwen38PagedKv cache;
-	SparkQwen38PagedKvConfiguration configuration;
-	SparkQwen38PagedKvMatch match;
+	SparkQwen38MaxPagedKv cache;
+	SparkQwen38MaxPagedKvConfiguration configuration;
+	SparkQwen38MaxPagedKvMatch match;
 	static uint32_t table[8u * 8u];
 	static uint32_t counts[8u];
 	UnitFixture fixture;
@@ -774,22 +774,22 @@ static void UnitSpecPopulation(uint32_t pool,uint32_t expect_evicted)
 	SparkStatus status;
 	UnitFixtureInit(&fixture,table,counts,8u,blocks_per_lane,pool);
 	UnitConfiguration(&configuration,&fixture,4u);
-	assert(SparkQwen38PagedKvInitialize(&cache,&configuration,table,counts) == SPARK_STATUS_OK);
+	assert(SparkQwen38MaxPagedKvInitialize(&cache,&configuration,table,counts) == SPARK_STATUS_OK);
 	UnitFill(prompt_a,500u,90u); /* 90 = 1 full block + 26 open */
 	for (round=0u; round<90u; round++)
 	{
 		prompt_b[round] = round < 64u ? prompt_a[round] : 900u + round;
 		prompt_c[round] = round < 96u ? prompt_a[round] : 700u + round; /* mid-block: 1.5 blocks shared -> adopt 1 */
 	}
-	status = SparkQwen38PagedKvAdmit(&cache,0u,prompt_a,90u,&match);
+	status = SparkQwen38MaxPagedKvAdmit(&cache,0u,prompt_a,90u,&match);
 	assert(status == SPARK_STATUS_OK && match.block_count == 0u);
-	assert(SparkQwen38PagedKvCover(&cache,0u,90u,0,0) == SPARK_STATUS_OK);
+	assert(SparkQwen38MaxPagedKvCover(&cache,0u,90u,0,0) == SPARK_STATUS_OK);
 	UnitBindWitnesses(&cache,0u,90u); /* the adapter binds these post-frame */
 	UnitConservationCheck(&cache,&fixture,"pop/admit-a",0u);
-	status = SparkQwen38PagedKvAdmit(&cache,1u,prompt_b,90u,&match);
+	status = SparkQwen38MaxPagedKvAdmit(&cache,1u,prompt_b,90u,&match);
 	assert(status == SPARK_STATUS_OK && match.block_count == 1u); /* block-granular */
 	UnitConservationCheck(&cache,&fixture,"pop/admit-b",1u);
-	status = SparkQwen38PagedKvAdmit(&cache,2u,prompt_c,90u,&match);
+	status = SparkQwen38MaxPagedKvAdmit(&cache,2u,prompt_c,90u,&match);
 	assert(status == SPARK_STATUS_OK && match.block_count == 1u); /* mid-block -> 1 */
 	UnitConservationCheck(&cache,&fixture,"pop/admit-c",2u);
 	/* Multi-token draft bursts (2..5 accepted tokens per round) on every
@@ -805,10 +805,10 @@ static void UnitSpecPopulation(uint32_t pool,uint32_t expect_evicted)
 			burst = 2u + (round + lane) % 4u;
 			for (k=0u; k<burst; k++)
 				tokens[k] = 3000u + round * 31u + lane * 7u + k;
-			committed = SparkQwen38PagedKvCommittedTokens(&cache,lane);
+			committed = SparkQwen38MaxPagedKvCommittedTokens(&cache,lane);
 			end = committed + burst;
 			assert(end <= (uint64_t)blocks_per_lane * U1_BLOCK_TOKENS);
-			status = SparkQwen38PagedKvCover(&cache,lane,end,tokens,burst);
+			status = SparkQwen38MaxPagedKvCover(&cache,lane,end,tokens,burst);
 			assert(status == SPARK_STATUS_OK);
 			UnitConservationCheck(&cache,&fixture,"pop/burst",round * 3u + lane);
 		}
@@ -824,23 +824,23 @@ static void UnitSpecPopulation(uint32_t pool,uint32_t expect_evicted)
 		for (round=0u; round<10u; round++)
 		{
 			uint64_t committed,end;
-			SparkQwen38PagedKvLaneReset(&cache,0u);
+			SparkQwen38MaxPagedKvLaneReset(&cache,0u);
 			UnitFill(prompt_a,5000u + round * 131u,90u);
-			status = SparkQwen38PagedKvAdmit(&cache,0u,prompt_a,90u,&match);
+			status = SparkQwen38MaxPagedKvAdmit(&cache,0u,prompt_a,90u,&match);
 			if ( status != SPARK_STATUS_OK )
 			{
 				UnitConservationCheck(&cache,&fixture,"pop/churn-refused",round);
 				break;
 			}
 			UnitConservationCheck(&cache,&fixture,"pop/churn-admit",round);
-			committed = SparkQwen38PagedKvCommittedTokens(&cache,0u);
+			committed = SparkQwen38MaxPagedKvCommittedTokens(&cache,0u);
 			end = committed + 64u * (round + 1u);
 			if ( end > (uint64_t)blocks_per_lane * U1_BLOCK_TOKENS )
 				end = (uint64_t)blocks_per_lane * U1_BLOCK_TOKENS;
-			status = SparkQwen38PagedKvCover(&cache,0u,end,0,0);
+			status = SparkQwen38MaxPagedKvCover(&cache,0u,end,0,0);
 			if ( status != SPARK_STATUS_OK )
 			{
-				SparkQwen38PagedKvLaneReset(&cache,0u);
+				SparkQwen38MaxPagedKvLaneReset(&cache,0u);
 				UnitConservationCheck(&cache,&fixture,"pop/churn-cover-refused",round);
 				break;
 			}
@@ -855,9 +855,9 @@ static void UnitSpecPopulation(uint32_t pool,uint32_t expect_evicted)
 	assert(expect_evicted != 0u || stats.evicted_block_count == 0u);
 	/* Teardown conserves: every attached block returns. */
 	for (round=0u; round<3u; round++)
-		SparkQwen38PagedKvLaneReset(&cache,round);
+		SparkQwen38MaxPagedKvLaneReset(&cache,round);
 	UnitConservationCheck(&cache,&fixture,"pop/reset",99u);
-	SparkQwen38PagedKvDestroy(&cache);
+	SparkQwen38MaxPagedKvDestroy(&cache);
 }
 
 /* CASE 10: the B-matrix at unit level, squeezed - exact-fit pools with
@@ -865,9 +865,9 @@ static void UnitSpecPopulation(uint32_t pool,uint32_t expect_evicted)
  * cell, conservation at every step, conserving teardown. */
 static void UnitSqueezedCell(uint32_t lanes,uint32_t pool_divisor)
 {
-	SparkQwen38PagedKv cache;
-	SparkQwen38PagedKvConfiguration configuration;
-	SparkQwen38PagedKvMatch match;
+	SparkQwen38MaxPagedKv cache;
+	SparkQwen38MaxPagedKvConfiguration configuration;
+	SparkQwen38MaxPagedKvMatch match;
 	static uint32_t table[512u * 4u];
 	static uint32_t counts[512u];
 	UnitFixture fixture;
@@ -882,7 +882,7 @@ static void UnitSqueezedCell(uint32_t lanes,uint32_t pool_divisor)
 	assert(lanes <= 512u);
 	UnitFixtureInit(&fixture,table,counts,lanes,blocks_per_lane,pool);
 	UnitConfiguration(&configuration,&fixture,lanes <= 8u ? 4u : 8u);
-	assert(SparkQwen38PagedKvInitialize(&cache,&configuration,table,counts) == SPARK_STATUS_OK);
+	assert(SparkQwen38MaxPagedKvInitialize(&cache,&configuration,table,counts) == SPARK_STATUS_OK);
 	for (round=0u; round<3u; round++)
 	{
 		for (lane=0u; lane<lanes; lane++)
@@ -891,8 +891,8 @@ static void UnitSqueezedCell(uint32_t lanes,uint32_t pool_divisor)
 			uint32_t length = 130u + (lane * 7u) % 60u;
 			UnitFill(prompt,root * 1000u,length);
 			if ( round != 0u )
-				SparkQwen38PagedKvLaneReset(&cache,lane);
-			status = SparkQwen38PagedKvAdmit(&cache,lane,prompt,length,&match);
+				SparkQwen38MaxPagedKvLaneReset(&cache,lane);
+			status = SparkQwen38MaxPagedKvAdmit(&cache,lane,prompt,length,&match);
 			if ( status != SPARK_STATUS_OK )
 			{
 				/* Exact-fit squeeze: a full-width wave may refuse up
@@ -902,10 +902,10 @@ static void UnitSqueezedCell(uint32_t lanes,uint32_t pool_divisor)
 				continue;
 			}
 			UnitConservationCheck(&cache,&fixture,"sq/admit",round * lanes + lane);
-			status = SparkQwen38PagedKvCover(&cache,lane,length,0,0);
+			status = SparkQwen38MaxPagedKvCover(&cache,lane,length,0,0);
 			if ( status != SPARK_STATUS_OK )
 			{
-				SparkQwen38PagedKvLaneReset(&cache,lane);
+				SparkQwen38MaxPagedKvLaneReset(&cache,lane);
 				UnitConservationCheck(&cache,&fixture,"sq/cover-refused",round * lanes + lane);
 				continue;
 			}
@@ -918,9 +918,9 @@ static void UnitSqueezedCell(uint32_t lanes,uint32_t pool_divisor)
 		(unsigned long long)stats.admit_count);
 	assert(stats.evicted_block_count > 0u);
 	for (lane=0u; lane<lanes; lane++)
-		SparkQwen38PagedKvLaneReset(&cache,lane);
+		SparkQwen38MaxPagedKvLaneReset(&cache,lane);
 	UnitConservationCheck(&cache,&fixture,"sq/reset",999u);
-	SparkQwen38PagedKvDestroy(&cache);
+	SparkQwen38MaxPagedKvDestroy(&cache);
 }
 
 /* ---- CASE 11 unit half: witness-clamped admit at the ledger level --- */
@@ -940,22 +940,22 @@ static uint32_t wsu_counts[2u];
 static GateWalkSkipVerdict GateWalkSkipUnitHalf(uint32_t reuse_on,
 	const char **reason)
 {
-	SparkQwen38PagedKv cache;
-	SparkQwen38PagedKvConfiguration configuration;
-	SparkQwen38PagedKvMatch match;
+	SparkQwen38MaxPagedKv cache;
+	SparkQwen38MaxPagedKvConfiguration configuration;
+	SparkQwen38MaxPagedKvMatch match;
 	UnitFixture fixture;
 	uint32_t prompt[130],donor_blocks[4],i;
 	GateWalkSkipVerdict verdict = GateWalkSkipOk;
 	*reason = "unreachable";
 	UnitFixtureInit(&fixture,wsu_table,wsu_counts,2u,4u,32u);
 	UnitConfiguration(&configuration,&fixture,reuse_on != 0u ? 4u : 0u);
-	if ( SparkQwen38PagedKvInitialize(&cache,&configuration,wsu_table,wsu_counts) != SPARK_STATUS_OK )
+	if ( SparkQwen38MaxPagedKvInitialize(&cache,&configuration,wsu_table,wsu_counts) != SPARK_STATUS_OK )
 	{
 		*reason = "unit fixture init refused";
 		return(GateWalkSkipIdentityBroken);
 	}
 	UnitFill(prompt,42000u,130u); /* two full blocks + two open tokens */
-	if ( SparkQwen38PagedKvAdmit(&cache,0u,prompt,130u,&match) != SPARK_STATUS_OK ||
+	if ( SparkQwen38MaxPagedKvAdmit(&cache,0u,prompt,130u,&match) != SPARK_STATUS_OK ||
 		match.block_count != 0u )
 	{
 		*reason = "cold donor admit matched on an empty pool";
@@ -966,7 +966,7 @@ static GateWalkSkipVerdict GateWalkSkipUnitHalf(uint32_t reuse_on,
 		*reason = "partition broken after donor admit";
 		return(GateWalkSkipConservationBroken);
 	}
-	if ( SparkQwen38PagedKvCover(&cache,0u,130u,0,0) != SPARK_STATUS_OK )
+	if ( SparkQwen38MaxPagedKvCover(&cache,0u,130u,0,0) != SPARK_STATUS_OK )
 	{
 		*reason = "donor cover refused on a roomy pool";
 		return(GateWalkSkipIdentityBroken);
@@ -979,7 +979,7 @@ static GateWalkSkipVerdict GateWalkSkipUnitHalf(uint32_t reuse_on,
 	UnitBindWitnesses(&cache,0u,130u); /* the adapter binds these post-frame */
 	for (i=0u; i<2u; i++)
 		donor_blocks[i] = fixture.table[0u * fixture.blocks_per_lane + i];
-	if ( SparkQwen38PagedKvAdmit(&cache,1u,prompt,130u,&match) != SPARK_STATUS_OK )
+	if ( SparkQwen38MaxPagedKvAdmit(&cache,1u,prompt,130u,&match) != SPARK_STATUS_OK )
 	{
 		*reason = "identical sibling admit refused";
 		return(GateWalkSkipIdentityBroken);
@@ -996,7 +996,7 @@ static GateWalkSkipVerdict GateWalkSkipUnitHalf(uint32_t reuse_on,
 	if ( reuse_on != 0u )
 	{
 		if ( match.block_count != 2u ||
-			match.checkpoint_slot == SPARK_QWEN38_PAGED_KV_NO_SLOT )
+			match.checkpoint_slot == SPARK_QWEN38_MAX_PAGED_KV_NO_SLOT )
 		{
 			*reason = "ON witness clamp did not resume at 128 with a live slot";
 			return(GateWalkSkipIdentityBroken);
@@ -1007,7 +1007,7 @@ static GateWalkSkipVerdict GateWalkSkipUnitHalf(uint32_t reuse_on,
 				*reason = "ON resumed but the shared prefix was not adopted verbatim";
 				return(GateWalkSkipIdentityBroken);
 			}
-		if ( SparkQwen38PagedKvCommittedTokens(&cache,1u) != 130u )
+		if ( SparkQwen38MaxPagedKvCommittedTokens(&cache,1u) != 130u )
 		{
 			*reason = "ON sibling frontier not at the full prompt length";
 			return(GateWalkSkipIdentityBroken);
@@ -1020,13 +1020,13 @@ static GateWalkSkipVerdict GateWalkSkipUnitHalf(uint32_t reuse_on,
 			*reason = "OFF matched a prefix without any bound checkpoint (pure-scratch violated)";
 			return(GateWalkSkipIdentityBroken);
 		}
-		if ( SparkQwen38PagedKvCommittedTokens(&cache,1u) != 0u )
+		if ( SparkQwen38MaxPagedKvCommittedTokens(&cache,1u) != 0u )
 		{
 			*reason = "OFF sibling bound a ledger sequence with reuse disarmed";
 			return(GateWalkSkipIdentityBroken);
 		}
 	}
-	if ( SparkQwen38PagedKvCover(&cache,1u,130u,0,0) != SPARK_STATUS_OK )
+	if ( SparkQwen38MaxPagedKvCover(&cache,1u,130u,0,0) != SPARK_STATUS_OK )
 	{
 		*reason = "sibling cover refused on a roomy pool";
 		return(GateWalkSkipIdentityBroken);
@@ -1037,19 +1037,19 @@ static GateWalkSkipVerdict GateWalkSkipUnitHalf(uint32_t reuse_on,
 		return(GateWalkSkipConservationBroken);
 	}
 	/* Teardown conserves: both lanes drop, every attached block returns. */
-	SparkQwen38PagedKvLaneReset(&cache,0u);
+	SparkQwen38MaxPagedKvLaneReset(&cache,0u);
 	if ( GatePartitionAudit(&cache,&fixture) != 0u )
 	{
 		*reason = "partition broken after lane-0 reset";
 		return(GateWalkSkipConservationBroken);
 	}
-	SparkQwen38PagedKvLaneReset(&cache,1u);
+	SparkQwen38MaxPagedKvLaneReset(&cache,1u);
 	if ( GatePartitionAudit(&cache,&fixture) != 0u )
 	{
 		*reason = "partition broken after lane-1 reset (teardown not conserving)";
 		return(GateWalkSkipConservationBroken);
 	}
-	SparkQwen38PagedKvDestroy(&cache);
+	SparkQwen38MaxPagedKvDestroy(&cache);
 	return(verdict);
 }
 
@@ -1098,7 +1098,7 @@ int main(void)
 			GateObservesReset();
 			donor_count = 0u;
 
-			setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE","0",1);
+			setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE","0",1);
 			GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,4096u);
 			adapter_state = 0;
 			{
@@ -1120,9 +1120,9 @@ int main(void)
 			GateObserve(&off,0u,gate_record_count(),seen_off,pool_blocks,s_observes_off);
 			assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 			library.adapter_interface.destroy(adapter_state);
-			unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+			unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 
-			setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE","1",1);
+			setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE","1",1);
 			GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,4096u);
 			adapter_state = 0;
 			assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
@@ -1189,7 +1189,7 @@ int main(void)
 			}
 			printf("b1_identity ON distinct=%u OFF distinct=%u\n",on.distinct_blocks,off.distinct_blocks);
 			assert(on.distinct_blocks < off.distinct_blocks);
-			unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+			unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 		}
 
 		/* ============ CASE 3: B4 mixed batched prefill =============== */
@@ -1215,7 +1215,7 @@ int main(void)
 			slots[0] = 1u; slots[1] = 2u; slots[2] = 3u; slots[3] = 4u;
 			lengths[0] = 130u; lengths[1] = 130u; lengths[2] = 130u; lengths[3] = 100u;
 
-			setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE","0",1);
+			setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE","0",1);
 			GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,4096u);
 			adapter_state = 0;
 			assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
@@ -1226,9 +1226,9 @@ int main(void)
 			GateObserve(&off,0u,gate_record_count(),seen_off,pool_blocks,s_observes_off);
 			assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 			library.adapter_interface.destroy(adapter_state);
-			unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+			unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 
-			setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE","1",1);
+			setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE","1",1);
 			GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,4096u);
 			adapter_state = 0;
 			assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
@@ -1249,7 +1249,7 @@ int main(void)
 				assert(on.walk_digest == off.walk_digest);
 			printf("b4_mixed identity ON distinct=%u OFF distinct=%u\n",on.distinct_blocks,off.distinct_blocks);
 			assert(on.distinct_blocks < off.distinct_blocks); /* two shared pairs */
-			unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+			unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 		}
 
 		/* ============ CASE 4: B25 pressure (squeezed deployment) ====== */
@@ -1264,7 +1264,7 @@ int main(void)
 			for (pass=0u; pass<2u; pass++)
 			{
 				uint32_t root,ok = 0u,refused = 0u;
-				setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE",pass == 0u ? "0" : "1",1);
+				setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE",pass == 0u ? "0" : "1",1);
 				/* Squeezed deployment: 256 positions -> 4 blocks/lane;
 				 * 25 resident x 4 = 128 blocks for 25 sequences of <=189
 				 * tokens (<=3 blocks) - fits, so identity is observable. */
@@ -1303,7 +1303,7 @@ int main(void)
 				refusals[pass] = refused;
 				assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 				library.adapter_interface.destroy(adapter_state);
-				unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+				unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 			}
 			printf("b25_pressure OFF ok=%u/%u ON ok=%u/%u distinct ON=%u OFF=%u\n",
 				statuses[0],statuses[0] + refusals[0],statuses[1],statuses[1] + refusals[1],
@@ -1332,7 +1332,7 @@ int main(void)
 			memset(&on,0,sizeof(on));
 			memset(&off,0,sizeof(off));
 			GateObservesReset();
-			assert(SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT == 512u);
+			assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT == 512u);
 			/* 16 prompt ROOTS, 32 users each; users of one root are
 			 * submitted CONSECUTIVELY - the 8 LRU witness slots reward
 			 * temporal locality, so interleaving all 16 roots would
@@ -1348,7 +1348,7 @@ int main(void)
 			for (pass=0u; pass<2u; pass++)
 			{
 				uint32_t ok = 0u;
-				setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE",pass == 0u ? "0" : "1",1);
+				setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE",pass == 0u ? "0" : "1",1);
 				/* resident capacity 512 forms the cell: 512 x 4 = 2048
 				 * blocks; 512 sequences of <=3 blocks each keep even the
 				 * OFF ledger inside the pool. One submission per lane:
@@ -1376,7 +1376,7 @@ int main(void)
 				statuses[pass] = ok;
 				assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 				library.adapter_interface.destroy(adapter_state);
-				unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+				unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 			}
 			printf("b512 identity ON distinct=%u OFF distinct=%u (ok=%u/%u)\n",
 				on.distinct_blocks,off.distinct_blocks,statuses[1],statuses[0]);
@@ -1395,7 +1395,7 @@ int main(void)
 		{
 			uint32_t prompt_e[126];
 			uint32_t blocks_e[32],count_e = 0u,round,record;
-			setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE","1",1);
+			setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE","1",1);
 			GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,4u,4u,4096u);
 			adapter_state = 0;
 			assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
@@ -1443,7 +1443,7 @@ int main(void)
 			printf("decode_churn ok=140 rounds, row grown to %u blocks (>=2 crossings)\n",count_e);
 			assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 			library.adapter_interface.destroy(adapter_state);
-			unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+			unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 		}
 
 		/* ============ CASE 7: wiring + limits ======================== */
@@ -1482,7 +1482,7 @@ int main(void)
 		 * The port-2 honesty bound: with adoption-without-walk-skip the
 		 * walked rows are identical ON vs OFF BY CONSTRUCTION, and no
 		 * assertion here can see the difference. This leg arms ONLY when
-		 * SPARK_QWEN38_GATE_WALK_SKIP=1 declares the CP-B module-side
+		 * SPARK_QWEN38_MAX_GATE_WALK_SKIP=1 declares the CP-B module-side
 		 * surface landed (pccore_qwen38_walkskip.patch); unarmed it
 		 * SKIPs exit-0 naming exactly that absent piece - it can never
 		 * silently green a half-landed tree. Armed, it demands:
@@ -1499,9 +1499,9 @@ int main(void)
 		 *     and OFF carrying neither new flag.
 		 */
 		{
-			const char *armed = getenv("SPARK_QWEN38_GATE_WALK_SKIP");
+			const char *armed = getenv("SPARK_QWEN38_MAX_GATE_WALK_SKIP");
 			if ( armed == 0 || strcmp(armed,"1") != 0 )
-				printf("walk_skip SKIP: SPARK_QWEN38_GATE_WALK_SKIP unset - CP-B module-side landing not declared (pccore_qwen38_walkskip.patch pending); leg inert\n");
+				printf("walk_skip SKIP: SPARK_QWEN38_MAX_GATE_WALK_SKIP unset - CP-B module-side landing not declared (pccore_qwen38_walkskip.patch pending); leg inert\n");
 			else
 			{
 				static GateDigestTable ws_off_digests,ws_on_digests;
@@ -1524,7 +1524,7 @@ int main(void)
 					GateWalkSkipFail("identity-broken",reason);
 				/* Serving half: OFF leg then ON leg, donor + identical
 				 * sibling of 200 tokens (witnessed boundaries 64/128/192). */
-				setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE","0",1);
+				setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE","0",1);
 				GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,4096u);
 				adapter_state = 0;
 				assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
@@ -1540,11 +1540,11 @@ int main(void)
 				GateObserve(&off,0u,gate_record_count(),ws_seen_off,pool_blocks,ws_off_digests);
 				assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 				library.adapter_interface.destroy(adapter_state);
-				unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+				unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 				/* OFF must be pure scratch: no CP-B flags anywhere. */
 				if ( off.resume_seen != 0u || off.checkpoint_seen != 0u )
 					GateWalkSkipFail("identity-broken","OFF leg carried PREFIX_RESUME/GDN_CHECKPOINT frames - switch is not a pure toggle");
-				setenv("SPARK_QWEN38_SERVING_PREFIX_CACHE","1",1);
+				setenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE","1",1);
 				GateConfiguration(&configuration,TEST_QWEN38_SERVING_CONFIG_PATH,runtime_root,&test_state,8u,8u,4096u);
 				adapter_state = 0;
 				assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
@@ -1559,7 +1559,7 @@ int main(void)
 				GateObserve(&on,0u,gate_record_count(),ws_seen_on,pool_blocks,ws_on_digests);
 				assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 				library.adapter_interface.destroy(adapter_state);
-				unsetenv("SPARK_QWEN38_SERVING_PREFIX_CACHE");
+				unsetenv("SPARK_QWEN38_MAX_SERVING_PREFIX_CACHE");
 				verdict = GateWalkSkipVerifyPair(&off,&on,ws_off_digests,ws_on_digests,"walk_skip_serving");
 				if ( verdict == GateWalkSkipRowsNotReduced )
 					GateWalkSkipFail("rows-not-reduced","rows_walked(ON) not STRICTLY less than rows_walked(OFF) - module side unlanded or resume never fired");
@@ -1574,16 +1574,16 @@ int main(void)
 				for (record_scan=0u; record_scan<gate_record_count(); record_scan++)
 				{
 					const GateFrameRecord *frame = (const GateFrameRecord *)gate_record_get(record_scan);
-					if ( (frame->context_flags & SPARK_QWEN38_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME) != 0u )
+					if ( (frame->context_flags & SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFIX_RESUME) != 0u )
 					{
 						resume_frame_seen++;
 						resume_slot = frame->snapshot_index;
 						if ( frame->snapshot_index_present == 0u ||
-							frame->base_position % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS != 0u )
+							frame->base_position % SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS != 0u )
 							GateWalkSkipFail("identity-broken","resume frame base not on a publish boundary or snapshot view missing");
 					}
 				}
-				if ( resume_frame_seen != 1u || resume_slot >= SPARK_QWEN38_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS )
+				if ( resume_frame_seen != 1u || resume_slot >= SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS )
 					GateWalkSkipFail("identity-broken","expected exactly one well-shaped PREFIX_RESUME frame naming a live checkpoint slot");
 				if ( on.checkpoint_seen == 0u )
 					GateWalkSkipFail("identity-broken","no GDN_CHECKPOINT capture frame on the donor walk");
