@@ -574,6 +574,16 @@ def active_ceph_processes() -> list[str]:
     return(sorted(row.strip() for row in output.splitlines() if CEPH_PROCESS_PATTERN.search(row)))
 
 
+def active_ceph_containers() -> list[str]:
+    if shutil.which("podman") is None:
+        return([])
+    output = command([
+        "podman","ps","--filter=label=ceph=True",
+        "--format={{.ID}}:{{.Names}}:{{.Status}}",
+    ])
+    return(sorted(row.strip() for row in output.splitlines() if row.strip()))
+
+
 def ceph_persistent_links(root: Path = Path("/etc/systemd/system")) -> list[Path]:
     return(sorted(
         path for path in root.rglob("ceph*")
@@ -633,6 +643,9 @@ def remove_ceph_startup(
     processes = active_ceph_processes()
     if processes:
         raise BrickproofError(f"Ceph processes remained after stop: {processes}")
+    containers = active_ceph_containers()
+    if containers:
+        raise BrickproofError(f"Ceph containers remained after stop: {containers}")
     run(["systemctl","reset-failed","ceph*.service","ceph*.target"],check=False)
 
 
@@ -655,6 +668,7 @@ def enable_policy_services() -> None:
     run(["systemctl","unmask","fstrim.service"])
     run(["systemctl","enable","--now","fstrim.timer"])
     run(["systemctl","reset-failed","fstrim.service","fstrim.timer"],check=False)
+    run(["systemctl","reset-failed","user@0.service"],check=False)
     run(["systemctl","set-default","multi-user.target"])
     run(["systemctl","set-property","--runtime","user-1000.slice","MemoryHigh=100G","MemoryMax=108G","MemorySwapMax=0"])
 
@@ -980,11 +994,13 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     ceph_states = ceph_unit_file_states()
     ceph_active = active_ceph_units()
     ceph_processes = active_ceph_processes()
+    ceph_containers = active_ceph_containers()
     ceph_links = [str(path) for path in ceph_persistent_links()]
     ceph_artifacts = [str(path) for path in ceph_startup_artifacts()]
     observations["ceph_unit_states"] = ceph_states
     observations["ceph_active_units"] = ceph_active
     observations["ceph_active_processes"] = ceph_processes
+    observations["ceph_active_containers"] = ceph_containers
     observations["ceph_startup_links"] = ceph_links
     observations["ceph_startup_artifacts"] = ceph_artifacts
     observations["ceph_legacy_marker"] = LEGACY_CEPH_WARM_STORAGE_MARKER.exists()
@@ -999,6 +1015,8 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
         failures.append("ceph-active:" + ",".join(ceph_active))
     if ceph_processes:
         failures.append("ceph-processes:" + ",".join(ceph_processes))
+    if ceph_containers:
+        failures.append("ceph-containers:" + ",".join(ceph_containers))
     if ceph_links:
         failures.append("ceph-startup-links:" + ",".join(ceph_links))
     if ceph_artifacts:
