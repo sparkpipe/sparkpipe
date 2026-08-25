@@ -22,6 +22,7 @@ SPARKPIPE_HOST_CUDA_STUB_SOURCE :=
 SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE := tests/cuda_stub/cuda_runtime_stub.c
 SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 endif
+MODEL_COMMON_INCLUDE_FLAGS += -Imodel-families/common/include
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
 QWEN36_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen36/include
 QWEN38_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen38/include

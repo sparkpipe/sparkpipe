@@ -6,3 +6,5 @@ __pycache__/
 diagnostics/
 tools/devcycle/drivers/
 .agents/
+.codex/
+.tshome/

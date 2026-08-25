@@ -21,7 +21,8 @@ SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
 
     memset(tap_plan, 0, sizeof(*tap_plan));
     tap_plan->abi_version = SPARK_DSPARK_ABI_VERSION;
-    tap_plan->descriptor_bytes = SPARK_DSPARK_HIDDEN_TAP_PLAN_DESCRIPTOR_BYTES;
+    tap_plan->descriptor_bytes =
+        SPARK_GLM52_DSPARK_HIDDEN_TAP_PLAN_DESCRIPTOR_BYTES;
     tap_plan->aux_layer_count = SPARK_DSPARK_AUX_LAYER_COUNT;
     tap_plan->hidden_dimension = SPARK_DSPARK_HIDDEN_DIMENSION;
     tap_plan->pp_stage_count = SPARK_GLM52_MODEL_DSPARK_PP_STAGE_COUNT;
@@ -55,7 +56,7 @@ SparkStatus SparkGlm52DsparkValidateHiddenTapPlan(
     if (tap_plan == 0 ||
         tap_plan->abi_version != SPARK_DSPARK_ABI_VERSION ||
         tap_plan->descriptor_bytes !=
-            SPARK_DSPARK_HIDDEN_TAP_PLAN_DESCRIPTOR_BYTES ||
+            SPARK_GLM52_DSPARK_HIDDEN_TAP_PLAN_DESCRIPTOR_BYTES ||
         tap_plan->aux_layer_count != SPARK_DSPARK_AUX_LAYER_COUNT ||
         tap_plan->hidden_dimension != SPARK_DSPARK_HIDDEN_DIMENSION ||
         tap_plan->pp_stage_count != 13u ||

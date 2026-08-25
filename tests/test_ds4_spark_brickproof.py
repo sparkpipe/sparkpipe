@@ -147,6 +147,16 @@ Boot0002* ubuntu HD(1,GPT,def)
             self.assertNotIn("WantedBy=multi-user.target",service)
             self.assertIn("WantedBy=timers.target",timer)
 
+    def test_optional_ceph_requires_explicit_selection(self) -> None:
+        service = (ROOT / "tools" / "devcycle" / "fleet" / "ds4-optional-storage.service").read_text()
+        self.assertIn("ConditionPathExists=/etc/sparkpipe/enable-ceph-warm-storage",service)
+
+    def test_ceph_logrotate_compatibility_is_processed_first(self) -> None:
+        source = (ROOT / "tools" / "devcycle" / "fleet" / "00-sparkpipe-cephadm").read_text()
+        self.assertIn("/var/log/ceph/cephadm.log",source)
+        self.assertIn("ignoreduplicates",source)
+        self.assertIn("/etc/logrotate.d/00-sparkpipe-cephadm",MODULE.ASSET_SOURCES)
+
     def test_switched_fabric_runtime_only_applies_local_fabric(self) -> None:
         source = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_switched_fabric_apply.sh").read_text()
         runtime = source.rsplit("\nfi\n",1)[1].strip()
@@ -234,6 +244,22 @@ Boot0002* ubuntu HD(1,GPT,def)
     def test_network_kernel_modules_have_one_canonical_load_list(self) -> None:
         self.assertEqual(MODULE.REQUIRED_KERNEL_MODULES,("sch_fq_codel",))
         self.assertEqual(MODULE.KERNEL_MODULES_LOAD,"sch_fq_codel\n")
+
+    def test_fleet_audit_rejects_degraded_maintenance(self) -> None:
+        source = SCRIPT.read_text()
+        self.assertIn('["systemctl","unmask","fstrim.service"]',source)
+        self.assertIn('["systemctl","--failed","--no-legend","--plain"]',source)
+        self.assertIn('["logrotate","--debug","/etc/logrotate.conf"]',source)
+
+    def test_fleet_audit_pins_physical_interfaces(self) -> None:
+        self.assertEqual(MODULE.SWITCHED_INTERFACE,"enp1s0f1np1")
+        self.assertEqual(MODULE.SWITCHED_SPEED_MBIT,"100000")
+        self.assertEqual(MODULE.DIRECT_INTERFACE,"enp1s0f0np0")
+        self.assertEqual(MODULE.DIRECT_SPEED_MBIT,"200000")
+        source = SCRIPT.read_text()
+        self.assertIn('"nvidia-smi","--query-gpu=name,temperature.gpu"',source)
+        self.assertIn('["tailscale","status","--json"]',source)
+        self.assertIn('extnvme-not-mounted-rw',source)
 
     def test_persistent_unit_links_only_returns_dependency_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
