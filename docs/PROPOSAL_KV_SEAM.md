@@ -461,20 +461,20 @@ NVMe sizing cross-check tests/test_nvme_kv_estimate.py. No GLM52-specific KV hos
 test exists yet because the JIT-KV backend was archive-only; the new one should
 mirror test_k3_kv_cache.c ("the seam, crossed").
 
-### 3.5 Qwen 3.8 (+ qwen36 reference) - Qwen38 model agent owns
+### 3.5 Qwen 3.8 (+ qwen38_27b reference) - Qwen38 model agent owns
 
 Target: adopt SparkKvPageStore + SparkKvStore, and finish TP 1/N head-sharding.
 Today qwen38 links stage_kv_client.c + kv_store.c but the adapter is
 DRIVER_OWNS_KV and the module ignores the page budgets (docs/QWEN38_MAX_KV.md:29-35).
 Steps: (1) fill SparkKvModelTable for the 23 full-attention layers (2 x 4 heads x
 256 x bf16 = 2048 elements/token, spark_qwen38_model.h:53-54); (2) wire the
-store client (qwen36's SparkQwen36ModuleOpenKvTier is the complete reference,
+store client (qwen38_27b's SparkQwen38_27bModuleOpenKvTier is the complete reference,
 docs/QWEN38_MAX_KV.md:42-48); (3) activate head-parallel 1/tp_degree KV sharding
 (currently refused at tp_degree > 1, docs/QWEN38_MAX_KV.md:127-130).
 
 Pinned by: tests/test_kv_store.c (store contracts + lookahead),
-tests/test_kv_mooncake.cpp (provider PUT/GET roundtrip), and the qwen36 reference
-tests/test_qwen36_serving_adapter.c. The qwen38 work-control tests landed in the
+tests/test_kv_mooncake.cpp (provider PUT/GET roundtrip), and the qwen38_27b reference
+tests/test_qwen38_27b_serving_adapter.c. The qwen38 work-control tests landed in the
 audit (QWEN38_MAX_KV.md:108-110, test_qwen38_work_control).
 
 ### 3.6 K3 (wire the capacity path; geometry header is already correct) - K3 model agent owns

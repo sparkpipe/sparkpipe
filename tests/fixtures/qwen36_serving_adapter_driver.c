@@ -1,7 +1,7 @@
 /*
- * Fixture driver for the qwen36 serving adapter test. Emulates the compiled
+ * Fixture driver for the qwen38_27b serving adapter test. Emulates the compiled
  * model_driver.so shape: descriptor/flags/profile the adapter pins, create
- * reading the strict process environment the adapter must set (the qwen36
+ * reading the strict process environment the adapter must set (the qwen38_27b
  * module's real configuration channel), submit_return completion, and the
  * head stage's token emission. TP4: every rank owns the embedding and the
  * head, so a frame carries token ids in (buffer 0) and head tokens out
@@ -17,22 +17,22 @@
 
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_model_driver_support.h"
-#include "sparkpipe/spark_qwen36_model.h"
-#include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_qwen38_27b_model.h"
+#include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 
-#ifndef QWEN36_MODEL_REVISION
-#error "QWEN36_MODEL_REVISION must match the adapter build"
+#ifndef QWEN38_27B_MODEL_REVISION
+#error "QWEN38_27B_MODEL_REVISION must match the adapter build"
 #endif
-#ifndef QWEN36_CONTRACT_SHA256
-#error "QWEN36_CONTRACT_SHA256 must match the adapter build"
+#ifndef QWEN38_27B_CONTRACT_SHA256
+#error "QWEN38_27B_CONTRACT_SHA256 must match the adapter build"
 #endif
 
-/* TP4: the adapter sets a single module stage (SPARK_QWEN36_STAGE_COUNT=1,
+/* TP4: the adapter sets a single module stage (SPARK_QWEN38_27B_STAGE_COUNT=1,
  * STAGE_INDEX=0) on every rank. */
-#define TEST_QWEN36_DRIVER_STAGE_COUNT 1u
-#define TEST_QWEN36_DRIVER_CAPTURE_ROWS 16u
+#define TEST_QWEN38_27B_DRIVER_STAGE_COUNT 1u
+#define TEST_QWEN38_27B_DRIVER_CAPTURE_ROWS 16u
 
-typedef struct TestQwen36ServingDriver
+typedef struct TestQwen38_27bServingDriver
 {
 	SparkModelDriverCompletionFunction completion_function;
 	void *completion_context;
@@ -40,49 +40,49 @@ typedef struct TestQwen36ServingDriver
 	uint32_t kv_block_count;
 	uint64_t submitted_count;
 	uint64_t completed_count;
-} TestQwen36ServingDriver;
+} TestQwen38_27bServingDriver;
 
-static SparkStatus TestQwen36ServingDriverSubmit(
+static SparkStatus TestQwen38_27bServingDriverSubmit(
 	void *driver_instance,
 	SparkModelDriverFrame *frame);
 
-static const SparkModelDriverProgramProfile TestQwen36ServingDriverProfile =
+static const SparkModelDriverProgramProfile TestQwen38_27bServingDriverProfile =
 {
 	.descriptor_bytes = sizeof(SparkModelDriverProgramProfile),
 	.profile_flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
-	.max_inflight = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
-	.max_active_slots = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	.max_new_tokens = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	.max_resident_sequences = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	.max_sequence_tokens = SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS
+	.max_inflight = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
+	.max_active_slots = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+	.max_new_tokens = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+	.max_resident_sequences = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+	.max_sequence_tokens = SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS
 };
 
-static const SparkModelDriverProgramDescriptor TestQwen36ServingDriverProgram =
+static const SparkModelDriverProgramDescriptor TestQwen38_27bServingDriverProgram =
 {
 	.program_id = 1u,
 	.flags = SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_RESIDENT_STATE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_FIXED_FIRMWARE | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT,
-	.max_inflight = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
+	.max_inflight = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.name = "resident_decode",
-	.profile = &TestQwen36ServingDriverProfile,
-	.submit = TestQwen36ServingDriverSubmit
+	.profile = &TestQwen38_27bServingDriverProfile,
+	.submit = TestQwen38_27bServingDriverSubmit
 };
 
-static const SparkModelDriverDescriptor TestQwen36ServingDriverDescriptor =
+static const SparkModelDriverDescriptor TestQwen38_27bServingDriverDescriptor =
 {
 	.abi_version = SPARK_MODEL_DRIVER_ABI_VERSION,
 	.descriptor_bytes = sizeof(SparkModelDriverDescriptor),
 	.model_id = "alibaba.qwen3.6-27b.resident-decode-stage-firmware",
-	.model_revision = QWEN36_MODEL_REVISION,
-	.stage_name = "qwen36_resident_decode_stage",
-	.target = "cuda.sm121.qwen36.resident_decode_stage.bf16",
-	.model_description_sha256 = QWEN36_CONTRACT_SHA256,
+	.model_revision = QWEN38_27B_MODEL_REVISION,
+	.stage_name = "qwen38_27b_resident_decode_stage",
+	.target = "cuda.sm121.qwen38_27b.resident_decode_stage.bf16",
+	.model_description_sha256 = QWEN38_27B_CONTRACT_SHA256,
 	.compiled_program_sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	.program_count = 1u,
 	.module_instance_count = 1u,
-	.programs = &TestQwen36ServingDriverProgram
+	.programs = &TestQwen38_27bServingDriverProgram
 };
 
-static uint32_t TestQwen36ServingDriverEnvironmentUnsigned(
+static uint32_t TestQwen38_27bServingDriverEnvironmentUnsigned(
 	const char *name,
 	uint32_t *value)
 {
@@ -99,11 +99,11 @@ static uint32_t TestQwen36ServingDriverEnvironmentUnsigned(
 	return(1u);
 }
 
-static SparkStatus TestQwen36ServingDriverCreate(
+static SparkStatus TestQwen38_27bServingDriverCreate(
 	const SparkModelDriverCreateRequest *request,
 	void **driver_instance)
 {
-	TestQwen36ServingDriver *driver;
+	TestQwen38_27bServingDriver *driver;
 	uint32_t stage_count,stage_index,kv_blocks,pipeline_slots;
 	const char *pack_path;
 	if ( SparkModelDriverCreateRequestIsValid(request) == 0u || driver_instance == 0 || request->execution_stream == 0 || request->completion_function == 0 )
@@ -112,12 +112,12 @@ static SparkStatus TestQwen36ServingDriverCreate(
 	 * passes no node context; both are pinned here. */
 	if ( request->node_context != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	pack_path = getenv("SPARK_QWEN36_STAGE_PACK_PATH");
-	if ( pack_path == 0 || strstr(pack_path,"qwen36-stage") == 0 || getenv("SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION") == 0 || getenv("SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION")[0] != '1' )
+	pack_path = getenv("SPARK_QWEN38_27B_STAGE_PACK_PATH");
+	if ( pack_path == 0 || strstr(pack_path,"qwen38_27b-stage") == 0 || getenv("SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION") == 0 || getenv("SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION")[0] != '1' )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( TestQwen36ServingDriverEnvironmentUnsigned("SPARK_QWEN36_STAGE_COUNT",&stage_count) == 0u || stage_count != TEST_QWEN36_DRIVER_STAGE_COUNT || TestQwen36ServingDriverEnvironmentUnsigned("SPARK_QWEN36_STAGE_INDEX",&stage_index) == 0u || stage_index >= stage_count || TestQwen36ServingDriverEnvironmentUnsigned("SPARK_QWEN36_STAGE_KV_BLOCKS",&kv_blocks) == 0u || kv_blocks == 0u || TestQwen36ServingDriverEnvironmentUnsigned("SPARK_QWEN36_STAGE_PIPELINE_SLOTS",&pipeline_slots) == 0u || pipeline_slots == 0u )
+	if ( TestQwen38_27bServingDriverEnvironmentUnsigned("SPARK_QWEN38_27B_STAGE_COUNT",&stage_count) == 0u || stage_count != TEST_QWEN38_27B_DRIVER_STAGE_COUNT || TestQwen38_27bServingDriverEnvironmentUnsigned("SPARK_QWEN38_27B_STAGE_INDEX",&stage_index) == 0u || stage_index >= stage_count || TestQwen38_27bServingDriverEnvironmentUnsigned("SPARK_QWEN38_27B_STAGE_KV_BLOCKS",&kv_blocks) == 0u || kv_blocks == 0u || TestQwen38_27bServingDriverEnvironmentUnsigned("SPARK_QWEN38_27B_STAGE_PIPELINE_SLOTS",&pipeline_slots) == 0u || pipeline_slots == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	driver = (TestQwen36ServingDriver *)calloc(1u,sizeof(*driver));
+	driver = (TestQwen38_27bServingDriver *)calloc(1u,sizeof(*driver));
 	if ( driver == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	driver->completion_function = request->completion_function;
@@ -128,16 +128,16 @@ static SparkStatus TestQwen36ServingDriverCreate(
 	return(SPARK_STATUS_OK);
 }
 
-static void TestQwen36ServingDriverDestroy(void *driver_instance)
+static void TestQwen38_27bServingDriverDestroy(void *driver_instance)
 {
-	TestQwen36ServingDriver *driver;
-	driver = (TestQwen36ServingDriver *)driver_instance;
+	TestQwen38_27bServingDriver *driver;
+	driver = (TestQwen38_27bServingDriver *)driver_instance;
 	if ( driver == 0 )
 		return;
 	free(driver);
 }
 
-static SparkStatus TestQwen36ServingDriverAdmit(
+static SparkStatus TestQwen38_27bServingDriverAdmit(
 	void *driver_instance,
 	const SparkModelDriverAdmissionRequest *request,
 	SparkModelDriverAdmissionDecision *decision)
@@ -148,48 +148,48 @@ static SparkStatus TestQwen36ServingDriverAdmit(
 	decision->descriptor_bytes = sizeof(*decision);
 	decision->accepted = 1u;
 	decision->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
-	decision->available_dispatch_slot_count = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
+	decision->available_dispatch_slot_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus TestQwen36ServingDriverSubmit(
+static SparkStatus TestQwen38_27bServingDriverSubmit(
 	void *driver_instance,
 	SparkModelDriverFrame *frame)
 {
-	TestQwen36ServingDriver *driver;
-	SparkQwen36ResidentDecodeStageFrameContext *context;
+	TestQwen38_27bServingDriver *driver;
+	SparkQwen38_27bResidentDecodeStageFrameContext *context;
 	SparkModelDriverCompletion completion;
 	uint32_t prefill,rows,row;
 	uint32_t *tokens;
-	driver = (TestQwen36ServingDriver *)driver_instance;
+	driver = (TestQwen38_27bServingDriver *)driver_instance;
 	if ( driver == 0 || frame == 0 || frame->user_context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->tokens_per_sequence != 1u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	context = (SparkQwen36ResidentDecodeStageFrameContext *)frame->user_context;
-	if ( context->abi_version != SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes < (uint32_t)sizeof(*context) )
+	context = (SparkQwen38_27bResidentDecodeStageFrameContext *)frame->user_context;
+	if ( context->abi_version != SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes < (uint32_t)sizeof(*context) )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
 	if ( prefill != 0u )
 	{
-		if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) == 0u || context->prefill_frame == 0 || context->decode_batch != 0 || frame->active_slot_count != 1u )
+		if ( (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) == 0u || context->prefill_frame == 0 || context->decode_batch != 0 || frame->active_slot_count != 1u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		rows = context->prefill_frame->token_count;
 	}
 	else
 	{
-		if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) == 0u || context->decode_batch == 0 || context->prefill_frame != 0 || frame->active_slot_count != frame->new_token_count )
+		if ( (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) == 0u || context->decode_batch == 0 || context->prefill_frame != 0 || frame->active_slot_count != frame->new_token_count )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		rows = context->decode_batch->row_count;
 	}
-	if ( rows == 0u || rows > TEST_QWEN36_DRIVER_CAPTURE_ROWS || rows != frame->new_token_count )
+	if ( rows == 0u || rows > TEST_QWEN38_27B_DRIVER_CAPTURE_ROWS || rows != frame->new_token_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE) == 0u || context->kv_block_table == 0 || context->kv_block_table->physical_block_indices == 0 || context->kv_block_table->host_physical_block_indices == 0 || context->kv_block_table->host_lane_physical_block_counts == 0 )
+	if ( (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE) == 0u || context->kv_block_table == 0 || context->kv_block_table->physical_block_indices == 0 || context->kv_block_table->host_physical_block_indices == 0 || context->kv_block_table->host_lane_physical_block_counts == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	/* TP4: every rank owns the embedding and the head, so a frame carries the
 	 * token ids in (buffer 0) and the head tokens out (buffer 1) with no
 	 * hidden transport. */
-	if ( (context->flags & (SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT | SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT)) != 0u || context->hidden_input_post_receive_function != 0 || context->hidden_output_send_function != 0 )
+	if ( (context->flags & (SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT | SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT)) != 0u || context->hidden_input_post_receive_function != 0 || context->hidden_output_send_function != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->buffer_count != 2u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)rows * sizeof(uint32_t) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -216,38 +216,38 @@ static SparkStatus TestQwen36ServingDriverSubmit(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus TestQwen36ServingDriverSnapshot(
+static SparkStatus TestQwen38_27bServingDriverSnapshot(
 	void *driver_instance,
 	uint32_t program_id,
 	SparkModelDriverRuntimeSnapshot *snapshot)
 {
-	TestQwen36ServingDriver *driver;
+	TestQwen38_27bServingDriver *driver;
 	if ( driver_instance == 0 || program_id != 1u || snapshot == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	driver = (TestQwen36ServingDriver *)driver_instance;
+	driver = (TestQwen38_27bServingDriver *)driver_instance;
 	memset(snapshot,0,sizeof(*snapshot));
 	snapshot->descriptor_bytes = sizeof(*snapshot);
 	snapshot->program_id = program_id;
-	snapshot->available_dispatch_slot_count = SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
+	snapshot->available_dispatch_slot_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
 	snapshot->submitted_count = driver->submitted_count;
 	snapshot->completed_count = driver->completed_count;
-	snapshot->kv_token_capacity = (uint64_t)driver->kv_block_count * SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	snapshot->kv_token_capacity = (uint64_t)driver->kv_block_count * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	return(SPARK_STATUS_OK);
 }
 
-static const SparkModelDriverInterface TestQwen36ServingDriverInterface =
+static const SparkModelDriverInterface TestQwen38_27bServingDriverInterface =
 {
 	.abi_version = SPARK_MODEL_DRIVER_ABI_VERSION,
 	.interface_bytes = sizeof(SparkModelDriverInterface),
-	.descriptor = &TestQwen36ServingDriverDescriptor,
-	.create = TestQwen36ServingDriverCreate,
-	.destroy = TestQwen36ServingDriverDestroy,
-	.admit = TestQwen36ServingDriverAdmit,
-	.snapshot = TestQwen36ServingDriverSnapshot
+	.descriptor = &TestQwen38_27bServingDriverDescriptor,
+	.create = TestQwen38_27bServingDriverCreate,
+	.destroy = TestQwen38_27bServingDriverDestroy,
+	.admit = TestQwen38_27bServingDriverAdmit,
+	.snapshot = TestQwen38_27bServingDriverSnapshot
 };
 
 __attribute__((visibility("default")))
 const SparkModelDriverInterface *SparkModelDriverGetInterface(void)
 {
-	return(&TestQwen36ServingDriverInterface);
+	return(&TestQwen38_27bServingDriverInterface);
 }

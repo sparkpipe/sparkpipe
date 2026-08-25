@@ -38,10 +38,10 @@ their module API:
 2. **run_rank** — execute the stage with the existing collective no-op so the
    reduces become no-ops and the PARTIAL output is captured. The reference
    pattern is the `TP_STANDALONE` escape hatch in
-   `modules/qwen36_resident_decode_stage/source/spark_qwen36_tp.c:177-181`:
-   when the env var is set, `SparkQwen36TpInitialize` returns early
-   (`spark_qwen36_tp.c:177-182`) and `SparkQwen36TpReduceHidden` is already
-   a no-op because `initialized == 0` (`spark_qwen36_tp.c:385-386`). The
+   `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c:177-181`:
+   when the env var is set, `SparkQwen38_27bTpInitialize` returns early
+   (`spark_qwen38_27b_tp.c:177-182`) and `SparkQwen38_27bTpReduceHidden` is already
+   a no-op because `initialized == 0` (`spark_qwen38_27b_tp.c:385-386`). The
    same shape is expected on the other families' TP state.
 3. **the TP plan** — a list of sweeps + host collectives (`all_reduce_sum`
    after a row-parallel down/o projection, `reduce_scatter` after a
@@ -53,7 +53,7 @@ their module API:
 
 The host emulation sums the ranks in rank order in fp32 and rounds once to bf16.
 The device combine folds each rank into the consumer buffer in its own order
-(e.g. `SparkQwen36LaunchAccumAdd`, `spark_qwen36_tp.c:42-46`). If the golden
+(e.g. `SparkQwen38_27bLaunchAccumAdd`, `spark_qwen38_27b_tp.c:42-46`). If the golden
 is bit-exact logits, the caller must make its `run_rank` partials reproduce the
 device reduce order, or accept the hash comparison at the reduced precision.
 This is the same accumulation-order contract the delta-rule kernels already

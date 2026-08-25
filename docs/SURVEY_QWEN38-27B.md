@@ -67,7 +67,7 @@ This is the single most important survey conclusion.
 2. **Adopt DSpark (separate 5-layer drafter) over MTP.** Survey: MTP cost/
    draft-token 0.153 vs DSpark 0.046 (3.3x cheaper); DSpark k7 beats every MTP
    row and reaches 58.5 tok/s FP8 single-stream. Our in-checkpoint MTP re-runs
-   a full lm_head argmax per draft (`spark_qwen36_resident_decode_stage_module.c:1556-1576`),
+   a full lm_head argmax per draft (`spark_qwen38_27b_resident_decode_stage_module.c:1556-1576`),
    the exact anti-pattern the survey flags. New drafter ~+200 lines + contract
    cards; the highest ceiling.
 3. **Land FP8 weights (vendor `Qwen/Qwen3.8-27B-FP8`, 28.5 GiB).** Halves the
@@ -83,11 +83,11 @@ This is the single most important survey conclusion.
    launches/step (TOP10 #9). Expected: close launch overhead toward the weight
    floor. ~0 net lines (graph capture), high risk.
 6. **Lossless BF16 weight codec + decompress-in-GEMM.** Our measured 1.52x
-   entropy headroom (QWEN36_TP4_PERF.md:35-36) is the output-preserving analogue
+   entropy headroom (QWEN38_27B_TP4_PERF.md:35-36) is the output-preserving analogue
    of quantization — +25-30% at BF16 with zero quality loss. +~200 lines
    (CUDA-KERNELS card).
 7. **Screen the B1 head (full-vocab argmax) + fuse GDN small kernels.** The last
-   ~1-3 ms to the practical ceiling (QWEN36_TP4_PERF.md:25-28). The FP8 SOTA's
+   ~1-3 ms to the practical ceiling (QWEN38_27B_TP4_PERF.md:25-28). The FP8 SOTA's
    7.88-vs-9.5-floor shows the same ~17% overhead we carry; these trims are the
    same shape. ~0 net lines.
 8. **Tune speculation depth k per workload.** SOTA: k=3 best on fresh generation,

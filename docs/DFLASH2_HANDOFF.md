@@ -11,7 +11,7 @@
 
 **UPDATE (same session, later commits): the engine is now PROVEN FAITHFUL and the
 acceptance gap is fully attributed.** The numpy-oracle replay on the engine's own
-dumped taps (full-prefix ctxrun dumps + `tools/qwen36_dflash2_engine_faithfulness.py`)
+dumped taps (full-prefix ctxrun dumps + `tools/qwen38_27b_dflash2_engine_faithfulness.py`)
 matches the engine's drafts on 82/84 positions over 12 rounds (97.6%; the two
 misses are isolated single-position near-tie flips, the sub-bf16 numerics class). The
 per-depth streak is FLAT (71/75/71/67/80/66% at k=7 MX =1 - the block-diffusion
@@ -35,13 +35,13 @@ regenerated on manual import). The prior session ported the walk from that dead 
 
 Evidence: on the reference's own dumped inputs, argmax-per-row agrees with the reference's
 drafts at **96–100% per position** (37/39, 37/39, 39/39, 39/39, 39/39, 39/39, 38/39) vs
-87%-at-best for any walk variant (`tools/qwen36_dflash2_vllm_input_parity.py`,
+87%-at-best for any walk variant (`tools/qwen38_27b_dflash2_vllm_input_parity.py`,
 SELECT_MODE=argmax default).
 
-Engine: the host walk in `SparkQwen36ModuleRunDsparkBlockForward` is replaced by rank-0
+Engine: the host walk in `SparkQwen38_27bModuleRunDsparkBlockForward` is replaced by rank-0
 selection (the device top-16 is value-desc/index-asc, so rank 0 IS the argmax).
 
-Measured on O128 (spark2, k=8, `SPARK_QWEN36_DFLASH2_WINDOW=256`): **E 1.10 → 2.36**,
+Measured on O128 (spark2, k=8, `SPARK_QWEN38_27B_DFLASH2_WINDOW=256`): **E 1.10 → 2.36**,
 ~3.36 committed/round, bit-exact vs the no-spec baseline (same token stream).
 Reference on the SAME prompt at temperature 0: **E = 2.90** (streak 81/74/72/78/86/83/90).
 Our pos-0 rate ≈ 76–81% (parity); the depth decay is still steeper than theirs — the
@@ -57,7 +57,7 @@ Other session findings:
   2048: +1.5% e2e), so this is NOT the bottleneck people feared.
 - BLOCK_KV stale-history rows barely matter under argmax (1.54 vs 1.60 mean accepted) —
   the walk-era "unlock" attribution was confounded with the wrong selection rule.
-- **Where the time actually goes** (`SPARK_QWEN36_PROFILE=1`, k=8, per frame ~229ms):
+- **Where the time actually goes** (`SPARK_QWEN38_27B_PROFILE=1`, k=8, per frame ~229ms):
   **FFN 155ms (68%!)**, GDN 44ms (19%), head 16ms, attn 12ms. The old "28ms/row GDN
   serialization" attribution was wrong — that slope was FFN-per-row. The FFN runs at ~6%
   of memory bandwidth; and the engine runs ~1.84 frames per spec round (~128 wasted
@@ -77,7 +77,7 @@ is 357.4ms of it - host orchestration is ~1ms, IPC/poll ~0.6s TOTAL across a
 
 Of the ~357ms round: ~277ms is the profiled target phases (ffn/gdn/attn/head -
 the weight-sweep memory wall) and **~80ms is the DRAFTER, which the profiler
-does not wrap** (its linears bypass SparkQwen36ModuleRunFfn): the ctx fc GEMM
+does not wrap** (its linears bypass SparkQwen38_27bModuleRunFfn): the ctx fc GEMM
 over the window, the per-layer K/V projections, the cache-attn kernel (which
 RE-NORMS and RE-ROPES every context K row per (block-row, head) - 256x
 redundant work by design, for the exact bf16 rounding path), the 5-layer block
@@ -85,7 +85,7 @@ forward, the select, and the padding-select D2H sync.
 
 Window sweep (k=7 MX =1, O512 wall): W=2048: 74.1s | **W=256: 70.6s (best)** |
 W=128: 73.3s (acceptance loss 159->171 rounds beats the round-time gain).
-Serve `SPARK_QWEN36_DFLASH2_WINDOW=256`.
+Serve `SPARK_QWEN38_27B_DFLASH2_WINDOW=256`.
 
 Next-session targets in order:
 
@@ -100,7 +100,7 @@ Next-session targets in order:
    fabric, not occupancy, caps this pattern. THE PATH: a cp.async
    shared-staged B tile - wide coalesced loads of whole 128B lines into
    shared, mma reads from shared (CUTLASS-style). Benchmark harness is
-   committed at tools/qwen36_native_linear_bench.cu with the build command;
+   committed at tools/qwen38_27b_native_linear_bench.cu with the build command;
    the measurement note lives in SparkLmSm121LoadMxf8B.
 
 0. **CUDA-GRAPH THE VERIFY FRAME** (the master lever - fixes the FFN's launch
@@ -185,20 +185,20 @@ verified: the gate reads e["rows"]/e["cols"], and the header's file_bytes
 first fixed repack left the original 29.9GB size and every tail entry past
 it failed pack validation with a misleading kind/layer error).
 
-The REAL repack (tools/qwen36_stagepack_mx_repack.py, both fixes in) converts
+The REAL repack (tools/qwen38_27b_stagepack_mx_repack.py, both fixes in) converts
 407 tensors with mean_rel ~2.3% (max_rel 0.98 on near-zero elements - the
-approved quantization trade) to /home/spark2/sparkdata/qwen38-mx2.tp1.qwen36sp
+approved quantization trade) to /home/spark2/sparkdata/qwen38-mx2.tp1.qwen38_27bsp
 (format histogram verified: {0:363, 6:407, 1:96}). It LOADS (validator ready
 lines) but the first frames fault with a deferred illegal-memory-access that
 surfaces at the mtp_emit sync - the faulting kernel is upstream in the
 verify-frame path with fmt-6 weights. THAT AUDIT is the next MX step: run
-with the mx2 pack + SPARK_QWEN36_WS_GEMM=0 (library native path) to see if
+with the mx2 pack + SPARK_QWEN38_27B_WS_GEMM=0 (library native path) to see if
 the fault is the WS kernel in situ or the fmt-6 path generally, then
 compute-sanitize. Production is RESTORED to the F32B128 pack (verified:
 67.6s / 7.58 tps / stream e3838ba2bf2475d4).
 
-The warp-specialized kernel IS wired into SparkQwen36LaunchLinear (routes
-when a format-6 pack is loaded; kill-switch SPARK_QWEN36_WS_GEMM=0) - it is
+The warp-specialized kernel IS wired into SparkQwen38_27bLaunchLinear (routes
+when a format-6 pack is loaded; kill-switch SPARK_QWEN38_27B_WS_GEMM=0) - it is
 DORMANT on the F32B128 pack. Its isolated (dependency-cold) bench numbers:
 166.9-171.2 GB/s at the verify shapes vs the library kernel's 125.6.
 
@@ -276,7 +276,7 @@ The e8m0 GEMV scale fix (exp2f -> __uint_as_float(code<<23), bit-exact):
 standalone 228 -> 248 GB/s (the pure-read ceiling is 266-276); in-situ the
 gain is mostly absorbed by launch overhead - one more confirmation the
 graph port is the lever. The 16B cp.async 180 GB/s ceiling stands as the
-practical multi-row FFN limit; cp.async.bulk measured 115 (fenced). The GDN kernel: SparkQwen36GdnStepKernel in the .cu serializes
+practical multi-row FFN limit; cp.async.bulk measured 115 (fenced). The GDN kernel: SparkQwen38_27bGdnStepKernel in the .cu serializes
 rows in-kernel for state chaining; the A_t = decay*(I - beta k k^T)
 transition is column-independent -> per-row transitions compute in
 parallel, then a tiny serial prefix composes them; checkpoints (slots
@@ -288,9 +288,9 @@ All three capture blockers found and fixed: (1) Finish's completion sync
 (capture-aware; the wrapper syncs after replay), (2) the profile-head spin
 sync, (3) the FFN TP-reduce spin sync (module.c ~835 - it invalidated the
 capture with the sticky error surfacing at the next checked ffn launch;
-found via layer-granular captrace, now env-gated SPARK_QWEN36_CAPTRACE).
+found via layer-granular captrace, now env-gated SPARK_QWEN38_27B_CAPTRACE).
 
-RESULTS (SPARK_QWEN36_FRAME_GRAPH=1):
+RESULTS (SPARK_QWEN38_27B_FRAME_GRAPH=1):
 - NO-SPEC: WORKS - zero errors, stream BIT-IDENTICAL (76ed2695005b9b53),
   79.6s vs 80.9s. The win is ~1.6% NOT the estimated 8%: the launch
   overhead was already CPU/GPU-overlapped (memory-bound frames ~120ms of
@@ -424,7 +424,7 @@ FRAME GRAPHS: DEFAULT ON (2026-08-21). The spec-graph anomaly is RESOLVED
 - it was the FFN TP-reduce capture invalidation (guarded earlier); the
 "fourth site" lead was stale. Verified on the current build, bit-identical
 streams both paths: spec O512 20.8-20.9s / 77 rounds (vs 21.1 off, +1.5%),
-no-spec 66.3s (vs 67.5, +1.7%). Kill-switch SPARK_QWEN36_FRAME_GRAPH=0.
+no-spec 66.3s (vs 67.5, +1.7%). Kill-switch SPARK_QWEN38_27B_FRAME_GRAPH=0.
 The gain is modest for SPEC because verify/drafter/replay frames are
 graph-blocked by design (varying snapshot slots are baked kernel args).
 
@@ -445,7 +445,7 @@ accepted=3: 227ms) - the state-select replay is one row + fold drafter,
 i.e. CHEAP AND CONSTANT. The round floor IS the verify frame streaming
 the full weight set at the WS kernel's 176 GB/s (~153ms of weights alone
 at 27GB/frame). Beating 32 tps decode at E~5.8-6.7 needs the FFN GEMM at
-200+ GB/s. EXPLORED AND CLOSED (tools/qwen36_multirow_dot_bench.cu):
+200+ GB/s. EXPLORED AND CLOSED (tools/qwen38_27b_multirow_dot_bench.cu):
 generalizing the 248 GB/s M=1 scalar GEMV to M rows tops at 160.3 GB/s
 (4-way group unroll, independent accumulator chains) - plain __ldg
 streaming is issue/LSU-bound at M>=8, and the WS cp.async pipeline still
@@ -457,7 +457,7 @@ provably inert (timers + statics only) - that function is fragile to
 growth; the timestamped spec_diag line gives per-round walls without
 touching it.
 
-PLAIN-B WS KERNEL (2026-08-21, default ON, kill-switch SPARK_QWEN36_WS_PLAIN=0):
+PLAIN-B WS KERNEL (2026-08-21, default ON, kill-switch SPARK_QWEN38_27B_WS_PLAIN=0):
 staging B with plain uint4 load+store instead of cp.async 16B lifts the
 ISOLATED kernel from 176-181 to 195-205 GB/s (bit-exact 3/3x with
 A-read-from-global - the shared raw-A ring has a latent race that the
@@ -494,13 +494,13 @@ profile, not the engine.
 ```bash
 cd /home/spark2/sparkdata/qwen38.fp8.tp1
 env LD_LIBRARY_PATH=$PWD/lib:$LD_LIBRARY_PATH \
-  SPARK_QWEN36_SERVING_SPECULATE=1 \
-  SPARK_QWEN36_SERVING_SPEC_METHOD=dflash2 \
-  SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT=5 \
-  SPARK_QWEN36_DSPARK_PACK_PATH=/home/spark2/sparkdata/qwen38-dflash2-drafter.qwen36sp \
-  SPARK_QWEN36_DFLASH2_STATE_SELECT=1 \
-  SPARK_QWEN36_DFLASH2_BONUS_FOLD=2 \
-  SPARK_QWEN36_DFLASH2_BLOCK_KV=1 \
+  SPARK_QWEN38_27B_SERVING_SPECULATE=1 \
+  SPARK_QWEN38_27B_SERVING_SPEC_METHOD=dflash2 \
+  SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT=5 \
+  SPARK_QWEN38_27B_DSPARK_PACK_PATH=/home/spark2/sparkdata/qwen38-dflash2-drafter.qwen38_27bsp \
+  SPARK_QWEN38_27B_DFLASH2_STATE_SELECT=1 \
+  SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD=2 \
+  SPARK_QWEN38_27B_DFLASH2_BLOCK_KV=1 \
   setsid nohup bin/sparkpipe_model_residentd \
     --deployment config/model_resident.json --rank-index 0 \
     > /tmp/qwen38.log 2>&1 < /dev/null &
@@ -523,10 +523,10 @@ Each decode submission becomes ONE verify frame (the vLLM shape):
 Per-layer raw k/v rows of every block the drafter ever ran, keyed by position (re-walked positions overwrite), stored in `dflash_block_hist_k/v` [4096 rows/layer], copied in after the current block rows and attended at their own positions. This is the HF DynamicCache semantics that specforge trains with and vLLM serves with.
 
 ### The device-side selector
-Fused kernel: per-slot top-16 (value desc, index asc — the host pass's exact two-key order via sortable-packed atomicMax merge) + the 256-wide hidden projection (strided threads, `__fmul_rn`/`__fadd_rn` to bit-match scalar rounding). Replaces ~4MB logits D2H + ~35ms host pass with one compact ids/scores/hproj copy. `SPARK_QWEN36_DSPARK_SEL_CHECK=1` keeps the original host pass as a live oracle.
+Fused kernel: per-slot top-16 (value desc, index asc — the host pass's exact two-key order via sortable-packed atomicMax merge) + the 256-wide hidden projection (strided threads, `__fmul_rn`/`__fadd_rn` to bit-match scalar rounding). Replaces ~4MB logits D2H + ~35ms host pass with one compact ids/scores/hproj copy. `SPARK_QWEN38_27B_DSPARK_SEL_CHECK=1` keeps the original host pass as a live oracle.
 
 ### The NeoX-128 rope
-The drafter ropes HF-style `rotate_half` over the FULL 128-dim head (dim d pairs with d+64, frequency θ^(-2d/128)). This is NOT the target's convention (interleaved-64). Implemented in `SparkQwen36DsparkRopeFrequencyNeoX()` + the cache-attn kernel's q and k loops.
+The drafter ropes HF-style `rotate_half` over the FULL 128-dim head (dim d pairs with d+64, frequency θ^(-2d/128)). This is NOT the target's convention (interleaved-64). Implemented in `SparkQwen38_27bDsparkRopeFrequencyNeoX()` + the cache-attn kernel's q and k loops.
 
 ---
 
@@ -537,8 +537,8 @@ The drafter ropes HF-style `rotate_half` over the FULL 128-dim head (dim d pairs
 The reference accepts 4.3 of 7 drafts per round; we accept 1.1. Same weights, same target, same prompts. This is a 4x gap that converts directly to throughput at fixed round cost.
 
 **What's been proven equivalent (don't re-check these):**
-- Input features: our taps = reference aux at cosine 1.000 per layer over the shared GSM prompt (tool: `tools/qwen36_dflash2_fp8_bf16_tapdiff.py`)
-- Forward math: three implementations (CUDA, numpy, torch) agree bit-for-bit; specforge's `DFlashDraftModel` per-layer cosine 0.92–0.98 (tool: `tools/qwen36_dflash2_specforge_bisect.py`)
+- Input features: our taps = reference aux at cosine 1.000 per layer over the shared GSM prompt (tool: `tools/qwen38_27b_dflash2_fp8_bf16_tapdiff.py`)
+- Forward math: three implementations (CUDA, numpy, torch) agree bit-for-bit; specforge's `DFlashDraftModel` per-layer cosine 0.92–0.98 (tool: `tools/qwen38_27b_dflash2_specforge_bisect.py`)
 - bf16 rounding: fp32 forward gives identical 34/39 agreement (eliminated)
 - Sliding window: all 5 layers are `sliding_attention` with window 2048 — never binds at our prompt lengths
 - Context window size: sweeps at 2048/512/32 all flat
@@ -562,13 +562,13 @@ Running our forward on the reference's own dumped inputs, we agree with their dr
 
 ### Problem B: GDN verify serialization (~28ms/row)
 
-Our `SparkQwen36GdnStepKernel` serializes verify rows in-kernel (necessary for state chaining). The reference uses a chunked parallel mamba scan. Result: our verify cost scales linearly with k, theirs doesn't.
+Our `SparkQwen38_27bGdnStepKernel` serializes verify rows in-kernel (necessary for state chaining). The reference uses a chunked parallel mamba scan. Result: our verify cost scales linearly with k, theirs doesn't.
 
 **Measured:** k=3→k=7 adds ~110ms (4 rows × 28ms) to the round. The reference's CUDA-graphed batched verify costs the same for any k.
 
 **How to proceed:**
 - The GDN recurrence is a linear state-space scan: `s_t = A·s_{t-1} + B·x_t`. For a block of k verify rows, this can be parallelized as a chunked scan (compute per-row transitions in parallel, then prefix-scan the state). vLLM's `mamba_ssm` kernel does exactly this.
-- The kernel lives in `spark_qwen36_resident_decode_stage_cuda.cu`, function `SparkQwen36GdnStepKernel`. The checkpoint writes (per-row state snapshots to slots 8+row) must be preserved.
+- The kernel lives in `spark_qwen38_27b_resident_decode_stage_cuda.cu`, function `SparkQwen38_27bGdnStepKernel`. The checkpoint writes (per-row state snapshots to slots 8+row) must be preserved.
 - After parallelizing, k=7 becomes viable → E=1.25 × lower round cost → ~12-14 tok/s even at current acceptance.
 
 ---
@@ -577,18 +577,18 @@ Our `SparkQwen36GdnStepKernel` serializes verify rows in-kernel (necessary for s
 
 ```bash
 # 1. rsync sources
-rsync modules/qwen36_resident_decode_stage/source/*.c \
-       modules/qwen36_resident_decode_stage/source/*.cu \
-       modules/qwen36_resident_decode_stage/source/*.cuh \
-       spark2:/home/spark2/sparkpipe/modules/qwen36_resident_decode_stage/source/
-rsync modules/qwen36_resident_decode_stage/include/sparkpipe/*.h \
-       spark2:/home/spark2/sparkpipe/modules/qwen36_resident_decode_stage/include/sparkpipe/
+rsync modules/qwen38_27b_resident_decode_stage/source/*.c \
+       modules/qwen38_27b_resident_decode_stage/source/*.cu \
+       modules/qwen38_27b_resident_decode_stage/source/*.cuh \
+       spark2:/home/spark2/sparkpipe/modules/qwen38_27b_resident_decode_stage/source/
+rsync modules/qwen38_27b_resident_decode_stage/include/sparkpipe/*.h \
+       spark2:/home/spark2/sparkpipe/modules/qwen38_27b_resident_decode_stage/include/sparkpipe/
 
 # 2. module (GPU validator — MUST pass)
 ssh spark2 'pgrep -f "[s]parkpipe_model_residentd" | xargs -r kill; cd /home/spark2/sparkpipe && \
-  make -C modules/qwen36_resident_decode_stage -j8 publish \
+  make -C modules/qwen38_27b_resident_decode_stage -j8 publish \
   NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a \
-  STAGE_PACK_PATH=/home/spark2/sparkdata/qwen38.fp8.tp1/packs/qwen38-fp8.tp1.qwen36sp \
+  STAGE_PACK_PATH=/home/spark2/sparkdata/qwen38.fp8.tp1/packs/qwen38-fp8.tp1.qwen38_27bsp \
   STAGE_COUNT=1 STAGE_INDEX=0 STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=64 \
   TP_DEGREE=1 TP_RANK=0 TP_STANDALONE=1 MTP_LAYER_COUNT=1 \
   GDN_SNAPSHOT_SLOT_COUNT=16 MAX_ACTIVE_SEQUENCES=8 KV_BLOCK_COUNT=8 \
@@ -596,29 +596,29 @@ ssh spark2 'pgrep -f "[s]parkpipe_model_residentd" | xargs -r kill; cd /home/spa
 
 # 3. adapter (TP1) — rebuild BOTH or you get the stale-adapter bug
 ssh spark2 'cd /home/spark2/sparkpipe && \
-  rm -f build/libqwen36_serving_adapter.so && \
-  make build/libqwen36_serving_adapter.so \
-  CC="cc -DSPARK_QWEN36_SERVING_TP_DEGREE=1u" -j8 2>&1 | grep -c error'
+  rm -f build/libqwen38_27b_serving_adapter.so && \
+  make build/libqwen38_27b_serving_adapter.so \
+  CC="cc -DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1u" -j8 2>&1 | grep -c error'
 
 # 4. driver compile + deploy BOTH
 ssh spark2 'cd /home/spark2/sparkpipe && \
   rm -rf /tmp/qwen38-driver-new && mkdir -p /tmp/qwen38-driver-new && \
-  env SPARK_QWEN36_STAGE_COUNT=1 SPARK_QWEN36_STAGE_INDEX=0 \
-  SPARK_QWEN36_STAGE_FIRST_LAYER=0 SPARK_QWEN36_STAGE_LAYER_COUNT=64 \
-  SPARK_QWEN36_TP_DEGREE=1 SPARK_QWEN36_TP_RANK=0 SPARK_QWEN36_TP_STANDALONE=1 \
-  SPARK_QWEN36_STAGE_MTP=1 SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS=16 \
-  SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES=8 SPARK_QWEN36_STAGE_KV_BLOCKS=8 \
-  SPARK_QWEN36_STAGE_KV_STORE=none SPARK_QWEN36_STAGE_KV_SERVICE=none \
-  SPARK_QWEN36_STAGE_KV_SOCKET=none SPARK_QWEN36_STAGE_KV_POOL_BYTES=0 \
-  SPARK_QWEN36_STAGE_KV_WORKER_COUNT=0 SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION=1 \
+  env SPARK_QWEN38_27B_STAGE_COUNT=1 SPARK_QWEN38_27B_STAGE_INDEX=0 \
+  SPARK_QWEN38_27B_STAGE_FIRST_LAYER=0 SPARK_QWEN38_27B_STAGE_LAYER_COUNT=64 \
+  SPARK_QWEN38_27B_TP_DEGREE=1 SPARK_QWEN38_27B_TP_RANK=0 SPARK_QWEN38_27B_TP_STANDALONE=1 \
+  SPARK_QWEN38_27B_STAGE_MTP=1 SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS=16 \
+  SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES=8 SPARK_QWEN38_27B_STAGE_KV_BLOCKS=8 \
+  SPARK_QWEN38_27B_STAGE_KV_STORE=none SPARK_QWEN38_27B_STAGE_KV_SERVICE=none \
+  SPARK_QWEN38_27B_STAGE_KV_SOCKET=none SPARK_QWEN38_27B_STAGE_KV_POOL_BYTES=0 \
+  SPARK_QWEN38_27B_STAGE_KV_WORKER_COUNT=0 SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION=1 \
   build/sparkpipe_model_compile \
-  --model examples/model_descriptions/qwen36_resident_decode_stage_firmware.json \
+  --model examples/model_descriptions/qwen38_27b_resident_decode_stage_firmware.json \
   --library build/module_library --output /tmp/qwen38-driver-new \
   --include include --cc-arg -L/usr/local/cuda/lib64 --cc-arg -lcudart --cc-arg -lstdc++ \
   2>&1 | tail -1 && \
   cp /tmp/qwen38-driver-new/stages/stage_000/model_driver.so \
      /home/spark2/sparkdata/qwen38.fp8.tp1/lib/model_driver.so && \
-  cp build/libqwen36_serving_adapter.so \
+  cp build/libqwen38_27b_serving_adapter.so \
      /home/spark2/sparkdata/qwen38.fp8.tp1/lib/model_serving_adapter.so'
 
 # 5. code-size gate (local)
@@ -675,13 +675,13 @@ curl -s http://spark3:8123/metrics | grep spec_decode
 
 | Tool | Purpose |
 |------|---------|
-| `tools/qwen36_dflash2_vllm_input_parity.py` | Run OUR forward on THEIR dumped inputs; score draft agreement. Env: `KV_CACHE=1`, `ROPE_MODE=neox`, `DTYPE=fp32`. Run on spark3. |
-| `tools/qwen36_dflash2_specforge_bisect.py` | Layer-by-layer compare vs specforge's DFlashDraftModel on the same inputs. Run on spark3. |
-| `tools/qwen36_dflash2_fp8_bf16_tapdiff.py` | Prove our FP8 taps = their BF16 aux features per layer. |
-| `tools/qwen36_dflash2_deep_parity.py` | Replay the numpy reference on one captured dump. |
-| `tools/qwen36_dflash2_round_parity.py` | Statistical scorer across all captured rounds. |
-| `tools/qwen36_dflash2_conv_sweep.py` | 16-combo convention sweep (rope × ctx × block). |
-| `tools/qwen36_dspark_reference.py` | The numpy oracle (bf16-exact forward + selector). |
+| `tools/qwen38_27b_dflash2_vllm_input_parity.py` | Run OUR forward on THEIR dumped inputs; score draft agreement. Env: `KV_CACHE=1`, `ROPE_MODE=neox`, `DTYPE=fp32`. Run on spark3. |
+| `tools/qwen38_27b_dflash2_specforge_bisect.py` | Layer-by-layer compare vs specforge's DFlashDraftModel on the same inputs. Run on spark3. |
+| `tools/qwen38_27b_dflash2_fp8_bf16_tapdiff.py` | Prove our FP8 taps = their BF16 aux features per layer. |
+| `tools/qwen38_27b_dflash2_deep_parity.py` | Replay the numpy reference on one captured dump. |
+| `tools/qwen38_27b_dflash2_round_parity.py` | Statistical scorer across all captured rounds. |
+| `tools/qwen38_27b_dflash2_conv_sweep.py` | 16-combo convention sweep (rope × ctx × block). |
+| `tools/qwen38_27b_dspark_reference.py` | The numpy oracle (bf16-exact forward + selector). |
 
 ---
 
@@ -721,7 +721,7 @@ curl -s http://spark3:8123/metrics | grep spec_decode
    profile decomposes as 152 verify frames + ~128 one-row PREFILL CHUNKS at full weight
    cost. The committed tokens are re-fed by the client as prefill rows and re-processed
    through the whole model instead of riding the next folded verify's row 0. Fix the
-   submission-to-lane flow in `spark_qwen36_serving_adapter.c` so every committed token
+   submission-to-lane flow in `spark_qwen38_27b_serving_adapter.c` so every committed token
    is consumed by the next verify frame (the fold condition `fold_position == position`
    catches only the LAST row of a submission — with 1-row submissions it should always
    match; find why ~45% of rounds take the prefill wave instead). Potential ~1.8x.
@@ -732,7 +732,7 @@ curl -s http://spark3:8123/metrics | grep spec_decode
 
 3. **Depth-2+ draft quality** (E 2.36 vs reference 2.90 at T=0): pos-0 is at parity;
    the decay steepens after. Compare per-layer hiddens against the live reference via
-   the stage dumps (`tools/qwen36_dflash2_stage_diff.py`; needs the vllmsel dump patch
+   the stage dumps (`tools/qwen38_27b_dflash2_stage_diff.py`; needs the vllmsel dump patch
    moved into the v1 speculator's `_generate_draft`, since dflash2/speculator.py is
    dead code — the /tmp/stage_patch.py on spark3 has the working pattern).
 
@@ -751,6 +751,6 @@ At E=2.36 with frames 1.84x→1.0 and FFN at bandwidth: ~15-17 tok/s. At E=2.9: 
   (`/tmp/launch_spec2.sh <bkv> <k>` with `W=` env on spark2; pre-truncate the log and
   wait for "model_residentd ready", the stale-log grep race bites).
 - GPU zombies after kill -9 need a wait before relaunch (~5s) or the stage load hangs.
-- Benchmark wall-time includes ~10-20s fixed overhead — use `SPARK_QWEN36_PROFILE=1`
+- Benchmark wall-time includes ~10-20s fixed overhead — use `SPARK_QWEN38_27B_PROFILE=1`
   frame spins for GPU-side comparisons; the profile counters are CUMULATIVE across the
   daemon lifetime (relaunch between measurements).

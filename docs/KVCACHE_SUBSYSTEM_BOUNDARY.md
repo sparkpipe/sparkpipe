@@ -208,7 +208,7 @@ Cross-field invariants enforced by the runtime (this is the real gate):
 Only one adapter declares JIT_KV today: DSv4
 (modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c:282,
 with cache_block_token_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS
-at :305-306). glm52, qwen38, qwen36 declare DRIVER_OWNS_KV only, and k3's
+at :305-306). glm52, qwen38, qwen38_27b declare DRIVER_OWNS_KV only, and k3's
 serving adapter is a stub (capability_flags = 0u, kv_cache_codec = 0u,
 cache_block_token_count = 0u - spark_k3_serving_adapter.c:451,461,478).
 
@@ -248,7 +248,7 @@ cache_block_token_count = 0u - spark_k3_serving_adapter.c:451,461,478).
   (q) / 128 (v) (spark_mimo25_model.h:61-72), 1M positions (:57). Not a support
   target (ARCHITECTURE.md:211). No serving adapter in-tree.
 - Qwen 3.6 - the complete reference for the stage KV store path
-  (SparkQwen36ModuleOpenKvTier), per QWEN38_MAX_KV.md:42-48.
+  (SparkQwen38_27bModuleOpenKvTier), per QWEN38_MAX_KV.md:42-48.
 
 ### 1.12 The storage contract (2.5 TB hot KV per spark; N sparks store 1/N)
 
@@ -430,7 +430,7 @@ and adopt the common paged cache + NVMe tier instead of a model-local backend.
 QWEN38_MAX_KV.md already maps the gap: the module links stage_kv_client.c +
 kv_store.c but the adapter is DRIVER_OWNS_KV only and the module ignores the
 page budgets (QWEN38_MAX_KV.md:29-35). Proposal: adopt the common
-SparkKvPageStore + SparkKvStore path (qwen36's SparkQwen36ModuleOpenKvTier is
+SparkKvPageStore + SparkKvStore path (qwen38_27b's SparkQwen38_27bModuleOpenKvTier is
 the reference, QWEN38_MAX_KV.md:42-48) and complete the TP 1/N head-sharding
 (currently refused at tp_degree > 1, QWEN38_MAX_KV.md:127-130).
 

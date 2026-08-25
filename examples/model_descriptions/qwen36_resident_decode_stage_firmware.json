@@ -5,7 +5,7 @@
     "revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1"
   },
   "metadata": {
-    "architecture": "qwen36_resident_decode_stage",
+    "architecture": "qwen38_27b_resident_decode_stage",
     "purpose": "resident decode-stage firmware for Qwen 3.6 27B: 3:1 Gated DeltaNet to gated full attention, partial RoPE, dense SwiGLU FFN, bf16 weights, one-layer MTP, screened exact full-vocabulary head",
     "provenance": {
       "status": "implemented driver, codex/model-driver-family (PR #491)",
@@ -61,7 +61,7 @@
       "status": "GPU_VALIDATED",
       "production_ready": false,
       "gpu_numerical_correctness": {
-        "validator": "modules/qwen36_resident_decode_stage/validation/validate_qwen36_resident_decode_stage_cuda.sh",
+        "validator": "modules/qwen38_27b_resident_decode_stage/validation/validate_qwen38_27b_resident_decode_stage_cuda.sh",
         "device": "GB10 sm_121a",
         "stage_pack": "real PP13 stage-0 pack from Qwen/Qwen3.6-27B bf16",
         "relative_l2": 1.69e-3,
@@ -81,26 +81,26 @@
       "completion": "submit_return",
       "fallback_allowed": false,
       "runtime_backend_selection": "forbidden",
-      "model_frame_context": "SparkQwen36ResidentDecodeStageFrameContext",
+      "model_frame_context": "SparkQwen38_27bResidentDecodeStageFrameContext",
       "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
       "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
       "required_environment": [
-        "SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION",
-        "SPARK_QWEN36_STAGE_PACK_PATH",
-        "SPARK_QWEN36_STAGE_COUNT",
-        "SPARK_QWEN36_STAGE_INDEX",
-        "SPARK_QWEN36_STAGE_FIRST_LAYER",
-        "SPARK_QWEN36_STAGE_LAYER_COUNT",
-        "SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES",
-        "SPARK_QWEN36_STAGE_PIPELINE_SLOTS",
-        "SPARK_QWEN36_STAGE_KV_BLOCKS",
-        "SPARK_QWEN36_STAGE_MTP",
-        "SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS",
-        "SPARK_QWEN36_STAGE_KV_STORE",
-        "SPARK_QWEN36_STAGE_KV_SERVICE",
-        "SPARK_QWEN36_STAGE_KV_SOCKET",
-        "SPARK_QWEN36_STAGE_KV_POOL_BYTES",
-        "SPARK_QWEN36_STAGE_KV_WORKERS"
+        "SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION",
+        "SPARK_QWEN38_27B_STAGE_PACK_PATH",
+        "SPARK_QWEN38_27B_STAGE_COUNT",
+        "SPARK_QWEN38_27B_STAGE_INDEX",
+        "SPARK_QWEN38_27B_STAGE_FIRST_LAYER",
+        "SPARK_QWEN38_27B_STAGE_LAYER_COUNT",
+        "SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES",
+        "SPARK_QWEN38_27B_STAGE_PIPELINE_SLOTS",
+        "SPARK_QWEN38_27B_STAGE_KV_BLOCKS",
+        "SPARK_QWEN38_27B_STAGE_MTP",
+        "SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS",
+        "SPARK_QWEN38_27B_STAGE_KV_STORE",
+        "SPARK_QWEN38_27B_STAGE_KV_SERVICE",
+        "SPARK_QWEN38_27B_STAGE_KV_SOCKET",
+        "SPARK_QWEN38_27B_STAGE_KV_POOL_BYTES",
+        "SPARK_QWEN38_27B_STAGE_KV_WORKERS"
       ],
       "notes": [
         "decode and bounded bulk-prefill frames are structurally supported but remain unqualified",
@@ -111,8 +111,8 @@
   },
   "stages": [
     {
-      "name": "qwen36_resident_decode_stage",
-      "target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
+      "name": "qwen38_27b_resident_decode_stage",
+      "target": "cuda.sm121.qwen38_27b.resident_decode_stage.bf16",
       "programs": [
         {
           "name": "resident_decode",
@@ -136,8 +136,8 @@
           },
           "operations": [
             {
-              "name": "qwen36_resident_decode_stage",
-              "module": "spark.qwen36.resident_decode_stage.bf16.h5120.l64.gdn48.mtp1.v1",
+              "name": "qwen38_27b_resident_decode_stage",
+              "module": "spark.qwen38_27b.resident_decode_stage.bf16.h5120.l64.gdn48.mtp1.v1",
               "configuration": {
                 "qualification_status": "GPU_VALIDATED",
                 "production_ready": false,

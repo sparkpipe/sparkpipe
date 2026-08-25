@@ -4,7 +4,7 @@
   "architecture": "GatedDeltaNet hybrid, dense FFN",
   "sources": {
     "checkpoint_config": "inference/llms/qwen_3_6/config.h, AUDITED against Qwen/Qwen3.6-27B on 2026-07-27",
-    "host_geometry": "model-families/qwen36/include/sparkpipe/spark_qwen36_model.h (held in lockstep with the firmware config by the family conformance gate)",
+    "host_geometry": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h (held in lockstep with the firmware config by the family conformance gate)",
     "variant_note": "the 27B with the dense FFN; the 35B-A3B shares the name prefix and is a different model (hidden 2048, 40 layers, 256 experts) - layer.cuh implements the dense path only",
     "known_gaps": [
       "mrope_interleaved sections [11,11,10] degenerate to plain rope for text-only decode; multimodal input is not this path"

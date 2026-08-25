@@ -81,11 +81,11 @@ Tensor map (from the pinned index):
 
 Codec work reuses the existing packers: MXFP4-E2M1 expert packing from the
 DSV4 stagepack path (per-group-32 E8M0 scales), bf16 non-expert verbatim
-(qwen36 packer convention), router gate bf16 (small).
+(qwen38_27b packer convention), router gate bf16 (small).
 
 ## Module plan
 
-Clone the qwen36 module (same GDN/attention family, ~7.8k LOC) and:
+Clone the qwen38_27b module (same GDN/attention family, ~7.8k LOC) and:
 1. Geometry: hidden 8192, 92 layers, 3:1 phase, 16/128 GDN heads, 64/4
    attention heads.
 2. Swap the dense FFN (gate/up/down + SwiGlu) for the routed-MoE path:

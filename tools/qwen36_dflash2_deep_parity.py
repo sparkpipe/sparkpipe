@@ -2,13 +2,13 @@
 """Deep-draft parity: run the numpy reference on one live drafter dump and
 score it against the device's own drafts and the round's truth.
 
-Inputs (produced by SPARK_QWEN36_DFLASH2_CTX_DUMP=N on spark2):
+Inputs (produced by SPARK_QWEN38_27B_DFLASH2_CTX_DUMP=N on spark2):
   /tmp/ctxwin_taps.bin   [nb, 5, H] bf16 taps for positions 0..nb-1
   /tmp/ctxwin.meta       base=... window=... nb_base=... nb=...
   /tmp/ctxwin_anchor     the anchor token id (the frame EMISSION)
   /tmp/ctxwin_device_drafts  the device walk's 7 draft ids, same run
   argv[1] (optional): the round's 8 emitted ids (truth), comma-separated,
-  from the widened qwen36_spec_diag line of the round that consumed these
+  from the widened qwen38_27b_spec_diag line of the round that consumed these
   drafts (its drafts[] tail must equal the device dump).
 
 Convention under test (the device's): context rows = window positions
@@ -20,7 +20,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, "/home/spark2/sparkpipe/tools")
-import qwen36_dspark_reference as R  # noqa: E402
+import qwen38_27b_dspark_reference as R  # noqa: E402
 
 N_Q, N_KV, HD = R.N_Q_HEADS, R.N_KV_HEADS, R.HEAD_DIM
 

@@ -20,12 +20,12 @@ def main() -> int:
         )
     )
 
-    if "Qwen36LaunchSlice<LmBf16Format>" not in bind:
+    if "Qwen38_27bLaunchSlice<LmBf16Format>" not in bind:
         raise AssertionError("Qwen 3.6 shipping entry point is not pinned to BF16")
     for forbidden in (
-        "Qwen36LaunchSlice<LmFp8",
-        "Qwen36LaunchSlice<LmMxfp4",
-        "Qwen36LaunchSlice<LmNvfp4",
+        "Qwen38_27bLaunchSlice<LmFp8",
+        "Qwen38_27bLaunchSlice<LmMxfp4",
+        "Qwen38_27bLaunchSlice<LmNvfp4",
     ):
         if forbidden in bind:
             raise AssertionError(f"Qwen 3.6 shipping entry contains {forbidden}")
@@ -39,7 +39,7 @@ def main() -> int:
 
     qwen_targets = [
         entry for entry in targets["targets"]
-        if entry.get("model_family") == "qwen36"
+        if entry.get("model_family") == "qwen38_27b"
     ]
     if len(qwen_targets) != 1:
         raise AssertionError("must-work manifest must contain exactly one Qwen 3.6 target")

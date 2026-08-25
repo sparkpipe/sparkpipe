@@ -3,7 +3,7 @@
 // Build on spark2 from the repo root:
 //   /usr/local/cuda/bin/nvcc -std=c++17 -O3 -gencode arch=compute_121a,code=sm_121a \
 //     -I . -I include -I model-families/common/include \
-//     -I modules/qwen36_resident_decode_stage/include tools/qwen36_native_linear_bench.cu \
+//     -I modules/qwen38_27b_resident_decode_stage/include tools/qwen38_27b_native_linear_bench.cu \
 //     -o /tmp/nb_bench -lcudart
 // 2026-08-22 baseline: M=8 K=5120 N=17408 -> 0.72ms, ~116-126 GB/s (vs ~245
 // GB/s D2D ceiling). Load-width variants measured: byte-by-byte __ldg WINS

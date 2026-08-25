@@ -11,7 +11,7 @@ session; this doc records what was found before and after.
 | Fully supports JIT | PARTIAL | The serving adapter grows lane blocks on demand from a host freelist (JIT within the resident pool) and releases them at position zero. The runtime already delivers logical/physical page capacities + a 4 TB-per-host NVMe backing contract through SparkFirmwareModuleHostServices, but the module IGNORES all of it: no KV tier, no store client, no paging. Prefill is refused (SPARK_STATUS_UNSUPPORTED), so the cache can only fill one decode token per step. |
 | Sharded | PARTIAL | PP: yes - each stage's pool covers only its slice's attention layers (dense attn_ordinal_by_layer). TP: NO - attention is fully replicated, so every rank stores all 4 KV heads: 4x the needed capacity across the TP4 group. Store keys carry rank_index, so a store ring can shard by rank once the client is wired. |
 | Not using more data than needed | PARTIAL | Token record is exactly K+V head-major: 2 x 4 heads x 256 x bf16 = 2048 elements = 4 KiB per token per layer, no padding, no Q-head waste, only attention layers stored (23 of 92). The 4x TP replication is the more-data-than-needed violation; per-rank record should be 512 elements = 1 KiB. |
-| Large capacity on a dedicated spark ring | NO (module) | The deployment spec already declares kv_logical_page_capacity 1048576, kv_physical_page_capacity 16384, and a 4 TiB NVMe backing dataset per host; the KV store service + mooncake provider + service_address client path exist in-tree (qwen36 uses them). The qwen38 module links stage_kv_client.c + kv_store.c but never calls them. |
+| Large capacity on a dedicated spark ring | NO (module) | The deployment spec already declares kv_logical_page_capacity 1048576, kv_physical_page_capacity 16384, and a 4 TiB NVMe backing dataset per host; the KV store service + mooncake provider + service_address client path exist in-tree (qwen38_27b uses them). The qwen38 module links stage_kv_client.c + kv_store.c but never calls them. |
 
 ## Evidence
 
@@ -39,10 +39,10 @@ cache/store/stage_kv_client.c opens a pluggable KV store provider
 (SparkKvStoreLoadInterfaceFromSharedObject), submits keyed GET/PUT batches
 (key = model_fingerprint, cache_layout_fingerprint, rank_index, sequence_id,
 logical_block), and polls completions. modules/kv_mooncake is the network
-provider (mooncake transfer engine behind the interface). qwen36's module
-(SparkQwen36ModuleOpenKvTier) is the complete reference: env
-SPARK_QWEN36_STAGE_KV_STORE / _SERVICE / _SOCKET / _POOL_BYTES / _WORKERS,
-geometry fingerprints, and model-families/qwen36/src/spark_qwen36_work_control.c
+provider (mooncake transfer engine behind the interface). qwen38_27b's module
+(SparkQwen38_27bModuleOpenKvTier) is the complete reference: env
+SPARK_QWEN38_27B_STAGE_KV_STORE / _SERVICE / _SOCKET / _POOL_BYTES / _WORKERS,
+geometry fingerprints, and model-families/qwen38_27b/src/spark_qwen38_27b_work_control.c
 builds the restore/evict batches with the pressure-limited lookahead
 selector. qwen38 links the same client but calls nothing, and its Makefile
 declares the KV_* variables without exporting them.
@@ -80,7 +80,7 @@ service at the other end of service_address).
 
 GDN recurrent state is the larger resident cost per lane (128 value heads x
 128x128 fp32 state x 69 GDN layers ~ 552 MiB per lane at full width) and is
-the reason the work-control port keeps the qwen36 gdn record page: state
+the reason the work-control port keeps the qwen38_27b gdn record page: state
 pages out with the KV blocks.
 
 ## Kernel inventory
@@ -105,7 +105,7 @@ Missing (this session's kernel work):
 ## Fix plan (this session)
 
 Landed:
-1. spark_qwen38_work_control ported (model-families/qwen38) with the qwen36
+1. spark_qwen38_work_control ported (model-families/qwen38) with the qwen38_27b
    building-block tests (plan math, lane-atomic restore batches, tier
    roundtrip through the mooncake provider) - test_qwen38_work_control PASS.
 2. Module KV tier: host_services logical/physical page capacities recorded,

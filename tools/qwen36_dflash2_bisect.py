@@ -10,7 +10,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, "/home/spark2/sparkpipe/tools")
-import qwen36_dspark_reference as R  # noqa: E402
+import qwen38_27b_dspark_reference as R  # noqa: E402
 
 CONV_ROWS = 2 * R.CONV_KERNEL_SIZE * (R.HIDDEN // R.CONV_GROUP_SIZE)  # 1280
 MASK = slice(1, R.BLOCK)

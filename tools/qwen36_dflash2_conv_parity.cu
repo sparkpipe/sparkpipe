@@ -1,4 +1,4 @@
-// qwen36_dflash2_conv_parity.cu - parity harness: the DFlash2 grouped conv kernel
+// qwen38_27b_dflash2_conv_parity.cu - parity harness: the DFlash2 grouped conv kernel
 // vs the numpy _grouped_conv oracle. Runs on synthetic inputs, dumps out.bin.
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>

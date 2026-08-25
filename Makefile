@@ -24,7 +24,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 endif
 MODEL_COMMON_INCLUDE_FLAGS += -Imodel-families/common/include
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
-QWEN36_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen36/include
+QWEN38_27B_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen38_27b/include
 QWEN38_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen38/include
 DSV4_DEFAULT_BATCH_FLAGS := -DSPARK_BATCH_BUCKET=1024u
 DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include $(DSV4_DEFAULT_BATCH_FLAGS)
@@ -33,7 +33,7 @@ MIMO25_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/mimo25/in
 MODEL_FAMILY_INCLUDE_FLAGS := \
     -Imodel-families/common/include \
     -Imodel-families/glm52/include \
-    -Imodel-families/qwen36/include \
+    -Imodel-families/qwen38_27b/include \
     -Imodel-families/qwen38/include \
     -Imodel-families/dsv4/include \
     -Imodel-families/k3/include \
@@ -87,7 +87,7 @@ CORE_SOURCES := $(SPARKPIPE_CORE_SOURCES)
 MODEL_COMMON_SOURCES := $(SPARKPIPE_MODEL_COMMON_SOURCES) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE)
 DEPLOYMENT_SOURCES := $(SPARKPIPE_DEPLOYMENT_SOURCES)
 GLM52_HOST_SOURCES := $(SPARKPIPE_GLM52_SOURCES)
-QWEN36_HOST_SOURCES := $(SPARKPIPE_QWEN36_SOURCES)
+QWEN38_27B_HOST_SOURCES := $(SPARKPIPE_QWEN38_27B_SOURCES)
 QWEN38_HOST_SOURCES := $(SPARKPIPE_QWEN38_SOURCES)
 DSV4_HOST_SOURCES := $(SPARKPIPE_DSV4_SOURCES)
 COMPILER_SOURCES := $(SPARKPIPE_COMPILER_SOURCES)
@@ -104,13 +104,13 @@ CORE_OBJECTS := $(call sp_objects,$(CORE_SOURCES))
 MODEL_COMMON_OBJECTS := $(call sp_objects,$(MODEL_COMMON_SOURCES))
 DEPLOYMENT_OBJECTS := $(call sp_objects,$(DEPLOYMENT_SOURCES))
 GLM52_HOST_OBJECTS := $(call sp_objects,$(GLM52_HOST_SOURCES))
-QWEN36_HOST_OBJECTS := $(call sp_objects,$(QWEN36_HOST_SOURCES))
+QWEN38_27B_HOST_OBJECTS := $(call sp_objects,$(QWEN38_27B_HOST_SOURCES))
 QWEN38_HOST_OBJECTS := $(call sp_objects,$(QWEN38_HOST_SOURCES))
 DSV4_HOST_OBJECTS := $(call sp_objects,$(DSV4_HOST_SOURCES))
 COMPILER_OBJECTS := $(call sp_objects,$(COMPILER_SOURCES))
 RUNTIME_OBJECTS := $(call sp_objects,$(RUNTIME_SOURCES))
 ALL_HOST_OBJECTS := $(CORE_OBJECTS) $(MODEL_COMMON_OBJECTS) $(DEPLOYMENT_OBJECTS) \
-    $(GLM52_HOST_OBJECTS) $(QWEN36_HOST_OBJECTS) $(QWEN38_HOST_OBJECTS) $(DSV4_HOST_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS)
+    $(GLM52_HOST_OBJECTS) $(QWEN38_27B_HOST_OBJECTS) $(QWEN38_HOST_OBJECTS) $(DSV4_HOST_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS)
 
 # Every object is built by the one rule below. Include flags are attached per
 # object list rather than per directory, so moving a source does not change how
@@ -121,21 +121,21 @@ $(RUNTIME_OBJECTS): SP_INCLUDE_FLAGS = $(CORE_INCLUDE_FLAGS)
 $(MODEL_COMMON_OBJECTS): SP_INCLUDE_FLAGS = $(MODEL_COMMON_INCLUDE_FLAGS)
 $(DEPLOYMENT_OBJECTS): SP_INCLUDE_FLAGS = $(DEPLOYMENT_INCLUDE_FLAGS)
 $(GLM52_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(GLM52_INCLUDE_FLAGS)
-$(QWEN36_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(QWEN36_INCLUDE_FLAGS)
+$(QWEN38_27B_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(QWEN38_27B_INCLUDE_FLAGS)
 $(QWEN38_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(QWEN38_INCLUDE_FLAGS)
 $(DSV4_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(DSV4_INCLUDE_FLAGS)
 CORE_LIBRARY := build/libsparkpipe_core.a
 MODEL_COMMON_LIBRARY := build/libsparkpipe_model_common.a
 DEPLOYMENT_LIBRARY := build/libsparkpipe_deployment.a
 GLM52_HOST_LIBRARY := build/libglm52_host.a
-QWEN36_HOST_LIBRARY := build/libqwen36_host.a
+QWEN38_27B_HOST_LIBRARY := build/libqwen38_27b_host.a
 QWEN38_HOST_LIBRARY := build/libqwen38_host.a
 DSV4_HOST_LIBRARY := build/libdsv4_host.a
 DSV4_MODEL_HEADER := model-families/dsv4/include/sparkpipe/spark_dsv4_model.h
 COMPILER_LIBRARY := build/libsparkpipe_compiler.a
 RUNTIME_LIBRARY := build/libsparkpipe_runtime.a
 COMMON_LIBRARY := $(CORE_LIBRARY)
-LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(DEPLOYMENT_LIBRARY) $(GLM52_HOST_LIBRARY) $(QWEN36_HOST_LIBRARY) $(DSV4_HOST_LIBRARY)
+LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(DEPLOYMENT_LIBRARY) $(GLM52_HOST_LIBRARY) $(QWEN38_27B_HOST_LIBRARY) $(DSV4_HOST_LIBRARY)
 
 DSV4_SERVING_ADAPTER := build/libdsv4_serving_adapter.$(SHARED_LIBRARY_EXT)
 DSV4_TP16_SERVING_ADAPTER := build/libdsv4_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
@@ -156,12 +156,12 @@ DSV4_PRO_TP4_PP4_B1_SERVING_ADAPTER := build/libdsv4_pro_tp4_pp4_b1_serving_adap
 # geometry derive from the same flag (spark_dsv4_serving_adapter.c).
 DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS := -DSPARK_DSV4_SERVING_TOPOLOGY=404 -DSPARK_DSV4_PRO_BUILD=1
 DSV4_PRO_TP4_PP4_B1_SERVING_TOPOLOGY_FLAGS := $(DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=1u
-QWEN36_SERVING_ADAPTER := build/libqwen36_serving_adapter.$(SHARED_LIBRARY_EXT)
+QWEN38_27B_SERVING_ADAPTER := build/libqwen38_27b_serving_adapter.$(SHARED_LIBRARY_EXT)
 K3_SERVING_ADAPTER := build/libk3_serving_adapter.$(SHARED_LIBRARY_EXT)
-QWEN36_MODEL_DESCRIPTION := examples/model_descriptions/qwen36_resident_decode_stage_firmware.json
-QWEN36_MODEL_REVISION ?= bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1
-QWEN36_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN36_MODEL_DESCRIPTION)"; else shasum -a 256 "$(QWEN36_MODEL_DESCRIPTION)"; fi | awk '{print $$1}')
-QWEN36_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN36_MODEL_REVISION=\"$(QWEN36_MODEL_REVISION)\" -DQWEN36_CONTRACT_SHA256=\"$(QWEN36_CONTRACT_SHA256)\"
+QWEN38_27B_MODEL_DESCRIPTION := examples/model_descriptions/qwen38_27b_resident_decode_stage_firmware.json
+QWEN38_27B_MODEL_REVISION ?= bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1
+QWEN38_27B_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN38_27B_MODEL_DESCRIPTION)"; else shasum -a 256 "$(QWEN38_27B_MODEL_DESCRIPTION)"; fi | awk '{print $$1}')
+QWEN38_27B_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN38_27B_MODEL_REVISION=\"$(QWEN38_27B_MODEL_REVISION)\" -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_CONTRACT_SHA256)\"
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -203,7 +203,7 @@ TEST_NAMES := \
     test_dsv4_serving_adapter \
     test_dsv4_tp16_serving_adapter \
 	test_dsv4_tp4_pp4_serving_adapter \
-    test_qwen36_serving_adapter \
+    test_qwen38_27b_serving_adapter \
     test_model_resident_end_to_end \
     test_distributed_work \
 	    test_json \
@@ -218,7 +218,7 @@ TEST_NAMES := \
     test_kv_model_table \
     test_nvme_tier \
     test_kv_mooncake \
-    test_qwen36_work_control \
+    test_qwen38_27b_work_control \
     test_qwen38_work_control \
     test_dsv4_cache_plan \
 	test_dsv4_parallel_shape \
@@ -332,9 +332,9 @@ PYTHON_TESTS := \
 	tests/test_perf_estimate.py \
 	tests/test_ptx_capability_gate.py \
 	tests/test_python_syntax.py \
-	tests/test_qwen36_bf16_contract.py \
-	tests/test_qwen36_layer_host.py \
-	tests/test_qwen36_stagepack.py \
+	tests/test_qwen38_27b_bf16_contract.py \
+	tests/test_qwen38_27b_layer_host.py \
+	tests/test_qwen38_27b_stagepack.py \
 	tests/test_recipe_generation.py \
 	tests/test_release_assemble.py \
 	tests/test_release_agent.py \
@@ -369,8 +369,8 @@ TEST_DSV4_TP16_SERVING_DRIVER_MODULE := \
     build/test_modules/libdsv4_tp16_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE := \
     build/test_modules/libdsv4_tp4_pp4_serving_driver_module.$(SHARED_LIBRARY_EXT)
-TEST_QWEN36_SERVING_DRIVER_MODULE := \
-    build/test_modules/libqwen36_serving_driver_module.$(SHARED_LIBRARY_EXT)
+TEST_QWEN38_27B_SERVING_DRIVER_MODULE := \
+    build/test_modules/libqwen38_27b_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
     build/test_modules/libmodel_resident_transport_module.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
@@ -391,9 +391,9 @@ TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
 
 # Model CUDA modules are immutable artifacts selected by an explicit model
 # package. Host builds never guess a codec or silently skip a CUDA artifact.
-all: $(LIBRARIES) tools $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_B1_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(DSV4_TP4_PP4_B1_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER) $(K3_SERVING_ADAPTER)
+all: $(LIBRARIES) tools $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_B1_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(DSV4_TP4_PP4_B1_SERVING_ADAPTER) $(QWEN38_27B_SERVING_ADAPTER) $(K3_SERVING_ADAPTER)
 
-tools: $(TOOL_BINARIES) $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(QWEN36_SERVING_ADAPTER)
+tools: $(TOOL_BINARIES) $(DSV4_SERVING_ADAPTER) $(DSV4_TP4_PP4_SERVING_ADAPTER) $(QWEN38_27B_SERVING_ADAPTER)
 
 .PHONY: core model_common deployment audit-boundaries architecture_audit model_driver_contracts non_glm_model_driver_contracts
 
@@ -434,7 +434,7 @@ GLM52_LINK_TARGETS := \
     build/sparkpipe_glm52_batchplane_model \
     build/test_model_description
 
-QWEN36_LINK_TARGETS := build/test_qwen36_work_control
+QWEN38_27B_LINK_TARGETS := build/test_qwen38_27b_work_control
 QWEN38_LINK_TARGETS := build/test_qwen38_work_control
 DSV4_LINK_TARGETS := build/test_dsv4_cache_plan build/sparkpipe_dsv4_cache_plan_report
 
@@ -447,8 +447,8 @@ $(GLM52_LINK_TARGETS): COMMON_LIBRARY = $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIB
 $(GLM52_LINK_TARGETS): $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(DSV4_LINK_TARGETS): $(DSV4_HOST_LIBRARY) $(CORE_LIBRARY)
 
-$(QWEN36_LINK_TARGETS): COMMON_LIBRARY = $(QWEN36_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-$(QWEN36_LINK_TARGETS): $(QWEN36_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+$(QWEN38_27B_LINK_TARGETS): COMMON_LIBRARY = $(QWEN38_27B_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+$(QWEN38_27B_LINK_TARGETS): $(QWEN38_27B_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(QWEN38_LINK_TARGETS): COMMON_LIBRARY = $(QWEN38_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(QWEN38_LINK_TARGETS): $(QWEN38_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
@@ -477,7 +477,7 @@ $(DEPLOYMENT_LIBRARY): $(DEPLOYMENT_OBJECTS)
 $(GLM52_HOST_LIBRARY): $(GLM52_HOST_OBJECTS)
 	$(AR) rcs $@ $^
 
-$(QWEN36_HOST_LIBRARY): $(QWEN36_HOST_OBJECTS)
+$(QWEN38_27B_HOST_LIBRARY): $(QWEN38_27B_HOST_OBJECTS)
 	$(AR) rcs $@ $^
 
 $(QWEN38_HOST_LIBRARY): $(QWEN38_HOST_OBJECTS)
@@ -633,8 +633,8 @@ $(DSV4_PRO_TP4_PP4_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/s
 $(DSV4_PRO_TP4_PP4_B1_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_serving_adapter.h modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(DSV4_MODEL_HEADER) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) $(DSV4_PRO_TP4_PP4_B1_SERVING_TOPOLOGY_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(QWEN36_SERVING_ADAPTER): modules/qwen36_resident_decode_stage/source/spark_qwen36_serving_adapter.c modules/qwen36_resident_decode_stage/include/sparkpipe/spark_qwen36_serving_adapter.h modules/qwen36_resident_decode_stage/include/sparkpipe/spark_qwen36_resident_decode_stage_firmware.h $(QWEN36_MODEL_DESCRIPTION) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include $(CFLAGS) $(QWEN36_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/qwen36_resident_decode_stage/source/spark_qwen36_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+$(QWEN38_27B_SERVING_ADAPTER): modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_serving_adapter.h modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h $(QWEN38_27B_MODEL_DESCRIPTION) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include $(CFLAGS) $(QWEN38_27B_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
@@ -709,8 +709,8 @@ $(TEST_DSV4_TP16_SERVING_DRIVER_MODULE): tests/fixtures/dsv4_serving_adapter_dri
 $(TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE): tests/fixtures/dsv4_serving_adapter_driver.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(DSV4_MODEL_HEADER) include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h | build/test_modules
 	$(CC) $(CPPFLAGS) -DTEST_DSV4_SERVING_HYBRID=1 -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-$(TEST_QWEN36_SERVING_DRIVER_MODULE): tests/fixtures/qwen36_serving_adapter_driver.c modules/qwen36_resident_decode_stage/include/sparkpipe/spark_qwen36_resident_decode_stage_firmware.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(QWEN36_MODEL_DESCRIPTION) | build/test_modules
-	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include $(CFLAGS) $(QWEN36_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+$(TEST_QWEN38_27B_SERVING_DRIVER_MODULE): tests/fixtures/qwen38_27b_serving_adapter_driver.c modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(QWEN38_27B_MODEL_DESCRIPTION) | build/test_modules
+	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include $(CFLAGS) $(QWEN38_27B_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE): tests/fixtures/model_resident_transport_module.c include/sparkpipe/spark_hidden_transport.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
@@ -764,8 +764,8 @@ build/test_dsv4_tp16_serving_adapter: tests/test_dsv4_tp16_serving_adapter.c tes
 build/test_dsv4_tp4_pp4_serving_adapter: tests/test_dsv4_tp4_pp4_serving_adapter.c tests/fixtures/dsv4_tp4_pp4_serving_adapter_config.json tests/fixtures/dsv4_tp4_pp4_serving_adapter_config_missing_graphs.json tests/fixtures/dsv4_tp4_pp4_serving_adapter_config_short_graphs.json $(DSV4_TP4_PP4_SERVING_ADAPTER) $(TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/include -DTEST_DSV4_TP4_PP4_ADAPTER_PATH=\"$(DSV4_TP4_PP4_SERVING_ADAPTER)\" -DTEST_DSV4_TP4_PP4_DRIVER_PATH=\"$(TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE)\" -DTEST_DSV4_TP4_PP4_CONFIG_PATH=\"tests/fixtures/dsv4_tp4_pp4_serving_adapter_config.json\" -DTEST_DSV4_TP4_PP4_MISSING_GRAPHS_CONFIG_PATH=\"tests/fixtures/dsv4_tp4_pp4_serving_adapter_config_missing_graphs.json\" -DTEST_DSV4_TP4_PP4_SHORT_GRAPHS_CONFIG_PATH=\"tests/fixtures/dsv4_tp4_pp4_serving_adapter_config_short_graphs.json\" $(CFLAGS) tests/test_dsv4_tp4_pp4_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_qwen36_serving_adapter: tests/test_qwen36_serving_adapter.c tests/fixtures/qwen36_serving_adapter_config.json tests/fixtures/qwen36_serving_adapter_config_stale.json tests/fixtures/qwen36_serving_adapter_config_absolute.json tests/fixtures/qwen36_serving_adapter_config_overrun.json $(QWEN36_SERVING_ADAPTER) $(TEST_QWEN36_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(QWEN36_INCLUDE_FLAGS) -Imodules/qwen36_resident_decode_stage/include -DTEST_QWEN36_SERVING_ADAPTER_PATH=\"$(QWEN36_SERVING_ADAPTER)\" -DTEST_QWEN36_SERVING_DRIVER_PATH=\"$(TEST_QWEN36_SERVING_DRIVER_MODULE)\" -DTEST_QWEN36_SERVING_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config.json\" -DTEST_QWEN36_SERVING_STALE_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_stale.json\" -DTEST_QWEN36_SERVING_ABSOLUTE_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_absolute.json\" -DTEST_QWEN36_SERVING_OVERRUN_CONFIG_PATH=\"tests/fixtures/qwen36_serving_adapter_config_overrun.json\" $(CFLAGS) tests/test_qwen36_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+build/test_qwen38_27b_serving_adapter: tests/test_qwen38_27b_serving_adapter.c tests/fixtures/qwen38_27b_serving_adapter_config.json tests/fixtures/qwen38_27b_serving_adapter_config_stale.json tests/fixtures/qwen38_27b_serving_adapter_config_absolute.json tests/fixtures/qwen38_27b_serving_adapter_config_overrun.json $(QWEN38_27B_SERVING_ADAPTER) $(TEST_QWEN38_27B_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include -DTEST_QWEN38_27B_SERVING_ADAPTER_PATH=\"$(QWEN38_27B_SERVING_ADAPTER)\" -DTEST_QWEN38_27B_SERVING_DRIVER_PATH=\"$(TEST_QWEN38_27B_SERVING_DRIVER_MODULE)\" -DTEST_QWEN38_27B_SERVING_CONFIG_PATH=\"tests/fixtures/qwen38_27b_serving_adapter_config.json\" -DTEST_QWEN38_27B_SERVING_STALE_CONFIG_PATH=\"tests/fixtures/qwen38_27b_serving_adapter_config_stale.json\" -DTEST_QWEN38_27B_SERVING_ABSOLUTE_CONFIG_PATH=\"tests/fixtures/qwen38_27b_serving_adapter_config_absolute.json\" -DTEST_QWEN38_27B_SERVING_OVERRUN_CONFIG_PATH=\"tests/fixtures/qwen38_27b_serving_adapter_config_overrun.json\" $(CFLAGS) tests/test_qwen38_27b_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 # The K3 adapter links the CUDA serving TUs (runner, dispatch, driver) with
 # nvcc, so the rule is the single-spark gate's link line plus the shared libs.
@@ -832,7 +832,7 @@ build/test_topology_switch: tests/test_topology_switch.c scheduler/topology_swit
 build/test_kv_mooncake: tests/test_kv_mooncake.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_qwen36_work_control: tests/test_qwen36_work_control.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
+build/test_qwen38_27b_work_control: tests/test_qwen38_27b_work_control.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_qwen38_work_control: tests/test_qwen38_work_control.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
@@ -840,8 +840,8 @@ build/test_qwen38_work_control: tests/test_qwen38_work_control.cpp tests/fixture
 
 # Numeric verification of the math-audit fixes: includes the module's CUDA
 # source, so the tested code IS the production code.
-build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_cuda.cu
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38/include -Imodules/qwen38_resident_decode_stage/include -Imodules/qwen38_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
+build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
 
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
@@ -984,7 +984,7 @@ tree_summary:
 	@printf "runtime_sources="; printf '%s\n' $(RUNTIME_SOURCES) | wc -l
 	@printf "model_common_sources="; printf '%s\n' $(MODEL_COMMON_SOURCES) | wc -l
 	@printf "glm52_host_sources="; printf '%s\n' $(GLM52_HOST_SOURCES) | wc -l
-	@printf "qwen36_host_sources="; printf '%s\n' $(QWEN36_HOST_SOURCES) | wc -l
+	@printf "qwen38_27b_host_sources="; printf '%s\n' $(QWEN38_27B_HOST_SOURCES) | wc -l
 	@printf "deployment_sources="; printf '%s\n' $(DEPLOYMENT_SOURCES) | wc -l
 	@printf "test_executables="; printf '%s\n' $(TEST_NAMES) | wc -l
 

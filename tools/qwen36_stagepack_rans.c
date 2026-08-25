@@ -1,5 +1,5 @@
 /*
- * qwen36_stagepack_rans: post-process a qwen36 stage pack, re-encoding the
+ * qwen38_27b_stagepack_rans: post-process a qwen38_27b stage pack, re-encoding the
  * large linear BF16 tensors as lossless rANS streams in 64x128 tile order.
  *
  * Wire format of a compressed tensor payload (all little endian):
@@ -34,7 +34,7 @@
 
 static void die(const char *msg)
 {
-	fprintf(stderr, "qwen36_stagepack_rans: %s\n", msg);
+	fprintf(stderr, "qwen38_27b_stagepack_rans: %s\n", msg);
 	exit(1);
 }
 
@@ -300,7 +300,7 @@ int main(int argc, char **argv)
 	uint8_t pad[PACK_ALIGN];
 	if (argc < 3)
 	{
-		fprintf(stderr, "usage: %s in.qwen36sp out.qwen36sp\n", argv[0]);
+		fprintf(stderr, "usage: %s in.qwen38_27bsp out.qwen38_27bsp\n", argv[0]);
 		return 1;
 	}
 	memset(pad, 0, sizeof(pad));

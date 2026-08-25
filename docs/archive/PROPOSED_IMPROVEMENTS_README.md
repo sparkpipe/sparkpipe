@@ -15,7 +15,7 @@ model-families/glm52/         GLM-5.2 host implementation
 model-families/dsv4/          DSV4 geometry
 model-families/k3/            K3 geometry
 model-families/mimo25/        MiMo 2.5 geometry
-model-families/qwen36/        Qwen 3.6 host implementation
+model-families/qwen38_27b/        Qwen 3.6 host implementation
 deployment/                   release and rollout services
 modules/                      linkable firmware modules
 ```

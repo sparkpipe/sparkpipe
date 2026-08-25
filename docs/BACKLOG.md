@@ -50,8 +50,8 @@ first (negative code), then level buys ranked by value-per-line.
 ## The level-buy block (ranked by value per line)
 
 - NAMESPACE SWEEP (post-DFlash2-adoption, mechanical, ~0 lines): rename the
-  qwen36 namespace to qwen38 across the tree (module dir, headers, tools,
-  gate entries, validation scripts, agent clones). The qwen36 name is the
+  qwen38_27b namespace to qwen38 across the tree (module dir, headers, tools,
+  gate entries, validation scripts, agent clones). The qwen38_27b name is the
   Qwen3.6-family lineage; the served model is Qwen3.8-27B (pinned in
   model_contracts/qwen38_27b_authoritative.json) which shares the same
   geometry. Deferred until the DFlash2 adoption lands so in-flight patches

@@ -300,7 +300,7 @@ Header extracted verbatim from the audited K3 resident decode stage, renamed
 `SparkLm*`; each driver module includes it into its own TU → one source, zero ABI
 coupling, zero runtime cost; MXFP4 group size is a template parameter so a
 disagreeing module fails to build (`spark_lm_kernels.cuh:14-28`). Consumers:
-qwen36, dsv4, mimo25 (`spark_lm_kernels.cuh:25-27`).
+qwen38_27b, dsv4, mimo25 (`spark_lm_kernels.cuh:25-27`).
 
 **Expert-tile bodies (two live schedules, `SPARK_LM_EXPERT_TILE_POLICY`):**
 

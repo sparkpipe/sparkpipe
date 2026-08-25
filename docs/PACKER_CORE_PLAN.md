@@ -8,11 +8,11 @@ tree; line numbers are from the current packers.
 
 | Primitive | Copies (file:line) |
 | --- | --- |
-| PackFailure | glm52_resident:90, dsv4:116, qwen36:102, qwen38:111 |
-| sha256 helpers | glm52_stagepack:508, glm52_resident:439, dsv4:181, qwen36:106, qwen38:115 |
-| align/align_up | glm52_stagepack:180, glm52_resident:125, dsv4:370, qwen36:117, qwen38:126 |
-| SafetensorsSource reader (check_config/shard_header/resolve) | dsv4:396, qwen36:266, qwen38:285 |
-| TensorRef + build_inventory + kind_shape + layer_tensor_name + is_gdn_layer | qwen36 (215/225/127/162/121) mirrored by qwen38 (233/261/135/173/130) |
+| PackFailure | glm52_resident:90, dsv4:116, qwen38_27b:102, qwen38:111 |
+| sha256 helpers | glm52_stagepack:508, glm52_resident:439, dsv4:181, qwen38_27b:106, qwen38:115 |
+| align/align_up | glm52_stagepack:180, glm52_resident:125, dsv4:370, qwen38_27b:117, qwen38:126 |
+| SafetensorsSource reader (check_config/shard_header/resolve) | dsv4:396, qwen38_27b:266, qwen38:285 |
+| TensorRef + build_inventory + kind_shape + layer_tensor_name + is_gdn_layer | qwen38_27b (215/225/127/162/121) mirrored by qwen38 (233/261/135/173/130) |
 | Record/directory/header serialization | dsv4:754-812 + glm52_resident pack writer + qwen pair |
 | Replicated-draft rule | dsv4 sharder (MTP block, sentinel 0xFFFFFFFB, count 3, flag-gated) vs qwen38 (MTP_LAYER=0xFFFFFFFE, count 1, sentinel compare) — two incompatible encodings of the same rule |
 
@@ -31,7 +31,7 @@ Corrections from the GLM52 agent's inventory (grep-verified):
   by nothing and side-effect-loading the GLM52 contract at import. It is
   the natural starting point for the neutral module once the side-effect
   import is removed.
-- PackFailure drift: RuntimeError in 6 files, Exception in qwen36/qwen38
+- PackFailure drift: RuntimeError in 6 files, Exception in qwen38_27b/qwen38
   (inconsistent), plain ValueError in glm52_stagepack. The shared core
   standardizes on RuntimeError.
 
@@ -84,8 +84,8 @@ table entry instead of a new branch.
 2. Migrate the DSV4 sharder first (test_dsv4_tp4_pp4_stagepack.py +
    test_dsv4_stagepack.py pin the bytes) - replace its PackFailure/sha/
    align/make_directory with the shared ones; delete the local copies.
-3. Migrate the qwen pair next (test_qwen36_stagepack.py +
-   test_qwen38_stagepack.py pin the qwen38 case); qwen36 stays
+3. Migrate the qwen pair next (test_qwen38_27b_stagepack.py +
+   test_qwen38_stagepack.py pin the qwen38 case); qwen38_27b stays
    frozen-deprecated and keeps working through the shared core.
 4. Migrate the glm52 resident packer (test_glm52_stage_pack.py pins the
    v3 wire format bytes).

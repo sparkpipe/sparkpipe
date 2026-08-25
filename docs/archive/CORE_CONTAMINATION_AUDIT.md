@@ -17,7 +17,7 @@ The proposal makes source ownership explicit through manifests:
 | Neutral runtime | `core/sources.mk` | driver loader and orchestrator |
 | Shared model runtime | `model-families/common/sources.mk` | hidden transport, memory link, KV provider ABI, collectives, tokenizer, stage KV client |
 | GLM-5.2 | `model-families/glm52/sources.mk` | all GLM-specific scheduling, KV, PP13, prompt, serving, and topology logic |
-| Qwen 3.6 | `model-families/qwen36/sources.mk` | Qwen-specific work control |
+| Qwen 3.6 | `model-families/qwen38_27b/sources.mk` | Qwen-specific work control |
 | Deployment | `deployment/sources.mk` | release management |
 
 The resulting archives are:
@@ -29,7 +29,7 @@ libsparkpipe_runtime.a
 libsparkpipe_model_common.a
 libsparkpipe_deployment.a
 libglm52_host.a
-libqwen36_host.a
+libqwen38_27b_host.a
 ```
 
 Core, compiler, and runtime translation units compile with only:

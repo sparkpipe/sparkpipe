@@ -9,7 +9,7 @@ MANIFEST = ROOT / "model_contracts" / "must_work_targets.json"
 EXPECTED_FAMILIES = {
     "k3",
     "glm52",
-    "qwen36",
+    "qwen38_27b",
     "dsv4_flash",
     "dsv4_pro",
 }
@@ -44,7 +44,7 @@ def main() -> int:
         "mxfp4_e2m1_e8m0",
     ]
     assert by_family["glm52"]["non_expert_weight_format"] == "bf16"
-    assert by_family["qwen36"]["non_expert_weight_format"] == "bf16"
+    assert by_family["qwen38_27b"]["non_expert_weight_format"] == "bf16"
     assert by_family["dsv4_flash"]["routed_expert_weight_codec"] == "mxfp4_e2m1"
     assert by_family["dsv4_pro"]["routed_expert_weight_codec"] == "mxfp4_e2m1"
     assert by_family["dsv4_flash"]["non_expert_weight_format"] == "fp8_e4m3_block_128x128"

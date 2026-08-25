@@ -448,13 +448,13 @@ adjacent to SparkPipe's GB10/SM121 target.** Treat concurrency > 1 as unproven.
 
 | Landed piece | Path |
 |---|---|
-| Packer | `tools/qwen36_dspark_stagepack.py` (294 L) — 17 tensor kinds, 62 tensors, magic `Q6SP`, header `26I2Q`, entry `6I4Q` |
-| Pack format / ABI | `modules/qwen36_resident_decode_stage/source/spark_qwen36_dspark_format.h` |
+| Packer | `tools/qwen38_27b_dspark_stagepack.py` (294 L) — 17 tensor kinds, 62 tensors, magic `Q6SP`, header `26I2Q`, entry `6I4Q` |
+| Pack format / ABI | `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_dspark_format.h` |
 | Neutral drafter constants | `model-families/common/include/sparkpipe/spark_dspark_drafter.h` (ABI v3, GLM52/K3/DSV4-Pro tables) |
-| Module forward | `modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_module.c` (2709 L) |
-| Draft kernels | `modules/qwen36_resident_decode_stage/source/spark_qwen36_dspark_cuda.cuh` — `SparkQwen36DsparkAttnKernel`, `SparkQwen36DsparkMarkovKernel` |
-| Serving adapter | `modules/qwen36_resident_decode_stage/source/spark_qwen36_serving_adapter.c` (1870 L), `SPARK_QWEN36_SERVING_SPEC_METHOD_DSPARK` |
-| Parity harness | `tools/qwen36_dspark_reference.py` (236 L) — numpy-only forward oracle |
+| Module forward | `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c` (2709 L) |
+| Draft kernels | `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_dspark_cuda.cuh` — `SparkQwen38_27bDsparkAttnKernel`, `SparkQwen38_27bDsparkMarkovKernel` |
+| Serving adapter | `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c` (1870 L), `SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK` |
+| Parity harness | `tools/qwen38_27b_dspark_reference.py` (236 L) — numpy-only forward oracle |
 | Policy | `src/spark_speculation_policy.c` (798 L) |
 
 ### Shape reality check — the landed port targets a DIFFERENT drafter geometry
@@ -467,7 +467,7 @@ model, materially different *drafter*:
 |---|---|---|---|
 | `layer_types` | `full_attention` ×5 | `sliding_attention` ×5, `sliding_window: 2048` | **attn kernel must gain a window mask** |
 | `is_causal` | (absent) | **`false`** | new explicit-causality field, honored ahead of `dflash_config.causal` (see `_dflash_layer_causal` change in PR #52816) |
-| `num_attention_heads` | 40 | **32** | `SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS`; `40u` is **hardcoded** in `SparkQwen36DsparkAttnKernel` |
+| `num_attention_heads` | 40 | **32** | `SPARK_QWEN38_27B_DSPARK_ATTN_QUERY_HEADS`; `40u` is **hardcoded** in `SparkQwen38_27bDsparkAttnKernel` |
 | `intermediate_size` | 10240 | **17408** | FFN shapes |
 | `block_size` | 7 | **8** | verify-window / slot arithmetic |
 | `target_layer_ids` | `[4,16,28,40,52]` | `[5,19,33,47,61]` | tap plumbing (still 5 taps) |
@@ -490,16 +490,16 @@ model, materially different *drafter*:
    `(VOCAB=248320, MARKOV_RANK=256)` ×2 **is bit-identical to DFlash2's
    `predecessor_codebook`/`successor_codebook` `[248320, 256]` ×2 (254 MB)**. The pack
    slot, the `markov_w1_host`/`markov_w2_host` D2H mirror
-   (`SparkQwen36ModuleRunMtp…` init path), and the byte accounting all carry over
+   (`SparkQwen38_27bModuleRunMtp…` init path), and the byte accounting all carry over
    verbatim. **This is the single largest reuse win.**
 4. **BF16-truncation discipline.** The landed Markov kernel already enforces
    "truncate → BF16 BEFORE the add" so device/host/numpy agree on near-ties. The selector
    needs the same convention; the rule and its test scaffolding exist.
 5. **Target-hidden tap capture** (5 taps → `fc`), **shared target embed/lm_head**
    (drafter still ships neither), **mask-token block construction**, **resident
-   decode-stage slot machinery**, **`SparkQwen36LaunchHeadScreenedArgmaxScore`**
+   decode-stage slot machinery**, **`SparkQwen38_27bLaunchHeadScreenedArgmaxScore`**
    (returns value+index → the top-K primitive's ancestor).
-6. **Serving adapter frame plumbing** — `SparkQwen36DsparkDraftView`,
+6. **Serving adapter frame plumbing** — `SparkQwen38_27bDsparkDraftView`,
    `SPARK_…_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER`, the speculative-frame call path. Only
    the draft-count constant and one method enum move.
 7. **Parity-harness architecture** — numpy-only, reads safetensors directly, synthesizes
@@ -544,7 +544,7 @@ Upstream is explicit: "the vocabulary top-k, the selector's largest single cost"
 0.020 ms and flat. vLLM uses FlashInfer's radix kernel (1.9× `torch.topk` at b=1, 4.5× at
 b=32) and falls back otherwise. SparkPipe has **no FlashInfer**, so this is a
 first-class own-kernel item: a radix/bitonic top-16 over 248320 BF16 logits per slot.
-`SparkQwen36LaunchHeadScreenedArgmaxScore` (fused matvec + value/index reduction over one
+`SparkQwen38_27bLaunchHeadScreenedArgmaxScore` (fused matvec + value/index reduction over one
 row) is the right starting point — generalise its reduction from top-1 to top-16.
 
 **W5 — Path-walk kernel (~1 day). Small, and pick your engine.**
@@ -562,7 +562,7 @@ SGLang-style one-hot/realized-q form is the cheaper fit** — it avoids material
 1.78 GB fp32 vocab buffer (see (d)).
 
 **W6 — Attention: full → sliding-window 2048, non-causal (~1 day).**
-`SparkQwen36DsparkAttnKernel` needs a window bound and must honor `is_causal: false`.
+`SparkQwen38_27bDsparkAttnKernel` needs a window bound and must honor `is_causal: false`.
 Also unhardcode `40u` (query heads) → 32 and widen FFN 10240 → 17408.
 
 **W7 — Policy and dispatch (~0.5 day).**
@@ -570,13 +570,13 @@ Clear `SPARK_DSPARK_POLICY_FLAG_REQUIRE_CONFIDENCE_HEAD` for DFlash2 (no confide
 → the confidence-milli floor has no input; either drop the gate or resynthesize a proxy
 from the selector's realized q). Keep `REQUIRE_MARKOV_HEAD` **renamed**, not removed —
 the tensors are there under a new meaning. Add a
-`SPARK_QWEN36_SERVING_SPEC_METHOD_DFLASH2` enum and — mirroring vLLM's V1 trap — make an
+`SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2` enum and — mirroring vLLM's V1 trap — make an
 unsupported-path dispatch **fail loudly**, never silently draft without the selector.
 Add `SPARK_DSPARK_TARGET_QWEN38_DFLASH2` to `spark_dspark_drafter.h` with
 `SELECTOR_TOP_K 16`, `CONV_KERNEL_SIZE 2`, `CONV_GROUP_SIZE 16`, and bump
 `SPARK_DSPARK_ABI_VERSION` 3 → 4.
 
-**W8 — Parity harness: extend `qwen36_dspark_reference.py` (~1 day).**
+**W8 — Parity harness: extend `qwen38_27b_dspark_reference.py` (~1 day).**
 Add `_grouped_conv`, the selector lattice, the walk. Constants change:
 `N_Q_HEADS 40→32`, `FFN 10240→17408`, `BLOCK 7→8`, `TAP_LAYERS→(5,19,33,47,61)`,
 `MASK_TOKEN_ID 248077→248070`, `ROPE` yarn→default, + sliding window 2048. Port both
@@ -596,7 +596,7 @@ runs DFlash2 against a **Q4_K_M target — quantized LM head included — and re
 acceptance** (<https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2-GGUF>), against 5.46 on the
 BF16 target. The selector only needs *top-16 ids + their scores*; nothing requires those
 logits to come from a dense BF16 matmul. SparkPipe writes its own head kernel and already
-has `SparkQwen36LaunchHeadScreenedArgmaxScore` producing value+index from a **quantized,
+has `SparkQwen38_27bLaunchHeadScreenedArgmaxScore` producing value+index from a **quantized,
 shadow-screened** head — i.e. **SparkPipe is better placed here than either upstream.**
 
 Three options, in preference order:

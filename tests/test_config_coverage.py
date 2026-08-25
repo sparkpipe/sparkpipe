@@ -58,12 +58,12 @@ EXEMPT = {
                         "there is nothing for a dispatcher to choose",
     "DSV4_LAYER_KIND": "the three kinds it returns have no entry points; see "
                        "tests/test_layer_kinds.py KNOWN_INCOMPLETE",
-    "QWEN36_ATTENTION_PERIOD": "read by QWEN36_LAYER_IS_LINEAR, which the host "
+    "QWEN38_27B_ATTENTION_PERIOD": "read by QWEN38_27B_LAYER_IS_LINEAR, which the host "
                                "evaluates to pick the entry point - the kernel "
                                "side never sees the period",
-    "QWEN36_FULL_PHASE": "same",
-    "QWEN36_ATTN_OUTPUT_GATE": "NOT IMPLEMENTED. The checkpoint sets "
-                               "attn_output_gate true and Qwen36LayerAttention "
+    "QWEN38_27B_FULL_PHASE": "same",
+    "QWEN38_27B_ATTN_OUTPUT_GATE": "NOT IMPLEMENTED. The checkpoint sets "
+                               "attn_output_gate true and Qwen38_27bLayerAttention "
                                "does not apply it, so the full-attention path is "
                                "missing a sigmoid gate on the attention output "
                                "before the output projection. Three layers in "
@@ -72,7 +72,7 @@ EXEMPT = {
     "GLM52_MTP_DRAFT_TOKENS": "speculation is wired in kernels/speculate.cuh but no model drives it yet",
     "GLM52_MTP_LAYER_INDEX": "same",
     "GLM52_WEIGHT_LAYERS": "used by the host packer, not by kernels",
-    "QWEN36_VOCAB": "same",
+    "QWEN38_27B_VOCAB": "same",
     "K3_VOCAB": "same",
     "MIMO25_ROPE_HALF": "derived; LmRopePerHeadKernel computes the half internally",
     "DSV4_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
@@ -87,7 +87,7 @@ EXEMPT = {
     "GLM52_FP8_SCALE_BLOCK": "the format trait carries its own group size",
     "GLM52_NVFP4_GROUP": "same",
     "MIMO25_RMS_EPSILON": "passed by the host, not named in unity.cu",
-    "QWEN36_MTP_LAYERS": "speculation not driven yet",
+    "QWEN38_27B_MTP_LAYERS": "speculation not driven yet",
     # glm5_2, with the reason each is not referenced by layer.cuh
     "GLM52_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
     "GLM52_ROUTED_LAYERS": "derived, used by the host packer",

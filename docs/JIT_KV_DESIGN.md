@@ -39,14 +39,14 @@ New frame-context flags (same pattern as GDN_PREFIX_SNAPSHOT_OUT):
   KV_BLOCKS_RESTORE_IN 0x00002000u   (restore: backing -> host -> VRAM
                                        blocks, before the layer loop)
 
-View struct (module-firmware header, mirrors SparkQwen36GdnSnapshotView):
-  typedef struct SparkQwen36KvBlocksView {
+View struct (module-firmware header, mirrors SparkQwen38_27bGdnSnapshotView):
+  typedef struct SparkQwen38_27bKvBlocksView {
       uint32_t abi_version, descriptor_bytes;
       uint32_t lane_index;
       uint32_t block_count;        /* blocks being parked/restored */
       uint32_t first_block;        /* ordinal within the lane table */
       void    *host_staging;       /* block_count * KV_BLOCK_BYTES, pinned */
-  } SparkQwen36KvBlocksView;
+  } SparkQwen38_27bKvBlocksView;
 
 Data path per block (4 MiB): cudaMemcpyAsync D2D lane-block ->
 staging is NOT needed for whole blocks: copy device block -> host

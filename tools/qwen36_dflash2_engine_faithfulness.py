@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Engine-faithfulness check: replay the numpy oracle on the ENGINE's own
-dumped taps (ctxrun_N from SPARK_QWEN36_DFLASH2_CTX_DUMP on spark2) and
+dumped taps (ctxrun_N from SPARK_QWEN38_27B_DFLASH2_CTX_DUMP on spark2) and
 compare its 7 drafts against the engine's drafts (ctxrun_N.meta).
 
 Agreement => the engine's block forward + selection is faithful to the
@@ -9,7 +9,7 @@ validated reference forward; the acceptance gap then lives in the inputs
 distilled against), not the engine.
 
 Run on spark3 (needs the drafter safetensors + the parity tooling):
-  qwen36_dflash2_engine_faithfulness.py <first> <last>
+  qwen38_27b_dflash2_engine_faithfulness.py <first> <last>
 with /tmp/ctxrun_*.{bin,meta} present.
 """
 import re
@@ -19,7 +19,7 @@ import numpy as np
 
 import importlib.util
 
-spec = importlib.util.spec_from_file_location("dp", "/tmp/qwen36_dflash2_deep_parity.py")
+spec = importlib.util.spec_from_file_location("dp", "/tmp/qwen38_27b_dflash2_deep_parity.py")
 dp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dp)
 R = dp.R

@@ -15,7 +15,7 @@
 // to disagree with my guess about its layout.
 //
 // What IS real here is the loop and the dispatch, and that is the half that was
-// missing: config.h has declared QWEN36_LAYER_KIND since the layer-kind commit
+// missing: config.h has declared QWEN38_27B_LAYER_KIND since the layer-kind commit
 // and nothing read it.
 
 #include "inference/kernels/formats/bf16.cuh"
@@ -24,14 +24,14 @@
 // One layer's weights. Every pointer here is a tensor the packer must place;
 // naming them in one struct is what lets the loop below be a loop rather than
 // 64 special cases.
-struct Qwen36LayerWeights
+struct Qwen38_27bLayerWeights
 {
 	const void *attn_norm_weight;
 	const void *mlp_norm_weight;
 	// Full-attention layers use the fused QKV and output projections. Linear
 	// layers use the gated-DeltaNet in and out projections and the convolution.
 	// A layer carries one pair or the other, never both, and which is decided
-	// by QWEN36_LAYER_KIND rather than by which pointers are non-null - a
+	// by QWEN38_27B_LAYER_KIND rather than by which pointers are non-null - a
 	// missing tensor should fail loudly, not silently select the other path.
 	const void *qkv_weight;
 	const void *qkv_scale;
@@ -60,7 +60,7 @@ struct Qwen36LayerWeights
 // Copy one layer's tensors into the buffer struct the kernels read. Each
 // assignment is a claim that two names mean the same tensor, which is where a
 // wrong one produces fluent output rather than a crash.
-static void Qwen36BindLayer(const Qwen36LayerWeights *weights, Qwen36LayerBuffers *buffers)
+static void Qwen38_27bBindLayer(const Qwen38_27bLayerWeights *weights, Qwen38_27bLayerBuffers *buffers)
 {
 	buffers->attn_norm_weight = weights->attn_norm_weight;
 	buffers->mlp_norm_weight = weights->mlp_norm_weight;
@@ -93,15 +93,15 @@ static void Qwen36BindLayer(const Qwen36LayerWeights *weights, Qwen36LayerBuffer
 // LmLayerKind without an arm here stops the model instead of running the wrong
 // one, and the compiler warns about the unhandled enum value first.
 template<class Format>
-static int32_t Qwen36LaunchAttentionHalf(const Qwen36LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t Qwen38_27bLaunchAttentionHalf(const Qwen38_27bLayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
-	enum LmLayerKind kind = (enum LmLayerKind)QWEN36_LAYER_KIND(layer);
+	enum LmLayerKind kind = (enum LmLayerKind)QWEN38_27B_LAYER_KIND(layer);
 	switch (kind)
 	{
 	case LM_LAYER_RECURRENT:
-		return(Qwen36LayerLinear<Format>(buffers,rows,multiprocessors,stream));
+		return(Qwen38_27bLayerLinear<Format>(buffers,rows,multiprocessors,stream));
 	case LM_LAYER_FULL:
-		return(Qwen36LayerAttention<Format,Qwen36FullKv>(buffers,rows,context,
+		return(Qwen38_27bLayerAttention<Format,Qwen38_27bFullKv>(buffers,rows,context,
 			multiprocessors,stream));
 	case LM_LAYER_WINDOW:
 	case LM_LAYER_SPARSE:
@@ -120,34 +120,34 @@ static int32_t Qwen36LaunchAttentionHalf(const Qwen36LayerBuffers *buffers, uint
 // by four, so a rank starting mid-period would otherwise run the wrong kind for
 // every layer it owns - and produce fluent output while doing it.
 template<class Format>
-static int32_t Qwen36LaunchSlice(const Qwen36LayerWeights *weights, Qwen36LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t Qwen38_27bLaunchSlice(const Qwen38_27bLayerWeights *weights, Qwen38_27bLayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	uint32_t offset,layer;
 	int32_t status;
 	for (offset = 0u; offset < layer_count; ++offset)
 	{
 		layer = first_layer + offset;
-		if (layer >= QWEN36_LAYERS)
+		if (layer >= QWEN38_27B_LAYERS)
 			return(LM_LAUNCH_ERR_SHAPE);
-		Qwen36BindLayer(&weights[offset],buffers);
-		status = Qwen36LaunchAttentionHalf<Format>(buffers,layer,rows,context,
+		Qwen38_27bBindLayer(&weights[offset],buffers);
+		status = Qwen38_27bLaunchAttentionHalf<Format>(buffers,layer,rows,context,
 			multiprocessors,stream);
 		if (status != LM_LAUNCH_OK)
 			return(status);
 		// Every layer has the same dense SwiGLU. This configuration has no
 		// routed experts, so unlike glm5_2 there is no second branch here.
-		status = Qwen36LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
+		status = Qwen38_27bLayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
 		if (status != LM_LAUNCH_OK)
 			return(status);
 	}
 	return(LM_LAUNCH_OK);
 }
 
-extern "C" int32_t Qwen36StageSlice(const void *layer_weights, void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t context, uint32_t multiprocessors, void *stream)
+extern "C" int32_t Qwen38_27bStageSlice(const void *layer_weights, void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t context, uint32_t multiprocessors, void *stream)
 {
-	return(Qwen36LaunchSlice<LmBf16Format>(
-		(const Qwen36LayerWeights *)layer_weights,
-		(Qwen36LayerBuffers *)layer_buffers,
+	return(Qwen38_27bLaunchSlice<LmBf16Format>(
+		(const Qwen38_27bLayerWeights *)layer_weights,
+		(Qwen38_27bLayerBuffers *)layer_buffers,
 		first_layer,layer_count,rows,context,multiprocessors,
 		(cudaStream_t)stream));
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a whole Qwen 3.6 layer on a CPU and check where its data went.
 
-tests/host_cuda/qwen36_layer_host.cu includes inference/llms/qwen_3_6/layer.cuh
+tests/host_cuda/qwen38_27b_layer_host.cu includes inference/llms/qwen_3_6/layer.cuh
 UNMODIFIED, with the GEMM recorded through the include shim and every other
 kernel the one that ships. The per-kernel harnesses cannot see this driver's
 defect class - a cache stored from a buffer nothing wrote, a state slot half
@@ -27,8 +27,8 @@ from pathlib import Path
 from host_cuda_compiler import host_cuda_cxx
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "tests" / "host_cuda" / "qwen36_layer_host.cu"
-BINARY = Path("/tmp") / "lm_qwen36_layer_host"
+SOURCE = ROOT / "tests" / "host_cuda" / "qwen38_27b_layer_host.cu"
+BINARY = Path("/tmp") / "lm_qwen38_27b_layer_host"
 
 
 def build():

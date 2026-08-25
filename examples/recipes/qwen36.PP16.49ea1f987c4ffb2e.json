@@ -1,15 +1,15 @@
 {
   "content_hash": "49ea1f987c4ffb2e",
   "contract": {
-    "path": "model_contracts/qwen36_authoritative.json",
+    "path": "model_contracts/qwen38_27b_authoritative.json",
     "sha256": "e162bb750570d6435697ac0f9da5b021cffb29f2f5480ffc937d11a9603aa577"
   },
-  "datafile": "qwen36.PP16.49ea1f987c4ffb2e.json",
+  "datafile": "qwen38_27b.PP16.49ea1f987c4ffb2e.json",
   "degree": 16,
-  "family": "qwen36",
+  "family": "qwen38_27b",
   "geometry_hash": "ff786ac12a1d6e13",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "qwen36.PP16.ff786ac12a1d6e13/",
+  "kv_entry_prefix": "qwen38_27b.PP16.ff786ac12a1d6e13/",
   "kv_geometry": {
     "attention_period": 4,
     "full_layer_count": 16,
@@ -33,7 +33,7 @@
     "rope_dimension": 64,
     "rope_theta": 10000000.0
   },
-  "model": "qwen36",
+  "model": "qwen38_27b",
   "pp": {
     "balance": {
       "max_stage_cost": 1777336320,

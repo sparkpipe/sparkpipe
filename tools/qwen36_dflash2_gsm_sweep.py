@@ -12,7 +12,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, "/home/spark2/sparkpipe/tools")
-import qwen36_dspark_reference as R  # noqa: E402
+import qwen38_27b_dspark_reference as R  # noqa: E402
 
 NB_BASE, NB = 84, 32
 BASE = 100

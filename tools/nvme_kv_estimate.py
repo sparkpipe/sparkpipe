@@ -134,7 +134,7 @@ MODELS = [
           pool_gb=724.8, n_experts=256, top_k=8, read_cap=2048),
     # roadmap:332-339 (dense: no pool; KV 16 L x 4 heads x 256 x K+V x 2 B;
     # GDN state already bf16, 0.052 GB/seq/step R+W, 26 MB stored)
-    Model("qwen36", kv_store_bpt=65536, read_bpt=65536, fixed_gb=50.2,
+    Model("qwen38_27b", kv_store_bpt=65536, read_bpt=65536, fixed_gb=50.2,
           pool_gb=0.0, n_experts=0, top_k=0,
           state_stream_gb=0.052, state_store_gb=0.026),
     # roadmap:363-369 (~8.9 KB/token compressed; top-k 1024 + window 128
