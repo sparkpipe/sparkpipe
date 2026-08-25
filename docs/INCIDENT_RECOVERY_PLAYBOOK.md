@@ -133,31 +133,34 @@ The policy repairs and verifies:
 - static management address and serial-console boot arguments
 - IPv4 PXE before the one canonical Linux EFI entry
 - root fsck skipped during boot and handled by the post-boot health timer
-- bounded fabric, remote-storage, firewall, and optional-storage work
+- bounded fabric, remote-storage, and firewall work
 - fabric services launched by timers, never as login-blocking boot dependencies
-- Ceph warm storage starts only when `/etc/sparkpipe/enable-ceph-warm-storage`
-  exists; its data and configuration remain preserved when unselected
+- every Ceph service and target is stopped and persistently masked; SparkPipe's
+  former optional-storage timer and marker are removed
 - weekly filesystem trim has an unmasked service and an enabled timer
 - logrotate configuration is parsed during every fleet audit
 - 64 GiB swap, earlyoom, no-swap model cgroups, and a 108 GiB user/model ceiling
 - network recovery sysctls and required qdisc modules
 
-### Quiesce unselected Ceph
+### Ceph quarantine
 
-The controller preserves Ceph data and configuration and does not stop a cluster
-that is already active. If the audit reports `unselected-ceph-active`, first
-confirm that `/etc/sparkpipe/enable-ceph-warm-storage` is absent and that no
-Ceph filesystem, RBD, iSCSI, or NVMe-oF client is mounted or configured. Then
-quiesce the old benchmark services without deleting their state:
+Ceph is not a fleet-supported storage path. Before changing Ceph state, the
+controller fails closed if it finds a Ceph/NFS/CIFS mount, RBD mapping, remote
+filesystem entry, iSCSI node, or NVMe-oF discovery configuration. With that
+precheck clear, apply performs the complete quarantine:
 
-```bash
-sudo systemctl stop ceph.target ceph-crash.service
-sudo systemctl reset-failed 'ceph*.service' 'ceph*.target'
-```
+- stop every active `ceph*.service` and `ceph*.target`
+- remove all Ceph wants/requires links and Cephadm-generated unit definitions
+  from `/etc/systemd/system`
+- remove the legacy SparkPipe optional-storage service, timer, and selection
+  marker
+- mask the canonical package units and every discovered Ceph service/target
+- preserve `/var/lib/ceph`, `/etc/ceph`, OSD devices, and installed packages
 
-Do not remove `/var/lib/ceph`, `/etc/ceph`, OSD devices, or package state as part
-of fleet recovery. Rerun the brickproof audit; active Ceph without the selection
-marker remains a hard fleet-duty failure.
+The audit rejects any active Ceph unit or process, startup link, non-mask Ceph
+systemd artifact, unmasked Ceph unit, legacy marker, or obsolete SparkPipe
+optional-storage file. Re-enabling Ceph requires a separate tested design and
+deployment; it is not a fleet-recovery operation.
 
 ## Fleet-duty acceptance
 

@@ -1,18 +1,22 @@
-# boot-unblock drop-ins (fail-soft instead of hang-on-boot)
+# Boot-Unblock Drop-Ins
 
-Deploy: copy each *.conf to /etc/systemd/system/<unit>.d/10-boot-timeout.conf,
-then 'systemctl daemon-reload'. Affects NEXT boot only.
+These are bounded compatibility drop-ins for operating-system services that
+SparkPipe does not own. The brickproof controller installs only the files named
+by `BOOT_TIMEOUT_SOURCES`; do not copy this directory wholesale.
 
-Unit -> TimeoutStartSec (all Type=oneshot except ceph = forking; TimeoutStartSec
-applies to both; no Type=simple so no 'timeout'-wrapped ExecStart is needed):
-  ds4-switched-fabric.service           120
-  ds4-direct-pair-fabric.service        120
-  ceph-b52b3459-...@.service (template) 180
-  rbdmap.service                        120
-  nvmf-autoconnect.service              120
-  open-iscsi.service                    120
-  pollinate.service                     30
+The SparkPipe-owned switched and direct-pair fabric services carry their own
+60-second `TimeoutStartSec` and are launched by timers outside the login-critical
+boot path. They have no duplicate drop-ins here.
 
-Root cause (spark2 cycle test): ds4-switched-fabric hangs when the 200G fabric is
-down, blocks network-online.target -> remote-fs -> ceph -> systemd-user-sessions
-(nologin). These drop-ins make each hang fail soft so boot always completes.
+Ceph is not made boot-safe with a timeout. The fleet policy stops and masks all
+Ceph services and targets, removes their persistent startup links, and preserves
+the data, configuration, devices, and packages for a future tested design.
+
+Current compatibility bounds:
+
+| Unit | TimeoutStartSec |
+| --- | ---: |
+| `rbdmap.service` | 120 |
+| `nvmf-autoconnect.service` | 120 |
+| `open-iscsi.service` | 120 |
+| `pollinate.service` | 30 |

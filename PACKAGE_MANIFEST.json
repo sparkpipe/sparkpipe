@@ -1,5 +1,5 @@
 {
-  "file_count": 1417,
+  "file_count": 1412,
   "files": [
     {
       "path": ".gitattributes",
@@ -258,8 +258,8 @@
     },
     {
       "path": "docs/INCIDENT_RECOVERY_PLAYBOOK.md",
-      "sha256": "9917cd8a8aafcd82989637dd069c94e68472dd6e08942ff757f33c714a98a002",
-      "size_bytes": 7820
+      "sha256": "fc1fa21e06797b03f02a72628d17a0f500e14ce3a83d8f976c59f1f1e1595f2f",
+      "size_bytes": 8045
     },
     {
       "path": "docs/JIT_KV_DESIGN.md",
@@ -348,8 +348,8 @@
     },
     {
       "path": "docs/PROPOSAL_BOOT_UNBLOCK.md",
-      "sha256": "a5bdfd372e94a0d1d40d1eb0f8db9e05579ae4f3cc1af9301f9d69339e96c0a3",
-      "size_bytes": 4207
+      "sha256": "204d4e77625f7ef1036a2c71dd6371e402f9b3e901780f6aa69f53d6c063db3f",
+      "size_bytes": 4591
     },
     {
       "path": "docs/PROPOSAL_DSV4_PRO_DSPARK_PASS.md",
@@ -5178,8 +5178,8 @@
     },
     {
       "path": "tests/test_ds4_spark_brickproof.py",
-      "sha256": "d86c8f690ae64c00f4e4ed8b48fa923a33a187211666042ab6177d8adb3730ce",
-      "size_bytes": 13332
+      "sha256": "5070647ef284e60a7393ac390417d2b5145b9b753155ff66ffa3f9e403dc2ead",
+      "size_bytes": 17908
     },
     {
       "path": "tests/test_dspark_drafter_pin.c",
@@ -6123,23 +6123,8 @@
     },
     {
       "path": "tools/devcycle/boot-unblock/README.md",
-      "sha256": "8a10b690dd790f4181f08c052646f5c7dd66435a0dae8b0581c3b20ad8f44b6d",
-      "size_bytes": 904
-    },
-    {
-      "path": "tools/devcycle/boot-unblock/ceph-b52b3459-74b2-428d-b944-1bb691b263c7@.service.conf",
-      "sha256": "b53345fbcf9ac15b3e761608fc88ce8549332531db5000c7bfac0432cec710a3",
-      "size_bytes": 30
-    },
-    {
-      "path": "tools/devcycle/boot-unblock/ds4-direct-pair-fabric.service.conf",
-      "sha256": "93a0b1dc44ea116dfda21c975e8f7008b1e5d9d68dfb8b9d34bfbe260feba5e7",
-      "size_bytes": 30
-    },
-    {
-      "path": "tools/devcycle/boot-unblock/ds4-switched-fabric.service.conf",
-      "sha256": "93a0b1dc44ea116dfda21c975e8f7008b1e5d9d68dfb8b9d34bfbe260feba5e7",
-      "size_bytes": 30
+      "sha256": "0d91aa2883d044f5c4b9de84a58694c41da0dd95436cddfe6f64712394e3227a",
+      "size_bytes": 890
     },
     {
       "path": "tools/devcycle/boot-unblock/nvmf-autoconnect.service.conf",
@@ -6198,8 +6183,8 @@
     },
     {
       "path": "tools/devcycle/ds4_spark_brickproof.py",
-      "sha256": "6b7f05fba69fabc9bb3d1b6bce493275790a93112f224014ec1002e625fa2f48",
-      "size_bytes": 50180
+      "sha256": "bb7b79bd6eaf387b0c816a6e5ba5c5449637b972cdc2e8fc6106762fe1034ab9",
+      "size_bytes": 54610
     },
     {
       "path": "tools/devcycle/dsv4_pro_ga_migration.md",
@@ -6280,16 +6265,6 @@
       "path": "tools/devcycle/fleet/ds4-direct-pair-fabric.timer",
       "sha256": "b4f3fbcc4b31da82b7179f600b7303830f6b71dbbbc29f019f8d7150a123556f",
       "size_bytes": 185
-    },
-    {
-      "path": "tools/devcycle/fleet/ds4-optional-storage.service",
-      "sha256": "6a7a825ecdc39c00d807fde4f0e31f8eff14df42b249c70d0d9f4996f7565faa",
-      "size_bytes": 297
-    },
-    {
-      "path": "tools/devcycle/fleet/ds4-optional-storage.timer",
-      "sha256": "acabf508fa57dd5f4ec540a0a33595ceae8d3481b5c172dbde09955e347d0f08",
-      "size_bytes": 173
     },
     {
       "path": "tools/devcycle/fleet/ds4-switched-fabric.service",
@@ -7090,5 +7065,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 25342828
+  "total_bytes": 25351869
 }

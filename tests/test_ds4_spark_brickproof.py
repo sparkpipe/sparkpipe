@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "devcycle" / "ds4_spark_brickproof.py"
@@ -147,9 +148,96 @@ Boot0002* ubuntu HD(1,GPT,def)
             self.assertNotIn("WantedBy=multi-user.target",service)
             self.assertIn("WantedBy=timers.target",timer)
 
-    def test_optional_ceph_requires_explicit_selection(self) -> None:
-        service = (ROOT / "tools" / "devcycle" / "fleet" / "ds4-optional-storage.service").read_text()
-        self.assertIn("ConditionPathExists=/etc/sparkpipe/enable-ceph-warm-storage",service)
+    def test_ceph_startup_assets_are_removed_and_masked(self) -> None:
+        for name in ("ds4-optional-storage.service","ds4-optional-storage.timer"):
+            self.assertFalse((ROOT / "tools" / "devcycle" / "fleet" / name).exists())
+            self.assertNotIn(f"/etc/systemd/system/{name}",MODULE.ASSET_SOURCES)
+        for name in ("ds4-switched-fabric.service.conf","ds4-direct-pair-fabric.service.conf"):
+            self.assertFalse((ROOT / "tools" / "devcycle" / "boot-unblock" / name).exists())
+        self.assertIn("ceph.target",MODULE.CEPH_MASK_UNITS)
+        self.assertIn("ceph-crash.service",MODULE.CEPH_MASK_UNITS)
+        self.assertIn("ceph-osd@.service",MODULE.CEPH_MASK_UNITS)
+        self.assertNotIn(
+            "ceph-b52b3459-74b2-428d-b944-1bb691b263c7@.service",
+            MODULE.BOOT_TIMEOUT_SOURCES,
+        )
+
+    def test_ceph_startup_link_scan_is_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wants = root / "multi-user.target.wants"
+            wants.mkdir()
+            ceph = wants / "ceph.target"
+            unrelated = wants / "ssh.service"
+            ceph.symlink_to("/lib/systemd/system/ceph.target")
+            unrelated.symlink_to("/lib/systemd/system/ssh.service")
+            self.assertEqual(MODULE.ceph_persistent_links(root),[ceph])
+
+    def test_ceph_startup_artifacts_allow_only_masks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mask = root / "ceph.target"
+            dropin = root / "ceph-osd@.service.d"
+            unrelated = root / "ssh.service"
+            mask.symlink_to("/dev/null")
+            dropin.mkdir()
+            unrelated.write_text("[Unit]\n")
+            self.assertEqual(MODULE.ceph_startup_artifacts(root),[dropin])
+
+    def test_ceph_process_match_is_limited_to_ceph_daemons(self) -> None:
+        matcher = MODULE.CEPH_PROCESS_PATTERN
+        self.assertIsNotNone(matcher.search("123 ceph-osd /usr/bin/ceph-osd -i 4"))
+        self.assertIsNotNone(matcher.search("124 python3 /usr/sbin/ceph-crash"))
+        self.assertIsNone(matcher.search("125 python3 audit-ceph-state.py"))
+
+    def test_remove_path_handles_ceph_dropin_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ceph-osd@.service.d"
+            path.mkdir()
+            (path / "override.conf").write_text("[Service]\n")
+            MODULE.remove_path(path)
+            self.assertFalse(path.exists())
+
+    def test_ceph_quarantine_masks_before_stopping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "systemd"
+            marker = Path(directory) / "enable-ceph-warm-storage"
+            root.mkdir()
+            marker.write_text("enabled\n")
+            (root / "ceph-old@.service").write_text("[Service]\n")
+            dropin = root / "ceph-old@.service.d"
+            dropin.mkdir()
+            (dropin / "override.conf").write_text("[Service]\n")
+            commands = []
+
+            def record(argv: list[str],**_kwargs: object) -> object:
+                commands.append(argv)
+                return(mock.Mock(returncode=0))
+
+            with mock.patch.object(MODULE,"ceph_unit_file_states",return_value={"ceph-old@.service":"enabled"}), \
+                    mock.patch.object(MODULE,"active_ceph_units",side_effect=[["ceph-old@osd.4.service"],[]]), \
+                    mock.patch.object(MODULE,"active_ceph_processes",return_value=[]), \
+                    mock.patch.object(MODULE,"disable_persistent_unit"), \
+                    mock.patch.object(MODULE,"run",side_effect=record):
+                MODULE.remove_ceph_startup([],root,marker)
+            self.assertFalse(marker.exists())
+            self.assertEqual(MODULE.ceph_startup_artifacts(root),[])
+            self.assertEqual((root / "ceph-old@.service").readlink(),Path("/dev/null"))
+            self.assertEqual((root / "ceph-old@osd.4.service").readlink(),Path("/dev/null"))
+            reload_index = commands.index(["systemctl","daemon-reload"])
+            stop_index = commands.index(["systemctl","stop","ceph-old@osd.4.service"])
+            self.assertLess(reload_index,stop_index)
+
+    def test_ceph_unit_mask_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unit = root / "ceph.target"
+            unit.write_text("[Unit]\n")
+            MODULE.mask_unit_file("ceph.target",root)
+            self.assertTrue(unit.is_symlink())
+            self.assertEqual(unit.readlink(),Path("/dev/null"))
+            MODULE.mask_unit_file("ceph.target",root)
+            self.assertEqual(unit.readlink(),Path("/dev/null"))
 
     def test_ceph_logrotate_compatibility_is_processed_first(self) -> None:
         source = (ROOT / "tools" / "devcycle" / "fleet" / "00-sparkpipe-cephadm").read_text()
