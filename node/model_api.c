@@ -129,10 +129,7 @@ static void *api_worker(void *arg)
 			sub.prompt_token_count = r->prompt_count;
 			st = SparkModelBatchEngineSubmit(S.engine, &sub, &h);
 			if (st == SPARK_STATUS_OK)
-			{
 				r->submitted = 1;
-				(void)SparkModelBatchEngineCloseAdmission(S.engine);
-			}
 			else
 			{
 				r->status = (uint32_t)st;
@@ -323,6 +320,10 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 {
 	SparkJsonDocument doc;
 	int32_t root, mt;
+	/* zero-init: the JSON parser's internal Destroy can free uninitialized
+	 * pointers if the document is stack garbage (valgrind: invalid free
+	 * from SparkJsonDocumentDestroy json.c:446) */
+	memset(&doc,0,sizeof(doc));
 	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
 	ApiRequest *req;
 	char *resp;
