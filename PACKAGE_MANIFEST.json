@@ -13,8 +13,8 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "d76772342a87714b5d8fae94817293d347ecf8c599643999e259e8f722e4000d",
-      "size_bytes": 85
+      "sha256": "1c2725cf9240a1b4cf3bca031b4412fc9007305655840c7cf9ee1eacef36c4e7",
+      "size_bytes": 102
     },
     {
       "path": ".updaterepo-policy",
@@ -7085,5 +7085,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 25310555
+  "total_bytes": 25310572
 }
