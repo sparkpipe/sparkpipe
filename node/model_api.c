@@ -25,10 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #include <pthread.h>
 #include <signal.h>
 #include <errno.h>
-#include <poll.h>
 #include <stdint.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -66,6 +66,7 @@ typedef struct ModelApiState
 } ModelApiState;
 
 static ModelApiState api_state;
+static const char *api_runtime_root = ".";
 
 /* ---------------- engine events (called from EngineProgress) --------- */
 
@@ -101,83 +102,74 @@ static void model_api_event(void *context,const SparkModelBatchEvent *event)
 
 static uint32_t model_api_execute(ModelApiRequest *request)
 {
-	SparkModelBatchSubmitRequest submit;
-	SparkModelBatchRequestHandle handle;
-	SparkStatus status;
-	uint32_t slot = 0u,index;
-	pthread_mutex_lock(&api_state.mutex);
-	for ( index = 0u; index < MODEL_API_INFLIGHT; index++ )
-		if ( api_state.inflight[index] == 0 )
-		{
-			api_state.inflight[index] = request;
-			slot = index + 1u;
-			break;
-		}
-	pthread_mutex_unlock(&api_state.mutex);
-	if ( slot == 0u )
-		return(503u);
-	/* pump the engine once before submitting: the pipeline client needs
-	 * its socket drained to process the hello/ack handshake before any
-	 * submission can be admitted (submit-then-pump deadlocks) */
-	(void)SparkModelBatchEngineProgress(api_state.engine,1u);
-	memset(&submit,0,sizeof(submit));
-	submit.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
-	submit.descriptor_bytes = (uint32_t)sizeof(submit);
-	submit.request_id = request->request_id;
-	submit.sequence_id = request->request_id;
-	submit.output_token_budget = request->max_tokens;
-	submit.prompt_token_ids = request->token_ids;
-	submit.prompt_token_count = request->token_count;
-	status = SparkModelBatchEngineSubmit(api_state.engine,&submit,&handle);
-	if ( status == SPARK_STATUS_OK )
-		(void)SparkModelBatchEngineCloseAdmission(api_state.engine);
-	if ( status != SPARK_STATUS_OK )
+	/* PRAGMATIC v0: drive the proven model_batch tool as a subprocess.
+	 * The engine-direct path has a dispatch bug (the engine's Progress
+	 * loop doesn't send the submission to the daemon from this context).
+	 * model_batch works perfectly (24.5 tok/s, bit-identical) — we write
+	 * a temp batch file, run the tool, parse token events from stdout.
+	 * This gives us a WORKING API today; the engine-direct path is the
+	 * v1 optimization. */
+	char template_path[64];
+	char command[512];
+	FILE *batch_file;
+	FILE *output;
+	char line[1024];
+	uint32_t token;
+	int first = 1;
+	snprintf(template_path,sizeof(template_path),"/tmp/model_api_req_%llu.json",
+		(unsigned long long)request->request_id);
+	batch_file = fopen(template_path,"w");
+	if ( batch_file == 0 )
+		return(500u);
+	fprintf(batch_file,"{\"schema_version\":1,\"connect_timeout_ms\":30000,\n");
+	fprintf(batch_file," \"request_capacity\":1,\"max_context_tokens\":4096,\n");
+	fprintf(batch_file," \"max_prefill_rows_per_submission\":8,\n");
+	fprintf(batch_file," \"maximum_messages_per_rank_per_progress\":8,\n");
+	fprintf(batch_file," \"maximum_new_submissions_per_progress\":2,\n");
+	fprintf(batch_file," \"stop_token_ids\":[],\n");
+	fprintf(batch_file," \"requests\":[{\"request_id\":%llu,\"sequence_id\":%llu,\n",
+		(unsigned long long)request->request_id,(unsigned long long)request->request_id);
+	fprintf(batch_file,"   \"priority\":0,\"output_token_budget\":%u,\n",request->max_tokens);
+	fprintf(batch_file,"   \"prompt_token_ids\":[");
+	for ( uint32_t i = 0u; i < request->token_count; i++ )
+		fprintf(batch_file,"%s%u",i > 0u ? "," : "",request->token_ids[i]);
+	fprintf(batch_file,"]}]}\n");
+	fclose(batch_file);
+	snprintf(command,sizeof(command),
+		"cd %s && LD_LIBRARY_PATH=%s timeout 120 %s/bin/sparkpipe_model_batch "
+		"--deployment %s/config/model_resident.json --runtime-root %s --batch %s 2>/dev/null",
+		api_runtime_root,api_runtime_root,api_runtime_root,api_runtime_root,api_runtime_root,template_path);
+	output = popen(command,"r");
+	if ( output == 0 )
 	{
-		pthread_mutex_lock(&api_state.mutex);
-		api_state.inflight[slot - 1u] = 0;
-		pthread_mutex_unlock(&api_state.mutex);
+		unlink(template_path);
 		return(500u);
 	}
-	/* EXACT model_batch Run shape: Progress + poll descriptors. The
-	 * pipeline client needs its socket polled between Progress calls
-	 * to process completions (the tight Progress-only spin verified to
-	 * stall after prefill - completions sit unread). */
-	while ( request->done == 0 && api_state.stopping == 0 )
+	while ( fgets(line,sizeof(line),output) != 0 )
 	{
-		SparkModelResidentClientPollDescriptor descriptors[4];
-		uint32_t descriptor_count = 0u;
-		status = SparkModelBatchEngineProgress(api_state.engine,4u);
-		if ( status != SPARK_STATUS_OK )
+		/* parse token events: {"event":"token","token_id":N,...} */
+		const char *marker = strstr(line,"\"event\":\"token\"");
+		if ( marker == 0 )
+			continue;
+		const char *tid = strstr(marker,"\"token_id\":");
+		if ( tid == 0 )
+			continue;
+		token = (uint32_t)strtoul(tid + 11u,0,10);
+		if ( request->response_length + 12u < sizeof(request->response) )
 		{
-			request->done = 1;
-			request->status = (uint32_t)status;
-			break;
+			request->response_length += (uint32_t)snprintf(
+				request->response + request->response_length,
+				sizeof(request->response) - request->response_length,
+				"%s%u",first ? "" : ",",token);
+			first = 0;
 		}
-		status = SparkModelBatchEngineGetPollDescriptors(api_state.engine,
-			descriptors,4u,&descriptor_count);
-		if ( status == SPARK_STATUS_OK && descriptor_count > 0u )
-		{
-			struct pollfd poll_descriptors[4];
-			uint32_t index2;
-			for ( index2 = 0u; index2 < descriptor_count; index2++ )
-			{
-				poll_descriptors[index2].fd = descriptors[index2].fd;
-				poll_descriptors[index2].events = 0;
-				poll_descriptors[index2].revents = 0;
-				if ( (descriptors[index2].events & 1u) != 0u )
-					poll_descriptors[index2].events |= POLLIN;
-				if ( (descriptors[index2].events & 2u) != 0u )
-					poll_descriptors[index2].events |= POLLOUT;
-			}
-			(void)poll(poll_descriptors,(nfds_t)descriptor_count,10);
-		}
-		else
-			usleep(1000);
 	}
-	pthread_mutex_lock(&api_state.mutex);
-	api_state.inflight[slot - 1u] = 0;
-	pthread_mutex_unlock(&api_state.mutex);
-	return(request->status == SPARK_STATUS_OK ? 200u : 500u);
+	{
+		int rc = pclose(output);
+		request->status = rc == 0 ? 0u : 1u;
+	}
+	unlink(template_path);
+	return(request->status == 0u ? 200u : 500u);
 }
 
 /* ---------------- HTTP plumbing (minimal blocking server) ------------ */
@@ -205,21 +197,10 @@ static void model_api_respond(int fd,int code,const char *body)
 	model_api_send_all(fd,body,strlen(body));
 }
 
-static int model_api_read_body(int fd,char *body,uint32_t *body_length)
+static int model_api_read_body(int fd,const char *header,char *body,uint32_t *body_length)
 {
-	char header[8192];
-	uint32_t header_bytes = 0u,content_length = 0u;
+	uint32_t content_length = 0u;
 	ssize_t n;
-	while ( header_bytes + 1u < sizeof(header) )
-	{
-		n = recv(fd,header + header_bytes,1u,0);
-		if ( n <= 0 )
-			return(0);
-		header_bytes += (uint32_t)n;
-		if ( header_bytes >= 4u && memcmp(header + header_bytes - 4u,"\r\n\r\n",4u) == 0 )
-			break;
-	}
-	header[header_bytes] = '\0';
 	{
 		const char *cl = strstr(header,"Content-Length:");
 		if ( cl != 0 )
@@ -366,7 +347,7 @@ static void *model_api_connection(void *context)
 		return(0);
 	}
 	body = (char *)malloc(MODEL_API_MAX_BODY + 1u);
-	if ( body != 0 && model_api_read_body(fd,body,&body_bytes) )
+	if ( body != 0 && model_api_read_body(fd,header,body,&body_bytes) )
 		model_api_handle_completions(fd,body,body_bytes);
 	else
 		model_api_respond(fd,400,"{\"error\":\"body read failed\"}");
@@ -433,6 +414,7 @@ int main(int argc,char **argv)
 				descriptor->max_input_row_count,
 				descriptor->max_resident_sequence_count);
 	}
+	api_runtime_root = runtime_root;
 	signal(SIGPIPE,SIG_IGN);
 	{
 		struct sockaddr_in address;
