@@ -1,0 +1,1005 @@
+{
+  "schema_version": 1,
+  "program": "sparkpipe-heterogeneous-platform",
+  "default_model": "opencode/x-preview-f-free",
+  "task_defaults": {
+    "max_api_retries": 12,
+    "max_code_attempts": 3,
+    "estimate_hours": 4,
+    "hardware": "host"
+    },
+    "tasks": [
+        {
+            "id": "PERF-001",
+            "title": "Daily primary-source SOTA scanner and comparable target ledger",
+            "workstream": "performance",
+            "priority": 120,
+            "dependencies": [],
+            "objective": "Implement a deterministic daily discovery pipeline that records the best public inference result for every supported exact model and compiles a SparkPipe target of at least 110% of the best genuinely comparable result.",
+            "non_goals": [
+                "Treat vendor marketing, anonymous screenshots, or unmatched benchmark shapes as SOTA evidence",
+                "Claim SparkPipe performance from an external result",
+                "Silently compare different checkpoints, quality levels, hardware counts, batches, contexts, speculation settings, or timing boundaries"
+            ],
+            "write_set": [
+                "schema/sota_observation.schema.json",
+                "performance/sota_sources.json",
+                "performance/sota_ledger.jsonl",
+                "examples/sota_observations/**",
+                "tools/update_sota_ledger.py",
+                "tests/test_sota_ledger.py",
+                "docs/SOTA_TRACKING.md"
+            ],
+            "acceptance": [
+                "Every observation binds source URL, retrieval time, source revision or publication date, exact checkpoint, quality mode, hardware, topology, batch, prompt and output lengths, context occupancy, speculation, metric, timing boundary, and evidence class",
+                "Primary official repositories, documentation, papers, benchmark artifacts, and reproducible issue receipts are preferred; secondary claims remain quarantined and cannot set the target",
+                "The comparator emits COMPARABLE, PARTIAL, or INCOMPARABLE with field-level reasons and never normalizes missing facts into invented values",
+                "The 110% target is emitted only for a comparable cell and uses explicit metric direction and units",
+                "Offline fixtures make tests deterministic while the production command can refresh sources from the network",
+                "Supported models include DSV4 Flash, DSV4 Pro, GLM 5.2, K3, MiniMax H3, Qwen 3.8 Pro, and Qwen 3.8 27B"
+            ],
+            "test_commands": [
+                "python3 tests/test_sota_ledger.py"
+            ],
+            "estimate_hours": 8,
+            "critical": true,
+            "recurrence_hours": 24,
+            "internet_policy": "primary_sources_only"
+        },
+        {
+            "id": "PERF-002",
+            "title": "Auditable benchmark protocol and plus-10 target compiler",
+            "workstream": "performance",
+            "priority": 119,
+            "dependencies": [
+                "PERF-001"
+            ],
+            "objective": "Freeze the benchmark cells and statistical decision rules used to prove that SparkPipe matches or exceeds a comparable SOTA result and reaches the 110% economic target.",
+            "non_goals": [
+                "Declare a win from analytical rooflines",
+                "Mix prefill and decode throughput",
+                "Credit more accelerators without reporting per-device efficiency and fleet throughput separately"
+            ],
+            "write_set": [
+                "schema/sota_comparison.schema.json",
+                "performance/benchmark_cells.json",
+                "examples/sota_comparisons/**",
+                "tools/compare_sota_receipts.py",
+                "tests/test_compare_sota_receipts.py",
+                "docs/SOTA_BENCHMARK_PROTOCOL.md"
+            ],
+            "acceptance": [
+                "Cells cover B1 through B1024 with an explicit context/output envelope rather than assuming every Cartesian point fits",
+                "Comparisons require the same exact checkpoint and an explicit quality-equivalence gate before performance",
+                "End-to-end, engine-only, and isolated-kernel boundaries remain separate",
+                "Paired randomized A/B, warmup, sample count, confidence interval, output parity, power state, clocks, and thermal state are recorded",
+                "The compiler reports SOTA parity, 110% target, observed gap, and uncertainty without extrapolating unmeasured cells"
+            ],
+            "test_commands": [
+                "python3 tests/test_compare_sota_receipts.py"
+            ],
+            "estimate_hours": 7,
+            "critical": true
+        },
+        {
+            "id": "PERF-003",
+            "title": "Profile-to-work-order compiler",
+            "workstream": "performance",
+            "priority": 116,
+            "dependencies": [
+                "PERF-002",
+                "FND-004"
+            ],
+            "objective": "Turn a no-drop end-to-end profile and current SOTA gap into narrowly scoped optimization tasks ranked by exposed wall-time opportunity, implementation risk, and hardware test cost.",
+            "non_goals": [
+                "Rank summed overlapping kernel times as wall time",
+                "Generate tasks that share a broad model-directory write lock",
+                "Accept isolated microbenchmark wins as model wins"
+            ],
+            "write_set": [
+                "schema/performance_work_order.schema.json",
+                "tools/compile_performance_work_orders.py",
+                "examples/performance_work_orders/**",
+                "tests/test_performance_work_orders.py",
+                "docs/PERFORMANCE_WORK_ORDERS.md"
+            ],
+            "acceptance": [
+                "Every generated task names one bottleneck, exact source files, a falsifiable hypothesis, control and candidate commands, rollback, numerical gate, and end-to-end A/B gate",
+                "Tasks are split until implementer write sets are disjoint",
+                "Expected gain is analytical and cannot satisfy acceptance",
+                "Rejected experiments remain searchable so agents do not repeat known losses"
+            ],
+            "test_commands": [
+                "python3 tests/test_performance_work_orders.py"
+            ],
+            "estimate_hours": 6,
+            "critical": true
+        },
+        {
+            "id": "PERF-DSV4-001",
+            "title": "DSV4 Flash current SOTA gap and no-drop bottleneck refresh",
+            "workstream": "performance",
+            "priority": 118,
+            "dependencies": [
+                "PERF-001"
+            ],
+            "objective": "Refresh the exact DSV4 Flash TP4 performance target, reproduce the best retained SparkPipe baseline, and produce a no-drop profile that identifies exposed—not merely summed—wall time.",
+            "non_goals": [
+                "Modify production kernels",
+                "Use the unsupported 40.67 documentation-only claim",
+                "Treat branch-level receipts as merged-main qualification"
+            ],
+            "write_set": [
+                "performance/models/dsv4_flash/**",
+                "qualification/dsv4/performance/sota_refresh/**",
+                "tools/dsv4_sota_profile.py",
+                "tests/test_dsv4_sota_profile.py",
+                "docs/DSV4_FLASH_SOTA_GAP.md"
+            ],
+            "acceptance": [
+                "The control is the exact current-main build and exact GA checkpoint with output parity",
+                "The profile separates GPU busy union, exposed idle, collectives, host/runtime gaps, and overlapping kernel categories",
+                "At least three disjoint implementation work orders are emitted with source-level write sets",
+                "Hardware-unavailable runs remain BLOCKED_HARDWARE and cannot fabricate profile data"
+            ],
+            "test_commands": [
+                "python3 tests/test_dsv4_sota_profile.py"
+            ],
+            "hardware": "cuda.sm121.gb10.tp4",
+            "dispatch_pool": "spark-tp4",
+            "estimate_hours": 10,
+            "critical": true
+        },
+        {
+            "id": "PERF-DSV4-002",
+            "title": "DSV4 Flash highest-exposed-wall-time optimization slice",
+            "workstream": "performance",
+            "priority": 114,
+            "dependencies": [
+                "PERF-DSV4-001",
+                "PERF-003"
+            ],
+            "objective": "Implement the highest-ranked source-disjoint DSV4 Flash work order and retain it only if exact output and paired end-to-end performance beat the current-main control.",
+            "non_goals": [
+                "Bundle multiple un-attributed optimizations",
+                "Keep code for an isolated-kernel win that loses end to end",
+                "Lower numerical quality to gain speed"
+            ],
+            "write_set": [
+                "modules/dsv4_resident_decode_stage/source/perf_slices/**",
+                "tests/dsv4_perf_slices/**",
+                "tests/test_dsv4_work_order_receipt.py",
+                "qualification/dsv4/performance/work_orders/**"
+            ],
+            "acceptance": [
+                "Candidate is bitwise exact where the contract is exact and within unchanged tolerances elsewhere",
+                "Three or more randomized interleaved full-request A/B pairs are positive in aggregate and report every pair",
+                "The result updates the gap to comparable SOTA and the 110% target",
+                "A regression or inconclusive result produces a rejection receipt and no production source change"
+            ],
+            "test_commands": [
+                "python3 tests/test_dsv4_work_order_receipt.py"
+            ],
+            "hardware": "cuda.sm121.gb10.tp4",
+            "dispatch_pool": "spark-tp4",
+            "estimate_hours": 14,
+            "critical": true
+        },
+        {
+            "id": "COR-K3-001",
+            "title": "K3 sharding and runtime correctness blockers",
+            "workstream": "models",
+            "priority": 117,
+            "dependencies": [],
+            "objective": "Port only the reviewed K3 sharder corrections and fix the layer-92 classification and premature tp_collective hard requirement before any K3 performance work.",
+            "non_goals": [
+                "Claim full-model inference",
+                "Import unified operational scripts or temporary artifacts",
+                "Optimize kernels before the exact layer gates pass"
+            ],
+            "write_set": [
+                "tools/k3_shard.py",
+                "tests/test_k3_shard.py",
+                "modules/k3_resident_decode_stage/source/spark_k3_bind.c",
+                "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu",
+                "tests/test_k3*",
+                "qualification/k3/correctness/**"
+            ],
+            "acceptance": [
+                "kda_decay_bias, kda_head_log_scale, and routed_norm_weight use checkpoint-derived sharding rules",
+                "Layer 92 has an explicit regression fixture",
+                "The device-collective path is reachable without a contradictory host collective requirement",
+                "No readiness or speed claim is emitted without a real checkpoint and target receipt"
+            ],
+            "test_commands": [
+                "python3 tests/test_k3_shard.py",
+                "python3 tests/test_model_families.py"
+            ],
+            "hardware": "cuda.sm121.gb10.tp16",
+            "estimate_hours": 12,
+            "critical": true
+        },
+        {
+            "id": "COR-GLM52-001",
+            "title": "GLM 5.2 real-pack correctness path",
+            "workstream": "models",
+            "priority": 115,
+            "dependencies": [
+                "FND-001"
+            ],
+            "objective": "Extract the reviewed GLM 5.2 runtime slices without mixed unified artifacts, wire the stagepack resolver into production ingestion, and make the validator consume a real exact pack.",
+            "non_goals": [
+                "Use synthetic weights as readiness evidence",
+                "Begin performance tuning before checkpoint parity",
+                "Cherry-pick mixed unified commits"
+            ],
+            "write_set": [
+                "modules/glm52_resident_decode_stage/**",
+                "modules/glm52_dspark_draft_backend/**",
+                "tools/glm52_dspark_stagepack.py",
+                "tests/test_glm52*",
+                "qualification/glm52/correctness/**"
+            ],
+            "acceptance": [
+                "Production and validation resolve the same exact stagepack identity",
+                "Synthetic and real-pack evidence are labeled separately",
+                "One complete real-weight layer matches the authoritative implementation",
+                "Performance tasks remain blocked until the numerical gate passes"
+            ],
+            "test_commands": [
+                "python3 tests/test_model_families.py",
+                "python3 tests/test_glm52_module_contract.py",
+                "python3 tests/test_glm52_stage_pack.py"
+            ],
+            "hardware": "cuda.sm121.gb10",
+            "estimate_hours": 16,
+            "critical": true
+        },
+        {
+            "id": "PERF-Q27-001",
+            "title": "Qwen 3.8 27B one-Spark SOTA gap and bottleneck profile",
+            "workstream": "performance",
+            "priority": 113,
+            "dependencies": [
+                "PERF-001",
+                "FND-002"
+            ],
+            "objective": "Bind the working one-Spark Qwen 3.8 27B path to its exact checkpoint, refresh comparable SOTA cells, and profile B1 plus the first useful batching cells.",
+            "non_goals": [
+                "Reuse Qwen 3.6 identity or receipts",
+                "Compare FP8 and BF16 storage without reporting quality and memory differences",
+                "Modify kernels in the profiling task"
+            ],
+            "write_set": [
+                "performance/models/qwen38_27b/**",
+                "qualification/qwen38_27b/performance/sota_refresh/**",
+                "tools/qwen38_27b_sota_profile.py",
+                "tests/test_qwen38_27b_sota_profile.py",
+                "docs/QWEN38_27B_SOTA_GAP.md"
+            ],
+            "acceptance": [
+                "B1 control reproduces exact output and current-main speed within declared variance",
+                "B2, B4, B8, and B16 are measured or explicitly capacity-blocked",
+                "Profile identifies exposed GPU, memory, host, graph, speculation, and sampling time",
+                "Work orders distinguish quality-preserving compute changes from storage-codec experiments"
+            ],
+            "test_commands": [
+                "python3 tests/test_qwen38_27b_sota_profile.py"
+            ],
+            "hardware": "cuda.sm121.gb10",
+            "dispatch_pool": "spark-single",
+            "estimate_hours": 10,
+            "critical": true
+        },
+        {
+            "id": "PERF-GLM52-001",
+            "title": "GLM 5.2 post-correctness SOTA performance program",
+            "workstream": "performance",
+            "priority": 108,
+            "dependencies": [
+                "COR-GLM52-001",
+                "PERF-003"
+            ],
+            "objective": "After exact real-pack correctness, establish the first end-to-end baseline and execute the highest-exposed-wall-time work order against a comparable SOTA target.",
+            "non_goals": [
+                "Optimize a synthetic validator",
+                "Trade output quality for throughput",
+                "Claim SOTA from an isolated CUDA kernel"
+            ],
+            "write_set": [
+                "performance/models/glm52/**",
+                "modules/glm52_resident_decode_stage/source/perf_slices/**",
+                "tests/glm52_perf_slices/**",
+                "tests/test_glm52_performance_receipt.py",
+                "qualification/glm52/performance/**"
+            ],
+            "acceptance": [
+                "The first receipt is an honest baseline even when far below target",
+                "Optimization retains real-checkpoint numerical parity",
+                "End-to-end A/B and current comparable SOTA gap are both reported",
+                "Hardware and topology are exact and reproducible"
+            ],
+            "test_commands": [
+                "python3 tests/test_glm52_performance_receipt.py"
+            ],
+            "hardware": "cuda.sm121.gb10",
+            "dispatch_pool": "spark-fleet",
+            "estimate_hours": 18,
+            "critical": true
+        },
+        {
+            "id": "PERF-K3-001",
+            "title": "K3 post-correctness SOTA performance program",
+            "workstream": "performance",
+            "priority": 107,
+            "dependencies": [
+                "COR-K3-001",
+                "PERF-003"
+            ],
+            "objective": "After K3 runtime correctness, establish exact TP topology baselines and execute one profile-backed optimization slice against a comparable SOTA target.",
+            "non_goals": [
+                "Use stale TP16 packs",
+                "Treat layer-zero success as full-model performance",
+                "Hide communication cost from the timing boundary"
+            ],
+            "write_set": [
+                "performance/models/k3/**",
+                "modules/k3_resident_decode_stage/source/perf_slices/**",
+                "tests/k3_perf_slices/**",
+                "tests/test_k3_performance_receipt.py",
+                "qualification/k3/performance/**"
+            ],
+            "acceptance": [
+                "Baseline includes all ranks, collectives, sampling, and streamed client observation",
+                "Output identity and pack freshness are proven before timing",
+                "Optimization is attributed to one work order and survives end-to-end A/B",
+                "SOTA parity and 110% target remain cell-specific"
+            ],
+            "test_commands": [
+                "python3 tests/test_k3_performance_receipt.py"
+            ],
+            "hardware": "cuda.sm121.gb10.tp16",
+            "dispatch_pool": "spark-tp16",
+            "estimate_hours": 18,
+            "critical": true
+        },
+        {
+            "id": "FND-001",
+      "title": "Machine-readable main/unified reconciliation manifest",
+      "workstream": "foundation",
+      "priority": 100,
+      "dependencies": [],
+      "objective": "Add a deterministic manifest and verifier that records every selectively salvaged unified commit/path, destination, conflicts, and gates without merging unified wholesale.",
+      "non_goals": ["Apply or cherry-pick any salvaged code", "Change production runtime files"],
+      "write_set": ["schema/reconciliation_manifest.schema.json", "reconciliation/**", "tools/reconcile_branches.py", "tests/test_reconciliation_manifest.py"],
+      "acceptance": ["Manifest pins origin/main, origin/unified, and merge-base SHAs", "Rejects tmp, binaries, logs, stale qwen36 user-facing names, and missing gates", "Output is byte-deterministic"],
+      "test_commands": ["python3 tests/test_reconciliation_manifest.py"],
+      "estimate_hours": 3,
+      "critical": true
+    },
+    {
+      "id": "FND-002",
+      "title": "Complete Qwen 3.8 27B rename and exact checkpoint identity",
+      "workstream": "foundation",
+      "priority": 100,
+      "dependencies": [],
+      "objective": "Repair current-main missing qwen38_27b paths and bind model, runtime, adapter, pack, fixtures, and must-work target to one exact Qwen 3.8 27B checkpoint identity.",
+      "non_goals": ["Claim production readiness", "Invent an FP8 pack when the authoritative contract forbids it"],
+      "write_set": ["Makefile", "model_contracts/qwen38_27b*.json", "model_contracts/must_work_targets.json", "model-families/qwen38_27b/**", "modules/qwen38_27b_resident_decode_stage/**", "examples/model_descriptions/qwen38_27b*", "tests/*qwen38_27b*", "tools/qwen38_27b*"],
+      "acceptance": ["No current build/test reference points at a nonexistent renamed path", "All public and runtime identities bind the pinned checkpoint revision", "Qualification remains NOT_MEASURED until real evidence exists", "make -n test succeeds"],
+      "test_commands": ["make -n test", "python3 tests/test_model_families.py", "python3 tests/test_must_work_targets.py"],
+      "estimate_hours": 6,
+      "critical": true
+    },
+    {
+      "id": "FND-003",
+      "title": "Exact model identity invariant gate",
+      "workstream": "foundation",
+      "priority": 91,
+      "dependencies": ["FND-002"],
+      "objective": "Add a generic test that follows checkpoint identity through contract, generated model description, adapter descriptor, resident handshake, release manifest, and API catalog.",
+      "non_goals": ["Model-specific hard-coded exceptions"],
+      "write_set": ["tests/test_exact_model_identity.py", "tools/check_exact_model_identity.py", "docs/EXACT_MODEL_IDENTITY.md"],
+      "acceptance": ["Mutation at every identity seam fails", "Gate covers all supported model families", "Historical aliases are not accepted as exact revisions"],
+      "test_commands": ["python3 tests/test_exact_model_identity.py"],
+      "estimate_hours": 4,
+      "critical": true
+    },
+    {
+      "id": "FND-004",
+      "title": "Qualification and evidence manifest schema",
+      "workstream": "foundation",
+      "priority": 96,
+      "dependencies": [],
+      "objective": "Define qualification levels L0-L9 and a receipt schema that separates measured, simulated, analytical, and unverified claims.",
+      "non_goals": ["Change existing performance numbers"],
+      "write_set": ["schema/qualification_receipt.schema.json", "examples/qualification/**", "tests/test_qualification_receipt.py", "docs/QUALIFICATION_LATTICE.md"],
+      "acceptance": ["Receipt binds source, build, artifact, target, topology, checkpoint, commands, and result hashes", "Production level requires merged-main and live target evidence", "Negative fixtures cover category inflation"],
+      "test_commands": ["python3 tests/test_qualification_receipt.py"],
+      "estimate_hours": 4,
+      "critical": true
+    },
+    {
+      "id": "RCP-001",
+      "title": "Model-instance recipe schema",
+      "workstream": "recipes",
+      "priority": 98,
+      "dependencies": [],
+      "objective": "Create the strict high-level recipe schema for checkpoint, weight codec, compute route, topology policy, batch/context envelope, KV policy, target constraints, promotion, and qualification.",
+      "non_goals": ["Modify low-level model_description schema v1", "Compile artifacts"],
+      "write_set": ["schema/model_instance_recipe.schema.json", "examples/model_recipes/**", "tests/test_model_instance_recipe.py", "docs/MODEL_INSTANCE_RECIPE.md"],
+      "acceptance": ["Supports storage bits 4,5,6,7,8,16 independently of compute and accumulator dtype", "Supports TP,PP,EP,ETP,CP,KVP,DP and prefill/decode disaggregation", "Unknown semantic fields are rejected", "Positive and mutation fixtures cover every axis"],
+      "test_commands": ["python3 tests/test_model_instance_recipe.py"],
+      "estimate_hours": 6,
+      "critical": true
+    },
+    {
+      "id": "RCP-002",
+      "title": "Canonical recipe hashing and mnemonic bindings",
+      "workstream": "recipes",
+      "priority": 90,
+      "dependencies": ["RCP-001"],
+      "objective": "Implement canonical JSON hashing and generation-fenced mnemonic bindings to immutable recipe/build hashes.",
+      "non_goals": ["Activate deployments", "Allow aliases to replace exact receipt identity"],
+      "write_set": ["tools/model_recipe_identity.py", "schema/mnemonic_binding.schema.json", "examples/mnemonics/**", "tests/test_model_recipe_identity.py"],
+      "acceptance": ["Semantically identical recipes hash identically", "Every semantic mutation changes the hash", "Alias compare-and-swap rejects stale generations", "Collision and Unicode normalization cases are tested"],
+      "test_commands": ["python3 tests/test_model_recipe_identity.py"],
+      "estimate_hours": 4,
+      "critical": true
+    },
+    {
+      "id": "RCP-003",
+      "title": "Weight codec registry for 4-16 bit storage",
+      "workstream": "recipes",
+      "priority": 82,
+      "dependencies": ["RCP-001"],
+      "objective": "Define codec records for true packed 4,5,6,7,8 and 16-bit storage, scale geometry, deterministic dequantization, and compute-route requirements.",
+      "non_goals": ["Implement target GPU kernels", "Alias 5/6/7-bit formats to int8"],
+      "write_set": ["schema/weight_codec.schema.json", "model_contracts/weight_codecs/**", "tools/validate_weight_codec.py", "tests/test_weight_codec_registry.py"],
+      "acceptance": ["Each codec pins byte order, packing, scales, zero points, group geometry, and error bars", "Reference encode/decode vectors round-trip deterministically", "Unsupported target primitive combinations fail"],
+      "test_commands": ["python3 tests/test_weight_codec_registry.py"],
+      "estimate_hours": 6
+    },
+    {
+      "id": "RCP-004",
+      "title": "Recipe topology legality compiler",
+      "workstream": "recipes",
+      "priority": 84,
+      "dependencies": ["RCP-001", "TOP-001"],
+      "objective": "Compile requested parallel axes into legal tensor, head, expert, context, and stage partitions with explicit replication records.",
+      "non_goals": ["Place ranks on concrete nodes"],
+      "write_set": ["tools/compile_recipe_topology.py", "tests/test_compile_recipe_topology.py", "examples/compiled_topologies/**"],
+      "acceptance": ["Rejects indivisible heads, expert counts, quant groups, or stage counts", "Reports effective KV sharding and replication factor", "Covers TP/PP/EP/ETP/CP/KVP/DP combinations"],
+      "test_commands": ["python3 tests/test_compile_recipe_topology.py"],
+      "estimate_hours": 8,
+      "critical": true
+    },
+    {
+      "id": "RCP-005",
+      "title": "Batch-context capacity envelope compiler",
+      "workstream": "recipes",
+      "priority": 86,
+      "dependencies": ["RCP-001", "KV-001"],
+      "objective": "Generate an enforceable B1-B1024 versus context envelope from weights, workspace, active KV, restore reserve, and target memory.",
+      "non_goals": ["Promise all B/context combinations", "Use average memory where a worst-case bound is required"],
+      "write_set": ["tools/compile_capacity_envelope.py", "schema/capacity_envelope.schema.json", "tests/test_capacity_envelope.py", "examples/capacity_envelopes/**"],
+      "acceptance": ["Envelope is monotone and rejects overcommit", "Includes active and parked lane assumptions", "Boundary mutations test one-byte and one-token overflow"],
+      "test_commands": ["python3 tests/test_capacity_envelope.py"],
+      "estimate_hours": 6,
+      "critical": true
+    },
+    {
+      "id": "ART-001",
+      "title": "Content-addressed artifact DAG schema",
+      "workstream": "artifacts",
+      "priority": 83,
+      "dependencies": ["RCP-001"],
+      "objective": "Model checkpoint blocks, normalized tensors, codec blocks, topology slices, rank packages, kernels, builds, and receipts as a provenance DAG.",
+      "non_goals": ["Delete any existing artifact", "Implement Ceph transport"],
+      "write_set": ["schema/artifact_dag.schema.json", "examples/artifact_dags/**", "tests/test_artifact_dag.py", "docs/ARTIFACT_DAG.md"],
+      "acceptance": ["All edges are hash-bound and acyclic", "Rank packages trace to exact checkpoint and recipe", "Mutation and missing-parent fixtures fail"],
+      "test_commands": ["python3 tests/test_artifact_dag.py"],
+      "estimate_hours": 5
+    },
+    {
+      "id": "ART-002",
+      "title": "Warm-cache catalog and lazy materialization planner",
+      "workstream": "artifacts",
+      "priority": 68,
+      "dependencies": ["ART-001"],
+      "objective": "Plan reuse and lazy generation of shard variants across the 48 TB warm tier without materializing the full combinatorial matrix.",
+      "non_goals": ["Garbage collect files", "Contact a live Ceph cluster"],
+      "write_set": ["tools/plan_artifact_materialization.py", "schema/warm_cache_catalog.schema.json", "tests/test_artifact_materialization.py"],
+      "acceptance": ["Planner reuses shared parents", "Pinned builds materialize transitively", "No-delete dry-run output is deterministic"],
+      "test_commands": ["python3 tests/test_artifact_materialization.py"],
+      "estimate_hours": 6
+    },
+    {
+      "id": "HWI-001",
+      "title": "Hardware target capability schema",
+      "workstream": "hardware",
+      "priority": 98,
+      "dependencies": [],
+      "objective": "Define target capabilities for CUDA, ROCm, Metal, and CPU reference without vendor types in portable records.",
+      "non_goals": ["Claim unmeasured hardware performance"],
+      "write_set": ["schema/hardware_target.schema.json", "examples/hardware_targets/**", "tests/test_hardware_target.py", "docs/HARDWARE_TARGETS.md"],
+      "acceptance": ["Records memory, bandwidth evidence, subgroup width, dtypes, matrix primitives, graphs, peer access, collectives, and transfer behavior", "Target IDs are immutable and versioned", "Unknown capabilities fail closed"],
+      "test_commands": ["python3 tests/test_hardware_target.py"],
+      "estimate_hours": 5,
+      "critical": true
+    },
+    {
+      "id": "HWI-002",
+      "title": "Port frozen hardware-neutral model-device interface",
+      "workstream": "hardware",
+      "priority": 94,
+      "dependencies": ["HWI-001", "FND-001"],
+      "objective": "Extract the normative DSV4-first hwiface contract from unified into current main with neutral headers and host contract tests.",
+      "non_goals": ["Import unified temporary artifacts", "Change CUDA kernel behavior", "Implement ROCm or Metal"],
+      "write_set": ["include/sparkpipe/spark_hw*.h", "docs/HWIFACE_V1.md", "tests/test_hwiface*.c", "tests/test_hwiface*.py", "tools/check_no_vendor_in_shared_headers.sh"],
+      "acceptance": ["Portable headers compile without CUDA, HIP, or Metal SDK", "Seven execution-island families and determinism classes are preserved", "No hot-path backend vtable", "Existing CUDA-facing ABI gates remain green"],
+      "test_commands": ["python3 tests/test_hwiface_contract.py", "sh tools/check_no_vendor_in_shared_headers.sh"],
+      "estimate_hours": 8,
+      "critical": true
+    },
+    {
+      "id": "HWI-003",
+      "title": "CUDA backend adapter baseline",
+      "workstream": "hardware",
+      "priority": 79,
+      "dependencies": ["HWI-002"],
+      "objective": "Route retained GB10 CUDA execution through the hardware interface while preserving exact behavior and performance-sensitive static linking.",
+      "non_goals": ["Retile kernels", "Claim device parity without device receipts"],
+      "write_set": ["modules/dsv4_cuda_sm121_gb10/**", "tests/test_dsv4_hwiface_cuda*.py", "tools/validate_dsv4_hwiface_cuda.sh"],
+      "acceptance": ["Host compile and source-contract gates pass", "Device qualification script compares exact retained cells", "No vendor branch enters portable core"],
+      "test_commands": ["python3 tests/test_dsv4_hwiface_cuda_source.py"],
+      "hardware": "cuda.sm121.gb10",
+      "estimate_hours": 10
+    },
+    {
+      "id": "HWI-004",
+      "title": "ROCm gfx950 runtime substrate",
+      "workstream": "hardware",
+      "priority": 80,
+      "dependencies": ["HWI-002"],
+      "objective": "Implement fail-closed HIP memory, queue, event, graph, callback, and descriptor substrate for rocm.gfx950.mi350p.",
+      "non_goals": ["Port full DSV4 model", "Compare performance with CUDA"],
+      "write_set": ["modules/dsv4_rocm_gfx950_mi350p/**", "tests/test_dsv4_rocm_substrate*.py", "tools/validate_dsv4_rocm_substrate.sh"],
+      "acceptance": ["Host/syntax probes compile without CUDA headers", "Unknown architecture refuses", "Queue completion and failure semantics have stress tests", "Hardware status remains UNVERIFIED until MI350P run"],
+      "test_commands": ["python3 tests/test_dsv4_rocm_substrate_source.py"],
+      "hardware": "rocm.gfx950.mi350p",
+      "estimate_hours": 12
+    },
+    {
+      "id": "HWI-005",
+      "title": "Apple Silicon Metal capability probe",
+      "workstream": "hardware",
+      "priority": 79,
+      "dependencies": ["HWI-001"],
+      "objective": "Add a read-only Metal capability probe and target descriptor generator for Apple Silicon GPU families.",
+      "non_goals": ["Use MPSGraph as silent production fallback", "Support Intel Mac GPU"],
+      "write_set": ["tools/hardware/metal_target_probe.*", "tools/generate_metal_target.py", "tests/test_metal_target_probe.py", "docs/METAL_BACKEND.md"],
+      "acceptance": ["Probe records OS, SoC/GPU family, memory, threadgroup/simd properties, feature sets, and command-buffer features", "Generated target is deterministic", "Non-macOS path skips honestly"],
+      "test_commands": ["python3 tests/test_metal_target_probe.py"],
+      "hardware": "metal.apple-silicon",
+      "estimate_hours": 7,
+      "critical": true
+    },
+    {
+      "id": "TOP-001",
+      "title": "Heterogeneous topology graph schema",
+      "workstream": "topology",
+      "priority": 96,
+      "dependencies": [],
+      "objective": "Replace the single ring/switch mode abstraction with a graph that simultaneously represents switched and direct rails, devices, storage, health, and failure domains.",
+      "non_goals": ["Remove existing topology schema compatibility in the first patch"],
+      "write_set": ["schema/hardware_topology_graph.schema.json", "examples/topology_graphs/**", "tests/test_hardware_topology_graph.py", "docs/HARDWARE_TOPOLOGY_GRAPH.md"],
+      "acceptance": ["Represents switched all-to-all plus direct pairs concurrently", "Edges are directed and capacity-scoped", "Includes accelerator/NIC/storage physical identities and observation epoch", "Mixed CUDA/ROCm/Metal fixtures validate"],
+      "test_commands": ["python3 tests/test_hardware_topology_graph.py"],
+      "estimate_hours": 7,
+      "critical": true
+    },
+    {
+      "id": "TOP-002",
+      "title": "Inventory snapshot and resource-demand schemas",
+      "workstream": "topology",
+      "priority": 92,
+      "dependencies": ["HWI-001", "TOP-001"],
+      "objective": "Define versioned inventory snapshots and execution-plan resource demands with scoped fungible, nonfungible, capability, locality, and gang resources.",
+      "non_goals": ["Schedule requests"],
+      "write_set": ["schema/fleet_inventory.schema.json", "schema/execution_plan_demand.schema.json", "examples/fleet_inventory/**", "tests/test_fleet_inventory.py"],
+      "acceptance": ["Memory on different nodes is not accidentally fungible", "Bandwidth binds actual directed paths", "Demands include weights, workspace, active KV, backing, ports, communicator and margin"],
+      "test_commands": ["python3 tests/test_fleet_inventory.py"],
+      "estimate_hours": 6,
+      "critical": true
+    },
+    {
+      "id": "TOP-003",
+      "title": "Deterministic locality-group enumerator",
+      "workstream": "topology",
+      "priority": 78,
+      "dependencies": ["TOP-002"],
+      "objective": "Enumerate local device groups satisfying execution-plan topology predicates and failure-domain policy.",
+      "non_goals": ["Score or reserve placements"],
+      "write_set": ["scheduler/locality_groups.c", "include/sparkpipe/spark_locality_groups.h", "tests/test_locality_groups.c"],
+      "acceptance": ["Enumeration is deterministic", "Rejects missing direct/switch edges, duplicate devices, stale inventory, and mixed backend collectives", "C test covers 1,4,8,16-node and mixed-stage fixtures"],
+      "test_commands": ["make build/test_locality_groups", "./build/test_locality_groups"],
+      "estimate_hours": 8
+    },
+    {
+      "id": "SCH-001",
+      "title": "Fleet compute-island offer schema",
+      "workstream": "scheduler",
+      "priority": 99,
+      "dependencies": [],
+      "objective": "Define the signed, short-lived service offer that separates global API routing from island-local hardware scheduling.",
+      "non_goals": ["Expose raw GPU state to the API gateway", "Implement cryptographic key management"],
+      "write_set": ["schema/compute_island_offer.schema.json", "examples/compute_island_offers/**", "tests/test_compute_island_offer.py", "docs/COMPUTE_ISLAND_ROUTING.md"],
+      "acceptance": ["Offer binds exact model build/allocation generation, context/features, capacity vector, SLO, region/trust/data policy, price, qualification, epoch, nonce, and expiry", "Expired/replayed/stale-generation offers fail", "Term is distinguished from kernel execution islands"],
+      "test_commands": ["python3 tests/test_compute_island_offer.py"],
+      "estimate_hours": 5,
+      "critical": true
+    },
+    {
+      "id": "SCH-002",
+      "title": "Generation-fenced capacity lease store",
+      "workstream": "scheduler",
+      "priority": 95,
+      "dependencies": ["SCH-001"],
+      "objective": "Implement an in-memory reference lease store with atomic reserve/renew/release, expiry, idempotency, and no-double-sell invariants.",
+      "non_goals": ["Distributed consensus", "Persistent production database"],
+      "write_set": ["scheduler/island_lease_store.c", "include/sparkpipe/spark_island_lease_store.h", "tests/test_island_lease_store.c"],
+      "acceptance": ["Concurrent reservations cannot exceed each capacity dimension", "Stale epoch and generation fail", "Expiry releases capacity exactly once", "Property-style randomized test preserves conservation"],
+      "test_commands": ["make build/test_island_lease_store", "./build/test_island_lease_store"],
+      "estimate_hours": 9,
+      "critical": true
+    },
+    {
+      "id": "SCH-003",
+      "title": "Global request broker core",
+      "workstream": "scheduler",
+      "priority": 96,
+      "dependencies": ["SCH-001", "SCH-002"],
+      "objective": "Implement provider-neutral request-to-compute-island filtering, scoring, and lease acquisition before any island-local admission.",
+      "non_goals": ["Select accelerator ranks", "Form local batches", "Retry after first output token"],
+      "write_set": ["scheduler/global_request_broker.c", "include/sparkpipe/spark_global_request_broker.h", "tests/test_global_request_broker.c"],
+      "acceptance": ["Hard filters exact build, features, context, region/data policy, trust, qualification, freshness and capacity", "Scoring covers queue, SLO, reliability, price and affinity", "Lease race and no-eligible-island tests pass"],
+      "test_commands": ["make build/test_global_request_broker", "./build/test_global_request_broker"],
+      "estimate_hours": 10,
+      "critical": true
+    },
+    {
+      "id": "SCH-004",
+      "title": "Island-local admission interface",
+      "workstream": "scheduler",
+      "priority": 93,
+      "dependencies": ["SCH-001"],
+      "objective": "Define the boundary by which a leased global request asks a compute island's existing admission/batch engine for final hardware-aware acceptance.",
+      "non_goals": ["Move KV or GPU details into the global broker"],
+      "write_set": ["include/sparkpipe/spark_island_admission.h", "runtime/island_admission.c", "tests/test_island_admission.c"],
+      "acceptance": ["Boundary carries exact build/allocation/lease/request identity and neutral demand", "Existing Spark admission reasons map without model-specific fields", "Stale lease and local pressure reject cleanly"],
+      "test_commands": ["make build/test_island_admission", "./build/test_island_admission"],
+      "estimate_hours": 7,
+      "critical": true
+    },
+    {
+      "id": "SCH-005",
+      "title": "Gang placement solver",
+      "workstream": "scheduler",
+      "priority": 86,
+      "dependencies": ["TOP-003", "SCH-002", "RCP-004"],
+      "objective": "Atomically place an execution-plan gang on one inventory epoch with exact device, link, storage, memory, port, and communicator reservations.",
+      "non_goals": ["Request batching", "Cross-island collectives"],
+      "write_set": ["scheduler/fleet_placement.c", "include/sparkpipe/spark_fleet_placement.h", "tests/test_fleet_placement.c"],
+      "acceptance": ["Impossible plans fail without partial reservations", "Same inputs yield same placement", "Overcommit, stale inventory, failure-domain and rollback tests pass"],
+      "test_commands": ["make build/test_fleet_placement", "./build/test_fleet_placement"],
+      "estimate_hours": 12,
+      "critical": true
+    },
+    {
+      "id": "SCH-006",
+      "title": "Active-set and promotion reconciler",
+      "workstream": "scheduler",
+      "priority": 80,
+      "dependencies": ["SCH-005", "REL-001", "RCP-002"],
+      "objective": "Reconcile desired mnemonic bindings and active-model set into generation-fenced local allocations with rollback.",
+      "non_goals": ["Copy unverified artifacts", "Publish before all-rank readiness"],
+      "write_set": ["scheduler/active_set_reconciler.c", "include/sparkpipe/spark_active_set_reconciler.h", "tests/test_active_set_reconciler.c"],
+      "acceptance": ["In-flight requests remain pinned across alias change", "Partial rank readiness never routes", "Every activation phase has rollback and restart tests"],
+      "test_commands": ["make build/test_active_set_reconciler", "./build/test_active_set_reconciler"],
+      "estimate_hours": 12,
+      "critical": true
+    },
+    {
+      "id": "SCH-007",
+      "title": "Dynamic B1-B1024 batch/context enforcement",
+      "workstream": "scheduler",
+      "priority": 84,
+      "dependencies": ["RCP-005", "SCH-004"],
+      "objective": "Make island-local batch formation consume compiled capacity envelopes and choose batch width without caller B numbers.",
+      "non_goals": ["Guarantee 256K at B1024", "Change model math"],
+      "write_set": ["runtime/model_batch_scheduler.h", "runtime/model_batch_engine.c", "tests/test_batch_capacity_envelope.c"],
+      "acceptance": ["Every admitted batch/context point lies inside envelope", "High-context requests reduce available width deterministically", "Priority/deadline fairness and boundary cases pass"],
+      "test_commands": ["make build/test_batch_capacity_envelope", "./build/test_batch_capacity_envelope"],
+      "estimate_hours": 10,
+      "critical": true
+    },
+    {
+      "id": "KV-001",
+      "title": "KV ownership and precision estimator",
+      "workstream": "kv",
+      "priority": 96,
+      "dependencies": [],
+      "objective": "Compute logical and rank-physical KV bytes, KVP/CP ownership, replication, active capacity, and backing horizon from model geometry and recipe policy.",
+      "non_goals": ["Transfer KV", "Assume TP implies KV sharding"],
+      "write_set": ["tools/kv_ownership_estimate.py", "schema/kv_policy.schema.json", "tests/test_kv_ownership_estimate.py", "docs/KV_OWNERSHIP.md"],
+      "acceptance": ["Reports approximately 1/N only when physical bytes prove it", "Handles MLA/compressed/recurrent state and separate key/value formats", "Indivisible head/context layouts reject or show replication"],
+      "test_commands": ["python3 tests/test_kv_ownership_estimate.py"],
+      "estimate_hours": 7,
+      "critical": true
+    },
+    {
+      "id": "KV-002",
+      "title": "KV park/restore module ABI",
+      "workstream": "kv",
+      "priority": 91,
+      "dependencies": [],
+      "objective": "Add versioned module frame operations and views for whole-block save/restore plus recurrent-state snapshots without introducing per-token paging.",
+      "non_goals": ["Implement scheduler victim policy", "Add a universal model KV layout"],
+      "write_set": ["include/sparkpipe/spark_kv_transfer.h", "tests/test_kv_transfer_abi.c", "docs/KV_TRANSFER_ABI.md"],
+      "acceptance": ["ABI is model-neutral and versioned", "Restore must complete before compute frame", "Size/overflow/misalignment negative tests pass"],
+      "test_commands": ["make build/test_kv_transfer_abi", "./build/test_kv_transfer_abi"],
+      "estimate_hours": 6,
+      "critical": true
+    },
+    {
+      "id": "KV-003",
+      "title": "Durable backing slot journal",
+      "workstream": "kv",
+      "priority": 78,
+      "dependencies": ["FND-004"],
+      "objective": "Extend the fixed-slot KV backing store with an atomic identity/epoch journal and stale-slot detection suitable for restart recovery.",
+      "non_goals": ["Promise crash durability before tests", "Delete cold recompute fallback"],
+      "write_set": ["runtime/spark_kv_backing.c", "include/sparkpipe/spark_kv_backing.h", "tests/test_kv_backing_journal.c"],
+      "acceptance": ["Torn writes cannot publish a slot map", "Wrong build/layout/rank/epoch fails", "Crash injection and round-trip integrity pass"],
+      "test_commands": ["make build/test_kv_backing_journal", "./build/test_kv_backing_journal"],
+      "estimate_hours": 10
+    },
+    {
+      "id": "KV-004",
+      "title": "Pager worker and full-lane restore state machine",
+      "workstream": "kv",
+      "priority": 79,
+      "dependencies": ["KV-002", "KV-003"],
+      "objective": "Implement asynchronous park/restore orchestration that makes a lane fully resident before decode and preserves shared-prefix references.",
+      "non_goals": ["Evict active work on every token", "Hide restore latency"],
+      "write_set": ["runtime/kv_pager.c", "include/sparkpipe/spark_kv_pager.h", "tests/test_kv_pager.c"],
+      "acceptance": ["State machine is restartable and cancellation-safe", "No decode callback occurs while lane is partial", "Shared/private block conservation holds under randomized operations"],
+      "test_commands": ["make build/test_kv_pager", "./build/test_kv_pager"],
+      "estimate_hours": 12,
+      "critical": true
+    },
+    {
+      "id": "KV-005",
+      "title": "Pager admission backpressure and anti-thrash",
+      "workstream": "kv",
+      "priority": 76,
+      "dependencies": ["KV-004", "SCH-007"],
+      "objective": "Integrate park budget, restore futures, priority and active-lane age into local admission so overloaded workloads queue instead of thrash.",
+      "non_goals": ["Change global compute-island routing policy"],
+      "write_set": ["runtime/model_batch_engine.c", "runtime/model_batch_scheduler.h", "tests/test_kv_pager_backpressure.c"],
+      "acceptance": ["Offered load 2x active capacity remains bounded", "Young higher-priority active lanes are not evicted", "Idle pager leaves canonical token stream unchanged"],
+      "test_commands": ["make build/test_kv_pager_backpressure", "./build/test_kv_pager_backpressure"],
+      "estimate_hours": 10,
+      "critical": true
+    },
+    {
+      "id": "API-001",
+      "title": "OpenAI compatibility profile and fixtures",
+      "workstream": "api",
+      "priority": 97,
+      "dependencies": [],
+      "objective": "Define a named compatibility profile with positive and negative fixtures for models, chat completions, legacy completions, stateless text responses, SSE, errors, usage and request IDs.",
+      "non_goals": ["Claim unrestricted OpenAI compatibility", "Call external APIs in tests"],
+      "write_set": ["docs/API_COMPATIBILITY_PROFILE.md", "tests/fixtures/openai_compat/**", "tests/test_api_compatibility_fixtures.py"],
+      "acceptance": ["Unsupported fields fail explicitly", "SSE ends with data: [DONE]", "Fixtures cover streaming/non-streaming, tool payload validation, finish reasons, usage and errors"],
+      "test_commands": ["python3 tests/test_api_compatibility_fixtures.py"],
+      "estimate_hours": 6,
+      "critical": true
+    },
+    {
+      "id": "API-002",
+      "title": "Hardened public gateway skeleton",
+      "workstream": "api",
+      "priority": 92,
+      "dependencies": ["API-001"],
+      "objective": "Add a separate gateway process and keep node/model_api.c private; implement bounded parsing, request identity, standard errors and a private broker interface.",
+      "non_goals": ["TLS termination in C", "Expose the current token-ID shim", "Implement billing"],
+      "write_set": ["gateway/**", "include/sparkpipe/spark_gateway.h", "tests/test_gateway*.c", "tests/test_gateway*.py", "Makefile"],
+      "acceptance": ["Gateway defaults to loopback/private broker in tests", "Body/header/timeout limits and malformed HTTP tests pass", "No direct batch-engine pointer in public parser", "Current model_api is not packaged as public"],
+      "test_commands": ["make build/test_gateway", "./build/test_gateway", "python3 tests/test_gateway_contract.py"],
+      "estimate_hours": 12,
+      "critical": true
+    },
+    {
+      "id": "API-003",
+      "title": "Generic tokenizer and chat-template package contract",
+      "workstream": "api",
+      "priority": 83,
+      "dependencies": ["API-001", "FND-003"],
+      "objective": "Bind tokenizer, detokenizer, chat-template version and capability metadata to every public model build.",
+      "non_goals": ["Reuse GLM template for other models", "Permit template drift without identity change"],
+      "write_set": ["include/sparkpipe/spark_text_package.h", "runtime/text_package.c", "schema/text_package.schema.json", "tests/test_text_package.c"],
+      "acceptance": ["Template/tokenizer mutation changes build identity", "Round-trip and invalid UTF-8/error cases pass", "All public model fixtures name an exact text package"],
+      "test_commands": ["make build/test_text_package", "./build/test_text_package"],
+      "estimate_hours": 9
+    },
+    {
+      "id": "API-004",
+      "title": "Gateway streaming, cancellation and idempotency",
+      "workstream": "api",
+      "priority": 84,
+      "dependencies": ["API-002", "SCH-003", "SCH-004"],
+      "objective": "Implement standard SSE ordering, disconnect cancellation, pre-first-token reroute attempts and durable idempotency semantics.",
+      "non_goals": ["Reroute after first token", "Silently change model/build"],
+      "write_set": ["gateway/streaming.c", "gateway/request_lifecycle.c", "include/sparkpipe/spark_gateway_lifecycle.h", "tests/test_gateway_lifecycle.c"],
+      "acceptance": ["Exactly one billable winning attempt", "Disconnect reaches batch-engine cancellation", "Duplicate idempotency key returns same terminal identity", "Post-first-token failure terminates rather than reroutes"],
+      "test_commands": ["make build/test_gateway_lifecycle", "./build/test_gateway_lifecycle"],
+      "estimate_hours": 12,
+      "critical": true
+    },
+    {
+      "id": "API-005",
+      "title": "Tenant auth and hierarchical quota reference",
+      "workstream": "api",
+      "priority": 85,
+      "dependencies": ["API-001"],
+      "objective": "Implement keyed-digest API credentials, org/project/key scopes, model allowlists and atomic RPM/TPM/concurrency/spend reservation reference logic.",
+      "non_goals": ["Store plaintext tokens", "Choose production database", "Implement payments"],
+      "write_set": ["gateway/auth.c", "gateway/quota.c", "include/sparkpipe/spark_gateway_auth.h", "tests/test_gateway_auth.c", "tests/test_gateway_quota.c"],
+      "acceptance": ["Immediate revocation works", "Hierarchical limits conserve reservations under concurrency", "Customer limit is distinguishable from marketplace exhaustion", "Timing-safe digest comparison is tested"],
+      "test_commands": ["make build/test_gateway_auth build/test_gateway_quota", "./build/test_gateway_auth", "./build/test_gateway_quota"],
+      "estimate_hours": 10,
+      "critical": true
+    },
+    {
+      "id": "MTR-001",
+      "title": "Immutable usage-event schema",
+      "workstream": "metering",
+      "priority": 88,
+      "dependencies": ["FND-004", "SCH-001"],
+      "objective": "Define deterministic terminal attempt and request usage events reconciliable across gateway, compute island and provider receipt.",
+      "non_goals": ["Invoice customers", "Treat Prometheus metrics as financial truth"],
+      "write_set": ["schema/usage_event.schema.json", "examples/usage_events/**", "tests/test_usage_event.py", "docs/USAGE_METERING.md"],
+      "acceptance": ["Events bind customer/project/key digest, provider/island, model build, price card, lease, tokens, timing and terminal reason", "Winning-attempt and retry semantics are explicit", "Deterministic ID and duplicate tests pass"],
+      "test_commands": ["python3 tests/test_usage_event.py"],
+      "estimate_hours": 5,
+      "critical": true
+    },
+    {
+      "id": "MTR-002",
+      "title": "Integer double-entry ledger reference",
+      "workstream": "metering",
+      "priority": 70,
+      "dependencies": ["MTR-001"],
+      "objective": "Implement an append-only integer ledger for customer debit, provider payable, platform fee, tax/reserve and reversal entries.",
+      "non_goals": ["Move real money", "Select tax jurisdiction"],
+      "write_set": ["gateway/usage_ledger.c", "include/sparkpipe/spark_usage_ledger.h", "tests/test_usage_ledger.c"],
+      "acceptance": ["Every transaction balances", "Duplicate usage event is idempotent", "Reversal and settlement-reserve release are auditable", "Randomized sequence preserves invariants"],
+      "test_commands": ["make build/test_usage_ledger", "./build/test_usage_ledger"],
+      "estimate_hours": 10
+    },
+    {
+      "id": "PRV-001",
+      "title": "Provider enrollment and signed capacity assertions",
+      "workstream": "providers",
+      "priority": 78,
+      "dependencies": ["SCH-001", "FND-004"],
+      "objective": "Define provider identity, trust tier, region/data policy, signing key, qualification receipt, nonce, monotonic counter and short-lived capacity assertion.",
+      "non_goals": ["Claim hardware-root attestation", "Permissionless onboarding", "Payout integration"],
+      "write_set": ["schema/provider_enrollment.schema.json", "schema/provider_assertion.schema.json", "examples/providers/**", "tests/test_provider_assertion.py", "docs/PROVIDER_TRUST.md"],
+      "acceptance": ["Replay, expiry, wrong release, wrong topology and revoked provider fail", "Software certification is labeled separately from TPM/TEE attestation", "Capacity reserve is explicit per resource vector"],
+      "test_commands": ["python3 tests/test_provider_assertion.py"],
+      "estimate_hours": 7,
+      "critical": true
+    },
+    {
+      "id": "PRV-002",
+      "title": "Outbound provider agent protocol",
+      "workstream": "providers",
+      "priority": 67,
+      "dependencies": ["PRV-001", "SCH-002"],
+      "objective": "Implement a local reference provider agent that maintains outbound authenticated control, publishes offers, accepts leases and returns signed receipts.",
+      "non_goals": ["Expose inbound provider management ports", "Run untrusted customer code"],
+      "write_set": ["provider_agent/**", "include/sparkpipe/spark_provider_agent.h", "tests/test_provider_agent*.c"],
+      "acceptance": ["Lease expiry stops admission", "Reconnect does not duplicate capacity or usage", "Nonce/replay and stale-build tests pass", "Secrets never appear in logs"],
+      "test_commands": ["make build/test_provider_agent", "./build/test_provider_agent"],
+      "estimate_hours": 12
+    },
+    {
+      "id": "REL-001",
+      "title": "Generation-atomic local release activation",
+      "workstream": "release",
+      "priority": 89,
+      "dependencies": ["FND-004"],
+      "objective": "Change release installation from file-by-file active mutation to immutable generation directories with atomic activation pointer, monotonic fencing and rollback metadata.",
+      "non_goals": ["Deploy to the live fleet", "Delete prior generations"],
+      "write_set": ["deployment/src/spark_release.c", "deployment/include/sparkpipe/spark_release.h", "deployment/tools/sparkpipe_release_manager.c", "tests/test_release_generation.c", "tests/test_release_agent.py"],
+      "acceptance": ["Failed sync cannot expose a mixed generation", "Stale generation cannot replace newer", "Activation and rollback survive injected crashes", "Prior files remain recoverable"],
+      "test_commands": ["make build/test_release_generation", "./build/test_release_generation", "python3 tests/test_release_agent.py"],
+      "estimate_hours": 12,
+      "critical": true
+    },
+    {
+      "id": "REL-002",
+      "title": "All-rank readiness quorum and activation journal",
+      "workstream": "release",
+      "priority": 81,
+      "dependencies": ["REL-001", "SCH-005"],
+      "objective": "Add allocation generation, exact identity, topology, rank set, readiness file verification, timeout and rollback to fleet activation.",
+      "non_goals": ["Treat live PID as readiness", "Skip unreachable ranks"],
+      "write_set": ["deployment/src/spark_release_transaction.c", "deployment/include/sparkpipe/spark_release_transaction.h", "tests/test_release_transaction.c"],
+      "acceptance": ["Partial quorum never publishes", "Every phase supports restart and rollback", "Unreachable-rank fault injection covers every transition", "Swap budget is measured and enforced"],
+      "test_commands": ["make build/test_release_transaction", "./build/test_release_transaction"],
+      "estimate_hours": 12,
+      "critical": true
+    },
+    {
+      "id": "MOD-001",
+      "title": "Qwen 3.8 27B recipe-to-build CUDA path",
+      "workstream": "models",
+      "priority": 77,
+      "dependencies": ["FND-002", "RCP-004", "RCP-005", "HWI-003", "ART-001"],
+      "objective": "Produce one exact Qwen 3.8 27B CUDA build from recipe through rank packages, model descriptions, driver and qualification receipt.",
+      "non_goals": ["Use inherited Qwen 3.6 receipts", "Claim FP8 if contract says BF16 only"],
+      "write_set": ["model_contracts/qwen38_27b*.json", "model-families/qwen38_27b/**", "modules/qwen38_27b_resident_decode_stage/**", "examples/model_recipes/qwen38_27b*", "examples/builds/qwen38_27b*", "qualification/qwen38_27b/**", "tests/test_qwen38_27b_build.py"],
+      "acceptance": ["Every identity seam matches exact checkpoint", "Host gates and package validation pass", "Target numerical/live levels remain honestly blocked until run"],
+      "test_commands": ["python3 tests/test_qwen38_27b_build.py"],
+      "hardware": "cuda.sm121.gb10",
+      "estimate_hours": 14,
+      "critical": true
+    },
+    {
+      "id": "MOD-002",
+      "title": "DSV4 ROCm one-layer numerical gate",
+      "workstream": "models",
+      "priority": 72,
+      "dependencies": ["HWI-004", "RCP-004", "FND-004"],
+      "objective": "Implement and qualify one complete DSV4 layer on MI350P/gfx950 through the portable core and ROCm backend.",
+      "non_goals": ["Full-model readiness", "CUDA-relative performance claim"],
+      "write_set": ["modules/dsv4_rocm_gfx950_mi350p/**", "qualification/dsv4/rocm_gfx950/**", "tests/test_dsv4_rocm_layer.py"],
+      "acceptance": ["Exact integer/routing halves match", "Floating halves meet unchanged oracle tolerances", "Receipt records real device/toolchain and artifact hashes", "Host-only run cannot mark hardware gate passed"],
+      "test_commands": ["python3 tests/test_dsv4_rocm_layer.py"],
+      "hardware": "rocm.gfx950.mi350p",
+      "estimate_hours": 16,
+      "critical": true
+    },
+    {
+      "id": "MOD-003",
+      "title": "Metal first execution-island numerical gate",
+      "workstream": "models",
+      "priority": 65,
+      "dependencies": ["HWI-005", "HWI-002", "FND-004"],
+      "objective": "Implement one portable contract island as a native Metal kernel and compare it to a CPU/reference oracle on Apple Silicon.",
+      "non_goals": ["Full model", "Silent MPSGraph fallback", "Intel Mac GPU"],
+      "write_set": ["modules/common_metal_apple_silicon/**", "qualification/metal/**", "tests/test_metal_first_island.py"],
+      "acceptance": ["Native Metal path is proven non-vacuous", "Exact and bounded fields follow qualification contract", "Target/OS/GPU family and command are in receipt"],
+      "test_commands": ["python3 tests/test_metal_first_island.py"],
+      "hardware": "metal.apple-silicon",
+      "estimate_hours": 14
+    },
+    {
+      "id": "TST-001",
+      "title": "Cross-matrix covering-array generator",
+      "workstream": "qualification",
+      "priority": 73,
+      "dependencies": ["RCP-001", "FND-004"],
+      "objective": "Generate pairwise/constraint-aware test cells across model, backend, topology, codec, KV, batch, context, speculation, prefix reuse and failure modes while preserving named exhaustive production cells.",
+      "non_goals": ["Replace exact production qualification", "Invent passing results"],
+      "write_set": ["tools/generate_qualification_matrix.py", "schema/qualification_matrix.schema.json", "tests/test_qualification_matrix.py", "examples/qualification_matrices/**"],
+      "acceptance": ["All valid pairs are covered", "Invalid combinations are omitted with reason", "Named production cells are mandatory and deterministic"],
+      "test_commands": ["python3 tests/test_qualification_matrix.py"],
+      "estimate_hours": 7
+    }
+  ]
+}
