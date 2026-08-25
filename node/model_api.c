@@ -51,6 +51,7 @@ typedef struct ApiRequest
 	char tokens_json[API_TOKEN_BUF_BYTES];
 	volatile uint32_t tokens_json_len;
 	volatile int done;
+	volatile int submitted;
 	volatile uint32_t status;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -112,7 +113,7 @@ static void *api_worker(void *arg)
 	{
 		/* submit any waiting request */
 		pthread_mutex_lock(&S.queue_mutex);
-		if (S.queue_head != 0 && !S.queue_head->done)
+		if (S.queue_head != 0 && !S.queue_head->done && !S.queue_head->submitted)
 		{
 			ApiRequest *r = S.queue_head;
 			SparkModelBatchSubmitRequest sub;
@@ -128,7 +129,10 @@ static void *api_worker(void *arg)
 			sub.prompt_token_count = r->prompt_count;
 			st = SparkModelBatchEngineSubmit(S.engine, &sub, &h);
 			if (st == SPARK_STATUS_OK)
+			{
+				r->submitted = 1;
 				(void)SparkModelBatchEngineCloseAdmission(S.engine);
+			}
 			else
 			{
 				r->status = (uint32_t)st;
@@ -199,13 +203,16 @@ static void send_response(int fd, int code, const char *body)
 static int read_http_request(int fd, char *method, size_t method_sz,
 	char *path, size_t path_sz, char **body, uint32_t *body_len)
 {
-	static __thread char buf[API_MAX_BODY + 8192];
+	/* heap buffer: a static __thread of 8MB overflows TLS when the first
+	 * connection thread is created (8MB TLS + 8MB stack = crash) */
+	char *buf = (char *)malloc(API_MAX_BODY + 8192u);
+	size_t buf_cap = API_MAX_BODY + 8192u;
 	size_t total = 0, header_end = 0;
 	uint32_t content_length = 0;
 	ssize_t n;
-	while (total < sizeof(buf) - 1)
+	while (total < buf_cap - 1)
 	{
-		n = recv(fd, buf + total, sizeof(buf) - 1 - total, 0);
+		n = recv(fd, buf + total, buf_cap - 1 - total, 0);
 		if (n <= 0)
 			return 0;
 		total += (size_t)n;
@@ -220,15 +227,24 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		}
 	}
 	if (header_end == 0)
+	{
+		free(buf);
 		return 0;
+	}
 	{
 		char *sp1 = strchr(buf, ' ');
 		char *sp2;
 		if (sp1 == 0)
+		{
+			free(buf);
 			return 0;
+		}
 		sp2 = strchr(sp1 + 1, ' ');
 		if (sp2 == 0)
+		{
+			free(buf);
 			return 0;
+		}
 		{
 			size_t ml = (size_t)(sp1 - buf);
 			if (ml >= method_sz) ml = method_sz - 1;
@@ -241,17 +257,31 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		}
 	}
 	{
-		char *cl = strcasestr(buf, "Content-Length:");
+		char *cl = strstr(buf, "Content-Length:");
 		if (cl != 0)
 			content_length = (uint32_t)strtoul(cl + 15, 0, 10);
 	}
-	if (content_length == 0 || content_length > API_MAX_BODY)
+	if (content_length > API_MAX_BODY)
+	{
+		free(buf);
 		return 0;
+	}
+	if (content_length == 0)
+	{
+		/* bodyless request (GET): succeed with an empty body */
+		buf[header_end] = '\0';
+		*body = buf + header_end;
+		*body_len = 0;
+		return 1;
+	}
 	while (total < header_end + content_length)
 	{
 		n = recv(fd, buf + total, header_end + content_length - total, 0);
 		if (n <= 0)
+		{
+			free(buf);
 			return 0;
+		}
 		total += (size_t)n;
 	}
 	*body = buf + header_end;
@@ -383,12 +413,15 @@ static void *api_connection(void *arg)
 	uint32_t body_len = 0;
 	int on = 1;
 	(void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
-	if (!read_http_request(fd, method, sizeof(method), path, sizeof(path),
-		&body, &body_len))
 	{
-		send_response(fd, 400, "{\"error\":\"bad request\"}");
-		close(fd);
-		return 0;
+		int rr = read_http_request(fd, method, sizeof(method), path, sizeof(path),
+			&body, &body_len);
+		if (!rr)
+		{
+			send_response(fd, 400, "{\"error\":\"bad request\"}");
+			close(fd);
+			return 0;
+		}
 	}
 	if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
