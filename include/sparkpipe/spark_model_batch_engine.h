@@ -137,6 +137,14 @@ SparkStatus SparkModelBatchEngineProgress(
 	uint32_t maximum_new_submission_count);
 SparkStatus SparkModelBatchEngineCloseAdmission(
 	SparkModelBatchEngine *engine);
+
+/* Reopen admission for continuous serving: the engine auto-closes
+ * admission when the last tracked request reaches terminal (designed
+ * for one-shot batch tools). Serving processes call this before each
+ * new Submit to keep the admission window open. Also clears any
+ * sticky failure from a prior request. */
+SparkStatus SparkModelBatchEngineReopenAdmission(
+	SparkModelBatchEngine *engine);
 SparkStatus SparkModelBatchEngineBeginShutdown(
 	SparkModelBatchEngine *engine);
 SparkStatus SparkModelBatchEngineGetPollDescriptors(
