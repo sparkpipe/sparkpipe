@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,30 @@ DIRECT_INTERFACE = "enp1s0f0np0"
 DIRECT_SPEED_MBIT = "200000"
 HOSTS_BLOCK_BEGIN = "# SparkPipe fleet aliases BEGIN"
 HOSTS_BLOCK_END = "# SparkPipe fleet aliases END"
-CEPH_WARM_STORAGE_MARKER = Path("/etc/sparkpipe/enable-ceph-warm-storage")
+LEGACY_CEPH_WARM_STORAGE_MARKER = Path("/etc/sparkpipe/enable-ceph-warm-storage")
+CEPH_MASK_UNITS = (
+    "ceph.target",
+    "ceph-crash.service",
+    "ceph-fuse@.service",
+    "ceph-mds.target",
+    "ceph-mds@.service",
+    "ceph-mgr.target",
+    "ceph-mgr@.service",
+    "ceph-mon.target",
+    "ceph-mon.service",
+    "ceph-mon@.service",
+    "ceph-osd.target",
+    "ceph-osd@.service",
+    "ceph-radosgw.target",
+    "ceph-radosgw@.service",
+    "ceph-volume-systemd@.service",
+    "ceph-volume@.service",
+)
+OBSOLETE_CEPH_STARTUP_UNITS = (
+    "ds4-optional-storage.service",
+    "ds4-optional-storage.timer",
+)
+CEPH_PROCESS_PATTERN = re.compile(r"(?:^|[\s/])(?:ceph(?:-[a-z0-9_-]+)?|cephadm)(?:\s|$)")
 LEGACY_HOSTS_BLOCKS = {
     "# DS4 Spark aliases BEGIN":"# DS4 Spark aliases END",
     "# DS4 switched Spark aliases BEGIN":"# DS4 switched Spark aliases END",
@@ -54,7 +78,6 @@ ASSET_SOURCES = {
     "/etc/systemd/system/sparkpipe-fsck-health.service": ("tools/devcycle/sparkpipe-fsck-health.service",0o644),
 }
 BOOT_TIMEOUT_SOURCES = {
-    "ceph-b52b3459-74b2-428d-b944-1bb691b263c7@.service": "ceph-b52b3459-74b2-428d-b944-1bb691b263c7@.service.conf",
     "rbdmap.service": "rbdmap.service.conf",
     "nvmf-autoconnect.service": "nvmf-autoconnect.service.conf",
     "open-iscsi.service": "open-iscsi.service.conf",
@@ -68,8 +91,6 @@ ASSET_SOURCES.update({
     "/etc/systemd/system/ds4-direct-pair-fabric.timer": ("tools/devcycle/fleet/ds4-direct-pair-fabric.timer",0o644),
     "/usr/local/sbin/ds4-switched-fabric-apply": ("tools/devcycle/fleet/ds4_switched_fabric_apply.sh",0o755),
     "/usr/local/sbin/ds4-direct-pair-fabric-apply": ("tools/devcycle/fleet/ds4_direct_pair_fabric_apply.sh",0o755),
-    "/etc/systemd/system/ds4-optional-storage.service": ("tools/devcycle/fleet/ds4-optional-storage.service",0o644),
-    "/etc/systemd/system/ds4-optional-storage.timer": ("tools/devcycle/fleet/ds4-optional-storage.timer",0o644),
     "/etc/systemd/system/sparkpipe-fsck-health.timer": ("tools/devcycle/fleet/sparkpipe-fsck-health.timer",0o644),
     "/etc/systemd/system/spark-firewall.service.d/10-ds4-timeout.conf": ("tools/devcycle/fleet/spark-firewall-timeout.conf",0o644),
 })
@@ -527,6 +548,94 @@ def disable_persistent_unit(unit: str) -> None:
         path.unlink()
 
 
+def ceph_unit_file_states() -> dict[str,str]:
+    output = command([
+        "systemctl","list-unit-files","--no-legend",
+        "ceph*.service","ceph*.target",
+    ],check=False)
+    states = {}
+    for row in output.splitlines():
+        fields = row.split()
+        if len(fields) >= 2 and fields[0].startswith("ceph"):
+            states[fields[0]] = fields[1]
+    return(states)
+
+
+def active_ceph_units() -> list[str]:
+    output = command([
+        "systemctl","list-units","--state=active","--no-legend",
+        "ceph*.service","ceph*.target",
+    ],check=False)
+    return(sorted({row.split()[0] for row in output.splitlines() if row.split()}))
+
+
+def active_ceph_processes() -> list[str]:
+    output = command(["ps","-eo","pid=,comm=,args="],check=False)
+    return(sorted(row.strip() for row in output.splitlines() if CEPH_PROCESS_PATTERN.search(row)))
+
+
+def ceph_persistent_links(root: Path = Path("/etc/systemd/system")) -> list[Path]:
+    return(sorted(
+        path for path in root.rglob("ceph*")
+        if path.is_symlink() and path.parent.name.endswith((".wants",".requires"))
+    ))
+
+
+def ceph_startup_artifacts(root: Path = Path("/etc/systemd/system")) -> list[Path]:
+    artifacts = []
+    for path in root.glob("ceph*"):
+        if path.is_symlink() and path.readlink() == Path("/dev/null"):
+            continue
+        artifacts.append(path)
+    return(sorted(artifacts))
+
+
+def remove_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif path.exists() or path.is_symlink():
+        path.unlink()
+
+
+def mask_unit_file(unit: str,root: Path = Path("/etc/systemd/system")) -> None:
+    path = root / unit
+    if path.exists() or path.is_symlink():
+        path.unlink()
+    path.symlink_to("/dev/null")
+
+
+def remove_ceph_startup(
+        configured: list[str],
+        systemd_root: Path = Path("/etc/systemd/system"),
+        marker: Path = LEGACY_CEPH_WARM_STORAGE_MARKER) -> None:
+    if configured:
+        raise BrickproofError(f"remote storage configuration exists; refusing to stop Ceph: {configured}")
+    if marker.exists():
+        marker.unlink()
+    active = active_ceph_units()
+    units = sorted(set(CEPH_MASK_UNITS) | set(ceph_unit_file_states()) | set(active))
+    for unit in units + list(OBSOLETE_CEPH_STARTUP_UNITS):
+        disable_persistent_unit(unit)
+    for path in ceph_persistent_links(systemd_root):
+        path.unlink()
+    for unit in OBSOLETE_CEPH_STARTUP_UNITS:
+        remove_path(systemd_root / unit)
+    for path in systemd_root.glob("ceph*"):
+        remove_path(path)
+    for unit in units:
+        mask_unit_file(unit,systemd_root)
+    run(["systemctl","daemon-reload"])
+    if active:
+        run(["systemctl","stop",*active],timeout=180)
+    remaining = active_ceph_units()
+    if remaining:
+        raise BrickproofError(f"Ceph units remained active after stop: {remaining}")
+    processes = active_ceph_processes()
+    if processes:
+        raise BrickproofError(f"Ceph processes remained after stop: {processes}")
+    run(["systemctl","reset-failed","ceph*.service","ceph*.target"],check=False)
+
+
 def enable_policy_services() -> None:
     run(["systemctl","daemon-reload"])
     run(["sysctl","--system"],timeout=180)
@@ -543,11 +652,9 @@ def enable_policy_services() -> None:
     run(["systemctl","enable","--now","ds4-direct-pair-fabric.timer"])
     disable_persistent_unit("sparkpipe_model_residentd.service")
     run(["systemctl","reset-failed","sparkpipe_model_residentd.service"],check=False)
-    run(["systemctl","enable","--now","ds4-optional-storage.timer"])
     run(["systemctl","unmask","fstrim.service"])
     run(["systemctl","enable","--now","fstrim.timer"])
     run(["systemctl","reset-failed","fstrim.service","fstrim.timer"],check=False)
-    run(["systemctl","reset-failed","ceph*.service","ceph*.target"],check=False)
     run(["systemctl","set-default","multi-user.target"])
     run(["systemctl","set-property","--runtime","user-1000.slice","MemoryHigh=100G","MemoryMax=108G","MemorySwapMax=0"])
 
@@ -576,11 +683,7 @@ def decouple_optional_boot_work() -> None:
     configured = has_configured_remote_storage()
     if configured:
         raise BrickproofError(f"remote storage configuration exists; refusing to mask initiators: {configured}")
-    ceph_targets = command(["systemctl","list-unit-files","--type=target","--no-legend","ceph*.target"],check=False)
-    for row in ceph_targets.splitlines():
-        unit = row.split()[0] if row.split() else ""
-        if unit:
-            run(["systemctl","disable",unit],check=False)
+    remove_ceph_startup(configured)
     for unit in ("rbdmap.service","nvmf-autoconnect.service","open-iscsi.service","iscsid.service","srp_daemon.service"):
         run(["systemctl","disable",unit],check=False)
         run(["systemctl","mask",unit],check=False)
@@ -745,7 +848,7 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
         observations[f"{unit}.active"] = state
         if state != "active":
             failures.append(f"{unit}:{state}")
-    for unit in ("serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer","ds4-optional-storage.timer"):
+    for unit in ("serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer"):
         state = is_enabled(unit)
         observations[f"{unit}.enabled"] = state
         if state != "enabled":
@@ -874,11 +977,40 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     observations["logrotate_config_rc"] = logrotate.returncode
     if logrotate.returncode != 0:
         failures.append("logrotate-config")
-    observations["ceph_warm_storage_selected"] = CEPH_WARM_STORAGE_MARKER.exists()
-    observations["ceph_target_active"] = service_value("ceph.target","ActiveState")
-    if (not observations["ceph_warm_storage_selected"] and
-            observations["ceph_target_active"] == "active"):
-        failures.append("unselected-ceph-active")
+    ceph_states = ceph_unit_file_states()
+    ceph_active = active_ceph_units()
+    ceph_processes = active_ceph_processes()
+    ceph_links = [str(path) for path in ceph_persistent_links()]
+    ceph_artifacts = [str(path) for path in ceph_startup_artifacts()]
+    observations["ceph_unit_states"] = ceph_states
+    observations["ceph_active_units"] = ceph_active
+    observations["ceph_active_processes"] = ceph_processes
+    observations["ceph_startup_links"] = ceph_links
+    observations["ceph_startup_artifacts"] = ceph_artifacts
+    observations["ceph_legacy_marker"] = LEGACY_CEPH_WARM_STORAGE_MARKER.exists()
+    observations["ceph_obsolete_startup_files"] = [
+        unit for unit in OBSOLETE_CEPH_STARTUP_UNITS
+        if ((Path("/etc/systemd/system") / unit).exists() or
+            (Path("/etc/systemd/system") / unit).is_symlink())
+    ]
+    not_masked = sorted(unit for unit,state in ceph_states.items() if state != "masked")
+    missing_masks = sorted(unit for unit in CEPH_MASK_UNITS if ceph_states.get(unit) != "masked")
+    if ceph_active:
+        failures.append("ceph-active:" + ",".join(ceph_active))
+    if ceph_processes:
+        failures.append("ceph-processes:" + ",".join(ceph_processes))
+    if ceph_links:
+        failures.append("ceph-startup-links:" + ",".join(ceph_links))
+    if ceph_artifacts:
+        failures.append("ceph-startup-artifacts:" + ",".join(ceph_artifacts))
+    if not_masked:
+        failures.append("ceph-unmasked:" + ",".join(not_masked))
+    if missing_masks:
+        failures.append("ceph-missing-masks:" + ",".join(missing_masks))
+    if observations["ceph_legacy_marker"]:
+        failures.append("ceph-legacy-marker")
+    if observations["ceph_obsolete_startup_files"]:
+        failures.append("ceph-obsolete-startup-files")
     hardware_failures,hardware_observations = audit_fleet_hardware(
         str(payload["recovery_network"]["node_id"]))
     failures.extend(hardware_failures)

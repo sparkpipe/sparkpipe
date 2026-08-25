@@ -1,6 +1,14 @@
-# Boot-unblock proposal — fabric/ceph/remote-fs must never block boot
+# Superseded Boot-Unblock Proposal
 
-Owner: SYSADMIN. Status: PROPOSAL (review+land+deploy to 7). spark2 already unblocked manually.
+Owner: SYSADMIN. Status: SUPERSEDED by the fleet brickproof policy in
+`docs/INCIDENT_RECOVERY_PLAYBOOK.md`.
+
+This document preserves the original incident diagnosis. Its proposed Ceph and
+fabric timeout drop-ins must not be deployed. The landed policy instead launches
+the bounded SparkPipe fabric services from timers outside the login-critical
+path and fully quarantines Ceph startup by stopping and masking every service and
+target. The remote-storage compatibility drop-ins remain managed centrally by
+`tools/devcycle/ds4_spark_brickproof.py`.
 
 ## 1. Root cause (diagnosed live on spark2 via root@2222, 2026-08-17)
 
@@ -39,7 +47,7 @@ user@1000, nvidia-dgx-telemetry, nvidia-spark-run-apt-upgrade-once, centaur-spar
 sparkpipe_model_residentd, sparkpipe-fsck-health, plymouth-quit, rpc-statd-notify,
 update-notifier-motd/download timers.
 
-## 3. Proposed drop-ins (make the blockers FAIL SOFT via TimeoutStartSec)
+## 3. Historical proposal (do not deploy)
 
 Each is a drop-in under /etc/systemd/system/<unit>.d/10-boot-timeout.conf:
 
