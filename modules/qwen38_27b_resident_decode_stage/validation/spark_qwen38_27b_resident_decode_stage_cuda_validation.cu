@@ -1184,6 +1184,16 @@ static int SparkQwen38_27bValCheckModule(void)
 		if (decode_token != prefill_token)
 			return(SparkQwen38_27bValFail("module_decode_vs_prefill","token_mismatch"));
 	}
+	if (module.head_stage != 0u && SparkQwen38_27bValCheckMtpDraft(&module) != 0)
+		return(1);
+	/* Release the first residency BEFORE the fresh-instance run: the pack
+	 * loader requires device_free >= pack bytes, so two simultaneous
+	 * residencies cannot fit alongside the validator context on a 128 GB
+	 * GB10 box. The comparison below uses the bytes captured above, so the
+	 * first instance does not need to stay alive. */
+	SparkQwen38_27bResidentDecodeStageDestroy(module.state);
+	cudaFree(module.device_blocks);
+	cudaFree(module.device_counts);
 	/* Determinism: a fresh instance must reproduce lane 0's decode hidden
 	 * bit for bit. */
 	{
@@ -1219,11 +1229,6 @@ static int SparkQwen38_27bValCheckModule(void)
 		cudaFree(rerun.device_counts);
 		printf("qwen38_27b_validation check=module_determinism bit_exact=1\n");
 	}
-	if (module.head_stage != 0u && SparkQwen38_27bValCheckMtpDraft(&module) != 0)
-		return(1);
-	SparkQwen38_27bResidentDecodeStageDestroy(module.state);
-	cudaFree(module.device_blocks);
-	cudaFree(module.device_counts);
 	return(0);
 }
 
