@@ -116,6 +116,10 @@ static uint32_t model_api_execute(ModelApiRequest *request)
 	pthread_mutex_unlock(&api_state.mutex);
 	if ( slot == 0u )
 		return(503u);
+	/* pump the engine once before submitting: the pipeline client needs
+	 * its socket drained to process the hello/ack handshake before any
+	 * submission can be admitted (submit-then-pump deadlocks) */
+	(void)SparkModelBatchEngineProgress(api_state.engine,1u);
 	memset(&submit,0,sizeof(submit));
 	submit.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	submit.descriptor_bytes = (uint32_t)sizeof(submit);
