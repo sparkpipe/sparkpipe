@@ -135,6 +135,10 @@ The policy repairs and verifies:
 - root fsck skipped during boot and handled by the post-boot health timer
 - bounded fabric, remote-storage, firewall, and optional-storage work
 - fabric services launched by timers, never as login-blocking boot dependencies
+- Ceph warm storage starts only when `/etc/sparkpipe/enable-ceph-warm-storage`
+  exists; its data and configuration remain preserved when unselected
+- weekly filesystem trim has an unmasked service and an enabled timer
+- logrotate configuration is parsed during every fleet audit
 - 64 GiB swap, earlyoom, no-swap model cgroups, and a 108 GiB user/model ceiling
 - network recovery sysctls and required qdisc modules
 
@@ -145,9 +149,8 @@ all of these live checks:
 
 1. Normal SSH command exits zero.
 2. Emergency root SSH on port 2222 exits zero with the fleet key.
-3. `systemctl is-system-running` is `running`, or every degraded unit has an
-   explicitly reviewed non-blocking reason and is reset before acceptance.
-4. No unexpected failed units.
+3. `systemctl is-system-running` is `running`.
+4. No failed units; the audit rejects every failed systemd unit by name.
 5. Running kernel and `/boot/vmlinuz` target both have intact image, modules,
    initrd, and module tree.
 6. GPU is visible and healthy.

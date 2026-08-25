@@ -35,6 +35,7 @@ SWITCHED_ADDRESS_BASE = 10
 SWITCHED_PREFIX = "10.10.100"
 HOSTS_BLOCK_BEGIN = "# SparkPipe fleet aliases BEGIN"
 HOSTS_BLOCK_END = "# SparkPipe fleet aliases END"
+CEPH_WARM_STORAGE_MARKER = Path("/etc/sparkpipe/enable-ceph-warm-storage")
 LEGACY_HOSTS_BLOCKS = {
     "# DS4 Spark aliases BEGIN":"# DS4 Spark aliases END",
     "# DS4 switched Spark aliases BEGIN":"# DS4 switched Spark aliases END",
@@ -56,6 +57,7 @@ BOOT_TIMEOUT_SOURCES = {
     "pollinate.service": "pollinate.service.conf",
 }
 ASSET_SOURCES.update({
+    "/etc/logrotate.d/00-sparkpipe-cephadm": ("tools/devcycle/fleet/00-sparkpipe-cephadm",0o644),
     "/etc/systemd/system/ds4-switched-fabric.service": ("tools/devcycle/fleet/ds4-switched-fabric.service",0o644),
     "/etc/systemd/system/ds4-switched-fabric.timer": ("tools/devcycle/fleet/ds4-switched-fabric.timer",0o644),
     "/etc/systemd/system/ds4-direct-pair-fabric.service": ("tools/devcycle/fleet/ds4-direct-pair-fabric.service",0o644),
@@ -538,6 +540,10 @@ def enable_policy_services() -> None:
     disable_persistent_unit("sparkpipe_model_residentd.service")
     run(["systemctl","reset-failed","sparkpipe_model_residentd.service"],check=False)
     run(["systemctl","enable","--now","ds4-optional-storage.timer"])
+    run(["systemctl","unmask","fstrim.service"])
+    run(["systemctl","enable","--now","fstrim.timer"])
+    run(["systemctl","reset-failed","fstrim.service","fstrim.timer"],check=False)
+    run(["systemctl","reset-failed","ceph*.service","ceph*.target"],check=False)
     run(["systemctl","set-default","multi-user.target"])
     run(["systemctl","set-property","--runtime","user-1000.slice","MemoryHigh=100G","MemoryMax=108G","MemorySwapMax=0"])
 
@@ -612,6 +618,7 @@ def remote_apply(payload_path: Path) -> dict[str,object]:
     rebuild_initramfs()
     decouple_optional_boot_work()
     enable_policy_services()
+    run(["systemctl","start","logrotate.service"])
     return({"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"source_commit":payload["source_commit"]})
 
 
@@ -696,6 +703,14 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
         observations[f"{unit}.enabled"] = state
         if state != "enabled":
             failures.append(f"{unit}:not-enabled")
+    fstrim_service = is_enabled("fstrim.service")
+    fstrim_timer = is_enabled("fstrim.timer")
+    observations["fstrim.service.enabled"] = fstrim_service
+    observations["fstrim.timer.enabled"] = fstrim_timer
+    if fstrim_service != "static":
+        failures.append(f"fstrim.service:{fstrim_service}")
+    if fstrim_timer != "enabled":
+        failures.append(f"fstrim.timer:{fstrim_timer}")
     cmdline_tokens = shlex.split(read_optional(Path("/proc/cmdline")))
     runtime_masks = {token.split("=",1)[1] for token in cmdline_tokens if token.startswith("systemd.mask=")}
     for unit in ("ds4-switched-fabric.service","ds4-direct-pair-fabric.service","sparkpipe-fsck-health.service","sparkpipe_model_residentd.service"):
@@ -800,6 +815,23 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
         failures.append("hosts-loopback-alias")
     observations["kernel"] = command(["uname","-r"],check=False)
     observations["system_state"] = command(["systemctl","is-system-running"],check=False)
+    if observations["system_state"] != "running":
+        failures.append(f"system-state:{observations['system_state']}")
+    failed_units = command(["systemctl","--failed","--no-legend","--plain"],check=False)
+    observations["failed_units"] = failed_units
+    for line in failed_units.splitlines():
+        fields = line.split()
+        if fields:
+            failures.append(f"failed-systemd-unit:{fields[0]}")
+    logrotate = run(["logrotate","--debug","/etc/logrotate.conf"],timeout=180,check=False)
+    observations["logrotate_config_rc"] = logrotate.returncode
+    if logrotate.returncode != 0:
+        failures.append("logrotate-config")
+    observations["ceph_warm_storage_selected"] = CEPH_WARM_STORAGE_MARKER.exists()
+    observations["ceph_target_active"] = service_value("ceph.target","ActiveState")
+    if (not observations["ceph_warm_storage_selected"] and
+            observations["ceph_target_active"] == "active"):
+        failures.append("unselected-ceph-active")
     health_path = Path("/var/lib/sparkpipe/fsck-health/last.json")
     if health_path.exists():
         try:

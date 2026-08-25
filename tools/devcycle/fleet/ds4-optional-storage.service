@@ -2,6 +2,7 @@
 Description=Start optional Ceph warm storage after the OS is recoverable
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=/etc/sparkpipe/enable-ceph-warm-storage
 
 [Service]
 Type=oneshot
