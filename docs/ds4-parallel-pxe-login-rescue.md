@@ -38,6 +38,11 @@ with the fleet's normal configuration-management path. Keep fabric and other
 nonessential distributed services out of the boot-critical path: they should
 start only after the OS and emergency SSH are available.
 
+Emergency SSH must itself be independent of boot completion. Use a dedicated
+root-only public-key daemon with `UsePAM no`; an unprivileged recovery account
+behind PAM is rejected by `pam_nologin` while systemd is still booting, which
+makes that channel unusable during exactly the failure it is meant to repair.
+
 Stop PXE service after recovery:
 
 ```bash
