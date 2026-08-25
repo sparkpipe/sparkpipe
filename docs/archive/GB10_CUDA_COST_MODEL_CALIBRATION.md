@@ -1,7 +1,7 @@
 # GB10 CUDA Module Cost Model — Calibration
 
 Purpose: estimate the decode-stage time cost of every resident CUDA module
-(glm52, mimo25, dsv4, qwen36, k3) from hardware constants and measured
+(glm52, mimo25, dsv4, qwen38_27b, k3) from hardware constants and measured
 efficiencies, so a module's latency can be projected before it runs on the
 ring and so optimization effort targets the term that actually bounds it.
 
@@ -122,7 +122,7 @@ compute wall, MoE bandwidth bound, B64 amortization) and supplies its own
 CONFIG byte geometry. First-order consequences that hold regardless of the
 still-pending itemization:
 
-- qwen36 is dense, not MoE: its FFN weight is read every layer with no
+- qwen38_27b is dense, not MoE: its FFN weight is read every layer with no
   expert sparsity to amortize, giving the largest per-token weight-byte term
   of the family. The device-grouped MoE work does nothing for it; its lever
   is dense-FFN quantization (FP8 to FP4 halves the dominant term).
@@ -130,7 +130,7 @@ still-pending itemization:
   (smallest KV byte term), thinnest head. Fastest per-token of the family.
 - mimo25 sits between: MoE like dsv4 but heavier head (vocab 152k) and fatter
   attention (head_dim 192, dual full/SWA branch).
-- qwen36 (hidden 5120) and k3 (hidden 7168) hit the QKVO 6.5-TFLOPS compute
+- qwen38_27b (hidden 5120) and k3 (hidden 7168) hit the QKVO 6.5-TFLOPS compute
   wall harder than dsv4/mimo25 (hidden 4096), because QKVO flops scale with
   hidden squared and the qkv width. If the family QKVO kernels share glm52's
   WMMA tiling, they inherit its 2.6-percent efficiency, and QKVO retiling is

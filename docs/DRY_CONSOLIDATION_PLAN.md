@@ -11,9 +11,9 @@ that did not check out are corrected inline.
    with a MODEL_GEOMETRY table, the same pattern already landed for the
    sharder pair (tools/dsv4_tp16_stagepack.py). Owner: DSV4 Pro session
    (offered), coordinator gates. Tests: test_dsv4_stagepack.py.
-2. **qwen36/qwen38 packer fork** - 379 identical lines (measured);
-   qwen38 = qwen36 + codec delta. One shared qwen packer base with
-   per-variant config. Owner: coordinator or qwen session. qwen36 stays
+2. **qwen38_27b/qwen38 packer fork** - 379 identical lines (measured);
+   qwen38 = qwen38_27b + codec delta. One shared qwen packer base with
+   per-variant config. Owner: coordinator or qwen session. qwen38_27b stays
    frozen-deprecated; the shared base survives with qwen38.
 3. **Shared packer core (H3)** - safetensors source reader, record/
    directory/header serialization, sha/align helpers re-implemented in

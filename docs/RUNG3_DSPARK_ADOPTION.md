@@ -66,16 +66,16 @@ lever: --enable-prefix-caching (14–22× shared-prefix prefill; off-by-default 
 
 DSpark = 5-layer full-attention drafter emitting a 7-token block in ONE forward.
 
-1. tools/qwen36_dspark_stagepack.py (new) — pack the 62 tensors → .qwen36sp (reuse
+1. tools/qwen38_27b_dspark_stagepack.py (new) — pack the 62 tensors → .qwen38_27bsp (reuse
    spark_pack_common + the stagepack wire format; full-attention only).
-2. modules/.../source/spark_qwen36_dspark_format.h (new) — drafter pack layout.
-3. modules/.../source/spark_qwen36_resident_decode_stage_cuda.cu — DFlash kernels:
+2. modules/.../source/spark_qwen38_27b_dspark_format.h (new) — drafter pack layout.
+3. modules/.../source/spark_qwen38_27b_resident_decode_stage_cuda.cu — DFlash kernels:
    dual-source GQA attention + 5-layer block forward + lm_head + markov/confidence.
-4. modules/.../source/spark_qwen36_resident_decode_stage_module.c — tap target hiddens
+4. modules/.../source/spark_qwen38_27b_resident_decode_stage_module.c — tap target hiddens
    @{4,16,28,40,52} + DSPARK_DRAFT_AFTER Execute path.
-5. modules/.../source/spark_qwen36_serving_adapter.c — swap MTP phase-one for DSpark
+5. modules/.../source/spark_qwen38_27b_serving_adapter.c — swap MTP phase-one for DSpark
    block draft + probabilistic left-to-right Markov sampling.
-6. modules/.../include/sparkpipe/spark_qwen36_resident_decode_stage_firmware.h — DSpark
+6. modules/.../include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h — DSpark
    frame context (block view + 5 tap buffers).
 7. manifest/env — drafter-pack path + spec method switch (mtp|dspark).
 

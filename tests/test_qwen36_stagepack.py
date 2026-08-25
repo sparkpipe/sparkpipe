@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Round-trip the qwen36 stage pack converter against a synthetic checkpoint.
+"""Round-trip the qwen38_27b stage pack converter against a synthetic checkpoint.
 
 Builds a sparse fake checkpoint with the real tensor names and shapes (the
 payload bytes are mostly holes - a 55 GB checkpoint that writes in a moment),
@@ -24,9 +24,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
-import qwen36_stagepack as packer  # noqa: E402
+import qwen38_27b_stagepack as packer  # noqa: E402
 
-SYNTHESIZER = ROOT / "modules/qwen36_resident_decode_stage/tools/qwen36_pack_synthesize.c"
+SYNTHESIZER = ROOT / "modules/qwen38_27b_resident_decode_stage/tools/qwen38_27b_pack_synthesize.c"
 
 
 def bf16(value: float) -> bytes:
@@ -128,7 +128,7 @@ def main() -> int:
             failures += 1
 
     # The tool's wire constants must be the format header's, restated.
-    header_text = (ROOT / "modules/qwen36_resident_decode_stage/source/spark_qwen36_stagepack_format.h").read_text()
+    header_text = (ROOT / "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h").read_text()
     import re
     magic = re.search(r"STAGEPACK_MAGIC (0x[0-9a-fA-F]+)u", header_text)
     version = re.search(r"STAGEPACK_FORMAT_VERSION (\d+)u", header_text)
@@ -138,7 +138,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary)
         build_fake_checkpoint(work)
-        pack = work / "stage.qwen36sp"
+        pack = work / "stage.qwen38_27bsp"
         receipt = {}
         packer.convert(work, pack, 1, 2, receipt, dry_run=False)
         result = packer.verify(pack)
@@ -180,7 +180,7 @@ def main() -> int:
         # Failure paths: a missing shard and a wrong shape must stop the pack.
         (work / "model-00001-of-00001.safetensors").rename(work / "renamed.safetensors")
         try:
-            packer.convert(work, work / "x.qwen36sp", 1, 2, {}, dry_run=False)
+            packer.convert(work, work / "x.qwen38_27bsp", 1, 2, {}, dry_run=False)
             check(False, "missing shard did not fail")
         except packer.PackFailure:
             pass
@@ -199,24 +199,24 @@ def main() -> int:
             file.write(struct.pack("<Q", len(encoded)))
             file.write(encoded)
         try:
-            packer.convert(bad, bad / "x.qwen36sp", 1, 2, {}, dry_run=False)
+            packer.convert(bad, bad / "x.qwen38_27bsp", 1, 2, {}, dry_run=False)
             check(False, "wrong shape did not fail")
         except packer.PackFailure:
             pass
 
     # The C synthesizer's pack passes the same verifier.
-    synthesizer_bin = Path("/tmp/qwen36_pack_synthesize_test")
+    synthesizer_bin = Path("/tmp/qwen38_27b_pack_synthesize_test")
     build = subprocess.run(
         ["cc", "-std=c11", "-O1",
          f"-I{ROOT}/include", f"-I{ROOT}/model-families/common/include",
-         f"-I{ROOT}/model-families/qwen36/include",
-         f"-I{ROOT}/modules/qwen36_resident_decode_stage/include",
-         f"-I{ROOT}/modules/qwen36_resident_decode_stage/source",
+         f"-I{ROOT}/model-families/qwen38_27b/include",
+         f"-I{ROOT}/modules/qwen38_27b_resident_decode_stage/include",
+         f"-I{ROOT}/modules/qwen38_27b_resident_decode_stage/source",
          str(SYNTHESIZER), "-o", str(synthesizer_bin)],
         capture_output=True, text=True)
     check(build.returncode == 0, f"synthesizer build: {build.stderr[:200]}")
     if build.returncode == 0:
-        synth_pack = Path("/tmp/qwen36_synth_slice.qwen36sp")
+        synth_pack = Path("/tmp/qwen38_27b_synth_slice.qwen38_27bsp")
         run = subprocess.run(
             [str(synthesizer_bin), "--output", str(synth_pack),
              "--first-layer", "1", "--layer-count", "2", "--bf16"],
@@ -229,7 +229,7 @@ def main() -> int:
     if failures:
         print(f"\nFAIL ({failures})")
         return 1
-    print("PASS qwen36 stage pack converter round-trip: checkpoint mapping, "
+    print("PASS qwen38_27b stage pack converter round-trip: checkpoint mapping, "
           "f32 upcast, inventory, failure paths, and the C synthesizer all agree")
     return 0
 

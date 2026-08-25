@@ -13,7 +13,7 @@
     "model_kernel_characterize": {
       "kimi_k3_mxfp4_experts_bf16_rest": "build/hardware/providers/libspark_k3_production_probe.so",
       "glm52_fp8_experts_bf16_rest": "build/hardware/providers/libspark_glm52_production_probe.so",
-      "qwen36_27b_bf16": "build/hardware/providers/libspark_qwen36_production_probe.so",
+      "qwen38_27b_27b_bf16": "build/hardware/providers/libspark_qwen38_27b_production_probe.so",
       "dsv4_flash_native_mixed_precision": "build/hardware/providers/libspark_dsv4_flash_production_probe.so",
       "dsv4_pro_native_mixed_precision": "build/hardware/providers/libspark_dsv4_pro_production_probe.so"
     },

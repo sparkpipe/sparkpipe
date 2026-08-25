@@ -45,45 +45,45 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 // One thread, so every kernel the layer launches runs the whole of its work
 // loop in order - the schedule the shim guarantees the house loop shape is
 // valid under. layer.cuh's default is 256 for the device.
-#define QWEN36_LAYER_THREADS 1u
+#define QWEN38_27B_LAYER_THREADS 1u
 #include "inference/llms/qwen_3_6/layer.cuh"
 
 #define ROWS 2u
 #define CANARY_BYTES 65536u
 #define CANARY_BYTE 0xAA
 
-static uint16_t hidden[ROWS * QWEN36_HIDDEN];
-static uint16_t residual[ROWS * QWEN36_HIDDEN];
-static uint16_t normed[ROWS * QWEN36_HIDDEN];
-static uint16_t fused_qkv[ROWS * QWEN36_ATTN_QKV_DIM];
-static uint16_t query_gate[ROWS * QWEN36_ATTN_QG_DIM];
-static uint16_t query[ROWS * QWEN36_Q_DIM];
-static uint16_t attn_gate[ROWS * QWEN36_Q_DIM];
-static uint16_t key[ROWS * QWEN36_GDN_QK_DIM];
-static uint16_t value[ROWS * QWEN36_GDN_V_DIM];
-static uint16_t expanded_q[ROWS * QWEN36_GDN_V_DIM];
-static uint16_t expanded_k[ROWS * QWEN36_GDN_V_DIM];
-static uint16_t attention_out[ROWS * QWEN36_Q_DIM];
-static uint16_t gate_up[ROWS * QWEN36_FFN_INTERMEDIATE * 2u];
-static uint16_t intermediate[ROWS * QWEN36_FFN_INTERMEDIATE];
-static uint16_t norm_weight[QWEN36_HIDDEN];
-static uint16_t conv_weight[QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL];
-static uint16_t beta_logit[ROWS * QWEN36_GDN_VALUE_HEADS];
-static uint16_t decay_logit[ROWS * QWEN36_GDN_VALUE_HEADS];
-static float a_log[QWEN36_GDN_VALUE_HEADS];
-static float dt_bias[QWEN36_GDN_VALUE_HEADS];
-static float forget_gate[ROWS * QWEN36_GDN_VALUE_HEADS * QWEN36_GDN_KEY_DIM];
-static float write_gate[ROWS * QWEN36_GDN_VALUE_HEADS];
+static uint16_t hidden[ROWS * QWEN38_27B_HIDDEN];
+static uint16_t residual[ROWS * QWEN38_27B_HIDDEN];
+static uint16_t normed[ROWS * QWEN38_27B_HIDDEN];
+static uint16_t fused_qkv[ROWS * QWEN38_27B_ATTN_QKV_DIM];
+static uint16_t query_gate[ROWS * QWEN38_27B_ATTN_QG_DIM];
+static uint16_t query[ROWS * QWEN38_27B_Q_DIM];
+static uint16_t attn_gate[ROWS * QWEN38_27B_Q_DIM];
+static uint16_t key[ROWS * QWEN38_27B_GDN_QK_DIM];
+static uint16_t value[ROWS * QWEN38_27B_GDN_V_DIM];
+static uint16_t expanded_q[ROWS * QWEN38_27B_GDN_V_DIM];
+static uint16_t expanded_k[ROWS * QWEN38_27B_GDN_V_DIM];
+static uint16_t attention_out[ROWS * QWEN38_27B_Q_DIM];
+static uint16_t gate_up[ROWS * QWEN38_27B_FFN_INTERMEDIATE * 2u];
+static uint16_t intermediate[ROWS * QWEN38_27B_FFN_INTERMEDIATE];
+static uint16_t norm_weight[QWEN38_27B_HIDDEN];
+static uint16_t conv_weight[QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL];
+static uint16_t beta_logit[ROWS * QWEN38_27B_GDN_VALUE_HEADS];
+static uint16_t decay_logit[ROWS * QWEN38_27B_GDN_VALUE_HEADS];
+static float a_log[QWEN38_27B_GDN_VALUE_HEADS];
+static float dt_bias[QWEN38_27B_GDN_VALUE_HEADS];
+static float forget_gate[ROWS * QWEN38_27B_GDN_VALUE_HEADS * QWEN38_27B_GDN_KEY_DIM];
+static float write_gate[ROWS * QWEN38_27B_GDN_VALUE_HEADS];
 static uint32_t state_index[ROWS];
 static uint32_t sequence_of_row[ROWS];
 static uint32_t context_length[ROWS];
 static uint32_t positions[ROWS];
 static uint32_t dense_offsets[ROWS + 1u];
 static uint32_t dense_tiles[2];
-static uint8_t state_pool[ROWS * QWEN36_GDN_STATE_BYTES + CANARY_BYTES];
-static uint16_t conv_window[ROWS * QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL
+static uint8_t state_pool[ROWS * QWEN38_27B_GDN_STATE_BYTES + CANARY_BYTES];
+static uint16_t conv_window[ROWS * QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL
 	+ CANARY_BYTES / 2u];
-static uint8_t kv_pool[2u * Qwen36FullKv::kPageBytes];
+static uint8_t kv_pool[2u * Qwen38_27bFullKv::kPageBytes];
 static uint32_t page_table[ROWS];
 static LmKvAccessError kv_access_error;
 
@@ -98,30 +98,30 @@ static uint32_t CanaryIntact(const uint8_t *canary)
 
 int main(void)
 {
-	static Qwen36LayerBuffers b;
+	static Qwen38_27bLayerBuffers b;
 	uint32_t index,head;
 	float expected,maxdiff;
 	memset(&b, 0, sizeof(b));
 	LmKvAccessErrorReset(&kv_access_error);
-	for (index = 0u; index < QWEN36_HIDDEN; ++index)
+	for (index = 0u; index < QWEN38_27B_HIDDEN; ++index)
 		norm_weight[index] = LmFloatToBf16(1.0f);
-	for (index = 0u; index < ROWS * QWEN36_HIDDEN; ++index)
+	for (index = 0u; index < ROWS * QWEN38_27B_HIDDEN; ++index)
 		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17u));
-	for (index = 0u; index < QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL; ++index)
+	for (index = 0u; index < QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL; ++index)
 		conv_weight[index] = LmFloatToBf16(0.25f);
 	// The gate mapping's per-head tensors: log-scale zero and bias zero, so
 	// the retention is exp(-softplus(logit)) and beta sigmoid(logit) of
 	// whatever the GEMM recorder wrote - values python computes closed-form.
-	for (index = 0u; index < QWEN36_GDN_VALUE_HEADS; ++index)
+	for (index = 0u; index < QWEN38_27B_GDN_VALUE_HEADS; ++index)
 	{
 		a_log[index] = 0.0f;
 		dt_bias[index] = 0.0f;
 	}
-	memset(state_pool, 0, ROWS * QWEN36_GDN_STATE_BYTES);
-	memset(state_pool + ROWS * QWEN36_GDN_STATE_BYTES, CANARY_BYTE, CANARY_BYTES);
+	memset(state_pool, 0, ROWS * QWEN38_27B_GDN_STATE_BYTES);
+	memset(state_pool + ROWS * QWEN38_27B_GDN_STATE_BYTES, CANARY_BYTE, CANARY_BYTES);
 	memset(conv_window, 0,
-		ROWS * QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL * sizeof(uint16_t));
-	memset(conv_window + ROWS * QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL,
+		ROWS * QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL * sizeof(uint16_t));
+	memset(conv_window + ROWS * QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL,
 		CANARY_BYTE, CANARY_BYTES);
 	// A poisoned cache: bf16 0xFFFF is NaN, so a store that does not happen is
 	// visible in the slot check rather than hiding behind zeroed memory.
@@ -163,7 +163,7 @@ int main(void)
 
 	// -- full attention layer -------------------------------------------------
 	lm_recorded_gemms.clear();
-	if ( Qwen36LayerAttention<LmBf16Format,Qwen36FullKv>(&b,ROWS,1u,1u,0) != LM_LAUNCH_OK )
+	if ( Qwen38_27bLayerAttention<LmBf16Format,Qwen38_27bFullKv>(&b,ROWS,1u,1u,0) != LM_LAUNCH_OK )
 	{
 		printf("attn_layer_status FAIL\n");
 		return(1);
@@ -178,9 +178,9 @@ int main(void)
 	expected = LmBf16ToFloat(LmFloatToBf16(0.125f));
 	{
 		const uint16_t *slot = (const uint16_t *)(kv_pool
-			+ ((uint64_t)page_table[0] * Qwen36FullKv::kPageBytes));
+			+ ((uint64_t)page_table[0] * Qwen38_27bFullKv::kPageBytes));
 		maxdiff = 0.0f;
-		for (index = 0u; index < QWEN36_KV_HEADS * QWEN36_HEAD_DIM * 2u; ++index)
+		for (index = 0u; index < QWEN38_27B_KV_HEADS * QWEN38_27B_HEAD_DIM * 2u; ++index)
 		{
 			float diff = LmBf16ToFloat(slot[index]) - expected;
 			if ( diff < 0.0f ) diff = -diff;
@@ -192,13 +192,13 @@ int main(void)
 	// recorder overwrote attention_out, so the attention result is recomputed
 	// from the cache the layer filled and the query the split left behind.
 	{
-		static uint16_t direct_out[ROWS * QWEN36_Q_DIM];
-		LM_HOST_LAUNCH(dim3(ROWS,QWEN36_ATTN_HEADS),
-			(LmGqaAttentionDecodeKernel<Qwen36FullKv,1u,QWEN36_KV_HEADS,QWEN36_HEAD_DIM,QWEN36_HEAD_DIM>(
+		static uint16_t direct_out[ROWS * QWEN38_27B_Q_DIM];
+		LM_HOST_LAUNCH(dim3(ROWS,QWEN38_27B_ATTN_HEADS),
+			(LmGqaAttentionDecodeKernel<Qwen38_27bFullKv,1u,QWEN38_27B_KV_HEADS,QWEN38_27B_HEAD_DIM,QWEN38_27B_HEAD_DIM>(
 				query, b.cache, sequence_of_row, context_length,
-				0, 0u, QWEN36_ATTN_HEADS, QWEN36_QK_SCALE, direct_out, 0)));
+				0, 0u, QWEN38_27B_ATTN_HEADS, QWEN38_27B_QK_SCALE, direct_out, 0)));
 		maxdiff = 0.0f;
-		for (index = 0u; index < ROWS * QWEN36_Q_DIM; ++index)
+		for (index = 0u; index < ROWS * QWEN38_27B_Q_DIM; ++index)
 		{
 			float diff = LmBf16ToFloat(direct_out[index]) - expected;
 			if ( diff < 0.0f ) diff = -diff;
@@ -213,7 +213,7 @@ int main(void)
 
 	// -- recurrent layer ------------------------------------------------------
 	lm_recorded_gemms.clear();
-	if ( Qwen36LayerLinear<LmBf16Format>(&b,ROWS,1u,0) != LM_LAUNCH_OK )
+	if ( Qwen38_27bLayerLinear<LmBf16Format>(&b,ROWS,1u,0) != LM_LAUNCH_OK )
 	{
 		printf("gdn_layer_status FAIL\n");
 		return(1);
@@ -235,10 +235,10 @@ int main(void)
 	// value-head slices. A 16-slice recurrence leaves head 47 at zero.
 	{
 		const float *state = (const float *)state_pool;
-		for (head = 0u; head < QWEN36_GDN_VALUE_HEADS; head += (QWEN36_GDN_VALUE_HEADS - 1u))
+		for (head = 0u; head < QWEN38_27B_GDN_VALUE_HEADS; head += (QWEN38_27B_GDN_VALUE_HEADS - 1u))
 			for (index = 0u; index < 8u; ++index)
 				printf("state_h%u %.9g\n", head,
-					(double)state[(head * QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM) + index]);
+					(double)state[(head * QWEN38_27B_GDN_KEY_DIM * QWEN38_27B_GDN_VALUE_DIM) + index]);
 	}
 	// The committed window: all 10240 channels of both sequences must hold
 	// the admitted token at the last tap. A conv over the key's 2048 channels
@@ -246,19 +246,19 @@ int main(void)
 	{
 		float lowest = 1e30f,highest = -1e30f;
 		for (index = 0u;
-			index < ROWS * QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL;
-			index += QWEN36_GDN_CONV_KERNEL)
+			index < ROWS * QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL;
+			index += QWEN38_27B_GDN_CONV_KERNEL)
 		{
-			float tap = LmBf16ToFloat(conv_window[index + (QWEN36_GDN_CONV_KERNEL - 1u)]);
+			float tap = LmBf16ToFloat(conv_window[index + (QWEN38_27B_GDN_CONV_KERNEL - 1u)]);
 			if ( tap < lowest ) lowest = tap;
 			if ( tap > highest ) highest = tap;
 		}
 		printf("window_tap3_min %.9g\nwindow_tap3_max %.9g\n",
 			(double)lowest, (double)highest);
 	}
-	printf("canary_state %u\n", CanaryIntact(state_pool + ROWS * QWEN36_GDN_STATE_BYTES));
+	printf("canary_state %u\n", CanaryIntact(state_pool + ROWS * QWEN38_27B_GDN_STATE_BYTES));
 	printf("canary_window %u\n", CanaryIntact(
-		(uint8_t *)(conv_window + ROWS * QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL)));
+		(uint8_t *)(conv_window + ROWS * QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL)));
 
 	// -- head expansion, with values that discriminate ------------------------
 	// Uniform projections cannot see a wrong group mapping: every head is the
@@ -266,18 +266,18 @@ int main(void)
 	// against source head h / 3.
 	{
 		uint32_t mismatch = 0u,h,g;
-		for (h = 0u; h < QWEN36_GDN_KEY_HEADS; ++h)
-			for (index = 0u; index < QWEN36_GDN_KEY_DIM; ++index)
-				key[(h * QWEN36_GDN_KEY_DIM) + index] = LmFloatToBf16((float)(h + 1u));
+		for (h = 0u; h < QWEN38_27B_GDN_KEY_HEADS; ++h)
+			for (index = 0u; index < QWEN38_27B_GDN_KEY_DIM; ++index)
+				key[(h * QWEN38_27B_GDN_KEY_DIM) + index] = LmFloatToBf16((float)(h + 1u));
 		LM_HOST_LAUNCH(dim3(1u),
 			(LmExpandHeadsKernel<1u>(key, expanded_k,
-				QWEN36_GDN_KEY_HEADS, QWEN36_GDN_KEY_DIM,
-				QWEN36_GDN_VALUE_PER_KEY, 1u)));
-		for (h = 0u; h < QWEN36_GDN_VALUE_HEADS; ++h)
+				QWEN38_27B_GDN_KEY_HEADS, QWEN38_27B_GDN_KEY_DIM,
+				QWEN38_27B_GDN_VALUE_PER_KEY, 1u)));
+		for (h = 0u; h < QWEN38_27B_GDN_VALUE_HEADS; ++h)
 		{
-			g = h / QWEN36_GDN_VALUE_PER_KEY;
-			for (index = 0u; index < QWEN36_GDN_KEY_DIM; ++index)
-				if ( LmBf16ToFloat(expanded_k[(h * QWEN36_GDN_KEY_DIM) + index])
+			g = h / QWEN38_27B_GDN_VALUE_PER_KEY;
+			for (index = 0u; index < QWEN38_27B_GDN_KEY_DIM; ++index)
+				if ( LmBf16ToFloat(expanded_k[(h * QWEN38_27B_GDN_KEY_DIM) + index])
 					!= (float)(g + 1u) )
 					++mismatch;
 		}
@@ -286,7 +286,7 @@ int main(void)
 
 	// -- dense MLP --------------------------------------------------------------
 	lm_recorded_gemms.clear();
-	if ( Qwen36LayerDenseMlp<LmBf16Format>(&b,ROWS,1u,0) != LM_LAUNCH_OK )
+	if ( Qwen38_27bLayerDenseMlp<LmBf16Format>(&b,ROWS,1u,0) != LM_LAUNCH_OK )
 	{
 		printf("mlp_layer_status FAIL\n");
 		return(1);
@@ -298,7 +298,7 @@ int main(void)
 			lm_recorded_gemms[index].output_dimension);
 	{
 		float peak = 0.0f;
-		for (index = 0u; index < ROWS * QWEN36_FFN_INTERMEDIATE; ++index)
+		for (index = 0u; index < ROWS * QWEN38_27B_FFN_INTERMEDIATE; ++index)
 		{
 			float v = LmBf16ToFloat(intermediate[index]);
 			if ( v < 0.0f ) v = -v;

@@ -17,7 +17,7 @@
  * Directory economics: the routed experts are STACKED - one tensor kind
  * carries all n_routed_experts of a projection (rows = experts x out), so
  * the directory stays O(layers), not O(layers x experts). Scales travel in
- * the entry beside their payload exactly as in the qwen36 format: fp8
+ * the entry beside their payload exactly as in the qwen38_27b format: fp8
  * weights carry one e8m0 byte per 128-column block per row, fp4 experts
  * one e8m0 byte per 32-column block per row. The hash router's tid2eid
  * table is a u32 tensor like any other. MTP kinds remain reserved for a

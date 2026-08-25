@@ -1,4 +1,4 @@
-# Qwen3.8-27B TP4 (qwen36) phase 2 performance plan
+# Qwen3.8-27B TP4 (qwen38_27b) phase 2 performance plan
 
 Measured on the spark0-3 TP4 band (4 x GB10, hidden-transport verbs backend).
 Quality gate on every number: Qwen38-TP4-E2E-PASS (per-rank agreement plus

@@ -67,11 +67,11 @@ NON_GLM_MODEL_PREFIXES = (
     "model-families/dsv4/",
     "model-families/k3/",
     "model-families/mimo25/",
-    "model-families/qwen36/",
+    "model-families/qwen38_27b/",
     "modules/dsv4_",
     "modules/k3_",
     "modules/mimo25_",
-    "modules/qwen36_",
+    "modules/qwen38_27b_",
     "inference/llms/deepseek_v4/",
     "inference/llms/deepseek_v4_pro/",
     "inference/llms/kimi_k3/",
@@ -79,7 +79,7 @@ NON_GLM_MODEL_PREFIXES = (
     "inference/llms/qwen_3_6/",
     "tools/generate_k3_contract.py",
     "tools/generate_dsv4_contracts.py",
-    "tools/qwen36_stagepack.py",
+    "tools/qwen38_27b_stagepack.py",
 )
 SIZE_ARGUMENTS_BY_CALL = {
     "cudaHostAlloc": (1,),

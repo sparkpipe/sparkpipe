@@ -67,8 +67,8 @@ SPARKPIPE_GLM52_SOURCES := \
 	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c \
 	src/spark_speculation_policy.c
 
-SPARKPIPE_QWEN36_SOURCES := \
-    model-families/qwen36/src/spark_qwen36_work_control.c
+SPARKPIPE_QWEN38_27B_SOURCES := \
+    model-families/qwen38_27b/src/spark_qwen38_27b_work_control.c
 
 SPARKPIPE_QWEN38_SOURCES := \
     model-families/qwen38/src/spark_qwen38_work_control.c

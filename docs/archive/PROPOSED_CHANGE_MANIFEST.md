@@ -44,8 +44,8 @@ Retained validation receipts under `docs/` are included.
 | `modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c` | 103110 | `d3f8c8b10988acefbd60ce249533fe2c81b3ef58f5292be630a4ebe051656e1d` |
 | `modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_cuda.cu` | 24569 | `1b6a34656a5a4fcc06a515d9a1bdcb520d160a0159381356fdad4c23cc71fd9b` |
 | `modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_module.c` | 90980 | `16c9f4101e6981ce0d7b680325e90be3549ab3d7dd241f384b4a841d09c27c93` |
-| `modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_cuda.cu` | 62243 | `bce272fd27c2ed85780c1411c6c4c2096a8511c8ed70ef4a25f0c5d0ff0c808e` |
-| `modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_module.c` | 107819 | `71b4d3fcc25ba82fe933bd72aba88288adf495b3ec4e9c2e892f499f5ea51b60` |
+| `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_cuda.cu` | 62243 | `bce272fd27c2ed85780c1411c6c4c2096a8511c8ed70ef4a25f0c5d0ff0c808e` |
+| `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c` | 107819 | `71b4d3fcc25ba82fe933bd72aba88288adf495b3ec4e9c2e892f499f5ea51b60` |
 | `tests/fixtures/glm52_resident_decode_stage_fake_backend.c` | 16244 | `74a7532459edf90f565b71064d02b6db37a25dbe26037cc776209937acf29d72` |
 | `tests/test_glm52_exact_pp13_prefill_hidden.py` | 76596 | `288b7a9007c5ef29bf5eb39073401ea92056e7d095d95ad5a53dcc19d3ec785a` |
 | `tests/test_glm52_quantized_cuda_contract.py` | 10246 | `31062815fd8968a9f010d473588723d2796128f26ffa9ff2bf5f371b432b5827` |

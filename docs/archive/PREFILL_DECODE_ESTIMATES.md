@@ -67,11 +67,11 @@ glm52          64       4.20         269     PP bandwidth  bandwidth 99%, comput
 glm52         256       3.48         891     PP bandwidth  bandwidth 98%, compute 80%, transport 1%
 glm52        1024       1.07       1,099     PP compute    compute 98%, bandwidth 36%, transport 1%
 
-qwen36          1       52.3        52.3     PP bandwidth  bandwidth 93%, launch 5%, compute 3%
-qwen36          8       50.9         407     PP bandwidth  bandwidth 93%, compute 24%, launch 5%
-qwen36         64       25.0       1,599     PP compute    compute 95%, bandwidth 55%, launch 3%
-qwen36        256       6.41       1,641     PP compute    compute 98%, bandwidth 22%, transport 2%
-qwen36       1024       1.61       1,652     PP compute    compute 98%, bandwidth 14%, transport 2%
+qwen38_27b          1       52.3        52.3     PP bandwidth  bandwidth 93%, launch 5%, compute 3%
+qwen38_27b          8       50.9         407     PP bandwidth  bandwidth 93%, compute 24%, launch 5%
+qwen38_27b         64       25.0       1,599     PP compute    compute 95%, bandwidth 55%, launch 3%
+qwen38_27b        256       6.41       1,641     PP compute    compute 98%, bandwidth 22%, transport 2%
+qwen38_27b       1024       1.61       1,652     PP compute    compute 98%, bandwidth 14%, transport 2%
 
 dsv4_pro        1       45.8        45.8     PP bandwidth  bandwidth 88%, launch 11%, compute 7%
 dsv4_pro        8       20.1         161     PP bandwidth  bandwidth 94%, compute 26%, launch 5%
@@ -108,11 +108,11 @@ glm52          64       5.16         330     PP bandwidth  bandwidth 99%, comput
 glm52         256       4.29       1,098     PP bandwidth  bandwidth 98%, compute 80%, transport 1%
 glm52        1024       1.33       1,357     PP compute    compute 99%, bandwidth 36%, transport 1%
 
-qwen36          1       63.8        63.8     PP bandwidth  bandwidth 92%, launch 7%, compute 3%
-qwen36          8       62.1         497     PP bandwidth  bandwidth 92%, compute 24%, launch 6%
-qwen36         64       30.7       1,967     PP compute    compute 95%, bandwidth 55%, launch 3%
-qwen36        256       7.91       2,025     PP compute    compute 98%, bandwidth 22%, transport 1%
-qwen36       1024       1.99       2,041     PP compute    compute 98%, bandwidth 14%, transport 1%
+qwen38_27b          1       63.8        63.8     PP bandwidth  bandwidth 92%, launch 7%, compute 3%
+qwen38_27b          8       62.1         497     PP bandwidth  bandwidth 92%, compute 24%, launch 6%
+qwen38_27b         64       30.7       1,967     PP compute    compute 95%, bandwidth 55%, launch 3%
+qwen38_27b        256       7.91       2,025     PP compute    compute 98%, bandwidth 22%, transport 1%
+qwen38_27b       1024       1.99       2,041     PP compute    compute 98%, bandwidth 14%, transport 1%
 
 dsv4_pro        1       55.2        55.2     PP bandwidth  bandwidth 86%, launch 13%, compute 7%
 dsv4_pro        8       24.5         196     PP bandwidth  bandwidth 94%, compute 26%, launch 6%
@@ -145,7 +145,7 @@ that lift.)
 model       topo          B1         B8        B64       B256       B1024   (tok/s/seq, ring13)
 k3          ring13       18.6       8.03       2.00       1.01       0.38
 glm52       ring13       48.8       14.3       4.20       3.48       1.07
-qwen36      ring13       45.2       23.0       4.66       1.25       0.32
+qwen38_27b      ring13       45.2       23.0       4.66       1.25       0.32
 dsv4_pro    ring13       44.9       18.9       4.61       2.37       0.60
 dsv4_flash  ring13        137       60.4       16.0       7.78       2.43
 mimo25      ring13        127       29.3       6.66       3.06       1.03
@@ -166,7 +166,7 @@ Effective MBU = ideal step time at 100% of raw aggregate / modelled step:
 model       ring13 eager   ring13 graph   dual16 eager   dual16 graph
 k3            0.733          0.792          0.721          0.793
 glm52         0.725          0.784          0.716          0.786
-qwen36        0.742          0.783          0.736          0.786
+qwen38_27b        0.742          0.783          0.736          0.786
 dsv4_pro      0.702          0.784          0.687          0.786
 dsv4_flash    0.573          0.743          0.549          0.751
 mimo25        0.608          0.747          0.588          0.755
@@ -202,7 +202,7 @@ Three findings:
 model       crossover @6.5 TF wall   @unit peaks        roadmap:423-430 says
 k3          B258                     never (<B8192)      B258 / never
 glm52       B320                     never               B320 / never
-qwen36      B34                      B300                B34  / B294
+qwen38_27b      B34                      B300                B34  / B294
 dsv4_pro    B165                     B8161               B165 / never(ish)
 dsv4_flash  B130                     never               B130 / never
 mimo25      B341                     never               B341 / never
@@ -228,7 +228,7 @@ Share of step time, graph mode (TP collective | PP transport):
 model       ring13 B1      ring13 B64     ring13 B1024    dual16 B1024
 k3          11.9% | 1.0%    7.4% | 2.0%    15.5% | 4.8%    10.4% | 3.8%
 glm52       25.4% | 1.9%    9.6% | 0.5%    31.7% | 1.3%    21.2% | 1.0%
-qwen36      21.5% | 2.0%   41.3% | 2.5%    32.6% | 1.7%    21.8% | 1.3%
+qwen38_27b      21.5% | 2.0%   41.3% | 2.5%    32.6% | 1.7%    21.8% | 1.3%
 dsv4_pro    19.4% | 1.8%   10.6% | 0.7%    16.0% | 0.9%    10.7% | 0.7%
 dsv4_flash  48.0% | 6.6%   21.3% | 2.0%    26.6% | 2.1%    17.8% | 1.6%
 mimo25      50.2% | 6.2%   10.6% | 0.9%    33.9% | 2.3%    22.7% | 1.8%
@@ -269,9 +269,9 @@ k3          128K      442      550       36      3,618 s (1.0 h)        bandwidt
 glm52       2K        945    1,165       74                             bandwidth
 glm52       32K       929    1,145       73                             bandwidth
 glm52       128K      420      517       33      4,026 s (1.1 h)        compute (quadratic)
-qwen36      2K      3,411    4,222      276                             compute
-qwen36      32K     3,228    3,994      261                             compute
-qwen36      128K    2,754    3,405      221        593 s (10 min)       compute
+qwen38_27b      2K      3,411    4,222      276                             compute
+qwen38_27b      32K     3,228    3,994      261                             compute
+qwen38_27b      128K    2,754    3,405      221        593 s (10 min)       compute
 dsv4_pro    2K        887    1,093       70                             bandwidth
 dsv4_pro    32K       839    1,034       66                             bandwidth
 dsv4_pro    128K      323      398       25      5,232 s (1.5 h)        compute (quadratic)
@@ -322,7 +322,7 @@ k3    DeltaRule<256,128,128> 94 regs  67,200 B smem -> 1 blk/SM (12%, smem-bound
 k3    GEMM Bf16 M64          87 regs  49,168 B smem -> 2 blk/SM (25%, regs-bound)
 glm52 GEMM Bf16→Fp8 M64     107 regs  32,784 B smem -> 2 blk/SM (25%, regs-bound)
 glm52 GEMM Bf16→Fp8 M32      72 regs  24,592 B smem -> 3 blk/SM (38%, regs-bound)
-qwen36 GEMM Bf16 M32         64 regs  40,976 B smem -> 3 blk/SM (38%, smem-bound)
+qwen38_27b GEMM Bf16 M32         64 regs  40,976 B smem -> 3 blk/SM (38%, smem-bound)
 dsv4* GEMM Fp8 M64 K128     123 regs  49,168 B smem -> 2 blk/SM (25%, regs-bound)
 dsv4* GEMM Fp8→Mxfp4 M32     83 regs  25,616 B smem -> 3 blk/SM (38%, regs-bound)
 mimo25 GEMM Int7 M64 K256    95 regs  86,032 B smem -> 1 blk/SM (12%, smem-bound)

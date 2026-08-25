@@ -1,13 +1,13 @@
 // cp.async shared-staged B-tile variant of the native block-scaled fp8 MMA
-// linear - the scoped FFN kernel project (see qwen36_native_linear_bench.cu
+// linear - the scoped FFN kernel project (see qwen38_27b_native_linear_bench.cu
 // for the baselines: byte-load 125.6 GB/s wins width tweaks; K-split null).
 // This harness: correctness vs the library kernel on RANDOM data + GB/s.
 //
 // Build on spark2 from the repo root:
 //   /usr/local/cuda/bin/nvcc -std=c++17 -O3 -gencode arch=compute_121a,code=sm_121a \
 //     -I . -I include -I model-families/common/include \
-//     -I modules/qwen36_resident_decode_stage/include \
-//     tools/qwen36_native_staged_bench.cu -o /tmp/staged_bench -lcudart
+//     -I modules/qwen38_27b_resident_decode_stage/include \
+//     tools/qwen38_27b_native_staged_bench.cu -o /tmp/staged_bench -lcudart
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +57,7 @@ static __device__ __forceinline__ void StCpWait(void)
 
 template <uint32_t D>
 static __global__ __launch_bounds__(SPARK_LM_CTA_THREADS, 1)
-void SparkQwen36StagedLinearKernel(
+void SparkQwen38_27bStagedLinearKernel(
 	const uint8_t *weight_payload,
 	const uint8_t *weight_scale_e8m0,
 	const void *input_bf16,
@@ -184,10 +184,10 @@ static cudaError_t LaunchStaged(cudaStream_t stream,
 	size_t shared = (size_t)depth * ST_TILE_N * ST_B_STRIDE;
 	cudaError_t error;
 	#define ST_LAUNCH(D) do { \
-		error = cudaFuncSetAttribute(SparkQwen36StagedLinearKernel<D>, \
+		error = cudaFuncSetAttribute(SparkQwen38_27bStagedLinearKernel<D>, \
 			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared); \
 		if ( error != cudaSuccess ) return(error); \
-		SparkQwen36StagedLinearKernel<D><<<grid, SPARK_LM_CTA_THREADS, shared, stream>>>( \
+		SparkQwen38_27bStagedLinearKernel<D><<<grid, SPARK_LM_CTA_THREADS, shared, stream>>>( \
 			(const uint8_t *)payload, scale, in, in_stride, out, out_stride, rows, K, N); \
 	} while (0)
 	switch ( depth )

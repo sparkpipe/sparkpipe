@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Pack the DFlash2 drafter (z-lab/Qwen3.8-27B-DFlash2) into a qwen36 wire pack.
+"""Pack the DFlash2 drafter (z-lab/Qwen3.8-27B-DFlash2) into a qwen38_27b wire pack.
 
 Setup-time code, never the serving path. The drafter is a 5-layer sliding-attention
 decoder (no GDN, no MTP) that emits an 8-token block; it SHARES the target's token
 embedding and lm_head (the safetensors carries neither). This tool streams the 81
-drafter tensors into the same wire format the qwen36 target packer writes, so the
+drafter tensors into the same wire format the qwen38_27b target packer writes, so the
 resident module can load both with one header reader.
 
 Drafter geometry (config.json): hidden 5120, 5 layers, 32 Q / 8 KV heads x head_dim
@@ -56,7 +56,7 @@ HEADER_STRUCT = struct.Struct("<26I2Q")
 ENTRY_STRUCT = struct.Struct("<6I4Q")
 assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
 
-# DFlash2 tensor kinds (per-layer + global). Mirror SparkQwen36DsparkTensorKind.
+# DFlash2 tensor kinds (per-layer + global). Mirror SparkQwen38_27bDsparkTensorKind.
 (KIND_ATTN_QUERY, KIND_ATTN_KEY, KIND_ATTN_VALUE, KIND_ATTN_OUTPUT,
  KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM, KIND_ATTENTION_NORM, KIND_MLP_NORM,
  KIND_FFN_GATE, KIND_FFN_UP, KIND_FFN_DOWN,
@@ -291,18 +291,18 @@ def main() -> int:
                         help="dir holding the drafter model.safetensors")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    receipt = {"kind": "sparkpipe.qwen36.dflash2-stagepack-receipt.v1",
-               "tool": "tools/qwen36_dspark_stagepack.py"}
+    receipt = {"kind": "sparkpipe.qwen38_27b.dflash2-stagepack-receipt.v1",
+               "tool": "tools/qwen38_27b_dspark_stagepack.py"}
     try:
         pack(args.checkpoint, args.output, receipt)
     except PackFailure as e:
-        print(f"qwen36_dspark_stagepack failed: {e}", file=sys.stderr)
+        print(f"qwen38_27b_dspark_stagepack failed: {e}", file=sys.stderr)
         return 1
     v = verify(args.output)
     if not verify_payload(args.output, args.checkpoint):
-        print("qwen36_dspark_stagepack round-trip FAILED", file=sys.stderr)
+        print("qwen38_27b_dspark_stagepack round-trip FAILED", file=sys.stderr)
         return 1
-    print(f"qwen36_dspark_stagepack wrote {args.output} tensors={v['tensor_count']} "
+    print(f"qwen38_27b_dspark_stagepack wrote {args.output} tensors={v['tensor_count']} "
           f"file_gib={v['bytes'] / 2**30:.2f} round_trip=ok")
     with open(str(args.output) + ".receipt.json", "w") as f:
         json.dump(receipt, f, indent=2)

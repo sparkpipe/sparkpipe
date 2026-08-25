@@ -20,8 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
-DRAFTER = Path(os.environ.get("SPARK_QWEN36_DFLASH2_DRAFTER", "/home/spark3/sparkdata/qwen38-dflash2-drafter"))
-TARGET = Path(os.environ.get("SPARK_QWEN36_DFLASH2_TARGET", "/home/spark3/extnvme/models/hf/Qwen/Qwen3.8-27B"))
+DRAFTER = Path(os.environ.get("SPARK_QWEN38_27B_DFLASH2_DRAFTER", "/home/spark3/sparkdata/qwen38-dflash2-drafter"))
+TARGET = Path(os.environ.get("SPARK_QWEN38_27B_DFLASH2_TARGET", "/home/spark3/extnvme/models/hf/Qwen/Qwen3.8-27B"))
 
 HIDDEN = 5120
 N_LAYERS = 5

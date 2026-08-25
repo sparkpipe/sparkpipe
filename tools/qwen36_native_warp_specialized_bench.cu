@@ -58,7 +58,7 @@
 //   3. b_scale_tile[2][128]: producers stage each next chunk's e8m0 scale
 //      bytes (1 strided byte load per neuron); consumers read scales from
 //      shared instead of SparkLmSm121ScaleB's global __ldg.
-// Build: same includes as tools/qwen36_native_staged_bench.cu
+// Build: same includes as tools/qwen38_27b_native_staged_bench.cu
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,7 +126,7 @@ static __device__ __forceinline__ void StCpWait(void)
  * regardless of D: one commit per iteration, all-but-the-last complete. */
 template <uint32_t D, bool PLAIN_B>
 static __global__ __launch_bounds__(512u, 1)
-void SparkQwen36WarpSpecializedKernel(
+void SparkQwen38_27bWarpSpecializedKernel(
 	const uint8_t *weight_payload,
 	const uint8_t *weight_scale_e8m0,
 	const void *input_bf16,
@@ -343,10 +343,10 @@ static cudaError_t LaunchStaged(cudaStream_t stream,
 	size_t shared = (size_t)depth * ST_TILE_N * ST_B_STRIDE;
 	cudaError_t error;
 	#define ST_LAUNCH(D, PB) do { \
-		error = cudaFuncSetAttribute(SparkQwen36WarpSpecializedKernel<D, PB>, \
+		error = cudaFuncSetAttribute(SparkQwen38_27bWarpSpecializedKernel<D, PB>, \
 			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared); \
 		if ( error != cudaSuccess ) return(error); \
-		SparkQwen36WarpSpecializedKernel<D, PB><<<grid, 512u, shared, stream>>>(\
+		SparkQwen38_27bWarpSpecializedKernel<D, PB><<<grid, 512u, shared, stream>>>(\
 			(const uint8_t *)payload, scale, in, in_stride, out, out_stride, rows, K, N); \
 	} while (0)
 	if ( plain_b != 0 )
@@ -426,7 +426,7 @@ int main(int argc, char **argv)
 	 * verify frame's FFN runs at ~123 GB/s effective regardless of the
 	 * staging engine; the gap to 176 is interleaving/cold-L2/gaps, NOT
 	 * the B-staging path. Plain-B ships default-ON (neutral, bit-exact)
-	 * with kill-switch SPARK_QWEN36_WS_PLAIN=0. */
+	 * with kill-switch SPARK_QWEN38_27B_WS_PLAIN=0. */
 	{
 		CHECK(LaunchStaged(stream, payload, scale, in, K, out, N, M, K, N, 4u, 1));
 		CHECK(cudaStreamSynchronize(stream));

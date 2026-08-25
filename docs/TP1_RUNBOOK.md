@@ -2,13 +2,13 @@
 
 Makes the checkpoint-pin -> TP1 run a single command. Companion to the TP1
 serving-adapter build-flag switch in
-`modules/qwen36_resident_decode_stage/source/spark_qwen36_serving_adapter.c`.
-Prep only — no commits, no pushes. Uses the EXISTING qwen36 driver; the 3.8 27B
+`modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c`.
+Prep only — no commits, no pushes. Uses the EXISTING qwen38_27b driver; the 3.8 27B
 checkpoint (once the user pins its HF revision) drops into `--checkpoint`.
 
 ## 0. The one switch
 
-`SPARK_QWEN36_SERVING_TP_DEGREE` (compile-time, overridable):
+`SPARK_QWEN38_27B_SERVING_TP_DEGREE` (compile-time, overridable):
 - 4 (default) = TP4 whole-stack build — UNCHANGED from the shipped adapter.
 - 1 = TP1 single-rank full-width build.
 - 0 = legacy PP layer-slice build (not shipped).
@@ -19,13 +19,13 @@ byte-for-byte the prior build.
 
 ## 1. Pack command (full-width TP1 pack)
 
-`tools/qwen36_stagepack.py` already takes `--tp-degree 1 --tp-rank 0` by
+`tools/qwen38_27b_stagepack.py` already takes `--tp-degree 1 --tp-rank 0` by
 default (= no column sharding, full-width), so no packer change is needed:
 
 ```sh
-python3 tools/qwen36_stagepack.py \
+python3 tools/qwen38_27b_stagepack.py \
   --checkpoint /path/to/Qwen/Qwen3.8-27B \
-  --output /home/spark3/sparkdata/qwen38.bf16.tp1/packs/qwen38.tp1.qwen36sp \
+  --output /home/spark3/sparkdata/qwen38.bf16.tp1/packs/qwen38.tp1.qwen38_27bsp \
   --first-layer 0 --layer-count 64
 ```
 
@@ -36,15 +36,15 @@ revision belongs (record it there at re-pack time to close the open pin).
 ## 2. Adapter build command (TP1 variant)
 
 ```sh
-make build/libqwen36_serving_adapter.so \
-  QWEN36_SERVING_ADAPTER_FLAGS="-D_POSIX_C_SOURCE=200809L \
-    -DQWEN36_MODEL_REVISION=\"bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1\" \
-    -DQWEN36_CONTRACT_SHA256=\"$(sha256sum examples/model_descriptions/qwen36_resident_decode_stage_firmware.json | awk '{print $1}')\" \
-    -DSPARK_QWEN36_SERVING_TP_DEGREE=1"
+make build/libqwen38_27b_serving_adapter.so \
+  QWEN38_27B_SERVING_ADAPTER_FLAGS="-D_POSIX_C_SOURCE=200809L \
+    -DQWEN38_27B_MODEL_REVISION=\"bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1\" \
+    -DQWEN38_27B_CONTRACT_SHA256=\"$(sha256sum examples/model_descriptions/qwen38_27b_resident_decode_stage_firmware.json | awk '{print $1}')\" \
+    -DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1"
 ```
 
-Omitting `-DSPARK_QWEN36_SERVING_TP_DEGREE=1` rebuilds the TP4 default. The
-adapter id flips to `spark.qwen36.serving-adapter.tp1.v1` and the descriptor
+Omitting `-DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1` rebuilds the TP4 default. The
+adapter id flips to `spark.qwen38_27b.serving-adapter.tp1.v1` and the descriptor
 stage_count to 1. The driver (.so) and module archive are unchanged.
 
 ## 3. Single-node deployment JSON shape
@@ -68,9 +68,9 @@ stage_count to 1. The driver (.so) and module archive are unchanged.
     {
       "rank_index": 0, "stage_index": 0,
       "runtime_root": "/home/spark3/sparkdata/qwen38.bf16.tp1",
-      "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
+      "node_target": "cuda.sm121.qwen38_27b.resident_decode_stage.bf16",
       "transport_host": "spark3-fabric",
-      "adapter_configuration_path": "config/qwen36_tp1_rank0.json",
+      "adapter_configuration_path": "config/qwen38_27b_tp1_rank0.json",
       "kv_backing_directory": null, "kv_backing_maximum_bytes": 0,
       "control_endpoint": { "kind": "tcp", "host": "spark3", "port": 17480 }
     }
@@ -84,7 +84,7 @@ stage_count to 1. The driver (.so) and module archive are unchanged.
 {
   "schema_version": 3,
   "model_revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1",
-  "stage_pack_path": "packs/qwen38.tp1.qwen36sp",
+  "stage_pack_path": "packs/qwen38.tp1.qwen38_27bsp",
   "max_sequence_positions": 8192
 }
 ```
@@ -97,9 +97,9 @@ RUNTIME_ROOT=/home/spark3/sparkdata/qwen38.bf16.tp1
 RANK_INDEX=0
 MODEL=qwen27b
 HOST=spark3
-SPARK_QWEN36_SERVING_SPECULATE=1
-SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY=recover   # A: recover (default)
-# SPARK_QWEN36_SERVING_SPEC_FIRST_DRAFT_POLICY=strict  # B: strict
+SPARK_QWEN38_27B_SERVING_SPECULATE=1
+SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY=recover   # A: recover (default)
+# SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY=strict  # B: strict
 ```
 
 Then: write the `10-user.conf` drop-in (User=<ssh user>), `systemctl
@@ -108,16 +108,16 @@ daemon-reload`, `systemctl start sparkpipe_model_residentd`, and run
 --batch /tmp/b1.json` (B1 batch = 1 request, prompt [0], output budget 32).
 
 Acceptance signal (the landed speculation fix): under `recover` a
-`qwen36_spec first_draft_miss` stderr line still yields `tokens_per_sequence > 1`
+`qwen38_27b_spec first_draft_miss` stderr line still yields `tokens_per_sequence > 1`
 (chain continues on C0); under `strict` the same miss collapses to 1. The
 completion `model_extension` (kind `0x5136`) carries `first_draft_miss_count`
 + `first_draft_policy`.
 
 ## Verification
 
-- `clang -fsyntax-only` (both `-DSPARK_QWEN36_SERVING_TP_DEGREE=1` and default) — clean.
+- `clang -fsyntax-only` (both `-DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1` and default) — clean.
 - `tests/test_dry_law.py`, `tests/test_code_size.py` (ceiling bumped +15),
-  `tests/test_qwen36_stagepack.py` — green in-clone.
+  `tests/test_qwen38_27b_stagepack.py` — green in-clone.
 
 ## Checkpoint pin (resolved 2026-08-17, coordinator-recorded)
 
@@ -130,6 +130,6 @@ completion `model_extension` (kind `0x5136`) carries `first_draft_miss_count`
   head_dim 256 (rope 64, theta 1e7) / linear GDN 16 key + 48 value heads x 128 / conv 4 /
   vocab 248320 / max_position 262144 / mtp_num_hidden_layers 1. Same shape as 3.6-27B;
   3.8 is a re-checkpoint with multimodal nesting (model.language_model.* + top-level mtp.*).
-- Packer note: tools/qwen36_stagepack.py already re-based to the 3.8 naming
+- Packer note: tools/qwen38_27b_stagepack.py already re-based to the 3.8 naming
   (LANGUAGE_PREFIX "model.language_model." + MTP_PREFIX "mtp."); the default pack
   command should work once the checkpoint is downloaded.

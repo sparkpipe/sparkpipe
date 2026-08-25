@@ -9,7 +9,7 @@ report; only one is a serving-engine bug, and it is NOT in the model path.
 1. **The daemon SEGV is a startup crash from concurrent instances** — the
    fleet watchdog restarts `model_residentd` while the previous process
    still holds the GPU; the new instance dies inside pack loading
-   (`SparkQwen36ModuleLoadPack → SparkStageModuleLoadDeviceRegion → jump
+   (`SparkQwen38_27bModuleLoadPack → SparkStageModuleLoadDeviceRegion → jump
    to 0x2480`, a corrupted call into libcudart under the instance
    conflict). Backtrace: `/var/crash/core.sparkpipe_model.2684848.*`
    (mine, readable) and two root-owned cores from 19:47/19:49 (the
@@ -32,11 +32,11 @@ Backtrace (gdb on the core, spark2-owned):
 ```
 #0  0x0000000000002480 in ?? ()
 #1  SparkStageModuleLoadDeviceRegion () from lib/model_driver.so
-#2  SparkQwen36ModuleLoadPack ()           from lib/model_driver.so
-#3  SparkQwen36ResidentDecodeStageInitialize ()
+#2  SparkQwen38_27bModuleLoadPack ()           from lib/model_driver.so
+#3  SparkQwen38_27bResidentDecodeStageInitialize ()
 #4  SparkGeneratedDriverCreate ()
-#5  SparkQwen36ServingLoadDriver ()        (adapter, pack load at init)
-#6..#11 SparkQwen36ServingInitialize → SparkModelResidentdInitialize → main
+#5  SparkQwen38_27bServingLoadDriver ()        (adapter, pack load at init)
+#6..#11 SparkQwen38_27bServingInitialize → SparkModelResidentdInitialize → main
 ```
 
 `LoadDeviceRegion` makes no indirect calls itself — the jump to `0x2480`

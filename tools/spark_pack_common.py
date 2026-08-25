@@ -44,7 +44,7 @@ _SHA256_CHUNK = 16 * 1024 * 1024
 class PackFailure(RuntimeError):
     """A source or wire-contract error that must stop pack generation.
 
-    Standardizes a drift across the packers: qwen36/qwen38 subclassed
+    Standardizes a drift across the packers: qwen38_27b/qwen38 subclassed
     Exception (so a bare except did not catch it the same way), glm52_stagepack
     raised plain ValueError, and the rest used RuntimeError. The shared
     contract is always RuntimeError.
@@ -108,7 +108,7 @@ class SafetensorsSource:
         section: str | None = None,
     ) -> None:
         """Assert config values match expectations (optionally under a
-        top-level section key, e.g. qwen36's text_config)."""
+        top-level section key, e.g. qwen38_27b's text_config)."""
         config: Mapping[str, object] = (
             self.config.get(section, {}) if section is not None else self.config
         )

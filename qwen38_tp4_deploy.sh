@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# qwen36 TP4 band deploy: spark0-3, simultaneous start, batch E2E on request
+# qwen38_27b TP4 band deploy: spark0-3, simultaneous start, batch E2E on request
 set -euo pipefail
 RUNTIME_NAME=qwen38.bf16.tp4
 BUILD=/home/spark0/sparkdata/$RUNTIME_NAME/build
@@ -15,11 +15,11 @@ if [[ "${1:-}" == "deploy" ]]; then
   for host in "${HOSTS[@]}"; do
     rt=/home/$host/sparkdata/$RUNTIME_NAME
     ssh -o BatchMode=yes $host "mkdir -p $rt/bin $rt/lib $rt/config $rt/packs"
-    rsync -a $PACKS/tp4-rank$i.qwen36sp $host:$rt/packs/tp4-rank$i.qwen36sp &
+    rsync -a $PACKS/tp4-rank$i.qwen38_27bsp $host:$rt/packs/tp4-rank$i.qwen38_27bsp &
     rsync -a $BUILD/sparkpipe_model_residentd $BUILD/sparkpipe_model_batch $host:$rt/bin/ &
     rsync -a $BUILD/model_driver.so $BUILD/model_serving_adapter.so $BUILD/hidden_transport.so $BUILD/libnccl.so.2 $host:$rt/lib/ &
     ssh -o BatchMode=yes $host "cp $rt/lib/hidden_transport.so $rt/lib/libhidden_transport.so" &
-    rsync -a $BUILD/qwen36_tp4_rank$i.json $host:$rt/config/qwen36_tp4_rank$i.json &
+    rsync -a $BUILD/qwen38_27b_tp4_rank$i.json $host:$rt/config/qwen38_27b_tp4_rank$i.json &
     rsync -a $BUILD/model_resident.json $host:$rt/config/ &
     wait
     echo "deployed $host rank$i"
@@ -31,7 +31,7 @@ if [[ "${1:-}" == "start" ]]; then
   i=0
   for host in "${HOSTS[@]}"; do
     rt=/home/$host/sparkdata/$RUNTIME_NAME
-    ssh -o BatchMode=yes $host "cd $rt && export LD_LIBRARY_PATH=$rt/lib:\$LD_LIBRARY_PATH $NCCL_ENV SPARKPIPE_RELEASE_GENERATION=$GENERATION SPARKPIPE_RELEASE_GIT_COMMIT=$COMMIT SPARKPIPE_RELEASE_ID=qwen38-tp4-rank$i SPARK_QWEN36_STAGE_MTP=1 SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS=8 SPARK_QWEN36_SERVING_SPECULATE=1 SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT=2 && setsid -f bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index $i >/tmp/qwen38-tp4-rank$i.log 2>&1 </dev/null" &
+    ssh -o BatchMode=yes $host "cd $rt && export LD_LIBRARY_PATH=$rt/lib:\$LD_LIBRARY_PATH $NCCL_ENV SPARKPIPE_RELEASE_GENERATION=$GENERATION SPARKPIPE_RELEASE_GIT_COMMIT=$COMMIT SPARKPIPE_RELEASE_ID=qwen38-tp4-rank$i SPARK_QWEN38_27B_STAGE_MTP=1 SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS=8 SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT=2 && setsid -f bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index $i >/tmp/qwen38-tp4-rank$i.log 2>&1 </dev/null" &
     i=$((i+1))
   done
   wait

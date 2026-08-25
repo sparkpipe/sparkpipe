@@ -22,7 +22,7 @@
  * never a defaulted macro, so a module that disagrees with the pack format
  * fails to build instead of silently decoding garbage.
  *
- * Consumers today: qwen36, dsv4, mimo25 (from first line). The K3 module
+ * Consumers today: qwen38_27b, dsv4, mimo25 (from first line). The K3 module
  * retrofits onto this header at its PP v2 pass; until then the K3 copies of
  * these functions remain the audited originals this file was taken from.
  */

@@ -47,7 +47,7 @@ model.eval()
 
 # --- load our forward (from the parity harness) ---
 import importlib.util
-spec = importlib.util.spec_from_file_location("dp", "/tmp/qwen36_dflash2_vllm_input_parity.py")
+spec = importlib.util.spec_from_file_location("dp", "/tmp/qwen38_27b_dflash2_vllm_input_parity.py")
 dp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dp)
 dp.DEV = DEV

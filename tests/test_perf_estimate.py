@@ -75,7 +75,7 @@ def test_roadmap_b1_reproduction():
         # (B1, B8, B64, B256, B1024) tok/s/seq at 2K context, 13 nodes
         "k3": (20.8, 9.2, 2.45, 1.58, 1.11),
         "glm52": (53.6, 14.8, 4.24, 3.54, 3.01),
-        "qwen36": (56.4, 55.0, 45.7, 29.0, 11.8),
+        "qwen38_27b": (56.4, 55.0, 45.7, 29.0, 11.8),
         "dsv4_pro": (52.1, 21.6, 5.35, 3.53, 3.41),
         "dsv4_flash": (198.4, 82.7, 23.8, 18.7, 17.5),
         "mimo25": (184.7, 38.7, 10.4, 8.7, 7.6),
@@ -91,7 +91,7 @@ def test_roadmap_b1_reproduction():
 def test_crossovers():
     """roadmap:423-430 wall crossovers, exactly; the scan must land on the
     same batches the roadmap's arithmetic does."""
-    expected = {"k3": 258, "glm52": 320, "qwen36": 34, "dsv4_pro": 165,
+    expected = {"k3": 258, "glm52": 320, "qwen38_27b": 34, "dsv4_pro": 165,
                 "dsv4_flash": 130, "mimo25": 341}
     for name, want in expected.items():
         got = pe.crossover_batch(name, "ring13", "wall")
@@ -99,9 +99,9 @@ def test_crossovers():
     # At peak, only dense qwen crosses inside the served batch range.
     for name in pe.PERF:
         peak = pe.crossover_batch(name, "ring13", "peak")
-        if name == "qwen36":
+        if name == "qwen38_27b":
             check(peak is not None and 280 <= peak <= 320,
-                  f"qwen36 peak crossover {peak}, roadmap ~B294")
+                  f"qwen38_27b peak crossover {peak}, roadmap ~B294")
         else:
             check(peak is None or peak > 1024,
                   f"{name}: unexpected peak crossover at {peak}")

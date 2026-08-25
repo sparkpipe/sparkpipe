@@ -8,7 +8,7 @@ outside the module. Cited `file:line`; HEAD `3bc44f5`.
 
 | Bucket | Path | Per-token cost in shared code |
 | --- | --- | --- |
-| **adapter scheduling** | serving submit = validate → build frame → admit → `program->submit` (`spark_qwen36_serving_adapter.c:981-1030`); engine dispatch (`model_batch_engine.c:1973-2019`) | µs — no blocking call |
+| **adapter scheduling** | serving submit = validate → build frame → admit → `program->submit` (`spark_qwen38_27b_serving_adapter.c:981-1030`); engine dispatch (`model_batch_engine.c:1973-2019`) | µs — no blocking call |
 | **residentd IPC** | 2 socket round-trips: submit encode/write (`model_resident_client.c:124-147`), completion read (`149-170`); residentd writes completion (`model_residentd.c:2073-2101`) | µs — `poll(…,POLLIN/OUT,timeout)` returns on readiness |
 | **batch-tool event loop** | `SparkModelBatchRun`: Progress + `poll(…,10ms)` (`node/model_batch.c:519-527`) | ~0 latency (poll returns on completion; the 10 ms timeout is never hit at B1) |
 | **token emission** | per-token `fprintf(stdout,…)+fflush(stdout)` (`node/model_batch.c:316-388`, before this change: `311-329`) | **blocks on a slow stdout reader** |

@@ -166,7 +166,7 @@ tree speculation (798), three quantization backends, cublasLt integration.
 
 ## The real duplication is algorithmic, across families
 
-| algorithm | glm52 | dsv4 | qwen36 | k3 | mimo25 |
+| algorithm | glm52 | dsv4 | qwen38_27b | k3 | mimo25 |
 | --- | --- | --- | --- | --- | --- |
 | top-k | yes | yes | - | yes | yes |
 | sparse attention | yes | yes | - | - | - |

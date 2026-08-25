@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
   "model_revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1",
-  "stage_pack_path": "packs/tp4-rank3.qwen36sp",
+  "stage_pack_path": "packs/tp4-rank3.qwen38_27bsp",
   "max_sequence_positions": 8192
 }

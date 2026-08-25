@@ -5,7 +5,7 @@
 #include "sparkpipe/spark_dsv4_runtime_contract.h"
 #include "sparkpipe/spark_k3_runtime_contract.h"
 #include "sparkpipe/spark_model_runtime.h"
-#include "sparkpipe/spark_qwen36_runtime_contract.h"
+#include "sparkpipe/spark_qwen38_27b_runtime_contract.h"
 
 #define TEST_OPERATION_CAPACITY 256u
 
@@ -295,8 +295,8 @@ int main(void)
     const TestContractCase contract_cases[] =
     {
         {"kimi-k3",SparkK3RuntimeContract,SparkK3RuntimeValidateContract},
-        {"qwen-3.6-27b",SparkQwen36RuntimeContract,
-            SparkQwen36RuntimeValidateContract},
+        {"qwen-3.6-27b",SparkQwen38_27bRuntimeContract,
+            SparkQwen38_27bRuntimeValidateContract},
         {"deepseek-v4-flash",SparkDsv4FlashRuntimeContract,
             SparkDsv4FlashRuntimeValidateContract},
         {"deepseek-v4-pro",SparkDsv4ProRuntimeContract,

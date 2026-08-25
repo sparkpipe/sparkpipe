@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repack a qwen36 fp8 stage pack from FP8_E4M3_F32B128 (per-128x128-tile
+"""Repack a qwen38_27b fp8 stage pack from FP8_E4M3_F32B128 (per-128x128-tile
 FP32 scales) to FP8_E4M3_E8M0B128 (per-row e8m0 scales, one per 128-K group)
 - the scale layout the SM121 native block-scaled fp8 MMA path reads
   (SparkLmSm121ScaleB: neuron * (K/128) + k/128).
@@ -9,7 +9,7 @@ two (ratio in (0.5, 1], payloads shrink, no overflow) and every payload
 element is re-rounded to nearest E4M3. Usage-approved quantization trade:
 small per-element loss, tensor-core GEMMs in return.
 
-Usage: qwen36_stagepack_mx_repack.py <in.qwen36sp> <out.qwen36sp>
+Usage: qwen38_27b_stagepack_mx_repack.py <in.qwen38_27bsp> <out.qwen38_27bsp>
 """
 import struct
 import sys

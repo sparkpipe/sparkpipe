@@ -147,7 +147,7 @@ def main():
     # reconstruct the client token per round: round r's client = e_m of round r-1
     import re as _re
     rounds_all = []
-    diag_re = _re.compile(r"qwen36_spec_diag C0=(\d+) accepted=(\d+) drafts=\[([0-9,]+)\] emitted=\[([0-9,]+)\]")
+    diag_re = _re.compile(r"qwen38_27b_spec_diag C0=(\d+) accepted=(\d+) drafts=\[([0-9,]+)\] emitted=\[([0-9,]+)\]")
     for m in diag_re.finditer(open("/tmp/qwen38-tp1-o128cap.log", errors="replace").read()):
         rounds_all.append((int(m.group(2)), [int(t) for t in m.group(4).split(",")]))
     client_tok = {}

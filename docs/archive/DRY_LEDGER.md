@@ -93,7 +93,7 @@ chat template data, `spark_glm52_model.h`, everything in
 contradict the authoritative `inference/llms/kimi_k3/config.h` (2048 vs 3072
 intermediate, 71 vs 92 routed layers). Nothing included it. A wrong-constants
 header waiting to be included is the config-drift incident class, on a
-timer. `model-families/dsv4/`, `model-families/qwen36/` - stubs and a
+timer. `model-families/dsv4/`, `model-families/qwen38_27b/` - stubs and a
 work-control nothing called; the real models live in `inference/llms/`.
 
 ## Kernel-layer duplication (inference/llms)
