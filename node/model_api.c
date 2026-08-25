@@ -127,6 +127,7 @@ static void *api_worker(void *arg)
 			sub.output_token_budget = r->max_tokens;
 			sub.prompt_token_ids = r->prompt_tokens;
 			sub.prompt_token_count = r->prompt_count;
+			(void)SparkModelBatchEngineReopenAdmission(S.engine);
 			st = SparkModelBatchEngineSubmit(S.engine, &sub, &h);
 			if (st == SPARK_STATUS_OK)
 				r->submitted = 1;
