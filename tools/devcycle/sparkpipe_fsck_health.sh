@@ -29,6 +29,7 @@ ROOT_DEV="${SPARKPIPE_ROOT_DEV:-/dev/nvme0n1p2}"
 OUT_DIR="${SPARKPIPE_FSCK_OUT_DIR:-/var/lib/sparkpipe/fsck-health}"
 OUT_JSON="$OUT_DIR/last.json"
 E2FSCK_TIMEOUT="${SPARKPIPE_E2FSCK_TIMEOUT:-180}"
+FSTAB_PATH="${SPARKPIPE_FSTAB_PATH:-/etc/fstab}"
 TAG="sparkpipe_fsck_health"
 HOST="$(hostname -s 2>/dev/null || echo unknown)"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)"
@@ -108,29 +109,89 @@ while read -r dev mp fstype opts; do
     emit "data|$mp|$device|$fstype|skipped: device missing|"
     continue
   fi
-  if mountpoint -q "$mp" 2>/dev/null; then
-    if ! umount "$mp" 2>/dev/null; then
+  automount_unit=""
+  mount_unit=""
+  restore_error=""
+  was_mounted="false"
+  case ",$opts," in
+    *,x-systemd.automount,*) automount_configured="true" ;;
+    *) automount_configured="false" ;;
+  esac
+  if [ "$automount_configured" = "true" ]; then
+    if ! command -v systemd-escape >/dev/null 2>&1; then
+      emit "data|$mp|$device|$fstype|skipped: automount control unavailable|"
+      log "data $mp: skipped: automount control unavailable"
+      continue
+    fi
+    escaped_unit="$(systemd-escape --path "$mp" 2>/dev/null)"
+    if [ -z "$escaped_unit" ]; then
+      emit "data|$mp|$device|$fstype|skipped: automount unit unresolved|"
+      log "data $mp: skipped: automount unit unresolved"
+      continue
+    fi
+    automount_unit="$escaped_unit.automount"
+    mount_unit="$escaped_unit.mount"
+    if ! systemctl is-active --quiet "$automount_unit" 2>/dev/null; then
+      emit "data|$mp|$device|$fstype|skipped: automount inactive|"
+      log "data $mp: skipped: automount inactive"
+      continue
+    fi
+    if ! systemctl stop "$automount_unit" 2>/dev/null; then
+      emit "data|$mp|$device|$fstype|skipped: automount busy|"
+      log "data $mp: skipped: automount busy"
+      continue
+    fi
+    if systemctl is-active --quiet "$mount_unit" 2>/dev/null; then
+      if ! systemctl stop "$mount_unit" 2>/dev/null; then
+        systemctl start "$automount_unit" 2>/dev/null
+        emit "data|$mp|$device|$fstype|skipped: automount busy|"
+        log "data $mp: skipped: automount busy"
+        continue
+      fi
+    fi
+    if mountpoint -q "$mp" 2>/dev/null; then
+      systemctl start "$automount_unit" 2>/dev/null
+      emit "data|$mp|$device|$fstype|skipped: automount still mounted|"
+      log "data $mp: skipped: automount still mounted"
+      continue
+    fi
+  else
+    if mountpoint -q "$mp" 2>/dev/null; then
+      was_mounted="true"
+    fi
+    if [ "$was_mounted" = "true" ] && ! umount "$mp" 2>/dev/null; then
       emit "data|$mp|$device|$fstype|skipped: busy|"
       log "data $mp: skipped: busy"
       continue
     fi
-    fsck -f -y "$device" >/dev/null 2>&1
-    ec=$?
-    mount "$mp" 2>/dev/null || log "data $mp: WARNING remount failed"
-  else
-    fsck -f -y "$device" >/dev/null 2>&1
-    ec=$?
   fi
-  case "$ec" in
-    0) res="ok";;
-    1) res="errors-corrected";;
-    4) res="errors-left-uncorrected";;
-    8) res="operational-error";;
-    *) res="exit-$ec";;
-  esac
+  fsck -f -y "$device" >/dev/null 2>&1
+  ec=$?
+  if [ -n "$automount_unit" ]; then
+    if ! systemctl start "$automount_unit" 2>/dev/null; then
+      restore_error="automount-restart-failed"
+      log "data $mp: WARNING automount restart failed"
+    fi
+  elif [ "$was_mounted" = "true" ]; then
+    if ! mount "$mp" 2>/dev/null; then
+      restore_error="remount-failed"
+      log "data $mp: WARNING remount failed"
+    fi
+  fi
+  if [ -n "$restore_error" ]; then
+    res="$restore_error"
+  else
+    case "$ec" in
+      0) res="ok";;
+      1) res="errors-corrected";;
+      4) res="errors-left-uncorrected";;
+      8) res="operational-error";;
+      *) res="exit-$ec";;
+    esac
+  fi
   emit "data|$mp|$device|$fstype|$res|$ec"
   log "data $mp: $res (fsck exit $ec)"
-done < <(awk '!/^[[:space:]]*#/ && NF>=4 {print $1, $2, $3, $4}' /etc/fstab 2>/dev/null)
+done < <(awk '!/^[[:space:]]*#/ && NF>=4 {print $1, $2, $3, $4}' "$FSTAB_PATH" 2>/dev/null)
 
 # ---- write result -----------------------------------------------------------
 

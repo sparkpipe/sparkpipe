@@ -273,6 +273,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_tp4_pp4_stagepack.py \
 	tests/test_expert_grouping.py \
 	tests/test_ds4_parallel_pxe_rescue.py \
+	tests/test_sparkpipe_fsck_health_automount.py \
 	tests/test_production_selection_contract.py \
 	tests/test_gemm_k_alignment.py \
 	tests/test_glm52_dspark_manifest.py \
