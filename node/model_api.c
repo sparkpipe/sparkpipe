@@ -1,23 +1,22 @@
-/* model_api - the standard API entry point (2026-08-23).
+/* model_api — the production API entry point.
  *
- * The problem this solves: the only way to drive the model was
- * model_residentd's private IPC with hand-built batch JSON files, and
- * because EVERY caller dialed the daemon directly, concurrent clients
- * collided on the daemon's single-client slot/submission state (measured:
- * a second client's first claim -> INVALID_ARGUMENT) and dead sessions
- * poisoned resident slots ("all cells fail until restart").
+ * Architecture: one persistent engine session driven by a single worker
+ * thread; HTTP connection threads enqueue requests and wait on
+ * per-request condition variables. The daemon is single-client; the
+ * engine worker IS that client.
  *
- * The architecture: ONE long-lived engine session (the same client
- * library model_batch uses) owned by this process. External callers
- * speak OpenAI-style HTTP; every request multiplexes through the single
- * session, so there are no client collisions and no session churn.
+ *   HTTP callers (many)
+ *          |
+ *   [accept → parse → enqueue → wait on condvar]
+ *          |
+ *   [engine worker thread]
+ *     loop: dequeue → Submit → CloseAdmission
+ *           Progress + poll → events fire → signal waiting threads
  *
- * Endpoints (v0 - token-id in/out; text needs a tokenizer sidecar):
- *   GET  /health              -> {"status":"ok","completed":N}
- *   POST /v1/completions      -> {"prompt_token_ids":[...],"max_tokens":N}
- *      response: {"object":"text_completion","tokens":[...],"count":N}
- *   POST /v1/chat/completions -> same shape (chat template is the
- *      caller's job in v0: send the templated token ids)
+ * Endpoints:
+ *   GET  /health           → {"status":"ok","served":N}
+ *   POST /v1/completions   → {"prompt_token_ids":[...],"max_tokens":N}
+ *        → {"object":"text_completion","tokens":[...],"status":0}
  *
  * Build: make build/sparkpipe_model_api
  */
@@ -25,7 +24,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/wait.h>
 #include <pthread.h>
 #include <signal.h>
 #include <errno.h>
@@ -33,421 +31,459 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
-#define MODEL_API_MAX_BODY (8u * 1024u * 1024u)
-#define MODEL_API_MAX_PROMPT_TOKENS (260000u)
-#define MODEL_API_MAX_OUTPUT_TOKENS (8192u)
-#define MODEL_API_INFLIGHT 32u
+#define API_MAX_BODY		(8u * 1024u * 1024u)
+#define API_MAX_PROMPT_TOKENS	(260000u)
+#define API_MAX_OUTPUT_TOKENS	(8192u)
+#define API_TOKEN_BUF_BYTES	(64u * 1024u)
 
-typedef struct ModelApiRequest
+typedef struct ApiRequest
 {
-	uint64_t request_id;
-	uint32_t *token_ids;
-	uint32_t token_count;
+	uint64_t id;
+	uint32_t *prompt_tokens;
+	uint32_t prompt_count;
 	uint32_t max_tokens;
-	char response[48u * 1024u];
-	uint32_t response_length;
+	char tokens_json[API_TOKEN_BUF_BYTES];
+	volatile uint32_t tokens_json_len;
 	volatile int done;
 	volatile uint32_t status;
-} ModelApiRequest;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	struct ApiRequest *next;
+} ApiRequest;
 
-typedef struct ModelApiState
+typedef struct ApiState
 {
 	SparkModelBatchEngine *engine;
-	pthread_mutex_t mutex;
-	ModelApiRequest *inflight[MODEL_API_INFLIGHT];
-	volatile int stopping;
-	uint64_t next_request_id;
-	uint64_t completed;
-} ModelApiState;
+	pthread_mutex_t queue_mutex;
+	ApiRequest *queue_head;
+	ApiRequest *queue_tail;
+	volatile int running;
+	uint64_t next_id;
+	uint64_t served;
+} ApiState;
 
-static ModelApiState api_state;
-static const char *api_runtime_root = ".";
+static ApiState S;
 
-/* ---------------- engine events (called from EngineProgress) --------- */
+/* ===================== worker: engine driving ===================== */
 
-static void model_api_event(void *context,const SparkModelBatchEvent *event)
+static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 {
-	uint32_t index;
-	(void)context;
-	if ( event == 0 )
+	ApiRequest *r;
+	(void)ctx;
+	if (ev == 0)
 		return;
-	pthread_mutex_lock(&api_state.mutex);
-	for ( index = 0u; index < MODEL_API_INFLIGHT; index++ )
+	for (r = S.queue_head; r != 0; r = r->next)
 	{
-		ModelApiRequest *request = api_state.inflight[index];
-		if ( request == 0 || request->request_id != event->request_id )
+		if (r->id != ev->request_id)
 			continue;
-		if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN && request->response_length + 12u < sizeof(request->response) )
-			request->response_length += (uint32_t)snprintf(request->response + request->response_length,
-				sizeof(request->response) - request->response_length,"%s%u",
-				request->response_length != 0u ? "," : "",(unsigned)event->token_id);
-		if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ||
-			event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
+		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN &&
+			r->tokens_json_len + 12u < sizeof(r->tokens_json))
+			r->tokens_json_len += (uint32_t)snprintf(
+				r->tokens_json + r->tokens_json_len,
+				sizeof(r->tokens_json) - r->tokens_json_len,
+				"%s%u", r->tokens_json_len ? "," : "",
+				(unsigned)ev->token_id);
+		if (ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ||
+			ev->kind == SPARK_MODEL_BATCH_EVENT_ERROR)
 		{
-			request->status = event->status;
-			request->done = 1;
-			api_state.completed++;
+			pthread_mutex_lock(&r->mutex);
+			r->status = ev->status;
+			r->done = 1;
+			S.served++;
+			pthread_cond_signal(&r->cond);
+			pthread_mutex_unlock(&r->mutex);
 		}
-		break;
+		return;
 	}
-	pthread_mutex_unlock(&api_state.mutex);
 }
 
-/* ---------------- request execution on the single session ------------ */
-
-static uint32_t model_api_execute(ModelApiRequest *request)
+static void *api_worker(void *arg)
 {
-	/* PRAGMATIC v0: drive the proven model_batch tool as a subprocess.
-	 * The engine-direct path has a dispatch bug (the engine's Progress
-	 * loop doesn't send the submission to the daemon from this context).
-	 * model_batch works perfectly (24.5 tok/s, bit-identical) — we write
-	 * a temp batch file, run the tool, parse token events from stdout.
-	 * This gives us a WORKING API today; the engine-direct path is the
-	 * v1 optimization. */
-	char template_path[64];
-	char command[512];
-	FILE *batch_file;
-	FILE *output;
-	char line[1024];
-	uint32_t token;
-	int first = 1;
-	snprintf(template_path,sizeof(template_path),"/tmp/model_api_req_%llu.json",
-		(unsigned long long)request->request_id);
-	batch_file = fopen(template_path,"w");
-	if ( batch_file == 0 )
-		return(500u);
-	fprintf(batch_file,"{\"schema_version\":1,\"connect_timeout_ms\":30000,\n");
-	fprintf(batch_file," \"request_capacity\":1,\"max_context_tokens\":4096,\n");
-	fprintf(batch_file," \"max_prefill_rows_per_submission\":8,\n");
-	fprintf(batch_file," \"maximum_messages_per_rank_per_progress\":8,\n");
-	fprintf(batch_file," \"maximum_new_submissions_per_progress\":2,\n");
-	fprintf(batch_file," \"stop_token_ids\":[],\n");
-	fprintf(batch_file," \"requests\":[{\"request_id\":%llu,\"sequence_id\":%llu,\n",
-		(unsigned long long)request->request_id,(unsigned long long)request->request_id);
-	fprintf(batch_file,"   \"priority\":0,\"output_token_budget\":%u,\n",request->max_tokens);
-	fprintf(batch_file,"   \"prompt_token_ids\":[");
-	for ( uint32_t i = 0u; i < request->token_count; i++ )
-		fprintf(batch_file,"%s%u",i > 0u ? "," : "",request->token_ids[i]);
-	fprintf(batch_file,"]}]}\n");
-	fclose(batch_file);
-	snprintf(command,sizeof(command),
-		"cd %s && LD_LIBRARY_PATH=%s timeout 120 %s/bin/sparkpipe_model_batch "
-		"--deployment %s/config/model_resident.json --runtime-root %s --batch %s 2>/dev/null",
-		api_runtime_root,api_runtime_root,api_runtime_root,api_runtime_root,api_runtime_root,template_path);
-	output = popen(command,"r");
-	if ( output == 0 )
+	SparkModelResidentClientPollDescriptor fds[4];
+	struct pollfd pfds[4];
+	(void)arg;
+	while (S.running)
 	{
-		unlink(template_path);
-		return(500u);
-	}
-	while ( fgets(line,sizeof(line),output) != 0 )
-	{
-		/* parse token events: {"event":"token","token_id":N,...} */
-		const char *marker = strstr(line,"\"event\":\"token\"");
-		if ( marker == 0 )
-			continue;
-		const char *tid = strstr(marker,"\"token_id\":");
-		if ( tid == 0 )
-			continue;
-		token = (uint32_t)strtoul(tid + 11u,0,10);
-		if ( request->response_length + 12u < sizeof(request->response) )
+		/* submit any waiting request */
+		pthread_mutex_lock(&S.queue_mutex);
+		if (S.queue_head != 0 && !S.queue_head->done)
 		{
-			request->response_length += (uint32_t)snprintf(
-				request->response + request->response_length,
-				sizeof(request->response) - request->response_length,
-				"%s%u",first ? "" : ",",token);
-			first = 0;
+			ApiRequest *r = S.queue_head;
+			SparkModelBatchSubmitRequest sub;
+			SparkModelBatchRequestHandle h;
+			SparkStatus st;
+			memset(&sub, 0, sizeof(sub));
+			sub.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+			sub.descriptor_bytes = (uint32_t)sizeof(sub);
+			sub.request_id = r->id;
+			sub.sequence_id = r->id;
+			sub.output_token_budget = r->max_tokens;
+			sub.prompt_token_ids = r->prompt_tokens;
+			sub.prompt_token_count = r->prompt_count;
+			st = SparkModelBatchEngineSubmit(S.engine, &sub, &h);
+			if (st == SPARK_STATUS_OK)
+				(void)SparkModelBatchEngineCloseAdmission(S.engine);
+			else
+			{
+				r->status = (uint32_t)st;
+				r->done = 1;
+				pthread_cond_signal(&r->cond);
+			}
 		}
+		pthread_mutex_unlock(&S.queue_mutex);
+		/* drive the engine only when we have submitted work — calling
+		 * Progress/poll on a freshly-connected idle engine segfaults */
+		if (S.queue_head != 0)
+		{
+			(void)SparkModelBatchEngineProgress(S.engine, 4u);
+			{
+				uint32_t n = 0;
+				if (SparkModelBatchEngineGetPollDescriptors(
+					S.engine, fds, 4u, &n) == SPARK_STATUS_OK && n > 0)
+				{
+					uint32_t i;
+					for (i = 0; i < n; i++)
+					{
+						pfds[i].fd = fds[i].fd;
+						pfds[i].events = 0;
+						pfds[i].revents = 0;
+						if (fds[i].events & 1u)
+							pfds[i].events |= POLLIN;
+						if (fds[i].events & 2u)
+							pfds[i].events |= POLLOUT;
+					}
+					(void)poll(pfds, (nfds_t)n, 10);
+				}
+				else
+					usleep(1000);
+			}
+		}
+		else
+			usleep(5000);
 	}
-	{
-		int rc = pclose(output);
-		request->status = rc == 0 ? 0u : 1u;
-	}
-	unlink(template_path);
-	return(request->status == 0u ? 200u : 500u);
+	return 0;
 }
 
-/* ---------------- HTTP plumbing (minimal blocking server) ------------ */
+/* ===================== HTTP layer ===================== */
 
-static void model_api_send_all(int fd,const char *data,size_t bytes)
+static void send_all(int fd, const char *data, size_t len)
 {
-	size_t sent = 0u;
-	while ( sent < bytes )
+	size_t off = 0;
+	while (off < len)
 	{
-		ssize_t n = send(fd,data + sent,bytes - sent,MSG_NOSIGNAL);
-		if ( n <= 0 )
+		ssize_t n = send(fd, data + off, len - off, MSG_NOSIGNAL);
+		if (n <= 0)
 			return;
-		sent += (size_t)n;
+		off += (size_t)n;
 	}
 }
 
-static void model_api_respond(int fd,int code,const char *body)
+static void send_response(int fd, int code, const char *body)
 {
-	char header[160];
-	int written = snprintf(header,sizeof(header),
-		"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-		code,code == 200 ? "OK" : "Error",strlen(body));
-	if ( written > 0 )
-		model_api_send_all(fd,header,(size_t)written);
-	model_api_send_all(fd,body,strlen(body));
+	char hdr[192];
+	int n = snprintf(hdr, sizeof(hdr),
+		"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
+		"Content-Length: %zu\r\nConnection: close\r\n\r\n",
+		code, code == 200 ? "OK" : "Error", strlen(body));
+	if (n > 0)
+		send_all(fd, hdr, (size_t)n);
+	send_all(fd, body, strlen(body));
 }
 
-static int model_api_read_body(int fd,const char *header,char *body,uint32_t *body_length)
+static int read_http_request(int fd, char *method, size_t method_sz,
+	char *path, size_t path_sz, char **body, uint32_t *body_len)
 {
-	uint32_t content_length = 0u;
+	static __thread char buf[API_MAX_BODY + 8192];
+	size_t total = 0, header_end = 0;
+	uint32_t content_length = 0;
 	ssize_t n;
+	while (total < sizeof(buf) - 1)
 	{
-		const char *cl = strstr(header,"Content-Length:");
-		if ( cl != 0 )
-			content_length = (uint32_t)strtoul(cl + 15u,0,10);
+		n = recv(fd, buf + total, sizeof(buf) - 1 - total, 0);
+		if (n <= 0)
+			return 0;
+		total += (size_t)n;
+		buf[total] = '\0';
+		{
+			char *end = strstr(buf, "\r\n\r\n");
+			if (end != 0)
+			{
+				header_end = (size_t)(end - buf) + 4u;
+				break;
+			}
+		}
 	}
-	if ( content_length == 0u || content_length > MODEL_API_MAX_BODY )
-		return(0);
-	while ( *body_length < content_length )
+	if (header_end == 0)
+		return 0;
 	{
-		n = recv(fd,body + *body_length,content_length - *body_length,0);
-		if ( n <= 0 )
-			return(0);
-		*body_length += (uint32_t)n;
+		char *sp1 = strchr(buf, ' ');
+		char *sp2;
+		if (sp1 == 0)
+			return 0;
+		sp2 = strchr(sp1 + 1, ' ');
+		if (sp2 == 0)
+			return 0;
+		{
+			size_t ml = (size_t)(sp1 - buf);
+			if (ml >= method_sz) ml = method_sz - 1;
+			memcpy(method, buf, ml); method[ml] = '\0';
+		}
+		{
+			size_t pl = (size_t)(sp2 - sp1 - 1);
+			if (pl >= path_sz) pl = path_sz - 1;
+			memcpy(path, sp1 + 1, pl); path[pl] = '\0';
+		}
 	}
-	body[*body_length] = '\0';
-	return(1);
+	{
+		char *cl = strcasestr(buf, "Content-Length:");
+		if (cl != 0)
+			content_length = (uint32_t)strtoul(cl + 15, 0, 10);
+	}
+	if (content_length == 0 || content_length > API_MAX_BODY)
+		return 0;
+	while (total < header_end + content_length)
+	{
+		n = recv(fd, buf + total, header_end + content_length - total, 0);
+		if (n <= 0)
+			return 0;
+		total += (size_t)n;
+	}
+	*body = buf + header_end;
+	*body_len = content_length;
+	return 1;
 }
 
-static uint32_t model_api_tokens_from_json(SparkJsonDocument *document,int32_t root,
-	const char *name,uint32_t **tokens_out)
+static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
+	const char *name, uint32_t **out)
 {
-	int32_t member,index;
-	uint32_t value,count;
+	int32_t m = SparkJsonFindObjectMember(doc, root, name);
+	uint32_t count, i;
 	uint32_t *tokens;
-	member = SparkJsonFindObjectMember(document,root,name);
-	if ( member < 0 || !SparkJsonTokenIsType(document,member,SPARK_JSON_TOKEN_ARRAY) )
-		return(0u);
-	count = (uint32_t)SparkJsonGetArrayElementCount(document,member);
-	if ( count == 0u || count > MODEL_API_MAX_PROMPT_TOKENS )
-		return(0u);
-	tokens = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
-	if ( tokens == 0 )
-		return(0u);
-	for ( index = 0u; index < (int32_t)count; index++ )
-		if ( SparkJsonGetUInt32(document,SparkJsonGetArrayElement(document,member,index),&value) != SPARK_STATUS_OK ||
-			value > 260000u )
+	if (m < 0 || !SparkJsonTokenIsType(doc, m, SPARK_JSON_TOKEN_ARRAY))
+		return 0;
+	count = (uint32_t)SparkJsonGetArrayElementCount(doc, m);
+	if (count == 0 || count > API_MAX_PROMPT_TOKENS)
+		return 0;
+	tokens = malloc((size_t)count * sizeof(uint32_t));
+	if (tokens == 0)
+		return 0;
+	for (i = 0; i < count; i++)
+	{
+		uint32_t v;
+		if (SparkJsonGetUInt32(doc,
+			SparkJsonGetArrayElement(doc, m, (int32_t)i), &v)
+			!= SPARK_STATUS_OK || v > 260000)
 		{
 			free(tokens);
-			return(0u);
+			return 0;
 		}
-		else
-			tokens[index] = value;
-	*tokens_out = tokens;
-	return(count);
+		tokens[i] = v;
+	}
+	*out = tokens;
+	return count;
 }
 
-static void model_api_handle_completions(int fd,char *body,uint32_t body_bytes)
+static void handle_completion(int fd, char *body, uint32_t body_len)
 {
-	SparkJsonDocument document;
-	int32_t root;
-	uint32_t *prompt = 0;
-	uint32_t prompt_count = 0u,max_tokens = 32u;
-	ModelApiRequest *request;
-	uint32_t code;
-	char *response;
-	if ( SparkJsonParseText(body,body_bytes,&document) != SPARK_STATUS_OK )
+	SparkJsonDocument doc;
+	int32_t root, mt;
+	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
+	ApiRequest *req;
+	char *resp;
+	if (SparkJsonParseText(body, body_len, &doc) != SPARK_STATUS_OK)
 	{
-		model_api_respond(fd,400,"{\"error\":\"invalid json\"}");
+		send_response(fd, 400, "{\"error\":\"invalid json\"}");
 		return;
 	}
-	root = SparkJsonGetRootToken(&document);
-	prompt_count = model_api_tokens_from_json(&document,root,"prompt_token_ids",&prompt);
-	if ( root >= 0 && prompt_count != 0u )
+	root = SparkJsonGetRootToken(&doc);
+	if (root >= 0)
+		prompt_len = parse_token_array(&doc, root, "prompt_token_ids", &prompt);
+	mt = SparkJsonFindObjectMember(&doc, root, "max_tokens");
+	if (mt >= 0)
 	{
-		int32_t member = SparkJsonFindObjectMember(&document,root,"max_tokens");
-		uint32_t value;
-		if ( member >= 0 && SparkJsonGetUInt32(&document,member,&value) == SPARK_STATUS_OK && value != 0u )
-			max_tokens = value > MODEL_API_MAX_OUTPUT_TOKENS ? MODEL_API_MAX_OUTPUT_TOKENS : value;
+		uint32_t v;
+		if (SparkJsonGetUInt32(&doc, mt, &v) == SPARK_STATUS_OK && v > 0)
+			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
 	}
-	if ( prompt_count == 0u )
+	SparkJsonDocumentDestroy(&doc);
+	if (prompt_len == 0)
 	{
-		SparkJsonDocumentDestroy(&document);
-		model_api_respond(fd,400,"{\"error\":\"prompt_token_ids required (v0: token-id in/out)\"}");
+		send_response(fd, 400, "{\"error\":\"prompt_token_ids required\"}");
 		return;
 	}
-	request = (ModelApiRequest *)calloc(1u,sizeof(*request));
-	if ( request == 0 )
+	req = calloc(1, sizeof(*req));
+	if (req == 0)
 	{
 		free(prompt);
-		SparkJsonDocumentDestroy(&document);
-		model_api_respond(fd,500,"{\"error\":\"out of memory\"}");
+		send_response(fd, 500, "{\"error\":\"oom\"}");
 		return;
 	}
-	request->request_id = ++api_state.next_request_id + 100000u;
-	request->token_ids = prompt;
-	request->token_count = prompt_count;
-	request->max_tokens = max_tokens;
-	code = model_api_execute(request);
-	response = (char *)malloc(request->response_length + 128u);
-	if ( response != 0 )
+	pthread_mutex_init(&req->mutex, 0);
+	pthread_cond_init(&req->cond, 0);
+	pthread_mutex_lock(&S.queue_mutex);
+	req->id = ++S.next_id + 100000;
+	req->prompt_tokens = prompt;
+	req->prompt_count = prompt_len;
+	req->max_tokens = max_tokens;
+	if (S.queue_tail != 0)
+		S.queue_tail->next = req;
+	else
+		S.queue_head = req;
+	S.queue_tail = req;
+	pthread_mutex_unlock(&S.queue_mutex);
+	pthread_mutex_lock(&req->mutex);
+	while (!req->done && S.running)
+		pthread_cond_wait(&req->cond, &req->mutex);
+	pthread_mutex_unlock(&req->mutex);
+	resp = malloc(req->tokens_json_len + 128);
+	if (resp != 0)
 	{
-		(void)snprintf(response,request->response_length + 128u,
+		(void)snprintf(resp, req->tokens_json_len + 128,
 			"{\"object\":\"text_completion\",\"tokens\":[%s],\"status\":%u}",
-			request->response,request->status);
-		model_api_respond(fd,code == 200u ? 200 : 500,response[0] != 0 ? response : "{}");
-		free(response);
+			req->tokens_json, req->status);
+		send_response(fd, req->status == 0 ? 200 : 500, resp);
+		free(resp);
 	}
 	else
-		model_api_respond(fd,500,"{\"error\":\"out of memory\"}");
-	free(request->token_ids);
-	free(request);
-	SparkJsonDocumentDestroy(&document);
+		send_response(fd, 500, "{\"error\":\"oom\"}");
+	/* dequeue */
+	pthread_mutex_lock(&S.queue_mutex);
+	{
+		ApiRequest **pp = &S.queue_head;
+		while (*pp != 0)
+		{
+			if (*pp == req)
+			{
+				*pp = req->next;
+				if (S.queue_tail == req)
+					S.queue_tail = 0;
+				break;
+			}
+			pp = &(*pp)->next;
+		}
+	}
+	pthread_mutex_unlock(&S.queue_mutex);
+	free(req->prompt_tokens);
+	pthread_mutex_destroy(&req->mutex);
+	pthread_cond_destroy(&req->cond);
+	free(req);
 }
 
-static void *model_api_connection(void *context)
+static void *api_connection(void *arg)
 {
-	int fd = (int)(intptr_t)context;
-	char header[8192];
-	uint32_t header_bytes = 0u;
-	ssize_t n;
+	int fd = (int)(intptr_t)arg;
+	char method[8], path[128];
 	char *body = 0;
-	uint32_t body_bytes = 0u;
-	int is_get = 0,is_post = 0;
-	while ( header_bytes + 1u < sizeof(header) )
+	uint32_t body_len = 0;
+	int on = 1;
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+	if (!read_http_request(fd, method, sizeof(method), path, sizeof(path),
+		&body, &body_len))
 	{
-		n = recv(fd,header + header_bytes,1u,0);
-		if ( n <= 0 )
-			break;
-		header_bytes += (uint32_t)n;
-		if ( header_bytes >= 4u && memcmp(header + header_bytes - 4u,"\r\n\r\n",4u) == 0 )
-			break;
-	}
-	if ( header_bytes == 0u )
-	{
+		send_response(fd, 400, "{\"error\":\"bad request\"}");
 		close(fd);
-		return(0);
+		return 0;
 	}
-	header[header_bytes] = '\0';
-	is_get = header_bytes > 4u && memcmp(header,"GET ",4u) == 0;
-	is_post = header_bytes > 5u && memcmp(header,"POST ",5u) == 0;
-	if ( is_get && strstr(header,"/health") != 0 )
+	if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
-		char payload[96u];
-		(void)snprintf(payload,sizeof(payload),"{\"status\":\"ok\",\"completed\":%llu}",
-			(unsigned long long)api_state.completed);
-		model_api_respond(fd,200,payload);
-		close(fd);
-		return(0);
+		char b[96];
+		(void)snprintf(b, sizeof(b), "{\"status\":\"ok\",\"served\":%llu}",
+			(unsigned long long)S.served);
+		send_response(fd, 200, b);
 	}
-	if ( !is_post || (strstr(header,"/v1/completions") == 0 && strstr(header,"/v1/chat/completions") == 0) )
-	{
-		model_api_respond(fd,404,"{\"error\":\"see /health, POST /v1/completions\"}");
-		close(fd);
-		return(0);
-	}
-	body = (char *)malloc(MODEL_API_MAX_BODY + 1u);
-	if ( body != 0 && model_api_read_body(fd,header,body,&body_bytes) )
-		model_api_handle_completions(fd,body,body_bytes);
+	else if (strcmp(method, "POST") == 0 &&
+		(strcmp(path, "/v1/completions") == 0 ||
+		 strcmp(path, "/v1/chat/completions") == 0))
+		handle_completion(fd, body, body_len);
 	else
-		model_api_respond(fd,400,"{\"error\":\"body read failed\"}");
-	free(body);
+		send_response(fd, 404, "{\"error\":\"not found\"}");
 	close(fd);
-	return(0);
+	return 0;
 }
 
-int main(int argc,char **argv)
+int main(int argc, char **argv)
 {
-	const char *deployment_path = 0;
-	const char *runtime_root = 0;
-	const char *listen_port = "8080";
-	SparkModelResidentDeployment deployment;
-	SparkModelBatchEngineConfiguration configuration;
-	int server_fd;
-	int index;
-	for ( index = 1; index < argc; index++ )
+	const char *dep_path = 0, *root = 0, *port_s = "8080";
+	SparkModelResidentDeployment dep;
+	SparkModelBatchEngineConfiguration cfg;
+	pthread_t worker;
+	int srv, i;
+	for (i = 1; i < argc; i++)
 	{
-		if ( strcmp(argv[index],"--deployment") == 0 && index + 1 < argc )
-			deployment_path = argv[++index];
-		else if ( strcmp(argv[index],"--runtime-root") == 0 && index + 1 < argc )
-			runtime_root = argv[++index];
-		else if ( strcmp(argv[index],"--port") == 0 && index + 1 < argc )
-			listen_port = argv[++index];
+		if (!strcmp(argv[i], "--deployment") && i + 1 < argc)
+			dep_path = argv[++i];
+		else if (!strcmp(argv[i], "--runtime-root") && i + 1 < argc)
+			root = argv[++i];
+		else if (!strcmp(argv[i], "--port") && i + 1 < argc)
+			port_s = argv[++i];
 	}
-	if ( deployment_path == 0 || runtime_root == 0 )
+	if (dep_path == 0 || root == 0)
 	{
-		fprintf(stderr,"usage: %s --deployment PATH --runtime-root PATH [--port N]\n",argv[0]);
-		return(1);
+		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--port N]\n", argv[0]);
+		return 1;
 	}
-	SparkModelResidentDeploymentReset(&deployment);
-	if ( SparkModelResidentDeploymentLoad(deployment_path,&deployment) != SPARK_STATUS_OK )
+	SparkModelResidentDeploymentReset(&dep);
+	if (SparkModelResidentDeploymentLoad(dep_path, &dep) != SPARK_STATUS_OK)
 	{
-		fprintf(stderr,"model_api: deployment load failed: %s\n",deployment_path);
-		return(1);
+		fprintf(stderr, "model_api: deployment load failed\n");
+		return 1;
 	}
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
-	configuration.descriptor_bytes = (uint32_t)sizeof(configuration);
-	configuration.deployment = &deployment;
-	configuration.runtime_root = runtime_root;
-	configuration.request_capacity = 2u;
-	configuration.max_context_tokens = 4096u;
-	configuration.max_prefill_rows_per_submission = 8u;
-	configuration.connect_timeout_ms = 30000u;
-	configuration.maximum_messages_per_rank_per_progress = 16u;
-	configuration.event_function = model_api_event;
-	configuration.event_context = 0;
-	if ( SparkModelBatchEngineConnect(&configuration,&api_state.engine) != SPARK_STATUS_OK )
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	cfg.descriptor_bytes = (uint32_t)sizeof(cfg);
+	cfg.deployment = &dep;
+	cfg.runtime_root = root;
+	cfg.request_capacity = 2;
+	cfg.max_context_tokens = 4096;
+	cfg.max_prefill_rows_per_submission = 8;
+	cfg.connect_timeout_ms = 30000;
+	cfg.maximum_messages_per_rank_per_progress = 8;
+	cfg.event_function = api_event;
+	cfg.event_context = 0;
+	if (SparkModelBatchEngineConnect(&cfg, &S.engine) != SPARK_STATUS_OK)
 	{
-		fprintf(stderr,"model_api: engine connect failed (is the daemon up?)\n");
-		return(1);
+		fprintf(stderr, "model_api: engine connect failed (daemon up?)\n");
+		return 1;
 	}
-	/* AUTO-CONFIGURE from the adapter descriptor: the caller never sets
-	 * shapes, batch widths, or context limits. The deployment declares
-	 * maximum capability; this process runs at that capability. */
+	signal(SIGPIPE, SIG_IGN);
+	pthread_mutex_init(&S.queue_mutex, 0);
+	S.running = 1;
+	pthread_create(&worker, 0, api_worker, 0);
 	{
-		const SparkModelServingAdapterDescriptor *descriptor =
-			SparkModelBatchEngineGetAdapterDescriptor(api_state.engine);
-		if ( descriptor != 0 )
-			fprintf(stderr,"model_api: auto-configured from descriptor: max_active=%u max_input_rows=%u max_resident=%u\n",
-				descriptor->max_active_sequence_count,
-				descriptor->max_input_row_count,
-				descriptor->max_resident_sequence_count);
-	}
-	api_runtime_root = runtime_root;
-	signal(SIGPIPE,SIG_IGN);
-	{
-		struct sockaddr_in address;
-		int enabled = 1;
-		server_fd = socket(AF_INET,SOCK_STREAM,0);
-		(void)setsockopt(server_fd,SOL_SOCKET,SO_REUSEADDR,&enabled,sizeof(enabled));
-		memset(&address,0,sizeof(address));
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = htonl(INADDR_ANY);
-		address.sin_port = htons((uint16_t)strtoul(listen_port,0,10));
-		if ( bind(server_fd,(struct sockaddr *)&address,sizeof(address)) != 0 ||
-			listen(server_fd,64) != 0 )
+		struct sockaddr_in addr;
+		int on = 1;
+		srv = socket(AF_INET, SOCK_STREAM, 0);
+		(void)setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = htonl(INADDR_ANY);
+		addr.sin_port = htons((uint16_t)strtoul(port_s, 0, 10));
+		if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+			listen(srv, 128) != 0)
 		{
-			fprintf(stderr,"model_api: listen failed on port %s: %s\n",listen_port,strerror(errno));
-			return(1);
+			fprintf(stderr, "model_api: listen %s: %s\n", port_s, strerror(errno));
+			return 1;
 		}
 	}
-	fprintf(stderr,"model_api ready port=%s (single engine session - the ONLY daemon client)\n",listen_port);
-	for ( ;; )
+	fprintf(stderr, "model_api ready port=%s (single session, worker-driven)\n", port_s);
+	for (;;)
 	{
-		int client_fd = accept(server_fd,0,0);
-		pthread_t thread;
-		if ( client_fd < 0 )
+		int cfd = accept(srv, 0, 0);
+		pthread_t t;
+		if (cfd < 0)
 			continue;
-		{
-			int enabled = 1;
-			(void)setsockopt(client_fd,IPPROTO_TCP,TCP_NODELAY,&enabled,sizeof(enabled));
-		}
-		if ( pthread_create(&thread,0,model_api_connection,(void *)(intptr_t)client_fd) == 0 )
-			pthread_detach(thread);
+		if (pthread_create(&t, 0, api_connection, (void *)(intptr_t)cfd) == 0)
+			pthread_detach(t);
 		else
-			close(client_fd);
+			close(cfd);
 	}
-	(void)SparkModelBatchEngineDestroy(api_state.engine);
-	return(0);
+	S.running = 0;
+	(void)SparkModelBatchEngineDestroy(S.engine);
+	return 0;
 }
