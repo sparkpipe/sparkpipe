@@ -1,0 +1,9 @@
+[Unit]
+Description=Start optional Ceph warm storage after the OS is recoverable
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start --no-block ceph.target
+TimeoutStartSec=15

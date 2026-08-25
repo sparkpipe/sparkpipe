@@ -1,0 +1,10 @@
+[Unit]
+Description=Defer optional Ceph warm storage until after boot
+
+[Timer]
+OnBootSec=60
+Unit=ds4-optional-storage.service
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

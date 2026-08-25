@@ -1,0 +1,13 @@
+[Unit]
+Description=DS4 single-switch 100G fabric address
+After=NetworkManager.service
+Wants=NetworkManager.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ds4-switched-fabric-apply
+RemainAfterExit=yes
+TimeoutStartSec=60
+Restart=on-failure
+RestartSec=30
