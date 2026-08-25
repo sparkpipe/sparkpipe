@@ -258,8 +258,8 @@
     },
     {
       "path": "docs/INCIDENT_RECOVERY_PLAYBOOK.md",
-      "sha256": "fc1fa21e06797b03f02a72628d17a0f500e14ce3a83d8f976c59f1f1e1595f2f",
-      "size_bytes": 8045
+      "sha256": "cd55b6e9717d15d4b1195d9190ad5caf2350b7972fd9e076f3bf60018db2e65d",
+      "size_bytes": 8065
     },
     {
       "path": "docs/JIT_KV_DESIGN.md",
@@ -5178,8 +5178,8 @@
     },
     {
       "path": "tests/test_ds4_spark_brickproof.py",
-      "sha256": "5070647ef284e60a7393ac390417d2b5145b9b753155ff66ffa3f9e403dc2ead",
-      "size_bytes": 17908
+      "sha256": "f9c0586f5378d7f81fb289863518696cb7ed319daf14bb3418a05f9efd5371de",
+      "size_bytes": 18593
     },
     {
       "path": "tests/test_dspark_drafter_pin.c",
@@ -6183,8 +6183,8 @@
     },
     {
       "path": "tools/devcycle/ds4_spark_brickproof.py",
-      "sha256": "bb7b79bd6eaf387b0c816a6e5ba5c5449637b972cdc2e8fc6106762fe1034ab9",
-      "size_bytes": 54610
+      "sha256": "cb777f2dde87009a3249ef2cbeba7ca848d016fb840743dec5d3499e7f595178",
+      "size_bytes": 55338
     },
     {
       "path": "tools/devcycle/dsv4_pro_ga_migration.md",
@@ -7065,5 +7065,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 25351869
+  "total_bytes": 25353302
 }

@@ -157,10 +157,10 @@ precheck clear, apply performs the complete quarantine:
 - mask the canonical package units and every discovered Ceph service/target
 - preserve `/var/lib/ceph`, `/etc/ceph`, OSD devices, and installed packages
 
-The audit rejects any active Ceph unit or process, startup link, non-mask Ceph
-systemd artifact, unmasked Ceph unit, legacy marker, or obsolete SparkPipe
-optional-storage file. Re-enabling Ceph requires a separate tested design and
-deployment; it is not a fleet-recovery operation.
+The audit rejects any active Ceph unit, process, or labeled container, startup
+link, non-mask Ceph systemd artifact, unmasked Ceph unit, legacy marker, or
+obsolete SparkPipe optional-storage file. Re-enabling Ceph requires a separate
+tested design and deployment; it is not a fleet-recovery operation.
 
 ## Fleet-duty acceptance
 

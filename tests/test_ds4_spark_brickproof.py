@@ -190,6 +190,15 @@ Boot0002* ubuntu HD(1,GPT,def)
         self.assertIsNotNone(matcher.search("124 python3 /usr/sbin/ceph-crash"))
         self.assertIsNone(matcher.search("125 python3 audit-ceph-state.py"))
 
+    def test_ceph_container_query_is_labeled_and_fail_closed(self) -> None:
+        with mock.patch.object(MODULE.shutil,"which",return_value="/usr/bin/podman"), \
+                mock.patch.object(MODULE,"command",return_value="abc:ceph-osd:Up") as query:
+            self.assertEqual(MODULE.active_ceph_containers(),["abc:ceph-osd:Up"])
+        query.assert_called_once_with([
+            "podman","ps","--filter=label=ceph=True",
+            "--format={{.ID}}:{{.Names}}:{{.Status}}",
+        ])
+
     def test_remove_path_handles_ceph_dropin_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ceph-osd@.service.d"
@@ -217,6 +226,7 @@ Boot0002* ubuntu HD(1,GPT,def)
             with mock.patch.object(MODULE,"ceph_unit_file_states",return_value={"ceph-old@.service":"enabled"}), \
                     mock.patch.object(MODULE,"active_ceph_units",side_effect=[["ceph-old@osd.4.service"],[]]), \
                     mock.patch.object(MODULE,"active_ceph_processes",return_value=[]), \
+                    mock.patch.object(MODULE,"active_ceph_containers",return_value=[]), \
                     mock.patch.object(MODULE,"disable_persistent_unit"), \
                     mock.patch.object(MODULE,"run",side_effect=record):
                 MODULE.remove_ceph_startup([],root,marker)
@@ -256,6 +266,7 @@ Boot0002* ubuntu HD(1,GPT,def)
     def test_apply_restarts_emergency_ssh_and_always_rebuilds_initramfs(self) -> None:
         source = SCRIPT.read_text()
         self.assertIn('run(["systemctl","restart","ssh-emergency.service"])',source)
+        self.assertIn('run(["systemctl","reset-failed","user@0.service"],check=False)',source)
         self.assertIn('run(["update-initramfs",mode,"-k",release],timeout=600)',source)
         self.assertIn('line.endswith("/.ssh/authorized_keys")',source)
 
