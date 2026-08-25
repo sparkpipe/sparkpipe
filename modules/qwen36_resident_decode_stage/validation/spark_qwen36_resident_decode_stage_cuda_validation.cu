@@ -33,7 +33,12 @@
 #define SPARK_QWEN36_VALIDATION_PREFILL_TOKENS 8u
 #define SPARK_QWEN36_VALIDATION_CHUNK_TOKENS 128u
 #define SPARK_QWEN36_VALIDATION_ATTN_TOKENS 5u
-#define SPARK_QWEN36_VALIDATION_KV_LANES 8u
+/* KV table lanes must match the module's max_active_sequence_count
+ * (the module validates lane_count == its own max). Use the firmware
+ * header's build-time value, not a hardcoded 8 — this was the B16
+ * validation failure: the module at B16 expected lane_count=16 but
+ * the validator always supplied 8. */
+#define SPARK_QWEN36_VALIDATION_KV_LANES SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES
 
 #define SPARK_QWEN36_DK SPARK_QWEN36_MODEL_GDN_HEAD_KEY_DIMENSION
 #define SPARK_QWEN36_DV SPARK_QWEN36_MODEL_GDN_HEAD_VALUE_DIMENSION
