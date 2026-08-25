@@ -1,0 +1,8 @@
+{
+"receipt": "tp4_b1_20260825_dflash2_baseline STEP1 no-spec reproduction",
+"date": "2026-08-25T17:55:00-07:00", "runtime": "/tmp/dsv4-integrated-lean-3d962820-runtime", "driver_sha256": "4675e35fa5a20349ecec0c2714621c909d8db793bf53968fb2f9c21e7c2d9a78",
+"pinned_hashes": {"o24": "6f2cfd844a2c296feaf9dd05a04d7888b87c906dcfee947d5cc6de28f541e538", "o128": "a9385d0b296ca083e577e715d2f6335067691dce0e0dd5ab1394a102a3d3631f"},
+"runs": {"gate24_o24": {"exact": true, "decode_tokens_per_second": 40.267}, "o128_r1": {"exact": true, "decode_tokens_per_second": 40.650}, "o128_r2": {"exact": true, "decode_tokens_per_second": 40.798}, "o128_r3": {"exact": true, "decode_tokens_per_second": 40.612}},
+"o128_mean_tokens_per_second": 40.687, "milestone_reference": 40.67,
+"fleet_state": "lean control residentd up on spark4/5/6/7 rank0-3, driver 4675e35f on all ranks; no other GPU work in band",
+"window": "opened 17:57:30 reclaiming stale 17:46:25 lane-F window; closed after r3", "lane": "F-flash-dflash2 attempt 8"}

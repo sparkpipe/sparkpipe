@@ -1,6 +1,0 @@
-{
-  "schema_version": 3,
-  "model_revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1",
-  "stage_pack_path": "tests/fixtures/qwen36-stage.qwen36sp",
-  "max_sequence_positions": 4096
-}

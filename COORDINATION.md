@@ -144,10 +144,10 @@ include its output with receipts.
 The Qwen line is **3.8**: Qwen 3.8 Max (`Qwen/Qwen3.8-2.4T-A95B`) and
 Qwen 3.8 27B, which replaces Qwen 3.6 27B.
 
-- `model-families/qwen36`, `modules/qwen36_resident_decode_stage`,
-  `tools/qwen36_stagepack.py`, and the `qwen36_27b_bf16` must-work
+- `model-families/qwen38_27b`, `modules/qwen38_27b_resident_decode_stage`,
+  `tools/qwen38_27b_stagepack.py`, and the `qwen38_27b_27b_bf16` must-work
   target are frozen as deprecated. No new 3.6-specific qualification work.
-- `model_contracts/must_work_targets.json`: replace `qwen36_27b_bf16`
+- `model_contracts/must_work_targets.json`: replace `qwen38_27b_27b_bf16`
   with the Qwen 3.8 27B target (exact checkpoint id + revision pinned from
   the checkpoint; update `tests/test_must_work_targets.py` in the same
   PR). This is a gate-breaking change; land it in one PR.
@@ -157,7 +157,7 @@ Qwen 3.8 27B, which replaces Qwen 3.6 27B.
 - The `qwen27b` fleet-registry entry already points at a
   `qwen38.bf16.pp16` runtime root. Finish that migration: owner,
   runtime_root, pack dir, and ports.
-- The qwen36 TP4 phase-2 plan (PR #661) re-bases to the 3.8 27B
+- The qwen38_27b TP4 phase-2 plan (PR #661) re-bases to the 3.8 27B
   checkpoint. 3.6 measurements stay as datapoints, not release evidence.
 - `qualification/ds4_eval`: drop the Qwen 3.6-27B-FP8 reference profile;
   the replacement profile is Qwen 3.8 27B.

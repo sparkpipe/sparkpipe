@@ -1370,6 +1370,25 @@ static void SparkModelResidentdCloseClientLocked(
 	if ( live_lease != 0u && SparkModelResidentdStop == 0 )
 		SparkModelResidentdFailLocked(runtime,SPARK_STATUS_IO_ERROR,
 			SPARK_MODEL_RESIDENTD_FAILURE_CLIENT_LEASE_DISCONNECT,0);
+	/* Session-death slot unbind (the fragility fix): a client that dies
+	 * mid-request (timeouts, kills, crashes - every harness does it) never
+	 * sends its RELEASE submissions, and bound slots then reject every new
+	 * client's claims under the REQUIRES_RELEASE contract (INVALID_ARGUMENT,
+	 * one poisoned slot per dead request - measured as "all cells fail
+	 * until daemon restart"). The daemon is single-client: when the session
+	 * ends, ALL lane bindings belong to it. Clear them so the next client
+	 * starts clean. Prefix-cache block pins are refcounted separately and
+	 * are unaffected. */
+	if ( runtime->sequence_slots != 0 )
+		for (index=0u; index<runtime->runtime_limits.resident_sequence_capacity;
+			index++)
+		{
+			runtime->sequence_slots[index].bound = 0u;
+			runtime->sequence_slots[index].request_id = 0u;
+			runtime->sequence_slots[index].request_generation = 0u;
+			runtime->sequence_slots[index].sequence_id = 0u;
+			runtime->sequence_slots[index].active_owner = 0u;
+		}
 	if ( runtime->client.fd >= 0 )
 		close(runtime->client.fd);
 	runtime->client.fd = -1;
@@ -1833,6 +1852,11 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		else
 			status = resolution_status;
 	}
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"model_residentd submission_rejected status=%u id=%llu kind=%u rows=%u lanes=%u last_id=%llu\n",
+			(uint32_t)status,(unsigned long long)submission.submission_id,submission.work_kind,
+			submission.row_count,submission.active_sequence_count,
+			(unsigned long long)runtime->client.last_submission_id);
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route != 0 && status == SPARK_STATUS_OK && cache_committed != 0u &&
 		decision_required == 0u )

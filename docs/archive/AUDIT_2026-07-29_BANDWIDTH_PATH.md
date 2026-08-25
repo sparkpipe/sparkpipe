@@ -132,5 +132,5 @@ estimate and the balanced builder does the rest. test_uniform_profile_
 admit proves it with qwen's dense geometry {64,64} - decode ADMITTED,
 thirteen balanced stages. K2 is closed for K3 and qwen alike; both now
 wait only on their execute rungs. Speed model for qwen BF16 lives in
-docs/QWEN36_BF16_SPEED.md. Dense geometry convention: first_routed ==
+docs/QWEN38_27B_BF16_SPEED.md. Dense geometry convention: first_routed ==
 layer_count means no routed layers; the scheduler validates <= now.

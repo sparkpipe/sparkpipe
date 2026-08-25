@@ -293,7 +293,7 @@ def validate_model_precision_contracts() -> None:
             "K3 interleaved expert stream fails closed")
     forbid(strip_comments_and_literals(k3), "LmScaleTensorBlockUe8m0(",
            "K3 far-plane scale descriptor over an interleaved stream")
-    require(qwen_bind, "Qwen36LaunchSlice<LmBf16Format>", "Qwen 3.6 BF16 entry point")
+    require(qwen_bind, "Qwen38_27bLaunchSlice<LmBf16Format>", "Qwen 3.6 BF16 entry point")
 
     require(dsv4_model, "SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3", "DSV4 FP8 linear codec")
     require(dsv4_model, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "DSV4 MXFP4 expert codec")

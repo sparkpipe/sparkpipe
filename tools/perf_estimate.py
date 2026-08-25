@@ -209,7 +209,7 @@ PERF = {
     ),
     # 16 full-attn x 6 + 48 GDN x 6 + 64 dense-MLP x 2 + head 3
     # (qwen_3_6/layer.cuh; dense model, FFN every layer)
-    "qwen36": Perf(5120, 64, {"bf16": 50.2}, 515,
+    "qwen38_27b": Perf(5120, 64, {"bf16": 50.2}, 515,
                    full_layers=16, score_dim=24 * 256),
     # 61 x (attn 9 + MoE 10) + head 3; pro shares deepseek_v4/layer.cuh
     "dsv4_pro": Perf(7168, 61, {"bf16": 3.7, "fp8": 77.0, "fp4": 56.4}, 1162,
@@ -246,7 +246,7 @@ PTXAS_TOP = {
         ("LmGemmKernel<Bf16,Fp8,M32,N128,K64,S2>", 72, 0,
          {"a_bits": 16, "b_bits": 8, "m": 32, "n": 128, "k": 64, "s": 2}),
     ],
-    "qwen36": [
+    "qwen38_27b": [
         ("LmDeltaRuleKernel<256,128,128>", 94, 1664 + 65536, None),
         ("LmGemmKernel<Bf16,Bf16,M64,N128,K64,S2>", 87, 0,
          {"a_bits": 16, "b_bits": 16, "m": 64, "n": 128, "k": 64, "s": 2}),

@@ -56,10 +56,10 @@
       "production_ready": false
     },
     {
-      "id": "qwen36_27b_bf16",
-      "model_family": "qwen36",
+      "id": "qwen38_27b_27b_bf16",
+      "model_family": "qwen38_27b",
       "model_id": "Qwen/Qwen3.6-27B",
-      "contract": "model-families/qwen36/include/sparkpipe/spark_qwen36_model.h",
+      "contract": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h",
       "routed_expert_weight_format": "none",
       "routed_expert_activation_format": "none",
       "non_expert_weight_format": "bf16",

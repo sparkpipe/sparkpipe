@@ -73,7 +73,7 @@ wired to the MLA latent kernel over a cache no launch wrote into, and
 the GDN state slot was half the stride the fp32 delta rule addresses -
 both fixed, with per-head GQA store/decode kernels (kernels/gqa.cuh)
 and a 48-slice state, all host-verified in
-tests/host_cuda/qwen36_layer_host.cu. Still open and named in
+tests/host_cuda/qwen38_27b_layer_host.cu. Still open and named in
 config.h: the GDN forget/write gates have no producer (the recurrent
 layers read gate buffers nothing computes until the beta/alpha
 projection is bound), the attention output gate, and mrope for

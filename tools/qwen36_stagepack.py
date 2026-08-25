@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Convert the Qwen/Qwen3.6-27B BF16 safetensors checkpoint into qwen36 stage packs.
+"""Convert the Qwen/Qwen3.6-27B BF16 safetensors checkpoint into qwen38_27b stage packs.
 
 Setup-time code, never the serving path: reads safetensors shard headers and
 streams payloads into the wire format of
-modules/qwen36_resident_decode_stage/source/spark_qwen36_stagepack_format.h.
+modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h.
 
 The checkpoint layout was pinned against transformers modeling_qwen3_5 and
 verified against the shard headers on disk:
@@ -52,7 +52,7 @@ DEFAULT_CONTRACT = ROOT / "model_contracts" / "qwen38_27b_authoritative.json"
 INDEX_NAME = "model.safetensors.index.json"
 CONFIG_NAME = "config.json"
 
-# Wire constants, mirroring spark_qwen36_stagepack_format.h. The round-trip
+# Wire constants, mirroring spark_qwen38_27b_stagepack_format.h. The round-trip
 # test cross-checks these against the header so the two cannot drift apart.
 MAGIC = 0x50533651  # 'Q6SP'
 FORMAT_VERSION = 3
@@ -96,7 +96,7 @@ ENTRY_STRUCT = struct.Struct("<6I4Q")
 assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
 
 
-# Tensor kinds, mirroring SparkQwen36StagePackTensorKind.
+# Tensor kinds, mirroring SparkQwen38_27bStagePackTensorKind.
 (KIND_EMBEDDING, KIND_FINAL_NORM, KIND_LM_HEAD, KIND_ATTENTION_NORM,
  KIND_MLP_NORM, KIND_FFN_GATE, KIND_FFN_UP, KIND_FFN_DOWN, KIND_GDN_QKV,
  KIND_GDN_GATE, KIND_GDN_BETA, KIND_GDN_DECAY, KIND_GDN_OUTPUT,
@@ -258,7 +258,7 @@ def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
 
 
 def expected_tensor_count(first_layer: int, layer_count: int) -> int:
-    """SparkQwen36StagePackExpectedTensorCount, restated."""
+    """SparkQwen38_27bStagePackExpectedTensorCount, restated."""
     full_below = lambda n: n // ATTENTION_PERIOD
     full = full_below(first_layer + layer_count) - full_below(first_layer)
     gdn = layer_count - full
@@ -332,7 +332,7 @@ def f32_to_bf16_u16(value: float) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Tensor-parallel sharding (recipe qwen36.TP4). A TP pack stores ONE rank's
+# Tensor-parallel sharding (recipe qwen38_27b.TP4). A TP pack stores ONE rank's
 # row/column window of every shardable tensor, stitched where the checkpoint
 # layout fuses several shard classes into one tensor. Replicated tensors
 # (norms, conv, gates, beta/decay, MTP) are stored whole.
@@ -545,7 +545,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         "source_config_sha256": source.config_sha256,
     })
     if dry_run:
-        print(f"qwen36_stagepack slice={first_layer}+{layer_count} "
+        print(f"qwen38_27b_stagepack slice={first_layer}+{layer_count} "
               f"tensors={len(plans)} file_bytes={file_bytes} "
               f"file_gib={file_bytes / 2**30:.2f} (dry run)")
         return receipt
@@ -577,7 +577,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     os.replace(temp_path, output)
     receipt["output_sha256"] = sha256_file(output)
     receipt["file"] = str(output)
-    print(f"qwen36_stagepack slice={first_layer}+{layer_count} tensors={len(plans)} "
+    print(f"qwen38_27b_stagepack slice={first_layer}+{layer_count} tensors={len(plans)} "
           f"file_gib={file_bytes / 2**30:.2f} wrote {output}")
     return receipt
 
@@ -710,7 +710,7 @@ def main() -> int:
 
     if args.verify is not None:
         result = verify(args.verify)
-        print(f"qwen36_stagepack verify ok: {result['file']} "
+        print(f"qwen38_27b_stagepack verify ok: {result['file']} "
               f"slice={result['first_layer_index']}+{result['layer_count']} "
               f"tensors={result['tensor_count']} bytes={result['bytes']}")
         return 0
@@ -731,8 +731,8 @@ def main() -> int:
         parser.error("--output is required unless --dry-run")
 
     receipt = {
-        "kind": "sparkpipe.qwen36.stagepack-receipt.v1",
-        "tool": "tools/qwen36_stagepack.py",
+        "kind": "sparkpipe.qwen38_27b.stagepack-receipt.v1",
+        "tool": "tools/qwen38_27b_stagepack.py",
         "checkpoint": str(args.checkpoint),
         "contract": {"path": str(args.contract),
                      "sha256": sha256_file(args.contract) if args.contract.is_file() else None},
@@ -750,7 +750,7 @@ def main() -> int:
     if not args.dry_run:
         receipt_path = args.receipt or Path(str(args.output) + ".receipt.json")
         write_receipt(result, receipt_path, suffix=None)
-        print(f"qwen36_stagepack receipt {receipt_path}")
+        print(f"qwen38_27b_stagepack receipt {receipt_path}")
     return 0
 
 
@@ -758,5 +758,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except PackFailure as error:
-        print(f"qwen36_stagepack: {error}", file=sys.stderr)
+        print(f"qwen38_27b_stagepack: {error}", file=sys.stderr)
         sys.exit(1)

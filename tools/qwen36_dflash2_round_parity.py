@@ -3,8 +3,8 @@
 run the numpy reference under several context conventions and compare
 per-position hit rates against the device's own drafts and the round truth.
 
-Inputs: the residentd log (qwen36_spec_diag lines) + /tmp/ctxrun_<n>.meta and
-ctxrun_<n>_taps.bin written by SPARK_QWEN36_DFLASH2_CTX_DUMP=1. Run n feeds
+Inputs: the residentd log (qwen38_27b_spec_diag lines) + /tmp/ctxrun_<n>.meta and
+ctxrun_<n>_taps.bin written by SPARK_QWEN38_27B_DFLASH2_CTX_DUMP=1. Run n feeds
 round n (run 1 = the bootstrap decode; the meta's drafts must equal the
 round's drafts[1:8] - asserted).
 
@@ -22,8 +22,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, "/home/spark2/sparkpipe/tools")
-import qwen36_dflash2_deep_parity as DP  # noqa: E402
-import qwen36_dspark_reference as R  # noqa: E402
+import qwen38_27b_dflash2_deep_parity as DP  # noqa: E402
+import qwen38_27b_dspark_reference as R  # noqa: E402
 
 LOG = sys.argv[1] if len(sys.argv) > 1 else "/tmp/qwen38-tp1-parity.log"
 
@@ -37,7 +37,7 @@ R.load_target_shared = lambda: _w.setdefault("s", _orig_shared())
 def parse_rounds(path):
     rounds = []
     line_re = re.compile(
-        r"qwen36_spec_diag C0=(\d+) accepted=(\d+) drafts=\[([0-9,]+)\] emitted=\[([0-9,]+)\]"
+        r"qwen38_27b_spec_diag C0=(\d+) accepted=(\d+) drafts=\[([0-9,]+)\] emitted=\[([0-9,]+)\]"
     )
     for line in open(path, errors="replace"):
         m = line_re.search(line)

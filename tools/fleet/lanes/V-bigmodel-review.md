@@ -1,0 +1,1 @@
+GOAL: static code review (no hardware) of dsv4-pro driver, qwen3.8-max, k3 at unified HEAD. Verify TOP10_DSV4-PRO items still-open, hunt new defects (bounds, lease/continuation paths, pack geometry). Deliverable: docs/REVIEW_BIGMODELS_<date>.md, severity-ranked.

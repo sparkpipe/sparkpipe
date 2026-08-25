@@ -9,7 +9,7 @@
   "mandatory_targets": [
     "kimi_k3_mxfp4_experts_bf16_rest",
     "glm52_fp8_experts_bf16_rest",
-    "qwen36_27b_bf16",
+    "qwen38_27b_27b_bf16",
     "dsv4_flash_native_mixed_precision",
     "dsv4_pro_native_mixed_precision"
   ],

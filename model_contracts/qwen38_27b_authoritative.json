@@ -17,7 +17,7 @@
     "known_gaps": [
       "vision tower and multimodal input out of scope by contract (text decode path only)",
       "mrope_interleaved sections [11,11,10] degenerate to plain rope for text-only decode",
-      "MTP execution gated behind SPARK_QWEN36_SERVING_SPECULATE (not enabled by default)"
+      "MTP execution gated behind SPARK_QWEN38_27B_SERVING_SPECULATE (not enabled by default)"
     ],
     "precision_policy": "all weights and activations BF16, GEMM accumulation and GDN recurrent state FP32 (mamba_ssm_dtype float32)"
   },

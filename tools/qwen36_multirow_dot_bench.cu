@@ -32,7 +32,7 @@
  * group sums) - same philosophy as the production M=1 scalar. Sanity =
  * max-abs-diff vs the library native kernel + determinism.
  * Build: nvcc -O3 -arch=sm_121a -I<repo>/include -I common/include \
- *        --extended-lambda -o /tmp/mrd tools/qwen36_multirow_dot_bench.cu
+ *        --extended-lambda -o /tmp/mrd tools/qwen38_27b_multirow_dot_bench.cu
  */
 #include <cuda_runtime.h>
 #include <stdio.h>

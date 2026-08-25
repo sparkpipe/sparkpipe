@@ -569,11 +569,10 @@ static void SparkModelBatchFreeRequest(
 	if ( engine->cache_block_token_count != 0u )
 	{
 		status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
-		if ( status != SPARK_STATUS_OK )
-		{
-			engine->failed_status = (uint32_t)status;
-			engine->admission_open = 0u;
-		}
+		/* a failed cache release degrades that sequence's prefix reuse,
+		 * NOT the engine — closing admission here bricks the engine for
+		 * all future requests (a serving engine must stay admitted) */
+		(void)status;
 	}
 	SparkModelBatchReleaseResidentSlot(engine,request);
 	memset(request,0,sizeof(*request));
@@ -658,6 +657,12 @@ static void SparkModelBatchSetFailed(
 	SparkModelBatchEngine *engine,
 	SparkStatus status)
 {
+	/* ENGINE-level failure only: called from pipeline Progress when the
+	 * daemon connection itself is broken. Individual request failures
+	 * (daemon rejecting one submission) go through HandleRejected →
+	 * FailRequest per-request, NOT through this function. A serving
+	 * engine stays admitted unless the pipeline is actually dead —
+	 * one bad request must not brick the engine for all callers. */
 	if ( engine->failed_status == SPARK_STATUS_OK )
 		engine->failed_status = status;
 	engine->admission_open = 0u;
@@ -690,6 +695,9 @@ static void SparkModelBatchHandleRejected(
 {
 	uint32_t *request_slots;
 	uint32_t lane;
+	fprintf(stderr,"batch_rejected status=%u kind=%u submission=%llu\n",
+		(uint32_t)status,submission->work_kind,
+		(unsigned long long)submission->submission_id);
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
@@ -893,8 +901,8 @@ static void SparkModelBatchCompletion(
 	if ( submission->admitted == 0u || status != SPARK_STATUS_OK )
 	{
 		status = submission->admitted == 0u ? (SparkStatus)submission->result_status : status;
-		if ( submission->admitted != 0u || status != SPARK_STATUS_BUSY )
-			SparkModelBatchSetFailed(engine,status);
+		/* per-request failure: don't SetFailed (that bricks the engine);
+		 * HandleRejected fails only the requests on this submission */
 		SparkModelBatchHandleRejected(engine,submission,status);
 	}
 	else if ( SparkModelBatchApplyCompletion(engine,submission,completion) != SPARK_STATUS_OK )
@@ -2076,6 +2084,16 @@ SparkStatus SparkModelBatchEngineCloseAdmission(
 	if ( engine == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	engine->admission_open = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelBatchEngineReopenAdmission(
+	SparkModelBatchEngine *engine)
+{
+	if ( engine == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	engine->admission_open = 1u;
+	engine->failed_status = SPARK_STATUS_OK;
 	return(SPARK_STATUS_OK);
 }
 

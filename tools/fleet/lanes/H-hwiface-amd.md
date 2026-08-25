@@ -1,0 +1,1 @@
+GOAL: drive all models to the CUDA/AMD-agnostic stage per hwiface_v1.md (FROZEN v1 contract). Audit each driver's direct-CUDA coupling, produce gap matrix + adoption order. Deliverable: docs/HWIFACE_ADOPTION_MATRIX.md.

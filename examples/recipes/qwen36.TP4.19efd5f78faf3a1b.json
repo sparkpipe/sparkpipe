@@ -1,15 +1,15 @@
 {
   "content_hash": "19efd5f78faf3a1b",
   "contract": {
-    "path": "model_contracts/qwen36_authoritative.json",
+    "path": "model_contracts/qwen38_27b_authoritative.json",
     "sha256": "557ddcce81fbc0ffe911b4c65c8be8799606ee4fd4f56d0ff2d8e7babc892126"
   },
-  "datafile": "qwen36.TP4.19efd5f78faf3a1b.json",
+  "datafile": "qwen38_27b.TP4.19efd5f78faf3a1b.json",
   "degree": 4,
-  "family": "qwen36",
+  "family": "qwen38_27b",
   "geometry_hash": "ff786ac12a1d6e13",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "qwen36.TP4.ff786ac12a1d6e13/",
+  "kv_entry_prefix": "qwen38_27b.TP4.ff786ac12a1d6e13/",
   "kv_geometry": {
     "attention_period": 4,
     "full_layer_count": 16,
@@ -33,7 +33,7 @@
     "rope_dimension": 64,
     "rope_theta": 10000000.0
   },
-  "model": "qwen36",
+  "model": "qwen38_27b",
   "schema_version": 1,
   "strategy": "TP",
   "topology": {

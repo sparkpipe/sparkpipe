@@ -8,7 +8,7 @@ performance and capacity findings are measured on a single GB10 spark
 
 ## 1. Correctness footguns found and FIXED
 
-1. **Adapter stage slicing was the qwen36 PP13 clone's.**
+1. **Adapter stage slicing was the qwen38_27b PP13 clone's.**
    `stage_layer_counts = {5,5,...,6,2}` summed to 64 layers while
    STAGE_COUNT was 16 world ranks; ranks 4-15 indexed past the array and
    every PP boundary used the world rank as the PP stage. Fixed:
@@ -17,7 +17,7 @@ performance and capacity findings are measured on a single GB10 spark
    first-layer computation).
 2. **Adapter advertised BF16 expert weights** (`.expert_weight_codec`) while
    the pack stores FP8_E4M3 block-128. Fixed to SPARK_WEIGHT_CODEC_FP8_E4M3.
-3. **Adapter context cap was the qwen36 8192** and would reject the model's
+3. **Adapter context cap was the qwen38_27b 8192** and would reject the model's
    own 262144-context stage config (LoadConfiguration treats the cap as a
    schema error). Fixed to SPARK_QWEN38_MODEL_MAXIMUM_CONTEXT_TOKENS.
 4. **Adapter advertised 4 inflight submissions while the module executes

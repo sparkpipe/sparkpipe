@@ -9,24 +9,24 @@ this clone at HEAD afb43a8, and spark3 was read-only probed via ssh.
 ## A. Why speculation is broken (root cause + fix plan + code-size)
 
 Speculation = the MTP 3-frame chain (decode-draft -> verify -> replay) in the
-qwen38-27b driver (still the qwen36 module). Four findings, ranked:
+qwen38-27b driver (still the qwen38_27b module). Four findings, ranked:
 
 **A1 — the build gate never exercises the speculation path (process root cause).**
 The TP4 build publishes the module with MTP and GDN-snapshot DISABLED:
 `qwen38_tp4_build.sh:27` passes `MTP_LAYER_COUNT=0 GDN_SNAPSHOT_SLOT_COUNT=0`,
-which `modules/qwen36_resident_decode_stage/Makefile:66-67` maps to
-`SPARK_QWEN36_STAGE_MTP=0` + `SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS=0` for the
+which `modules/qwen38_27b_resident_decode_stage/Makefile:66-67` maps to
+`SPARK_QWEN38_27B_STAGE_MTP=0` + `SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS=0` for the
 publish/GPU-validator run. Deploy then arms both: `qwen38_tp4_deploy.sh:34`
-sets `SPARK_QWEN36_STAGE_MTP=1` and the serving adapter forces
-`SPARK_QWEN36_STAGE_MTP=1` + `SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS=8`
-(`spark_qwen36_serving_adapter.c:384-388`). So
-`SparkQwen36ModuleRunMtpDraftChain` and `SparkQwen36ModuleGdnSnapshot`
-(`spark_qwen36_resident_decode_stage_module.c:1587,1445`) are the ONE code path
+sets `SPARK_QWEN38_27B_STAGE_MTP=1` and the serving adapter forces
+`SPARK_QWEN38_27B_STAGE_MTP=1` + `SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS=8`
+(`spark_qwen38_27b_serving_adapter.c:384-388`). So
+`SparkQwen38_27bModuleRunMtpDraftChain` and `SparkQwen38_27bModuleGdnSnapshot`
+(`spark_qwen38_27b_resident_decode_stage_module.c:1587,1445`) are the ONE code path
 the GPU gate never runs — it ships unvalidated, and "broken" is the expected
 outcome.
 
 **A2 — the chain-dead self-consistency gate silently zeroes speculation.**
-`spark_qwen36_serving_adapter.c:1263` sets `chain_dead = draft_ids[0] !=
+`spark_qwen38_27b_serving_adapter.c:1263` sets `chain_dead = draft_ids[0] !=
 committed_ids[0]` — the MTP's first draft must EXACTLY reproduce the main
 model's committed token. On any miss, `:1303-1304` force `min_accepted=0` and
 the lane commits one token with zero credit. Because speculation is B1-only
@@ -36,7 +36,7 @@ draft[0] poisons the verify), but it means the chain stands or falls on
 draft[0]==C0, and there is no fallback re-draft.
 
 **A3 — latent OOB + fragile hand-rolled bookkeeping.**
-`spark_qwen36_serving_adapter.c:1324` writes `replay_tokens[min_accepted+1u]`
+`spark_qwen38_27b_serving_adapter.c:1324` writes `replay_tokens[min_accepted+1u]`
 into an 8-element array while `min_accepted` can reach `draft_count-1u` (up
 to 8; `:1292`) -> index 8 out of bounds. Not hit at D=2 (the deploy config)
 but proves the hand-rolled 3-frame chain (accept loop `:1280`) is fragile and
@@ -45,8 +45,8 @@ should be replaced, not patched.
 **A4 — MTP is the wrong drafter, and ours is the worst variant.**
 The survey's FP8 recipe (0xBakeer) measures MTP cost/draft-token 0.153 vs DSpark
 0.046 (3.3x cheaper) because MTP re-runs a full lm_head projection per draft.
-Our `SparkQwen36ModuleRunMtpArgmaxRow` does exactly that — a full
-screened-argmax lm_head pass per draft step (`spark_qwen36_resident_decode_stage_module.c:1556-1576`).
+Our `SparkQwen38_27bModuleRunMtpArgmaxRow` does exactly that — a full
+screened-argmax lm_head pass per draft step (`spark_qwen38_27b_resident_decode_stage_module.c:1556-1576`).
 So even after A1-A3, our MTP D=2 ceiling is capped well below DSpark.
 
 **Fix plan + code-size.**
@@ -99,16 +99,16 @@ drafter (rung 3) can make spec beat no-spec.
 ## B. Checkpoint id + revision (read from spark3, no downloads/launches)
 
 spark3 (hostname `aitopatom-a18f`) runtime `/home/spark3/sparkdata/
-qwen38.bf16.tp4` holds one pack: `packs/tp4-rank3.qwen36sp` (16,059,167,232 B).
+qwen38.bf16.tp4` holds one pack: `packs/tp4-rank3.qwen38_27bsp` (16,059,167,232 B).
 Its 120-byte header decodes to: magic 1347630673, format 3, tensor_count 866,
 hidden 5120, layer_count 64, GDN 16 key/48 value heads, attention 24 query/4 KV
 heads x 256, FFN intermediate 17408, vocab 248320, mtp_layer_count 1, tp 4/rank 3.
 
-The rank config `config/qwen36_tp4_rank3.json` pins `model_revision =
+The rank config `config/qwen38_27b_tp4_rank3.json` pins `model_revision =
 "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1"`, which matches
-`Makefile:161` (`QWEN36_MODEL_REVISION`). The upstream model is
-`Qwen/Qwen3.6-27B` (`tools/qwen36_stagepack.py:2`;
-`model_contracts/qwen36_authoritative.json:3`).
+`Makefile:161` (`QWEN38_27B_MODEL_REVISION`). The upstream model is
+`Qwen/Qwen3.6-27B` (`tools/qwen38_27b_stagepack.py:2`;
+`model_contracts/qwen38_27b_authoritative.json:3`).
 
 **Conclusion — the pin is still OPEN, and the runtime is mis-named.**
 The deployed weights are Qwen 3.6 27B BF16 (geometry above), NOT Qwen 3.8 27B.
@@ -138,7 +138,7 @@ win, then precision, then the drafter.
 
 Gate after every step: the module GPU validator +
 `Qwen38-TP4-E2E-PASS` (per-rank agreement, 64-token reference, bit-identical),
-mirroring `QWEN36_TP4_PERF.md:67-68`. Do not stack steps until the prior one
+mirroring `QWEN38_27B_TP4_PERF.md:67-68`. Do not stack steps until the prior one
 beats the retained baseline (the TECHDEBT acceptance rule).
 
 ## What I need
@@ -153,9 +153,9 @@ beats the retained baseline (the TECHDEBT acceptance rule).
 
 Standing bar: our 7 draft tokens == vLLM's 7 given the same taps. Status: MET.
 
-The harness (`tools/qwen36_dspark_parity.cu`, links the real `.cu` kernels)
+The harness (`tools/qwen38_27b_dspark_parity.cu`, links the real `.cu` kernels)
 produced `[220,16,92,198,12,328,82]`; the numpy oracle
-(`tools/qwen36_dspark_reference.py`) produced `[220,17,11,748,874,4799,13]`.
+(`tools/qwen38_27b_dspark_reference.py`) produced `[220,17,11,748,874,4799,13]`.
 A multi-turn hunt (embedding gather, rope position, Q/K RMSNorm row indexing,
 attention accumulation) read clean — all four were correct in the kernel.
 A per-layer/per-position intermediate dump localized the first divergence to
@@ -163,7 +163,7 @@ the layer-0 ATTENTION output, and an independent numpy reimplementation of the
 KERNEL's arithmetic matched the CUDA output to ~1 ULP. That proved the kernel
 was right and the ORACLE was wrong.
 
-**Deviant line** — `tools/qwen36_dspark_reference.py` `apply_rope()` had an
+**Deviant line** — `tools/qwen38_27b_dspark_reference.py` `apply_rope()` had an
 in-place numpy view aliasing bug:
 
     xr = out[..., 0:ROPE_DIM:2]          # a VIEW, not a copy

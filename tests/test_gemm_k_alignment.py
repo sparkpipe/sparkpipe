@@ -67,8 +67,8 @@ def k_extents():
     for layer in sorted(glob.glob(os.path.join(ROOT, "inference/llms/*/layer.cuh"))):
         model = os.path.basename(os.path.dirname(layer))
         values = config_defines(os.path.join(os.path.dirname(layer), "config.h"))
-        # widths derived in layer.cuh count too: QWEN36_Q_DIM and
-        # QWEN36_GDN_V_DIM are K extents and live there, not in config.h
+        # widths derived in layer.cuh count too: QWEN38_27B_Q_DIM and
+        # QWEN38_27B_GDN_V_DIM are K extents and live there, not in config.h
         values.update(config_defines(layer))
         source = re.sub(r"\s+", " ", open(layer).read())
         for match in re.finditer(r"LmGemmLaunch<[^(]*\(([^;]*?)\);", source):

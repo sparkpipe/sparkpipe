@@ -19,9 +19,12 @@ METADATA_NAMES = {
     EVIDENCE_MANIFEST_NAME,
 }
 EXCLUDED_DIRECTORY_NAMES = {
+    ".agents",
+    ".codex",
     ".git",
     ".mypy_cache",
     ".pytest_cache",
+    ".tshome",
     "__pycache__",
     "build",
 }

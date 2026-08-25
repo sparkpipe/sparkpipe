@@ -21,13 +21,13 @@ Today admission is one shared *type system* with four re-implemented *loops*:
 | **Module-side shape/capacity admit** (per model) | `Spark<Model>ResidentDecodeStageAdmit` ×4 | **duplicated** |
 
 The four serving-side wrappers are near-identical boilerplate
-(`spark_glm52_serving_adapter.c:885-916`, `spark_qwen36_serving_adapter.c:981-1010`,
+(`spark_glm52_serving_adapter.c:885-916`, `spark_qwen38_27b_serving_adapter.c:981-1010`,
 `spark_qwen38_serving_adapter.c:841-870`, plus dsv4's
 `spark_dsv4_serving_adapter.c:1207-1311` and `spark_dsv4_stage_runner.c:356-414`).
 The four module-side admits are the same decision ladder over different constants
 (`spark_glm52_resident_decode_stage_module.c:1554-1591`,
 `spark_dsv4_resident_decode_stage_module.c:5871-5946`,
-`spark_qwen36_resident_decode_stage_module.c:2031-2116`,
+`spark_qwen38_27b_resident_decode_stage_module.c:2031-2116`,
 `spark_qwen38_resident_decode_stage_module.c:1242-1251` — the last is a stub
 returning `SPARK_STATUS_UNSUPPORTED`).
 
@@ -209,8 +209,8 @@ Semantics of each:
   `available_dispatch_slot_count == 0` → optional `predicate` tail → optional
   `cost` tail → accept. This is exactly the ladder each
   `Spark<Model>ResidentDecodeStageAdmit` repeats (compare glm52
-  `spark_glm52_resident_decode_stage_module.c:1564-1590` with qwen36
-  `spark_qwen36_resident_decode_stage_module.c:2046-2112`).
+  `spark_glm52_resident_decode_stage_module.c:1564-1590` with qwen38_27b
+  `spark_qwen38_27b_resident_decode_stage_module.c:2046-2112`).
 * **`SparkAdmissionDecisionCost`** promotes the orchestrator's static
   `SparkDriverAdmissionDecisionCost` (`src/spark_orchestrator.c:507-523`) to the
   shared header so the orchestrator and any future hook share one formula.
@@ -224,7 +224,7 @@ Semantics of each:
 1. **Per-module cost** — a module admit sets `host_staging_bytes`,
    `device_memcpy_bytes`, `estimated_service_time_ns`,
    `estimated_queue_delay_ns`, `endpoint_cost`, `residency_match_score`
-   (see glm52 `1588-1589`, dsv4 `5944-5946`, qwen36 `2113-2116`). The
+   (see glm52 `1588-1589`, dsv4 `5944-5946`, qwen38_27b `2113-2116`). The
    generated driver merges them across the program's modules (saturating-add the
    byte/time/cost fields, min the residency score, max the queue delay) —
    `driver_compiler.c:735-747`. That merge becomes `SparkAdmissionMergeDecision`.
@@ -241,7 +241,7 @@ Semantics of each:
 maps: ACCEPTED→OK; BUSY or **DEADLINE**→BUSY; UNSUPPORTED_SHAPE→UNSUPPORTED; else
 CAPACITY_EXCEEDED. The four serving wrappers and the dsv4 stage runner instead do
 `BUSY ? BUSY : CAPACITY_EXCEEDED` (`spark_glm52_serving_adapter.c:913`,
-`spark_qwen36_serving_adapter.c:1008`, `spark_qwen38_serving_adapter.c:868`,
+`spark_qwen38_27b_serving_adapter.c:1008`, `spark_qwen38_serving_adapter.c:868`,
 `spark_dsv4_stage_runner.c:408-410`), which **loses the DEADLINE and
 UNSUPPORTED_SHAPE distinctions** at the adapter boundary. The core routes all four
 through `SparkAdmissionEvaluate`, so the richer mapping applies uniformly.
@@ -307,17 +307,17 @@ BUSY ladder.
 
 Mapping today → table:
 
-| Field | glm52 | qwen36 | dsv4 | qwen38 (stub) |
+| Field | glm52 | qwen38_27b | dsv4 | qwen38 (stub) |
 | --- | --- | --- | --- | --- |
 | `max_active_sequence_count` | `resident_sequence_capacity` (`1569`) | `state->max_active_sequence_count` (`2066`) | descriptor | (unimplemented) |
 | `max_input_row_count` | `SPARK_GLM52_..._MAX_INPUT_ROW_COUNT` (`1569`) | `state->max_active_sequence_count` (`2068`) | descriptor | (unimplemented) |
-| `max_sequence_positions` | `state->max_sequence_positions` (`1575`) | `SPARK_QWEN36_MODEL_MAXIMUM_CONTEXT_TOKENS` (`2086,2089`) | `SparkDsv4ModuleAdmissionFitsKv` (`5905`) | (unimplemented) |
+| `max_sequence_positions` | `state->max_sequence_positions` (`1575`) | `SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS` (`2086,2089`) | `SparkDsv4ModuleAdmissionFitsKv` (`5905`) | (unimplemented) |
 | `flags` | DECODE_EQUALS_SLOTS (`1569`) | PREFILL_SINGLE_SLOT + DECODE_EQUALS_SLOTS (`2069-2071`) | via `AdmissionShapeSupported` (`5895`) | (unimplemented) |
 | `predicate` | NULL | NULL | JIT-KV prepare/commit/abort (`5910-5937`) | (unimplemented) |
 | `cost` | `1588-1589` | `2113-2116` | `5944-5946` | (unimplemented) |
 
 Note the `ALLOW_DISPATCH_FLAG` divergence: glm52 whitelists
-`DRIVER_DISPATCH_SLOT_VALID` in `frame_flags` (`1569`) while qwen36 rejects it
+`DRIVER_DISPATCH_SLOT_VALID` in `frame_flags` (`1569`) while qwen38_27b rejects it
 (`2063-2064`). The flag bit makes that a data difference, not a code fork.
 
 ### 2.3 JIT-KV cache admission — joint contract, marked not decided
@@ -398,7 +398,7 @@ replace `Spark<Model>ServingAdmit` + `SparkDsv4StageRunnerAdmit` with
 `SparkAdmissionRequestFromSubmission/FromFrame` + `SparkAdmissionEvaluateAndApply`.
 Pinned by `test_dsv4_stage_runner.c:36-40,220,230-232` (dsv4) and, for the others,
 by the existing serving-adapter driver fixtures (`tests/fixtures/dsv4_serving_adapter_driver.c`,
-`tests/fixtures/qwen36_serving_adapter_driver.c`, `tests/fixtures/model_serving_adapter_module.c`)
+`tests/fixtures/qwen38_27b_serving_adapter_driver.c`, `tests/fixtures/model_serving_adapter_module.c`)
 which assert the request fields the driver's `admit` sees. Each MODEL agent edits
 its own `*_serving_adapter.c` / runner.
 
@@ -411,7 +411,7 @@ agents own their tables; the scheduler agent supplies the table type + the
 
 **Order:** (1) dsv4 — most complex (JIT-KV predicate + third call site), most test
 coverage; (2) glm52 — has no JIT-KV, but its `ALLOW_DISPATCH_FLAG` quirk
-(`1569`) exercises a flag the others don't; (3) qwen36 — deprecated-frozen
+(`1569`) exercises a flag the others don't; (3) qwen38_27b — deprecated-frozen
 (`COORDINATION.md:147-149`), migrate only if it stays on the shared core, otherwise
 leave the legacy admit in place; (4) qwen38 — its module admit is a stub
 (`spark_qwen38_resident_decode_stage_module.c:1242-1251`), so it *starts* from the
@@ -525,8 +525,8 @@ the per-adapter collapse is scheduled for migration phase C.
   instead of the BUSY/CAPACITY ternary; `SparkAdmissionMergeDecision` +
   `SparkAdmissionDecisionCost` are promoted shared symbols.
 - Phase C: glm52/qwen38 adapters collapsed to `FromSubmission`;
-  qwen36/dsv4 stage runner + serving builder collapsed to `FromFrame`;
-  qwen36 + glm52 module gates collapsed to `EvaluateShape` (qwen36 keeps a
+  qwen38_27b/dsv4 stage runner + serving builder collapsed to `FromFrame`;
+  qwen38_27b + glm52 module gates collapsed to `EvaluateShape` (qwen38_27b keeps a
   KV predicate for its prefill `RangeFits` check).
 - NOT collapsed (recorded reasons): dsv4 module gate (release path +
   per-lane KV prepare/commit/abort exceed the ladder contract) and qwen38

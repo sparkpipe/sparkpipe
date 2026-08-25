@@ -1,7 +1,7 @@
 // Run MiMo 2.5's attention layers - full and sliding-window - on a CPU and
 // check where their data went.
 //
-// The sibling of qwen36_layer_host for the second per-head-KV driver, and it
+// The sibling of qwen38_27b_layer_host for the second per-head-KV driver, and it
 // exists for the three things only this driver has: a value NARROWER than the
 // key (128 against 192, the width LmKvHeads priced wrong), a value scale
 // applied at the split that must reach the cache exactly once, and a sliding

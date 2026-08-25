@@ -166,7 +166,7 @@ def test_tp_shard_coverage():
                     check(resolution["reason"],
                           f"{tag}.TP{degree}:{cls['name']}: replicated "
                           f"without a recorded reason")
-            if tag == "qwen36" and degree == 16:
+            if tag == "qwen38_27b" and degree == 16:
                 # 24 query / 4 KV heads cannot split 16 ways; the recipe
                 # must say so, not shard on fractional heads (the bug this
                 # regression pins: row divisibility used to masquerade as
@@ -176,10 +176,10 @@ def test_tp_shard_coverage():
                 check(status["heads_out:full_q"] == "replicated" and
                       status["heads_out:full_kv"] == "replicated" and
                       status["heads_in:full_o"] == "replicated",
-                      "qwen36.TP16: full attention must replicate")
+                      "qwen38_27b.TP16: full attention must replicate")
                 check(status["heads_out:gdn_qk"] == "sharded" and
                       status["heads_out:gdn_v"] == "sharded",
-                      "qwen36.TP16: GDN projections divide 16 and must "
+                      "qwen38_27b.TP16: GDN projections divide 16 and must "
                       "shard")
             # the per-rank table tiles the extent with no overlap or gap
             for cls in recipe["tp"]["shard_classes"]:

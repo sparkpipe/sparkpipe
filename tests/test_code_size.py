@@ -226,7 +226,7 @@ from pathlib import Path
 # The completion-tail now surfaces publish/rollback failures (page-cache status
 # flows into async->completion.status instead of (void)) (+2); 165781 is the
 # exact count.
-# The qwen36 speculation fix lands (+55): verify/replay frames feed the
+# The qwen38_27b speculation fix lands (+55): verify/replay frames feed the
 # committed token C0 instead of the redundant first draft (a first-draft miss
 # no longer poisons or zeroes the chain), the gate becomes a named
 # configurable policy (recover default / strict legacy for A/B), misses are
@@ -234,8 +234,8 @@ from pathlib import Path
 # build gate publishes MTP_LAYER_COUNT=1 GDN_SNAPSHOT_SLOT_COUNT=8 so the GPU
 # validator exercises the MTP chain + GDN snapshot path it never ran before.
 # 165836 is the exact count.
-# The qwen36 TP1 serving-adapter build switch lands (+15):
-# SPARK_QWEN36_SERVING_TP_DEGREE becomes a #ifndef-overridable knob (4 default
+# The qwen38_27b TP1 serving-adapter build switch lands (+15):
+# SPARK_QWEN38_27B_SERVING_TP_DEGREE becomes a #ifndef-overridable knob (4 default
 # TP4 unchanged / 1 TP1 single-rank / 0 legacy PP), and adapter_id, stage_count,
 # and stage_layer_counts derive from it so a TP1 adapter compiles from the same
 # source with zero TP4 behavior change. 165851 is the exact count.
@@ -273,7 +273,7 @@ from pathlib import Path
 # The k3 GEMM integration lands (+7): K3Project switches to LmGemmLaunchTileK
 # and unity.cu instantiates the TILE_K=32 kernel variants - the K3 half of the
 # fallback. 166316 is the exact count.
-# The qwen36 validator admits TP1 full-width into the whole-stack tier and
+# The qwen38_27b validator admits TP1 full-width into the whole-stack tier and
 # derives head_stage from STAGE_COUNT (+6); the TP1 topology knob's validation
 # path. 166322 is the exact count.
 # The client continuation-lease fix lands (+8): the lease advances by the
@@ -285,7 +285,7 @@ from pathlib import Path
 # between halves) - the mechanically-correct 9-AR-point TP16 replay plan. The
 # recurrent state-carry numerical bug is tracked separately. 166509 is the
 # exact count.
-# The qwen36 KV predicate fix lands (+5): a passing KV check now marks the
+# The qwen38_27b KV predicate fix lands (+5): a passing KV check now marks the
 # decision ACCEPTED explicitly (an untouched decision kept its init
 # rejection_reason and every passing admit was silently rejected - the
 # module_admit smoke's real root cause). 166514 is the exact count.
@@ -329,7 +329,7 @@ from pathlib import Path
 # multi-row frames now run the certified 1-row kernels per row instead of the
 # activation-quantizing native path (delta_wq_a/wo_b bit-identical to the
 # lean baseline). 166721 is the exact count.
-# The qwen36 FP8 pack path lands (+66): dtype-driven per-tensor FP8_E4M3
+# The qwen38_27b FP8 pack path lands (+66): dtype-driven per-tensor FP8_E4M3
 # selection with F32 per-128x128 scales (format 5), the firmware enum, the
 # stagepack PayloadBytes/ScaleBytes, and module ValidateEntry - the BF16
 # round-trip path stays byte-compatible. The shared Linear kernel already
@@ -342,7 +342,7 @@ from pathlib import Path
 # the certified 1-row head instead of the screened-argmax route (hash
 # unchanged - proves the token-2 divergence is upstream, but the certified
 # head is the correct math regardless). 166806 is the exact count.
-# The qwen36 FP8 scale-offset + verify fixes land (+17): copy_scale reads the
+# The qwen38_27b FP8 scale-offset + verify fixes land (+17): copy_scale reads the
 # scale tensor from its data offset (was header bytes -> NaN), and the verify()
 # re-parse path accepts the FP8 format. 166823 is the exact count.
 # The non-blocking token-emission fix lands (+66): emission decouples from
@@ -357,7 +357,7 @@ from pathlib import Path
 # the same Progress that reads the completion (drops the one-iteration
 # deferral) - tightens the serial loop; the B1 bubble itself closes via
 # speculation overlap, not the scheduler. 166903 is the exact count.
-# The qwen36 MTP qualification lands (+37): the validator's whole-stack tier
+# The qwen38_27b MTP qualification lands (+37): the validator's whole-stack tier
 # arms STAGE_MTP=1 and adds an MTP_DRAFT_AFTER frame with an in-vocab draft
 # check (determinism rides the fresh-instance re-execution). 166940 is the
 # exact count.
@@ -365,7 +365,7 @@ from pathlib import Path
 # decode-draft) now runs BEFORE the phase-two scan so verify(N) and
 # decode-draft(N+1) overlap under max_inflight_submission_count; FIFO,
 # lease, and transport ordering all preserved. 166950 is the exact count.
-# The qwen36 DSpark drafter packer + format header land (+328): the 62-tensor
+# The qwen38_27b DSpark drafter packer + format header land (+328): the 62-tensor
 # drafter (Doopeworld/Qwen3.8-27B-DSpark-vLLM, 1.36B params) packs into the
 # Q6SP wire format with 17 kinds and the module-side shape table - the rung-3
 # foundation (draft weights are public; no gate). 167278 is the exact count.
@@ -383,7 +383,7 @@ from pathlib import Path
 # through the committed compressor (rejected rows keep the old value) - the
 # keep-old rollback contract. 167427 is the exact count.
 # The DSpark parity reference lands (+236): the numpy golden draft script
-# (tools/qwen36_dspark_reference.py) whose rope view bug was the last blocker
+# (tools/qwen38_27b_dspark_reference.py) whose rope view bug was the last blocker
 # between the CUDA drafter and the reference tokens - the fixed script is
 # the bit-exact golden for draft parity and must stay in-tree.
 # 167663 is the exact count.
@@ -396,10 +396,10 @@ from pathlib import Path
 # The parity-verified DSpark drafter port lands (+628 net): the 5-layer
 # block-diffusion forward + device Markov head + serving-adapter dspark
 # wiring + C0-anchor/draft-remap fixes, rebased onto the landed tap-capture
-# foundation (the drafter is env-gated: SPARK_QWEN36_SERVING_SPEC_METHOD=
+# foundation (the drafter is env-gated: SPARK_QWEN38_27B_SERVING_SPEC_METHOD=
 # dspark + optional pack path; greedy baseline = 5.078 tok/s, 10.5% acc).
 # 168349 is the exact count.
-# The CUDA compile gate gains the qwen36 resident stage module (+9): the
+# The CUDA compile gate gains the qwen38_27b resident stage module (+9): the
 # DSpark port landed without sm_121a gate coverage (the gate listed only
 # glm52/dsv4 stages) - now the port's .cu is CI-compiled every push.
 # 168358 is the exact count.
@@ -420,7 +420,7 @@ from pathlib import Path
 # +1 for the DRAFTER-path env override line in the DFlash2 reference.
 # 168588 is the exact count.
 # +1: the dspark .cuh includes the format header (W6 constants were
-# undefined in the CI gate compile - the qwen36 gate coverage caught it).
+# undefined in the CI gate compile - the qwen38_27b gate coverage caught it).
 # 168589 is the exact count.
 # +79: the W2 conv parity harness (kernel vs _grouped_conv oracle,
 # assert_allclose PASS) - the DFlash2 kernel regression gate.
@@ -847,12 +847,12 @@ from pathlib import Path
 # per sublayer), the host top-16 + selector lattice + greedy walk pass, the
 # dflash2 adapter method (block 8), and the fail-loud drafter-pack guard.
 # 168788 is the exact count.
-# +60: env-gated DFlash2 stage-dump bisection (SPARK_QWEN36_DFLASH2_STAGE_DUMP)
+# +60: env-gated DFlash2 stage-dump bisection (SPARK_QWEN38_27B_DFLASH2_STAGE_DUMP)
 # - the parity-debug surface, removed after forward parity lands.
 # 168848 is the exact count.
 # +107: conv kernel reads the fused [B, sides, taps, groups] delta directly
 # (side param, full row stride - the pointer-offset variant read the wrong
-# rows) + the stage-bisect tool (tools/qwen36_dflash2_bisect.py).
+# rows) + the stage-bisect tool (tools/qwen38_27b_dflash2_bisect.py).
 # 168955 is the exact count.
 # +11: spec acceptance clamped to the shared tokens-per-sequence ABI cap.
 # 168966 is the exact count.
@@ -865,7 +865,7 @@ from pathlib import Path
 # 169051 is the exact count.
 # +3: the draft hangs off the replay tail (taps = last committed row),
 # not the verify tail (row 0 = the anchor itself - off-by-one vs training).
-# +19: drafter-run tap dump (SPARK_QWEN36_DFLASH2_RUN_DUMP=N) - the exact
+# +19: drafter-run tap dump (SPARK_QWEN38_27B_DFLASH2_RUN_DUMP=N) - the exact
 # taps the drafter consumed, for oracle replay.
 # 169089 is the exact count.
 # +47: cache-based drafter context (upstream precompute_and_store_context_kv):
@@ -873,7 +873,7 @@ from pathlib import Path
 # k/q prep + cache attention kernels; supersedes the dual-source attention.
 # 169136 is the exact count.
 # +163: pair-atomic rope prep + layer-0 stage dumps + the
-# cache-semantics checker tool (tools/qwen36_dflash2_cache_check.py).
+# cache-semantics checker tool (tools/qwen38_27b_dflash2_cache_check.py).
 # 169299 is the exact count.
 # +10: bonus-token convention (anchor = the frame's last input row;
 # context window excludes the bonus position; adapter remap shifts).
@@ -921,12 +921,12 @@ from pathlib import Path
 # +8: the conv-tail per-row checkpoint (full bf16 elements - the
 # first attempt never landed and the restore read stale tails).
 # 169634 is the exact count.
-# +23: SPARK_QWEN36_DFLASH2_STATE_SELECT env gate (default OFF =
+# +23: SPARK_QWEN38_27B_DFLASH2_STATE_SELECT env gate (default OFF =
 # the validated replay path; the select path stays opt-in WIP).
 # 169657 is the exact count.
 # +2: checkpoint slot-base wiring.
 # 169659 is the exact count.
-# +108: the bonus fold (the vLLM round shape, SPARK_QWEN36_DFLASH2_BONUS_FOLD
+# +108: the bonus fold (the vLLM round shape, SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD
 # env gate, default OFF) - the correction tail drafts (anchor = its emission)
 # and the next round's verify row 0 walks the client token in the decode
 # walk's place: 3 full-model frames per round drop to 2. Commit math is
@@ -945,7 +945,7 @@ from pathlib import Path
 # to localize the position-2+ acceptance collapse (WIP instrumentation).
 # 169940 is the exact count.
 # +416 (tools incl.): THE conditioning fix, from the live convention sweep on
-# 44 O128 rounds (torch, tools/qwen36_dflash2_conv_sweep.py): the drafter
+# 44 O128 rounds (torch, tools/qwen38_27b_dflash2_conv_sweep.py): the drafter
 # wants HF Qwen3 NeoX rope over the full 128-dim head (not interleaved-64),
 # the context must INCLUDE the walked row's tap g_P at RoPE position base-1 -
 # llama.cpp's seed pair (t_{P+1}, g_P) - and the walk emits own-position
@@ -957,7 +957,7 @@ from pathlib import Path
 # 170442 is the exact count.
 # +2: parity tool default moves to the fixed geometry.
 # 170444 is the exact count.
-# +92: the ONE-FRAME round (SPARK_QWEN36_DFLASH2_BONUS_FOLD=2) - dspark view
+# +92: the ONE-FRAME round (SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD=2) - dspark view
 # ABI v2 gains multi_block_count (block i anchored on verify row i's emission
 # at base+i; the host picks block m post-accept), the module loops the block
 # forward per row, and the adapter runs the round as ONE verify frame (row 0
@@ -978,7 +978,7 @@ from pathlib import Path
 # scalar path) + a compact ids/scores/hproj copy - removes the ~4MB logits
 # D2H and the ~25-35ms scalar 7x248320 insertion pass per drafter call.
 # 170650 is the exact count.
-# +62: the selector parity oracle (SPARK_QWEN36_DSPARK_SEL_CHECK=1 runs the
+# +62: the selector parity oracle (SPARK_QWEN38_27B_DSPARK_SEL_CHECK=1 runs the
 # original scalar host pass beside the device kernel and prints divergences)
 # - it caught the kernel's rank>threads hproj hole (outputs 128..255 read as
 # zero, halving the walk's edge scores: -6% O128). Zero mismatches post-fix.
@@ -994,7 +994,7 @@ from pathlib import Path
 # (HF rotate_half over the full head, re-applied; the trained convention)
 # and the persistent block-KV history (per-layer raw k/v rows of every
 # block the drafter ran, keyed by position, attended after the current
-# block rows; SPARK_QWEN36_DFLASH2_BLOCK_KV=1). Both validated on the
+# block rows; SPARK_QWEN38_27B_DFLASH2_BLOCK_KV=1). Both validated on the
 # reference input dumps: 87% pos-0 draft agreement, curve mirrors theirs.
 # 170992 is the exact count.
 # +199 stale at the handoff commit (506770e): the session's last tooling
@@ -1009,9 +1009,9 @@ from pathlib import Path
 # 171424 is the exact count.
 # +213: the MX serving format - FP8_E4M3_E8M0B128 (format 6: E4M3 payload,
 # per-row e8m0 scales per 128-K group, the native SM121 block-scaled fp8 MMA
-# layout). Loader + byte-calcs + the SparkQwen36LaunchLinear dispatch route
+# layout). Loader + byte-calcs + the SparkQwen38_27bLaunchLinear dispatch route
 # (native launcher for its shapes, per-row loop for the rest), plus the
-# repack tool (tools/qwen36_stagepack_mx_repack.py - measured LOSSLESS: the
+# repack tool (tools/qwen38_27b_stagepack_mx_repack.py - measured LOSSLESS: the
 # pack's tile scales are already powers of two, so the conversion is a pure
 # re-layout with zero quantization cost).
 # 171637 is the exact count.
@@ -1028,14 +1028,14 @@ from pathlib import Path
 # 67.7s and the window cost flattened (W=2048 == W=256, so the full window
 # rides free with the better acceptance).
 # 171782 is the exact count.
-# +83: the native-linear micro-benchmark tool (tools/qwen36_native_linear_bench.cu)
+# +83: the native-linear micro-benchmark tool (tools/qwen38_27b_native_linear_bench.cu)
 # - the measured record for the FFN kernel project: the byte-load variant
 # WINS (125.6 GB/s vs 91.7/83.7 for 4-byte loads - the outstanding byte
 # transactions are the needed memory-level parallelism), K-split does not
 # help, and the path past ~125 GB/s is a cp.async shared-staged B tile.
 # 171865 is the exact count.
 # +225: the staged-B kernel exploration harness (tools/
-# qwen36_native_staged_bench.cu) - a bit-exact cp.async double-buffered
+# qwen38_27b_native_staged_bench.cu) - a bit-exact cp.async double-buffered
 # variant of the native MMA linear plus the PIPELINE-DEPTH LAW: this kernel
 # family's bandwidth ~= (in-flight bytes/CTA / DRAM latency) x resident
 # CTAs x SMs (16KB/600ns x 4.5 x 10 ~= the measured 113-125 GB/s; pure
@@ -1044,11 +1044,11 @@ from pathlib import Path
 # parity with the direct kernel.
 # 172144 is the exact count.
 # +328: the warp-specialized kernel SKETCH (tools/
-# qwen36_native_warp_specialized_bench.cu) - the design that escapes the
+# qwen38_27b_native_warp_specialized_bench.cu) - the design that escapes the
 # shared-budget tension (producer warps stream the B ring continuously,
 # consumer warps mma, collective A rendezvous). DEADLOCKS: the named-barrier
 # arrival matrix needs re-derivation (documented in the header). The
-# measured map it builds on lives in qwen36_native_staged_bench.cu.
+# measured map it builds on lives in qwen38_27b_native_staged_bench.cu.
 # 172472 is the exact count.
 # +101: the warp-specialized kernel VERIFIED BIT-EXACT
 # (139264/139264 at both depths) after fixing three subtle races (per-thread
@@ -1081,7 +1081,7 @@ from pathlib import Path
 # sequence's stale rows and acceptance collapses run over run: 57.6 -> 79.7
 # -> 85.2s measured on identical prompts; now stable 57.8/57.5/57.5s).
 # 172936 is the exact count.
-# +114: the frame-graph WIRING (opt-in, SPARK_QWEN36_FRAME_GRAPH=1):
+# +114: the frame-graph WIRING (opt-in, SPARK_QWEN38_27B_FRAME_GRAPH=1):
 # per-(rows,prefill) capture in RunFrame, warm-then-capture-then-replay
 # (the K3 pattern), eager uploads outside, capture-aware syncs (Finish +
 # profile-head guarded), capture-fail = loud error (GDN rerun unsafe).
@@ -1108,9 +1108,28 @@ from pathlib import Path
 # ledger: 160.3 GB/s best vs WS 176.8 - the M=1 248 GB/s scalar does not
 # generalize to M>=8).
 # 174101 (2026-08-21): plain-B WS kernel variant (uint4 load+store B
-# staging, default ON, kill-switch SPARK_QWEN36_WS_PLAIN=0) + consumer
+# staging, default ON, kill-switch SPARK_QWEN38_27B_WS_PLAIN=0) + consumer
 # acquire fence + publish barrier; bench ledger updated with the in-situ
 # A/B (kernel-level +10%, end-to-end neutral, bit-exact).
+<<<<<<< HEAD
+=======
+# 174145 (2026-08-23): incident fixes - pack-load device-memory preflight
+# (watchdog-restart SEGV -> clean capacity_exceeded), daemon client-session
+# submission-id reset on hello, engine prefill lane concentration (full-
+# width frames instead of 1-row-per-lane at B>1).
+# 174603 (2026-08-23): daemon session-death slot unbind (the "all cells
+# fail until restart" poisoning fix), submission-rejection logging (daemon
+# + client), and node/model_api.c - the standard OpenAI-style HTTP entry
+# point (single engine session, health endpoint working; completion path
+# WIP - see the commit message).
+# 174635 (2026-08-23): null guards on ALL debug-dump file writes (the
+# "speculation does not work" report: CTX_DUMP/L0_DUMP env + failed fopen
+# = fwrite(NULL) SEGV on the first decode round).
+# 174923 (2026-08-24): JIT-KV design contract + backing-store tier 1
+# (runtime/spark_kv_backing.c: slot file, alloc/free, 4 MiB block I/O,
+# horizon exhaustion -> backpressure signal; unit test ALL PASS).
+CEILING = 175261
+>>>>>>> origin/main
 
 # +4239: consolidation merge (origin/main: WS kernel staging +10%, incident
 # fixes A/B/C) + peer iteration-2/3 delivery wave (prefix-cache core, fwrite

@@ -13,7 +13,7 @@ code-size delta. All facts cited file:line against origin/unified @ afb43a8.
   spark_nvme_tier.h, prefix cache spark_prefix_cache.h) is ~11.4k lines and
   token-free, but ONLY DSv4 declares JIT_KV
   (modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c:282,305).
-  glm52/qwen38/qwen36 are DRIVER_OWNS_KV (spark_glm52_serving_adapter.c:124,
+  glm52/qwen38/qwen38_27b are DRIVER_OWNS_KV (spark_glm52_serving_adapter.c:124,
   spark_qwen38_serving_adapter.c:204); k3's adapter is a stub
   (spark_k3_serving_adapter.c:451,461,478).
 - A SECOND GENERATION of the same logic still exists: cache/cache.h (723 lines,

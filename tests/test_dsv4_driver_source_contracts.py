@@ -272,7 +272,7 @@ def main() -> None:
 	require(adapter, "request.kv_physical_page_capacity =", "generic physical-page budget forwarding")
 	require(generic_cache, "SparkModelBatchSchedulerPlanCacheBoundLaneCount", "generic cache-aware batch planner")
 	require(generic_cache, "runtime_limits->kv_physical_page_capacity", "generic runtime physical-page validation")
-	for model_name in ("dsv4", "deepseek", "glm52", "spark_glm", "qwen36", "spark_qwen"):
+	for model_name in ("dsv4", "deepseek", "glm52", "spark_glm", "qwen38_27b", "spark_qwen"):
 		reject(generic_cache.lower(), model_name, "model name in generic cache runtime")
 	require(pool_layout, "SparkDsv4PoolCacheLaneElements(max_sequence_positions,kind)", "per-layer compressed cache sizing")
 	require(pool_layout, "overlap * ratio * overlap * SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION", "ratio-specific compressor state sizing")

@@ -63,8 +63,8 @@ Re-run the B1 no-spec measure after this lands and report the new wall vs the
 225→190 ms GPU split; the expected win is the elimination of the ~129 K wasted
 Progress passes that contended with the completion callback. A follow-up is
 dropping the remaining 10 ms active-poll floor (`PollTimeoutMs`, `2633-2643`) to
--1 when the adapter's completion is wake-driven (qwen36's `progress` is a no-op,
-`spark_qwen36_serving_adapter.c:1529-1535`).
+-1 when the adapter's completion is wake-driven (qwen38_27b's `progress` is a no-op,
+`spark_qwen38_27b_serving_adapter.c:1529-1535`).
 
 ## Verification
 

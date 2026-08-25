@@ -39,8 +39,8 @@
     ],
     "stage_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     "runtime_dataset": "qwen3.6_27b.bf16.pp13",
-    "node_target": "cuda.sm121.qwen36.resident_decode_stage.bf16",
-    "adapter_configuration_path_template": "config/qwen36_flash_stage.json",
+    "node_target": "cuda.sm121.qwen38_27b.resident_decode_stage.bf16",
+    "adapter_configuration_path_template": "config/qwen38_27b_flash_stage.json",
     "kv_backing_dataset": null,
     "kv_backing_maximum_bytes": 0,
     "control_endpoint": {

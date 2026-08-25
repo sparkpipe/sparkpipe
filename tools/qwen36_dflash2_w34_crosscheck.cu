@@ -17,8 +17,8 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 
-#include "spark_qwen36_dspark_cuda.cuh"
-#include "qwen36_dflash2_parity_io.h"
+#include "spark_qwen38_27b_dspark_cuda.cuh"
+#include "qwen38_27b_dflash2_parity_io.h"
 
 static void RunW4(const char *directory, const char *test_case, uint64_t *mismatches)
 {

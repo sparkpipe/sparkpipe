@@ -1,0 +1,1 @@
+GOAL: reviewed AMD kernel set + optimized CUDA kernels (GB10 measured ceilings: 250-273 GB/s DRAM). Cross-check WS-kernel staging wins (PR #678), tile_k guards, head screen; propose next fusions with roofline justification. Deliverable: docs/KERNEL_NEXT_STEPS.md.

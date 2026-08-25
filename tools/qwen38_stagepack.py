@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert the Qwen/Qwen3.8-2.4T-A95B BF16 safetensors checkpoint into qwen38 stage packs.
 
-Setup-time code, never the serving path. Mirrors tools/qwen36_stagepack.py for
+Setup-time code, never the serving path. Mirrors tools/qwen38_27b_stagepack.py for
 the GDN/attention tensors and adds the routed-MoE inventory with MXFP4-E2M1
 expert weights (group-32 E8M0 scales), the quality-first ladder pinned by
 model_contracts/qwen38_authoritative.json: routed experts MXFP4, everything

@@ -14,11 +14,11 @@ from-zero operational path.
 | Serving host | `spark2` (DGX Spark, GB10, sm_121a), model data on local disk |
 | Working clone on spark2 | `/home/spark2/sparkpipe` (⚠ may be dirty — see §3 step 0) |
 | Deployment root | `/home/spark2/sparkdata/qwen38.fp8.tp1/` |
-| Target model pack (FP8, production) | `…/packs/qwen38-fp8.tp1.qwen36sp` (29 GB, MX E4M3+E8M0/128, format 6) |
-| Target model pack (F32B128, original) | `…/packs/qwen38-fp8-F32B128.orig.qwen36sp` (28 GB) |
-| Target model pack (BF16) | `…/packs/qwen38.tp1.bf16.qwen36sp` (51 GB) |
-| DFlash2 drafter pack | `/home/spark2/sparkdata/qwen38-dflash2-drafter.qwen36sp` (3.6 GB, 5-layer BF16) |
-| Deployment configs | `…/config/model_resident.json` (daemon/deployment), `…/config/qwen36_tp1_rank0.json` (adapter: pack path, revision, 8192 max positions) |
+| Target model pack (FP8, production) | `…/packs/qwen38-fp8.tp1.qwen38_27bsp` (29 GB, MX E4M3+E8M0/128, format 6) |
+| Target model pack (F32B128, original) | `…/packs/qwen38-fp8-F32B128.orig.qwen38_27bsp` (28 GB) |
+| Target model pack (BF16) | `…/packs/qwen38.tp1.bf16.qwen38_27bsp` (51 GB) |
+| DFlash2 drafter pack | `/home/spark2/sparkdata/qwen38-dflash2-drafter.qwen38_27bsp` (3.6 GB, 5-layer BF16) |
+| Deployment configs | `…/config/model_resident.json` (daemon/deployment), `…/config/qwen38_27b_tp1_rank0.json` (adapter: pack path, revision, 8192 max positions) |
 | Deployed binaries | `…/bin/sparkpipe_model_residentd`, `…/bin/sparkpipe_model_batch`; `…/lib/model_driver.so`, `model_serving_adapter.so`, `hidden_transport.so` |
 | Daemon log | `/tmp/qwen38.log` (truncated by the launcher each start) |
 | Reference server (vLLM, for comparisons) | `spark3` |
@@ -28,7 +28,7 @@ Model identity: `Qwen/Qwen3.8-27B`, revision
 `bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1` — 64 layers (48 GDN +
 16 attention), hidden 5120, vocab 248320, +1 MTP layer.
 The FP8 pack was produced from the F32B128 original by
-`tools/qwen36_stagepack_mx_repack.py` (both known bugs fixed: per-entry
+`tools/qwen38_27b_stagepack_mx_repack.py` (both known bugs fixed: per-entry
 rows/cols gate; header `file_bytes` rewrite at offset 112). Re-running the
 repack is NOT needed unless you regenerate weights.
 
@@ -62,43 +62,43 @@ cd /home/spark2 && git clone -b qwen38-dflash2-20260821 \
 
 # step 1: module (GPU validator MUST print PASS)
 pgrep -f "[s]parkpipe_model_residentd" | xargs -r kill; sleep 3
-make -C modules/qwen36_resident_decode_stage -j8 publish \
+make -C modules/qwen38_27b_resident_decode_stage -j8 publish \
   NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a \
-  STAGE_PACK_PATH=/home/spark2/sparkdata/qwen38.fp8.tp1/packs/qwen38-fp8.tp1.qwen36sp \
+  STAGE_PACK_PATH=/home/spark2/sparkdata/qwen38.fp8.tp1/packs/qwen38-fp8.tp1.qwen38_27bsp \
   STAGE_COUNT=1 STAGE_INDEX=0 STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=64 \
   TP_DEGREE=1 TP_RANK=0 TP_STANDALONE=1 MTP_LAYER_COUNT=1 \
   GDN_SNAPSHOT_SLOT_COUNT=16 MAX_ACTIVE_SEQUENCES=8 KV_BLOCK_COUNT=8 \
   ALLOW_UNQUALIFIED_EXECUTION=1
-#   → expect: "qwen36_validation PASS"
+#   → expect: "qwen38_27b_validation PASS"
 
 # step 2: node binaries (daemon, bench tool, and the driver compiler)
 make -j8 build/sparkpipe_model_residentd build/sparkpipe_model_batch \
   build/sparkpipe_model_compile
 
 # step 3: serving adapter (TP1)
-rm -f build/libqwen36_serving_adapter.so
-make build/libqwen36_serving_adapter.so \
-  CC="cc -DSPARK_QWEN36_SERVING_TP_DEGREE=1u" -j8
+rm -f build/libqwen38_27b_serving_adapter.so
+make build/libqwen38_27b_serving_adapter.so \
+  CC="cc -DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1u" -j8
 
 # step 4: driver compile
 rm -rf /tmp/qwen38-driver-new && mkdir -p /tmp/qwen38-driver-new
-env SPARK_QWEN36_STAGE_COUNT=1 SPARK_QWEN36_STAGE_INDEX=0 \
-  SPARK_QWEN36_STAGE_FIRST_LAYER=0 SPARK_QWEN36_STAGE_LAYER_COUNT=64 \
-  SPARK_QWEN36_TP_DEGREE=1 SPARK_QWEN36_TP_RANK=0 SPARK_QWEN36_TP_STANDALONE=1 \
-  SPARK_QWEN36_STAGE_MTP=1 SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS=16 \
-  SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES=8 SPARK_QWEN36_STAGE_KV_BLOCKS=8 \
-  SPARK_QWEN36_STAGE_KV_STORE=none SPARK_QWEN36_STAGE_KV_SERVICE=none \
-  SPARK_QWEN36_STAGE_KV_SOCKET=none SPARK_QWEN36_STAGE_KV_POOL_BYTES=0 \
-  SPARK_QWEN36_STAGE_KV_WORKER_COUNT=0 SPARK_QWEN36_ALLOW_UNQUALIFIED_EXECUTION=1 \
+env SPARK_QWEN38_27B_STAGE_COUNT=1 SPARK_QWEN38_27B_STAGE_INDEX=0 \
+  SPARK_QWEN38_27B_STAGE_FIRST_LAYER=0 SPARK_QWEN38_27B_STAGE_LAYER_COUNT=64 \
+  SPARK_QWEN38_27B_TP_DEGREE=1 SPARK_QWEN38_27B_TP_RANK=0 SPARK_QWEN38_27B_TP_STANDALONE=1 \
+  SPARK_QWEN38_27B_STAGE_MTP=1 SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS=16 \
+  SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES=8 SPARK_QWEN38_27B_STAGE_KV_BLOCKS=8 \
+  SPARK_QWEN38_27B_STAGE_KV_STORE=none SPARK_QWEN38_27B_STAGE_KV_SERVICE=none \
+  SPARK_QWEN38_27B_STAGE_KV_SOCKET=none SPARK_QWEN38_27B_STAGE_KV_POOL_BYTES=0 \
+  SPARK_QWEN38_27B_STAGE_KV_WORKER_COUNT=0 SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION=1 \
   build/sparkpipe_model_compile \
-  --model examples/model_descriptions/qwen36_resident_decode_stage_firmware.json \
+  --model examples/model_descriptions/qwen38_27b_resident_decode_stage_firmware.json \
   --library build/module_library --output /tmp/qwen38-driver-new \
   --include include --cc-arg -L/usr/local/cuda/lib64 --cc-arg -lcudart --cc-arg -lstdc++
 
 # step 5: deploy ALL FOUR artifacts (stale-mix = subtle numerics bugs)
 D=/home/spark2/sparkdata/qwen38.fp8.tp1
 cp /tmp/qwen38-driver-new/stages/stage_000/model_driver.so $D/lib/
-cp build/libqwen36_serving_adapter.so $D/lib/model_serving_adapter.so
+cp build/libqwen38_27b_serving_adapter.so $D/lib/model_serving_adapter.so
 cp build/sparkpipe_model_residentd $D/bin/
 cp build/sparkpipe_model_batch $D/bin/
 ```
@@ -115,11 +115,11 @@ code size (ceiling ratchets require justification in the same change).
 `runtime_limits`: submissions 2, active 64, rows 128, resident 64,
 **kv_logical 256 / kv_physical 64**, node `runtime_root` =
 `/home/spark2/sparkdata/qwen38.fp8.tp1`, node_target
-`cuda.sm121.qwen36.resident_decode_stage.bf16`,
-`adapter_configuration_path = config/qwen36_tp1_rank0.json`, endpoint
+`cuda.sm121.qwen38_27b.resident_decode_stage.bf16`,
+`adapter_configuration_path = config/qwen38_27b_tp1_rank0.json`, endpoint
 `tcp spark2:17480`.
 
-`config/qwen36_tp1_rank0.json`: `stage_pack_path` → the FP8 pack,
+`config/qwen38_27b_tp1_rank0.json`: `stage_pack_path` → the FP8 pack,
 `model_revision` as above, `max_sequence_positions: 8192`.
 
 ## 5. Launch (production daemon)
@@ -132,13 +132,13 @@ nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | xargs -r
 cd /home/spark2/sparkdata/qwen38.fp8.tp1
 : > /tmp/qwen38.log
 export LD_LIBRARY_PATH=$PWD/lib:${LD_LIBRARY_PATH:-}
-export SPARK_QWEN36_PROFILE=1                                  # optional: phase counters
-export SPARK_QWEN36_SERVING_SPECULATE=1 SPARK_QWEN36_SERVING_SPEC_METHOD=dflash2
-export SPARK_QWEN36_SERVING_SPECULATIVE_DRAFT_COUNT=8          # k=8 = all drafter mask slots
-export SPARK_QWEN36_DSPARK_PACK_PATH=/home/spark2/sparkdata/qwen38-dflash2-drafter.qwen36sp
-export SPARK_QWEN36_DFLASH2_STATE_SELECT=1 SPARK_QWEN36_DFLASH2_BONUS_FOLD=2
-export SPARK_QWEN36_DFLASH2_BLOCK_KV=0                          # MUST be 0 (see handoff: E 4.81 vs 5.66)
-export SPARK_QWEN36_DFLASH2_WINDOW=2048 SPARK_QWEN36_DFLASH2_CTX_CACHE=1
+export SPARK_QWEN38_27B_PROFILE=1                                  # optional: phase counters
+export SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPARK_QWEN38_27B_SERVING_SPEC_METHOD=dflash2
+export SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT=8          # k=8 = all drafter mask slots
+export SPARK_QWEN38_27B_DSPARK_PACK_PATH=/home/spark2/sparkdata/qwen38-dflash2-drafter.qwen38_27bsp
+export SPARK_QWEN38_27B_DFLASH2_STATE_SELECT=1 SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD=2
+export SPARK_QWEN38_27B_DFLASH2_BLOCK_KV=0                          # MUST be 0 (see handoff: E 4.81 vs 5.66)
+export SPARK_QWEN38_27B_DFLASH2_WINDOW=2048 SPARK_QWEN38_27B_DFLASH2_CTX_CACHE=1
 setsid nohup bin/sparkpipe_model_residentd --deployment config/model_resident.json \
   --rank-index 0 > /tmp/qwen38.log 2>&1 < /dev/null &
 for i in $(seq 1 90); do grep -q "model_residentd ready" /tmp/qwen38.log 2>/dev/null && break; sleep 1; done
@@ -147,8 +147,8 @@ grep -q "model_residentd ready" /tmp/qwen38.log && echo READY || { echo FAILED; 
 
 No-spec daemon: same script minus the `SPECULATE/SPEC_METHOD/DRAFT_COUNT/
 DSPARK_PACK_PATH/DFLASH2_*` exports. Default-ON kill-switches (rarely
-needed): `SPARK_QWEN36_FRAME_GRAPH=0`, `SPARK_QWEN36_WS_PLAIN=0`,
-`SPARK_QWEN36_WS_GEMM=0`.
+needed): `SPARK_QWEN38_27B_FRAME_GRAPH=0`, `SPARK_QWEN38_27B_WS_PLAIN=0`,
+`SPARK_QWEN38_27B_WS_GEMM=0`.
 
 Ready line to expect:
 `… lanes=64 kv_blocks=8192 device_gib=77.7` then
@@ -199,7 +199,7 @@ EOF
 | Rerun on same daemon | identical stream (live-daemon rerun is supported) |
 | No-spec O512 | 66.4 s (7.7 tok/s), stream `5d6ee525deb999f5` |
 | Rounds | 77 (`grep -ac spec_diag /tmp/qwen38.log`), mean accepted ≈ 5.66 |
-| Prefix cache | `grep -a "qwen36_prefix borrow" /tmp/qwen38.log` fires on a repeat prompt; output bit-identical to cold |
+| Prefix cache | `grep -a "qwen38_27b_prefix borrow" /tmp/qwen38.log` fires on a repeat prompt; output bit-identical to cold |
 
 Sequential-arrival mode (prefix-cache testing): run the batch tool with
 `SPARK_MODEL_BATCH_SEQUENTIAL=1` and a 2-request file — request 2 must
@@ -214,7 +214,7 @@ lanes from zero, so same-batch requests never hit).
 | `phase=deployment_validation … invalid_argument` | missing/zero `kv_*_page_capacity` in model_resident.json (§2) |
 | `phase=adapter_initialize capacity_exceeded` | stale daemon holding GPU — full kill sequence (§2) |
 | `route_failed … reason=2` on RELEASE submissions | adapter release path returned bad residency — don't strip the `pending->residency = submission->residency` line |
-| Request errors immediately, log shows `qwen36_prefix miss … recomputing` | adapter prefix store missed (client cache outlives it) — correct-but-slow fallback; expected after daemon restarts mid-batch |
+| Request errors immediately, log shows `qwen38_27b_prefix miss … recomputing` | adapter prefix store missed (client cache outlives it) — correct-but-slow fallback; expected after daemon restarts mid-batch |
 | Acceptance ~4.8 instead of 5.66 | `BLOCK_KV` left at 1 — must be 0 |
 | Wall jumped on "identical" build | stale artifact mix in `lib/` (deploy all four, step 5) |
 | Bench hangs at 0 tokens | client raced a daemon restart — rerun after READY |
@@ -223,8 +223,8 @@ lanes from zero, so same-batch requests never hit).
 
 - Perf analysis + next levers: `docs/DFLASH2_HANDOFF.md` (round structure,
   FFN in-situ locality, kernel ledgers).
-- Kernel benches: `tools/qwen36_native_warp_specialized_bench.cu`,
-  `tools/qwen36_multirow_dot_bench.cu` (build line in each header).
+- Kernel benches: `tools/qwen38_27b_native_warp_specialized_bench.cu`,
+  `tools/qwen38_27b_multirow_dot_bench.cu` (build line in each header).
 - TP4×PP4 direction: TP4 fabric characterization + measured allreduce
   latencies in `PERFORMANCE_STATUS.md`; DSV4 TP4 B1 production experience
   in `DSV4_TP4_B1_HANDOFF.md`; qwen38 TP4 build scaffolding in

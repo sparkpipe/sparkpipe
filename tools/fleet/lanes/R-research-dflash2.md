@@ -1,0 +1,1 @@
+GOAL: research the new SGLang DFlash2 release (BF16 lm_head, claimed ~50 tok/s): exact checkpoint/weights precision of main model, drafter architecture, acceptance rates, whether it matches our 8-bit main weights. Deliverable: docs/DFLASH2_SGLANG_ANALYSIS.md with a go/no-go port recommendation per model (qwen27b, flash, glm52).

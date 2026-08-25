@@ -33,7 +33,7 @@ Shard classes use the recipe vocabulary: REPLICATED, OUTPUT_DIM_HEADS, OUTPUT_DI
 INPUT_DIM_HEADS, INPUT_DIM, CONCAT_OUTPUT. A class whose split extent does
 not divide the degree on whole rows / head blocks / quantization groups is
 not failed here (the engine owns refusal) - the recipe marks it replicated
-for that degree and records why, which is what makes qwen36.TP16 honest:
+for that degree and records why, which is what makes qwen38_27b.TP16 honest:
 24 query heads do not split 16 ways, so attention replicates and the MLP
 carries the sharding.
 
@@ -397,7 +397,7 @@ def adapt_dsv4(c, family):
             "kv_geometry": kv_geometry, "shard_classes": shard_classes}
 
 
-def adapt_qwen36(c):
+def adapt_qwen38_27b(c):
     m, hyb, gdn, att = (c["model"], c["hybrid_attention"], c["gdn"],
                         c["attention"])
     hidden, layers, vocab = (m["hidden_dimension"], m["layer_count"],
@@ -599,8 +599,8 @@ MODELS = {
                 "adapter": lambda c: adapt_dsv4(c, "dsv4_pro")},
     "glm52": {"contract": "glm52.json", "family": "glm52",
               "adapter": adapt_glm52},
-    "qwen36": {"contract": "qwen36_authoritative.json", "family": "qwen36",
-               "adapter": adapt_qwen36},
+    "qwen38_27b": {"contract": "qwen38_27b_authoritative.json", "family": "qwen38_27b",
+               "adapter": adapt_qwen38_27b},
     "mimo25": {"contract": "mimo25_authoritative.json", "family": "mimo25",
                "adapter": adapt_mimo25},
 }
