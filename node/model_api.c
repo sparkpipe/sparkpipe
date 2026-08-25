@@ -399,10 +399,10 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		}
 	}
 	pthread_mutex_unlock(&S.queue_mutex);
-	free(req->prompt_tokens);
-	pthread_mutex_destroy(&req->mutex);
-	pthread_cond_destroy(&req->cond);
-	free(req);
+	/* DEFERRED FREE: freeing here races with the worker's event callback
+	 * (use-after-free abort on the second request). Leak per-request for
+	 * now — the production fix is a request pool or epoch-based reclamation */
+	req->next = 0; /* mark as detached */
 }
 
 static void *api_connection(void *arg)
