@@ -5173,8 +5173,8 @@
     },
     {
       "path": "tests/test_ds4_spark_brickproof.py",
-      "sha256": "1dba69bcc97b6a08c32d4535bb15d10f20decfe5bce21805d49dc9c05cfb95f8",
-      "size_bytes": 12779
+      "sha256": "d86c8f690ae64c00f4e4ed8b48fa923a33a187211666042ab6177d8adb3730ce",
+      "size_bytes": 13332
     },
     {
       "path": "tests/test_dspark_drafter_pin.c",
@@ -6193,8 +6193,8 @@
     },
     {
       "path": "tools/devcycle/ds4_spark_brickproof.py",
-      "sha256": "611c1361b15bdfad8c5255190cbecd86acb2274664db03e472e27ca4feb76aa9",
-      "size_bytes": 47640
+      "sha256": "6b7f05fba69fabc9bb3d1b6bce493275790a93112f224014ec1002e625fa2f48",
+      "size_bytes": 50180
     },
     {
       "path": "tools/devcycle/dsv4_pro_ga_migration.md",
@@ -7085,5 +7085,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 25307462
+  "total_bytes": 25310555
 }

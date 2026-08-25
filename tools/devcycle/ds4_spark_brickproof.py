@@ -33,6 +33,10 @@ MAX_SPARK_RANK = 15
 NODE_RANK_PATH = Path("/etc/ds4-node-rank")
 SWITCHED_ADDRESS_BASE = 10
 SWITCHED_PREFIX = "10.10.100"
+SWITCHED_INTERFACE = "enp1s0f1np1"
+SWITCHED_SPEED_MBIT = "100000"
+DIRECT_INTERFACE = "enp1s0f0np0"
+DIRECT_SPEED_MBIT = "200000"
 HOSTS_BLOCK_BEGIN = "# SparkPipe fleet aliases BEGIN"
 HOSTS_BLOCK_END = "# SparkPipe fleet aliases END"
 CEPH_WARM_STORAGE_MARKER = Path("/etc/sparkpipe/enable-ceph-warm-storage")
@@ -637,6 +641,49 @@ def is_enabled(unit: str) -> str:
     return(command(["systemctl","is-enabled",unit],check=False))
 
 
+def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
+    failures = []
+    observations: dict[str,object] = {}
+    for interface,expected_speed in (
+            (SWITCHED_INTERFACE,SWITCHED_SPEED_MBIT),
+            (DIRECT_INTERFACE,DIRECT_SPEED_MBIT)):
+        root = Path("/sys/class/net") / interface
+        link = {
+            "carrier":read_optional(root / "carrier").strip(),
+            "duplex":read_optional(root / "duplex").strip(),
+            "speed_mbit":read_optional(root / "speed").strip(),
+        }
+        observations[f"link:{interface}"] = link
+        if link != {"carrier":"1","duplex":"full","speed_mbit":expected_speed}:
+            failures.append(f"fabric-link:{interface}")
+    gpu = run(["nvidia-smi","--query-gpu=name,temperature.gpu","--format=csv,noheader,nounits"],timeout=30,check=False)
+    observations["gpu"] = gpu.stdout.decode("utf-8",errors="replace").strip()
+    if gpu.returncode != 0 or not str(observations["gpu"]).startswith("NVIDIA GB10,"):
+        failures.append("gpu-unhealthy")
+    extnvme = Path("/home") / node_id / "extnvme"
+    stat_result = run(["timeout","15","stat",str(extnvme)],check=False)
+    mount = command(["findmnt","-rn","-T",str(extnvme),"-o","TARGET,SOURCE,FSTYPE,OPTIONS"],check=False)
+    observations["extnvme"] = mount
+    if stat_result.returncode != 0 or not mount or "rw" not in mount.split()[-1].split(","):
+        failures.append("extnvme-not-mounted-rw")
+    tailscale = run(["tailscale","status","--json"],timeout=30,check=False)
+    try:
+        status = json.loads(tailscale.stdout.decode("utf-8"))
+        self_status = status.get("Self",{})
+        observations["tailscale"] = {
+            "backend":status.get("BackendState"),
+            "online":self_status.get("Online"),
+            "tags":self_status.get("Tags",[]),
+        }
+    except json.JSONDecodeError:
+        observations["tailscale"] = {}
+    if (observations["tailscale"].get("backend") != "Running" or
+            observations["tailscale"].get("online") is not True or
+            "tag:spark" not in observations["tailscale"].get("tags",[])):
+        failures.append("tailscale-not-ready")
+    return(failures,observations)
+
+
 def remote_audit(payload_path: Path) -> dict[str,object]:
     payload = json.loads(payload_path.read_text())
     public_key = str(payload["fleet_public_key"])
@@ -832,6 +879,10 @@ def remote_audit(payload_path: Path) -> dict[str,object]:
     if (not observations["ceph_warm_storage_selected"] and
             observations["ceph_target_active"] == "active"):
         failures.append("unselected-ceph-active")
+    hardware_failures,hardware_observations = audit_fleet_hardware(
+        str(payload["recovery_network"]["node_id"]))
+    failures.extend(hardware_failures)
+    observations.update(hardware_observations)
     health_path = Path("/var/lib/sparkpipe/fsck-health/last.json")
     if health_path.exists():
         try:

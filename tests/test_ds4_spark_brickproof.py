@@ -251,6 +251,16 @@ Boot0002* ubuntu HD(1,GPT,def)
         self.assertIn('["systemctl","--failed","--no-legend","--plain"]',source)
         self.assertIn('["logrotate","--debug","/etc/logrotate.conf"]',source)
 
+    def test_fleet_audit_pins_physical_interfaces(self) -> None:
+        self.assertEqual(MODULE.SWITCHED_INTERFACE,"enp1s0f1np1")
+        self.assertEqual(MODULE.SWITCHED_SPEED_MBIT,"100000")
+        self.assertEqual(MODULE.DIRECT_INTERFACE,"enp1s0f0np0")
+        self.assertEqual(MODULE.DIRECT_SPEED_MBIT,"200000")
+        source = SCRIPT.read_text()
+        self.assertIn('"nvidia-smi","--query-gpu=name,temperature.gpu"',source)
+        self.assertIn('["tailscale","status","--json"]',source)
+        self.assertIn('extnvme-not-mounted-rw',source)
+
     def test_persistent_unit_links_only_returns_dependency_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
