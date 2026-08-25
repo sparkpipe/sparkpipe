@@ -142,6 +142,23 @@ The policy repairs and verifies:
 - 64 GiB swap, earlyoom, no-swap model cgroups, and a 108 GiB user/model ceiling
 - network recovery sysctls and required qdisc modules
 
+### Quiesce unselected Ceph
+
+The controller preserves Ceph data and configuration and does not stop a cluster
+that is already active. If the audit reports `unselected-ceph-active`, first
+confirm that `/etc/sparkpipe/enable-ceph-warm-storage` is absent and that no
+Ceph filesystem, RBD, iSCSI, or NVMe-oF client is mounted or configured. Then
+quiesce the old benchmark services without deleting their state:
+
+```bash
+sudo systemctl stop ceph.target ceph-crash.service
+sudo systemctl reset-failed 'ceph*.service' 'ceph*.target'
+```
+
+Do not remove `/var/lib/ceph`, `/etc/ceph`, OSD devices, or package state as part
+of fleet recovery. Rerun the brickproof audit; active Ceph without the selection
+marker remains a hard fleet-duty failure.
+
 ## Fleet-duty acceptance
 
 A host is not fleet-ready merely because it answers ping or accepts TCP. Record
