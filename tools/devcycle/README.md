@@ -79,6 +79,20 @@ GA validator, source-contract suite, docs update, PR via
 tools/sparkpipe_github_pat.sh (never plain gh/git push), merged-main
 rebuild + 3-run requalification.
 
+## Merge discipline
+
+The package inventory is part of the source contract. Every PR must pass
+`python3 tools/verify_package_manifest.py` in required CI. Immediately before
+merge, refresh the PR against current `origin/main`. If the base advanced after
+the last green run, rebase, regenerate `PACKAGE_MANIFEST.json` and
+`SHA256SUMS`, rerun the package verifier, push, and wait for required CI again.
+Never merge a manifest-bearing branch using a green result from an older base.
+
+After merge, pull the exact merge commit into the deployment checkout and run
+the package verifier once more before building or installing. A concurrent
+merge that adds, removes, or changes a packaged path is a hard stop, not a
+warning and not a reason to hand-edit the deployed tree.
+
 ## Cleanup
 
 ```sh

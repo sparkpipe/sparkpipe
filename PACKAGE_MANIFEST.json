@@ -1,5 +1,5 @@
 {
-  "file_count": 1416,
+  "file_count": 1417,
   "files": [
     {
       "path": ".gitattributes",
@@ -390,6 +390,11 @@
       "path": "docs/PROPOSAL_RING_WINDOW_HOOK.md",
       "sha256": "c3b6f30e9a913fd095a41128cee0e5333ff738c99c58352b719c1c36591f9085",
       "size_bytes": 7439
+    },
+    {
+      "path": "docs/QWEN36_TO_QWEN38_RENAME.md",
+      "sha256": "e351315ee0b7a209d15d6ffe50fa1bd1df2c1a85cd7960c1d45e3d7b15afa0cd",
+      "size_bytes": 2351
     },
     {
       "path": "docs/QWEN36_TP4_PERF.md",
@@ -5783,8 +5788,8 @@
     },
     {
       "path": "tests/test_package_manifest.py",
-      "sha256": "d7316047d7f4707ffa7330ec88465fa8b533720e2e1fe43b9e6e8418d2e102a1",
-      "size_bytes": 7198
+      "sha256": "b1b177b8aef851434df1db5a5c648521ca912e9cf872f54bc576f2cef2bc0acc",
+      "size_bytes": 7679
     },
     {
       "path": "tests/test_perf_estimate.py",
@@ -6073,8 +6078,8 @@
     },
     {
       "path": "tools/cuda13_sm121a_compile_gate.sh",
-      "sha256": "ac4e426d5b73b8f02af40f80c041a1317c39fedc5bbdf1b2c6d55dd470cc6871",
-      "size_bytes": 8423
+      "sha256": "87648f43e208ab1c4e1de5e447fb81279b7920122271359e3578e3fd67858712",
+      "size_bytes": 8486
     },
     {
       "path": "tools/devcycle.sh",
@@ -6088,8 +6093,8 @@
     },
     {
       "path": "tools/devcycle/README.md",
-      "sha256": "8b89fcc845a384589a0cc32d57df3bb1e2ce0b6729cdb075eeb32ed6d2b5c908",
-      "size_bytes": 4038
+      "sha256": "d4454b907dc018c470c452e77fe444e7a5a89d05314dd7ae6a59089c790b140e",
+      "size_bytes": 4803
     },
     {
       "path": "tools/devcycle/archive_ga_pro_cold.sh",
@@ -7085,5 +7090,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 25310572
+  "total_bytes": 25314232
 }

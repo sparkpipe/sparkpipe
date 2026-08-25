@@ -16,6 +16,7 @@ VERIFIER = ROOT / "tools" / "verify_package_manifest.py"
 PACKAGE_BUILDER = ROOT / "tools" / "package_source.py"
 ARCHIVE_VERIFIER = ROOT / "tools" / "verify_source_archive.py"
 PACKAGE_INVENTORY = ROOT / "tools" / "package_inventory.py"
+CUDA_GATE = ROOT / "tools" / "cuda13_sm121a_compile_gate.sh"
 
 
 def run(*arguments: str, expect_success: bool) -> subprocess.CompletedProcess[str]:
@@ -211,9 +212,21 @@ def verify_archive_round_trip_does_not_contaminate_payload() -> None:
             )
 
 
+def verify_required_cuda_gate_checks_package_manifest() -> None:
+    gate_source = CUDA_GATE.read_text()
+    required_command = (
+        'python3 "${repository_root}/tools/verify_package_manifest.py"'
+    )
+    if required_command not in gate_source:
+        raise AssertionError(
+            "required CUDA gate does not verify the package manifest"
+        )
+
+
 def main() -> int:
     verify_manifest_rejects_payload_drift()
     verify_archive_round_trip_does_not_contaminate_payload()
+    verify_required_cuda_gate_checks_package_manifest()
     print("package manifest generation and Git-independent verification pass")
     return 0
 

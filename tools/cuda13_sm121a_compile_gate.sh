@@ -6,6 +6,8 @@ output_directory="${SPARK_CUDA_GATE_OUTPUT_DIRECTORY:-${repository_root}/build/c
 nvcc_binary="${NVCC:-nvcc}"
 cuda_architecture="${CUDA_ARCH:-sm_121a}"
 
+python3 "${repository_root}/tools/verify_package_manifest.py"
+
 if [[ "${cuda_architecture}" != "sm_121a" ]]; then
 	echo "CUDA gate requires CUDA_ARCH=sm_121a, got ${cuda_architecture}" >&2
 	exit 2
