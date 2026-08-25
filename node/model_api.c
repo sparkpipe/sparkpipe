@@ -409,9 +409,9 @@ int main(int argc,char **argv)
 	configuration.descriptor_bytes = (uint32_t)sizeof(configuration);
 	configuration.deployment = &deployment;
 	configuration.runtime_root = runtime_root;
-	configuration.request_capacity = 1024u;
-	configuration.max_context_tokens = 262144u;
-	configuration.max_prefill_rows_per_submission = 64u;
+	configuration.request_capacity = 2u;
+	configuration.max_context_tokens = 4096u;
+	configuration.max_prefill_rows_per_submission = 8u;
 	configuration.connect_timeout_ms = 30000u;
 	configuration.maximum_messages_per_rank_per_progress = 16u;
 	configuration.event_function = model_api_event;
