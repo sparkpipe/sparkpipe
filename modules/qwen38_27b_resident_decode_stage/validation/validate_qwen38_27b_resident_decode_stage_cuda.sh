@@ -108,6 +108,7 @@ make -C "${repository_root}" \
 
 "${nvcc_path}" \
     -std=c++17 \
+    -DSPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES=${SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES:-8} \
     -O3 \
     --expt-relaxed-constexpr \
     -gencode arch=compute_121a,code=sm_121a \
