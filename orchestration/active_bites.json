@@ -1,0 +1,1800 @@
+{
+  "schema_version": 1,
+  "source_pert": "orchestration/program_pert.json",
+  "updated_at": "2026-08-26T06:00:00Z",
+  "policy": {
+    "selection": "Only status=ready bites whose PERT dependencies are integrated may dispatch. dependency_blocked is an admitted specification and becomes ready automatically when every named dependency has an integrated receipt.",
+    "parallelism": "Dispatch every conflict-free ready bite; a live child blocks only descendants and overlapping write or hardware leases.",
+    "production": "One implementer result plus an independent audit of the exact patch is required before coordinator review.",
+    "exploratory": "No independent audit; retain decisive raw data and the decision unlocked by every outcome.",
+    "code_metric": "Solutions / (net production LOC squared); failed or unqualified work has zero Solutions."
+  },
+  "bites": [
+    {
+      "id": "BG-MOUNT-001",
+      "pert_id": "ART-013",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 240,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Fail-closed physical mount receipt validator",
+      "objective": "Implement one small offline validator for injected findmnt and lsblk evidence; it must prove one expected host, scoped path, mounted source, filesystem, and physical parent without executing remote commands or inferring identity.",
+      "expected_value": "Unblocks safe file work on every Spark; a false mount identity could fill or mutate the wrong device, while this pure validator can be finished and tested immediately.",
+      "dependencies": [],
+      "write_set": ["tools/storage/mount_receipt.py", "tests/test_mount_receipt.py"],
+      "context_paths": ["qualification/storage/inventory_probe.py", "/private/tmp/sparkpipe-luna-logical/results/NVME-INVENTORY-LIVE.json"],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 80,
+      "required_data": [
+        "CLI: python3 tools/storage/mount_receipt.py validate --receipt RECEIPT.json; exit 0 and canonical JSON on pass, nonzero and one stable reason code on rejection",
+        "receipt binds expected hostname, scoped_path, mount_target, mounted_source, filesystem, and physical_parent to observed hostname, findmnt rows, and lsblk tree",
+        "fixtures cover valid internal NVMe plus missing evidence, multiple matching mounts, wrong host/device/parent/filesystem/mountpoint, path outside mount root, shared filesystem, malformed lsblk, and root-scope input",
+        "exact patch, net production LOC, test count, commands, exits, and raw output"
+      ],
+      "acceptance": [
+        "Validation is deterministic, read-only, standard-library-only, and never shells out.",
+        "Only one findmnt row and one physical-parent chain may satisfy the declared identity; ambiguity fails closed.",
+        "cifs, nfs, ceph, fuse, missing physical parents, /, and a scoped path outside the observed mount fail.",
+        "python3 tests/test_mount_receipt.py and git diff --check pass."
+      ],
+      "test_commands": ["python3 tests/test_mount_receipt.py", "python3 -m py_compile tools/storage/mount_receipt.py", "git diff --check"],
+      "outcomes": {"pass": "Seal the exact patch for independent audit and make BG-MOUNT-001 available to fileadmin.", "fail": "Return the first failing rejection fixture and the smallest same-write-set correction."}
+    },
+    {
+      "id": "BG-PACK-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 239,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Deterministic rank-pack manifest builder and validator",
+      "objective": "Implement one small offline CLI that builds or validates a rank-local manifest from an explicit file list and binds checkpoint identity, model recipe, TP4xPP4 rank ownership, byte counts, and SHA-256 values.",
+      "expected_value": "Makes generated shards verifiable and directly placeable instead of requiring another broad inventory; one valid rank manifest is the unit fileadmin can copy and publish.",
+      "dependencies": [],
+      "write_set": ["tools/storage/rank_pack_manifest.py", "tests/test_rank_pack_manifest.py"],
+      "context_paths": ["tools/generate_package_manifest.py", "tools/verify_package_manifest.py", "tools/dsv4_tp4_pp4_stagepacks.py", "qualification/spark/topologies/single_switch_16node.json"],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 100,
+      "required_data": [
+        "CLI build --spec SPEC.json --root ROOT --output MANIFEST.json and validate --manifest MANIFEST.json --root ROOT",
+        "spec binds model, checkpoint revision/index SHA-256, recipe SHA-256, codec, world_size=16, tp_degree=4, pp_degree=4, world_rank, pp_stage=floor(rank/4), tp_rank=rank%4, and explicit relative final files",
+        "manifest records sorted relative path, exact bytes and SHA-256 for every required file plus total bytes; output is byte-deterministic",
+        "fixtures reject missing/extra/duplicate files, absolute or traversal names, .part/.tmp names, rank/topology mismatch, size/hash drift, and incomplete required metadata"
+      ],
+      "acceptance": [
+        "Builder reads files and writes only the requested manifest; validator writes nothing.",
+        "No model family or checkpoint path is guessed and no tensor is generated or transformed.",
+        "Two builds from identical input are byte-identical and every negative fixture fails closed.",
+        "python3 tests/test_rank_pack_manifest.py and git diff --check pass."
+      ],
+      "test_commands": ["python3 tests/test_rank_pack_manifest.py", "python3 -m py_compile tools/storage/rank_pack_manifest.py", "git diff --check"],
+      "outcomes": {"pass": "Seal the exact patch for independent audit and use it for the first generated TP4xPP4 pack.", "fail": "Return the first identity or determinism failure and the smallest same-write-set correction."}
+    },
+    {
+      "id": "BG-BUDGET-001",
+      "pert_id": "ART-017",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 238,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Per-Spark pack generation and KV-reserve budget gate",
+      "objective": "Implement one pure JSON-in/JSON-out byte calculator that separately decides whether a proposed rank-pack generation fits its temporary peak and whether the resulting node meets the one-terabyte model target plus caller-selected two-to-2.5-terabyte KV reserve.",
+      "expected_value": "Turns the live free-space inventory into immediate per-model go/no-go decisions and prevents pack generation from exhausting an internal NVMe.",
+      "dependencies": [],
+      "write_set": ["tools/storage/disk_budget.py", "tests/test_disk_budget.py"],
+      "context_paths": ["tools/nvme_kv_estimate.py", "/private/tmp/sparkpipe-luna-logical/results/NVME-INVENTORY-LIVE.json"],
+      "time_budget_minutes": 10,
+      "max_net_production_lines": 80,
+      "required_data": [
+        "CLI: python3 tools/storage/disk_budget.py --input PLAN.json; prints canonical decision JSON and returns 0 only when operation_safe is true",
+        "input integer bytes: total, used, available, protected_model, existing_required_pack, new_pack, generated_scratch_peak, verified_reclaimable_generated, unknown_owner, and kv_reserve_requested",
+        "output exact formulas and values for peak_used, final_used, final_available, final_model_bytes, operation_safe, model_target_met, kv_target_met, and blocking reason codes",
+        "fixtures cover 2.0TB and 2.5TB reserve boundaries, one-byte overflow, temporary peak failure, unknown ownership, negative/noninteger/contradictory totals, and no-delete baseline"
+      ],
+      "acceptance": [
+        "kv_reserve_requested outside 2000000000000..2500000000000 fails; model target is exactly 1000000000000 bytes.",
+        "Only explicitly verified generated bytes may be counted as reclaimable; protected or unknown bytes never reduce the peak or final usage.",
+        "The result distinguishes operation safety from target-layout eligibility and reports every equation in bytes.",
+        "python3 tests/test_disk_budget.py and git diff --check pass."
+      ],
+      "test_commands": ["python3 tests/test_disk_budget.py", "python3 -m py_compile tools/storage/disk_budget.py", "git diff --check"],
+      "outcomes": {"pass": "Seal the exact patch for independent audit and calculate all sixteen node budgets from the live inventory.", "fail": "Return the first boundary-calculation failure and the smallest same-write-set correction."}
+    },
+    {
+      "id": "BG-RECEIPT-001",
+      "pert_id": "ART-015",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 237,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Generation-fenced fileadmin apply receipt validator",
+      "objective": "Implement one offline validator that binds an apply receipt to the approved plan, live mount receipt, lease generation, exact published rank-manifest hash, and explicitly allowed create/copy/verify/atomic-publish/generated-temp-cleanup operations.",
+      "expected_value": "Allows long-running direct rank-pack placement to finish safely and resume without coordinator micromanagement or accepting unverified files.",
+      "dependencies": [],
+      "write_set": ["tools/storage/file_agent_receipt.py", "tests/test_file_agent_receipt.py"],
+      "context_paths": ["tools/storage/mount_receipt.py", "tools/storage/rank_pack_manifest.py", "tools/storage/disk_budget.py"],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 100,
+      "required_data": [
+        "CLI: python3 tools/storage/file_agent_receipt.py validate --plan PLAN.json --receipt RECEIPT.json --now UNIX_SECONDS",
+        "plan and receipt bind plan SHA-256, host, mount receipt SHA-256, nonce, generation, lease start/expiry, source rank-manifest SHA-256, destination root, byte ceiling, operation list, and final published manifest SHA-256",
+        "only create_temp, copy_range, verify_sha256, publish_atomic, and delete_generated_temp operations are accepted; every path is beneath the scoped mount",
+        "fixtures reject stale/wrong generation, expired lease, identity/hash/byte drift, partial publication, source delete/move, overwrite, out-of-root path, undeclared operation, and cleanup of a non-generated path"
+      ],
+      "acceptance": [
+        "Validator is deterministic, standard-library-only, and never touches the filesystem named by the receipt.",
+        "Published files and hashes exactly equal the bound rank-pack manifest; partial or extra output fails.",
+        "No source checkpoint deletion or movement can be represented as an accepted operation.",
+        "python3 tests/test_file_agent_receipt.py and git diff --check pass."
+      ],
+      "test_commands": ["python3 tests/test_file_agent_receipt.py", "python3 -m py_compile tools/storage/file_agent_receipt.py", "git diff --check"],
+      "outcomes": {"pass": "Seal the exact patch for independent audit and enable resumable direct rank-pack publication.", "fail": "Return the first fencing or forbidden-operation failure and the smallest same-write-set correction."}
+    },
+    {
+      "id": "Q27-TP4PP4-PACKER-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 236,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Make the existing Qwen 27B packer emit TP4xPP4 ranks",
+      "objective": "Apply the smallest correction and wrapper around qwen36_stagepack.py so its existing TP slicing works for four 16-layer PP stages and deterministically emits sixteen verifiable rank packs.",
+      "expected_value": "The live inventory proved a complete Qwen 27B source on spark3; this removes its first exact blocker without inventing a second pack format.",
+      "dependencies": [],
+      "write_set": ["tools/qwen36_stagepack.py", "tools/qwen36_tp4_pp4_stagepacks.py", "tests/test_qwen36_tp4_pp4_stagepacks.py"],
+      "context_paths": ["tests/test_qwen36_stagepack.py", "model_contracts/q27", "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-PACK-INVENTORY-001.json"],
+      "time_budget_minutes": 18,
+      "max_net_production_lines": 100,
+      "required_data": [
+        "one CLI taking checkpoint and output directory and invoking the existing converter for stages 0+16, 16+16, 32+16, and 48+16 crossed with TP ranks 0..3",
+        "mini-checkpoint test proving globals appear only on owning stages, every layer appears once per TP rank, TP metadata is 4/rank, all sixteen packs verify, and a repeated build is byte-identical",
+        "negative tests for wrong rank, incomplete source, partial output, and a slice outside 64 layers",
+        "exact patch, net production LOC, commands, exits, output, and independent audit hash"
+      ],
+      "acceptance": [
+        "Reuse the current wire format and conversion/sharding functions; no copied tensor logic or new framework.",
+        "The wrapper streams one rank at a time and writes no checkpoint data.",
+        "All focused tests and git diff --check pass within the LOC cap."
+      ],
+      "test_commands": ["python3 tests/test_qwen36_stagepack.py", "python3 tests/test_qwen36_tp4_pp4_stagepacks.py", "git diff --check"],
+      "outcomes": {"pass": "Audit the exact patch, then unblock TP4PP4-Q27-MATERIALIZE-001.", "fail": "Return the first unsupported stage/TP invariant and the smallest correction."}
+    },
+    {
+      "id": "GLM52-TP4PP4-PACKER-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 235,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Parameterize the existing GLM 5.2 packer for TP4xPP4",
+      "objective": "Use glm52_resident_stagepack.py's existing layer-range, stage-count, stage-index, TP-degree, and TP-rank machinery to emit four balanced PP stages crossed with four TP ranks, with embedding/head globals owned once.",
+      "expected_value": "The live inventory proved a complete GLM 5.2 source on sparke; a small topology wrapper unlocks sixteen rank packs and avoids a new packer.",
+      "dependencies": [],
+      "write_set": ["tools/glm52_resident_stagepack.py", "tools/glm52_tp4_pp4_stagepacks.py", "tests/test_glm52_tp4_pp4_stagepacks.py"],
+      "context_paths": ["tests/test_glm52_stagepack.c", "examples/model_descriptions/glm52_resident_decode_stage_fp8_firmware.json", "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-PACK-INVENTORY-001.json"],
+      "time_budget_minutes": 18,
+      "max_net_production_lines": 100,
+      "required_data": [
+        "balanced deterministic 78-layer split and one command template per world rank with stage_count=4, stage_index, tp_degree=4, and tp_rank",
+        "tests proving all layers are covered once per TP rank, no overlap, embedding only stage0, final norm/head only stage3, correct rank metadata, invalid topology rejection, and deterministic manifest",
+        "proof the wrapper reuses the existing Reader/Packer and adds no tensor transformation",
+        "exact patch, net production LOC, commands, exits, output, and independent audit hash"
+      ],
+      "acceptance": [
+        "No second GLM wire format, model reader, or tensor-copy implementation is introduced.",
+        "Sixteen rank commands are deterministic and can run independently from the same explicit source identity.",
+        "Focused tests and git diff --check pass within the LOC cap."
+      ],
+      "test_commands": ["python3 tests/test_glm52_tp4_pp4_stagepacks.py", "git diff --check"],
+      "outcomes": {"pass": "Audit the exact patch, then unblock TP4PP4-GLM52-MATERIALIZE-001.", "fail": "Return the first global-ownership or TP-slice invariant and the smallest correction."}
+    },
+    {
+      "id": "GLM-TP8-RANK4-BIND-003",
+      "pert_id": "MOD-GLM-006",
+      "biggulp": "model-glm52",
+      "status": "ready",
+      "priority": 218,
+      "development_phase": "exploratory",
+      "action_kind": "spark_configuration_bind",
+      "title": "Bind the retained GLM TP8 configuration to spark8 through sparkf",
+      "objective": "Using the successful switched-fabric receipt, inspect and generation-fence the eight retained GLM TP8 deployment configurations so physical rank 12 is logical TP rank 4 on sparkc:19484, every peer/endpoint is restricted to spark8 through sparkf, and each rank references its existing matching pack; do not launch the model or copy model data.",
+      "expected_value": "Removes the exact stale spark1 rank-4 configuration that caused the last eight-rank launch to fail before inference, while leaving GPU time available for other models.",
+      "dependencies": [],
+      "nodes": ["spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "context_paths": ["tools/devcycle/fleet_registry.json", "/private/tmp/sparkpipe-luna-logical/results/GLM-FABRIC-SPARKC-002.json", "/private/tmp/sparkpipe-luna-logical/results/GLM-LAUNCH-LIVE.json"],
+      "time_budget_minutes": 20,
+      "required_data": [
+        "merged-main/tool identity and successful GLM-FABRIC-SPARKC-002 receipt hash used as the fabric prerequisite",
+        "for ranks 0 through 7: host, control endpoint, fabric peer list, config path and SHA-256, rank-pack path, bytes and SHA-256, with rank 4 exactly sparkc:19484 and its rank04 pack",
+        "before-to-after field diff proving spark1 is absent from every host, endpoint, peer and pack reference and no unrelated field changed",
+        "current adapter/config validator argv, stdout, stderr and exit for all eight generated configurations",
+        "generation-fenced activation receipt or the first exact missing config/pack/validator fact; no daemon is started and no model bytes are copied"
+      ],
+      "acceptance": [
+        "The only eight model hosts are spark8, spark9, sparka, sparkb, sparkc, sparkd, sparke and sparkf in rank order.",
+        "Rank 4 binds sparkc:19484 and the existing rank04 pack; every hash is recorded and all eight configs validate.",
+        "No model data, source, service, daemon or GPU workload is changed."
+      ],
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/GLM-TP8-RANK4-BIND-003.json"
+    },
+    {
+      "id": "GLM-TP8-B1-CORRECTNESS-004",
+      "pert_id": "MOD-GLM-006",
+      "biggulp": "model-glm52",
+      "status": "dependency_blocked",
+      "priority": 229,
+      "development_phase": "exploratory",
+      "action_kind": "spark_model_launch",
+      "title": "Run the first corrected GLM 5.2 TP8 B1 token",
+      "objective": "After the retained rank configurations pass GLM-TP8-RANK4-BIND-003, launch the existing real-weight FP8 GLM TP8 runtime on spark8 through sparkf and run the existing 11-token B1 request through one emitted token; capture the earliest all-rank failure or the exact token and timing evidence.",
+      "expected_value": "This is the shortest experiment that distinguishes a fixed TP8 launch from the previous stale rank-4 topology failure and produces the first nonzero GLM correctness result needed before any 32K or throughput hill climb.",
+      "dependencies": ["GLM-TP8-RANK4-BIND-003"],
+      "nodes": ["spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["gpu", "service_control"],
+      "role": "model_launcher",
+      "context_paths": ["/private/tmp/sparkpipe-luna-logical/results/GLM-LAUNCH-LIVE.json", "/private/tmp/sparkpipe-luna-logical/results/GLM-FABRIC-SPARKC-002.json", "/private/tmp/sparkpipe-luna-logical/results/GLM-TP8-RANK4-BIND-003.json", "tools/model_stream_decode_benchmark.py", "tools/fleet_swap.sh"],
+      "time_budget_minutes": 35,
+      "required_data": [
+        "merged-main commit and clean deployed runtime/config/binary hashes on all eight ranks plus the accepted rank-bind receipt hash",
+        "all-rank service start timestamps, PIDs, readiness lines, pack paths/hashes, TP ranks and endpoints",
+        "exact existing B1 request path and SHA-256, client argv, stdout, stderr, exit, emitted token count and token IDs",
+        "earliest rank-0 or first-failing-rank log window with peer timeout noise omitted",
+        "GPU utilization samples during the request and a decisive next action for every observed outcome"
+      ],
+      "acceptance": [
+        "All eight ranks load their matching real-weight packs with rank 4 on sparkc and no spark1 reference.",
+        "The B1 request emits at least one token with a successful terminal status; a failure remains useful only when the earliest causal rank and exact status are captured.",
+        "No smaller-context substitution, synthetic weights, hotpatch or unrelated service change is allowed. This exploratory run needs no independent audit."
+      ],
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/GLM-TP8-B1-CORRECTNESS-004.json",
+      "outcomes": {
+        "pass": "Immediately enqueue exact-32K B1 prefill/decode qualification on the same topology.",
+        "fail": "Register the smallest diagnostic or correction for the first causal failure and rerun this same B1 cell."
+      }
+    },
+    {
+      "id": "K3-PACK-VERIFY-CLI-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 234,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Add a read-only verifier mode to the existing K3 packer",
+      "objective": "Add the smallest verifier-only CLI path to k3_pack.py that checks the existing magic/version, manifest JSON, tensor ranges/alignment/non-overlap, embedded geometry, file closure, and outer SHA-256 without rebuilding weights.",
+      "expected_value": "Sixteen K3 TP4xPP4 packs already exist; verifier-only qualification can recover them without source regeneration.",
+      "dependencies": [],
+      "write_set": ["tools/k3_pack.py", "tests/test_k3_pack.py"],
+      "context_paths": ["tests/test_k3_pack_layout.py", "docs/K3_PACK_FORMAT_V2.md", "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-PACK-INVENTORY-001.json"],
+      "time_budget_minutes": 15,
+      "max_net_production_lines": 80,
+      "required_data": [
+        "CLI verifier command and canonical JSON result containing file bytes, SHA-256, version, tensor count, payload bytes, and validated geometry",
+        "positive fixture plus corruption tests for magic/version, manifest length/JSON, traversal, alignment, overlap, bounds, payload closure, and geometry drift",
+        "proof verify mode never opens checkpoint input or writes a pack",
+        "exact patch, net production LOC, commands, exits, output, and independent audit hash"
+      ],
+      "acceptance": [
+        "Reuse validate_layout and existing format constants; do not duplicate the packer.",
+        "Malformed or truncated files fail before any unbounded allocation.",
+        "Focused tests and git diff --check pass within the LOC cap."
+      ],
+      "test_commands": ["python3 tests/test_k3_pack.py", "python3 tests/test_k3_pack_layout.py", "git diff --check"],
+      "outcomes": {"pass": "Audit the exact patch, then run TP4PP4-K3-LIVE-VERIFY-001.", "fail": "Return the first unrepresentable validation invariant and the smallest correction."}
+    },
+    {
+      "id": "K3-CONTRACT-CORRECTION-001",
+      "pert_id": "MOD-K3-001",
+      "biggulp": "model-k3",
+      "status": "ready",
+      "priority": 222,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Correct and shrink the rejected K3 exact-contract patch",
+      "objective": "Produce the smallest corrected version of D35-MOD-K3-001: retain model_contracts/k3_authoritative.json as the sole semantic authority, derive exactly 93 layer kinds from period=4 and global_phase=3, remove contradictory hard-coded classifications, and fail closed on unresolved header macros.",
+      "expected_value": "Unblocks the K3 model lane at its first gate and removes the false dependency that parked every later K3 task.",
+      "dependencies": [],
+      "write_set": ["model_contracts/k3/contract.py", "model_contracts/k3/frozen_contract.json", "qualification/k3/contract/fixtures", "tests/model_contracts/test_k3_contract.py"],
+      "context_paths": ["model_contracts/k3_authoritative.json", "/private/tmp/sparkpipe-oxalpha-stream/D35-MOD-K3-001/candidate.patch", "/private/tmp/sparkpipe-oxalpha-stream/D35-MOD-K3-001/receipt.json"],
+      "time_budget_minutes": 18,
+      "max_net_production_lines": 260,
+      "required_data": [
+        "exact explanation of the prior 93-entry length/phase contradiction and which duplicated data was deleted",
+        "derived classification has length 93, MLA exactly at indices congruent to 3 modulo 4, KDA count 69, MLA count 24, and layer 92 is KDA",
+        "unresolved or cyclic header macros raise a deterministic contract error instead of becoming zero",
+        "exact patch, net production LOC, focused test output, git diff check, and independent audit of the corrected patch"
+      ],
+      "acceptance": [
+        "No second hard-coded layer classification or nearby-model constants are introduced.",
+        "The rejected candidate is reduced where possible rather than blindly reapplied.",
+        "python3 tests/model_contracts/test_k3_contract.py and git diff --check pass."
+      ],
+      "test_commands": ["python3 tests/model_contracts/test_k3_contract.py", "git diff --check"],
+      "outcomes": {"pass": "Audit and deliver the exact correction to coordinator review.", "fail": "Return the first remaining authoritative-source contradiction and the smallest correction."}
+    },
+    {
+      "id": "K3-TP4-EQUIV-BOUNDS-002",
+      "pert_id": "MOD-K3-006",
+      "biggulp": "model-k3",
+      "status": "ready",
+      "priority": 221,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Make K3 TP4 numerical evidence fail closed",
+      "objective": "Apply the already-defined K3-BITE-EQUIV-001 fix against the current source instead of retrying its stale non-applying patch: reject odd-byte and unequal-rank dumps before unpacking or summation while preserving valid summed and direct paths.",
+      "expected_value": "Makes the first K3 multi-rank numerical run decision-grade instead of allowing malformed evidence or a traceback.",
+      "dependencies": [],
+      "write_set": ["tools/k3_tp4_equivalence_check.py", "tests/test_k3_tp4_equivalence_check.py"],
+      "context_paths": ["/private/tmp/sparkpipe-luna-logical/tasks/K3-BITE-EQUIV-001.json", "/private/tmp/sparkpipe-oxalpha-stream/K3-BITE-EQUIV-001/state.json"],
+      "time_budget_minutes": 10,
+      "max_net_production_lines": 40,
+      "required_data": ["odd-byte and unequal-rank failures through the real CLI", "valid summed and --direct controls at unchanged tolerance", "exact patch, net LOC, test output, and independent audit"],
+      "acceptance": ["No tolerance or arithmetic change.", "Malformed input prints FAIL and exits nonzero without traceback.", "python3 tests/test_k3_tp4_equivalence_check.py and git diff --check pass."],
+      "test_commands": ["python3 tests/test_k3_tp4_equivalence_check.py", "git diff --check"]
+    },
+    {
+      "id": "K3-SHARD-BOUNDS-002",
+      "pert_id": "MOD-K3-003",
+      "biggulp": "model-k3",
+      "status": "ready",
+      "priority": 220,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Fail closed at K3 rank-pack shard admission",
+      "objective": "Execute the already-defined K3-BITE-SHARD-001 against current source: reject truncated header/manifest/payload extents, malformed JSON, and invalid rank or degree before emitting a rank pack, without changing valid TP geometry.",
+      "expected_value": "Removes a concrete rank-pack publication blocker while all sixteen live packs are being requalified.",
+      "dependencies": [],
+      "write_set": ["tools/k3_shard.py", "tests/test_k3_shard_bounds.py"],
+      "context_paths": ["/private/tmp/sparkpipe-luna-logical/tasks/K3-BITE-SHARD-001.json", "/private/tmp/sparkpipe-oxalpha-stream/K3-BITE-SHARD-001/state.json"],
+      "time_budget_minutes": 15,
+      "max_net_production_lines": 70,
+      "required_data": ["all malformed-source and invalid-rank/degree cases fail before publication", "unchanged valid V2 control", "exact patch, net LOC, focused and existing test output, and independent audit"],
+      "acceptance": ["No tensor classification or shard arithmetic redesign.", "No partial rank pack is published on failure.", "Both focused and existing shard tests plus git diff check pass."],
+      "test_commands": ["python3 tests/test_k3_shard_bounds.py", "python3 tests/test_k3_shard.py", "git diff --check"]
+    },
+    {
+      "id": "K3-PACKLOAD-BOUNDS-002",
+      "pert_id": "MOD-K3-003",
+      "biggulp": "model-k3",
+      "status": "ready",
+      "priority": 219,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Make the K3 pack loader payload bounds overflow-safe",
+      "objective": "Execute the already-defined K3-BITE-PACKLOAD-001 against current source: use overflow-safe ordered bounds checks for aligned payload base, entry offset, and bytes while preserving the public ABI and valid lookup behavior.",
+      "expected_value": "Prevents the serving launcher from accepting a bogus payload pointer and closes one concrete loader qualification gap.",
+      "dependencies": [],
+      "write_set": ["modules/k3_resident_decode_stage/source/spark_k3_pack_load.c", "tests/test_k3_pack_load_bounds.c"],
+      "context_paths": ["modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_pack_load.h", "/private/tmp/sparkpipe-luna-logical/tasks/K3-BITE-PACKLOAD-001.json", "/private/tmp/sparkpipe-oxalpha-stream/K3-BITE-PACKLOAD-001/state.json"],
+      "time_budget_minutes": 18,
+      "max_net_production_lines": 70,
+      "required_data": ["valid minimal pack opens and resolves", "payload-base beyond EOF and wrapping or beyond-EOF entry reject with validation failure", "exact patch, net LOC, compile/run output, and independent audit"],
+      "acceptance": ["No pack format, CUDA dispatch, ABI, or valid binding change.", "Focused C fixture uses the real loader and JSON/status implementations.", "Focused binary and git diff check pass."],
+      "test_commands": ["cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -I. -Iinclude -Imodules/k3_resident_decode_stage/include tests/test_k3_pack_load_bounds.c modules/k3_resident_decode_stage/source/spark_k3_pack_load.c runtime/json.c src/spark_status.c -o /tmp/sparkpipe-k3-pack-load-bounds", "/tmp/sparkpipe-k3-pack-load-bounds", "git diff --check"]
+    },
+    {
+      "id": "TP4PP4-D4F-FORMAT-PROBE-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 233,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_inspection",
+      "title": "Resolve the DSV4 Flash stage-pack verifier mismatch",
+      "objective": "Read one existing rank pack from each PP stage and identify whether the current verifier, current runtime loader, or the pack is stale; do not rebuild or move data.",
+      "dependencies": [],
+      "nodes": ["spark0", "spark4", "spark8", "sparkc"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "time_budget_minutes": 20,
+      "required_data": [
+        "for each representative pack: physical mount receipt, path, bytes, SHA-256, first 256 header bytes, decoded magic/version/topology/layer slice/codecs, and exact current verifier command/stdout/stderr/exit",
+        "canonical verifier and deployed runtime-loader commit/hash plus the exact first header-contract field on which each accepts or rejects",
+        "comparison with the active DSV4 Flash pack actually loaded on spark4-spark7",
+        "decision: existing packs qualify, smallest verifier correction, or exact regeneration command/source identity and measured scratch peak"
+      ],
+      "acceptance": [
+        "Probe is read-only and names one first mismatch rather than reporting generic verifier failure.",
+        "A pack qualifies only if the deployed production loader and canonical contract accept the same bytes.",
+        "No source, pack, runtime, service, or configuration is changed."
+      ],
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-D4F-FORMAT-PROBE-001.json"
+    },
+    {
+      "id": "TP4PP4-D4P-LIVE-VERIFY-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 232,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_inspection",
+      "title": "Requalify the retained DSV4 Pro TP4xPP4 packs",
+      "objective": "Compare all sixteen live rank packs to the retained round-10 full SHA-256 list and run the current Pro verifier/loader checks without regenerating source shards.",
+      "dependencies": [],
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "context_paths": ["tools/devcycle/dsv4_pro_single_spark_receipts.md", "tools/devcycle/verify_rank_packs_pro.sh"],
+      "time_budget_minutes": 20,
+      "required_data": [
+        "per rank host/path/bytes/live SHA-256/expected SHA-256/equality and fresh physical mount receipt",
+        "current dsv4_pro_stagepack.py verifier command/stdout/stderr/exit on all distinct stage shapes",
+        "current loader/config identity and proof the pack header topology and layer slices are 16/15/15/15",
+        "decision: qualified reusable, exact first drift, or missing pack; source completeness is not required when the retained pack itself requalifies"
+      ],
+      "acceptance": [
+        "All sixteen full hashes, not prefixes, match retained evidence and current loader/verifier acceptance.",
+        "No file or service mutation occurs.",
+        "Failure identifies the first rank/hash/header/loader mismatch."
+      ],
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-D4P-LIVE-VERIFY-001.json"
+    },
+    {
+      "id": "TP4PP4-SOURCE-UNION-001",
+      "pert_id": "ART-017",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "priority": 231,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_inspection",
+      "title": "Prove distributed checkpoint completeness by union, not per host",
+      "objective": "For each exact checkpoint index identity, compute the union of final-named source shards across spark0-sparkf and map every required shard to direct source hosts; do not require a full checkpoint on every Spark.",
+      "dependencies": [],
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "time_budget_minutes": 25,
+      "required_data": [
+        "group source directories only when model/revision/index SHA-256 are identical; conflicting indexes remain separate",
+        "for each required final shard: relative name, expected index owner tensors, observed host paths, bytes, SHA-256, and direct 100Gbps endpoint",
+        "per model union listed/present/missing/duplicate counts and total bytes; *.part and temp names never count",
+        "exact minimal source-read plan for each rank pack and first missing shard when union is incomplete"
+      ],
+      "acceptance": [
+        "Completeness is evaluated over the verified distributed union and never inferred from per-host counts.",
+        "Every union member has one exact index identity and content hash; conflicting bytes fail closed.",
+        "Probe is read-only and produces no copies or cleanup actions."
+      ],
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-SOURCE-UNION-001.json"
+    },
+    {
+      "id": "UI-PERF-COMPACT-001",
+      "pert_id": "OBS-003",
+      "biggulp": "ui",
+      "status": "ready",
+      "development_phase": "exploratory_internal",
+      "action_kind": "ui_implementation",
+      "owner_role": "ui_agent",
+      "title": "Compact the live performance frontier into four aligned matrices",
+      "objective": "Make the live dashboard performance section quickly readable: preserve the model selector, replace the all-model card wall with one compact comparison table, and place ours/SOTA crossed with speculation off/on as four compact matrices in one horizontal row at normal desktop width.",
+      "dependencies": [],
+      "write_set": [
+        "/private/tmp/sparkpipe_oxalpha_dashboard.py"
+      ],
+      "context_paths": [
+        "/private/tmp/sparkpipe_oxalpha_dashboard.py",
+        "performance/sparkpipe_frontier.jsonl"
+      ],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 60,
+      "required_data": [
+        "before and after dashboard screenshots at the same desktop viewport",
+        "DOM count and headings proving exactly four matrices: ours off, SOTA off, ours with speculation, SOTA with speculation",
+        "computed matrix container width, overflow behavior, and row/column count",
+        "proof that the model selector still changes all four matrices and that every supported model remains in the summary",
+        "summary table row count, column headings, and proof that each model occupies exactly one row",
+        "Python compile result, dashboard HTTP status, and browser console errors"
+      ],
+      "acceptance": [
+        "At a 1440-pixel desktop viewport all four compact matrices occupy one horizontal row without four full-width vertical sections.",
+        "Each matrix uses the same context rows and B columns, short cell labels, and an explicit ours/SOTA plus speculation off/on heading.",
+        "The model selector updates all four matrices together and the all-model summary remains directly above them.",
+        "The all-model summary is one dense comparison table: exactly one row per supported model and only model, best qualified cell, ours Solution, SOTA Solution, ratio/gap, speculation state, topology, qualification, and blocker/next-cell columns.",
+        "Numeric summary columns are right-aligned, status is encoded by short badges, long provenance/details move to title text, and no model uses a separate card or multi-paragraph block.",
+        "When a metric is missing, the table shows a short dash or zero-qualified marker instead of verbose explanatory text.",
+        "Long-term roles such as sysadmin, fileadmin, and benchmarker are displayed as available/busy roles rather than blocked BigGulps, and milestone gates are not counted as executable blocked work.",
+        "Narrow screens may horizontally scroll the matrix row, but the page must not expand each matrix to full viewport width.",
+        "No API/state semantics change and the dashboard remains live at http://127.0.0.1:8877/."
+      ],
+      "test_commands": [
+        "python3 -m py_compile /private/tmp/sparkpipe_oxalpha_dashboard.py",
+        "git diff --check"
+      ],
+      "outcomes": {
+        "pass": "Persist screenshots and browser measurements, restart the dashboard, and return the exact temp-file diff for coordinator review.",
+        "failure": "Return the exact width, overflow, selector, or render failure and the smallest CSS/markup correction; do not redesign the dashboard."
+      }
+    },
+    {
+      "id": "OXA-001-QUAL-001",
+      "pert_id": "OXA-001",
+      "biggulp": "agents",
+      "status": "ready",
+      "development_phase": "production_qualification",
+      "action_kind": "independent_audit",
+      "title": "Qualify the retained provider-pool and secret-loading contract",
+      "objective": "Independently decide whether the current canonical OxAlpha provider configuration and racer already satisfy OXA-001; do not propose a patch unless an exact acceptance gap is proven.",
+      "dependencies": [],
+      "write_set": [],
+      "context_paths": [
+        "orchestration/program_pert.json",
+        "orchestration/oxalpha_providers.example.json",
+        "tools/oxalpha_race.py",
+        "tests/test_oxalpha_race.py"
+      ],
+      "time_budget_minutes": 8,
+      "required_data": [
+        "exact command, exit code, and raw output for offline provider-pool validation",
+        "exact command, exit code, test count, and raw output for the focused racer suite",
+        "field-by-field mapping for enabled providers, independent failure domains, authorization, model, headers, redaction, and environment-only secrets",
+        "PASS or FAIL verdict; on FAIL, the first unmet acceptance clause and smallest bounded correction write set"
+      ],
+      "acceptance": [
+        "python3 tools/oxalpha_race.py validate --config orchestration/oxalpha_providers.example.json exits zero and reports the enabled provider count and redundancy.",
+        "python3 tests/test_oxalpha_race.py exits zero.",
+        "Static provider files contain no credential value or authorization secret and configuration rejects secret-bearing static headers.",
+        "At least two simultaneously selected providers must be from independent declared failure domains.",
+        "Every OXA-001 PERT acceptance clause is supported by a named test or exact inspected field."
+      ],
+      "test_commands": [
+        "python3 tools/oxalpha_race.py validate --config orchestration/oxalpha_providers.example.json",
+        "python3 tests/test_oxalpha_race.py",
+        "git diff --check"
+      ],
+      "outcomes": {
+        "pass": "Return an immutable audit receipt for coordinator integration of OXA-001 and unlock OXA-002.",
+        "fail": "Return one minimal correction bite; do not broaden OXA-001 or edit canonical files."
+      }
+    },
+    {
+      "id": "FND-001-BITE-002",
+      "pert_id": "FND-001",
+      "biggulp": "foundation",
+      "status": "ready",
+      "development_phase": "exploratory",
+      "action_kind": "evidence_capture",
+      "title": "Create the machine-readable current-state evidence baseline",
+      "objective": "Inspect the canonical checkout and retained receipts, then record the minimum truthful baseline that labels every model, branch, API, KV/cache, backend, and fleet claim as implemented, retained_evidence, operator_assertion, or plan.",
+      "dependencies": [],
+      "write_set": [
+        "orchestration/current_state_evidence.json"
+      ],
+      "context_paths": [
+        "README.md",
+        "orchestration/program_pert.json",
+        "docs/MODEL_DRIVER_HILLCLIMB.md",
+        "performance/sparkpipe_frontier.jsonl"
+      ],
+      "time_budget_minutes": 12,
+      "required_data": [
+        "one record for each of Qwen 3.8 27B, Qwen 3.8 Max, DSV4 Flash, DSV4 Pro, GLM 5.2, K3, and MiniMax H3",
+        "separate records for main/unified branch state, API, KV/cache, CUDA, ROCm, Metal, artifact storage, scheduler, provider pool, and live fleet",
+        "for every record: classification enum, exact claim, evidence path or operator-source marker, observed revision or unknown, observed_at, and known limit",
+        "list of contradictions or unknowns that block FND-002 or FND-003"
+      ],
+      "acceptance": [
+        "The file is valid JSON and uses only implemented, retained_evidence, operator_assertion, or plan classifications.",
+        "A repository implementation claim names at least one current path and revision; a retained-evidence claim names an immutable receipt path; operator assertions are never presented as measured evidence.",
+        "Missing checkpoint, branch, hardware, performance, or API proof is recorded as unknown rather than inferred.",
+        "The baseline is data, not a design document, and adds no production code."
+      ],
+      "test_commands": [
+        "python3 -m json.tool orchestration/current_state_evidence.json",
+        "python3 tests/test_sources_exist.py",
+        "git diff --check"
+      ],
+      "outcomes": {
+        "pass": "Return the JSON and raw inspection paths for coordinator review; unlock FND-002, FND-003, REC-001, FND-007, and FND-008 as their dependencies allow.",
+        "fail": "Return the exact missing evidence category; do not fill it with prose or assumptions."
+      }
+    },
+    {
+      "id": "FND-004-BITE-002",
+      "pert_id": "FND-004",
+      "biggulp": "foundation",
+      "status": "ready",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Implement the fail-closed qualification receipt schema",
+      "objective": "Implement the smallest schema, validator, and subprocess tests that bind commit/tree, model/checkpoint/recipe/artifact/hardware identity, commands, parity, timing boundary, qualification level, and evidence class.",
+      "dependencies": [],
+      "write_set": [
+        "schema/qualification_receipt.schema.json",
+        "tools/validate_qualification_receipt.py",
+        "tests/test_qualification_receipt.py"
+      ],
+      "context_paths": [
+        "schema/sota_observation.schema.json",
+        "tools/update_sota_ledger.py",
+        "tests/test_sota_ledger.py"
+      ],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 80,
+      "required_data": [
+        "exact patch and net production LOC",
+        "positive and negative fixture counts",
+        "validator exit codes for measured, simulated, analytical, unverified, contradictory, and unknown inputs",
+        "test command outputs and exit codes",
+        "implementation patch SHA-256 and independent audit verdict on that exact hash"
+      ],
+      "acceptance": [
+        "Valid receipts require PERT identity, qualification level L0-L9, evidence class, commit/tree state, model/checkpoint/recipe/artifact/hardware identities, command, parity, and timing boundary as applicable.",
+        "Measured claims cannot omit immutable identity or command; simulated, analytical, and unverified claims cannot pass as measured.",
+        "Unknown enums, missing fields, contradictory evidence, and dirty-tree production claims fail closed deterministically.",
+        "Focused subprocess tests cover positive and negative receipts and unrelated files remain untouched."
+      ],
+      "test_commands": [
+        "python3 tests/test_qualification_receipt.py",
+        "python3 -m py_compile tools/validate_qualification_receipt.py",
+        "git diff --check"
+      ],
+      "outcomes": {
+        "pass": "Seal the implementation patch, dispatch a fresh independent auditor, and return only after exact-hash approval.",
+        "fail": "Return the first failing fixture or acceptance clause and issue the smallest same-write-set correction."
+      }
+    },
+    {
+      "id": "PERF-001-QUAL-001",
+      "pert_id": "PERF-001",
+      "biggulp": "performance",
+      "status": "integrated",
+      "development_phase": "production_qualification",
+      "action_kind": "independent_audit",
+      "title": "Qualify the retained comparable-SOTA ledger",
+      "objective": "Independently decide whether the current ledger schema, updater, sources, and tests satisfy PERF-001; do not propose new code unless an exact acceptance gap is proven.",
+      "dependencies": [],
+      "write_set": [],
+      "context_paths": [
+        "performance/sota_sources.json",
+        "performance/sota_ledger.jsonl",
+        "schema/sota_observation.schema.json",
+        "tools/update_sota_ledger.py",
+        "tests/test_sota_ledger.py"
+      ],
+      "time_budget_minutes": 8,
+      "required_data": [
+        "exact test command, exit code, group count, and raw output",
+        "field-by-field mapping for source/date/revision, checkpoint, quality, hardware, topology, batch/context/output, speculation, metric, boundary, and evidence class",
+        "proof that production-comparable observations expire after 24 hours",
+        "PASS or FAIL verdict; on FAIL, first unmet clause and smallest bounded correction"
+      ],
+      "acceptance": [
+        "python3 tests/test_sota_ledger.py exits zero.",
+        "Every required comparable-SOTA dimension is schema-required or deterministically derived without extrapolation.",
+        "Stale, incomparable, unqualified, or incomplete observations cannot become a production SOTA target.",
+        "All seven supported model names, including Qwen 3.8 Max and MiniMax H3, are representable without aliases that change checkpoint identity."
+      ],
+      "test_commands": [
+        "python3 tests/test_sota_ledger.py",
+        "git diff --check"
+      ],
+      "outcomes": {
+        "pass": "Return an immutable audit receipt for coordinator integration of PERF-001 and unlock PERF-002 plus OBS-006.",
+        "fail": "Return one minimal correction bite; do not redesign the performance workstream."
+      },
+      "integration_receipt": "/private/tmp/sparkpipe-oxalpha-stream/D35-PERF-001/receipt.json"
+    },
+    {
+      "id": "D4F-32K-BUILD-002",
+      "pert_id": "MOD-D4F-005",
+      "biggulp": "model-dsv4-flash",
+      "status": "integrated",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Merged DSV4 32768-position build ceiling",
+      "objective": "Record the independently audited build-ceiling prerequisite merged by PR 720.",
+      "dependencies": [],
+      "write_set": ["modules/dsv4_resident_decode_stage/Makefile"],
+      "time_budget_minutes": 1,
+      "required_data": ["merge commit 0aac0061c09ebd81f889bb7cf5e287e67b42984b and approved audit receipt"],
+      "acceptance": ["The coordinator integration state is bound to merged main and PR 720."],
+      "test_commands": ["python3 tests/test_dsv4_contracts.py"],
+      "outcomes": {"pass": "Satisfy only this prerequisite; do not complete MOD-D4F-005."}
+    },
+    {
+      "id": "D4F-32K-STAGE-001",
+      "pert_id": "MOD-D4F-005",
+      "biggulp": "model-dsv4-flash",
+      "status": "integrated",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Merged DSV4 32768-position stage ceiling",
+      "objective": "Record the independently audited stage-template prerequisite merged by PR 720.",
+      "dependencies": [],
+      "write_set": ["tools/devcycle/templates/dsv4_flash_tp4_stage.template.json"],
+      "time_budget_minutes": 1,
+      "required_data": ["merge commit 0aac0061c09ebd81f889bb7cf5e287e67b42984b and approved audit receipt"],
+      "acceptance": ["The coordinator integration state is bound to merged main and PR 720."],
+      "test_commands": ["python3 tests/test_dsv4_contracts.py"],
+      "outcomes": {"pass": "Satisfy only this prerequisite; do not complete MOD-D4F-005."}
+    },
+    {
+      "id": "D4F-32K-DECODE-HEADROOM-003",
+      "pert_id": "MOD-D4F-005",
+      "biggulp": "model-dsv4-flash",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Add the measured 256-token decode headroom to DSV4 exact-32K",
+      "objective": "Raise only the DSV4 Flash build and stage sequence ceiling from 32768 to the measured required 33024 positions so a 32768-token input can emit 256 output tokens, and update the existing focused contract assertions.",
+      "dependencies": ["D4F-32K-BUILD-002", "D4F-32K-STAGE-001"],
+      "write_set": [
+        "modules/dsv4_resident_decode_stage/Makefile",
+        "tools/devcycle/templates/dsv4_flash_tp4_stage.template.json",
+        "tests/test_dsv4_contracts.py"
+      ],
+      "context_paths": [
+        "/private/tmp/sparkpipe-luna-logical/results/D4F-32K-B8-CAPACITY-002.json"
+      ],
+      "time_budget_minutes": 12,
+      "required_data": [
+        "the authoritative measured derivation required_sequence_positions=32768+256=33024",
+        "the exact Makefile and stage-template fields changed from 32768 to 33024",
+        "focused contract output proving model identity, topology, backend, and unrelated capacity knobs did not change",
+        "candidate diff and independent audit bound to the same patch SHA256"
+      ],
+      "acceptance": [
+        "Both production ceiling fields are exactly 33024.",
+        "Existing DSV4 contract and source-contract tests pass.",
+        "No runtime, topology, model-data, KV, batching, kernel, or launcher behavior changes.",
+        "The independently approved patch is returned for coordinator integration; no Spark deployment is attempted."
+      ],
+      "test_commands": [
+        "python3 tests/test_dsv4_contracts.py",
+        "python3 tests/test_dsv4_driver_source_contracts.py",
+        "git diff --check"
+      ],
+      "outcomes": {
+        "pass": "Send the minimal audited patch to coordinator integration and unlock the predefined zero-drift deployment.",
+        "fail": "Return the first exact contract mismatch; do not widen scope."
+      }
+    },
+    {
+      "id": "D4F-32K-ZERO-DRIFT-DEPLOY-004",
+      "pert_id": "MOD-D4F-005",
+      "biggulp": "model-dsv4-flash",
+      "status": "dependency_blocked",
+      "development_phase": "exploratory",
+      "action_kind": "spark_model_launch",
+      "title": "Deploy the merged DSV4 33024-position runtime on spark4-spark7",
+      "objective": "After the headroom correction is merged, pull that exact main commit on spark4-spark7, rebuild, install, and generation-fenced restart DSV4 Flash, then prove all four installed configs expose max_sequence_positions=33024 before benchmarking.",
+      "dependencies": ["D4F-32K-DECODE-HEADROOM-003"],
+      "hardware": {
+        "nodes": ["spark4", "spark5", "spark6", "spark7"],
+        "resources": ["service_control", "gpu"],
+        "lease_seconds": 3600,
+        "runner_role": "model-launcher"
+      },
+      "spark_queue": {
+        "job_id": "D4F-32K-ZERO-DRIFT-DEPLOY-004",
+        "result_path": "/private/tmp/sparkpipe-luna-logical/results/D4F-32K-ZERO-DRIFT-DEPLOY-004.json",
+        "priority": 260
+      },
+      "write_set": [],
+      "time_budget_minutes": 35,
+      "required_data": [
+        "one merged-main commit, clean-tree proof, and source/package hashes on every rank",
+        "exact build, install, restart commands and exits plus generation and PID fencing",
+        "installed binary, config, adapter, and rank-pack hashes on every rank",
+        "max_sequence_positions=33024 on all four installed stage configs",
+        "readiness and one-token smoke result or the earliest causal rank failure",
+        "proof that no model data moved and no local hotpatch was used"
+      ],
+      "acceptance": [
+        "All ranks run one identical merged-main commit with clean source trees.",
+        "Installed configuration and binary hashes are recorded and the ceiling is exactly 33024.",
+        "All four ranks reach generation-fenced readiness; a failure records the first causal rank and command.",
+        "No benchmark cell is claimed by this deployment task."
+      ],
+      "outcomes": {
+        "success": "Unlock the exact-32768 B1 correctness and performance baseline.",
+        "failure": "Issue one correction for the earliest build, install, schema, readiness, or rank failure."
+      }
+    },
+    {
+      "id": "D4F-32K-B1-BASELINE-004",
+      "pert_id": "MOD-D4F-005",
+      "biggulp": "model-dsv4-flash",
+      "status": "dependency_blocked",
+      "development_phase": "exploratory",
+      "action_kind": "spark_model_benchmark",
+      "title": "Qualify DSV4 Flash exact-32K B1 before batching",
+      "objective": "On the zero-drift deployed DSV4 Flash runtime, run exact 32768-token B1 input with 256 output tokens, prove output parity, and record prefill and decode rates with raw all-rank evidence.",
+      "dependencies": ["D4F-32K-ZERO-DRIFT-DEPLOY-004"],
+      "hardware": {
+        "nodes": ["spark4", "spark5", "spark6", "spark7"],
+        "resources": ["gpu", "service_control"],
+        "lease_seconds": 3600,
+        "runner_role": "benchmarker"
+      },
+      "spark_queue": {
+        "job_id": "D4F-32K-B1-BASELINE-004",
+        "result_path": "/private/tmp/sparkpipe-luna-logical/results/D4F-32K-B1-BASELINE-004.json",
+        "priority": 255
+      },
+      "write_set": [],
+      "time_budget_minutes": 30,
+      "required_data": [
+        "accepted deployment receipt and exact runtime, config, checkpoint, topology, and pack hashes",
+        "uncached exact prompt_tokens=32768, output_tokens=256, fixed sampling, request hash, and output token hash",
+        "oracle parity or explicit tolerance result",
+        "TTFT, prefill seconds and tokens/s, decode seconds and tokens/s, ITL p50/p95, and per-rank peak VRAM",
+        "raw client output and all-rank logs or earliest causal failure"
+      ],
+      "acceptance": [
+        "The input is exactly 32768 tokens and the run emits 256 tokens without capacity truncation.",
+        "Output correctness passes before any rate is qualified.",
+        "Prefill and decode measurements are reproducible and bound to raw evidence.",
+        "Failure selects one smallest next correction and does not unlock B8."
+      ],
+      "outcomes": {
+        "success": "Update the B1 C32K frontier and unlock the predefined B8 experiment.",
+        "failure": "Issue one bounded correction for the earliest correctness, capacity, collective, or runtime failure."
+      }
+    },
+    {
+      "id": "D4F-32K-B8-CAPACITY-004",
+      "pert_id": "MOD-D4F-005",
+      "biggulp": "model-dsv4-flash",
+      "status": "dependency_blocked",
+      "development_phase": "exploratory",
+      "action_kind": "hardware_experiment",
+      "title": "Measure and remove the first DSV4 Flash exact-32K B8 admission blocker",
+      "objective": "Using the current four-Spark DSV4 Flash path, preserve a B1 exact-32768 control, apply only a generation-fenced configuration overlay that admits eight active sequences, then run exact-32768 B8 and capture the first real capacity, correctness, or timing boundary.",
+      "dependencies": ["D4F-32K-B1-BASELINE-004"],
+      "hardware": {
+        "nodes": ["spark4", "spark5", "spark6", "spark7"],
+        "resources": ["gpu", "service_control"],
+        "lease_seconds": 3600,
+        "runner_role": "model-launcher"
+      },
+      "spark_queue": {
+        "job_id": "D4F-32K-B8-CAPACITY-004",
+        "spec_path": "orchestration/active_bites.json",
+        "result_path": "/private/tmp/sparkpipe-luna-logical/results/D4F-32K-B8-CAPACITY-004.json",
+        "priority": 250
+      },
+      "write_set": [],
+      "time_budget_minutes": 35,
+      "required_data": [
+        "merged-main commit and clean-tree proof on all four ranks",
+        "checkpoint, rank-pack hashes, topology, runtime generation, and exact launch/config hashes",
+        "B1 and B8 prompt_tokens=32768, output_tokens, token-parity result, prefill seconds and tokens/s, decode seconds and tokens/s",
+        "per-rank free/used VRAM before load, after load, after prefill, and peak decode in bytes",
+        "raw client output and all-rank logs, with earliest rank/status on failure",
+        "control-to-treatment configuration diff limited to active-sequence and row-capacity fields",
+        "next decision for success, capacity failure, numerical failure, or runtime failure"
+      ],
+      "acceptance": [
+        "The Spark scheduler owns a generation-fenced lease for exactly spark4-spark7 and records the result path.",
+        "B1 exact-32K control is numerically valid before B8 is attempted.",
+        "B8 uses eight active sequences and exactly 32768 prompt tokens per sequence; smaller or approximate context is not reported as the target cell.",
+        "No model files move and no production source changes; only the declared runtime overlay may differ.",
+        "Success records qualified rates; failure records the earliest concrete boundary and bytes needed for the next correction."
+      ],
+      "outcomes": {
+        "success": "Update the qualified frontier for DSV4 Flash B8 C32K and enqueue the highest-EV next B64 or profiler experiment.",
+        "capacity_failure": "Use measured byte components to issue one bounded KV/batch-capacity correction bite.",
+        "numerical_failure": "Stop performance work and issue one smallest parity-localization experiment.",
+        "runtime_failure": "Issue one bounded correction for the earliest exact status; do not tune kernels."
+      }
+    },
+    {
+      "id": "GLM-FABRIC-SPARKC-002",
+      "pert_id": "MOD-GLM-005",
+      "biggulp": "model-glm52",
+      "status": "ready",
+      "development_phase": "exploratory",
+      "action_kind": "hardware_experiment",
+      "title": "Restore and prove sparkc membership in the GLM TP8 fabric",
+      "objective": "Route the canonical setup-only static-fabric recovery through the sysadmin Spark runner for sparkc, then prove the exact rank-4 address, active rail, MTU, peer reachability, and topology expected by the spark8-sparkf GLM TP8 deployment.",
+      "dependencies": [],
+      "hardware": {
+        "nodes": ["sparkc"],
+        "resources": ["network_fabric", "service_control"],
+        "lease_seconds": 1800,
+        "runner_role": "sysadmin"
+      },
+      "spark_queue": {
+        "job_id": "GLM-FABRIC-SPARKC-002",
+        "spec_path": "orchestration/active_bites.json",
+        "result_path": "/private/tmp/sparkpipe-luna-logical/results/GLM-FABRIC-SPARKC-002.json",
+        "priority": 100
+      },
+      "write_set": [],
+      "time_budget_minutes": 20,
+      "required_data": [
+        "scheduler job id, generation, exact sysadmin command, exit code, and raw output path",
+        "sparkc interface names, addresses, link state, MTU, route, RDMA rail if present, and service/timer state before and after",
+        "peer reachability with jumbo payload from sparkc to each of spark8, spark9, sparka, sparkb, sparkd, sparke, and sparkf",
+        "expected versus observed rank-4 endpoint and the exact next decision for pass or each failure class"
+      ],
+      "acceptance": [
+        "The job changes no model data, rank packs, or production source and is executed only by the sysadmin role through the Spark queue.",
+        "sparkc has the canonical GLM rank-4 fabric identity and active interface, and every required TP8 peer is reachable at the declared MTU.",
+        "The receipt distinguishes a harmless service enablement-state mismatch from an actual missing interface, address, route, rail, or reachability failure.",
+        "On pass, GLM-LIVE-002 becomes executable; on failure, the earliest concrete network invariant is named."
+      ],
+      "outcomes": {
+        "pass": "Wake model-glm52 and fileadmin for the predefined rank-4 config/hash bind, then launch the TP8 group.",
+        "failure": "Issue one exact sysadmin correction for the first failed network invariant; do not touch model files or CUDA."
+      }
+    },
+    {
+      "id": "REC-001-BITE-001",
+      "pert_id": "REC-001",
+      "biggulp": "reconciliation",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Build the path-level main/unified source classification manifest",
+      "objective": "Pin main, unified, and merge-base revisions and classify every selectively salvageable path without merging, copying, or applying unified code.",
+      "dependencies": ["FND-001"],
+      "write_set": [
+        "schema/reconciliation_manifest.schema.json",
+        "reconciliation/main_unified.json",
+        "tools/validate_reconciliation_manifest.py",
+        "tests/test_reconciliation_manifest.py"
+      ],
+      "time_budget_minutes": 15,
+      "max_net_production_lines": 120,
+      "required_data": [
+        "main, unified, and merge-base SHAs plus remote identity",
+        "every manifest path, source revision, destination, classification, conflict, owner, and required gate",
+        "deterministic validator output and positive/negative fixture counts",
+        "proof that no source path was applied and no runtime file changed",
+        "exact patch hash and independent audit verdict"
+      ],
+      "acceptance": [
+        "Each path is retained-main, salvage-candidate, conflict, obsolete, generated, private-artifact, or rejected with an evidence reason.",
+        "Temporary files, binaries, logs, stale user-facing Qwen 3.6 names, and entries without gates fail closed.",
+        "The same inputs produce byte-identical manifest output and no branch merge or cherry-pick occurs.",
+        "The schema and validator expose the exact next reconciliation task for each accepted path."
+      ],
+      "test_commands": [
+        "python3 tests/test_reconciliation_manifest.py",
+        "python3 -m py_compile tools/validate_reconciliation_manifest.py",
+        "git diff --check"
+      ]
+    },
+    {
+      "id": "HWI-001-BITE-001",
+      "pert_id": "HWI-001",
+      "biggulp": "hardware",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Implement the vendor-neutral hardware capability schema",
+      "objective": "Define the smallest versioned capability record that can describe CUDA, ROCm, Metal, and CPU reference targets without vendor types leaking into portable records.",
+      "dependencies": ["FND-010"],
+      "write_set": [
+        "schema/hardware_capability.schema.json",
+        "tools/validate_hardware_capability.py",
+        "tests/test_hardware_capability.py"
+      ],
+      "time_budget_minutes": 15,
+      "max_net_production_lines": 100,
+      "required_data": [
+        "schema fields and units for identity, memory, bandwidth evidence, subgroup, dtypes, accumulation, matrix primitives, graph/fixed launch, peer access, collectives, and transfers",
+        "valid CUDA, ROCm, Metal, and CPU fixtures plus unknown/contradictory negative fixtures",
+        "deterministic validator exit codes and test output",
+        "patch hash, net production LOC, and independent audit verdict"
+      ],
+      "acceptance": [
+        "Target IDs and schema versions are immutable and unknown capabilities fail closed rather than defaulting to CUDA behavior.",
+        "Measured values bind source command, hardware identity, units, and observation time; unmeasured values remain unknown.",
+        "Portable records contain no CUDA, HIP, MSL, CUdevice, hipDevice, or Objective-C types.",
+        "Focused tests cover every backend class and contradictory capability combinations."
+      ],
+      "test_commands": [
+        "python3 tests/test_hardware_capability.py",
+        "python3 -m py_compile tools/validate_hardware_capability.py",
+        "git diff --check"
+      ]
+    },
+    {
+      "id": "CUDA-001-BASELINE-001",
+      "pert_id": "CUDA-001",
+      "biggulp": "cuda",
+      "status": "dependency_blocked",
+      "development_phase": "exploratory",
+      "action_kind": "hardware_experiment",
+      "title": "Capture the clean current-main SM121 CUDA baseline",
+      "objective": "Build and run the existing smallest CUDA capability and model-kernel probes from clean merged main on one leased Spark, recording the first failing gate without changing production source.",
+      "dependencies": ["REC-010"],
+      "hardware": {
+        "nodes": ["spark0"],
+        "resources": ["gpu", "service_control"],
+        "lease_seconds": 1800,
+        "runner_role": "sysadmin"
+      },
+      "spark_queue": {
+        "job_id": "CUDA-001-BASELINE-001",
+        "spec_path": "orchestration/active_bites.json",
+        "result_path": "/private/tmp/sparkpipe-luna-logical/results/CUDA-001-BASELINE-001.json",
+        "priority": 80
+      },
+      "write_set": [],
+      "time_budget_minutes": 25,
+      "required_data": [
+        "merged-main SHA and clean-tree proof",
+        "CUDA driver/toolkit, compiler, GPU identity, SM target, clocks, power state, and free memory",
+        "exact build/probe commands, exit codes, raw stdout/stderr, and artifact hashes",
+        "first failing compile, load, launch, numerical, or timing gate and next decision"
+      ],
+      "acceptance": [
+        "The Spark queue owns the lease and the run uses no copied hotpatch or dirty checkout.",
+        "At least the existing SM121 compile gate and smallest real kernel launch execute, or the earliest exact blocker is retained.",
+        "No performance claim is made from a compile-only or synthetic result."
+      ]
+    },
+    {
+      "id": "MET-001-BITE-001",
+      "pert_id": "MET-001",
+      "biggulp": "metal",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_data",
+      "title": "Define the Apple-Silicon support matrix",
+      "objective": "Publish a fail-closed Apple-Silicon SoC and Metal capability matrix derived from the HWI-001 schema, clearly separating observed, documented, and unknown capabilities.",
+      "dependencies": ["HWI-001"],
+      "write_set": [
+        "hardware/targets/apple_silicon.json",
+        "tests/test_metal_target_contract.py"
+      ],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 40,
+      "required_data": [
+        "SoC/OS/Metal-family identity keys, memory model, SIMD width, dtype/accumulation, matrix, command-buffer, transfer, and peer capability fields",
+        "source class for every non-unknown field and explicit unsupported/unknown values",
+        "positive and negative validation output",
+        "patch hash and independent audit verdict"
+      ],
+      "acceptance": [
+        "No CUDA/ROCm assumption is copied into Metal records and no unmeasured throughput is claimed.",
+        "Unsupported and unknown are distinct; runtime selection can fail closed from the record alone.",
+        "The initial matrix is small and versioned rather than a speculative device taxonomy."
+      ],
+      "test_commands": ["python3 tests/test_metal_target_contract.py", "git diff --check"]
+    },
+    {
+      "id": "AMD-001-BITE-001",
+      "pert_id": "AMD-001",
+      "biggulp": "amd",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_data",
+      "title": "Define the MI350 gfx950 target and toolchain contract",
+      "objective": "Publish the minimum fail-closed MI350/gfx950 target record and pinned ROCm compiler/runtime contract without claiming access to unmeasured hardware.",
+      "dependencies": ["HWI-001"],
+      "write_set": [
+        "hardware/targets/mi350_gfx950.json",
+        "tests/test_rocm_target_contract.py"
+      ],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 40,
+      "required_data": [
+        "gfx target, ROCm/LLVM version constraints, wave size, dtype/accumulator, matrix, graph, memory, RCCL, peer, and transfer capability fields",
+        "documented versus measured versus unknown source class for every value",
+        "negative fixtures for wrong gfx, missing toolchain, CUDA-only fields, and unknown required capabilities",
+        "patch hash and independent audit verdict"
+      ],
+      "acceptance": [
+        "The contract selects gfx950 explicitly and rejects fallback to a nearby gfx target.",
+        "No MI350 performance or topology fact is marked measured before a real device receipt exists.",
+        "ROCm concepts are expressed through the portable HWI capability fields."
+      ],
+      "test_commands": ["python3 tests/test_rocm_target_contract.py", "git diff --check"]
+    },
+    {
+      "id": "PERF-002-BITE-002",
+      "pert_id": "PERF-002",
+      "biggulp": "performance",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "owner_role": "benchmarker",
+      "title": "Implement the auditable benchmark-cell and plus-ten protocol",
+      "objective": "Compile comparable observations into exact B/context/output/speculation cells and report parity, 110 percent, gap, and uncertainty without extrapolating unmeasured cells.",
+      "dependencies": ["PERF-001", "FND-004"],
+      "write_set": [
+        "schema/sota_comparison.schema.json",
+        "performance/benchmark_cells.json",
+        "tools/compare_sota_receipts.py",
+        "tests/test_compare_sota_receipts.py"
+      ],
+      "time_budget_minutes": 18,
+      "max_net_production_lines": 180,
+      "required_data": [
+        "declared legal B1-B1024 context/output cells and byte-proved exclusions",
+        "quality-equivalence, timing-boundary, topology, device count, per-device, power/clock/thermal, warmup/sample, and confidence fields",
+        "positive and adversarial comparator fixture results including missing and nonfinite metrics",
+        "patch hash, net production LOC, and independent audit verdict"
+      ],
+      "acceptance": [
+        "Prefill and decode remain separate and ours/SOTA comparisons require exact checkpoint plus quality equivalence.",
+        "Engine, end-to-end, and isolated-kernel boundaries never compare across classes.",
+        "The tool emits measured parity, 110-percent target, gap, and uncertainty for exact cells only.",
+        "Unmeasured, stale, extrapolated, topology-mismatched, or unqualified cells score zero."
+      ],
+      "test_commands": ["python3 tests/test_compare_sota_receipts.py", "git diff --check"]
+    },
+    {
+      "id": "MOD-QMAX-001-QUAL-001",
+      "pert_id": "MOD-QMAX-001",
+      "biggulp": "model-qwen38-max",
+      "status": "dependency_blocked",
+      "development_phase": "production_qualification",
+      "action_kind": "independent_audit",
+      "title": "Qualify the retained Qwen 3.8 Max source and oracle",
+      "objective": "Audit the current Qwen 3.8 Max model family against the exact checkpoint/tokenizer/config/tensor/oracle PERT contract and reject any borrowed 27B constant.",
+      "dependencies": ["FND-003", "REC-010", "RCP-001"],
+      "write_set": [],
+      "context_paths": [
+        "model-families/qwen38_max",
+        "modules/qwen38_max_resident_decode_stage",
+        "tests/test_model_families.py",
+        "tests/test_model_constants.c"
+      ],
+      "time_budget_minutes": 12,
+      "required_data": [
+        "exact source/checkpoint revision, tokenizer/config identity, tensor inventory, and geometry evidence or explicit missing fields",
+        "Qwen 27B versus Max constant diff",
+        "operator-family oracle/fixture coverage and exact test outputs",
+        "PASS or first unmet clause plus one smallest correction write set"
+      ],
+      "acceptance": [
+        "Every semantic dimension is checkpoint-derived and Qwen 27B geometry is never used by proximity.",
+        "Unknown identity or tensor fields fail closed and every operator family has an authoritative reduced oracle.",
+        "No performance or hardware work begins on audit failure."
+      ]
+    },
+    {
+      "id": "MOD-D4P-001-QUAL-001",
+      "pert_id": "MOD-D4P-001",
+      "biggulp": "model-dsv4-pro",
+      "status": "dependency_blocked",
+      "development_phase": "production_qualification",
+      "action_kind": "independent_audit",
+      "title": "Qualify the retained DSV4 Pro source and oracle",
+      "objective": "Audit the current DSV4 Pro model family against the GA checkpoint/tokenizer/config/tensor/oracle PERT contract and reject any silent DSV4 Flash alias.",
+      "dependencies": ["FND-003", "REC-010", "RCP-001"],
+      "write_set": [],
+      "context_paths": [
+        "model-families/dsv4",
+        "tools/devcycle/dsv4_pro_ga_migration.md",
+        "tests/test_dsv4_contracts.py",
+        "tests/test_dsv4_pro_dspark_drafter_pin.c"
+      ],
+      "time_budget_minutes": 12,
+      "required_data": [
+        "GA source/checkpoint revision, tokenizer/config identity, tensor inventory, and geometry evidence or explicit missing fields",
+        "DSV4 Flash versus Pro semantic and tensor diff",
+        "operator-family oracle coverage and exact test outputs",
+        "PASS or first unmet clause plus one smallest correction write set"
+      ],
+      "acceptance": [
+        "Every Pro semantic dimension is GA-checkpoint-derived and differences from Flash are explicit.",
+        "Unknown identity or tensor fields fail closed and every operator family has an authoritative reduced oracle.",
+        "Branch-only or pre-GA performance evidence cannot qualify the source contract."
+      ]
+    },
+    {
+      "id": "CI-001-BITE-001",
+      "pert_id": "CI-001",
+      "biggulp": "reliability",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Add the smallest host and multiplatform CI foundation",
+      "objective": "Create a fail-closed Linux/macOS host-test matrix and static CUDA/ROCm/Metal capability-contract gates without pretending unavailable accelerator jobs ran.",
+      "dependencies": ["FND-004", "HWI-001"],
+      "write_set": [
+        ".github/workflows/host-multiplatform.yml",
+        "tests/test_ci_workflow.py"
+      ],
+      "time_budget_minutes": 15,
+      "max_net_production_lines": 100,
+      "required_data": [
+        "exact matrix OS/tool versions and commands",
+        "which gates execute versus remain explicit unavailable-hardware jobs",
+        "negative fixture results for skipped required jobs and permissive continue-on-error",
+        "patch hash, net production LOC, and independent audit verdict"
+      ],
+      "acceptance": [
+        "Linux and macOS host tests run with pinned actions and no required gate uses continue-on-error.",
+        "Accelerator qualification is represented as explicit gated jobs, not green placeholders.",
+        "Workflow tests reject missing commands, unpinned actions, and silent skips."
+      ],
+      "test_commands": ["python3 tests/test_ci_workflow.py", "git diff --check"]
+    },
+    {
+      "id": "SEC-001-BITE-001",
+      "pert_id": "SEC-001",
+      "biggulp": "security",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_contract",
+      "title": "Encode the product trust boundaries and threat model",
+      "objective": "Create one machine-checkable trust-boundary contract for tenants, gateway, global broker, compute islands, providers, file agent, model builders, auditors, and external payment/legal systems.",
+      "dependencies": ["FND-002"],
+      "write_set": [
+        "schema/trust_boundaries.schema.json",
+        "security/trust_boundaries.json",
+        "tests/test_trust_boundaries.py"
+      ],
+      "time_budget_minutes": 15,
+      "max_net_production_lines": 100,
+      "required_data": [
+        "actor, asset, boundary, authority, credential, data class, threat, mitigation owner, and verification gate records",
+        "negative fixtures for conflicting authority, implicit trust, missing credential scope, and unowned mitigation",
+        "test output, patch hash, net production LOC, and independent audit verdict"
+      ],
+      "acceptance": [
+        "Every cross-boundary action names its authenticating principal, least authority, data class, and fail-closed verification.",
+        "Compute providers cannot choose tenant routing or self-qualify; file agents cannot schedule compute; model code cannot mint credentials.",
+        "Unknown actors, assets, authority, or mitigation owners fail validation."
+      ],
+      "test_commands": ["python3 tests/test_trust_boundaries.py", "git diff --check"]
+    },
+    {
+      "id": "API-001-QUAL-001",
+      "pert_id": "API-001",
+      "biggulp": "api",
+      "status": "dependency_blocked",
+      "development_phase": "production_qualification",
+      "action_kind": "independent_audit",
+      "title": "Qualify the retained OpenAI compatibility profile",
+      "objective": "Audit the current fixtures and validators for models, chat, completions, stateless Responses, SSE, errors, usage, request IDs, tool payloads, and unsupported fields.",
+      "dependencies": ["FND-006", "REC-003"],
+      "write_set": [],
+      "context_paths": [
+        "tests/fixtures/openai_compat",
+        "tests/test_api_compatibility_fixtures.py",
+        "tests/test_api_compatibility_chat_non_streaming.py"
+      ],
+      "time_budget_minutes": 10,
+      "required_data": [
+        "endpoint/streaming/error/usage/tool coverage matrix",
+        "exact focused test commands and outputs",
+        "proof unsupported fields fail explicitly and SSE terminal ordering is validated",
+        "PASS or first missing profile cell plus smallest correction write set"
+      ],
+      "acceptance": [
+        "The profile names exactly what is compatible and never claims unrestricted OpenAI compatibility.",
+        "Positive and negative fixtures cover streaming/non-streaming terminal events, finish reasons, usage, IDs, errors, and malformed tool payloads.",
+        "External APIs are not called by qualification tests."
+      ]
+    },
+    {
+      "id": "TOP-001-QUAL-001",
+      "pert_id": "TOP-001",
+      "biggulp": "topology",
+      "status": "dependency_blocked",
+      "development_phase": "production_qualification",
+      "action_kind": "independent_audit",
+      "title": "Qualify or reject the retained heterogeneous topology schema",
+      "objective": "Audit the current topology schema and tests for simultaneous switched/direct rails, directed capacity edges, devices, storage, health, failure domains, observation epoch, and mixed backend fixtures.",
+      "dependencies": ["HWI-002"],
+      "write_set": [],
+      "context_paths": [
+        "schema/hardware_topology.schema.json",
+        "tools/generate_topology.py",
+        "tests/test_hardware_topology.py"
+      ],
+      "time_budget_minutes": 10,
+      "required_data": [
+        "field-by-field PERT acceptance mapping",
+        "valid mixed CUDA/ROCm/Metal and switched-plus-direct fixture result or exact absence",
+        "exact focused test outputs",
+        "PASS or first missing graph semantic plus smallest correction write set"
+      ],
+      "acceptance": [
+        "The schema represents multiple concurrent rails and directed capacity-scoped edges without collapsing to one ring/switch mode.",
+        "Accelerator, NIC, storage, health, failure-domain, and observation identities are explicit.",
+        "Unsupported or ambiguous edge semantics fail closed."
+      ]
+    },
+    {
+      "id": "SCH-001-BITE-001",
+      "pert_id": "SCH-001",
+      "biggulp": "scheduler",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Implement the compute-island signed offer schema",
+      "objective": "Define and validate the short-lived signed offer that lets the global API broker route to an island without exposing island-local GPU state.",
+      "dependencies": ["FND-005", "TOP-008"],
+      "write_set": [
+        "schema/compute_island_offer.schema.json",
+        "tools/validate_compute_island_offer.py",
+        "tests/test_compute_island_offer.py"
+      ],
+      "time_budget_minutes": 15,
+      "max_net_production_lines": 120,
+      "required_data": [
+        "model build/allocation generation, context/features, fungible and nonfungible capacity vector, SLO, region/trust/data policy, price, qualification, epoch, nonce, signature, and expiry fields",
+        "negative fixture exit codes for expiry, replay, stale generation, wrong model, missing locality, and over-capacity",
+        "patch hash, net production LOC, and independent audit verdict"
+      ],
+      "acceptance": [
+        "Offers are immutable, short-lived, generation-fenced, replay-resistant, and bind exact model capability plus resource capacity.",
+        "The global broker sees service capacity and policy, not mutable raw accelerator state.",
+        "Compute island is never confused with a kernel execution island."
+      ],
+      "test_commands": ["python3 tests/test_compute_island_offer.py", "git diff --check"]
+    },
+    {
+      "id": "KV-001-QUAL-001",
+      "pert_id": "KV-001",
+      "biggulp": "kv",
+      "status": "dependency_blocked",
+      "development_phase": "production_qualification",
+      "action_kind": "independent_audit",
+      "title": "Qualify the retained KV ownership, precision, and byte contract",
+      "objective": "Audit current KV headers, estimators, and tests for logical versus rank-physical bytes, KVP/CP ownership, replication, selectable resolution, recurrent state, active capacity, and backing horizon.",
+      "dependencies": ["RCP-004"],
+      "write_set": [],
+      "context_paths": [
+        "include/sparkpipe/spark_kv_cache.h",
+        "include/sparkpipe/spark_kv_backing.h",
+        "tools/nvme_kv_estimate.py",
+        "tests/test_nvme_kv_estimate.py",
+        "tests/test_memory_contracts.py"
+      ],
+      "time_budget_minutes": 12,
+      "required_data": [
+        "formula and units for logical bytes, physical bytes per rank, replication, ownership, active capacity, and backing horizon",
+        "MLA/compressed/recurrent and separate key/value precision coverage",
+        "indivisible layout rejection or explicit replication evidence",
+        "exact tests and PASS or first gap plus smallest correction write set"
+      ],
+      "acceptance": [
+        "Approximately 1/N sharding is reported only when exact rank-physical bytes prove it.",
+        "TP never implicitly means KV sharding and selectable KV precision is byte-accounted.",
+        "The contract can reject impossible B/context/resolution cells before allocation."
+      ]
+    },
+    {
+      "id": "ART-017-TP4PP4-INVENTORY-001",
+      "pert_id": "ART-017",
+      "biggulp": "fileadmin",
+      "status": "ready",
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_inspection",
+      "title": "Prove the reusable TP4xPP4 rank-pack and storage baseline",
+      "objective": "On the live sixteen-Spark single-switch fleet, determine exactly which rank-local TP4xPP4 packs already qualify, which models need generation, where each authoritative checkpoint and packer lives, and which internal-NVMe paths are protected, active, generated, or unknown before any cleanup or placement.",
+      "dependencies": [],
+      "nodes": [
+        "spark0", "spark1", "spark2", "spark3",
+        "spark4", "spark5", "spark6", "spark7",
+        "spark8", "spark9", "sparka", "sparkb",
+        "sparkc", "sparkd", "sparke", "sparkf"
+      ],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "write_set": [
+        "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-PACK-INVENTORY-001.json"
+      ],
+      "context_paths": [
+        "qualification/spark/topologies/single_switch_16node.json",
+        "examples/runtime_configs/single_switch_100g.json",
+        "tools/devcycle/fleet_registry.json",
+        "model_contracts",
+        "tools"
+      ],
+      "time_budget_minutes": 30,
+      "required_data": [
+        "fixed rank map: stage0 spark0-3, stage1 spark4-7, stage2 spark8-b, stage3 sparkc-f; TP rank is world_rank modulo 4 and PP stage is floor(world_rank/4)",
+        "for qwen27b, dsv4-flash, glm52, dsv4-pro, k3, qwen38max, and minimax-h3: exact checkpoint path/revision/index hash, final-shard completeness, packer path/commit/command, codec, expected layer split, expected rank bytes, and scratch peak; unknown is explicit",
+        "for every one of 16 expected rank packages per model: host, stage, TP rank, path, byte count, file hash, manifest or receipt hash, loader verification result, and qualified/rebuild/missing classification",
+        "per host: internal-NVMe physical device, free bytes, protected active paths, protected source checkpoints, generated reproducible paths, unknown-owner paths, and projected bytes after keeping only required rank packages",
+        "direct 100Gbps source-to-destination transfer endpoints and measured or observed interface/MTU evidence; no waterfall or hop forwarding",
+        "next executable action per model: verify-only, generate with exact source/output/command and byte gate, or blocked with the first missing fact"
+      ],
+      "acceptance": [
+        "The probe is read-only and does not create, move, truncate, or delete model files.",
+        "No existing path is cleanup-eligible unless its exact model/rank identity, reproducibility input, active-reference absence, and byte count are all proven; source checkpoints are always protected.",
+        "Every claimed reusable rank pack has a file hash and a successful family loader or pack verifier result.",
+        "The result is sufficient to enqueue independent per-model generation and direct-placement jobs without another broad inventory pass."
+      ],
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-PACK-INVENTORY-001.json"
+    },
+    {
+      "id": "ART-017-NVME-OWNERSHIP-002",
+      "pert_id": "ART-017",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 240,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_inspection",
+      "title": "Classify the exact internal-NVMe consumers blocking model and KV budgets",
+      "objective": "On all sixteen Sparks, bind each material internal-NVMe consumer to live process/config ownership or to a reproducible source receipt, then compute exact no-delete placement budgets for both 2.0 TB and 2.5 TB KV backing targets.",
+      "dependencies": ["TP4PP4-SOURCE-UNION-001"],
+      "nodes": [
+        "spark0", "spark1", "spark2", "spark3",
+        "spark4", "spark5", "spark6", "spark7",
+        "spark8", "spark9", "sparka", "sparkb",
+        "sparkc", "sparkd", "sparke", "sparkf"
+      ],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "write_set": [],
+      "time_budget_minutes": 35,
+      "required_data": [
+        "fresh physical mount, free bytes, and every sparkdata/build/cache path >=1 GB with bytes and file count",
+        "for each path: active process, service, config, checkpoint, rank/topology, and last-use evidence or explicit no-reference proof",
+        "classification active/protected-source/reproducible-generated/verified-inactive/unknown with the evidence supporting exactly one class",
+        "for every reproducible-generated path: source identity, packer/build command, retained receipt, and recovery cost",
+        "per-host projected bytes for required TP4xPP4 packs plus 2.0 TB KV and separately 2.5 TB KV, with exact deficit or surplus",
+        "a no-action candidate manifest; no move, delete, truncate, overwrite, or service stop"
+      ],
+      "acceptance": [
+        "The probe is read-only and all raw command artifacts are retained with hashes.",
+        "Unknown ownership is not called reclaimable; verified inactive and reproducible are distinct.",
+        "The result identifies the smallest ownership proof or placement-policy change needed on every deficit host.",
+        "No cleanup action occurs until a separate coordinator-approved fileadmin job exists."
+      ],
+      "spark_queue": {
+        "job_id": "ART-017-NVME-OWNERSHIP-002",
+        "result_path": "/private/tmp/sparkpipe-luna-logical/results/ART-017-NVME-OWNERSHIP-002.json",
+        "priority": 240
+      },
+      "outcomes": {
+        "sufficient": "Issue separate per-host no-delete placement jobs using only verified budgets.",
+        "reclaimable": "Return an exact recoverable candidate list for coordinator approval; do not execute it.",
+        "insufficient": "Return per-host deficits and the smallest model/KV budget or storage-tier correction."
+      }
+    },
+    {
+      "id": "TP4PP4-Q27-MATERIALIZE-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 230,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_materialization",
+      "title": "Materialize Qwen 3.8 27B TP4xPP4 rank packs",
+      "objective": "Generate or recover, directly place, and verify exactly the qwen27b rank packs selected by the live inventory receipt.",
+      "dependencies": ["ART-017-TP4PP4-INVENTORY-001", "BG-MOUNT-001", "BG-PACK-001", "BG-BUDGET-001", "BG-RECEIPT-001"],
+      "task_template": "orchestration/tp4pp4_materialization.json",
+      "model_key": "qwen27b",
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-Q27-MATERIALIZE-001.json"
+    },
+    {
+      "id": "TP4PP4-D4F-MATERIALIZE-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 229,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_materialization",
+      "title": "Materialize DSV4 Flash TP4xPP4 rank packs",
+      "objective": "Generate or recover, directly place, and verify exactly the dsv4-flash rank packs selected by the live inventory receipt.",
+      "dependencies": ["ART-017-TP4PP4-INVENTORY-001", "BG-MOUNT-001", "BG-PACK-001", "BG-BUDGET-001", "BG-RECEIPT-001"],
+      "task_template": "orchestration/tp4pp4_materialization.json",
+      "model_key": "dsv4-flash",
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-D4F-MATERIALIZE-001.json"
+    },
+    {
+      "id": "TP4PP4-GLM52-MATERIALIZE-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 228,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_materialization",
+      "title": "Materialize GLM 5.2 TP4xPP4 rank packs",
+      "objective": "Generate or recover, directly place, and verify exactly the glm52 rank packs selected by the live inventory receipt.",
+      "dependencies": ["ART-017-TP4PP4-INVENTORY-001", "BG-MOUNT-001", "BG-PACK-001", "BG-BUDGET-001", "BG-RECEIPT-001"],
+      "task_template": "orchestration/tp4pp4_materialization.json",
+      "model_key": "glm52",
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-GLM52-MATERIALIZE-001.json"
+    },
+    {
+      "id": "TP4PP4-D4P-MATERIALIZE-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 227,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_materialization",
+      "title": "Materialize DSV4 Pro TP4xPP4 rank packs",
+      "objective": "Generate or recover, directly place, and verify exactly the dsv4-pro rank packs selected by the live inventory receipt.",
+      "dependencies": ["ART-017-TP4PP4-INVENTORY-001", "BG-MOUNT-001", "BG-PACK-001", "BG-BUDGET-001", "BG-RECEIPT-001"],
+      "task_template": "orchestration/tp4pp4_materialization.json",
+      "model_key": "dsv4-pro",
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-D4P-MATERIALIZE-001.json"
+    },
+    {
+      "id": "TP4PP4-K3-MATERIALIZE-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 226,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_materialization",
+      "title": "Recover and verify K3 TP4xPP4 rank packs",
+      "objective": "Recover or verify, directly place only missing files, and requalify exactly the k3 rank packs selected by the live inventory receipt.",
+      "dependencies": ["ART-017-TP4PP4-INVENTORY-001", "BG-MOUNT-001", "BG-PACK-001", "BG-BUDGET-001", "BG-RECEIPT-001"],
+      "task_template": "orchestration/tp4pp4_materialization.json",
+      "model_key": "k3",
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-K3-MATERIALIZE-001.json"
+    },
+    {
+      "id": "TP4PP4-QMAX-MATERIALIZE-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 225,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_materialization",
+      "title": "Materialize Qwen 3.8 Max TP4xPP4 rank packs",
+      "objective": "Generate or recover, directly place, and verify exactly the qwen38max rank packs selected by the live inventory receipt; block if the current packer cannot produce TP rank slices.",
+      "dependencies": ["ART-017-TP4PP4-INVENTORY-001", "BG-MOUNT-001", "BG-PACK-001", "BG-BUDGET-001", "BG-RECEIPT-001"],
+      "task_template": "orchestration/tp4pp4_materialization.json",
+      "model_key": "qwen38max",
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-QMAX-MATERIALIZE-001.json"
+    },
+    {
+      "id": "TP4PP4-H3-MATERIALIZE-001",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 224,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_materialization",
+      "title": "Materialize MiniMax H3 TP4xPP4 rank packs",
+      "objective": "Generate or recover, directly place, and verify exactly the minimax-h3 rank packs selected by the live inventory receipt; block if checkpoint identity or a rank-slicing packer is absent.",
+      "dependencies": ["ART-017-TP4PP4-INVENTORY-001", "BG-MOUNT-001", "BG-PACK-001", "BG-BUDGET-001", "BG-RECEIPT-001"],
+      "task_template": "orchestration/tp4pp4_materialization.json",
+      "model_key": "minimax-h3",
+      "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-H3-MATERIALIZE-001.json"
+    },
+    {
+      "id": "Q27-TP4-32K-B1-BASELINE-001",
+      "pert_id": "MOD-Q27-006",
+      "biggulp": "model-qwen38-27b",
+      "status": "ready",
+      "priority": 223,
+      "development_phase": "exploratory",
+      "action_kind": "spark_model_benchmark",
+      "title": "Measure the Qwen 3.8 27B TP4 exact-32K B1 baseline",
+      "objective": "On spark0 through spark3, run the retained merged-main Qwen 3.8 27B TP4 path with one exact 32768-token prompt and measure accurate prefill and decode, or capture the earliest exact rank, capacity, pack, configuration, collective, or runtime blocker that prevents the benchmark.",
+      "expected_value": "This is the first direct performance/correctness observation for the available Qwen TP4 topology and determines whether the next bite is measurement-driven optimization or one bounded launch/capacity correction.",
+      "dependencies": [],
+      "nodes": ["spark0", "spark1", "spark2", "spark3"],
+      "resources": ["gpu", "service_control"],
+      "role": "benchmarker",
+      "time_budget_minutes": 45,
+      "required_data": [
+        "zero-drift identity on every rank: merged main commit, clean tree, build and service identity, checkpoint revision, rank-pack SHA-256, topology/config SHA-256, and generation",
+        "preflight: configured and pack-declared maximum sequence positions, active-sequence/row/KV capacities, free and used VRAM, and all-rank connectivity before load",
+        "request: batch=1, exactly 32768 uncached input tokens, at least 128 measured output tokens, fixed deterministic sampling, prompt/token IDs and request SHA-256",
+        "qualified result: prompt and output parity against the retained one-Spark control, TTFT, prefill seconds and tokens/second, decode seconds and tokens/second, inter-token p50/p95, and per-rank peak VRAM",
+        "failure result: earliest timestamped rank and status plus the exact violated limit, required bytes or missing artifact, raw all-rank logs, and the smallest next correction",
+        "decision: qualified baseline becomes the B1/32K non-spec frontier; any shorter-context run is control evidence only and never substitutes for the exact-32K cell"
+      ],
+      "acceptance": [
+        "The benchmark uses the canonical queue lease and records exact argv plus raw output hashes.",
+        "No source, pack, model data, or service configuration is hotpatched; an absent merged-main exact-32K path is returned as a precise blocker.",
+        "A speed is qualified only when exact-32K input and output parity both pass."
+      ],
+      "result_path": "/private/tmp/sparkpipe-luna-logical/results/Q27-TP4-32K-B1-BASELINE-001.json"
+    },
+    {
+      "id": "QMAX-CONTRACT-CONSISTENCY-001",
+      "pert_id": "MOD-QMAX-001",
+      "biggulp": "model-qwen38-max",
+      "status": "ready",
+      "priority": 217,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Qualify the existing Qwen 3.8 Max identity and geometry contract",
+      "objective": "Add one focused test that treats model_contracts/qwen38_authoritative.json as the sole Qwen 3.8 Max semantic authority and proves its identity, 92-layer geometry, 262144-token context, hybrid GDN/full-attention counts, precision policy, and every matching qwen38_max model-header constant without creating a duplicate contract.",
+      "expected_value": "Replaces a repeatedly truncated 420KB-context monolith with the smallest executable gate for MOD-QMAX-001 and immediately exposes the first real contract drift.",
+      "dependencies": [],
+      "write_set": ["tests/model_contracts/test_qmax_contract.py"],
+      "context_paths": ["model_contracts/qwen38_authoritative.json", "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h", "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_work_control.h"],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 0,
+      "max_patch_lines": 180,
+      "required_data": [
+        "exact authority fields and header macros compared, including units and derived 69 GDN plus 23 full-attention layer count",
+        "negative fixture or temporary mutated copy proving unknown, missing, nearby-27B, and inconsistent fields fail closed",
+        "test output, git diff check, patch hash, test LOC, and independent audit verdict"
+      ],
+      "acceptance": [
+        "No production code or second Qwen Max geometry table is added.",
+        "The test reads actual JSON and headers and fails on unresolved or contradictory constants.",
+        "python3 tests/model_contracts/test_qmax_contract.py and git diff --check pass."
+      ],
+      "test_commands": ["python3 tests/model_contracts/test_qmax_contract.py", "git diff --check"],
+      "outcomes": {"pass": "Advance to one separate tensor-inventory/oracle bite.", "fail": "Return the first exact authority/header contradiction and the smallest correction write set."}
+    },
+    {
+      "id": "D4P-CONTRACT-CONSISTENCY-001",
+      "pert_id": "MOD-D4P-001",
+      "biggulp": "model-dsv4-pro",
+      "status": "ready",
+      "priority": 216,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Qualify the retained DSV4 Pro authoritative and generated contracts",
+      "objective": "Add one focused test that proves model_contracts/dsv4_pro_authoritative.json and dsv4_pro.json agree on every semantic field, validates the 61-layer plus three-DSpark-layer boundary and compression-ratio interpretation, and checks matching Pro header constants without implementing inference or duplicating the contract.",
+      "expected_value": "Turns the repeatedly truncated DSV4 Pro monolith into a short deterministic first gate using the contract already present in the repository.",
+      "dependencies": [],
+      "write_set": ["tests/model_contracts/test_d4p_contract.py"],
+      "context_paths": ["model_contracts/dsv4_pro_authoritative.json", "model_contracts/dsv4_pro.json", "model-families/dsv4/include/sparkpipe/spark_dsv4_pro_model.h", "tools/dsv4_pro_stagepack.py"],
+      "time_budget_minutes": 12,
+      "max_net_production_lines": 0,
+      "max_patch_lines": 180,
+      "required_data": [
+        "all semantic fields compared with exact paths and units; generated metadata is explicitly separated",
+        "negative fixture or temporary mutated copy proving missing, Flash-aliased, inconsistent and unknown fields fail closed",
+        "compression-ratio length and backbone-versus-DSpark boundary proof",
+        "test output, git diff check, patch hash, test LOC, and independent audit verdict"
+      ],
+      "acceptance": [
+        "No production code, checkpoint constants, or second DSV4 Pro contract is added.",
+        "The test reads the real contracts and header and fails on unresolved or contradictory fields.",
+        "python3 tests/model_contracts/test_d4p_contract.py and git diff --check pass."
+      ],
+      "test_commands": ["python3 tests/model_contracts/test_d4p_contract.py", "git diff --check"],
+      "outcomes": {"pass": "Advance to separate tensor-inventory and reduced-oracle bites.", "fail": "Return the first exact authoritative/generated/header contradiction and the smallest correction write set."}
+    },
+    {
+      "id": "PRV-001-BITE-001",
+      "pert_id": "PRV-001",
+      "biggulp": "providers",
+      "status": "dependency_blocked",
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Implement provider identity and enrollment assertions",
+      "objective": "Define provider identity, trust/data/region policy, signing key, qualification reference, nonce, monotonic counter, and short-lived capacity assertion for decentralized compute enrollment.",
+      "dependencies": ["SEC-002", "TOP-004"],
+      "write_set": [
+        "schema/provider_enrollment.schema.json",
+        "schema/provider_capacity_assertion.schema.json",
+        "tools/validate_provider_assertion.py",
+        "tests/test_provider_assertion.py"
+      ],
+      "time_budget_minutes": 18,
+      "max_net_production_lines": 150,
+      "required_data": [
+        "provider, trust tier, region/data policy, release/topology/qualification identity, resource vector, reserved ten-percent capacity-in-kind, nonce/counter/expiry/signature fields",
+        "negative fixture results for replay, expiry, wrong release/topology, revoked provider, overcommit, and cash-fee substitution",
+        "patch hash, net production LOC, and independent audit verdict"
+      ],
+      "acceptance": [
+        "Assertions are short-lived, signed, monotonic, replay-resistant, and bind exact qualified release/topology capacity.",
+        "Software certification is labeled separately from hardware-root attestation.",
+        "The ten-percent fee is capacity-in-kind, never a cash charge, and is explicit in the capacity vector."
+      ],
+      "test_commands": ["python3 tests/test_provider_assertion.py", "git diff --check"]
+    },
+    {
+      "id": "D4P-32K-DECODE-HEADROOM-002",
+      "pert_id": "MOD-D4P-013",
+      "biggulp": "model-dsv4-pro",
+      "status": "ready",
+      "priority": 232,
+      "development_phase": "production",
+      "action_kind": "production_code",
+      "title": "Correct DSV4 Pro exact-32K input-plus-output capacity",
+      "objective": "Raise only the real DSV4 Pro TP4xPP4 stage position ceiling from 4096 to 33024 and add one focused regression that proves a 32768-token prompt plus 256 generated tokens fits while every retained topology and transport field remains unchanged.",
+      "expected_value": "Removes the first known deterministic blocker to an exact-32K DSV4 Pro launch without changing model, pack, KV, rank, transport, or launcher semantics.",
+      "dependencies": [],
+      "write_set": [
+        "examples/deployments/dsv4_pro_tp4_pp4_stage.json",
+        "tests/test_dsv4_pro_exact32k_stage.py"
+      ],
+      "context_paths": [
+        "examples/deployments/dsv4_pro_tp4_pp4_stage.json",
+        "examples/deployments/dsv4_pro_tp4_pp4_host_rdma.spec.json",
+        "model_contracts/dsv4_pro_authoritative.json"
+      ],
+      "time_budget_minutes": 10,
+      "max_net_production_lines": 1,
+      "max_patch_lines": 70,
+      "required_data": [
+        "The capacity equation is max_sequence_positions >= prompt_tokens + output_tokens = 32768 + 256 = 33024.",
+        "The previous audited 32768 patch is rejected by /private/tmp/sparkpipe-luna-logical/receipts/D4P-32K-STAGE-001-coordinator-reject.json.",
+        "The focused test reads the real stage JSON and pins model revision, hidden_transport module, all sixteen peers and ports, collective algorithms, both rails, and step rail indices.",
+        "No hardware, numerical, prefill, decode, or SOTA claim is made by this offline correction."
+      ],
+      "acceptance": [
+        "The real Pro TP4xPP4 stage artifact contains integer max_sequence_positions=33024.",
+        "The focused test proves 32768 prompt plus 256 output positions fit and 33025 does not fit the declared ceiling.",
+        "No model, pack, rank mapping, KV policy, transport endpoint, or launcher implementation changes.",
+        "python3 tests/test_dsv4_pro_exact32k_stage.py and git diff --check pass."
+      ],
+      "test_commands": [
+        "python3 tests/test_dsv4_pro_exact32k_stage.py",
+        "git diff --check"
+      ],
+      "outcomes": {
+        "pass": "Advance to merged-main rebuild/install/restart and the smallest real DSV4 Pro exact-32K correctness probe.",
+        "fail": "Return the first exact artifact or topology contradiction and do not launch hardware."
+      }
+    },
+    {
+      "id": "TP4PP4-D4P-AUTHORITATIVE-REQUALIFY-002",
+      "pert_id": "ART-007",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 241,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_inspection",
+      "title": "Requalify all sixteen live DSV4 Pro rank packs with one authoritative verifier",
+      "objective": "Determine whether the nine DSV4 Pro rank packs that differ from the retained round-10 hash list are valid later generations or corrupt artifacts by running one merged-main verifier identity against every live pack and binding each pack to its exact header, source generation, loader contract, and current full hash without moving model data.",
+      "expected_value": "A decisive read-only result either recovers the existing sixteen-pack TP4xPP4 set for zero-drift deployment or identifies the exact ranks that must be regenerated before any Spark launch.",
+      "dependencies": [
+        "D4P-32K-DECODE-HEADROOM-002"
+      ],
+      "nodes": [
+        "spark0", "spark1", "spark2", "spark3",
+        "spark4", "spark5", "spark6", "spark7",
+        "spark8", "spark9", "sparka", "sparkb",
+        "sparkc", "sparkd", "sparke", "sparkf"
+      ],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "write_set": [],
+      "time_budget_minutes": 30,
+      "required_data": [
+        "merged-main commit containing the 33024 stage ceiling plus the exact verifier path and SHA256 used identically for every rank",
+        "per rank host, PP stage, TP rank, physical mount, pack path, bytes, current full SHA256, first 256 header bytes, decoded header fields, verifier argv, exit, stdout and stderr",
+        "per distinct stage shape the expected model revision, layer slice, tensor inventory, hidden dimension, vocabulary, routed experts, DSpark or MTP layers, codec and format version",
+        "for every hash that differs from round-10, the exact retained or live generation receipt and source identity when present; absence remains UNKNOWN and never becomes qualified by age or size alone",
+        "deployed loader and configuration identities plus a read-only header or open validation result; no service restart and no model-data write",
+        "one decision: all sixteen qualified for zero-drift deployment, or the smallest exact rank regeneration set with source, packer, output path, scratch peak and byte gate"
+      ],
+      "acceptance": [
+        "One authoritative verifier identity is used for all four stage shapes; per-host stale or missing verifier copies are not semantic authorities.",
+        "Old-hash mismatch alone is not failure and equal size alone is not success.",
+        "Every qualified pack has current full-hash, header, verifier, loader-contract and source-generation evidence.",
+        "The job is read-only for model data and does not launch, stop, rebuild, move, overwrite or delete anything."
+      ],
+      "spark_queue": {
+        "job_id": "TP4PP4-D4P-AUTHORITATIVE-REQUALIFY-002",
+        "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-D4P-AUTHORITATIVE-REQUALIFY-002.json",
+        "priority": 241
+      },
+      "outcomes": {
+        "qualified": "Unlock one merged-main zero-drift DSV4 Pro TP4xPP4 deployment and B1 correctness bite.",
+        "regenerate": "Submit only the exact failed ranks to the fileadmin materialization queue using the proven source and packer identity.",
+        "unknown": "Return the first missing source, generation, verifier or loader fact and the bounded evidence probe that can resolve it."
+      }
+    }
+  ]
+}

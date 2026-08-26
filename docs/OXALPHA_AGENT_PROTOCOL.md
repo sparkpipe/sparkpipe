@@ -60,7 +60,9 @@ until each patch has a reviewable semantic boundary and disjoint write set.
 - A production task starts after relevant unknowns have measured answers. It
   follows the strict project coding rules and implements the smallest complete
   solution justified by those measurements.
-- Maximize `Solutions / (production code size * 2)`. Test-only probe code that
+- Maximize `validated Solutions / (net production code size squared)`. Failed
+  work scores zero; ten times more production code is one hundred times worse.
+  Test-only probe code that
   exercises production behavior is evidence and is excluded from production
   code size. Duplicated production algorithms, shipping probe machinery, and
   abstractions created only to support a probe count as production code.

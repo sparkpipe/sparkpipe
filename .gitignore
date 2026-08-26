@@ -12,4 +12,8 @@ tools/devcycle/drivers/
 !.codex/agents/
 .codex/agents/*
 !.codex/agents/pert-foreman.toml
+!.codex/agents/metric-expediter.toml
+!.codex/agents/benchmarker.toml
+!.codex/agents/spark-role-worker.toml
+orchestration/pert_bites.json
 .tshome/

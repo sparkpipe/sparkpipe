@@ -1,6 +1,6 @@
 # TOP-10 KV-cache (top-speed assessment + ranked improvements)
 
-KV-cache subsystem agent. Metric: maximize Solutions / (code size x 2)
+KV-cache subsystem agent. Metric: maximize validated Solutions / (net production code size squared)
 (METRIC.md). DRY wins first (deleting a line is a solution at zero cost); then
 performance levels 1 accurate-slow < 2 80% SOTA < 3 90% SOTA < 4 SOTA < 5
 exceeds. Each item below names which solution it buys and an estimated

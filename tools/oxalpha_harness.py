@@ -3947,7 +3947,7 @@ class CodexHarnessRunner:
             "source before making semantic claims. Use the available tools instead of inventing file "
             f"contents. Development phase: {phase.upper()}. Less code is better; choose the simplest "
             "measured solution, do not overengineer, and find decisive test results quickly. Maximize "
-            "Solutions / (production code size * 2); test-only probes that reuse production code are "
+            "Solutions / (net production code size squared); test-only probes that reuse production code are "
             f"evidence rather than a second implementation. {phase_rule} {edit_rule} For apply_patch, "
             "send a git-apply-compatible patch beginning with "
             "'diff --git'; never send '*** Begin Patch' syntax. Raw outputs are stored as session "

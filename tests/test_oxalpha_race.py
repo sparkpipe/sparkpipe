@@ -699,6 +699,29 @@ class RacingTests(unittest.TestCase):
         self.assertEqual(health["a-invalid"]["failures"], 1)
         self.assertEqual(health["c-refill"]["wins"], 1)
 
+    def test_provider_can_require_automatic_tool_choice(self):
+        upstream = self.upstream("auto")
+        spec = dataclasses.replace(
+            provider("auto", upstream), tool_choice="auto", stream=False,
+            max_output_tokens=4096, reasoning_effort="low",
+        )
+        pool = RACE.ProviderRacePool(settings([spec], redundancy=1))
+        pool.race({
+            "messages": [{"role": "user", "content": "work"}],
+            "tools": [{"type": "function", "function": {
+                "name": "finish", "parameters": {"type": "object"},
+            }}],
+            "tool_choice": {"type": "function", "function": {"name": "finish"}},
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "max_tokens": 16384,
+        }, "provider-tool-choice")
+        self.assertEqual(upstream.calls[0]["tool_choice"], "auto")
+        self.assertIs(upstream.calls[0]["stream"], False)
+        self.assertNotIn("stream_options", upstream.calls[0])
+        self.assertEqual(upstream.calls[0]["max_tokens"], 4096)
+        self.assertEqual(upstream.calls[0]["reasoning_effort"], "low")
+
     def test_malformed_fast_tool_response_does_not_cancel_valid_leg(self):
         malformed = completion("bad", content=None)
         malformed["choices"][0]["finish_reason"] = "tool_calls"

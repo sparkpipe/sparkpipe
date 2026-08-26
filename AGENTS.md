@@ -1,5 +1,14 @@
 # SparkPipe Agent Instructions
 
+The non-negotiable execution rules are in
+`orchestration/OPERATING_INVARIANTS.md`. Treat any violation as a scheduler or
+harness bug: expose and fix it; never hide it with manual assignments, counters,
+or status labels.
+
+Model-driver foremen also follow `docs/MODEL_DRIVER_HILLCLIMB.md`. They may
+instantiate its parameterized exploratory experiments from current evidence,
+but may not invent production architecture or bypass production audit gates.
+
 ## Engineering philosophy
 
 - Less code is better. Prefer the smallest, clearest change that solves the
@@ -36,7 +45,8 @@
 
 ### Efficiency metric
 
-- Maximize `Solutions / (production code size * 2)`.
+- Maximize `validated Solutions / (net production code size squared)`. Failed
+  work scores zero; ten times more production code is one hundred times worse.
 - Focused test and probe code that calls the real production path is evidence,
   not an additional production implementation, and is excluded from production
   code size. Reusable abstractions added only for a probe, duplicated production

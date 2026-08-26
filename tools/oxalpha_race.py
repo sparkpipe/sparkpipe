@@ -75,6 +75,10 @@ class ProviderSpec:
     enabled: bool
     hedging_authorized: bool
     failure_domains: tuple[str, ...] = ()
+    tool_choice: str | None = None
+    stream: bool | None = None
+    max_output_tokens: int | None = None
+    reasoning_effort: str | None = None
 
     @property
     def correlation_domains(self) -> tuple[str, ...]:
@@ -209,6 +213,24 @@ def load_pool_settings(path: Path) -> PoolSettings:
         model = value.get("model")
         if not isinstance(model, str) or not model:
             raise PoolConfigurationError(f"{provider_id} model must be a non-empty string")
+        tool_choice = value.get("tool_choice")
+        if tool_choice not in {None, "auto"}:
+            raise PoolConfigurationError(
+                f"{provider_id} tool_choice must be auto when configured"
+            )
+        stream = value.get("stream")
+        if stream is not None and not isinstance(stream, bool):
+            raise PoolConfigurationError(f"{provider_id} stream must be boolean")
+        max_output_tokens = value.get("max_output_tokens")
+        if max_output_tokens is not None:
+            max_output_tokens = _integer(
+                max_output_tokens, f"{provider_id} max_output_tokens", 256
+            )
+        reasoning_effort = value.get("reasoning_effort")
+        if reasoning_effort not in {None, "low", "high", "max"}:
+            raise PoolConfigurationError(
+                f"{provider_id} reasoning_effort must be low, high, or max"
+            )
         auth = value.get("auth", {"kind": "none"})
         if not isinstance(auth, dict):
             raise PoolConfigurationError(f"{provider_id} auth must be an object")
@@ -252,6 +274,10 @@ def load_pool_settings(path: Path) -> PoolSettings:
                 enabled=value.get("enabled", True) is True,
                 hedging_authorized=value.get("hedging_authorized", False) is True,
                 failure_domains=domains,
+                tool_choice=tool_choice,
+                stream=stream,
+                max_output_tokens=max_output_tokens,
+                reasoning_effort=reasoning_effort,
             )
         )
     eligible = [item for item in providers if item.enabled and item.hedging_authorized]
@@ -1055,6 +1081,20 @@ class ProviderRacePool:
                 raise InterruptedError("canceled before upstream request")
             request = dict(body)
             request["model"] = provider.model
+            if provider.tool_choice is not None and "tools" in request:
+                request["tool_choice"] = provider.tool_choice
+            if provider.stream is not None:
+                request["stream"] = provider.stream
+                if not provider.stream:
+                    request.pop("stream_options", None)
+            if provider.max_output_tokens is not None:
+                requested_tokens = request.get("max_tokens")
+                if isinstance(requested_tokens, int) and not isinstance(requested_tokens, bool):
+                    request["max_tokens"] = min(
+                        requested_tokens, provider.max_output_tokens
+                    )
+            if provider.reasoning_effort is not None:
+                request["reasoning_effort"] = provider.reasoning_effort
             encoded = json.dumps(request, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
             if len(encoded) > self.settings.max_request_bytes:
                 raise ValueError("upstream request exceeds size limit")

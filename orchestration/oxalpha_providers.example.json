@@ -13,16 +13,16 @@
       "id": "opencode-zen",
       "failure_domains": ["gateway-opencode", "operator-opencode"],
       "base_url": "https://opencode.ai/zen/v1",
-      "model": "x-preview-f-free",
+      "model": "glm-5.2",
       "auth": {"kind": "env", "name": "OPENCODE_API"},
-      "enabled": true,
+      "enabled": false,
       "hedging_authorized": true
     },
     {
       "id": "openrouter",
       "failure_domains": ["gateway-openrouter", "upstream-openrouter"],
       "base_url": "https://openrouter.ai/api/v1",
-      "model": "stealth/ox-alpha",
+      "model": "z-ai/glm-5.3-flash",
       "auth": {"kind": "env", "name": "OPENROUTER_API_KEY"},
       "headers": {"X-Title": "SparkPipe Ox Alpha development"},
       "enabled": false,
@@ -32,7 +32,7 @@
       "id": "aimlapi",
       "failure_domains": ["gateway-aimlapi", "upstream-openrouter"],
       "base_url": "https://api.aimlapi.com/v1",
-      "model": "stealth/ox-alpha",
+      "model": "z-ai/glm-5.3-flash",
       "auth": {"kind": "env", "name": "AIML_API"},
       "enabled": false,
       "hedging_authorized": false
@@ -59,8 +59,11 @@
       "id": "nous",
       "failure_domains": ["gateway-nous", "operator-nous", "upstream-openrouter"],
       "base_url": "https://inference-api.nousresearch.com/v1",
-      "model": "stealth/ox-alpha",
+      "model": "z-ai/glm-5.3-flash",
       "auth": {"kind": "env", "name": "NOUS_API"},
+      "tool_choice": "auto",
+      "max_output_tokens": 4096,
+      "reasoning_effort": "low",
       "enabled": true,
       "hedging_authorized": true
     }

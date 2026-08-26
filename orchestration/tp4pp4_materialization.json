@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "topology": {
+    "name": "TP4xPP4",
+    "world_size": 16,
+    "rank_map": "world_rank=pp_stage*4+tp_rank",
+    "hosts": [
+      "spark0", "spark1", "spark2", "spark3",
+      "spark4", "spark5", "spark6", "spark7",
+      "spark8", "spark9", "sparka", "sparkb",
+      "sparkc", "sparkd", "sparke", "sparkf"
+    ],
+    "transport": "direct source-to-destination over the single 100Gbps switch"
+  },
+  "prerequisites": [
+    "TP4PP4-PACK-INVENTORY-001 has one complete model row with exact checkpoint/index hashes, final-shard completeness, packer revision and argv, expected layer split, per-rank bytes, scratch peak, and destination paths",
+    "BG-MOUNT-001, BG-PACK-001, BG-BUDGET-001, and BG-RECEIPT-001 exact patches are independently approved",
+    "every participating host has a fresh valid physical-mount receipt and operation_safe=true disk budget",
+    "the Spark storage queue owns generation-fenced storage_io leases for the named source, scratch, and destination hosts"
+  ],
+  "execution": [
+    "If all sixteen rank packs are already hash- and loader-qualified, skip generation and publish only missing destination files.",
+    "Otherwise run exactly the packer argv recorded by the inventory receipt; missing or ambiguous source, revision, command, codec, split, or byte estimate blocks only this model.",
+    "Write scratch only beneath the queue-approved generated scratch root. Never write beside or alter a source checkpoint.",
+    "Build and validate one BG-PACK-001 manifest per world rank before transfer.",
+    "Transfer each rank directly to its owning host using a generated temporary filename; do not forward through another Spark.",
+    "Verify destination byte count, SHA-256, rank manifest, and family loader before atomic publication.",
+    "After all sixteen publications verify, delete only scratch paths created by this generation and named in its receipt. Never delete, move, or overwrite a source checkpoint or pre-existing unknown path."
+  ],
+  "required_result": [
+    "job, generation, lease, model, checkpoint/index/recipe/packer identities and exact executed argv",
+    "source and scratch host physical mount receipts plus preflight and peak byte budgets",
+    "for all sixteen ranks: host, world rank, PP stage, TP rank, final path, bytes, SHA-256, rank-manifest SHA-256, loader result, and publication generation",
+    "direct-transfer source/destination/interface/MTU and byte/timing evidence",
+    "every generated scratch path and its cleanup result, or exact retained reason",
+    "before/after free bytes on every touched host and the next decision"
+  ],
+  "acceptance": [
+    "Sixteen final packs map rank 0..15 to spark0..sparkf with PP stage floor(rank/4) and TP rank rank modulo 4.",
+    "Every final pack is manifest-, SHA-256-, and loader-verified before publication.",
+    "All transfers are direct any-to-any over the single switch; no waterfall path is used.",
+    "Only job-generated scratch may be removed, and only after all required destinations verify.",
+    "Source checkpoints and pre-existing unknown paths are unchanged."
+  ]
+}

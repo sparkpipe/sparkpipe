@@ -131,9 +131,11 @@ MODEL_TASK_PREFIX_LANES = {
 MODEL_DRIVER_LANES = frozenset(MODEL_TASK_PREFIX_LANES.values())
 DEVELOPMENT_PHASES = frozenset({"exploratory", "production"})
 AGENT_CODING_PHILOSOPHY = (
+    "Obey every rule in orchestration/OPERATING_INVARIANTS.md; violating output is rejected. "
     "Less code is better. Use the simplest solution that answers the measured problem; "
-    "do not overengineer. Find decisive test results quickly. Maximize Solutions / "
-    "(production code size * 2). Test-only probes that reuse the real production path "
+    "do not overengineer. Find decisive test results quickly. Maximize validated Solutions / "
+    "(net production code size squared); failed work scores zero and ten times more code is "
+    "one hundred times worse. Test-only probes that reuse the real production path "
     "are evidence, not a second production implementation."
 )
 CANONICAL_BACKENDS = (

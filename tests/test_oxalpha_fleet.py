@@ -443,7 +443,7 @@ class GraphTests(unittest.TestCase):
         implementation = FLEET.implementer_prompt(current, "a" * 40, None)
         self.assertIn("Development phase: EXPLORATORY", implementation)
         self.assertIn("Less code is better", implementation)
-        self.assertIn("Solutions / (production code size * 2)", implementation)
+        self.assertIn("Solutions / (net production code size squared)", implementation)
         self.assertIn("real production path", implementation)
         self.assertIn('"status": "READY_FOR_FOREMAN"', implementation)
         with self.assertRaisesRegex(ValueError, "do not have an auditor phase"):

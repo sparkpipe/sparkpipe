@@ -700,7 +700,7 @@ def build_observation(source_config, envelope):
         reasons.append("envelope source_id does not match configured source")
         return None, reasons
     extraction = source_config.get("extraction", {})
-    fmt = extraction["format"]
+    fmt = extraction.get("format")
     body = envelope["body"]
     if fmt == "sparkpipe_flat_v1":
         obs, reasons = _apply_flat_v1(body, extraction)
@@ -1210,6 +1210,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     model_filter = args.models.split(",") if args.models else None
+    if model_filter:
+        unknown_models = sorted(set(model_filter) - set(SUPPORTED_MODELS))
+        if unknown_models:
+            print(
+                f"unknown model_id(s) in --models: {unknown_models}",
+                file=sys.stderr,
+            )
+            return 2
     mode_label = "offline_fixtures" if args.mode == "offline" else "network_fetch"
     envelope_dir = args.envelope_dir
     if args.mode == "fetch":

@@ -362,6 +362,7 @@
         },
         {
             "id": "PERF-DSV4-001",
+            "source_task_id": "MOD-D4F-017",
             "title": "DSV4 Flash current SOTA gap and no-drop bottleneck refresh",
             "workstream": "performance",
             "priority": 118,
@@ -399,6 +400,7 @@
         },
         {
             "id": "PERF-DSV4-002",
+            "source_task_id": "PERF-005",
             "title": "DSV4 Flash highest-exposed-wall-time optimization slice",
             "workstream": "performance",
             "priority": 114,
@@ -435,6 +437,7 @@
         },
         {
             "id": "COR-K3-001",
+            "source_task_id": "MOD-K3-004",
             "title": "K3 sharding and runtime correctness blockers",
             "workstream": "models",
             "priority": 117,
@@ -470,6 +473,7 @@
         },
         {
             "id": "COR-GLM52-001",
+            "source_task_id": "MOD-GLM-004",
             "title": "GLM 5.2 real-pack correctness path",
             "workstream": "models",
             "priority": 115,
@@ -508,6 +512,7 @@
         },
         {
             "id": "PERF-Q27-001",
+            "source_task_id": "MOD-Q27-017",
             "title": "Qwen 3.8 27B one-Spark SOTA gap and bottleneck profile",
             "workstream": "performance",
             "priority": 113,
@@ -546,6 +551,7 @@
         },
         {
             "id": "PERF-GLM52-001",
+            "source_task_id": "MOD-GLM-017",
             "title": "GLM 5.2 post-correctness SOTA performance program",
             "workstream": "performance",
             "priority": 108,
@@ -583,6 +589,7 @@
         },
         {
             "id": "PERF-K3-001",
+            "source_task_id": "MOD-K3-017",
             "title": "K3 post-correctness SOTA performance program",
             "workstream": "performance",
             "priority": 107,
@@ -1201,6 +1208,7 @@
     },
     {
       "id": "MOD-001",
+      "source_task_id": "MOD-Q27-003",
       "title": "Qwen 3.8 27B recipe-to-build CUDA path",
       "workstream": "models",
       "priority": 77,
@@ -1216,6 +1224,7 @@
     },
     {
       "id": "MOD-002",
+      "source_task_id": "AMD-013",
       "title": "DSV4 ROCm one-layer numerical gate",
       "workstream": "models",
       "priority": 72,
@@ -1231,6 +1240,7 @@
     },
     {
       "id": "MOD-003",
+      "source_task_id": "MET-012",
       "title": "Metal first execution-island numerical gate",
       "workstream": "models",
       "priority": 65,
@@ -1245,6 +1255,7 @@
     },
     {
       "id": "TST-001",
+      "source_task_id": "HWI-009",
       "title": "Cross-matrix covering-array generator",
       "workstream": "qualification",
       "priority": 73,

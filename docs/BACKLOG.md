@@ -2,7 +2,7 @@
 
 Source: the twelve TOP10_*.md agent assessments (landed in the agent
 workspaces; this file is the coordinator merge). Sort key: Solutions /
-(code size * 2) with the value ladder from .agents/METRIC.md. DRY wins
+(net production code size squared). DRY wins
 first (negative code), then level buys ranked by value-per-line.
 
 ## Human decisions needed (blockers - nothing moves until these are made)

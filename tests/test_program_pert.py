@@ -40,6 +40,14 @@ class ProgramPertTests(unittest.TestCase):
             for dependency in task["dependencies"]:
                 self.assertIn(dependency, self.by_id, task["id"])
 
+    def test_every_runner_task_has_pert_provenance(self) -> None:
+        platform = json.loads(
+            (ROOT / "orchestration" / "platform_tasks.json").read_text()
+        )
+        for task in platform["tasks"]:
+            parent = task.get("source_task_id", task["id"])
+            self.assertIn(parent, self.by_id, task["id"])
+
     def test_confirmed_decisions_and_agent_redundancy_are_exact(self) -> None:
         decisions = self.graph["decisions"]
         self.assertEqual(decisions["large_qwen_name"], "Qwen 3.8 Max")

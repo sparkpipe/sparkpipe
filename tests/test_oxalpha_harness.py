@@ -126,7 +126,7 @@ class NativeHarnessTests(unittest.TestCase):
         )
         self.assertIn("Development phase: EXPLORATORY", prompt)
         self.assertIn("Less code is better", prompt)
-        self.assertIn("Solutions / (production code size * 2)", prompt)
+        self.assertIn("Solutions / (net production code size squared)", prompt)
         self.assertIn("real production path", prompt)
         self.assertIn("no independent audit follows", prompt)
         self.assertIn("Batch independent read-only calls", prompt)

@@ -1,6 +1,6 @@
 # Top-10 infra improvements — SYSADMIN
 
-Metric (`.agents/METRIC.md:3-13`): maximize **Solutions / (code size × 2)**.
+Metric: maximize **validated Solutions / (net production code size²)**.
 Every item states the solution it buys. Infra items buy *operational* solutions
 (availability, MTTR reduction, or DRY) rather than the performance-level ladder;
 DRY wins are flagged where the delta is negative (deleting lines is a solution
