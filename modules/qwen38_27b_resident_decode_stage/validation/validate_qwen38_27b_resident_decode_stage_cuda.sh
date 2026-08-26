@@ -69,9 +69,9 @@ require_configuration_value SPARK_QWEN38_27B_STAGE_FIRST_LAYER 0
 # The harness block table spans MAX_ACTIVE_SEQUENCES lanes (the -D plumbing
 # from PR #714); admit the qualified lane-ladder values.
 case "${SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES:-8}" in
-    8|16) ;;
+    8|16|64) ;;
     *)
-        echo "qwen38_27b hardware validation requires SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES in {8,16}, got '${SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES:-}'" >&2
+        echo "qwen38_27b hardware validation requires SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES in {8,16,64}, got '${SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES:-}'" >&2
         exit 2
         ;;
 esac
