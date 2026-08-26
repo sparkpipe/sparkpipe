@@ -20,6 +20,7 @@ TRANSPORT_BASE = 60700
 COLLECTIVE_ID = 8811223344556678
 MODEL_REVISION = "b4734de4facf877f85769a911abafc5283eab3d9"
 NODE_TARGET = "cuda.sm121.glm52.resident_decode_stage.bf16.expert_fp8"
+MAX_SEQUENCE_POSITIONS = 32768
 
 TP_COLLECTIVE = {
     "backend": "hidden_transport",
@@ -44,7 +45,7 @@ def stage_config(rank: int) -> dict:
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": "fp8",
         "stage_pack_path": "packs/glm52_tp8_rank%02d.fp8.glms52sp" % rank,
-        "max_sequence_positions": 4096,
+        "max_sequence_positions": MAX_SEQUENCE_POSITIONS,
         "execution_row_capacity": 16,
         "tp_degree": TP,
         "tp_rank": rank,
