@@ -129,6 +129,26 @@ class NativeHarnessTests(unittest.TestCase):
             max_turns=8,
         )
 
+    def test_module_imports_with_system_python(self):
+        system_python = Path("/usr/bin/python3")
+        if not system_python.is_file():
+            self.skipTest("system Python is unavailable")
+        result = subprocess.run(
+            [
+                str(system_python),
+                "-c",
+                "import importlib.util,sys; "
+                f"p={str(ROOT / 'tools' / 'oxalpha_harness.py')!r}; "
+                "s=importlib.util.spec_from_file_location('compat_harness',p); "
+                "m=importlib.util.module_from_spec(s); "
+                "sys.modules[s.name]=m; s.loader.exec_module(m)",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+
     def test_raced_turn_executes_patch_once_and_journals_raw_data(self):
         patch = (
             "diff --git a/result.txt b/result.txt\n"

@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
 
 SESSION_ID_RE = re.compile(r"^codex-oxalpha-[0-9a-f]{32}$")
@@ -48,7 +48,7 @@ MAX_STORAGE_ENTRIES = 262144
 MAX_PROCESS_DESCENDANTS = 64
 MAX_TOOL_CALLS_PER_TURN = 128
 TOOL_COMPLETION_SCHEMA_VERSION = 2
-EventCallback = Callable[[str, dict[str, Any] | None, int | None], None]
+EventCallback = Callable[[str, Optional[Dict[str, Any]], Optional[int]], None]
 TRUSTED_EXECUTABLE_PATHS = {
     "bash": (Path("/bin/bash"),),
     "bwrap": (Path("/usr/bin/bwrap"), Path("/bin/bwrap")),

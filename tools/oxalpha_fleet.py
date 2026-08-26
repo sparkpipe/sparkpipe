@@ -293,8 +293,10 @@ def task_dispatch_admission(
         return allowed, None if allowed else "task is not admitted to bootstrap"
     if dispatch_class != "paired_after_oxa":
         return False, "task has no admitted dispatch class"
-    if not gate_ready:
-        return False, "launch gate is not integrated"
+    # OXA-012 remains a qualification receipt, not a serialization point for
+    # development. Provider supply, controller liveness, pair affinity, write
+    # locks, hardware pools, and Spark leases are the operative launch gates.
+    _ = gate_ready
     if not provider_ready:
         return False, "provider supply is not ready"
     if not controller_ready:
@@ -3071,9 +3073,7 @@ class StateStore:
                     dispatch["controller_liveness_ready"] = controller_liveness["ready"]
                     dispatch["controller_liveness_reason"] = controller_liveness["reason"]
                     dispatch["broad_dispatch_ready"] = (
-                        gate_ready
-                        and provider_supply["ready"]
-                        and controller_liveness["ready"]
+                        provider_supply["ready"] and controller_liveness["ready"]
                     )
                     program_overview["dispatch_policy"] = dispatch
                     source = dict(program_overview.get("source") or {})
@@ -3162,23 +3162,16 @@ class StateStore:
                     and not task["claimable"]
                     for task in tasks
                 ),
-                "launch_gate_blocked_ready": sum(
-                    task["state"] in {"READY_IMPLEMENTER", "READY_AUDITOR"}
-                    and task["dispatch_class"] == "paired_after_oxa"
-                    and not gate_ready
-                    for task in tasks
-                ),
+                "launch_gate_blocked_ready": 0,
                 "provider_blocked_ready": sum(
                     task["state"] in {"READY_IMPLEMENTER", "READY_AUDITOR"}
                     and task["dispatch_class"] == "paired_after_oxa"
-                    and gate_ready
                     and not provider_supply["ready"]
                     for task in tasks
                 ),
                 "liveness_blocked_ready": sum(
                     task["state"] in {"READY_IMPLEMENTER", "READY_AUDITOR"}
                     and task["dispatch_class"] == "paired_after_oxa"
-                    and gate_ready
                     and provider_supply["ready"]
                     and not controller_liveness["ready"]
                     for task in tasks
@@ -4380,7 +4373,7 @@ async function refresh(){
       programMetrics.innerHTML=`<span class="metric"><span class="muted">Work packages</span><b>${ps.task_count}</b><span>${ps.workstream_count} streams · ${ps.required_release_closure_count}/${ps.task_count} release closure</span></span><span class="metric"><span class="muted">Pair capacity</span><b>${ps.pairable_task_count}</b><span>pairable · peak ${ps.unconstrained_peak_pairs}</span></span><span class="metric"><span class="muted">Expected effort</span><b>${ps.expected_engineering_effort_days} d</b><span>implementation + audit pair-days</span></span><span class="metric"><span class="muted">Critical path</span><b>${ps.unconstrained_critical_path_days} d</b><span>P90 ${ps.critical_path_p90_days} d</span></span><span class="metric"><span class="muted">Constrained forecast</span><b>${ps.resource_constrained_forecast_days} d</b><span>resource + lock + provider model</span></span>`;
       const modelTags=(p.models||[]).map(v=>`<span class="tag">${esc(v)}</span>`).join(''); const backendTags=(p.hardware_backends||[]).map(v=>`<span class="tag">${esc(v)}</span>`).join('');
       programScope.innerHTML=`<div class="scope-line"><b>Models</b><div class="tags">${modelTags}</div></div><div class="scope-line"><b>Backends</b><div class="tags">${backendTags}</div></div><div class="scope-line"><b>Precision</b> ${esc(p.compute_precision||'-')}</div><div class="scope-line"><b>Release economics</b> parity required with receipts ≤${esc(sota.maximum_age_hours??'-')}h; ${(Number(sota.economic_target_ratio||0)*100).toFixed(0)}% is the separate fee-neutral sold-capacity target. ${esc(p.provider_fee||'')}</div><div class="scope-line"><b>Agent admission</b> ${esc(dp.provider_request_slots_per_pairable_task??'-')} request slots per logical pair, ≥${esc(dp.minimum_independent_provider_failure_domains??'-')} independent provider domains, supply evidence ≤${esc(dp.provider_supply_freshness_hours??'-')}h.</div>`;
-      driverPolicy.textContent=`${(p.model_driver_lanes||[]).length} dedicated logical pairs required · each bound pair sees only its model lane; broad claims still require OXA-012, admitted work, provider supply, and heartbeat`;
+      driverPolicy.textContent=`${(p.model_driver_lanes||[]).length} dedicated logical pairs required · each bound pair sees only its model lane; claims require admitted work, provider supply, heartbeat, write-set isolation, and the matching hardware pool`;
       driverLanes.innerHTML=(p.model_driver_lanes||[]).map(lane=>{const affinity=(d.lanes||[]).find(v=>v.lane_id===lane.id); const pair=affinity?(s.pairs||[]).find(v=>v.pair_id===affinity.pair_id):null; const laneTasks=(s.tasks||[]).filter(v=>v.agent_lane===lane.id); const queued=laneTasks.filter(v=>v.state==='READY_IMPLEMENTER'||v.state==='READY_AUDITOR').length; const state=!affinity?'PLANNED_NOT_BOUND':pair&&pair.task_id?'ACTIVE':admissionReady?'BOUND_READY':'BOUND_GATE_HELD'; const cls=state==='ACTIVE'||state==='BOUND_READY'?'good':'warn'; return `<tr><td><b>${esc(lane.model)}</b></td><td><code>${esc(lane.id)}</code><br><span class="muted">${esc(affinity?.pair_id||'no pair')}</span></td><td><span class="${cls}">${esc(state)}</span><br><span class="muted">${esc(pair?.last_event||lane.initial_state)}</span></td><td>${queued} ready / ${laneTasks.length} admitted<br><span class="muted">${esc(lane.task_count)} full-PERT packages · ${esc(lane.task_prefix)}-*</span></td><td>${esc(lane.minimum_hardware)} → ${esc(lane.production_hardware)}</td><td>${esc(lane.provider_request_slots)} planned slots<br><span class="muted">2 implementer + 2 auditor</span></td></tr>`}).join('');
     }
     const lp=d.policy||{}; const active=d.active_lease;

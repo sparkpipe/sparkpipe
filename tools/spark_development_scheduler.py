@@ -150,7 +150,7 @@ def finite_positive(value: Any) -> bool:
 
 
 def positive_decimal(value: Any, field: str) -> tuple[Decimal, str, float]:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not isinstance(value, (int, float, ExactJSONNumber)) or isinstance(value, bool):
         raise SchedulerError(f"{field} is invalid")
     try:
         text = str(value)
@@ -163,6 +163,19 @@ def positive_decimal(value: Any, field: str) -> tuple[Decimal, str, float]:
     if not exact.is_finite() or exact <= 0 or not math.isfinite(storage) or storage <= 0:
         raise SchedulerError(f"{field} is invalid")
     return exact, text, storage
+
+
+def meets_minimum_progress(candidate: Decimal, previous: Decimal) -> bool:
+    candidate_numerator, candidate_denominator = candidate.as_integer_ratio()
+    previous_numerator, previous_denominator = previous.as_integer_ratio()
+    return (
+        candidate_numerator
+        * previous_denominator
+        * MINIMUM_PROGRESS_DENOMINATOR
+        >= previous_numerator
+        * candidate_denominator
+        * MINIMUM_PROGRESS_NUMERATOR
+    )
 
 
 def persisted_decimal(text: Any, fallback: Any, field: str) -> Decimal:
@@ -1860,8 +1873,7 @@ class SchedulerStore:
             qualifies = first_nonworking_baseline or (
                 previous is not None
                 and value_exact > previous
-                and value_exact * MINIMUM_PROGRESS_DENOMINATOR
-                >= previous * MINIMUM_PROGRESS_NUMERATOR
+                and meets_minimum_progress(value_exact, previous)
             )
             received = utc_now(epoch)
             connection.execute(
@@ -2315,13 +2327,24 @@ def dashboard_snapshot(fleet_state_dir: Path, repo: Path | None) -> dict[str, An
     return store.snapshot(repo)
 
 
-def load_json(path: Path) -> Any:
+class ExactJSONNumber(str):
+    pass
+
+
+def load_json(path: Path, exact_decimal_fields: frozenset[str] = frozenset()) -> Any:
     if not path.is_file() or path.is_symlink():
         raise SchedulerError(f"JSON input is not a regular file: {path}")
     payload = path.read_bytes()
     if len(payload) > 4 * 1024 * 1024:
         raise SchedulerError(f"JSON input exceeds 4 MiB: {path}")
-    return json.loads(payload)
+    parsed = json.loads(payload)
+    if exact_decimal_fields:
+        lexical = json.loads(payload, parse_float=ExactJSONNumber)
+        if isinstance(parsed, dict) and isinstance(lexical, dict):
+            for field in exact_decimal_fields:
+                if isinstance(lexical.get(field), ExactJSONNumber):
+                    parsed[field] = lexical[field]
+    return parsed
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2373,7 +2396,9 @@ def main(argv: list[str] | None = None) -> int:
             arguments.plan_id, arguments.generation, load_json(arguments.receipt)
         )
     elif arguments.command == "benchmark":
-        result = store.record_benchmark(load_json(arguments.receipt))
+        result = store.record_benchmark(
+            load_json(arguments.receipt, frozenset({"value"}))
+        )
     elif arguments.command == "status":
         result = store.snapshot(arguments.repo.resolve() if arguments.repo else None)
     else:

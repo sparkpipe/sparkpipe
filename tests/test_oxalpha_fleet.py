@@ -1065,23 +1065,26 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(pair["agent_lane"])
         self.assertEqual(lanes, [])
 
-    def test_broad_dispatch_is_unclaimable_until_oxa_gate_is_integrated(self):
-        blocked_graph = graph(
+    def test_broad_dispatch_does_not_wait_for_qualification_receipt(self):
+        launch_graph = graph(
             [task("BROAD-001", dispatch_class="paired_after_oxa")]
         )
-        blocked_store = FLEET.StateStore(self.root / "blocked-state")
-        blocked_store.initialize(
-            blocked_graph, self.graph_path, self.repo, self.base, 1
+        launch_store = FLEET.StateStore(self.root / "launch-state")
+        launch_store.initialize(
+            launch_graph, self.graph_path, self.repo, self.base, 1
         )
-        self.assertIsNone(blocked_store.claim_task("pair-001", {"host"}))
-        snapshot = blocked_store.snapshot()
+        admit_runtime(launch_store)
+        launch_store.set_controller_runtime({"host"}, FLEET.epoch_now())
+        snapshot = launch_store.snapshot()
         self.assertEqual(snapshot["counts"]["ready"], 1)
-        self.assertEqual(snapshot["counts"]["dispatchable_ready"], 0)
-        self.assertEqual(snapshot["counts"]["gate_blocked_ready"], 1)
+        self.assertEqual(snapshot["counts"]["dispatchable_ready"], 1)
+        self.assertEqual(snapshot["counts"]["gate_blocked_ready"], 0)
+        claimed = launch_store.claim_task("pair-001", {"host"})
+        self.assertEqual(claimed["task_id"], "BROAD-001")
 
+    def test_broad_dispatch_still_requires_provider_supply_and_liveness(self):
         admitted_graph = graph(
             [
-                task("OXA-012", priority=200, dispatch_class="bootstrap"),
                 task("BROAD-001", priority=100, dispatch_class="paired_after_oxa"),
             ]
         )
@@ -1089,11 +1092,8 @@ class StoreTests(unittest.TestCase):
         admitted_store.initialize(
             admitted_graph, self.graph_path, self.repo, self.base, 1
         )
-        self.assertFalse(hasattr(admitted_store, "update_task"))
-        admitted_store._update_task("OXA-012", "INTEGRATED", clear_pair=True)
         self.assertIsNone(admitted_store.claim_task("pair-001", {"host"}))
-        admitted_store._update_task("OXA-012", "READY_IMPLEMENTER", clear_pair=True)
-        self.integrate_task(admitted_store, "OXA-012")
+        admit_runtime(admitted_store)
         claimed = admitted_store.claim_task("pair-001", {"host"})
         self.assertEqual(claimed["task_id"], "BROAD-001")
 
@@ -1155,7 +1155,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(claimed["task_id"], "BROAD-001")
         self.assertEqual(admitted_store.snapshot()["provider_supply"]["state"], "READY")
 
-    def test_non_whitelisted_bootstrap_and_removed_gate_fail_closed(self):
+    def test_non_whitelisted_bootstrap_fails_and_removed_receipt_does_not_block(self):
         bypass_store = FLEET.StateStore(self.root / "bypass-state")
         bypass_graph = graph([task("BROAD-001", dispatch_class="bootstrap")])
         with self.assertRaisesRegex(ValueError, "immutable bootstrap whitelist"):
@@ -1179,7 +1179,8 @@ class StoreTests(unittest.TestCase):
             self.graph_path,
         )
         self.assertEqual(admitted_store.task("OXA-012")["state"], "SUPERSEDED")
-        self.assertIsNone(admitted_store.claim_task("pair-001", {"host"}))
+        claimed = admitted_store.claim_task("pair-001", {"host"})
+        self.assertEqual(claimed["task_id"], "BROAD-001")
 
     def test_gate_closes_on_audited_spec_or_uncontrolled_base_drift(self):
         admitted_graph = graph(

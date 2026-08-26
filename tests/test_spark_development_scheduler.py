@@ -726,6 +726,55 @@ class SchedulerTests(unittest.TestCase):
         self.assertFalse(policy["require_gain_establishes_baseline"])
         self.assertNotIn("first_valid_result_establishes_missing_baseline", policy)
 
+    def test_json_decimal_just_below_one_percent_does_not_renew(self):
+        self.store.enqueue(lease_request())
+        plan = self.store.schedule_next(now=1000.0)
+        self.store.acknowledge_plan(
+            plan["plan_id"], plan["generation"], execution_receipt(self.store, plan), now=1010.0
+        )
+        self.store.record_benchmark(
+            benchmark_receipt(plan, "exact-json-baseline", 100.0, measured_epoch=1020.0),
+            now=1020.0,
+        )
+        receipt = benchmark_receipt(
+            plan, "exact-json-subthreshold", 1, measured_epoch=1030.0
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "receipt.json"
+            encoded = json.dumps(receipt).replace(
+                '"value": 1', '"value": 100.999999999999999'
+            )
+            path.write_text(encoded, encoding="utf-8")
+            loaded = SCHEDULER.load_json(path, frozenset({"value"}))
+        self.assertIsInstance(loaded["value"], SCHEDULER.ExactJSONNumber)
+        result = self.store.record_benchmark(loaded, now=1030.0)
+        self.assertFalse(result["qualifies"])
+        self.assertEqual(result["deadline_at"], 4620.0)
+
+    def test_large_decimal_just_below_one_percent_does_not_renew(self):
+        self.store.enqueue(lease_request())
+        plan = self.store.schedule_next(now=1000.0)
+        self.store.acknowledge_plan(
+            plan["plan_id"], plan["generation"], execution_receipt(self.store, plan), now=1010.0
+        )
+        self.store.record_benchmark(
+            benchmark_receipt(
+                plan, "large-exact-baseline", 10**30, measured_epoch=1020.0
+            ),
+            now=1020.0,
+        )
+        result = self.store.record_benchmark(
+            benchmark_receipt(
+                plan,
+                "large-exact-subthreshold",
+                (101 * (10**28)) - 1,
+                measured_epoch=1030.0,
+            ),
+            now=1030.0,
+        )
+        self.assertFalse(result["qualifies"])
+        self.assertEqual(result["deadline_at"], 4620.0)
+
     def test_wrong_shape_quality_or_contract_cannot_renew(self):
         self.store.enqueue(lease_request())
         plan = self.store.schedule_next(now=1000.0)
