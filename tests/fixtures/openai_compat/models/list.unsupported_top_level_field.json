@@ -1,0 +1,14 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "sparkpipe-test-model",
+      "object": "model",
+      "created": 1735689600,
+      "owned_by": "sparkpipe"
+    }
+  ],
+  "pagination": {
+    "next_cursor": "cursor-1"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "chatcmpl-sparkpipe-missing-content-00000001",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "sparkpipe-test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 16,
+    "completion_tokens": 9,
+    "total_tokens": 25
+  }
+}

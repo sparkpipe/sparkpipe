@@ -1550,7 +1550,7 @@ class WorkspaceTools:
         for path in paths:
             self._repo_path(path)
         check = self._process(
-            [self.git_executable, "apply", "--check", "--whitespace=nowarn", "-"],
+            [self.git_executable, "apply", "--check", "--recount", "--whitespace=nowarn", "-"],
             input_bytes=encoded,
             timeout_seconds=60,
             check=False,
@@ -1558,7 +1558,7 @@ class WorkspaceTools:
         if check.returncode != 0:
             raise HarnessError(check.stderr.decode("utf-8", errors="replace")[-4000:])
         applied = self._process(
-            [self.git_executable, "apply", "--whitespace=nowarn", "-"],
+            [self.git_executable, "apply", "--recount", "--whitespace=nowarn", "-"],
             input_bytes=encoded,
             timeout_seconds=60,
             check=False,
@@ -2005,8 +2005,8 @@ class WorkspaceTools:
             ("diff", "--name-only"),
         }
         patch_operations = {
-            ("apply", "--check", "--whitespace=nowarn", "-"),
-            ("apply", "--whitespace=nowarn", "-"),
+            ("apply", "--check", "--recount", "--whitespace=nowarn", "-"),
+            ("apply", "--recount", "--whitespace=nowarn", "-"),
             ("apply", "--numstat", "-z", "-"),
         }
         if arguments in patch_operations:

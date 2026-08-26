@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-sparkpipe-nonstream-000000000001",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "sparkpipe-test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Batching groups concurrent requests into one decode pass."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 16,
+    "completion_tokens": 9,
+    "total_tokens": 25
+  }
+}

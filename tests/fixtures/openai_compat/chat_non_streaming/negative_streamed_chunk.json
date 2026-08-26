@@ -1,0 +1,17 @@
+{
+  "id": "chatcmpl-sparkpipe-streamed-chunk-000001",
+  "object": "chat.completion.chunk",
+  "created": 1700000000,
+  "model": "sparkpipe-test-model",
+  "stream": true,
+  "choices": [
+    {
+      "index": 0,
+      "delta": {
+        "role": "assistant",
+        "content": "Ba"
+      },
+      "finish_reason": null
+    }
+  ]
+}
