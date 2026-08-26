@@ -132,6 +132,19 @@ def main() -> int:
     assert tp4_stage["tp_collective"]["backend"] == "hidden_transport"
     assert tp4_stage["tp_collective"]["peer_hosts"] == [
         f"spark{index:x}-mgmt" for index in range(4)]
+    devcycle_stage = json.loads(
+        (ROOT / "tools" / "devcycle" / "templates" /
+         "dsv4_flash_tp4_stage.template.json").read_text(encoding="utf-8"))
+    assert devcycle_stage["max_sequence_positions"] == 32768
+    assert devcycle_stage["model_revision"] == "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
+    assert devcycle_stage["cuda_graph_count_by_pp_stage"] == [130]
+    assert devcycle_stage["tp_collective"]["backend"] == "hidden_transport"
+    assert devcycle_stage["tp_collective"]["peer_hosts"] == [
+        f"spark{index:x}-mgmt" for index in range(4, 8)]
+    stage_makefile = (ROOT / "modules" / "dsv4_resident_decode_stage" /
+                      "Makefile").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^MAX_SEQUENCE_POSITIONS \?= 32768$", stage_makefile)
+    assert "SPARK_DSV4_STAGE_MAX_SEQ=$(MAX_SEQUENCE_POSITIONS)" in stage_makefile
     tp4_spec = json.loads(
         (ROOT / "examples" / "deployments" /
          "dsv4_flash_tp4_b1_host_rdma.spec.json").read_text(

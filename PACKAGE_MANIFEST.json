@@ -2628,8 +2628,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile",
-      "sha256": "bb6dfe3b5097978958393dabfe37f97de96e70e2dcde5f17f8b4af5e7ea16a56",
-      "size_bytes": 3995
+      "sha256": "4921c60636b2464c0f2a2ad2bab686bca0640da7de662929e7ceafbd20090bd1",
+      "size_bytes": 3996
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile.pro",
@@ -5198,8 +5198,8 @@
     },
     {
       "path": "tests/test_dsv4_contracts.py",
-      "sha256": "a726092afe137d1b731a3fb7ac192232a037fb04324463835d03a687c2646832",
-      "size_bytes": 9916
+      "sha256": "0536a6b2bb558dda155ac23c895f343f716af77516ead0dbb31258f710a7174e",
+      "size_bytes": 10787
     },
     {
       "path": "tests/test_dsv4_driver_source_contracts.py",
@@ -6383,7 +6383,7 @@
     },
     {
       "path": "tools/devcycle/templates/dsv4_flash_tp4_stage.template.json",
-      "sha256": "a7c8be460bc7c2f3571483dfb6fa7470a066b9c5300c8bf22164f3b8a8673280",
+      "sha256": "da7a672f47d9174de09f3d348a2154475a5efcbf8e6735efe7684cde457d7993",
       "size_bytes": 1197
     },
     {
@@ -7065,5 +7065,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 25354156
+  "total_bytes": 25355028
 }
