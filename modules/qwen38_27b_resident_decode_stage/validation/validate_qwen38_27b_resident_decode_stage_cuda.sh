@@ -66,7 +66,15 @@ require_source_digest "${SPARK_QWEN38_27B_CPU_ORACLE_SHA256:-}" "${cpu_oracle}" 
 require_configuration_value SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION 1
 require_configuration_value SPARK_QWEN38_27B_STAGE_INDEX 0
 require_configuration_value SPARK_QWEN38_27B_STAGE_FIRST_LAYER 0
-require_configuration_value SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES 8
+# The harness block table spans MAX_ACTIVE_SEQUENCES lanes (the -D plumbing
+# from PR #714); admit the qualified lane-ladder values.
+case "${SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES:-8}" in
+    8|16) ;;
+    *)
+        echo "qwen38_27b hardware validation requires SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES in {8,16}, got '${SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES:-}'" >&2
+        exit 2
+        ;;
+esac
 # Whole-stack tier: TP-sharded (TP_DEGREE != 1) OR TP1 full-width
 # standalone (TP_DEGREE == 1 with TP_STANDALONE == 1). The TP1 topology
 # knob postdates the original >1 restriction.
