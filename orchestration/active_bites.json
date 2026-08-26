@@ -1795,6 +1795,69 @@
         "regenerate": "Submit only the exact failed ranks to the fileadmin materialization queue using the proven source and packer identity.",
         "unknown": "Return the first missing source, generation, verifier or loader fact and the bounded evidence probe that can resolve it."
       }
+    },
+    {
+      "id": "TP4PP4-D4P-WARM-SOURCE-PUBLISH-003",
+      "pert_id": "ART-015",
+      "biggulp": "fileadmin",
+      "status": "dependency_blocked",
+      "priority": 242,
+      "development_phase": "exploratory",
+      "action_kind": "spark_storage_materialization",
+      "title": "Publish the complete DSV4 Pro source union once to Ceph warm storage",
+      "objective": "Copy the exact 64-shard DSV4 Pro checkpoint identity proven complete by TP4PP4-SOURCE-UNION-001 directly from its canonical Spark owners into one Ceph staging directory, verify every byte and the merged-main packer contract, and atomically publish one shared read-only source directory without overwriting or deleting any existing model data.",
+      "expected_value": "One authoritative warm checkpoint removes sixteen-way source duplication and immediately unlocks four-stage TP4xPP4 pack generation from a shared 100Gbps-visible path.",
+      "dependencies": ["TP4PP4-SOURCE-UNION-001"],
+      "context_paths": [
+        "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-SOURCE-UNION-001.json",
+        "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-D4P-AUTHORITATIVE-REQUALIFY-002.json",
+        "tools/dsv4_pro_stagepack.py",
+        "tools/dsv4_stagepack.py",
+        "model_contracts/dsv4_pro.json"
+      ],
+      "nodes": [
+        "spark0", "spark1", "spark2", "spark3",
+        "spark4", "spark5", "spark6", "spark7",
+        "spark8", "spark9", "sparka", "sparkb",
+        "sparkc", "sparkd", "sparke", "sparkf"
+      ],
+      "resources": ["storage_io"],
+      "role": "fileadmin",
+      "write_set": [
+        "/mnt/model-warm/.publish/DeepSeek-V4-Pro-0813-fp8-a3a39b9c.TP4PP4-D4P-WARM-SOURCE-PUBLISH-003.tmp",
+        "/mnt/model-warm/DeepSeek-V4-Pro-0813-fp8-a3a39b9c"
+      ],
+      "time_budget_minutes": 45,
+      "required_data": [
+        "preflight on every source owner: /mnt/model-warm mount identity, Ceph health and degraded state, direct 100Gbps endpoint, source path, physical source mount, source bytes, source SHA256 and free-byte headroom; osd.12 absence is recorded and never hidden",
+        "source identity exactly index SHA256 a3a39b9ccb4e729851922fc9c770f5c5755e7b9d7e96cd02c23f0e12b5e25cb9 with 64/64 final model-*.safetensors shards from the canonical owner map in TP4PP4-SOURCE-UNION-001; *.part, temp names and alternate index identities are forbidden",
+        "publication root setup command and before/after uid, gid and mode; create only /mnt/model-warm/.publish when absent, using one privileged host, uid 1000, gid 1000 and mode 2775; no recursive chmod or chown",
+        "one generation-fenced staging directory named /mnt/model-warm/.publish/DeepSeek-V4-Pro-0813-fp8-a3a39b9c.TP4PP4-D4P-WARM-SOURCE-PUBLISH-003.tmp; refuse a nonempty staging directory unless its journal has the same job, source index and destination identity",
+        "per shard canonical source host/path, destination temporary path, bytes, expected SHA256, observed SHA256, started and completed timestamps, copy exit and direct endpoint; each host copies its own assigned shards straight to Ceph and never forwards through another Spark",
+        "copy model.safetensors.index.json and all available non-shard checkpoint metadata from one identity-matching source only after the 64 shards verify; record every published relative path, bytes and SHA256",
+        "run the a4db0234fcc51fe2df3a2bde7f7d7eea2bf94c8c merged-main dsv4_pro_stagepack.py inspect/validation for slices 0+16, 16+15, 31+15 and 46+15 against the staged directory, with exact argv, tool hashes, exits, stdout and stderr",
+        "atomic publication command and same-filesystem proof; if /mnt/model-warm/DeepSeek-V4-Pro-0813-fp8-a3a39b9c already exists, verify exact identity and return reused or conflict without overwrite",
+        "final manifest and receipt with total files and bytes, all per-file hashes, source-owner map, Ceph state, publication generation, before/after free bytes, and the exact next TP4xPP4 pack-generation input path",
+        "heartbeat the Spark queue at least once per minute while copies or hashes run; preserve resumable verified files on timeout and report the exact remaining shards rather than restarting completed work"
+      ],
+      "acceptance": [
+        "The final directory contains one index and all 64 exact final shards with full SHA256 equality to the source-union receipt; no *.part or temporary file is published.",
+        "All four merged-main DSV4 Pro stage slices pass source tensor and geometry validation before publication.",
+        "Every shard travels directly from its canonical source Spark to the shared Ceph mount; no waterfall copy or full checkpoint replication onto rank-local NVMe occurs.",
+        "Publication is one same-filesystem atomic rename after verification; existing final data is never overwritten and pre-existing source or rank-pack data is never moved or deleted.",
+        "A timeout is not failure theatre: verified staged files and a generation-fenced journal remain resumable, with the exact unfinished set in the queue receipt."
+      ],
+      "spark_queue": {
+        "job_id": "TP4PP4-D4P-WARM-SOURCE-PUBLISH-003",
+        "result_path": "/private/tmp/sparkpipe-luna-logical/results/TP4PP4-D4P-WARM-SOURCE-PUBLISH-003.json",
+        "priority": 242
+      },
+      "outcomes": {
+        "published": "Unlock DSV4 Pro four-stage full-pack generation and TP4 sharding from /mnt/model-warm/DeepSeek-V4-Pro-0813-fp8-a3a39b9c.",
+        "resumable": "Requeue only the exact unfinished shard or hash set against the same generation-fenced staging directory.",
+        "source_mismatch": "Block publication and name the first index, shard, tensor or geometry contradiction.",
+        "ceph_blocked": "Block publication with the first exact mount, permission, capacity or degraded-health safety failure; do not fall back to waterfall copying."
+      }
     }
   ]
 }
