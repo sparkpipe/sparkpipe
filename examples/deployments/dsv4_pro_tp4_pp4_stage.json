@@ -2,7 +2,7 @@
   "schema_version": 3,
   "model_revision": "official Hugging Face config observed 2026-07-31",
   "stage_pack_path": "packs/dsv4_pro_tp4_pp4_stage.spstage",
-  "max_sequence_positions": 4096,
+  "max_sequence_positions": 33024,
   "cuda_graph_count_by_pp_stage": [49, 46, 46, 46],
   "tp_collective": {
     "backend": "hidden_transport",
