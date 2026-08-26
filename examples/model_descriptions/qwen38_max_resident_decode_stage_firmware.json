@@ -5,7 +5,7 @@
     "revision": "fp8-h8192-l92-gdn69-full23-e512k10-v248320-mtp1-d2dc3565-v1"
   },
   "metadata": {
-    "architecture": "qwen38_resident_decode_stage",
+    "architecture": "qwen38_max_resident_decode_stage",
     "purpose": "resident decode-stage firmware for Qwen3.8-2.4T-A95B: 3:1 Gated DeltaNet to gated full attention, routed MoE (512 experts, top-10, one shared), vendor block-128 FP8 expert weights, BF16 spine, one-layer MTP",
     "provenance": {
       "status": "in bring-up; module loader + execution core compile, pack pipeline verified against the vendor FP8 checkpoint",

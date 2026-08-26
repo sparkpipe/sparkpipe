@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "model": {
-    "id": "alibaba.qwen3.6-27b.resident-decode-stage-firmware",
+    "id": "alibaba.qwen3.8-27b.resident-decode-stage-firmware",
     "revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1"
   },
   "metadata": {
     "architecture": "qwen38_27b_resident_decode_stage",
-    "purpose": "resident decode-stage firmware for Qwen 3.6 27B: 3:1 Gated DeltaNet to gated full attention, partial RoPE, dense SwiGLU FFN, bf16 weights, one-layer MTP, screened exact full-vocabulary head",
+    "purpose": "resident decode-stage firmware for Qwen 3.8 27B: 3:1 Gated DeltaNet to gated full attention, partial RoPE, dense SwiGLU FFN, bf16 weights, one-layer MTP, screened exact full-vocabulary head",
     "provenance": {
       "status": "implemented driver, codex/model-driver-family (PR #491)",
       "disclosed_source": [
@@ -63,7 +63,7 @@
       "gpu_numerical_correctness": {
         "validator": "modules/qwen38_27b_resident_decode_stage/validation/validate_qwen38_27b_resident_decode_stage_cuda.sh",
         "device": "GB10 sm_121a",
-        "stage_pack": "real PP13 stage-0 pack from Qwen/Qwen3.6-27B bf16",
+        "stage_pack": "real PP13 stage-0 pack from Qwen/Qwen3.8-27B bf16",
         "relative_l2": 1.69e-3,
         "cosine": 0.9999986,
         "decode_vs_prefill_l2": 0,

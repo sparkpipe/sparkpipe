@@ -711,7 +711,12 @@ from pathlib import Path
 # 174923 (2026-08-24): JIT-KV design contract + backing-store tier 1
 # (runtime/spark_kv_backing.c: slot file, alloc/free, 4 MiB block I/O,
 # horizon exhaustion -> backpressure signal; unit test ALL PASS).
-CEILING = 175261
+# The fleet-stability PRs #715-#717 (staged PXE rescue, brickproof
+# expansion, Ceph startup quarantine removal) landed 18 authored lines
+# past the ratchet without moving it; the qwen38 rename completion
+# (firmware description files + references + validator identity) is
+# line-neutral on this counter. 175279 is the exact count.
+CEILING = 175279
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -951,7 +951,7 @@ static int SparkQwen38_27bValModuleInitialize(SparkQwen38_27bValModule *module)
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
 	configuration.descriptor_bytes = sizeof(configuration);
-	configuration.model_id = "Qwen/Qwen3.6-27B";
+	configuration.model_id = "Qwen/Qwen3.8-27B";
 	configuration.model_revision = "validation";
 	configuration.stage_name = "qwen38_27b_resident_decode_stage";
 	configuration.program_name = "resident_decode";
