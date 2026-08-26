@@ -7,4 +7,9 @@ diagnostics/
 tools/devcycle/drivers/
 .agents/
 .codex/
+!.codex/
+.codex/*
+!.codex/agents/
+.codex/agents/*
+!.codex/agents/pert-foreman.toml
 .tshome/

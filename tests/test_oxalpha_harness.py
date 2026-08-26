@@ -120,6 +120,41 @@ class NativeHarnessTests(unittest.TestCase):
         HARNESS.WorkspaceTools._prepare_os_containment = self.original_os_containment
         self.temporary.cleanup()
 
+    def test_system_prompt_carries_phase_and_minimal_code_philosophy(self):
+        prompt = HARNESS.CodexHarnessRunner._system_prompt(
+            "implementer", {"development_phase": "exploratory"}
+        )
+        self.assertIn("Development phase: EXPLORATORY", prompt)
+        self.assertIn("Less code is better", prompt)
+        self.assertIn("Solutions / (production code size * 2)", prompt)
+        self.assertIn("real production path", prompt)
+        self.assertIn("no independent audit follows", prompt)
+        self.assertIn("Batch independent read-only calls", prompt)
+        with self.assertRaisesRegex(HARNESS.HarnessError, "development_phase"):
+            HARNESS.CodexHarnessRunner._system_prompt(
+                "implementer", {"development_phase": "prototype"}
+            )
+
+    def test_exploratory_finish_contract_goes_to_foreman(self):
+        local_task = task()
+        local_task["development_phase"] = "exploratory"
+        root = self.sessions / "exploratory-contract"
+        root.mkdir(parents=True)
+        tools = HARNESS.WorkspaceTools(self.repo, "implementer", local_task, root)
+        finish_schema = next(
+            item for item in tools.schemas()
+            if item["function"]["name"] == "finish_task"
+        )
+        self.assertEqual(
+            finish_schema["function"]["parameters"]["properties"]["status"]["enum"],
+            ["READY_FOR_FOREMAN"],
+        )
+        self.assertTrue(
+            tools.execute("finish_task", {"status": "READY_FOR_FOREMAN"})["ok"]
+        )
+        with self.assertRaisesRegex(HARNESS.HarnessError, "invalid implementer final status"):
+            tools.execute("finish_task", {"status": "READY_FOR_AUDIT"})
+
     def runner(self, pool):
         return HARNESS.CodexHarnessRunner(
             pool,

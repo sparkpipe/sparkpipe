@@ -189,7 +189,7 @@ class FakeRunner:
         if role == "implementer":
             (workspace / "result.txt").write_text("candidate\n", encoding="utf-8")
             contract = {
-                "status": "READY_FOR_AUDIT",
+                "status": FLEET.implementer_ready_status(task),
                 "summary": "fixture",
                 "changed_paths": ["result.txt"],
                 "tests": [{"command": "git diff --check", "exit_code": 0, "evidence": "ok"}],
@@ -252,7 +252,7 @@ class NativeScriptedPool:
     def race(self, body, context_key):
         self.calls.append((body, context_key))
         messages = body["messages"]
-        auditor = "read-only" in messages[0]["content"]
+        auditor = "You are read-only:" in messages[0]["content"]
         tool_names = [message.get("name") for message in messages if message.get("role") == "tool"]
         if not auditor and "apply_patch" not in tool_names:
             patch = (
@@ -436,6 +436,28 @@ class GraphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "immutable bootstrap whitelist"):
             FLEET.validate_task_graph(graph([task("BROAD-001")]))
 
+    def test_development_phase_is_validated_and_injected_into_agent_prompts(self):
+        current = task("BROAD-001", dispatch_class="paired_after_oxa")
+        current["development_phase"] = "exploratory"
+        FLEET.validate_task_graph(graph([current]))
+        implementation = FLEET.implementer_prompt(current, "a" * 40, None)
+        self.assertIn("Development phase: EXPLORATORY", implementation)
+        self.assertIn("Less code is better", implementation)
+        self.assertIn("Solutions / (production code size * 2)", implementation)
+        self.assertIn("real production path", implementation)
+        self.assertIn('"status": "READY_FOR_FOREMAN"', implementation)
+        with self.assertRaisesRegex(ValueError, "do not have an auditor phase"):
+            FLEET.auditor_prompt(current, "a" * 40, "b" * 64)
+        current["development_phase"] = "production"
+        audit = FLEET.auditor_prompt(current, "a" * 40, "b" * 64)
+        self.assertIn("Development phase: PRODUCTION", audit)
+        self.assertIn('"status": "READY_FOR_AUDIT"', FLEET.implementer_prompt(
+            current, "a" * 40, None
+        ))
+        current["development_phase"] = "prototype"
+        with self.assertRaisesRegex(ValueError, "development_phase"):
+            FLEET.validate_task_graph(graph([current]))
+
     def test_graph_validation_rejects_noncanonical_model_lane(self):
         bad = graph(
             [
@@ -543,6 +565,9 @@ class GraphTests(unittest.TestCase):
             FLEET.MODEL_DRIVER_LANES,
         )
         self.assertEqual(by_id["PERF-001"]["dispatch_class"], "paired_after_oxa")
+        self.assertTrue(
+            all(item["development_phase"] == "production" for item in by_id.values())
+        )
         self.assertTrue(
             all(item["dispatch_class"] in {"bootstrap", "paired_after_oxa"} for item in by_id.values())
         )
@@ -756,6 +781,19 @@ class StoreTests(unittest.TestCase):
             self.store.get_agent_session("TASK-001", 1, "auditor", auditor),
             "audit-session",
         )
+
+    def test_restart_never_sends_exploratory_work_to_an_auditor(self):
+        exploratory_task = task("TASK-001")
+        exploratory_task["development_phase"] = "exploratory"
+        store = FLEET.StateStore(self.root / "exploratory-recovery-state")
+        store.initialize(graph([exploratory_task]), self.graph_path, self.repo, self.base, 1)
+        claimed = store.claim_task("pair-001", {"host"})
+        store._update_task("TASK-001", "IMPLEMENTER_COMPLETE", patch_sha256="a" * 64)
+        store.recover_interrupted()
+        self.assertEqual(store.task("TASK-001")["state"], "READY_IMPLEMENTER")
+        resumed = store.claim_task("pair-001", {"host"})
+        self.assertEqual(resumed["attempt"], claimed["attempt"])
+        self.assertEqual(resumed["start_role"], "implementer")
 
     def test_snapshot_has_queue_count(self):
         snapshot = self.store.snapshot()
@@ -1401,6 +1439,37 @@ class StoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "does not match the audited patch"):
             self.store.mark_integrated("TASK-001", commit, self.repo)
 
+    def test_exploratory_candidate_integrates_without_an_audit_receipt(self):
+        exploratory_task = task("TASK-001")
+        exploratory_task["development_phase"] = "exploratory"
+        store = FLEET.StateStore(self.root / "exploratory-integration-state")
+        store.initialize(graph([exploratory_task]), self.graph_path, self.repo, self.base, 1)
+        claimed = store.claim_task("pair-001", {"host"})
+        marker = self.repo / "result.txt"
+        marker.write_text("measured probe\n", encoding="utf-8")
+        git(self.repo, "add", "--intent-to-add", marker.name)
+        patch = FLEET.git_output(
+            self.repo,
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "HEAD",
+            "--",
+        )
+        patch_sha = FLEET.sha256_bytes(patch)
+        store._update_task(
+            "TASK-001",
+            "IMPLEMENTER_COMPLETE",
+            patch_sha256=patch_sha,
+        )
+        store.complete_exploratory("TASK-001", claimed["attempt"], patch_sha)
+        self.assertIsNone(store.task("TASK-001")["audit_contract_sha256"])
+        git(self.repo, "add", marker.name)
+        git(self.repo, "commit", "--quiet", "-m", "integrate exploratory probe")
+        commit = git(self.repo, "rev-parse", "HEAD")
+        store.mark_integrated("TASK-001", commit, self.repo)
+        self.assertEqual(store.task("TASK-001")["state"], "INTEGRATED")
+
     def test_legacy_pair_migration_adds_partial_unique_lane_index(self):
         state_dir = self.root / "legacy-pair-state"
         state_dir.mkdir()
@@ -1991,10 +2060,10 @@ class PairPipelineTests(unittest.TestCase):
         self.temporary.cleanup()
         self.bootstrap_patch.stop()
 
-    def controller(self, runner, sleeps=None):
+    def controller(self, runner, sleeps=None, store=None):
         sleeps = sleeps if sleeps is not None else []
         return FLEET.FleetController(
-            self.store,
+            store or self.store,
             runner,
             pair_count=1,
             pools={"host"},
@@ -2017,6 +2086,27 @@ class PairPipelineTests(unittest.TestCase):
             self.store.workspace_dir / "TASK-001" / "attempt-01" / "implementer",
             self.store.workspace_dir / "TASK-001" / "attempt-01" / "auditor",
         )
+
+    def test_exploratory_task_skips_auditor_and_enters_foreman_queue(self):
+        exploratory_task = task()
+        exploratory_task["development_phase"] = "exploratory"
+        exploratory_graph = graph([exploratory_task])
+        store = FLEET.StateStore(self.root / "exploratory-state")
+        store.initialize(exploratory_graph, self.graph_path, self.repo, self.base, 1)
+        runner = FakeRunner()
+        claimed = store.claim_task("pair-001", {"host"})
+        self.controller(runner, store=store).process_task("pair-001", claimed)
+        candidate = store.task("TASK-001")
+        self.assertEqual(candidate["state"], "READY_COORDINATOR")
+        self.assertIsNone(candidate["audit_approved_attempt"])
+        self.assertEqual([call[0] for call in runner.calls], ["implementer"])
+        self.assertFalse(
+            (store.workspace_dir / "TASK-001" / "attempt-01" / "auditor").exists()
+        )
+        events = [item["event_type"] for item in store.snapshot()["events"]]
+        self.assertIn("exploratory_complete", events)
+        visible = next(item for item in store.snapshot()["tasks"] if item["task_id"] == "TASK-001")
+        self.assertEqual(visible["development_phase"], "exploratory")
 
     def test_crash_after_approval_cannot_strand_task(self):
         runner = FakeRunner()

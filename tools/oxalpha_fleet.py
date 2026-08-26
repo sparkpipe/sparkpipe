@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Retrying implementer/auditor fleet controller for temporary Ox Alpha capacity.
+"""Retrying coding-agent fleet controller for temporary Ox Alpha capacity.
 
 The controller owns task state and isolated workspaces.  Agents never update the
-canonical checkout.  A candidate reaches READY_COORDINATOR only after a fresh
-auditor workspace reproduces the exact patch hash and approves it.
+canonical checkout.  Production candidates require a fresh independent audit;
+exploratory candidates hand decisive test evidence directly to the coordinator.
 """
 
 from __future__ import annotations
@@ -129,6 +129,13 @@ MODEL_TASK_PREFIX_LANES = {
     for prefix in MODEL_LANE_PREFIXES.values()
 }
 MODEL_DRIVER_LANES = frozenset(MODEL_TASK_PREFIX_LANES.values())
+DEVELOPMENT_PHASES = frozenset({"exploratory", "production"})
+AGENT_CODING_PHILOSOPHY = (
+    "Less code is better. Use the simplest solution that answers the measured problem; "
+    "do not overengineer. Find decisive test results quickly. Maximize Solutions / "
+    "(production code size * 2). Test-only probes that reuse the real production path "
+    "are evidence, not a second production implementation."
+)
 CANONICAL_BACKENDS = (
     "NVIDIA CUDA",
     "AMD ROCm",
@@ -395,7 +402,7 @@ def load_task_graph(path: Path) -> dict[str, Any]:
     defaults = graph.get("task_defaults", {})
     allowed_defaults = {
         "max_api_retries", "max_code_attempts", "estimate_hours", "hardware",
-        "dispatch_class",
+        "dispatch_class", "development_phase",
     }
     if not isinstance(defaults, dict) or not set(defaults).issubset(allowed_defaults):
         raise ValueError("task graph has invalid task_defaults")
@@ -414,6 +421,11 @@ def load_task_graph(path: Path) -> dict[str, Any]:
         raise ValueError("task graph has invalid default hardware")
     if defaults.get("dispatch_class") not in (None, "bootstrap", "paired_after_oxa"):
         raise ValueError("task graph has invalid default dispatch_class")
+    if (
+        "development_phase" in defaults
+        and defaults["development_phase"] not in DEVELOPMENT_PHASES
+    ):
+        raise ValueError("task graph has invalid default development_phase")
     raw_tasks = graph.get("tasks")
     if not isinstance(raw_tasks, list):
         raise ValueError("task graph must contain a tasks array")
@@ -1506,6 +1518,8 @@ def validate_task_graph(graph: dict[str, Any]) -> None:
             raise ValueError(f"invalid task priority: {task_id}")
         if not bounded_text(task.get("objective"), 8192):
             raise ValueError(f"invalid task objective: {task_id}")
+        if task.get("development_phase", "production") not in DEVELOPMENT_PHASES:
+            raise ValueError(f"invalid task development_phase: {task_id}")
         for field in ("non_goals", "dependencies", "write_set", "acceptance", "test_commands"):
             values = task.get(field)
             if not isinstance(values, list) or len(values) > 256 or any(
@@ -2620,6 +2634,35 @@ class StateStore:
         if not re.fullmatch(r"[0-9a-f]{64}", patch_sha256):
             raise RuntimeError("audit approval has an invalid patch hash")
         contract_sha = sha256_bytes(canonical_json(audit_contract).encode("utf-8"))
+        self._complete_candidate(
+            task_id,
+            attempt,
+            patch_sha256,
+            "production",
+            audit_contract_sha256=contract_sha,
+        )
+
+    def complete_exploratory(
+        self,
+        task_id: str,
+        attempt: int,
+        patch_sha256: str,
+    ) -> None:
+        if not re.fullmatch(r"[0-9a-f]{64}", patch_sha256):
+            raise RuntimeError("exploratory completion has an invalid patch hash")
+        self._complete_candidate(task_id, attempt, patch_sha256, "exploratory")
+
+    def _complete_candidate(
+        self,
+        task_id: str,
+        attempt: int,
+        patch_sha256: str,
+        phase: str,
+        *,
+        audit_contract_sha256: str | None = None,
+    ) -> None:
+        expected_state = "AUDITING" if phase == "production" else "IMPLEMENTER_COMPLETE"
+        label = "audit" if phase == "production" else "exploratory"
         now = utc_now()
         with self.connection() as connection:
             task = connection.execute(
@@ -2628,12 +2671,15 @@ class StateStore:
             ).fetchone()
             if task is None:
                 raise KeyError(task_id)
-            if task["state"] != "AUDITING":
-                raise RuntimeError(f"{task_id} is {task['state']}, not AUDITING")
+            if task["state"] != expected_state:
+                raise RuntimeError(f"{task_id} is {task['state']}, not {expected_state}")
             if int(task["attempt"]) != attempt:
-                raise RuntimeError(f"{task_id} audit attempt does not match")
+                raise RuntimeError(f"{task_id} {label} attempt does not match")
             if task["patch_sha256"] != patch_sha256:
-                raise RuntimeError(f"{task_id} audit patch does not match sealed candidate")
+                raise RuntimeError(f"{task_id} {label} patch does not match sealed candidate")
+            spec = json.loads(str(task["spec_json"]))
+            if spec.get("development_phase", "production") != phase:
+                raise RuntimeError(f"{task_id} is not a {phase} task")
             receipt = connection.execute(
                 "SELECT base_commit,spec_sha256,graph_sha256 FROM task_attempts "
                 "WHERE task_id=? AND attempt=?",
@@ -2641,7 +2687,7 @@ class StateStore:
             ).fetchone()
             current_spec_sha = sha256_bytes(str(task["spec_json"]).encode("utf-8"))
             if receipt is None or receipt["spec_sha256"] != current_spec_sha:
-                raise RuntimeError(f"{task_id} audit specification does not match attempt")
+                raise RuntimeError(f"{task_id} {label} specification does not match attempt")
             meta = {
                 row["key"]: row["value"]
                 for row in connection.execute(
@@ -2649,18 +2695,26 @@ class StateStore:
                 ).fetchall()
             }
             if receipt["base_commit"] != meta.get("base_commit"):
-                raise RuntimeError(f"{task_id} audit base does not match attempt")
+                raise RuntimeError(f"{task_id} {label} base does not match attempt")
             if (
                 not receipt["graph_sha256"]
                 or receipt["graph_sha256"] != meta.get("graph_sha256")
             ):
-                raise RuntimeError(f"{task_id} audit graph does not match attempt")
-            connection.execute(
-                "UPDATE tasks SET state='READY_COORDINATOR',assigned_pair=NULL,"
-                "audit_approved_attempt=?,audit_patch_sha256=?,audit_contract_sha256=?,"
-                "updated_at=? WHERE task_id=?",
-                (attempt, patch_sha256, contract_sha, now, task_id),
-            )
+                raise RuntimeError(f"{task_id} {label} graph does not match attempt")
+            if phase == "production":
+                connection.execute(
+                    "UPDATE tasks SET state='READY_COORDINATOR',assigned_pair=NULL,"
+                    "audit_approved_attempt=?,audit_patch_sha256=?,audit_contract_sha256=?,"
+                    "updated_at=? WHERE task_id=?",
+                    (attempt, patch_sha256, audit_contract_sha256, now, task_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE tasks SET state='READY_COORDINATOR',assigned_pair=NULL,"
+                    "audit_approved_attempt=NULL,audit_patch_sha256=NULL,"
+                    "audit_contract_sha256=NULL,updated_at=? WHERE task_id=?",
+                    (now, task_id),
+                )
 
     def update_pair(self, pair_id: str, **fields: Any) -> None:
         if not fields:
@@ -2785,18 +2839,19 @@ class StateStore:
                 )
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT task_id,state FROM tasks WHERE state IN (%s)"
+                "SELECT task_id,state,spec_json FROM tasks WHERE state IN (%s)"
                 % ",".join("?" for _ in RESTART_STATES),
                 tuple(sorted(RESTART_STATES)),
             ).fetchall()
             for row in rows:
                 recovered.append(row["task_id"])
-                if row["state"] == "AUDIT_APPROVED":
+                exploratory = not task_requires_audit(json.loads(row["spec_json"]))
+                if row["state"] == "AUDIT_APPROVED" and not exploratory:
                     resume_state = "READY_COORDINATOR"
                     resume_attempt = 0
-                elif row["state"] == "AUDIT_REJECTED":
+                elif row["state"] == "AUDIT_REJECTED" or exploratory:
                     resume_state = "READY_IMPLEMENTER"
-                    resume_attempt = 0
+                    resume_attempt = int(row["state"] in ACTIVE_STATES)
                 elif row["state"] in {
                     "IMPLEMENTER_COMPLETE",
                     "PREPARING_AUDIT",
@@ -2840,7 +2895,9 @@ class StateStore:
                 raise KeyError(task_id)
             if task["state"] != "READY_COORDINATOR":
                 raise RuntimeError(f"{task_id} is {task['state']}, not READY_COORDINATOR")
-            if (
+            spec = json.loads(str(task["spec_json"]))
+            audited = task_requires_audit(spec)
+            if audited and (
                 task["audit_approved_attempt"] != task["attempt"]
                 or task["audit_patch_sha256"] != task["patch_sha256"]
                 or not re.fullmatch(r"[0-9a-f]{64}", task["audit_contract_sha256"] or "")
@@ -2851,11 +2908,12 @@ class StateStore:
                 "WHERE task_id=? AND attempt=?",
                 (task_id, task["attempt"]),
             ).fetchone()
+            qualification = "audited" if audited else "exploratory"
             if attempt is None or not attempt["spec_sha256"]:
-                raise RuntimeError(f"{task_id} has no audited attempt receipt")
+                raise RuntimeError(f"{task_id} has no {qualification} attempt receipt")
             current_spec_sha = sha256_bytes(str(task["spec_json"]).encode("utf-8"))
             if attempt["spec_sha256"] != current_spec_sha:
-                raise RuntimeError(f"{task_id} specification changed after audit")
+                raise RuntimeError(f"{task_id} specification changed after {qualification} completion")
             meta = {
                 row["key"]: row["value"]
                 for row in connection.execute(
@@ -2863,12 +2921,12 @@ class StateStore:
                 ).fetchall()
             }
             if attempt["base_commit"] != meta.get("base_commit"):
-                raise RuntimeError(f"{task_id} audited base is not the canonical base")
+                raise RuntimeError(f"{task_id} {qualification} base is not the canonical base")
             graph_sha = meta.get("graph_sha256")
             if not graph_sha:
                 raise RuntimeError("missing canonical task graph hash")
             if not attempt["graph_sha256"] or attempt["graph_sha256"] != graph_sha:
-                raise RuntimeError(f"{task_id} audited graph is not the canonical graph")
+                raise RuntimeError(f"{task_id} {qualification} graph is not the canonical graph")
             verify_integration_candidate(
                 repo.resolve(),
                 attempt["base_commit"],
@@ -2971,6 +3029,7 @@ class StateStore:
             task["created_at"] = status_text(task.get("created_at"), 64)
             task["updated_at"] = status_text(task.get("updated_at"), 64)
             task["dispatch_class"] = spec.get("dispatch_class", "unadmitted")
+            task["development_phase"] = spec.get("development_phase", "production")
             task["agent_lane"] = status_text(spec.get("agent_lane"), 64)
             task.update(cycle["plan"]["task_status"][source["task_id"]])
             tasks.append(task)
@@ -3028,6 +3087,11 @@ class StateStore:
             )
             pair["attempt"] = (
                 task_lookup.get(pair["task_id"], {}).get("attempt") if pair["task_id"] else None
+            )
+            pair["development_phase"] = (
+                task_lookup.get(pair["task_id"], {}).get("development_phase")
+                if pair["task_id"]
+                else None
             )
             pairs.append(pair)
         heartbeat_raw = meta_rows.get("controller_heartbeat", "0") or "0"
@@ -3674,8 +3738,9 @@ def validate_implementer_contract(
     verified_receipts: Sequence[dict[str, Any]] | None = None,
 ) -> list[str]:
     failures = []
-    if contract.get("status") != "READY_FOR_AUDIT":
-        failures.append("status is not READY_FOR_AUDIT")
+    expected_status = implementer_ready_status(task)
+    if contract.get("status") != expected_status:
+        failures.append(f"status is not {expected_status}")
     reported = contract.get("changed_paths")
     if not isinstance(reported, list) or sorted(reported) != sorted(actual_paths):
         failures.append("reported changed_paths do not match git diff")
@@ -3717,13 +3782,44 @@ def validate_auditor_contract(
     return failures
 
 
+def task_coding_philosophy(task: dict[str, Any]) -> str:
+    phase = task.get("development_phase", "production")
+    if phase not in DEVELOPMENT_PHASES:
+        raise ValueError(f"invalid task development_phase: {phase!r}")
+    if phase == "exploratory":
+        phase_rule = (
+            "Answer the named unknown quickly by exercising the real production path with "
+            "the smallest clearly non-shipping probe. Deploy and measure when an assigned "
+            "hardware runner exists; do not invent results or build production abstractions."
+        )
+    else:
+        phase_rule = (
+            "The relevant variables must already be measured. Apply the strict production "
+            "coding and evidence rules, contain exploratory shortcuts, and implement only "
+            "the smallest measured solution."
+        )
+    return f"Development phase: {phase.upper()}. {AGENT_CODING_PHILOSOPHY} {phase_rule}"
+
+
+def task_requires_audit(task: dict[str, Any]) -> bool:
+    phase = task.get("development_phase", "production")
+    if phase not in DEVELOPMENT_PHASES:
+        raise ValueError(f"invalid task development_phase: {phase!r}")
+    return phase == "production"
+
+
+def implementer_ready_status(task: dict[str, Any]) -> str:
+    return "READY_FOR_AUDIT" if task_requires_audit(task) else "READY_FOR_FOREMAN"
+
+
 def implementer_prompt(task: dict[str, Any], base_commit: str, feedback: Any | None) -> str:
     contract = {
         "task": task,
         "base_commit": base_commit,
         "previous_feedback": feedback,
     }
-    return f"""You are the IMPLEMENTER half of an independent SparkPipe agent pair.
+    ready_status = implementer_ready_status(task)
+    return f"""You are the IMPLEMENTER for one focused SparkPipe task.
 
 Work only in this isolated clone at exact base commit {base_commit}. Read AGENTS.md and the
 actual source before editing. Do not commit, push, add remotes, open PRs, launch subagents,
@@ -3731,12 +3827,14 @@ or access files outside this clone. Modify only the declared write_set. Run ever
 test command. Do not claim target-hardware evidence unless you actually ran that exact
 hardware and recorded it. Analytical, simulated, and unverified claims must be labeled.
 
+{task_coding_philosophy(task)}
+
 Task contract:
 {json.dumps(contract, indent=2, sort_keys=True)}
 
 When finished, emit one final JSON object and no later prose with exactly this shape:
 {{
-  "status": "READY_FOR_AUDIT",
+  "status": "{ready_status}",
   "summary": "...",
   "changed_paths": ["..."],
   "tests": [{{"command": "...", "exit_code": 0, "evidence": "..."}}],
@@ -3747,6 +3845,8 @@ When finished, emit one final JSON object and no later prose with exactly this s
 
 
 def auditor_prompt(task: dict[str, Any], base_commit: str, patch_sha256: str) -> str:
+    if not task_requires_audit(task):
+        raise ValueError("exploratory tasks do not have an auditor phase")
     return f"""You are the AUDITOR half of an independent SparkPipe agent pair.
 
 This fresh isolated clone is at base {base_commit} with candidate patch SHA-256
@@ -3755,6 +3855,9 @@ Do not edit, fix, commit, push, add remotes, launch subagents, or access files o
 clone. Try to invalidate the implementation. Run every required test and useful adversarial
 checks. APPROVE only with no P0/P1/P2 findings and no missing gate. A target-hardware gate
 that was not really run is BLOCKED, never assumed.
+
+{task_coding_philosophy(task)} Reject unnecessary production code, speculative abstraction,
+duplicated production behavior, or shipping machinery justified only by an old probe.
 
 Task contract:
 {json.dumps(task, indent=2, sort_keys=True)}
@@ -3991,6 +4094,8 @@ class FleetController:
     ) -> None:
         task_id = task_row["task_id"]
         task = task_row["spec"]
+        if not task_requires_audit(task):
+            raise RuntimeError("exploratory tasks cannot enter the auditor phase")
         attempt = int(task_row["attempt"])
         self.store._update_task(task_id, "PREPARING_AUDIT")
         expected_patch = prepare_or_resume_audit_workspace(
@@ -4115,6 +4220,10 @@ class FleetController:
         if task_row.get("feedback_json"):
             feedback = json.loads(task_row["feedback_json"])
         if task_row.get("start_role") == "auditor":
+            if not task_requires_audit(task):
+                self.store._update_task(task_id, "READY_IMPLEMENTER", clear_pair=True)
+                self.store.idle_pair(pair_id, f"{task_id} exploratory task bypassed stale audit")
+                return
             patch_sha = task_row.get("patch_sha256")
             if not isinstance(patch_sha, str) or not patch_path.is_file():
                 self.reject_attempt(
@@ -4203,14 +4312,29 @@ class FleetController:
             pair_id=pair_id,
             role="implementer",
         )
-        self.process_audit_phase(
-            pair_id,
-            task_row,
-            base_commit,
-            audit_workspace,
-            patch_path,
-            patch_sha,
+        if task_requires_audit(task):
+            self.process_audit_phase(
+                pair_id,
+                task_row,
+                base_commit,
+                audit_workspace,
+                patch_path,
+                patch_sha,
+            )
+            return
+        self.store.complete_exploratory(task_id, attempt, patch_sha)
+        self.store.add_event(
+            "exploratory_complete",
+            {
+                "attempt": attempt,
+                "patch_sha256": patch_sha,
+                "test_count": len(contract.get("tests", [])),
+            },
+            task_id=task_id,
+            pair_id=pair_id,
+            role="implementer",
         )
+        self.store.idle_pair(pair_id, f"{task_id} exploratory evidence ready for foreman")
 
     def reject_attempt(self, pair_id: str, task_row: dict[str, Any], feedback: Any) -> None:
         task_id = task_row["task_id"]
@@ -4328,7 +4452,7 @@ code{overflow-wrap:anywhere}#events{white-space:pre-wrap;max-height:16rem;overfl
 </style>
 </head>
 <body>
-<h1>Ox Alpha paired-agent fleet</h1>
+<h1>Ox Alpha coding-agent fleet</h1>
 <div id="health"></div><div id="metrics" class="metrics"></div>
 <h2>Platform program</h2>
 <div id="program-health"></div>
@@ -4374,7 +4498,7 @@ async function refresh(){
       const modelTags=(p.models||[]).map(v=>`<span class="tag">${esc(v)}</span>`).join(''); const backendTags=(p.hardware_backends||[]).map(v=>`<span class="tag">${esc(v)}</span>`).join('');
       programScope.innerHTML=`<div class="scope-line"><b>Models</b><div class="tags">${modelTags}</div></div><div class="scope-line"><b>Backends</b><div class="tags">${backendTags}</div></div><div class="scope-line"><b>Precision</b> ${esc(p.compute_precision||'-')}</div><div class="scope-line"><b>Release economics</b> parity required with receipts ≤${esc(sota.maximum_age_hours??'-')}h; ${(Number(sota.economic_target_ratio||0)*100).toFixed(0)}% is the separate fee-neutral sold-capacity target. ${esc(p.provider_fee||'')}</div><div class="scope-line"><b>Agent admission</b> ${esc(dp.provider_request_slots_per_pairable_task??'-')} request slots per logical pair, ≥${esc(dp.minimum_independent_provider_failure_domains??'-')} independent provider domains, supply evidence ≤${esc(dp.provider_supply_freshness_hours??'-')}h.</div>`;
       driverPolicy.textContent=`${(p.model_driver_lanes||[]).length} dedicated logical pairs required · each bound pair sees only its model lane; claims require admitted work, provider supply, heartbeat, write-set isolation, and the matching hardware pool`;
-      driverLanes.innerHTML=(p.model_driver_lanes||[]).map(lane=>{const affinity=(d.lanes||[]).find(v=>v.lane_id===lane.id); const pair=affinity?(s.pairs||[]).find(v=>v.pair_id===affinity.pair_id):null; const laneTasks=(s.tasks||[]).filter(v=>v.agent_lane===lane.id); const queued=laneTasks.filter(v=>v.state==='READY_IMPLEMENTER'||v.state==='READY_AUDITOR').length; const state=!affinity?'PLANNED_NOT_BOUND':pair&&pair.task_id?'ACTIVE':admissionReady?'BOUND_READY':'BOUND_GATE_HELD'; const cls=state==='ACTIVE'||state==='BOUND_READY'?'good':'warn'; return `<tr><td><b>${esc(lane.model)}</b></td><td><code>${esc(lane.id)}</code><br><span class="muted">${esc(affinity?.pair_id||'no pair')}</span></td><td><span class="${cls}">${esc(state)}</span><br><span class="muted">${esc(pair?.last_event||lane.initial_state)}</span></td><td>${queued} ready / ${laneTasks.length} admitted<br><span class="muted">${esc(lane.task_count)} full-PERT packages · ${esc(lane.task_prefix)}-*</span></td><td>${esc(lane.minimum_hardware)} → ${esc(lane.production_hardware)}</td><td>${esc(lane.provider_request_slots)} planned slots<br><span class="muted">2 implementer + 2 auditor</span></td></tr>`}).join('');
+      driverLanes.innerHTML=(p.model_driver_lanes||[]).map(lane=>{const affinity=(d.lanes||[]).find(v=>v.lane_id===lane.id); const pair=affinity?(s.pairs||[]).find(v=>v.pair_id===affinity.pair_id):null; const laneTasks=(s.tasks||[]).filter(v=>v.agent_lane===lane.id); const queued=laneTasks.filter(v=>v.state==='READY_IMPLEMENTER'||v.state==='READY_AUDITOR').length; const state=!affinity?'PLANNED_NOT_BOUND':pair&&pair.task_id?'ACTIVE':admissionReady?'BOUND_READY':'BOUND_GATE_HELD'; const cls=state==='ACTIVE'||state==='BOUND_READY'?'good':'warn'; return `<tr><td><b>${esc(lane.model)}</b></td><td><code>${esc(lane.id)}</code><br><span class="muted">${esc(affinity?.pair_id||'no pair')}</span></td><td><span class="${cls}">${esc(state)}</span><br><span class="muted">${esc(pair?.last_event||lane.initial_state)}</span></td><td>${queued} ready / ${laneTasks.length} admitted<br><span class="muted">${esc(lane.task_count)} full-PERT packages · ${esc(lane.task_prefix)}-*</span></td><td>${esc(lane.minimum_hardware)} → ${esc(lane.production_hardware)}</td><td>${esc(lane.provider_request_slots)} planned slots<br><span class="muted">2 implementer + 2 production audit</span></td></tr>`}).join('');
     }
     const lp=d.policy||{}; const active=d.active_lease;
     document.getElementById('lease-policy').innerHTML=`Scheduler <b class="${d.status==='ERROR'?'bad':d.status==='ACTIVE'?'good':'warn'}">${esc(d.status||'unavailable')}</b>${d.error?' · '+esc(d.error):''} · one atomic <code>${esc(lp.small_models_atomic_group||'small-models-current')}</code> · ${esc(lp.lease_seconds??3600)}s lease · only a numerically valid ≥${Number(lp.minimum_progress_percent??1).toFixed(2)}% accepted-best gain renews; only <code>ESTABLISH_IF_NONWORKING</code> may establish a first baseline for an explicitly nonworking model.`;
@@ -4384,10 +4508,10 @@ async function refresh(){
     document.getElementById('spark-plans').innerHTML=(d.plans||[]).length?'<b>Latest fenced plans:</b> '+(d.plans||[]).slice(0,6).map(v=>`<code>${esc(v.plan_id)}</code> ${esc(v.kind)} g${esc(v.generation)} ${esc(v.state)}`).join(' · '):'No file-agent plan is pending.';
     document.getElementById('benchmark-policy').textContent=`Every row is B1/B8/B64 with exactly ${lp.prompt_tokens??32768} input tokens, ${lp.output_tokens??256} measured output tokens, prefix cache disabled. Public SOTA values are listed only for an exact primary-source ledger cell; missing or not-fully-comparable cells remain N/A. Exact public cells currently present: ${d.sota_exact_cell_count??0}.`;
     document.getElementById('benchmark-matrix').innerHTML=(d.benchmark_matrix||[]).map(row=>{const pm=row.metrics?.prefill_tokens_per_second||{}; const om=row.metrics?.output_tokens_per_second||{}; return `<tr><td><b>${esc(row.model)}</b><br><span class="nowrap">B${esc(row.batch_size)} · 32k</span></td><td>${localMetric(pm)}</td><td>${sotaMetric(pm)}</td><td>${gapMetric(pm)}</td><td>${localMetric(om)}</td><td>${sotaMetric(om)}</td><td>${gapMetric(om)}</td></tr>`}).join('');
-    document.getElementById('pairs').innerHTML=s.pairs.map(p=>`<tr><td>${esc(p.pair_id)}<br><code>${esc(p.queue_scope)}</code></td><td><code>${esc(p.task_id||'-')}</code><br>${esc(p.task_title||'')} ${p.attempt==null?'':'· attempt '+p.attempt}</td><td>${esc(p.role)} / ${esc(p.state)}</td><td>${p.queued_tasks}<br><span class="muted">I ${p.queued_tasks_by_role?.implementer??0} / A ${p.queued_tasks_by_role?.auditor??0}</span></td><td>${p.api_retries}</td><td><code>${esc(p.session_id||'-')}</code><br>${p.tokens} tok</td><td>${p.heartbeat_age_seconds==null?'-':p.heartbeat_age_seconds.toFixed(1)+'s'}</td><td>${esc(p.last_event||'')}</td></tr>`).join('');
+    document.getElementById('pairs').innerHTML=s.pairs.map(p=>`<tr><td>${esc(p.pair_id)}<br><code>${esc(p.queue_scope)}</code></td><td><code>${esc(p.task_id||'-')}</code><br>${esc(p.task_title||'')} ${p.attempt==null?'':'· attempt '+p.attempt}<br><span class="muted">${esc(p.development_phase||'')}</span></td><td>${esc(p.role)} / ${esc(p.state)}</td><td>${p.queued_tasks}<br><span class="muted">I ${p.queued_tasks_by_role?.implementer??0} / A ${p.queued_tasks_by_role?.auditor??0}</span></td><td>${p.api_retries}</td><td><code>${esc(p.session_id||'-')}</code><br>${p.tokens} tok</td><td>${p.heartbeat_age_seconds==null?'-':p.heartbeat_age_seconds.toFixed(1)+'s'}</td><td>${esc(p.last_event||'')}</td></tr>`).join('');
     const race=s.provider_race; const supply=s.provider_supply||{}; const raceAge=race&&race.snapshot_generated_at!=null?Math.max(0,Date.now()/1000-race.snapshot_generated_at):null; document.getElementById('race-summary').textContent=race?(race.error||`admission ${supply.state||'unknown'}${supply.reason?' ('+supply.reason+')':''} · effective R=${race.effective_redundancy??0}/${race.configured_redundancy??race.redundancy} · healthy ${race.healthy_provider_count??0}/${race.eligible_provider_count??0} · requests ${race.requests_won} won / ${race.requests_failed} failed · event lag ${race.event_callback_lag_events??0} · snapshot ${raceAge==null?'unknown':raceAge.toFixed(1)+'s old'} · display errors ${race.event_callback_failures??0}`):`admission ${supply.state||'NOT_CONFIGURED'}${supply.reason?' · '+supply.reason:''}`;
     document.getElementById('race').innerHTML=race&&race.providers?race.providers.map(p=>`<tr><td>${esc(p.id)}</td><td>${esc((p.failure_domains||[p.failure_domain]).join(', '))}</td><td>${esc(p.in_flight)}</td><td>${esc(p.wins)}</td><td>${esc(p.failures)}</td><td class="${p.circuit_open?'bad':'good'}">${p.circuit_open?'OPEN':'closed'}</td><td>${p.last_latency_seconds==null?'-':esc(Number(p.last_latency_seconds).toFixed(2))+'s'}</td><td>${esc(p.last_error||'-')}</td></tr>`).join(''):'';
-    const ready=s.tasks.filter(t=>t.state==='READY_COORDINATOR'); document.getElementById('integration').innerHTML=ready.length?ready.map(t=>`<div><code>${esc(t.task_id)}</code> ${esc(t.title)} patch <code>${esc(t.patch_sha256||'')}</code></div>`).join(''):'<span class="muted">empty</span>';
+    const ready=s.tasks.filter(t=>t.state==='READY_COORDINATOR'); document.getElementById('integration').innerHTML=ready.length?ready.map(t=>`<div><code>${esc(t.task_id)}</code> [${esc(t.development_phase)}] ${esc(t.title)} patch <code>${esc(t.patch_sha256||'')}</code></div>`).join(''):'<span class="muted">empty</span>';
     document.getElementById('events').textContent=s.events.slice(-25).map(e=>`${e.created_at} ${e.pair_id||'-'} ${e.task_id||'-'} ${e.event_type}`).join('\\n');
   }catch(e){document.getElementById('health').innerHTML='<b class="bad">dashboard fetch failed</b> '+esc(e)}
 }

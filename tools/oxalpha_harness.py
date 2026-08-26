@@ -621,6 +621,13 @@ def _session_truncate(root: Path, relative: Path, length: int) -> None:
         os.close(descriptor)
 
 
+def _implementer_ready_status(task: dict[str, Any]) -> str:
+    phase = task.get("development_phase", "production")
+    if phase not in {"exploratory", "production"}:
+        raise HarnessError(f"invalid task development_phase: {phase!r}")
+    return "READY_FOR_FOREMAN" if phase == "exploratory" else "READY_FOR_AUDIT"
+
+
 class WorkspaceTools:
     """Single-threaded tools scoped to one isolated agent workspace."""
 
@@ -783,6 +790,7 @@ class WorkspaceTools:
             ),
         ]
         if self.role == "implementer":
+            ready_status = _implementer_ready_status(self.task)
             tools.append(
                 self._schema(
                     "apply_patch",
@@ -798,7 +806,7 @@ class WorkspaceTools:
                     "Submit the final implementer contract after all edits and declared tests. "
                     "Call this as the only tool in the final turn.",
                     {
-                        "status": {"type": "string", "enum": ["READY_FOR_AUDIT"]},
+                        "status": {"type": "string", "enum": [ready_status]},
                         "summary": {"type": "string"},
                         "changed_paths": {"type": "array", "items": {"type": "string"}},
                         "tests": {
@@ -946,7 +954,7 @@ class WorkspaceTools:
 
     def _finish_task(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if self.role == "implementer":
-            if arguments.get("status") != "READY_FOR_AUDIT":
+            if arguments.get("status") != _implementer_ready_status(self.task):
                 raise HarnessError("invalid implementer final status")
         elif arguments.get("verdict") not in {"APPROVE", "REJECT", "BLOCKED"}:
             raise HarnessError("invalid auditor final verdict")
@@ -3581,7 +3589,7 @@ class CodexHarnessRunner:
                 "awaiting_model_response": False,
                 "context_archive_count": 0,
                 "pending_tool_calls": [],
-                "messages": [{"role": "system", "content": self._system_prompt(role)}],
+                "messages": [{"role": "system", "content": self._system_prompt(role, task)}],
             }
             self._save_state(root, state)
             return state, root
@@ -3916,20 +3924,36 @@ class CodexHarnessRunner:
         )
 
     @staticmethod
-    def _system_prompt(role: str) -> str:
+    def _system_prompt(role: str, task: dict[str, Any]) -> str:
         edit_rule = (
             "Use apply_patch for all edits and stay inside the declared write_set."
             if role == "implementer"
             else "You are read-only: never modify files or attempt to repair the candidate."
         )
+        phase = task.get("development_phase", "production")
+        if phase not in {"exploratory", "production"}:
+            raise HarnessError(f"invalid task development_phase: {phase!r}")
+        phase_rule = (
+            "For exploratory work, reuse the real production path and add only the smallest "
+            "non-shipping probe needed to measure the named unknown. Hand the decisive test "
+            "and evidence directly to the foreman; no independent audit follows."
+            if phase == "exploratory"
+            else "For production work, use measured answers and the strict project rules to "
+            "implement only the smallest complete solution; an independent audit follows."
+        )
         return (
             "You are one durable coding-agent thread supervised by Codex. The provider serving any "
             "turn may change, so rely only on the supplied conversation and tool results. Inspect actual "
             "source before making semantic claims. Use the available tools instead of inventing file "
-            f"contents. {edit_rule} For apply_patch, send a git-apply-compatible patch beginning with "
+            f"contents. Development phase: {phase.upper()}. Less code is better; choose the simplest "
+            "measured solution, do not overengineer, and find decisive test results quickly. Maximize "
+            "Solutions / (production code size * 2); test-only probes that reuse production code are "
+            f"evidence rather than a second implementation. {phase_rule} {edit_rule} For apply_patch, "
+            "send a git-apply-compatible patch beginning with "
             "'diff --git'; never send '*** Begin Patch' syntax. Raw outputs are stored as session "
             "artifacts; use read_artifact when "
-            "a compact tool result says more bytes are available. Execute tools sequentially. Finish with "
+            "a compact tool result says more bytes are available. Batch independent read-only calls in "
+            "one turn; dependent and mutating calls remain ordered. Finish with "
             "finish_task as the only tool call in the final turn; its arguments are the exact final "
             "contract. Never finish with prose or a fenced JSON block."
         )

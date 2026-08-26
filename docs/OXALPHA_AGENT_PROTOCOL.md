@@ -1,4 +1,4 @@
-# Ox Alpha paired-agent development protocol
+# Ox Alpha coding-agent development protocol
 
 This protocol governs temporary Ox Alpha implementation capacity. It is
 designed for unreliable APIs and prevents an agent from writing the canonical
@@ -12,13 +12,16 @@ SparkPipe checkout.
 - Agents never commit, push, open PRs, use repository credentials, or edit the
   canonical checkout.
 - An implementer may change only the task's declared write set.
-- An auditor receives a fresh clone with the implementer's patch applied. The
-  auditor does not receive the implementer's mutable workspace.
+- For production tasks, an auditor receives a fresh clone with the
+  implementer's patch applied. The auditor does not receive the implementer's
+  mutable workspace.
 - The auditor never fixes code. It tries to invalidate the patch and emits a
   structured verdict.
-- The coordinator does not inspect a candidate patch until the independent
-  auditor returns `APPROVE`.
-- Approval queues a candidate for coordinator review; it does not merge it.
+- A production candidate reaches the coordinator only after the independent
+  auditor returns `APPROVE`. An exploratory candidate reaches its Luna foreman
+  or the coordinator after its decisive test receipts and evidence are sealed;
+  it has no independent audit phase.
+- Completion queues a candidate for coordinator review; it does not merge it.
 
 ## 2. Unit of work
 
@@ -27,6 +30,7 @@ One task contract contains:
 ```text
 task id and title
 base commit
+development phase: exploratory or production
 objective and non-goals
 declared write set
 required source files and contracts
@@ -41,6 +45,29 @@ estimated effort and retry budget
 Tasks should fit one focused agent session. A broad component is decomposed
 until each patch has a reviewable semantic boundary and disjoint write set.
 
+### 2.1 Coding and experiment philosophy
+
+- Less code is better. Choose the simplest change that solves the measured
+  problem and reject speculative frameworks, abstraction, and generality.
+- Find decisive test results quickly. Do not spend agent turns rediscovering the
+  repository when the production path and narrow test are already identified.
+- Every microtask declares `development_phase` as `exploratory` or
+  `production`. A missing phase defaults to `production` for compatibility.
+- An exploratory task answers one named unknown. It reuses production code,
+  adds the smallest clearly non-shipping probe, deploys through an authorized
+  runner, and records the real result. Its deliverable is evidence, not a
+  generalized design. Exploratory work does not consume an auditor.
+- A production task starts after relevant unknowns have measured answers. It
+  follows the strict project coding rules and implements the smallest complete
+  solution justified by those measurements.
+- Maximize `Solutions / (production code size * 2)`. Test-only probe code that
+  exercises production behavior is evidence and is excluded from production
+  code size. Duplicated production algorithms, shipping probe machinery, and
+  abstractions created only to support a probe count as production code.
+- Production auditors reject unnecessary production code, duplicated behavior,
+  and overengineering. The exploratory completion gate rejects a probe that
+  bypasses the real production path or lacks its decisive test receipt.
+
 ## 3. Pair state machine
 
 ```text
@@ -49,17 +76,19 @@ BLOCKED_DEPENDENCY
   -> IMPLEMENTING
   -> IMPLEMENTER_RETRY_WAIT
   -> IMPLEMENTER_COMPLETE
-  -> PREPARING_AUDIT
-  -> AUDITING
-  -> AUDITOR_RETRY_WAIT
-  -> AUDIT_REJECTED -> READY_IMPLEMENTER (new attempt)
-  -> AUDIT_APPROVED -> READY_COORDINATOR
+  -> exploratory: READY_COORDINATOR
+  -> production: PREPARING_AUDIT
+       -> AUDITING
+       -> AUDITOR_RETRY_WAIT
+       -> AUDIT_REJECTED -> READY_IMPLEMENTER (new attempt)
+       -> AUDIT_APPROVED -> READY_COORDINATOR
   -> INTEGRATING
   -> INTEGRATED | COORDINATOR_REJECTED | SUPERSEDED
 ```
 
-No transition skips audit. Each attempt has its own implementation patch hash,
-test evidence, audit hash, logs, and provider session ID.
+No production transition skips audit. Exploratory work deliberately skips it.
+Each attempt has its own implementation patch hash, test evidence, logs, and
+provider session ID; production attempts also have an independent audit hash.
 
 ## 4. API failure handling
 
@@ -201,7 +230,7 @@ The controller captures the git diff mechanically. The implementer calls
 
 ```json
 {
-  "status": "READY_FOR_AUDIT",
+  "status": "READY_FOR_AUDIT|READY_FOR_FOREMAN",
   "summary": "...",
   "changed_paths": ["..."],
   "tests": [
@@ -214,13 +243,18 @@ The controller captures the git diff mechanically. The implementer calls
 }
 ```
 
+Production tasks use `READY_FOR_AUDIT`. Exploratory tasks use
+`READY_FOR_FOREMAN`; after deterministic controller validation they enter the
+foreman/coordinator queue without creating an auditor workspace or API request.
+
 The controller rejects an empty diff, a dirty submodule, a changed path outside
 the write set, generated drift, secrets, credentials, private addresses where
 forbidden, binary artifacts, or missing required tests.
 
-## 6. Auditor output contract
+## 6. Production auditor output contract
 
-The auditor starts from the task contract, not the implementer's conclusion.
+Exploratory tasks do not use this contract. A production auditor starts from
+the task contract, not the implementer's conclusion.
 It must read the diff, inspect surrounding code, rerun required tests, add
 adversarial tests where practical, verify semantic/non-goal boundaries, and
 submit this object through `finish_task`.
@@ -252,18 +286,19 @@ only if the task contract explicitly permits deferred cleanup.
 
 ## 7. Coordinator review
 
-After approval the coordinator:
+After a candidate enters the coordinator queue, the coordinator:
 
 1. verifies base and patch hashes;
-2. reads the task, implementation, audit, and diff;
+2. reads the task, implementation, diff, and the audit when production;
 3. reproduces risk-proportionate tests in a fresh integration branch;
 4. resolves overlap with already integrated work;
 5. applies style, architecture, and security review;
 6. commits and opens a PR through the repository authentication wrapper; and
 7. performs zero-drift target deployment before a production claim.
 
-The coordinator may reject an auditor-approved patch. That rejection becomes a
-new task input; it is never silently edited into a different patch.
+The coordinator may reject either an exploratory candidate or an
+auditor-approved production patch. That rejection becomes a new task input; it
+is never silently edited into a different patch.
 
 ## 8. Global task scheduler
 
@@ -272,7 +307,7 @@ scheduler. It provides:
 
 - dependency and artifact-hash readiness;
 - write-set collision exclusion;
-- role separation and no self-audit;
+- production role separation and no self-audit;
 - provider and model concurrency limits;
 - fair queues by critical-path slack and priority;
 - retry/backoff/circuit-breaker state;
@@ -288,16 +323,16 @@ concurrently even if their DAG dependencies are independent.
 
 The seven initial model drivers use explicit durable lane affinity rather than
 the generic pull queue. Each `model-driver:<code>` lane owns one logical
-implementer/auditor pair across that model's task sequence so its
-task-local provider-neutral context survives provider changes, API retries,
+implementer plus a production-only auditor across that model's task sequence.
+Its task-local provider-neutral context survives provider changes, API retries,
 and controller restart. A newly admitted task starts from the repository and
 the lane's already integrated artifacts rather than inheriting unreviewed chat
-state. Both roles still use the configured provider race, the auditor still
-starts from a fresh immutable workspace, and the lane cannot claim another
-model's work. Shared-runtime or cross-model write sets leave the lane and
-return to coordinator-controlled ownership. A planned lane is not an active
-agent until its pair, admitted task, provider supply, lock, and heartbeat are
-all present in durable state.
+state. Exploratory work uses only the implementer race. For production work,
+both roles use the configured provider race and the auditor starts from a fresh
+immutable workspace. The lane cannot claim another model's work. Shared-runtime
+or cross-model write sets leave the lane and return to coordinator-controlled
+ownership. A planned lane is not active until its workers, admitted task,
+provider supply, lock, and heartbeat are all present in durable state.
 
 ## 9. Real-time display
 
@@ -307,13 +342,13 @@ is derived from persisted state, not process names or hand-edited markdown.
 Required views:
 
 - aggregate counts by pair state, provider, retry reason, and workstream;
-- one row per implementer/auditor pair;
+- one row per logical lane, including its implementer and production auditor;
 - current task and attempt;
 - role state (`working`, `waiting for implementer`, `retry backoff`,
   `auditing`, `ready for coordinator`, and terminal states);
 - queued task count for each role and pair; unbound workers show the global
   ready pull queue, while a dedicated model pair shows only its exact lane,
-  with both split by implementer/auditor role;
+  split by implementer/production-auditor role;
 - API retries, next retry time, circuit status, and last heartbeat;
 - provider session IDs and elapsed/token usage without secrets;
 - last durable event and artifact links; and
@@ -421,11 +456,11 @@ python3 tools/oxalpha_fleet.py mark-integrated PERF-001 \
 
 An API transport failure resumes the same provider session twice before a
 replacement session is created in the same isolated workspace. It does not
-consume a code attempt. A controller restart terminates the ownership epoch,
-requeues an interrupted implementer at implementation and an interrupted
-auditor directly at audit, always on the same attempt, immutable base, session,
-and role-specific workspace. A recovered rejected attempt advances to the next
-attempt, while a legacy approved transition goes directly to the coordinator
-queue. Approval no longer has an intermediate crash-strandable state. Recovery
-keeps prior events and feedback; no interrupted patch becomes
-coordinator-visible.
+consume a code attempt. A controller restart terminates the ownership epoch and
+requeues an interrupted implementer at implementation on the same attempt. An
+interrupted production auditor resumes directly at audit. Exploratory work
+never recovers into an auditor state. Immutable base, session, and
+role-specific workspace receipts remain intact. A recovered rejected attempt
+advances to the next attempt, while a legacy approved production transition
+goes directly to the coordinator queue. Recovery keeps prior events and
+feedback; no interrupted patch becomes coordinator-visible.
