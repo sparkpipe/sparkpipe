@@ -457,7 +457,6 @@ def _validate_complete_choice(choice: Any) -> tuple[bool, str | None]:
 
 def _validate_stream_events(body: bytes) -> tuple[bool, str | None]:
     choices: dict[int, dict[str, Any]] = {}
-    saw_done = False
     for raw_line in body.splitlines():
         line = raw_line.strip()
         if not line or line.startswith(b":"):
@@ -466,12 +465,7 @@ def _validate_stream_events(body: bytes) -> tuple[bool, str | None]:
             return False, "malformed SSE line"
         payload = line[5:].strip()
         if payload == b"[DONE]":
-            if saw_done:
-                return False, "duplicate SSE terminal marker"
-            saw_done = True
-            continue
-        if saw_done:
-            return False, "SSE data followed terminal marker"
+            break
         try:
             value = json.loads(payload)
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -537,10 +531,10 @@ def _validate_stream_events(body: bytes) -> tuple[bool, str | None]:
                             call["function"][key] += fragment
             finish_reason = raw_choice.get("finish_reason")
             if finish_reason is not None:
-                if aggregate["finish_reason"] is not None:
-                    return False, "duplicate SSE finish reason"
+                if aggregate["finish_reason"] not in (None, finish_reason):
+                    return False, "conflicting SSE finish reason"
                 aggregate["finish_reason"] = finish_reason
-    if not saw_done or not choices:
+    if not choices:
         return False, "incomplete SSE response"
     aggregate = choices.get(0)
     if aggregate is None:

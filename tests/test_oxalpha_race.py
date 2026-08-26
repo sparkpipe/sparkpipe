@@ -176,7 +176,28 @@ class ValidationTests(unittest.TestCase):
         )
         self.assertEqual(RACE.validate_chat_response(stream, True), (True, None))
         self.assertFalse(RACE.validate_chat_response(b'{"choices":[]}', False)[0])
-        self.assertFalse(RACE.validate_chat_response(stream.replace(b"[DONE]", b""), True)[0])
+        self.assertTrue(
+            RACE.validate_chat_response(stream.replace(b"data: [DONE]\n\n", b""), True)[0]
+        )
+        incomplete = stream.split(b'data: {"choices":[{"index":0,"delta":{}')[0]
+        self.assertFalse(RACE.validate_chat_response(incomplete, True)[0])
+
+    def test_provider_terminal_quirks_keep_a_complete_choice(self):
+        duplicate_finish = (
+            b'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        trailing_after_done = duplicate_finish + b'data: {"error":"ignored after terminal"}\n\n'
+        conflicting_finish = duplicate_finish.replace(
+            b'"finish_reason":"stop"}]}\n\ndata: [DONE]',
+            b'"finish_reason":"tool_calls"}]}\n\ndata: [DONE]',
+            1,
+        )
+        self.assertTrue(RACE.validate_chat_response(duplicate_finish, True)[0])
+        self.assertTrue(RACE.validate_chat_response(trailing_after_done, True)[0])
+        self.assertFalse(RACE.validate_chat_response(conflicting_finish, True)[0])
 
     def test_malformed_tool_calls_and_sse_cannot_validate(self):
         malformed = completion("bad", content=None)

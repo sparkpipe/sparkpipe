@@ -42,6 +42,34 @@
   code size. Reusable abstractions added only for a probe, duplicated production
   algorithms, and shipping probe machinery count as production code.
 
+### Actual-results gate
+
+- Agent activity is useful only when it produces one of four outcomes:
+  1. a runnable experiment or the narrow code needed for it;
+  2. an executed experiment with raw Spark or test output;
+  3. analysis tied to that executed result that chooses the next action; or
+  4. tested production code implementing a measured design.
+- Plans, inventories, status prose, speculative designs, receipt preparation,
+  repeated source reading, and ideas without execution are not progress.
+- A negative experiment is progress when its hypothesis had a stated plausible
+  path to success and its result eliminates a real branch of the search space.
+- Generate a compact durable receipt only after an actual result exists. The raw
+  run artifact comes first; receipt work must never delay the next experiment.
+- Every OxAlpha microtask must name an `action_kind` from the four outcomes
+  above, a concrete expected result, why the attempt has reasonable expected
+  value, and the command or artifact that proves completion.
+- Attribute `UsefulTokens` only after the promised result exists. Tokens spent
+  by failed provider legs, plan-only turns, unexecuted ideas, or abandoned
+  inventory remain non-useful. Maximize `UsefulTokens / TotalTokens` without
+  gaming it by omitting necessary high-value failed experiments.
+- Apply the agent-ablation test continuously: if removing an agent would not
+  materially change experiments run, results analyzed, or tested code produced,
+  redirect or retire that agent.
+- A foreman manages by walking around. On every loop, inspect one live BigGulp
+  deeply enough to find its current limiting result, then issue a specific
+  correction or next experiment. Do not substitute workflow maintenance for
+  movement toward the BigGulp's weekly outcome.
+
 ## GitHub authentication
 
 - Never open a GitHub login flow, request a connector, call `gh auth login`, or

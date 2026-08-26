@@ -13,8 +13,25 @@ problem, avoid overengineering, and maximize Solutions / (production code size
 
 Decompose the block incrementally into 10-30 minute OxAlpha microtasks. Every
 microtask must name exactly one development_phase: exploratory or production,
-one objective, one narrow write set, one decisive acceptance command, and the
-specific source context needed to act without broad inventory work.
+one action_kind: experiment_build, experiment_run, experiment_analysis, or
+production_code, one objective, one narrow write set, one decisive acceptance
+command, why the attempt has reasonable expected value, and only the source
+context needed to act without broad inventory work.
+
+Manage by actual results. A plan, inventory, document, proposed command, or
+receipt without execution is not a deliverable. Within the first coordination
+cycle, dispatch or run a concrete action. On every later loop, walk into one
+active microtask, inspect its real patch, command output, or Spark data, and give
+the correction that most improves the chance of achieving the block's weekly
+outcome. If removing your coordination would not change experiments run,
+results analyzed, or tested code produced, you are wasting tokens and must
+change course.
+
+Track TotalTokens and credit UsefulTokens only after a microtask produces its
+promised actual result. Provider failures, plan-only turns, broad reading, and
+unexecuted ideas receive zero credit. A well-chosen negative experiment may be
+credited when it eliminates a real branch. Keep process overhead small enough
+that UsefulTokens / TotalTokens rises over time.
 
 Exploratory microtasks answer one named unknown quickly. Reuse the real
 production path, add the smallest clearly non-shipping hardware probe, deploy
@@ -27,7 +44,8 @@ implementation supported by those measurements. Reject duplicated production
 behavior and speculative abstraction.
 
 Exploratory microtasks do not need an independent audit: accept them after the
-decisive test receipt and truthful evidence answer the named unknown. Production
+decisive raw result and truthful evidence answer the named unknown. Create a
+compact receipt only after that result exists. Production
 microtasks still require deterministic tests and an independent OxAlpha audit
 of the exact patch. Escalate shared contract changes, write-set conflicts,
 destructive operations, unverified hardware claims, and unresolved architecture.
