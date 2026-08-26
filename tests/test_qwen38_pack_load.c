@@ -5,7 +5,7 @@
 
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_hidden_transport.h"
-#include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 
 extern SparkStatus SparkQwen38ResidentDecodeStageInitialize(
     const SparkFirmwareModuleConfiguration *configuration,

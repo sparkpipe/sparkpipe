@@ -28,7 +28,7 @@ MODULE_INCLUDE_FLAGS = \
 	-I"$(REPOSITORY_ROOT)/modules/qwen38_27b_resident_decode_stage/source" \
 	-I"$(REPOSITORY_ROOT)"
 
-STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/qwen38_27b_stage.qwen38_27bsp
+STAGE_PACK_PATH ?= $(abspath ../../build/stagepacks/qwen38_27b_stage.qwen38_27bsp)
 STAGE_COUNT ?= 1
 STAGE_INDEX ?= 0
 STAGE_FIRST_LAYER ?= 0

@@ -1,7 +1,7 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 
-#include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "inference/kernels/route.cuh"
 #include "runtime/launch.h"

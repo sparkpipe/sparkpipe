@@ -153,7 +153,7 @@ max committed 4, context extension 3 (`:14-18`), `NODE_ROWS` topology
   Makefile defaults `MTP_LAYER_COUNT ?= 0` (`modules/qwen38_resident_decode_stage/Makefile:41`),
   MTP tensors packed under sentinel layer `SPARK_QWEN38_STAGEPACK_MTP_LAYER (UINT32_MAX-1u)`
   (`spark_qwen38_stagepack_format.h:27`), and the three-frame MTP modifier
-  contract documented in `spark_qwen38_resident_decode_stage_firmware.h:355-397`.
+  contract documented in `spark_qwen38_max_resident_decode_stage_firmware.h:355-397`.
 
 ---
 
@@ -236,7 +236,7 @@ Landed neutral code under shared paths; changes land through the coordinator.
    `include/sparkpipe/spark_speculation_tree.h` (shape: 1 candidate, single
    MTP layer) instead of growing its own parallel bookkeeping
    (`SPECULATION_AUDIT.md:73-77`, `:49`). The three-frame modifier contract
-   already documented at `spark_qwen38_resident_decode_stage_firmware.h:355-397`
+   already documented at `spark_qwen38_max_resident_decode_stage_firmware.h:355-397`
    becomes the consumer of the neutral tree.
 
 3. **DSV4 lane bookkeeping → the tree.** Owner: **DSV4 sessions** (Flash and/or
