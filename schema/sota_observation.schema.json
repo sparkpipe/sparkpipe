@@ -1,0 +1,511 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sparkpipe.local/schema/sota-observation-v1.json",
+  "title": "SparkPipe SOTA observation",
+  "description": "One externally observed inference result, bound to its primary source and to every execution dimension needed to decide comparability. Missing facts must stay missing; nothing in this schema permits a consumer to invent defaults. JSON numbers must be finite; NaN and infinities are invalid at parsing and validation boundaries.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "observation_id",
+    "model_id",
+    "checkpoint",
+    "quality_mode",
+    "precision",
+    "quality_gate",
+    "execution",
+    "hardware",
+    "fabric",
+    "power_state",
+    "topology",
+    "batch",
+    "workload",
+    "request_distribution",
+    "prefix_cache",
+    "speculation",
+    "service_level_objectives",
+    "statistics",
+    "metric",
+    "source"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "model_id": {
+      "type": "string",
+      "enum": [
+        "dsv4-flash",
+        "dsv4-pro",
+        "glm-5.2",
+        "k3",
+        "minimax-h3",
+        "qwen-3.8-max",
+        "qwen-3.8-27b"
+      ]
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": [
+        "name",
+        "revision"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Upstream checkpoint identity, org/repo form."
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact checkpoint revision: commit hash or release tag."
+        }
+      },
+      "additionalProperties": false
+    },
+    "quality_mode": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact weight/activation/KV precision recipe, e.g. fp8_e4m3_weights_bf16_activations."
+    },
+    "precision": {
+      "type": "object",
+      "required": [
+        "weight_dtype",
+        "weight_codec",
+        "activation_dtype",
+        "accumulator_dtype",
+        "kv_cache_dtype",
+        "kv_cache_codec"
+      ],
+      "properties": {
+        "weight_dtype": { "type": "string", "minLength": 1 },
+        "weight_codec": { "type": "string", "minLength": 1 },
+        "activation_dtype": { "type": "string", "minLength": 1 },
+        "accumulator_dtype": { "type": "string", "minLength": 1 },
+        "kv_cache_dtype": { "type": "string", "minLength": 1 },
+        "kv_cache_codec": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "quality_gate": {
+      "type": "object",
+      "required": [
+        "method",
+        "status",
+        "output_parity",
+        "atol",
+        "rtol"
+      ],
+      "properties": {
+        "method": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["passed", "failed", "not_reported"]
+        },
+        "output_parity": { "type": "boolean" },
+        "atol": { "type": "number", "minimum": 0 },
+        "rtol": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "required": ["compute_route", "kv_route"],
+      "properties": {
+        "compute_route": { "type": "string", "minLength": 1 },
+        "kv_route": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "hardware": {
+      "type": "object",
+      "required": [
+        "accelerator_name",
+        "accelerator_count"
+      ],
+      "properties": {
+        "accelerator_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accelerator_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      },
+      "additionalProperties": false
+    },
+    "fabric": {
+      "type": "object",
+      "required": [
+        "interconnect",
+        "collective_backend",
+        "bandwidth_gbps_per_device",
+        "rdma_enabled"
+      ],
+      "properties": {
+        "interconnect": { "type": "string", "minLength": 1 },
+        "collective_backend": { "type": "string", "minLength": 1 },
+        "bandwidth_gbps_per_device": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "rdma_enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "power_state": {
+      "type": "object",
+      "required": [
+        "state",
+        "power_limit_watts",
+        "graphics_clock_mhz",
+        "memory_clock_mhz",
+        "thermal_state"
+      ],
+      "properties": {
+        "state": { "type": "string", "minLength": 1 },
+        "power_limit_watts": { "type": "number", "exclusiveMinimum": 0 },
+        "graphics_clock_mhz": { "type": "integer", "minimum": 1 },
+        "memory_clock_mhz": { "type": "integer", "minimum": 1 },
+        "thermal_state": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "topology": {
+      "type": "object",
+      "required": [
+        "kind",
+        "tp_size",
+        "pp_size",
+        "ep_size"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "tp",
+            "pp",
+            "tp_pp",
+            "ep",
+            "tp_ep_pp"
+          ]
+        },
+        "tp_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pp_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ep_size": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "request_distribution": {
+      "type": "object",
+      "required": [
+        "kind",
+        "batch_size_p50",
+        "batch_size_p95",
+        "prompt_tokens_p50",
+        "prompt_tokens_p95",
+        "output_tokens_p50",
+        "output_tokens_p95",
+        "context_occupancy_pct_p50",
+        "context_occupancy_pct_p95"
+      ],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "batch_size_p50": { "type": "integer", "minimum": 1 },
+        "batch_size_p95": { "type": "integer", "minimum": 1 },
+        "prompt_tokens_p50": { "type": "integer", "minimum": 1 },
+        "prompt_tokens_p95": { "type": "integer", "minimum": 1 },
+        "output_tokens_p50": { "type": "integer", "minimum": 1 },
+        "output_tokens_p95": { "type": "integer", "minimum": 1 },
+        "context_occupancy_pct_p50": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100
+        },
+        "context_occupancy_pct_p95": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100
+        }
+      },
+      "additionalProperties": false
+    },
+    "prefix_cache": {
+      "type": "object",
+      "required": ["enabled", "state", "matched_tokens"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "state": {
+          "type": "string",
+          "enum": ["disabled", "cold", "warm", "shared_warm"]
+        },
+        "matched_tokens": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "batch": {
+      "type": "object",
+      "required": [
+        "batch_size"
+      ],
+      "properties": {
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      },
+      "additionalProperties": false
+    },
+    "workload": {
+      "type": "object",
+      "required": [
+        "prompt_tokens",
+        "output_tokens",
+        "context_window_tokens",
+        "context_occupancy_pct"
+      ],
+      "properties": {
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "context_window_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "context_occupancy_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100,
+          "description": "Finite declared context occupancy of the measurement, percent of the context window occupied by the prompt at steady state."
+        }
+      },
+      "additionalProperties": false
+    },
+    "speculation": {
+      "type": "object",
+      "description": "Speculative decoding configuration. provider and draft_length are null when enabled is false; they are part of the binding and must never be defaulted.",
+      "required": [
+        "enabled",
+        "provider",
+        "draft_length"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "draft_length": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "service_level_objectives": {
+      "type": "object",
+      "required": ["ttft_ms_max", "itl_ms_max"],
+      "properties": {
+        "ttft_ms_max": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0
+        },
+        "itl_ms_max": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "statistics": {
+      "type": "object",
+      "required": [
+        "randomization",
+        "paired",
+        "warmup_iterations",
+        "sample_count",
+        "summary_statistic",
+        "confidence_interval"
+      ],
+      "properties": {
+        "randomization": { "type": "string", "minLength": 1 },
+        "paired": { "type": "boolean" },
+        "warmup_iterations": { "type": "integer", "minimum": 0 },
+        "sample_count": { "type": "integer", "minimum": 1 },
+        "summary_statistic": { "type": "string", "minLength": 1 },
+        "confidence_interval": {
+          "type": "object",
+          "required": ["method", "level", "lower", "upper"],
+          "properties": {
+            "method": { "type": "string", "minLength": 1 },
+            "level": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "lower": { "type": "number" },
+            "upper": { "type": "number" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "metric": {
+      "type": "object",
+      "required": [
+        "name",
+        "value",
+        "unit",
+        "direction",
+        "timing_boundary"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "output_tokens_per_second",
+            "requests_per_second",
+            "inter_token_latency_ms",
+            "time_to_first_token_ms",
+            "prefill_tokens_per_second"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Finite measured metric value."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "higher_is_better",
+            "lower_is_better"
+          ]
+        },
+        "timing_boundary": {
+          "type": "string",
+          "enum": [
+            "steady_state_decode",
+            "end_to_end_request",
+            "prefill_only",
+            "time_to_first_token"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "url",
+        "retrieved_utc",
+        "evidence_class"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "publication_date"
+          ]
+        },
+        {
+          "required": [
+            "revision"
+          ]
+        }
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://",
+          "description": "Exact source URL the observation was retrieved from."
+        },
+        "retrieved_utc": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "evidence_class": {
+          "type": "string",
+          "enum": [
+            "MEASURED_BENCHMARK_ARTIFACT",
+            "MEASURED_ISSUE_RECEIPT",
+            "MEASURED_OFFICIAL_DOCS",
+            "PAPER_MEASURED",
+            "VENDOR_MARKETING",
+            "ANONYMOUS_SCREENSHOT",
+            "AGGREGATOR_SECONDARY",
+            "UNVERIFIED"
+          ]
+        },
+        "publisher": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document_kind": {
+          "type": "string",
+          "enum": [
+            "github_repository_artifact",
+            "github_issue_receipt",
+            "official_documentation",
+            "paper",
+            "huggingface_model_card",
+            "vendor_blog",
+            "aggregator_page"
+          ]
+        },
+        "publication_date": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$"
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revision of the source document itself (commit, tag, or version), when known."
+        }
+      },
+      "additionalProperties": false
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20
+    }
+  },
+  "additionalProperties": false
+}

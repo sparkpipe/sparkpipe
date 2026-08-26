@@ -1,0 +1,9 @@
+{
+  "source_id": "k3-paper-table-excerpt",
+  "retrieved_utc": "2026-08-23T07:45:00Z",
+  "http_status": 200,
+  "content_type": "text/plain; charset=utf-8",
+  "body": {
+    "text": "Table 4: Kimi K3 serving throughput, measured on the released checkpoint moonshotai/Kimi-K3 revision 9be21fca44d70813ab65ff02c7de91aa3840bd67. Setup: 8 x NVIDIA H800 with TP8 PP1 EP1 sharding, NVLink/NCCL fabric, locked power and clocks at steady thermal state, batch size 4, 2048 prompt tokens and 1024 completion tokens against a 262144-token window (occupancy 0.8 percent), fixed request distribution, prefix cache disabled, and speculative decoding disabled. The checkpoint-native weight codec used BF16 activation/FP32 accumulation and BF16 KV on the native CUDA/HBM route. Token-exact output parity passed. Ten samples after two warmups used a 95 percent bootstrap confidence interval; TTFT and ITL were unconstrained. Steady-state decode reached 720.0 tok/s (output tokens per second, higher is better). Results generated 2026-05-11."
+  }
+}

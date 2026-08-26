@@ -1,0 +1,221 @@
+{
+  "model_section": {
+    "model_id": "dsv4-flash",
+    "display_name": "DeepSeek V4 Flash",
+    "sources": [
+      {
+        "source_id": "z-high-same-cell",
+        "url": "https://bench.example/dsv4-flash/z-high-same-cell.json",
+        "document_kind": "github_repository_artifact",
+        "publisher": "Adversarial fixture",
+        "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+        "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "extraction": {
+          "format": "sparkpipe_flat_v1"
+        }
+      },
+      {
+        "source_id": "a-low-same-cell",
+        "url": "https://bench.example/dsv4-flash/a-low-same-cell.json",
+        "document_kind": "github_repository_artifact",
+        "publisher": "Adversarial fixture",
+        "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+        "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "extraction": {
+          "format": "sparkpipe_flat_v1"
+        }
+      },
+      {
+        "source_id": "b-different-batch",
+        "url": "https://bench.example/dsv4-flash/b-different-batch.json",
+        "document_kind": "github_repository_artifact",
+        "publisher": "Adversarial fixture",
+        "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+        "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "extraction": {
+          "format": "sparkpipe_flat_v1"
+        }
+      },
+      {
+        "source_id": "m-equal-high-same-cell",
+        "url": "https://bench.example/dsv4-flash/m-equal-high-same-cell.json",
+        "document_kind": "github_repository_artifact",
+        "publisher": "Adversarial fixture",
+        "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+        "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "extraction": {"format": "sparkpipe_flat_v1"}
+      },
+      {
+        "source_id": "c-lower-slow",
+        "url": "https://bench.example/dsv4-flash/c-lower-slow.json",
+        "document_kind": "github_repository_artifact",
+        "publisher": "Adversarial fixture",
+        "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+        "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "extraction": {"format": "sparkpipe_flat_v1"}
+      },
+      {
+        "source_id": "x-lower-fast",
+        "url": "https://bench.example/dsv4-flash/x-lower-fast.json",
+        "document_kind": "github_repository_artifact",
+        "publisher": "Adversarial fixture",
+        "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+        "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "extraction": {"format": "sparkpipe_flat_v1"}
+      }
+    ]
+  },
+  "envelopes": [
+    {
+      "source_id": "a-low-same-cell",
+      "retrieved_utc": "2026-08-25T01:00:00Z",
+      "http_status": 200,
+      "body": {
+        "checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "checkpoint_revision": "3f9c2ab7d1e40552c8bb0f6a19d4e77a2b91c630",
+        "quality_mode": "fp8_e4m3_weights_bf16_activations_fp8_kv_cache",
+        "precision": {"weight_dtype": "fp8_e4m3", "weight_codec": "native_fp8_e4m3", "activation_dtype": "bf16", "accumulator_dtype": "fp32", "kv_cache_dtype": "fp8_e4m3", "kv_cache_codec": "native_fp8_e4m3"},
+        "quality_gate": {"method": "token_exact", "status": "passed", "output_parity": true, "atol": 0.0, "rtol": 0.0},
+        "execution": {"compute_route": "cuda_native", "kv_route": "device_hbm_contiguous"},
+        "hardware_accelerator": "NVIDIA H200 SXM",
+        "accelerator_count": 8,
+        "fabric": {"interconnect": "nvlink4_nvswitch", "collective_backend": "nccl", "bandwidth_gbps_per_device": 900.0, "rdma_enabled": false},
+        "power_state": {"state": "locked", "power_limit_watts": 700.0, "graphics_clock_mhz": 1980, "memory_clock_mhz": 2619, "thermal_state": "steady"},
+        "topology_kind": "tp",
+        "tp_size": 8,
+        "pp_size": 1,
+        "ep_size": 1,
+        "batch_size": 16,
+        "prompt_tokens": 1024,
+        "output_tokens": 512,
+        "context_window_tokens": 163840,
+        "context_occupancy_pct": 0.6,
+        "request_distribution": {"kind": "fixed", "batch_size_p50": 16, "batch_size_p95": 16, "prompt_tokens_p50": 1024, "prompt_tokens_p95": 1024, "output_tokens_p50": 512, "output_tokens_p95": 512, "context_occupancy_pct_p50": 0.6, "context_occupancy_pct_p95": 0.6},
+        "prefix_cache": {"enabled": false, "state": "disabled", "matched_tokens": 0},
+        "speculation_enabled": false,
+        "speculation_provider": null,
+        "speculation_draft_length": null,
+        "service_level_objectives": {"ttft_ms_max": null, "itl_ms_max": null},
+        "statistics": {"randomization": "none", "paired": false, "warmup_iterations": 2, "sample_count": 10, "summary_statistic": "mean", "confidence_interval": {"method": "bootstrap", "level": 0.95, "lower": 2980.0, "upper": 3020.0}},
+        "metric_name": "output_tokens_per_second",
+        "metric_value": 3000.0,
+        "metric_unit": "tok/s",
+        "metric_direction": "higher_is_better",
+        "timing_boundary": "steady_state_decode",
+        "artifact_generated_utc": "2026-08-25T00:00:00Z"
+      }
+    },
+    {
+      "source_id": "z-high-same-cell",
+      "retrieved_utc": "2026-08-25T01:00:00Z",
+      "http_status": 200,
+      "body": {
+        "checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "checkpoint_revision": "3f9c2ab7d1e40552c8bb0f6a19d4e77a2b91c630",
+        "quality_mode": "fp8_e4m3_weights_bf16_activations_fp8_kv_cache",
+        "precision": {"weight_dtype": "fp8_e4m3", "weight_codec": "native_fp8_e4m3", "activation_dtype": "bf16", "accumulator_dtype": "fp32", "kv_cache_dtype": "fp8_e4m3", "kv_cache_codec": "native_fp8_e4m3"},
+        "quality_gate": {"method": "token_exact", "status": "passed", "output_parity": true, "atol": 0.0, "rtol": 0.0},
+        "execution": {"compute_route": "cuda_native", "kv_route": "device_hbm_contiguous"},
+        "hardware_accelerator": "NVIDIA H200 SXM",
+        "accelerator_count": 8,
+        "fabric": {"interconnect": "nvlink4_nvswitch", "collective_backend": "nccl", "bandwidth_gbps_per_device": 900.0, "rdma_enabled": false},
+        "power_state": {"state": "locked", "power_limit_watts": 700.0, "graphics_clock_mhz": 1980, "memory_clock_mhz": 2619, "thermal_state": "steady"},
+        "topology_kind": "tp",
+        "tp_size": 8,
+        "pp_size": 1,
+        "ep_size": 1,
+        "batch_size": 16,
+        "prompt_tokens": 1024,
+        "output_tokens": 512,
+        "context_window_tokens": 163840,
+        "context_occupancy_pct": 0.6,
+        "request_distribution": {"kind": "fixed", "batch_size_p50": 16, "batch_size_p95": 16, "prompt_tokens_p50": 1024, "prompt_tokens_p95": 1024, "output_tokens_p50": 512, "output_tokens_p95": 512, "context_occupancy_pct_p50": 0.6, "context_occupancy_pct_p95": 0.6},
+        "prefix_cache": {"enabled": false, "state": "disabled", "matched_tokens": 0},
+        "speculation_enabled": false,
+        "speculation_provider": null,
+        "speculation_draft_length": null,
+        "service_level_objectives": {"ttft_ms_max": null, "itl_ms_max": null},
+        "statistics": {"randomization": "none", "paired": false, "warmup_iterations": 2, "sample_count": 10, "summary_statistic": "mean", "confidence_interval": {"method": "bootstrap", "level": 0.95, "lower": 3180.0, "upper": 3220.0}},
+        "metric_name": "output_tokens_per_second",
+        "metric_value": 3200.0,
+        "metric_unit": "tok/s",
+        "metric_direction": "higher_is_better",
+        "timing_boundary": "steady_state_decode",
+        "artifact_generated_utc": "2026-08-25T00:00:00Z"
+      }
+    },
+    {
+      "source_id": "b-different-batch",
+      "retrieved_utc": "2026-08-25T01:00:00Z",
+      "http_status": 200,
+      "body": {
+        "checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+        "checkpoint_revision": "3f9c2ab7d1e40552c8bb0f6a19d4e77a2b91c630",
+        "quality_mode": "fp8_e4m3_weights_bf16_activations_fp8_kv_cache",
+        "precision": {"weight_dtype": "fp8_e4m3", "weight_codec": "native_fp8_e4m3", "activation_dtype": "bf16", "accumulator_dtype": "fp32", "kv_cache_dtype": "fp8_e4m3", "kv_cache_codec": "native_fp8_e4m3"},
+        "quality_gate": {"method": "token_exact", "status": "passed", "output_parity": true, "atol": 0.0, "rtol": 0.0},
+        "execution": {"compute_route": "cuda_native", "kv_route": "device_hbm_contiguous"},
+        "hardware_accelerator": "NVIDIA H200 SXM",
+        "accelerator_count": 8,
+        "fabric": {"interconnect": "nvlink4_nvswitch", "collective_backend": "nccl", "bandwidth_gbps_per_device": 900.0, "rdma_enabled": false},
+        "power_state": {"state": "locked", "power_limit_watts": 700.0, "graphics_clock_mhz": 1980, "memory_clock_mhz": 2619, "thermal_state": "steady"},
+        "topology_kind": "tp",
+        "tp_size": 8,
+        "pp_size": 1,
+        "ep_size": 1,
+        "batch_size": 64,
+        "prompt_tokens": 1024,
+        "output_tokens": 512,
+        "context_window_tokens": 163840,
+        "context_occupancy_pct": 0.6,
+        "request_distribution": {"kind": "fixed", "batch_size_p50": 64, "batch_size_p95": 64, "prompt_tokens_p50": 1024, "prompt_tokens_p95": 1024, "output_tokens_p50": 512, "output_tokens_p95": 512, "context_occupancy_pct_p50": 0.6, "context_occupancy_pct_p95": 0.6},
+        "prefix_cache": {"enabled": false, "state": "disabled", "matched_tokens": 0},
+        "speculation_enabled": false,
+        "speculation_provider": null,
+        "speculation_draft_length": null,
+        "service_level_objectives": {"ttft_ms_max": null, "itl_ms_max": null},
+        "statistics": {"randomization": "none", "paired": false, "warmup_iterations": 2, "sample_count": 10, "summary_statistic": "mean", "confidence_interval": {"method": "bootstrap", "level": 0.95, "lower": 8950.0, "upper": 9050.0}},
+        "metric_name": "output_tokens_per_second",
+        "metric_value": 9000.0,
+        "metric_unit": "tok/s",
+        "metric_direction": "higher_is_better",
+        "timing_boundary": "steady_state_decode",
+        "artifact_generated_utc": "2026-08-25T00:00:00Z"
+      }
+    }
+  ],
+  "derived_envelopes": [
+    {
+      "from_source_id": "z-high-same-cell",
+      "source_id": "m-equal-high-same-cell",
+      "body_overrides": {
+        "statistics.confidence_interval.lower": 3185.0,
+        "statistics.confidence_interval.upper": 3215.0
+      }
+    },
+    {
+      "from_source_id": "z-high-same-cell",
+      "source_id": "c-lower-slow",
+      "body_overrides": {
+        "metric_name": "inter_token_latency_ms",
+        "metric_value": 8.0,
+        "metric_unit": "ms/token",
+        "metric_direction": "lower_is_better",
+        "statistics.confidence_interval.lower": 7.8,
+        "statistics.confidence_interval.upper": 8.2
+      }
+    },
+    {
+      "from_source_id": "z-high-same-cell",
+      "source_id": "x-lower-fast",
+      "body_overrides": {
+        "metric_name": "inter_token_latency_ms",
+        "metric_value": 6.0,
+        "metric_unit": "ms/token",
+        "metric_direction": "lower_is_better",
+        "statistics.confidence_interval.lower": 5.8,
+        "statistics.confidence_interval.upper": 6.2
+      }
+    }
+  ]
+}

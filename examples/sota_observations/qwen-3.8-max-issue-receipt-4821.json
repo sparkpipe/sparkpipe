@@ -1,0 +1,15 @@
+{
+  "source_id": "qwen-3.8-max-issue-receipt-4821",
+  "retrieved_utc": "2026-08-24T06:30:00Z",
+  "http_status": 200,
+  "content_type": "application/json",
+  "body": {
+    "number": 4821,
+    "title": "[receipt] Qwen3.8-Max TP8 decode with MTP speculation on 8x H200",
+    "html_url": "https://github.com/QwenLM/Qwen3.8/issues/4821",
+    "created_at": "2026-07-28T09:05:00Z",
+    "state": "open",
+    "user": "qwen-bench-bot",
+    "body": "Reproducible receipt, speculative decoding enabled (MTP, draft length 2).\n\nRerun: `python3 bench/decode.py --checkpoint Qwen/Qwen3.8-Max --revision e77b30c --tp 8 --batch 16 --spec mtp:2`.\n\n```json\n{\"checkpoint_name\":\"Qwen/Qwen3.8-Max\",\"checkpoint_revision\":\"e77b30c51482fa9620cb3518dd6620aa47c1b394\",\"quality_mode\":\"fp8_e4m3_weights_bf16_activations\",\"precision\":{\"weight_dtype\":\"fp8_e4m3\",\"weight_codec\":\"native_fp8_e4m3\",\"activation_dtype\":\"bf16\",\"accumulator_dtype\":\"fp32\",\"kv_cache_dtype\":\"bf16\",\"kv_cache_codec\":\"native_bf16\"},\"quality_gate\":{\"method\":\"token_exact\",\"status\":\"passed\",\"output_parity\":true,\"atol\":0.0,\"rtol\":0.0},\"execution\":{\"compute_route\":\"cuda_native\",\"kv_route\":\"device_hbm_paged\"},\"hardware_accelerator\":\"NVIDIA H200 SXM\",\"accelerator_count\":8,\"fabric\":{\"interconnect\":\"nvlink4_nvswitch\",\"collective_backend\":\"nccl\",\"bandwidth_gbps_per_device\":900.0,\"rdma_enabled\":false},\"power_state\":{\"state\":\"locked\",\"power_limit_watts\":700.0,\"graphics_clock_mhz\":1980,\"memory_clock_mhz\":2619,\"thermal_state\":\"steady\"},\"topology_kind\":\"tp\",\"tp_size\":8,\"pp_size\":1,\"ep_size\":1,\"batch_size\":16,\"prompt_tokens\":1024,\"output_tokens\":1024,\"context_window_tokens\":262144,\"context_occupancy_pct\":0.4,\"request_distribution\":{\"kind\":\"fixed\",\"batch_size_p50\":16,\"batch_size_p95\":16,\"prompt_tokens_p50\":1024,\"prompt_tokens_p95\":1024,\"output_tokens_p50\":1024,\"output_tokens_p95\":1024,\"context_occupancy_pct_p50\":0.4,\"context_occupancy_pct_p95\":0.4},\"prefix_cache\":{\"enabled\":false,\"state\":\"disabled\",\"matched_tokens\":0},\"speculation_enabled\":true,\"speculation_provider\":\"mtp\",\"speculation_draft_length\":2,\"service_level_objectives\":{\"ttft_ms_max\":null,\"itl_ms_max\":null},\"statistics\":{\"randomization\":\"none\",\"paired\":false,\"warmup_iterations\":2,\"sample_count\":10,\"summary_statistic\":\"mean\",\"confidence_interval\":{\"method\":\"bootstrap\",\"level\":0.95,\"lower\":2050.0,\"upper\":2150.0}},\"metric_name\":\"output_tokens_per_second\",\"metric_value\":2100.0,\"metric_unit\":\"tok/s\",\"metric_direction\":\"higher_is_better\",\"timing_boundary\":\"steady_state_decode\"}\n```\n\nVerification hashes and per-step logs attached."
+  }
+}

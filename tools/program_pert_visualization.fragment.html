@@ -1,0 +1,516 @@
+<div id="sp-program-pert">
+  <style>
+    #sp-program-pert {
+      color: var(--foreground);
+      font-size: var(--font-size-base);
+      width: 100%;
+    }
+    #sp-program-pert .sp-stats {
+      margin-bottom: 1rem;
+    }
+    #sp-program-pert .sp-controls {
+      margin-bottom: 0.75rem;
+    }
+    #sp-program-pert .sp-detail {
+      margin-bottom: 0.75rem;
+    }
+    #sp-program-pert .sp-detail-grid {
+      display: grid;
+      grid-template-columns: minmax(7rem, 0.7fr) minmax(12rem, 2fr) minmax(9rem, 1fr);
+      gap: 0.65rem;
+      align-items: start;
+    }
+    #sp-program-pert .sp-detail-primary,
+    #sp-program-pert .sp-detail-secondary,
+    #sp-program-pert .sp-detail-acceptance {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    #sp-program-pert .sp-detail-primary {
+      font-weight: 500;
+    }
+    #sp-program-pert .sp-detail-status {
+      margin-bottom: 0.35rem;
+    }
+    #sp-program-pert .sp-legend {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin: 0.35rem 0 0.75rem;
+      color: var(--muted-foreground);
+    }
+    #sp-program-pert .sp-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    #sp-program-pert .sp-swatch {
+      display: inline-block;
+      width: 1.4rem;
+      height: 0.55rem;
+      border-radius: 999px;
+      background: var(--viz-series-2);
+    }
+    #sp-program-pert .sp-swatch-critical {
+      background: var(--viz-series-1);
+    }
+    #sp-program-pert .sp-swatch-ready {
+      background: var(--viz-series-4);
+    }
+    #sp-program-pert .sp-swatch-milestone {
+      width: 0.7rem;
+      border-radius: 0;
+      background: var(--viz-series-3);
+    }
+    #sp-program-pert .sp-axis,
+    #sp-program-pert .sp-row {
+      display: grid;
+      grid-template-columns: minmax(8rem, 13rem) minmax(0, 1fr) 4.25rem;
+      gap: 0.65rem;
+      align-items: center;
+    }
+    #sp-program-pert .sp-axis {
+      color: var(--muted-foreground);
+      margin-bottom: 0.25rem;
+    }
+    #sp-program-pert .sp-axis-track,
+    #sp-program-pert .sp-track {
+      position: relative;
+      min-width: 0;
+    }
+    #sp-program-pert .sp-axis-track {
+      height: 1.25rem;
+    }
+    #sp-program-pert .sp-axis-tick {
+      position: absolute;
+      transform: translateX(-50%);
+      white-space: nowrap;
+    }
+    #sp-program-pert .sp-axis-tick:first-child {
+      transform: none;
+    }
+    #sp-program-pert .sp-axis-tick:last-child {
+      transform: translateX(-100%);
+    }
+    #sp-program-pert .sp-row {
+      min-height: 2.35rem;
+      border-bottom: 1px solid var(--border);
+    }
+    #sp-program-pert .sp-row[data-selected="true"] {
+      background: color-mix(in srgb, var(--accent) 58%, transparent);
+    }
+    #sp-program-pert .sp-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #sp-program-pert .sp-label code {
+      color: var(--foreground);
+    }
+    #sp-program-pert .sp-track {
+      height: 1.15rem;
+    }
+    #sp-program-pert .sp-gridline {
+      position: absolute;
+      inset-block: -0.6rem;
+      border-left: 1px solid var(--border);
+      pointer-events: none;
+    }
+    #sp-program-pert .sp-bar {
+      position: absolute;
+      top: 0.16rem;
+      height: 0.82rem;
+      min-width: 0.32rem;
+      border-radius: 999px;
+      background: var(--viz-series-2);
+      opacity: 0.82;
+    }
+    #sp-program-pert .sp-bar-critical {
+      background: var(--viz-series-1);
+      opacity: 0.95;
+    }
+    #sp-program-pert .sp-bar-ready {
+      background: var(--viz-series-4);
+      opacity: 0.95;
+    }
+    #sp-program-pert .sp-bar-milestone {
+      border-radius: 0;
+      background: var(--viz-series-3);
+      opacity: 0.95;
+    }
+    #sp-program-pert .sp-row[data-selected="true"] .sp-bar {
+      outline: 2px solid var(--ring);
+      outline-offset: 2px;
+    }
+    #sp-program-pert .sp-end {
+      color: var(--muted-foreground);
+      text-align: end;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    #sp-program-pert .sp-chart-empty {
+      color: var(--muted-foreground);
+      padding: 1rem 0;
+    }
+    @media (max-width: 540px) {
+      #sp-program-pert .sp-detail-grid {
+        grid-template-columns: 1fr;
+      }
+      #sp-program-pert .sp-axis,
+      #sp-program-pert .sp-row {
+        grid-template-columns: minmax(5.5rem, 7.5rem) minmax(0, 1fr) 3.5rem;
+        gap: 0.4rem;
+      }
+    }
+  </style>
+
+  <div class="viz-grid sp-stats" aria-label="Program summary">
+    <div class="card viz-stat">
+      <div class="text-muted">Work packages</div>
+      <div class="viz-stat-value" id="sp-pert-task-count">—</div>
+      <div class="text-small text-muted" id="sp-pert-workstream-context">25 workstreams</div>
+    </div>
+    <div class="card viz-stat">
+      <div class="text-muted">Expected effort</div>
+      <div class="viz-stat-value" id="sp-pert-effort">—</div>
+      <div class="text-small text-muted">implementation + audit pair-days</div>
+    </div>
+    <div class="card viz-stat">
+      <div class="text-muted">Critical path</div>
+      <div class="viz-stat-value" id="sp-pert-critical-days">—</div>
+      <div class="text-small text-muted" id="sp-pert-forecast-context">unconstrained engineering days</div>
+    </div>
+  </div>
+
+  <div class="viz-controls sp-controls">
+    <label class="form-label" for="sp-pert-view">
+      View
+      <select class="form-select" id="sp-pert-view"></select>
+    </label>
+    <label class="form-label" for="sp-pert-focus">
+      Focus
+      <select class="form-select" id="sp-pert-focus"></select>
+    </label>
+    <label class="form-label" for="sp-pert-schedule">
+      Schedule
+      <select class="form-select" id="sp-pert-schedule">
+        <option value="unconstrained">Unconstrained PERT</option>
+        <option value="resource">Resource + lock forecast</option>
+      </select>
+    </label>
+    <span class="viz-badge" id="sp-pert-visible-count">—</span>
+  </div>
+
+  <div class="card sp-detail" id="sp-pert-detail" aria-live="polite">
+    <div class="sp-detail-status"><span class="viz-badge" id="sp-pert-detail-status">planning</span></div>
+    <div class="sp-detail-grid">
+      <div class="sp-detail-primary" id="sp-pert-detail-primary">—</div>
+      <div class="sp-detail-secondary" id="sp-pert-detail-secondary">—</div>
+      <div class="sp-detail-acceptance text-small" id="sp-pert-detail-acceptance">—</div>
+    </div>
+  </div>
+
+  <div class="sp-legend text-small" aria-label="Legend">
+    <span class="sp-legend-item"><span class="sp-swatch sp-swatch-critical"></span>◆ zero slack</span>
+    <span class="sp-legend-item"><span class="sp-swatch"></span>planned</span>
+    <span class="sp-legend-item"><span class="sp-swatch sp-swatch-ready"></span>○ planning root</span>
+    <span class="sp-legend-item"><span class="sp-swatch sp-swatch-milestone"></span>◇ milestone</span>
+  </div>
+
+  <div class="sp-axis text-small" aria-hidden="true">
+    <div id="sp-pert-axis-label">Workstream</div>
+    <div class="sp-axis-track" id="sp-pert-axis"></div>
+    <div class="text-end">finish</div>
+  </div>
+  <div id="sp-pert-chart" role="img" aria-label="SparkPipe PERT schedule"></div>
+  <div class="table-responsive">
+    <table class="table table-sm" aria-label="Visible PERT work packages">
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>Status</th>
+          <th>Dependencies</th>
+          <th>Hardware</th>
+          <th>Write locks</th>
+          <th class="text-end">Start</th>
+          <th class="text-end">Finish</th>
+        </tr>
+      </thead>
+      <tbody id="sp-pert-table-body"></tbody>
+    </table>
+  </div>
+
+  <script type="application/json" id="sp-pert-data">__PERT_DATA__</script>
+  <script>
+    (() => {
+      const root = document.getElementById("sp-program-pert");
+      const dataNode = document.getElementById("sp-pert-data");
+      const data = JSON.parse(dataNode.textContent);
+      const tasks = new Map(data.tasks.map((task) => [task.id, task]));
+      const view = root.querySelector("#sp-pert-view");
+      const focus = root.querySelector("#sp-pert-focus");
+      const schedule = root.querySelector("#sp-pert-schedule");
+      const chart = root.querySelector("#sp-pert-chart");
+      const axis = root.querySelector("#sp-pert-axis");
+      const axisLabel = root.querySelector("#sp-pert-axis-label");
+      const tableBody = root.querySelector("#sp-pert-table-body");
+      const visibleCount = root.querySelector("#sp-pert-visible-count");
+      const detailStatus = root.querySelector("#sp-pert-detail-status");
+      const detailPrimary = root.querySelector("#sp-pert-detail-primary");
+      const detailSecondary = root.querySelector("#sp-pert-detail-secondary");
+      const detailAcceptance = root.querySelector("#sp-pert-detail-acceptance");
+      let selectedId = "";
+
+      root.querySelector("#sp-pert-task-count").textContent = data.summary.task_count;
+      root.querySelector("#sp-pert-effort").textContent = `${data.summary.expected_engineering_effort_days} d`;
+      root.querySelector("#sp-pert-critical-days").textContent = `${data.summary.unconstrained_critical_path_days} d`;
+      root.querySelector("#sp-pert-forecast-context").textContent = `P90 ${data.summary.critical_path_p90_days} d · constrained ${data.summary.resource_constrained_forecast_days} d`;
+      root.querySelector("#sp-pert-workstream-context").textContent = `${data.summary.workstream_count} workstreams · peak ${data.summary.unconstrained_peak_pairs} pairs`;
+
+      function addOption(select, value, label) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        select.appendChild(option);
+      }
+
+      addOption(view, "overview", "Program overview");
+      addOption(view, "critical", "Representative critical path");
+      addOption(view, "all-critical", "All zero-slack tasks");
+      addOption(view, "roots", "Pairable planning roots (not live)");
+      addOption(view, "hardware-blocked", "Hardware-blocked work");
+      addOption(view, "recurring", "Recurring and freshness-gated work");
+      const workstreamGroup = document.createElement("optgroup");
+      workstreamGroup.label = "Workstreams";
+      Object.entries(data.workstreams)
+        .sort((left, right) => left[1].title.localeCompare(right[1].title))
+        .forEach(([id, item]) => addOption(workstreamGroup, `workstream:${id}`, item.title));
+      view.appendChild(workstreamGroup);
+
+      function maxDay() {
+        return schedule.value === "resource"
+          ? data.summary.resource_constrained_forecast_days
+          : data.summary.unconstrained_critical_path_days;
+      }
+
+      function itemStart(item) {
+        return schedule.value === "resource" ? item.resource_start_day : item.start_day;
+      }
+
+      function itemFinish(item) {
+        return schedule.value === "resource" ? item.resource_finish_day : item.finish_day;
+      }
+
+      function drawAxis() {
+        axis.replaceChildren();
+        [0, 0.25, 0.5, 0.75, 1].forEach((ratio) => {
+          const tick = document.createElement("span");
+          tick.className = "sp-axis-tick text-small";
+          tick.style.left = `${ratio * 100}%`;
+          tick.textContent = `d ${Math.round(maxDay() * ratio)}`;
+          axis.appendChild(tick);
+        });
+      }
+
+      function overviewItems() {
+        return Object.entries(data.workstreams)
+          .map(([id, item]) => ({
+            id: `workstream:${id}`,
+            workstream: id,
+            title: item.title,
+            start_day: item.earliest_start_day,
+            finish_day: item.earliest_finish_day,
+            resource_start_day: item.resource_start_day,
+            resource_finish_day: item.resource_finish_day,
+            expected_days: item.expected_engineering_effort_days,
+            critical: false,
+            contains_critical: item.critical_task_count > 0,
+            kind: "workstream",
+            task_count: item.task_count,
+            critical_task_count: item.critical_task_count,
+          }))
+          .sort((left, right) => left.start_day - right.start_day || left.title.localeCompare(right.title));
+      }
+
+      function taskItems() {
+        if (view.value === "critical") {
+          return data.critical.map((id) => tasks.get(id));
+        }
+        if (view.value === "all-critical") {
+          return data.tasks
+            .filter((task) => task.critical)
+            .sort((left, right) => left.start_day - right.start_day || left.id.localeCompare(right.id));
+        }
+        if (view.value === "roots") {
+          return data.planning_roots.map((id) => tasks.get(id));
+        }
+        if (view.value === "hardware-blocked") {
+          return data.tasks
+            .filter((task) => task.state === "blocked_hardware")
+            .sort((left, right) => left.start_day - right.start_day || left.id.localeCompare(right.id));
+        }
+        if (view.value === "recurring") {
+          return data.tasks
+            .filter((task) => task.recurring_days || task.freshness_hours)
+            .sort((left, right) => left.start_day - right.start_day || left.id.localeCompare(right.id));
+        }
+        if (view.value.startsWith("workstream:")) {
+          const workstream = view.value.slice("workstream:".length);
+          return data.tasks
+            .filter((task) => task.workstream === workstream)
+            .sort((left, right) => left.start_day - right.start_day || left.id.localeCompare(right.id));
+        }
+        return overviewItems();
+      }
+
+      function setDetail(item) {
+        if (item.kind === "workstream") {
+          detailStatus.textContent = item.contains_critical ? "contains zero-slack work" : "workstream";
+          detailPrimary.textContent = item.title;
+          detailSecondary.textContent = `${item.task_count} tasks · ${item.expected_days} pair-days · day ${itemStart(item).toFixed(1)}–${itemFinish(item).toFixed(1)}`;
+          detailAcceptance.textContent = `${item.critical_task_count} zero-slack tasks in this workstream`;
+          return;
+        }
+        const dependencies = item.dependencies.length ? item.dependencies.join(", ") : "none";
+        const successors = item.successors.length ? item.successors.join(", ") : "none";
+        const locks = item.write_locks.length ? item.write_locks.join(", ") : "none";
+        const providerCapacity = item.provider_request_slots ? ` · providers ${item.provider_request_slots} requests across ≥${item.provider_failure_domains_required} domains` : "";
+        const recurrence = item.freshness_hours ? ` · max age ${item.freshness_hours}h` : item.recurring_days ? ` · every ${item.recurring_days}d` : "";
+        detailStatus.textContent = `${item.state} · ${item.dispatch_class}${recurrence}`;
+        detailPrimary.textContent = `${item.id} · ${item.title}`;
+        detailSecondary.textContent = `phase ${item.phase} · ${item.gate} · ${item.resource} · ${item.hardware}${providerCapacity} · day ${itemStart(item).toFixed(1)}–${itemFinish(item).toFixed(1)} · slack ${item.slack_days.toFixed(1)}d · locks: ${locks}`;
+        detailAcceptance.textContent = `${item.acceptance} Dependencies: ${dependencies}. Successors: ${successors}.`;
+      }
+
+      function statusText(item) {
+        if (item.kind === "workstream") return item.contains_critical ? "contains critical" : "workstream";
+        const marks = [];
+        if (item.critical) marks.push("◆ zero slack");
+        if (data.planning_roots.includes(item.id)) marks.push("○ planning root");
+        if (item.kind === "milestone") marks.push("◇ milestone");
+        if (item.state === "blocked_hardware") marks.push("blocked hardware");
+        if (item.freshness_hours) marks.push(`fresh ≤${item.freshness_hours}h`);
+        return marks.length ? marks.join(" · ") : item.state;
+      }
+
+      function appendCell(row, text, className = "") {
+        const cell = document.createElement("td");
+        if (className) cell.className = className;
+        cell.textContent = text;
+        row.appendChild(cell);
+      }
+
+      function drawTable(items) {
+        tableBody.replaceChildren();
+        items.forEach((item) => {
+          const row = document.createElement("tr");
+          const dependencies = item.kind === "workstream" ? "—" : (item.dependencies.join(", ") || "none");
+          const hardware = item.kind === "workstream" ? "mixed" : [
+            ...item.hardware_requirements.map((entry) => `${entry.pool}×${entry.quantity}`),
+            ...(item.provider_request_slots ? [`provider requests×${item.provider_request_slots} / domains≥${item.provider_failure_domains_required}`] : []),
+          ].join(", ");
+          const locks = item.kind === "workstream" ? "mixed" : (item.write_locks.join(", ") || "none");
+          appendCell(row, item.kind === "workstream" ? item.title : `${item.id} — ${item.title}`);
+          appendCell(row, statusText(item));
+          appendCell(row, dependencies);
+          appendCell(row, hardware);
+          appendCell(row, locks);
+          appendCell(row, itemStart(item).toFixed(1), "text-end");
+          appendCell(row, itemFinish(item).toFixed(1), "text-end");
+          tableBody.appendChild(row);
+        });
+      }
+
+      function addGridlines(track) {
+        [0.25, 0.5, 0.75].forEach((ratio) => {
+          const line = document.createElement("span");
+          line.className = "sp-gridline";
+          line.style.left = `${ratio * 100}%`;
+          track.appendChild(line);
+        });
+      }
+
+      function draw(items) {
+        chart.replaceChildren();
+        focus.replaceChildren();
+        drawAxis();
+        axisLabel.textContent = view.value === "overview" ? "Workstream" : "Task";
+        visibleCount.textContent = `${items.length} visible`;
+        chart.setAttribute(
+          "aria-label",
+          `${items.length} ${view.value === "overview" ? "workstreams" : "tasks"} on a zero to ${maxDay()} day ${schedule.value} PERT axis`,
+        );
+        if (!items.length) {
+          tableBody.replaceChildren();
+          const empty = document.createElement("div");
+          empty.className = "sp-chart-empty";
+          empty.textContent = "No work packages in this view.";
+          chart.appendChild(empty);
+          return;
+        }
+        if (!items.some((item) => item.id === selectedId)) {
+          selectedId = items[0].id;
+        }
+        items.forEach((item) => addOption(focus, item.id, item.kind === "workstream" ? item.title : `${item.id} — ${item.title}`));
+        focus.value = selectedId;
+
+        items.forEach((item) => {
+          const row = document.createElement("div");
+          row.className = "sp-row";
+          row.dataset.id = item.id;
+          row.dataset.selected = item.id === selectedId ? "true" : "false";
+
+          const label = document.createElement("div");
+          label.className = "sp-label";
+          if (item.kind === "workstream") {
+            label.textContent = item.title;
+          } else {
+            const code = document.createElement("code");
+            const marker = item.critical ? "◆ " : data.planning_roots.includes(item.id) ? "○ " : item.kind === "milestone" ? "◇ " : "";
+            code.textContent = marker + item.id;
+            label.appendChild(code);
+          }
+
+          const track = document.createElement("div");
+          track.className = "sp-track";
+          addGridlines(track);
+          const bar = document.createElement("span");
+          bar.className = "sp-bar";
+          if (item.critical) bar.classList.add("sp-bar-critical");
+          if (data.planning_roots.includes(item.id)) bar.classList.add("sp-bar-ready");
+          if (item.kind === "milestone") bar.classList.add("sp-bar-milestone");
+          const left = Math.min(99.2, Math.max(0, (itemStart(item) / maxDay()) * 100));
+          const width = Math.max(0.8, ((itemFinish(item) - itemStart(item)) / maxDay()) * 100);
+          bar.style.left = `${left}%`;
+          bar.style.width = `${Math.min(width, 100 - left)}%`;
+          track.appendChild(bar);
+
+          const end = document.createElement("div");
+          end.className = "sp-end text-small";
+          end.textContent = `d ${itemFinish(item).toFixed(1)}`;
+          row.append(label, track, end);
+          chart.appendChild(row);
+        });
+        setDetail(items.find((item) => item.id === selectedId));
+        drawTable(items);
+      }
+
+      function render() {
+        draw(taskItems());
+      }
+
+      view.addEventListener("change", () => {
+        selectedId = "";
+        render();
+      });
+      focus.addEventListener("change", () => {
+        selectedId = focus.value;
+        render();
+      });
+      schedule.addEventListener("change", render);
+      render();
+    })();
+  </script>
+</div>

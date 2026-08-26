@@ -206,7 +206,7 @@ the hardware. The initial model set is:
 - GLM 5.2;
 - Kimi K3;
 - MiniMax H3;
-- Qwen 3.8 Pro and Qwen 3.8 27B.
+- Qwen 3.8 Max and Qwen 3.8 27B.
 
 MiniMax 2.5 is not a support target. A model name in this list defines product
 scope, not production readiness. Every exact checkpoint requires its own

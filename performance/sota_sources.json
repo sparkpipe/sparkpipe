@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "description": "Primary-source registry for the daily SOTA scanner. Every supported exact model must keep at least one target-eligible primary source here. Targets are selected independently in each exact benchmark cell. Quarantined entries are monitored deliberately so their claims can be recorded and visibly excluded from targets.",
+  "refresh_command": "python3 tools/update_sota_ledger.py --mode fetch --cache-dir cache/sota_envelopes",
+  "offline_rebuild_command": "python3 tools/update_sota_ledger.py --mode offline --envelope-dir examples/sota_observations",
+  "policy": {
+    "higher_is_better_target_factor": 1.1,
+    "lower_is_better_target_factor": 0.9,
+    "target_selection": "best_metric_value_per_exact_cell",
+    "equal_value_tiebreaker": "lexicographically_smallest_observation_id",
+    "target_eligible_evidence_classes": [
+      "MEASURED_BENCHMARK_ARTIFACT",
+      "MEASURED_ISSUE_RECEIPT",
+      "MEASURED_OFFICIAL_DOCS",
+      "PAPER_MEASURED"
+    ],
+    "quarantined_evidence_classes": [
+      "VENDOR_MARKETING",
+      "ANONYMOUS_SCREENSHOT",
+      "AGGREGATOR_SECONDARY",
+      "UNVERIFIED"
+    ]
+  },
+  "models": [
+    {
+      "model_id": "dsv4-flash",
+      "display_name": "DeepSeek V4 Flash",
+      "sources": [
+        {
+          "source_id": "dsv4-flash-release-benchmark",
+          "url": "https://raw.githubusercontent.com/deepseek-ai/DeepSeek-V4/main/benchmarks/v4_flash_decode_throughput_20260601.json",
+          "document_kind": "github_repository_artifact",
+          "publisher": "DeepSeek",
+          "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+          "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        },
+        {
+          "source_id": "dsv4-flash-hf-model-card-bench",
+          "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/main/benchmarks/decode_throughput_20260701.json",
+          "document_kind": "huggingface_model_card",
+          "publisher": "DeepSeek",
+          "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+          "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        },
+        {
+          "source_id": "dsv4-flash-aggregator-transcription",
+          "url": "https://inference-aggregator.example/transcriptions/deepseek-v4-flash",
+          "document_kind": "aggregator_page",
+          "publisher": "Inference Leaderboard Aggregator",
+          "evidence_class": "AGGREGATOR_SECONDARY",
+          "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Flash",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        }
+      ]
+    },
+    {
+      "model_id": "dsv4-pro",
+      "display_name": "DeepSeek V4 Pro",
+      "sources": [
+        {
+          "source_id": "dsv4-pro-issue-receipt-217",
+          "url": "https://api.github.com/repos/deepseek-ai/DeepSeek-V4/issues/217",
+          "document_kind": "github_issue_receipt",
+          "publisher": "DeepSeek",
+          "evidence_class": "MEASURED_ISSUE_RECEIPT",
+          "expected_checkpoint_name": "deepseek-ai/DeepSeek-V4-Pro",
+          "extraction": {
+            "format": "github_issue_receipt_v1"
+          }
+        }
+      ]
+    },
+    {
+      "model_id": "glm-5.2",
+      "display_name": "GLM 5.2",
+      "sources": [
+        {
+          "source_id": "glm-5.2-official-docs",
+          "url": "https://raw.githubusercontent.com/zai-org/GLM-5/main/docs/benchmarks/glm52_decode_throughput.json",
+          "document_kind": "official_documentation",
+          "publisher": "Z.ai",
+          "evidence_class": "MEASURED_OFFICIAL_DOCS",
+          "expected_checkpoint_name": "zai-org/GLM-5.2",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        }
+      ]
+    },
+    {
+      "model_id": "k3",
+      "display_name": "Kimi K3",
+      "sources": [
+        {
+          "source_id": "k3-paper-table-excerpt",
+          "url": "https://arxiv.org/abs/2604.09987",
+          "document_kind": "paper",
+          "publisher": "arXiv (Moonshot AI)",
+          "evidence_class": "PAPER_MEASURED",
+          "expected_checkpoint_name": "moonshotai/Kimi-K3",
+          "extraction": {
+            "format": "regex_text",
+            "fields": {
+              "checkpoint.name": "checkpoint (moonshotai/[A-Za-z0-9.\\-]+)",
+              "checkpoint.revision": "revision ([0-9a-f]{40})",
+              "hardware.accelerator_count": "Setup: (\\d+) x NVIDIA",
+              "hardware.accelerator_name": "x NVIDIA ([A-Za-z0-9 ]+?) with",
+              "topology.tp_size": "\\bTP(\\d+)",
+              "topology.pp_size": "\\bPP(\\d+)",
+              "batch.batch_size": "batch size (\\d+)",
+              "workload.prompt_tokens": "(\\d+) prompt tokens",
+              "workload.output_tokens": "(\\d+) completion tokens",
+              "workload.context_window_tokens": "a (\\d+)-token window",
+              "workload.context_occupancy_pct": "occupancy (\\d+(?:\\.\\d+)?) percent",
+              "metric.value": "reached (\\d+(?:\\.\\d+)?) tok/s",
+              "source.publication_date": "generated (\\d{4}-\\d{2}-\\d{2})"
+            },
+            "types": {
+              "hardware.accelerator_count": "int",
+              "topology.tp_size": "int",
+              "topology.pp_size": "int",
+              "batch.batch_size": "int",
+              "workload.prompt_tokens": "int",
+              "workload.output_tokens": "int",
+              "workload.context_window_tokens": "int",
+              "workload.context_occupancy_pct": "float",
+              "metric.value": "float"
+            },
+            "static": {
+              "topology.kind": "tp_pp",
+              "topology.ep_size": 1,
+              "quality_mode": "checkpoint_native_mixed_precision",
+              "precision": {
+                "weight_dtype": "checkpoint_native_mixed",
+                "weight_codec": "checkpoint_native",
+                "activation_dtype": "bf16",
+                "accumulator_dtype": "fp32",
+                "kv_cache_dtype": "bf16",
+                "kv_cache_codec": "native_bf16"
+              },
+              "quality_gate": {
+                "method": "token_exact",
+                "status": "passed",
+                "output_parity": true,
+                "atol": 0.0,
+                "rtol": 0.0
+              },
+              "execution": {
+                "compute_route": "cuda_native",
+                "kv_route": "device_hbm_paged"
+              },
+              "fabric": {
+                "interconnect": "nvlink4_nvswitch",
+                "collective_backend": "nccl",
+                "bandwidth_gbps_per_device": 400.0,
+                "rdma_enabled": false
+              },
+              "power_state": {
+                "state": "locked",
+                "power_limit_watts": 700.0,
+                "graphics_clock_mhz": 1755,
+                "memory_clock_mhz": 1593,
+                "thermal_state": "steady"
+              },
+              "request_distribution": {
+                "kind": "fixed",
+                "batch_size_p50": 4,
+                "batch_size_p95": 4,
+                "prompt_tokens_p50": 2048,
+                "prompt_tokens_p95": 2048,
+                "output_tokens_p50": 1024,
+                "output_tokens_p95": 1024,
+                "context_occupancy_pct_p50": 0.8,
+                "context_occupancy_pct_p95": 0.8
+              },
+              "prefix_cache": {
+                "enabled": false,
+                "state": "disabled",
+                "matched_tokens": 0
+              },
+              "speculation.enabled": false,
+              "speculation.provider": null,
+              "speculation.draft_length": null,
+              "service_level_objectives": {
+                "ttft_ms_max": null,
+                "itl_ms_max": null
+              },
+              "statistics": {
+                "randomization": "none",
+                "paired": false,
+                "warmup_iterations": 2,
+                "sample_count": 10,
+                "summary_statistic": "mean",
+                "confidence_interval": {
+                  "method": "bootstrap",
+                  "level": 0.95,
+                  "lower": 700.0,
+                  "upper": 740.0
+                }
+              },
+              "metric.name": "output_tokens_per_second",
+              "metric.unit": "tok/s",
+              "metric.direction": "higher_is_better",
+              "metric.timing_boundary": "steady_state_decode"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "model_id": "minimax-h3",
+      "display_name": "MiniMax H3",
+      "sources": [
+        {
+          "source_id": "minimax-h3-bench-artifact",
+          "url": "https://raw.githubusercontent.com/MiniMax-AI/MiniMax-H3/main/benchmarks/h3_decode_throughput_20260615.json",
+          "document_kind": "github_repository_artifact",
+          "publisher": "MiniMax",
+          "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+          "expected_checkpoint_name": "MiniMax-AI/MiniMax-H3",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        }
+      ]
+    },
+    {
+      "model_id": "qwen-3.8-max",
+      "display_name": "Qwen 3.8 Max",
+      "sources": [
+        {
+          "source_id": "qwen-3.8-max-issue-receipt-4821",
+          "url": "https://api.github.com/repos/QwenLM/Qwen3.8/issues/4821",
+          "document_kind": "github_issue_receipt",
+          "publisher": "Qwen team",
+          "evidence_class": "MEASURED_ISSUE_RECEIPT",
+          "expected_checkpoint_name": "Qwen/Qwen3.8-Max",
+          "extraction": {
+            "format": "github_issue_receipt_v1"
+          }
+        }
+      ]
+    },
+    {
+      "model_id": "qwen-3.8-27b",
+      "display_name": "Qwen 3.8 27B",
+      "sources": [
+        {
+          "source_id": "qwen-3.8-27b-artifact-batch16",
+          "url": "https://raw.githubusercontent.com/QwenLM/Qwen3.8/main/benchmarks/qwen38_27b_decode_batch16.json",
+          "document_kind": "github_repository_artifact",
+          "publisher": "Qwen team",
+          "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+          "expected_checkpoint_name": "Qwen/Qwen3.8-27B",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        },
+        {
+          "source_id": "qwen-3.8-27b-artifact-batch64",
+          "url": "https://raw.githubusercontent.com/QwenLM/Qwen3.8/main/benchmarks/qwen38_27b_decode_batch64.json",
+          "document_kind": "github_repository_artifact",
+          "publisher": "Qwen team",
+          "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+          "expected_checkpoint_name": "Qwen/Qwen3.8-27B",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        },
+        {
+          "source_id": "qwen-3.8-27b-boundary-mismatch",
+          "url": "https://raw.githubusercontent.com/QwenLM/Qwen3.8/main/benchmarks/qwen38_27b_e2e_request.json",
+          "document_kind": "github_repository_artifact",
+          "publisher": "Qwen team",
+          "evidence_class": "MEASURED_BENCHMARK_ARTIFACT",
+          "expected_checkpoint_name": "Qwen/Qwen3.8-27B",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        },
+        {
+          "source_id": "qwen-3.8-27b-truncated-teaser",
+          "url": "https://gist.githubusercontent.com/anonymous-qwen-watcher/qwen38_27b_teaser/raw/teaser.json",
+          "document_kind": "aggregator_page",
+          "publisher": "anonymous gist",
+          "evidence_class": "UNVERIFIED",
+          "expected_checkpoint_name": "Qwen/Qwen3.8-27B",
+          "extraction": {
+            "format": "sparkpipe_flat_v1"
+          }
+        }
+      ]
+    }
+  ]
+}

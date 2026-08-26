@@ -1,0 +1,17 @@
+{
+  "source_id": "k3-paper-table-excerpt",
+  "url": "https://arxiv.org/abs/2604.09987",
+  "document_kind": "paper",
+  "publisher": "arXiv (Moonshot AI)",
+  "evidence_class": "PAPER_MEASURED",
+  "expected_checkpoint_name": "moonshotai/Kimi-K3",
+  "extraction": {
+    "format": "regex_text",
+    "fields": {
+      "metric.value": "reached (\\S+) tok/s"
+    },
+    "types": {
+      "metric.value": "decimal128"
+    }
+  }
+}

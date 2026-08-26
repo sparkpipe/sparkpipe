@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "observed_at": "2000-01-01T00:00:00Z",
+  "nodes": [
+    {"node_id": "spark0", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark1", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark2", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark3", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark4", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark5", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark6", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark7", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark8", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "spark9", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "sparkA", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "sparkB", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "sparkC", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "sparkD", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "sparkE", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null},
+    {"node_id": "sparkF", "model_group": null, "model_id": null, "rank": null, "runtime_path": null, "pid": null}
+  ]
+}

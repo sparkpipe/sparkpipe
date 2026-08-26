@@ -132,7 +132,7 @@ retained as a progress diary.
 ## Model contracts
 
 - Add exact checkpoint-derived contracts and native execution packages for
-  MiniMax H3, Qwen 3.8 Pro, and Qwen 3.8 27B.
+  MiniMax H3, Qwen 3.8 Max, and Qwen 3.8 27B.
 - Remove legacy model names from generated release inventories and operator
   surfaces when their replacement contracts land.
 - Retain independent numerical, transport, memory, and performance gates for

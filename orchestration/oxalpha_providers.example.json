@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "virtual_model": "ox-alpha",
+  "redundancy": 2,
+  "first_byte_timeout_seconds": 30,
+  "idle_timeout_seconds": 30,
+  "request_timeout_seconds": 180,
+  "failure_cooldown_seconds": 30,
+  "max_request_bytes": 67108864,
+  "max_response_bytes": 67108864,
+  "providers": [
+    {
+      "id": "opencode-zen",
+      "failure_domains": ["gateway-opencode", "operator-opencode"],
+      "base_url": "https://opencode.ai/zen/v1",
+      "model": "x-preview-f-free",
+      "auth": {"kind": "env", "name": "OPENCODE_API"},
+      "enabled": true,
+      "hedging_authorized": true
+    },
+    {
+      "id": "openrouter",
+      "failure_domains": ["gateway-openrouter", "upstream-openrouter"],
+      "base_url": "https://openrouter.ai/api/v1",
+      "model": "stealth/ox-alpha",
+      "auth": {"kind": "env", "name": "OPENROUTER_API_KEY"},
+      "headers": {"X-Title": "SparkPipe Ox Alpha development"},
+      "enabled": false,
+      "hedging_authorized": false
+    },
+    {
+      "id": "aimlapi",
+      "failure_domains": ["gateway-aimlapi", "upstream-openrouter"],
+      "base_url": "https://api.aimlapi.com/v1",
+      "model": "stealth/ox-alpha",
+      "auth": {"kind": "env", "name": "AIML_API"},
+      "enabled": false,
+      "hedging_authorized": false
+    },
+    {
+      "id": "kilo",
+      "failure_domains": ["gateway-kilo"],
+      "base_url": "https://api.kilo.ai/api/gateway",
+      "model": "stealth/ox-alpha",
+      "auth": {"kind": "env", "name": "KILO_API_KEY"},
+      "enabled": false,
+      "hedging_authorized": false
+    },
+    {
+      "id": "venice",
+      "failure_domains": ["gateway-venice", "upstream-openrouter"],
+      "base_url": "https://api.venice.ai/api/v1",
+      "model": "stealth-ox-alpha",
+      "auth": {"kind": "env", "name": "VENICE_API"},
+      "enabled": false,
+      "hedging_authorized": false
+    },
+    {
+      "id": "nous",
+      "failure_domains": ["gateway-nous", "operator-nous", "upstream-openrouter"],
+      "base_url": "https://inference-api.nousresearch.com/v1",
+      "model": "stealth/ox-alpha",
+      "auth": {"kind": "env", "name": "NOUS_API"},
+      "enabled": true,
+      "hedging_authorized": true
+    }
+  ]
+}

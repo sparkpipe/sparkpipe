@@ -1,14 +1,258 @@
 {
   "schema_version": 1,
   "program": "sparkpipe-heterogeneous-platform",
-  "default_model": "opencode/x-preview-f-free",
-  "task_defaults": {
+  "default_model": "oxalpha-race/ox-alpha",
+    "task_defaults": {
     "max_api_retries": 12,
     "max_code_attempts": 3,
     "estimate_hours": 4,
-    "hardware": "host"
+    "hardware": "host",
+    "dispatch_class": "paired_after_oxa"
     },
     "tasks": [
+        {
+            "id": "OXA-001",
+            "title": "Provider racer hardening and adversarial qualification",
+            "workstream": "agents",
+            "priority": 200,
+            "dependencies": [],
+            "objective": "Qualify the dual-provider OxAlpha turn racer under malformed responses, deadlines, cancellation, callback failure, closure, and credential-redaction attacks.",
+            "non_goals": ["Run model-driver work", "Store provider credentials in repository files"],
+            "write_set": ["tools/oxalpha_race.py", "tests/test_oxalpha_race.py"],
+            "acceptance": [
+                "Only a structurally valid choice-zero response completed before the absolute deadline can win",
+                "All worker, callback, cancellation, timeout, close, and BaseException paths settle exactly once without credential disclosure",
+                "Provider failure domains, cooldown, bounded I/O, and truthful live counters pass adversarial tests"
+            ],
+            "test_commands": ["python3 tests/test_oxalpha_race.py", "python3 tests/test_python_syntax.py", "git diff --check"],
+            "estimate_hours": 4,
+            "critical": true,
+            "dispatch_class": "bootstrap",
+            "agent_lane": "oxalpha-bootstrap"
+        },
+        {
+            "id": "OXA-002",
+            "title": "Native harness containment and recovery hardening",
+            "workstream": "agents",
+            "priority": 199,
+            "dependencies": ["OXA-001"],
+            "objective": "Qualify durable provider-neutral sessions, tool receipts, process containment, sandboxing, fingerprints, quotas, and crash recovery.",
+            "non_goals": ["Implement product runtime code", "Treat profile-string inspection as real sandbox proof"],
+            "write_set": ["tools/oxalpha_harness.py", "tests/test_oxalpha_harness.py"],
+            "acceptance": [
+                "Only proven owned processes and descendants are killed and reaped; stale PID and detached-child probes fail safely",
+                "Mutating receipts, journal recovery, workspace fingerprints, symlink containment, trusted executables, and quotas fail closed",
+                "A real OS-sandbox qualification remains explicit before broad launch"
+            ],
+            "test_commands": ["python3 tests/test_oxalpha_harness.py", "python3 tests/test_python_syntax.py", "git diff --check"],
+            "estimate_hours": 6,
+            "critical": true,
+            "dispatch_class": "bootstrap",
+            "agent_lane": "oxalpha-bootstrap"
+        },
+        {
+            "id": "OXA-003",
+            "title": "Fail-closed fleet gate, bounded dashboard, and source binding",
+            "workstream": "agents",
+            "priority": 198,
+            "dependencies": ["OXA-001", "OXA-002"],
+            "objective": "Qualify task claiming, OXA-012 admission, bounded live status, exact PERT source binding, and truthful planned model lanes.",
+            "non_goals": ["Activate model lanes before lane affinity exists", "Expose raw event payloads"],
+            "write_set": ["tools/oxalpha_fleet.py", "tests/test_oxalpha_fleet.py", "tools/program_pert.py", "tests/test_program_pert.py", "orchestration/program_pert.json"],
+            "acceptance": [
+                "Only explicit bootstrap tasks run before OXA-012 and all broad work is blocked until integration",
+                "Status is bounded, escaped, no-store, source-bound, and omits raw tool payloads",
+                "Seven model lanes remain PLANNED_NOT_ACTIVE until executable durable affinity is audited"
+            ],
+            "test_commands": ["python3 tests/test_oxalpha_fleet.py", "python3 tests/test_program_pert.py", "python3 tests/test_python_syntax.py", "git diff --check"],
+            "estimate_hours": 5,
+            "critical": true,
+            "dispatch_class": "bootstrap",
+            "agent_lane": "oxalpha-bootstrap"
+        },
+        {
+            "id": "OXA-016",
+            "title": "Generation-fenced Spark leases and live execution overlay",
+            "workstream": "agents",
+            "priority": 197,
+            "dependencies": ["OXA-003"],
+            "objective": "Own development Spark assignment, durable model-lane affinity, file-agent handoff plans, and exact 32k B1/B8/B64 SparkPipe-versus-SOTA progress receipts before hardware work can be dispatched.",
+            "non_goals": [
+                "Move model files or kill live Spark processes from the coordinator",
+                "Renew a hardware lease for code activity, profiling, heartbeat, invalid output, or a throughput gain below one percent",
+                "Relabel a shorter-context or mismatched public result as exact 32k SOTA"
+            ],
+            "write_set": [
+                "tools/spark_development_scheduler.py",
+                "tests/test_spark_development_scheduler.py",
+                "tools/oxalpha_fleet.py",
+                "tests/test_oxalpha_fleet.py",
+                "orchestration/execution_state*.json",
+                "docs/DEVELOPMENT_SPARK_SCHEDULER.md"
+            ],
+            "acceptance": [
+                "Every model-driver lane has durable pair affinity and every Spark lease, transition plan, executor receipt, and benchmark receipt is generation-fenced",
+                "The current small models are one atomic restore group; a big-model lease starts only after an exact file-agent activation receipt and expires after sixty minutes without a qualifying receipt",
+                "Only a numerically valid B1, B8, or B64 result at exactly 32768 prompt tokens can establish a missing baseline or renew a lease with at least a 1.00 percent prefill/output gain against the accepted best",
+                "The dashboard lists SparkPipe best and exact public SOTA prefill/output values, 110 percent targets, source/date/hardware, and N/A for every missing or incomparable exact cell",
+                "The scheduler emits plans but performs no SSH, process, service, or model-file mutation"
+            ],
+            "test_commands": [
+                "python3 tests/test_spark_development_scheduler.py",
+                "python3 tests/test_oxalpha_fleet.py",
+                "python3 tests/test_python_syntax.py",
+                "git diff --check"
+            ],
+            "estimate_hours": 5,
+            "critical": true,
+            "dispatch_class": "bootstrap",
+            "agent_lane": "oxalpha-bootstrap"
+        },
+        {
+            "id": "OXA-004",
+            "title": "One-pair provider-failure and controller-recovery qualification",
+            "workstream": "agents",
+            "priority": 196,
+            "dependencies": ["OXA-016"],
+            "objective": "Run one complete implementation, sealed patch, independent audit, rejection/retry, and coordinator-ready cycle while injecting provider timeout and controller restart.",
+            "non_goals": ["Scale beyond one logical pair", "Integrate the qualification candidate automatically"],
+            "write_set": ["tools/oxalpha_live_chaos.py", "tests/test_oxalpha_live_chaos.py", "qualification/oxalpha/chaos/**"],
+            "acceptance": [
+                "OpenCode/Nous racing preserves exact context through one injected failure and one provider switch",
+                "Controller restart loses no task, duplicates no tool, leaks no child, and never self-approves",
+                "Provider latency, validity, timeout, retry, winner, and audit statistics are retained without secrets"
+            ],
+            "test_commands": ["python3 tests/test_oxalpha_live_chaos.py", "git diff --check"],
+            "estimate_hours": 3,
+            "critical": true,
+            "dispatch_class": "bootstrap",
+            "agent_lane": "oxalpha-bootstrap"
+        },
+        {
+            "id": "OXA-012",
+            "title": "Massively parallel development launch gate receipt",
+            "workstream": "agents",
+            "priority": 195,
+            "dependencies": ["OXA-004"],
+            "objective": "Produce the independently audited launch receipt that alone enables paired_after_oxa task claiming.",
+            "non_goals": ["Claim broad production completion", "Bypass real sandbox or provider-diversity evidence"],
+            "write_set": ["qualification/oxalpha/launch_gate.json", "tests/test_oxalpha_launch_gate.py", "docs/OXALPHA_LAUNCH_GATE.md"],
+            "acceptance": [
+                "The receipt binds merged commit, provider failure domains, one-pair chaos artifacts, sandbox status, dashboard bounds, and exact test commands",
+                "Every OXA dependency is coordinator-integrated and independently audited",
+                "Only coordinator integration of this exact task changes broad dispatch from blocked to ready"
+            ],
+            "test_commands": ["python3 tests/test_oxalpha_launch_gate.py", "git diff --check"],
+            "estimate_hours": 2,
+            "critical": true,
+            "dispatch_class": "bootstrap",
+            "agent_lane": "oxalpha-bootstrap"
+        },
+        {
+            "id": "MOD-Q27-001",
+            "title": "Qwen 3.8 27B exact source, contract, and reference oracle",
+            "workstream": "models",
+            "priority": 140,
+            "dependencies": [],
+            "objective": "Freeze the exact Qwen 3.8 27B checkpoint, tokenizer, geometry, tensor inventory, quality contract, and authoritative reduced reference oracle before further driver optimization.",
+            "non_goals": ["Reuse Qwen 3.6 constants", "Tune CUDA kernels", "Claim production readiness"],
+            "write_set": ["model_contracts/q27/**", "model-families/q27/**", "tests/model_contracts/test_q27_contract.py", "qualification/qwen38_27b/contract/**"],
+            "acceptance": ["Every tensor and semantic dimension is checkpoint-derived", "Tokenizer/config/checkpoint revisions are immutable", "Reduced reference fixtures cover every operator family", "Unknown or borrowed constants fail closed"],
+            "test_commands": ["python3 tests/model_contracts/test_q27_contract.py", "git diff --check"],
+            "estimate_hours": 8,
+            "critical": true,
+            "agent_lane": "model-driver:q27"
+        },
+        {
+            "id": "MOD-D4F-001",
+            "title": "DSV4 Flash exact source, contract, and reference oracle",
+            "workstream": "models",
+            "priority": 139,
+            "dependencies": [],
+            "objective": "Freeze the exact DSV4 Flash GA checkpoint, tokenizer, geometry, tensor inventory, quality contract, and authoritative reduced reference oracle.",
+            "non_goals": ["Borrow DSV4 Pro constants", "Optimize kernels", "Treat branch receipts as merged-main evidence"],
+            "write_set": ["model_contracts/d4f/**", "model-families/d4f/**", "tests/model_contracts/test_d4f_contract.py", "qualification/dsv4/contract/**"],
+            "acceptance": ["Every tensor and semantic dimension is checkpoint-derived", "GA checkpoint identity is exact", "Reduced reference fixtures cover dense, MLA/state, MoE, and sampling paths", "Unknown fields fail closed"],
+            "test_commands": ["python3 tests/model_contracts/test_d4f_contract.py", "git diff --check"],
+            "estimate_hours": 8,
+            "critical": true,
+            "agent_lane": "model-driver:d4f"
+        },
+        {
+            "id": "MOD-GLM-001",
+            "title": "GLM 5.2 exact source, contract, and reference oracle",
+            "workstream": "models",
+            "priority": 138,
+            "dependencies": [],
+            "objective": "Freeze the exact GLM 5.2 checkpoint, tokenizer, geometry, tensor inventory, quality contract, and authoritative reduced reference oracle used by the real-pack correctness path.",
+            "non_goals": ["Use synthetic weights as readiness", "Tune performance", "Import mixed unified artifacts"],
+            "write_set": ["model_contracts/glm/**", "model-families/glm/**", "tests/model_contracts/test_glm_contract.py", "qualification/glm52/contract/**"],
+            "acceptance": ["Every tensor and semantic dimension is checkpoint-derived", "Stagepack and reference identities are exact", "Reduced fixtures cover all operator families including routed experts", "Unknown fields fail closed"],
+            "test_commands": ["python3 tests/model_contracts/test_glm_contract.py", "git diff --check"],
+            "estimate_hours": 9,
+            "critical": true,
+            "agent_lane": "model-driver:glm"
+        },
+        {
+            "id": "MOD-K3-001",
+            "title": "K3 exact source, contract, and reference oracle",
+            "workstream": "models",
+            "priority": 137,
+            "dependencies": [],
+            "objective": "Freeze the exact K3 checkpoint, tokenizer, layer classification, tensor inventory, quality contract, and authoritative reduced reference oracle.",
+            "non_goals": ["Assume layer 92 semantics", "Tune kernels", "Use stale TP16 packs"],
+            "write_set": ["model_contracts/k3/**", "model-families/k3/**", "tests/model_contracts/test_k3_contract.py", "qualification/k3/contract/**"],
+            "acceptance": ["Every tensor and semantic dimension is checkpoint-derived", "Layer 92 has an explicit fixture", "Reduced fixtures cover KDA/state, MoE, dense, and sampling paths", "Unknown fields fail closed"],
+            "test_commands": ["python3 tests/model_contracts/test_k3_contract.py", "git diff --check"],
+            "estimate_hours": 9,
+            "critical": true,
+            "agent_lane": "model-driver:k3"
+        },
+        {
+            "id": "MOD-D4P-001",
+            "title": "DSV4 Pro exact source, contract, and reference oracle",
+            "workstream": "models",
+            "priority": 136,
+            "dependencies": [],
+            "objective": "Freeze the exact DSV4 Pro checkpoint, tokenizer, geometry, tensor inventory, quality contract, and authoritative reduced reference oracle independently of DSV4 Flash.",
+            "non_goals": ["Alias DSV4 Flash semantics", "Implement full inference", "Tune kernels"],
+            "write_set": ["model_contracts/d4p/**", "model-families/d4p/**", "tests/model_contracts/test_d4p_contract.py", "qualification/dsv4_pro/contract/**"],
+            "acceptance": ["Every tensor and semantic dimension is checkpoint-derived", "Differences from Flash are explicit", "Reduced reference fixtures cover every operator family", "Unknown fields fail closed"],
+            "test_commands": ["python3 tests/model_contracts/test_d4p_contract.py", "git diff --check"],
+            "estimate_hours": 10,
+            "critical": true,
+            "agent_lane": "model-driver:d4p"
+        },
+        {
+            "id": "MOD-QMAX-001",
+            "title": "Qwen 3.8 Max exact source, contract, and reference oracle",
+            "workstream": "models",
+            "priority": 135,
+            "dependencies": [],
+            "objective": "Freeze the exact Qwen 3.8 Max checkpoint, tokenizer, geometry, tensor inventory, quality contract, and authoritative reduced reference oracle independently of Qwen 27B.",
+            "non_goals": ["Reuse 27B geometry", "Implement full inference", "Tune kernels"],
+            "write_set": ["model_contracts/qmax/**", "model-families/qmax/**", "tests/model_contracts/test_qmax_contract.py", "qualification/qwen38_max/contract/**"],
+            "acceptance": ["Every tensor and semantic dimension is checkpoint-derived", "Differences from 27B are explicit", "Reduced reference fixtures cover every operator family", "Unknown fields fail closed"],
+            "test_commands": ["python3 tests/model_contracts/test_qmax_contract.py", "git diff --check"],
+            "estimate_hours": 10,
+            "critical": true,
+            "agent_lane": "model-driver:qmax"
+        },
+        {
+            "id": "MOD-H3-001",
+            "title": "MiniMax H3 exact source, contract, and reference oracle",
+            "workstream": "models",
+            "priority": 134,
+            "dependencies": [],
+            "objective": "Freeze the exact MiniMax H3 checkpoint, tokenizer, geometry, tensor inventory, quality contract, and authoritative reduced reference oracle.",
+            "non_goals": ["Substitute MiniMax 2.5", "Implement full inference", "Tune kernels"],
+            "write_set": ["model_contracts/h3/**", "model-families/h3/**", "tests/model_contracts/test_h3_contract.py", "qualification/minimax_h3/contract/**"],
+            "acceptance": ["Every tensor and semantic dimension is checkpoint-derived", "H3 identity is distinct from MiniMax 2.5", "Reduced reference fixtures cover every operator family", "Unknown fields fail closed"],
+            "test_commands": ["python3 tests/model_contracts/test_h3_contract.py", "git diff --check"],
+            "estimate_hours": 10,
+            "critical": true,
+            "agent_lane": "model-driver:h3"
+        },
         {
             "id": "PERF-001",
             "title": "Daily primary-source SOTA scanner and comparable target ledger",
@@ -36,7 +280,7 @@
                 "The comparator emits COMPARABLE, PARTIAL, or INCOMPARABLE with field-level reasons and never normalizes missing facts into invented values",
                 "The 110% target is emitted only for a comparable cell and uses explicit metric direction and units",
                 "Offline fixtures make tests deterministic while the production command can refresh sources from the network",
-                "Supported models include DSV4 Flash, DSV4 Pro, GLM 5.2, K3, MiniMax H3, Qwen 3.8 Pro, and Qwen 3.8 27B"
+                "Supported models include DSV4 Flash, DSV4 Pro, GLM 5.2, K3, MiniMax H3, Qwen 3.8 Max, and Qwen 3.8 27B"
             ],
             "test_commands": [
                 "python3 tests/test_sota_ledger.py"
@@ -121,7 +365,8 @@
             "workstream": "performance",
             "priority": 118,
             "dependencies": [
-                "PERF-001"
+                "PERF-001",
+                "MOD-D4F-001"
             ],
             "objective": "Refresh the exact DSV4 Flash TP4 performance target, reproduce the best retained SparkPipe baseline, and produce a no-drop profile that identifies exposed—not merely summed—wall time.",
             "non_goals": [
@@ -148,7 +393,8 @@
             "hardware": "cuda.sm121.gb10.tp4",
             "dispatch_pool": "spark-tp4",
             "estimate_hours": 10,
-            "critical": true
+            "critical": true,
+            "agent_lane": "model-driver:d4f"
         },
         {
             "id": "PERF-DSV4-002",
@@ -183,14 +429,15 @@
             "hardware": "cuda.sm121.gb10.tp4",
             "dispatch_pool": "spark-tp4",
             "estimate_hours": 14,
-            "critical": true
+            "critical": true,
+            "agent_lane": "model-driver:d4f"
         },
         {
             "id": "COR-K3-001",
             "title": "K3 sharding and runtime correctness blockers",
             "workstream": "models",
             "priority": 117,
-            "dependencies": [],
+            "dependencies": ["MOD-K3-001"],
             "objective": "Port only the reviewed K3 sharder corrections and fix the layer-92 classification and premature tp_collective hard requirement before any K3 performance work.",
             "non_goals": [
                 "Claim full-model inference",
@@ -217,7 +464,8 @@
             ],
             "hardware": "cuda.sm121.gb10.tp16",
             "estimate_hours": 12,
-            "critical": true
+            "critical": true,
+            "agent_lane": "model-driver:k3"
         },
         {
             "id": "COR-GLM52-001",
@@ -225,7 +473,8 @@
             "workstream": "models",
             "priority": 115,
             "dependencies": [
-                "FND-001"
+                "FND-001",
+                "MOD-GLM-001"
             ],
             "objective": "Extract the reviewed GLM 5.2 runtime slices without mixed unified artifacts, wire the stagepack resolver into production ingestion, and make the validator consume a real exact pack.",
             "non_goals": [
@@ -253,7 +502,8 @@
             ],
             "hardware": "cuda.sm121.gb10",
             "estimate_hours": 16,
-            "critical": true
+            "critical": true,
+            "agent_lane": "model-driver:glm"
         },
         {
             "id": "PERF-Q27-001",
@@ -262,7 +512,8 @@
             "priority": 113,
             "dependencies": [
                 "PERF-001",
-                "FND-002"
+                "FND-002",
+                "MOD-Q27-001"
             ],
             "objective": "Bind the working one-Spark Qwen 3.8 27B path to its exact checkpoint, refresh comparable SOTA cells, and profile B1 plus the first useful batching cells.",
             "non_goals": [
@@ -289,7 +540,8 @@
             "hardware": "cuda.sm121.gb10",
             "dispatch_pool": "spark-single",
             "estimate_hours": 10,
-            "critical": true
+            "critical": true,
+            "agent_lane": "model-driver:q27"
         },
         {
             "id": "PERF-GLM52-001",
@@ -325,7 +577,8 @@
             "hardware": "cuda.sm121.gb10",
             "dispatch_pool": "spark-fleet",
             "estimate_hours": 18,
-            "critical": true
+            "critical": true,
+            "agent_lane": "model-driver:glm"
         },
         {
             "id": "PERF-K3-001",
@@ -361,7 +614,8 @@
             "hardware": "cuda.sm121.gb10.tp16",
             "dispatch_pool": "spark-tp16",
             "estimate_hours": 18,
-            "critical": true
+            "critical": true,
+            "agent_lane": "model-driver:k3"
         },
         {
             "id": "FND-001",

@@ -1,0 +1,15 @@
+{
+  "source_id": "dsv4-pro-issue-receipt-217",
+  "retrieved_utc": "2026-08-22T08:15:00Z",
+  "http_status": 200,
+  "content_type": "application/json",
+  "body": {
+    "number": 217,
+    "title": "[receipt] DSV4 Pro TP4xPP4 decode throughput on 16x H200",
+    "html_url": "https://github.com/deepseek-ai/DeepSeek-V4/issues/217",
+    "created_at": "2026-07-02T18:41:00Z",
+    "state": "open",
+    "user": "deepseek-bench-bot",
+    "body": "Reproducible receipt for the 2026-07-02 serving sweep.\n\nRerun: `python3 bench/decode.py --checkpoint deepseek-ai/DeepSeek-V4-Pro --revision b71e04d9 --tp 4 --pp 4 --batch 8`.\n\n```json\n{\"checkpoint_name\":\"deepseek-ai/DeepSeek-V4-Pro\",\"checkpoint_revision\":\"b71e04d9c2f8a6153e0d94a7c5512fb83a09e4d2\",\"quality_mode\":\"fp8_e4m3_weights_bf16_activations\",\"precision\":{\"weight_dtype\":\"fp8_e4m3\",\"weight_codec\":\"native_fp8_e4m3\",\"activation_dtype\":\"bf16\",\"accumulator_dtype\":\"fp32\",\"kv_cache_dtype\":\"bf16\",\"kv_cache_codec\":\"native_bf16\"},\"quality_gate\":{\"method\":\"token_exact\",\"status\":\"passed\",\"output_parity\":true,\"atol\":0.0,\"rtol\":0.0},\"execution\":{\"compute_route\":\"cuda_native\",\"kv_route\":\"device_hbm_contiguous\"},\"hardware_accelerator\":\"NVIDIA H200 SXM\",\"accelerator_count\":16,\"fabric\":{\"interconnect\":\"nvlink4_nvswitch\",\"collective_backend\":\"nccl\",\"bandwidth_gbps_per_device\":900.0,\"rdma_enabled\":false},\"power_state\":{\"state\":\"locked\",\"power_limit_watts\":700.0,\"graphics_clock_mhz\":1980,\"memory_clock_mhz\":2619,\"thermal_state\":\"steady\"},\"topology_kind\":\"tp_pp\",\"tp_size\":4,\"pp_size\":4,\"ep_size\":1,\"batch_size\":8,\"prompt_tokens\":2048,\"output_tokens\":1024,\"context_window_tokens\":163840,\"context_occupancy_pct\":1.3,\"request_distribution\":{\"kind\":\"fixed\",\"batch_size_p50\":8,\"batch_size_p95\":8,\"prompt_tokens_p50\":2048,\"prompt_tokens_p95\":2048,\"output_tokens_p50\":1024,\"output_tokens_p95\":1024,\"context_occupancy_pct_p50\":1.3,\"context_occupancy_pct_p95\":1.3},\"prefix_cache\":{\"enabled\":false,\"state\":\"disabled\",\"matched_tokens\":0},\"speculation_enabled\":false,\"speculation_provider\":null,\"speculation_draft_length\":null,\"service_level_objectives\":{\"ttft_ms_max\":null,\"itl_ms_max\":null},\"statistics\":{\"randomization\":\"none\",\"paired\":false,\"warmup_iterations\":2,\"sample_count\":10,\"summary_statistic\":\"mean\",\"confidence_interval\":{\"method\":\"bootstrap\",\"level\":0.95,\"lower\":960.0,\"upper\":1000.0}},\"metric_name\":\"output_tokens_per_second\",\"metric_value\":980.0,\"metric_unit\":\"tok/s\",\"metric_direction\":\"higher_is_better\",\"timing_boundary\":\"steady_state_decode\"}\n```\n\nRaw logs attached to this issue."
+  }
+}
