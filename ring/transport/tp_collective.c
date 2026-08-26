@@ -423,6 +423,7 @@ static SparkStatus SparkTpCollectiveValidateConfig(
     const SparkTpCollectiveConfig *config)
 {
     SparkTpCollectivePeer empty_peer;
+    uint32_t prior_index;
     uint32_t step_count;
     uint32_t step_index;
 
@@ -475,6 +476,14 @@ static SparkStatus SparkTpCollectiveValidateConfig(
                 inet_pton(AF_INET, peer->host_name, &peer_address) != 1)
             {
                 return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            for (prior_index = 0u; prior_index < step_index; ++prior_index)
+            {
+                if (peer->port == config->peers[prior_index].port &&
+                    strcmp(peer->host_name, config->peers[prior_index].host_name) == 0)
+                {
+                    return SPARK_STATUS_INVALID_ARGUMENT;
+                }
             }
         }
     }

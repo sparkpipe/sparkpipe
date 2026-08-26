@@ -678,6 +678,22 @@ static void SparkTestTpcRejectsInvalidConfiguration(void)
     assert(SparkTpCollectiveCreate(
         &config,
         &collective) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    SparkTestTpcPopulateConfig(
+        &config,
+        4u,
+        0u,
+        SparkTestTpcFindAvailablePortBase(4u),
+        SparkTestTpcNextCollectiveIdentifier(),
+        SPARK_TEST_TPC_CONNECT_TIMEOUT_MILLI,
+        SPARK_TEST_TPC_OPERATION_TIMEOUT_MILLI);
+    memcpy(config.peers[1].host_name,
+        config.peers[0].host_name,
+        sizeof(config.peers[1].host_name));
+    config.peers[1].port = config.peers[0].port;
+    assert(SparkTpCollectiveCreate(
+        &config,
+        &collective) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestTpcMissingPeerTimesOut(void)
