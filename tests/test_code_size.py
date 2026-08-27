@@ -737,7 +737,13 @@ from pathlib import Path
 # reuses its staging buffer immediately), and the API request/buffer
 # reclamation (queue-locked event walk, unlink-then-free, body base
 # ownership); 175483 exact.
-CEILING = 175483
+# Audit-4 API/scheduler fixes: the API submits the whole queued set
+(not just the head) with aligned engine limits and explicit context
+# rejection, speculation miss telemetry attributes per-request only
+# for single-lane batches (aggregate kept at engine level), and the
+# support table reflects GLM 5.2 deprecation and the flash models;
+# 175507 exact.
+CEILING = 175507
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

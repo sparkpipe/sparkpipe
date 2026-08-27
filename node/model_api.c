@@ -117,11 +117,17 @@ static void *api_worker(void *arg)
 	(void)arg;
 	while (S.running)
 	{
-		/* submit any waiting request */
+		/* submit every waiting request, oldest first: the engine batches
+		 * concurrent submissions into shared prefill/decode rounds, so
+		 * holding back everything behind the head serialized the API and
+		 * starved batching (audit: "strictly serial queue head"). */
 		pthread_mutex_lock(&S.queue_mutex);
-		if (S.queue_head != 0 && !S.queue_head->done && !S.queue_head->submitted)
 		{
-			ApiRequest *r = S.queue_head;
+			ApiRequest *r;
+			for (r = S.queue_head; r != 0; r = r->next)
+			{
+			if (!r->done && !r->submitted)
+			{
 			SparkModelBatchSubmitRequest sub;
 			SparkModelBatchRequestHandle h;
 			SparkStatus st;
@@ -142,6 +148,8 @@ static void *api_worker(void *arg)
 				r->status = (uint32_t)st;
 				r->done = 1;
 				pthread_cond_signal(&r->cond);
+			}
+			}
 			}
 		}
 		pthread_mutex_unlock(&S.queue_mutex);
@@ -358,6 +366,11 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		send_response(fd, 400, "{\"error\":\"prompt_token_ids required\"}");
 		return;
 	}
+	if ((uint64_t)prompt_len + max_tokens > API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS)
+	{
+		send_response(fd, 400, "{\"error\":\"prompt + max_tokens exceeds context limit\"}");
+		return;
+	}
 	req = calloc(1, sizeof(*req));
 	if (req == 0)
 	{
@@ -490,9 +503,9 @@ int main(int argc, char **argv)
 	cfg.descriptor_bytes = (uint32_t)sizeof(cfg);
 	cfg.deployment = &dep;
 	cfg.runtime_root = root;
-	cfg.request_capacity = 2;
-	cfg.max_context_tokens = 4096;
-	cfg.max_prefill_rows_per_submission = 8;
+	cfg.request_capacity = 64;
+	cfg.max_context_tokens = API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS;
+	cfg.max_prefill_rows_per_submission = 16;
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.event_function = api_event;

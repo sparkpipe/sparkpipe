@@ -43,8 +43,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "355f955e778b29a32a0bd5189e35ca271bbdea1339776f6e70be45e2756eace8",
-      "size_bytes": 73140
+      "sha256": "9f8af00fac1402a2b44d429edb85fd2b2b945d6254dbdb5bd3c42f687248c10b",
+      "size_bytes": 73440
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -313,8 +313,8 @@
     },
     {
       "path": "docs/MODEL_SUPPORT.md",
-      "sha256": "3e95eb5d2e2faac4996e3e8e50f8eeb4837c2fb21a4155fd9aeee1735b5fc5f7",
-      "size_bytes": 3053
+      "sha256": "74069b6e339e80fc67bf3fefef6459c97eeaff933bdc9791bd71a1d8f990560b",
+      "size_bytes": 3141
     },
     {
       "path": "docs/MODULE_MAP.md",
@@ -2738,8 +2738,8 @@
     },
     {
       "path": "modules/glm52_dspark_draft_backend/Makefile",
-      "sha256": "e710e6c1ecd6e3a74316fcb3aaf2792d698e05bda27a524bc3b8ae157f7a6097",
-      "size_bytes": 2164
+      "sha256": "d237f01dd3a2c7e5425b3d8e547f3fdee833edb711464c936cbd862ebd62cbca",
+      "size_bytes": 2194
     },
     {
       "path": "modules/glm52_dspark_draft_backend/include/sparkpipe/spark_glm52_dspark_draft_backend.h",
@@ -3133,8 +3133,8 @@
     },
     {
       "path": "modules/resident_decode_stage_rules.mk",
-      "sha256": "d07923de282ed69c5e4f98c68dbe36b578e681a58f5c665f185ee066819fc5a9",
-      "size_bytes": 11402
+      "sha256": "19c7d420ad1d06147845bd3d5f5b9a69bcd88970fdc68195b13ceeed3adc46ba",
+      "size_bytes": 11474
     },
     {
       "path": "node/README",
@@ -3148,8 +3148,8 @@
     },
     {
       "path": "node/model_api.c",
-      "sha256": "ed238a5f7915bca1a56318d6303c2ef60d10467670ba2ed40572a27ed0a66119",
-      "size_bytes": 14487
+      "sha256": "b16c3298eb5b0873f65efa1582986777fe7e1cb7fa6931f0a83fb5cdc16cc25f",
+      "size_bytes": 14962
     },
     {
       "path": "node/model_batch.c",
@@ -4558,8 +4558,8 @@
     },
     {
       "path": "runtime/model_batch_engine.c",
-      "sha256": "93bf136a532866ee13cd61b84e620ab9d76a0616e6a0ceb5632d2e4afc0e6923",
-      "size_bytes": 87670
+      "sha256": "28e7bce257b037d75a28ca11fbcdc679372525306df41884e3e02a116e774203",
+      "size_bytes": 88273
     },
     {
       "path": "runtime/model_batch_scheduler.h",
@@ -5133,8 +5133,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "f28a38d3f802587f2fe11eb20255796d389869aeda7180e5dc2e29236aa08deb",
-      "size_bytes": 49241
+      "sha256": "3fd0828ea54e50908af40afad4a13e9d8c193adcc0a5b1a98d8545f3daf8b8df",
+      "size_bytes": 49596
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -7075,5 +7075,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 25379788
+  "total_bytes": 25381711
 }

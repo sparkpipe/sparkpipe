@@ -135,6 +135,10 @@ struct SparkModelBatchEngine
 	uint64_t next_submission_id;
 	uint64_t submitted_request_count;
 	uint64_t completed_request_count;
+	/* Batch-aggregate first-draft misses: the adapter extension reports
+	 * one count for the whole submission, so per-request attribution is
+	 * only possible for single-lane completions. */
+	uint32_t batch_first_draft_miss_count;
 	uint64_t cancelled_request_count;
 	uint64_t emitted_token_count;
 };
@@ -800,7 +804,14 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 		if ( completion->model_extension_kind == 0x5136u )
 		{
 			request->model_extension_kind = completion->model_extension_kind;
-			request->first_draft_miss_count += extension_miss;
+			/* The adapter reports ONE aggregate miss count for the whole
+			 * submission; crediting it to every request fabricated a miss
+			 * on all B-1 peers. Attribute per-request only when the batch
+			 * has a single lane, and keep the aggregate at engine level. */
+			if ( submission->lane_count == 1u )
+				request->first_draft_miss_count += extension_miss;
+			else
+				engine->batch_first_draft_miss_count += extension_miss;
 			request->first_draft_policy = extension_policy;
 		}
 		for (step=0u; step<completion->tokens_per_sequence; step++)
