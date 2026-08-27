@@ -209,6 +209,7 @@ TEST_NAMES := \
 	test_dsv4_tp4_pp4_serving_adapter \
     test_qwen38_27b_serving_adapter \
     test_qwen38_27b_tp_faults \
+    test_qwen4_flash_model_header \
     test_model_resident_end_to_end \
     test_distributed_work \
 	    test_json \
