@@ -195,17 +195,23 @@ max_tok_s = total_compute_rate / (2 × active_params_per_token)
 For MoE models, use ACTIVE params (top_k × expert_size + attention),
 not total params — the whole point of MoE is that most experts are idle.
 
-| Model | Active params/token | Max aggregate (16× GB10 FP8/MXFP4) |
-|---|---|---|
-| Qwen 27B (dense) FP8 | 27B | 14,815 tok/s |
-| K3 MXFP4 (896 experts, top-16) | ~103B active | 1,941,748 tok/s (theoretical) |
-| GLM 5.2 FP8 (256+1 experts, top-8) | ~33B active | 24,000 tok/s |
-| Qwen Max FP8 (512+1 experts, top-10) | ~60B active | 13,333 tok/s |
+| Model | Active params/token | FLOPs/token | Max aggregate (16× GB10) |
+|---|---|---|---|
+| Qwen 27B (dense) FP8 | 27B (all active) | 54 GFLOP | 14,815 tok/s |
+| K3 MXFP4 (896 experts, top-16) | ~144B active | 288 GFLOP | 1,389 tok/s |
+| GLM 5.2 FP8 (256+1 experts, top-8) | ~33B active | 66 GFLOP | 12,121 tok/s |
+| Qwen Max FP8 (512+1 experts, top-10) | ~60B active | 120 GFLOP | 6,667 tok/s |
 
-The K3 number is theoretical — activation memory, KV cache traffic, and
-attention scale per-token and become the real bottleneck at high B. But
-the direction is clear: MoE models with many low-activation experts can
-serve enormous aggregate throughput when batched correctly.
+ACTIVE params = attention + router + top_k experts + shared experts per
+token. NOT total params. K3 has 1.5T total params but only ~144B active
+per token — still 5.3× more than the 27B dense, and at MXFP4 half-rate
+compute, giving 10.6× more FLOPs per token than the 27B.
+
+**CORRECTION (2026-08-28):** the previously published 1.9M tok/s figure
+for K3 was an arithmetic error (confused total and active params, and
+used the wrong FLOPs divisor). The correct max aggregate for K3 TP16 is
+1,389 tok/s — slower than the 27B dense, because K3 trades compute for
+capacity (more knowledge per model, more compute per token).
 
 **For inference services**: running at B < B* wastes hardware. Most
 production deployments run at B=1-8, far below B*=100. The expert-grouped
