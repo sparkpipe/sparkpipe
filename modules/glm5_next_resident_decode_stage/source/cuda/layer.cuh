@@ -1,0 +1,1768 @@
+#pragma once
+
+#include "runtime/gemm.cuh"
+#include "inference/kernels/norm.cuh"
+#include "inference/kernels/attn.cuh"
+#include "inference/kernels/topk.cuh"
+#include "inference/kernels/route.cuh"
+#include "inference/kernels/project.cuh"
+#include "inference/kernels/head.cuh"
+#include "inference/kernels/formats/bf16.cuh"
+#include "inference/kernels/weight_codec.cuh"
+#include "modules/glm5_next_resident_decode_stage/source/cuda/config.h"
+
+// Block-major KV geometry: one logical block = GLM5_NEXT_KV_PAGE_SLOTS
+// tokens across the DSA layers (only the 11 sparse layers carry an MLA KV
+// row; KDA layers are O(1)-state and need none), laid out contiguously in
+// the common SparkKvCacheArena block-major layout. kPageBytes is the block
+// stride; the per-layer pool base the driver passes already carries the
+// DSA-layer offset, so SlotInPage stays the within-block token index.
+struct Glm5NextKv
+{
+    static constexpr uint32_t kSlotBytes = GLM5_NEXT_KV_SLOT_BYTES;
+    static constexpr uint32_t kPageSlots = GLM5_NEXT_KV_PAGE_SLOTS;
+    static constexpr uint32_t kPageBytes =
+        GLM5_NEXT_KV_SLOT_BYTES * GLM5_NEXT_KV_PAGE_SLOTS *
+        SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
+    static constexpr bool kGrows = true;
+    static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
+    { return position / GLM5_NEXT_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position)
+    { return position % GLM5_NEXT_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
+    { return (tokens + GLM5_NEXT_KV_PAGE_SLOTS - 1u) / GLM5_NEXT_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
+    { return pages * (uint64_t)kPageBytes; }
+};
+/* The packed indexer cache row: [ k(128) | gate(128) | valid(1) ] bf16.
+ * The gate half carries the per-token pool-mix logits; valid is 1.0 for
+ * every stored row (only real tokens are stored). */
+struct Glm5NextIndexKv
+{
+    static constexpr uint32_t kSlotBytes =
+        SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
+    static constexpr uint32_t kPageSlots = GLM5_NEXT_KV_PAGE_SLOTS;
+    static constexpr uint32_t kPageBytes =
+        kSlotBytes * kPageSlots * SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
+    static constexpr bool kGrows = true;
+    static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
+    { return position / kPageSlots; }
+    static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position)
+    { return position % kPageSlots; }
+    static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
+    { return (tokens + kPageSlots - 1u) / kPageSlots; }
+    static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
+    { return pages * (uint64_t)kPageBytes; }
+};
+
+/* Fuse [ k | gate | 1.0 ] into the packed 257-wide indexer cache row. */
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void Glm5NextIndexPackKernel(
+    const uint16_t *__restrict__ key_bf16,
+    const uint16_t *__restrict__ gate_bf16,
+    uint16_t *__restrict__ packed_bf16,
+    uint32_t dimension)
+{
+    uint32_t row = blockIdx.x;
+    uint64_t base = (uint64_t)row * (2u * dimension + 1u);
+    uint32_t index;
+    for (index = threadIdx.x; index < dimension; index += THREADS)
+    {
+        packed_bf16[base + index] = key_bf16[(uint64_t)row * dimension + index];
+        packed_bf16[base + dimension + index] =
+            gate_bf16[(uint64_t)row * dimension + index];
+    }
+    if (threadIdx.x == 0u)
+        packed_bf16[base + 2u * dimension] = 0x3F80u; /* bf16 1.0 */
+}
+
+/* Score one 4-token k-pool for every query row: one block per (pool, row).
+ *
+ * pool_key = sum_j softmax_j(gate_j + ape_j) * k_j over the pool's KPOOL
+ * positions (the reference's get_pooled_states; the softmax is per-channel
+ * over pool positions); score_h = relu(q_h . pool_key * 128**-0.5); the
+ * row's pool score is the head-weighted sum weights_proj(x)_h * 32**-0.5.
+ * Positions past the sequence's context contribute nothing (masked out of
+ * the softmax with -inf, exactly as the reference's grouped_valid_keys).
+ */
+template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS>
+__global__ __launch_bounds__(THREADS, 1)
+void Glm5NextPoolScoreKernel(
+    const uint16_t *__restrict__ query_bf16,      /* [rows, HEADS*DIM] */
+    const uint16_t *__restrict__ head_weight_bf16,/* [rows, HEADS] */
+    LmKvView index_cache,
+    const uint32_t *__restrict__ sequence_of_row,
+    const uint32_t *__restrict__ context_length,
+    const float *__restrict__ compress_ape_f32,   /* [KPOOL, DIM] */
+    uint32_t pools,
+    float softmax_scale,
+    float head_scale,
+    float *__restrict__ pool_scores)              /* [rows, pools] */
+{
+    __shared__ float pool_key[DIM];
+    __shared__ float reduction[THREADS / LM_WARP_LANES];
+    uint32_t pool = blockIdx.x;
+    uint32_t row = blockIdx.y;
+    uint32_t sequence = sequence_of_row[row];
+    uint32_t context = context_length[sequence];
+    uint32_t first = pool * KPOOL;
+    uint32_t index, slot_in_pool, head;
+    if (pool >= pools)
+        return;
+
+    /* Per-channel softmax over the pool's gate logits ( ape bias included )
+     * then the weighted key sum, both over DIM channels in parallel. */
+    for (index = threadIdx.x; index < DIM; index += THREADS)
+    {
+        float maximum = -INFINITY;
+        float sum = 0.0f;
+        float logits[KPOOL];
+        for (slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool)
+        {
+            uint32_t position = first + slot_in_pool;
+            if (position >= context)
+            {
+                logits[slot_in_pool] = -INFINITY;
+                continue;
+            }
+            const uint16_t *slot = (const uint16_t *)LmKvSlotRequired<Glm5NextIndexKv>(
+                index_cache, sequence, position, row, LM_KV_ACCESS_READ);
+            if (slot == 0)
+                return;
+            logits[slot_in_pool] =
+                LmBf16ToFloat(slot[DIM + index]) +
+                compress_ape_f32[slot_in_pool * DIM + index];
+            maximum = fmaxf(maximum, logits[slot_in_pool]);
+        }
+        for (slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool)
+            if (logits[slot_in_pool] != -INFINITY)
+                sum += __expf(logits[slot_in_pool] - maximum);
+        float mix[KPOOL];
+        for (slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool)
+            mix[slot_in_pool] = logits[slot_in_pool] == -INFINITY
+                ? 0.0f
+                : __expf(logits[slot_in_pool] - maximum) / fmaxf(sum, 1.0e-20f);
+        float key = 0.0f;
+        for (slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool)
+        {
+            if (mix[slot_in_pool] == 0.0f)
+                continue;
+            uint32_t position = first + slot_in_pool;
+            const uint16_t *slot = (const uint16_t *)LmKvSlotRequired<Glm5NextIndexKv>(
+                index_cache, sequence, position, row, LM_KV_ACCESS_READ);
+            if (slot == 0)
+                return;
+            key += mix[slot_in_pool] * LmBf16ToFloat(slot[index]);
+        }
+        pool_key[index] = key;
+    }
+    __syncthreads();
+
+    /* Head-major dot products with per-head relu, then the weighted head
+     * sum. One thread per (head, channel-slice); block reduction per head
+     * would serialise, so each thread owns whole heads when HEADS <=
+     * THREADS and accumulates across its heads' channels serially. */
+    float total = 0.0f;
+    for (head = 0u; head < HEADS; ++head)
+    {
+        float score = 0.0f;
+        for (index = threadIdx.x; index < DIM; index += THREADS)
+            score += LmBf16ToFloat(
+                query_bf16[((uint64_t)row * HEADS + head) * DIM + index]) *
+                pool_key[index];
+        score = LmBlockSum<THREADS>(score, reduction) * softmax_scale;
+        __syncthreads();
+        if (score < 0.0f)
+            score = 0.0f;
+        if (threadIdx.x == 0u)
+            reduction[0] = score * LmBf16ToFloat(
+                head_weight_bf16[(uint64_t)row * HEADS + head]) * head_scale;
+        __syncthreads();
+        total += reduction[0];
+    }
+    if (threadIdx.x == 0u)
+        pool_scores[(uint64_t)row * pools + pool] = total;
+}
+
+/* Expand selected pools into raw token positions and append the tail.
+ * Output width is TOPK + KPOOL - 1 (2051): 512 pools x 4 tokens, then the
+ * incomplete tail (up to 3). Slots beyond the tail count carry UINT32_MAX,
+ * which the latent decode kernel's causal check (position > row_position)
+ * skips without a cache read. */
+template<uint32_t THREADS, uint32_t KPOOL, uint32_t TOPK, uint32_t WIDTH>
+__global__ __launch_bounds__(THREADS, 1)
+void Glm5NextPoolExpandKernel(
+    const uint32_t *__restrict__ selected_pools,  /* [rows, TOPK/KPOOL] */
+    const uint32_t *__restrict__ sequence_of_row,
+    const uint32_t *__restrict__ context_length,
+    uint32_t *__restrict__ selected_positions,    /* [rows, WIDTH] */
+    uint32_t rows)
+{
+    uint32_t row = blockIdx.x;
+    uint32_t index;
+    if (row >= rows)
+        return;
+    uint32_t sequence = sequence_of_row[row];
+    uint32_t context = context_length[sequence];
+    uint32_t select = TOPK / KPOOL;
+    for (index = threadIdx.x; index < WIDTH; index += THREADS)
+    {
+        uint32_t position = 0xFFFFFFFFu;
+        if (index < TOPK)
+        {
+            uint32_t pool = selected_pools[(uint64_t)row * select +
+                                           index / KPOOL];
+            uint32_t within = index % KPOOL;
+            position = pool * KPOOL + within;
+            /* A pool is only selectable complete: clamp incomplete tails
+             * out to the sentinel. */
+            if (position >= context)
+                position = 0xFFFFFFFFu;
+        }
+        else
+        {
+            uint32_t tail_count = context % KPOOL;
+            uint32_t tail_index = index - TOPK;
+            if (tail_index < tail_count)
+                position = context - tail_count + tail_index;
+        }
+        selected_positions[(uint64_t)row * WIDTH + index] = position;
+    }
+}
+
+#include "modules/glm5_next_resident_decode_stage/source/cuda/launch_shape.h"
+
+#define GLM5_NEXT_LAYER_TILE_N 128u
+#define GLM5_NEXT_LAYER_STAGES 2u
+#define GLM5_NEXT_LAYER_WARPS 8u
+#define GLM5_NEXT_HEAD_TILE 1024u
+
+static_assert(
+    GLM5_NEXT_HIDDEN % LmBf16Format::kTileK == 0u,
+    "glm5_next hidden projections must cover every BF16 K tile");
+static_assert(
+    GLM5_NEXT_QUERY_A_DIM % LmBf16Format::kTileK == 0u,
+    "glm5_next low-rank query projections must cover every BF16 K tile");
+static_assert(
+    GLM5_NEXT_DSA_QUERY_DIM % LmBf16Format::kTileK == 0u,
+    "glm5_next DSA index queries must cover every BF16 K tile");
+static_assert(
+    (GLM5_NEXT_ATTN_HEADS * GLM5_NEXT_LATENT) % LmBf16Format::kTileK == 0u,
+    "glm5_next latent attention output must cover every BF16 K tile");
+static_assert(
+    GLM5_NEXT_DENSE_INTERMEDIATE % LmBf16Format::kTileK == 0u,
+    "glm5_next dense FFN down projection must cover every BF16 K tile");
+static_assert(
+    GLM5_NEXT_EXPERT_INTERMEDIATE % LmBf16Format::kTileK == 0u,
+    "glm5_next expert down projection must cover every BF16 K tile");
+static_assert(
+    GLM5_NEXT_KDA_QK_DIM % LmBf16Format::kTileK == 0u,
+    "glm5_next fused KDA q|k|v|beta rows must cover every BF16 K tile");
+struct Glm5NextLayerBuffers
+{
+    const uint32_t *dense_row_offset;
+    uint32_t *dense_tile_prefix;
+
+    const void *attn_norm_weight;
+    const void *q_a_weight;
+    const void *q_a_norm_weight;
+    const void *q_b_weight;
+    const void *kv_a_weight;
+    const void *kv_a_norm_weight;
+    const void *kv_b_key_transposed_weight;
+    const void *kv_b_value_weight;
+    const void *index_q_weight;
+    const void *index_k_weight;
+    const void *index_head_weight;
+    const void *index_norm_weight;
+    const void *index_norm_bias;
+    float qk_scale;
+    const void *output_weight;
+    const void *mlp_norm_weight;
+    const void *router_weight;
+    const float *router_correction_bias;
+    const void *dense_gate_weight;
+    const void *dense_up_weight;
+    const void *dense_down_weight;
+    // Bind-time fact, not a launch-time decision: the pack laid the up rows
+    // immediately behind the gate rows, so one GEMM over the concatenated
+    // tensor produces the [gate | up] layout two launches would. Zero means
+    // unknown or non-contiguous, which takes the two-launch path.
+    uint32_t dense_gate_up_fused;
+
+    // Tensor-parallel sharding. The pack stores per-rank shards of the row- or
+    // column-sharded projections, so every projection dimension the kernels
+    // price must come from here rather than the full-model constant; tp_degree
+    // == 1 recovers the single-rank geometry. Replicated tensors (norms, q_a,
+    // kv_a, kv_b, indexer, router, correction) keep their full dims and the KV
+    // cache keeps all heads on every rank.
+    uint32_t tp_degree;
+    uint32_t tp_rank;
+    uint32_t attn_heads;
+    uint32_t q_b_rows;
+    uint32_t attn_output_columns;
+    uint32_t dense_gate_up_rows;
+    uint32_t dense_intermediate;
+    uint32_t expert_w1_rows;
+    uint32_t expert_intermediate;
+    uint32_t shared_gate_up_rows;
+    uint32_t shared_intermediate;
+    uint32_t head_vocabulary;
+    const void *expert_w1_weight;
+    const void *expert_w1_scale;
+    const void *expert_w2_weight;
+    const void *expert_w2_scale;
+    const void *shared_gate_up_weight;
+    const void *shared_down_weight;
+
+    uint16_t *hidden_bf16;
+    uint16_t *residual_bf16;
+    uint16_t *normed_bf16;
+    uint16_t *q_compressed_bf16;
+    uint16_t *q_bf16;
+    uint16_t *query_latent_bf16;
+    uint16_t *query_rope_bf16;
+    uint16_t *index_query_bf16;
+    uint16_t *index_key_bf16;
+    uint16_t *index_head_weight_bf16;
+    uint16_t *kv_slot_bf16;
+    uint16_t *attention_latent_bf16;
+    uint16_t *attention_value_bf16;
+    uint16_t *attention_out_bf16;
+    uint16_t *gate_up_bf16;
+    uint16_t *intermediate_bf16;
+    uint16_t *expert_out_bf16;
+    uint16_t *shared_out_bf16;
+    float *router_logits;
+    float *selection_scores;
+    uint32_t *route_expert;
+    float *route_weight;
+    uint32_t *route_source_token;
+    uint32_t *route_packed_row;
+    float *head_candidate_score;
+    uint32_t *head_candidate_token;
+    uint32_t *output_token;
+    float *output_score;
+    uint32_t *group_row_offset;
+    uint32_t *group_tile_prefix_w1;
+    uint32_t *group_tile_prefix_w2;
+
+    /* -- KDA (k3 donor): weights, per-layer state, and scratch. Every
+     * per-head dimension comes from kda_heads (the rank's shard), never
+     * the full-model constant. */
+    const void *kda_qkv_beta_weight;
+    const void *kda_decay_gate_down_weight;
+    const void *kda_decay_up_weight;
+    const void *kda_gate_up_weight;
+    const float *kda_q_conv_weight;
+    const float *kda_k_conv_weight;
+    const float *kda_v_conv_weight;
+    const float *kda_decay_bias;
+    const float *kda_head_log_scale;
+    const void *kda_out_norm_weight;
+    const void *kda_out_weight;
+    uint32_t kda_heads;
+    uint8_t *kda_state_pool;
+    uint32_t kda_state_slot_bytes;
+    const uint32_t *kda_state_index;
+    const uint32_t *sequence_row_begin;
+    uint16_t *kda_q_window;
+    uint16_t *kda_k_window;
+    uint16_t *kda_v_window;
+    uint16_t *fused_qkvb_bf16;
+    uint16_t *fused_decay_gate_bf16;
+    uint16_t *kda_output_bf16;
+    uint16_t *kda_decay_latent_bf16;
+    uint16_t *kda_beta_logit;
+    uint16_t *kda_gate_bf16;
+    uint16_t *kda_gate_latent_bf16;
+    uint16_t *kda_decay_logit_bf16;
+    float *kda_retention;
+    float *kda_write_gate;
+
+    /* -- hyper-connections (dsv4 donor): weights and per-site scratch.
+     * hidden_bf16 carries hc_mult streams of GLM5_NEXT_HIDDEN (the HC
+     * "streams_bf16" surface); residual semantics live in the HC launch
+     * pair, not the residual pointer. */
+    const void *hc_attn_fn;
+    const void *hc_attn_base;
+    const void *hc_attn_scale;
+    const void *hc_ffn_fn;
+    const void *hc_ffn_base;
+    const void *hc_ffn_scale;
+    float *hc_mixes_f32;
+    float *hc_pre_f32;
+    float *hc_post_f32;
+    float *hc_comb_f32;
+
+    /* -- indexer kpool compressor (dsv4 mechanism, glm53 geometry) */
+    const void *index_compress_ape;
+    const void *index_compress_gate;
+    uint16_t *index_gate_bf16;
+    uint16_t *index_packed_bf16;
+    uint32_t *selected_pools;
+
+    LmKvView cache;
+    LmKvView index_cache;
+    const uint32_t *sequence_of_row;
+    const uint32_t *context_length;
+    const uint32_t *positions;
+    const uint32_t *row_positions;
+    uint32_t *selected_positions;
+    uint32_t selected_position_count;
+};
+
+static int32_t Glm5NextLaunchBf16Linear(
+    const uint16_t *activation_bf16,
+    const void *weight_bf16,
+    uint16_t *output_bf16,
+    const uint32_t *row_offset,
+    uint32_t *tile_prefix,
+    uint32_t rows,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t output_row_stride,
+    uint32_t output_column_offset,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    LmGemmArguments gemm;
+
+    if (activation_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 ||
+        row_offset == 0 || tile_prefix == 0 || rows == 0u ||
+        input_dimension == 0u || output_dimension == 0u ||
+        multiprocessors == 0u)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+
+    memset(&gemm, 0, sizeof(gemm));
+    gemm.scale_a = LmScaleTensorNone();
+    gemm.scale_b = LmScaleTensorNone();
+    gemm.group_row_offset = row_offset;
+    gemm.group_tile_prefix = tile_prefix;
+    gemm.output_bf16 = output_bf16;
+    gemm.output_row_stride = output_row_stride;
+    gemm.output_column_offset = output_column_offset;
+    return LmGemmLaunch<
+        LmBf16Format,
+        GLM5_NEXT_LAYER_TILE_N,
+        LmBf16Format::kTileK,
+        GLM5_NEXT_LAYER_STAGES,
+        GLM5_NEXT_LAYER_WARPS>(
+            &gemm,
+            activation_bf16,
+            weight_bf16,
+            rows,
+            rows,
+            1u,
+            1u,
+            input_dimension,
+            output_dimension,
+            multiprocessors,
+            false,
+            stream);
+}
+
+static int32_t Glm5NextLayerIndexer(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+    uint32_t pools;
+
+    /* Every DSA layer is a FULL indexer in glm5_next (indexer_types is 45x
+     * "full"); the caller gates on layer kind. The kpool selection is
+     * bypassed while the context cannot fill the pool budget (context at
+     * or below TOPK selects everything): the projections and cache stores
+     * below still run because the packed cache row must exist for future
+     * contexts, but the pool scoring pass is pure overhead there. */
+    if (buffers == 0 || rows == 0u || context == 0u ||
+        buffers->positions == 0 || buffers->sequence_of_row == 0 ||
+        buffers->context_length == 0 ||
+        !LmKvViewIsConfigured(buffers->index_cache) ||
+        buffers->index_q_weight == 0 || buffers->index_k_weight == 0 ||
+        buffers->index_head_weight == 0 || buffers->index_norm_weight == 0 ||
+        buffers->index_norm_bias == 0 || buffers->index_query_bf16 == 0 ||
+        buffers->index_key_bf16 == 0 ||
+        buffers->index_head_weight_bf16 == 0 ||
+        buffers->index_compress_gate == 0 ||
+        buffers->index_compress_ape == 0 ||
+        buffers->index_gate_bf16 == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    status = Glm5NextLaunchBf16Linear(
+        buffers->q_compressed_bf16,
+        buffers->index_q_weight,
+        buffers->index_query_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_QUERY_A_DIM,
+        GLM5_NEXT_DSA_QUERY_DIM,
+        GLM5_NEXT_DSA_QUERY_DIM,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    status = Glm5NextLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->index_k_weight,
+        buffers->index_key_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_DSA_INDEX_DIM,
+        GLM5_NEXT_DSA_INDEX_DIM,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    /* The compressor's per-token gate logits: hidden -> 128, packed beside
+     * the key. NO rope on either half - NoPE model, and
+     * indexer_rope_interleave is not a porting dependency. */
+    status = Glm5NextLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->index_compress_gate,
+        buffers->index_gate_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_DSA_INDEX_DIM,
+        GLM5_NEXT_DSA_INDEX_DIM,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    LM_LAUNCH(
+        (LmLayerNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_DSA_INDEX_DIM + 8u) * sizeof(float),
+        stream,
+        buffers->index_key_bf16,
+        (const uint16_t *)buffers->index_norm_weight,
+        (const uint16_t *)buffers->index_norm_bias,
+        buffers->index_key_bf16,
+        GLM5_NEXT_DSA_INDEX_DIM,
+        GLM5_NEXT_DSA_INDEX_DIM,
+        GLM5_NEXT_DSA_INDEX_EPSILON);
+    status = Glm5NextLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->index_head_weight,
+        buffers->index_head_weight_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_DSA_INDEX_HEADS,
+        GLM5_NEXT_DSA_INDEX_HEADS,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    LM_LAUNCH(
+        (Glm5NextIndexPackKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->index_key_bf16,
+        buffers->index_gate_bf16,
+        buffers->index_packed_bf16,
+        GLM5_NEXT_DSA_INDEX_DIM);
+    LM_LAUNCH(
+        (LmKvStoreKernel<Glm5NextIndexKv,GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->index_cache,
+        buffers->index_packed_bf16,
+        buffers->sequence_of_row,
+        buffers->positions,
+        rows,
+        SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION);
+    if (context <= GLM5_NEXT_DSA_SELECTED)
+    {
+        return cudaPeekAtLastError() == cudaSuccess
+            ? LM_LAUNCH_OK
+            : LM_LAUNCH_ERR_LAUNCH;
+    }
+    if (buffers->selection_scores == 0 || buffers->selected_positions == 0 ||
+        buffers->head_candidate_token == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    /* Complete pools only: context > TOPK guarantees at least TOPK/KPOOL
+     * of them, so every selected pool expands to four real positions. */
+    pools = context / GLM5_NEXT_DSA_KPOOL;
+    LM_LAUNCH(
+        (Glm5NextPoolScoreKernel<
+            GLM5_NEXT_LAYER_THREADS,
+            GLM5_NEXT_DSA_INDEX_DIM,
+            GLM5_NEXT_DSA_KPOOL,
+            GLM5_NEXT_DSA_INDEX_HEADS>),
+        dim3(pools,rows),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->index_query_bf16,
+        buffers->index_head_weight_bf16,
+        buffers->index_cache,
+        buffers->sequence_of_row,
+        buffers->context_length,
+        (const float *)buffers->index_compress_ape,
+        pools,
+        GLM5_NEXT_DSA_INDEX_SCALE,
+        GLM5_NEXT_DSA_INDEX_HEAD_WEIGHT_SCALE,
+        buffers->selection_scores);
+    LM_LAUNCH(
+        (LmTopkHistogramKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->selection_scores,
+        pools,
+        GLM5_NEXT_DSA_SELECTED / GLM5_NEXT_DSA_KPOOL,
+        buffers->head_candidate_token);
+    LM_LAUNCH(
+        (LmTopkGatherKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->selection_scores,
+        pools,
+        GLM5_NEXT_DSA_SELECTED / GLM5_NEXT_DSA_KPOOL,
+        buffers->head_candidate_token,
+        buffers->selected_pools,
+        0);
+    LM_LAUNCH(
+        (Glm5NextPoolExpandKernel<
+            GLM5_NEXT_LAYER_THREADS,
+            GLM5_NEXT_DSA_KPOOL,
+            GLM5_NEXT_DSA_SELECTED,
+            SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->selected_pools,
+        buffers->sequence_of_row,
+        buffers->context_length,
+        buffers->selected_positions,
+        rows);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextLayerAttention(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    const uint32_t *selected_positions;
+    uint32_t selected_position_count;
+    int32_t status;
+
+    if (buffers == 0 || rows == 0u || context == 0u ||
+        buffers->qk_scale <= 0.0f || buffers->hidden_bf16 == 0 ||
+        buffers->residual_bf16 == 0 || buffers->normed_bf16 == 0 ||
+        buffers->attn_norm_weight == 0 || buffers->kv_slot_bf16 == 0 ||
+        buffers->attention_latent_bf16 == 0 ||
+        buffers->attention_value_bf16 == 0 ||
+        buffers->attention_out_bf16 == 0 || buffers->output_weight == 0 ||
+        buffers->sequence_of_row == 0 || buffers->context_length == 0 ||
+        buffers->positions == 0 ||
+        buffers->q_a_weight == 0 || buffers->q_a_norm_weight == 0 ||
+        buffers->q_b_weight == 0 || buffers->kv_a_weight == 0 ||
+        buffers->kv_a_norm_weight == 0 ||
+        buffers->kv_b_key_transposed_weight == 0 ||
+        buffers->kv_b_value_weight == 0 ||
+        buffers->q_compressed_bf16 == 0 || buffers->q_bf16 == 0 ||
+        buffers->query_latent_bf16 == 0 ||
+        buffers->query_rope_bf16 == 0 ||
+        (context > GLM5_NEXT_DSA_SELECTED &&
+         (buffers->selected_positions == 0 ||
+          buffers->selected_position_count != GLM5_NEXT_DSA_SELECTED)))
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    selected_positions = context > GLM5_NEXT_DSA_SELECTED
+        ? buffers->selected_positions : 0;
+    selected_position_count = context > GLM5_NEXT_DSA_SELECTED
+        ? buffers->selected_position_count : 0u;
+
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->hidden_bf16,
+        buffers->residual_bf16,
+        (const uint16_t *)buffers->attn_norm_weight,
+        buffers->residual_bf16,
+        buffers->normed_bf16,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_RMS_EPSILON);
+
+    // The two low-rank norms are nonlinear and cannot be folded into a static
+    // hidden-to-latent matrix. Run the checkpoint sequence exactly.
+    status = Glm5NextLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->q_a_weight,
+        buffers->q_compressed_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_QUERY_A_DIM,
+        GLM5_NEXT_QUERY_A_DIM,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_QUERY_A_DIM + 8u) * sizeof(float),
+        stream,
+        buffers->q_compressed_bf16,
+        0,
+        (const uint16_t *)buffers->q_a_norm_weight,
+        0,
+        buffers->q_compressed_bf16,
+        GLM5_NEXT_QUERY_A_DIM,
+        GLM5_NEXT_QUERY_A_DIM,
+        GLM5_NEXT_RMS_EPSILON);
+    status = Glm5NextLayerIndexer(
+        buffers,
+        rows,
+        context,
+        layer_index,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    status = Glm5NextLaunchBf16Linear(
+        buffers->q_compressed_bf16,
+        buffers->q_b_weight,
+        buffers->q_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_QUERY_A_DIM,
+        buffers->q_b_rows,
+        buffers->q_b_rows,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    status = Glm5NextLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->kv_a_weight,
+        buffers->kv_slot_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_LATENT_ROW,
+        GLM5_NEXT_LATENT_ROW,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_LATENT + 8u) * sizeof(float),
+        stream,
+        buffers->kv_slot_bf16,
+        0,
+        (const uint16_t *)buffers->kv_a_norm_weight,
+        0,
+        buffers->kv_slot_bf16,
+        GLM5_NEXT_LATENT,
+        GLM5_NEXT_LATENT_ROW,
+        GLM5_NEXT_RMS_EPSILON);
+
+    /* ROPE-0 MLA: the query carries nope only and the latent row is the
+     * pure 512 lora, so both rope launches are GONE - not skipped at
+     * runtime, absent at compile time (NoPE: no rope exists anywhere in
+     * the glm5_next text stack). query_rope_bf16 stays null; the latent
+     * attention template below reads it only when ROPE != 0. */
+    LM_LAUNCH(
+        (LmPerHeadProjectKernel<
+            GLM5_NEXT_LAYER_THREADS,
+            GLM5_NEXT_QK_NOPE_DIM,
+            GLM5_NEXT_LATENT,
+            GLM5_NEXT_QK_NOPE_DIM + GLM5_NEXT_ROPE_DIM,
+            0u>),
+        dim3(rows, buffers->attn_heads),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->q_bf16,
+        (const uint16_t *)buffers->kv_b_key_transposed_weight,
+        buffers->query_latent_bf16,
+        buffers->attn_heads,
+        rows);
+    LM_LAUNCH(
+        (LmKvStoreKernel<Glm5NextKv, GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->cache,
+        buffers->kv_slot_bf16,
+        buffers->sequence_of_row,
+        buffers->positions,
+        rows,
+        GLM5_NEXT_LATENT_ROW);
+    LM_LAUNCH(
+        (LmLatentAttentionDecodeKernel<
+            Glm5NextKv,
+            GLM5_NEXT_ATTN_THREADS,
+            GLM5_NEXT_LATENT,
+            GLM5_NEXT_ROPE_DIM>),
+        dim3(rows, buffers->attn_heads),
+        GLM5_NEXT_ATTN_THREADS,
+        0,
+        stream,
+        buffers->query_latent_bf16,
+        buffers->query_rope_bf16,
+        buffers->cache,
+        buffers->sequence_of_row,
+        buffers->context_length,
+        selected_positions,
+        selected_position_count,
+        buffers->attn_heads,
+        buffers->qk_scale,
+        buffers->attention_latent_bf16,
+        buffers->row_positions);
+
+    LM_LAUNCH(
+        (LmPerHeadProjectKernel<
+            GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_LATENT,GLM5_NEXT_VALUE_DIM>),
+        dim3(rows, buffers->attn_heads),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->attention_latent_bf16,
+        (const uint16_t *)buffers->kv_b_value_weight,
+        buffers->attention_value_bf16,
+        buffers->attn_heads,
+        rows);
+
+    return Glm5NextLaunchBf16Linear(
+        buffers->attention_value_bf16,
+        buffers->output_weight,
+        buffers->attention_out_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        buffers->attn_output_columns,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        0u,
+        multiprocessors,
+        stream);
+}
+
+/* Split the fused q|k|v|beta GEMM output into the four per-row buffers
+ * (k3's pack-V2 split, verbatim: sections are row ranges head-major). */
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void Glm5NextSplitFusedProjectionsKernel(
+    const uint16_t *__restrict__ qkvb_bf16,
+    uint16_t *__restrict__ query_bf16,
+    uint16_t *__restrict__ key_bf16,
+    uint16_t *__restrict__ value_bf16,
+    uint16_t *__restrict__ beta_bf16,
+    uint32_t rows,
+    uint32_t qk_dim,
+    uint32_t v_dim,
+    uint32_t heads,
+    uint32_t fused_rows)
+{
+    uint32_t row = blockIdx.x, index;
+    const uint32_t k_offset = qk_dim;
+    const uint32_t v_offset = 2u * qk_dim;
+    const uint32_t beta_offset = v_offset + v_dim;
+    uint64_t fused = (uint64_t)row * fused_rows;
+    uint64_t dense = (uint64_t)row * qk_dim;
+    if (row >= rows)
+        return;
+    for (index = threadIdx.x; index < qk_dim; index += THREADS)
+        query_bf16[dense + index] = qkvb_bf16[fused + index];
+    for (index = threadIdx.x; index < qk_dim; index += THREADS)
+        key_bf16[dense + index] = qkvb_bf16[fused + k_offset + index];
+    for (index = threadIdx.x; index < v_dim; index += THREADS)
+        value_bf16[((uint64_t)row * v_dim) + index] =
+            qkvb_bf16[fused + v_offset + index];
+    for (index = threadIdx.x; index < heads; index += THREADS)
+        beta_bf16[((uint64_t)row * heads) + index] =
+            qkvb_bf16[fused + beta_offset + index];
+}
+
+/* Split the fused decay_down|gate_down bottleneck output: the first
+ * GLM5_NEXT_KDA_LOW_RANK rows are the decay latent, the second half the
+ * gate latent (pack-V2's replicated fusion, resurrected for glm5_next's
+ * LOW-RANK output gate). */
+template<uint32_t THREADS, uint32_t LOW_RANK>
+__global__ __launch_bounds__(THREADS, 1)
+void Glm5NextSplitDecayGateDownKernel(
+    const uint16_t *__restrict__ fused_bf16,
+    uint16_t *__restrict__ decay_latent_bf16,
+    uint16_t *__restrict__ gate_latent_bf16,
+    uint32_t rows)
+{
+    uint32_t row = blockIdx.x, index;
+    if (row >= rows)
+        return;
+    for (index = threadIdx.x; index < LOW_RANK; index += THREADS)
+    {
+        decay_latent_bf16[((uint64_t)row * LOW_RANK) + index] =
+            fused_bf16[((uint64_t)row * 2u * LOW_RANK) + index];
+        gate_latent_bf16[((uint64_t)row * LOW_RANK) + index] =
+            fused_bf16[((uint64_t)row * 2u * LOW_RANK) + LOW_RANK + index];
+    }
+}
+
+/* KDA linear attention, 34 of 45 layers - k3's launch chain with the
+ * glm5_next deltas:
+ *
+ *     q, k = L2Norm(Swish(ShortConv(W x)))        (checkpoint convs are BF16;
+ *     v    = Swish(ShortConv(W x))                 LmScalarToFloat reads them)
+ *     a    = exp(-5.0 * sigmoid(exp(A_log_h) * (Wf_up(Wf_down(x)) + dt_bias)))
+ *     S    = (I - beta k k^T) Diag(a) S + beta k v^T,  beta = sigmoid(b_proj x)
+ *     y    = W_o[ sigmoid(Wg_up(Wg_down(x))) * RMSNorm(S^T q) ]
+ *
+ * The decay mapping is LmBoundedDecay EXACTLY (verified against the
+ * reference forget gate); the gated norm is the shared RMSNorm followed by
+ * LmOutputGateKernel, which multiplies by sigmoid(gate) - RMSNormGated's
+ * "sigmoid" activation, same order.
+ */
+static int32_t Glm5NextLayerKda(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t sequences,
+    uint32_t commit,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    const uint32_t rank_heads = buffers->kda_heads;
+    const uint32_t rank_qk = rank_heads * GLM5_NEXT_KDA_KEY_DIM;
+    const uint32_t rank_v = rank_heads * GLM5_NEXT_KDA_VALUE_DIM;
+    int32_t status;
+
+    if (buffers == 0 || rows == 0u || sequences == 0u ||
+        buffers->kda_state_pool == 0 ||
+        buffers->kda_state_slot_bytes != GLM5_NEXT_KDA_STATE_BYTES_PER_LAYER ||
+        buffers->kda_qkv_beta_weight == 0 ||
+        buffers->kda_decay_gate_down_weight == 0 ||
+        buffers->kda_decay_up_weight == 0 ||
+        buffers->kda_gate_up_weight == 0 ||
+        buffers->kda_q_conv_weight == 0 || buffers->kda_k_conv_weight == 0 ||
+        buffers->kda_v_conv_weight == 0 || buffers->kda_decay_bias == 0 ||
+        buffers->kda_head_log_scale == 0 ||
+        buffers->kda_out_norm_weight == 0 ||
+        buffers->kda_out_weight == 0 ||
+        buffers->fused_qkvb_bf16 == 0 ||
+        buffers->fused_decay_gate_bf16 == 0 ||
+        buffers->kda_decay_latent_bf16 == 0 ||
+        buffers->kda_beta_logit == 0 ||
+        buffers->kda_gate_bf16 == 0 ||
+        buffers->kda_gate_latent_bf16 == 0 ||
+        buffers->kda_decay_logit_bf16 == 0 ||
+        buffers->kda_retention == 0 || buffers->kda_write_gate == 0 ||
+        buffers->normed_bf16 == 0 || buffers->attention_out_bf16 == 0 ||
+        buffers->q_bf16 == 0 || buffers->kv_slot_bf16 == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->hidden_bf16,
+        0,
+        (const uint16_t *)buffers->attn_norm_weight,
+        0,
+        buffers->residual_bf16,
+        buffers->normed_bf16,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_RMS_EPSILON);
+
+    /* TWO WIDE GEMMs over one activation read: the fused q|k|v|beta tensor
+     * (OUTPUT_DIM_HEADS class) and the fused decay|gate-down bottleneck
+     * (replicated). Both read normed_bf16 back to back. */
+    status = Glm5NextLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->kda_qkv_beta_weight,
+        buffers->fused_qkvb_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        rank_qk * 2u + rank_v + rank_heads,
+        rank_qk * 2u + rank_v + rank_heads,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    status = Glm5NextLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->kda_decay_gate_down_weight,
+        buffers->fused_decay_gate_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        2u * GLM5_NEXT_KDA_LOW_RANK,
+        2u * GLM5_NEXT_KDA_LOW_RANK,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    LM_LAUNCH(
+        (Glm5NextSplitFusedProjectionsKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->fused_qkvb_bf16,
+        buffers->q_bf16,
+        buffers->kv_slot_bf16 /* key rows */,
+        buffers->gate_up_bf16 /* value rows: rank_v wide */,
+        buffers->kda_beta_logit,
+        rows,
+        rank_qk,
+        rank_v,
+        rank_heads,
+        rank_qk * 2u + rank_v + rank_heads);
+    LM_LAUNCH(
+        (Glm5NextSplitDecayGateDownKernel<
+            GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_LOW_RANK>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->fused_decay_gate_bf16,
+        buffers->kda_decay_latent_bf16,
+        buffers->kda_gate_latent_bf16,
+        rows);
+
+    /* THREE CONVOLUTIONS, each with its own window; the weights are the
+     * checkpoint's BF16 tensors unconverted. */
+    LM_LAUNCH(
+        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
+        dim3(sequences,(rank_qk + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->kda_q_window,
+        buffers->kda_state_index,
+        buffers->sequence_row_begin,
+        0,
+        buffers->q_bf16,
+        (const uint16_t *)buffers->kda_q_conv_weight,
+        buffers->q_bf16,
+        rank_qk,
+        sequences,
+        commit);
+    LM_LAUNCH(
+        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
+        dim3(sequences,(rank_qk + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->kda_k_window,
+        buffers->kda_state_index,
+        buffers->sequence_row_begin,
+        0,
+        buffers->kv_slot_bf16,
+        (const uint16_t *)buffers->kda_k_conv_weight,
+        buffers->kv_slot_bf16,
+        rank_qk,
+        sequences,
+        commit);
+    LM_LAUNCH(
+        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
+        dim3(sequences,(rank_v + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->kda_v_window,
+        buffers->kda_state_index,
+        buffers->sequence_row_begin,
+        0,
+        buffers->gate_up_bf16,
+        (const uint16_t *)buffers->kda_v_conv_weight,
+        buffers->gate_up_bf16,
+        rank_v,
+        sequences,
+        commit);
+    /* q and k only; the value is not normalised. */
+    LM_LAUNCH(
+        (LmL2NormalisePerHeadKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
+        dim3(rows,rank_heads),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->q_bf16,
+        rank_heads,
+        rows,
+        GLM5_NEXT_RMS_EPSILON);
+    LM_LAUNCH(
+        (LmL2NormalisePerHeadKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
+        dim3(rows,rank_heads),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->kv_slot_bf16,
+        rank_heads,
+        rows,
+        GLM5_NEXT_RMS_EPSILON);
+
+    /* The two up-projections: decay logits (bounded-decay input) and the
+     * gate (waits for the delta rule to finish). */
+    status = Glm5NextLaunchBf16Linear(
+        buffers->kda_decay_latent_bf16,
+        buffers->kda_decay_up_weight,
+        buffers->kda_decay_logit_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_KDA_LOW_RANK,
+        rank_qk,
+        rank_qk,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    status = Glm5NextLaunchBf16Linear(
+        buffers->kda_gate_latent_bf16,
+        buffers->kda_gate_up_weight,
+        buffers->kda_gate_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_KDA_LOW_RANK,
+        rank_v,
+        rank_v,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    LM_LAUNCH(
+        (LmBoundedDecayKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
+        dim3(rows,rank_heads),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->kda_decay_logit_bf16,
+        buffers->kda_decay_bias,
+        buffers->kda_head_log_scale,
+        buffers->kda_retention,
+        rank_heads,
+        GLM5_NEXT_KDA_GATE_LOWER_BOUND,
+        rows);
+    LM_LAUNCH(
+        (LmSigmoidRowsKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->kda_beta_logit,
+        buffers->kda_write_gate,
+        rank_heads);
+    LM_LAUNCH(
+        (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM>),
+        dim3(sequences,rank_heads),
+        GLM5_NEXT_LAYER_THREADS,
+        GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float),
+        stream,
+        buffers->kda_state_pool,
+        buffers->kda_state_slot_bytes,
+        buffers->kda_state_index,
+        buffers->sequence_row_begin,
+        0,
+        buffers->q_bf16,
+        buffers->kv_slot_bf16,
+        buffers->gate_up_bf16,
+        buffers->kda_retention,
+        buffers->kda_write_gate,
+        buffers->attention_out_bf16,
+        rank_heads,
+        1u,
+        sequences,
+        commit);
+    /* RMSNorm before the gate (head-wise, fp32 strict), then the sigmoid
+     * gate that has been waiting in kda_gate_bf16. */
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,float>),
+        dim3((uint64_t)rows * rank_heads),
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_KDA_VALUE_DIM + 8u) * sizeof(float),
+        stream,
+        buffers->attention_out_bf16,
+        0,
+        (const float *)buffers->kda_out_norm_weight,
+        0,
+        buffers->attention_out_bf16,
+        GLM5_NEXT_KDA_VALUE_DIM,
+        GLM5_NEXT_KDA_VALUE_DIM,
+        GLM5_NEXT_RMS_EPSILON);
+    LM_LAUNCH(
+        (LmOutputGateKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->attention_out_bf16,
+        buffers->kda_gate_bf16,
+        rank_v);
+    return Glm5NextLaunchBf16Linear(
+        buffers->attention_out_bf16,
+        buffers->kda_out_weight,
+        buffers->kda_output_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        rank_v,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        0u,
+        multiprocessors,
+        stream);
+}
+
+static int32_t Glm5NextLayerDenseMlp(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    if (buffers == 0 || rows == 0u || buffers->attention_out_bf16 == 0 ||
+        buffers->residual_bf16 == 0 || buffers->mlp_norm_weight == 0 ||
+        buffers->normed_bf16 == 0 || buffers->dense_gate_weight == 0 ||
+        buffers->dense_up_weight == 0 || buffers->dense_down_weight == 0 ||
+        buffers->gate_up_bf16 == 0 || buffers->intermediate_bf16 == 0 ||
+        buffers->hidden_bf16 == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->attention_out_bf16,
+        buffers->residual_bf16,
+        (const uint16_t *)buffers->mlp_norm_weight,
+        buffers->residual_bf16,
+        buffers->normed_bf16,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_RMS_EPSILON);
+
+    if (buffers->dense_gate_up_fused != 0u)
+    {
+        // The pack stores the dense gate-up stack as [up | gate] (matching the
+        // routed-expert convention), so one GEMM over the concatenated tensor
+        // writes that [up | gate] layout directly and LmSiluMulKernel runs with
+        // gate_first=false - the two-launch form below re-reads the normed
+        // activation and pays a second launch for the same weight bytes.
+        // Per-element math is identical either way; only the launch count differs.
+        status = Glm5NextLaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->dense_gate_weight,
+            buffers->gate_up_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            buffers->dense_gate_up_rows,
+            buffers->dense_gate_up_rows,
+            0u,
+            multiprocessors,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
+    }
+    else
+    {
+        status = Glm5NextLaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->dense_gate_weight,
+            buffers->gate_up_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            buffers->dense_intermediate,
+            buffers->dense_gate_up_rows,
+            0u,
+            multiprocessors,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
+        status = Glm5NextLaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->dense_up_weight,
+            buffers->gate_up_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            buffers->dense_intermediate,
+            buffers->dense_gate_up_rows,
+            buffers->dense_intermediate,
+            multiprocessors,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
+    }
+
+    LM_LAUNCH(
+        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->gate_up_bf16,
+        buffers->intermediate_bf16,
+        buffers->dense_intermediate,
+        false);
+
+    return Glm5NextLaunchBf16Linear(
+        buffers->intermediate_bf16,
+        buffers->dense_down_weight,
+        buffers->hidden_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        buffers->dense_intermediate,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        0u,
+        multiprocessors,
+        stream);
+}
+
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoe(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
+    LmGemmArguments gemm;
+    int32_t status;
+
+    static_assert(ExpertCodec != SPARK_WEIGHT_CODEC_BF16,
+        "GLM 5.2 routed experts require an explicit compressed codec");
+    static_assert(GLM5_NEXT_HIDDEN % ExpertFormat::kScaleGroup == 0u &&
+        GLM5_NEXT_EXPERT_INTERMEDIATE % ExpertFormat::kScaleGroup == 0u,
+        "GLM 5.2 expert dimensions must contain complete codec scale groups");
+
+    if (buffers == 0 || rows == 0u ||
+        packed_rows != rows * GLM5_NEXT_TOP_K ||
+        buffers->attention_out_bf16 == 0 || buffers->residual_bf16 == 0 ||
+        buffers->mlp_norm_weight == 0 || buffers->normed_bf16 == 0 ||
+        buffers->router_weight == 0 || buffers->router_logits == 0 ||
+        buffers->router_correction_bias == 0 ||
+        buffers->route_expert == 0 || buffers->route_weight == 0 ||
+        buffers->route_source_token == 0 || buffers->route_packed_row == 0 ||
+        buffers->group_row_offset == 0 ||
+        buffers->group_tile_prefix_w1 == 0 ||
+        buffers->group_tile_prefix_w2 == 0 ||
+        buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
+        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 ||
+        buffers->expert_out_bf16 == 0 || buffers->gate_up_bf16 == 0 ||
+        buffers->intermediate_bf16 == 0 || buffers->hidden_bf16 == 0 ||
+        buffers->shared_gate_up_weight == 0 ||
+        buffers->shared_down_weight == 0 || buffers->shared_out_bf16 == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->attention_out_bf16,
+        buffers->residual_bf16,
+        (const uint16_t *)buffers->mlp_norm_weight,
+        buffers->residual_bf16,
+        buffers->normed_bf16,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_RMS_EPSILON);
+
+    memset(&gemm, 0, sizeof(gemm));
+    gemm.scale_a = LmScaleTensorNone();
+    gemm.scale_b = LmScaleTensorNone();
+    gemm.group_row_offset = buffers->dense_row_offset;
+    gemm.group_tile_prefix = buffers->dense_tile_prefix;
+    gemm.output_f32 = buffers->router_logits;
+    status = LmGemmLaunch<
+        LmBf16Format,
+        GLM5_NEXT_LAYER_TILE_N,
+        LmBf16Format::kTileK,
+        GLM5_NEXT_LAYER_STAGES,
+        GLM5_NEXT_LAYER_WARPS>(
+            &gemm,
+            buffers->normed_bf16,
+            buffers->router_weight,
+            rows,
+            rows,
+            1u,
+            1u,
+            GLM5_NEXT_HIDDEN,
+            GLM5_NEXT_EXPERTS,
+            multiprocessors,
+            false,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmTopkSmallKernel<
+            GLM5_NEXT_LAYER_THREADS,
+            GLM5_NEXT_TOP_K,
+            true,
+            1u,
+            1u,
+            LM_TOPK_SCORE_SIGMOID>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),
+        stream,
+        buffers->router_logits,
+        GLM5_NEXT_EXPERTS,
+        buffers->route_expert,
+        buffers->route_weight,
+        buffers->router_correction_bias,
+        0,
+        GLM5_NEXT_ROUTED_SCALE);
+    status = LmRouteBuild<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_EXPERTS>(
+        buffers->route_expert,
+        rows,
+        packed_rows,
+        GLM5_NEXT_TOP_K,
+        buffers->group_row_offset,
+        buffers->route_packed_row,
+        buffers->route_source_token,
+        buffers->expert_w1_rows,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_LAYER_TILE_N,
+        buffers->group_tile_prefix_w1,
+        buffers->group_tile_prefix_w2,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    memset(&gemm, 0, sizeof(gemm));
+    gemm.scale_a = LmScaleTensorNone();
+    gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(
+        buffers->expert_w1_scale,
+        GLM5_NEXT_EXPERTS,
+        buffers->expert_w1_rows,
+        GLM5_NEXT_HIDDEN);
+    gemm.prefix_built = 1u;
+    gemm.group_row_offset = buffers->group_row_offset;
+    gemm.group_tile_prefix = buffers->group_tile_prefix_w1;
+	gemm.source_row_map = buffers->route_source_token;
+	gemm.source_row_count = rows;
+    gemm.output_bf16 = buffers->gate_up_bf16;
+    status = LmGemmWeightOnlyIndirectLaunch<
+        ExpertFormat,
+        GLM5_NEXT_LAYER_TILE_N,
+        GLM5_NEXT_LAYER_STAGES,
+        GLM5_NEXT_LAYER_WARPS>(
+            &gemm,
+			buffers->normed_bf16,
+            buffers->expert_w1_weight,
+            packed_rows,
+            rows,
+            GLM5_NEXT_TOP_K,
+            GLM5_NEXT_EXPERTS,
+            GLM5_NEXT_HIDDEN,
+            buffers->expert_w1_rows,
+            multiprocessors,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        packed_rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->gate_up_bf16,
+        buffers->intermediate_bf16,
+        buffers->expert_intermediate,
+        false);
+
+    memset(&gemm, 0, sizeof(gemm));
+    gemm.scale_a = LmScaleTensorNone();
+    gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(
+        buffers->expert_w2_scale,
+        GLM5_NEXT_EXPERTS,
+        GLM5_NEXT_HIDDEN,
+        buffers->expert_intermediate);
+    gemm.prefix_built = 1u;
+    gemm.group_row_offset = buffers->group_row_offset;
+    gemm.group_tile_prefix = buffers->group_tile_prefix_w2;
+    gemm.output_bf16 = buffers->expert_out_bf16;
+    status = LmGemmWeightOnlyLaunch<
+        ExpertFormat,
+        GLM5_NEXT_LAYER_TILE_N,
+        GLM5_NEXT_LAYER_STAGES,
+        GLM5_NEXT_LAYER_WARPS>(
+            &gemm,
+            buffers->intermediate_bf16,
+            buffers->expert_w2_weight,
+            packed_rows,
+            rows,
+            GLM5_NEXT_TOP_K,
+            GLM5_NEXT_EXPERTS,
+            buffers->expert_intermediate,
+            GLM5_NEXT_HIDDEN,
+            multiprocessors,
+            true,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmMoeFinalizeKernel<GLM5_NEXT_LAYER_THREADS>),
+        dim3(
+            (GLM5_NEXT_HIDDEN + GLM5_NEXT_LAYER_THREADS - 1u) /
+                GLM5_NEXT_LAYER_THREADS,
+            rows),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->expert_out_bf16,
+        buffers->route_packed_row,
+        buffers->route_weight,
+        buffers->hidden_bf16,
+        rows,
+        GLM5_NEXT_TOP_K,
+        GLM5_NEXT_HIDDEN);
+    status = Glm5NextLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->shared_gate_up_weight,
+        buffers->gate_up_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        buffers->shared_gate_up_rows,
+        buffers->shared_gate_up_rows,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    LM_LAUNCH(
+        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->gate_up_bf16,
+        buffers->intermediate_bf16,
+        buffers->shared_intermediate,
+        false);
+    status = Glm5NextLaunchBf16Linear(
+        buffers->intermediate_bf16,
+        buffers->shared_down_weight,
+        buffers->shared_out_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        buffers->shared_intermediate,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    LM_LAUNCH(
+        (LmAddRowsKernel<GLM5_NEXT_LAYER_THREADS>),
+        dim3(
+            (GLM5_NEXT_HIDDEN + GLM5_NEXT_LAYER_THREADS - 1u) /
+                GLM5_NEXT_LAYER_THREADS,
+            rows),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->hidden_bf16,
+        buffers->shared_out_bf16,
+        buffers->hidden_bf16,
+        rows,
+        GLM5_NEXT_HIDDEN);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextHead(
+    const Glm5NextLayerBuffers *buffers,
+    const void *head_norm_weight,
+    const void *head_weight,
+    const uint32_t *token_ids,
+    uint32_t vocabulary,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    uint32_t tiles;
+
+    if (buffers == 0 || head_norm_weight == 0 || head_weight == 0 ||
+        rows == 0u || vocabulary == 0u || buffers->hidden_bf16 == 0 ||
+        buffers->residual_bf16 == 0 || buffers->normed_bf16 == 0 ||
+        buffers->head_candidate_score == 0 ||
+        buffers->head_candidate_token == 0 || buffers->output_token == 0 ||
+        buffers->output_score == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+
+    tiles = (vocabulary + GLM5_NEXT_HEAD_TILE - 1u) / GLM5_NEXT_HEAD_TILE;
+    // The stream arrives SPLIT: the layer loop leaves the last MLP output in
+    // hidden_bf16 and everything before it in residual_bf16, and the true
+    // final stream is their sum. Norming hidden alone - as this did - drops
+    // the whole residual stream at the one norm the model cannot afford to
+    // lose. The fold is free: the kernel adds the residual and writes no
+    // residual back when residual_out is null.
+    // CONTRACT: a caller that flushes residual into hidden itself must zero
+    // residual_bf16 afterwards, or the stream is counted twice here.
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->hidden_bf16,
+        buffers->residual_bf16,
+        (const uint16_t *)head_norm_weight,
+        0,
+        buffers->normed_bf16,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_RMS_EPSILON);
+    LM_LAUNCH(
+        (LmHeadCandidateKernel<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_HEAD_TILE>),
+        dim3(tiles, rows),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->normed_bf16,
+        (const uint16_t *)head_weight,
+        token_ids,
+        buffers->head_candidate_score,
+        buffers->head_candidate_token,
+        rows,
+        GLM5_NEXT_HIDDEN,
+        vocabulary);
+    LM_LAUNCH(
+        (LmHeadCommitKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->head_candidate_score,
+        buffers->head_candidate_token,
+        tiles,
+        buffers->output_token,
+        buffers->output_score,
+        rows);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
