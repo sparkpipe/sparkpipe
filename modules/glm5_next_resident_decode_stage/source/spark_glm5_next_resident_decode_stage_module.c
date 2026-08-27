@@ -79,6 +79,19 @@ struct SparkGlm5NextModuleState
 	char model_revision[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES];
 	SparkGlm5NextLayerWeights layers[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint32_t index_ordinal_by_local_layer[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
+	uint32_t kv_ordinal_by_local_layer[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
+	uint32_t kda_ordinal_by_local_layer[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
+	uint32_t kv_layer_count;
+	uint32_t kda_layer_count;
+	uint8_t *kda_state_pools;
+	uint64_t kda_state_layer_stride_bytes;
+	uint8_t *kda_window_pools;
+	uint8_t *kda_q_window_pool;
+	uint8_t *kda_k_window_pool;
+	uint8_t *kda_v_window_pool;
+	uint64_t kda_window_layer_stride_bytes;
+	uint32_t *kda_state_index_device;
+	uint32_t *kda_state_index_host;
 	uint64_t layer_seen[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint64_t global_seen;
 	const void *embedding_bf16;
@@ -362,6 +375,32 @@ static SparkStatus SparkGlm5NextPackAssignLayer(
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_GATE_UP: weights->shared_gate_up_bf16 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_DOWN: weights->shared_down_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_QKV_BETA: weights->kda_qkv_beta_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_DECAY_GATE_DOWN: weights->kda_decay_gate_down_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_DECAY_UP: weights->kda_decay_up_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_GATE_UP: weights->kda_gate_up_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_Q_CONV: weights->kda_q_conv_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_K_CONV: weights->kda_k_conv_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_V_CONV: weights->kda_v_conv_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_DECAY_BIAS: weights->kda_decay_bias_f32 = (const float *)payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE: weights->kda_head_log_scale_f32 = (const float *)payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT_NORM: weights->kda_out_norm_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT: weights->kda_out_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_ATTN_FN: weights->hc_attn_fn_f32 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_ATTN_BASE: weights->hc_attn_base_f32 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_ATTN_SCALE: weights->hc_attn_scale_f32 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_FN: weights->hc_ffn_fn_f32 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_BASE: weights->hc_ffn_base_f32 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_SCALE: weights->hc_ffn_scale_f32 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_INDEX_COMPRESS_APE: weights->index_compress_ape_f32 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_INDEX_COMPRESS_GATE: weights->index_compress_gate_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_EH_PROJ:
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_ENORM:
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_HNORM:
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_SHARED_NORM:
+		/* The MTP head rides the spec path (M5); accepted and validated at
+		 * load, consumed later. */
+		break;
 	default: return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return(SPARK_STATUS_OK);
@@ -562,16 +601,43 @@ static SparkStatus SparkGlm5NextAllocateSlotHidden(
 	uint64_t rows;
 	SparkStatus status;
 	rows = state->execution_row_capacity;
-	status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->hidden_bf16);
+	/* hidden_bf16 IS the HC streams surface: rows x hc x hidden. */
+	status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->hidden_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->residual_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->normed_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->hc_collapsed_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->hc_snapshot_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->hc_mean_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_HC_MIX_DIMENSION,sizeof(float),(void **)&slot->hc_mixes_f32);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_HC_MULT,sizeof(float),(void **)&slot->hc_pre_f32);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_HC_MULT,sizeof(float),(void **)&slot->hc_post_f32);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HC_MULT,sizeof(float),(void **)&slot->hc_comb_f32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_QUERY_A_DIMENSION,(void **)&slot->q_compressed_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_QUERY_B_DIMENSION,(void **)&slot->q_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_LATENT_DIMENSION,(void **)&slot->query_latent_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_ROPE_DIMENSION,(void **)&slot->query_rope_bf16);
+	/* query_rope_bf16 is deliberately NOT allocated: rope dim is zero and
+	 * the latent attention template never dereferences a null rope
+	 * pointer at ROPE == 0 (compile-time guarantee, config.h assert). */
+	slot->query_rope_bf16 = 0;
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_DSA_INDEX_QUERY_DIMENSION,(void **)&slot->index_query_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_DSA_INDEX_HEAD_DIMENSION,(void **)&slot->index_key_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_DSA_INDEX_HEAD_COUNT,(void **)&slot->index_head_weight_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_DSA_INDEX_HEAD_DIMENSION,(void **)&slot->index_gate_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION,(void **)&slot->index_packed_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K / SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL,sizeof(uint32_t),(void **)&slot->selected_pools);
+	/* KDA scratch: full-width per-rank tensors (the pack shard applies at
+	 * load; the module allocates for the LOCAL rank's dimensions, which
+	 * at tp_degree 1 are the full 8192 rows). */
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,2u * SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION + SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION + SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,(void **)&slot->fused_qkvb_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,2u * SPARK_GLM5_NEXT_MODEL_KDA_LOW_RANK_GATE_BOTTLENECK,(void **)&slot->fused_decay_gate_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_LOW_RANK_GATE_BOTTLENECK,(void **)&slot->kda_decay_latent_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_LOW_RANK_GATE_BOTTLENECK,(void **)&slot->kda_gate_latent_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,(void **)&slot->kda_beta_logit);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,(void **)&slot->kda_gate_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,(void **)&slot->kda_decay_logit_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->kda_output_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,sizeof(float),(void **)&slot->kda_retention);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,sizeof(float),(void **)&slot->kda_write_gate);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS,(void **)&slot->kv_slot_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_LATENT_DIMENSION,(void **)&slot->attention_latent_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_VALUE_HEAD_DIMENSION,(void **)&slot->attention_value_bf16);
@@ -592,8 +658,8 @@ static SparkStatus SparkGlm5NextAllocateSlotMlp(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,packed_rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->expert_out_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->shared_out_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT,sizeof(float),(void **)&slot->router_logits_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,state->max_sequence_positions,sizeof(float),(void **)&slot->selection_scores_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_DSA_SELECTED_TOKEN_COUNT,sizeof(uint32_t),(void **)&slot->selected_positions);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,state->max_sequence_positions / SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL,sizeof(float),(void **)&slot->selection_scores_f32);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH,sizeof(uint32_t),(void **)&slot->selected_positions);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_expert);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,packed_rows,1u,sizeof(float),(void **)&slot->route_weight);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_source_token);
@@ -779,25 +845,53 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 	uint64_t main_total,index_total;
 	uint32_t local;
 	SparkStatus status;
+	/* Hybrid caches: the 11 DSA weight layers carry an MLA latent pool and
+	 * a packed indexer pool; the 34 KDA layers carry an fp32 state pool and
+	 * three bf16 conv-window pools instead. Ordinals are per class. */
+	uint64_t kda_window_stride;
+	uint64_t kda_total,window_total;
 	state->index_layer_count = 0u;
+	state->kv_layer_count = 0u;
+	state->kda_layer_count = 0u;
 	for (local=0u; local<state->layer_count; local++)
 	{
+		uint32_t layer = state->first_layer_index + local;
 		state->index_ordinal_by_local_layer[local] = SPARK_GLM5_NEXT_NO_INDEX_ORDINAL;
-		if ( SparkGlm5NextStagePackLayerHasFullIndexer(state->first_layer_index + local) != 0u )
-			state->index_ordinal_by_local_layer[local] = state->index_layer_count++;
+		state->kv_ordinal_by_local_layer[local] = SPARK_GLM5_NEXT_NO_INDEX_ORDINAL;
+		state->kda_ordinal_by_local_layer[local] = SPARK_GLM5_NEXT_NO_INDEX_ORDINAL;
+		if ( layer < SPARK_GLM5_NEXT_MODEL_LAYER_COUNT )
+		{
+			if ( SparkGlm5NextStagePackLayerIsDsa(layer) != 0u )
+			{
+				state->kv_ordinal_by_local_layer[local] = state->kv_layer_count++;
+				state->index_ordinal_by_local_layer[local] = state->index_layer_count++;
+			}
+			else if ( SparkGlm5NextStagePackLayerIsKda(layer) != 0u )
+				state->kda_ordinal_by_local_layer[local] = state->kda_layer_count++;
+		}
 	}
 	status = SparkGlm5NextBuildPageTable(state);
-	main_page_bytes = 64u * (uint64_t)SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
-	index_page_bytes = 64u * (uint64_t)SPARK_GLM5_NEXT_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
-	/* Block-major pool: one 64-token block holds all layers contiguously; the
-	 * per-layer pool base the kernel receives is kv_cache + layer *
-	 * main_page_bytes, and the block stride (main_page_bytes * layer_count) is
-	 * the shared arena's default. */
-	state->kv_layer_stride_bytes = main_page_bytes;
+	/* Slot geometry from the family's KV structs (block-major, 64-token
+	 * pages; the DSA pool strides by the 11 sparse layers, the indexer
+	 * pool by the same ordinals with the 257-wide packed row). */
+	/* Block-major pages: 64 tokens x slot bytes x layer count of the
+	 * owning class (must equal Glm5NextKv/Glm5NextIndexKv::kPageBytes in
+	 * layer.cuh - the compile-time check lives in unity.cu). */
+	main_page_bytes = (uint64_t)64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES *
+		SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
+	index_page_bytes = (uint64_t)64u *
+		SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u *
+		SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
+	kda_window_stride = (uint64_t)state->resident_sequence_capacity *
+		SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER;
+	state->kv_layer_stride_bytes = (uint64_t)state->page_count * main_page_bytes;
 	state->index_layer_stride_bytes = (uint64_t)state->page_count * index_page_bytes;
-	if ( status != SPARK_STATUS_OK || state->kv_layer_stride_bytes == 0u || state->page_count > UINT64_MAX / (main_page_bytes * state->layer_count) )
+	state->kda_state_layer_stride_bytes = (uint64_t)state->resident_sequence_capacity *
+		SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER;
+	state->kda_window_layer_stride_bytes = kda_window_stride;
+	if ( status != SPARK_STATUS_OK || state->kv_layer_stride_bytes == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_CAPACITY_EXCEEDED : status);
-	main_total = (uint64_t)state->page_count * main_page_bytes * state->layer_count;
+	main_total = state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,main_total,(void **)&state->kv_cache);
 	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u )
 	{
@@ -805,6 +899,41 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		index_total = state->index_layer_stride_bytes * state->index_layer_count;
 		status = SparkStageModuleDeviceAllocate(&state->ledger,index_total,(void **)&state->index_cache);
+	}
+	/* KDA pools: one fp32 state slab (heads x key x value per sequence per
+	 * layer) and three conv-window slabs. */
+	kda_total = state->kda_state_layer_stride_bytes * (uint64_t)state->kda_layer_count;
+	if ( status == SPARK_STATUS_OK && state->kda_layer_count != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,kda_total,(void **)&state->kda_state_pools);
+	window_total = kda_window_stride * 3u * (uint64_t)state->kda_layer_count;
+	if ( status == SPARK_STATUS_OK && state->kda_layer_count != 0u )
+	{
+		status = SparkStageModuleDeviceAllocate(&state->ledger,window_total,(void **)&state->kda_window_pools);
+		if ( status == SPARK_STATUS_OK )
+		{
+			state->kda_q_window_pool = state->kda_window_pools;
+			state->kda_k_window_pool = state->kda_q_window_pool + kda_window_stride * (uint64_t)state->kda_layer_count;
+			state->kda_v_window_pool = state->kda_k_window_pool + kda_window_stride * (uint64_t)state->kda_layer_count;
+		}
+	}
+	if ( status == SPARK_STATUS_OK && state->kda_layer_count != 0u )
+	{
+		uint32_t sequence;
+		cudaError_t error;
+		state->kda_state_index_host = (uint32_t *)malloc((size_t)state->resident_sequence_capacity * sizeof(uint32_t));
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)state->resident_sequence_capacity * sizeof(uint32_t),(void **)&state->kda_state_index_device);
+		if ( status == SPARK_STATUS_OK && state->kda_state_index_host != 0 )
+		{
+			for (sequence=0u; sequence<state->resident_sequence_capacity; sequence++)
+				state->kda_state_index_host[sequence] = sequence;
+			error = cudaMemcpy(state->kda_state_index_device,state->kda_state_index_host,(size_t)state->resident_sequence_capacity * sizeof(uint32_t),cudaMemcpyHostToDevice);
+			if ( error != cudaSuccess )
+				status = SPARK_STATUS_INTERNAL_ERROR;
+		}
+		else if ( state->kda_state_index_host == 0 )
+		{
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		}
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextKvInitialize(state);
@@ -1162,6 +1291,14 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->index_cache = state->index_cache;
 	wave->index_layer_stride_bytes = state->index_layer_stride_bytes;
 	wave->index_ordinal_by_local_layer = state->index_ordinal_by_local_layer;
+	wave->kda_ordinal_by_local_layer = state->kda_ordinal_by_local_layer;
+	wave->kda_state_pools = state->kda_state_pools;
+	wave->kda_state_layer_stride_bytes = state->kda_state_layer_stride_bytes;
+	wave->kda_q_window_pool = state->kda_q_window_pool;
+	wave->kda_k_window_pool = state->kda_k_window_pool;
+	wave->kda_v_window_pool = state->kda_v_window_pool;
+	wave->kda_window_layer_stride_bytes = state->kda_window_layer_stride_bytes;
+	wave->kda_state_index = state->kda_state_index_device;
 	wave->page_table = state->page_table;
 	wave->multiprocessor_count = state->multiprocessor_count;
 }
@@ -1851,6 +1988,7 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm5NextReleaseSlotHost(state);
 	SparkStageModuleLedgerRelease(&state->ledger);
+	free(state->kda_state_index_host);
 	free(state->kv_blocks);
 	free(state->kv_resident_slot_logical_block_indices);
 	free(state->kv_entries);

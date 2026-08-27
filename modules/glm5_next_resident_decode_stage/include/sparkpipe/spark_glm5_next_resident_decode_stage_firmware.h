@@ -37,8 +37,12 @@ extern "C" {
 	SPARK_BATCH_BUCKET
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 65536u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
+/* The inter-stage boundary carries ONE hidden row per token: the HC
+ * streams expand at load (every stream initialises to the boundary row)
+ * and collapse by unweighted mean at store - the boundary contract is a
+ * single hidden row, not the stream set. */
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT \
-	(2u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION)
+	SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES 2u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_KIND 1u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_BYTES_PER_ROW \

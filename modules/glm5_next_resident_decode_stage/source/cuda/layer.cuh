@@ -3,6 +3,7 @@
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
+#include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
@@ -355,9 +356,11 @@ struct Glm5NextLayerBuffers
     const void *kda_decay_gate_down_weight;
     const void *kda_decay_up_weight;
     const void *kda_gate_up_weight;
-    const float *kda_q_conv_weight;
-    const float *kda_k_conv_weight;
-    const float *kda_v_conv_weight;
+    /* BF16 conv weights, unconverted from the checkpoint (k3 packs them
+     * F32; glm5_next's LmCausalConvKernel<uint16_t> reads bf16 taps). */
+    const void *kda_q_conv_weight;
+    const void *kda_k_conv_weight;
+    const void *kda_v_conv_weight;
     const float *kda_decay_bias;
     const float *kda_head_log_scale;
     const void *kda_out_norm_weight;
@@ -397,6 +400,7 @@ struct Glm5NextLayerBuffers
     float *hc_comb_f32;
     uint16_t *hc_collapsed_bf16;
     uint16_t *hc_snapshot_bf16;
+    uint16_t *hc_mean_bf16;
 
     /* -- indexer kpool compressor (dsv4 mechanism, glm53 geometry) */
     const void *index_compress_ape;
@@ -676,10 +680,6 @@ static int32_t Glm5NextLayerIndexer(
         buffers->context_length,
         buffers->selected_positions,
         rows);
-    return cudaPeekAtLastError() == cudaSuccess
-        ? LM_LAUNCH_OK
-        : LM_LAUNCH_ERR_LAUNCH;
-}
     return cudaPeekAtLastError() == cudaSuccess
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;
@@ -1041,7 +1041,6 @@ static int32_t Glm5NextLayerKda(
         0,
         (const uint16_t *)buffers->attn_norm_weight,
         0,
-        buffers->residual_bf16,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -2039,22 +2038,18 @@ static int32_t Glm5NextHead(
     }
 
     tiles = (vocabulary + GLM5_NEXT_HEAD_TILE - 1u) / GLM5_NEXT_HEAD_TILE;
-    // The stream arrives SPLIT: the layer loop leaves the last MLP output in
-    // hidden_bf16 and everything before it in residual_bf16, and the true
-    // final stream is their sum. Norming hidden alone - as this did - drops
-    // the whole residual stream at the one norm the model cannot afford to
-    // lose. The fold is free: the kernel adds the residual and writes no
-    // residual back when residual_out is null.
-    // CONTRACT: a caller that flushes residual into hidden itself must zero
-    // residual_bf16 afterwards, or the stream is counted twice here.
+    /* glm5_next: the layer loop leaves the HC STREAMS in hidden_bf16; the
+     * head collapse is the UNWEIGHTED MEAN (hc_mean_bf16, filled by
+     * Glm5NextHcHeadMeanKernel in the wave runner) followed by this plain
+     * norm - residual_bf16 carries nothing at this point. */
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
-        buffers->hidden_bf16,
-        buffers->residual_bf16,
+        buffers->hc_mean_bf16,
+        0,
         (const uint16_t *)head_norm_weight,
         0,
         buffers->normed_bf16,

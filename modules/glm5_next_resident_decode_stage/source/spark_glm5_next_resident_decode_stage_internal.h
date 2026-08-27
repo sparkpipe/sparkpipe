@@ -32,6 +32,28 @@ typedef struct SparkGlm5NextLayerWeights
 	const void *expert_down_scale;
 	const void *shared_gate_up_bf16;
 	const void *shared_down_bf16;
+	/* KDA (pack-V2 fusions; conv/bias/log-scale arrive rank-sliced). */
+	const void *kda_qkv_beta_bf16;
+	const void *kda_decay_gate_down_bf16;
+	const void *kda_decay_up_bf16;
+	const void *kda_gate_up_bf16;
+	const void *kda_q_conv_bf16;
+	const void *kda_k_conv_bf16;
+	const void *kda_v_conv_bf16;
+	const float *kda_decay_bias_f32;
+	const float *kda_head_log_scale_f32;
+	const void *kda_out_norm_bf16;
+	const void *kda_out_bf16;
+	/* Hyper-connections (fn/base/scale stored F32). */
+	const void *hc_attn_fn_f32;
+	const void *hc_attn_base_f32;
+	const void *hc_attn_scale_f32;
+	const void *hc_ffn_fn_f32;
+	const void *hc_ffn_base_f32;
+	const void *hc_ffn_scale_f32;
+	/* Indexer kpool compressor. */
+	const void *index_compress_ape_f32;
+	const void *index_compress_gate_bf16;
 } SparkGlm5NextLayerWeights;
 
 typedef struct SparkGlm5NextExecutionSlot
@@ -58,6 +80,9 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *query_rope_bf16;
 	uint16_t *index_query_bf16;
 	uint16_t *index_key_bf16;
+	uint16_t *index_gate_bf16;
+	uint16_t *index_packed_bf16;
+	uint32_t *selected_pools;
 	uint16_t *index_head_weight_bf16;
 	uint16_t *kv_slot_bf16;
 	uint16_t *attention_latent_bf16;
@@ -67,6 +92,28 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *intermediate_bf16;
 	uint16_t *expert_out_bf16;
 	uint16_t *shared_out_bf16;
+	/* KDA per-layer state and scratch. */
+	uint8_t *kda_state_pool;
+	const uint32_t *kda_state_index;
+	uint16_t *kda_qkv_window_pool;
+	uint16_t *fused_qkvb_bf16;
+	uint16_t *fused_decay_gate_bf16;
+	uint16_t *kda_decay_latent_bf16;
+	uint16_t *kda_gate_latent_bf16;
+	uint16_t *kda_beta_logit;
+	uint16_t *kda_gate_bf16;
+	uint16_t *kda_decay_logit_bf16;
+	uint16_t *kda_output_bf16;
+	float *kda_retention;
+	float *kda_write_gate;
+	/* Hyper-connection scratch. */
+	float *hc_mixes_f32;
+	float *hc_pre_f32;
+	float *hc_post_f32;
+	float *hc_comb_f32;
+	uint16_t *hc_collapsed_bf16;
+	uint16_t *hc_snapshot_bf16;
+	uint16_t *hc_mean_bf16;
 	float *router_logits_f32;
 	float *selection_scores_f32;
 	uint32_t *selected_positions;
@@ -121,6 +168,16 @@ typedef struct SparkGlm5NextCudaWave
 	uint8_t *index_cache;
 	uint64_t index_layer_stride_bytes;
 	const uint32_t *index_ordinal_by_local_layer;
+	/* KDA per-layer pools: fp32 state + the three bf16 conv windows,
+	 * indexed by KDA ordinal (only 34 layers carry them). */
+	uint8_t *kda_state_pools;
+	uint64_t kda_state_layer_stride_bytes;
+	uint8_t *kda_q_window_pool;
+	uint8_t *kda_k_window_pool;
+	uint8_t *kda_v_window_pool;
+	uint64_t kda_window_layer_stride_bytes;
+	const uint32_t *kda_ordinal_by_local_layer;
+	const uint32_t *kda_state_index;
 	const uint32_t *page_table;
 	uint32_t multiprocessor_count;
 } SparkGlm5NextCudaWave;
