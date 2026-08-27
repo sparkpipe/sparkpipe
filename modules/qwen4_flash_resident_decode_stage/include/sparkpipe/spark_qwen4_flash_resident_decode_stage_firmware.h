@@ -74,6 +74,12 @@ extern "C" {
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 2u
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 3u
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 4u
+/* MX wire format for routed experts (packer --expert-format fp8-e8m0b128):
+ * E4M3 payload + one E8M0 scale byte per 128-element row block. Accepted as
+ * an alternative to the F32B128 natural format for the three routed-expert
+ * tensors; decode is the shared common-kernel MX grid (a per-build numerics
+ * baseline, same as the 27b module's format-6 packs). */
+#define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 6u
 
 /*
  * One linear projection, bf16 or MXFP4 payload with per-group E8M0 scales.

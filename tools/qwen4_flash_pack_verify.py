@@ -133,8 +133,11 @@ def verify_directory(header: dict, entries: list[dict], tp_degree: int, tp_rank:
             problems.append(f"kind={entry['tensor_kind']} illegal expert format {wire_format}")
         if wire_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
             want_payload = entry["rows"] * entry["columns"]
-            want_scale = (entry["rows"] // FP8_BLOCK) * (entry["columns"] // FP8_BLOCK) * (
-                4 if wire_format == WEIGHT_FP8_F32B128 else 1)
+            # F32B128: f32 per 128x128 tile; E8M0B128: exponent byte per
+            # (row, 128-column block) - the module kernel's per-row MX plane.
+            want_scale = ((entry["rows"] // FP8_BLOCK) * (entry["columns"] // FP8_BLOCK) * 4
+                          if wire_format == WEIGHT_FP8_F32B128
+                          else entry["rows"] * (entry["columns"] // FP8_BLOCK))
             if entry["scale_group_size"] != FP8_BLOCK:
                 problems.append(f"kind={entry['tensor_kind']} scale group {entry['scale_group_size']} != {FP8_BLOCK}")
         elif wire_format == WEIGHT_BF16:
@@ -274,9 +277,16 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                 matrix = expert_source_matrix(source, ref, kind, layer)
                 values, scale = dequantize_block(payload, scales, entry["weight_format"])
                 rows, columns = entry["rows"], entry["columns"]
-                values = values.reshape(rows // FP8_BLOCK, FP8_BLOCK, columns // FP8_BLOCK, FP8_BLOCK)
-                scale = scale.reshape(rows // FP8_BLOCK, 1, columns // FP8_BLOCK, 1)
-                rebuilt = (values * scale).reshape(rows, columns).astype(np.float32)
+                if entry["weight_format"] == WEIGHT_FP8_E8M0B128:
+                    # Per-row MX plane: scale[r, c/128] applies to the 128
+                    # columns of row r in that block (matches the module's
+                    # SparkLmDotRowFp8E8m0 decode).
+                    scale = scale.reshape(rows, columns // FP8_BLOCK, 1)
+                    rebuilt = (values.reshape(rows, columns // FP8_BLOCK, FP8_BLOCK) * scale).reshape(rows, columns).astype(np.float32)
+                else:
+                    values = values.reshape(rows // FP8_BLOCK, FP8_BLOCK, columns // FP8_BLOCK, FP8_BLOCK)
+                    scale = scale.reshape(rows // FP8_BLOCK, 1, columns // FP8_BLOCK, 1)
+                    rebuilt = (values * scale).reshape(rows, columns).astype(np.float32)
                 source_f32 = matrix.astype(np.float32)
                 difference = float(np.sqrt(((rebuilt - source_f32) ** 2).sum()))
                 norm = float(np.sqrt((source_f32 ** 2).sum()))

@@ -257,6 +257,14 @@ REPLICATED_KINDS = frozenset({
     KIND_GDN_NORM, KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM,
     KIND_FINAL_NORM, KIND_MTP_FC, KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM,
     KIND_MTP_FINAL_NORM,
+    # The router gate MUST be replicated: a rank-local gate would select a
+    # rank-local top-k, and the union across ranks is not the model's top-k.
+    # Every rank scores all experts and routes the same global top-k; each
+    # rank executes only the pairs whose experts live in its shard (the
+    # module derives the route group base from the gate width). The first
+    # deployed pack generation narrowed it - the module still accepts and
+    # runs those (self-consistent, wrong mixture); rebuilt packs replicate.
+    KIND_MOE_GATE,
 })
 
 
@@ -382,9 +390,12 @@ class SafetensorsSource(_BaseSafetensorsSource):
 
 
 def quantize_fp8_blocks(matrix_bf16: "np.ndarray", expert_format: str):
-    """Quantize one [R, C] BF16 matrix to FP8_E4M3 with per-128x128-block
-    scales. Returns (payload bytes, scale bytes). F32B128 stores f32
-    multiplier scales; E8M0B128 stores one exponent byte per block.
+    """Quantize one [R, C] BF16 matrix to FP8_E4M3. Returns (payload bytes,
+    scale bytes). F32B128: per-128x128-tile f32 multiplier scales. E8M0B128:
+    one exponent byte per (row, 128-column block) - the per-row MX layout the
+    module's grouped expert kernels decode (SparkLmDotRowFp8E8m0: scale index
+    = row * (columns/128) + block). E8M0 scales round UP to a power of two so
+    value/scale never exceeds the E4M3 max (no saturation).
 
     The Flash checkpoint ships BF16, so this is a real quantization step
     (unlike the vendor-FP8 qwen38_max source): amax per block, scale =
@@ -395,23 +406,31 @@ def quantize_fp8_blocks(matrix_bf16: "np.ndarray", expert_format: str):
     rows, columns = matrix_bf16.shape
     if rows % FP8_BLOCK != 0 or columns % FP8_BLOCK != 0:
         raise PackFailure(f"fp8 block quantization needs {FP8_BLOCK}-aligned matrix, got [{rows},{columns}]")
-    values = matrix_bf16.astype(np.float32).reshape(
-        rows // FP8_BLOCK, FP8_BLOCK, columns // FP8_BLOCK, FP8_BLOCK)
-    amax = np.maximum(np.abs(values).max(axis=(1, 3), keepdims=True), 1e-30)
-    scale = amax / FP8_E4M3_MAX
-    scaled = values / scale
-    payload = np.clip(scaled, -FP8_E4M3_MAX, FP8_E4M3_MAX)
-    codes = float_to_e4m3(payload)
-    payload_bytes = codes.astype(np.uint8).tobytes()
     if expert_format == "fp8-f32b128":
+        values = matrix_bf16.astype(np.float32).reshape(
+            rows // FP8_BLOCK, FP8_BLOCK, columns // FP8_BLOCK, FP8_BLOCK)
+        amax = np.maximum(np.abs(values).max(axis=(1, 3), keepdims=True), 1e-30)
+        scale = amax / FP8_E4M3_MAX
+        scaled = values / scale
+        payload = np.clip(scaled, -FP8_E4M3_MAX, FP8_E4M3_MAX)
+        codes = float_to_e4m3(payload)
+        payload_bytes = codes.astype(np.uint8).tobytes()
         scale_plane = scale.astype("<f4").tobytes()
-    elif expert_format == "fp8-e8m0b128":
-        exponent = np.maximum(np.ceil(np.log2(scale)), -127.0)
-        exponent = np.minimum(exponent, 127.0)
-        scale_plane = (exponent + 127.0).astype(np.uint8).tobytes()
-    else:
-        raise PackFailure(f"unknown expert format {expert_format}")
-    return payload_bytes, scale_plane
+        return payload_bytes, scale_plane
+    if expert_format == "fp8-e8m0b128":
+        values = matrix_bf16.astype(np.float32).reshape(rows, columns // FP8_BLOCK, FP8_BLOCK)
+        amax = np.maximum(np.abs(values).max(axis=2, keepdims=True), 1e-30)
+        scale = amax / FP8_E4M3_MAX
+        # ceil to a power of two: scale_rounded >= scale keeps |v|/scale <= 448.
+        exponent = np.minimum(np.maximum(np.ceil(np.log2(scale)), -127.0), 127.0)
+        scale_rounded = np.power(2.0, exponent)
+        scaled = values / scale_rounded
+        payload = np.clip(scaled, -FP8_E4M3_MAX, FP8_E4M3_MAX)
+        codes = float_to_e4m3(payload)
+        payload_bytes = codes.astype(np.uint8).reshape(rows, columns).tobytes()
+        scale_plane = (exponent + 127.0).astype(np.uint8).reshape(rows, columns // FP8_BLOCK).tobytes()
+        return payload_bytes, scale_plane
+    raise PackFailure(f"unknown expert format {expert_format}")
 
 
 def float_to_e4m3(values: "np.ndarray") -> "np.ndarray":
@@ -688,13 +707,21 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         _, _, offset = source.check_shape(full_ref)
         full_ref.source_offset = offset
     refs = [shard_ref(ref, tp_degree, tp_rank) for ref in inventory]
+    # The routed experts' WIRE format (natural is F32B128; the CLI flag swaps
+    # in the per-row MX plane). The plan below must price the scale bytes by
+    # the WIRE format - the writer emits exactly this plane.
+    expert_wire_format = WEIGHT_FP8_E8M0B128 if expert_format == "fp8-e8m0b128" else WEIGHT_FP8_F32B128
     plans = []
     cursor = 0
     for ref in refs:
         if ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
             payload_bytes = ref.rows * ref.columns
-            scale_bytes = (ref.rows // FP8_BLOCK) * (ref.columns // FP8_BLOCK) * (
-                F32_BYTES if ref.weight_format == WEIGHT_FP8_F32B128 else 1)
+            # F32B128: one f32 per 128x128 tile; E8M0B128: one exponent byte
+            # per (row, 128-column block) - the per-row MX plane the module's
+            # grouped expert kernels decode.
+            scale_bytes = ((ref.rows // FP8_BLOCK) * (ref.columns // FP8_BLOCK) * F32_BYTES
+                           if expert_wire_format == WEIGHT_FP8_F32B128
+                           else ref.rows * (ref.columns // FP8_BLOCK))
         else:
             payload_bytes = ref.rows * ref.columns * (BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES)
             scale_bytes = 0
@@ -703,8 +730,6 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         cursor = payload_offset + payload_bytes + scale_bytes
     payload_base = align_up(HEADER_BYTES + len(plans) * ENTRY_BYTES, PAYLOAD_ALIGNMENT)
     file_bytes = payload_base + cursor
-
-    expert_wire_format = WEIGHT_FP8_E8M0B128 if expert_format == "fp8-e8m0b128" else WEIGHT_FP8_F32B128
 
     header = HEADER_STRUCT.pack(
         MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, len(plans),

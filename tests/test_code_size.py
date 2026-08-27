@@ -752,7 +752,14 @@ from pathlib import Path
 # The M1 contract freeze adds the authoritative JSON's census section and
 # the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
 # ports) lands in the same window; 186345 is the exact count.
-CEILING = 186345
+# The M5 kernel port window: whole-stack TP4 enablement in
+# modules/qwen4_flash_resident_decode_stage (TP_STANDALONE bypass, vocab-
+# sharded embedding gather + all-reduce, sharded head argmax with the
+# maxloc u64 collective, rank-local GDN kernels, dual-width router gate,
+# format-6 E8M0B128 grouped expert kernels incl. the family-local scalar
+# variant, MTP draft chain fixes) + packer/verifier format-6 per-row plane
+# and gate replication; 187008 is the exact count.
+CEILING = 187008
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
