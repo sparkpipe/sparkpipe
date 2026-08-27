@@ -749,7 +749,10 @@ from pathlib import Path
 # (geometry header + work control), tools/qwen4_flash_verify_source.py, and
 # tests. Sibling-geometry re-parameterization of existing families, not new
 # architecture code; 184913 is the exact count after it lands.
-CEILING = 184913
+# The M1 contract freeze adds the authoritative JSON's census section and
+# the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
+# ports) lands in the same window; 186345 is the exact count.
+CEILING = 186345
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
