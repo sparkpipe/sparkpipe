@@ -183,6 +183,24 @@ First verifier revision FAILED the good pack (per-expert interleaved
 expected stream) — fixed to all-payloads-then-all-scales; the manual
 per-component digests proved the PACK was correct both times.
 
+## Node plan (coordinator updates, 2026-08-27)
+
+1. First correction: sparkc/sparkd are contended (GLM+K3+QwenMax) — lane
+   node is sparkb ONLY. Applied: nothing was ever parked on c/d; the
+   verify-park pipeline was retargeted before any pack landed.
+2. Second revision asked for immediate deploy of "~144 GB rank packs"
+   (2.3T/16) to spark0-15. NOT EXECUTABLE as stated — see F1/F2: rank
+   packs of that shape do not exist (loader is full-width-only) and the
+   real 573-606 GiB stage packs cannot be resident on 119 GB nodes.
+   Answered with options (a) TP4xPP8/32 ranks — fits, no module change;
+   (b) sharded-pack module work; (c) stage-unsupported-packs-on-ack.
+   Also: 16 ranks need 16 hosts; spark2=prod and spark1=restarting leave
+   14 — two short for the 16-rank plan regardless.
+3. Deploy target dir per coordinator: /home/<host>/sparkdata/qwen38max.tp4pp4/packs/.
+   (Pipeline v2 parks stages 0-2 on sparkb there after verifier PASS;
+   stage 3 stays on the build host spark0 so sparkb stays <=75% disk.
+   spark0 locals are deleted after each park size-check.)
+
 ## P3 live status (updated as builds land)
 
 * Building on spark0 (reads verified cold RAID, writes spark0 local NVMe
