@@ -97,3 +97,29 @@ Current → Target:
 4. GLM 5.2 numbers are from the pre-audit-fix code; the current code has
    correctness fixes that may change throughput.
 5. qwen38_max has no validation harness (audit finding).
+
+## Qwen 27B TP4×PP4 Projected Performance (not yet measured)
+
+The 24.5 tok/s current production is TP1 B=1 with DFlash2. The projected
+numbers for TP4×PP4 deployment on 16 sparks:
+
+| Configuration | Single-stream spec | Aggregate spec (continuous batching) |
+|---|---|---|
+| TP1 B=1 (current) | 50 tok/s | 50 tok/s |
+| TP4×PP4 B=1 | 199 tok/s | 199 tok/s |
+| TP4×PP4 B≥4 (pipeline full) | 794 tok/s | 794 tok/s |
+| TP4×PP4 B≥16 (batched) | — | ~8,900 tok/s |
+| TP4×PP4 B≥64 (theoretical max) | — | ~50,000 tok/s (weight-stream bound) |
+
+The 150 "ceiling" is B=1 single-stream latency on TP4×PP4 (28.5 ms through
+4 pipeline stages). The aggregate ceiling is set by weight streaming
+(28.5 GB per pass through 4,000 GB/s total HBM = 7.1 ms) — NOT by compute.
+Continuous batching amortizes the weight stream across all pending
+requests. The same principle as MoE expert grouping, applied to dense:
+memory-bound → compute-bound by increasing tokens per weight load.
+
+**These are projections, not measurements.** The TP4×PP4 deployment
+requires: the pack path fix on spark4, TP4 rank packs (which the DFlash2
+spec path needs), the pipeline runtime on 4 nodes, and the collective
+standalone bypass (or a 4-node TP collective). None of these are
+currently deployed for the 27B (which runs TP1 on spark2).
