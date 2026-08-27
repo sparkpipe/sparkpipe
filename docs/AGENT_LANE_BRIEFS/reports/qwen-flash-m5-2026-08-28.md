@@ -202,15 +202,29 @@ OOB), not validator artifacts. The skip_gdn debug probe also proved
 misleading (it manufactures stale-delta reads) - documented here so nobody
 re-runs that bisect expecting signal.
 
-## v2 pack generation (in flight)
+## v2 pack generation (rank 0 verified + validated; 1-3 building)
 
-4 ranks building on spark4 as this report is written (packs_v2/): format-4
-experts (byte-comparable to the deployed class) + REPLICATED router gates.
-Same builder+verifier loop as P2. Intended next steps (not done here):
-verify all 4, whole-stack standalone on rank 0 (exercises the dual-mode
-gate path), rsync to spark5-7, then a live 4-node collective run once a
-residentd exists. The deployed format-4/narrowed-gate packs remain valid
-for standalone validation.
+packs_v2 on spark4: format-4 experts (byte-comparable to the deployed
+class) + REPLICATED router gates. Rank 0:
+
+```
+qwen4_flash_stagepack slice=0+48 tp=4/0 tensors=899 file_gib=30.89 wrote ...packs_v2/...rank0...
+PASS qwen4_flash_full.tp4-rank0.qwen4_flashsp: header geometry, 899 directory
+     entries (tp 4/0), 10 byte-traced samples receipt=verified
+
+whole-stack TP4 standalone, v2 pack (dual-mode replicated-gate path):
+qwen4_flash_validation check=module_decode_vs_prefill decode_token=17776 prefill_token=17776 bit_exact=1
+qwen4_flash_validation check=module_mtp_draft in_vocab=1 drafts=[377,20656]
+qwen4_flash_validation check=module_determinism bit_exact=1
+qwen4_flash_validation PASS
+```
+
+Tokens differ from the v1 pack run (17776 vs 37853) exactly as expected:
+the global top-10 over 512 experts is a different mixture than rank 0's
+local top-10 over 128. Ranks 1-3 build+verify with the same loop
+(/tmp/q4f_v2_build.log on spark4); deploy = rsync packs_v2 to spark5-7 and
+point the launchers at it (next session; the deployed v1 packs remain
+valid for standalone validation).
 
 ## INTEGRATION REQUEST
 
@@ -236,6 +250,10 @@ for standalone validation.
 
 ## Commits (this session)
 
+  * module Makefile: the adapter contract-sha provenance pin compiled
+    EMPTY (REPOSITORY_ROOT undefined at immediate-expansion time) - now
+    CURDIR-relative; the pin builds as
+    d5227ed0792eda1c24272ce549538a793d0f861000f7057db99afbccb79ed09c.
   * module: TP_STANDALONE bypass, whole-stack TP4 enablement (sharded
     embedding + head argmax + MTP chain, rank-local GDN kernels, dual-width
     router gate + route base, format-6 expert paths incl. the family-local
