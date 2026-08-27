@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Convert the Qwen/Qwen3.8-2.4T-A95B BF16 safetensors checkpoint into qwen38 stage packs.
+"""Convert the Qwen/Qwen3.8-2.4T-A95B FP8 safetensors checkpoint into qwen38 stage packs.
 
-Setup-time code, never the serving path. Mirrors tools/qwen38_27b_stagepack.py for
-the GDN/attention tensors and adds the routed-MoE inventory with MXFP4-E2M1
-expert weights (group-32 E8M0 scales), the quality-first ladder pinned by
-model_contracts/qwen38_authoritative.json: routed experts MXFP4, everything
-else BF16, A_log/dt_bias F32.
+Setup-time code, never the serving path. Mirrors the qwen38_27b packer for
+the GDN/attention tensors and packs the routed-MoE inventory in the
+precision ladder pinned by model_contracts/qwen38_authoritative.json:
+routed experts F8_E4M3 with F32 block-128x128 scale_inv planes KEPT AS
+SHIPPED, everything else BF16, A_log/dt_bias widened to F32.
 
-Checkpoint layout pinned against the HF index at revision
-207bd685a7e3696cfaff12ded7c6a7ea0f88c996:
+Checkpoint layout pinned against the live FP8 release (per-expert tensors,
+not the fused gate_up stack of a BF16 release):
 
   * GDN layers: input_layernorm, linear_attn.{in_proj_qkv [20480,8192] fused
     q2048|k2048|v16384, in_proj_z [16384,8192], in_proj_a/b [128,8192],
@@ -17,23 +17,31 @@ Checkpoint layout pinned against the HF index at revision
   * Attention layers: input_layernorm, self_attn.{q_proj [32768,8192] fused
     query|gate, k_proj/v_proj [1024,8192], o_proj, q_norm/k_norm [256]},
     post_attention_layernorm.
-  * Every layer: mlp.gate.weight [512,8192], mlp.experts.gate_up_proj
-    [512,4096,8192] (fused w1|w3, split here), mlp.experts.down_proj
-    [512,8192,2048], mlp.shared_expert.{gate_proj,up_proj [2048,8192],
+  * Every layer: mlp.gate.weight [512,8192], mlp.experts.{e}.gate_proj
+    [2048,8192] + {e}.up_proj [2048,8192] (split here into w1/w3 stacks),
+    mlp.experts.{e}.down_proj [8192,2048], each with a {e}..._scale_inv
+    BF16 plane, mlp.shared_expert.{gate_proj,up_proj [2048,8192],
     down_proj [8192,2048]}, mlp.shared_expert_gate.weight [1,8192].
   * Head: lm_head [248320,8192], model.norm [8192], embed [248320,8192].
   * MTP: one decoder layer, same per-layer kinds at the MTP marker.
 
-The vision tower is out of scope by contract. TP slicing (TP4 rank-local
-packs) lands in a follow-up revision once the module's shard plan is pinned;
-this revision packs whole PP-stage slices.
+The vision tower is out of scope by contract.
+
+TOPOLOGY: this packer emits WHOLE PP-STAGE slices. The qwen38_max module's
+pack loader validates full-width shapes (SparkQwen38MaxModuleValidateEntry
+in spark_qwen38_max_resident_decode_stage_module.c) and its TP kernels
+slice heads/experts at RUN time from the resident full-width buffers
+(SparkQwen38MaxLaunchGroupedExpertLinear indexes payload by tp_rank *
+experts_per_rank; the attention kernels index heads/KV the same way), so
+every rank of a TP group loads the SAME stage-pack file. Rank-local TP
+shards of this model would fail pack_entry_invalid at load.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import struct
@@ -69,7 +77,6 @@ PAYLOAD_ALIGNMENT = 256
 WEIGHT_BF16 = 0
 WEIGHT_F32 = 1
 WEIGHT_FP8_F32B128 = 4
-WEIGHT_MXFP4_E2M1 = 7
 
 HIDDEN = 8192
 LAYER_COUNT = 92
@@ -300,75 +307,55 @@ class SafetensorsSource(_BaseSafetensorsSource):
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
         if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
             # per-expert FP8 tensors: validate expert 0 and the scale companion
+            # (dtype AND shape; the remaining experts are resolved again per
+            # expert in copy_fp8_experts, and a missing name fails there)
             expert0 = ref.name.replace("{e}", "0")
+            rows_per_expert = ref.rows // EXPERT_COUNT
             shard, meta, offset = self.resolve(expert0)
             if meta["dtype"] != "F8_E4M3":
                 raise PackFailure(f"{expert0}: dtype {meta['dtype']}, expected F8_E4M3")
+            if meta["shape"] != [rows_per_expert, ref.columns]:
+                raise PackFailure(
+                    f"{expert0}: checkpoint shape {meta['shape']}, pack expects "
+                    f"[{rows_per_expert}, {ref.columns}]")
             scale_name = expert0 + "_scale_inv"
             scale_shard, scale_meta, scale_offset = self.resolve(scale_name)
             if scale_meta["dtype"] != "BF16":
                 raise PackFailure(f"{scale_name}: dtype {scale_meta['dtype']}, expected BF16")
+            if scale_meta["shape"] != [rows_per_expert // 128, ref.columns // 128]:
+                raise PackFailure(
+                    f"{scale_name}: checkpoint shape {scale_meta['shape']}, pack expects "
+                    f"[{rows_per_expert // 128}, {ref.columns // 128}]")
             return shard, meta, offset
         return super().check_shape(ref.name, ref.rows, ref.columns)
 
 
-# -- MXFP4-E2M1 quantization ----------------------------------------------------
-
-# E2M1 magnitudes, OCP microscaling: exp=0 -> {0, 0.5}, exp=1 -> {1, 1.5},
-# exp=2 -> {2, 3}. Scale is a power of two: value = code * 2^(e8m0 - 127).
-E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0)
-
-
-def quantize_mxfp4_e2m1(values: list[float]) -> tuple[bytearray, bytearray]:
-    """Group-32 MXFP4-E2M1 with E8M0 scales: payload byte per element pair,
-    one scale byte per 32-element group. RNE toward nearest magnitude; ties
-    away from zero at the midpoint, matching cvt.rn.e2m1x2 semantics."""
-    if len(values) % (2 * MXFP4_GROUP) != 0:
-        raise PackFailure("mxfp4 input length must be a multiple of 64")
-    payload = bytearray(len(values) // 2)
-    scales = bytearray(len(values) // MXFP4_GROUP)
-    for group in range(len(values) // MXFP4_GROUP):
-        base = group * MXFP4_GROUP
-        group_max = 0.0
-        for value in values[base:base + MXFP4_GROUP]:
-            magnitude = abs(value)
-            if magnitude > group_max:
-                group_max = magnitude
-        if group_max == 0.0:
-            scales[group] = 0
-            continue
-        # scale = 2^e with e = ceil(log2(group_max / 3)); E8M0 code = e + 127.
-        exponent = math.ceil(math.log2(group_max / 3.0))
-        code = max(1, min(254, exponent + 127))
-        scales[group] = code
-        scale = 2.0 ** (code - 127)
-        for offset in range(MXFP4_GROUP):
-            value = values[base + offset] / scale
-            sign = 1 if value < 0.0 else 0
-            magnitude = abs(value)
-            best = 0
-            best_distance = None
-            for index, candidate in enumerate(E2M1_MAGNITUDES):
-                distance = abs(magnitude - candidate)
-                if best_distance is None or distance < best_distance - 1e-9:
-                    best, best_distance = index, distance
-                elif distance == best_distance and candidate > E2M1_MAGNITUDES[best]:
-                    best = index
-            # index 0 -> exp=0 m=0; 1 -> exp=0 m=1; 2 -> exp=1 m=0; 3 -> exp=1 m=1;
-            # 4 -> exp=2 m=0; 5 -> exp=2 m=1.
-            code_bits = ((0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1))[best]
-            # 4-bit E2M1 nibble: [sign, exp1, exp0, mantissa]
-            nibble = (sign << 3) | (code_bits[0] << 1) | code_bits[1]
-            pair_offset = base + offset
-            byte_index = pair_offset >> 1
-            if pair_offset & 1:
-                payload[byte_index] = (payload[byte_index] & 0x0F) | (nibble << 4)
-            else:
-                payload[byte_index] = (payload[byte_index] & 0xF0) | nibble
-    return payload, scales
-
-
 # -- pack writing ---------------------------------------------------------------
+
+
+class _HashingWriter:
+    """Write-through sha256: hashes every byte as it is written so the
+    receipt's whole-file digest needs no second read pass over a finished
+    multi-hundred-GiB pack (warm-storage read-back can be orders of
+    magnitude slower than the write)."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.digest = hashlib.sha256()
+
+    def write(self, data) -> int:
+        written = self.stream.write(data)
+        self.digest.update(data)
+        return written
+
+    def tell(self) -> int:
+        return self.stream.tell()
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+    def fileno(self) -> int:
+        return self.stream.fileno()
 
 
 def copy_bf16_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
@@ -397,34 +384,41 @@ def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
     """Stack 512 per-expert F8_E4M3 weights and their BF16 scale_inv planes
     into the pack: payload [E*R, C] expert-major, scales [E*R/128, C/128]
     as F32 row-major (the common FP8_E4M3_F32B128 kernel layout; scale_inv
-    is stored verbatim as the multiplier plane)."""
+    is stored verbatim as the multiplier plane).
+
+    Streams the payload expert by expert instead of materializing the full
+    [E*R, C] tensor in memory (8 GiB per tensor on this model); the F32
+    scale plane is small (rows*cols/4096*4 bytes, ~2 MiB per tensor) so it
+    is buffered and appended after the payload."""
     import numpy as np
     experts = EXPERT_COUNT
     rows_per_expert = ref.rows // experts
     scale_rows = rows_per_expert // 128
     scale_cols = ref.columns // 128
-    payload = bytearray(ref.rows * ref.columns)
-    scales = bytearray(ref.rows * ref.columns // (128 * 128) * 4)
+    scales = bytearray()
     for e in range(experts):
         name = ref.name.replace("{e}", str(e))
         shard, meta, off = source.resolve(name)
         with (source.root / shard).open("rb") as f:
             f.seek(off)
-            raw = f.read(rows_per_expert * ref.columns)
-        if len(raw) != rows_per_expert * ref.columns:
-            raise PackFailure(f"short read on {name}")
-        base = e * rows_per_expert * ref.columns
-        payload[base:base + len(raw)] = raw
+            remaining = rows_per_expert * ref.columns
+            while remaining > 0:
+                step = min(remaining, CHUNK_BYTES)
+                raw = f.read(step)
+                if len(raw) != step:
+                    raise PackFailure(f"short read on {name}")
+                remaining -= step
+                out.write(raw)
         scale_name = name + "_scale_inv"
         s_shard, s_meta, s_off = source.resolve(scale_name)
         with (source.root / s_shard).open("rb") as f:
             f.seek(s_off)
             sraw = f.read(scale_rows * scale_cols * 2)
+        if len(sraw) != scale_rows * scale_cols * 2:
+            raise PackFailure(f"short read on {scale_name}")
         s16 = np.frombuffer(sraw, dtype="<u2").astype(np.uint32)
-        s32 = ((s16 << 16).astype(np.uint32)).view(np.float32).astype("<f4").tobytes()
-        sbase = e * scale_rows * scale_cols * 4
-        scales[sbase:sbase + len(s32)] = s32
-    out.write(payload)
+        scales.extend(((s16 << 16).astype(np.uint32)).view(np.float32)
+                      .astype("<f4").tobytes())
     out.write(scales)
 
 
@@ -437,10 +431,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     cursor = 0
     for ref in refs:
         shard, meta, offset = source.check_shape(ref)
-        if ref.weight_format == WEIGHT_MXFP4_E2M1:
-            payload_bytes = ref.rows * ref.columns // 2
-            scale_bytes = ref.rows * ref.columns // MXFP4_GROUP
-        elif ref.weight_format == WEIGHT_FP8_F32B128:
+        if ref.weight_format == WEIGHT_FP8_F32B128:
             payload_bytes = ref.rows * ref.columns
             scale_bytes = (ref.rows // 128) * (ref.columns // 128) * F32_BYTES
         else:
@@ -464,8 +455,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     entries = b"".join(
         ENTRY_STRUCT.pack(
             ref.kind, ref.layer, ref.weight_format, ref.rows, ref.columns,
-            (MXFP4_GROUP if ref.weight_format == WEIGHT_MXFP4_E2M1 else
-             128 if ref.weight_format == WEIGHT_FP8_F32B128 else 0),
+            128 if ref.weight_format == WEIGHT_FP8_F32B128 else 0,
             payload_base + payload_offset, payload_bytes,
             payload_base + payload_offset + payload_bytes if scale_bytes else 0,
             scale_bytes)
@@ -488,33 +478,33 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     with tempfile.NamedTemporaryFile(prefix=f".{output.name}.", suffix=".tmp",
                                      dir=output.parent, delete=False) as temp:
         temp_path = Path(temp.name)
-        temp.write(header)
-        temp.write(entries)
-        padding = payload_base - temp.tell()
+        hashing = _HashingWriter(temp)
+        hashing.write(header)
+        hashing.write(entries)
+        padding = payload_base - hashing.tell()
         if padding < 0:
             raise PackFailure("directory overruns the payload base")
-        temp.write(b"\0" * padding)
+        hashing.write(b"\0" * padding)
         for ref, source_offset, payload_offset, payload_bytes, scale_bytes in plans:
-            before = temp.tell()
+            before = hashing.tell()
             if ref.weight_format == WEIGHT_FP8_F32B128:
-                copy_fp8_experts(source, ref, temp)
-            elif ref.weight_format == WEIGHT_MXFP4_E2M1:
-                copy_mxfp4_tensor(source, ref, source_offset, temp)
+                copy_fp8_experts(source, ref, hashing)
             else:
-                copy_bf16_tensor(source, ref, source_offset, temp)
-            wrote = temp.tell() - before
+                copy_bf16_tensor(source, ref, source_offset, hashing)
+            wrote = hashing.tell() - before
             if wrote != payload_bytes + scale_bytes:
                 raise PackFailure(f"payload size mismatch on {ref.name}: {wrote} != {payload_bytes + scale_bytes}")
-            pad = align_up(temp.tell(), PAYLOAD_ALIGNMENT) - temp.tell()
+            pad = align_up(hashing.tell(), PAYLOAD_ALIGNMENT) - hashing.tell()
             if pad:
-                temp.write(b"\0" * pad)
-        temp.flush()
+                hashing.write(b"\0" * pad)
+        hashing.flush()
         os.fsync(temp.fileno())
     os.replace(temp_path, output)
-    receipt["output_sha256"] = sha256_file(output)
+    receipt["output_sha256"] = hashing.digest.hexdigest()
     receipt["file"] = str(output)
     print(f"qwen38_stagepack slice={first_layer}+{layer_count} tensors={len(plans)} "
-          f"file_gib={file_bytes / 2**30:.2f} wrote {output}")
+          f"file_gib={file_bytes / 2**30:.2f} sha256={receipt['output_sha256'][:16]}... "
+          f"wrote {output}")
     return receipt
 
 
@@ -540,7 +530,7 @@ def main() -> int:
         "checkpoint": str(args.checkpoint),
         "contract": {"path": str(args.contract),
                      "sha256": sha256_file(args.contract) if args.contract.is_file() else None},
-        "weight_formats": {"routed_experts": "mxfp4_e2m1",
+        "weight_formats": {"routed_experts": "fp8_e4m3_f32b128_scale_inv",
                            "non_expert": "bf16",
                            "gdn_a_log_dt_bias": "f32"},
     }
