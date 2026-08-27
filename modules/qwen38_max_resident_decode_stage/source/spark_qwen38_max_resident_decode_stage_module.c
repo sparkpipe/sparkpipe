@@ -1627,7 +1627,10 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 			 * count - with the fused SwiGLU in W13. */
 			error = SparkQwen38MaxLaunchFusedExpertW13Act(stream,&weights->experts_w1,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_SWIGLU_LIMIT,state->multiprocessor_count,state->tp_degree,state->tp_rank);
 			if ( error == cudaSuccess )
-				error = SparkQwen38MaxLaunchExpertDown(stream,&weights->experts_w2,slot->moe_slot_up_bf16,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count,state->tp_degree,state->tp_rank);
+				/* rows (not rows*topk): the B1 W2 kernel enumerates its packed rows via
+			 * the route's group offsets and validates rows against the admitted
+			 * decode shapes. */
+			error = SparkQwen38MaxLaunchExpertDown(stream,&weights->experts_w2,slot->moe_slot_up_bf16,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count,state->tp_degree,state->tp_rank);
 		}
 		else if ( rows >= SPARK_QWEN38_MAX_MODULE_MOE_TILE_ROWS )
 		{

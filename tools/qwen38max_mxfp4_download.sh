@@ -15,13 +15,18 @@ SPARK="${SPARK_HOST:-spark7}"
 WORKERS="${DOWNLOAD_WORKERS:-10}"
 REPO="amd/Qwen3.8-2.4T-A95B-Quark-MXFP4"
 DEST="/mnt/model-warm/packbuild/qwen38max/amd-mxfp4"
+# Split the file list across concurrent download nodes: --shard-mod N/M
+# takes files whose list index satisfies index % M == N. Default takes all.
+SHARD_N=0
+SHARD_M=1
 
-usage() { echo "usage: $0 [--spark N] [--workers N] [--dest PATH]" >&2; exit 2; }
+usage() { echo "usage: $0 [--spark N] [--workers N] [--dest PATH] [--shard-mod N/M]" >&2; exit 2; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --spark) SPARK="$2"; shift 2 ;;
     --workers) WORKERS="$2"; shift 2 ;;
     --dest) DEST="$2"; shift 2 ;;
+    --shard-mod) SHARD_N="${2%%/*}"; SHARD_M="${2##*/}"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -31,24 +36,27 @@ set -euo pipefail
 REPO="__REPO__"
 DEST="__DEST__"
 WORKERS=__WORKERS__
+SHARD_N=__SHARD_N__
+SHARD_M=__SHARD_M__
 mkdir -p "$DEST"
 cd "$DEST"
 
 # File list with exact blob sizes from the HF API (the size is the integrity
-# check - every shard must land whole).
+# check - every shard must land whole). The shard-mod filter splits the list
+# across concurrent download nodes.
 curl -s --retry 5 "https://huggingface.co/api/models/${REPO}?blobs=true" \
-  | python3 -c '
-import json,sys
+  | SHARD_N="${SHARD_N}" SHARD_M="${SHARD_M}" python3 -c '
+import json,os,sys
 d=json.load(sys.stdin)
-for s in d.get("siblings",[]):
-    name=s["rfilename"]; size=s.get("size",0)
-    if name.startswith(".") or name in ("README.md","LICENSE"):
-        continue
-    print(f"{size}\t{name}")
-' > files.tsv
+n=int(os.environ["SHARD_N"]); m=int(os.environ["SHARD_M"])
+files=[s for s in d.get("siblings",[]) if not s["rfilename"].startswith(".")
+       and s["rfilename"] not in ("README.md","LICENSE")]
+for i,s in enumerate(files):
+    if i % m == n:
+        print(str(s.get("size",0)) + "\t" + s["rfilename"])' > files.tsv
 TOTAL=$(awk -F'\t' '{s+=$1} END{print s+0}' files.tsv)
 COUNT=$(wc -l < files.tsv)
-echo "$(date -Is) download start repo=${REPO} files=${COUNT} bytes=${TOTAL} workers=${WORKERS}"
+echo "$(date -Is) download start repo=${REPO} slice=${SHARD_N}/${SHARD_M} files=${COUNT} bytes=${TOTAL} workers=${WORKERS}"
 
 fetch_one() {
   local size="$1" name="$2"
@@ -80,13 +88,15 @@ awk -F'\t' '{print $1" "$2}' files.tsv | xargs -P "$WORKERS" -n 2 bash -c 'fetch
 GOT=$(awk -F'\t' '{s+=$1} END{print s+0}' <(while read -r sz nm; do
   [[ -f "$nm" ]] && [[ "$(stat -c %s "$nm")" == "$sz" ]] && echo -e "$sz\t$nm"
 done < files.tsv))
-echo "$(date -Is) download complete verified_bytes=${GOT} expected=${TOTAL}"
+echo "$(date -Is) slice complete verified_bytes=${GOT} expected=${TOTAL}"
 [[ "$GOT" == "$TOTAL" ]] || { echo "MISSING BYTES: $((TOTAL-GOT))" >&2; exit 1; }
 REMOTE
 )
 remote_script="${remote_script//__REPO__/$REPO}"
 remote_script="${remote_script//__DEST__/$DEST}"
 remote_script="${remote_script//__WORKERS__/$WORKERS}"
+remote_script="${remote_script//__SHARD_N__/$SHARD_N}"
+remote_script="${remote_script//__SHARD_M__/$SHARD_M}"
 
-echo "launching download on ${SPARK} -> ${DEST} with ${WORKERS} workers"
+echo "launching download on ${SPARK} -> ${DEST} slice ${SHARD_N}/${SHARD_M} with ${WORKERS} workers"
 ssh -o BatchMode=yes "${SPARK}" bash -s <<< "$remote_script"
