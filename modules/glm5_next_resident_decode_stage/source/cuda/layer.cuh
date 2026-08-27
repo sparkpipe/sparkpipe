@@ -395,6 +395,8 @@ struct Glm5NextLayerBuffers
     float *hc_pre_f32;
     float *hc_post_f32;
     float *hc_comb_f32;
+    uint16_t *hc_collapsed_bf16;
+    uint16_t *hc_snapshot_bf16;
 
     /* -- indexer kpool compressor (dsv4 mechanism, glm53 geometry) */
     const void *index_compress_ape;
@@ -723,16 +725,18 @@ static int32_t Glm5NextLayerAttention(
     selected_position_count = context > GLM5_NEXT_DSA_SELECTED
         ? buffers->selected_position_count : 0u;
 
+    /* PLAIN norm of the HC-collapsed input: the residual bookkeeping
+     * belongs to the HC post step, so the sublayer never adds one. */
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
-        buffers->hidden_bf16,
-        buffers->residual_bf16,
+        buffers->hc_collapsed_bf16,
+        0,
         (const uint16_t *)buffers->attn_norm_weight,
-        buffers->residual_bf16,
+        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -1033,7 +1037,7 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
-        buffers->hidden_bf16,
+        buffers->hc_collapsed_bf16,
         0,
         (const uint16_t *)buffers->attn_norm_weight,
         0,
@@ -1291,6 +1295,326 @@ static int32_t Glm5NextLayerKda(
         stream);
 }
 
+/* -- hyper-connections (dsv4 donor, glm5_next constants) ---------------------
+ *
+ * mHC per the reference: mixes are fn-dots over the UNWEIGHTED-RMSNorm'd
+ * flattened streams; pre = sigmoid(w*s0 + b0) + eps; post = 2*sigmoid(...);
+ * comb = softmax(+eps) then ONE column normalisation and 19 alternating
+ * row/column pairs (sinkhorn 20) - dsv4's iteration structure exactly,
+ * with the first row pass elided by the softmax. The final head collapse
+ * is an UNWEIGHTED MEAN (dsv4 weights it), then the model norm.
+ *
+ * One thread per row for the split: hc is 4, comb fits in 16 registers. */
+__global__ void Glm5NextHcSplitSinkhornKernel(
+    const float *__restrict__ mixes_f32,
+    const float *__restrict__ scale3_f32,
+    const float *__restrict__ base_f32,
+    uint32_t row_count,
+    uint32_t hc,
+    uint32_t iterations,
+    float epsilon,
+    float *__restrict__ pre_f32,
+    float *__restrict__ post_f32,
+    float *__restrict__ comb_f32)
+{
+    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t i, j, iteration;
+    const uint32_t mix_rows = (2u + hc) * hc;
+    const float *mixes;
+    float comb[16], maximum, total;
+    if (row >= row_count || hc > 4u)
+        return;
+    mixes = mixes_f32 + (uint64_t)row * mix_rows;
+    for (i = 0u; i < hc; ++i)
+    {
+        pre_f32[(uint64_t)row * hc + i] =
+            1.0f / (1.0f + __expf(-(mixes[i] * scale3_f32[0] + base_f32[i]))) +
+            epsilon;
+        post_f32[(uint64_t)row * hc + i] =
+            2.0f / (1.0f + __expf(-(mixes[hc + i] * scale3_f32[1] +
+                                    base_f32[hc + i])));
+    }
+    for (i = 0u; i < hc; ++i)
+    {
+        maximum = -3.0e38f;
+        for (j = 0u; j < hc; ++j)
+        {
+            comb[i * hc + j] =
+                mixes[2u * hc + i * hc + j] * scale3_f32[2] +
+                base_f32[2u * hc + i * hc + j];
+            maximum = fmaxf(maximum, comb[i * hc + j]);
+        }
+        total = 0.0f;
+        for (j = 0u; j < hc; ++j)
+            total += (comb[i * hc + j] = __expf(comb[i * hc + j] - maximum));
+        for (j = 0u; j < hc; ++j)
+            comb[i * hc + j] = comb[i * hc + j] / total + epsilon;
+    }
+    for (iteration = 0u; iteration < iterations; ++iteration)
+    {
+        if (iteration != 0u)
+            for (i = 0u; i < hc; ++i)
+            {
+                total = 0.0f;
+                for (j = 0u; j < hc; ++j)
+                    total += comb[i * hc + j];
+                for (j = 0u; j < hc; ++j)
+                    comb[i * hc + j] /= total + epsilon;
+            }
+        for (j = 0u; j < hc; ++j)
+        {
+            total = 0.0f;
+            for (i = 0u; i < hc; ++i)
+                total += comb[i * hc + j];
+            for (i = 0u; i < hc; ++i)
+                comb[i * hc + j] /= total + epsilon;
+        }
+    }
+    for (i = 0u; i < hc * hc; ++i)
+        comb_f32[(uint64_t)row * hc * hc + i] = comb[i];
+}
+
+/* Mix projection: 24 fp32 dots of fn against the flattened streams,
+ * scaled by the rsqrt of the flattened mean square (the reference's
+ * UnweightedRMSNorm applied to the mix, exactly). The fn weights are F32
+ * in the pack (the checkpoint stores BF16; the packer upcasts once). */
+__global__ void Glm5NextHcMixKernel(
+    const uint16_t *__restrict__ streams_bf16,
+    const float *__restrict__ fn_f32,
+    float *__restrict__ mixes_f32,
+    uint32_t row_count,
+    uint32_t flat_dimension,
+    uint32_t mix_rows,
+    float rms_epsilon)
+{
+    extern __shared__ float staged[];
+    __shared__ float reduction[GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES];
+    uint32_t row = blockIdx.x;
+    uint32_t warp = threadIdx.x / LM_WARP_LANES;
+    uint32_t lane = threadIdx.x % LM_WARP_LANES;
+    uint32_t mix, element;
+    float value, total = 0.0f, inverse, accumulator;
+    if (row >= row_count)
+        return;
+    for (element = threadIdx.x; element < flat_dimension;
+         element += GLM5_NEXT_LAYER_THREADS)
+    {
+        value = LmBf16ToFloat(
+            streams_bf16[((uint64_t)row * flat_dimension) + element]);
+        staged[element] = value;
+        total += value * value;
+    }
+    __syncthreads();
+    total = LmBlockSum<GLM5_NEXT_LAYER_THREADS>(total, reduction);
+    inverse = rsqrtf(total / (float)flat_dimension + rms_epsilon);
+    for (mix = warp; mix < mix_rows; mix += GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES)
+    {
+        accumulator = 0.0f;
+        for (element = lane; element < flat_dimension; element += LM_WARP_LANES)
+            accumulator += staged[element] *
+                fn_f32[((uint64_t)mix * flat_dimension) + element];
+        /* warp reduce */
+        for (uint32_t lane_step = LM_WARP_LANES / 2u; lane_step > 0u;
+             lane_step >>= 1)
+            accumulator +=
+                __shfl_down_sync(0xFFFFFFFFu, accumulator, lane_step);
+        if (lane == 0u)
+            mixes_f32[((uint64_t)row * mix_rows) + mix] = accumulator * inverse;
+    }
+}
+
+/* Stream collapse for the sublayer input, and the residual snapshot the
+ * post step mixes back in: one block tile per (row, element range). */
+__global__ void Glm5NextHcPreReduceKernel(
+    const uint16_t *__restrict__ streams_bf16,
+    const float *__restrict__ pre_f32,
+    uint16_t *__restrict__ collapsed_bf16,
+    uint16_t *__restrict__ snapshot_bf16,
+    uint32_t row_count,
+    uint32_t hc,
+    uint32_t dimension)
+{
+    uint32_t row = blockIdx.x;
+    uint32_t element, stream;
+    float value;
+    if (row >= row_count)
+        return;
+    for (element = threadIdx.x; element < dimension;
+         element += blockDim.x)
+    {
+        value = 0.0f;
+        for (stream = 0u; stream < hc; ++stream)
+        {
+            uint64_t index =
+                (((uint64_t)row * hc) + stream) * dimension + element;
+            uint16_t raw = streams_bf16[index];
+            snapshot_bf16[index] = raw;
+            value += pre_f32[((uint64_t)row * hc) + stream] *
+                LmBf16ToFloat(raw);
+        }
+        collapsed_bf16[(uint64_t)row * dimension + element] =
+            LmFloatToBf16(value);
+    }
+}
+
+/* Sublayer output placement: streams_new[s] = post_s * out + sum_r
+ * comb[r][s] * snapshot_r. */
+__global__ void Glm5NextHcPostKernel(
+    const uint16_t *__restrict__ out_bf16,
+    const uint16_t *__restrict__ snapshot_bf16,
+    const float *__restrict__ post_f32,
+    const float *__restrict__ comb_f32,
+    uint16_t *__restrict__ streams_bf16,
+    uint32_t row_count,
+    uint32_t hc,
+    uint32_t dimension)
+{
+    __shared__ float post[4];
+    __shared__ float comb[16];
+    uint32_t row = blockIdx.x;
+    uint32_t element, stream, source;
+    float residual[4], out, value;
+    if (row >= row_count || hc > 4u)
+        return;
+    if (threadIdx.x < hc)
+        post[threadIdx.x] = post_f32[(uint64_t)row * hc + threadIdx.x];
+    if (threadIdx.x < hc * hc)
+        comb[threadIdx.x] = comb_f32[(uint64_t)row * hc * hc + threadIdx.x];
+    __syncthreads();
+    for (element = threadIdx.x; element < dimension; element += blockDim.x)
+    {
+        out = LmBf16ToFloat(out_bf16[(uint64_t)row * dimension + element]);
+        for (source = 0u; source < hc; ++source)
+            residual[source] = LmBf16ToFloat(
+                snapshot_bf16[((uint64_t)row * hc + source) * dimension +
+                              element]);
+        for (stream = 0u; stream < hc; ++stream)
+        {
+            value = post[stream] * out;
+            for (source = 0u; source < hc; ++source)
+                value = __fmaf_rn(comb[source * hc + stream],
+                                  residual[source], value);
+            streams_bf16[((uint64_t)row * hc + stream) * dimension + element] =
+                LmFloatToBf16(value);
+        }
+    }
+}
+
+/* Final head collapse: the UNWEIGHTED MEAN of the streams (dsv4 weights
+ * its hc_head; glm5_next does not), ready for the model norm + lm_head. */
+__global__ void Glm5NextHcHeadMeanKernel(
+    const uint16_t *__restrict__ streams_bf16,
+    uint16_t *__restrict__ reduced_bf16,
+    uint32_t row_count,
+    uint32_t hc,
+    uint32_t dimension)
+{
+    uint32_t row = blockIdx.x;
+    uint32_t element, stream;
+    float value;
+    if (row >= row_count)
+        return;
+    for (element = threadIdx.x; element < dimension; element += blockDim.x)
+    {
+        value = 0.0f;
+        for (stream = 0u; stream < hc; ++stream)
+            value += LmBf16ToFloat(
+                streams_bf16[((uint64_t)row * hc + stream) * dimension +
+                             element]);
+        reduced_bf16[(uint64_t)row * dimension + element] =
+            LmFloatToBf16(value / (float)hc);
+    }
+}
+
+/* One attention site under HC: mix -> sinkhorn -> collapse -> sublayer ->
+ * place. The sublayer (KDA or MLA) receives `collapsed` as its hidden
+ * input and writes `sublayer_out`; every sublayer norm runs in the PLAIN
+ * form (residual bookkeeping belongs to the HC post step, not to the
+ * sublayer). */
+static int32_t Glm5NextHcSite(
+    const Glm5NextLayerBuffers *buffers,
+    const void *fn_weight,
+    const void *base_weight,
+    const void *scale_weight,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    uint32_t mix_rows = GLM5_NEXT_HC_MIX;
+    uint32_t flat = GLM5_NEXT_HC_FLAT;
+    if (buffers->hc_mixes_f32 == 0 || buffers->hc_pre_f32 == 0 ||
+        buffers->hc_post_f32 == 0 || buffers->hc_comb_f32 == 0 ||
+        buffers->hc_collapsed_bf16 == 0 || buffers->hc_snapshot_bf16 == 0 ||
+        fn_weight == 0 || base_weight == 0 || scale_weight == 0)
+        return LM_LAUNCH_ERR_SHAPE;
+    LM_LAUNCH(
+        (Glm5NextHcMixKernel),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        flat * sizeof(float),
+        stream,
+        buffers->hidden_bf16 /* the streams surface */,
+        (const float *)fn_weight,
+        buffers->hc_mixes_f32,
+        rows,
+        flat,
+        mix_rows,
+        GLM5_NEXT_RMS_EPSILON);
+    LM_LAUNCH(
+        (Glm5NextHcSplitSinkhornKernel),
+        (rows + 63u) / 64u,
+        64u,
+        0,
+        stream,
+        buffers->hc_mixes_f32,
+        (const float *)scale_weight,
+        (const float *)base_weight,
+        rows,
+        GLM5_NEXT_HC,
+        GLM5_NEXT_HC_SINKHORN_ITERATIONS,
+        GLM5_NEXT_HC_EPSILON,
+        buffers->hc_pre_f32,
+        buffers->hc_post_f32,
+        buffers->hc_comb_f32);
+    LM_LAUNCH(
+        (Glm5NextHcPreReduceKernel),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->hidden_bf16,
+        buffers->hc_pre_f32,
+        buffers->hc_collapsed_bf16,
+        buffers->hc_snapshot_bf16,
+        rows,
+        GLM5_NEXT_HC,
+        GLM5_NEXT_HIDDEN);
+    return LM_LAUNCH_OK;
+}
+
+static int32_t Glm5NextHcPost(
+    const Glm5NextLayerBuffers *buffers,
+    const uint16_t *sublayer_out,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    LM_LAUNCH(
+        (Glm5NextHcPostKernel),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        sublayer_out,
+        buffers->hc_snapshot_bf16,
+        buffers->hc_post_f32,
+        buffers->hc_comb_f32,
+        buffers->hidden_bf16,
+        rows,
+        GLM5_NEXT_HC,
+        GLM5_NEXT_HIDDEN);
+    return LM_LAUNCH_OK;
+}
+
 static int32_t Glm5NextLayerDenseMlp(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -1309,16 +1633,17 @@ static int32_t Glm5NextLayerDenseMlp(
         return LM_LAUNCH_ERR_SHAPE;
     }
 
+    /* PLAIN norm of the HC-collapsed input (see the attention note). */
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
-        buffers->attention_out_bf16,
-        buffers->residual_bf16,
+        buffers->hc_collapsed_bf16,
+        0,
         (const uint16_t *)buffers->mlp_norm_weight,
-        buffers->residual_bf16,
+        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -1402,7 +1727,7 @@ static int32_t Glm5NextLayerDenseMlp(
     return Glm5NextLaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->dense_down_weight,
-        buffers->hidden_bf16,
+        buffers->attention_out_bf16,
         buffers->dense_row_offset,
         buffers->dense_tile_prefix,
         rows,
@@ -1459,10 +1784,10 @@ static int32_t Glm5NextLayerMoe(
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
-        buffers->attention_out_bf16,
-        buffers->residual_bf16,
+        buffers->hc_collapsed_bf16,
+        0,
         (const uint16_t *)buffers->mlp_norm_weight,
-        buffers->residual_bf16,
+        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -1682,7 +2007,7 @@ static int32_t Glm5NextLayerMoe(
         GLM5_NEXT_LAYER_THREADS,
         0,
         stream,
-        buffers->hidden_bf16,
+        buffers->attention_out_bf16,
         buffers->shared_out_bf16,
         buffers->hidden_bf16,
         rows,
