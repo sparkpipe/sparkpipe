@@ -96,3 +96,42 @@ Following the external audit's recommendation:
   measured CUDA-performance exception
 - The existing 17 functions above CCN 50 get split opportunistically
   when their family's agent touches them (not a dedicated refactor)
+
+## Priority 6: Sharded pack format (blocks Qwen Max, benefits all)
+
+The current module loads FULL-WIDTH packs — every TP rank loads the same
+complete file and slices at runtime. This is wrong for large models:
+
+| Model | Full-width pack | Per-rank (TP16) | Fits 119 GB? |
+|---|---|---|---|
+| 27B FP8 | 28.5 GB | 1.78 GB | ✓ (even TP4: 7.1 GB) |
+| DSV4 Flash | 149 GB | 9.3 GB | ✓ |
+| K3 MXFP4 | 390 GB (stage) | 24 GB (TP16) | ✓ |
+| **Qwen Max FP8** | **576-606 GB (stage)** | **36-38 GB** | **✓ if sharded** |
+
+The fix: add a TP shard axis to the pack wire format.
+- Pack header gains `tp_rank` and `tp_degree` fields
+- Packer produces per-rank files (each contains only that rank's slice of
+  every tensor: its share of heads, experts, FFN columns)
+- Loader validates the sharded shape (not full-width)
+- Kernels index from rank-local offsets (already partially done — the TP
+  kernels slice from resident buffers; they just need the buffers to be
+  rank-local instead of full-width copies)
+
+### Variable expert bit widths (part of the platform plan)
+
+The pack format already has codec IDs (format 6 = FP8 E4M3, format 4 =
+MXFP4). The loader needs to accept all of them:
+
+| Bit width | Codec | Use case | Bytes/param | Qwen Max size |
+|---|---|---|---|---|
+| 8-bit | F8_E4M3 + scale_inv | maximum quality | ~1.0 | 2.3 TB |
+| 6-bit | MXFP6 | balanced | ~0.75 | 1.7 TB |
+| 4-bit | MXFP4 / NVFP4 | maximum capacity | ~0.5 | 1.15 TB |
+
+For Qwen Max at 4-bit experts: ~1.15 TB / 16 ranks = 72 GB per rank.
+Fits 119 GB nodes with room for KV cache and activations.
+
+The quantization is an offline repack step (packer-side), not a runtime
+change. The same kernels execute; they just read narrower payloads with
+different scale layouts.
