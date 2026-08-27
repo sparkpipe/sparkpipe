@@ -278,7 +278,7 @@ def main() -> int:
     check("rope-0 MLA delta recorded",
           any("rope" in d and "0" in d for d in deltas))
     check("low-rank KDA gate delta recorded",
-          any("LOW-RANK" in d for d in deltas))
+          any("low-rank" in d.lower() and "gate" in d.lower() for d in deltas))
     check("kpool compressor delta recorded",
           any("softmax" in d and "pool" in d.lower() for d in deltas))
     check("nope indexer delta recorded",

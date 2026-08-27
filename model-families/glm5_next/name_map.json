@@ -358,7 +358,7 @@
    "shard_class": "replicated",
    "codec": "bf16",
    "transform": "fuse rows decay_down|gate_down from f_a_proj+g_a_proj [128+128, 4096]",
-   "delta": "glm53 gate is the LOW-RANK two-stage g_a->g_b form (the k3 pack's historical fusion vocabulary); the released K3 checkpoint is full-rank g_proj - the module must read the fused down + gate_up pair"
+   "delta": "RESOLVED (k3 kernel audit): LmBoundedDecay is EXACTLY the glm53 forget gate - exp(-5.0 * sigmoid(exp(A_log_h) * (W_up(W_down(x)) + dt_bias))) per head per channel - and RMSNorm+LmOutputGateKernel reproduces RMSNormGated(sigmoid) exactly. The only delta vs the released K3 checkpoint is FIELD GEOMETRY: glm53 needs the low-rank fused decay|gate_down [256,4096] + gate_up [8192,128] pair (k3's own pack V2 vocabulary) where K3 ships one full-rank kda_gate_weight [12288,7168]; the module chains the two GEMMs exactly like the existing decay path. No new kernels."
   },
   {
    "checkpoint_pattern": "model.language_model.layers.{layer}.self_attn.g_a_proj.weight",
