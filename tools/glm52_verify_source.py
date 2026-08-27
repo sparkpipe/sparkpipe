@@ -127,6 +127,20 @@ def freeze(source: Path, workers: int, stride: int, small_bytes: int) -> Dict[st
 
 def geometry_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
     text = config.get("text_config", config)
+    if not isinstance(text, dict):
+        text = config
+    # Some revisions nest only part of the text-model keys under text_config;
+    # merge so a key found at either level is derived (top level wins ties).
+    merged = dict(text)
+    for key, value in config.items():
+        if key != "text_config" and key not in merged:
+            merged[key] = value
+    # GLM-5.2 nests rope_theta inside rope_parameters
+    rope_parameters = config.get("rope_parameters")
+    if isinstance(rope_parameters, dict):
+        for key, value in rope_parameters.items():
+            if key not in merged:
+                merged[key] = value
     keys = {
         "hidden_size": "hidden_dimension",
         "num_hidden_layers": "layer_count",
@@ -151,12 +165,12 @@ def geometry_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
     }
     geometry = {}
     for config_key, contract_key in keys.items():
-        if config_key in text:
-            geometry[contract_key] = text[config_key]
-    if "scoring_func" in text:
-        geometry["router_scoring_func"] = text["scoring_func"]
-    if "norm_topk_prob" in text:
-        geometry["norm_topk_prob"] = text["norm_topk_prob"]
+        if config_key in merged:
+            geometry[contract_key] = merged[config_key]
+    if "scoring_func" in merged:
+        geometry["router_scoring_func"] = merged["scoring_func"]
+    if "norm_topk_prob" in merged:
+        geometry["norm_topk_prob"] = merged["norm_topk_prob"]
     return geometry
 
 
