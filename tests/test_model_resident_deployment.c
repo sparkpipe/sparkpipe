@@ -77,7 +77,7 @@ int main(void)
 	assert(strcmp(deployment.transport_shared_object_path,"lib/hidden_transport.so") == 0);
 	node = SparkModelResidentDeploymentFindRank(&deployment,12u);
 	assert(node != 0);
-	assert(strcmp(node->transport_host,"sparkc") == 0);
+	assert(strcmp(node->transport_host,"sparkc-fabric") == 0);
 	assert(strcmp(node->runtime_root,
 		"/home/sparkc/sparkdata/dsv4_flash.fp8.pp13") == 0);
 	assert(strcmp(node->adapter_configuration_path,"config/dsv4_flash_stage.json") == 0);

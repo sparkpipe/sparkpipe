@@ -19,6 +19,7 @@ static void SparkTestExpertCodec(uint32_t codec,uint32_t bits,uint32_t group)
 		SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE,
 		3u,
 		codec,
+		1u,
 		&shape) == 0);
 	assert(shape.payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_PACKED_WEIGHT);
 	assert(shape.weight_codec == codec);
@@ -53,6 +54,7 @@ static void SparkTestShapeContract(void)
 		SPARK_GLM52_STAGEPACK_TENSOR_Q_A,
 		0u,
 		SPARK_WEIGHT_CODEC_INT8,
+		1u,
 		&shape) == 0);
 	assert(shape.payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_BF16);
 	assert(shape.weight_codec == SPARK_WEIGHT_CODEC_BF16);
@@ -62,16 +64,19 @@ static void SparkTestShapeContract(void)
 		SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN,
 		3u,
 		SPARK_WEIGHT_CODEC_BF16,
+		1u,
 		&shape) == -5);
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_INDEX_Q,
 		4u,
 		SPARK_WEIGHT_CODEC_INT8,
+		1u,
 		&shape) == -3);
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN,
 		3u,
 		SPARK_WEIGHT_CODEC_INT8,
+		1u,
 		&shape) == -4);
 }
 

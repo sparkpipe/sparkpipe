@@ -337,7 +337,7 @@ typedef struct SparkQwen38_27bServingState
 	 * Per-block refcounts (entries share blocks when one prefix extends
 	 * another); identity-keyed entries own refs on their blocks + one
 	 * persistent GDN snapshot slot each. */
-	uint8_t *block_refs;
+	uint16_t *block_refs;
 	uint32_t lane_prefix_entry[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t lane_prefix_blocks[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint8_t lane_publish_identity[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT][32];
@@ -855,6 +855,9 @@ static SparkStatus SparkQwen38_27bServingCoverLane(
 	required = (uint32_t)((end_position + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 	if ( required > state->blocks_per_lane )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	/* Commit each block as it is popped: on mid-loop capacity exhaustion
+	 * the lane count already covers every popped block, so the rollback
+	 * (ReleaseLane) can return them instead of leaking them. */
 	for (ordinal=state->lane_block_counts[slot]; ordinal<required; ordinal++)
 	{
 		if ( state->free_block_count == 0u )
@@ -862,6 +865,7 @@ static SparkStatus SparkQwen38_27bServingCoverLane(
 		state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal] = state->free_blocks[--state->free_block_count];
 		if ( state->block_refs != 0 )
 			state->block_refs[state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal]] = 1u;
+		state->lane_block_counts[slot] = ordinal + 1u;
 	}
 	state->lane_block_counts[slot] = required;
 	return(SPARK_STATUS_OK);
@@ -2199,6 +2203,7 @@ static void SparkQwen38_27bServingDestroy(void *adapter_state)
 	if ( state->gather_scratch != 0 )
 		(void)cudaFree(state->gather_scratch);
 	free(state->host_block_indices);
+	free(state->block_refs);
 	free(state->free_blocks);
 	free(state);
 }
@@ -2249,7 +2254,7 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 	uint64_t indices;
 	indices = (uint64_t)state->max_active_sequence_count * state->blocks_per_lane;
 	state->host_block_indices = (uint32_t *)malloc((size_t)indices * sizeof(uint32_t));
-	state->block_refs = (uint8_t *)calloc((size_t)state->kv_block_count,1u);
+	state->block_refs = (uint16_t *)calloc((size_t)state->kv_block_count,sizeof(uint16_t));
 	{
 		uint32_t li;
 		for (li=0u; li<SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; li++)
@@ -2261,7 +2266,7 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 		}
 	}
 	state->free_blocks = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
-	if ( state->host_block_indices == 0 || state->free_blocks == 0 )
+	if ( state->host_block_indices == 0 || state->block_refs == 0 || state->free_blocks == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for (block=0u; block<state->kv_block_count; block++)
 		state->free_blocks[block] = state->kv_block_count - 1u - block;

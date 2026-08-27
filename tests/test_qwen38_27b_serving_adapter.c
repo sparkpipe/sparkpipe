@@ -71,6 +71,10 @@ static void TestQwen38_27bServingConfiguration(
 	configuration->runtime_limits.max_active_sequence_count = 8u;
 	configuration->runtime_limits.max_input_row_count = 8u;
 	configuration->runtime_limits.resident_sequence_capacity = 8u;
+	/* The adapter declares JIT_KV, so the shared limits validator requires
+	 * kv_physical >= max_active and kv_logical >= resident capacity. */
+	configuration->runtime_limits.kv_logical_page_capacity = 64u;
+	configuration->runtime_limits.kv_physical_page_capacity = 64u;
 	configuration->runtime_root = runtime_root;
 	configuration->node_id = "spark-test";
 	configuration->node_target = "cuda.sm121.qwen38_27b.resident_decode_stage.bf16";

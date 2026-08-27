@@ -71,7 +71,7 @@ SPARKPIPE_QWEN38_27B_SOURCES := \
     model-families/qwen38_27b/src/spark_qwen38_27b_work_control.c
 
 SPARKPIPE_QWEN38_SOURCES := \
-    model-families/qwen38/src/spark_qwen38_work_control.c
+    model-families/qwen38_max/src/spark_qwen38_max_work_control.c
 
 SPARKPIPE_DSV4_SOURCES := \
     model-families/dsv4/src/spark_dsv4_parallel_shape.c \

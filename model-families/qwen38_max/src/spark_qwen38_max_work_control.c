@@ -1,11 +1,11 @@
-#include "sparkpipe/spark_qwen38_work_control.h"
+#include "sparkpipe/spark_qwen38_max_work_control.h"
 
 #include <limits.h>
 #include <stddef.h>
 #include <string.h>
 
-static SparkStatus SparkQwen38WorkControlValidatePlanConfiguration(
-	const SparkQwen38WorkControlKvPlanConfig *configuration)
+static SparkStatus SparkQwen38MaxWorkControlValidatePlanConfiguration(
+	const SparkQwen38MaxWorkControlKvPlanConfig *configuration)
 {
 	if ( configuration == 0
 		|| configuration->model_fingerprint == 0u
@@ -16,8 +16,8 @@ static SparkStatus SparkQwen38WorkControlValidatePlanConfiguration(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkQwen38WorkControlPrepareBlock(
-	const SparkQwen38WorkControlKvPlanConfig *configuration,
+static SparkStatus SparkQwen38MaxWorkControlPrepareBlock(
+	const SparkQwen38MaxWorkControlKvPlanConfig *configuration,
 	uint64_t sequence_id,
 	uint32_t logical_block,
 	uint32_t operation,
@@ -47,13 +47,13 @@ static SparkStatus SparkQwen38WorkControlPrepareBlock(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkQwen38WorkControlProgressBatch(
+static SparkStatus SparkQwen38MaxWorkControlProgressBatch(
 	SparkStageKvClient *client,
-	SparkQwen38WorkControlKvBatchState *batch_state)
+	SparkQwen38MaxWorkControlKvBatchState *batch_state)
 {
 	SparkKvStoreCompletion completion;
 	SparkStatus status;
-	if ( batch_state->state != SPARK_QWEN38_WORK_CONTROL_BATCH_SUBMITTED )
+	if ( batch_state->state != SPARK_QWEN38_MAX_WORK_CONTROL_BATCH_SUBMITTED )
 		return(SPARK_STATUS_OK);
 	memset(&completion,0,sizeof(completion));
 	status = SparkStageKvClientPoll(client,batch_state->batch_id,&completion);
@@ -67,11 +67,11 @@ static SparkStatus SparkQwen38WorkControlProgressBatch(
 		|| completion.completed_block_count > batch_state->submitted_block_count )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	batch_state->status = completion.status;
-	batch_state->state = SPARK_QWEN38_WORK_CONTROL_BATCH_READY;
+	batch_state->state = SPARK_QWEN38_MAX_WORK_CONTROL_BATCH_READY;
 	return(SPARK_STATUS_OK);
 }
 
-uint32_t SparkQwen38WorkControlGdnBlockEquivalents(
+uint32_t SparkQwen38MaxWorkControlGdnBlockEquivalents(
 	uint32_t gdn_record_bytes,
 	uint32_t block_record_bytes)
 {
@@ -80,8 +80,8 @@ uint32_t SparkQwen38WorkControlGdnBlockEquivalents(
 	return((gdn_record_bytes + block_record_bytes - 1u) / block_record_bytes);
 }
 
-SparkStatus SparkQwen38WorkControlCumulativeNonresident(
-	const SparkQwen38WorkControlPendingLane *pending_lanes,
+SparkStatus SparkQwen38MaxWorkControlCumulativeNonresident(
+	const SparkQwen38MaxWorkControlPendingLane *pending_lanes,
 	uint32_t pending_lane_count,
 	const uint32_t *packet_lane_counts,
 	uint32_t packet_count,
@@ -105,7 +105,7 @@ SparkStatus SparkQwen38WorkControlCumulativeNonresident(
 			packet_lane_index < packet_lane_counts[packet_index];
 			++packet_lane_index )
 		{
-			const SparkQwen38WorkControlPendingLane *lane;
+			const SparkQwen38MaxWorkControlPendingLane *lane;
 			uint64_t lane_count;
 			lane = &pending_lanes[lane_index++];
 			if ( lane->sequence_id == 0u
@@ -126,8 +126,8 @@ SparkStatus SparkQwen38WorkControlCumulativeNonresident(
 	return(SPARK_STATUS_OK);
 }
 
-uint32_t SparkQwen38WorkControlSelectRestorePackets(
-	const SparkQwen38WorkControlKvPlanConfig *configuration,
+uint32_t SparkQwen38MaxWorkControlSelectRestorePackets(
+	const SparkQwen38MaxWorkControlKvPlanConfig *configuration,
 	uint32_t packet_count,
 	const uint32_t *cumulative_nonresident_block_counts)
 {
@@ -142,9 +142,9 @@ uint32_t SparkQwen38WorkControlSelectRestorePackets(
 		cumulative_nonresident_block_counts));
 }
 
-SparkStatus SparkQwen38WorkControlBuildRestoreBatch(
-	const SparkQwen38WorkControlKvPlanConfig *configuration,
-	const SparkQwen38WorkControlPendingLane *pending_lanes,
+SparkStatus SparkQwen38MaxWorkControlBuildRestoreBatch(
+	const SparkQwen38MaxWorkControlKvPlanConfig *configuration,
+	const SparkQwen38MaxWorkControlPendingLane *pending_lanes,
 	uint32_t pending_lane_count,
 	const uint32_t *packet_lane_counts,
 	uint32_t packet_count,
@@ -160,7 +160,7 @@ SparkStatus SparkQwen38WorkControlBuildRestoreBatch(
 	uint32_t block_record_index,gdn_record_index,lane_index;
 	uint64_t declared_lane_count;
 	SparkStatus status;
-	status = SparkQwen38WorkControlValidatePlanConfiguration(configuration);
+	status = SparkQwen38MaxWorkControlValidatePlanConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK || pending_lanes == 0
 		|| pending_lane_count == 0u || packet_lane_counts == 0
 		|| packet_count == 0u || block_staging == 0 || gdn_staging == 0
@@ -178,7 +178,7 @@ SparkStatus SparkQwen38WorkControlBuildRestoreBatch(
 	gdn_record_index = 0u;
 	for ( lane_index = 0u; lane_index < pending_lane_count; ++lane_index )
 	{
-		const SparkQwen38WorkControlPendingLane *lane;
+		const SparkQwen38MaxWorkControlPendingLane *lane;
 		uint32_t lane_output_count,lane_block_index;
 		lane = &pending_lanes[lane_index];
 		if ( lane->sequence_id == 0u
@@ -199,7 +199,7 @@ SparkStatus SparkQwen38WorkControlBuildRestoreBatch(
 		}
 		if ( lane->gdn_nonresident != 0u )
 		{
-			status = SparkQwen38WorkControlPrepareBlock(
+			status = SparkQwen38MaxWorkControlPrepareBlock(
 				configuration,lane->sequence_id,UINT32_MAX,
 				SPARK_KV_STORE_OPERATION_GET,
 				(uint8_t *)gdn_staging
@@ -214,7 +214,7 @@ SparkStatus SparkQwen38WorkControlBuildRestoreBatch(
 			lane_block_index < lane->nonresident_block_count;
 			++lane_block_index )
 		{
-			status = SparkQwen38WorkControlPrepareBlock(
+			status = SparkQwen38MaxWorkControlPrepareBlock(
 				configuration,lane->sequence_id,
 				lane->nonresident_blocks[lane_block_index],
 				SPARK_KV_STORE_OPERATION_GET,
@@ -231,8 +231,8 @@ SparkStatus SparkQwen38WorkControlBuildRestoreBatch(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkQwen38WorkControlBuildEvictBatch(
-	const SparkQwen38WorkControlKvPlanConfig *configuration,
+SparkStatus SparkQwen38MaxWorkControlBuildEvictBatch(
+	const SparkQwen38MaxWorkControlKvPlanConfig *configuration,
 	uint64_t sequence_id,
 	const uint32_t *resident_blocks,
 	uint32_t resident_block_count,
@@ -245,7 +245,7 @@ SparkStatus SparkQwen38WorkControlBuildEvictBatch(
 {
 	uint32_t output_count,resident_block_index;
 	SparkStatus status;
-	status = SparkQwen38WorkControlValidatePlanConfiguration(configuration);
+	status = SparkQwen38MaxWorkControlValidatePlanConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK || sequence_id == 0u
 		|| (resident_block_count != 0u && resident_blocks == 0)
 		|| block_staging == 0 || gdn_staging == 0 || blocks == 0
@@ -259,7 +259,7 @@ SparkStatus SparkQwen38WorkControlBuildEvictBatch(
 	*block_count = 0u;
 	if ( include_gdn_state != 0u )
 	{
-		status = SparkQwen38WorkControlPrepareBlock(
+		status = SparkQwen38MaxWorkControlPrepareBlock(
 			configuration,sequence_id,UINT32_MAX,SPARK_KV_STORE_OPERATION_PUT,
 			(void *)gdn_staging,configuration->gdn_record_bytes,
 			&blocks[*block_count]);
@@ -271,7 +271,7 @@ SparkStatus SparkQwen38WorkControlBuildEvictBatch(
 		resident_block_index < resident_block_count;
 		++resident_block_index )
 	{
-		status = SparkQwen38WorkControlPrepareBlock(
+		status = SparkQwen38MaxWorkControlPrepareBlock(
 			configuration,sequence_id,resident_blocks[resident_block_index],
 			SPARK_KV_STORE_OPERATION_PUT,
 			(uint8_t *)block_staging
@@ -284,9 +284,9 @@ SparkStatus SparkQwen38WorkControlBuildEvictBatch(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkQwen38WorkControlSubmit(
+SparkStatus SparkQwen38MaxWorkControlSubmit(
 	SparkStageKvClient *client,
-	SparkQwen38WorkControlKvBatchState *batch_state,
+	SparkQwen38MaxWorkControlKvBatchState *batch_state,
 	uint32_t operation,
 	const SparkKvStoreBlock *blocks,
 	uint32_t block_count,
@@ -298,9 +298,9 @@ SparkStatus SparkQwen38WorkControlSubmit(
 		|| block_count == 0u || block_count > SPARK_KV_STORE_MAX_BATCH_BLOCKS
 		|| (operation != SPARK_KV_STORE_OPERATION_GET
 			&& operation != SPARK_KV_STORE_OPERATION_PUT)
-		|| priority > SPARK_QWEN38_WORK_CONTROL_RESTORE_PRIORITY_SPECULATIVE )
+		|| priority > SPARK_QWEN38_MAX_WORK_CONTROL_RESTORE_PRIORITY_SPECULATIVE )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( batch_state->state != SPARK_QWEN38_WORK_CONTROL_BATCH_IDLE )
+	if ( batch_state->state != SPARK_QWEN38_MAX_WORK_CONTROL_BATCH_IDLE )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageKvClientSubmit(
 		client,operation,blocks,block_count,priority,&batch_id);
@@ -308,29 +308,29 @@ SparkStatus SparkQwen38WorkControlSubmit(
 		return(status);
 	batch_state->batch_id = batch_id;
 	batch_state->status = SPARK_STATUS_PENDING;
-	batch_state->state = SPARK_QWEN38_WORK_CONTROL_BATCH_SUBMITTED;
+	batch_state->state = SPARK_QWEN38_MAX_WORK_CONTROL_BATCH_SUBMITTED;
 	batch_state->submitted_block_count = block_count;
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkQwen38WorkControlProgress(
+SparkStatus SparkQwen38MaxWorkControlProgress(
 	SparkStageKvClient *client,
-	SparkQwen38WorkControlKvState *state)
+	SparkQwen38MaxWorkControlKvState *state)
 {
 	SparkStatus status;
 	if ( client == 0 || state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkQwen38WorkControlProgressBatch(client,&state->restore);
+	status = SparkQwen38MaxWorkControlProgressBatch(client,&state->restore);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	return(SparkQwen38WorkControlProgressBatch(client,&state->evict));
+	return(SparkQwen38MaxWorkControlProgressBatch(client,&state->evict));
 }
 
-SparkStatus SparkQwen38WorkControlAcknowledge(
-	SparkQwen38WorkControlKvBatchState *batch_state)
+SparkStatus SparkQwen38MaxWorkControlAcknowledge(
+	SparkQwen38MaxWorkControlKvBatchState *batch_state)
 {
 	if ( batch_state == 0
-		|| batch_state->state != SPARK_QWEN38_WORK_CONTROL_BATCH_READY )
+		|| batch_state->state != SPARK_QWEN38_MAX_WORK_CONTROL_BATCH_READY )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(batch_state,0,sizeof(*batch_state));
 	return(SPARK_STATUS_OK);

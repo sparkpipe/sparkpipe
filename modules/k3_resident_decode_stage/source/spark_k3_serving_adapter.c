@@ -238,6 +238,8 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	SparkJsonDocumentDestroy(&doc);
 	return SPARK_STATUS_OK;
 }
+static void K3ServingDestroy(void *adapter_state);
+
 static SparkStatus K3ServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
@@ -258,14 +260,16 @@ static SparkStatus K3ServingInitialize(
 	state->positions_host = (uint32_t *)malloc((uint64_t)state->max_rows * 4u);
 	state->context_host = (uint32_t *)malloc((uint64_t)state->max_rows * 4u);
 	state->state_host = (uint32_t *)malloc((uint64_t)state->max_rows * 4u);
-	cudaMalloc(&state->positions_device, (uint64_t)state->max_rows * 4u);
-	cudaMalloc(&state->context_device, (uint64_t)state->max_rows * 4u);
-	cudaMalloc(&state->state_device, (uint64_t)state->max_rows * 4u);
-	cudaMalloc(&state->output_tokens, (uint64_t)state->max_rows * 4u);
-	cudaMalloc(&state->output_scores, (uint64_t)state->max_rows * 4u);
+	if ( state->positions_host == 0 || state->context_host == 0 || state->state_host == 0 ||
+		cudaMalloc(&state->positions_device, (uint64_t)state->max_rows * 4u) != cudaSuccess ||
+		cudaMalloc(&state->context_device, (uint64_t)state->max_rows * 4u) != cudaSuccess ||
+		cudaMalloc(&state->state_device, (uint64_t)state->max_rows * 4u) != cudaSuccess ||
+		cudaMalloc(&state->output_tokens, (uint64_t)state->max_rows * 4u) != cudaSuccess ||
+		cudaMalloc(&state->output_scores, (uint64_t)state->max_rows * 4u) != cudaSuccess )
+		{ K3ServingDestroy(state); return SPARK_STATUS_CAPACITY_EXCEEDED; }
 	status = SparkK3StageRunnerInitialize(&state->runner, &state->runner_config);
 	if ( status != SPARK_STATUS_OK )
-		{ free(state->positions_host); free(state->context_host); free(state->state_host); free(state); return status; }
+		{ K3ServingDestroy(state); return status; }
 	*adapter_state = state;
 	return SPARK_STATUS_OK;
 }
@@ -316,14 +320,17 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	positions_host64 = (uint64_t *)malloc((uint64_t)rows * 8u);
 	if ( positions_host64 == 0 )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	cudaMemcpy(positions_host64, submission->row_positions,
-		(uint64_t)rows * 8u, cudaMemcpyDeviceToHost);
+	/* row_positions is host memory in the serving ABI; a plain copy. */
+	memcpy(positions_host64, submission->row_positions,
+		(uint64_t)rows * sizeof(uint64_t));
 	for ( uint32_t i = 0u; i < rows; ++i )
 	{
 		state->positions_host[i] = (uint32_t)positions_host64[i];
 		state->context_host[i] = (uint32_t)positions_host64[i] + 1u;
 		state->state_host[i] = submission->lanes != 0
-			? submission->lanes[i].resident_sequence_slot : i;
+			? submission->lanes[submission->row_lane_indices != 0
+				? submission->row_lane_indices[i] : i].resident_sequence_slot
+			: i;
 	}
 	free(positions_host64);
 	cudaMemcpy(state->positions_device, state->positions_host,
@@ -364,6 +371,8 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	{
 		SparkModelServingCompletion completion;
 		uint32_t *tokens_host = (uint32_t *)malloc((uint64_t)rows * 4u);
+		if ( tokens_host == 0 )
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		memset(&completion, 0, sizeof(completion));
 		completion.abi_version = submission->abi_version;
 		completion.descriptor_bytes = (uint32_t)sizeof(completion);
@@ -448,17 +457,22 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = (uint32_t)sizeof(SparkModelServingAdapterDescriptor),
-	.capability_flags = 0u,
+	.capability_flags =
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
 	/* One node per RANK (the hybrid's contract): the residentd checks the
 	 * node count against this. */
 	.stage_count = 16u,
 	.layer_count = 93u,
-	.boundary_format = 0u,
+	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = 7168u,
 	.boundary_element_bytes = 2u,
-	.linear_weight_codec = 0u,
-	.expert_weight_codec = 1u,
-	.kv_cache_codec = 0u,
+	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_NVFP4_E2M1,
+	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = 16u,
 	.max_input_row_count = 16u,
@@ -470,7 +484,8 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.model_id = "moonshotai/Kimi-K3-MXFP4",
 	.model_revision = "k3-tp4pp4",
 	.driver_program_name = "k3",
-	.artifact_sha256 = "",
+	.artifact_sha256 =
+		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217",
 	.stage_layer_counts = { 24u, 23u, 23u, 23u, 24u, 23u, 23u, 23u, 24u, 23u, 23u, 23u, 24u, 23u, 23u, 23u },
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },

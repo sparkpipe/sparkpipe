@@ -720,7 +720,12 @@ from pathlib import Path
 # in the qwen38_max module, explicit credit-buffer ownership in the 27B TP
 # path (extracted AllocateCreditMemory), the stub fault-injection ledger,
 # and its fault test; 175399 is the exact count.
-CEILING = 175399
+# The correctness-audit response: K3 descriptor/submission/cleanup fixes,
+# CoverLane incremental commits, uint16 block refs, the tap-plan
+# declarations, nvcc host guard, and rename-completion for the test gate
+# (work-control symbols, qwen36 test files and contents, fabric hosts,
+# tp_degree in glm52 stagepack calls); 175433 is the exact count.
+CEILING = 175433
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -560,11 +560,15 @@ static SparkStatus SparkQwen38MaxServingCoverLane(
 	required = (uint32_t)((end_position + SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 	if ( required > state->blocks_per_lane )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	/* Commit each block as it is popped: on mid-loop capacity exhaustion
+	 * the lane count already covers every popped block, so the rollback
+	 * (ReleaseLane) can return them instead of leaking them. */
 	for (ordinal=state->lane_block_counts[slot]; ordinal<required; ordinal++)
 	{
 		if ( state->free_block_count == 0u )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		state->host_block_indices[((uint64_t)slot * state->blocks_per_lane) + ordinal] = state->free_blocks[--state->free_block_count];
+		state->lane_block_counts[slot] = ordinal + 1u;
 	}
 	state->lane_block_counts[slot] = required;
 	return(SPARK_STATUS_OK);

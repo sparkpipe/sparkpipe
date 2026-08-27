@@ -74,6 +74,7 @@ extern "C" {
 #define SPARK_GLM52_DSPARK_HIDDEN_TAP_PLAN_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkHiddenTapPlan))
 
+
 /* Legacy type aliases over the neutral policy structs. */
 typedef SparkSpeculationModelContract SparkGlm52DsparkModelContract;
 typedef SparkSpeculationDraftRequest SparkGlm52DsparkDraftRequest;
@@ -118,6 +119,11 @@ typedef struct SparkGlm52DsparkHiddenTapPlan
     uint32_t reserved1;
     SparkGlm52DsparkTapStage tap_stages[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT];
 } SparkGlm52DsparkHiddenTapPlan;
+SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
+    SparkGlm52DsparkHiddenTapPlan *tap_plan);
+SparkStatus SparkGlm52DsparkValidateHiddenTapPlan(
+    const SparkGlm52DsparkHiddenTapPlan *tap_plan);
+
 
 #ifdef __cplusplus
 }
