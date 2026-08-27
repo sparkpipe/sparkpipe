@@ -2,10 +2,13 @@
 
 #include <stdint.h>
 
-uint32_t SparkModelBatchSchedulerPlanGroupSize(
-	uint32_t queued,
-	uint32_t maximum_group_size,
-	uint32_t minimum_efficient_group_size);
+/* Continuous-batching scheduler policy. The batch engine admits the whole
+ * ready set (every request with KV resident) up to the resource caps
+ * (MAX_ACTIVE lanes, prefill row budget, KV pages) and passes
+ * minimum_by_kind floors of 1: any nonzero ready set dispatches on the
+ * next Progress. The old fixed-bucket ladder (defer a kind until
+ * minimum_efficient rows queue up, or the request ages out) is gone; the
+ * bypass counters remain as the starvation escape for aged requests. */
 uint32_t SparkModelBatchSchedulerPlanCacheBoundLaneCount(
 	uint32_t maximum_lane_count,
 	uint32_t physical_page_capacity,

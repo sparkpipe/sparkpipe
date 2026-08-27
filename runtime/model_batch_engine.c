@@ -106,7 +106,6 @@ struct SparkModelBatchEngine
 	uint32_t max_context_tokens;
 	uint32_t max_prefill_rows;
 	uint32_t max_active_sequence_count;
-	uint32_t minimum_efficient_submission_row_count;
 	uint32_t scratch_row_capacity;
 	uint32_t submission_capacity;
 	uint32_t maximum_messages_per_rank;
@@ -162,26 +161,6 @@ static uint32_t SparkModelBatchCacheDemandCapacity(uint32_t request_capacity)
 		capacity *= 2u;
 	}
 	return(capacity);
-}
-
-uint32_t SparkModelBatchSchedulerPlanGroupSize(
-	uint32_t queued,
-	uint32_t maximum_group_size,
-	uint32_t minimum_efficient_group_size)
-{
-	uint32_t group_count,group_size,reserved;
-	if ( queued == 0u || maximum_group_size == 0u )
-		return(0u);
-	if ( minimum_efficient_group_size == 0u )
-		minimum_efficient_group_size = 1u;
-	if ( minimum_efficient_group_size > maximum_group_size )
-		minimum_efficient_group_size = maximum_group_size;
-	group_count = (queued / maximum_group_size) + (queued % maximum_group_size != 0u ? 1u : 0u);
-	if ( group_count > queued / minimum_efficient_group_size )
-		return(queued < maximum_group_size ? queued : maximum_group_size);
-	reserved = (group_count - 1u) * minimum_efficient_group_size;
-	group_size = queued - reserved;
-	return(group_size < maximum_group_size ? group_size : maximum_group_size);
 }
 
 uint32_t SparkModelBatchSchedulerPlanCacheBoundLaneCount(
@@ -1080,7 +1059,6 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->adapter_descriptor = SparkModelPipelineClientGetAdapterDescriptor(engine->pipeline);
 	if ( engine->adapter_descriptor == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	engine->minimum_efficient_submission_row_count = engine->adapter_descriptor->minimum_efficient_submission_row_count;
 	engine->cache_block_token_count = engine->adapter_descriptor->cache_block_token_count;
 	if ( engine->cache_block_token_count != 0u )
 	{
@@ -1480,17 +1458,6 @@ static uint32_t SparkModelBatchMaximumLaneCount(
 		engine->kv_physical_page_capacity,engine->inflight_kv_page_count));
 }
 
-static uint32_t SparkModelBatchTargetRowFloor(
-	const SparkModelBatchEngine *engine,
-	uint32_t maximum)
-{
-	uint32_t minimum;
-	minimum = engine->minimum_efficient_submission_row_count;
-	if ( minimum == 0u )
-		minimum = 1u;
-	return(minimum < maximum ? minimum : maximum);
-}
-
 static void SparkModelBatchCountDispatchableRequests(
 	const SparkModelBatchEngine *engine,
 	uint32_t queued_by_kind[4])
@@ -1672,7 +1639,12 @@ static uint32_t SparkModelBatchAssignPrefillCounts(
 		remaining_prompt = SparkModelBatchPrefillSpan(engine,request);
 		total_remaining = remaining_prompt <= UINT32_MAX - total_remaining ? total_remaining + remaining_prompt : UINT32_MAX;
 	}
-	row_budget = SparkModelBatchSchedulerPlanGroupSize(total_remaining,engine->max_prefill_rows,SparkModelBatchTargetRowFloor(engine,engine->max_prefill_rows));
+	/* Continuous batching: the whole ready set gets the row budget up
+	 * front, capped only by max_prefill_rows. The old ladder planner
+	 * reserved floor rows to seed later fixed-size groups, holding ready
+	 * work back; the remainder now chunk-prefills on the next pass. */
+	row_budget = total_remaining < engine->max_prefill_rows ?
+		total_remaining : engine->max_prefill_rows;
 	if ( row_budget < lane_count )
 		row_budget = lane_count;
 	remaining_rows = row_budget - lane_count;
@@ -2000,8 +1972,12 @@ static uint32_t SparkModelBatchChooseWorkKind(
 			available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_RELEASE]++;
 	}
 	memset(minimum_by_kind,0,sizeof(minimum_by_kind));
-	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = SparkModelBatchTargetRowFloor(engine,engine->max_prefill_rows);
-	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = SparkModelBatchTargetRowFloor(engine,engine->max_active_sequence_count);
+	/* Continuous admission: no minimum-efficient floor. Every nonzero
+	 * ready set dispatches on the next Progress (the old B-ladder deferred
+	 * small queues until minimum_efficient_submission_row_count work was
+	 * pending or the request aged out - waiting to fill a fixed bucket). */
+	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 1u;
+	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 1u;
 	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = 1u;
 	SparkModelBatchCountDispatchableRequests(engine,queued_by_kind);
 	SparkModelBatchCountInflightSubmissions(engine,inflight_by_kind);

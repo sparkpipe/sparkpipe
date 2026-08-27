@@ -238,9 +238,6 @@ static void TestModelBatchSchedulerPolicy(void)
 	queued[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
 	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
 	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,10u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_DECODE);
-	assert(SparkModelBatchSchedulerPlanGroupSize(136u,128u,16u) == 120u);
-	assert(SparkModelBatchSchedulerPlanGroupSize(31u,128u,16u) == 31u);
-	assert(SparkModelBatchSchedulerPlanGroupSize(2176u,128u,16u) == 128u);
 	TestModelBatchSchedulerKinds();
 	TestModelBatchSchedulerCacheCapacity();
 }
@@ -1280,6 +1277,112 @@ static void TestModelBatchEngineCachePageBudget(
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 }
 
+static void TestModelBatchEngineContinuous(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	uint32_t decode_lanes,index,long_prompt[15],prompt[1];
+	for (index=0u; index<15u; index++)
+		long_prompt[index] = 41u + index;
+	prompt[0] = 41u;
+	/* Chunked prefill continuity: three 15-token prompts prefill in
+	 * block-span passes (3 lanes x 4 rows) and the engine repeats until
+	 * every prompt is resident - submit, process, repeat with no
+	 * between-pass gating. */
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,8u);
+	for (index=0u; index<3u; index++)
+		(void)TestModelBatchSubmit(engine,1501u + index,2501u + index,long_prompt,15u,1u);
+	assert(SparkModelBatchEngineProgress(engine,1u) == SPARK_STATUS_OK);
+	{
+		struct timespec span;
+		uint32_t attempt;
+		span.tv_sec = 0;
+		span.tv_nsec = 1000000;
+		for (attempt=0u; attempt<10000u && state.first_prefill_row_count == 0u; attempt++)
+		{
+			assert(SparkModelBatchEngineProgress(engine,1u) == SPARK_STATUS_OK);
+			nanosleep(&span,0);
+		}
+	}
+	assert(state.first_prefill_row_count == 12u);
+	assert(state.first_prefill_lane_count == 3u);
+	TestModelBatchWaitIdle(engine,3u);
+	assert(state.accepted_count == 3u);
+	assert(state.token_count == 3u);
+	assert(state.completed_count == 3u);
+	assert(state.error_count == 0u);
+	{
+		uint32_t prefill_submissions = 0u;
+		for (index=0u; index<state.submission_count; index++)
+		{
+			if ( state.submission_work_kinds[index] != SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+				continue;
+			assert(state.submission_row_counts[index] == 12u ||
+				state.submission_row_counts[index] == 9u);
+			prefill_submissions++;
+		}
+		/* 45 prompt rows ride block-span chunks of 3 lanes x 4 rows, with
+		 * a 3-row tail: exactly four repeating passes, no gating between. */
+		assert(prefill_submissions == 4u);
+	}
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+	/* Staggered arrival: r3/r4 land while r1/r2's prefill is inflight and
+	 * are admitted to the next pass. The old floor (16) deferred them
+	 * until the pipe drained or they aged out of the bypass. */
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,8u);
+	(void)TestModelBatchSubmit(engine,1601u,2601u,prompt,1u,2u);
+	(void)TestModelBatchSubmit(engine,1602u,2602u,prompt,1u,2u);
+	assert(SparkModelBatchEngineProgress(engine,1u) == SPARK_STATUS_OK);
+	(void)TestModelBatchSubmit(engine,1603u,2603u,prompt,1u,2u);
+	(void)TestModelBatchSubmit(engine,1604u,2604u,prompt,1u,2u);
+	assert(SparkModelBatchEngineProgress(engine,1u) == SPARK_STATUS_OK);
+	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
+	assert(view.inflight_submission_count == 2u);
+	TestModelBatchWaitIdle(engine,4u);
+	assert(state.accepted_count == 4u);
+	assert(state.token_count == 8u);
+	assert(state.completed_count == 4u);
+	assert(state.cancelled_count == 0u);
+	assert(state.error_count == 0u);
+	/* Every ready request decoded exactly once; decode submissions carry
+	 * whatever was ready (2 lanes per wave, or one merged 4-lane pass). */
+	decode_lanes = 0u;
+	for (index=0u; index<state.submission_count; index++)
+	{
+		if ( state.submission_work_kinds[index] != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+			continue;
+		assert(state.submission_lane_counts[index] == 2u ||
+			state.submission_lane_counts[index] == 4u);
+		decode_lanes += state.submission_lane_counts[index];
+	}
+	assert(decode_lanes == 4u);
+	/* Oldest-first at equal priority: prefill tokens emit in arrival
+	 * order regardless of the mid-flight join. */
+	for (index=0u; index<4u; index++)
+		assert(state.token_request_ids[index] == 1601u + index);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+	/* Deep queue: the first window takes MAX_ACTIVE (16) lanes in arrival
+	 * order, the tail drains in a smaller variable batch - token emission
+	 * stays oldest-first across the whole depth. */
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,24u);
+	for (index=0u; index<20u; index++)
+		(void)TestModelBatchSubmit(engine,1701u + index,2701u + index,prompt,1u,1u);
+	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
+	TestModelBatchWaitIdle(engine,20u);
+	assert(state.accepted_count == 20u);
+	assert(state.token_count == 20u);
+	assert(state.completed_count == 20u);
+	assert(state.error_count == 0u);
+	for (index=0u; index<20u; index++)
+		assert(state.token_request_ids[index] == 1701u + index);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+}
+
 static uint32_t TestModelBatchCountText(const char *text,const char *needle)
 {
 	uint32_t count;
@@ -1552,6 +1655,7 @@ int main(void)
 	TestModelBatchEngineAggregatePrefill(&deployment);
 	TestModelBatchEngineResidentQueue(&deployment);
 	TestModelBatchEngineDeepQueue(&deployment);
+	TestModelBatchEngineContinuous(&deployment);
 	TestModelBatchEnginePrefixReuse(&deployment);
 	TestModelBatchEngineCachePageBudget(&deployment);
 	TestModelBatchEngineShutdown(&deployment);
