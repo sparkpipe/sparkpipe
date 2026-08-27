@@ -266,6 +266,9 @@ typedef struct SparkQwen38_27bModuleState
 	uint64_t profile_attn_spin_nanos;
 	uint64_t profile_ffn_spin_nanos;
 	uint64_t profile_head_spin_nanos;
+	uint64_t profile_stage_nanos;
+	uint64_t profile_walk_nanos;
+	uint64_t profile_tail_nanos;
 	uint64_t profile_frame_nanos;
 	uint32_t profile_frame_count;
 	uint32_t graphs_broken;
@@ -283,13 +286,16 @@ static void SparkQwen38_27bProfilePrint(SparkQwen38_27bModuleState *state, uint6
 	state->profile_frame_nanos += frame_nanos;
 	state->profile_frame_count++;
 	if ( (state->profile_frame_count & 7u) == 0u || state->profile_frame_count == 1u )
-		fprintf(stderr, "%s gpu_spin_profile frames=%u frame_ms=%.2f gdn_ms=%.2f attn_ms=%.2f ffn_ms=%.2f head_ms=%.2f\n",
+		fprintf(stderr, "%s gpu_spin_profile frames=%u frame_ms=%.2f gdn_ms=%.2f attn_ms=%.2f ffn_ms=%.2f head_ms=%.2f stage_ms=%.2f walk_ms=%.2f tail_ms=%.2f\n",
 			SPARK_QWEN38_27B_MODULE_TAG, state->profile_frame_count,
 			(double)state->profile_frame_nanos / 1000000.0,
 			(double)state->profile_gdn_spin_nanos / 1000000.0,
 			(double)state->profile_attn_spin_nanos / 1000000.0,
 			(double)state->profile_ffn_spin_nanos / 1000000.0,
-			(double)state->profile_head_spin_nanos / 1000000.0);
+			(double)state->profile_head_spin_nanos / 1000000.0,
+			(double)state->profile_stage_nanos / 1000000.0,
+			(double)state->profile_walk_nanos / 1000000.0,
+			(double)state->profile_tail_nanos / 1000000.0);
 }
 
 extern cudaError_t SparkQwen38_27bConfigureCudaKernels(void);
@@ -2951,6 +2957,7 @@ static SparkStatus SparkQwen38_27bModuleCaptureDsparkTap(
 static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, SparkQwen38_27bResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen38_27bPrefillFrameView *prefill, uint32_t rows)
 {
 	uint64_t frame_start = state->profile_enabled != 0u ? SparkQwen38_27bProfileNow() : 0ull;
+	uint64_t profile_stage_end = frame_start, profile_walk_end = frame_start;
 	SparkStatus status = SparkQwen38_27bModuleUploadRows(state,slot,context,frame,prefill,rows);
 	slot->replay_frame = (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u ? 1u : 0u;
 	slot->verify_frame = (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u ? 1u : 0u;
@@ -3037,6 +3044,11 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 		if ( replayed == 0 )
 		{
 			slot->capturing = capturing != 0 ? 1u : 0u;
+			if ( state->profile_enabled != 0u )
+			{
+				profile_stage_end = SparkQwen38_27bProfileNow();
+				state->profile_stage_nanos += profile_stage_end - frame_start;
+			}
 			if ( status == SPARK_STATUS_OK )
 				status = SparkQwen38_27bModuleBeginHidden(state,slot,context,rows);
 			{
@@ -3057,6 +3069,11 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 			}
 			if ( status == SPARK_STATUS_OK )
 				status = SparkQwen38_27bModuleFinish(state,slot,context,frame,prefill,rows);
+			if ( state->profile_enabled != 0u )
+			{
+				profile_walk_end = SparkQwen38_27bProfileNow();
+				state->profile_walk_nanos += profile_walk_end - profile_stage_end;
+			}
 			if ( status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT) != 0u && context->gdn_snapshot != 0 )
 				status = SparkQwen38_27bModuleGdnPrefixTransfer(state,slot,prefill->lane_index,context->gdn_snapshot->snapshot_index,0u);
 			if ( capturing != 0 )
@@ -3123,7 +3140,13 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 		}
 	}
 	if ( state->profile_enabled != 0u )
+	{
+		{
+			uint64_t tail_now = SparkQwen38_27bProfileNow();
+			state->profile_tail_nanos += tail_now - (profile_walk_end != 0 ? profile_walk_end : profile_stage_end);
+		}
 		SparkQwen38_27bProfilePrint(state, SparkQwen38_27bProfileNow() - frame_start);
+	}
 	return(status);
 }
 
