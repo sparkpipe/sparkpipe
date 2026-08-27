@@ -65,6 +65,13 @@ design point of this architecture — 34/45 layers are O(1) memory.
    rope 64 it needs a templated variant (drop the rope qk term, fold the
    layout). Verify: grep glm52 MLA kernel for rope-dim constant; add a
    compile-time `MLA_ROPE_DIM=0` instantiation. ~50-150 lines.
+   [CONFIRMED 2026-08-27 by the glm53 lane against transformers'
+   modeling_glm5_next.py: the text stack is NoPE EVERYWHERE — the indexer
+   carries no rope either (the config's `indexer_rope_interleave` does not
+   introduce positional scoring), and the KDA gate is the low-rank g_a/g_b
+   + sigmoid-safe form. So delta 1 widens slightly but simplifies: strip
+   rope from BOTH the MLA scoring and the dsv4-donor indexer when porting;
+   `indexer_rope_interleave` is not a porting dependency.]
 2. **Checkpoint→pack name mapping.** The K3 module's packed field names
    (`kda_*`) differ from glm53 checkpoint names (`A_log`, `dt_bias`,
    `f_a_proj`, ...). This is packer mapping, not kernels: a table in the
