@@ -752,7 +752,16 @@ from pathlib import Path
 # The M1 contract freeze adds the authoritative JSON's census section and
 # the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
 # ports) lands in the same window; 186345 is the exact count.
-CEILING = 186401
+# The qwen38max pack lane (lane/qwen38max, 2026-08-27) lands the missing
+# pack gate + TP4xPP4 orchestration for Qwen3.8-2.4T-A95B:
+# tools/qwen38_pack_verify.py (the pack verifier the family lacked -
+# structure vs the wire format, per-entry source-vs-pack content sha,
+# receipt cross-check), tools/qwen38_tp4pp4_packs.py (the 4-stage builder
+# + 16-rank manifest), tools/qwen38_tp4pp4_deploy.sh (per-host deploy
+# from the manifest), and tools/qwen38_stagepack.py rework (net negative:
+# dead MXFP4 path removed, streaming expert copy, hash-while-write,
+# expert shape checks). Net +579; 186980 is the exact count.
+CEILING = 186980
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
