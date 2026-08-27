@@ -742,7 +742,17 @@ from pathlib import Path
 # for single-lane batches (aggregate kept at engine level), and the
 # support table reflects GLM 5.2 deprecation and the flash models;
 # 175507 exact.
-CEILING = 175507
+# Qwen 3.8 Flash lane (qwen4_flash): the first module family port lands -
+# modules/qwen4_flash_resident_decode_stage (module + serving adapter +
+# CUDA stage + stagepack format + pack synthesizer + the validation harness
+# ported from the proven qwen38_27b unit), model-families/qwen4_flash
+# (geometry header + work control), tools/qwen4_flash_verify_source.py, and
+# tests. Sibling-geometry re-parameterization of existing families, not new
+# architecture code; 184913 is the exact count after it lands.
+# The M1 contract freeze adds the authoritative JSON's census section and
+# the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
+# ports) lands in the same window; 186345 is the exact count.
+CEILING = 186345
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
