@@ -1,5 +1,9 @@
 # Hardware independence — measured status (2026-08-27)
 
+Extended by docs/INFERENCE_OS_DESIGN.md, which adds the memory-space
+model (the deep coupling: unified vs split address spaces, DMA, file
+mapping, residency) and revises the Phase 1B order to memory-first.
+
 Where the stack stands, layer by layer, and what the lane agents are
 bound to while the Phase 1B device API (the HAL) has not landed. Every
 claim below is checkable in-tree; the numbers are from today's main.

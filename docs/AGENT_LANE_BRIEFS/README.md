@@ -71,6 +71,21 @@ the future extraction is cheap and the CPU oracle keeps working:
 MODULE_TARGET stays a namespaced tuple (`cuda.sm121.<family>...`) — it
 is the backend-swap hook; do not collapse it to a bare arch flag.
 
+MEMORY DISCIPLINE (the memory-space model is docs/INFERENCE_OS_DESIGN.md —
+read it before writing allocation code):
+4. EVERY ALLOCATION NAMES ITS SPACE KIND in a one-line comment:
+   device-private (cudaMalloc), pinned (cudaMallocHost/Register),
+   coherent (managed/UM), or file-backed (pack mmap). Zero-cost now;
+   it is the extraction inventory later.
+5. NO OPEN-CODED CROSS-SPACE COPIES. A cudaMemcpy between buffers whose
+   spaces differ needs a comment saying which two spaces — pointer
+   identity across spaces is exactly what breaks the first discrete
+   port. Same-space copies are fine bare.
+6. ANY NEW ALLOCATION KIND in your family (first managed alloc, first
+   cudaHostRegister, a private mmap scheme) goes in the INTEGRATION
+   REQUEST with call sites — the family pack loader's mapping is the
+   sanctioned file-backed path; do not invent a second one.
+
 ## Cluster rules (hard)
 - Nodes are `spark0..sparkf`, ssh BatchMode works from the controller mac.
 - `spark2` hosts the 27B development instance. It CAN be used for pack
