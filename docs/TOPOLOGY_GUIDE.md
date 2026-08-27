@@ -122,3 +122,45 @@ Per model, after the TP4×PP4 baseline:
 | Qwen Max FP8 | 2.3 TB / ~144 GB/rank | TP4×PP4 minimum, TP8×PP2 to test | 92 layers, huge MoE |
 | K3 MXFP4 | 1.5 TB / ~94 GB/rank TP16 | TP4×PP4 or TP8×PP2 | 93 layers, 896 experts (EP candidate) |
 | GLM 5.2 FP8 | 704 GB / ~88 GB/rank TP8 | TP8 (proven) → TP4×PP4 to compare | 78 layers |
+
+## Dense model topology: TP16 vs DP (the 27B case study)
+
+For DENSE models (no MoE), the math is different from MoE models.
+Every token streams the same weights — batching amortizes but doesn't
+eliminate the weight traffic.
+
+| Configuration | Single-stream | Aggregate | Aggregate spec |
+|---|---|---|---|
+| TP16 (1 instance, 16 sparks) | 130 tok/s (16×) | 2,351 tok/s | 8,229 tok/s |
+| TP1 (1 spark) | 8.8 tok/s | 926 tok/s | 3,241 tok/s |
+| 16× TP1 replicas (DP) | 8.8 tok/s each | **14,815 tok/s** | **51,852 tok/s** |
+
+**TP16 is a latency play. DP is a throughput play.**
+
+- TP16: 16× faster per token (each rank streams 1/16 of weights → 7 ms
+  instead of 114 ms). Single-stream spec: 455 tok/s. But the all-reduce
+  scales with batch size and caps aggregate at ~2,351 tok/s (reached at
+  B=17, where all-reduce wire time = weight stream time).
+
+- DP (16× TP1 replicas): each spark runs an independent deployment.
+  Aggregate = 16 × 926 = 14,815 tok/s. No all-reduce. The request
+  router (LiteLLM → SparkPipe router) distributes pending requests.
+
+- The compute-bound crossover B*=106 is the same for both (TP divides
+  weights AND compute by the same factor). Below B*: memory-bound.
+  Above: compute-bound. The aggregate plateau is the same per-GPU-group.
+
+**The right deployment**: some sparks run TP16 for interactive/low-latency,
+the rest run TP1 replicas for batch throughput. The router switches by
+request class. This IS the compute-island model.
+
+### Why TP16 showed no gain historically
+
+128 all-reduce launches per decode step × 20-50 µs launch overhead =
+2.6-6.4 ms per step. At TP16, the weight stream is 7.1 ms — so the
+launch overhead ADDS 90% on top, erasing the 16× gain. With graph-
+captured collectives (0.1 ms), TP16 delivers its theoretical 16×.
+
+The fix is the same one as the MoE expert-grouping: capture the
+collectives into the frame graph. The collective kernels are already
+in the capture scope for the hidden transport backend.
