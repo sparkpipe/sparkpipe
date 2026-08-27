@@ -1,3 +1,20 @@
+# INFRA: ceph /mnt/model-warm wedge — RESOLVED 2026-08-28 (root cause: spark3, not ceph)
+
+RESOLUTION + CORRECTION: ceph itself was never wedged. spark3 hosts
+`mds.ds4warm.spark3` (the cephfs METADATA SERVER for model-warm) plus
+osd.3/osd.17. When spark3 wedged (GPU incident below), the MDS went with
+it: every client's UNCACHED read stalled on metadata retries (cached
+pages needed no MDS and flew at RAM speed) — which masqueraded as an
+"OSD-path" wedge fleet-wide. spark3's reboot restored everything;
+verified uncached direct reads: sparke 336 MB/s, sparkd 272 MB/s.
+Corollary for future incidents: spark3 (or whichever host runs the
+model-warm MDS) being unresponsive = fleet-wide slow uncached reads.
+Check the MDS host's health BEFORE diagnosing ceph.
+
+The advisory below is retained for the pattern and the recovery test.
+
+---
+
 # INFRA: ceph /mnt/model-warm wedged on OSD path — fleet lane advisory (2026-08-27)
 
 Status: ACTIVE incident, sysadmin escalated. Uncached reads from

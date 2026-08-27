@@ -97,6 +97,22 @@ read it before writing allocation code):
   (`pgrep -f sparkpipe_model`). After ANY reset wait 10s before starting
   daemons. A daemon SIGKILLed mid-CUDA leaks device memory; the next
   start fails with `cuda_storage` - that means reset (cleanly), not panic.
+- **THE NO-KILL PROTOCOL (learned from three NVRM wedges, most recently
+  spark3 2026-08-27 whose KILL also took down the model-warm ceph MDS
+  fleet-wide):** TERM first, ALWAYS. Wait. If the process ignores TERM
+  (R-state spin, D-state sleep), do NOT escalate to SIGKILL — capture
+  `/proc/<pid>/stack`, `/proc/<pid>/status`, and 30s of `top -H` output,
+  then REPORT the node as needing a sysadmin reboot with the process
+  left running. A reboot cleans a stuck daemon without rolling the
+  NVRM dice; a SIGKILL mid-CUDA wedges the GPU (and on MDS/OSD hosts,
+  the storage for everyone). The daemon is already lost when TERM fails
+  — the only question is whether the node goes with it.
+- **WHY DAEMONS BECOME TERM-IMMUNE (the bug to fix, not the protocol):**
+  an unbounded spin in a collective wait loop does not return to the
+  signal handler. Every wait on a peer must carry a deadline (the
+  config's operation_timeout_milli exists — honor it) and re-check
+  shutdown flags. If you find a wait loop without one, that is a P1
+  bug in the runtime, report it as an integration request.
 - Each residentd accepts ONE client. The model_api holds that slot; for
   direct batch-tool tests, stop the api first, restore it after.
 - The DFlash2 launch environment is MANDATORY for spec runs (missing it
@@ -104,6 +120,10 @@ read it before writing allocation code):
   SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPEC_METHOD=dflash2 DRAFT_COUNT=8
   DSPARK_PACK_PATH=<drafter> DFLASH2_STATE_SELECT=1 BONUS_FOLD=2
   DFLASH2_BLOCK_KV=0 DFLASH2_WINDOW=2048 DFLASH2_CTX_CACHE=1
+- **CEPH SINGLE-POINT MAP:** spark3 runs `mds.ds4warm.spark3` + osd.3/17;
+  sparkc runs osd.12 (other OSDs: check `ps -C ceph-osd` per host).
+  Fleet-wide SLOW UNCACHED reads with fast cached reads = the MDS host
+  (spark3) is in trouble — check it BEFORE diagnosing ceph.
 
 ## Build chain (the only supported path)
 1. Module: `make -C modules/<family> publish NVCC=/usr/local/cuda/bin/nvcc
