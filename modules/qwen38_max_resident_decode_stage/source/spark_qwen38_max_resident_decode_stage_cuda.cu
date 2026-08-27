@@ -45,17 +45,32 @@ static __device__ __forceinline__ float SparkQwen38RopeFrequency(uint32_t pair)
 	return(exp2f(-((float)(2u * pair) / (float)SPARK_QWEN38_MAX_MODEL_ATTN_ROPE_DIMENSION) * log2f((float)SPARK_QWEN38_MAX_MODEL_ATTN_ROPE_THETA)));
 }
 
+/* Local GDN geometry for a rank: every axis is whole-head cut, so the
+ * grouped-value ratio (8 value heads per key head) and the per-head key/value
+ * dimensions are invariant and only the head counts and the composed channel
+ * widths narrow. tp_degree 1 reproduces the full-width layout exactly. */
+static __device__ __forceinline__ void SparkQwen38GdnLocalGeometry(uint32_t tp_degree, uint32_t *local_key_heads, uint32_t *local_value_heads, uint32_t *local_qk_dimension, uint32_t *local_value_dimension, uint32_t *local_conv_channels)
+{
+	*local_key_heads = SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT / tp_degree;
+	*local_value_heads = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree;
+	*local_qk_dimension = (*local_key_heads) * SPARK_QWEN38_CUDA_DK;
+	*local_value_dimension = (*local_value_heads) * SPARK_QWEN38_CUDA_DV;
+	*local_conv_channels = (2u * (*local_qk_dimension)) + (*local_value_dimension);
+}
+
 // Depthwise causal conv update for one decode token per row: one thread per
 // (row, channel), window = carried tail (3) plus the fresh projection, dot
 // with the 4-tap weight, silu, then rotate the tail in place. Cold rows read
-// a zero tail. Matches causal_conv1d_update with bias absent.
-static __global__ void SparkQwen38ConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
+// a zero tail. Matches causal_conv1d_update with bias absent. The channel
+// axis is head-composed (q|k|v), so it narrows with the rank.
+static __global__ void SparkQwen38ConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride, uint32_t tp_degree)
 {
 	uint32_t row = blockIdx.y,channel = (blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t local_conv_channels = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS / tp_degree;
 	uint64_t tail_base;
 	float window[4],accumulator;
 	uint32_t tap;
-	if ( row >= row_count || channel >= SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS )
+	if ( row >= row_count || channel >= local_conv_channels )
 		return;
 	tail_base = ((uint64_t)row_lane_indices[row] * tail_lane_stride) + ((uint64_t)gdn_layer_ordinal * tail_layer_stride) + ((uint64_t)channel * 3u);
 	if ( state_cold_by_row[row] != 0u )
@@ -70,26 +85,27 @@ static __global__ void SparkQwen38ConvUpdateKernel(const void *qkv_bf16, const v
 		window[1] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 1u);
 		window[2] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 2u);
 	}
-	window[3] = SparkLmBf16ToFloat(qkv_bf16,((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS) + channel);
+	window[3] = SparkLmBf16ToFloat(qkv_bf16,((uint64_t)row * local_conv_channels) + channel);
 	accumulator = 0.0f;
 	for (tap = 0; tap < SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL; tap++)
 		accumulator += (window[tap] * SparkLmBf16ToFloat(conv_weight_bf16,((uint64_t)channel * SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL) + tap));
-	SparkLmFloatToBf16(conv_out_bf16,((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS) + channel,SparkLmSwish(accumulator));
+	SparkLmFloatToBf16(conv_out_bf16,((uint64_t)row * local_conv_channels) + channel,SparkLmSwish(accumulator));
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 0u,window[1]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 1u,window[2]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[3]);
 }
 
-// Per-head log decay and beta from the two 48-row projections plus the fp32
+// Per-head log decay and beta from the two per-head projections plus the fp32
 // decay parameters: g = -exp(a_log) * softplus(a + dt_bias), beta =
-// sigmoid(b). One thread per (row, value head).
-static __global__ void SparkQwen38DecayBetaKernel(const void *decay_pre_bf16, const void *beta_pre_bf16, const float *a_log_f32, const float *dt_bias_f32, float *log_decay_f32, float *beta_f32, uint32_t row_count)
+// sigmoid(b). One thread per (row, value head). Head axis narrows per rank.
+static __global__ void SparkQwen38DecayBetaKernel(const void *decay_pre_bf16, const void *beta_pre_bf16, const float *a_log_f32, const float *dt_bias_f32, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree)
 {
 	uint32_t row = blockIdx.x,head = threadIdx.x;
+	uint32_t local_value_heads = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree;
 	uint64_t index;
-	if ( row >= row_count || head >= SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT )
+	if ( row >= row_count || head >= local_value_heads )
 		return;
-	index = ((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT) + head;
+	index = ((uint64_t)row * local_value_heads) + head;
 	log_decay_f32[index] = -expf(a_log_f32[head]) * SparkLmSoftplus(SparkLmBf16ToFloat(decay_pre_bf16,index) + dt_bias_f32[head]);
 	beta_f32[index] = SparkLmSigmoid(SparkLmBf16ToFloat(beta_pre_bf16,index));
 }
@@ -104,12 +120,22 @@ static __global__ void SparkQwen38DecayBetaKernel(const void *decay_pre_bf16, co
  * read-out. State is fp32 in the resident pool and updated in place; cold
  * rows start from zero without a separate memset pass.
  */
-static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
+static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride, uint32_t tp_degree)
 {
     extern __shared__ float state_shared[];
     __shared__ float qn[SPARK_QWEN38_CUDA_DK];
     __shared__ float kn[SPARK_QWEN38_CUDA_DK];
     __shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+    const uint32_t local_value_heads =
+        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree;
+    const uint32_t local_qk_dimension =
+        (SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT / tp_degree) *
+        SPARK_QWEN38_CUDA_DK;
+    const uint32_t local_conv_channels =
+        (2u * local_qk_dimension) +
+        (local_value_heads * SPARK_QWEN38_CUDA_DV);
+    const uint32_t local_value_dimension =
+        local_value_heads * SPARK_QWEN38_CUDA_DV;
     uint32_t row;
     uint32_t head;
     uint32_t column;
@@ -136,7 +162,7 @@ static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const
         return;
     }
 
-    conv_row = (uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS;
+    conv_row = (uint64_t)row * local_conv_channels;
     value = SparkLmBf16ToFloat(
         conv_out_bf16,
         conv_row + ((uint64_t)key_head * SPARK_QWEN38_CUDA_DK) + column);
@@ -146,7 +172,7 @@ static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const
 
     value = SparkLmBf16ToFloat(
         conv_out_bf16,
-        conv_row + SPARK_QWEN38_MAX_MODEL_GDN_QK_DIMENSION +
+        conv_row + local_qk_dimension +
             ((uint64_t)key_head * SPARK_QWEN38_CUDA_DK) + column);
     k_norm = SparkLmBlockReduceSum(value * value, reduce_scratch);
     kn[column] = value * rsqrtf(k_norm + 1.0e-6f);
@@ -159,9 +185,9 @@ static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const
     decay = state_cold_by_row[row] != 0u
         ? 0.0f
         : expf(log_decay_f32[
-            ((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT) + head]);
+            ((uint64_t)row * local_value_heads) + head]);
     beta = beta_f32[
-        ((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT) + head];
+        ((uint64_t)row * local_value_heads) + head];
 
     kv_memory = 0.0f;
     for (element = 0u; element < SPARK_QWEN38_CUDA_DK; ++element)
@@ -176,7 +202,7 @@ static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const
 
     delta = (SparkLmBf16ToFloat(
         conv_out_bf16,
-        conv_row + (2u * SPARK_QWEN38_MAX_MODEL_GDN_QK_DIMENSION) +
+        conv_row + (2u * local_qk_dimension) +
             ((uint64_t)head * SPARK_QWEN38_CUDA_DV) + column) - kv_memory) * beta;
     output = 0.0f;
     for (element = 0u; element < SPARK_QWEN38_CUDA_DK; ++element)
@@ -188,7 +214,7 @@ static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const
     }
     SparkLmFloatToBf16(
         core_out_bf16,
-        ((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION) +
+        ((uint64_t)row * local_value_dimension) +
             ((uint64_t)head * SPARK_QWEN38_CUDA_DV) + column,
         output);
 
@@ -200,12 +226,14 @@ static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const
 }
 
 // Gated head norm: fp32 RMSNorm over one value head, times weight, times
-// silu(z). One block per (row, head), 128 threads. Norm before gate.
-static __global__ void SparkQwen38GatedNormKernel(const void *core_bf16, const void *z_bf16, const void *norm_weight_bf16, void *output_bf16, uint32_t row_count, float epsilon)
+// silu(z). One block per (row, head), 128 threads. Norm before gate. The
+// head axis narrows per rank; the per-head value dimension does not.
+static __global__ void SparkQwen38GatedNormKernel(const void *core_bf16, const void *z_bf16, const void *norm_weight_bf16, void *output_bf16, uint32_t row_count, float epsilon, uint32_t tp_degree)
 {
 	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t local_value_dimension = (SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION / tp_degree);
 	uint32_t row = blockIdx.y,head = blockIdx.x,column = threadIdx.x;
-	uint64_t index = ((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION) + ((uint64_t)head * SPARK_QWEN38_CUDA_DV) + column;
+	uint64_t index = ((uint64_t)row * local_value_dimension) + ((uint64_t)head * SPARK_QWEN38_CUDA_DV) + column;
 	float value,variance;
 	if ( row >= row_count )
 		return;
@@ -821,16 +849,20 @@ static __device__ __forceinline__ uint64_t SparkQwen38ChunkHeadOffset(uint32_t h
 
 // Stage 1: per-head L2 norms with the 1/sqrt(dk) query scale, the intra-
 // chunk decay cumsum, the decay mask and the strictly-lower beta-scaled
-// -k_beta k^T attention seed. Block per head, thread per token row.
-static __global__ void SparkQwen38ChunkPrepareKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, SparkQwen38ChunkWorkspaceView views, uint32_t token_count)
+// -k_beta k^T attention seed. Block per head, thread per token row. The
+// head axis and the composed conv channels are the rank-local ones.
+static __global__ void SparkQwen38ChunkPrepareKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, SparkQwen38ChunkWorkspaceView views, uint32_t token_count, uint32_t tp_degree)
 {
+	uint32_t local_value_heads = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree;
+	uint32_t local_qk_dimension = (SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT / tp_degree) * SPARK_QWEN38_CUDA_DK;
+	uint32_t local_conv_channels = (2u * local_qk_dimension) + (local_value_heads * SPARK_QWEN38_CUDA_DV);
 	uint32_t head = blockIdx.x,row = threadIdx.x,key_head = head / SPARK_QWEN38_CUDA_GVA_GROUP,element,column;
 	uint64_t conv_row,qk_base = SparkQwen38ChunkHeadOffset(head,SPARK_QWEN38_CUDA_CHUNK * SPARK_QWEN38_CUDA_DK);
 	uint64_t mat_base = SparkQwen38ChunkHeadOffset(head,SPARK_QWEN38_CUDA_CHUNK * SPARK_QWEN38_CUDA_CHUNK);
 	float total,value,product;
 	if ( row >= token_count )
 		return;
-	conv_row = (uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS;
+	conv_row = (uint64_t)row * local_conv_channels;
 	total = 0.0f;
 	for (element = 0; element < SPARK_QWEN38_CUDA_DK; element++)
 	{
@@ -843,18 +875,18 @@ static __global__ void SparkQwen38ChunkPrepareKernel(const void *conv_out_bf16, 
 	total = 0.0f;
 	for (element = 0; element < SPARK_QWEN38_CUDA_DK; element++)
 	{
-		value = SparkLmBf16ToFloat(conv_out_bf16,conv_row + SPARK_QWEN38_MAX_MODEL_GDN_QK_DIMENSION + ((uint64_t)key_head * SPARK_QWEN38_CUDA_DK) + element);
+		value = SparkLmBf16ToFloat(conv_out_bf16,conv_row + local_qk_dimension + ((uint64_t)key_head * SPARK_QWEN38_CUDA_DK) + element);
 		total += (value * value);
 	}
 	total = rsqrtf(total + 1e-6f);
 	for (element = 0; element < SPARK_QWEN38_CUDA_DK; element++)
-		views.kn[qk_base + ((uint64_t)row * SPARK_QWEN38_CUDA_DK) + element] = SparkLmBf16ToFloat(conv_out_bf16,conv_row + SPARK_QWEN38_MAX_MODEL_GDN_QK_DIMENSION + ((uint64_t)key_head * SPARK_QWEN38_CUDA_DK) + element) * total;
+		views.kn[qk_base + ((uint64_t)row * SPARK_QWEN38_CUDA_DK) + element] = SparkLmBf16ToFloat(conv_out_bf16,conv_row + local_qk_dimension + ((uint64_t)key_head * SPARK_QWEN38_CUDA_DK) + element) * total;
 	if ( row == 0u )
 	{
 		total = 0.0f;
 		for (element = 0; element < token_count; element++)
 		{
-			total += log_decay_f32[((uint64_t)element * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT) + head];
+			total += log_decay_f32[((uint64_t)element * local_value_heads) + head];
 			views.cum_g[SparkQwen38ChunkHeadOffset(head,SPARK_QWEN38_CUDA_CHUNK) + element] = total;
 		}
 	}
@@ -865,7 +897,7 @@ static __global__ void SparkQwen38ChunkPrepareKernel(const void *conv_out_bf16, 
 		views.decay[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + column] = value;
 		product = 0.0f;
 		for (element = 0; element < SPARK_QWEN38_CUDA_DK && column < row; element++)
-			product += (views.kn[qk_base + ((uint64_t)row * SPARK_QWEN38_CUDA_DK) + element] * beta_f32[((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT) + head] * views.kn[qk_base + ((uint64_t)column * SPARK_QWEN38_CUDA_DK) + element]);
+			product += (views.kn[qk_base + ((uint64_t)row * SPARK_QWEN38_CUDA_DK) + element] * beta_f32[((uint64_t)row * local_value_heads) + head] * views.kn[qk_base + ((uint64_t)column * SPARK_QWEN38_CUDA_DK) + element]);
 		views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + column] = column < row ? -(product * value) : 0.0f;
 	}
 }
@@ -904,9 +936,12 @@ static __global__ void SparkQwen38ChunkSolveKernel(SparkQwen38ChunkWorkspaceView
 
 // Stage 3: w = T (v o beta) and kg = T (k o beta o e^G). Block per (head,
 // token row), thread per output column striped over dv then dk.
-static __global__ void SparkQwen38ChunkTransformKernel(const void *conv_out_bf16, const float *beta_f32, SparkQwen38ChunkWorkspaceView views, uint32_t token_count)
+static __global__ void SparkQwen38ChunkTransformKernel(const void *conv_out_bf16, const float *beta_f32, SparkQwen38ChunkWorkspaceView views, uint32_t token_count, uint32_t tp_degree)
 {
 	__shared__ float exp_cum_g[SPARK_QWEN38_CUDA_CHUNK];
+	uint32_t local_value_heads = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree;
+	uint32_t local_qk_dimension = (SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT / tp_degree) * SPARK_QWEN38_CUDA_DK;
+	uint32_t local_conv_channels = (2u * local_qk_dimension) + (local_value_heads * SPARK_QWEN38_CUDA_DV);
 	uint32_t head = blockIdx.x,row = blockIdx.y,column = threadIdx.x,element;
 	uint64_t mat_base = SparkQwen38ChunkHeadOffset(head,SPARK_QWEN38_CUDA_CHUNK * SPARK_QWEN38_CUDA_CHUNK);
 	uint64_t vec_base = SparkQwen38ChunkHeadOffset(head,SPARK_QWEN38_CUDA_CHUNK * SPARK_QWEN38_CUDA_DK);
@@ -924,14 +959,14 @@ static __global__ void SparkQwen38ChunkTransformKernel(const void *conv_out_bf16
 	accumulator = 0.0f;
 	for (element = 0; element < token_count; element++)
 	{
-		transform = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT) + head];
-		accumulator += (transform * SparkLmBf16ToFloat(conv_out_bf16,((uint64_t)element * SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS) + (2u * SPARK_QWEN38_MAX_MODEL_GDN_QK_DIMENSION) + ((uint64_t)head * SPARK_QWEN38_CUDA_DV) + column));
+		transform = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * local_value_heads) + head];
+		accumulator += (transform * SparkLmBf16ToFloat(conv_out_bf16,((uint64_t)element * local_conv_channels) + (2u * local_qk_dimension) + ((uint64_t)head * SPARK_QWEN38_CUDA_DV) + column));
 	}
 	views.w[vec_base + ((uint64_t)row * SPARK_QWEN38_CUDA_DV) + column] = accumulator;
 	accumulator = 0.0f;
 	for (element = 0; element < token_count; element++)
 	{
-		transform = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT) + head] * exp_cum_g[element];
+		transform = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN38_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * local_value_heads) + head] * exp_cum_g[element];
 		accumulator += (transform * views.kn[vec_base + ((uint64_t)element * SPARK_QWEN38_CUDA_DK) + column]);
 	}
 	views.kg[vec_base + ((uint64_t)row * SPARK_QWEN38_CUDA_DK) + column] = accumulator;
@@ -1006,7 +1041,7 @@ static __global__ void SparkQwen38ChunkQkDecayKernel(SparkQwen38ChunkWorkspaceVi
 // carried state S <- S e^G_last + (k o e^(G_last - G))^T v_new. Block per
 // (head, state row is the thread's dk stripe? No): thread per dv column,
 // mirroring the decode step's coalesced state-column ownership.
-static __global__ void SparkQwen38ChunkStepKernel(const float *log_decay_f32, SparkQwen38ChunkWorkspaceView views, float *state_f32, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
+static __global__ void SparkQwen38ChunkStepKernel(const float *log_decay_f32, SparkQwen38ChunkWorkspaceView views, float *state_f32, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride, uint32_t tp_degree)
 {
     extern __shared__ float chunk_shared[];
     float *state_shared;
@@ -1107,7 +1142,7 @@ static __global__ void SparkQwen38ChunkStepKernel(const float *log_decay_f32, Sp
         }
         SparkLmFloatToBf16(
             core_out_bf16,
-            ((uint64_t)row * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION) +
+            ((uint64_t)row * (SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION / tp_degree)) +
                 ((uint64_t)head * SPARK_QWEN38_CUDA_DV) + column,
             accumulator);
     }
@@ -1141,12 +1176,13 @@ static __global__ void SparkQwen38ChunkStepKernel(const float *log_decay_f32, Sp
  * write-back needs no blending cases. Frames chain: the tail written here
  * seeds the next frame's first window.
  */
-static __global__ void SparkQwen38ChunkConvKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
+static __global__ void SparkQwen38ChunkConvKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride, uint32_t tp_degree)
 {
+	uint32_t local_conv_channels = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS / tp_degree;
 	uint32_t channel = (blockIdx.x * blockDim.x) + threadIdx.x,token,tap;
 	uint64_t tail_base,element;
 	float window[4],weight[4],accumulator;
-	if ( channel >= SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS )
+	if ( channel >= local_conv_channels )
 		return;
 	tail_base = ((uint64_t)lane_index * tail_lane_stride) + ((uint64_t)gdn_layer_ordinal * tail_layer_stride) + ((uint64_t)channel * SPARK_QWEN38_MAX_MODEL_GDN_CONV_TAIL_COLUMNS);
 	window[0] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 0u);
@@ -1156,7 +1192,7 @@ static __global__ void SparkQwen38ChunkConvKernel(const void *qkv_bf16, const vo
 		weight[tap] = SparkLmBf16ToFloat(conv_weight_bf16,((uint64_t)channel * SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL) + tap);
 	for (token = 0; token < token_count; token++)
 	{
-		element = ((uint64_t)token * SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS) + channel;
+		element = ((uint64_t)token * local_conv_channels) + channel;
 		window[3] = SparkLmBf16ToFloat(qkv_bf16,element);
 		accumulator = 0.0f;
 		for (tap = 0; tap < SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL; tap++)
@@ -1211,23 +1247,24 @@ extern "C" cudaError_t SparkQwen38LaunchLinear(cudaStream_t stream, const SparkQ
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 
-extern "C" cudaError_t SparkQwen38LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal)
+extern "C" cudaError_t SparkQwen38LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
 {
-	dim3 grid((SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,row_count,1u);
-	SparkQwen38ConvUpdateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,row_lane_indices,pool->state_cold_by_row,row_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements);
+	uint32_t local_conv_channels = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS / tp_degree;
+	dim3 grid((local_conv_channels + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,row_count,1u);
+	SparkQwen38ConvUpdateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,row_lane_indices,pool->state_cold_by_row,row_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements,tp_degree);
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkQwen38GdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count)
+extern "C" cudaError_t SparkQwen38LaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkQwen38GdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree)
 {
-	SparkQwen38DecayBetaKernel<<<row_count,SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,0,stream>>>(decay_pre_bf16,beta_pre_bf16,weights->a_log_f32,weights->dt_bias_f32,log_decay_f32,beta_f32,row_count);
+	SparkQwen38DecayBetaKernel<<<row_count,SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree,0,stream>>>(decay_pre_bf16,beta_pre_bf16,weights->a_log_f32,weights->dt_bias_f32,log_decay_f32,beta_f32,row_count,tp_degree);
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen38GdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal)
+extern "C" cudaError_t SparkQwen38LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen38GdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
 {
     dim3 grid(
-        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,
+        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree,
         row_count,
         1u);
     SparkQwen38GdnStepKernel<<<
@@ -1245,14 +1282,15 @@ extern "C" cudaError_t SparkQwen38LaunchGdnStep(cudaStream_t stream, const void 
             row_count,
             gdn_layer_ordinal,
             pool->state_lane_stride_elements,
-            pool->state_layer_stride_elements);
+            pool->state_layer_stride_elements,
+            tp_degree);
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t SparkQwen38LaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen38GdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon)
+extern "C" cudaError_t SparkQwen38LaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen38GdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon, uint32_t tp_degree)
 {
-	dim3 grid(SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,row_count,1u);
-	SparkQwen38GatedNormKernel<<<grid,SPARK_QWEN38_CUDA_DV,0,stream>>>(core_bf16,z_bf16,weights->gdn_norm_weight_bf16,output_bf16,row_count,epsilon);
+	dim3 grid(SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree,row_count,1u);
+	SparkQwen38GatedNormKernel<<<grid,SPARK_QWEN38_CUDA_DV,0,stream>>>(core_bf16,z_bf16,weights->gdn_norm_weight_bf16,output_bf16,row_count,epsilon,tp_degree);
 	return(cudaGetLastError());
 }
 
@@ -1300,11 +1338,12 @@ extern "C" cudaError_t SparkQwen38LaunchAttnDecode(cudaStream_t stream, const vo
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t SparkQwen38LaunchChunkConv(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38GdnStatePool *pool, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal)
+extern "C" cudaError_t SparkQwen38LaunchChunkConv(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38GdnStatePool *pool, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
 {
+	uint32_t local_conv_channels = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS / tp_degree;
 	if ( token_count == 0u )
 		return(cudaErrorInvalidValue);
-	SparkQwen38ChunkConvKernel<<<(SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,lane_index,token_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements);
+	SparkQwen38ChunkConvKernel<<<(local_conv_channels + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,lane_index,token_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements,tp_degree);
 	return(cudaGetLastError());
 }
 
@@ -1315,12 +1354,14 @@ extern "C" cudaError_t SparkQwen38LaunchChunkConv(cudaStream_t stream, const voi
  * for free. Workspace pointers are slot-owned device buffers sized per the
  * view layout (per head: qn/kn/w/kg 64 x 128, decay/attn 64 x 64, cum_g 64).
  */
-extern "C" cudaError_t SparkQwen38LaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen38GdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal)
+extern "C" cudaError_t SparkQwen38LaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen38GdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
 {
     SparkQwen38ChunkWorkspaceView views;
     cudaError_t status;
+    uint32_t local_value_heads =
+        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree;
     dim3 transform_grid(
-        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,
+        local_value_heads,
         token_count,
         1u);
 
@@ -1337,17 +1378,17 @@ extern "C" cudaError_t SparkQwen38LaunchGdnChunk(cudaStream_t stream, const void
     }
 
     SparkQwen38ChunkPrepareKernel<<<
-        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,
+        local_value_heads,
         SPARK_QWEN38_CUDA_CHUNK,
         0u,
-        stream>>>(conv_out_bf16, log_decay_f32, beta_f32, views, token_count);
+        stream>>>(conv_out_bf16, log_decay_f32, beta_f32, views, token_count, tp_degree);
     status = cudaGetLastError();
     if (status != cudaSuccess)
     {
         return status;
     }
     SparkQwen38ChunkSolveKernel<<<
-        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,
+        local_value_heads,
         SPARK_QWEN38_CUDA_CHUNK,
         0u,
         stream>>>(views, token_count);
@@ -1360,14 +1401,14 @@ extern "C" cudaError_t SparkQwen38LaunchGdnChunk(cudaStream_t stream, const void
         transform_grid,
         SPARK_QWEN38_CUDA_DV,
         0u,
-        stream>>>(conv_out_bf16, beta_f32, views, token_count);
+        stream>>>(conv_out_bf16, beta_f32, views, token_count, tp_degree);
     status = cudaGetLastError();
     if (status != cudaSuccess)
     {
         return status;
     }
     SparkQwen38ChunkQkDecayKernel<<<
-        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,
+        local_value_heads,
         SPARK_LM_CTA_THREADS,
         SPARK_QWEN38_CUDA_GDN_QK_SHARED_BYTES,
         stream>>>(views, token_count);
@@ -1377,7 +1418,7 @@ extern "C" cudaError_t SparkQwen38LaunchGdnChunk(cudaStream_t stream, const void
         return status;
     }
     SparkQwen38ChunkStepKernel<<<
-        SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,
+        local_value_heads,
         SPARK_QWEN38_CUDA_DV,
         SPARK_QWEN38_CUDA_GDN_CHUNK_SHARED_BYTES,
         stream>>>(
@@ -1389,7 +1430,8 @@ extern "C" cudaError_t SparkQwen38LaunchGdnChunk(cudaStream_t stream, const void
             token_count,
             gdn_layer_ordinal,
             pool->state_lane_stride_elements,
-            pool->state_layer_stride_elements);
+            pool->state_layer_stride_elements,
+            tp_degree);
     return cudaGetLastError();
 }
 
@@ -1604,28 +1646,45 @@ extern "C" cudaError_t SparkQwen38LaunchGateSelect(cudaStream_t stream, const fl
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2)
+extern "C" cudaError_t SparkQwen38LaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t expert_mxfp4, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2)
 {
-	int32_t launch_status = LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,SPARK_LM_TILE_N,SPARK_LM_TILE_N,group_tile_prefix_w1,group_tile_prefix_w2,stream);
+	/* The B1 exact kernels walk the route's tile prefixes at their own tile
+	 * widths (32-wide W13 tasks at one row, 128 otherwise); the FP8 paths
+	 * price at the common 128 tile. */
+	uint32_t w13_tile_n = expert_mxfp4 != 0u ? SparkLmSm121ExpertW13TileN(rows) : SPARK_LM_TILE_N;
+	uint32_t w2_tile_n = expert_mxfp4 != 0u ? SparkLmSm121ExpertW2TileN(rows) : SPARK_LM_TILE_N;
+	int32_t launch_status = LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,w13_tile_n,w2_tile_n,group_tile_prefix_w1,group_tile_prefix_w2,stream);
 	return(launch_status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
 }
 
-extern "C" cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen38LinearView *w1, const SparkQwen38LinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count)
+extern "C" cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen38LinearView *w1, const SparkQwen38LinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank)
 {
 	cudaError_t status;
-	uint64_t required_rows = (uint64_t)SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * expert_width;
-	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || w1->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w3->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != required_rows || w3->output_dimension != required_rows || w1->input_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION || w3->input_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION )
+	uint32_t experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	/* Full-width packs carry all 512 experts (the payload pointer shifts into
+	 * the rank's slice); sharded v2 packs carry only the rank's experts. */
+	uint32_t owned_experts = w1->output_dimension == (uint64_t)SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * expert_width ? SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT : experts_per_rank;
+	const uint8_t *payload_base;
+	const uint8_t *scale_base;
+	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || w1->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w3->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != w3->output_dimension || w1->output_dimension != (uint64_t)owned_experts * expert_width || w1->input_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION || w3->input_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION || tp_degree == 0u || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
-	status = SparkLmHostLaunchSm121FusedExpertW13(stream,w1->weight_payload,w1->weight_scale_e8m0,w3->weight_payload,w3->weight_scale_e8m0,input_bf16,route_source_token,group_row_offset,group_tile_prefix,activated_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,expert_width,limit,multiprocessor_count);
+	payload_base = (const uint8_t *)w1->weight_payload + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * expert_width * w1->input_dimension / 2u : 0u);
+	scale_base = (const uint8_t *)w1->weight_scale_e8m0 + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * expert_width * (w1->input_dimension / SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE) : 0u);
+	status = SparkLmHostLaunchSm121FusedExpertW13(stream,payload_base,scale_base,(const uint8_t *)w3->weight_payload + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * expert_width * w3->input_dimension / 2u : 0u),(const uint8_t *)w3->weight_scale_e8m0 + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * expert_width * (w3->input_dimension / SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE) : 0u),input_bf16,route_source_token,group_row_offset + ((uint64_t)tp_rank * experts_per_rank),group_tile_prefix + ((uint64_t)tp_rank * experts_per_rank),activated_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,experts_per_rank,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,expert_width,limit,multiprocessor_count);
 	return(status);
 }
 
-extern "C" cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count)
+extern "C" cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank)
 {
-	uint64_t required_rows = (uint64_t)SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * hidden_dimension;
-	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || stacked->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != required_rows || stacked->input_dimension != expert_width )
+	uint32_t experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	uint32_t owned_experts = stacked != 0 && stacked->output_dimension == (uint64_t)SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * hidden_dimension ? SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT : experts_per_rank;
+	const uint8_t *payload_base;
+	const uint8_t *scale_base;
+	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || stacked->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != (uint64_t)owned_experts * hidden_dimension || stacked->input_dimension != expert_width || tp_degree == 0u || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
-	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->weight_payload,stacked->weight_scale_e8m0,input_bf16,group_row_offset,group_tile_prefix,output_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,multiprocessor_count));
+	payload_base = (const uint8_t *)stacked->weight_payload + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * hidden_dimension * expert_width / 2u : 0u);
+	scale_base = (const uint8_t *)stacked->weight_scale_e8m0 + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * hidden_dimension * (expert_width / SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE) : 0u);
+	return(SparkLmHostLaunchSm121ExpertW2(stream,payload_base,scale_base,input_bf16,group_row_offset + ((uint64_t)tp_rank * experts_per_rank),group_tile_prefix + ((uint64_t)tp_rank * experts_per_rank),output_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,experts_per_rank,expert_width,hidden_dimension,multiprocessor_count));
 }
 
 extern "C" cudaError_t SparkQwen38LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension)
@@ -1730,6 +1789,11 @@ extern "C" cudaError_t SparkQwen38ConfigureCudaKernels(void)
  * FP8 grouped expert linear via the common grouped-scalar path (FP8_E4M3
  * F32B128). The pack stores experts expert-major, so the per-group strides
  * are constant; source_row_map is the route's packed->source row table.
+ * The payload base discriminates the pack generation: a full-width v1-style
+ * view spans all 512 experts (the rank's slice is a pointer shift into it),
+ * a sharded v2 view carries only the rank's experts (base offset zero).
+ * Route structures (offsets, tile prefixes) are ALWAYS global and always
+ * shifted - only the weight pointers differ between the generations.
  */
 extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 	cudaStream_t stream,
@@ -1747,6 +1811,8 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 	uint64_t rows_per_expert;
 	uint64_t payload_stride,scale_stride;
 	uint32_t experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	uint32_t owned_experts;
+	uint64_t expert_base;
 	const uint8_t *payload;
 	const uint8_t *scale;
 	const uint32_t *offsets;
@@ -1754,22 +1820,29 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 	if ( view == 0 || input_bf16 == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
 		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
-		view->output_dimension % SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT != 0u ||
 		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
 		(source_row_map == 0 && source_row_count == 0u) ||
 		tp_degree == 0u || tp_rank >= tp_degree ||
 		(SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
-	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT;
+	/* The per-expert row count is a model constant per projection: W1/W3
+	 * read the hidden width, DOWN reads the expert width. */
+	rows_per_expert = view->input_dimension == SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION
+		? SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION
+		: SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
+	if ( view->output_dimension == (uint64_t)SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * rows_per_expert )
+		owned_experts = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT;
+	else if ( view->output_dimension == (uint64_t)experts_per_rank * rows_per_expert )
+		owned_experts = experts_per_rank;
+	else
+		return(cudaErrorInvalidValue);
 	payload_stride = rows_per_expert * view->input_dimension;
 	scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
-	/* Expert shard: the pack stores experts expert-major, so the rank's
-	 * slice is one contiguous pointer shift over payload, scales, offsets
-	 * and tile prefixes; all row/output indexing stays global. */
-	payload = (const uint8_t *)view->weight_payload + ((uint64_t)tp_rank * experts_per_rank * payload_stride);
-	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * scale_stride);
-	offsets = group_row_offset + ((uint64_t)tp_rank * experts_per_rank);
-	prefix = group_tile_prefix + ((uint64_t)tp_rank * experts_per_rank);
+	expert_base = (uint64_t)tp_rank * experts_per_rank;
+	payload = (const uint8_t *)view->weight_payload + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? expert_base * payload_stride : 0u);
+	scale = (const uint8_t *)view->weight_scale_e8m0 + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? expert_base * scale_stride : 0u);
+	offsets = group_row_offset + expert_base;
+	prefix = group_tile_prefix + expert_base;
 	return(SparkLmHostLaunchGroupedScalarLinear<32u>(stream,
 		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
 		payload,scale,
@@ -1806,32 +1879,38 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(
 {
 	uint64_t rows_per_expert;
 	uint64_t payload_stride,scale_stride;
-	uint32_t m_blocks,n_tiles,experts_per_rank;
+	uint32_t experts_per_rank;
+	uint32_t owned_experts;
+	uint64_t expert_base;
 	const uint8_t *payload;
 	const uint8_t *scale;
 	const uint32_t *offsets;
 	if ( view == 0 || input_bf16 == 0 || group_row_offset == 0 || output_bf16 == 0 ||
 		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
-		view->output_dimension % SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT != 0u ||
 		view->input_dimension % 64u != 0u ||
 		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
 		source_row_count == 0u ||
 		tp_degree == 0u || tp_rank >= tp_degree ||
 		(SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
-	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT;
+	experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	rows_per_expert = view->input_dimension == SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION
+		? SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION
+		: SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
+	if ( view->output_dimension == (uint64_t)SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * rows_per_expert )
+		owned_experts = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT;
+	else if ( view->output_dimension == (uint64_t)experts_per_rank * rows_per_expert )
+		owned_experts = experts_per_rank;
+	else
+		return(cudaErrorInvalidValue);
 	if ( rows_per_expert % SPARK_LM_TILE_N != 0u )
 		return(cudaErrorInvalidValue);
 	payload_stride = rows_per_expert * view->input_dimension;
 	scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
-	m_blocks = (source_row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
-	n_tiles = (uint32_t)(rows_per_expert / SPARK_LM_TILE_N);
-	(void)m_blocks;
-	(void)n_tiles;
-	experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
-	payload = (const uint8_t *)view->weight_payload + ((uint64_t)tp_rank * experts_per_rank * payload_stride);
-	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * scale_stride);
-	offsets = group_row_offset + ((uint64_t)tp_rank * experts_per_rank);
+	expert_base = (uint64_t)tp_rank * experts_per_rank;
+	payload = (const uint8_t *)view->weight_payload + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? expert_base * payload_stride : 0u);
+	scale = (const uint8_t *)view->weight_scale_e8m0 + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? expert_base * scale_stride : 0u);
+	offsets = group_row_offset + expert_base;
 	/* The expert-stride m-loop at every tile shape: one launch of
 	 * 64 x n_tiles CTAs, each walking several experts - empty experts
 	 * cost a few cycles instead of a launch, and each k-strip is staged

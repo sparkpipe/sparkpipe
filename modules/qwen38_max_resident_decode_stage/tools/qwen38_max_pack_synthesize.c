@@ -10,19 +10,22 @@
 #include "spark_qwen38_max_stagepack_format.h"
 
 /*
- * Synthetic Qwen 3.6 27B stage pack writer, slice-aware.
+ * Synthetic Qwen 3.8 Max stage pack writer, slice- and shard-aware (format v2).
  *
  * Emits every tensor one pipeline STAGE will demand, at the geometry the
  * module was compiled for, with reproducible pseudo-random contents. It
- * exercises the loader, the shape table, the slice arithmetic and the layer
- * walk end to end. It says nothing about output quality: these are not the
- * model's weights, they are correctly shaped noise, and the module cannot
- * tell the difference by design.
+ * exercises the loader, the shape table, the slice arithmetic, the TP shard
+ * table and the layer walk end to end. It says nothing about output quality:
+ * these are not the model's weights, they are correctly shaped noise, and
+ * the module cannot tell the difference by design.
  *
  * The tensor list is derived from the same shape table and the same expected
  * tensor count the loader validates against, so the two can never disagree.
- * The default slice is the whole stack (--first-layer 0 --layer-count 64);
- * any PP-N stage is the same tool with its own slice.
+ * The default slice is the whole stack (--first-layer 0 --layer-count 92);
+ * any PP-N stage is the same tool with its own slice, and --tp-degree
+ * N --tp-rank R emits the rank's shard. Experts default to the MXFP4-E2M1
+ * production codec (--fp8-experts for the vendor FP8 layout, --bf16 for the
+ * all-BF16 test packs).
  */
 
 #define SPARK_QWEN38_MAX_SYNTHESIZE_MAX_TENSORS 1024u
@@ -34,6 +37,9 @@ typedef struct SparkQwen38MaxSynthesizeContext
 	uint32_t entry_count;
 	uint32_t first_layer_index;
 	uint32_t layer_count;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
+	uint32_t expert_mxfp4;
 	uint64_t payload_cursor;
 	uint64_t seed;
 } SparkQwen38MaxSynthesizeContext;
@@ -70,16 +76,22 @@ static int32_t SparkQwen38MaxSynthesizeAppend(SparkQwen38MaxSynthesizeContext *c
 	uint32_t format;
 	if ( context->entry_count >= SPARK_QWEN38_MAX_SYNTHESIZE_MAX_TENSORS )
 		return(-1);
-	if ( SparkQwen38MaxStagePackResolvedShape(tensor_kind,layer_index,is_global,&shape) < 0 )
+	if ( SparkQwen38MaxStagePackResolvedShapeSharded(tensor_kind,layer_index,is_global,context->tp_degree,context->tp_rank,&shape) < 0 )
 		return(-2);
+	/* Production parity: routed experts carry the MXFP4-E2M1 group-32 codec
+	 * (the AMD-Quark packs) unless the caller asks for the FP8 vendor layout
+	 * or the all-BF16 test mode. Everything else stays at its natural
+	 * format (BF16 spine, F32 decay vectors). */
 	format = quantize != 0u ? shape.natural_format : SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16;
+	if ( context->expert_mxfp4 != 0u && (tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1 || tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3 || tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN) && quantize != 0u )
+		format = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1;
 	entry = &context->entries[context->entry_count];
 	entry->tensor_kind = tensor_kind;
 	entry->layer_index = (is_global != 0u && layer_index != SPARK_QWEN38_MAX_STAGEPACK_MTP_LAYER) ? SPARK_QWEN38_MAX_STAGEPACK_GLOBAL_LAYER : layer_index;
 	entry->weight_format = format;
 	entry->rows = shape.rows;
 	entry->columns = shape.columns;
-	entry->scale_group_size = format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? 32u : 0u;
+	entry->scale_group_size = format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE : (format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ? 128u : 0u);
 	entry->payload_bytes = SparkQwen38MaxStagePackPayloadBytes(format,shape.rows,shape.columns);
 	entry->scale_bytes = SparkQwen38MaxStagePackScaleBytes(format,shape.rows,shape.columns);
 	entry->payload_offset = SparkQwen38MaxSynthesizeAlign(context->payload_cursor);
@@ -322,6 +334,8 @@ int main(int argc, char **argv)
 	memset(&context,0,sizeof(context));
 	context.seed = 1u;
 	context.layer_count = SPARK_QWEN38_MAX_MODEL_LAYER_COUNT;
+	context.tp_degree = 1u;
+	context.expert_mxfp4 = 1u;
 	for (argument_index = 1; argument_index < (uint32_t)argc; argument_index++)
 	{
 		if ( strcmp(argv[argument_index],"--output") == 0 && argument_index + 1u < (uint32_t)argc )
@@ -332,13 +346,19 @@ int main(int argc, char **argv)
 			context.first_layer_index = (uint32_t)strtoul(argv[++argument_index],0,10);
 		else if ( strcmp(argv[argument_index],"--layer-count") == 0 && argument_index + 1u < (uint32_t)argc )
 			context.layer_count = (uint32_t)strtoul(argv[++argument_index],0,10);
+		else if ( strcmp(argv[argument_index],"--tp-degree") == 0 && argument_index + 1u < (uint32_t)argc )
+			context.tp_degree = (uint32_t)strtoul(argv[++argument_index],0,10);
+		else if ( strcmp(argv[argument_index],"--tp-rank") == 0 && argument_index + 1u < (uint32_t)argc )
+			context.tp_rank = (uint32_t)strtoul(argv[++argument_index],0,10);
+		else if ( strcmp(argv[argument_index],"--fp8-experts") == 0 )
+			context.expert_mxfp4 = 0u;
 		else if ( strcmp(argv[argument_index],"--bf16") == 0 )
 			quantize = 0u;
 		else if ( strcmp(argv[argument_index],"--dry-run") == 0 )
 			dry_run = 1u;
 		else
 		{
-			fprintf(stderr,"usage: %s --output PATH [--seed N] [--first-layer N] [--layer-count N] [--bf16] [--dry-run]\n",argv[0]);
+			fprintf(stderr,"usage: %s --output PATH [--seed N] [--first-layer N] [--layer-count N] [--tp-degree N] [--tp-rank N] [--fp8-experts] [--bf16] [--dry-run]\n",argv[0]);
 			return(1);
 		}
 	}
@@ -346,6 +366,11 @@ int main(int argc, char **argv)
 	{
 		fprintf(stderr,"qwen38_pack_synthesize invalid slice %u+%u of %u\n",context.first_layer_index,context.layer_count,SPARK_QWEN38_MAX_MODEL_LAYER_COUNT);
 		return(2);
+	}
+	if ( SparkQwen38MaxStagePackShardingFeasible(context.tp_degree) != 0 || context.tp_rank >= context.tp_degree )
+	{
+		fprintf(stderr,"qwen38_pack_synthesize invalid tp %u/%u\n",context.tp_rank,context.tp_degree);
+		return(6);
 	}
 	if ( output_path == 0 && dry_run == 0u )
 	{
@@ -359,7 +384,7 @@ int main(int argc, char **argv)
 	}
 	payload_base = SparkQwen38MaxSynthesizeAlign(SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES + ((uint64_t)context.entry_count * SPARK_QWEN38_MAX_STAGEPACK_ENTRY_BYTES));
 	SparkQwen38MaxSynthesizeShiftPayload(&context,payload_base);
-	SparkQwen38MaxStagePackExpectedGeometry(&header,context.first_layer_index,context.layer_count);
+	SparkQwen38MaxStagePackExpectedGeometry(&header,context.first_layer_index,context.layer_count,context.tp_degree,context.tp_rank);
 	header.directory_offset = SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES;
 	header.file_bytes = payload_base + context.payload_cursor;
 	SparkQwen38MaxSynthesizeReport(&context,&header);

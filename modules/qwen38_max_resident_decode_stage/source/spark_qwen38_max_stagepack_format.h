@@ -19,10 +19,17 @@
  * Routed experts are flattened: w1/w3 are [expert_count * intermediate, H]
  * and w2 is [expert_count * H, intermediate]. The checkpoint's fused
  * gate_up_proj is split at pack time into w1 (rows 0..I) and w3 (rows I..2I).
+ *
+ * FORMAT VERSION 2 adds TP sharding: the header names the tensor-parallel
+ * degree and rank the pack was sliced for, and the shape table resolves
+ * per-rank shapes (the shard axes are documented at
+ * SparkQwen38MaxStagePackShardDivisor). A v2 pack with tp_degree 1 is
+ * shape-identical to a v1 full-width pack; the loader accepts exactly the
+ * (degree, rank) it was configured for, never a mix.
  */
 
 #define SPARK_QWEN38_MAX_STAGEPACK_MAGIC 0x50533851u /* 'Q8SP' little endian */
-#define SPARK_QWEN38_MAX_STAGEPACK_FORMAT_VERSION 1u
+#define SPARK_QWEN38_MAX_STAGEPACK_FORMAT_VERSION 2u
 #define SPARK_QWEN38_MAX_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_QWEN38_MAX_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
 #define SPARK_QWEN38_MAX_STAGEPACK_PAYLOAD_ALIGNMENT 256u
@@ -97,6 +104,8 @@ typedef struct SparkQwen38MaxStagePackHeader
 	uint32_t output_vocab_count;
 	uint32_t mxfp4_group_size;
 	uint32_t mtp_layer_count;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
 	uint64_t directory_offset;
 	uint64_t file_bytes;
 } SparkQwen38MaxStagePackHeader;
@@ -120,9 +129,9 @@ typedef struct SparkQwen38MaxStagePackEntry
  * padding on the LP64 targets this module builds for; the asserts make that a
  * compile error rather than a silent format drift.
  */
-#define SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES 120u
+#define SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES 128u
 #define SPARK_QWEN38_MAX_STAGEPACK_ENTRY_BYTES 56u
-_Static_assert(sizeof(SparkQwen38MaxStagePackHeader) == SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES,"qwen38 stage pack header must be 120 wire bytes");
+_Static_assert(sizeof(SparkQwen38MaxStagePackHeader) == SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES,"qwen38 stage pack header must be 128 wire bytes");
 _Static_assert(sizeof(SparkQwen38MaxStagePackEntry) == SPARK_QWEN38_MAX_STAGEPACK_ENTRY_BYTES,"qwen38 stage pack directory entry must be 56 wire bytes");
 
 // Model-geometry compile-time proofs.
@@ -165,7 +174,7 @@ static inline uint32_t SparkQwen38MaxStagePackExpectedTensorCount(uint32_t first
 	return(tensors);
 }
 
-static inline void SparkQwen38MaxStagePackExpectedGeometry(SparkQwen38MaxStagePackHeader *header, uint32_t first_layer_index, uint32_t layer_count)
+static inline void SparkQwen38MaxStagePackExpectedGeometry(SparkQwen38MaxStagePackHeader *header, uint32_t first_layer_index, uint32_t layer_count, uint32_t tp_degree, uint32_t tp_rank)
 {
 	header->magic = SPARK_QWEN38_MAX_STAGEPACK_MAGIC;
 	header->format_version = SPARK_QWEN38_MAX_STAGEPACK_FORMAT_VERSION;
@@ -193,6 +202,8 @@ static inline void SparkQwen38MaxStagePackExpectedGeometry(SparkQwen38MaxStagePa
 	header->output_vocab_count = SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT;
 	header->mxfp4_group_size = SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE;
 	header->mtp_layer_count = SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT;
+	header->tp_degree = tp_degree;
+	header->tp_rank = tp_rank;
 	header->directory_offset = 0u;
 	header->file_bytes = 0u;
 }
@@ -210,8 +221,11 @@ static inline int32_t SparkQwen38MaxStagePackHeaderMatches(const SparkQwen38MaxS
 		return(-4);
 	if ( file_header->routed_expert_count != expected->routed_expert_count || file_header->experts_per_token != expected->experts_per_token || file_header->expert_intermediate_dimension != expected->expert_intermediate_dimension || file_header->output_vocab_count != expected->output_vocab_count || file_header->mxfp4_group_size != expected->mxfp4_group_size || file_header->mtp_layer_count != expected->mtp_layer_count )
 		return(-5);
+	if ( file_header->tp_degree != expected->tp_degree || file_header->tp_rank != expected->tp_rank )
+		return(-6);
 	return(0);
 }
+
 
 typedef struct SparkQwen38MaxStagePackTensorShape
 {
@@ -220,6 +234,114 @@ typedef struct SparkQwen38MaxStagePackTensorShape
 	uint32_t natural_format;
 	uint32_t layer_class;
 } SparkQwen38MaxStagePackTensorShape;
+
+/*
+ * The TP shard axes, one helper per axis so the shape table stays factual:
+ *   - rows over the expert axis (W1/W3 I rows and DOWN H rows per expert,
+ *     expert_count/degree experts per rank, expert-major slices);
+ *   - rows over the head axis (GDN gate [V,H], beta/decay [Vh,H] and the
+ *     composed GDN QKV/conv channels q|k|v, all cut so a rank owns whole
+ *     heads; ATTN query rows 2*Q — query|gate fused per head — and the
+ *     GQA key/value rows over the KV heads);
+ *   - columns over the input axis (GDN_OUTPUT [H,V] and ATTN_OUTPUT [H,Q]:
+ *     the output projection consumes the rank-local head slice, so its
+ *     INPUT narrows and its partial sums need the TP all-reduce);
+ *   - columns over the head axis for the per-head parameter vectors
+ *     (A_log/dt_bias [1,Vh]);
+ *   - replicated (router gate, shared expert, norms, embedding, LM head,
+ *     MTP globals: identical bytes on every rank).
+ */
+typedef enum SparkQwen38MaxStagePackShardAxis
+{
+	SPARK_QWEN38_MAX_STAGEPACK_SHARD_NONE = 0,
+	SPARK_QWEN38_MAX_STAGEPACK_SHARD_EXPERT_ROWS = 1,
+	SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_ROWS = 2,
+	SPARK_QWEN38_MAX_STAGEPACK_SHARD_INPUT_COLUMNS = 3,
+	SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_COLUMNS = 4
+} SparkQwen38MaxStagePackShardAxis;
+
+static inline SparkQwen38MaxStagePackShardAxis SparkQwen38MaxStagePackShardAxisOf(uint32_t tensor_kind)
+{
+	switch ( tensor_kind )
+	{
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN:
+		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_EXPERT_ROWS);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_QKV:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_CONV_WEIGHT:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_GATE:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_VALUE:
+		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_ROWS);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_OUTPUT:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_OUTPUT:
+		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_INPUT_COLUMNS);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_A_LOG:
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DT_BIAS:
+		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_COLUMNS);
+	default:
+		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_NONE);
+	}
+}
+
+/*
+ * A degree is sharding-feasible when every axis it cuts lands on whole
+ * heads/experts/groups: the routed experts, the GDN key and value heads
+ * (QK and value dimensions are heads x fixed head dims, so cutting the
+ * heads cuts both cleanly and preserves the 8:1 grouped-value ratio), the
+ * attention query and KV head groups (GQA stays intact: Q/KV = 16), and
+ * the MXFP4 group tiling of the narrowed expert rows. Degrees 1, 2 and 4
+ * qualify on this geometry.
+ */
+static inline int32_t SparkQwen38MaxStagePackShardingFeasible(uint32_t tp_degree)
+{
+	if ( tp_degree == 0u )
+		return(-1);
+	if ( (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
+		return(-2);
+	if ( (SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT % tp_degree) != 0u )
+		return(-3);
+	if ( (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u )
+		return(-4);
+	if ( ((SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION % tp_degree) != 0u) || ((SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION % tp_degree) != 0u) )
+		return(-5);
+	return(0);
+}
+
+/* Apply the rank's shard to a resolved full-width shape. Whole-head and
+ * whole-expert cuts only (feasibility checked by the caller), so every
+ * narrowed dimension keeps the MXFP4 group tiling and the FP8 block tiling
+ * (128 divides every cut width at the admitted degrees). */
+static inline void SparkQwen38MaxStagePackShardShape(SparkQwen38MaxStagePackTensorShape *shape, uint32_t tensor_kind, uint32_t tp_degree, uint32_t tp_rank)
+{
+	SparkQwen38MaxStagePackShardAxis axis = SparkQwen38MaxStagePackShardAxisOf(tensor_kind);
+	if ( axis == SPARK_QWEN38_MAX_STAGEPACK_SHARD_NONE || tp_degree <= 1u )
+		return;
+	switch ( axis )
+	{
+	case SPARK_QWEN38_MAX_STAGEPACK_SHARD_EXPERT_ROWS:
+		/* Expert-major flattening: rows are expert_count * rows_per_expert,
+		 * so the rank's slice is a plain rows/degree cut. */
+		shape->rows /= tp_degree;
+		break;
+	case SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_ROWS:
+		shape->rows /= tp_degree;
+		break;
+	case SPARK_QWEN38_MAX_STAGEPACK_SHARD_INPUT_COLUMNS:
+		shape->columns /= tp_degree;
+		break;
+	case SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_COLUMNS:
+		shape->columns /= tp_degree;
+		break;
+	case SPARK_QWEN38_MAX_STAGEPACK_SHARD_NONE:
+		break;
+	}
+	(void)tp_rank;
+}
 
 static inline void SparkQwen38MaxStagePackShapeInit(SparkQwen38MaxStagePackTensorShape *shape)
 {
@@ -407,6 +529,27 @@ static inline int32_t SparkQwen38MaxStagePackResolvedShape(uint32_t tensor_kind,
 		return(-4);
 	if ( shape->layer_class == SPARK_QWEN38_MAX_STAGEPACK_CLASS_ATTN_LAYER && SPARK_QWEN38_MAX_MODEL_LAYER_IS_GDN(layer_index) != 0u )
 		return(-5);
+	return(0);
+}
+
+/*
+ * The v2 resolution: full-width kind/layer validation first, then the rank's
+ * shard. The MTP decoder layer shards identically to a full-attention layer
+ * (it IS one, geometry-wise). tp_degree 1 must reproduce the v1 shapes
+ * exactly — the shard is a no-op there by construction.
+ */
+static inline int32_t SparkQwen38MaxStagePackResolvedShapeSharded(uint32_t tensor_kind, uint32_t layer_index, uint32_t is_global, uint32_t tp_degree, uint32_t tp_rank, SparkQwen38MaxStagePackTensorShape *shape)
+{
+	int32_t status = SparkQwen38MaxStagePackResolvedShape(tensor_kind,layer_index,is_global,shape);
+	if ( status != 0 )
+		return(status);
+	if ( tp_degree <= 1u )
+		return(0);
+	if ( SparkQwen38MaxStagePackShardingFeasible(tp_degree) != 0 )
+		return(-7);
+	if ( tp_rank >= tp_degree )
+		return(-8);
+	SparkQwen38MaxStagePackShardShape(shape,tensor_kind,tp_degree,tp_rank);
 	return(0);
 }
 
