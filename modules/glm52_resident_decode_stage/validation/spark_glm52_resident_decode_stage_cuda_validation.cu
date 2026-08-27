@@ -824,10 +824,13 @@ static int SparkGlm52ValFixtureSetup(SparkGlm52ValFixture *fixture)
 		SparkGlm52ValAllocMatrix(&fixture->index_q,SPARK_GLM52_VDSA_QUERY_DIM,SPARK_GLM52_VQUERY_A,0,0.02f) != 0 ||
 		SparkGlm52ValAllocMatrix(&fixture->index_k,SPARK_GLM52_VDSA_DIM,SPARK_GLM52_VHIDDEN,0,0.02f) != 0 ||
 		SparkGlm52ValAllocMatrix(&fixture->index_head,SPARK_GLM52_VDSA_HEADS,SPARK_GLM52_VHIDDEN,0,0.01f) != 0 ||
-		SparkGlm52ValAllocMatrix(&fixture->index_norm_weight,1u,SPARK_GLM52_VDSA_DIM,1,0.0f) != 0 )
+		SparkGlm52ValAllocMatrix(&fixture->index_norm_weight,1u,SPARK_GLM52_VDSA_DIM,1,0.0f) != 0 ||
+		SparkGlm52ValAllocMatrix(&fixture->index_norm_bias,1u,SPARK_GLM52_VDSA_DIM,1,0.0f) != 0 )
 		return(1);
 	/* The index-key LayerNorm bias is zero here; the matrix form keeps the
-	 * oracle's restatement of LmLayerNormKernel honest (weight AND bias). */
+	 * oracle's restatement of LmLayerNormKernel honest (weight AND bias).
+	 * (The origin/unified restore left index_norm_bias unallocated; the
+	 * NULL-host memset segfaulted the validator before any tier ran.) */
 	memset(fixture->index_norm_bias.host,0,(uint64_t)SPARK_GLM52_VDSA_DIM * sizeof(float));
 	if ( cudaMemcpy(fixture->index_norm_bias.device,fixture->index_norm_bias.host,
 		(uint64_t)SPARK_GLM52_VDSA_DIM * sizeof(uint16_t),cudaMemcpyHostToDevice) != cudaSuccess )
@@ -1092,6 +1095,8 @@ static void SparkGlm52ValBuildWave(SparkGlm52ValFixture *fixture,uint32_t first_
 	slot->positions = fixture->positions;
 	slot->kv_access_error = fixture->kv_access_error;
 	fixture->weights.attn_norm_bf16 = fixture->attn_norm.device;
+	fixture->weights.attn_output_bf16 = fixture->attn_output.device;
+	fixture->weights.post_attn_norm_bf16 = fixture->post_attn_norm.device;
 	fixture->weights.q_a_bf16 = fixture->q_a.device;
 	fixture->weights.q_a_norm_bf16 = fixture->q_a_norm.device;
 	fixture->weights.q_b_bf16 = fixture->q_b.device;
@@ -1157,10 +1162,18 @@ static int SparkGlm52ValRunWalk(SparkGlm52ValFixture *fixture)
 		status = SparkGlm52LaunchCudaWaveBegin(&fixture->wave);
 		if ( status != 0 )
 			return(SparkGlm52ValFail("wave_begin","status"));
-		if ( SparkGlm52LaunchCudaLayerAttention(&fixture->wave,0u) != 0 )
+		status = SparkGlm52LaunchCudaLayerAttention(&fixture->wave,0u);
+		if ( status != 0 )
+		{
+			fprintf(stderr,"glm52_validation layer_attention status=%d step=%u\n",status,step);
 			return(SparkGlm52ValFail("layer_attention","status"));
-		if ( SparkGlm52LaunchCudaLayerMlp(&fixture->wave,0u) != 0 )
+		}
+		status = SparkGlm52LaunchCudaLayerMlp(&fixture->wave,0u);
+		if ( status != 0 )
+		{
+			fprintf(stderr,"glm52_validation layer_mlp status=%d step=%u\n",status,step);
 			return(SparkGlm52ValFail("layer_mlp","status"));
+		}
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkGlm52ValFail("walk","sync"));
 	}
