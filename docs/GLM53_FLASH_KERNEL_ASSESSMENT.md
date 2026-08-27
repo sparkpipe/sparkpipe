@@ -99,7 +99,12 @@ heads divide cleanly — 64 KDA heads, 32 indexer heads do; or TP4xPP4):
 Both fit trivially; start TP16 (simplest, 1M-context KV replication is
 5.6 GB), keep TP4xPP4 as the hill-climb alternate. All-16 pack budget
 for this model: ~19 GB on every node (see AGENT_LANE_BRIEFS/README.md
-fleet table).
+fleet table). [Topology note from the M3 build: with hyper-connections
+the inter-stage boundary carries ONE hidden row per token — the hc_mult=4
+streams expand at load / mean at store. EXACT for single-stage TP16
+serving (no boundary); approximate for any multi-stage placement, so the
+TP4xPP4 hill-climb alternate inherits that approximation or needs the
+full 4-stream boundary carry. Documented in the family firmware header.]
 
 ## Performance expectation (honest, pre-measurement)
 
