@@ -79,6 +79,10 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 	(void)ctx;
 	if (ev == 0)
 		return;
+	/* The walk must hold the queue lock: a completed request is unlinked
+	 * and freed by its connection thread under the same lock, and an
+	 * unlocked walk could chase a node through freed memory. */
+	pthread_mutex_lock(&S.queue_mutex);
 	for (r = S.queue_head; r != 0; r = r->next)
 	{
 		if (r->id != ev->request_id)
@@ -100,8 +104,10 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 			pthread_cond_signal(&r->cond);
 			pthread_mutex_unlock(&r->mutex);
 		}
+		pthread_mutex_unlock(&S.queue_mutex);
 		return;
 	}
+	pthread_mutex_unlock(&S.queue_mutex);
 }
 
 static void *api_worker(void *arg)
@@ -199,7 +205,8 @@ static void send_response(int fd, int code, const char *body)
 }
 
 static int read_http_request(int fd, char *method, size_t method_sz,
-	char *path, size_t path_sz, char **body, uint32_t *body_len)
+	char *path, size_t path_sz, char **body, char **body_base,
+	uint32_t *body_len)
 {
 	/* heap buffer: a static __thread of 8MB overflows TLS when the first
 	 * connection thread is created (8MB TLS + 8MB stack = crash) */
@@ -269,6 +276,7 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		/* bodyless request (GET): succeed with an empty body */
 		buf[header_end] = '\0';
 		*body = buf + header_end;
+		*body_base = buf;
 		*body_len = 0;
 		return 1;
 	}
@@ -283,6 +291,7 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		total += (size_t)n;
 	}
 	*body = buf + header_end;
+	*body_base = buf;
 	*body_len = content_length;
 	return 1;
 }
@@ -401,23 +410,27 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		}
 	}
 	pthread_mutex_unlock(&S.queue_mutex);
-	/* DEFERRED FREE: freeing here races with the worker's event callback
-	 * (use-after-free abort on the second request). Leak per-request for
-	 * now — the production fix is a request pool or epoch-based reclamation */
-	req->next = 0; /* mark as detached */
+	/* The request is unlinked under the queue lock and the worker's event
+	 * walk holds the same lock, so nothing can reach it anymore: the
+	 * waiter already woke (done was signaled under req->mutex) and the
+	 * worker's last touch of this request preceded that signal. */
+	pthread_mutex_destroy(&req->mutex);
+	pthread_cond_destroy(&req->cond);
+	free(req->prompt_tokens);
+	free(req);
 }
 
 static void *api_connection(void *arg)
 {
 	int fd = (int)(intptr_t)arg;
 	char method[8], path[128];
-	char *body = 0;
+	char *body = 0, *body_base = 0;
 	uint32_t body_len = 0;
 	int on = 1;
 	(void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
 	{
 		int rr = read_http_request(fd, method, sizeof(method), path, sizeof(path),
-			&body, &body_len);
+			&body, &body_base, &body_len);
 		if (!rr)
 		{
 			send_response(fd, 400, "{\"error\":\"bad request\"}");
@@ -438,6 +451,9 @@ static void *api_connection(void *arg)
 		handle_completion(fd, body, body_len);
 	else
 		send_response(fd, 404, "{\"error\":\"not found\"}");
+	/* the receive buffer (up to API_MAX_BODY + 8K) is the connection's to
+	 * release; body itself is an interior pointer into it */
+	free(body_base);
 	close(fd);
 	return 0;
 }

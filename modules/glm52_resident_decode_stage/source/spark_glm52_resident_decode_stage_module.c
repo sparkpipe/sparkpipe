@@ -675,10 +675,14 @@ static SparkStatus SparkGlm52PageCopy(
 	state = (SparkGlm52ModuleState *)context;
 	if ( state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	/* The page-store worker treats this callback as complete when it
+	 * returns and immediately performs NVMe I/O or reuses its single
+	 * staging buffer; an async copy on the execution stream would still
+	 * be in flight and corrupt both directions. Complete the copy here. */
 	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
-		error = cudaMemcpyAsync(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost,(cudaStream_t)state->execution_stream);
+		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
 	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
-		error = cudaMemcpyAsync((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice,(cudaStream_t)state->execution_stream);
+		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
 	else
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"kv_page_copy"));

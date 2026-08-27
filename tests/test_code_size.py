@@ -732,7 +732,12 @@ from pathlib import Path
 # correct 43-layer layout (plus build comment), and the pipeline test
 # expectations move to the concentrated-prefill/overlapped-admission
 # semantics with the capacity-tail invariant; 175449 exact.
-CEILING = 175449
+# Audit-3 correctness fixes: QMax eviction reverse-map invalidation
+# (stride field + guarded clear), GLM page-copy completion (the worker
+# reuses its staging buffer immediately), and the API request/buffer
+# reclamation (queue-locked event walk, unlink-then-free, body base
+# ownership); 175483 exact.
+CEILING = 175483
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

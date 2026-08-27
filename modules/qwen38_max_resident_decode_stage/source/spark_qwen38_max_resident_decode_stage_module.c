@@ -187,6 +187,7 @@ typedef struct SparkQwen38MaxModuleState
 	uint64_t kv_backing_maximum_bytes;
 	uint32_t *kv_logical_to_slot;
 	uint64_t kv_logical_to_slot_capacity;
+	uint32_t kv_logical_stride;
 	uint32_t *kv_table_indices_device;
 	uint32_t *kv_table_counts_device;
 	uint32_t *kv_table_indices_host;
@@ -745,6 +746,17 @@ static SparkStatus SparkQwen38MaxModuleKvEvictSlot(SparkQwen38MaxModuleState *st
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
+	/* Invalidate the reverse mapping BEFORE the metadata is scrubbed: a
+	 * stale nonzero kv_logical_to_slot entry reads as resident on the next
+	 * demand and would address a slot that now holds a different block. */
+	if ( state->kv_logical_to_slot != 0 && state->kv_slot_lane[slot] != UINT32_MAX &&
+		state->kv_slot_logical[slot] != UINT32_MAX && state->kv_logical_stride != 0u )
+	{
+		uint64_t evict_index = (uint64_t)state->kv_slot_lane[slot] * state->kv_logical_stride + state->kv_slot_logical[slot];
+		if ( evict_index < state->kv_logical_to_slot_capacity &&
+			state->kv_logical_to_slot[evict_index] == slot + 1u )
+			state->kv_logical_to_slot[evict_index] = 0u;
+	}
 	state->kv_slot_dirty[slot] = 0u;
 	state->kv_slot_pinned[slot] = 0u;
 	state->kv_slot_lane[slot] = UINT32_MAX;
@@ -793,7 +805,9 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 		memset(grown + state->kv_logical_to_slot_capacity,0,(size_t)(logical_capacity - state->kv_logical_to_slot_capacity) * sizeof(uint32_t));
 		state->kv_logical_to_slot = grown;
 		state->kv_logical_to_slot_capacity = logical_capacity;
+		state->kv_logical_stride = table->lane_stride;
 	}
+	state->kv_logical_stride = table->lane_stride;
 	/* Pass 1: distinct lanes, required block counts, sequence ids, and pin
 	 * every already-resident block the frame needs so eviction skips it. */
 	for (row = 0u; row < rows; row++)
