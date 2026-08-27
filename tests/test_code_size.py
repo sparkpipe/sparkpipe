@@ -752,7 +752,13 @@ from pathlib import Path
 # The M1 contract freeze adds the authoritative JSON's census section and
 # the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
 # ports) lands in the same window; 186345 is the exact count.
-CEILING = 186500
+# The qwen38_max sharded-pack sprint adds the module's first validation
+# harness (kernel oracles incl. the MXFP4 expert path and TP4 local
+# geometry, module tier with determinism), the format-v2 packer with the
+# quark-mxfp4 and sharded-copy codecs, the streaming pack verifier, and
+# the checkpoint fetch/build tooling; 189018 is the exact count after it
+# lands (the module was previously uncompilable and unvalidatable).
+CEILING = 189018
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
