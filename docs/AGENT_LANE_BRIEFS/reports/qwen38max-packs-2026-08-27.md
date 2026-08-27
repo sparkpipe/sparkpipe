@@ -183,6 +183,124 @@ First verifier revision FAILED the good pack (per-expert interleaved
 expected stream) — fixed to all-payloads-then-all-scales; the manual
 per-component digests proved the PACK was correct both times.
 
+## F3 — HARD CONSTRAINT: 16 ranks at FP8 is impossible; MXFP4 is mandatory for any 16-rank plan
+
+Total routed-expert params: 92 layers x 512 experts x 3 x 2048 x 8192 =
+2,362,230,128,640 (~2.36T). FP8 = 1 B/param => 2.36 TB, and per rank that
+is total/ranks — INVARIANT under any PP/TP split:
+
+  16 ranks, FP8:      147.6 GiB expert payload/rank  > 119 GB node  => IMPOSSIBLE
+  16 ranks, MXFP4:     73.8 GiB payload + 4.6 GiB scales = 78.4 GiB/rank experts
+  32 ranks, FP8:       73.8 GiB/rank experts — fits, but the cluster has
+                       15 hosts (spark0-15 minus spark1-restarting; spark2
+                       released per coordinator) — 32 ranks need 32 hosts: OUT.
+
+So "16 ranks" and "FP8" cannot both hold. The real sprint decision is:
+MXFP4 sharded packs at TP4xPP4 on 16 hosts (when spark1 returns). Budget
+per rank at TP4xPP4+MXFP4: 78.4 experts + ~6.2 sharded non-expert +
+2-8 embed/head/MTP share + 10-20 KV/GDN-state planner pools ~= 97-113 GiB
+vs 119 GB — FITS but the KV planner must be sized to the remaining margin.
+
+## Sharded-pack sprint scope (coordinator request)
+
+(4) CAN THE PACKER ALONE EMIT RANK PACKS THE CURRENT MODULE LOADS? NO —
+three independent mechanisms refuse it:
+  i.  `SparkQwen38MaxModuleValidateEntry` (module.c:362) compares every
+      entry's rows/columns against the FULL-width shape table; any shard
+      fails `pack_entry_invalid`.
+  ii. The grouped-expert kernels index rank slices OUT of the full buffer:
+      `payload = weight_payload + tp_rank * experts_per_rank * payload_stride`
+      (cuda.cu:1769-1772, 1832-1834) — rank>0 reads past a sharded
+      allocation.
+  iii. The generic projection launcher `SparkQwen38MaxLaunchLinear(view,...)`
+      (module.c:1379, call sites 1527-1531) has NO tp args: qkv/gate/beta/
+      decay/attn q·k·v·o/shared-expert consume FULL-width views, and
+      `SparkQwen38MaxModuleVerifyCoverage` (module.c:515-549) requires
+      every kind bit per layer — a rank missing "the other ranks' share"
+      fails coverage. `SparkQwen38MaxLaunchGdnStep` (module.c:1382) and
+      `SparkQwen38MaxLaunchMoeRoute` (module.c:1389) are likewise
+      tp-free (GDN core walks all heads; route builds the GLOBAL 512-expert
+      prefix table).
+Conclusion: module changes are on the critical path; this cannot be a
+packer-only fix.
+
+(a) WIRE FORMAT — the 120-byte header is FULL (`<26I2Q>` = 26xu32 + 2xu64,
+static-asserted in spark_qwen38_max_stagepack_format.h:123-126). Add
+tp_degree + tp_rank (+2 reserved u32) => header 128 bytes, FORMAT_VERSION 2,
+bump SPARK_QWEN38_MAX_STAGEPACK_{HEADER_BYTES,FORMAT_VERSION}, extend
+ExpectedGeometry + HeaderMatches. Touches: format .h, packer, verifier,
+synthesize tool. ~60-80 lines total.
+
+(b) LOADER — shape table gains a tp axis: every Sliced kind scales its
+rank-local extent, replicated kinds stay full-width:
+  expert-sharded (rows/4): MOE_W1/W3/DOWN (512->128 experts; scale planes
+    slice on the same expert-major boundaries — clean).
+  head-sharded: GDN_GATE (16384->4096 rows), GDN_BETA/DECAY (128->32),
+    GDN_A_LOG/DT_BIAS (128->32), GDN_NORM (128->32 cols),
+    ATTN_QUERY (32768->8192 rows, head-contiguous fused query|gate),
+    ATTN_KEY/VALUE (1024->256), ATTN_Q/K_NORM ([1,256]->[16,256] composed).
+  input-dim sharded (cols/4): GDN_OUTPUT (16384->4096 cols),
+    ATTN_OUTPUT (16384->4096 cols).
+  composed (non-contiguous in source): GDN_QKV rows = q512|k512|v4096 per
+    rank (packer gathers q/k/v independently; conv weight GDN_CONV_WEIGHT
+    must be sliced with the SAME channel order, 20480->5120 rows).
+  replicated: MOE_GATE (global route), SHARED_* (decide: replicate or
+    +all-reduce), EMBEDDING, LM_HEAD (+ 4-bit head shadow), MTP globals.
+Functions: SparkQwen38MaxStagePackShape{EveryLayer,Gdn,Attn} gain (tp_degree)
+or new tp-aware wrappers; ValidateEntry passes the rank shape; the
+natural-format exception must also accept MXFP4_E2M1 for the three expert
+kinds (currently BF16-only exception, module.c:366-370). ~150-250 lines
+(module.c + format .h).
+
+(c) KERNELS — mixed:
+  already rank-aware: AttnPrepare/AttnDecode slice heads/KV by tp_rank
+    (cuda.cu 242-278, 415-481) — with sharded views they need LOCAL head
+    indexing (drop the tp_rank*local_heads base) while keeping the
+    tp_degree=1 path byte-identical (~30-60 lines).
+  already parameterized: GroupedExpert Linear/TileLinear compute rank
+    offsets from the GLOBAL prefix arrays — with sharded buffers the base
+    offset becomes 0 but the route/prefix tables stay global (router is
+    replicated) — small (~20-40 lines) + an MXFP4 grouped path (see d).
+  needs real work: GdnStep/GdnChunk head loops + state-pool sizing /4
+    (~100-200 lines); one additional residual all-reduce if GDN output is
+    sharded (the TP collective wiring exists — module.c 1088-1103).
+  MXFP4 grouped experts: SparkLmDotRowMxfp4<32> exists
+    (model-families/common/include/sparkpipe/spark_lm_kernels.cuh:807-833)
+    and the MMA path is proven in inference/kernels/mma.cuh
+    (LM_MMA4_MXFP4_GROUP 32, nibble-packed e2m1 + ue8m0/32); the grouped
+    expert launchers gate on `weight_format != FP8_E4M3_F32B128`
+    (cuda.cu:1756,1814) and their scale-stride math assumes 128-block F32 —
+    add the group-32 E8M0 path (~100-150 lines).
+Total kernels: ~300-500 lines, one file (spark_qwen38_max_resident_decode_stage_cuda.cu).
+
+(d) MXFP4 EXPERT PACKING — the wire side is already specified in the
+qwen38_max format (WEIGHT_FORMAT_MXFP4_E2M1 = 3; payload elements/2,
+E8M0 scale plane elements/32 — format .h PayloadBytes/ScaleBytes handle
+it today). The packer needs a vectorized requantizer F8_E4M3(block
+128x128 scale_inv) -> MXFP4(group 32 E8M0): dequant block -> per-32-group
+amax -> e8m0 code -> LUT nibble; pure numpy, ~100-150 lines, I/O-bound
+(~2.4 TB pass, ~1-2 h on spark0). QUALITY GATE: this CHANGES the model
+(contract precision policy says FP8 "kept AS SHIPPED") — require a
+kernel-cosine/decode parity gate vs the FP8 reference before any serving
+claim; the family has no validator harness yet, which gates everything.
+
+(e) ESTIMATE — files: spark_qwen38_max_stagepack_format.h,
+spark_qwen38_max_resident_decode_stage_module.c,
+spark_qwen38_max_resident_decode_stage_cuda.cu,
+modules/.../tools/qwen38_max_pack_synthesize.c, tools/qwen38_stagepack.py
+(or sibling sharded packer), tools/qwen38_pack_verify.py, NEW
+validation/validate_qwen38_max_resident_decode_stage_cuda.sh (port of the
+27b harness — REQUIRED: `make publish` fails without GPU_VALIDATOR, and
+decode parity is the quality gate for the requant). LOC: format ~70,
+loader ~200, kernels ~400, packer ~300, verifier ~100, synth/test ~100,
+validator port ~1 day of adaptation: ~1,150-1,600 lines + harness.
+Calendar, single agent: packer+verifier 1-1.5 d; module loader/format
+1 d; kernels 1.5-2 d; validator port + GPU parity 1-1.5 d => 4-6 days
+honest. "1-2 days" only covers the packer side or skips GPU validation
+(which the build chain's publish gate forbids). Prereq decision: accept
+the MXFP4 requant quality trade (or land the validator first and measure
+before committing).
+
 ## Node plan (coordinator updates, 2026-08-27)
 
 1. First correction: sparkc/sparkd are contended (GLM+K3+QwenMax) — lane
