@@ -287,6 +287,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_dspark_trace_quality.py \
 	tests/test_glm52_module_contract.py \
 	tests/test_glm52_layer_host.py \
+	tests/test_glm52_pack_fp8_source.py \
 	tests/test_glm52_quantized_cuda_contract.py \
 	tests/test_glm52_stage_pack.py \
 	tests/test_glm52_unity_precision_contract.py \

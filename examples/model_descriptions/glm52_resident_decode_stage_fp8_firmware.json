@@ -42,7 +42,7 @@
       "runtime_backend_selection": "forbidden"
     },
     "source_model": {
-      "id": "zai-org/GLM-5.2",
+      "id": "zai-org/GLM-5.2-FP8",
       "revision": "b4734de4facf877f85769a911abafc5283eab3d9"
     }
   },
