@@ -752,38 +752,11 @@ from pathlib import Path
 # The M1 contract freeze adds the authoritative JSON's census section and
 # the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
 # ports) lands in the same window; 186345 is the exact count.
-# The glm52 validator-fix lane (PR #728) + the packs-lane head remainder it
-# carries: the expert-dimension dequant oracle fix with its host-executable
-# tier-2 oracle gate, zero-mean fixture grids, the KV page-cache adapter
-# lane + admission predicate + JIT_KV config fixes that carried the TP8
-# band to a completed B1 decode, plus the packs lane's verify_source /
-# deploy tooling and packer evolution (glm52_verify_source.py 278,
-# glm52_deploy_packs.sh 88, stagepack +728, pack test +335).
-# 192659 is the exact count.
-# The glm52 fp8-source packer adoption (from the pack lane) lands the
-# numpy-only fp8->bf16 spine dequant packer plus its hermetic test in the
-# gate; it emits the deployed TP8 fleet packs.
-# The qwen-flash M5 kernel port window (merged from lane/qwen-flash):
-# whole-stack TP4 enablement in modules/qwen4_flash_resident_decode_stage
-# (TP_STANDALONE bypass, vocab-sharded embedding gather + all-reduce,
-# sharded head argmax with the maxloc u64 collective, rank-local GDN
-# kernels, dual-width router gate, format-6 E8M0B128 grouped expert
-# kernels incl. the family-local scalar variant, MTP draft chain fixes)
-# + packer/verifier format-6 per-row plane and gate replication.
-# The K3 pack lane lands its verification chain: k3_verify_pack.py (450:
-# byte-level cross-check of every rank vs the stage pack, negative-
-# controlled), k3_verify_source.py (262: 38-field contract check), the
-# rank-0 smoke launcher, and the export-shim diagnostic (retired once the
-# canonical-symbol fix merged). model_contracts/references/ joins
-# EXCLUDED_COMPONENTS (vendored publisher modeling files pinned as
-# semantics ground truth — modeling_qwen4_exp.py is 2707 lines of
-# upstream code, not authored source), so the ceiling moves by the lane's
-# 835 authored lines only. 188714 is the exact count.
-# The qwen38max full-width lane lands its packer-at-scale chain: the
-# tp4pp4 pack/deploy tooling (172+55) and the stagepack rewrite (net
-# 37) that built the four 573 GiB stage packs with receipts. 189314 is
-# the exact count.
-CEILING = 192659
+# The glm53 lane (GLM 5.3 Flash) opens with its M1 contract-freeze tooling:
+# tools/glm53_contract_freeze.py (fetch/verify/emit, ~620 lines). Main was
+# already +2 over from the brief edits; 187123 is the exact count with the
+# glm53 tool and lane briefs in place.
+CEILING = 187123
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

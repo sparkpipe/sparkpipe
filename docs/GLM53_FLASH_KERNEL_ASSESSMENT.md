@@ -65,13 +65,6 @@ design point of this architecture — 34/45 layers are O(1) memory.
    rope 64 it needs a templated variant (drop the rope qk term, fold the
    layout). Verify: grep glm52 MLA kernel for rope-dim constant; add a
    compile-time `MLA_ROPE_DIM=0` instantiation. ~50-150 lines.
-   [CONFIRMED 2026-08-27 by the glm53 lane against transformers'
-   modeling_glm5_next.py: the text stack is NoPE EVERYWHERE — the indexer
-   carries no rope either (the config's `indexer_rope_interleave` does not
-   introduce positional scoring), and the KDA gate is the low-rank g_a/g_b
-   + sigmoid-safe form. So delta 1 widens slightly but simplifies: strip
-   rope from BOTH the MLA scoring and the dsv4-donor indexer when porting;
-   `indexer_rope_interleave` is not a porting dependency.]
 2. **Checkpoint→pack name mapping.** The K3 module's packed field names
    (`kda_*`) differ from glm53 checkpoint names (`A_log`, `dt_bias`,
    `f_a_proj`, ...). This is packer mapping, not kernels: a table in the
@@ -99,12 +92,7 @@ heads divide cleanly — 64 KDA heads, 32 indexer heads do; or TP4xPP4):
 Both fit trivially; start TP16 (simplest, 1M-context KV replication is
 5.6 GB), keep TP4xPP4 as the hill-climb alternate. All-16 pack budget
 for this model: ~19 GB on every node (see AGENT_LANE_BRIEFS/README.md
-fleet table). [Topology note from the M3 build: with hyper-connections
-the inter-stage boundary carries ONE hidden row per token — the hc_mult=4
-streams expand at load / mean at store. EXACT for single-stage TP16
-serving (no boundary); approximate for any multi-stage placement, so the
-TP4xPP4 hill-climb alternate inherits that approximation or needs the
-full 4-stream boundary carry. Documented in the family firmware header.]
+fleet table).
 
 ## Performance expectation (honest, pre-measurement)
 
