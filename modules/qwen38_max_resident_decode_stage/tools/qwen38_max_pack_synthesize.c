@@ -79,7 +79,7 @@ static int32_t SparkQwen38MaxSynthesizeAppend(SparkQwen38MaxSynthesizeContext *c
 	entry->weight_format = format;
 	entry->rows = shape.rows;
 	entry->columns = shape.columns;
-	entry->scale_group_size = format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? 32u : 0u;
+	entry->scale_group_size = format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? 32u : (format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ? 128u : 0u);
 	entry->payload_bytes = SparkQwen38MaxStagePackPayloadBytes(format,shape.rows,shape.columns);
 	entry->scale_bytes = SparkQwen38MaxStagePackScaleBytes(format,shape.rows,shape.columns);
 	entry->payload_offset = SparkQwen38MaxSynthesizeAlign(context->payload_cursor);
