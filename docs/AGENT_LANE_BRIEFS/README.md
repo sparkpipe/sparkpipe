@@ -44,6 +44,33 @@ Wire-format-v2 sharding lands via the qwen38max lane; until then lanes
 build family packs as today and the coordinator re-shards + deploys at
 merge time (packs are derived artifacts; re-sharding is a cheap pass).
 
+## Hardware-independence contract (binding — status in docs/HARDWARE_INDEPENDENCE.md)
+
+The HAL (Phase 1B `spark_device.h`) does not exist yet; lanes run
+CUDA-direct at the module layer and that is correct. Three lines hold so
+the future extraction is cheap and the CPU oracle keeps working:
+
+1. KERNEL TREE STAYS HOST-COMPILABLE. Anything you add under
+   `inference/kernels/` or `inference/llms/` uses the house loop shape
+   (`for (i = threadIdx.x; i < N; i += THREADS)`; reductions at
+   `THREADS/2` down) so THREADS==1 runs on the CPU shim, includes no
+   cuda_runtime.h, and gains a host oracle test in your lane. TMA /
+   async-pipeline intrinsics only through the existing tile.cuh
+   patterns the shim already stubs — never bare.
+2. NO PER-FAMILY ABSTRACTION LAYERS. Do not invent a device wrapper in
+   your family "to be safe" — seven private HALs are worse than one
+   direct surface. Call cuda directly, plainly, where your family
+   already does. ANY NEW CUDA API CATEGORY (an API family you call that
+   your family's existing code does not — events, graphs, host register,
+   a new memory kind...) goes in your report's INTEGRATION REQUEST with
+   the call sites listed, so the extraction inventory stays complete.
+3. ABIs STAY DEVICE-OPAQUE OUTSIDE YOUR FAMILY. Shared headers take
+   `void *` handles (see the serving adapter's `execution_stream`);
+   `cudaStream_t` and friends stay inside your family-local headers.
+
+MODULE_TARGET stays a namespaced tuple (`cuda.sm121.<family>...`) — it
+is the backend-swap hook; do not collapse it to a bare arch flag.
+
 ## Cluster rules (hard)
 - Nodes are `spark0..sparkf`, ssh BatchMode works from the controller mac.
 - `spark2` hosts the 27B development instance. It CAN be used for pack
