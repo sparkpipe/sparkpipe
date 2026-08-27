@@ -69,6 +69,33 @@ def build_one(checkpoint: Path, output_dir: Path, pp_stage: int,
     }
 
 
+def from_receipts(output_dir: Path) -> list[dict]:
+    """Reassemble the stage summaries from existing pack receipts (no
+    rebuild): used when the packs were built by an earlier run and only
+    the manifest is missing or needs the host plan filled in."""
+    stages = []
+    for pp_stage in range(PP_STAGE_COUNT):
+        output = output_dir / f"qwen38max.tp4_pp4.stage{pp_stage}.spstage"
+        receipt_path = Path(str(output) + ".receipt.json")
+        if not receipt_path.is_file():
+            raise SystemExit(f"--from-receipts: missing {receipt_path}")
+        receipt = json.loads(receipt_path.read_text())
+        if receipt["file"] != str(output):
+            raise SystemExit(f"--from-receipts: receipt file {receipt['file']} != {output}")
+        stages.append({
+            "pp_stage": pp_stage,
+            "first_layer": LAYER_SLICES[pp_stage][0],
+            "layer_count": LAYER_SLICES[pp_stage][1],
+            "pack": str(output),
+            "bytes": receipt["bytes"],
+            "sha256": receipt["output_sha256"],
+            "tensor_count": receipt["tensor_count"],
+            "source_index_sha256": receipt["source_index_sha256"],
+            "source_config_sha256": receipt["source_config_sha256"],
+        })
+    return stages
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -79,6 +106,9 @@ def main() -> int:
     parser.add_argument("--hosts", type=str, default="",
                         help="comma-separated spark hosts in world_rank order "
                              "(rank = pp_stage * 4 + tp_rank); optional")
+    parser.add_argument("--from-receipts", action="store_true",
+                        help="skip building: reassemble the manifest from the "
+                             "pack receipts already in --output-directory")
     args = parser.parse_args()
 
     hosts = [host.strip() for host in args.hosts.split(",") if host.strip()] if args.hosts else []
@@ -86,11 +116,14 @@ def main() -> int:
         parser.error(f"--hosts needs {WORLD_SIZE} entries in world_rank order, got {len(hosts)}")
 
     args.output_directory.mkdir(parents=True, exist_ok=True)
-    with ThreadPoolExecutor(max_workers=max(1, min(args.jobs, 2))) as pool:
-        stages = list(pool.map(
-            lambda stage: build_one(args.checkpoint, args.output_directory, stage,
-                                    args.contract),
-            range(PP_STAGE_COUNT)))
+    if args.from_receipts:
+        stages = from_receipts(args.output_directory)
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, min(args.jobs, 2))) as pool:
+            stages = list(pool.map(
+                lambda stage: build_one(args.checkpoint, args.output_directory, stage,
+                                        args.contract),
+                range(PP_STAGE_COUNT)))
 
     ranks = []
     for stage in stages:
