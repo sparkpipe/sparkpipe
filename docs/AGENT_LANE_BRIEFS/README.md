@@ -20,7 +20,9 @@ larger agent fleet failed here; every rule below encodes a real failure.
 
 ## Cluster rules (hard)
 - Nodes are `spark0..sparkf`, ssh BatchMode works from the controller mac.
-- `spark2` is PRODUCTION. Read-only. Never run daemons or tests there.
+- `spark2` hosts the 27B development instance. It CAN be used for pack
+  deployment and testing — the daemon can be stopped/restarted when needed
+  (coordinate via the report so concurrent users know). No special protection.
 - Your lane's nodes are in your brief. Do not touch other lanes' nodes.
 - NEVER reboot or restart a spark node. If a node is wedged, report it.
 - GPU hygiene: `nvidia-smi -r` only when NO cuda processes are running
