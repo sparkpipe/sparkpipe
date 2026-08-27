@@ -164,3 +164,54 @@ captured collectives (0.1 ms), TP16 delivers its theoretical 16×.
 The fix is the same one as the MoE expert-grouping: capture the
 collectives into the frame graph. The collective kernels are already
 in the capture scope for the hidden transport backend.
+
+## The compute-bound knee: B* is a hardware constant, not a model property
+
+For ANY model on ANY hardware, there is a batch size B* where weight
+streaming time = compute time. Below B*: memory-bound (wasted bandwidth).
+Above B*: compute-bound (every cycle does useful work).
+
+```
+B* = compute_rate / (HBM_BW × 2 × bytes_per_param)
+```
+
+This is a property of the HARDWARE + PRECISION combination only. It does
+not depend on model size, layer count, or architecture.
+
+On GB10 (250 GB/s HBM, 50 TFLOPS FP8): B* ≈ 100
+
+| Precision | B* on GB10 | B* on H100 (3.35 TB/s, 1000 TFLOPS) | B* on A100 (2 TB/s, 312 TFLOPS) |
+|---|---|---|---|
+| FP8 | 100 | 150 | 78 |
+| MXFP4 | 100 | 300 | 156 |
+| BF16 | 25 | 75 | 39 |
+
+**The maximum sustainable aggregate throughput** at B >> B*:
+
+```
+max_tok_s = total_compute_rate / (2 × active_params_per_token)
+```
+
+For MoE models, use ACTIVE params (top_k × expert_size + attention),
+not total params — the whole point of MoE is that most experts are idle.
+
+| Model | Active params/token | Max aggregate (16× GB10 FP8/MXFP4) |
+|---|---|---|
+| Qwen 27B (dense) FP8 | 27B | 14,815 tok/s |
+| K3 MXFP4 (896 experts, top-16) | ~103B active | 1,941,748 tok/s (theoretical) |
+| GLM 5.2 FP8 (256+1 experts, top-8) | ~33B active | 24,000 tok/s |
+| Qwen Max FP8 (512+1 experts, top-10) | ~60B active | 13,333 tok/s |
+
+The K3 number is theoretical — activation memory, KV cache traffic, and
+attention scale per-token and become the real bottleneck at high B. But
+the direction is clear: MoE models with many low-activation experts can
+serve enormous aggregate throughput when batched correctly.
+
+**For inference services**: running at B < B* wastes hardware. Most
+production deployments run at B=1-8, far below B*=100. The expert-grouped
+continuous batching (or weight amortization for dense models) to reach
+B > B* is the difference between 3% and 90%+ hardware utilization.
+
+**For SparkPipe**: this is the core innovation for the MoE models. The
+pack agents, the route counting sort, and the grouped GEMM already exist.
+The batch engine's continuous-batching admission is the remaining work.
