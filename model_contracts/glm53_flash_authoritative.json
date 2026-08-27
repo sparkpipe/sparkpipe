@@ -458,7 +458,8 @@
     "model-00062-of-00062.safetensors"
    ],
    "ok": 9,
-   "failed": []
+   "failed": [],
+   "environment_note": "2026-08-27 ceph wedge alert arrived AFTER this verification ran (49s for ~48 GiB => cached path). Remaining shard reads deferred until ceph recovery; no further shard IO planned until then."
   },
   "files": {
    "config.json": {

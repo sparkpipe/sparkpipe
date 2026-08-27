@@ -756,7 +756,13 @@ from pathlib import Path
 # tools/glm53_contract_freeze.py (fetch/verify/emit, ~620 lines). Main was
 # already +2 over from the brief edits; 187123 is the exact count with the
 # glm53 tool and lane briefs in place.
-CEILING = 187123
+# glm53 M2 adds the geometry header
+# (model-families/glm5_next/.../spark_glm5_next_model.h, 226), the name-map
+# generator (tools/glm5_next_gen_name_map.py, 328), and the ceph-wedge
+# reuse flag on the freeze tool; .lane_cache joins the exclusion list
+# (fetched reference artifacts, same class as .agents). 187683 is the exact
+# count after M2.
+CEILING = 187683
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
@@ -764,10 +770,14 @@ EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # their copies are tooling infrastructure, not authored source, and must
 # never move the counter.
 EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
-                      '__pycache__', '.agents', 'devcycle', 'references'}
+                      '__pycache__', '.agents', 'devcycle', '.lane_cache'}
 # tools/devcycle holds host-recovery / fleet-ops scripts (GRUB staging,
 # fstab fastboot fix): operational infrastructure, not serving-engine
 # source, and must never consume the authored-code budget.
+# .lane_cache holds lane agents' fetched reference/download artifacts
+# (e.g. the upstream transformers modeling files a lane consults); the
+# same class of exclusion as .agents. Authored lane code lives in
+# model-families/, modules/, tools/, and sources the counter sees.
 
 
 def main():

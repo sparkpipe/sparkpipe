@@ -465,6 +465,12 @@ def build_contract(cfg: dict, manifest: dict, files: dict, shard_check: dict) ->
                 "sampled": shard_check["sampled_shards"],
                 "ok": shard_check["ok"],
                 "failed": shard_check["failed"],
+                "environment_note": (
+                    "2026-08-27 ceph wedge alert arrived AFTER this "
+                    "verification ran (49s for ~48 GiB => cached path). "
+                    "Remaining shard reads deferred until ceph recovery; "
+                    "no further shard IO planned until then."
+                ),
             },
             "files": {
                 name: entry
@@ -537,6 +543,11 @@ def main() -> int:
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--skip-fetch", action="store_true")
+    parser.add_argument(
+        "--skip-shard-verify", action="store_true",
+        help="do not re-hash the strided shard sample (ceph wedged); reuse "
+             "the verification record from an existing contract at --output",
+    )
     args = parser.parse_args()
 
     if not args.skip_fetch:
@@ -556,11 +567,24 @@ def main() -> int:
         "SHA256SUMS digest does not match archive receipt"
     )
 
-    print("verifying strided shard sample (re-hash on spark)")
-    shard_check = verify_strided_shards(args.spark, args.source, args.cache_dir)
-    assert shard_check["failed"] == [], shard_check["failed"]
-    assert shard_check["ok"] == len(shard_check["sampled_shards"])
-    print(f"  {shard_check['ok']}/{len(shard_check['sampled_shards'])} shards OK")
+    if args.skip_shard_verify and args.output.exists():
+        prior = json.loads(args.output.read_text())
+        shard_check = prior["source"]["shard_verification"]
+        shard_check.pop("environment_note", None)
+        shard_check = {
+            "shard_count": prior["source"]["shard_count"],
+            "stride": shard_check["stride"],
+            "sampled_shards": shard_check["sampled"],
+            "ok": shard_check["ok"],
+            "failed": shard_check["failed"],
+        }
+        print("reusing recorded strided shard verification (no shard IO)")
+    else:
+        print("verifying strided shard sample (re-hash on spark)")
+        shard_check = verify_strided_shards(args.spark, args.source, args.cache_dir)
+        assert shard_check["failed"] == [], shard_check["failed"]
+        assert shard_check["ok"] == len(shard_check["sampled_shards"])
+        print(f"  {shard_check['ok']}/{len(shard_check['sampled_shards'])} shards OK")
 
     contract = build_contract(cfg, manifest, files, shard_check)
 
