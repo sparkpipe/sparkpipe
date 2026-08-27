@@ -384,6 +384,16 @@ static uint64_t SparkGlm52ValPayloadBytesPerExpert(uint32_t codec,uint32_t rows,
 	return((uint64_t)rows * SparkGlm52ValPayloadRowBytes(codec,columns));
 }
 
+/* Expert-major slab offset in the payload buffer - the mirror of the kernel's
+ * weight tensor map (LmGemmEncodeWeightMap: one TMA group per expert, group e
+ * at e * slab bytes) and of the pack layout. The payload argument of the
+ * dequant below is the BASE of the expert-major slab buffer; this offset is
+ * what selects the expert's codes. */
+static uint64_t SparkGlm52ValPayloadExpertOffset(uint32_t codec,uint32_t expert,uint32_t rows,uint32_t columns)
+{
+	return((uint64_t)expert * SparkGlm52ValPayloadBytesPerExpert(codec,rows,columns));
+}
+
 /* Read one stored code at (row, column) of a payload slab. Bit packing is
  * LSB-first within each row for the sub-byte integer formats (LmInt6Raw /
  * LmInt7Raw); 4-bit packs even columns in the low nibble (LmNvfp4Pair). */
@@ -419,31 +429,39 @@ static uint64_t SparkGlm52ValScaleIndex(uint32_t codec,uint32_t rows,uint32_t co
 }
 
 /* Effective bf16 weight the MMA consumes for (expert, row, column):
- * decode x scale x (bf16 rounding from LmPackBf16Pair). NVFP4 multiplies its
- * per-expert f32 global into the block scale (LmScaleTensorLoad). */
+ * decode x scale x (bf16 rounding from LmPackBf16Pair). payload is the BASE
+ * of the expert-major slab buffer and scales the BASE of the full plane set:
+ * BOTH are offset by the expert dimension here, exactly as the kernel's
+ * weight tensor map (groups = expert count) and LmScaleTensorIndex address
+ * them. The restore from origin/unified applied the expert offset to the
+ * scale index only and decoded slab 0's codes for every expert - the
+ * routed_expert_forward failure this file's selftest now pins. NVFP4
+ * multiplies its per-expert f32 global into the block scale
+ * (LmScaleTensorLoad). */
 static float SparkGlm52ValDequantWeight(const uint8_t *payload,const uint8_t *scales,uint32_t codec,uint32_t expert_count,
 	uint32_t expert,uint32_t row,uint32_t rows,uint32_t columns,uint32_t column)
 {
 	uint64_t scale_index = SparkGlm52ValScaleIndex(codec,rows,columns,expert,row,column);
+	const uint8_t *slab = payload + SparkGlm52ValPayloadExpertOffset(codec,expert,rows,columns);
 	float raw,scale;
 	if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
 	{
 		const uint8_t *blocks = scales + SparkGlm52ValScaleGlobalsBytes(codec,expert_count);
 		scale = SparkGlm52ValUe4m3Decode(blocks[scale_index]) * ((const float *)scales)[expert];
-		raw = SparkGlm52ValE2m1Decode((uint8_t)SparkGlm52ValReadCode(payload,codec,row,columns,column));
+		raw = SparkGlm52ValE2m1Decode((uint8_t)SparkGlm52ValReadCode(slab,codec,row,columns,column));
 	}
 	else if ( codec == SPARK_GLM52_VAL_CODEC_MXFP4 )
 	{
 		scale = SparkGlm52ValUe8m0Decode(scales[scale_index]);
-		raw = SparkGlm52ValE2m1Decode((uint8_t)SparkGlm52ValReadCode(payload,codec,row,columns,column));
+		raw = SparkGlm52ValE2m1Decode((uint8_t)SparkGlm52ValReadCode(slab,codec,row,columns,column));
 	}
 	else
 	{
 		scale = ((const float *)scales)[scale_index];
 		if ( codec == SPARK_GLM52_VAL_CODEC_FP8 )
-			raw = SparkGlm52ValE4m3Decode((uint8_t)SparkGlm52ValReadCode(payload,codec,row,columns,column));
+			raw = SparkGlm52ValE4m3Decode((uint8_t)SparkGlm52ValReadCode(slab,codec,row,columns,column));
 		else
-			raw = (float)SparkGlm52ValReadCode(payload,codec,row,columns,column);
+			raw = (float)SparkGlm52ValReadCode(slab,codec,row,columns,column);
 	}
 	return(SparkGlm52ValFromBf16(SparkGlm52ValBf16(raw * scale)));
 }
@@ -746,9 +764,15 @@ static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t 
 			uint64_t bit = (uint64_t)column * SparkGlm52ValCodecStoredBits(codec);
 			if ( SparkGlm52ValCodecUsesSignedIntGrid(codec) )
 			{
-				static const int32_t int6_choices[7] = {-9,-4,-1,0,1,5,11};
-				static const int32_t int7_choices[7] = {-19,-7,-2,0,3,13,29};
-				static const int32_t int8_choices[7] = {-41,-17,-5,0,7,23,59};
+				/* Zero-mean symmetric grids: a grid with a nonzero mean makes
+				 * the expert forward amplify the activation's ones-component
+				 * quadratically (gate/up ~ mean*S, silu(gate)*up ~ (mean*S)^2),
+				 * which magnifies the dense tier's normal 0.3-0.6% chain noise
+				 * token-dependently up to several percent and fails the
+				 * mixture check for reasons unrelated to any layout bug. */
+				static const int32_t int6_choices[7] = {-9,-4,-1,0,1,4,9};
+				static const int32_t int7_choices[7] = {-19,-7,-2,0,2,7,19};
+				static const int32_t int8_choices[7] = {-41,-17,-5,0,5,17,41};
 				const int32_t *choices = codec == SPARK_GLM52_VAL_CODEC_INT6 ? int6_choices :
 					(codec == SPARK_GLM52_VAL_CODEC_INT7 ? int7_choices : int8_choices);
 				int32_t code = choices[draw % 7u];
@@ -760,14 +784,18 @@ static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t 
 			}
 			else if ( codec == SPARK_GLM52_VAL_CODEC_FP8 )
 			{
-				/* Finite E4M3 codes with three-bit mantissas: exact in bf16. */
-				static const uint8_t fp8_choices[10] = {0x08,0x2c,0x30,0x34,0x38,0x3c,0x40,0x44,0x88,0xb0};
-				row_base[column] = fp8_choices[draw % 10u];
+				/* Finite E4M3 codes with three-bit mantissas, exact in bf16,
+				 * in sign-symmetric pairs (subnormal to 3.0) so the grid mean
+				 * is exactly zero - see the int-grid note above. */
+				static const uint8_t fp8_choices[11] = {0x00,0x08,0x88,0x2c,0xac,0x34,0xb4,0x3c,0xbc,0x44,0xc4};
+				row_base[column] = fp8_choices[draw % 11u];
 			}
 			else
 			{
-				static const uint8_t nibble_choices[8] = {0,1,2,3,4,5,6,9};
-				uint8_t nibble = nibble_choices[draw % 8u];
+				/* Sign-symmetric E2M1 pairs, zero mean (see the int-grid
+				 * note above). */
+				static const uint8_t nibble_choices[7] = {0,1,3,4,9,11,12};
+				uint8_t nibble = nibble_choices[draw % 7u];
 				if ( (column & 1u) == 0u )
 					row_base[column >> 1u] |= nibble;
 				else
@@ -1284,7 +1312,8 @@ static void SparkGlm52ValRouterGemm(const float *activation,const float *weights
 }
 
 /* Weight-only grouped GEMM row: A row comes through the route's source-row
- * map, B is the codec-decoded expert slab, output rounds to bf16. */
+ * map, B is the codec-decoded expert slab pair (payload/scale BASES, expert
+ * selects both planes expert-major inside), output rounds to bf16. */
 static void SparkGlm52ValExpertGemmRow(const uint8_t *payload,const uint8_t *scales,
 	uint32_t expert,const float *activation,float *output,uint32_t rows,uint32_t input_dimension,uint32_t output_dimension)
 {
@@ -2463,7 +2492,15 @@ static int SparkGlm52ValSelftestCodecRoundTrip(void)
 		if ( failures != 0 )
 			return(1);
 	}
-	/* Dequant of a written slab must reproduce the encoded grid exactly. */
+	/* Dequant must address payload AND scales expert-major across the slab
+	 * buffers, exactly as the kernel's weight tensor map (one TMA group per
+	 * expert) and LmScaleTensorIndex do. Two slabs with independent random
+	 * contents decide the payload plane; a power-of-two scale patch of
+	 * expert 1's plane only decides the scale plane bit-exactly. The
+	 * origin/unified restore applied the expert offset to the scale index
+	 * only and decoded slab 0's codes for every expert - under that bug the
+	 * two experts' weights are IDENTICAL here (uniform fixture scales), so
+	 * this is the check that pins it. */
 	{
 		uint32_t codec;
 		for (codec = 2u; codec <= 7u; codec++)
@@ -2471,33 +2508,84 @@ static int SparkGlm52ValSelftestCodecRoundTrip(void)
 			uint32_t rows = 4u,columns = SparkGlm52ValCodecScaleGroup(codec) * 2u;
 			uint64_t payload_bytes = SparkGlm52ValPayloadBytesPerExpert(codec,rows,columns);
 			uint64_t scale_bytes = SparkGlm52ValScaleBufferBytes(codec,256u,rows,columns);
-			uint8_t *payload = (uint8_t *)calloc(1,(size_t)payload_bytes);
+			uint64_t plane_bytes = SparkGlm52ValScaleBytesPerExpert(codec,rows,columns);
+			uint8_t *payload = (uint8_t *)calloc(1,(size_t)(2u * payload_bytes));
 			uint8_t *scales = (uint8_t *)calloc(1,(size_t)scale_bytes);
-			uint32_t row,column;
+			float *first = (float *)calloc((size_t)(rows * columns),sizeof(float));
+			float *second = (float *)calloc((size_t)(rows * columns),sizeof(float));
+			uint32_t row,column,expert;
+			uint64_t differing = 0u;
 			int failures = 0;
-			if ( payload == 0 || scales == 0 )
+			if ( payload == 0 || scales == 0 || first == 0 || second == 0 )
 				return(1);
-			SparkGlm52ValFillExpertSlab(codec,payload,
-				scales + SparkGlm52ValScaleExpertOffset(codec,256u,1u,rows,columns),rows,columns);
+			for (expert = 0u; expert < 2u; expert++)
+				SparkGlm52ValFillExpertSlab(codec,
+					payload + SparkGlm52ValPayloadExpertOffset(codec,expert,rows,columns),
+					scales + SparkGlm52ValScaleExpertOffset(codec,256u,expert,rows,columns),
+					rows,columns);
 			if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
 			{
 				float global_scale = 4.0f;
-				uint32_t expert;
 				for (expert = 0u; expert < 256u; expert++)
 					memcpy(scales + expert * sizeof(float),&global_scale,sizeof(float));
 			}
 			for (row = 0u; row < rows; row++)
 				for (column = 0u; column < columns; column++)
 				{
-					float weight = SparkGlm52ValDequantWeight(payload,scales,codec,256u,1u,row,rows,columns,column);
-					if ( !isfinite(weight) )
+					uint64_t at = (uint64_t)row * columns + column;
+					first[at] = SparkGlm52ValDequantWeight(payload,scales,codec,256u,0u,row,rows,columns,column);
+					second[at] = SparkGlm52ValDequantWeight(payload,scales,codec,256u,1u,row,rows,columns,column);
+					if ( !isfinite(first[at]) || !isfinite(second[at]) )
 					{
 						fprintf(stderr,"codec=%u dequant_not_finite row=%u column=%u\n",codec,row,column);
+						failures++;
+					}
+					if ( memcmp(&first[at],&second[at],sizeof(float)) != 0 )
+						differing++;
+				}
+			if ( differing * 2u < (uint64_t)rows * columns )
+			{
+				fprintf(stderr,"codec=%u expert payload planes alias: %llu/%u positions differ\n",
+					codec,(unsigned long long)differing,rows * columns);
+				failures++; /* expert 1 decoded slab 0's codes */
+			}
+			/* Patch ONLY expert 1's scale plane by an exact power of two
+			 * (1/4). The grids are exact, so the re-read must be the old
+			 * value scaled bit-exactly; a scale index that ignored the
+			 * expert leaves the weights unchanged. */
+			if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
+			{
+				float quarter_global = 1.0f;
+				memcpy(scales + 1u * sizeof(float),&quarter_global,sizeof(float));
+			}
+			else if ( codec == SPARK_GLM52_VAL_CODEC_MXFP4 )
+				memset(scales + SparkGlm52ValScaleExpertOffset(codec,256u,1u,rows,columns),125,
+					(size_t)plane_bytes); /* 2^-2 against 2^0 */
+			else
+			{
+				float quarter_scale = codec == SPARK_GLM52_VAL_CODEC_FP8 ? 0.25f : 0.00390625f;
+				uint64_t index,blocks = SparkGlm52ValScaleBlocksPerExpert(codec,rows,columns);
+				for (index = 0u; index < blocks; index++)
+					memcpy(scales + SparkGlm52ValScaleExpertOffset(codec,256u,1u,rows,columns) +
+						index * sizeof(float),&quarter_scale,sizeof(float));
+			}
+			for (row = 0u; row < rows; row++)
+				for (column = 0u; column < columns; column++)
+				{
+					uint64_t at = (uint64_t)row * columns + column;
+					float expect = second[at] * 0.25f;
+					float again = SparkGlm52ValDequantWeight(payload,scales,codec,256u,1u,row,rows,columns,column);
+					if ( memcmp(&again,&expect,sizeof(float)) != 0 )
+					{
+						fprintf(stderr,"codec=%u scale plane not expert-addressed row=%u column=%u\n",
+							codec,row,column);
 						failures++;
 					}
 				}
 			free(payload);
 			free(scales);
+			free(first);
+			free(second);
 			if ( failures != 0 )
 				return(1);
 		}

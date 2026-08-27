@@ -752,7 +752,16 @@ from pathlib import Path
 # The M1 contract freeze adds the authoritative JSON's census section and
 # the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
 # ports) lands in the same window; 186345 is the exact count.
-CEILING = 186401
+# The glm52 validator-fix lane raises the ceiling to 189979: +3492 was already
+# present on lane/glm52 at its head b845f70 (the packs lane's numpy-only fp8
+# packer, deployment generator, validator restore and receipts; verified by
+# running this test on the unmodified branch), and +86 is this lane's routed
+# oracle fix - the expert-major payload offset with its layout-contract
+# comment, the two-slab/patched-plane selftest, and the zero-mean fixture
+# grids with their amplification rationale. The validator gate now runs all
+# three tiers (dense, routed, DSA) on sm_121a and a host-executable oracle
+# selftest backs it on GPU-less machines.
+CEILING = 189979
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
