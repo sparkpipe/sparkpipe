@@ -22,8 +22,8 @@ Sampling policy (frozen; do not change without re-freezing):
 
 Stride note: the warm Ceph mount measured ~4 MiB/s per stream with a
 ~30 MiB/s aggregate cap at freeze time (shared cluster traffic), so the
-stride was widened from the initial 5 to 17 to keep the freeze under an
-hour; 9 of 131 shards (~27 GiB, ~8% of shard bytes) are fully hashed and
+stride was widened twice under measured bandwidth caps (5 -> 17 -> 34);
+5 of 131 shards (~15 GiB, ~4.5% of shard bytes) are fully hashed and
 the rest are pinned transitively through the receipt.
 """
 
@@ -38,7 +38,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SMALL_LIMIT = 256 * 1024 * 1024  # 256 MiB
-STRIDE = 17
+STRIDE = 34
 HASH_WORKERS = 8
 SHARD_RE = re.compile(r"^model-(\d+)-of-(\d+)\.safetensors$")
 CHUNK = 8 * 1024 * 1024

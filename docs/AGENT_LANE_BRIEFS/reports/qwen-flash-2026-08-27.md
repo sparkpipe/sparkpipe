@@ -168,11 +168,49 @@ make ... validate STAGE_COUNT=2 STAGE_LAYER_COUNT=4 MTP=0   → exit 0
 qwen4_flash_validation PASS
 ```
 
-A whole-stack synthetic dress rehearsal (122.93 GiB synth pack, STAGE_COUNT=1
-STAGE_LAYER_COUNT=48 MTP=1 TP_STANDALONE=1) was ATTEMPTED but is what
-triggered the incident below; it must be rerun against a TP4 rank-local
-pack (~31 GiB) instead of the TP1 whole-model pack, mirroring the 27b
-whole-stack tier (TP_DEGREE=4 TP_RANK=0 TP_STANDALONE=1).
+### M5 whole-stack validation — BLOCKED (exact state below)
+
+Work completed toward M5 (all committed):
+
+  * MTP draft chain ported (see M5 PREP above); mid-pipeline regression
+    PASS after every change tonight.
+  * Attention kernels accept replicated KV when kv_heads does not divide
+    the TP degree (Flash kv=2 at TP4): local_kv_heads stays full-width,
+    the rank offset degenerates, launcher checks relaxed to query-head
+    divisibility.
+  * Module pack loader accepts rank-local TP packs: family-own pack magic
+    'Q4SP' 0x50533451 (was the inherited 'Q8SP' — the real rank0 pack
+    failed with `pack_geometry_mismatch code=-1` until this) and
+    SparkQwen4FlashStagePackNarrowShape applies the shard plan at entry
+    validation (mirrored by packer + verifier).
+  * TP env names aligned (module read SPARK_QWEN4_FLASH_STAGE_TP_* while
+    the Makefile emits SPARK_QWEN4_FLASH_TP_*).
+
+Exact blocker, with stderr, for the whole-stack TP4-standalone run
+(spark5, real rank0 pack, STAGE_COUNT=1 STAGE_LAYER_COUNT=48 MTP=1
+TP_DEGREE=4 TP_RANK=0 TP_STANDALONE=1):
+
+```
+qwen4_flash_stage initialize_failed status=1
+qwen4_flash_validation failure=module_initialize status=1
+```
+
+status=1 is the TP collective env requirement (backend/identifier/port/
+hosts/local host) — the module demands a live collective for tp_degree>1
+and has no standalone bypass. Behind that sit two more gaps, both now
+FAIL-CLOSED by a guard (tp>1 with owns_embedding/owns_final_head returns
+UNSUPPORTED with `tp_whole_stack_pending` instead of reading past the
+vocab-sharded embedding/head slabs):
+
+  1. embedding gather + final-head argmax are full-vocab; TP4 needs the
+     replicated-embedding switch plus the sharded-argmax + maxloc
+     collective port from qwen38_27b (LaunchHeadScreenedArgmaxScore /
+     MaxLocPack / MaxLocUnpack / TpReduceU64Max).
+  2. the MTP draft chain at tp>1 returns UNSUPPORTED for the same reason.
+
+A TP1 whole-stack run is impossible by footprint on one GB10: the TP1
+pack is 122.93 GiB against 128 GB unified (this is what tripped the
+spark5 reboot — see INCIDENT).
 
 ## INCIDENT (report to coordinator)
 
@@ -232,9 +270,19 @@ validation only from rank-local TP4 packs.
 
 ## Next
 
-  1. Finish M1 when the freeze lands (contract JSON + verify PASS + M2 test
-     green), commit.
-  2. Append the 4-rank pack verify results (M4 full exit).
-  3. Port the 27b MTP draft chain for M5; build the whole-stack TP1 real
-     pack (122.93 GiB, ~2 h at observed throughput) and run the
-     whole-stack validator on spark5.
+  1. Finish M1 when the freeze lands: the stride-34 freeze (5 shards +
+     small files + SHA256SUMS + receipt) is running on spark4 writing
+     /tmp/qwen4_flash_digests.json; embed it under digest_freeze in
+     model_contracts/qwen4_flash_authoritative.json, then
+     `python3 tools/qwen4_flash_verify_source.py verify --source
+     /mnt/model-warm/qwen3.8-flash-next --contract
+     model_contracts/qwen4_flash_authoritative.json` must print PASS, and
+     `python3 tests/test_qwen4_flash_model_header.py` must go green.
+  2. Ranks 1-3 packs + verifies are running on spark5
+     (/tmp/q4f_build_packs.log); rank 0 is DONE and verified:
+     `PASS qwen4_flash_full.tp4-rank0.qwen4_flashsp: header geometry, 899
+     directory entries (tp 4/0), 10 byte-traced samples receipt=verified`
+     (FP8 dequant traces at relative_l2 0.0265).
+  3. M5: port the TP collective + replicated embedding + sharded argmax
+     from qwen38_27b (fail-closed guards mark every gap), then the
+     whole-stack TP4-standalone validate with the rank0 pack.

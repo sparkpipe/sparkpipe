@@ -213,8 +213,8 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 		 * layout (tp_degree 1). tp_degree > 1 needs the head-sliced
 		 * projections AND the residual all-reduce, so the initialize path
 		 * refuses it until the TP collective is wired (fail closed). */
-		const char *tp_degree_text = getenv("SPARK_QWEN4_FLASH_STAGE_TP_DEGREE");
-		const char *tp_rank_text = getenv("SPARK_QWEN4_FLASH_STAGE_TP_RANK");
+		const char *tp_degree_text = getenv("SPARK_QWEN4_FLASH_TP_DEGREE");
+		const char *tp_rank_text = getenv("SPARK_QWEN4_FLASH_TP_RANK");
 		char *end = 0;
 		unsigned long parsed = 1u;
 		if ( tp_degree_text != 0 )
@@ -320,6 +320,17 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 	}
 	state->owns_embedding = state->first_layer_index == 0u ? 1u : 0u;
 	state->owns_final_head = state->first_layer_index + state->layer_count == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT ? 1u : 0u;
+	/* Rank-local packs load and the sharded GDN/attention/MoE kernels run at
+	 * tp_degree > 1, but the embedding gather and the final-head argmax are
+	 * still full-width: a vocab-sharded embedding/head would read past the
+	 * rank's slab. Refuse whole-stack TP tiers until the replicated-
+	 * embedding + sharded-argmax-collective port lands (fail closed, no
+	 * out-of-bounds device reads). */
+	if ( state->tp_degree > 1u && (state->owns_embedding != 0u || state->owns_final_head != 0u) )
+	{
+		fprintf(stderr,"%s tp_whole_stack_pending degree=%u (embedding/head shards need the collective port)\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->tp_degree);
+		return(SPARK_STATUS_UNSUPPORTED);
+	}
 	if ( (state->stage_index == 0u) != (state->owns_embedding != 0u) || (state->stage_index + 1u == state->stage_count) != (state->owns_final_head != 0u) )
 	{
 		fprintf(stderr,"%s config_position_mismatch stage=%u/%u slice=%u+%u\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
@@ -361,7 +372,10 @@ static SparkStatus SparkQwen4FlashModuleValidateEntry(SparkQwen4FlashModuleState
 {
 	SparkQwen4FlashStagePackTensorShape shape;
 	uint32_t global = entry->layer_index == SPARK_QWEN4_FLASH_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	if ( SparkQwen4FlashStagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,&shape) != 0 || entry->rows != shape.rows || entry->columns != shape.columns )
+	if ( SparkQwen4FlashStagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,&shape) != 0 )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	SparkQwen4FlashStagePackNarrowShape(&shape,entry->tensor_kind,state->tp_degree,state->tp_rank);
+	if ( entry->rows != shape.rows || entry->columns != shape.columns )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	/* Strict natural format, except the three routed-expert tensors may also
 	 * arrive BF16 (synthesized test packs); anything else fails. */
@@ -570,7 +584,17 @@ static SparkStatus SparkQwen4FlashModuleLoadPack(SparkQwen4FlashModuleState *sta
 		SparkQwen4FlashStagePackExpectedGeometry(&expected,state->first_layer_index,state->layer_count);
 		if ( SparkQwen4FlashStagePackHeaderMatches(&header,&expected) != 0 || header.directory_offset != SPARK_QWEN4_FLASH_STAGEPACK_HEADER_BYTES )
 		{
-			fprintf(stderr,"%s pack_geometry_mismatch\n",SPARK_QWEN4_FLASH_MODULE_TAG);
+			fprintf(stderr,"%s pack_geometry_mismatch code=%d slice=%u+%u tensor_count=%u/%u hidden=%u/%u layers=%u/%u first=%u/%u total=%u/%u mtp=%u/%u dir=%llu\n",
+				SPARK_QWEN4_FLASH_MODULE_TAG,
+				SparkQwen4FlashStagePackHeaderMatches(&header,&expected),
+				state->first_layer_index,state->layer_count,
+				header.tensor_count,expected.tensor_count,
+				header.hidden_dimension,expected.hidden_dimension,
+				header.layer_count,expected.layer_count,
+				header.first_layer_index,expected.first_layer_index,
+				header.total_layer_count,expected.total_layer_count,
+				header.mtp_layer_count,expected.mtp_layer_count,
+				(unsigned long long)header.directory_offset);
 			status = SPARK_STATUS_VALIDATION_FAILED;
 		}
 	}

@@ -241,9 +241,15 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                     matrix = source_matrix(source, ref.name)
                     if matrix.ndim == 3:
                         matrix = matrix[:, 0, :]
-                    if row_slice is not None:
+                    if matrix.ndim == 1:
+                        # 1-D vectors (A_log/dt_bias) shard flat.
+                        matrix = matrix.reshape(1, -1) if row_slice is None and column_slice is None else matrix
+                        if row_slice is not None:
+                            matrix = matrix[row_slice[0]:row_slice[0] + row_slice[1]]
+                            matrix = matrix.reshape(1, -1)
+                    if row_slice is not None and matrix.ndim == 2:
                         matrix = matrix[row_slice[0]:row_slice[0] + row_slice[1], :]
-                    if column_slice is not None:
+                    if column_slice is not None and matrix.ndim == 2:
                         matrix = matrix[:, column_slice[0]:column_slice[0] + column_slice[1]]
                     expected = matrix
                 if entry["weight_format"] == WEIGHT_BF16:

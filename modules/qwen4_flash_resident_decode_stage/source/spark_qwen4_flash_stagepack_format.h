@@ -21,7 +21,7 @@
  * gate_up_proj is split at pack time into w1 (rows 0..I) and w3 (rows I..2I).
  */
 
-#define SPARK_QWEN4_FLASH_STAGEPACK_MAGIC 0x50533851u /* 'Q8SP' little endian */
+#define SPARK_QWEN4_FLASH_STAGEPACK_MAGIC 0x50533451u /* 'Q4SP' little endian: the Flash family pack format (own magic, not the qwen38 'Q8SP') */
 #define SPARK_QWEN4_FLASH_STAGEPACK_FORMAT_VERSION 1u
 #define SPARK_QWEN4_FLASH_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_QWEN4_FLASH_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
@@ -382,6 +382,82 @@ static inline int32_t SparkQwen4FlashStagePackTensorShapeOf(uint32_t tensor_kind
 	if ( SparkQwen4FlashStagePackShapeAttn(tensor_kind,shape) == 0 )
 		return(0);
 	return(-1);
+}
+
+/*
+ * Rank-local entry geometry: the per-kind narrowing the TP pack plan
+ * applies (mirrored by tools/qwen4_flash_stagepack.py shard_ref and
+ * tools/qwen4_flash_pack_verify.py - three statements of one plan, so a
+ * drift fails closed at load). KV projections replicate whole when the kv
+ * heads do not divide across ranks; norms, scalars and the MTP globals
+ * replicate; everything else narrows along the sharded axis.
+ */
+static inline void SparkQwen4FlashStagePackNarrowShape(SparkQwen4FlashStagePackTensorShape *shape, uint32_t tensor_kind, uint32_t tp_degree, uint32_t tp_rank)
+{
+	uint32_t key_heads, value_heads, experts;
+	if ( tp_degree <= 1u )
+		return;
+	key_heads = SPARK_QWEN4_FLASH_MODEL_GDN_KEY_HEAD_COUNT / tp_degree;
+	value_heads = SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree;
+	experts = SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	(void)tp_rank;
+	switch ( tensor_kind )
+	{
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY:
+		shape->rows = (SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree) * 2u * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE:
+		if ( (SPARK_QWEN4_FLASH_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u )
+			break; /* replicated */
+		shape->rows = (SPARK_QWEN4_FLASH_MODEL_ATTN_KV_HEAD_COUNT / tp_degree) * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT:
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_DIMENSION / tp_degree;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_QKV:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_CONV_WEIGHT:
+		shape->rows = (2u * (key_heads * SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_KEY_DIMENSION))
+			+ (value_heads * SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_VALUE_DIMENSION);
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_GATE:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_DIMENSION / tp_degree;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_BETA:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DECAY:
+		shape->rows = value_heads;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_A_LOG:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DT_BIAS:
+		shape->columns = value_heads;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_OUTPUT:
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_DIMENSION / tp_degree;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE:
+		shape->rows = experts;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3:
+		shape->rows = experts * SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN:
+		shape->rows = experts * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION / tp_degree;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN:
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION / tp_degree;
+		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_EMBEDDING:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT / tp_degree;
+		break;
+	default:
+		break; /* replicated: norms, scalars, MTP globals */
+	}
 }
 
 /*
