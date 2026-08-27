@@ -1,17 +1,22 @@
 # Lane brief: GLM 5.2 serving bring-up (vehicle for GLM 5.3 Flash)
 
 Worktree: /tmp/lane-glm52 (git worktree, branch lane/glm52, synced to main)
-Your nodes: spark1, spark9, sparka, sparkb, sparkc, sparkd, sparke, sparkf
-(TP8 = 8 ranks). Do NOT touch: spark2 (prod), spark3 (with sysadmin),
-spark4-7 (qwen-flash lane), spark8 (coordinator perf bench).
+Your nodes: spark9, sparka, sparkb, sparkc, sparkd, sparke, sparkf
+(7 nodes; TP8 needs a partner rank - coordinate with the coordinator
+via the report). Do NOT touch: spark1 (reserved for coordinator's 27B
+TP work), spark2 (prod), spark3 (with sysadmin), spark4-7 (qwen-flash
+lane), spark8 (coordinator perf bench).
 Cap concurrent heavy jobs per node at TWO (a prior lane rebooted spark5
 with three pack builds).
 
 ## Mission
-Get the GLM 5.2 FP8 model serving end-to-end on your 8 nodes, then prove
-the lane is a re-pack vehicle: GLM 5.3 Flash (same architecture per the
-vendor, different weights) at /mnt/model-warm/glm-5.3-flash should need
-only new packs + config once 5.2 is healthy.
+Get the GLM 5.2 FP8 model serving end-to-end on your nodes. The re-pack
+target is GLM 5.3 (the FULL model - same process/architecture as 5.2,
+different weights). GLM 5.3 FLASH is a DIFFERENT model logic
+(Glm5NextForConditionalGeneration: hybrid linear/deepseek-sparse
+attention, MLA kv_lora 512, MoE 288+1 top-8, hidden 4096) and is NOT
+a repack of this module - it is a separate future lane with new kernel
+work. Do not attempt it here.
 
 ## Existing assets (in-tree on main)
 - modules/glm52_resident_decode_stage/ (module + adapter, ~5.9k LOC) with
@@ -51,9 +56,10 @@ M3 Packs: build TP8 rank packs from the 5.2 FP8 source (packer in
    tools/ - glm52 packers exist; adapt as needed).
 M4 TP8 serving: 8-rank deployment on your nodes, B1 correctness, then
    B8/B16 batches. Record stream hashes + throughput.
-M5 GLM 5.3 Flash repack: build packs from the warm 5.3-flash source
-   against the same module. If geometry mismatches, stop and report
-   the exact deltas (that is a finding, not a failure).
+M5 GLM 5.3 (full) repack readiness: when the 5.3-full source lands,
+   verify the glm52 module's parameterization covers its geometry and
+   document the repack path. The warm mount's glm-5.3-flash is the
+   SEPARATE model - out of scope for this lane.
 
 ## Report
 docs/AGENT_LANE_BRIEFS/reports/glm52-<date>.md after every milestone,
