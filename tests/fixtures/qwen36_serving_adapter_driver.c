@@ -71,7 +71,7 @@ static const SparkModelDriverDescriptor TestQwen38_27bServingDriverDescriptor =
 {
 	.abi_version = SPARK_MODEL_DRIVER_ABI_VERSION,
 	.descriptor_bytes = sizeof(SparkModelDriverDescriptor),
-	.model_id = "alibaba.qwen3.6-27b.resident-decode-stage-firmware",
+	.model_id = "alibaba.qwen3.8-27b.resident-decode-stage-firmware",
 	.model_revision = QWEN38_27B_MODEL_REVISION,
 	.stage_name = "qwen38_27b_resident_decode_stage",
 	.target = "cuda.sm121.qwen38_27b.resident_decode_stage.bf16",

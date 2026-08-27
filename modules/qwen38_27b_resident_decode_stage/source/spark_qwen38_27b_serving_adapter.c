@@ -86,7 +86,7 @@ static double clock_gettime_mono_ns(void)
 #endif
 #define SPARK_QWEN38_27B_SERVING_MODEL_ID "Qwen/Qwen3.8-27B"
 #define SPARK_QWEN38_27B_SERVING_DRIVER_MODEL_ID \
-	"alibaba.qwen3.6-27b.resident-decode-stage-firmware"
+	"alibaba.qwen3.8-27b.resident-decode-stage-firmware"
 #define SPARK_QWEN38_27B_SERVING_STAGE_NAME "qwen38_27b_resident_decode_stage"
 #define SPARK_QWEN38_27B_SERVING_TARGET \
 	"cuda.sm121.qwen38_27b.resident_decode_stage.bf16"

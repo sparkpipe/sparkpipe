@@ -1188,7 +1188,15 @@ static int SparkQwen38_27bValCheckModule(void)
 			return(SparkQwen38_27bValFail("module_decode_vs_prefill","token_mismatch"));
 	}
 	/* Determinism: a fresh instance must reproduce lane 0's decode hidden
-	 * bit for bit. */
+	 * bit for bit. Two whole-stack TP1 instances (pack + lane state) exceed
+	 * the GB10 CUDA window, so the MTP check runs on the live instance and
+	 * the first instance is destroyed before the rerun initializes; the
+	 * comparison targets were captured into module-independent arrays. */
+	if (module.head_stage != 0u && SparkQwen38_27bValCheckMtpDraft(&module) != 0)
+		return(1);
+	SparkQwen38_27bResidentDecodeStageDestroy(module.state);
+	cudaFree(module.device_blocks);
+	cudaFree(module.device_counts);
 	{
 		SparkQwen38_27bValModule rerun;
 		if (SparkQwen38_27bValModuleInitialize(&rerun) != 0)
@@ -1222,11 +1230,6 @@ static int SparkQwen38_27bValCheckModule(void)
 		cudaFree(rerun.device_counts);
 		printf("qwen38_27b_validation check=module_determinism bit_exact=1\n");
 	}
-	if (module.head_stage != 0u && SparkQwen38_27bValCheckMtpDraft(&module) != 0)
-		return(1);
-	SparkQwen38_27bResidentDecodeStageDestroy(module.state);
-	cudaFree(module.device_blocks);
-	cudaFree(module.device_counts);
 	return(0);
 }
 

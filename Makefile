@@ -162,6 +162,10 @@ QWEN38_27B_MODEL_DESCRIPTION := examples/model_descriptions/qwen38_27b_resident_
 QWEN38_27B_MODEL_REVISION ?= bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1
 QWEN38_27B_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN38_27B_MODEL_DESCRIPTION)"; else shasum -a 256 "$(QWEN38_27B_MODEL_DESCRIPTION)"; fi | awk '{print $$1}')
 QWEN38_27B_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN38_27B_MODEL_REVISION=\"$(QWEN38_27B_MODEL_REVISION)\" -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_CONTRACT_SHA256)\"
+# Topology/lane specialization for the shared adapter source (TP1 whole-stack
+# deployments pass -DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1u and the module's
+# lane count), mirroring the DSV4_TP4_SERVING_TOPOLOGY_FLAGS pattern.
+QWEN38_27B_SERVING_TOPOLOGY_FLAGS ?=
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -634,7 +638,7 @@ $(DSV4_PRO_TP4_PP4_B1_SERVING_ADAPTER): modules/dsv4_resident_decode_stage/sourc
 	$(CC) $(CPPFLAGS) $(DSV4_PRO_TP4_PP4_B1_SERVING_TOPOLOGY_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DSV4_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(QWEN38_27B_SERVING_ADAPTER): modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_serving_adapter.h modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h $(QWEN38_27B_MODEL_DESCRIPTION) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include $(CFLAGS) $(QWEN38_27B_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include $(CFLAGS) $(QWEN38_27B_SERVING_ADAPTER_FLAGS) $(QWEN38_27B_SERVING_TOPOLOGY_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
