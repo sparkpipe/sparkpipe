@@ -1,0 +1,124 @@
+// Qwen 3.8 Flash model geometry for the host tiers, pinned against the
+// qwen4_flash authoritative contract (model_contracts/
+// qwen4_flash_authoritative.json), which is in turn digest-frozen against
+// the warm checkpoint config.json at revision f5d0827. The firmware config
+// remains the source of truth; tests/test_qwen4_flash_model_header.py holds
+// header and contract in lockstep, same discipline as qwen38_max/qwen38_27b.
+//
+// Sibling of qwen38_max: same 3:1 linear:full hybrid period and the same
+// 512-expert top-10 MoE shape. Checkpoint-verified deltas vs the max
+// sibling (see the contract's tensor_census): hyper-connection residual
+// mixing on every sublayer and a final mixer instead of a plain final norm,
+// an attention indexer on the 12 full-attention layers, and a PLE n-gram
+// embedding block on layer 1 (weights; config ple_layer_ids says 2 - the
+// tensors win). Those constants are pinned here too so the module and packer
+// consume one geometry.
+#ifndef SPARKPIPE_SPARK_QWEN4_FLASH_MODEL_H
+#define SPARKPIPE_SPARK_QWEN4_FLASH_MODEL_H
+
+#define SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION 2560u
+#define SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT 48u
+#define SPARK_QWEN4_FLASH_MODEL_VOCAB_COUNT 248320u
+#define SPARK_QWEN4_FLASH_MODEL_ATTENTION_HEAD_COUNT 24u
+#define SPARK_QWEN4_FLASH_MODEL_KV_HEAD_COUNT 2u
+#define SPARK_QWEN4_FLASH_MODEL_HEAD_DIMENSION 256u
+#define SPARK_QWEN4_FLASH_MODEL_GDN_KEY_HEAD_COUNT 16u
+#define SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEAD_COUNT 48u
+
+// Wider geometry vocabulary for the resident decode stage module.
+#define SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT SPARK_QWEN4_FLASH_MODEL_VOCAB_COUNT
+#define SPARK_QWEN4_FLASH_MODEL_MAXIMUM_CONTEXT_TOKENS 262144u
+#define SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON 1e-06f
+#define SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT 1u
+
+#define SPARK_QWEN4_FLASH_MODEL_ATTENTION_PERIOD 4u
+#define SPARK_QWEN4_FLASH_MODEL_FULL_ATTENTION_PHASE 3u
+#define SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer_index) \
+	(((layer_index) % SPARK_QWEN4_FLASH_MODEL_ATTENTION_PERIOD) != SPARK_QWEN4_FLASH_MODEL_FULL_ATTENTION_PHASE)
+#define SPARK_QWEN4_FLASH_MODEL_GDN_LAYER_COUNT 36u
+#define SPARK_QWEN4_FLASH_MODEL_FULL_ATTENTION_LAYER_COUNT 12u
+
+// Linear attention ("gdn" slot in the module, GatedDeltaNet-shaped): the
+// checkpoint's linear_attn.in_proj_* map one-to-one onto the qwen38_max GDN
+// tensor kinds - in_proj_qkv [2*QK+V, H], in_proj_z (gate) [V, H],
+// in_proj_a (decay) / in_proj_b (beta) [value_heads, H], norm [128],
+// conv1d [2*QK+V, 1, 4], A_log / dt_bias [value_heads], out_proj [H, V].
+// The grouped-value ratio is 3 (48 value heads over 16 key heads), NOT the
+// max sibling's 8; kernels must derive it from these macros.
+#define SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_KEY_DIMENSION 128u
+#define SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_VALUE_DIMENSION 128u
+#define SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEADS_PER_KEY_HEAD \
+	(SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEAD_COUNT / SPARK_QWEN4_FLASH_MODEL_GDN_KEY_HEAD_COUNT)
+#define SPARK_QWEN4_FLASH_MODEL_GDN_CONV_KERNEL 4u
+#define SPARK_QWEN4_FLASH_MODEL_GDN_QK_DIMENSION \
+	(SPARK_QWEN4_FLASH_MODEL_GDN_KEY_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_KEY_DIMENSION)
+#define SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_DIMENSION \
+	(SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_VALUE_DIMENSION)
+#define SPARK_QWEN4_FLASH_MODEL_GDN_CONV_CHANNELS \
+	((2u * SPARK_QWEN4_FLASH_MODEL_GDN_QK_DIMENSION) + SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_DIMENSION)
+#define SPARK_QWEN4_FLASH_MODEL_GDN_CONV_TAIL_COLUMNS (SPARK_QWEN4_FLASH_MODEL_GDN_CONV_KERNEL - 1u)
+#define SPARK_QWEN4_FLASH_MODEL_GDN_CHUNK_TOKENS 64u
+
+// Gated full attention: q_proj carries [2*Q, H] (query then sigmoid output
+// gate, output_gate_type sigmoid), k/v [512, H] (2 heads x 256), partial
+// rotary 0.25 -> 64 rope dimensions per head, mrope sections [11,11,10]
+// degenerate to plain rope for text-only decode (same as the max contract).
+#define SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_HEAD_COUNT SPARK_QWEN4_FLASH_MODEL_ATTENTION_HEAD_COUNT
+#define SPARK_QWEN4_FLASH_MODEL_ATTN_KV_HEAD_COUNT SPARK_QWEN4_FLASH_MODEL_KV_HEAD_COUNT
+#define SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION SPARK_QWEN4_FLASH_MODEL_HEAD_DIMENSION
+#define SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION 64u
+#define SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_THETA 10000000.0f
+#define SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_DIMENSION \
+	(SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION)
+#define SPARK_QWEN4_FLASH_MODEL_ATTN_KV_DIMENSION \
+	(SPARK_QWEN4_FLASH_MODEL_ATTN_KV_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION)
+#define SPARK_QWEN4_FLASH_MODEL_ATTN_CACHE_TOKEN_ELEMENTS \
+	(2u * SPARK_QWEN4_FLASH_MODEL_ATTN_KV_DIMENSION)
+
+// Routed MoE, pinned against config.json at the contract revision: same
+// expert shape family as qwen38_max with the Flash intermediate (640).
+// Source experts are BF16 fused gate_up [512, 1280, H]; the packer splits
+// w1/w3 and quantizes to the format-6 MX FP8 codec (E4M3 payload, E8M0
+// scale, 128 blocks), matching the qwen38_27b serving format.
+#define SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT 512u
+#define SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN 10u
+#define SPARK_QWEN4_FLASH_MODEL_SHARED_EXPERT_COUNT 1u
+#define SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION 640u
+#define SPARK_QWEN4_FLASH_MODEL_SHARED_EXPERT_INTERMEDIATE_DIMENSION 640u
+#define SPARK_QWEN4_FLASH_MODEL_MXFP4_GROUP_SIZE 32u
+#define SPARK_QWEN4_FLASH_MODEL_FP8_BLOCK 128u
+#define SPARK_QWEN4_FLASH_MODEL_SWIGLU_LIMIT 10.0f
+
+// Hyper-connection residual geometry (hc_count 4, low-rank 320): the
+// residual stream is 4 x hidden wide; every attention and MoE sublayer
+// carries a mixer (input_mix up [4H, 320] / down [320, 4H], block_inject
+// [4, 4H], hc_norm [4H]), and the stack ends in a global
+// hyper_connection_mixer of the same shape instead of a plain final norm.
+#define SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT 4u
+#define SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION 320u
+#define SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH \
+	(SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION)
+
+// Attention indexer on every full-attention layer (DSV4-flash family):
+// 4 query heads + 1 kv head at 128, top-k budget 2048, compression 4.
+#define SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT 4u
+#define SPARK_QWEN4_FLASH_MODEL_INDEXER_KV_HEAD_COUNT 1u
+#define SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION 128u
+#define SPARK_QWEN4_FLASH_MODEL_INDEXER_BUDGET 2048u
+#define SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO 4u
+
+// PLE n-gram embedding block: tensors live on layer 1 (weights truth; the
+// config's ple_layer_ids [2] is drifted - see the contract census). 3-gram,
+// 8 heads per n-gram, embedding dim = hidden, conv kernel 4, 128 shards.
+#define SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX 1u
+#define SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_SIZE 3u
+#define SPARK_QWEN4_FLASH_MODEL_PLE_HEADS_PER_NGRAM 8u
+#define SPARK_QWEN4_FLASH_MODEL_PLE_SHARD_COUNT 128u
+#define SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION
+#define SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL 4u
+
+#define SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES 2u
+#define SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES \
+	(SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES)
+
+#endif
