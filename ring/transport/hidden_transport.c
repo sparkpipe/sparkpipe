@@ -432,7 +432,7 @@ SparkStatus SparkHiddenTransportValidatePacket(
             sideband_transfer_bytes / packet->active_sequence_count !=
                 (uint64_t)packet->sideband_bytes_per_sequence)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+        return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
     else if (packet->sideband_payload != 0 ||

@@ -725,7 +725,10 @@ from pathlib import Path
 # declarations, nvcc host guard, and rename-completion for the test gate
 # (work-control symbols, qwen36 test files and contents, fabric hosts,
 # tp_degree in glm52 stagepack calls); 175433 is the exact count.
-CEILING = 175433
+# The pipeline-e2e lease fix: a zero-emitted decode completion no longer
+# fails the continuation-lease decode and kills the daemon - the lease
+# holds at the lane context instead; net +7 with comments.
+CEILING = 175440
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

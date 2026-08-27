@@ -777,11 +777,17 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 			(completed_tokens > route->completion.tokens_per_sequence &&
 			 route->completion.tokens_per_sequence != 0u) )
 			completed_tokens = route->completion.tokens_per_sequence;
-		status = SparkModelContinuationLeaseDecodePosition(
-			lane->context_token_count,
-			completed_tokens,&next_sequence_position);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
+		if ( completed_tokens != 0u )
+		{
+			status = SparkModelContinuationLeaseDecodePosition(
+				lane->context_token_count,
+				completed_tokens,&next_sequence_position);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
+		/* A decode that emitted zero tokens (degenerate completion) holds
+		 * the lease at the lane's current context instead of failing the
+		 * route and the daemon with it. */
 	}
 	/* The lease must be fenced by the CURRENT client generation, not the
 		 * route's (captured at reservation): the ASYNC verify completion can
@@ -2546,6 +2552,7 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 	{
 		index = (start + offset) % runtime->route_capacity;
 		status = SparkModelResidentdProgressRoute(runtime,&runtime->routes[index],allow_adapter != 0u ? &adapter_submitted : 0);
+
 		if ( adapter_submitted != 0u )
 			runtime->next_adapter_route = (index + 1u) % runtime->route_capacity;
 	}
