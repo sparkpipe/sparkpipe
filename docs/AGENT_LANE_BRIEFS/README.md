@@ -86,6 +86,31 @@ read it before writing allocation code):
    REQUEST with call sites — the family pack loader's mapping is the
    sanctioned file-backed path; do not invent a second one.
 
+## Run queue + node reservations (hard, 2026-08-28)
+
+GPU and heavy remote work is scheduled through the run queue
+(`python3 tools/spark_queue.py`, state in `runs/`, controller-local):
+
+- **Before GPU work on a node**: `tools/spark_queue.py reserve --node
+  sparkX --holder lane-<name> --ttl-min <estimate>`; release when done
+  (`release --node sparkX`). The coordinator's scheduler will not land
+  queued runs on a reserved node, and the 30-min sweep audits stale
+  reservations (TTL + holder process gone = released).
+- **Script-expressible runs** (benches, sweeps, verifier passes, builds
+  with a known command): submit them — `add --id <id> --nodes sparkX
+  --cmd '<remote cmd>' --priority N [--after id,id]` — instead of running
+  them by hand. The scheduler launches every entry whose node set is
+  free; disjoint entries run in PARALLEL; a running entry HOLDS its
+  nodes until exit (let-them-cook: no preemption).
+- **Gates**: `--kind gate` entries block dependents until marked done —
+  use them for cross-lane dependencies (e.g. "glm53 validator resumes
+  after glm52 oracle fix merges").
+- Entry kinds: run / gate / note. `after:` = dependency ids. Logs land
+  at `/tmp/sparkq/<id>.log` on the node; `status --id` tails them.
+- The queue REFUSES commands containing rm -rf, reboot, kill -9 and
+  friends — destructive cleanup is a human-visible coordinator action,
+  never a queued one.
+
 ## Cluster rules (hard)
 - Nodes are `spark0..sparkf`, ssh BatchMode works from the controller mac.
 - `spark2` hosts the 27B development instance. It CAN be used for pack
