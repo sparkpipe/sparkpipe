@@ -5,6 +5,27 @@ Every number here has a receipt. Numbers not in this file are not claims.
 
 Updated: 2026-08-28 (UTC)
 
+## SCOREBOARD (machine-read; rendered every coordinator sweep)
+
+One row per model: best MEASURED decode and prefill, with the cell that
+produced them. "—" = not yet measured (the sweep prints these gaps).
+tools/perf_scoreboard.py parses this section; edit HERE, never downstream.
+
+<!-- scoreboard:start -->
+| Model | Best decode (tok/s) | Decode cell | Best prefill (tok/s) | Prefill cell | Code | Date |
+|---|---|---|---|---|---|---|
+| Qwen 3.8 27B | 24.5 (spec) / 8.03 (no-spec) | B1 TP1 DFlash2 k8 / B1 TP1 | ~21.7 | p256 B16 PFR8 | main | 2026-08-27 |
+| Qwen 3.8 27B aggregate | 36.22 | B4 TP1 (continuous batching) | — | — | main (PR725) | 2026-08-27 |
+| DSV4 Flash | 40.48 branch / 33.55 main | B1 TP4 exact-32K | — | not measured | 3d962820 / main | 2026-08-17 / 08-28 |
+| GLM 5.2 (donor) | 6.91 | B1 TP8 | — | not measured | pre-audit code | historical |
+| GLM 5.2 aggregate (donor) | 75.55 | B16 TP8 | — | not measured | pre-audit code | historical |
+| Qwen 3.8 Max | 1.29 | B1 TP4xPP4 anchors | — | not measured | anchors | 2026-08 |
+| K3 | 18.0 | B1 single-stage | — | not measured | single-stage | 2026-08 |
+| Qwen 3.8 Flash | — | lane in flight (M5 kernels) | — | — | — | — |
+| GLM 5.3 Flash | — | lane M1-M3 done, validator pending | — | — | — | — |
+| DSV4 Pro | — | packs building (spark6) | — | — | — | — |
+<!-- scoreboard:end -->
+
 ## DSV4 Flash (DeepSeek V4 Flash, FP8, TP4)
 
 | Metric | Value | Code | Status |
