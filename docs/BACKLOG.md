@@ -23,6 +23,7 @@ first (negative code), then level buys ranked by value-per-line.
 
 | Rank | Item | Kind | Delta | Owner |
 | --- | --- | --- | --- | --- |
+| 0 | **Pre-existing flake: TestModelPipelineStopResidents exit-status assert fails ~2/5 runs on UNMODIFIED runtime** (found during PR #725's CB3; before any batch-engine scenario). Reproduce + fix before it masks real regressions. | flake | 0 | coordinator |
 | 1 | Measure DSV4 Flash DSpark end-to-end (wired, never measured) | level 4->5 | ~0 | dsv4-flash + cuda-kernels cards |
 | 2 | Land admission core (in flight: admission-core task agent) | DRY | -400 | admission-core -> coordinator |
 | 3 | Land SparkKvModelTable + SparkKvBackendInitialize (signed) | DRY | ~0, unblocks 4 models | kv-cache -> coordinator |
