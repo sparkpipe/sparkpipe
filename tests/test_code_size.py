@@ -762,7 +762,13 @@ from pathlib import Path
 # reuse flag on the freeze tool; .lane_cache joins the exclusion list
 # (fetched reference artifacts, same class as .agents). 187683 is the exact
 # count after M2.
-CEILING = 187683
+# glm53 M3 module assembly lands the glm5_next family module (assembled
+# from the glm52 skeleton: layer.cuh with rope-0 MLA + kpool indexer + KDA
+# chain + mHC kernels, cuda.cu HC-runner, module.c hybrid caches, the
+# 49-kind stagepack format, kv geometry header, Makefile tier knobs, and
+# the synthesized-pack tool; ~7100 lines, nvcc sm_121a compile gate PASS).
+# 195716 is the exact count after M3.
+CEILING = 195716
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

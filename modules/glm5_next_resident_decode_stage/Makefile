@@ -33,7 +33,7 @@ GLM5_NEXT_EXPERT_CODEC_ID := 7
 endif
 
 MODULE_FAMILY := glm5_next
-MODULE_IDENTIFIER_PREFIX := spark.glm5_next.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h6144.l78.e256.k8
+MODULE_IDENTIFIER_PREFIX := spark.glm5_next.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h4096.l45.kda34.e288.k8
 MODULE_IDENTIFIER_SUFFIX := v2
 MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
 # The batch-variant ladder: one archive per power of two, emitted by
@@ -63,7 +63,7 @@ MODULE_INCLUDE_FLAGS := \
 	-I../../modules/glm5_next_resident_decode_stage/source \
 	-I../..
 
-STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/glm5_next_stage.$(EXPERT_CODEC).glm5_nextsp
+STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/glm5_next_stage.$(EXPERT_CODEC).g5nsp
 STAGE_INDEX ?= 0
 MAX_ACTIVE_SEQUENCES ?= 64
 MAX_SEQUENCE_POSITIONS ?= 32768
