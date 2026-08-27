@@ -4,8 +4,8 @@ Worktree: /tmp/lane-glm52 (git worktree, branch lane/glm52, synced to main)
 Your nodes: spark8, spark9, sparka, sparkb, sparkc, sparkd, sparke,
 sparkf (TP8 = 8 ranks). spark8 carries the coordinator's 27B bench
 state (repo tree + a deployment dir + maybe a daemon) - take it over
-freely. Do NOT touch: spark1 (coordinator's new bench), spark2 (prod),
-spark3 (with sysadmin), spark4-7 (qwen-flash lane).
+freely. Do NOT touch: spark1 (coordinator's new bench), spark2 (dev instance, usable),
+ spark4-7 (qwen-flash lane).
 Cap concurrent heavy jobs per node at TWO (a prior lane rebooted spark5
 with three pack builds).
 

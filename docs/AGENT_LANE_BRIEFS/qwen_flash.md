@@ -3,7 +3,7 @@
 Worktree: /tmp/lane-qwenflash
 Branch: lane/qwen-flash (already created from main)
 Your nodes: spark4, spark5, spark6, spark7 (TP4). spark3 is the
-coordinator's bench - do not run daemons there. spark2 = prod, untouchable.
+coordinator's bench - do not run daemons there. spark2 is usable (dev instance).
 
 ## Mission
 Bring Qwen 3.8 Flash to its first validated, serving-ready build, reusing

@@ -21,7 +21,7 @@ from the coordinator with the exact signature - do not fork the file.
   reference sources + build scratch only. No AI slop.
 
 ## Node assignment (disjoint)
-Check your brief for your nodes. spark2 is prod (untouchable). One
+Check your brief for your nodes. spark2 is a dev instance (usable). One
 agent per model, one heavy build per node at a time (a prior lane
 rebooted a spark with 3 concurrent pack jobs).
 
