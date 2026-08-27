@@ -93,7 +93,12 @@ def natural_format(kind: int) -> int:
 
 
 def hash_source_entry(source, ref) -> str:
-    """sha256 of the byte stream the checkpoint must yield for this tensor."""
+    """sha256 of the byte stream the checkpoint must yield for this tensor.
+
+    The pack layout is: the full expert-major payload (all 512 experts
+    stacked), THEN the whole F32 scale plane (expert 0's plane .. expert
+    511's). The expected stream must follow that order, not per-expert
+    interleaved payload+scale."""
     digest = hashlib.sha256()
     if ref.weight_format == WEIGHT_FP8_F32B128:
         import numpy as np
@@ -101,8 +106,8 @@ def hash_source_entry(source, ref) -> str:
         rows_per_expert = ref.rows // experts
         scale_rows = rows_per_expert // 128
         scale_cols = ref.columns // 128
-        for e in range(experts):
-            name = ref.name.replace("{e}", str(e))
+        names = [ref.name.replace("{e}", str(e)) for e in range(experts)]
+        for name in names:
             shard, _, off = source.resolve(name)
             with (source.root / shard).open("rb") as f:
                 f.seek(off)
@@ -114,6 +119,7 @@ def hash_source_entry(source, ref) -> str:
                         raise RuntimeError(f"short source read on {name}")
                     digest.update(chunk)
                     remaining -= step
+        for name in names:
             scale_name = name + "_scale_inv"
             s_shard, _, s_off = source.resolve(scale_name)
             with (source.root / s_shard).open("rb") as f:
