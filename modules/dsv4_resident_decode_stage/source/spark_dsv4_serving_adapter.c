@@ -40,8 +40,17 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
+/* Stage-major (pp_stage * TP degree + tp_rank): each pipeline stage's four
+ * TP replicas carry the same layer count and the per-stage counts sum to
+ * the model's layer count. Pro is 61 = 16+15+15+15; Flash-0731 is
+ * 43 = 11+11+11+10. */
+#ifdef SPARK_DSV4_PRO_BUILD
 #define SPARK_DSV4_SERVING_STAGE_LAYERS \
 	{16u,16u,16u,16u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u}
+#else
+#define SPARK_DSV4_SERVING_STAGE_LAYERS \
+	{11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,11u,10u,10u,10u,10u}
+#endif
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 4u
 #elif SPARK_DSV4_SERVING_TOPOLOGY == 16
 #if defined(SPARK_DSV4_PRO_BUILD)

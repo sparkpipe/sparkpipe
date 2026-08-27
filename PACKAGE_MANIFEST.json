@@ -2708,8 +2708,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
-      "sha256": "75d173d9cfcc902ee1f80c720564093e1a14cf9962465c4c6935ee438cf11afd",
-      "size_bytes": 69442
+      "sha256": "cefb1643a68f84ecc330f94ed57bd21d07caae45a0561d457df46f7bbd21f3ba",
+      "size_bytes": 69833
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_sparse_attention_split.h",
@@ -3158,8 +3158,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "d4b18e61622d675cf6f79e80bca1c29fe699c5ce0500a2f9a0cea435d9b25e59",
-      "size_bytes": 115332
+      "sha256": "4b2a8c62e00bbf666159211a3f877a14b476920a26e784b4707663a7e8333073",
+      "size_bytes": 115553
     },
     {
       "path": "qualification/dsv4/collectives/tp4_tree_bitwise_20260814/result.json",
@@ -4483,8 +4483,8 @@
     },
     {
       "path": "ring/transport/hidden_transport.c",
-      "sha256": "e16c9c98132ab54b068e00cfc56d7f692ac177c0f879d0ad82283259f258f5ed",
-      "size_bytes": 49400
+      "sha256": "0ed3a170bdc150f6a551666567bf8aed9e3aa9dc5143f34b9ac64702eeba55d1",
+      "size_bytes": 49396
     },
     {
       "path": "ring/transport/memlink.c",
@@ -4843,8 +4843,8 @@
     },
     {
       "path": "tests/fixtures/model_resident_transport_module.c",
-      "sha256": "8f547aa01dfddf1b3dd8c8a0be5970f894e8e90b2a6d15c4435810a600a547b6",
-      "size_bytes": 9603
+      "sha256": "740b8531bb416339abc3235f48be7504d4ef5873f3bd56da82c7c3d89cf71e58",
+      "size_bytes": 9622
     },
     {
       "path": "tests/fixtures/model_serving_adapter_config.json",
@@ -5133,8 +5133,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "b127bf838464cd26f32d35537355b1705f6d299869bd52f85a3edb241e1e377b",
-      "size_bytes": 48462
+      "sha256": "48dd09348621786f4d09ca7d74af703a70e1ff9366dcf61fb88ad95bc356283c",
+      "size_bytes": 48937
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -5718,8 +5718,8 @@
     },
     {
       "path": "tests/test_model_pipeline_client.c",
-      "sha256": "7a07861cfbabbf35b921b95ff3b5b93de5ca07e9c951da62c41e911bc47938f9",
-      "size_bytes": 65702
+      "sha256": "cc8d314314dd989c6cadca0329798608baca1ec629aaadbfaff578c6c8a8fe43",
+      "size_bytes": 66857
     },
     {
       "path": "tests/test_model_resident_deadline.c",
@@ -7075,5 +7075,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 25375565
+  "total_bytes": 25377822
 }

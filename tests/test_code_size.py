@@ -728,7 +728,11 @@ from pathlib import Path
 # The pipeline-e2e lease fix: a zero-emitted decode completion no longer
 # fails the continuation-lease decode and kills the daemon - the lease
 # holds at the lane context instead; net +7 with comments.
-CEILING = 175440
+# The e2e restoration: the dsv4 flash TP4PP4 stage-layer table gains its
+# correct 43-layer layout (plus build comment), and the pipeline test
+# expectations move to the concentrated-prefill/overlapped-admission
+# semantics with the capacity-tail invariant; 175449 exact.
+CEILING = 175449
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
