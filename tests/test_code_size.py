@@ -738,8 +738,7 @@ from pathlib import Path
 # reclamation (queue-locked event walk, unlink-then-free, body base
 # ownership); 175483 exact.
 # Audit-4 API/scheduler fixes: the API submits the whole queued set
-(not just the head) with aligned engine limits and explicit context
-# rejection, speculation miss telemetry attributes per-request only
+# (not just the head) with aligned engine limits and explicit context
 # for single-lane batches (aggregate kept at engine level), and the
 # support table reflects GLM 5.2 deprecation and the flash models;
 # 175507 exact.
