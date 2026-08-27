@@ -1909,6 +1909,113 @@ static SparkStatus SparkQwen4FlashModuleEmitHiddenOutput(SparkQwen4FlashModuleSl
 	return(context->hidden_output_send_function(context->hidden_output_transport_session,packet));
 }
 
+/* MTP draft chain (ported from the proven qwen38_27b unit; the max
+ * lineage never wired the pack's MTP tensors into execution). TP1 only -
+ * the TP>1 argmax shards need the HeadScreenedArgmaxScore/MaxLoc kernels
+ * this module does not carry yet; those return UNSUPPORTED. */
+static SparkStatus SparkQwen4FlashModuleRunMtpPackInput(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const uint32_t *token_src, const void *hnorm_src, uint32_t rows_p)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint64_t half_bytes = SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES,pack_pitch = 2u * half_bytes;
+	cudaError_t error;
+	error = SparkQwen4FlashLaunchEmbeddingGather(stream,token_src,state->token_embedding_bf16,slot->gated_bf16,rows_p);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchRmsNorm(stream,slot->gated_bf16,state->mtp.embed_norm_weight_bf16,slot->normalized_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchRmsNorm(stream,hnorm_src,state->mtp.hidden_norm_weight_bf16,slot->delta_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy2DAsync(slot->qkv_bf16,pack_pitch,slot->normalized_bf16,half_bytes,half_bytes,rows_p,cudaMemcpyDeviceToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy2DAsync((uint8_t *)slot->qkv_bf16 + half_bytes,pack_pitch,slot->delta_bf16,half_bytes,half_bytes,rows_p,cudaMemcpyDeviceToDevice,stream);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&state->mtp.fc,slot->qkv_bf16,slot->hidden_bf16,rows_p);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"mtp_pack"));
+}
+
+static SparkStatus SparkQwen4FlashModuleRunMtpDecoderPass(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashKvBlockTableView *table, const SparkQwen4FlashAttnRowsView *rows_view, uint32_t rows_p)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	SparkStatus status;
+	cudaError_t error = SparkQwen4FlashLaunchRmsNorm(stream,slot->hidden_bf16,state->mtp.attention_norm_weight_bf16,slot->normalized_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"mtp_attn_norm");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunAttnLayer(state,slot,table,&state->mtp.attention,state->mtp_cache_ordinal,rows_view,rows_p);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchResidualAdd(stream,slot->hidden_bf16,slot->delta_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION),"mtp_residual");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunMoe(state,slot,state->mtp.mlp_norm_weight_bf16,&state->mtp.moe,rows_p);
+	return(status);
+}
+
+static SparkStatus SparkQwen4FlashModuleRunMtpArgmaxRow(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t row, uint32_t draft_index)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	const void *row_hidden = (const uint8_t *)slot->hidden_bf16 + ((uint64_t)row * SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES);
+	cudaError_t error;
+	if ( state->tp_degree > 1u )
+		return(SPARK_STATUS_UNSUPPORTED); /* needs the sharded argmax kernels */
+	error = SparkQwen4FlashLaunchRmsNorm(stream,row_hidden,state->mtp.final_norm_weight_bf16,slot->normalized_bf16,1u,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids,slot->head_candidate_counts,slot->mtp_draft_ids + draft_index,1u,SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"mtp_argmax"));
+}
+
+/* Seed pass over the committed row (token id + backbone hidden), then one
+ * extension step per additional draft token: embed the previous draft
+ * against the previous MTP hidden through the identical decoder pass. The
+ * draft rows' KV slot/position/context are staged here because the decode
+ * path only stages committed rows. */
+static SparkStatus SparkQwen4FlashModuleRunMtpDraftChain(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkQwen4FlashResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, uint32_t rows)
+{
+	const SparkQwen4FlashMtpDraftView *view = context->mtp_draft;
+	uint32_t step;
+	uint32_t out_index = state->owns_embedding != 0u ? 1u : 0u;
+	const uint32_t *seed_ids = slot->input_token_ids;
+	const void *seed_hidden = slot->hidden_bf16;
+	SparkQwen4FlashAttnRowsView rows_view;
+	SparkStatus status;
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	if ( view == 0 || view->draft_token_count == 0u || view->draft_token_count > SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (context->flags & SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	if ( view->lane_index >= state->max_active_sequence_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	rows_view.slot_mapping = slot->slot_mapping;
+	rows_view.row_positions = slot->row_positions;
+	rows_view.row_lane_indices = slot->row_lane_indices;
+	rows_view.context_lengths = slot->context_lengths;
+	status = SparkQwen4FlashModuleRunMtpPackInput(state,slot,seed_ids,seed_hidden,1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunMtpDecoderPass(state,slot,context->kv_block_table,&rows_view,1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunMtpArgmaxRow(state,slot,0u,0u);
+	for (step = 1u; status == SPARK_STATUS_OK && step < view->draft_token_count; step++)
+	{
+		uint64_t position = view->base_position + step - 1u;
+		uint32_t lane_index = view->lane_index;
+		uint32_t slot_mapping = (uint32_t)(position % SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+		uint32_t context_length = (uint32_t)(position % SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) + 1u;
+		rows_view.slot_mapping = slot->slot_mapping + rows;
+		rows_view.row_positions = slot->row_positions + rows;
+		rows_view.row_lane_indices = slot->row_lane_indices + rows;
+		rows_view.context_lengths = slot->context_lengths + rows;
+		if ( cudaSuccess != cudaMemcpyAsync(slot->slot_mapping + rows,&slot_mapping,sizeof(slot_mapping),cudaMemcpyHostToDevice,stream)
+			|| cudaSuccess != cudaMemcpyAsync(slot->row_positions + rows,&position,sizeof(position),cudaMemcpyHostToDevice,stream)
+			|| cudaSuccess != cudaMemcpyAsync(slot->row_lane_indices + rows,&lane_index,sizeof(lane_index),cudaMemcpyHostToDevice,stream)
+			|| cudaSuccess != cudaMemcpyAsync(slot->context_lengths + rows,&context_length,sizeof(context_length),cudaMemcpyHostToDevice,stream) )
+			return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,cudaErrorInvalidValue,"mtp_stage_rows"));
+		status = SparkQwen4FlashModuleRunMtpPackInput(state,slot,slot->mtp_draft_ids + (step - 1u),slot->hidden_bf16,1u);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkQwen4FlashModuleRunMtpDecoderPass(state,slot,context->kv_block_table,&rows_view,1u);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkQwen4FlashModuleRunMtpArgmaxRow(state,slot,0u,step);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,cudaMemcpyAsync((uint8_t *)frame->buffers[out_index].address + sizeof(uint32_t),slot->mtp_draft_ids,view->draft_token_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream),"mtp_emit");
+	return(status);
+}
+
 static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkModelDriverFrame *frame, SparkQwen4FlashResidentDecodeStageFrameContext *context, uint32_t rows)
 {
 	SparkQwen4FlashKvBlockTableView table;
@@ -1972,6 +2079,9 @@ static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *st
 		return(status);
 	if ( state->owns_final_head != 0u )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashModuleEmitHead(state,slot,frame,rows),"head_emit");
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u
+		&& (context->flags & SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER) != 0u )
+		status = SparkQwen4FlashModuleRunMtpDraftChain(state,slot,context,frame,rows);
 	wants_output = context != 0 && (context->flags & SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && wants_output != 0u )
 		status = SparkQwen4FlashModuleEmitHiddenOutput(slot,context,rows);

@@ -156,6 +156,43 @@ background on spark5 (/tmp/q4f_build_packs.log); results to be appended.
 
 ### M5–M7 — NOT STARTED (blockers below)
 
+M5 PREP (committed, regression-verified): the max lineage never wired the
+pack's MTP tensors into execution — RunMtpPackInput / DecoderPass /
+ArgmaxRow / DraftChain ported from the proven qwen38_27b unit (TP1; the
+TP>1 sharded argmax kernels return UNSUPPORTED pending the Score/MaxLoc
+port), draft-row KV staging included, hooked after EmitHead on
+MTP_DRAFT_AFTER frames. Mid-pipeline regression after the port:
+
+```
+make ... validate STAGE_COUNT=2 STAGE_LAYER_COUNT=4 MTP=0   → exit 0
+qwen4_flash_validation PASS
+```
+
+A whole-stack synthetic dress rehearsal (122.93 GiB synth pack, STAGE_COUNT=1
+STAGE_LAYER_COUNT=48 MTP=1 TP_STANDALONE=1) was ATTEMPTED but is what
+triggered the incident below; it must be rerun against a TP4 rank-local
+pack (~31 GiB) instead of the TP1 whole-model pack, mirroring the 27b
+whole-stack tier (TP_DEGREE=4 TP_RANK=0 TP_STANDALONE=1).
+
+## INCIDENT (report to coordinator)
+
+spark5 REBOOTED itself at ~19:10 KST while I ran three concurrent heavy
+jobs on it (whole-stack validator loading the 122.93 GiB TP1 synth pack +
+the 4-rank pack builder + the shared Ceph reads). The node came back clean
+after ~2 minutes; NOT a manual reboot, no nvidia-smi -r was ever issued,
+no processes were killed by me — most plausibly an OOM/watchdog under
+unified-memory pressure (a 123 GiB pack cannot fit a 128 GB GB10 beside
+anything else; the README's ~53 GB whole-stack guidance does not scale to
+this model's TP1 pack size). Casualties:
+
+  * my whole-stack validate + rank pack builder (restarted, single-job)
+  * the DSV4 lane's residentd rank 1 that was deployed on spark5
+    (ranks 0/2/3 on spark4/6/7 are still up; that deployment is now
+    missing rank 1 — the DSV4 lane/coordinator should redeploy it)
+
+Lesson applied: one heavy job per node at a time from here on; whole-stack
+validation only from rank-local TP4 packs.
+
 ## Honest negatives / open items
 
   * The architecture is NOT the pure sibling the brief describes. Beyond

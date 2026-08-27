@@ -570,6 +570,13 @@ def read_source_matrix(source: SafetensorsSource, name: str) -> "np.ndarray":
     return packed
 
 
+def bf16_widen(packed_u16) -> "np.ndarray":
+    """u16 bf16 bits -> f32 values (bit shift, no value conversion)."""
+    import numpy as np
+    bits = packed_u16.astype(np.uint32) << 16
+    return bits.view(np.float32)
+
+
 def bf16_to_f32_matrix(packed_u16) -> "np.ndarray":
     import numpy as np
     bits = packed_u16.astype(np.uint32) << 16
@@ -615,12 +622,21 @@ def copy_sharded_bf16(source: SafetensorsSource, ref: TensorRef, offset: int, ou
                     out.write(widened)
         return
     full = read_source_matrix(source, ref.name)
-    if full.ndim == 3:
-        full = full.reshape(full.shape[0], -1)
     if ref.kind in (KIND_FINAL_NORM, KIND_MTP_HIDDEN_NORM, KIND_ATTENTION_NORM, KIND_MLP_NORM):
         # 4-stream hc norm: take the stream-0 section (receipted).
-        section = full[:ref.columns]
+        section = full.reshape(-1)[:ref.columns]
         out.write(section.astype("<u2").tobytes())
+        return
+    if full.ndim == 3:
+        full = full.reshape(full.shape[0], -1)
+    if full.ndim == 1:
+        # 1-D vectors (A_log/dt_bias) shard flat and may need f32 widening.
+        if row_slice is not None:
+            full = full[row_slice[0]:row_slice[0] + row_slice[1]]
+        if ref.weight_format == WEIGHT_F32:
+            out.write(bf16_widen(np.ascontiguousarray(full).astype("<u2").reshape(-1)).tobytes())
+        else:
+            out.write(np.ascontiguousarray(full).astype("<u2").tobytes())
         return
     if row_slice is not None:
         full = full[row_slice[0]:row_slice[0] + row_slice[1], :]
@@ -664,10 +680,13 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     source = SafetensorsSource(checkpoint)
     source.check_config()
     inventory = build_inventory(first_layer, layer_count)
-    # Shape-validate the FULL refs against the checkpoint first; the TP
-    # narrowing below only changes the pack-side rows/columns.
+    # Shape-validate the FULL refs against the checkpoint first and stash
+    # each payload offset on the ref (shard_ref mutates in place, so the
+    # attribute survives the narrowing); the TP narrowing below only
+    # changes the pack-side rows/columns.
     for full_ref in inventory:
-        source.check_shape(full_ref)
+        _, _, offset = source.check_shape(full_ref)
+        full_ref.source_offset = offset
     refs = [shard_ref(ref, tp_degree, tp_rank) for ref in inventory]
     plans = []
     cursor = 0
@@ -739,8 +758,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             elif ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
                 quantize_experts(source, ref, expert_format, temp)
             else:
-                _, _, offset = source.check_shape(ref)
-                copy_sharded_bf16(source, ref, offset, temp)
+                copy_sharded_bf16(source, ref, getattr(ref, "source_offset", 0), temp)
             wrote = temp.tell() - before
             if wrote != payload_bytes + scale_bytes:
                 raise PackFailure(f"payload size mismatch on {ref.name}: wrote {wrote} != {payload_bytes + scale_bytes}")
