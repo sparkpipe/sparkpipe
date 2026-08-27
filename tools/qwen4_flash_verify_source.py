@@ -136,7 +136,7 @@ def verify(source: Path, contract: dict) -> list[str]:
         "mtp_layer_count": cfg.get("mtp_num_hidden_layers"),
         "maximum_context_tokens": cfg.get("max_position_embeddings"),
         "full_attention_interval": cfg.get("full_attention_interval"),
-        "num_attention_heads": cfg.get("num_attention_heads"),
+        "attention_head_count": cfg.get("num_attention_heads"),
         "kv_head_count": cfg.get("num_key_value_heads"),
         "head_dimension": cfg.get("head_dim"),
         "moe_intermediate_dimension": cfg.get("moe_intermediate_size"),

@@ -12,19 +12,31 @@ ARCHIVE-RECEIPT.json/PUBLISHED/SHA256SUMS (147 files on warm; brief said
 
 ## Milestones
 
-### M1 Contract freeze — IN PROGRESS (tool done, digests hashing)
+### M1 Contract freeze — DONE (commits d7c8fb5, 2abe0fe)
 
 Tool: `tools/qwen4_flash_verify_source.py` (freeze/verify/census modes).
-Sampling policy: all 18 files < 256 MiB fully hashed + shards on stride 17
-from 1 (9 of 131: 1,18,35,52,62(largest),69,86,103,120) + publisher
-SHA256SUMS + ARCHIVE-RECEIPT.json hashed, transitively pinning the rest.
+Sampling policy (final): all 16 files < 256 MiB fully hashed + shards on
+stride 34 from 1 (5 of 131: 1, 35, 62-largest, 69, 103; 14.48 GiB, ~4.5%
+of shard bytes) + publisher SHA256SUMS + ARCHIVE-RECEIPT.json hashed,
+transitively pinning the rest via the dual-archive receipt. The stride was
+widened twice (5 -> 17 -> 34) under measured bandwidth caps (~4 MiB/s per
+stream, ~30 MiB/s aggregate on the shared warm mount); both widenings and
+their rationale are recorded in the tool's policy note.
 
-The warm Ceph mount measured ~4 MiB/s single-stream, ~30 MiB/s aggregate
-(dd/head timings in the session log), so the initial stride-5 plan (~85 GiB)
-was widened to stride-17 (~27 GiB). The parallel (8-way) freeze started
-18:12 KST on spark4 and is still IO-bound at report time. The contract JSON
-lands when it completes; the M2 header conformance test
-(tests/test_qwen4_flash_model_header.py) is written and waits on it.
+**Exit evidence** (spark4, against the warm copy):
+
+```
+python3 tools/qwen4_flash_verify_source.py verify \
+  --source /mnt/model-warm/qwen3.8-flash-next \
+  --contract model_contracts/qwen4_flash_authoritative.json
+PASS 21 pinned files verified against /mnt/model-warm/qwen3.8-flash-next
+(stride 34, 5/131 shards fully hashed); geometry re-derived from live
+config.json matches the contract
+```
+
+Cross-checks: config.json sha 889658f2... and SHA256SUMS self-hash
+ac50e07d... in the freeze both equal the publisher receipt's pinned
+values.
 
 Census (from index.json, pinned for the contract): 1658 entries, 227 pattern
 classes. Checkpoint facts that DIFFER from the brief's "sibling" framing:
@@ -45,9 +57,12 @@ gdn36/full12, gdn k16/v48 x128 → grouped-value ratio 3 (NOT the max
 sibling's 8), conv 10240, attn q24/kv2 x256 rope64 theta 1e7, MoE 512/10/640
 +1 shared, mtp 1, hc 4x320, indexer 4+1 x128 budget 2048 compress 4, PLE
 ngram3 8-per 128 shards layer 1). Conformance test
-`tests/test_qwen4_flash_model_header.py` binds 36 header constants + 8
-composed invariants to the authoritative contract (runs once the contract
-JSON lands with M1).
+**Exit evidence**:
+
+```
+python3 tests/test_qwen4_flash_model_header.py
+PASS qwen4_flash header matches the authoritative contract (36 bindings + 8 composed)
+```
 
 ### M3 Module skeleton + validator PASS — DONE (commit 2ecb9c5)
 
