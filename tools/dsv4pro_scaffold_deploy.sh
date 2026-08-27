@@ -27,11 +27,17 @@ src_root="/home/${binary_source}/sparkdata/dsv4_pro.tp4pp4"
 
 ssh -o BatchMode=yes "${target}" "mkdir -p '${deploy_root}/bin' '${deploy_root}/lib' '${deploy_root}/config' '${deploy_root}/packs' '${deploy_root}/kv'"
 
-# Binaries + shared objects relay via the controller (sparks do not ssh peers).
+# Binaries + shared objects relay via the controller (sparks do not ssh
+# peers, and rsync forbids remote->remote): pull once into a local cache,
+# then push to the target.
+cache="${repo}/.dsv4pro_binary_cache/${binary_source}"
+mkdir -p "${cache}/bin" "${cache}/lib"
+rsync -a "${binary_source}:${src_root}/bin/" "${cache}/bin/"
+rsync -a "${binary_source}:${src_root}/lib/" "${cache}/lib/"
 for f in bin/sparkpipe_model_residentd bin/sparkpipe_model_batch \
          lib/model_driver.so lib/libdsv4_pro_tp4_pp4_serving_adapter.so \
          lib/libhidden_transport_spark_host_rdma_verbs.so; do
-    rsync -a "${binary_source}:${src_root}/${f}" "${target}:${deploy_root}/${f}"
+    rsync -a "${cache}/${f}" "${target}:${deploy_root}/${f}"
 done
 
 # Adapter/firmware config: current repo descriptor (PR 721, 33024 ceiling).
