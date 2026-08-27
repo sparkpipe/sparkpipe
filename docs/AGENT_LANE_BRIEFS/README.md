@@ -70,6 +70,13 @@ larger agent fleet failed here; every rule below encodes a real failure.
 - The code-size ratchet (tests/test_code_size.py) applies on your branch:
   ratchet with a justification comment in the same commit.
 
+## Script parameterization (hard rule)
+Every script takes the spark host as a parameter (`--spark N` or
+`SPARK_HOST=sparkN env`), NEVER hardcodes a node. The coordinator's
+scripts burned an afternoon on hardcoded spark3 paths when that node
+went down; a measurement chain must be movable to any healthy spark
+by changing one argument. Batch/poll one-shots get this too.
+
 ## Escalation
 Stuck > 45 min on one problem: write what you tried in the report and
 move to the next independent item. Report wedged nodes immediately.
