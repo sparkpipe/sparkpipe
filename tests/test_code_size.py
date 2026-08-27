@@ -752,7 +752,10 @@ from pathlib import Path
 # The M1 contract freeze adds the authoritative JSON's census section and
 # the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
 # ports) lands in the same window; 186345 is the exact count.
-CEILING = 186500
+# The glm52 fp8-source packer adoption (from the pack lane) lands the
+# numpy-only fp8->bf16 spine dequant packer plus its hermetic test in the
+# gate; it emits the deployed TP8 fleet packs. 186844 is the exact count.
+CEILING = 186844
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
