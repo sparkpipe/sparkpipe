@@ -19,7 +19,7 @@ performance and capacity findings are measured on a single GB10 spark
    the pack stores FP8_E4M3 block-128. Fixed to SPARK_WEIGHT_CODEC_FP8_E4M3.
 3. **Adapter context cap was the qwen38_27b 8192** and would reject the model's
    own 262144-context stage config (LoadConfiguration treats the cap as a
-   schema error). Fixed to SPARK_QWEN38_MODEL_MAXIMUM_CONTEXT_TOKENS.
+   schema error). Fixed to SPARK_QWEN38_MAX_MODEL_MAXIMUM_CONTEXT_TOKENS.
 4. **Adapter advertised 4 inflight submissions while the module executes
    every frame on ONE slot (slots[0]) with a per-frame stream sync.**
    Clamped to 1 until multi-slot pipelining lands.

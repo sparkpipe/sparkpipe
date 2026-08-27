@@ -1,14 +1,14 @@
 MODULE_FAMILY := qwen38
 MODULE_IDENTIFIER := spark.qwen38.resident_decode_stage.fp8.h8192.l92.gdn69.e512k10.v1
 MODULE_TARGET := cuda.sm121.qwen38.resident_decode_stage.fp8
-MODEL_HEADER := ../../model-families/qwen38/include/sparkpipe/spark_qwen38_max_model.h
+MODEL_HEADER := ../../model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h
 MODULE_ENTRY_PREFIX := SparkQwen38MaxResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_qwen38_max_resident_decode_stage_module.c
 MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
-	$(REPOSITORY_ROOT)/model-families/qwen38/src/spark_qwen38_max_work_control.c \
+	$(REPOSITORY_ROOT)/model-families/qwen38_max/src/spark_qwen38_max_work_control.c \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
@@ -25,9 +25,9 @@ MODULE_INCLUDE_FLAGS = \
 	-I"$(REPOSITORY_ROOT)/include" \
 	-I"$(REPOSITORY_ROOT)/src" \
 	-I"$(REPOSITORY_ROOT)/model-families/common/include" \
-	-I"$(REPOSITORY_ROOT)/model-families/qwen38/include" \
-	-I"$(REPOSITORY_ROOT)/modules/qwen38_resident_decode_stage/include" \
-	-I"$(REPOSITORY_ROOT)/modules/qwen38_resident_decode_stage/source" \
+	-I"$(REPOSITORY_ROOT)/model-families/qwen38_max/include" \
+	-I"$(REPOSITORY_ROOT)/modules/qwen38_max_resident_decode_stage/include" \
+	-I"$(REPOSITORY_ROOT)/modules/qwen38_max_resident_decode_stage/source" \
 	-I"$(REPOSITORY_ROOT)"
 
 STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/qwen38_stage.qwen38sp

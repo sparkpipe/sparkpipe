@@ -6,20 +6,119 @@
 
 static uint32_t cuda_capture_depth;
 
-cudaError_t cudaMalloc(void **pointer, size_t bytes)
+/* Fault-injection and allocation-ledger hooks. The stub prefixes every live
+ * allocation with a header so tests can (a) assert zero outstanding
+ * allocations after a destroy path and (b) fail the Nth allocation-family
+ * call to exercise partial-initialization cleanup. */
+#define CUDA_STUB_ALLOC_MAGIC UINT32_C(0x53545542)
+#define CUDA_STUB_MAX_TRACKED 4096
+
+typedef struct cuda_stub_alloc_header
 {
-    if (pointer == 0 || bytes == 0u)
+    uint32_t magic;
+    uint32_t tracked;
+} cuda_stub_alloc_header;
+
+static void *cuda_stub_tracked[CUDA_STUB_MAX_TRACKED];
+static uint32_t cuda_stub_tracked_count;
+static uint32_t cuda_stub_alloc_calls;
+static int32_t cuda_stub_fail_alloc_at = -1; /* 1-based call index, -1 = off */
+static uint32_t cuda_stub_host_map_calls;
+static int32_t cuda_stub_fail_host_map_at = -1;
+
+static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
+{
+    cuda_stub_alloc_header *header;
+    cuda_stub_alloc_calls++;
+    if (pointer == 0 || bytes == 0u || cuda_stub_alloc_calls ==
+        (uint32_t)cuda_stub_fail_alloc_at)
     {
         return cudaErrorMemoryAllocation;
     }
-    *pointer = malloc(bytes);
-    return *pointer != 0 ? cudaSuccess : cudaErrorMemoryAllocation;
+    header = (cuda_stub_alloc_header *)malloc(bytes + sizeof(*header));
+    if (header == 0)
+    {
+        return cudaErrorMemoryAllocation;
+    }
+    header->magic = CUDA_STUB_ALLOC_MAGIC;
+    if (cuda_stub_tracked_count < CUDA_STUB_MAX_TRACKED)
+    {
+        header->tracked = 1u;
+        cuda_stub_tracked[cuda_stub_tracked_count++] = header + 1;
+    }
+    else
+    {
+        header->tracked = 0u;
+    }
+    *pointer = header + 1;
+    return cudaSuccess;
+}
+
+static cudaError_t cuda_stub_free(void *pointer)
+{
+    cuda_stub_alloc_header *header;
+    uint32_t index;
+    if (pointer == 0)
+    {
+        return cudaSuccess;
+    }
+    header = ((cuda_stub_alloc_header *)pointer) - 1;
+    if (header->magic != CUDA_STUB_ALLOC_MAGIC)
+    {
+        return cudaErrorInvalidValue;
+    }
+    header->magic = 0u;
+    if (header->tracked != 0u)
+    {
+        for (index = 0u; index < cuda_stub_tracked_count; index++)
+        {
+            if (cuda_stub_tracked[index] == pointer)
+            {
+                cuda_stub_tracked[index] =
+                    cuda_stub_tracked[--cuda_stub_tracked_count];
+                break;
+            }
+        }
+    }
+    free(header);
+    return cudaSuccess;
+}
+
+void spark_stub_cuda_reset_faults(void)
+{
+    while (cuda_stub_tracked_count != 0u)
+    {
+        (void)cuda_stub_free(cuda_stub_tracked[0]);
+    }
+    cuda_stub_alloc_calls = 0u;
+    cuda_stub_fail_alloc_at = -1;
+    cuda_stub_host_map_calls = 0u;
+    cuda_stub_fail_host_map_at = -1;
+}
+
+void spark_stub_cuda_fail_alloc_call(uint32_t one_based_call_index)
+{
+    cuda_stub_fail_alloc_at = (int32_t)one_based_call_index;
+}
+
+void spark_stub_cuda_fail_host_map_call(uint32_t one_based_call_index)
+{
+    cuda_stub_fail_host_map_at = (int32_t)one_based_call_index;
+}
+
+uint32_t spark_stub_cuda_outstanding_allocs(void)
+{
+    return cuda_stub_tracked_count;
+}
+
+cudaError_t cudaMalloc(void **pointer, size_t bytes)
+{
+    return cuda_stub_alloc(pointer, bytes);
 }
 
 cudaError_t cudaFree(void *pointer)
 {
-    free(pointer);
-    return cudaSuccess;
+    return cuda_stub_free(pointer);
 }
 
 cudaError_t cudaMemset(void *pointer, int value, size_t bytes)
@@ -271,12 +370,12 @@ cudaError_t cudaHostAlloc(
     unsigned int flags)
 {
     (void)flags;
-    return cudaMalloc(pointer, bytes);
+    return cuda_stub_alloc(pointer, bytes);
 }
 
 cudaError_t cudaFreeHost(void *pointer)
 {
-    return cudaFree(pointer);
+    return cuda_stub_free(pointer);
 }
 
 cudaError_t cudaHostGetDevicePointer(
@@ -285,7 +384,9 @@ cudaError_t cudaHostGetDevicePointer(
     unsigned int flags)
 {
     (void)flags;
-    if (device_pointer == 0 || host_pointer == 0)
+    cuda_stub_host_map_calls++;
+    if (device_pointer == 0 || host_pointer == 0 ||
+        cuda_stub_host_map_calls == (uint32_t)cuda_stub_fail_host_map_at)
     {
         return cudaErrorMemoryAllocation;
     }

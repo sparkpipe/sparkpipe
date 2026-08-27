@@ -50,6 +50,11 @@ typedef struct SparkQwen38_27bTpState
 	void *credit_receive_bf16;
 	void *host_credit_send_bf16;
 	void *host_credit_receive_bf16;
+	/* 1 while credit_send/receive_bf16 own real cudaMalloc allocations;
+	 * 0 once they alias the mapped host buffers (the originals were freed
+	 * in that case). Destroy frees exactly what this flag says is owned -
+	 * it must never guess aliasing from pointer nullness. */
+	uint32_t credit_device_allocated;
 	uint64_t next_ordinal;
 	void *cuda_stream;
 } SparkQwen38_27bTpState;
@@ -72,6 +77,12 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	void *registration_cuda_stream);
 
 void SparkQwen38_27bTpDestroy(SparkQwen38_27bTpState *tp);
+/* Credit-buffer allocation with explicit ownership; mapped_host selects
+ * the mapped-host aliasing path. Failure paths destroy partial state. */
+SparkStatus SparkQwen38_27bTpAllocateCreditMemory(
+	SparkQwen38_27bTpState *tp,
+	uint64_t total_bytes,
+	uint32_t mapped_host);
 
 /* Stream-ordered BF16 all-reduce of rows * hidden_dimension elements. The
  * reduction is enqueued on the caller's stream between the producing and

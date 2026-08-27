@@ -716,7 +716,11 @@ from pathlib import Path
 # past the ratchet without moving it; the qwen38 rename completion
 # (firmware description files + references + validator identity) is
 # line-neutral on this counter. 175279 is the exact count.
-CEILING = 175279
+# The audit-response hardening adds the transactional KV-restore unwind
+# in the qwen38_max module, explicit credit-buffer ownership in the 27B TP
+# path (extracted AllocateCreditMemory), the stub fault-injection ledger,
+# and its fault test; 175399 is the exact count.
+CEILING = 175399
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -769,6 +769,15 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 	uint64_t logical_capacity;
 	SparkStatus status;
 	cudaError_t error;
+	/* Transaction ledger: slots popped from the free stack stay listed
+	 * here until their batch commits (kv_logical_to_slot is published).
+	 * Any failure unwinds by returning the uncommitted slots and clearing
+	 * this frame's pins, so transient store/CUDA errors cannot shrink the
+	 * usable KV pool. */
+	uint32_t uncommitted[SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS];
+	uint32_t uncommitted_count = 0u;
+	uint32_t unwind_index;
+	SparkStatus fail_status;
 	if ( state->kv_tier_active == 0u )
 		return(SPARK_STATUS_OK);
 	if ( context == 0 || context->decode_batch == 0 || context->decode_batch->row_sequence_ids == 0 || table == 0 || table->host_physical_block_indices == 0 || table->host_lane_physical_block_counts == 0 || table->physical_block_indices == 0 || table->lane_physical_block_counts == 0 )
@@ -845,13 +854,20 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 					{
 						state->kv_evict_cursor = (state->kv_evict_cursor + 1u) % state->kv_block_count;
 						if ( ++scans > state->kv_block_count )
-							return(SPARK_STATUS_CAPACITY_EXCEEDED);
+							{
+								fail_status = SPARK_STATUS_CAPACITY_EXCEEDED;
+								goto fail;
+							}
 					}
 					status = SparkQwen38MaxModuleKvEvictSlot(state,state->kv_evict_cursor);
 					if ( status != SPARK_STATUS_OK )
-						return(status);
+						{
+							fail_status = status;
+							goto fail;
+						}
 				}
 			slot_index = state->kv_slot_free_stack[--state->kv_slot_free_count];
+			uncommitted[uncommitted_count++] = slot_index;
 			pending_lanes[batch_block_count].sequence_id = lane_sequence[lane_index];
 			pending_lanes[batch_block_count].nonresident_blocks = &pending_logical[batch_block_count];
 			pending_lanes[batch_block_count].nonresident_block_count = 1u;
@@ -873,17 +889,29 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 				if ( status == SPARK_STATUS_OK )
 					status = SparkQwen38MaxModuleKvWaitBatch(state,restore_batch);
 				if ( status != SPARK_STATUS_OK )
-					return(status);
+					{
+						fail_status = status;
+						goto fail;
+					}
 				for (batch_index = 0u; batch_index < batch_block_count; batch_index++)
 				{
 					error = cudaMemcpyAsync((uint8_t *)state->kv_cache_bf16 + (uint64_t)pending_slots[batch_index] * state->kv_plan.block_record_bytes,(const uint8_t *)state->kv_block_staging + ((uint64_t)batch_index * state->kv_plan.block_record_bytes),(size_t)state->kv_plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
 					if ( error != cudaSuccess )
-						return(SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_restore_copy"));
+						{
+							fail_status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_restore_copy");
+							goto fail;
+						}
 					state->kv_slot_lane[pending_slots[batch_index]] = lane_list[pending_lane_index[batch_index]];
 					state->kv_slot_logical[pending_slots[batch_index]] = pending_logical[batch_index];
 					state->kv_slot_sequence[pending_slots[batch_index]] = pending_lanes[batch_index].sequence_id;
 					state->kv_slot_dirty[pending_slots[batch_index]] = 0u;
 					state->kv_logical_to_slot[((uint64_t)lane_list[pending_lane_index[batch_index]] * table->lane_stride) + pending_logical[batch_index]] = pending_slots[batch_index] + 1u;
+					for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
+						if ( uncommitted[unwind_index] == pending_slots[batch_index] )
+						{
+							uncommitted[unwind_index] = uncommitted[--uncommitted_count];
+							break;
+						}
 				}
 				batch_block_count = 0u;
 			}
@@ -902,16 +930,28 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 			if ( status == SPARK_STATUS_OK )
 				status = SparkQwen38MaxModuleKvWaitBatch(state,restore_batch);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				{
+					fail_status = status;
+					goto fail;
+				}
 			for (batch_index = 0u; batch_index < batch_block_count; batch_index++)
 			{
 				error = cudaMemcpyAsync((uint8_t *)state->kv_cache_bf16 + (uint64_t)pending_slots[batch_index] * state->kv_plan.block_record_bytes,(const uint8_t *)state->kv_block_staging + ((uint64_t)batch_index * state->kv_plan.block_record_bytes),(size_t)state->kv_plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
 				if ( error != cudaSuccess )
-					return(SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_restore_copy"));
+					{
+						fail_status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_restore_copy");
+						goto fail;
+					}
 				state->kv_slot_lane[pending_slots[batch_index]] = lane_list[pending_lane_index[batch_index]];
 				state->kv_slot_logical[pending_slots[batch_index]] = pending_logical[batch_index];
 				state->kv_slot_sequence[pending_slots[batch_index]] = pending_lanes[batch_index].sequence_id;
 				state->kv_slot_dirty[pending_slots[batch_index]] = 0u;
+				for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
+					if ( uncommitted[unwind_index] == pending_slots[batch_index] )
+					{
+						uncommitted[unwind_index] = uncommitted[--uncommitted_count];
+						break;
+					}
 				state->kv_logical_to_slot[((uint64_t)lane_list[pending_lane_index[batch_index]] * table->lane_stride) + pending_logical[batch_index]] = pending_slots[batch_index] + 1u;
 			}
 		}
@@ -930,13 +970,19 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 			state->kv_table_indices_host[lane_slice + logical] = state->kv_logical_to_slot[lane_slice + logical] - 1u;
 		error = cudaMemcpyAsync((uint8_t *)state->kv_table_indices_device + (lane_slice * sizeof(uint32_t)),state->kv_table_indices_host + lane_slice,(size_t)table->lane_stride * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
 		if ( error != cudaSuccess )
-			return(SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_table_upload"));
+			{
+				fail_status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_table_upload");
+				goto fail;
+			}
 	}
 	table->physical_block_indices = state->kv_table_indices_device;
 	table->lane_physical_block_counts = state->kv_table_counts_device;
 	error = cudaMemcpyAsync((void *)state->kv_table_counts_device,(const void *)table->host_lane_physical_block_counts,(size_t)table->lane_count * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
 	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_table_upload"));
+		{
+			fail_status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_table_upload");
+			goto fail;
+		}
 	for (row = 0u; row < rows; row++)
 	{
 		uint32_t lane = slot->host_row_lane_indices[row];
@@ -946,7 +992,10 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 	}
 	error = cudaMemcpyAsync(slot->slot_mapping,slot->host_slot_mapping,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
 	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_slot_upload"));
+		{
+			fail_status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"kv_slot_upload");
+			goto fail;
+		}
 	for (lane_index = 0u; lane_index < lane_count; lane_index++)
 	{
 		uint32_t lane = lane_list[lane_index];
@@ -958,6 +1007,20 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 		}
 	}
 	return(SPARK_STATUS_OK);
+fail:
+	for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
+		state->kv_slot_free_stack[state->kv_slot_free_count++] = uncommitted[unwind_index];
+	for (lane_index = 0u; lane_index < lane_count; lane_index++)
+	{
+		uint32_t fail_lane = lane_list[lane_index];
+		for (logical = 0u; logical < lane_required[lane_index]; logical++)
+		{
+			slot_index = state->kv_logical_to_slot[((uint64_t)fail_lane * table->lane_stride) + logical];
+			if ( slot_index != 0u )
+				state->kv_slot_pinned[slot_index - 1u] = 0u;
+		}
+	}
+	return(fail_status);
 }
 
 /* The frame just wrote K/V rows into window slots: mark them dirty so the

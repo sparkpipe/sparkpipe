@@ -120,6 +120,51 @@ static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buf
 	return (SparkStatus)pending.status;
 }
 
+/* Credit-buffer allocation with explicit ownership. Every failure path
+ * runs through the ownership-aware destroy, so no partial state survives:
+ * device allocations are freed while credit_device_allocated is set, and
+ * mapped-host aliasing (originals freed, flag cleared) is the only way the
+ * device fields can outlive it. Fault-injection coverage lives in
+ * tests/test_qwen38_27b_tp_faults.c. */
+SparkStatus SparkQwen38_27bTpAllocateCreditMemory(
+	SparkQwen38_27bTpState *tp,
+	uint64_t total_bytes,
+	uint32_t mapped_host)
+{
+	void *mapped_receive = 0,*mapped_send = 0;
+	if ( total_bytes == 0u )
+		return SPARK_STATUS_OK;
+	if ( cudaMalloc(&tp->credit_send_bf16,(size_t)total_bytes) != cudaSuccess )
+	{
+		SparkQwen38_27bTpDestroy(tp);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	tp->credit_device_allocated = 1u;
+	if ( cudaMalloc(&tp->credit_receive_bf16,(size_t)total_bytes) != cudaSuccess )
+	{
+		SparkQwen38_27bTpDestroy(tp);
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	if ( mapped_host != 0u )
+	{
+		if ( cudaHostAlloc(&tp->host_credit_send_bf16,(size_t)total_bytes,cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
+			cudaHostAlloc(&tp->host_credit_receive_bf16,(size_t)total_bytes,cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
+			cudaHostGetDevicePointer(&mapped_send,tp->host_credit_send_bf16,0u) != cudaSuccess ||
+			cudaHostGetDevicePointer(&mapped_receive,tp->host_credit_receive_bf16,0u) != cudaSuccess )
+		{
+			fprintf(stderr, "%s credit_host_alloc_failed\n", SPARK_QWEN38_27B_TP_TAG);
+			SparkQwen38_27bTpDestroy(tp);
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		}
+		cudaFree(tp->credit_send_bf16);
+		cudaFree(tp->credit_receive_bf16);
+		tp->credit_send_bf16 = mapped_send;
+		tp->credit_receive_bf16 = mapped_receive;
+		tp->credit_device_allocated = 0u;
+	}
+	return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkQwen38_27bTpInitialize(
 	SparkQwen38_27bTpState *tp,
 	uint32_t degree,
@@ -134,7 +179,6 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	uint32_t transport_backend;
 	uint32_t credit,route,route_count,hidden,credit_count,memory_mode;
 	uint64_t credit_bytes,offset,total_bytes;
-	void *mapped_receive,*mapped_send;
 	SparkStatus status;
 	uint32_t index;
 
@@ -266,38 +310,17 @@ SparkStatus SparkQwen38_27bTpInitialize(
 				return SPARK_STATUS_CAPACITY_EXCEEDED;
 			total_bytes += credit_bytes * configuration.credit_count;
 		}
-		status = SPARK_STATUS_OK;
-		if ( total_bytes != 0u && cudaMalloc(&tp->credit_send_bf16,(size_t)total_bytes) != cudaSuccess )
-			status = SPARK_STATUS_CAPACITY_EXCEEDED;
-		if ( status == SPARK_STATUS_OK && total_bytes != 0u && cudaMalloc(&tp->credit_receive_bf16,(size_t)total_bytes) != cudaSuccess )
-			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		status = SparkQwen38_27bTpAllocateCreditMemory(tp,total_bytes,
+			memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( total_bytes != 0u && memory_mode ==
-			SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
-		{
-			mapped_receive = 0;
-			mapped_send = 0;
-			if ( cudaHostAlloc(&tp->host_credit_send_bf16,(size_t)total_bytes,cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess )
-				(void)cudaHostAlloc(&tp->host_credit_receive_bf16,(size_t)total_bytes,cudaHostAllocPortable | cudaHostAllocMapped);
-			if ( tp->host_credit_send_bf16 == 0 || tp->host_credit_receive_bf16 == 0 )
-			{
-				fprintf(stderr, "%s credit_host_alloc_failed\n", SPARK_QWEN38_27B_TP_TAG);
-				return SPARK_STATUS_CAPACITY_EXCEEDED;
-			}
-			if ( cudaHostGetDevicePointer(&mapped_send,tp->host_credit_send_bf16,0u) == cudaSuccess &&
-				cudaHostGetDevicePointer(&mapped_receive,tp->host_credit_receive_bf16,0u) == cudaSuccess )
-			{
-				cudaFree(tp->credit_send_bf16);
-				cudaFree(tp->credit_receive_bf16);
-				tp->credit_send_bf16 = mapped_send;
-				tp->credit_receive_bf16 = mapped_receive;
-			}
-		}
 		bindings = (SparkTpDeviceCollectiveCreditBinding *)calloc(
 			(uint64_t)route_count * configuration.credit_count,sizeof(*bindings));
 		if ( bindings == 0 )
+		{
+			SparkQwen38_27bTpDestroy(tp);
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		}
 		offset = 0u;
 		configuration.credit_binding_count = 0u;
 		for (route = 0u; route < route_count; route++)
@@ -346,6 +369,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		fprintf(stderr, "%s create_failed status=%d degree=%u rank=%u backend=%s\n",
 			SPARK_QWEN38_27B_TP_TAG, (int)status, degree, rank,
 			transport_backend != 0u ? "transport" : "nccl");
+		SparkQwen38_27bTpDestroy(tp);
 		return status;
 	}
 	tp->initialized = 1u;
@@ -363,10 +387,17 @@ void SparkQwen38_27bTpDestroy(SparkQwen38_27bTpState *tp)
 		return;
 	if ( tp->initialized != 0u )
 		(void)SparkTpDeviceCollectiveDestroy(&tp->collective);
-	if ( tp->credit_send_bf16 != 0 && tp->host_credit_send_bf16 == 0 )
-		(void)cudaFree(tp->credit_send_bf16);
-	if ( tp->credit_receive_bf16 != 0 && tp->host_credit_receive_bf16 == 0 )
-		(void)cudaFree(tp->credit_receive_bf16);
+	/* Ownership, not pointer-nullness: the device fields are freed only
+	 * while they own real cudaMalloc allocations; once mapped they alias
+	 * the host buffers, which the next two frees release. Any partially
+	 * initialized state frees exactly what exists. */
+	if ( tp->credit_device_allocated != 0u )
+	{
+		if ( tp->credit_send_bf16 != 0 )
+			(void)cudaFree(tp->credit_send_bf16);
+		if ( tp->credit_receive_bf16 != 0 )
+			(void)cudaFree(tp->credit_receive_bf16);
+	}
 	if ( tp->host_credit_send_bf16 != 0 )
 		(void)cudaFreeHost(tp->host_credit_send_bf16);
 	if ( tp->host_credit_receive_bf16 != 0 )

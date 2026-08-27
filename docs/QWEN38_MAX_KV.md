@@ -58,7 +58,7 @@ declares the KV_* variables without exporting them.
   group holds the identical 4-head cache: 4x replication.
 
 ### Exactness
-Token record = SPARK_QWEN38_MODEL_ATTN_CACHE_TOKEN_ELEMENTS = 2 x
+Token record = SPARK_QWEN38_MAX_MODEL_ATTN_CACHE_TOKEN_ELEMENTS = 2 x
 ATTN_KV_DIMENSION = 2048 bf16 (K then V, head-major, post-RoPE). The pool is
 cache_block_stride x kv_block_count elements zeroed at allocate. No waste
 per record. The waste is the TP replication factor only.
