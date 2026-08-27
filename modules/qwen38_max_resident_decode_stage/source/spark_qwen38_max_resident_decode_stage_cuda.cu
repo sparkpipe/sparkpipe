@@ -399,8 +399,8 @@ static __global__ void SparkQwen38AttnPrepareKernel(
     __syncthreads();
 
     slot = slot_mapping[row];
-    block = slot / SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-    offset = slot % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+    block = slot / SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+    offset = slot % SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
     cache_base =
         ((uint64_t)block * cache_block_stride) +
         ((uint64_t)attn_layer_ordinal * cache_layer_stride) +
@@ -429,8 +429,8 @@ static __global__ void SparkQwen38AttnPrepareKernel(
  */
 static __device__ __forceinline__ uint64_t SparkQwen38AttnTokenBase(const uint32_t *block_indices, uint64_t lane_base, uint32_t token, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t local_kv_head, uint32_t local_token_elements)
 {
-	uint32_t block = __ldg(block_indices + lane_base + (token / SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
-	return(((uint64_t)block * cache_block_stride) + ((uint64_t)attn_layer_ordinal * cache_layer_stride) + ((uint64_t)(token % SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) * local_token_elements) + ((uint64_t)local_kv_head * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION));
+	uint32_t block = __ldg(block_indices + lane_base + (token / SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
+	return(((uint64_t)block * cache_block_stride) + ((uint64_t)attn_layer_ordinal * cache_layer_stride) + ((uint64_t)(token % SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) * local_token_elements) + ((uint64_t)local_kv_head * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION));
 }
 
 // Cross-warp merge with the fused sigmoid gate applied at the store.
@@ -519,8 +519,8 @@ static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, con
     context = context_lengths[row];
     available_block_count = __ldg(block_counts + lane_index);
     required_block_count =
-        (context + SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) /
-        SPARK_QWEN38_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+        (context + SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) /
+        SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
     if (context == 0u ||
         available_block_count > lane_stride ||
         required_block_count > available_block_count)
@@ -1237,17 +1237,17 @@ extern "C" cudaError_t SparkQwen38LaunchRmsNorm(cudaStream_t stream, const void 
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t SparkQwen38LaunchLinear(cudaStream_t stream, const SparkQwen38LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
+extern "C" cudaError_t SparkQwen38LaunchLinear(cudaStream_t stream, const SparkQwen38MaxLinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
 	/* The dense BF16 spine at B>=32 uses the M-group tile: the plain grid
 	 * re-reads each weight strip once per m-tile (16x at B=256); the
 	 * m-loop stages it once per k-stage for eight m-tiles. */
-	if ( view->weight_format == SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && row_count >= 2u * SPARK_LM_TILE && view->input_dimension > SPARK_LM_TILE_K && view->output_dimension != 0u )
+	if ( view->weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && row_count >= 2u * SPARK_LM_TILE && view->input_dimension > SPARK_LM_TILE_K && view->output_dimension != 0u )
 		return(SparkLmHostLaunchBatchedLinearMloop(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 
-extern "C" cudaError_t SparkQwen38LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
+extern "C" cudaError_t SparkQwen38LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38MaxGdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38MaxGdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
 {
 	uint32_t local_conv_channels = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS / tp_degree;
 	dim3 grid((local_conv_channels + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,row_count,1u);
@@ -1255,13 +1255,13 @@ extern "C" cudaError_t SparkQwen38LaunchConvUpdate(cudaStream_t stream, const vo
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkQwen38GdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree)
+extern "C" cudaError_t SparkQwen38LaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkQwen38MaxGdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree)
 {
 	SparkQwen38DecayBetaKernel<<<row_count,SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree,0,stream>>>(decay_pre_bf16,beta_pre_bf16,weights->a_log_f32,weights->dt_bias_f32,log_decay_f32,beta_f32,row_count,tp_degree);
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen38GdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
+extern "C" cudaError_t SparkQwen38LaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen38MaxGdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
 {
     dim3 grid(
         SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree,
@@ -1287,14 +1287,14 @@ extern "C" cudaError_t SparkQwen38LaunchGdnStep(cudaStream_t stream, const void 
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t SparkQwen38LaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen38GdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon, uint32_t tp_degree)
+extern "C" cudaError_t SparkQwen38LaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen38MaxGdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon, uint32_t tp_degree)
 {
 	dim3 grid(SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / tp_degree,row_count,1u);
 	SparkQwen38GatedNormKernel<<<grid,SPARK_QWEN38_CUDA_DV,0,stream>>>(core_bf16,z_bf16,weights->gdn_norm_weight_bf16,output_bf16,row_count,epsilon,tp_degree);
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen38AttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon, uint32_t tp_degree, uint32_t tp_rank)
+extern "C" cudaError_t SparkQwen38LaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen38MaxAttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon, uint32_t tp_degree, uint32_t tp_rank)
 {
 	if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT / tp_degree) == 0u )
 		return(cudaErrorInvalidValue);
@@ -1303,7 +1303,7 @@ extern "C" cudaError_t SparkQwen38LaunchAttnPrepare(cudaStream_t stream, void *q
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38LaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen38KvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
+extern "C" cudaError_t SparkQwen38LaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen38MaxKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
 {
     if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT / tp_degree) == 0u )
         return(cudaErrorInvalidValue);
@@ -1338,7 +1338,7 @@ extern "C" cudaError_t SparkQwen38LaunchAttnDecode(cudaStream_t stream, const vo
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t SparkQwen38LaunchChunkConv(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38GdnStatePool *pool, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
+extern "C" cudaError_t SparkQwen38LaunchChunkConv(cudaStream_t stream, const void *qkv_bf16, const SparkQwen38MaxGdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen38MaxGdnStatePool *pool, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
 {
 	uint32_t local_conv_channels = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS / tp_degree;
 	if ( token_count == 0u )
@@ -1354,7 +1354,7 @@ extern "C" cudaError_t SparkQwen38LaunchChunkConv(cudaStream_t stream, const voi
  * for free. Workspace pointers are slot-owned device buffers sized per the
  * view layout (per head: qn/kn/w/kg 64 x 128, decay/attn 64 x 64, cum_g 64).
  */
-extern "C" cudaError_t SparkQwen38LaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen38GdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
+extern "C" cudaError_t SparkQwen38LaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen38MaxGdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
 {
     SparkQwen38ChunkWorkspaceView views;
     cudaError_t status;
@@ -1657,7 +1657,7 @@ extern "C" cudaError_t SparkQwen38LaunchMoeRoute(cudaStream_t stream, const uint
 	return(launch_status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
 }
 
-extern "C" cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen38LinearView *w1, const SparkQwen38LinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank)
+extern "C" cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen38MaxLinearView *w1, const SparkQwen38MaxLinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank)
 {
 	cudaError_t status;
 	uint32_t experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
@@ -1666,7 +1666,7 @@ extern "C" cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, c
 	uint32_t owned_experts = w1->output_dimension == (uint64_t)SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * expert_width ? SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT : experts_per_rank;
 	const uint8_t *payload_base;
 	const uint8_t *scale_base;
-	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || w1->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w3->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != w3->output_dimension || w1->output_dimension != (uint64_t)owned_experts * expert_width || w1->input_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION || w3->input_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION || tp_degree == 0u || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
+	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || w1->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w3->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != w3->output_dimension || w1->output_dimension != (uint64_t)owned_experts * expert_width || w1->input_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION || w3->input_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION || tp_degree == 0u || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
 	payload_base = (const uint8_t *)w1->weight_payload + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * expert_width * w1->input_dimension / 2u : 0u);
 	scale_base = (const uint8_t *)w1->weight_scale_e8m0 + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * expert_width * (w1->input_dimension / SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE) : 0u);
@@ -1674,13 +1674,13 @@ extern "C" cudaError_t SparkQwen38LaunchFusedExpertW13Act(cudaStream_t stream, c
 	return(status);
 }
 
-extern "C" cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank)
+extern "C" cudaError_t SparkQwen38LaunchExpertDown(cudaStream_t stream, const SparkQwen38MaxLinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank)
 {
 	uint32_t experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
 	uint32_t owned_experts = stacked != 0 && stacked->output_dimension == (uint64_t)SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * hidden_dimension ? SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT : experts_per_rank;
 	const uint8_t *payload_base;
 	const uint8_t *scale_base;
-	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || stacked->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != (uint64_t)owned_experts * hidden_dimension || stacked->input_dimension != expert_width || tp_degree == 0u || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
+	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || stacked->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != (uint64_t)owned_experts * hidden_dimension || stacked->input_dimension != expert_width || tp_degree == 0u || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
 	payload_base = (const uint8_t *)stacked->weight_payload + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * hidden_dimension * expert_width / 2u : 0u);
 	scale_base = (const uint8_t *)stacked->weight_scale_e8m0 + (owned_experts == SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT ? (uint64_t)tp_rank * experts_per_rank * hidden_dimension * (expert_width / SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE) : 0u);
@@ -1737,11 +1737,11 @@ static __global__ void SparkQwen38GateScoresKernel(const void *weight_bf16, cons
 		scores_f32[((uint64_t)row * expert_count) + expert] = accumulator;
 }
 
-extern "C" cudaError_t SparkQwen38LaunchGateScores(cudaStream_t stream, const SparkQwen38LinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count)
+extern "C" cudaError_t SparkQwen38LaunchGateScores(cudaStream_t stream, const SparkQwen38MaxLinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count)
 {
 	uint32_t warp_count = SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES;
 	uint32_t expert_blocks = (gate->output_dimension + warp_count - 1u) / warp_count;
-	if ( gate == 0 || input_bf16 == 0 || scores_f32 == 0 || gate->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 || gate->input_dimension == 0u )
+	if ( gate == 0 || input_bf16 == 0 || scores_f32 == 0 || gate->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 || gate->input_dimension == 0u )
 		return(cudaErrorInvalidValue);
 	SparkQwen38GateScoresKernel<<<dim3(row_count,expert_blocks),SPARK_LM_CTA_THREADS,gate->input_dimension * sizeof(float),stream>>>(gate->weight_payload,input_bf16,scores_f32,row_count,gate->input_dimension,gate->output_dimension);
 	return(cudaGetLastError());
@@ -1780,7 +1780,7 @@ extern "C" cudaError_t SparkQwen38ConfigureCudaKernels(void)
      * the widest qwen38 input is the 16384-wide attention/GDN output
      * projection (64KB of floats), past the 48KB static ceiling. */
     return cudaFuncSetAttribute(
-        (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE>,
+        (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_CTA_WARPS>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         (int)(SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_DIMENSION * sizeof(float)));
 }
@@ -1797,7 +1797,7 @@ extern "C" cudaError_t SparkQwen38ConfigureCudaKernels(void)
  */
 extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 	cudaStream_t stream,
-	const SparkQwen38LinearView *view,
+	const SparkQwen38MaxLinearView *view,
 	const void *input_bf16,
 	const uint32_t *source_row_map,
 	const uint32_t *group_row_offset,
@@ -1819,7 +1819,7 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
 	const uint32_t *prefix;
 	if ( view == 0 || input_bf16 == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
-		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
+		view->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
 		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
 		(source_row_map == 0 && source_row_count == 0u) ||
 		tp_degree == 0u || tp_rank >= tp_degree ||
@@ -1868,7 +1868,7 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertLinear(
  */
 extern "C" cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(
 	cudaStream_t stream,
-	const SparkQwen38LinearView *view,
+	const SparkQwen38MaxLinearView *view,
 	const void *input_bf16,
 	const uint32_t *source_row_map,
 	const uint32_t *group_row_offset,
@@ -1886,7 +1886,7 @@ extern "C" cudaError_t SparkQwen38LaunchGroupedExpertTileLinear(
 	const uint8_t *scale;
 	const uint32_t *offsets;
 	if ( view == 0 || input_bf16 == 0 || group_row_offset == 0 || output_bf16 == 0 ||
-		view->weight_format != SPARK_QWEN38_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
+		view->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
 		view->input_dimension % 64u != 0u ||
 		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
 		source_row_count == 0u ||
