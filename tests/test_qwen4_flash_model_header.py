@@ -62,15 +62,33 @@ BINDINGS = {
 
 
 def macro(header: str, name: str) -> float:
-    match = re.search(rf"^#define\s+{name}\s+(.+?)\s*(?:/[/*].*)?$", header, re.M)
-    if match is None:
+    """Resolve one #define to a number: numeric defines directly, composed
+    defines by evaluating their expression over previously resolved names
+    (line continuations joined first)."""
+    joined = header.replace("\\\n", " ")
+    defines: dict[str, str] = {}
+    # [ \t] after the name keeps valueless include guards from swallowing
+    # the next line; continuations are already joined.
+    for match in re.finditer(r"^#define\s+(\w+)[ \t]+([^\n]+?)\s*$", joined, re.M):
+        defines[match.group(1)] = match.group(2).strip()
+    if name not in defines:
         raise AssertionError(f"header missing #define {name}")
-    text = match.group(1)
-    if text.endswith("u"):
-        text = text[:-1]
-    if text.endswith("f"):
-        text = text[:-1]
-    return float(text)
+
+    def resolve(target: str, seen: frozenset) -> float:
+        text = defines[target]
+        if target in seen:
+            raise AssertionError(f"cyclic define {target}")
+        try:
+            return float(text.rstrip("uf"))
+        except ValueError:
+            pass
+        expression = re.sub(r"\w+", lambda m: (
+            str(resolve(m.group(0), seen | {target}))
+            if m.group(0) in defines and m.group(0) != target else m.group(0)), text)
+        expression = re.sub(r"(\d)[uf]\b", r"\1", expression)  # strip C suffixes
+        return float(eval(expression, {"__builtins__": {}}, {}))  # noqa: S307 - header constants only
+
+    return resolve(name, frozenset())
 
 
 def main() -> int:
