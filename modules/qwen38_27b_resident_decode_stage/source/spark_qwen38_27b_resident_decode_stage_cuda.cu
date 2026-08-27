@@ -1950,23 +1950,15 @@ extern "C" cudaError_t SparkQwen38_27bLaunchLinear(cudaStream_t stream, const Sp
 				input_bf16,view->input_dimension,0u,0u,
 				output_bf16,view->output_dimension,0u,0u,
 				1u,row_count,view->input_dimension,view->output_dimension));
-		/* Last resort: dimension shapes the tiled kernels cannot express.
-		 * Per-row launches re-stream weights per row - if this path ever
-		 * fires at scale it is a dispatch bug, not a fallback. */
-		{
-			uint32_t row;
-			cudaError_t error = cudaSuccess;
-			for ( row = 0u; row < row_count && error == cudaSuccess; row++ )
-				error = SparkLmHostLaunchSm121NativeLinear<
-					SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(
-					stream,view->weight_payload,scale,payload_stride,scale_stride,
-					(const uint8_t *)input_bf16 + (uint64_t)row * view->input_dimension * 2u,
-					view->input_dimension,0u,0u,
-					(uint8_t *)output_bf16 + (uint64_t)row * view->output_dimension * 2u,
-					view->output_dimension,0u,0u,
-					1u,1u,view->input_dimension,view->output_dimension);
-			return(error);
-		}
+		/* NO SILENT FALLBACK: a shape that reaches here has no wired kernel.
+ * The old per-row loop re-streamed the full weight strip once per row -
+ * a silent rows-x degradation that doubled the configuration space and
+ * hid dispatch bugs. Hard-fail with the exact shape so the missing
+ * kernel gets wired, not papered over. */
+		fprintf(stderr, "qwen38_27b_stage linear_dispatch_unsupported format=%u rows=%u in=%u out=%u\n",
+			(unsigned)view->weight_format, (unsigned)row_count,
+			(unsigned)view->input_dimension, (unsigned)view->output_dimension);
+		return(cudaErrorNotSupported);
 	}
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
