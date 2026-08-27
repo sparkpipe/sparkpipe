@@ -1920,8 +1920,22 @@ extern "C" cudaError_t SparkQwen38_27bLaunchLinear(cudaStream_t stream, const Sp
 		 * depth-specific race). Kill-switch: SPARK_QWEN38_27B_WS_GEMM=0. */
 		{
 			const char *ws_env = getenv("SPARK_QWEN38_27B_WS_GEMM");
+			/* Row ceiling (env-constrainable). The kernel's grid is (rows+15)/16
+			 * in x with row-guarded loads; the historical 16-row cap routed
+			 * rows=32+ to the native-MMA path that measured 4.6x slower per
+			 * frame (PFR=32 event data) - a silent degradation with no error.
+			 * Default: try the fast path; the bit-exact validators catch real
+			 * breakage. Constrain only for known-defect shapes. */
+			uint32_t ws_max_rows = 1024u;
+			const char *ws_rows_env = getenv("SPARK_QWEN38_27B_WS_MAX_ROWS");
+			if ( ws_rows_env != 0 )
+			{
+				long parsed = strtol(ws_rows_env,0,10);
+				if ( parsed >= 1L && parsed <= 1024L )
+					ws_max_rows = (uint32_t)parsed;
+			}
 			if ( (ws_env == 0 || ws_env[0] != '0') &&
-				row_count <= 16u &&
+				row_count <= ws_max_rows &&
 				(view->input_dimension % 128u) == 0u &&
 				(view->output_dimension % 128u) == 0u )
 				return(SparkQwen38_27bLaunchWsLinear(stream,view->weight_payload,scale,
@@ -1936,6 +1950,9 @@ extern "C" cudaError_t SparkQwen38_27bLaunchLinear(cudaStream_t stream, const Sp
 				input_bf16,view->input_dimension,0u,0u,
 				output_bf16,view->output_dimension,0u,0u,
 				1u,row_count,view->input_dimension,view->output_dimension));
+		/* Last resort: dimension shapes the tiled kernels cannot express.
+		 * Per-row launches re-stream weights per row - if this path ever
+		 * fires at scale it is a dispatch bug, not a fallback. */
 		{
 			uint32_t row;
 			cudaError_t error = cudaSuccess;

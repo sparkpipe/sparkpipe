@@ -3046,6 +3046,9 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 		 * Verified bit-identical on both paths: spec O512 20.8s / 77 rounds
 		 * (was 21.1), no-spec 66.3s (was 67.5). Kill-switch
 		 * SPARK_QWEN38_27B_FRAME_GRAPH=0. */
+		/* Default ON: measured 78% of frames replay with zero capture
+		 * failures; the feared fourth blocker never materialized. The
+		 * opt-in era cost a free win. Kill switch: FRAME_GRAPH=0. */
 		const char *genv = getenv("SPARK_QWEN38_27B_FRAME_GRAPH");
 		int graph_off = genv != 0 && genv[0] == '0';
 		int replayed = 0;
