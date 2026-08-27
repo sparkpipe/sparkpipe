@@ -242,14 +242,21 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                     if matrix.ndim == 3:
                         matrix = matrix[:, 0, :]
                     if matrix.ndim == 1:
-                        # 1-D vectors (A_log/dt_bias) shard flat.
-                        matrix = matrix.reshape(1, -1) if row_slice is None and column_slice is None else matrix
+                        # 1-D vectors (A_log/dt_bias) shard flat. The row
+                        # slice consumes the whole vector; do NOT fall
+                        # through to the 2-D row rule below — it would
+                        # re-slice the reshaped single row into nothing
+                        # for every rank past 0 (rank 0's slice 0:N
+                        # masked this until the rank 1-3 builds).
                         if row_slice is not None:
-                            matrix = matrix[row_slice[0]:row_slice[0] + row_slice[1]]
+                            matrix = matrix[row_slice[0]:row_slice[0] + row_slice[1]].reshape(1, -1)
+                        else:
                             matrix = matrix.reshape(1, -1)
-                    if row_slice is not None and matrix.ndim == 2:
+                    elif row_slice is not None:
                         matrix = matrix[row_slice[0]:row_slice[0] + row_slice[1], :]
-                    if column_slice is not None and matrix.ndim == 2:
+                        if column_slice is not None:
+                            matrix = matrix[:, column_slice[0]:column_slice[0] + column_slice[1]]
+                    elif column_slice is not None:
                         matrix = matrix[:, column_slice[0]:column_slice[0] + column_slice[1]]
                     expected = matrix
                 if entry["weight_format"] == WEIGHT_BF16:
@@ -297,6 +304,10 @@ def source_matrix(source: SafetensorsSource, name: str):
     with (source.root / shard).open("rb") as file:
         file.seek(offset)
         raw = file.read(elements * 2)
+    if len(raw) != elements * 2:
+        # A transient mount hiccup must fail loudly, not degrade into a
+        # misleading byte-comparison failure downstream.
+        raise ValueError(f"short read on {name}: {len(raw)} of {elements * 2} bytes")
     return np.frombuffer(raw, dtype="<u2").reshape(meta["shape"])
 
 
