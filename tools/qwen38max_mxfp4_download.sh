@@ -67,7 +67,12 @@ fetch_one() {
   fi
   local rc=0
   for attempt in 1 2 3 4 5; do
+    # --speed-limit/--speed-time: abort any stream that drops below 4 MB/s
+    # for 30s - HF's CDN slows long-lived connections to a crawl while a
+    # fresh one reopens at full speed, so cycling the connection is the
+    # throughput fix (resume -C - makes the cycle cheap).
     if curl -sL --fail --retry 3 --retry-delay 5 \
+         --speed-limit 4000000 --speed-time 30 \
          -o "${name}.part" -C - "$url"; then
       if [[ "$(stat -c %s "${name}.part")" == "$size" ]]; then
         mv "${name}.part" "$name"
