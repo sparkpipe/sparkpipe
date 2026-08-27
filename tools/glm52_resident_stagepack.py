@@ -707,9 +707,7 @@ def build_receipt(packer: "Packer", output: Path, file_bytes: int,
 
 def write_all_ranks(packers, output_paths, model_revision, contract_sha256,
                     source_config_sha256, pack_recipe_sha256, stage_count, stage_index,
-                    first_layer_index, layer_count, total_layer_count,
-                    recipe: Dict[str, Any], source_config: Dict[str, Any],
-                    first: int, last: int) -> List[int]:
+                    first_layer_index, layer_count, total_layer_count) -> List[int]:
     """Lockstep fan-out writer: every packer walks its plan in the same
     tensor order, so driving entry i of all ranks back-to-back serves the
     shared source reads (and the single spine dequant) from the reader LRU -
