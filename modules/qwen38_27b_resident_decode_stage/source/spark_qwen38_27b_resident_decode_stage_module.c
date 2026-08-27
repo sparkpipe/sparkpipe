@@ -272,6 +272,13 @@ typedef struct SparkQwen38_27bModuleState
 	uint32_t graph_frames_replayed;
 	uint32_t graph_frames_captured;
 	uint32_t graph_frames_plain;
+	/* GPU-side per-phase timing via stream events (plain frames; the
+	 * spin counters measure host reduce/sync spans, not kernels) */
+	cudaEvent_t profile_ev[2];
+	float profile_gdn_ms;
+	float profile_attn_ms;
+	float profile_ffn_ms;
+	uint32_t profile_event_frames;
 	uint64_t profile_frame_nanos;
 	uint32_t profile_frame_count;
 	uint32_t graphs_broken;
@@ -300,10 +307,12 @@ static void SparkQwen38_27bProfilePrint(SparkQwen38_27bModuleState *state, uint6
 			(double)state->profile_walk_nanos / 1000000.0,
 			(double)state->profile_tail_nanos / 1000000.0);
 	if ( (state->profile_frame_count & 63u) == 0u )
-		fprintf(stderr, "%s graph_profile replayed=%u captured=%u plain=%u broken=%u\n",
+		fprintf(stderr, "%s graph_profile replayed=%u captured=%u plain=%u broken=%u evframes=%u evgdn_ms=%.0f evattn_ms=%.0f evffn_ms=%.0f\n",
 			SPARK_QWEN38_27B_MODULE_TAG, state->graph_frames_replayed,
 			state->graph_frames_captured, state->graph_frames_plain,
-			state->graphs_broken);
+			state->graphs_broken, state->profile_event_frames,
+			state->profile_gdn_ms, state->profile_attn_ms,
+			state->profile_ffn_ms);
 }
 
 extern cudaError_t SparkQwen38_27bConfigureCudaKernels(void);
@@ -1312,10 +1321,38 @@ static SparkStatus SparkQwen38_27bModuleRunLayer(SparkQwen38_27bModuleState *sta
 	rows_view.row_lane_indices = slot->row_lane_indices;
 	rows_view.context_lengths = slot->context_lengths;
 	status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,error,"attention_norm");
+	if ( state->profile_enabled != 0u && slot->capturing == 0u )
+	{
+		(void)cudaEventRecord(state->profile_ev[0],(cudaStream_t)slot->cuda_stream);
+		if ( layer == state->first_layer_index )
+			state->profile_event_frames++;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SPARK_QWEN38_27B_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen38_27bModuleRunGdnLayer(state,slot,prefill,layer,rows) : SparkQwen38_27bModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
+	if ( status == SPARK_STATUS_OK && state->profile_enabled != 0u && slot->capturing == 0u )
+	{
+		float ms;
+		(void)cudaEventRecord(state->profile_ev[1],(cudaStream_t)slot->cuda_stream);
+		(void)cudaEventSynchronize(state->profile_ev[1]);
+		if ( cudaEventElapsedTime(&ms,state->profile_ev[0],state->profile_ev[1]) == cudaSuccess )
+		{
+			if ( SPARK_QWEN38_27B_MODEL_LAYER_IS_GDN(layer) != 0u )
+				state->profile_gdn_ms += ms;
+			else
+				state->profile_attn_ms += ms;
+		}
+		(void)cudaEventRecord(state->profile_ev[0],(cudaStream_t)slot->cuda_stream);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38_27bModuleRunFfn(state,slot,state->mlp_norm_by_layer[layer],&state->ffn_by_layer[layer],rows);
+	if ( status == SPARK_STATUS_OK && state->profile_enabled != 0u && slot->capturing == 0u )
+	{
+		float ms;
+		(void)cudaEventRecord(state->profile_ev[1],(cudaStream_t)slot->cuda_stream);
+		(void)cudaEventSynchronize(state->profile_ev[1]);
+		if ( cudaEventElapsedTime(&ms,state->profile_ev[0],state->profile_ev[1]) == cudaSuccess )
+			state->profile_ffn_ms += ms;
+	}
 	return(status);
 }
 
@@ -3564,6 +3601,11 @@ SparkStatus SparkQwen38_27bResidentDecodeStageInitialize(
     {
         const char *profile_env = getenv("SPARK_QWEN38_27B_PROFILE");
         state->profile_enabled = profile_env != 0 && strcmp(profile_env, "0") != 0 ? 1u : 0u;
+        if ( state->profile_enabled != 0u )
+        {
+            (void)cudaEventCreate(&state->profile_ev[0]);
+            (void)cudaEventCreate(&state->profile_ev[1]);
+        }
     }
     {
         /* Diagnostics: capture drafter taps on EVERY decode frame (even
