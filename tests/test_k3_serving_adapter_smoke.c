@@ -17,7 +17,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	const SparkModelServingAdapterInterface *iface =
-		SparkK3ServingAdapterGetInterface();
+		SparkModelServingAdapterGetInterface();
 	if ( iface == 0 || iface->initialize == 0 )
 	{
 		printf("INTERFACE FAIL\n");

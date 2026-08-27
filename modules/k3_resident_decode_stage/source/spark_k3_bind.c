@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_k3_bind.h"
+#include "sparkpipe/spark_k3_pool_sizing.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -91,7 +92,11 @@ SparkStatus SparkK3BindLayer(SparkK3Pack *pack, uint32_t layer_index,
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	memset(bound, 0, sizeof(*bound));
 	bound->layer_index = layer_index;
-	bound->layer_is_gdn = (layer_index % 4u) != 3u;
+	/* SparkK3LayerIsMla, not the bare period-4 test: layer 92 is the
+	 * trailing MLA exception and the modulo alone calls it GDN (the
+	 * layer-92 kind-drift bug - every other classifier carries the
+	 * exception; this site drifted from them). */
+	bound->layer_is_gdn = !SparkK3LayerIsMla(layer_index);
 	bound->layer_is_dense = (layer_index == 0u);
 	status = SparkK3BindEveryLayer(pack, bound);
 	if ( status != SPARK_STATUS_OK )

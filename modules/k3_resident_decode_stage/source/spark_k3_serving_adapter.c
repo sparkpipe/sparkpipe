@@ -513,7 +513,10 @@ static const SparkModelServingAdapterInterface K3ServingInterface =
 	.reset = K3ServingReset,
 };
 
-const SparkModelServingAdapterInterface *SparkK3ServingAdapterGetInterface(void)
+// The runtime dlsym's SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL, which
+// is exactly "SparkModelServingAdapterGetInterface" - a family-specific
+// name here is invisible to the loader (the found-and-fixed K3 export bug).
+const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
 {
 	return &K3ServingInterface;
 }

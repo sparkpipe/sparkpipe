@@ -18,7 +18,9 @@ extern "C" {
  *     operation_timeout_milli, collective_identifier,
  *     peers: ["host:port", ...] } - peers are the step topology
  */
-const SparkModelServingAdapterInterface *SparkK3ServingAdapterGetInterface(void);
+// Exported under the canonical symbol the runtime dlsym's - see
+// SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL in spark_model_serving_adapter.h.
+const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void);
 
 #ifdef __cplusplus
 }
