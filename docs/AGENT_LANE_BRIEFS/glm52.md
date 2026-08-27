@@ -1,9 +1,26 @@
-# Lane brief: GLM 5.2 serving bring-up (vehicle for GLM 5.3 Flash)
+# Lane brief: GLM 5.2 serving bring-up (vehicle for GLM 5.3 full)
 
 Worktree: /tmp/lane-glm52 (git worktree, branch lane/glm52, synced to main)
-Your nodes: spark1, spark9, sparka, sparkb, sparkc, sparkd, sparke, sparkf
-(TP8 = 8 ranks). Do NOT touch: spark2 (prod), spark3 (with sysadmin),
-spark4-7 (qwen-flash lane), spark8 (coordinator perf bench).
+
+CORRECTIONS 2026-08-27 (coordinator, binding):
+- spark1 was REMOVED from this lane. Nodes: spark9, sparka, sparkb, sparkc,
+  sparkd, sparke, sparkf (7 nodes). TP8 needs 8 ranks: EITHER borrow spark8's
+  idle GPU for one rank ONLY IF `nvidia-smi --query-compute-apps=pid` shows no
+  coordinator job there (record the check + coordinate via the lane report),
+  OR run TP4/PP across the 7 nodes. Do NOT touch spark1, spark2 (prod),
+  spark3 (sysadmin), spark4-7 (qwen-flash), spark8-heavy-jobs.
+- GLM 5.3 (the FULL model) shares 5.2's process/architecture (same module,
+  different weights). GLM 5.3 FLASH is a DIFFERENT architecture
+  (Glm5NextForConditionalGeneration: hybrid linear/deepseek-sparse attention,
+  MLA kv_lora 512, MoE 288+1 top-8, 45 layers, hidden 4096 vs 5.2's
+  GlmMoeDsaForCausalLM hidden 6144, 78 layers) — NEVER repack flash against
+  the glm52 module; geometry mismatch is expected, not a finding. Flash is a
+  separate future lane (new kernel work: sparse + hybrid attention), out of
+  scope here.
+- M5 corrected: "GLM 5.3 (full) repack readiness" — verify the glm52 module
+  parameterization covers the 5.3-full geometry when its source lands;
+  document what a 5.2 -> 5.3-full repack needs.
+
 Cap concurrent heavy jobs per node at TWO (a prior lane rebooted spark5
 with three pack builds).
 
@@ -51,7 +68,7 @@ M3 Packs: build TP8 rank packs from the 5.2 FP8 source (packer in
    tools/ - glm52 packers exist; adapt as needed).
 M4 TP8 serving: 8-rank deployment on your nodes, B1 correctness, then
    B8/B16 batches. Record stream hashes + throughput.
-M5 GLM 5.3 Flash repack: build packs from the warm 5.3-flash source
+M5 GLM 5.3 (full) repack readiness: verify the glm52 module parameterization covers the 5.3-full geometry when its source lands; document the 5.2->5.3-full repack delta. glm-5.3-flash is OUT OF SCOPE (different architecture, future lane).
    against the same module. If geometry mismatches, stop and report
    the exact deltas (that is a finding, not a failure).
 
