@@ -18,6 +18,32 @@ larger agent fleet failed here; every rule below encodes a real failure.
   often, small commits. Push with `tools/sparkpipe_github_pat.sh git push`.
   Open a PR at each milestone; never merge it yourself.
 
+## Fleet pack policy (hard, 2026-08-27): every model on all 16 sparks
+
+Every served model runs on a 16-rank topology fleet-wide, therefore
+**every spark holds its rank's pack for EVERY model**. A pack build that
+targets fewer nodes is incomplete by definition. Each packer emits 16
+rank-addressed packs (wire format v2: tp_degree + tp_rank); rank r
+deploys to sparke-hex-digit r (spark0..sparkf). The 16-rank topology is
+per-model (TP16 where heads divide; TP4xPP4 otherwise — the topology
+guide decides), but the deployment set is always all 16.
+
+| Model | 16-rank topology | Pack/rank | Status |
+|---|---|---|---|
+| Qwen 3.8 27B | TP4xPP4 (4 KV heads) | ~3.4 GB | re-emit sharded |
+| DSV4 Flash -0731 | TP16 | ~9.8 GB | building (spark4) → shard |
+| Qwen 3.8 Flash | TP16 | ~10.5 GB | pending M5 kernels |
+| GLM 5.3 Flash | TP16 (first guess) | ~19.1 GB | lane launching |
+| DSV4 Pro | TP4xPP4 | ~52 GB | building (spark6) → shard |
+| Qwen Max | TP4xPP4 | ~80 GB | sharding sprint (spark7) |
+| K3 | TP16 | ~94 GB | building (sparke) → shard |
+
+Per-node budget ≈ 269 GB of packs — fits every node's NVMe with KV head
+room. GLM 5.2 is a kernel donor, NOT a serving target: no fleet pack.
+Wire-format-v2 sharding lands via the qwen38max lane; until then lanes
+build family packs as today and the coordinator re-shards + deploys at
+merge time (packs are derived artifacts; re-sharding is a cheap pass).
+
 ## Cluster rules (hard)
 - Nodes are `spark0..sparkf`, ssh BatchMode works from the controller mac.
 - `spark2` hosts the 27B development instance. It CAN be used for pack
