@@ -264,14 +264,16 @@ class Fp8SourceReader:
             scale_dtype, scale_shape, _ = self.meta(scale_name)
             if scale_dtype != "F32":
                 raise PackFailure(f"{scale_name}: dtype {scale_dtype}, expected F32")
-            if scale_shape != (rows // 128, cols // 128):
+            # partial quantization blocks are padded: the tile is ceil-shaped
+            # (e.g. kv_a_proj_with_mqa is [576, 6144] with a [5, 48] tile)
+            expected_shape = ((rows + 127) // 128, (cols + 127) // 128)
+            if scale_shape != expected_shape:
                 raise PackFailure(
-                    f"{scale_name}: shape {scale_shape}, expected "
-                    f"({rows // 128}, {cols // 128})")
+                    f"{scale_name}: shape {scale_shape}, expected {expected_shape}")
             codes = self.raw(name).reshape(rows, cols)
             scale = self.raw(scale_name).view(np.float32).reshape(scale_shape)
-            expanded = np.repeat(scale, 128, axis=0)
-            expanded = np.repeat(expanded, 128, axis=1)
+            expanded = np.repeat(scale, 128, axis=0)[:rows]
+            expanded = np.repeat(expanded, 128, axis=1)[:, :cols]
             matrix = f32_to_bf16_u16(self._lut[codes] * expanded)
             del expanded
         else:

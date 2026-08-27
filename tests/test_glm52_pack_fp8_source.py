@@ -96,9 +96,13 @@ def check_bf16_rounding():
 
 
 def write_synthetic_store(root: Path):
-    """One-shard safetensors store: fp8 [256,256] + scale_inv [2,2], bf16 [4,6]."""
+    """One-shard safetensors store: fp8 [256,256] + scale_inv [2,2], a
+    partial-block fp8 [320,256] + scale_inv [3,2] (320 rows = 2.5 blocks),
+    and bf16 [4,6]."""
     codes = (np.arange(256 * 256, dtype=np.uint32) * 7 + 3).astype(np.uint8).reshape(256, 256)
     scale = np.array([[1.0, 2.0], [0.5, 4.0]], dtype=np.float32)
+    partial_codes = (np.arange(320 * 256, dtype=np.uint32) * 11 + 1).astype(np.uint8).reshape(320, 256)
+    partial_scale = np.array([[1.0, 0.25], [2.0, 0.5], [4.0, 1.0]], dtype=np.float32)
     bf16 = (np.arange(4 * 6, dtype=np.uint16) * 257 + 1).reshape(4, 6)
     header = {}
     blobs = []
@@ -106,6 +110,10 @@ def write_synthetic_store(root: Path):
     for name, dtype, shape, array_bytes in (
         ("model.layers.5.self_attn.q_a_proj.weight", "F8_E4M3", [256, 256], codes.tobytes()),
         ("model.layers.5.self_attn.q_a_proj.weight_scale_inv", "F32", [2, 2], scale.tobytes()),
+        ("model.layers.5.self_attn.kv_a_proj_with_mqa.weight", "F8_E4M3",
+         [320, 256], partial_codes.tobytes()),
+        ("model.layers.5.self_attn.kv_a_proj_with_mqa.weight_scale_inv", "F32",
+         [3, 2], partial_scale.tobytes()),
         ("model.embed_tokens.weight", "BF16", [4, 6], bf16.tobytes()),
     ):
         header[name] = {"dtype": dtype, "shape": shape,
@@ -123,13 +131,13 @@ def write_synthetic_store(root: Path):
         {"weight_map": {name: "model-00001-of-00001.safetensors"
                         for name in header}}))
     (root / "config.json").write_text(json.dumps({"architectures": ["TestModel"]}))
-    return codes, scale, bf16
+    return codes, scale, bf16, partial_codes, partial_scale
 
 
 def check_reader():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        codes, scale, bf16 = write_synthetic_store(root)
+        codes, scale, bf16, partial_codes, partial_scale = write_synthetic_store(root)
         reader = packer.Fp8SourceReader(root)
 
         # BF16 passthrough: byte-exact uint16 matrix
@@ -143,6 +151,16 @@ def check_reader():
         expanded = np.repeat(np.repeat(scale, 128, axis=0), 128, axis=1)
         expected = packer.f32_to_bf16_u16(packer.fp8_e4m3_lut()[codes] * expanded)
         assert np.array_equal(matrix, expected), "code*scale_inv dequant drift"
+
+        # partial quantization block: 320 rows = ceil(320/128)=3 tile rows,
+        # the last covering only 64 rows (kv_a_proj_with_mqa is [576, 6144])
+        matrix = reader.spine_bf16("model.layers.5.self_attn.kv_a_proj_with_mqa.weight")
+        expanded = np.repeat(partial_scale, 128, axis=0)[:320]
+        expanded = np.repeat(expanded, 128, axis=1)[:, :256]
+        expected = packer.f32_to_bf16_u16(
+            packer.fp8_e4m3_lut()[partial_codes] * expanded)
+        assert matrix.shape == (320, 256)
+        assert np.array_equal(matrix, expected), "partial-block dequant drift"
 
         # expert payload: verbatim byte slices (rows, then cols)
         payload = reader.expert_payload("model.layers.5.self_attn.q_a_proj.weight",
@@ -162,7 +180,8 @@ def check_reader():
                                 0, 256, 128, 256), dtype=np.float32).reshape(256, 1)
         assert np.all(got == np.repeat(scale[:, [1]], 128, axis=0)), "col scale slice drift"
         reader.close()
-    print("PASS Fp8SourceReader (bf16 passthrough, fp8 dequant, verbatim payload, scale expansion)")
+    print("PASS Fp8SourceReader (bf16 passthrough, fp8 dequant, partial blocks, "
+          "verbatim payload, scale expansion)")
 
 
 class MockSource:
