@@ -349,14 +349,17 @@ class SafetensorsSource(_BaseSafetensorsSource):
         return super().check_shape(ref.name, *self._full_shape(ref))
 
     def _full_shape(self, ref: TensorRef) -> tuple[int, int]:
-        """The checkpoint-side (rows, columns) of a sharded non-expert ref."""
+        """The checkpoint-side (rows, columns) of a possibly-sharded ref:
+        only the shard-axis kinds widen; replicated tensors are exact."""
         if ref.tp_degree <= 1:
             return ref.rows, ref.columns
-        if ref.kind in (KIND_GDN_A_LOG, KIND_GDN_DT_BIAS):
-            return 1, ref.columns * ref.tp_degree
-        if ref.kind in (KIND_GDN_OUTPUT, KIND_ATTN_OUTPUT):
+        if ref.kind in (KIND_GDN_OUTPUT, KIND_ATTN_OUTPUT, KIND_GDN_A_LOG, KIND_GDN_DT_BIAS):
             return ref.rows, ref.columns * ref.tp_degree
-        return ref.rows * ref.tp_degree, ref.columns
+        if ref.kind in (KIND_GDN_QKV, KIND_GDN_CONV_WEIGHT, KIND_GDN_GATE,
+                        KIND_GDN_BETA, KIND_GDN_DECAY, KIND_ATTN_QUERY,
+                        KIND_ATTN_KEY, KIND_ATTN_VALUE):
+            return ref.rows * ref.tp_degree, ref.columns
+        return ref.rows, ref.columns
 
 
 # -- payload writers -----------------------------------------------------------
@@ -409,8 +412,13 @@ def sharded_bf16_plan(ref: TensorRef) -> tuple:
                     (GDN_QK_DIM + rank * local_qk, local_qk),
                     (2 * GDN_QK_DIM + rank * local_v, local_v)]
         return ("segments", segments, ref.columns)
-    # head/expert row cut: the full height is ref.rows * tp.
-    return ("plain", rank * ref.rows, ref.rows, 0, ref.columns, ref.columns)
+    if ref.kind in (KIND_GDN_GATE, KIND_GDN_BETA, KIND_GDN_DECAY,
+                    KIND_ATTN_QUERY, KIND_ATTN_KEY, KIND_ATTN_VALUE):
+        # head-row cut: the full height is ref.rows * tp.
+        return ("plain", rank * ref.rows, ref.rows, 0, ref.columns, ref.columns)
+    # Replicated (router, shared expert, norms, embedding, lm_head, MTP):
+    # byte-identical on every rank.
+    return ("plain", 0, ref.rows, 0, ref.columns, ref.columns)
 
 
 def copy_sharded_bf16(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
