@@ -269,6 +269,9 @@ typedef struct SparkQwen38_27bModuleState
 	uint64_t profile_stage_nanos;
 	uint64_t profile_walk_nanos;
 	uint64_t profile_tail_nanos;
+	uint32_t graph_frames_replayed;
+	uint32_t graph_frames_captured;
+	uint32_t graph_frames_plain;
 	uint64_t profile_frame_nanos;
 	uint32_t profile_frame_count;
 	uint32_t graphs_broken;
@@ -296,6 +299,11 @@ static void SparkQwen38_27bProfilePrint(SparkQwen38_27bModuleState *state, uint6
 			(double)state->profile_stage_nanos / 1000000.0,
 			(double)state->profile_walk_nanos / 1000000.0,
 			(double)state->profile_tail_nanos / 1000000.0);
+	if ( (state->profile_frame_count & 63u) == 0u )
+		fprintf(stderr, "%s graph_profile replayed=%u captured=%u plain=%u broken=%u\n",
+			SPARK_QWEN38_27B_MODULE_TAG, state->graph_frames_replayed,
+			state->graph_frames_captured, state->graph_frames_plain,
+			state->graphs_broken);
 }
 
 extern cudaError_t SparkQwen38_27bConfigureCudaKernels(void);
@@ -3015,7 +3023,10 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 					if ( cudaGraphLaunch(slot->graph_exec,(cudaStream_t)slot->cuda_stream) == cudaSuccess )
 					{
 						if ( cudaStreamSynchronize((cudaStream_t)slot->cuda_stream) == cudaSuccess )
+						{
 							replayed = 1;
+							state->graph_frames_replayed++;
+						}
 						else
 							state->graphs_broken = 1u;
 					}
@@ -3043,6 +3054,7 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 		}
 		if ( replayed == 0 )
 		{
+			state->graph_frames_plain++;
 			slot->capturing = capturing != 0 ? 1u : 0u;
 			if ( state->profile_enabled != 0u )
 			{
@@ -3083,6 +3095,7 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 					cudaGraphExec_t exec = 0;
 					if ( cudaGraphInstantiate(&exec,cap,0ull) == cudaSuccess && exec != 0 )
 					{
+						state->graph_frames_captured++;
 						slot->graph_exec = exec;
 						/* the capture round did not execute - replay now so this
 						 * frame produces its output (the K3 pattern) */
