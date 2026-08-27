@@ -2,13 +2,14 @@
 
 Worktree: /tmp/lane-glm52 (git worktree, branch lane/glm52, synced to main)
 
-CORRECTIONS 2026-08-27 (coordinator, binding):
-- spark1 was REMOVED from this lane. Nodes: spark9, sparka, sparkb, sparkc,
-  sparkd, sparke, sparkf (7 nodes). TP8 needs 8 ranks: EITHER borrow spark8's
-  idle GPU for one rank ONLY IF `nvidia-smi --query-compute-apps=pid` shows no
-  coordinator job there (record the check + coordinate via the lane report),
-  OR run TP4/PP across the 7 nodes. Do NOT touch spark1, spark2 (prod),
-  spark3 (sysadmin), spark4-7 (qwen-flash), spark8-heavy-jobs.
+CORRECTIONS 2026-08-27 (coordinator, binding; second update supersedes the first):
+- FINAL node set: spark8, spark9, sparka, sparkb, sparkc, sparkd, sparke,
+  sparkf (8 nodes, full TP8, no borrowing). spark8 was handed over by the
+  coordinator: /home/spark8/sparkpipe-rel (instrumented 27B repo, do not rely
+  on its build state) and /home/spark8/sparkdata/qwen38.fp8.tp1 (27B
+  deployment, ignore/leave) live there; a leftover residentd may be killed
+  freely if it holds GPU memory. Do NOT touch spark1 (coordinator 27B),
+  spark2 (prod), spark3 (sysadmin), spark4-7 (qwen-flash).
 - GLM 5.3 (the FULL model) shares 5.2's process/architecture (same module,
   different weights). GLM 5.3 FLASH is a DIFFERENT architecture
   (Glm5NextForConditionalGeneration: hybrid linear/deepseek-sparse attention,
