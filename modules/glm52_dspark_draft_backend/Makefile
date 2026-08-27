@@ -28,7 +28,7 @@ $(BACKEND_OBJECT): source/spark_glm52_dspark_draft_backend.cu include/sparkpipe/
 
 $(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
 	rm -f $@
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(VALIDATOR): validation/validate_glm52_dspark_epoch3_cuda.cu $(BACKEND_ARCHIVE)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/libsparkpipe_model_common.a

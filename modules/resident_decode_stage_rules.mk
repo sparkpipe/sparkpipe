@@ -81,7 +81,7 @@ $(MODULE_CUDA_OBJECT): $(MODULE_CUDA_SOURCE) | $(BUILD_DIRECTORY)
 		-Xcompiler -Wall,-Wextra,-fPIC,-fvisibility=hidden -MMD -MP -c "$<" -o "$@"
 
 $(MODULE_ARCHIVE): $(MODULE_HOST_OBJECTS) $(MODULE_CUDA_OBJECT)
-	$(AR) rcs "$@" $^
+	$(AR) rcs "$@.$$$$.tmp" $^ && mv "$@.$$$$.tmp" "$@"
 
 # BATCH VARIANTS, opt-in per family. A family Makefile sets
 # MODULE_BATCH_VARIANT_BUCKETS to the bucket ladder (every power of two from
@@ -134,7 +134,7 @@ $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(MODULE_CUDA_SOURCE)))_b$(1).o: $(MOD
 		-Xcompiler -Wall,-Wextra,-fPIC,-fvisibility=hidden -MMD -MP -c "$$<" -o "$$@"
 
 $(call MODULE_BATCH_VARIANT_ARCHIVE,$(1)): $(foreach source,$(MODULE_HOST_SOURCES),$(BUILD_DIRECTORY)/$(subst /,_,$(basename $(source)))_b$(1).o) $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(MODULE_CUDA_SOURCE)))_b$(1).o
-	$(AR) rcs "$$@" $$^
+	$(AR) rcs "$$@.$$$$$.tmp" $$^ && mv "$$@.$$$$$.tmp" "$$@"
 endef
 $(foreach bucket,$(MODULE_BATCH_VARIANT_BUCKETS),$(eval $(call SPARK_MODULE_BATCH_VARIANT_RULES,$(bucket))))
 

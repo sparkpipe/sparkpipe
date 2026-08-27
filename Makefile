@@ -471,31 +471,31 @@ build/obj/%.o: %.c | build
 	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(SPARK_SPECULATION_TARGET_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 $(CORE_LIBRARY): $(CORE_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(MODEL_COMMON_LIBRARY): $(MODEL_COMMON_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(DEPLOYMENT_LIBRARY): $(DEPLOYMENT_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(GLM52_HOST_LIBRARY): $(GLM52_HOST_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(QWEN38_27B_HOST_LIBRARY): $(QWEN38_27B_HOST_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(QWEN38_HOST_LIBRARY): $(QWEN38_HOST_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(DSV4_HOST_LIBRARY): $(DSV4_HOST_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(COMPILER_LIBRARY): $(COMPILER_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(RUNTIME_LIBRARY): $(RUNTIME_OBJECTS)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 build/sparkpipe_module_publish: tools/sparkpipe_module_publish.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -691,7 +691,7 @@ build/test_modules/module_affine_helper.o: tests/fixtures/module_affine_helper.c
 	$(CC) -Iinclude $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 build/test_modules/module_affine.a: build/test_modules/module_affine_entry.o build/test_modules/module_affine_helper.o
-	$(AR) rcs $@ $^
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(TEST_HIDDEN_TRANSPORT_MODULE): tests/fixtures/hidden_transport_module.c | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
