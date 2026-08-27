@@ -24,14 +24,23 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: test_qwen38_pack_load PACK\n");
         return 2;
     }
+    /* Defaults smoke a 1-layer mid stage; pre-set the env to override the
+     * slice (e.g. a real stage-0 pack: INDEX=0 FIRST_LAYER=0). */
     setenv("SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION","1",1);
-    setenv("SPARK_QWEN38_MAX_STAGE_COUNT","4",1);
-    setenv("SPARK_QWEN38_MAX_STAGE_INDEX","1",1);
-    setenv("SPARK_QWEN38_MAX_STAGE_FIRST_LAYER","1",1);
-    setenv("SPARK_QWEN38_MAX_STAGE_LAYER_COUNT","1",1);
-    setenv("SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES","1",1);
-    setenv("SPARK_QWEN38_MAX_STAGE_PIPELINE_SLOTS","1",1);
-    setenv("SPARK_QWEN38_MAX_STAGE_KV_BLOCKS","8",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_COUNT") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_COUNT","4",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_INDEX") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_INDEX","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_FIRST_LAYER") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_FIRST_LAYER","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_LAYER_COUNT") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_LAYER_COUNT","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_PIPELINE_SLOTS") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_PIPELINE_SLOTS","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_KV_BLOCKS") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_KV_BLOCKS","8",1);
     setenv("SPARK_QWEN38_MAX_STAGE_PACK_PATH",argv[1],1);
     memset(&configuration,0,sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
