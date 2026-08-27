@@ -16,7 +16,12 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 # Adapter provenance pins: the Qwen3.8-Flash-Next checkpoint revision and the
 # exact package contract, checked at adapter compile time.
 QWEN4_FLASH_MODEL_REVISION := f5d08274bafd880402bd16f5e3e6c514136ec06c
-QWEN4_FLASH_CONTRACT_SHA256 := $(shell sha256sum $(REPOSITORY_ROOT)/model_contracts/qwen4_flash_authoritative.json | awk '{print $$1}')
+# CURDIR-relative (not REPOSITORY_ROOT): the rules file that defines
+# REPOSITORY_ROOT is included below, and MODULE_COMPILE_FLAGS below expands
+# immediately - with REPOSITORY_ROOT the sha256sum ran against
+# "/model_contracts/..." and pinned an EMPTY contract hash into the adapter
+# provenance.
+QWEN4_FLASH_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/qwen4_flash_authoritative.json | awk '{print $$1}')
 MODULE_COMPILE_FLAGS := \
 	-DSPARK_QWEN4_FLASH_MODULE_BUILD=1 \
 	-DQWEN4_FLASH_MODEL_REVISION=\"$(QWEN4_FLASH_MODEL_REVISION)\" \
