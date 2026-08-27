@@ -70,10 +70,14 @@ for rank in "${!HOST_ARRAY[@]}"; do
   host="${HOST_ARRAY[$rank]}"
   transfer "$rank" "$host" &
   RUNNING=$((RUNNING + 1))
-  if [[ "$RUNNING" -ge "$PARALLEL" ]]; then
-    wait -n || FAILED=1
-    RUNNING=$((RUNNING - 1))
-  fi
+  # bash 3.2 has no `wait -n`: poll for any finished child instead
+  while [[ "$RUNNING" -ge "$PARALLEL" ]]; do
+    RUNNING=$PARALLEL
+    for job in $(jobs -p); do
+      kill -0 "$job" 2>/dev/null || RUNNING=$((RUNNING - 1))
+    done
+    [[ "$RUNNING" -ge "$PARALLEL" ]] && sleep 2
+  done
 done
 wait || FAILED=1
 
