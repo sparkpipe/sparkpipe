@@ -789,3 +789,10 @@ Operator question: does two-model co-residency work? Phase-1 results:
   OPERATOR DECISION (license choice is yours: Apache-2.0? MIT?).
 - Auditor's asymmetry diagnosis accepted: static hygiene now has a
   dedicated lane so it paces the fleet.
+
+## 2026-08-29 ~6:3x — fleet steady; final-emit hunt live; hygiene lane starting
+
+- glm53 wave standing (spark0 ready-line fresh); the curl still returns
+  status-4 empty (the final-emit bug under hunt by the diag lane, tip
+  28m old). qwen-flash retarget pushed (16-rank bf16 repackaging).
+  Hygiene lane just spawned (no pushes yet). Scoreboard unchanged.
