@@ -24,7 +24,7 @@ def main() -> int:
 
     # Retained topology and transport fields unchanged.
     tp = stage["tp_collective"]
-    assert stage["model_revision"] == "official Hugging Face config observed 2026-07-31"
+    assert stage["model_revision"] == "GA release deepseek-ai/DeepSeek-V4-Pro-0813 (HF, 2026-08-13)"
     assert stage["stage_pack_path"] == "packs/dsv4_pro_tp4_pp4_stage.spstage"
     assert stage["cuda_graph_count_by_pp_stage"] == [49, 46, 46, 46]
     assert tp["backend"] == "hidden_transport"

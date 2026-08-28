@@ -23,7 +23,7 @@ tools/perf_scoreboard.py parses this section; edit HERE, never downstream.
 | K3 | 18.0 | B1 single-stage; MODULE CHAIN VERIFIED through collective on real deployed pack (fleet bring-up = first fleet number) | — | not measured | single-stage + main fixes | 2026-08-28 |
 | Qwen 3.8 Flash | — | M5 whole-stack TP4 gate PASSED (bit-exact, cross-node); M6 live smoke + hc/indexer/PLE ports next | — | — | main e3b795a | 2026-08-28 |
 | GLM 5.3 Flash | — | lane M1-M3 done, validator pending | — | — | — | — |
-| DSV4 Pro | — | packs building (spark6) | — | — | — | — |
+| DSV4 Pro | — | 16 TP4xPP4 rank packs built+verified (~93GB each, DSpark draft replicated), 14/16 deployed; old packs were never corrupt (verifier mismatch by construction); driver rebuild pending ready line (PR #729) | — | — | lane/dsv4pro merged | 2026-08-28 |
 <!-- scoreboard:end -->
 
 ## DSV4 Flash (DeepSeek V4 Flash, FP8, TP4)
