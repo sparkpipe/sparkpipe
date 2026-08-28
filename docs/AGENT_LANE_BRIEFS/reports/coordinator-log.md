@@ -646,3 +646,11 @@ Operator question: does two-model co-residency work? Phase-1 results:
   - CORRECTION: the release also cleared the real set (the lane's
     reserves live in its worktree's runs/, advisory only; no contention
     at this hour — fleet exclusivity remains by lane ownership).
+
+## 2026-08-28 ~05:4x KST — lane active on transport instrumentation
+
+- glm53 worktree touched 20m ago — the resumed co-debug is working
+  (transport .so instrumentation per the handoff). Fleet holding on
+  spark0 (3 residentd procs — the lane's wave cycling; its node).
+  Scoreboard unchanged; next event = the instrumented curl naming the
+  async-op origin.
