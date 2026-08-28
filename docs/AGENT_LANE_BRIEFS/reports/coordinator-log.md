@@ -1012,3 +1012,12 @@ failure is ever diagnosable through the wire.
   coordinator action on any wake: check W2, finish or re-task it.
 - QUALITY STUDY queued in GOALS (full-res vs quant-spine+full-spine
   vs fully-quant, via ds4_eval 92x) — explicitly AFTER basics.
+
+## 2026-08-29 ~21:2x — IDLENESS CORRECTED: W2-continuation + first-tokens agents spawned
+
+- Operator caught agents idling with 27 defined tasks remaining —
+  session-end passivity, not work exhaustion. CORRECTED: W2 items 2-4
+  (+ provider slot) agent spawned; glm5_next FIX-1→first-tokens agent
+  spawned (fleet live as reproducer). K3 pack build checked.
+- Doctrine going forward: a lane session ending does NOT park its
+  backlog — the next spawn carries the remaining items immediately.
