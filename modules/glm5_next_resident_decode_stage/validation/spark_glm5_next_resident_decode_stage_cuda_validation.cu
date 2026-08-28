@@ -493,7 +493,8 @@ static void SparkGlm5NextValHcPost(const float *out,const float *snapshot,const 
 /* KDA forward for one token (decode step), state carried in [heads][k][v]
  * fp32. Inputs are the ALREADY-bf16-rounded fixture values. */
 static void SparkGlm5NextValKdaToken(
-	const float *collapsed,          /* [hidden] */
+	const float *collapsed_in,       /* [hidden] the HC-collapsed input */
+	const float *attn_norm_weight,   /* [hidden] plain-norm weight (ones fixture) */
 	const float *qkv_beta,           /* [q|k|v|beta fused rows, hidden] */
 	const float *conv_q, const float *conv_k, const float *conv_v, /* [dim, kernel] */
 	const float *decay_down_gate,    /* [2*low_rank, hidden] fused */
@@ -516,6 +517,19 @@ static void SparkGlm5NextValKdaToken(
 	float core[SPARK_GLM5_NEXT_VKDA_DIM];
 	uint32_t index, head, channel;
 
+	/* THE PLAIN NORM FIRST (the module's first launch): the collapsed
+	 * input is ~1e-4-scale; the norm amplifies it to O(1) before the
+	 * projections. Skipping this was the oracle's step-0 bug - every
+	 * projection came out ~1000x small. */
+	float collapsed[SPARK_GLM5_NEXT_VHIDDEN];
+	{
+		float total = 0.0f, inv;
+		for (index = 0u; index < SPARK_GLM5_NEXT_VHIDDEN; index++)
+			total += collapsed_in[index] * collapsed_in[index];
+		inv = 1.0f / sqrtf(total / (float)SPARK_GLM5_NEXT_VHIDDEN + 1e-5f);
+		for (index = 0u; index < SPARK_GLM5_NEXT_VHIDDEN; index++)
+			collapsed[index] = collapsed_in[index] * inv * attn_norm_weight[index];
+	}
 	/* Projections from the fused tensor. */
 	for (index = 0u; index < qk; index++)
 	{
@@ -1051,6 +1065,7 @@ static int SparkGlm5NextValOracleSelftest(void)
 		static float up[2u][SPARK_GLM5_NEXT_VKDA_DIM * SPARK_GLM5_NEXT_VKDA_LOW_RANK];
 		static float dt[SPARK_GLM5_NEXT_VKDA_DIM], alog[SPARK_GLM5_NEXT_VKDA_HEADS];
 		static float onorm[SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION];
+		static float hidden_norm[SPARK_GLM5_NEXT_VHIDDEN];
 		static float ow[SPARK_GLM5_NEXT_VHIDDEN * SPARK_GLM5_NEXT_VKDA_DIM];
 		static float state[(uint64_t)SPARK_GLM5_NEXT_VKDA_HEADS * 128u * 128u];
 		static float output[SPARK_GLM5_NEXT_VHIDDEN];
@@ -1077,13 +1092,15 @@ static int SparkGlm5NextValOracleSelftest(void)
 			alog[i] = 0.1f;
 		for (i = 0u; i < SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION; i++)
 			onorm[i] = 1.0f;
+		for (i = 0u; i < SPARK_GLM5_NEXT_VHIDDEN; i++)
+			hidden_norm[i] = 1.0f;
 		for (i = 0u; i < sizeof(ow) / sizeof(float); i++)
 			ow[i] = ((float)(i % 7u) - 3.0f) * 0.005f;
 		memset(wq,0,sizeof(wq));
 		memset(wk,0,sizeof(wk));
 		memset(wv,0,sizeof(wv));
 		memset(state,0,sizeof(state));
-		SparkGlm5NextValKdaToken(collapsed,qkv_beta,conv[0],conv[1],conv[2],
+		SparkGlm5NextValKdaToken(collapsed,hidden_norm,qkv_beta,conv[0],conv[1],conv[2],
 			down_gate,up[0],up[1],dt,alog,onorm,ow,wq,wk,wv,state,output);
 		for (j = 0u; j < SPARK_GLM5_NEXT_VHIDDEN; j++)
 		{
@@ -1192,7 +1209,9 @@ typedef struct SparkGlm5NextValFixture
 	SparkGlm5NextValMatrix attn_norm,mlp_norm;
 	/* KDA tensors (the pack-V2 fused forms). */
 	SparkGlm5NextValMatrix kda_qkv_beta,kda_decay_gate_down,kda_decay_up,kda_gate_up;
-	SparkGlm5NextValMatrix kda_q_conv,kda_k_conv,kda_v_conv,kda_out_norm,kda_out;
+	SparkGlm5NextValMatrix kda_q_conv,kda_k_conv,kda_v_conv,kda_out;
+	float *kda_out_norm_dev;
+	float kda_out_norm_host[SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION];
 	float *kda_dt_bias;      float kda_dt_bias_host[SPARK_GLM5_NEXT_VKDA_DIM];
 	float *kda_a_log;        float kda_a_log_host[SPARK_GLM5_NEXT_VKDA_HEADS];
 	/* MLA tensors. */
@@ -1215,7 +1234,7 @@ typedef struct SparkGlm5NextValFixture
 	float *router_correction; float router_correction_host[SPARK_GLM5_NEXT_VEXPERTS];
 	/* Scratch and caches (8 rows of everything, 1 lane). */
 	uint16_t *streams,*residual,*normed,*q_compressed,*q_bf16,*kv_slot;
-	uint16_t *attention_latent,*attention_value,*attention_out;
+	uint16_t *query_latent,*attention_latent,*attention_value,*attention_out;
 	uint16_t *gate_up,*intermediate,*expert_out,*shared_out;
 	uint16_t *fused_qkvb,*fused_decay_gate,*decay_latent,*gate_latent;
 	uint16_t *kda_beta_logit,*kda_gate_bf16,*kda_decay_logit,*kda_output;
@@ -1259,7 +1278,6 @@ static int SparkGlm5NextValFixtureBuild(SparkGlm5NextValFixture *fixture)
 		SparkGlm5NextValAllocMatrix(&fixture->kda_q_conv,SPARK_GLM5_NEXT_VKDA_DIM,SPARK_GLM5_NEXT_VKDA_CONV,0,0.05f) != 0 ||
 		SparkGlm5NextValAllocMatrix(&fixture->kda_k_conv,SPARK_GLM5_NEXT_VKDA_DIM,SPARK_GLM5_NEXT_VKDA_CONV,0,0.05f) != 0 ||
 		SparkGlm5NextValAllocMatrix(&fixture->kda_v_conv,SPARK_GLM5_NEXT_VKDA_DIM,SPARK_GLM5_NEXT_VKDA_CONV,0,0.05f) != 0 ||
-		SparkGlm5NextValAllocMatrix(&fixture->kda_out_norm,1u,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION,1,0.0f) != 0 ||
 		SparkGlm5NextValAllocMatrix(&fixture->kda_out,SPARK_GLM5_NEXT_VHIDDEN,SPARK_GLM5_NEXT_VKDA_DIM,0,0.005f) != 0 ||
 		SparkGlm5NextValAllocMatrix(&fixture->q_a,SPARK_GLM5_NEXT_VQUERY_A,SPARK_GLM5_NEXT_VHIDDEN,0,0.02f) != 0 ||
 		SparkGlm5NextValAllocMatrix(&fixture->q_a_norm,1u,SPARK_GLM5_NEXT_VQUERY_A,1,0.0f) != 0 ||
@@ -1294,7 +1312,13 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 	fixture->normed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
 	fixture->q_compressed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQUERY_A * 8u * sizeof(uint16_t));
 	fixture->q_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQ_B_ROWS * 8u * sizeof(uint16_t));
-	fixture->kv_slot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKV_SLOT_ELEMENTS * 8u * sizeof(uint16_t));
+	/* kv_slot serves BOTH paths: the MLA latent row (512) AND the KDA
+	 * key row (KDA_DIM = 8192) - allocate the KDA width or the split's
+	 * key copy overflows into the neighbouring allocations (the exact
+	 * defect the step-0 probe ran down: the "k" readback returned q's
+	 * bytes from the adjacent buffer). */
+	fixture->kv_slot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 8u * sizeof(uint16_t));
+	fixture->query_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 8u * sizeof(uint16_t));
 	fixture->attention_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 8u * sizeof(uint16_t));
 	fixture->attention_value = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VATTN_COLS * 8u * sizeof(uint16_t));
 	fixture->attention_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
@@ -1415,6 +1439,16 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 			cudaMemcpy(fixture->kda_state_index,&zero,sizeof(zero),cudaMemcpyHostToDevice) != cudaSuccess)
 			return(SparkGlm5NextValFail("fixture","page_table"));
 	}
+	/* o_norm: f32 ones (pack convention F32). */
+	{
+		uint32_t index;
+		for (index = 0u; index < SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION; index++)
+			fixture->kda_out_norm_host[index] = 1.0f;
+		fixture->kda_out_norm_dev = (float *)SparkGlm5NextValAllocZeroed(sizeof(fixture->kda_out_norm_host));
+		if (fixture->kda_out_norm_dev == 0 ||
+			cudaMemcpy(fixture->kda_out_norm_dev,fixture->kda_out_norm_host,sizeof(fixture->kda_out_norm_host),cudaMemcpyHostToDevice) != cudaSuccess)
+			return(SparkGlm5NextValFail("fixture","out_norm"));
+	}
 	/* dt_bias / A_log / router correction (f32, host-known). */
 	{
 		uint32_t index;
@@ -1467,7 +1501,7 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	weights->kda_q_conv_bf16 = fixture->kda_q_conv.device;
 	weights->kda_k_conv_bf16 = fixture->kda_k_conv.device;
 	weights->kda_v_conv_bf16 = fixture->kda_v_conv.device;
-	weights->kda_out_norm_bf16 = fixture->kda_out_norm.device;
+	weights->kda_out_norm_bf16 = fixture->kda_out_norm_dev;
 	weights->kda_out_bf16 = fixture->kda_out.device;
 	weights->kda_decay_bias_f32 = fixture->kda_dt_bias;
 	weights->kda_head_log_scale_f32 = fixture->kda_a_log;
@@ -1504,6 +1538,7 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	slot->q_compressed_bf16 = fixture->q_compressed;
 	slot->q_bf16 = fixture->q_bf16;
 	slot->kv_slot_bf16 = fixture->kv_slot;
+	slot->query_latent_bf16 = fixture->query_latent;
 	slot->attention_latent_bf16 = fixture->attention_latent;
 	slot->attention_value_bf16 = fixture->attention_value;
 	slot->attention_out_bf16 = fixture->attention_out;
@@ -1702,6 +1737,40 @@ static int SparkGlm5NextValRunTier2aAttention(SparkGlm5NextValFixture *fixture,u
 	static const uint32_t tokens[SPARK_GLM5_NEXT_VALIDATION_TOKENS] = {2u,5u,1u,4u};
 	uint32_t step;
 	int32_t status;
+	/* Null audit: the exact fields the MLA site demands, once. */
+	SparkGlm5NextValBuildWave(fixture,3u,tokens[0],0u);
+	{
+		const SparkGlm5NextLayerWeights *w = &fixture->weights;
+		const SparkGlm5NextExecutionSlot *slot = &fixture->slot;
+		struct { const char *name; const void *pointer; } audit[] = {
+			{"q_a",w->q_a_bf16},{"q_a_norm",w->q_a_norm_bf16},{"q_b",w->q_b_bf16},
+			{"kv_a",w->kv_a_bf16},{"kv_a_norm",w->kv_a_norm_bf16},
+			{"kv_b_key",w->kv_b_key_transposed_bf16},{"kv_b_value",w->kv_b_value_bf16},
+			{"attn_output",w->attn_output_bf16},{"attn_norm",w->attn_norm_bf16},
+			{"index_q",w->index_q_bf16},{"index_k",w->index_k_bf16},
+			{"index_head",w->index_head_bf16},{"index_norm_w",w->index_norm_weight_bf16},
+			{"index_norm_b",w->index_norm_bias_bf16},
+			{"compress_ape",w->index_compress_ape_f32},{"compress_gate",w->index_compress_gate_bf16},
+			{"hc_attn_fn",w->hc_attn_fn_f32},{"hc_attn_base",w->hc_attn_base_f32},
+			{"hc_attn_scale",w->hc_attn_scale_f32},
+			{"kv_slot",slot->kv_slot_bf16},{"q_compressed",slot->q_compressed_bf16},
+			{"q_bf16",slot->q_bf16},{"query_latent",slot->query_latent_bf16},
+			{"attention_latent",slot->attention_latent_bf16},
+			{"attention_value",slot->attention_value_bf16},
+			{"attention_out",slot->attention_out_bf16},
+			{"index_query",slot->index_query_bf16},{"index_key",slot->index_key_bf16},
+			{"index_gate",slot->index_gate_bf16},{"index_packed",slot->index_packed_bf16},
+			{"index_head_w",slot->index_head_weight_bf16},
+			{"hidden",slot->hidden_bf16},{"normed",slot->normed_bf16},
+			{"selected",slot->selected_positions},{"selection_scores",slot->selection_scores_f32},
+			{"hc_collapsed",slot->hc_collapsed_bf16},{"hc_snapshot",slot->hc_snapshot_bf16},
+			{"hc_mixes",slot->hc_mixes_f32},
+		};
+		uint32_t i;
+		for (i = 0u; i < sizeof(audit)/sizeof(audit[0]); i++)
+			if (audit[i].pointer == 0)
+				fprintf(stderr,"tier2a null: %s\n",audit[i].name);
+	}
 	for (step = 0u; step < SPARK_GLM5_NEXT_VALIDATION_TOKENS; step++)
 	{
 		SparkGlm5NextValBuildWave(fixture,3u,tokens[step],step);
@@ -1789,11 +1858,11 @@ static void SparkGlm5NextValOracleTier1Token(SparkGlm5NextValOracleWalk *walk,co
 	SparkGlm5NextValHcSite(walk->streams,fixture->hc_attn_fn_host,fixture->hc_attn_base_host,
 		fixture->hc_attn_scale_host,SPARK_GLM5_NEXT_MODEL_HC_EPSILON,
 		SPARK_GLM5_NEXT_VHC,SPARK_GLM5_NEXT_VHIDDEN,mixes,pre,post,comb,collapsed,snapshot);
-	SparkGlm5NextValKdaToken(collapsed,fixture->kda_qkv_beta.host,
+	SparkGlm5NextValKdaToken(collapsed,fixture->attn_norm.host,fixture->kda_qkv_beta.host,
 		fixture->kda_q_conv.host,fixture->kda_k_conv.host,fixture->kda_v_conv.host,
 		fixture->kda_decay_gate_down.host,fixture->kda_decay_up.host,
 		fixture->kda_gate_up.host,fixture->kda_dt_bias_host,fixture->kda_a_log_host,
-		fixture->kda_out_norm.host,fixture->kda_out.host,
+		fixture->kda_out_norm_host,fixture->kda_out.host,
 		walk->q_window,walk->k_window,walk->v_window,walk->state,sublayer);
 	SparkGlm5NextValHcPost(sublayer,snapshot,post,comb,SPARK_GLM5_NEXT_VHC,
 		SPARK_GLM5_NEXT_VHIDDEN,walk->streams);
@@ -1887,11 +1956,11 @@ int main(int argc,char **argv)
 			SparkGlm5NextValHcSite(walk.streams,fixture.hc_attn_fn_host,fixture.hc_attn_base_host,
 				fixture.hc_attn_scale_host,SPARK_GLM5_NEXT_MODEL_HC_EPSILON,
 				SPARK_GLM5_NEXT_VHC,SPARK_GLM5_NEXT_VHIDDEN,mixes,pre,post,comb,collapsed,snapshot);
-			SparkGlm5NextValKdaToken(collapsed,fixture.kda_qkv_beta.host,
+			SparkGlm5NextValKdaToken(collapsed,fixture.attn_norm.host,fixture.kda_qkv_beta.host,
 				fixture.kda_q_conv.host,fixture.kda_k_conv.host,fixture.kda_v_conv.host,
 				fixture.kda_decay_gate_down.host,fixture.kda_decay_up.host,
 				fixture.kda_gate_up.host,fixture.kda_dt_bias_host,fixture.kda_a_log_host,
-				fixture.kda_out_norm.host,fixture.kda_out.host,
+				fixture.kda_out_norm_host,fixture.kda_out.host,
 				walk.q_window,walk.k_window,walk.v_window,walk.state,sublayer);
 			if (step == 0u)
 			{
@@ -1930,6 +1999,10 @@ int main(int argc,char **argv)
 				cudaMemcpy(q_read,fixture.q_bf16,128u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
 			{
 				uint32_t j;
+				float gate_probe[128];
+				float v_probe[128];
+				uint16_t gate_read[128];
+				uint16_t v_read[128];
 				printf("probe retention[0..3] %f %f %f %f  write_gate[0..3] %f %f %f %f\n",
 					retention_probe[0],retention_probe[1],retention_probe[2],retention_probe[3],
 					write_gate_probe[0],write_gate_probe[1],write_gate_probe[2],write_gate_probe[3]);
@@ -1937,6 +2010,60 @@ int main(int argc,char **argv)
 					q_probe[j] = SparkGlm5NextValFromBf16(q_read[j]);
 				printf("probe q_norm_sq %f\n",
 					q_probe[0]*q_probe[0] + q_probe[1]*q_probe[1] + q_probe[2]*q_probe[2] + q_probe[3]*q_probe[3]);
+				if (cudaMemcpy(gate_read,fixture.kda_gate_bf16,128u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess &&
+					cudaMemcpy(v_read,fixture.gate_up,128u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
+				{
+					for (j = 0u; j < 8u; j++)
+					{
+						gate_probe[j] = SparkGlm5NextValFromBf16(gate_read[j]);
+						v_probe[j] = SparkGlm5NextValFromBf16(v_read[j]);
+					}
+					printf("probe gate[0..3] %f %f %f %f  v[0..3] %f %f %f %f\n",
+						gate_probe[0],gate_probe[1],gate_probe[2],gate_probe[3],
+						v_probe[0],v_probe[1],v_probe[2],v_probe[3]);
+				}
+				/* the o_proj INPUT: post norm+gate y, first head */
+				{
+					uint16_t y_read[8];
+					if (cudaMemcpy(y_read,fixture.attention_out,8u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
+						printf("probe y post-norm-gate head0 [0..3] %f %f %f %f\n",
+							SparkGlm5NextValFromBf16(y_read[0]),SparkGlm5NextValFromBf16(y_read[1]),
+							SparkGlm5NextValFromBf16(y_read[2]),SparkGlm5NextValFromBf16(y_read[3]));
+				}
+				/* THE O_PROJ GEMM TEST: recompute o_proj on the HOST from
+				 * the DEVICE's own y and the fixture weight, and compare
+				 * against the device's sublayer. Isolates the GEMM from
+				 * everything upstream (already verified equal). */
+				{
+					static uint16_t y_all[SPARK_GLM5_NEXT_VKDA_DIM];
+					static float recomputed[SPARK_GLM5_NEXT_VHIDDEN];
+					static float actual_out[SPARK_GLM5_NEXT_VHIDDEN];
+					uint16_t out_read[SPARK_GLM5_NEXT_VHIDDEN];
+					uint32_t row, column;
+					SparkGlm5NextValMetrics gemm_metrics;
+					if (cudaMemcpy(y_all,fixture.attention_out,
+						(uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess &&
+						cudaMemcpy(out_read,fixture.kda_output,
+						(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
+					{
+						for (row = 0u; row < SPARK_GLM5_NEXT_VHIDDEN; row++)
+						{
+							float acc = 0.0f;
+							for (column = 0u; column < SPARK_GLM5_NEXT_VKDA_DIM; column++)
+								acc += SparkGlm5NextValFromBf16(y_all[column]) *
+									fixture.kda_out.host[(uint64_t)row * SPARK_GLM5_NEXT_VKDA_DIM + column];
+							recomputed[row] = acc;
+							actual_out[row] = SparkGlm5NextValFromBf16(out_read[row]);
+						}
+						SparkGlm5NextValMeasure(&gemm_metrics,actual_out,recomputed,
+							SPARK_GLM5_NEXT_VHIDDEN);
+						(void)SparkGlm5NextValReport("probe o_proj gemm (device y vs host recompute)",
+							&gemm_metrics,0.02,0.999);
+						printf("probe o_proj recomputed[0..3] %f %f %f %f actual %f %f %f %f\n",
+							recomputed[0],recomputed[1],recomputed[2],recomputed[3],
+							actual_out[0],actual_out[1],actual_out[2],actual_out[3]);
+					}
+				}
 			}
 		}
 	}

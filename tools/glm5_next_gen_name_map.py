@@ -135,10 +135,11 @@ def main() -> int:
                        "heads; glm53 needs no slice)",
       delta="decay_rate = exp(A_log) per head, folded into the safe gate")
     e(A + "o_norm.weight", "kda_out_norm_weight", "k3", "kda_layers",
-      "replicated", "bf16",
-      transform="[128] per-channel",
-      delta="RMSNormGated with sigmoid activation, strict fp32 in kernel; "
-            "checkpoint stores BF16")
+      "replicated", "f32",
+      transform="[128] per-channel, UPCAST to f32 at pack time",
+      delta="the gated norm instantiates Weight=float (k3 convention) - a "
+            "bf16 store made the kernel read past the tensor and zeroed "
+            "channels 64..127 of every head (found on device, fixed)")
     e(A + "o_proj.weight", "kda_out_weight", "k3", "kda_layers",
       "output_dim_heads", "bf16")
 

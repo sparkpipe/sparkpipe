@@ -416,9 +416,9 @@
    "donor_module": "k3",
    "layer_class": "kda_layers",
    "shard_class": "replicated",
-   "codec": "bf16",
-   "transform": "[128] per-channel",
-   "delta": "RMSNormGated with sigmoid activation, strict fp32 in kernel; checkpoint stores BF16"
+   "codec": "f32",
+   "transform": "[128] per-channel, UPCAST to f32 at pack time",
+   "delta": "the gated norm instantiates Weight=float (k3 convention) - a bf16 store made the kernel read past the tensor and zeroed channels 64..127 of every head (found on device, fixed)"
   },
   {
    "checkpoint_pattern": "model.language_model.layers.{layer}.self_attn.o_proj.weight",

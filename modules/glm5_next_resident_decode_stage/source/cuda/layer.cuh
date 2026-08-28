@@ -699,7 +699,7 @@ static int32_t Glm5NextLayerAttention(
 
     if (buffers == 0 || rows == 0u || context == 0u ||
         buffers->qk_scale <= 0.0f || buffers->hidden_bf16 == 0 ||
-        buffers->residual_bf16 == 0 || buffers->normed_bf16 == 0 ||
+        buffers->normed_bf16 == 0 ||
         buffers->attn_norm_weight == 0 || buffers->kv_slot_bf16 == 0 ||
         buffers->attention_latent_bf16 == 0 ||
         buffers->attention_value_bf16 == 0 ||
@@ -1252,6 +1252,14 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float));
     if (status != LM_LAUNCH_OK)
         return(status);
+#ifdef GLM5_NEXT_KDA_DEBUG_LAUNCHES
+    fprintf(stderr,"kda delta: grid(%u,%u) threads %u shared %u heads %u vhp %u seqs %u slot_bytes %u q=%p k=%p v=%p out=%p\n",
+        sequences,rank_heads,GLM5_NEXT_LAYER_THREADS,
+        (unsigned)(GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float)),
+        rank_heads,1u,sequences,buffers->kda_state_slot_bytes,
+        (void*)buffers->q_bf16,(void*)buffers->kv_slot_bf16,(void*)buffers->gate_up_bf16,
+        (void*)buffers->attention_out_bf16);
+#endif
     LM_LAUNCH(
         (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM>),
         dim3(sequences,rank_heads),
@@ -1275,6 +1283,12 @@ static int32_t Glm5NextLayerKda(
         commit);
     /* RMSNorm before the gate (head-wise, fp32 strict), then the sigmoid
      * gate that has been waiting in kda_gate_bf16. */
+#ifdef GLM5_NEXT_KDA_DEBUG_LAUNCHES
+    fprintf(stderr,"kda norm: grid %llu threads %u shared %u dim %u\n",
+        (unsigned long long)((uint64_t)rows * rank_heads),GLM5_NEXT_LAYER_THREADS,
+        (unsigned)((GLM5_NEXT_KDA_VALUE_DIM + 8u) * sizeof(float)),
+        GLM5_NEXT_KDA_VALUE_DIM);
+#endif
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,float>),
         dim3((uint64_t)rows * rank_heads),

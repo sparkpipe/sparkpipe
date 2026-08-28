@@ -437,7 +437,11 @@ static inline int32_t SparkGlm5NextStagePackExpectedShape(uint32_t tensor_kind,u
         SparkGlm5NextStagePackShapeF32(shape,1u,1u,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT);
         break;
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT_NORM:
-        SparkGlm5NextStagePackShapeBf16(shape,1u,1u,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION);
+        /* F32 in the pack (k3 donor convention): the gated norm instantiates
+         * Weight=float, and a bf16 store made the kernel read past the
+         * tensor - weights 64..127 came back as whatever followed, and the
+         * upper half of every head's output silently zeroed. */
+        SparkGlm5NextStagePackShapeF32(shape,1u,1u,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION);
         break;
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT:
         SparkGlm5NextStagePackShapeBf16(shape,1u,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION);
