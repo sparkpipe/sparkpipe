@@ -43,7 +43,8 @@ from qwen4_flash_stagepack import (  # noqa: E402
     FULL_PHASE, GDN_CONV_KERNEL, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
     GDN_KEY_HEADS, GDN_QK_DIM, GDN_VALUE_DIM, GDN_VALUE_HEADS, HEADER_BYTES,
     HEADER_STRUCT, HIDDEN, LAYER_COUNT, MAGIC, MTP_LAYERS, MTP_LAYER,
-    MXFP4_GROUP, VOCAB, WEIGHT_BF16, WEIGHT_F32, WEIGHT_FP8_E8M0B128,
+    MXFP4_GROUP, PLE_LAYER, PLE_NGRAM_HEAD_DIM, PLE_NGRAM_ROWS, VOCAB,
+    WEIGHT_BF16, WEIGHT_F32, WEIGHT_I64, WEIGHT_FP8_E8M0B128,
     WEIGHT_FP8_F32B128, build_inventory, is_gdn_layer, kind_shape,
     layer_tensor_name, shard_ref, SafetensorsSource,
 )
@@ -144,6 +145,8 @@ def verify_directory(header: dict, entries: list[dict], tp_degree: int, tp_rank:
             want_payload, want_scale = entry["rows"] * entry["columns"] * 2, 0
         elif wire_format == WEIGHT_F32:
             want_payload, want_scale = entry["rows"] * entry["columns"] * 4, 0
+        elif wire_format == WEIGHT_I64:
+            want_payload, want_scale = entry["rows"] * entry["columns"] * 8, 0
         else:
             problems.append(f"kind={entry['tensor_kind']} unknown format {wire_format}")
             continue
@@ -190,7 +193,7 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
     import numpy as np
     problems: list[str] = []
     candidates = [entry for entry in entries
-                  if entry["weight_format"] in (WEIGHT_BF16, WEIGHT_F32)
+                  if entry["weight_format"] in (WEIGHT_BF16, WEIGHT_F32, WEIGHT_I64)
                   or entry["weight_format"] in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128)]
     stride = max(1, len(candidates) // sample_count)
     sampled = candidates[::stride][:sample_count]
@@ -229,9 +232,35 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                     if not np.array_equal(got, expected.astype("<u2")):
                         problems.append(f"kind={kind} layer={layer} bf16 triple-slice mismatch")
                     continue
-                if kind in (1, 3, 4, 30):  # hc-norm section kinds (final/attn/mlp/mtp-hidden)
+                if entry["weight_format"] == WEIGHT_I64:
+                    # Raw little-endian int64 hash constants: byte-exact copy.
+                    shard_name = source.weight_map[ref.name]
+                    with (source.root / shard_name).open("rb") as sf:
+                        sf.seek(source.resolve(ref.name)[2])
+                        want_raw = sf.read(entry["columns"] * 8)
+                    if payload != want_raw:
+                        problems.append(f"kind={kind} layer={layer} i64 byte mismatch")
+                    continue
+                if kind == 54:  # PLE n-gram table: spot-check rows in this rank's span
+                    import numpy as np
+                    shard_start = ref.ngram_shard_range[0] if hasattr(ref, "ngram_shard_range") else 0
+                    rows_per_shard = PLE_NGRAM_ROWS // 128
+                    for probe in (0, entry["rows"] // 2, entry["rows"] - 1):
+                        shard_index = shard_start + probe // rows_per_shard
+                        in_shard = probe % rows_per_shard
+                        shard_name = f"model.language_model.layers.{PLE_LAYER}.ple.ple_embedding.ngram_embedding.shard_{shard_index}.weight"
+                        with (source.root / source.weight_map[shard_name]).open("rb") as sf:
+                            sf.seek(source.resolve(shard_name)[2] + in_shard * PLE_NGRAM_HEAD_DIM * 2)
+                            want_row = sf.read(PLE_NGRAM_HEAD_DIM * 2)
+                        got_row = payload[probe * PLE_NGRAM_HEAD_DIM * 2:(probe + 1) * PLE_NGRAM_HEAD_DIM * 2]
+                        if got_row != want_row:
+                            problems.append(f"kind=54 ngram row {probe} mismatch (shard {shard_index})")
+                            break
+                    continue
+                if kind in (1, 31) or kind in (3, 4, 30, 47, 48, 49):
+                    # Full-width [4H] group-norm vectors (v2: the stream-0
+                    # section approximation is retired).
                     vector = source_vector(source, ref.name)
-                    expected = vector[:entry["columns"]] if entry["columns"] < len(vector) else vector
                 elif row_slice is None and column_slice is None:
                     expected = source_matrix(source, ref.name)
                     if expected.ndim == 3:
