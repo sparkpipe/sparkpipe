@@ -71,3 +71,22 @@ enum entry — not five family edits.
 4. The recipe compiler emits the provider block per model (the
    contract already records 'speculation provider + verification
    contract' per MODEL_SUPPORT.md).
+
+## Addendum: the tournament provider (operator idea, assessed)
+
+"Run multiple speculators in realtime and use it to improve quality" —
+the honest framing: a speculator CANNOT improve output quality
+(verification pins emitted tokens to the target model — that is its
+contract). What multiple live speculators CAN improve is ACCEPTANCE:
+race N drafters per step, verify the longest draft, emit its accepted
+prefix. Draft compute is cheap (small models); verification is the
+fixed cost either way — so a tournament raises the effective
+acceptance rate toward max(drafters) at ~N x draft FLOPs, which is
+the throughput lever. Adaptive variant: a per-prompt bandit picks the
+drafter (prompt-class specialization — coding vs prose drafters).
+This composes NATURALLY on the provider interface: a tournament
+provider WRAPS N providers and exposes the same contract — the
+abstraction makes the idea a module, not an architecture change.
+Caveat to verify by measurement: GPU time-slicing N live drafters may
+eat the win below N=2-3; the wrapper must measure and expose its own
+acceptance telemetry per drafter so the portfolio tests have data.

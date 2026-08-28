@@ -82,6 +82,29 @@ DSpark2 = a new provider module, not five family edits).
 6. Serving completion: B-ladder honest re-measure (P1b cliff fixed),
    prefill regressions closed, prefix caching + JIT-KV tiers live.
 
+## SOTA NORMALIZATION (operator directive 2026-08-29)
+
+4x faster on 4x sparks is NOT 4x SOTA — it is 1x. All claims
+normalize to SPARK-EQUIVALENT throughput: single-spark cells are the
+head-to-head SOTA++ baseline FIRST; topology stacking (TP/PP/EP) is a
+SEPARATE, second-axis gain reported alongside, never blended into the
+per-spark number. The scoreboard carries both axes explicitly.
+
+## INCOMING SOURCES (sysadmin, ~1 day)
+
+GLM 5.3 (full) official BF16 + FP8 + radixark NVFP4 (community —
+VETTING REQUIRED per policy); Qwen Max 4-bit found. Implication:
+multiple expert precisions per model, FULL-SIZED spines — the island
+catalog gains a precision-variant axis; the quant policy's
+official/vetted rule applies per variant.
+
+## SPECULATOR PORTFOLIO (operator)
+
+A dozen speculators incoming for head-to-head testing. The provider
+abstraction (SPECULATION_PROVIDER_DESIGN.md) is the harness for it.
+The operator's multi-speculator-live idea is assessed as the
+TOURNAMENT PROVIDER: see the design doc's addendum.
+
 ## The island-catalog manifest (operator-ratified abstraction)
 
 An ISLAND = compute nodes + fabric + a CATALOG of pre-vetted model
