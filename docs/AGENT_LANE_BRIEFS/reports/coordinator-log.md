@@ -507,3 +507,7 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   ready-lines + M5 number are the next landmarks.
 - ceph canary + spark0 disk post-rescue: healthy (585G free).
 - Scoreboard unchanged.
+  - LATE NOTE: canary ENOENT returned on shard 80 (spark6) — the
+    intermittent MDS signature. Possibly the MacStudio MDS migration
+    work itself (failovers during the move); glm53's launch is
+    local-NVMe-only, unaffected. Watching.
