@@ -28,14 +28,17 @@ OUT="${1:?usage: k3_gen_deployment.sh OUT_PATH}"
   echo '    "max_active_sequences": 16,'
   echo '    "max_input_rows": 16,'
   echo '    "resident_sequence_capacity": 16,'
-  echo '    "kv_logical_page_capacity": 4096,'
-  echo '    "kv_physical_page_capacity": 4096'
+  echo '    "kv_logical_page_capacity": 0,'
+  echo '    "kv_physical_page_capacity": 0'
   echo '  },'
   echo '  "nodes": ['
   for i in $(seq 0 15); do
     hex=$(printf '%x' "$i")
     host="spark$hex"
-    stage=$((i / 4))
+    # stage_index is the LINEAR pipe position (must be unique per node:
+    # the deployment schema treats every rank as a stage). The K3 adapter
+    # derives its PP stage as stage_index / tp_degree itself.
+    stage=$i
     comma=","
     [ "$i" = "15" ] && comma=""
     echo '    {'
