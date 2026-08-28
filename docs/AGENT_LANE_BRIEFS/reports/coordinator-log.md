@@ -852,3 +852,22 @@ Operator question: does two-model co-residency work? Phase-1 results:
   (one real correction each — the duplicated define + the exact
   32**-0.5 scale). RECIPE-COMPILER v0 EXISTS. The token-saver is real:
   geometry headers are never hand-written again.
+
+## 2026-08-29 ~10:5x — SPECULATION PROVIDER DESIGN (operator directive)
+
+- All spec types supported: MTP, DFlash, DSpark, DFlash2, + the coming
+  DSpark2 and successors (not every model gets today's best — the
+  fleet needs the portfolio). Design: docs/SPECULATION_PROVIDER_
+  DESIGN.md; recorded in GOALS (060138b).
+- Shape: provider = capability unit behind the adapter template
+  (kind/capability/draft-lifecycle/verify-contract/KV-interaction/env
+  schema); INNER LOOPS STAY PROVIDER-OWNED — zero hot-path
+  indirection, the module-ABI principle applied to speculation.
+- The verify-contract slot is where the lease-advance bug class lives
+  (it hit twice, per-family) — one implementation kills the class.
+- Sequenced into W2: the template gains the slot this sprint (design +
+  two-shape mapping: glm52_dspark module-provider + 27B embedded
+  dflash2); family migration is post-cleaning with cell-unchanged
+  gates; DFlash2's env contract migrates last (most receipts). W2's
+  agent session ended mid-flight — the addition rides its resume/PR
+  review.
