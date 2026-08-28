@@ -1092,3 +1092,13 @@ failure is ever diagnosable through the wire.
   route wide, attention_out narrow. Structural compile clean.
 - REAL-TOKENS AGENT spawned: rebuild from main → deploy 16 → wave →
   curl (expect NON-ZERO tokens) → M5 exact-32K B1 → COMPSEC-17.
+
+## 2026-08-30 ~0:1x — PARALLEL DOCTRINE REAFFIRMED (operator)
+
+- Agent model-request failures are transient; the answer is RESPAWN,
+  never coordinator-centralization. Both dead lanes respawned:
+  real-tokens (deploy HC fix → first tokens → M5 → COMPSEC-17) and
+  bulk-packs2 (speculators P1, official 27B FP8 P2, NVFP4 study arms
+  P3). W2 dry-template2 continues (its branch shows items 2-5 landed —
+  coordinator merges next window). Coordinator: merges + own IR queue
+  only.
