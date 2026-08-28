@@ -850,7 +850,11 @@ from pathlib import Path
 # gen_geometry_header.py (qwen38_27b BYTE-IDENTICAL proof; glm5_next +
 # qwen4_flash cut over w/ corrections), dead-field deletion. 215055 exact
 # post-merge.
-CEILING = 215055
+# W2 dry-template item 1 (module-lifecycle library; qwen38_27b +
+# dsv4 cut over, families 1-2 of 5; glm52/glm5_next/k3 follow): the
+# dsv4 cutover alone NET-DELETED 40 lines while sharing the lifecycle.
+# 215321 exact post-merge.
+CEILING = 215321
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
