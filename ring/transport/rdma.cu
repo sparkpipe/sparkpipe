@@ -4916,13 +4916,14 @@ static SparkStatus SparkHiddenSparkHostRdmaSendPersistent(
             receive,packet) == 0u)
     {
         fprintf(stderr,
-            "G5N-TP rdma-send-validate route=%s persistent=%u used=%u gen=%llu/%llu seq=%llu/%llu tok=%u/%u rows=%u/%u\n",
+            "G5N-TP rdma-send-validate route=%s persistent=%u used=%u gen=%llu/%llu seq=%llu/%llu tok=%llu/%llu rows=%u/%u\n",
             state->endpoint.route_name,receive->persistent,receive->used,
             (unsigned long long)receive->generation,
             (unsigned long long)generation,
             (unsigned long long)receive->sequence_id,
             (unsigned long long)(packet != 0 ? packet->sequence_id : 0u),
-            receive->token_index,packet != 0 ? packet->token_index : 0u,
+            (unsigned long long)receive->token_index,
+            (unsigned long long)(packet != 0 ? packet->token_index : 0u),
             receive->active_sequence_count,
             packet != 0 ? packet->active_sequence_count : 0u);
         return SPARK_STATUS_VALIDATION_FAILED;
