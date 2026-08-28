@@ -442,3 +442,14 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   is one command per node.
 - Bisect asked directly: 32K run complete / in-flight / done-unreported?
   (its TP4 fleet still up, GPUs idle, worktree quiet for hours).
+
+## 2026-08-28 ~21:0x KST — 32K run in-flight w/ +25min cutoff; two meta-notes
+
+- Bisect's exact-32K main+fix run in-flight (31m into prefill; lean's
+  took 17m — the PREFILL ASYMMETRY is an open dsv4 item independent of
+  the restored decode). Hard cutoff +25m then TERM+release; glm53
+  launches on release.
+- SWEEP RULE ADJUSTMENT: GB10 nvidia-smi reads 0% under real load —
+  GPU-util is NOT an idleness signal on residentd-serving nodes; use
+  process + queue state (the 'GPU idleness is a finding' rule now
+  qualifies this).
