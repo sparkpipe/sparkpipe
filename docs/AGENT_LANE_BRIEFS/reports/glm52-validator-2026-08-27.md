@@ -308,6 +308,11 @@ reserve spark8-f in the queue first, then launch all 8 ranks within one
 config/model_resident.json --rank-index r on each), and tear down after
 the run.
 
+Branch lane/glm52-validator-fix pushed; PR https://github.com/sparkpipe/sparkpipe/pull/728
+(commits ddb1000 F1/F2 diagnosis, 876a665 F3 validator fix + hermetic gate,
+633e29a adapter rule fix, 1067921 F4 bring-up fixes + report). Workspace on
+spark8: /home/spark8/glm52_fix_repo (kept for follow-up B8/B16 bring-ups).
+
 ## INTEGRATION REQUESTS
 
 1. tests/test_glm52_cuda_validator_tier2_oracle.py (new, this lane) and
