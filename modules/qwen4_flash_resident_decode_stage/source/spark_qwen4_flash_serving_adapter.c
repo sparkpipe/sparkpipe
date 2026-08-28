@@ -329,7 +329,10 @@ static SparkStatus SparkQwen4FlashServingSetEnvironment(
 	SPARK_QWEN4_FLASH_SERVING_SET_TEXT("SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION","1");
 	SPARK_QWEN4_FLASH_SERVING_SET_TEXT("SPARK_QWEN4_FLASH_STAGE_PACK_PATH",state->stage_pack_path);
 	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_COUNT",state->pp_stage_count);
-	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_INDEX",state->stage_index);
+	/* configuration->stage_index is the NODE's unique chain position
+	 * (0..node_count-1); the module's slice plan indexes PP stages, so
+	 * hand it the group stage, not the chain position. */
+	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_INDEX",SparkQwen4FlashServingPpStageIndex(state,state->stage_index));
 	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_FIRST_LAYER",state->first_layer_index);
 	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_LAYER_COUNT",state->stage_layer_count);
 	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_MAX_ACTIVE_SEQUENCES",state->max_active_sequence_count);

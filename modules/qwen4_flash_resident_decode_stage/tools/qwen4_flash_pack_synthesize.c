@@ -72,7 +72,14 @@ static int32_t SparkQwen4FlashSynthesizeAppend(SparkQwen4FlashSynthesizeContext 
 		return(-1);
 	if ( SparkQwen4FlashStagePackResolvedShape(tensor_kind,layer_index,is_global,&shape) < 0 )
 		return(-2);
-	format = quantize != 0u ? shape.natural_format : SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16;
+	/* --bf16 substitutes BF16 only where the quantized codecs would sit
+	 * (natural F32B128 experts): f32/bf16-natural kinds (A_log, dt_bias,
+	 * norms...) keep their natural format - the loader accepts BF16 over
+	 * an F32B128 natural shape ONLY, and a blanket conversion produces
+	 * pack_entry_invalid on the first f32-natural kind. */
+	format = quantize != 0u ? shape.natural_format :
+		(shape.natural_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ?
+		 SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 : shape.natural_format);
 	entry = &context->entries[context->entry_count];
 	entry->tensor_kind = tensor_kind;
 	entry->layer_index = (is_global != 0u && layer_index != SPARK_QWEN4_FLASH_STAGEPACK_MTP_LAYER) ? SPARK_QWEN4_FLASH_STAGEPACK_GLOBAL_LAYER : layer_index;
