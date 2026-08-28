@@ -342,3 +342,14 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   (budget conservation + uncertainty).
 - Survivors healthy; queue reservations unchanged (glm53's spark9-f set
   persists). Scoreboard unchanged.
+
+## 2026-08-28 ~16:0x KST — resume verification RESOLVED: glm53 alive, bisect re-attempted
+
+- glm53 RESUME CONFIRMED ALIVE: commit 21bcf7c pushed 23 min post-resume
+  (M4 pack work underway; the dir-mtime check was flawed — branch tips
+  are the truth).
+- Bisect first resume did NOT execute (zero activity 1h). Second attempt
+  sent with a touch-your-worktree first action; if silent another 30 min,
+  the bisect re-tasks to a fresh agent next window (state carries in its
+  report/receipts).
+- Scoreboard unchanged; survivors healthy.
