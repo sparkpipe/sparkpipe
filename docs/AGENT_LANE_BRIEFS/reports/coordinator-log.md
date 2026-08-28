@@ -174,3 +174,20 @@
 - SYSADMIN+1: sparke wedged at NETWORK level twice today (self-recovered,
   one self power-cycle) — node-health check requested before it hosts
   long-running work.
+
+## 2026-08-28 ~15:0x — KNEE CURVE: B32 = 1469 tok/s aggregate (thesis proven); Pro lane stray cleared
+
+- KNEE SWEEP MAIN CURVE (128-lane cfg, weights resident): B1-32 decode
+  aggregate 8.44/16.86/33.73/111.18/406.65/1469.40 tok/s; step time
+  118.5→21.8 ms. The compute-thesis proof — with 55GB weights resident
+  the B1 step floor is overhead, not weight streaming; scoreboard updated.
+- P1 FOUND (knee lane, B=24/48): intermittent FAILURE_DEACTIVATE_ROUTE
+  (status=17 INTERNAL_ERROR reason=7) in the prefetch-abort deactivate
+  path, node/model_residentd.c:1413-1417 — root-caused to code, logs
+  captured; fix to be scheduled off the lane's receipts.
+- B=64 pathology (3.5 tok/s, GPU busy) — 64-lane comparison ladder
+  running to isolate lane-capacity overhead.
+- DSV4 PRO STRAY: its rank-3 on spark3 self-exited fleet-less
+  (transport-wait); spark3 is knee-reserved AND an MDS host. Marker left
+  in its deployment dir; fleet-only + storage-host rules re-cited.
+  spark2's rank-0 daemon = the legitimate 27B dev instance.
