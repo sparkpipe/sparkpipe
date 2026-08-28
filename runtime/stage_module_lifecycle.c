@@ -54,7 +54,7 @@ SparkStatus SparkStageModuleLifecycleInitialize(
     ops->describe(state, &lifecycle);
     lifecycle.ledger->module_tag = lifecycle.module_tag;
     SparkStageModuleLifecycleInitializeCounters(&lifecycle);
-    status = ops->state_prepare(state, host_services);
+    status = ops->state_prepare(state, configuration, host_services);
     if (status != SPARK_STATUS_OK)
     {
         SparkStageModuleLifecycleDestroy(state, ops);

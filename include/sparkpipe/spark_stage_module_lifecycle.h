@@ -55,10 +55,13 @@ typedef struct SparkStageModuleLifecycleOps
     void (*describe)(void *state, SparkStageModuleLifecycle *lifecycle);
     /* Configuration, pack load, pools, slots: everything between the state
      * allocation and readiness; families that derive configuration from the
-     * host services (transport stream, kv backing) receive them here. A
-     * non-OK status routes to the full destroy path (quiesce over zeroed
-     * slots, family teardown, ledger release). */
+     * host services (transport stream, kv backing) receive them here, and
+     * the module configuration is forwarded because some families
+     * cross-check it against the node context. A non-OK status routes to
+     * the full destroy path (quiesce over zeroed slots, family teardown,
+     * ledger release). */
     SparkStatus (*state_prepare)(void *state,
+        const SparkFirmwareModuleConfiguration *configuration,
         const SparkFirmwareModuleHostServices *host_services);
     /* Optional readiness banner (stderr, family format). */
     void (*state_report_ready)(void *state);

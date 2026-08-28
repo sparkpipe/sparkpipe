@@ -6188,6 +6188,7 @@ static void SparkDsv4ModuleDescribe(
  * and every teardown branch is guarded). */
 static SparkStatus SparkDsv4ModulePrepare(
 	void *module_state,
+	const SparkFirmwareModuleConfiguration *configuration,
 	const SparkFirmwareModuleHostServices *host_services)
 {
 	SparkDsv4ModuleState *state = (SparkDsv4ModuleState *)module_state;
@@ -6195,6 +6196,7 @@ static SparkStatus SparkDsv4ModulePrepare(
 	uint32_t slot_index;
 	SparkStatus status;
 
+	(void)configuration;
 	if ( pthread_mutex_init(&state->cache_mutex,0) != 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	state->cache_mutex_initialized = 1u;

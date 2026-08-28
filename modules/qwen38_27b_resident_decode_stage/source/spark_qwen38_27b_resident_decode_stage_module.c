@@ -3584,6 +3584,7 @@ static void SparkQwen38_27bModuleDescribe(
  * destroy path. */
 static SparkStatus SparkQwen38_27bModulePrepare(
     void *module_state,
+    const SparkFirmwareModuleConfiguration *configuration,
     const SparkFirmwareModuleHostServices *host_services)
 {
     SparkQwen38_27bModuleState *state;
@@ -3591,6 +3592,7 @@ static SparkStatus SparkQwen38_27bModulePrepare(
     uint32_t slot_index;
     SparkStatus status;
 
+    (void)configuration;
     (void)host_services;
     state = (SparkQwen38_27bModuleState *)module_state;
     pack_path = 0;

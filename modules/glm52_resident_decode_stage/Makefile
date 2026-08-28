@@ -45,6 +45,7 @@ MODEL_HEADER := ../../model-families/glm52/include/sparkpipe/spark_glm52_model.h
 MODULE_ENTRY_PREFIX := SparkGlm52ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm52_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
+	../../runtime/stage_module_lifecycle.c \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \

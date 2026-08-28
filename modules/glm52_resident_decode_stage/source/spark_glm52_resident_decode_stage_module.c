@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_glm52_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
 
@@ -119,6 +120,9 @@ struct SparkGlm52ModuleState
 	atomic_ullong rejected_count;
 	atomic_ullong failed_count;
 	atomic_ullong host_callback_completion_count;
+	/* The shared lifecycle's counter view carries a tokens_emitted bucket;
+	 * glm52 counts emissions driver-side, so this stays zero. */
+	atomic_ullong tokens_emitted;
 	SparkTpDeviceCollective tp_device_collective;
 	uint32_t tp_device_collective_initialized;
 	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
@@ -1758,7 +1762,7 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageExecute(
+static SparkStatus SparkGlm52ModuleExecuteFrame(
 	void *module_state,
 	SparkModelDriverFrame *frame)
 {
@@ -1791,7 +1795,7 @@ static void SparkGlm52AdmissionCost(
 	decision->device_memcpy_bytes = decision->host_staging_bytes;
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageAdmit(
+static SparkStatus SparkGlm52ModuleAdmit(
 	void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
 	SparkModelDriverAdmissionDecision *decision)
@@ -1801,8 +1805,6 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
 	uint32_t available;
 	SparkStatus status;
 	state = (SparkGlm52ModuleState *)module_state;
-	if ( state == 0 || request == 0 || decision == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
 	memset(&table,0,sizeof(table));
 	table.abi_version = SPARK_ADMISSION_ABI_VERSION;
@@ -1824,44 +1826,33 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
 	return(status);
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageSnapshot(
+static void SparkGlm52ModuleSnapshotExtend(
 	void *module_state,
-	uint32_t program_id,
 	SparkModelDriverRuntimeSnapshot *snapshot)
 {
 	SparkGlm52ModuleState *state;
 	uint32_t index,resident_count;
 	state = (SparkGlm52ModuleState *)module_state;
-	if ( state == 0 || snapshot == 0 || program_id == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkStageModuleRuntimeSnapshotInitialize(snapshot,program_id,state->slot_states,state->pipeline_slot_count);
-	snapshot->submitted_count = atomic_load_explicit(&state->submitted_count,memory_order_relaxed);
-	snapshot->completed_count = atomic_load_explicit(&state->completed_count,memory_order_relaxed);
-	snapshot->rejected_count = atomic_load_explicit(&state->rejected_count,memory_order_relaxed);
 	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
 	resident_count = 0u;
 	for (index=0u; index<state->resident_sequence_capacity; index++)
 		resident_count += atomic_load_explicit(&state->lane_bound[index],memory_order_acquire) != 0u ? 1u : 0u;
 	snapshot->resident_sequence_count = resident_count;
 	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
-	return(SPARK_STATUS_OK);
 }
 
-void SparkGlm52ResidentDecodeStageDestroy(void *module_state)
+/* Family teardown AFTER the lifecycle's quiesce wait; the lifecycle
+ * releases the ledger and frees the state afterwards. */
+static void SparkGlm52ModuleStateTeardown(void *module_state)
 {
 	SparkGlm52ModuleState *state;
 	state = (SparkGlm52ModuleState *)module_state;
-	if ( state == 0 )
-		return;
-	if ( SparkStageModuleWaitForSlots(SPARK_GLM52_MODULE_TAG,state->slot_states,state->pipeline_slot_count,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK )
-		return;
 	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm52ReleaseSlotHost(state);
-	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state->kv_blocks);
 	free(state->kv_resident_slot_logical_block_indices);
 	free(state->kv_entries);
@@ -1874,22 +1865,23 @@ void SparkGlm52ResidentDecodeStageDestroy(void *module_state)
 	free(state->kv_lane_mutable_page);
 	free(state->kv_lane_mutation_flags);
 	free(state->kv_lane_cache_lanes);
-	free(state);
 }
 
-static SparkStatus SparkGlm52InitializeState(
+/* Configuration, pack load, caches, slots, tp collective - the family's
+ * original order. The lifecycle allocated and zeroed the state, set the
+ * ledger tag, and initialized the submission counters before this runs,
+ * and routes any failure to the full destroy path (quiesce over the still-
+ * zeroed slot array, family teardown, ledger release). */
+static SparkStatus SparkGlm52ModulePrepare(
+	void *module_state,
 	const SparkFirmwareModuleConfiguration *configuration,
-	const SparkFirmwareModuleHostServices *host_services,
-	SparkGlm52ModuleState **state_out)
+	const SparkFirmwareModuleHostServices *host_services)
 {
 	SparkGlm52ModuleState *state;
 	const char *pack_path;
 	SparkStatus status;
 	uint32_t lane;
-	state = (SparkGlm52ModuleState *)calloc(1u,sizeof(*state));
-	if ( state == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state->ledger.module_tag = SPARK_GLM52_MODULE_TAG;
+	state = (SparkGlm52ModuleState *)module_state;
 	status = SparkGlm52ModuleConfigure(state,configuration,host_services,&pack_path);
 	if ( status == SPARK_STATUS_OK && SparkGlm52ConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;
@@ -1902,12 +1894,7 @@ static SparkStatus SparkGlm52InitializeState(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ModuleInitializeTpCollective(state,(const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context);
 	if ( status != SPARK_STATUS_OK )
-	{
-		SparkGlm52ReleaseSlotHost(state);
-		SparkStageModuleLedgerRelease(&state->ledger);
-		free(state);
 		return(status);
-	}
 	SparkStageModuleAtomicStateArrayInitialize(state->slot_states,state->pipeline_slot_count);
 	SparkStageModuleAtomicStateArrayInitialize(state->lane_states,state->resident_sequence_capacity);
 	for (lane=0u; lane<state->resident_sequence_capacity; lane++)
@@ -1916,30 +1903,48 @@ static SparkStatus SparkGlm52InitializeState(
 		atomic_init(&state->lane_sequence_ids[lane],0u);
 		atomic_init(&state->lane_next_positions[lane],0u);
 	}
-	atomic_init(&state->submitted_count,0u);
-	atomic_init(&state->completed_count,0u);
-	atomic_init(&state->rejected_count,0u);
-	atomic_init(&state->failed_count,0u);
+	/* submitted/completed/rejected/failed/tokens_emitted are the shared
+	 * lifecycle's; these two are glm52's own counters. */
 	atomic_init(&state->host_callback_completion_count,0u);
 	atomic_init(&state->tp_next_ordinal,0u);
-	*state_out = state;
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageInitialize(
-	const SparkFirmwareModuleConfiguration *configuration,
-	const SparkFirmwareModuleHostServices *host_services,
-	void **module_state)
+/* Shared firmware-module lifecycle wiring (see
+ * include/sparkpipe/spark_stage_module_lifecycle.h). Everything above this
+ * block is family work; the five ABI entry points below are the template's.
+ * glm52 runs no environment gate and publishes no readiness banner, so
+ * those hooks stay unset. */
+static void SparkGlm52ModuleDescribe(
+	void *module_state,
+	SparkStageModuleLifecycle *lifecycle)
 {
 	SparkGlm52ModuleState *state;
-	SparkStatus status;
-	status = SparkFirmwareModuleValidateInitialization(configuration,host_services,module_state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	state = 0;
-	status = SparkGlm52InitializeState(configuration,host_services,&state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	*module_state = state;
-	return(SPARK_STATUS_OK);
+	state = (SparkGlm52ModuleState *)module_state;
+	lifecycle->module_tag = SPARK_GLM52_MODULE_TAG;
+	lifecycle->ledger = &state->ledger;
+	lifecycle->slot_states = state->slot_states;
+	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
+	lifecycle->submitted_count = &state->submitted_count;
+	lifecycle->completed_count = &state->completed_count;
+	lifecycle->rejected_count = &state->rejected_count;
+	lifecycle->failed_count = &state->failed_count;
+	lifecycle->tokens_emitted = &state->tokens_emitted;
 }
+
+static const SparkStageModuleLifecycleOps SparkGlm52ModuleLifecycle =
+{
+	sizeof(SparkGlm52ModuleState),
+	0, /* initialize_gate */
+	SparkGlm52ModuleDescribe,
+	SparkGlm52ModulePrepare,
+	0, /* state_report_ready */
+	SparkGlm52ModuleStateTeardown,
+	SparkGlm52ModuleExecuteFrame,
+	SparkGlm52ModuleAdmit,
+	SparkGlm52ModuleSnapshotExtend
+};
+
+SPARK_STAGE_MODULE_LIFECYCLE_ENTRY_POINTS(
+	SparkGlm52ResidentDecodeStage,
+	&SparkGlm52ModuleLifecycle)
