@@ -54,7 +54,7 @@
 #endif
 
 #define SPARK_QWEN4_FLASH_SERVING_ADAPTER_ID \
-	"spark.qwen4_flash.serving-adapter.tp4-pp3.v1"
+	"spark.qwen4_flash.serving-adapter.tp4.v1"
 #define SPARK_QWEN4_FLASH_SERVING_MODEL_ID "Qwen/Qwen3.8-Flash-Next"
 #define SPARK_QWEN4_FLASH_SERVING_DRIVER_MODEL_ID \
 	"qwen4_flash.resident-decode-stage-firmware"
@@ -62,14 +62,15 @@
 #define SPARK_QWEN4_FLASH_SERVING_TARGET \
 	"cuda.sm121.qwen4_flash.resident_decode_stage.fp8"
 #define SPARK_QWEN4_FLASH_SERVING_PROGRAM_NAME "resident_decode"
-/* 12 world ranks at TP4xPP3 (48 layers, 4 per stage); stage_index is the world rank. The TP degree is a
- * RUNTIME value from the stage configuration ("tp_degree": 4 -> TP4xPP4,
- * 16 -> TP16xPP1), so one adapter serves both topologies. Pipeline
- * boundaries (hidden in/out, token in/out) are PP boundaries and the
- * per-PP-stage layer counts derive from the degree. The TP-rank tensor
- * sharding (column/row-parallel hidden slices and the router/expert
- * all-reduces) is OUTSTANDING and lands with the rank-local packs. */
-#define SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT 12u
+/* TP mode = single-stage whole stack (27b-mirrored): every rank runs
+ * module stage 1/1 - all 48 layers, embedding AND head - and the TP4
+ * device collective (embedding all-reduce, u64 maxloc, per-layer residual
+ * reduces) spans the ranks; no PP hidden boundaries exist. The TP degree
+ * is a RUNTIME value from the stage configuration ("tp_degree": 4). The
+ * old TP4xPP3 12-rank plan predates the sharded-serving port and is
+ * retired: a PP split needs per-stage slice packs that do not exist, and
+ * the fleet-wide 16-rank re-shard is a coordinator merge-time pass. */
+#define SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT 1u
 #define SPARK_QWEN4_FLASH_SERVING_DEFAULT_TP_DEGREE 4u
 #define SPARK_QWEN4_FLASH_SERVING_MAX_PP_STAGE_COUNT 4u
 /* Serving caps context at the model's native 262144 until the KV-tier
@@ -226,7 +227,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen4FlashServingDescriptor
 	.model_revision = QWEN4_FLASH_MODEL_REVISION,
 	.driver_program_name = SPARK_QWEN4_FLASH_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = QWEN4_FLASH_CONTRACT_SHA256,
-	.stage_layer_counts = {0u,0u,0u,0u},
+	.stage_layer_counts = {SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT,0u,0u,0u},
 	.minimum_efficient_submission_row_count = 0u
 };
 
@@ -277,7 +278,7 @@ static SparkStatus SparkQwen4FlashServingLoadConfiguration(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen4FlashServingJsonUnsigned(&document,root,"tp_degree",&state->tp_degree);
-	if ( status == SPARK_STATUS_OK && (state->tp_degree == 0u || SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT % state->tp_degree != 0u || state->tp_degree > SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT) )
+	if ( status == SPARK_STATUS_OK && (state->tp_degree == 0u || state->tp_degree > SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_HEAD_COUNT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	token = status == SPARK_STATUS_OK ? SparkQwen4FlashServingJsonMember(&document,root,"stage_pack_path") : -1;
 	if ( status == SPARK_STATUS_OK )
@@ -1199,10 +1200,12 @@ static SparkStatus SparkQwen4FlashServingInitialize(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
-		/* PP geometry derives from the config's tp_degree: TP4 -> four
-		 * stages of 23 layers, TP16 -> one stage of 92. */
+		/* Whole-stack TP serving (27b-mirrored): one PP stage holding
+		 * every layer regardless of the TP degree - the ranks of a TP
+		 * group share stage 0. Guard the ratio so a tp_degree above the
+		 * (single) stage count cannot zero it. */
 		uint32_t pp,base,extra;
-		state->pp_stage_count = SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT / state->tp_degree;
+		state->pp_stage_count = SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT >= state->tp_degree ? SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT / state->tp_degree : 1u;
 		if ( state->pp_stage_count > SPARK_QWEN4_FLASH_SERVING_MAX_PP_STAGE_COUNT )
 			state->pp_stage_count = SPARK_QWEN4_FLASH_SERVING_MAX_PP_STAGE_COUNT;
 		base = SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT / state->pp_stage_count;

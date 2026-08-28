@@ -765,7 +765,12 @@ from pathlib import Path
 # 192135 after the qwen4_flash v2 semantics port (hc residual + indexer +
 # PLE kernels, pack format v2, validator oracle hooks - the M5.2/M5.4/M5.5
 # milestone work on lane/qwen-flash); +4256 over the prior ceiling.
-CEILING = 192135
+# 192989 after the qwen-flash S5/S6 serving window: the whole-stack TP
+# adapter mode (stage 1/1, TP4xPP3 retired) + the one-wave pid-file
+# launcher rewrite (TERM-only recorded pids, memory watchdog); absorbs
+# the +708 that crept in after the v2 port under the PLE/MTP live fixes
+# and the v3 pack session without a bump.
+CEILING = 192989
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
