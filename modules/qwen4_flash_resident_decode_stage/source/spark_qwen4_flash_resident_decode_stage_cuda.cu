@@ -2737,8 +2737,10 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 	if ( view == 0 || input_bf16 == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
 		(view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
-			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128) ||
-		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 &&
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
+		view->weight_payload == 0 ||
+		(view->weight_scale_e8m0 == 0 && view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
 		(source_row_map == 0 && source_row_count == 0u) ||
 		tp_degree == 0u || tp_rank >= tp_degree ||
 		(SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
@@ -2752,13 +2754,21 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 		return(cudaErrorInvalidValue);
 	payload_stride = rows_per_expert * view->input_dimension;
 	/* F32B128: one f32 per 128x128 tile; E8M0B128: one exponent byte per
-	 * (row, 128-column block) - the per-row MX plane. */
+	 * (row, 128-column block) - the per-row MX plane; BF16: the policy
+	 * repackage (2 bytes per element, no scale plane - the shared kernel's
+	 * SparkLmDotRowBf16 branch never touches a scale). */
 	if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
 	{
 		if ( (view->input_dimension % 128u) != 0u )
 			return(cudaErrorInvalidValue);
 		scale_stride = rows_per_expert * ((uint64_t)view->input_dimension / 128u);
 		lm_format = SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128;
+	}
+	else if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+	{
+		payload_stride *= 2u;
+		scale_stride = 0u;
+		lm_format = SPARK_LM_WEIGHT_FORMAT_BF16;
 	}
 	else
 	{
@@ -2830,9 +2840,11 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 	const uint32_t *offsets;
 	if ( view == 0 || input_bf16 == 0 || group_row_offset == 0 || output_bf16 == 0 ||
 		(view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
-			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128) ||
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 &&
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
 		view->input_dimension % 64u != 0u ||
-		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
+		view->weight_payload == 0 ||
+		(view->weight_scale_e8m0 == 0 && view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
 		source_row_count == 0u ||
 		tp_degree == 0u || tp_rank >= tp_degree ||
 		(SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
@@ -2843,6 +2855,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 	if ( rows_per_expert * experts_per_rank != view->output_dimension || rows_per_expert % SPARK_LM_TILE_N != 0u )
 		return(cudaErrorInvalidValue);
 	payload_stride = rows_per_expert * view->input_dimension;
+	if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+		payload_stride *= 2u;
 	m_blocks = (source_row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	n_tiles = (uint32_t)(rows_per_expert / SPARK_LM_TILE_N);
 	(void)m_blocks;
@@ -2874,6 +2888,20 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 			view->input_dimension,(uint32_t)rows_per_expert,
 			experts_per_rank);
 		return(cudaGetLastError());
+	}
+	if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+	{
+		/* Policy bf16 repackage: the tile stager's BF16 branch copies raw
+		 * fragments and never dereferences a scale, so the scale plane is
+		 * absent (null base, zero stride). */
+		return(SparkLmHostLaunchGroupedExpertTileMloop(
+			stream,
+			SPARK_LM_WEIGHT_FORMAT_BF16,
+			payload,(const uint8_t *)0,
+			payload_stride,0u,
+			input_bf16,source_row_map,offsets,output_bf16,
+			view->input_dimension,(uint32_t)rows_per_expert,
+			experts_per_rank));
 	}
 	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * ((rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u));
 	return(SparkLmHostLaunchGroupedExpertTileMloop(

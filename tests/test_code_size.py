@@ -770,7 +770,10 @@ from pathlib import Path
 # launcher rewrite (TERM-only recorded pids, memory watchdog); absorbs
 # the +708 that crept in after the v2 port under the PLE/MTP live fixes
 # and the v3 pack session without a bump.
-CEILING = 192989
+# 193155: the 16-rank TP4xPP4 fleet retarget (coordinator directive) -
+# HYBRID_TP_PP adapter geometry, bf16 grouped-expert kernel acceptance
+# (policy: repackage-only), packer --expert-format bf16.
+CEILING = 193155
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

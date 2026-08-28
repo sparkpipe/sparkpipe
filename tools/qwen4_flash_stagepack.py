@@ -852,7 +852,9 @@ def copy_mtp_fc(source: SafetensorsSource, ref: TensorRef, out) -> None:
 def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: str, out) -> None:
     """Read the fused per-layer expert tensors [E, 2I, H] / [E, H, I],
     split w1/w3 per expert, quantize per 128x128 block, and stack the
-    rank's experts expert-major with the scale plane after the payload."""
+    rank's experts expert-major with the scale plane after the payload.
+    --expert-format bf16 writes the source BF16 bits verbatim (the
+    quantization policy: repackage-only, never quantize)."""
     import numpy as np
     expert_start, expert_count = getattr(ref, "expert_slice", (0, EXPERT_COUNT))
     if ref.kind == KIND_MOE_DOWN:
@@ -864,6 +866,9 @@ def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: s
         half = section.shape[1] // 2
         matrix = (section[:, :half, :] if ref.kind == KIND_MOE_W1
                   else section[:, half:, :]).reshape(-1, HIDDEN)
+    if expert_format == "bf16":
+        out.write(np.ascontiguousarray(matrix, dtype="<u2").tobytes())
+        return
     payload, scales = quantize_fp8_blocks(bf16_to_f32_matrix(matrix), expert_format)
     out.write(payload)
     out.write(scales)
@@ -884,26 +889,30 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         _, _, offset = source.check_shape(full_ref)
         full_ref.source_offset = offset
     refs = [shard_ref(ref, tp_degree, tp_rank) for ref in inventory]
-    # The routed experts' WIRE format (natural is F32B128; the CLI flag swaps
-    # in the per-row MX plane). The plan below must price the scale bytes by
-    # the WIRE format - the writer emits exactly this plane.
-    expert_wire_format = WEIGHT_FP8_E8M0B128 if expert_format == "fp8-e8m0b128" else WEIGHT_FP8_F32B128
+    # The routed experts' WIRE format (natural is F32B128; the CLI flag
+    # swaps in the per-row MX plane or the policy-mandated BF16
+    # repackage). The plan below must price payload and scale bytes by
+    # the WIRE format - the writer emits exactly this layout.
+    expert_wire_format = {"fp8-f32b128": WEIGHT_FP8_F32B128,
+                          "fp8-e8m0b128": WEIGHT_FP8_E8M0B128,
+                          "bf16": WEIGHT_BF16}[expert_format]
     plans = []
     cursor = 0
     for ref in refs:
-        if ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
+        wire = expert_wire_format if ref.weight_format == WEIGHT_FP8_F32B128 else ref.weight_format
+        if wire in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
             payload_bytes = ref.rows * ref.columns
             # F32B128: one f32 per 128x128 tile; E8M0B128: one exponent byte
             # per (row, 128-column block) - the per-row MX plane the module's
             # grouped expert kernels decode.
             scale_bytes = ((ref.rows // FP8_BLOCK) * (ref.columns // FP8_BLOCK) * F32_BYTES
-                           if expert_wire_format == WEIGHT_FP8_F32B128
+                           if wire == WEIGHT_FP8_F32B128
                            else ref.rows * (ref.columns // FP8_BLOCK))
         elif ref.weight_format == WEIGHT_I64:
             payload_bytes = ref.rows * ref.columns * 8
             scale_bytes = 0
         else:
-            payload_bytes = ref.rows * ref.columns * (BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES)
+            payload_bytes = ref.rows * ref.columns * (BF16_BYTES if wire == WEIGHT_BF16 else F32_BYTES)
             scale_bytes = 0
         payload_offset = align_up(cursor, PAYLOAD_ALIGNMENT)
         plans.append((ref, payload_offset, payload_bytes, scale_bytes))
@@ -925,7 +934,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             ref.kind, ref.layer,
             expert_wire_format if ref.weight_format == WEIGHT_FP8_F32B128 else ref.weight_format,
             ref.rows, ref.columns,
-            FP8_BLOCK if ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128) else 0,
+            FP8_BLOCK if (ref.weight_format == WEIGHT_FP8_F32B128 and expert_wire_format != WEIGHT_BF16) or ref.weight_format == WEIGHT_FP8_E8M0B128 else 0,
             payload_base + payload_offset, payload_bytes,
             payload_base + payload_offset + payload_bytes if scale_bytes else 0,
             scale_bytes)
@@ -990,7 +999,7 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path, help="receipt output (default: <output>.receipt.json)")
     parser.add_argument("--tp-degree", type=int, default=1)
     parser.add_argument("--tp-rank", type=int, default=0)
-    parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128"), default="fp8-f32b128")
+    parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128", "bf16"), default="fp8-f32b128")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
