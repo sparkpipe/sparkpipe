@@ -526,3 +526,11 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   death via the retried agent. Next: ready-line verification + M5
   exact-32K B1 = first GLM 5.3 Flash scoreboard number. LETTING IT COOK
   (no invasive checks during measurement).
+
+## 2026-08-28 ~23:1x KST — glm53 submit-path debug underway; fleet steady
+
+- Fleet 16/16 steady, all-16 reservations held; API healthy on spark0
+  ({"status":"ok","served":1} — first served request recorded; whether
+  that's the health probe or the first token, the lane's next push will
+  say). Lane debugging the batch-engine submit blocker per the pointer.
+- Scoreboard unchanged; M5 number pending the submit path.
