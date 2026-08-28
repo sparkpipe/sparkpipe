@@ -619,3 +619,18 @@ Operator question: does two-model co-residency work? Phase-1 results:
 - Lane at the exact failing site (chainfail probe, 5-min-old tip); my
   live curl still rejects (status 4, empty tokens) — the instrumented
   hunt continues. Merging waits for the milestone. Scoreboard unchanged.
+
+## 2026-08-28 ~04:4x — async-op debug: coordinator survey + lane resumed
+
+- Reproduced the async TP failure myself against wave-18 (one curl; log
+  trail: admit OK → CUDA wave → collective submit accepted → completion
+  status 1 with ROWS 0 — the tell: submit took rows 1).
+- MY SURVEY: transport CORE exonerated (hidden_transport.c = open-time
+  checks only; tp_device_collective.c latches VALIDATION_FAILED not
+  INVALID_ARGUMENT). Likely origin: the RDMA backend's async
+  completion-delivery (rdma.cu, 89 sites; credit repost vs
+  MAX_PENDING_RECEIVE_COUNT is a concrete candidate). Lane resumed for
+  the co-debug (instrumented transport .so swap on spark0 + one curl).
+- ALSO noted: tp_collective schema HARD-REQUIRES 2 rails + 3 step
+  indices (single-rail = schema_error) — an inflexibility worth a
+  follow-up.
