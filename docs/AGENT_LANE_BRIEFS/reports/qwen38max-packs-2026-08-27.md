@@ -385,3 +385,17 @@ before committing).
   node-local for whichever topology the coordinator picks.
 * If assigned: qwen38_max GPU validator harness (27b template), then
   TP4xPP8 mid-tier GPU validation of the GDN/attn/MoE kernels.
+
+## P3 live addendum (14:0x spark0-time)
+
+* Storage degraded-tenant reality: cold RAID6 (md127, 6/6 disks UU) serves
+  large reads at 35-125 ms r_await, ~11-25 MB/s per stream to my builders
+  (~33-75 MB/s aggregate) while also feeding the DSV4 lane's 6h+ build;
+  warm Ceph reads 12 MB/s (osd.14/sparke DOWN, per coordinator). Both
+  sources are slow right now; the builds + verifies continue regardless.
+* stage1 verifier runs out-of-band (pack 615 GiB + source 615 GiB reads);
+  stages 0/2/3 rebuild in parallel (tmps ~50 GiB each of ~615).
+* Fully autonomous chain in place on spark0: rebuild_all.sh (builds) ->
+  verify_and_park.sh (verifier PASS -> rsync to sparkb
+  sparkdata/qwen38max.tp4pp4/packs -> size-check -> delete local; stage3
+  stays on spark0 per plan). Disk peak bounded <= ~84% of root.
