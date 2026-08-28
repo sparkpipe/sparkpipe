@@ -771,7 +771,11 @@ from pathlib import Path
 # semantics ground truth — modeling_qwen4_exp.py is 2707 lines of
 # upstream code, not authored source), so the ceiling moves by the lane's
 # 835 authored lines only. 188714 is the exact count.
-CEILING = 188714
+# The qwen38max full-width lane lands its packer-at-scale chain: the
+# tp4pp4 pack/deploy tooling (172+55) and the stagepack rewrite (net
+# 37) that built the four 573 GiB stage packs with receipts. 189314 is
+# the exact count.
+CEILING = 189314
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

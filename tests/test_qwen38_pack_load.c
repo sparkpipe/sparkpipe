@@ -7,11 +7,11 @@
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 
-extern SparkStatus SparkQwen38ResidentDecodeStageInitialize(
+extern SparkStatus SparkQwen38MaxResidentDecodeStageInitialize(
     const SparkFirmwareModuleConfiguration *configuration,
     const SparkFirmwareModuleHostServices *host_services,
     void **module_state);
-extern void SparkQwen38ResidentDecodeStageDestroy(void *module_state);
+extern void SparkQwen38MaxResidentDecodeStageDestroy(void *module_state);
 
 int main(int argc, char **argv)
 {
@@ -24,15 +24,24 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: test_qwen38_pack_load PACK\n");
         return 2;
     }
-    setenv("SPARK_QWEN38_ALLOW_UNQUALIFIED_EXECUTION","1",1);
-    setenv("SPARK_QWEN38_STAGE_COUNT","4",1);
-    setenv("SPARK_QWEN38_STAGE_INDEX","1",1);
-    setenv("SPARK_QWEN38_STAGE_FIRST_LAYER","1",1);
-    setenv("SPARK_QWEN38_STAGE_LAYER_COUNT","1",1);
-    setenv("SPARK_QWEN38_STAGE_MAX_ACTIVE_SEQUENCES","1",1);
-    setenv("SPARK_QWEN38_STAGE_PIPELINE_SLOTS","1",1);
-    setenv("SPARK_QWEN38_STAGE_KV_BLOCKS","8",1);
-    setenv("SPARK_QWEN38_STAGE_PACK_PATH",argv[1],1);
+    /* Defaults smoke a 1-layer mid stage; pre-set the env to override the
+     * slice (e.g. a real stage-0 pack: INDEX=0 FIRST_LAYER=0). */
+    setenv("SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_COUNT") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_COUNT","4",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_INDEX") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_INDEX","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_FIRST_LAYER") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_FIRST_LAYER","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_LAYER_COUNT") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_LAYER_COUNT","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_PIPELINE_SLOTS") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_PIPELINE_SLOTS","1",1);
+    if ( getenv("SPARK_QWEN38_MAX_STAGE_KV_BLOCKS") == 0 )
+        setenv("SPARK_QWEN38_MAX_STAGE_KV_BLOCKS","8",1);
+    setenv("SPARK_QWEN38_MAX_STAGE_PACK_PATH",argv[1],1);
     memset(&configuration,0,sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
     configuration.descriptor_bytes = sizeof(configuration);
@@ -45,11 +54,11 @@ int main(int argc, char **argv)
     services.abi_version = SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
     services.descriptor_bytes = sizeof(services);
     state = 0;
-    status = SparkQwen38ResidentDecodeStageInitialize(&configuration,&services,&state);
+    status = SparkQwen38MaxResidentDecodeStageInitialize(&configuration,&services,&state);
     fprintf(stderr,"initialize status=%d state=%p\n",(int)status,state);
     if ( status != SPARK_STATUS_OK )
         return 1;
-    SparkQwen38ResidentDecodeStageDestroy(state);
+    SparkQwen38MaxResidentDecodeStageDestroy(state);
     fprintf(stderr,"destroy ok\n");
     return 0;
 }
