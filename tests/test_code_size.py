@@ -762,7 +762,10 @@ from pathlib import Path
 # kernels, dual-width router gate, format-6 E8M0B128 grouped expert
 # kernels incl. the family-local scalar variant, MTP draft chain fixes)
 # + packer/verifier format-6 per-row plane and gate replication.
-CEILING = 187879
+# 192135 after the qwen4_flash v2 semantics port (hc residual + indexer +
+# PLE kernels, pack format v2, validator oracle hooks - the M5.2/M5.4/M5.5
+# milestone work on lane/qwen-flash); +4256 over the prior ceiling.
+CEILING = 192135
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
