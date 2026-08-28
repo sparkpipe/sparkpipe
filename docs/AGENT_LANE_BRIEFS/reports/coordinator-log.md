@@ -889,3 +889,18 @@ Operator question: does two-model co-residency work? Phase-1 results:
 - W2 dry-template ACTIVE (dsv4 cutover, 5-min-old tip, spark2/5
   reserved); W1 staging report landed (2.53T, final gaps itemized).
   Scoreboard unchanged. NEEDS USER: spark0 may need a sysadmin look.
+
+## 2026-08-29 ~13:0x — WEDGE ROOT-CAUSE ANALYSIS (spark0 OOM confirmed by operator)
+
+EVERY wedge this week is one class: memory exhaustion via stacked
+daemon generations during wave cycling, or GPU-alloc pressure against
+co-located daemons. spark0 = 4 stacked residentds (~30G CUDA context
+each) = >119G = OOM. CONTRIBUTING: TERM'd daemons exit slowly (D-state
+I/O), launch loops didn't verify exit before refiring, cyclers raced
+(EADDRINUSE), and the 110GiB ceiling is a RULE not CODE.
+SYSTEMIC FIXES (queued, coordinator write set): (1) launcher PREFLIGHT
+in the shared wave tools — refuse to fire unless free-mem >= envelope
+AND no same-cwd daemon alive AND a generation counter guards double-
+launch; (2) fast-exit TERM handling at daemon level; (3) weights+KV
+envelope computed and checked at config time. Power-cycle spark0 =
+operator.
