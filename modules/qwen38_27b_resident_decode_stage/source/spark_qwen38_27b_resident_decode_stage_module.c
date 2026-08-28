@@ -17,6 +17,7 @@
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "spark_qwen38_27b_stagepack_format.h"
 #include "spark_qwen38_27b_dspark_format.h"
 #include "spark_qwen38_27b_tp.h"
@@ -3209,7 +3210,9 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 	return(status);
 }
 
-SparkStatus SparkQwen38_27bResidentDecodeStageExecute(
+/* Frame execution hook for the shared firmware-module lifecycle (the
+ * lifecycle shell already rejected null state/frame). */
+static SparkStatus SparkQwen38_27bModuleExecuteFrame(
     void *module_state,
     SparkModelDriverFrame *frame)
 {
@@ -3231,10 +3234,6 @@ SparkStatus SparkQwen38_27bResidentDecodeStageExecute(
     SparkStatus status;
 
     state = (SparkQwen38_27bModuleState *)module_state;
-    if (state == 0 || frame == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
     context = 0;
     status = SparkQwen38_27bModuleValidateFrame(
         state,
@@ -3446,7 +3445,9 @@ static SparkStatus SparkQwen38_27bAdmissionKvPredicate(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkQwen38_27bResidentDecodeStageAdmit(
+/* Admission hook for the shared firmware-module lifecycle (the shell
+ * already rejected null arguments). */
+static SparkStatus SparkQwen38_27bModuleAdmit(
     void *module_state,
     const SparkModelDriverAdmissionRequest *request,
     SparkModelDriverAdmissionDecision *decision)
@@ -3457,10 +3458,6 @@ SparkStatus SparkQwen38_27bResidentDecodeStageAdmit(
     SparkStatus status;
 
     state = (SparkQwen38_27bModuleState *)module_state;
-    if (state == 0 || request == 0 || decision == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
     available_slot_count = SparkStageModuleSlotCountFree(
         state->slot_states,
         state->pipeline_slot_count);
@@ -3492,54 +3489,27 @@ SparkStatus SparkQwen38_27bResidentDecodeStageAdmit(
     return status;
 }
 
-SparkStatus SparkQwen38_27bResidentDecodeStageSnapshot(
+/* Snapshot extension hook: the family's KV capacity on top of the shared
+ * slot/counter base. */
+static void SparkQwen38_27bModuleSnapshotExtend(
     void *module_state,
-    uint32_t program_id,
     SparkModelDriverRuntimeSnapshot *snapshot)
 {
     SparkQwen38_27bModuleState *state;
 
     state = (SparkQwen38_27bModuleState *)module_state;
-    if (state == 0 || snapshot == 0 || program_id == 0u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    SparkStageModuleRuntimeSnapshotInitialize(
-        snapshot,
-        program_id,
-        state->slot_states,
-        state->pipeline_slot_count);
-    snapshot->submitted_count = atomic_load_explicit(
-        &state->submitted_count,
-        memory_order_relaxed);
-    snapshot->completed_count = atomic_load_explicit(
-        &state->completed_count,
-        memory_order_relaxed);
-    snapshot->rejected_count = atomic_load_explicit(
-        &state->rejected_count,
-        memory_order_relaxed);
     snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-    return SPARK_STATUS_OK;
 }
 
-void SparkQwen38_27bResidentDecodeStageDestroy(void *module_state)
+/* Teardown hook for the shared firmware-module lifecycle: runs after the
+ * lifecycle's quiesce wait; the lifecycle releases the ledger and frees the
+ * state afterwards. */
+static void SparkQwen38_27bModuleStateTeardown(void *module_state)
 {
     SparkQwen38_27bModuleState *state;
     uint32_t slot_index;
 
     state = (SparkQwen38_27bModuleState *)module_state;
-    if (state == 0)
-    {
-        return;
-    }
-    if (SparkStageModuleWaitForSlots(
-            SPARK_QWEN38_27B_MODULE_TAG,
-            state->slot_states,
-            state->pipeline_slot_count,
-            SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK)
-    {
-        return;
-    }
     for (slot_index = 0u; slot_index < state->pipeline_slot_count; ++slot_index)
     {
         if (state->slots[slot_index].cuda_stream != 0)
@@ -3565,48 +3535,65 @@ void SparkQwen38_27bResidentDecodeStageDestroy(void *module_state)
     if (state->dspark_weights.selector_hidden_proj_host != 0)
         free(state->dspark_weights.selector_hidden_proj_host);
     SparkStageKvClientClose(&state->kv_client);
-    SparkStageModuleLedgerRelease(&state->ledger);
-    free(state);
 }
 
-SparkStatus SparkQwen38_27bResidentDecodeStageInitialize(
-    const SparkFirmwareModuleConfiguration *configuration,
-    const SparkFirmwareModuleHostServices *host_services,
-    void **module_state)
+/*
+ * Shared firmware-module lifecycle wiring (see
+ * include/sparkpipe/spark_stage_module_lifecycle.h). Everything above this
+ * point is family work; the five ABI entry points below are the template's.
+ */
+static SparkStatus SparkQwen38_27bModuleInitializeGate(void)
 {
-    SparkQwen38_27bModuleState *state;
-    const char *pack_path;
     uint32_t allow_unqualified_execution;
-    uint32_t slot_index;
-    SparkStatus status;
 
-    pack_path = 0;
     allow_unqualified_execution = 0u;
-    status = SparkFirmwareModuleValidateInitialization(
-        configuration,
-        host_services,
-        module_state);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkStageModuleEnvironmentUnsigned(
-        SPARK_QWEN38_27B_MODULE_TAG,
-        "SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION",
-        1u,
-        1u,
-        &allow_unqualified_execution);
-    if (status != SPARK_STATUS_OK || allow_unqualified_execution != 1u)
+    if (SparkStageModuleEnvironmentUnsigned(
+            SPARK_QWEN38_27B_MODULE_TAG,
+            "SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION",
+            1u,
+            1u,
+            &allow_unqualified_execution) != SPARK_STATUS_OK ||
+        allow_unqualified_execution != 1u)
     {
         return SPARK_STATUS_MODULE_NOT_VALIDATED;
     }
+    return SPARK_STATUS_OK;
+}
 
-    state = (SparkQwen38_27bModuleState *)calloc(1u, sizeof(*state));
-    if (state == 0)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-    state->ledger.module_tag = SPARK_QWEN38_27B_MODULE_TAG;
+static void SparkQwen38_27bModuleDescribe(
+    void *module_state,
+    SparkStageModuleLifecycle *lifecycle)
+{
+    SparkQwen38_27bModuleState *state;
+
+    state = (SparkQwen38_27bModuleState *)module_state;
+    lifecycle->module_tag = SPARK_QWEN38_27B_MODULE_TAG;
+    lifecycle->ledger = &state->ledger;
+    lifecycle->slot_states = state->slot_states;
+    lifecycle->pipeline_slot_count = state->pipeline_slot_count;
+    lifecycle->submitted_count = &state->submitted_count;
+    lifecycle->completed_count = &state->completed_count;
+    lifecycle->rejected_count = &state->rejected_count;
+    lifecycle->failed_count = &state->failed_count;
+    lifecycle->tokens_emitted = &state->tokens_emitted;
+}
+
+/* Configuration, pack load, pools and slots in the family's original order.
+ * The lifecycle allocated and zeroed the state and initialized the ledger
+ * tag and counters before this runs, and routes any failure to the full
+ * destroy path. */
+static SparkStatus SparkQwen38_27bModulePrepare(
+    void *module_state,
+    const SparkFirmwareModuleHostServices *host_services)
+{
+    SparkQwen38_27bModuleState *state;
+    const char *pack_path;
+    uint32_t slot_index;
+    SparkStatus status;
+
+    (void)host_services;
+    state = (SparkQwen38_27bModuleState *)module_state;
+    pack_path = 0;
     {
         const char *profile_env = getenv("SPARK_QWEN38_27B_PROFILE");
         state->profile_enabled = profile_env != 0 && strcmp(profile_env, "0") != 0 ? 1u : 0u;
@@ -3629,12 +3616,6 @@ SparkStatus SparkQwen38_27bResidentDecodeStageInitialize(
         state->tap_dump_nth = dump_env != 0 ? (uint32_t)strtoul(dump_env,0,0) : 0xFFFFFFFFu;
         state->tap_capture_count = 0u;
     }
-    atomic_init(&state->submitted_count, 0u);
-    atomic_init(&state->completed_count, 0u);
-    atomic_init(&state->rejected_count, 0u);
-    atomic_init(&state->failed_count, 0u);
-    atomic_init(&state->tokens_emitted, 0u);
-
     status = SparkQwen38_27bModuleConfigure(state);
     if (status == SPARK_STATUS_OK)
     {
@@ -3695,12 +3676,14 @@ SparkStatus SparkQwen38_27bResidentDecodeStageInitialize(
     {
         status = SparkQwen38_27bModuleAllocateSlot(state, &state->slots[slot_index]);
     }
-    if (status != SPARK_STATUS_OK)
-    {
-        SparkQwen38_27bResidentDecodeStageDestroy(state);
-        return status;
-    }
+    return status;
+}
 
+static void SparkQwen38_27bModuleReportReady(void *module_state)
+{
+    SparkQwen38_27bModuleState *state;
+
+    state = (SparkQwen38_27bModuleState *)module_state;
     fprintf(
         stderr,
         "%s ready stage=%u/%u slice=%u+%u tp=%u/%u gdn=%u attn=%u lanes=%u kv_blocks=%u device_gib=%.1f\n",
@@ -3717,6 +3700,21 @@ SparkStatus SparkQwen38_27bResidentDecodeStageInitialize(
         state->kv_block_count,
         (double)state->ledger.device_bytes_resident /
             (1024.0 * 1024.0 * 1024.0));
-    *module_state = state;
-    return SPARK_STATUS_OK;
 }
+
+static const SparkStageModuleLifecycleOps SparkQwen38_27bModuleLifecycle =
+{
+    sizeof(SparkQwen38_27bModuleState),
+    SparkQwen38_27bModuleInitializeGate,
+    SparkQwen38_27bModuleDescribe,
+    SparkQwen38_27bModulePrepare,
+    SparkQwen38_27bModuleReportReady,
+    SparkQwen38_27bModuleStateTeardown,
+    SparkQwen38_27bModuleExecuteFrame,
+    SparkQwen38_27bModuleAdmit,
+    SparkQwen38_27bModuleSnapshotExtend
+};
+
+SPARK_STAGE_MODULE_LIFECYCLE_ENTRY_POINTS(
+    SparkQwen38_27bResidentDecodeStage,
+    &SparkQwen38_27bModuleLifecycle)

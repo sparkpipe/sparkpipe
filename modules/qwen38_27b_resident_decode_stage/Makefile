@@ -8,6 +8,7 @@ MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen38_27b_resident_decode_stage_cu
 # model-families/common/src was deleted with the library rewrite; the KV
 # client and store implementations now live under cache/store (same ABI).
 MODULE_ADDITIONAL_HOST_SOURCES = \
+	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
 	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
