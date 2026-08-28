@@ -122,3 +122,17 @@
   measurement phases (bisect/validator host work). Queue gates all
   correctly pending; reservations intact.
 
+
+## 2026-08-28 ~13:0x — sweep: K3 build-break fix merged; validator staleness flagged
+
+- MERGED lane/k3 (6ef8c95): the lane fixed a BUILD BREAK from my own
+  01b7ae4 (stray trailing */ in the stage_layer_counts comment) and
+  retired the export-shim (superseded by the canonical-symbol fix).
+  K3 stage-0 resume in progress on recovered sparke.
+- GLM52-VALIDATOR WATCH: worktree silent ~2.2h, spark8 GPU idle —
+  borderline (deep analysis vs stuck). If next sweep shows no movement,
+  ping the agent; escalate if two sweeps silent.
+- Canary ENOENT blip again on shard 80 (the documented MDS-pair
+  failover signature during ongoing recovery — wait-and-retest, not a
+  new incident). spark3 knee sweep still at 96% (cooking); bisect
+  between measurement phases on spark5.
