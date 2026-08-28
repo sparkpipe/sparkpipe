@@ -132,3 +132,20 @@ the pair off GPU nodes / MemoryMin) now have an integrity incident, not
 just a perf incident, behind them. LANES: kimi-k3 warm reads may ENOENT
 intermittently — treat warm kimi-k3 as DEGRADED until cleared; the K3
 lane's stage-0 source reads are directly affected (cold RAID6 unaffected).
+
+## ADDENDUM 2026-08-29 ~7:5x — spark6/7 bulk-read wedge (third client-side class instance)
+
+- qwen-flash lane's two stage-0 pack builds D-stuck 16+min at the
+  identical PLE-shard offset; plain 128MB dd on the shard also hung
+  >90s; small ops fine. Lane TERMed own pids, rerouted all 10 builds
+  to spark4/5 (healthy, full-speed). ZERO fleet impact (residentds
+  read local NVMe).
+- Coordinator probe confirms on spark6: small-file ENOENT (the known
+  MDS blip) AND bulk rc=124 (timeout) — bulk reads wedged while
+  metadata-small mostly works.
+- PATTERN now 3 instances (spark5, spark6, spark7), all BULK-read
+  class, all during MULTI-NODE CONCURRENT reads of the SAME large
+  checkpoint. Hypothesis (lane's, plausible): MDS-side pressure under
+  the pattern — the MacStudio MDS move addresses it structurally.
+  SYSADMIN: when convenient, spark6/7 ceph client/mount health; the
+  fleet works around by rerouting builds (documented pattern).
