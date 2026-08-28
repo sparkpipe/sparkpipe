@@ -10,41 +10,5 @@
   "holder": "lane-dry",
   "id": "manual:lane-dry",
   "ttl_minutes": 120.0
- },
- "spark9": {
-  "acquired_at": "2026-08-28T11:35:14",
-  "holder": "lane-glm53",
-  "id": "manual:lane-glm53",
-  "ttl_minutes": 360.0
- },
- "sparka": {
-  "acquired_at": "2026-08-28T11:35:14",
-  "holder": "lane-glm53",
-  "id": "manual:lane-glm53",
-  "ttl_minutes": 360.0
- },
- "sparkb": {
-  "acquired_at": "2026-08-28T11:35:14",
-  "holder": "lane-glm53",
-  "id": "manual:lane-glm53",
-  "ttl_minutes": 360.0
- },
- "sparkc": {
-  "acquired_at": "2026-08-28T11:35:14",
-  "holder": "lane-glm53",
-  "id": "manual:lane-glm53",
-  "ttl_minutes": 360.0
- },
- "sparkd": {
-  "acquired_at": "2026-08-28T11:35:14",
-  "holder": "lane-glm53",
-  "id": "manual:lane-glm53",
-  "ttl_minutes": 360.0
- },
- "sparkf": {
-  "acquired_at": "2026-08-28T11:35:15",
-  "holder": "lane-glm53",
-  "id": "manual:lane-glm53",
-  "ttl_minutes": 360.0
  }
 }

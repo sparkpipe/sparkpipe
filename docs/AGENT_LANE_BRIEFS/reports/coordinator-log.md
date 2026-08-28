@@ -871,3 +871,21 @@ Operator question: does two-model co-residency work? Phase-1 results:
   gates; DFlash2's env contract migrates last (most receipts). W2's
   agent session ended mid-flight — the addition rides its resume/PR
   review.
+
+## 2026-08-29 ~12:3x KST — INCIDENT: spark0 load-spiral then unreachable
+
+- spark0 observed at load 59.59/62.35 (4 residentd procs — stacked
+  generations from the wave cycles) then SSH stopped answering
+  (banner timeouts, 3 attempts over ~2 min). Node did NOT respond
+  long enough to capture ps/dmesg. Other nodes healthy (spark4/8/e
+  idle, GPUs free).
+- The glm53 fleet (spark0 = rank 0 + API) is DARK for now — the
+  diag lane's hunt is interrupted; NO REBOOT issued by us (rule).
+  If it self-recovers (the sparke pattern), the wave relaunches; if
+  not, sysadmin. The stacked-daemon class + load spiral is consistent
+  with the earlier cuda_storage/EADDRINUSE generation-stacking we
+  diagnosed — wave-owner rule exists precisely because of this; the
+  stack likely predates it.
+- W2 dry-template ACTIVE (dsv4 cutover, 5-min-old tip, spark2/5
+  reserved); W1 staging report landed (2.53T, final gaps itemized).
+  Scoreboard unchanged. NEEDS USER: spark0 may need a sysadmin look.
