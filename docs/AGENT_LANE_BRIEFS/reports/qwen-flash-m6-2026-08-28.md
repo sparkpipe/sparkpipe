@@ -135,6 +135,11 @@ synthesizable at true shape; real v3 packs load with the env unset).
 
 ## INTEGRATION REQUEST
 
+  0. (coordinator) NODE CONTENTION: dsv4-bisect started a live 4-rank
+     deployment across spark4-7 minutes before my S6 launch window. My live
+     smoke + B1 cell are fully staged and launch with the commands above;
+     please arbitrate the node schedule (their run or mine first).
+
   1. (coordinator) spark6 is at 96% disk (161G free). packs_v3 (~56G) fits
      but leaves ~105G; flagging before the fleet deploy.
   2. (coordinator, FYI) queue `sweep` subcommand missing; stale
@@ -199,6 +204,46 @@ clean on the node.
     adapter configs (tp_degree 4, node-local packs, 32768 max positions).
   * tools/qwen4_flash_live_launch.sh: parameterized 4-rank launcher
     (TERM-only teardown, ready-line wait, --rank/--api-only modes).
+
+### S4 COMPLETE — all four ranks built, verified, deployed sha-identical
+
+```
+PASS qwen4_flash_full.tp4-rank0.qwen4_flashsp: 1246 directory entries (tp 4/0) receipt=verified
+PASS qwen4_flash_full.tp4-rank1.qwen4_flashsp: 1246 directory entries (tp 4/1) receipt=verified
+PASS qwen4_flash_full.tp4-rank2.qwen4_flashsp: 1246 directory entries (tp 4/2) receipt=verified
+PASS qwen4_flash_full.tp4-rank3.qwen4_flashsp: 1246 directory entries (tp 4/3) receipt=verified
+
+rank0 d08ccfec4ac5ab82db8a5af544d8b8d2ab725a2a04734499a3f5dd4a4742c058 (spark4)
+rank1 183bf7fc79492e46995578cbb85b4a297674e1336a1e07b5b29499d7e29fe551 (spark4=spark5)
+rank2 d3d66c6aebd715c93f0457d5498ac3074a1d8604fa2396076c411a3b540519fd (spark4=spark6)
+rank3 4fbc9336501c079ab3555c7651f27547cb2fc751ce2b844ee2f9ed3face57960 (spark4; spark7 copy in flight at report time)
+```
+
+### S6 LIVE 4-node smoke — STAGED, BLOCKED by the sibling lane's live run
+
+At 13:3x the dsv4-bisect lane started a LIVE 4-rank residentd deployment
+(`--deployment config/model_resident.json`, rank 0 on spark4 pid 1789507,
+ranks 1-3 on spark5/6/7), ~60 GiB resident per node. My v3 deployment needs
+~57 GiB/node for the pack alone - coexistence is not possible, and the
+no-kill protocol + lane rules say coordinate, not preempt. Their queue
+reservations (lane-dsv4bisect, spark5/6/7) are live-held by running
+processes; my earlier read of them as stale was wrong for 5/6/7 (spark4's
+was genuinely stale and was released/re-reserved).
+
+Everything for the live smoke is in place and ONE command launches it once
+the nodes free:
+
+```
+tools/qwen4_flash_live_launch.sh --hosts spark4,spark5,spark6,spark7 --term
+# then, when all four ranks print ready:
+tools/qwen4_flash_live_launch.sh --hosts spark4,... --api-only
+# smoke (stop the api first for a direct batch test, per the one-client rule):
+bin/sparkpipe_model_batch --deployment <deploy_v3> --runtime-root runtime-0   --batch qwen4_flash_smoke_batch.json
+```
+
+The smoke batch (2 requests x 64-token prompts, 32-token budgets) is staged
+at deploy_v3/qwen4_flash_smoke_batch.json on spark4. The B1 exact-32K decode
+cell follows the smoke (adapter configs already declare 32768 max positions).
 
 ## Next (session 2)
 
