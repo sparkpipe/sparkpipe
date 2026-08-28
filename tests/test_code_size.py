@@ -773,8 +773,8 @@ from pathlib import Path
 # machinery, new kpool pool kernels, the 49-kind .g5nsp stagepack format,
 # hybrid cache allocation, the synthesized-pack tool, and the M1/M2
 # contract + name-map tooling (nvcc sm_121a compile gate PASS).
-# 207908 is the exact count after the chainfail probe.
-CEILING = 207908
+# 207911 is the exact count after the count fix + hunt-6.
+CEILING = 207911
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
