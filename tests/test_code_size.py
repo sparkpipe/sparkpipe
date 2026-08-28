@@ -752,6 +752,7 @@ from pathlib import Path
 # The M1 contract freeze adds the authoritative JSON's census section and
 # the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
 # ports) lands in the same window; 186345 is the exact count.
+<<<<<<< HEAD
 # The glm52 validator-fix lane (PR #728) + the packs-lane head remainder it
 # carries: the expert-dimension dequant oracle fix with its host-executable
 # tier-2 oracle gate, zero-mean fixture grids, the KV page-cache adapter
@@ -790,6 +791,31 @@ from pathlib import Path
 # default off) + the lease-advance mirror fix that restored 40+ at the
 # no-spec O128 cell with exact canonical hash. 192981 is the exact count.
 CEILING = 192981
+=======
+# The glm53 lane (GLM 5.3 Flash) opens with its M1 contract-freeze tooling:
+# tools/glm53_contract_freeze.py (fetch/verify/emit, ~620 lines). Main was
+# already +2 over from the brief edits; 187123 is the exact count with the
+# glm53 tool and lane briefs in place.
+# glm53 M2 adds the geometry header
+# (model-families/glm5_next/.../spark_glm5_next_model.h, 226), the name-map
+# generator (tools/glm5_next_gen_name_map.py, 328), and the ceph-wedge
+# reuse flag on the freeze tool; .lane_cache joins the exclusion list
+# (fetched reference artifacts, same class as .agents). 187683 is the exact
+# count after M2.
+# glm53 M3 module assembly lands the glm5_next family module (assembled
+# from the glm52 skeleton: layer.cuh with rope-0 MLA + kpool indexer + KDA
+# chain + mHC kernels, cuda.cu HC-runner, module.c hybrid caches, the
+# 49-kind stagepack format, kv geometry header, Makefile tier knobs, and
+# the synthesized-pack tool; ~7100 lines, nvcc sm_121a compile gate PASS).
+# 195716 is the exact count after M3.
+# The glm53 lane's family module lands as one assembly on the rebased main
+# (b313cd5): the glm52 skeleton with k3's KDA chain, dsv4's mHC site
+# machinery, new kpool pool kernels, the 49-kind .g5nsp stagepack format,
+# hybrid cache allocation, the synthesized-pack tool, and the M1/M2
+# contract + name-map tooling (nvcc sm_121a compile gate PASS).
+# 207863 is the exact count after the api deadlock fix + adapter capabilities.
+CEILING = 207863
+>>>>>>> origin/lane/glm53
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
@@ -797,10 +823,14 @@ EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # their copies are tooling infrastructure, not authored source, and must
 # never move the counter.
 EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
-                      '__pycache__', '.agents', 'devcycle', 'references'}
+                      '__pycache__', '.agents', 'devcycle', '.lane_cache'}
 # tools/devcycle holds host-recovery / fleet-ops scripts (GRUB staging,
 # fstab fastboot fix): operational infrastructure, not serving-engine
 # source, and must never consume the authored-code budget.
+# .lane_cache holds lane agents' fetched reference/download artifacts
+# (e.g. the upstream transformers modeling files a lane consults); the
+# same class of exclusion as .agents. Authored lane code lives in
+# model-families/, modules/, tools/, and sources the counter sees.
 
 
 def main():
