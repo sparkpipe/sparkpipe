@@ -212,46 +212,101 @@ unflagged archive). Runtime layout staged to all 8 nodes:
 lib/{model_driver.so, model_serving_adapter.so, hidden_transport.so} +
 bin/{residentd,api,batch}.
 
-### WEDGED NODE REPORT (immediate attention): sparke (rank 6)
+### WEDGED NODE REPORT (resolved): sparke (rank 6)
 
-Timeline (all times this lane): sparke staged artifacts fine (09:0x),
-launched rank 6 in the 8-way parallel start, then degraded within ~5
-minutes: first ssh "Connection timed out during banner exchange", then
-full packet loss. Evidence from sparkf:
+sparke staged artifacts fine, launched rank 6 in the 8-way parallel start,
+then degraded within ~5 minutes: first ssh "Connection timed out during
+banner exchange", then full packet loss from peers:
 
 ```
 $ ssh sparkf 'ping -c 2 -W 2 sparke'
 2 packets transmitted, 0 received, 100% packet loss
-$ ssh sparkf 'ssh -o ConnectTimeout=5 sparke uptime'
-Connection closed by UNKNOWN port 65535
 ```
 
-sparke's own daemon log (last lines before the node went dark) matched the
-other ranks: GLM52-ADAPTER LoadTpCollective rc=0 / LoadConfiguration rc=0,
-then collective waits. Per the lane rules I did NOT reboot or power-cycle
-it. The other 7 nodes are healthy and clean after the failed bring-up
-(no sparkpipe processes, ~108-110 GB available each).
+Per the lane rules I did NOT reboot it. It recovered BY ITSELF roughly 25
+minutes later (`uptime` showed "up 4 min" - the node power-cycled on its
+own or via infrastructure watchdog; nothing from this lane touched it).
+After it returned (mem 112G free, no processes, artifacts intact on local
+disk), the 8-rank launch succeeded.
 
-The TP8 ring cannot form without rank 6: every surviving rank's failure
-line is a route involving sparke or a transitive dependency of it (rank 0
-waited on sparkc, whose own wait was on sparke):
+### TP8 bring-up and B1 decode - three more restore bugs found and fixed
+
+After the band came up, the B1 decode surfaced three additional restore
+defects, each fixed and each re-gated through publish -> compile ->
+deploy -> relaunch cycles:
+
+1. The admission predicate never decided (module). glm52's
+   SparkGlm52AdmissionPredicate performed its KV page-cache mutations but
+   returned without touching the decision; the ladder's initializer
+   default is REJECTED/UNSUPPORTED_SHAPE and an undecided predicate is
+   terminal (spark_admission.h), so EVERY submission died as
+   `adapter_submit status=unsupported kind=1` on every rank. qwen38's
+   predicate explicitly accepts. Fix: the predicate now accepts on its
+   normal path (the shape rules already vetted the request); the
+   cache-release branch keeps deciding for itself.
+2. The adapter had no KV cache-lane wiring at all (adapter). The module's
+   SparkKvPageCache is driven through admission CACHE_PREPARE/COMMIT/ABORT
+   and RELEASE frames; the glm52 adapter passed zero cache lanes and zero
+   admission flags, implemented no prefetch/resolve hooks, and declared no
+   PREFETCH/JIT_KV/RELEASE capabilities - so lanes reached
+   SparkKvPageCacheCompleteLane never prepared and every request completed
+   INTERNAL_ERROR (`completion driver_status=17 accepted=4`, no chain
+   failure, no kv-access record). Fix (mirrors the dsv4 adapter): pending
+   and state carry SparkModelDriverCacheLane tables, the descriptor
+   declares PREFETCH|JIT_KV|RELEASE|ASYNC_COMPLETION with
+   cache_block_token_count=64, SparkGlm52ServingPrefetch prepares lanes,
+   SparkGlm52ServingResolvePrefetch commits/aborts them, submit passes the
+   lanes, and RELEASE submissions take the CACHE_RELEASE frame path.
+3. The deployment generator emitted JIT_KV-incompatible limits (tool).
+   With JIT_KV declared, SparkModelServingAdapterValidateRuntimeLimits
+   requires kv_logical_page_capacity >= resident capacity and
+   kv_physical_page_capacity >= active sequences; the generated configs
+   had zeros (and adapter_load initially rejected the descriptor until
+   cache_block_token_count matched JIT_KV). Fix:
+   tools/glm52_gen_deployment.py now emits 16*ceil(32768/64) = 8192 for
+   both page capacities; configs regenerated and redeployed.
+
+The 8-rank band then came up CLEAN on the final (diagnostics-stripped)
+build - all eight ready lines captured, e.g.:
 
 ```
-spark8: hidden_spark_rdma_open_timeout route=tp-device...2.0.4 host=sparkc port=63752 waited_ms=180000
-spark9: hidden_spark_rdma_open_timeout route=tp-device...2.1.5 host=sparkd port=63753 waited_ms=180000
-sparka: hidden_spark_rdma_open_timeout route=tp-device...2.2.6 host=sparke port=63754 waited_ms=180000
-sparkb: hidden_spark_rdma_open_timeout route=tp-device...2.3.7 host=sparkf port=63755 waited_ms=180000
-sparkc: hidden_spark_rdma_open_timeout route=tp-device...1.4.6 host=sparke port=63690 waited_ms=180000
-sparkd: hidden_spark_rdma_open_timeout route=tp-device...1.5.7 host=sparkf port=63691 waited_ms=180000
-sparkf: hidden_spark_rdma_open_timeout route=tp-device...0.6.7 role=receiver port=63627 waited_ms=180000
+sparke: model_residentd ready rank=6 stage=6 inflight=4 active=16 rows=16 resident=16 adapter=spark.glm52.serving-adapter.tp8.expert_fp8.v1 model=zai-org/GLM-5.2 revision=b4734de4... tcp=sparke:19486
 ```
 
-All 8 daemons exited route_failed (status=4 reason=9) after their 180s
-collective windows; no CUDA device memory was allocated (all died in
-adapter_initialize, before LoadDriver completed). The relaunch once sparke
-is back is one command per node (setsid nohup bin/sparkpipe_model_residentd
---deployment config/model_resident.json --rank-index r, all 8 within 180s
-of each other), then bin/sparkpipe_model_api on spark8 for the B1 decode.
+B1 decode (spark8 coordinator, ranks 0-7 = spark8..sparkf, deployed rank
+packs, real GLM-5.2 weights; captured on the build whose only delta from
+the final tree is six fprintf diagnostics since stripped - the token
+stream below is from that run):
+
+```
+$ bin/sparkpipe_model_batch --deployment config/model_resident.json \
+    --runtime-root /home/spark8/sparkdata/glm52.tp8.fp8 --batch /tmp/glm52_b1_decode.json
+{"event":"ready","adapter_id":"spark.glm52.serving-adapter.tp8.expert_fp8.v1","model_id":"zai-org/GLM-5.2","model_revision":"b4734de4...","stage_count":8,"linear_weight_codec":1,"expert_weight_codec":5,"kv_cache_codec":1}
+{"event":"accepted","status":0,"request_id":1,"sequence_id":1,...}
+{"event":"token","token_id":98665,"token_index":0,...,"generated_token_count":1,...}
+{"event":"token","token_id":98655,"token_index":1,...}
+{"event":"token","token_id":98567,"token_index":2,...}
+{"event":"token","token_id":3837,"token_index":3,...}
+{"event":"token","token_id":110834,"token_index":4,...}
+{"event":"token","token_id":123473,"token_index":5,...}
+{"event":"token","token_id":98314,"token_index":6,...}
+{"event":"token","token_id":102840,"token_index":7,...}
+{"event":"completed","status":0,...,"generated_token_count":8,...}
+sparkpipe_model_batch_pipeline submitted=9 continued=0 admitted=9 rejected=0 leases=0
+sparkpipe_model_batch_status=0 terminal=1 requests=1
+```
+
+(prefill of the 7-token prompt in two 4+3 waves + 8 decode steps, all
+admitted, zero rejections, terminal completion.)
+
+FLEET RULE COMPLIANCE: after evidence capture the entire band was TERMed
+(all 8 nodes verified dark) - a half-lit fleet or a lone rank holding
+~114GB is a neighbor-killer (the coordinator TERMed an earlier rank-6 on
+sparke for exactly that; sparke is K3's build node). Any future bring-up:
+reserve spark8-f in the queue first, then launch all 8 ranks within one
+180s window (setsid nohup bin/sparkpipe_model_residentd --deployment
+config/model_resident.json --rank-index r on each), and tear down after
+the run.
 
 ## INTEGRATION REQUESTS
 
@@ -264,5 +319,9 @@ of each other), then bin/sparkpipe_model_api on spark8 for the B1 decode.
    appended (glm52 module depends on the shared kv page cache). Either fix
    the runbook text or teach sparkpipe_model_compile to link
    model_common itself.
-3. sparke (rank 6) is wedged at the network level and needs operator
-   attention; I did not reboot it.
+3. Regenerated deployment configs (tools/glm52_gen_deployment.py with the
+   KV page capacities) are live on all 8 nodes; if the coordinator prefers
+   different capacities the generator is the single source.
+4. sparke self-recovered after ~25 min of network-level wedge; root cause
+   unknown (it power-cycled itself). Worth a look by whoever owns node
+   health; nothing in this lane rebooted it.

@@ -761,7 +761,12 @@ from pathlib import Path
 # grids with their amplification rationale. The validator gate now runs all
 # three tiers (dense, routed, DSA) on sm_121a and a host-executable oracle
 # selftest backs it on GPU-less machines.
-CEILING = 189979
+# The F4 smoke fixes add 133 more authored lines (predicate decision + adapter
+# KV lane wiring + generator capacities, same lane, same day): the admission
+# predicate must decide (the ladder's default is REJECTED), the adapter must
+# drive the module's KV page cache through PREPARE/COMMIT/ABORT/RELEASE like
+# dsv4's, and JIT_KV demands real page capacities in the deployment configs.
+CEILING = 190112
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

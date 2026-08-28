@@ -93,8 +93,13 @@ def resident_deployment() -> dict:
             "max_active_sequences": 16,
             "max_input_rows": 16,
             "resident_sequence_capacity": 16,
-            "kv_logical_page_capacity": 0,
-            "kv_physical_page_capacity": 0,
+            # The adapter declares CAPABILITY_JIT_KV (the module's KV page
+            # cache prepares/commits lanes through the admission ladder), so
+            # the limits must state the pool geometry: one logical page per
+            # 64-token block per resident sequence, all of them physically
+            # resident in the device pool the module allocates.
+            "kv_logical_page_capacity": 16 * ((32768 + 63) // 64),
+            "kv_physical_page_capacity": 16 * ((32768 + 63) // 64),
         },
         "nodes": nodes,
     }
