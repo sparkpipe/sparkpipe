@@ -904,3 +904,18 @@ AND no same-cwd daemon alive AND a generation counter guards double-
 launch; (2) fast-exit TERM handling at daemon level; (3) weights+KV
 envelope computed and checked at config time. Power-cycle spark0 =
 operator.
+
+## 2026-08-29 ~13:5x — spark0 unreachable AGAIN post-power-cycle; fleet stood down
+
+- After the operator power-cycle, preflight PASSED (16/16 clean,
+  107-110G free) and the wave fired — ranks 1-15 reached fabric-ready
+  then route_failed (waiting on rank 0); spark0 went unreachable
+  within ~3 min of launching its daemon. HYPOTHESIS: post-hard-cycle
+  ceph recovery (mon.spark0 + osd.0) + the residentd's ~30G alloc
+  raced — the preflight checked free memory but NOT ceph-recovery
+  state (a gap; added to the preflight design).
+- STOOD DOWN: 15 ranks TERMed by cwd (fleet dark, clean); NO further
+  launch attempts until the operator confirms spark0 stable — the
+  cycling-it-until-it-works pattern is exactly what wedges nodes.
+- FLEET NOTE: post-power-cycle nodes hosting mon/osd need a settle
+  window before GPU work; the preflight gains a ceph-recovery check.
