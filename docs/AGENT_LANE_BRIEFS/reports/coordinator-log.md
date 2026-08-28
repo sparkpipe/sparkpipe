@@ -1078,3 +1078,17 @@ failure is ever diagnosable through the wire.
 - Hand to next agent window or coordinator: check for an initial
   hidden all-reduce (stage EMBEDDING_REDUCE) in the TP chain; the 27B's
   chain has one (its embedding is sharded the same way).
+
+## 2026-08-29 ~23:5x — ALL-ZEROS ROOT-CAUSED AND FIXED (8043d83); real-tokens agent deployed
+
+- ROOT CAUSE CONFIRMED (not the missing-reduce hypothesis — sharper):
+  the initial hidden allreduce EXISTS; the bug is WIDTH. hidden_bf16
+  carries HC(4) streams/row; the collective prices payloads at ONE
+  hidden-width/sequence — the embedding reduce AND every MLP residual
+  reduce summed only the first quarter-slice of hidden across ranks.
+  The 27B's identical pattern is correct because it has no HC.
+- FIX (coordinator, write set): a second HC-wide collective twin (own
+  credit pool, HC x hidden/sequence, device mode); hidden reduces
+  route wide, attention_out narrow. Structural compile clean.
+- REAL-TOKENS AGENT spawned: rebuild from main → deploy 16 → wave →
+  curl (expect NON-ZERO tokens) → M5 exact-32K B1 → COMPSEC-17.
