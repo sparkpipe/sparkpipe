@@ -360,3 +360,14 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   after the resume message) — agent alive, early-phase. glm53 mid-M4
   (tip 21bcf7c, normal between-push cadence). Fleet healthy; scoreboard
   unchanged.
+
+## 2026-08-28 ~17:0x KST — bisect MEASURING (spark5 86% GPU); stagger holding
+
+- Bisect is in its D-measurement phase: spark5 GPU 86%, residentd up,
+  cooking the 40-vs-33.5 verdict cell. glm53 mid-M4 (tip 82m old —
+  emission/re-verify work between pushes).
+- Stagger intact: 2 concurrent agents (bisect, glm53); qwen-flash next
+  when a slot frees (its 4c3ff91 = pre-pause S4 state), then K3, p1a.
+- Queue TTL audit pruned expired manual reservations (spark4/5 from the
+  bisect's old set; its live measurement unaffected — advisory among
+  queue users). Scoreboard unchanged; verdict expected next bisect push.
