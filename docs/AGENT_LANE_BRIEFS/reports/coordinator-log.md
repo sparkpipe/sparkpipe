@@ -772,3 +772,20 @@ Operator question: does two-model co-residency work? Phase-1 results:
 - THE LAST BLOCKER (both lanes converged on it): final emit status 17,
   tokcnt 0, acc 10 after the clean full-model walk — final head/MTP/
   accounting class. Diag agent has the live wave-28.
+
+## 2026-08-29 ~6:0x — AUDIT RESPONSE: top item FIXED by coordinator; hygiene agent on the rest
+
+- PREFIX-CACHE CONTENT VERIFICATION (audit's #1, fd84988): every entry
+  now carries a SHA-256 digest of its block tokens (32B/entry); both
+  FindEntry match sites compare it; all callers compute from tokens
+  they hold; LIVE_ONLY placeholders (pre-token, sequence-bound — not
+  the collision class) zero-digested and skipped. Wrong-KV reuse:
+  silent-hash-collision -> 2^-256 non-event. Clean compile; ratchet
+  reconciled.
+- HYGIENE AGENT (8 items): the 2 stale-red C gates, ~11 red python
+  gates, the pipeline-client flake, Makefile:699 header dep, the
+  qwen38max harness merge+wiring, memlink %n + dflash2 bound as exact
+  integration-request diffs (my write set), LICENSE placeholder +
+  OPERATOR DECISION (license choice is yours: Apache-2.0? MIT?).
+- Auditor's asymmetry diagnosis accepted: static hygiene now has a
+  dedicated lane so it paces the fleet.
