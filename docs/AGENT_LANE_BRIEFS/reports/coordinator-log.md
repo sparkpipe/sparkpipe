@@ -995,3 +995,6 @@ INTERNAL_ERROR after the clean 45-layer walk with acc=4 — partial
 progress then failure; likely finalization (head/MTP/emit accounting).
 The two conspired: FIX-1 alone won't produce tokens but without it no
 failure is ever diagnosable through the wire.
+  - HANDOFF: diag-lane agent not currently active (session window) —
+    the finding + FIX-1/FIX-2 assignments are in this log and the
+    report; the next diag-lane spawn or coordinator window executes.
