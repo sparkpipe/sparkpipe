@@ -476,3 +476,25 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   PR #732 = docs-only follow-up. Staged fix runtime + v4 packs remain on
   spark4-7/spark5 for the prefill investigation; glm53 may reclaim /tmp.
 - glm53's last gate is GONE: all 16 nodes free, launch sequence live.
+
+## 2026-08-28 ~21:1x KST — spark0 disk rescue; 27B aggregate roofline flag; MDS move news
+
+- SPARK0 RESCUED: was 12G free/100% (disk-full killed the survivor
+  stage builds — 0 procs, stage3 never finished). Removed unverified
+  stage0+stage2 full-width packs (1.15T; rebuildable from cold); KEPT
+  verified stage1 (615.3GB, receipt + verify.json = the scale proof).
+  Now 585G free. Logged destructive action per policy.
+- OPERATOR ROOFLINE CHALLENGE on the knee aggregate (their instinct):
+  effective TFLOPS = tok/s x 54 GFLOP/token: B16 = 22 TFLOPS (plausible),
+  B32 = 79.3 TFLOPS — possible only if GB10 dense BF16/FP8 peak is the
+  125/250 class (63% MFU) vs the plan's assumed ~50 TFLOPS FP8 (would
+  make it impossible). B1 no-spec = 8.44 (the old '~9' was an old-stack
+  aggregate). The super-linearity is the r-law (step cost scales with
+  CONFIGURED lanes; more rows/lane nearly free) but the B32 point needs
+  PER-ROW token-stream verification (hash each row's output, not
+  aggregate counts) before '1469' is trusted as decode tok/s. QUEUED as
+  the verification follow-up; spec (24.5 old-stack) not yet measured on
+  cont-batching main — pending.
+- MDS RELOCATION to MacStudio announced by operator (sparks = backup) —
+  when landed, spark2/3 return to full GPU duty and the storage-host
+  rule relaxes. Best structural news of the day.
