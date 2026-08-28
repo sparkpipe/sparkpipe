@@ -246,7 +246,7 @@ typedef struct SparkQwen38_27bModuleState
 	uint64_t dflash_ctx_valid_to;
 	uint64_t *dflash_positions;
 
-	uint64_t dflash_positions_host[2056u];
+	uint64_t dflash_positions_host[SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS];
 	void *tp_stream;
 	atomic_ullong submitted_count;
 	atomic_ullong completed_count;
@@ -2661,6 +2661,12 @@ static SparkStatus SparkQwen38_27bModuleRunDsparkBlockForward(
 						error = cudaMemcpyAsync(kv_k + hist_base + live * 1024u,(const uint16_t *)state->dflash_block_hist_k + hist_lk + (uint64_t)hi * 1024u,1024u * 2u,cudaMemcpyDeviceToDevice,stream);
 					if ( error == cudaSuccess )
 						error = cudaMemcpyAsync(kv_v + hist_base + live * 1024u,(const uint16_t *)state->dflash_block_hist_v + hist_lk + (uint64_t)hi * 1024u,1024u * 2u,cudaMemcpyDeviceToDevice,stream);
+					if ( window + ctx_tail + B + live >= SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS )
+					{
+						fprintf(stderr,"qwen38_27b_stage dflash2_block_kv_frame_overflow nkv_eff=%u frame_rows=%u\n",
+							window + ctx_tail + B + live,SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS);
+						return(SPARK_STATUS_CAPACITY_EXCEEDED);
+					}
 					state->dflash_positions_host[window + ctx_tail + B + live] = state->dflash_hist_pos_host[hi];
 					live++;
 				}

@@ -4,6 +4,7 @@
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "spark_qwen38_27b_dspark_cuda.cuh"
+#include "spark_qwen38_27b_dspark_format.h"
 #include "spark_qwen38_27b_native_ws.cuh"
 
 /*
@@ -2351,6 +2352,17 @@ extern "C" cudaError_t SparkQwen38_27bLaunchDsparkQPrep(cudaStream_t stream, voi
 
 extern "C" cudaError_t SparkQwen38_27bLaunchDsparkCacheAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, const uint64_t *positions, void *attn_out_bf16, uint32_t block_rows, uint32_t nkv, uint32_t window)
 {
+	/* The dynamic score smem below is 2056 floats: 2048 window rows plus
+	 * the 8-row tail. nkv beyond that writes past shared memory - refuse
+	 * here so the module-side guard has a kernel-side twin (hard-fail,
+	 * never clamp). */
+	if ( nkv > SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS )
+	{
+		fprintf(stderr,"qwen38_27b_stage dflash2_cache_attn_nkv_overflow nkv=%u frame_rows=%u\n",
+			nkv,SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS);
+		return(cudaErrorInvalidValue);
+	}
+
 	dim3 grid(block_rows, 32u);
 	SparkQwen38_27bDsparkCacheAttnKernel<<<grid, SPARK_QWEN38_27B_DSPARK_ATTN_HEAD_DIM, 2056u * sizeof(float), stream>>>((const __nv_bfloat16 *)q_bf16, (const __nv_bfloat16 *)k_bf16, (const __nv_bfloat16 *)v_bf16, (const __nv_bfloat16 *)q_norm_bf16, (const __nv_bfloat16 *)k_norm_bf16, positions, (__nv_bfloat16 *)attn_out_bf16, block_rows, nkv, window);
 	return(cudaGetLastError());

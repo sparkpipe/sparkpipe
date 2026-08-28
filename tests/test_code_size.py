@@ -834,7 +834,11 @@ from pathlib import Path
 # root-caused (SIGTERM-vs-EOF race, teardown race-tolerant 30/30),
 # header dep, qwen38max harness wired (+1714), make-test host guards.
 # Post-merge exact: 210835.
-CEILING = 210835
+# IR-9 + IR-10 from the hygiene lane (coordinator-applied): memlink
+# template validator (config-never-format-string, %n hard-rejected) and
+# the dflash2 2056-row frame bound with module+kernel twins sharing one
+# define in dspark_format.h. 210893 exact.
+CEILING = 210893
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
