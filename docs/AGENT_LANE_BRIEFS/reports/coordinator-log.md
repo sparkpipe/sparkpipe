@@ -838,3 +838,17 @@ Operator question: does two-model co-residency work? Phase-1 results:
   pause. Two latent staging bugs fixed pre-launch (TP4xPP3 geometry,
   pgrep -f teardown). Verifier gained the bf16-expert branch. spark4-7
   reservations released to the housecleaning sprint.
+
+## 2026-08-29 ~10:2x — W4 REDUNDANCY LANE MERGED (PR737, 2dea928)
+
+- HEADLINE: runtime/node/cache/ring have ZERO duplication — the paste
+  problem is entirely modules/-side (93 hits, all triaged: 44 to W2's
+  libraries, 27 kernel templates parked pending W2, 22 justified as
+  per-family validation independence).
+- The 157-max cyclomatic named: DsparkBlockForward (619 lines) w/ its
+  own plan; 151 hotspots dispositioned, 12 named plans.
+- GENERATOR PROVEN: gen_geometry_header.py regenerates qwen38_27b's
+  hand-written header BYTE-IDENTICAL; glm5_next/qwen4_flash cut over
+  (one real correction each — the duplicated define + the exact
+  32**-0.5 scale). RECIPE-COMPILER v0 EXISTS. The token-saver is real:
+  geometry headers are never hand-written again.
