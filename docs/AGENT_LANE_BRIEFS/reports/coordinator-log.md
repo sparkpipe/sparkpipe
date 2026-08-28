@@ -212,3 +212,16 @@
 - Third fuzzy-match incident (Pro's smoke cleanup hit bisect's daemons on
   spark4-7; they self-restarted) — the spawn-captured-pids rule covers
   it; no further action.
+
+## 2026-08-28 ~16:2x — sweep: MDS metadata INCONSISTENCY escalated; no merges
+
+- ESCALATION 3 (ab4243b): warm kimi-k3 readdir/stat disagree (file
+  listed, open ENOENT) — persistent, cross-node. Both MDS alive; hosts
+  at 84-90G with co-located GPU daemons. Sysadmin: ceph fs status +
+  likely standby-MDS restart; relocation/MemoryMin asks now backed by an
+  integrity incident. K3 lane warned (stage-0 source affected; local
+  NVMe packs/journals unaffected).
+- No lane merges this pass (glm53's a6a3847 = the already-processed
+  checkpoint report). spark3 knee sweep 96% (ladder finishing). Bisect
+  fleet measurements live on spark4-7 (per Pro lane's accidental
+  confirmation). All OSDs healthy; disks fine (spark0 1.7T, spark5 1.9T).
