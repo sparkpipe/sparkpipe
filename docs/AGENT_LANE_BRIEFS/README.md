@@ -145,17 +145,17 @@ GPU and heavy remote work is scheduled through the run queue
   SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPEC_METHOD=dflash2 DRAFT_COUNT=8
   DSPARK_PACK_PATH=<drafter> DFLASH2_STATE_SELECT=1 BONUS_FOLD=2
   DFLASH2_BLOCK_KV=0 DFLASH2_WINDOW=2048 DFLASH2_CTX_CACHE=1
-- **CEPH SINGLE-POINT MAP + STORAGE-HOST RULE:** spark3 runs
-  `mds.ds4warm.spark3` + osd.3/17; sparkc runs osd.12 (other OSDs:
-  `ps -C ceph-osd` per host). Fleet-wide SLOW UNCACHED reads with fast
-  cached reads = the MDS host is in trouble — check it BEFORE diagnosing
-  ceph. **STORAGE-HOST nodes (spark3, sparkc) host NO GPU lane work**:
-  unified memory is shared, and a GPU job allocating past the safe
-  envelope OOMs the ceph daemons — spark3 rebooted this way on
-  2026-08-28 (~104 GiB KV pool next to mds+2xOSD), taking fleet storage
-  down with it. The queue will not dispatch GPU runs to storage hosts;
-  agents do not reserve them. (Coordinator-granted exceptions must name
-  the memory envelope.)
+- **CEPH TOPOLOGY + STORAGE-RISK RULE (full map in the infra advisory):
+  EVERY node runs an OSD; mons on spark0/spark7/sparkf; the ACTIVE MDS
+  pair is mds.ds4warm.spark2 + .spark3.** (1) STRICT no-GPU-work on the
+  active-MDS hosts (spark2, spark3) — unified memory is shared and a GPU
+  job past the envelope OOMs the MDS/OSDs (spark3 rebooted this way at
+  ~104 GiB on 2026-08-28, and its reboots bounce the MDS pair fleet-wide:
+  transient ENOENT + slow uncached reads = MDS failover/warm-up, wait and
+  retest). (2) ALL other nodes run GPU work under a ~85-90 GiB device
+  memory envelope so the local OSD survives. (3) Fleet-wide SLOW UNCACHED
+  reads + fast cached = MDS host trouble; SINGLE-OBJECT stall with healthy
+  neighbors = degraded PG (node/OSD down — like sparke/osd.14).
 
 ## Build chain (the only supported path)
 1. Module: `make -C modules/<family> publish NVCC=/usr/local/cuda/bin/nvcc

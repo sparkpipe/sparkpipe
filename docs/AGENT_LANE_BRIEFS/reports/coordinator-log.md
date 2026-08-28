@@ -37,3 +37,22 @@
   residentd/api, S6 live 4-node smoke + first perf cell.
 - Standing integration request #4 (tests wiring) verified ALREADY DONE
   (Makefile:260).
+
+## 2026-08-28 ~10:4x — sweep: SPARKE DOWN (osd.14); ceph topology fully mapped; knee sweep running
+
+- INCIDENT: sparke unreachable (no ping from 2 vantages) — runs osd.14;
+  degraded PGs, replication serves. Second node-down today (after spark3's
+  reboot pair) — sysadmin asked to check for a common cause. K3 lane told
+  to hold (journals/packs survive on NVMe; no build relocation — restart
+  would re-read 174GB from degraded ceph).
+- TOPOLOGY CORRECTED: every node runs an OSD (osd.0-18); mons spark0/7/f
+  (quorum alive); MDS PAIR = mds.ds4warm.spark2 + .spark3 (explains
+  transient ENOENT blips = pair failover from spark3's reboots; seen
+  again on spark6 this sweep). Storage-risk rule REVISED in the README:
+  strict no-GPU only on active-MDS hosts (spark2, spark3); all other
+  nodes under a ~85-90 GiB device envelope so local OSDs survive GPU jobs.
+- GPU: spark3 at 95% — the knee sweep is measuring (B-point checkpointing
+  per protocol). spark5 load 2.7 (bisect building/measuring). No new lane
+  merges this pass (no new commits on validator-fix/knee/bisect branches).
+- Queue: bisect agent self-registered spark4-7; gates unchanged
+  (glm52-validator-fix still in flight on spark8).

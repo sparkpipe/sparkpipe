@@ -1,4 +1,29 @@
-# INFRA ESCALATION (2026-08-28 09:05, UPDATED 09:20): spark3 reboots — LIKELY GPU-MEMORY vs CEPH CONFLICT
+# INFRA ESCALATION 2 (2026-08-28 ~10:3x): sparke FULLY DOWN — osd.14 with it. SYSADMIN NEEDED
+
+sparke: no ping (100% loss from the controller), ssh timeout from two
+vantage points (controller + spark0). Node power/console/fabric check
+needed. It runs **osd.14** — degraded PGs until it returns (replication
+serves; expect recovery churn). Second node-down incident today after
+spark3's reboot pair — worth checking for a common cause (power feed,
+fabric switch, thermal).
+
+FULL CEPH TOPOLOGY (inventoried 10:3x — corrects the earlier partial map):
+- mons: spark0, spark7, sparkf (quorum alive)
+- MDS PAIR: mds.ds4warm.spark2 + mds.ds4warm.spark3 (both up; spark3's
+  reboots have been bouncing one half — the transient ENOENT blips are
+  consistent with MDS pair failover, seen again at 10:3x on spark6)
+- OSDs: one per node (osd.0 spark0, osd.1 spark1, osd.2+16 spark2,
+  osd.3+17 spark3, osd.4 spark4, osd.5 spark5, osd.6+18 spark6,
+  osd.7 spark7, osd.8 spark8, osd.9 spark9, osd.10 sparka, osd.11 sparkb,
+  osd.12 sparkc, osd.13 sparkd, osd.14 SPARKE (DOWN), osd.15 sparkf)
+
+REVISED storage-risk rule (replaces the two-host version): EVERY node is
+a storage node. Strict no-GPU-work applies to ACTIVE-MDS hosts (spark2,
+spark3 while they hold the mds.ds4warm pair). All other nodes run GPU
+work under a MEMORY ENVELOPE (~85-90 GiB device ceiling; the spark3 crash
+was ~104 GiB next to mds+2 OSDs) so a GPU job cannot OOM the local OSD.
+Better long-term: sysadmin adds systemd MemoryMin to ceph units on ALL
+nodes, then the envelope relaxes.
 
 spark3 rebooted twice inside one hour (~08:13 and ~08:59). UPDATED ROOT
 CAUSE (from the knee-sweep lane): reboot #2 coincided exactly with a
