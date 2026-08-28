@@ -773,8 +773,8 @@ from pathlib import Path
 # machinery, new kpool pool kernels, the 49-kind .g5nsp stagepack format,
 # hybrid cache allocation, the synthesized-pack tool, and the M1/M2
 # contract + name-map tooling (nvcc sm_121a compile gate PASS).
-# 206853 is the exact count after the validator PASS (fixture fixes + oracle norm).
-CEILING = 206853
+# 207611 is the exact count after the M4 real-checkpoint packer.
+CEILING = 207611
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

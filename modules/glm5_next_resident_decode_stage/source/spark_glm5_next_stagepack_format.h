@@ -266,8 +266,6 @@ static inline uint32_t SparkGlm5NextStagePackTpShardsRows(uint32_t tensor_kind)
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_Q_CONV:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_K_CONV:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_V_CONV:
-    case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_DECAY_BIAS:
-    case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT:
         return(1u);
     default:
@@ -282,6 +280,10 @@ static inline uint32_t SparkGlm5NextStagePackTpShardsCols(uint32_t tensor_kind)
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_DENSE_DOWN:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_DOWN:
+    /* the per-channel KDA vectors shard along their channel/head axis
+     * (columns at rows=1); rows-sharding a 1-row tensor cannot divide. */
+    case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_DECAY_BIAS:
+    case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE:
         return(1u);
     default:
         return(0u);
