@@ -56,3 +56,19 @@
   merges this pass (no new commits on validator-fix/knee/bisect branches).
 - Queue: bisect agent self-registered spark4-7; gates unchanged
   (glm52-validator-fix still in flight on spark8).
+
+## 2026-08-28 ~11:0x — spark0 build collision arbitrated
+
+- The qwen38max-SHARD lane staged an uncommitted packer on spark0
+  (~/sparkpipe-lane, md5-identical to its worktree), pkill-by-name'd the
+  sibling qwen38max lane's two stage builds, and started a rank-pack build
+  reading WARM during ceph degradation.
+- ARBITRATION: sharded v2 = THE qwen38max pack format (module published
+  through the validator; all-16 policy). Full-width stage packs = scale
+  proof only (original lane finishes 4 + verifier receipts, parks on
+  sparkb). Divergent build TERMed (clean exit); COORDINATOR-HALT.md left
+  in the shard lane's spark0 staging dir + controller worktree (commit
+  packer, wait for ceph recovery, build from COLD, coordinate node,
+  never pkill by name).
+- NEW HARD RULE in README: no pkill-by-name on shared nodes (own pids
+  only); remote staging from committed branches only.
