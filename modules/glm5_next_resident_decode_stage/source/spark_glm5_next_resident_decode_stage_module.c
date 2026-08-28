@@ -148,6 +148,15 @@ struct SparkGlm5NextModuleState
 	void *tp_credit_receive_bf16;
 	void *tp_host_credit_send_bf16;
 	void *tp_host_credit_receive_bf16;
+	/* HC-wide twin credit pool: same memory-mode discipline as the narrow
+	 * instance (device arena + mapped-host transport aliases), priced at
+	 * HC x hidden per sequence. */
+	SparkTpDeviceCollectiveCreditBinding tp_hc_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
+	uint32_t tp_hc_credit_binding_count;
+	void *tp_hc_credit_send_bf16;
+	void *tp_hc_credit_receive_bf16;
+	void *tp_hc_host_credit_send_bf16;
+	void *tp_hc_host_credit_receive_bf16;
 	atomic_ullong tp_next_ordinal;
 };
 
@@ -1242,6 +1251,11 @@ static SparkStatus SparkGlm5NextValidateFrame(
  * the single-rank path exercises every chunk boundary.
  */
 #define SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
+/* The HC twin's port block: the narrow collective claims
+ * control_port_base + step*64 (+rank) for its steps, i.e. the first
+ * 4*64 = 256 port numbers; the twin starts 512 above the base so the
+ * blocks can never touch. */
+#define SPARK_GLM5_NEXT_TP_COLLECTIVE_HC_PORT_STRIDE 512u
 
 typedef enum SparkGlm5NextChainStage
 {
@@ -1403,6 +1417,29 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	/* The HC-wide twin is a SECOND collective instance, not a config
+	 * variant of the first: hidden_bf16 rows carry HC(4) streams, so its
+	 * payload width is HC x hidden and its credit pool is priced the same
+	 * way. It gets its OWN identifier and port block - route names embed
+	 * the identifier and every step claims PORT_STRIDE x degree ports, so
+	 * sharing either with the narrow instance collides at open. */
+	memset(&configuration_hc,0,sizeof(configuration_hc));
+	configuration_hc.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	configuration_hc.backend_kind = context->tp_collective_backend_kind;
+	configuration_hc.tp_degree = state->tp_degree;
+	configuration_hc.tp_rank = state->tp_rank;
+	configuration_hc.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+	configuration_hc.credit_count = configuration.credit_count;
+	configuration_hc.local_hidden_dimension =
+		SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * SPARK_GLM5_NEXT_MODEL_HC_MULT;
+	configuration_hc.max_active_sequence_count = configuration.max_active_sequence_count;
+	configuration_hc.connect_timeout_milli = context->tp_connect_timeout_milli;
+	configuration_hc.operation_timeout_milli = context->tp_operation_timeout_milli;
+	configuration_hc.control_port_base = context->tp_collective_control_port_base +
+		SPARK_GLM5_NEXT_TP_COLLECTIVE_HC_PORT_STRIDE;
+	configuration_hc.collective_identifier = context->tp_collective_identifier + 1u;
+	configuration_hc.backend_module_path = context->tp_collective_backend_module_path;
+	configuration_hc.registration_cuda_stream = state->execution_stream;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration_hc);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -1411,6 +1448,8 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		configuration.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
 		configuration.combine_u64_max_function = SparkGlm5NextModuleCombineU64Max;
 		configuration.combine_context = state;
+		configuration_hc.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
+		configuration_hc.combine_context = state;
 	}
 	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.control_port_base == 0u || configuration.collective_identifier == 0u || configuration.backend_module_path == 0 || configuration.local_host == 0 || configuration.backend_module_path[0] == '\0' || configuration.local_host[0] == '\0' )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1502,59 +1541,102 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		return(status);
 	}
 	state->tp_device_collective_initialized = 1u;
-	/* The HC-wide twin: its own credit pool at HC x hidden per sequence.
-	 * Mapped-host mode is skipped for the twin (device buffers suffice;
-	 * the narrow instance carries the host-mapped path if configured). */
+	/* The HC-wide twin: its own credit pool at HC x hidden per sequence,
+	 * allocated with the SAME memory-mode discipline as the narrow pool
+	 * above - the backend derives the mode from its own capabilities at
+	 * Create, and a host-verbs transport requires pinned mapped-host
+	 * transport aliases; raw device pointers cannot satisfy it. */
 	{
 		uint32_t hc_credit_count = configuration_hc.credit_count;
 		uint64_t hc_credit_bytes = (uint64_t)configuration_hc.max_active_sequence_count *
 			configuration_hc.local_hidden_dimension * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
-		uint64_t hc_total = hc_credit_bytes * hc_credit_count;
-		SparkTpDeviceCollectiveCreditBinding *hc_bindings;
-		uint32_t hc_index;
-		if ( hc_total != 0u )
+		uint64_t hc_total;
+		void *hc_mapped_send,*hc_mapped_receive;
+		hc_total = 0u;
+		for (route=0u; route<route_count; route++)
 		{
-			void *hc_send,*hc_receive;
-			status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&hc_send);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&hc_receive);
-			if ( status != SPARK_STATUS_OK )
-				return(status);
-			hc_bindings = (SparkTpDeviceCollectiveCreditBinding *)calloc(
-				(size_t)hc_credit_count * route_count,
-				sizeof(*hc_bindings));
-			if ( hc_bindings == 0 )
+			if ( hc_credit_bytes == 0u || hc_total > UINT64_MAX - hc_credit_bytes * hc_credit_count )
 				return(SPARK_STATUS_CAPACITY_EXCEEDED);
-			hc_index = 0u;
-			for (route=0u; route<route_count; route++)
-			{
-				for (credit=0u; credit<hc_credit_count; credit++)
-				{
-					SparkTpDeviceCollectiveCreditBinding *binding;
-					if ( hc_index >= (size_t)hc_credit_count * route_count )
-						break;
-					binding = &hc_bindings[hc_index++];
-					binding->step_index = route;
-					binding->credit_index = credit;
-					binding->send_device = (uint8_t *)hc_send + (uint64_t)route * hc_credit_count * hc_credit_bytes + (uint64_t)credit * hc_credit_bytes;
-					binding->receive_device = (uint8_t *)hc_receive + (uint64_t)route * hc_credit_count * hc_credit_bytes + (uint64_t)credit * hc_credit_bytes;
-					binding->send_transport = binding->send_device;
-					binding->receive_transport = binding->receive_device;
-					binding->flags = 0u;
-					binding->reserved0 = 0u;
-				}
-			}
-			configuration_hc.credit_bindings = hc_bindings;
-			configuration_hc.credit_binding_count = hc_index;
-			configuration_hc.memory_mode = SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE;
-			status = SparkTpDeviceCollectiveCreate(&configuration_hc,&state->tp_device_collective_hc);
-			if ( status != SPARK_STATUS_OK )
-				return(status);
-			state->tp_device_collective_hc_initialized = 1u;
+			hc_total += hc_credit_bytes * hc_credit_count;
 		}
+		status = SPARK_STATUS_OK;
+		/* device-private arena for the twin's credit pool (ledger-tracked) */
+		if ( hc_total != 0u )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&state->tp_hc_credit_send_bf16);
+		if ( status == SPARK_STATUS_OK && hc_total != 0u )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&state->tp_hc_credit_receive_bf16);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		if ( hc_total != 0u && memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
+		{
+			/* pinned coherent host aliases: the transport reads/writes the
+			 * host pointer, the kernels the device alias of the SAME memory */
+			hc_mapped_receive = 0;
+			hc_mapped_send = 0;
+			error = cudaHostAlloc(&state->tp_hc_host_credit_send_bf16,hc_total,cudaHostAllocPortable | cudaHostAllocMapped);
+			if ( error == cudaSuccess )
+				error = cudaHostAlloc(&state->tp_hc_host_credit_receive_bf16,hc_total,cudaHostAllocPortable | cudaHostAllocMapped);
+			if ( error == cudaSuccess )
+				error = cudaHostGetDevicePointer(&hc_mapped_send,state->tp_hc_host_credit_send_bf16,0u);
+			if ( error == cudaSuccess )
+				error = cudaHostGetDevicePointer(&hc_mapped_receive,state->tp_hc_host_credit_receive_bf16,0u);
+			if ( error != cudaSuccess )
+			{
+				if ( state->tp_hc_host_credit_send_bf16 != 0 )
+					(void)cudaFreeHost(state->tp_hc_host_credit_send_bf16);
+				if ( state->tp_hc_host_credit_receive_bf16 != 0 )
+					(void)cudaFreeHost(state->tp_hc_host_credit_receive_bf16);
+				state->tp_hc_host_credit_send_bf16 = 0;
+				state->tp_hc_host_credit_receive_bf16 = 0;
+				return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_hc_credit_alloc"));
+			}
+			state->tp_hc_credit_send_bf16 = hc_mapped_send;
+			state->tp_hc_credit_receive_bf16 = hc_mapped_receive;
+		}
+		offset = 0u;
+		state->tp_hc_credit_binding_count = 0u;
+		for (route=0u; route<route_count; route++)
+		{
+			for (credit=0u; credit<hc_credit_count; credit++)
+			{
+				SparkTpDeviceCollectiveCreditBinding *binding;
+				if ( state->tp_hc_credit_binding_count >= SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT )
+					return(SPARK_STATUS_CAPACITY_EXCEEDED);
+				binding = &state->tp_hc_credit_bindings[state->tp_hc_credit_binding_count++];
+				binding->step_index = route;
+				binding->credit_index = credit;
+				binding->send_device = (uint8_t *)state->tp_hc_credit_send_bf16 + offset;
+				binding->receive_device = (uint8_t *)state->tp_hc_credit_receive_bf16 + offset;
+				binding->send_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_hc_host_credit_send_bf16 + offset : binding->send_device;
+				binding->receive_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_hc_host_credit_receive_bf16 + offset : binding->receive_device;
+				binding->flags = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS : 0u;
+				binding->reserved0 = 0u;
+				offset += hc_credit_bytes;
+			}
+		}
+		if ( state->tp_hc_credit_binding_count != 0u )
+		{
+			configuration_hc.credit_bindings = state->tp_hc_credit_bindings;
+			configuration_hc.credit_binding_count = state->tp_hc_credit_binding_count;
+		}
+		status = SparkTpDeviceCollectiveCreate(&configuration_hc,&state->tp_device_collective_hc);
+		if ( status != SPARK_STATUS_OK )
+		{
+			if ( state->tp_hc_host_credit_send_bf16 != 0 )
+				(void)cudaFreeHost(state->tp_hc_host_credit_send_bf16);
+			if ( state->tp_hc_host_credit_receive_bf16 != 0 )
+				(void)cudaFreeHost(state->tp_hc_host_credit_receive_bf16);
+			state->tp_hc_host_credit_send_bf16 = 0;
+			state->tp_hc_host_credit_receive_bf16 = 0;
+			return(status);
+		}
+		state->tp_device_collective_hc_initialized = 1u;
 	}
 	return(SPARK_STATUS_OK);
 }
+
+static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *chain,
+	void *device_bf16,uint32_t hc_wide);
 
 static SparkStatus SparkGlm5NextModuleReduceHidden(SparkGlm5NextTpChain *chain,void *device_bf16)
 {
@@ -2202,10 +2284,16 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 	if ( SparkStageModuleWaitForSlots(SPARK_GLM5_NEXT_MODULE_TAG,state->slot_states,state->pipeline_slot_count,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK )
 		return;
 	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
+	if ( state->tp_device_collective_hc_initialized != 0u )
+		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective_hc);
+	if ( state->tp_hc_host_credit_send_bf16 != 0 )
+		(void)cudaFreeHost(state->tp_hc_host_credit_send_bf16);
+	if ( state->tp_hc_host_credit_receive_bf16 != 0 )
+		(void)cudaFreeHost(state->tp_hc_host_credit_receive_bf16);
+	state->tp_hc_host_credit_send_bf16 = 0;
+	state->tp_hc_host_credit_receive_bf16 = 0;
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
-		if ( state->tp_device_collective_hc_initialized != 0u )
-			SparkTpDeviceCollectiveDestroy(&state->tp_device_collective_hc);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm5NextReleaseSlotHost(state);

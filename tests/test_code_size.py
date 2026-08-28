@@ -860,7 +860,14 @@ from pathlib import Path
 # W2 items 2-5 (adapter template + memory-M1 handles + stagepack
 # library + provider slot; qwen38_27b + dsv4 cut over — families 1-2 of
 # 5, remaining families follow post-review) + build fixes. 216634 exact.
-CEILING = 216634
+# glm5_next real-tokens lane: the HC-wide collective twin made REAL —
+# the committed twin was un-buildable (Config has no memory_mode member)
+# and inert (hc config never populated, width never scaled by HC), so the
+# rewrite fully prices the twin at HC x hidden, gives it its own
+# identifier/port block and mapped-host credit discipline, and adds the
+# family host-syntax gate test that would have caught the broken commit.
+# 216722 exact.
+CEILING = 216722
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
