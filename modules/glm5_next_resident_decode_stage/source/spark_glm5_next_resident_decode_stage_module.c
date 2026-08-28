@@ -11,6 +11,17 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
+
+/* Real-tokens lane diagnostic: SPARK_GLM5_NEXT_PROBE=1 arms the
+ * G5N-PROBE dumps (token ids seen by Execute, post-embed hidden row,
+ * post-reduce head maxloc). Print-only, off by default. */
+static int SparkGlm5NextProbeEnabled(void)
+{
+	static int probe_enabled = -1;
+	if ( probe_enabled < 0 )
+		probe_enabled = getenv("SPARK_GLM5_NEXT_PROBE") != 0 ? 1 : 0;
+	return(probe_enabled);
+}
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_kv_model_table.h"
@@ -1791,6 +1802,22 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION:
+		if ( SparkGlm5NextProbeEnabled() && chain->next_layer == 0u )
+		{
+			uint16_t probe_hidden[16];
+			uint32_t probe_i;
+			uint64_t probe_sum;
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			error = cudaMemcpy(probe_hidden,chain->slot->hidden_bf16,sizeof(probe_hidden),cudaMemcpyDeviceToHost);
+			probe_sum = 0u;
+			for ( probe_i = 0u; probe_i < 16u; probe_i++ )
+				probe_sum += probe_hidden[probe_i];
+			fprintf(stderr,"G5N-PROBE post-embed-reduce hidden row0 first16 bf16sum %llu first8 %u %u %u %u %u %u %u %u\n",
+				(unsigned long long)probe_sum,
+				(unsigned)probe_hidden[0],(unsigned)probe_hidden[1],(unsigned)probe_hidden[2],(unsigned)probe_hidden[3],
+				(unsigned)probe_hidden[4],(unsigned)probe_hidden[5],(unsigned)probe_hidden[6],(unsigned)probe_hidden[7]);
+			(void)error;
+		}
 		if ( SparkGlm5NextLaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1853,6 +1880,23 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		{
 			SparkGlm5NextTpChainFail(chain,launch_status);
 			return;
+		}
+		if ( SparkGlm5NextProbeEnabled() )
+		{
+			float probe_score = 0.0f;
+			uint32_t probe_token = 0u;
+			uint64_t probe_maxloc = 0u;
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			error = cudaMemcpy(&probe_score,chain->slot->output_score,sizeof(probe_score),cudaMemcpyDeviceToHost);
+			if ( error == cudaSuccess )
+				error = cudaMemcpy(&probe_token,chain->slot->output_token,sizeof(probe_token),cudaMemcpyDeviceToHost);
+			if ( error == cudaSuccess )
+				error = cudaMemcpy(&probe_maxloc,chain->slot->head_maxloc_u64,sizeof(probe_maxloc),cudaMemcpyDeviceToHost);
+			fprintf(stderr,"G5N-PROBE head score %.6f token %u maxloc %llx rank %u/%u\n",
+				(double)probe_score,(unsigned)probe_token,
+				(unsigned long long)probe_maxloc,
+				state->tp_rank,state->tp_degree);
+			(void)error;
 		}
 		if ( chain->next_wave_row < chain->batch->row_count )
 		{
@@ -2102,6 +2146,14 @@ static SparkStatus SparkGlm5NextExecuteBatch(
 		(unsigned)batch->active_sequence_count,
 		(unsigned long long)frame->flags,
 		(unsigned)frame->cache_lane_count);
+	if ( SparkGlm5NextProbeEnabled() && batch->token_ids != 0 )
+	{
+		uint32_t probe_row;
+		fprintf(stderr,"G5N-PROBE batch token_ids rows %u:",batch->row_count);
+		for ( probe_row = 0u; probe_row < batch->row_count && probe_row < 8u; probe_row++ )
+			fprintf(stderr," %u",batch->token_ids[probe_row]);
+		fprintf(stderr,"\n");
+	}
 	if ( frame->cache_lane_count != 0u )
 	{
 		const SparkModelDriverCacheLane *frame_lane = &frame->cache_lanes[0];
