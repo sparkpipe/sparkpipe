@@ -353,3 +353,10 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   the bisect re-tasks to a fresh agent next window (state carries in its
   report/receipts).
 - Scoreboard unchanged; survivors healthy.
+
+## 2026-08-28 ~16:3x KST — both resumes CONFIRMED alive
+
+- Bisect second resume EXECUTED: worktree touched 07:06 UTC (5 min
+  after the resume message) — agent alive, early-phase. glm53 mid-M4
+  (tip 21bcf7c, normal between-push cadence). Fleet healthy; scoreboard
+  unchanged.
