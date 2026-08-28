@@ -106,3 +106,19 @@
   (48G reclaimed, spark0 /home now 970G free).
 - RULE HARDENED (README): kill ONLY spawn-captured pids; no fuzzy match
   by name, path, or parent — the agent's own root-cause line, verbatim.
+
+## 2026-08-28 ~12:3x — sweep: SPARKE RECOVERED; K3 resumed; qwen38max merged
+
+- SPARKE BACK (up 28 min, osd.14 rejoining, GPU healthy, stage-0 journal
+  intact). Previously-stuck shard-12 object now reads 253 MB/s direct —
+  recovery confirmed. K3 lane RESUMED via message (told to merge main
+  first: all 5 module findings now fixed there; restart probe loop with
+  spawn-captured pids per the hardened rule).
+- MERGED lane/qwen38max (3588464, ratchet 189314 justified: tp4pp4
+  pack/deploy tooling + stagepack rewrite that built the 573 GiB stage
+  packs). Report-only tip + earlier tool commits; format arbitration
+  acknowledged in their report.
+- GPU: spark3 96% (knee sweep cooking). spark5/8 GPU-idle between
+  measurement phases (bisect/validator host work). Queue gates all
+  correctly pending; reservations intact.
+
