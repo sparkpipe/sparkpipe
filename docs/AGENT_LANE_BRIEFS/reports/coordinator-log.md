@@ -498,3 +498,12 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
 - MDS RELOCATION to MacStudio announced by operator (sparks = backup) —
   when landed, spark2/3 return to full GPU duty and the storage-host
   rule relaxes. Best structural news of the day.
+
+## 2026-08-28 ~21:4x KST — glm53 mid-launch (all-16 reservations, staging phase)
+
+- glm53 holds the all-16 reservation set (10 confirmed in queue view)
+  with zero fleet daemons yet — runtime-tree staging/sync across 16
+  nodes; no failure notifications = tentatively alive. Watching; the
+  ready-lines + M5 number are the next landmarks.
+- ceph canary + spark0 disk post-rescue: healthy (585G free).
+- Scoreboard unchanged.
