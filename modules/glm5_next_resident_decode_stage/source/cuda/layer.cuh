@@ -713,7 +713,8 @@ static int32_t Glm5NextLayerAttention(
         buffers->kv_b_value_weight == 0 ||
         buffers->q_compressed_bf16 == 0 || buffers->q_bf16 == 0 ||
         buffers->query_latent_bf16 == 0 ||
-        buffers->query_rope_bf16 == 0 ||
+        /* query_rope_bf16 stays null at ROPE_DIM == 0: the latent decode
+         * template never dereferences it (compile-time guarantee). */
         (context > GLM5_NEXT_DSA_SELECTED &&
          (buffers->selected_positions == 0 ||
           buffers->selected_position_count != GLM5_NEXT_DSA_SELECTED)))
@@ -978,6 +979,17 @@ void Glm5NextSplitDecayGateDownKernel(
     }
 }
 
+/* THE DELTA RULE'S 64 KiB OPT-IN (runtime/launch.h's shared grant table;
+ * k3 names its own instantiation the same way). */
+static int32_t Glm5NextDeltaRuleOptIn(uint32_t shared_bytes)
+{
+    return(LmKernelSharedMemoryOptIn(
+        (const void *)LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,
+                                        GLM5_NEXT_KDA_KEY_DIM,
+                                        GLM5_NEXT_KDA_VALUE_DIM>,
+        shared_bytes));
+}
+
 /* KDA linear attention, 34 of 45 layers - k3's launch chain with the
  * glm5_next deltas:
  *
@@ -1233,6 +1245,13 @@ static int32_t Glm5NextLayerKda(
         buffers->kda_beta_logit,
         buffers->kda_write_gate,
         rank_heads);
+    /* THE DELTA RULE'S 64 KiB OF DYNAMIC SHARED IS PAST THE 48 KiB DEFAULT
+     * (k3's identical lesson): the launch fails with invalid argument on
+     * device unless cudaFuncSetAttribute opts this instantiation in. */
+    status = Glm5NextDeltaRuleOptIn(
+        GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float));
+    if (status != LM_LAUNCH_OK)
+        return(status);
     LM_LAUNCH(
         (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM>),
         dim3(sequences,rank_heads),
@@ -1375,8 +1394,12 @@ __global__ void Glm5NextHcSplitSinkhornKernel(
 
 /* Mix projection: 24 fp32 dots of fn against the flattened streams,
  * scaled by the rsqrt of the flattened mean square (the reference's
- * UnweightedRMSNorm applied to the mix, exactly). The fn weights are F32
+ * UnweightedRMSNorm applied to the mix, exactly). The staging is TILED at
+ * 4096 floats (16 KB shared) like dsv4's pattern: the flat row is 4 x
+ * 4096 = 64 KB, over the default dynamic-shared limit, so a single-pass
+ * stage would fail launch with invalid argument. The fn weights are F32
  * in the pack (the checkpoint stores BF16; the packer upcasts once). */
+#define GLM5_NEXT_HC_MIX_TILE 4096u
 __global__ void Glm5NextHcMixKernel(
     const uint16_t *__restrict__ streams_bf16,
     const float *__restrict__ fn_f32,
@@ -1391,35 +1414,56 @@ __global__ void Glm5NextHcMixKernel(
     uint32_t row = blockIdx.x;
     uint32_t warp = threadIdx.x / LM_WARP_LANES;
     uint32_t lane = threadIdx.x % LM_WARP_LANES;
-    uint32_t mix, element;
-    float value, total = 0.0f, inverse, accumulator;
+    uint32_t mix, element, tile, tile_end, tile_elements;
+    const uint32_t warps = GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES;
+    float value, total = 0.0f, accumulator;
+    float accum[4]; /* warps (8) >= mix rows per warp step of 3 used below */
     if (row >= row_count)
         return;
-    for (element = threadIdx.x; element < flat_dimension;
-         element += GLM5_NEXT_LAYER_THREADS)
+    /* Accumulate per-mix partials over tiles: mix_rows (24) exceeds the
+     * warp count (8), so each warp carries ceil(24/8) = 3 mixes. */
+    for (mix = 0u; mix < 3u; mix++)
+        accum[mix] = 0.0f;
+    for (tile = 0u; tile < flat_dimension; tile += GLM5_NEXT_HC_MIX_TILE)
     {
-        value = LmBf16ToFloat(
-            streams_bf16[((uint64_t)row * flat_dimension) + element]);
-        staged[element] = value;
-        total += value * value;
+        tile_end = tile + GLM5_NEXT_HC_MIX_TILE < flat_dimension
+            ? tile + GLM5_NEXT_HC_MIX_TILE
+            : flat_dimension;
+        tile_elements = tile_end - tile;
+        __syncthreads();
+        for (element = threadIdx.x; element < tile_elements;
+             element += GLM5_NEXT_LAYER_THREADS)
+        {
+            value = LmBf16ToFloat(
+                streams_bf16[((uint64_t)row * flat_dimension) + tile + element]);
+            staged[element] = value;
+            total += value * value;
+        }
+        __syncthreads();
+        for (mix = warp; mix < mix_rows; mix += warps)
+        {
+            accumulator = 0.0f;
+            for (element = lane; element < tile_elements; element += LM_WARP_LANES)
+                accumulator += staged[element] *
+                    fn_f32[((uint64_t)mix * flat_dimension) + tile + element];
+            for (uint32_t lane_step = LM_WARP_LANES / 2u; lane_step > 0u;
+                 lane_step >>= 1)
+                accumulator +=
+                    __shfl_down_sync(0xFFFFFFFFu, accumulator, lane_step);
+            if (lane == 0u)
+                accum[mix / warps] += accumulator;
+        }
     }
-    __syncthreads();
     total = LmBlockSum<GLM5_NEXT_LAYER_THREADS>(total, reduction);
-    inverse = rsqrtf(total / (float)flat_dimension + rms_epsilon);
-    for (mix = warp; mix < mix_rows; mix += GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES)
-    {
-        accumulator = 0.0f;
-        for (element = lane; element < flat_dimension; element += LM_WARP_LANES)
-            accumulator += staged[element] *
-                fn_f32[((uint64_t)mix * flat_dimension) + element];
-        /* warp reduce */
-        for (uint32_t lane_step = LM_WARP_LANES / 2u; lane_step > 0u;
-             lane_step >>= 1)
-            accumulator +=
-                __shfl_down_sync(0xFFFFFFFFu, accumulator, lane_step);
+    __shared__ float inverse_shared[1];
+    if (threadIdx.x == 0u)
+        inverse_shared[0] =
+            rsqrtf(total / (float)flat_dimension + rms_epsilon);
+    __syncthreads();
+    for (mix = warp; mix < mix_rows; mix += warps)
         if (lane == 0u)
-            mixes_f32[((uint64_t)row * mix_rows) + mix] = accumulator * inverse;
-    }
+            mixes_f32[((uint64_t)row * mix_rows) + mix] =
+                accum[mix / warps] * inverse_shared[0];
 }
 
 /* Stream collapse for the sublayer input, and the residual snapshot the
@@ -1550,7 +1594,7 @@ static int32_t Glm5NextHcSite(
         (Glm5NextHcMixKernel),
         rows,
         GLM5_NEXT_LAYER_THREADS,
-        flat * sizeof(float),
+        GLM5_NEXT_HC_MIX_TILE * sizeof(float),
         stream,
         buffers->hidden_bf16 /* the streams surface */,
         (const float *)fn_weight,
