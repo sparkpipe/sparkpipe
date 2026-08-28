@@ -14,8 +14,8 @@ tools/perf_scoreboard.py parses this section; edit HERE, never downstream.
 <!-- scoreboard:start -->
 | Model | Best decode (tok/s) | Decode cell | Best prefill (tok/s) | Prefill cell | Code | Date |
 |---|---|---|---|---|---|---|
-| Qwen 3.8 27B | 24.5 (spec) / 8.03 (no-spec) | B1 TP1 DFlash2 k8 / B1 TP1 | ~21.7 | p256 B16 PFR8 | main | 2026-08-27 |
-| Qwen 3.8 27B aggregate | 36.22 | B4 TP1 (continuous batching) | — | — | main (PR725) | 2026-08-27 |
+| Qwen 3.8 27B | 24.5 (spec) / 8.45 (no-spec) | B1 TP1 DFlash2 k8 / B1 TP1 71.1GiB cfg | ~21.7 | p256 B16 PFR8 | main | 2026-08-28 |
+| Qwen 3.8 27B aggregate | 55.44 (B=1/2/4: 8.45/16.75/55.44) | B4 TP1 continuous batching, 71.1GiB cfg | — | — | main f8f2ea0 | 2026-08-28 |
 | DSV4 Flash | 40.48 branch / 33.55 main | B1 TP4 exact-32K | — | not measured | 3d962820 / main | 2026-08-17 / 08-28 |
 | GLM 5.2 (donor) | 6.91 | B1 TP8 | — | not measured | pre-audit code | historical |
 | GLM 5.2 aggregate (donor) | 75.55 | B16 TP8 | — | not measured | pre-audit code | historical |

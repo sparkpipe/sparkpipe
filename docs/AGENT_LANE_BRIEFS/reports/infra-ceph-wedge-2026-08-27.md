@@ -1,20 +1,34 @@
-# INFRA ESCALATION (2026-08-28 09:05): spark3 reboot-crash-loop — SYSADMIN NEEDED
+# INFRA ESCALATION (2026-08-28 09:05, UPDATED 09:20): spark3 reboots — LIKELY GPU-MEMORY vs CEPH CONFLICT
 
-spark3 rebooted twice inside one hour (~08:13 and ~08:59, "up 3 min" at
-09:02; third reboot in ~24h). Yesterday's GPU wedge showed arm-smmu-v3
-CMD_SYNC timeout storms and an NVRM full-chip-reset assertion — the
-recurring reboots fit that same hardware/driver instability signature.
-Two asks for the sysadmin:
-1. Investigate spark3 (hardware/driver — smmu/NVRM; crash logs will be
-   in the journal around 08:1x and 08:5x).
-2. MOVE `mds.ds4warm.spark3` to a stable host (sparkc runs osd.12 and
-   has been rock solid). Fleet storage health is currently coupled to
-   the least stable node: every spark3 reboot restarts the model-warm
-   metadata server cold → transient ENOENT blips + slow uncached reads
-   fleet-wide for minutes (NOT a new ceph wedge — do not diagnose it as
-   one; wait 10-15 min for MDS warm-up and retest).
-Until cleared: spark3 is UNSTABLE — the knee-sweep lane has been told
-to checkpoint every measurement and stop if it reboots twice more.
+spark3 rebooted twice inside one hour (~08:13 and ~08:59). UPDATED ROOT
+CAUSE (from the knee-sweep lane): reboot #2 coincided exactly with a
+residentd launch at resident_sequence_capacity=128 / max_sequence_positions=8192
+— a ~104+ GiB unified-memory KV pool on the SAME node as mds.ds4warm +
+osd.3 + osd.17. GPU unified-memory pressure can starve/OOM the ceph
+daemons → node crash + fleet-wide storage impact. Reboot #1 (~08:13)
+predates all GPU work that morning — unexplained, possibly residual from
+yesterday's NVRM/smmu instability. This is a NOISY-NEIGHBOR design
+conflict, not (necessarily) flaky hardware: production storage roles and
+GPU jobs share one 119 GB unified memory.
+
+Asks for the sysadmin:
+1. Confirm in the journal (~08:5x): OOM kill of ceph daemons / kernel
+   panic signature. And check the 08:1x reboot's cause.
+2. MOVE `mds.ds4warm.spark3` to a host without GPU lanes (sparkc runs
+   osd.12 and has been rock solid). Fleet storage health is coupled to
+   nodes we GPU-stress; every spark3 reboot restarts the model-warm MDS
+   cold → transient ENOENT + slow uncached reads fleet-wide (NOT a new
+   ceph wedge; wait 10-15 min for MDS warm-up and retest).
+3. If storage roles stay on GPU nodes: systemd memory protections
+   (MemoryMin/MemoryMax) for the ceph units so a GPU job cannot OOM
+   them.
+
+Lane policy effective now (in the README): STORAGE-HOST nodes (spark3:
+mds+osd.3+osd.17; sparkc: osd.12) host NO GPU lane work — the queue will
+not dispatch GPU runs there; agents do not reserve them. The knee-sweep
+lane is granted a ONE-TIME exception on spark3 at the VERIFIED 71.1 GiB
+envelope only (its 104 GiB config is dropped), one-B-per-session with
+checkpoints; it stops if the node reboots twice more.
 
 ---
 
