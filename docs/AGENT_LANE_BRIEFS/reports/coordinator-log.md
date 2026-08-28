@@ -559,3 +559,17 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   restarted during debug, served counter reset). No merges this pass.
 - Canary: healthy/known-blip class (MDS migration window). Scoreboard
   carries the RETRACTED-curve correction from the operator's catch.
+
+## 2026-08-28 ~01:0x KST — first-token: deadlock FIXED on main; reject ranked for the lane
+
+- API self-deadlock root-caused by the lane w/ gdb receipt (worker held
+  the queue mutex across Submit→api_event re-entry) — fix (inflight/
+  orphaned, submit-outside-lock) merged to main, verified live (my curl
+  reaches admission). Ranked analysis handed to the lane for the
+  admit→UNSUPPORTED: (1) publish-count mismatch @kv_page_cache ~996,
+  (2) context==0-with-position!=0 underflow @586/800 (mis-filled field
+  class), (3) dump block_token_count (geometry). One instrumented
+  fprintf names the site; cache-side fix mine, adapter-side theirs.
+- Follow-ups logged: client-generation recovery path (schema-error on
+  2nd request after reject); glm52 adapter missing CONTINUE_LEASE (its
+  next re-deploy hits the client gate).
