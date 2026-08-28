@@ -15,7 +15,7 @@ tools/perf_scoreboard.py parses this section; edit HERE, never downstream.
 | Model | Best decode (tok/s) | Decode cell | Best prefill (tok/s) | Prefill cell | Code | Date |
 |---|---|---|---|---|---|---|
 | Qwen 3.8 27B | 24.5 (spec) / 8.45 (no-spec) | B1 TP1 DFlash2 k8 / B1 TP1 71.1GiB cfg | ~21.7 | p256 B16 PFR8 | main | 2026-08-28 |
-| Qwen 3.8 27B aggregate | 1469.40 @B32 (curve 8.44/16.86/33.73/111.18/406.65/1469.40; step ms 118.5→21.8) | B1-32 TP1 128-lane cont-batching, weights resident; B4 peak 55.44 at K1 cfg | — | — | main, knee sweep | 2026-08-28 |
+| Qwen 3.8 27B aggregate | 1469.40 @B32 (L128 curve 8.44/16.86/33.73/111.18/406.65/1469.40, step 118.5→21.8ms); L64 ladder 55.48/204.20/733.05 (B4/8/16) | L128 B1-32 + L64 B4-16, TP1 cont-batching, exact-512-token cells; B4 is config-specific (55.48 @64-lane/128→256 win vs 33.73 @128-lane); r-law: step ∝ B×64/lanes — right-size lanes; knee NOT reached (walls are software: P1a deactivate-route bug, P1b ratio cliff B≥lanes/2) | — | — | main f8f2ea0, PR #730 | 2026-08-28 |
 | DSV4 Flash | 40.48 branch / 33.55 main | B1 TP4 exact-32K | — | not measured | 3d962820 / main | 2026-08-17 / 08-28 |
 | GLM 5.2 (donor) | 6.91 | B1 TP8 (historical); CORRECTNESS RESTORED on current code: full validator PASS + 8-rank B1 e2e decode (PR #728, timing not claimed) | — | not measured | main b313cd5 | 2026-08-28 |
 | GLM 5.2 aggregate (donor) | 75.55 | B16 TP8 | — | not measured | pre-audit code | historical |
