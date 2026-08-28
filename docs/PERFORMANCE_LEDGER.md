@@ -22,7 +22,7 @@ tools/perf_scoreboard.py parses this section; edit HERE, never downstream.
 | Qwen 3.8 Max | 1.29 | B1 TP4xPP4 anchors | — | not measured | anchors | 2026-08 |
 | K3 | 18.0 | B1 single-stage; MODULE CHAIN VERIFIED through collective on real deployed pack (fleet bring-up = first fleet number) | — | not measured | single-stage + main fixes | 2026-08-28 |
 | Qwen 3.8 Flash | — | M5 whole-stack TP4 gate PASSED (bit-exact, cross-node); M6 live smoke + hc/indexer/PLE ports next | — | — | main e3b795a | 2026-08-28 |
-| GLM 5.3 Flash | — | M3 published + M4 pack set COMPLETE: 16/16 real TP16 packs (21.7GB each, 347.3GB) pass the module shape gate (1160 tensors, 0 fail/rank); 3 packer bugs caught by the gate pre-ship. Bring-up → M5 next (PR #727 6da29f8) | — | — | lane/glm53 | 2026-08-28 |
+| GLM 5.3 Flash | — | FLEET LIVE: 16/16 TP16 ranks READY on real packs (simultaneous wave, ready-lines verified, API connected) — one isolated blocker to first tokens (API batch-engine submit path); M5 exact-32K B1 next (PR #727 feeeae7) | — | — | lane/glm53 | 2026-08-28 |
 | DSV4 Pro | — | 16 TP4xPP4 rank packs built+verified (~93GB each, DSpark draft replicated), 14/16 deployed; old packs were never corrupt (verifier mismatch by construction); driver rebuild pending ready line (PR #729) | — | — | lane/dsv4pro merged | 2026-08-28 |
 <!-- scoreboard:end -->
 

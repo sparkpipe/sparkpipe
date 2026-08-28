@@ -157,6 +157,16 @@ GPU and heavy remote work is scheduled through the run queue
   transport-wait holding its full weight in unified memory — one
   OOM-killed a sibling lane's pack build and nearly re-OOMed the local
   OSD on a storage node. Single-rank smoke tests run on YOUR OWN node.
+- **FLEET-WAVE LESSONS (glm53 all-16 bring-up, 2026-08-28):** (1) a
+  multi-rank launch is ONE SIMULTANEOUS WAVE — staggered launches die
+  on the 180s hidden-transport connect window and late joiners are
+  refused; TERM-sweep everything first, then launch all ranks together.
+  (2) `pkill -f` catches your own ssh wrapper — use `pkill -x
+  sparkpipe_model` (exact-name matching only; consistent with the
+  spawn-captured-pids rule). (3) EADDRINUSE TIME_WAIT at wave start on
+  some nodes: a 45s pre-launch sleep fixes it. Record per-node layout
+  and launch commands in a LAUNCH-STATE.md in the deployment dir so any
+  coordinator/agent can take over mid-bring-up.
 - The DFlash2 launch environment is MANDATORY for spec runs (missing it
   produces degenerate output - this cost us a day):
   SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPEC_METHOD=dflash2 DRAFT_COUNT=8
