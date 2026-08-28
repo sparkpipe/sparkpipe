@@ -534,3 +534,20 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   that's the health probe or the first token, the lane's next push will
   say). Lane debugging the batch-engine submit blocker per the pointer.
 - Scoreboard unchanged; M5 number pending the submit path.
+
+## 2026-08-28 ~23:4x — CURVE RETRACTED (units bug); co-resident test framed
+
+- OPERATOR VINDICATED (2nd challenge): knee-sweep awk multiplied the
+  batch-total token count by B — every rate inflated xB (B32: 1469
+  reported vs 41.3 true; receipts valid: wall+tokens were direct).
+  Scoreboard retracted + tool fixed (3c98234). TRUE 27B curve: 8.31 B1
+  → 41.3 tok/s saturation ~B16 (batching ~5x, not 174x). Open: flat B2
+  (8.31 = B1 — first doubling gave nothing), step-ms re-derivation,
+  K1's B2/B4 numbers (16.75/55.44 used the buggy column — re-derive).
+- CO-RESIDENT TEST framed (operator request): glm5_next at 21.7GB/rank
+  leaves ~76GB/node headroom (spark2 measured: 42G used with rank up).
+  27B TP1 full pack (29.9GB) co-deploys per node without new packs.
+  Plan: after glm53's M5, co-resident 27B on 4 glm53 nodes (distinct
+  API ports), measure both models' tok/s solo-vs-paired + memory/OSD
+  health — surfaces the co-residency issue class (mem pressure, one-
+  client slots are per-daemon=OK, launch-wave interactions).
