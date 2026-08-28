@@ -809,7 +809,11 @@ from pathlib import Path
 # The staging lane's manifest tooling + test wiring (the checked-state
 # gate); their in-commit reconciliation landed 12 under the merge's
 # tree state. 208761 is the exact merged count.
-CEILING = 208761
+# glm53 lane merge (af1c970): transport probes + the algorithm-guarded
+# RouteBinding variant (convergent with 20539c6; the guard preserves the
+# TP4 ring alias's purpose while fixing recursive-only degrees) + wave
+# launcher tooling. 209028 exact.
+CEILING = 209028
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -419,7 +419,10 @@ static void SparkGlm5NextBindLayer(
 	buffers->positions = slot->positions;
 	buffers->row_positions = slot->positions;
 	buffers->selected_positions = slot->selected_positions;
-	buffers->selected_position_count = SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH;
+	/* The MLA decode kernel consumes the kpool-expanded width but its
+	 * shape gate demands the SELECT width constant; long contexts only
+	 * (this gate arm is context > SELECT). */
+	buffers->selected_position_count = GLM5_NEXT_DSA_SELECTED;
 	/* KDA scratch + state (indexed by KDA ordinal, not layer index). */
 	buffers->fused_qkvb_bf16 = slot->fused_qkvb_bf16;
 	buffers->fused_decay_gate_bf16 = slot->fused_decay_gate_bf16;

@@ -42,8 +42,12 @@ TP_COLLECTIVE = {
     "algorithms": ["recursive_doubling"],
     "direct_all_to_all_max_payload_bytes": 0,
     "split_ring_min_payload_bytes": 0,
+    # The schema REQUIRES exactly 2 rails (MAX_RAIL_COUNT=2) and 3
+    # step_rail_indices (SPLIT_RING_ROUTE_COUNT=3) - glm52's template.
+    # The async op INVALID_ARGUMENT discriminator is done differently:
+    # point BOTH rails at the same (only) fabric device.
     "rail_peer_hosts": [list(HOSTS), list(HOSTS)],
-    "step_rail_indices": [0, 0, 1],
+    "step_rail_indices": [0, 0, 0],
 }
 
 

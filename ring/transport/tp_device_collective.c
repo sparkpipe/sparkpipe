@@ -317,14 +317,24 @@ static uint64_t SparkTpDeviceCollectiveTransportGeneration(
 }
 
 static uint32_t SparkTpDeviceCollectiveRouteBinding(
-    const SparkTpDeviceCollectiveImplementation *implementation,
+    SparkTpDeviceCollectiveImplementation *implementation,
     uint32_t route_index)
 {
     if (implementation->binding_route_count ==
         SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_PEER_COUNT)
         return route_index;
-    return route_index == SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX ?
-        1u : route_index;
+    /* The 2->1 row alias exists for the TP4 counter-rotating split ring,
+     * where binding rows are shared across the ring's route indices. A
+     * recursive-doubling-only collective (TP8/TP16) uses raw step rows in
+     * BuildOperationPackets, so aliasing here would register session-2
+     * templates from row 1 while its recursive ops present row-2 pointers
+     * - the activate template compare then fails every op at step 2 with
+     * INVALID_ARGUMENT (glm53 lane receipt, wave-26 probe). */
+    if ((implementation->collective->algorithm_mask &
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) != 0u)
+        return route_index == SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX ?
+            1u : route_index;
+    return route_index;
 }
 
 static uint32_t SparkTpDeviceCollectiveOperationHiddenDimension(

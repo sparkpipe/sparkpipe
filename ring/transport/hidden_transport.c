@@ -389,6 +389,8 @@ SparkStatus SparkHiddenTransportValidatePacket(
             SPARK_HIDDEN_TRANSPORT_CAP_STREAM_ORDERED) != 0u &&
         packet->cuda_stream == 0)
     {
+        fprintf(stderr,"G5N-TP validate-stream-zero caps=%x\n",
+            endpoint->capability_flags);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (packet->hidden_bf16 == 0 ||
@@ -407,6 +409,13 @@ SparkStatus SparkHiddenTransportValidatePacket(
             (packet->hidden_dimension > endpoint->hidden_dimension ||
              packet->bytes_per_sequence > endpoint->bytes_per_sequence)))
     {
+        fprintf(stderr,
+            "G5N-TP validate-shape hidden=%p rows=%u/%u dim=%u bps=%llu/%llu flags=%x ep_dim=%u\n",
+            packet->hidden_bf16,packet->active_sequence_count,
+            endpoint->max_active_sequence_count,packet->hidden_dimension,
+            (unsigned long long)packet->bytes_per_sequence,
+            (unsigned long long)endpoint->bytes_per_sequence,packet->flags,
+            endpoint->hidden_dimension);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -907,11 +916,22 @@ SparkStatus SparkHiddenTransportReservePersistentSend(
     if (session == 0 || packet == 0 || generation == 0u ||
         SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
     {
+        fprintf(stderr,
+            "G5N-TP w-reserve-guard session=%p packet=%p gen=%llu caps=%x\n",
+            (void *)session,(const void *)packet,
+            (unsigned long long)generation,
+            session != 0 ? session->transport_interface.capability_flags : 0u);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     status = SparkHiddenTransportValidatePacket(&session->endpoint,packet);
     if (status != SPARK_STATUS_OK)
     {
+        fprintf(stderr,
+            "G5N-TP w-reserve-validate status=%u rows=%u hidden=%u flags=%x stream=%p\n",
+            (unsigned)status,packet != 0 ? packet->active_sequence_count : 0u,
+            packet != 0 ? packet->hidden_dimension : 0u,
+            packet != 0 ? packet->flags : 0u,
+            packet != 0 ? packet->cuda_stream : 0);
         return status;
     }
     return session->transport_interface.reserve_persistent_send(
@@ -943,11 +963,20 @@ SparkStatus SparkHiddenTransportActivatePersistentReceive(
     if (session == 0 || packet == 0 || generation == 0u ||
         SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
     {
+        fprintf(stderr,
+            "G5N-TP w-activate-guard session=%p gen=%llu caps=%x\n",
+            (void *)session,(unsigned long long)generation,
+            session != 0 ? session->transport_interface.capability_flags : 0u);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     status = SparkHiddenTransportValidatePacket(&session->endpoint,packet);
     if (status != SPARK_STATUS_OK)
     {
+        fprintf(stderr,
+            "G5N-TP w-activate-validate status=%u rows=%u hidden=%u flags=%x\n",
+            (unsigned)status,packet != 0 ? packet->active_sequence_count : 0u,
+            packet != 0 ? packet->hidden_dimension : 0u,
+            packet != 0 ? packet->flags : 0u);
         return status;
     }
     return session->transport_interface.activate_persistent_receive(
