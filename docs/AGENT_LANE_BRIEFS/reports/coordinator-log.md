@@ -1102,3 +1102,17 @@ failure is ever diagnosable through the wire.
   P3). W2 dry-template2 continues (its branch shows items 2-5 landed —
   coordinator merges next window). Coordinator: merges + own IR queue
   only.
+
+## 2026-08-30 ~0:4x — three new accelerators executed
+
+1. API-binary refresh coordinated into the real-tokens deploy (the
+   COMPSEC gate + liteLLM verify need /v1/models + error shape live).
+2. QUALITY FIXTURES PRE-TOKENIZED (93a3a0b): all 92 cases (incl the
+   COMPSEC-17, identified by compsec-* ids) tokenized for glm5.3-flash
+   and committed — the quality gate fires the SECOND real tokens land,
+   no tokenizer stall, works for qwen-flash's gate too (regenerate per
+   tokenizer with the same one-shot script pattern).
+3. W2 FINAL-FAMILIES agent spawned: glm52 + k3 adapter cutovers onto
+   the template (their lanes are done — no longer mid-flight; glm5_next
+   skipped as genuinely active). Completes DRY to 5/5 families.
+- W2 items 2-5 MERGED (270be02) — housecleaning core COMPLETE.
