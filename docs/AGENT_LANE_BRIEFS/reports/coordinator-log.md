@@ -662,3 +662,10 @@ Operator question: does two-model co-residency work? Phase-1 results:
   remote builds; the earlier staleness was the build phase). 3
   residentd procs = its wave cycling. No intervention; next push or
   first tokens resolves. Scoreboard unchanged.
+
+## 2026-08-28 ~06:4x KST — glm53 fully quiet this pass (no builds 35m+, API mid-wave)
+
+- No pushes, no new .so builds in ~35m, API curl empty, worktree 80m
+  stale. First fully-quiet sweep since the resume; if the next sweep
+  shows the same, the lane gets a direct ping + re-resume (the harness
+  error classes have killed it silently before). Scoreboard unchanged.
