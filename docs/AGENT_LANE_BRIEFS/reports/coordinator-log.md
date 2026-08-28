@@ -613,3 +613,9 @@ Operator question: does two-model co-residency work? Phase-1 results:
   computed per node pre-launch, KV pools cut to fit. Co-resident
   phase-2 numbers: 27B (29G) + reduced 35G KV + glm53 rank (21.7G)
   ≈ 92G — comfortable.
+
+## 2026-08-28 ~03:5x KST — glm53 hunt 5: exact failing site (fc10bba)
+
+- Lane at the exact failing site (chainfail probe, 5-min-old tip); my
+  live curl still rejects (status 4, empty tokens) — the instrumented
+  hunt continues. Merging waits for the milestone. Scoreboard unchanged.
