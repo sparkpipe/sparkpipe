@@ -136,3 +136,22 @@
   failover signature during ongoing recovery — wait-and-retest, not a
   new incident). spark3 knee sweep still at 96% (cooking); bisect
   between measurement phases on spark5.
+
+## 2026-08-28 ~13:4x — K3 module chain VERIFIED on real pack; rogue glm52 rank-6 TERMed
+
+- K3 SMOKE MILESTONE: rank-12 on sparkc with the 16-node deployment gets
+  through adapter_load → module init+bind (layer-92 fix confirmed live)
+  → dispatch → collective, dying only at the PP transport wait — the
+  module chain is clean; fleet bring-up = the first K3 fleet number.
+  Scoreboard cell updated.
+- NODE CONFLICT RESOLVED: glm52 TP8 rank-6 residentd (validator lane's
+  ranks-1-7 step) sat ALONE on sparke at 114/121GB, OOM-killing the K3
+  stage-1 builder and one allocation from re-OOMing osd.14. TERMed
+  cleanly (memory 114→59GB). New rule pending README: residentd ranks
+  come up ONLY as a coordinated fleet bring-up with queue reservations —
+  half-lit fleets are wasted memory and neighbor-killers.
+- MERGED lane/k3 config fixes (98ebc2e): deployment stage_index must be
+  the unique linear rank (my k3_gen_deployment.sh emitted i/4 duplicates),
+  kv page capacities 0 (k3 descriptor has no JIT_KV). K3 stage-1
+  restarting on sparke; stage-0 probe-then-resume continues (shards 12/13
+  deep objects still in backfill).

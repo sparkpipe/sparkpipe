@@ -20,7 +20,7 @@ tools/perf_scoreboard.py parses this section; edit HERE, never downstream.
 | GLM 5.2 (donor) | 6.91 | B1 TP8 | — | not measured | pre-audit code | historical |
 | GLM 5.2 aggregate (donor) | 75.55 | B16 TP8 | — | not measured | pre-audit code | historical |
 | Qwen 3.8 Max | 1.29 | B1 TP4xPP4 anchors | — | not measured | anchors | 2026-08 |
-| K3 | 18.0 | B1 single-stage | — | not measured | single-stage | 2026-08 |
+| K3 | 18.0 | B1 single-stage; MODULE CHAIN VERIFIED through collective on real deployed pack (fleet bring-up = first fleet number) | — | not measured | single-stage + main fixes | 2026-08-28 |
 | Qwen 3.8 Flash | — | M5 whole-stack TP4 gate PASSED (bit-exact, cross-node); M6 live smoke + hc/indexer/PLE ports next | — | — | main e3b795a | 2026-08-28 |
 | GLM 5.3 Flash | — | lane M1-M3 done, validator pending | — | — | — | — |
 | DSV4 Pro | — | packs building (spark6) | — | — | — | — |
