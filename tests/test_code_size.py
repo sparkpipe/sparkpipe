@@ -806,7 +806,10 @@ from pathlib import Path
 # walk over ssh, exit 1 on any gap vs the fleet table) + its registered
 # offline test, plus the one PYTHON_TESTS registration line in the Makefile.
 # Tooling only; no production source grew. 208749 exact.
-CEILING = 208749
+# The staging lane's manifest tooling + test wiring (the checked-state
+# gate); their in-commit reconciliation landed 12 under the merge's
+# tree state. 208761 is the exact merged count.
+CEILING = 208761
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
