@@ -634,3 +634,12 @@ Operator question: does two-model co-residency work? Phase-1 results:
 - ALSO noted: tp_collective schema HARD-REQUIRES 2 rails + 3 step
   indices (single-rail = schema_error) — an inflexibility worth a
   follow-up.
+
+## 2026-08-28 ~05:1x KST — phantom reservations cleaned; lane in transport-instrument window
+
+- The resumed lane re-reserved with BARE hex hostnames (0-f, from the
+  fleet-table's rank→spark{hex} shorthand taken literally) alongside the
+  proper spark0-f set — 16 phantoms released. NOTE for lanes: node names
+  are spark0..sparkf, never bare hex.
+- glm53 API mid-wave during the lane's transport .so instrument work
+  (curl empty; tip = the 33m-old handoff receipt). Scoreboard unchanged.
