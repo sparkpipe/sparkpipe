@@ -371,3 +371,11 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
 - Queue TTL audit pruned expired manual reservations (spark4/5 from the
   bisect's old set; its live measurement unaffected — advisory among
   queue users). Scoreboard unchanged; verdict expected next bisect push.
+
+## 2026-08-28 ~17:3x KST — bisect measurement ended; wrap-up or analysis (no notification yet)
+
+- spark5 GPU returned to 0% and the bisect's queue reservations were
+  released (by the agent or TTL audit) — consistent with either
+  post-measurement analysis or lane wrap-up. No completion notification
+  yet; next notification resolves. glm53 2h between pushes (mid-M4
+  emission I/O — plausible). Scoreboard unchanged.
