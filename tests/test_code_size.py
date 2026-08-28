@@ -773,7 +773,11 @@ from pathlib import Path
 # 193155: the 16-rank TP4xPP4 fleet retarget (coordinator directive) -
 # HYBRID_TP_PP adapter geometry, bf16 grouped-expert kernel acceptance
 # (policy: repackage-only), packer --expert-format bf16.
-CEILING = 193155
+# 193508: verifier bf16-expert byte-trace branch (the tp>1 expert shard
+# crashed the generic expected-read - rank-0 strides had masked it) +
+# synth --bf16 experts-only substitution + the fleet16 launcher and
+# deploy_v4 generator completing the pack-complete staging window.
+CEILING = 193508
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
