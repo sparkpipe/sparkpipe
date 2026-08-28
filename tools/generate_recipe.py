@@ -63,7 +63,7 @@ HASH_CHARS = 16
 MAX_ROUTED_PER_STAGE = 8
 ENGINE_MAX_STAGE_COUNT = 16
 DEFAULT_DEGREES = (16, 13)
-DATAFILE_RE = re.compile(r"^[a-z0-9]+\.(?:TP|PP)\d+\.[0-9a-f]{16}\.json$")
+DATAFILE_RE = re.compile(r"^[a-z0-9_]+\.(?:TP|PP)\d+\.[0-9a-f]{16}\.json$")
 
 
 class RecipeFailure(RuntimeError):

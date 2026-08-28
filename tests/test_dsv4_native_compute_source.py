@@ -301,16 +301,23 @@ def main() -> int:
 
     expert_host = body(common, "SparkLmHostLaunchSm121FusedExpertW13")
     w2_host = body(common, "SparkLmHostLaunchSm121ExpertW2")
-    require(expert_host, "if ( rows == 1024u )", "B1024 routed W13 M64 tile")
-    require(expert_host, "SPARK_LM_SM121_NATIVE_WIDE_TILE_M",
-            "wide routed W13 specialization")
-    require(w2_host, "if ( rows == 1024u )", "B1024 routed W2 M64 tile")
-    require(w2_host, "SPARK_LM_SM121_NATIVE_WIDE_TILE_M",
-            "wide routed W2 specialization")
+    # f2d1f67 (exact-per-row MoE experts): every row count runs the
+    # certified B1 exact kernel. The native B1024 M64 tile route was
+    # retired because its per-tile scales diverged on multi-row verify
+    # frames - absent by design, which the forbids below pin.
+    forbid(expert_host, "rows == 1024u", "retired B1024 routed W13 tile")
+    forbid(expert_host, "SPARK_LM_SM121_NATIVE_WIDE_TILE_M",
+            "retired wide routed W13 specialization")
+    require(expert_host, "SparkLmSm121B1ExpertW13Kernel<SPARK_LM_SM121_NATIVE_TILE_N>",
+            "multi-row W13 exact-tile instantiation")
+    forbid(w2_host, "rows == 1024u", "retired B1024 routed W2 tile")
+    forbid(w2_host, "SPARK_LM_SM121_NATIVE_WIDE_TILE_M",
+            "retired wide routed W2 specialization")
+    require(w2_host, "SparkLmSm121B1ExpertW2Kernel<SPARK_LM_SM121_B1_EXPERT_W2_TILE_N>",
+            "multi-row W2 exact-tile instantiation")
     require(expert_host, "if ( rows == 1u )", "true-B1 routed W13 dispatch")
     require(expert_host, "SPARK_LM_SM121_B1_EXPERT_W13_TILE_N",
             "B1 W13 N32 tile")
-    require(w2_host, "if ( rows == 1u )", "true-B1 routed W2 dispatch")
     require(w2_host, "SPARK_LM_SM121_B1_EXPERT_W2_TILE_N", "B1 W2 N128 tile")
     require(w2_host, "SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM",
             "B1 W2 four-CTA launch")
@@ -360,8 +367,11 @@ def main() -> int:
     forbid(scalar_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
            "slower multi-neuron scalar projection route")
     dense_w13_dispatch = body(common, "SparkLmHostLaunchSm121FusedDenseW13")
-    require(dense_w13_dispatch, "if ( row_count == 1u )",
-            "true-B1 shared W13 dispatch")
+    # f2d1f67 again: multi-row shared W13 must be bit-identical to the
+    # certified 1-row GEMV, so the launcher loops the exact GEMV once per
+    # row and the tiled B8/B1024 tensor route is retired.
+    require(dense_w13_dispatch, "for (row = 0u; row < row_count; row++)",
+            "exact per-row shared W13 dispatch loop")
     require(dense_w13_dispatch, "SparkLmSm121FusedDenseW13GemvKernel",
             "B1 shared W13 GEMV")
     require(dense_w13_dispatch,
@@ -373,16 +383,20 @@ def main() -> int:
     dense_w13_gemv = body(common, "SparkLmSm121FusedDenseW13GemvKernel")
     require(dense_w13_gemv, "SPARK_LM_SM121_B1_DENSE_W13_CTA_WARPS",
             "B1 shared W13 measured neuron geometry")
-    require(dense_w13_dispatch, "SparkLmSm121FusedDenseW13Kernel",
-            "B8/B1024 shared W13 tensor route")
+    forbid(dense_w13_dispatch, "SparkLmSm121FusedDenseW13Kernel",
+           "retired B8/B1024 shared W13 tensor route")
     strided_launch = body(dsv4, "SparkDsv4LaunchStridedLinear")
     require(strided_launch, "SparkLmHostLaunchSm121StridedDecodeLinear",
             "shape-aware strided route")
     strided_dispatch = body(common, "SparkLmHostLaunchSm121StridedDecodeLinear")
     require(strided_dispatch, "if ( row_count == 1u )", "true-B1 strided dispatch")
     require(strided_dispatch, "SparkLmStridedLinearKernel", "B1 strided GEMV route")
-    require(strided_dispatch, "SparkLmHostLaunchSm121NativeLinear",
-            "B8/B1024 native strided route")
+    # 47c24f2: multi-row strided decode runs the certified 1-row kernel
+    # once per row; the native tensor fallback is retired.
+    require(strided_dispatch, "for (row = 0u; row < row_count; row++)",
+            "exact per-row strided dispatch loop")
+    forbid(strided_dispatch, "SparkLmHostLaunchSm121NativeLinear",
+           "retired B8/B1024 native strided route")
     require(strided_dispatch,
             "SparkLmStridedLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>",
             "measured one-neuron strided B1 route")
@@ -450,11 +464,14 @@ def main() -> int:
     require(slot_tail, "SparkHeadCertifiedFp8CandidateBytes",
             "full rank-local candidate allocation size")
     project_head = body(module, "SparkDsv4ModuleProjectHead")
-    require(project_head, "if ( error == cudaSuccess && rows == 1u )",
-            "runtime B1 algorithm selection")
+    # d5e09f8: every row runs the certified 1-row head once (the screened
+    # argmax route flipped near-tie argmaxes), so the runtime rows==1u
+    # selection became an unconditional per-row loop.
+    require(project_head, "for (row = 0u; row < rows && error == cudaSuccess; row++)",
+            "certified per-row head selection")
     require(project_head, "SparkDsv4LaunchHeadCertifiedFp8B1Sharded",
             "certified B1 head route")
-    require(project_head, "state->head_certified_fp8_norm_f32,slot->head_certified_scratch",
+    require(project_head, "state->head_certified_fp8_norm_f32,\n\t\t\t\tslot->head_certified_scratch",
             "dedicated certified scratch launch argument")
     forbid(project_head, "#if", "no compile-time B1 feature fork")
     require(body(dsv4, "SparkDsv4HeadMaxlocPackKernel"),

@@ -422,10 +422,57 @@ static void TestModelPipelineStopResidents(
 	{
 		assert(kill(children[rank],SIGTERM) == 0 || errno == ESRCH);
 		assert(waitpid(children[rank],&child_status,0) == children[rank]);
+		if ( !WIFEXITED(child_status) ||
+			(uint32_t)WEXITSTATUS(child_status) != expected_exit_status )
+			fprintf(stderr,"test_model_pipeline_client rank=%u expected_exit=%u "
+				"raw_status=0x%x exited=%d signaled=%d exit=%d term_signal=%d\n",
+				rank,expected_exit_status,child_status,
+				WIFEXITED(child_status) ? 1 : 0,WIFSIGNALED(child_status) ? 1 : 0,
+				WIFEXITED(child_status) ? WEXITSTATUS(child_status) : -1,
+				WIFSIGNALED(child_status) ? WTERMSIG(child_status) : -1);
 		assert(WIFEXITED(child_status));
 		assert((uint32_t)WEXITSTATUS(child_status) == expected_exit_status);
 		unlink(paths[rank]);
 	}
+}
+
+/* Stop residents after the client destroyed a FAILED pipeline.
+ *
+ * The exit status of each rank is a race the test cannot control: the
+ * destroyed client's socket EOF turns the run loop into an io_error
+ * failure (exit 1), but a SIGTERM that lands first stops the loop
+ * cleanly (exit 0). Both orderings are correct residentd behavior; what
+ * the gate can and must pin is that every rank exits by one of exactly
+ * those two paths and that the failure was not silently swallowed
+ * everywhere (at least one rank observed it). The failure itself is
+ * already asserted through the client view before this runs. */
+static void TestModelPipelineStopResidentsAfterFailure(
+	pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT],
+	char paths[][108])
+{
+	uint32_t rank,failed_exit_count;
+	int32_t child_status;
+	uint32_t exit_status;
+	uint32_t observed[TEST_MODEL_PIPELINE_RANK_COUNT];
+	failed_exit_count = 0u;
+	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
+	{
+		assert(kill(children[rank],SIGTERM) == 0 || errno == ESRCH);
+		assert(waitpid(children[rank],&child_status,0) == children[rank]);
+		assert(WIFEXITED(child_status));
+		exit_status = (uint32_t)WEXITSTATUS(child_status);
+		observed[rank] = exit_status;
+		assert(exit_status == 0u || exit_status == 1u);
+		if ( exit_status == 1u )
+			failed_exit_count++;
+		unlink(paths[rank]);
+	}
+	if ( failed_exit_count == 0u )
+		for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
+			fprintf(stderr,"test_model_pipeline_client rank=%u exit=%u "
+				"(no rank observed the failure at teardown)\n",
+				rank,observed[rank]);
+	assert(failed_exit_count != 0u);
 }
 
 static void TestModelPipelineBuildSubmission(
@@ -1646,7 +1693,7 @@ int main(void)
 	assert(view.rejected_count == 3u);
 	assert(view.completed_count == 9u);
 	SparkModelPipelineClientDestroy(pipeline);
-	TestModelPipelineStopResidents(children,paths,1u);
+	TestModelPipelineStopResidentsAfterFailure(children,paths);
 	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
 		children[rank] = TestModelPipelineStartResident(deployment_path,rank);
 	TestModelPipelineWaitForSockets(paths);

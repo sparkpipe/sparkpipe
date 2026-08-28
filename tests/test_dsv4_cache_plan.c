@@ -152,10 +152,10 @@ static void SparkTestProUsesItsOwnLayerSchedule(void)
         &configuration,
         SPARK_DSV4_MODEL_VARIANT_PRO);
     configuration.backbone_layer_count = 61u;
-    configuration.include_mtp_layer = 1u;
+    configuration.include_mtp_layer = 0u;
     assert(SparkDsv4CachePlanBuild(&configuration, &plan) == SPARK_STATUS_OK);
-    assert(plan.planned_layer_count == 62u);
-    assert(plan.sliding_layer_count == 1u);
+    assert(plan.planned_layer_count == 61u);
+    assert(plan.sliding_layer_count == 0u);
     assert(plan.compressed_sparse_layer_count == 30u);
     assert(plan.heavily_compressed_layer_count == 31u);
     assert(plan.layers[0u].attention_class ==
@@ -164,11 +164,19 @@ static void SparkTestProUsesItsOwnLayerSchedule(void)
         SPARK_DSV4_ATTENTION_CLASS_HEAVILY_COMPRESSED);
     assert(plan.layers[2u].attention_class ==
         SPARK_DSV4_ATTENTION_CLASS_COMPRESSED_SPARSE);
-    assert(plan.layers[61u].is_mtp_layer == 1u);
-    assert(plan.layers[61u].attention_class ==
-        SPARK_DSV4_ATTENTION_CLASS_SLIDING);
+    assert(plan.layers[60u].attention_class ==
+        SPARK_DSV4_ATTENTION_CLASS_COMPRESSED_SPARSE);
     assert(plan.total_arena_bytes < plan.worst_class_total_arena_bytes);
     SparkTestValidateArenaPlacement(&plan);
+    /* The 0813 GA Pro checkpoint carries a 3-draft-layer DSpark MTP stage
+     * (SPARK_DSV4_PRO_MTP_LAYER_COUNT == 3u since commit 757e6bb,
+     * 2026-08-16). The planner models a single appended MTP layer and
+     * fails closed for any variant whose MTP stage is deeper than one
+     * layer, so Pro + include_mtp_layer must be rejected until the
+     * planner learns the 3-layer stage. */
+    configuration.include_mtp_layer = 1u;
+    assert(SparkDsv4CachePlanBuild(&configuration, &plan) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestAggregateHistoryUsesCeilingDivision(void)

@@ -120,16 +120,20 @@ def main():
     bank = [list(embedding)]
     for l in range(LAYERS):
         gemms = per_layer[l]["gemms"]
-        # PACK V2 CONSUMPTION, PER KDA LAYER: the six projection GEMMs that
-        # read the normed input are exactly two wide ones, bound through
-        # K3BindLayer to the two fused pack tensors. Any other projection
-        # destination or weight here is the six-launch block come back.
+        # PACK V2 CONSUMPTION, PER KDA LAYER: the projections that read the
+        # normed input are the fused qkv|beta wide GEMM plus the gate
+        # reconciliation pair (commit 55cd2f9): the standalone 128-wide
+        # kda_decay_down landing in latent and the checkpoint's full-rank
+        # gate. Any other destination here is the six-launch block come
+        # back.
         if l % 4 != 3:
-            fused = [(d, w) for _, d, w in gemms if d.startswith("fused_")]
-            if fused != [("fused_qkvb", "qkvb"),
-                         ("fused_decay_gate", "decay_gate")]:
-                print(f"  FAIL layer {l}: fused projection GEMMs are "
-                      f"{fused}, not qkv|beta and decay|gate once each")
+            wide = [(d, w) for _, d, w in gemms[:3]]
+            if wide != [("fused_qkvb", "qkvb"),
+                        ("latent", "decay_gate"),
+                        ("gate", "decay_gate")]:
+                print(f"  FAIL layer {l}: normed-input projection GEMMs are "
+                      f"{wide}, not qkv|beta fused, decay_down, and the "
+                      f"full-rank gate once each")
                 failures += 1
             stale = [d for _, d, _ in gemms
                      if d in ("query", "key", "value", "beta")]
@@ -137,7 +141,13 @@ def main():
                 print(f"  FAIL layer {l}: projections write {stale} directly; "
                       f"the sections come from the split, not a GEMM")
                 failures += 1
-        a = 0.125 * next(i for i, d, _ in gemms if d == "attention_out")
+        # a is the projection that wrote the attention output: the KDA out
+        # projection (first hidden write) on KDA layers, the MLA out GEMM on
+        # the every-fourth MLA layer.
+        if l % 4 != 3:
+            a = 0.125 * next(i for i, d, _ in gemms if d == "hidden")
+        else:
+            a = 0.125 * next(i for i, d, _ in gemms if d == "attention_out")
         hidden_writes = [i for i, d, _ in gemms if d == "hidden"]
         shared_writes = [i for i, d, _ in gemms if d == "shared_out"]
         m = 0.125 * (hidden_writes[-1] + sum(shared_writes))

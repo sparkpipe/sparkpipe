@@ -64,7 +64,7 @@ def build_text(path):
 
 
 PATH_RE = re.compile(
-    r"(?<![\w/.$)])((?:\.\./)*(?:[\w.@-]+/)*[\w.@-]+\.(?:cuh|cu|c|h))(?![\w.])")
+    r"(?<![\w/.$)-])((?:\.\./)*(?:[\w.@-]+/)*[\w.@-]+\.(?:cuh|cu|c|h))(?![\w.])")
 
 
 def check_makefile_paths():

@@ -818,7 +818,19 @@ from pathlib import Path
 # every hash-chain hit — wrong-KV reuse goes from a silent 2^-192-ish
 # hash collision to a 2^-256 non-event. LIVE_ONLY placeholders are
 # sequence-bound and skipped by the compare. 209095 exact.
-CEILING = 209095
+# qwen38_max validation harness merge (hygiene lane, from
+# lane/qwen38max-shard S1): the 1552-line sm_121a validation unit, its
+# fail-closed driver + publish wrapper — the family's first validation
+# harness, PASS receipt 2026-08-28 in
+# docs/AGENT_LANE_BRIEFS/reports/qwen38max-shard-2026-08-28.md. 210809
+# exact (the lane's own +2518 ratchet additionally covers the v2
+# packer/verifier and module sources that stay on the lane pending the
+# coordinator's merge).
+# The make-test run loop learns to skip binaries a host deliberately
+# does not build (the nvcc-guarded test_qwen38_math_kernels/execute
+# targets emit SKIP, and the loop then tried to execute the missing
+# file) - one guard line. 210810 exact.
+CEILING = 210810
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

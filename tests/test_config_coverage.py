@@ -88,6 +88,14 @@ EXEMPT = {
     "GLM52_NVFP4_GROUP": "same",
     "MIMO25_RMS_EPSILON": "passed by the host, not named in unity.cu",
     "QWEN38_27B_MTP_LAYERS": "speculation not driven yet",
+    # qwen_3_8 (Qwen 3.8 Max): checkpoint facts the sequence consumes by
+    # construction - the same shape as the DSV4 pair below
+    "QWEN38_SHARED_EXPERTS": "the checkpoint ships exactly one shared expert "
+                             "and Qwen38SharedExpertAddKernel implements that "
+                             "one; the count is a config fact, not a loop "
+                             "bound, until a sibling checkpoint disagrees",
+    "QWEN38_MTP_LAYERS": "speculation not driven yet - the MTP stage is packed "
+                         "and staged by the host; no layer.cuh path reads it",
     # glm5_2, with the reason each is not referenced by layer.cuh
     "GLM52_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
     "GLM52_ROUTED_LAYERS": "derived, used by the host packer",
