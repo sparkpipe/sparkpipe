@@ -573,3 +573,23 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
 - Follow-ups logged: client-generation recovery path (schema-error on
   2nd request after reject); glm52 adapter missing CONTINUE_LEASE (its
   next re-deploy hits the client gate).
+
+## 2026-08-28 ~02:3x KST — CO-RESIDENT TEST phase 1 (mechanics): PARTIAL, findings real
+
+Operator question: does two-model co-residency work? Phase-1 results:
+- MECHANICS VALIDATED: 27B TP1 (29G pack) staged spark9+a alongside
+  glm53 ranks; both daemons reached READY (module 71.1GiB pool + pack
+  resident); config portability bugs found+fixed en route (absolute
+  spark2 paths in deployment json; "host": "spark2" listener field;
+  TIME_WAIT 45s rule bit twice).
+- MEMORY ENVELOPE MEASURED: 114G/119G used with the FULL 71.1GiB KV
+  pool — co-resident configs need a REDUCED KV pool (e.g. 4096 blocks
+  ≈ 35GiB) to leave real headroom. This is the sizing datapoint.
+- NOT PROVEN: both 27B instances exited SILENTLY post-ready (3-line
+  clean logs, no error) under my hand-rolled ssh launch chains — root
+  cause undetermined (orchestration pattern suspect: setsid-nohup-over-
+  ssh + later TERM cycles; the lanes' proven gen_deployment launch
+  tooling is the right harness, not hand curls).
+- TRUE TWO-MODEL LOAD still gated on glm53 first token (admit bug in
+  flight). Phase 2 = proper launch tooling + reduced-pool config +
+  concurrent B-load on both models + interference measurement.
