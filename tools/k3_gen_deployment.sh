@@ -28,8 +28,8 @@ OUT="${1:?usage: k3_gen_deployment.sh OUT_PATH}"
   echo '    "max_active_sequences": 16,'
   echo '    "max_input_rows": 16,'
   echo '    "resident_sequence_capacity": 16,'
-  echo '    "kv_logical_page_capacity": 4096,'
-  echo '    "kv_physical_page_capacity": 4096'
+  echo '    "kv_logical_page_capacity": 0,'
+  echo '    "kv_physical_page_capacity": 0'
   echo '  },'
   echo '  "nodes": ['
   for i in $(seq 0 15); do
