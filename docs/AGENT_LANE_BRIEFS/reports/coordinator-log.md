@@ -453,3 +453,14 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   GPU-util is NOT an idleness signal on residentd-serving nodes; use
   process + queue state (the 'GPU idleness is a finding' rule now
   qualifies this).
+
+## 2026-08-28 ~20:0x KST — second usage window: agents died, remote work survived; both resumed
+
+- Second 5h window cut glm53 (mid-staging) + bisect (mid-32K-enforcement).
+  Remote state INTACT: bisect's 32K batch client + fleet alive on spark4/5;
+  glm53's staged trees + distributed packs + published module all persist.
+  Queue emptied by TTL audit — re-reservation on resume.
+- Both agents resumed (stagger 2): bisect collects/cuts its 32K run then
+  releases spark4-7; glm53 waits for the clear, re-reserves all 16,
+  launches simultaneous per fleet rule, checkpoints right after
+  ready-lines, then M5.
