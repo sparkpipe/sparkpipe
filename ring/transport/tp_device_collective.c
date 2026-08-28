@@ -329,7 +329,7 @@ static uint32_t SparkTpDeviceCollectiveRouteBinding(
      * BuildOperationPackets, so aliasing here would register session-2
      * templates from row 1 while its recursive ops present row-2 pointers
      * - the activate template compare then fails every op at step 2 with
-     * INVALID_ARGUMENT (glm53 lane receipt, wave-26 probe). */
+     * INVALID_ARGUMENT (the first TP16 family's lane receipt, wave-26 probe). */
     if ((implementation->collective->algorithm_mask &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) != 0u)
         return route_index == SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX ?
@@ -1116,8 +1116,9 @@ static SparkStatus SparkTpDeviceCollectiveBuildOperationPackets(
      * than the packets — ActivatePersistentReceive rejected the size
      * mismatch (8 credits x 128KiB = 0x100000, the exact observed
      * delta) and every completion arrived async-INVALID_ARGUMENT,
-     * terminating the whole glm5_next TP16 fleet at layer 0. TP8/TP4
-     * are identity remaps, which is why glm52/DSV4 never hit it. */
+     * terminating the whole first TP16 fleet at layer 0. TP8/TP4
+     * are identity remaps, which is why the TP8/TP4 families never
+     * hit it. */
     binding = &implementation->bindings[
         SparkTpDeviceCollectiveRouteBinding(implementation,step_index)]
         [operation->credit_index];
