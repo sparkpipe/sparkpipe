@@ -803,3 +803,10 @@ Operator question: does two-model co-residency work? Phase-1 results:
   dep — the stale-dylib gate). Diag lane mid-hunt (35m since tip;
   deep-debug cadence). qwen-flash repackaging. Live probe: API down
   (mid-wave cycling during the diag's work). Scoreboard unchanged.
+
+## 2026-08-29 ~7:2x — OPERATOR: no LICENSE for now (flexibility)
+
+- License decision: NONE for now — maximum flexibility preserved. The
+  hygiene lane's placeholder item resolves to 'deliberately absent';
+  reopens on operator word. (Source-model licenses still apply to the
+  models themselves — this is only about SparkPipe's code.)
