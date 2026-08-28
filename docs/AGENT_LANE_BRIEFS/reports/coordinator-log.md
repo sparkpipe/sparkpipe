@@ -155,3 +155,22 @@
   kv page capacities 0 (k3 descriptor has no JIT_KV). K3 stage-1
   restarting on sparke; stage-0 probe-then-resume continues (shards 12/13
   deep objects still in backfill).
+
+## 2026-08-28 ~14:3x — GLM52 LANE COMPLETE: PR 728 merged; glm53 RESUMED
+
+- MERGED lane/glm52-validator-fix (b313cd5): routed-oracle failure was
+  TWO validator-side bugs (expert dimension applied to scale index only
+  — every expert decoded slab 0; positive-mean fixture grids = quadratic
+  amplifier), kernels were CORRECT. First full validator PASS (dense+
+  routed+dsa); 3 more restore bugs fixed (admission predicate, KV
+  page-cache lane wiring, JIT_KV capacities); 8 ranks ready + B1 decode
+  E2E complete (timing honestly not claimed — 8 tokens, no timestamps).
+  All 3 integration requests landed: tier-2 oracle gate registered
+  (PASS locally), model_common runbook note, ratchet 192659 justified.
+- GATES CLOSED (glm52-validator-fix, glm52-smoke) → glm53 lane RESUMED
+  (rebase onto fix, M3 validator with the fixed oracle pattern, M4 packs
+  on the dark spark8-f band w/ reservations). spark8 reservation
+  released; spark0 785GiB packbuild insurance REMOVED (manual, logged).
+- SYSADMIN+1: sparke wedged at NETWORK level twice today (self-recovered,
+  one self power-cycle) — node-health check requested before it hosts
+  long-running work.
