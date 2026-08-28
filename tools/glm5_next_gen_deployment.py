@@ -67,24 +67,45 @@ def stage_config(rank: int) -> dict:
 
 
 def resident_deployment() -> dict:
-    stages = []
+    nodes = []
     for rank, host in enumerate(HOSTS):
-        stages.append({
+        nodes.append({
+            "rank_index": rank,
             "stage_index": rank,
-            "node_target": NODE_TARGET,
-            "host": host,
             "runtime_root": RUNTIME_ROOT.format(host=host),
-            "stage_config": "config/stage_%02d.json" % rank,
-            "transport_listen_port": TRANSPORT_BASE + rank,
+            "node_target": NODE_TARGET,
+            "transport_host": host,
+            "adapter_configuration_path": "config/stage.json",
+            "kv_backing_directory": "/home/%s/kvcache/glm5_next.tp16" % host,
+            "kv_backing_maximum_bytes": 8589934592,
+            "control_endpoint": {
+                "kind": "tcp",
+                "host": host,
+                "port": CONTROL_BASE + rank,
+            },
         })
     return {
-        "schema_version": 4,
-        "model_id": "glm5_next",
-        "model_revision": MODEL_REVISION,
-        "node_target": NODE_TARGET,
-        "expert_weight_codec": "fp8",
-        "stage_count": TP,
-        "stages": stages,
+        "schema_version": 2,
+        "coordinator_rank_index": 0,
+        "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
+        "driver": {
+            "shared_object_path": "lib/model_driver.so",
+            "program_name": "resident_decode",
+        },
+        "transport": {
+            "shared_object_path": "lib/hidden_transport.so",
+            "mode": "host-rdma",
+            "control_port_base": TRANSPORT_BASE,
+        },
+        "runtime_limits": {
+            "max_inflight_submissions": 4,
+            "max_active_sequences": 16,
+            "max_input_rows": 16,
+            "resident_sequence_capacity": 16,
+            "kv_logical_page_capacity": 16 * ((32768 + 63) // 64),
+            "kv_physical_page_capacity": 16 * ((32768 + 63) // 64),
+        },
+        "nodes": nodes,
     }
 
 

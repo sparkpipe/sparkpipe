@@ -1,138 +1,266 @@
 {
- "schema_version": 4,
- "model_id": "glm5_next",
- "model_revision": "84c6a6aa9497188e15a635ba793b0f95a79b1033",
- "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
- "expert_weight_codec": "fp8",
- "stage_count": 16,
- "stages": [
+ "schema_version": 2,
+ "coordinator_rank_index": 0,
+ "adapter": {
+  "shared_object_path": "lib/model_serving_adapter.so"
+ },
+ "driver": {
+  "shared_object_path": "lib/model_driver.so",
+  "program_name": "resident_decode"
+ },
+ "transport": {
+  "shared_object_path": "lib/hidden_transport.so",
+  "mode": "host-rdma",
+  "control_port_base": 60710
+ },
+ "runtime_limits": {
+  "max_inflight_submissions": 4,
+  "max_active_sequences": 16,
+  "max_input_rows": 16,
+  "resident_sequence_capacity": 16,
+  "kv_logical_page_capacity": 8192,
+  "kv_physical_page_capacity": 8192
+ },
+ "nodes": [
   {
+   "rank_index": 0,
    "stage_index": 0,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark0",
    "runtime_root": "/home/spark0/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_00.json",
-   "transport_listen_port": 60710
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark0",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark0/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark0",
+    "port": 19560
+   }
   },
   {
+   "rank_index": 1,
    "stage_index": 1,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark1",
    "runtime_root": "/home/spark1/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_01.json",
-   "transport_listen_port": 60711
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark1",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark1/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark1",
+    "port": 19561
+   }
   },
   {
+   "rank_index": 2,
    "stage_index": 2,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark2",
    "runtime_root": "/home/spark2/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_02.json",
-   "transport_listen_port": 60712
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark2",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark2/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark2",
+    "port": 19562
+   }
   },
   {
+   "rank_index": 3,
    "stage_index": 3,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark3",
    "runtime_root": "/home/spark3/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_03.json",
-   "transport_listen_port": 60713
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark3",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark3/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark3",
+    "port": 19563
+   }
   },
   {
+   "rank_index": 4,
    "stage_index": 4,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark4",
    "runtime_root": "/home/spark4/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_04.json",
-   "transport_listen_port": 60714
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark4",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark4/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark4",
+    "port": 19564
+   }
   },
   {
+   "rank_index": 5,
    "stage_index": 5,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark5",
    "runtime_root": "/home/spark5/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_05.json",
-   "transport_listen_port": 60715
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark5",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark5/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark5",
+    "port": 19565
+   }
   },
   {
+   "rank_index": 6,
    "stage_index": 6,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark6",
    "runtime_root": "/home/spark6/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_06.json",
-   "transport_listen_port": 60716
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark6",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark6/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark6",
+    "port": 19566
+   }
   },
   {
+   "rank_index": 7,
    "stage_index": 7,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark7",
    "runtime_root": "/home/spark7/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_07.json",
-   "transport_listen_port": 60717
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark7",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark7/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark7",
+    "port": 19567
+   }
   },
   {
+   "rank_index": 8,
    "stage_index": 8,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark8",
    "runtime_root": "/home/spark8/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_08.json",
-   "transport_listen_port": 60718
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark8",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark8/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark8",
+    "port": 19568
+   }
   },
   {
+   "rank_index": 9,
    "stage_index": 9,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "spark9",
    "runtime_root": "/home/spark9/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_09.json",
-   "transport_listen_port": 60719
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "spark9",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/spark9/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "spark9",
+    "port": 19569
+   }
   },
   {
+   "rank_index": 10,
    "stage_index": 10,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "sparka",
    "runtime_root": "/home/sparka/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_10.json",
-   "transport_listen_port": 60720
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "sparka",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/sparka/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "sparka",
+    "port": 19570
+   }
   },
   {
+   "rank_index": 11,
    "stage_index": 11,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "sparkb",
    "runtime_root": "/home/sparkb/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_11.json",
-   "transport_listen_port": 60721
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "sparkb",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/sparkb/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "sparkb",
+    "port": 19571
+   }
   },
   {
+   "rank_index": 12,
    "stage_index": 12,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "sparkc",
    "runtime_root": "/home/sparkc/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_12.json",
-   "transport_listen_port": 60722
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "sparkc",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/sparkc/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "sparkc",
+    "port": 19572
+   }
   },
   {
+   "rank_index": 13,
    "stage_index": 13,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "sparkd",
    "runtime_root": "/home/sparkd/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_13.json",
-   "transport_listen_port": 60723
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "sparkd",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/sparkd/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "sparkd",
+    "port": 19573
+   }
   },
   {
+   "rank_index": 14,
    "stage_index": 14,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "sparke",
    "runtime_root": "/home/sparke/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_14.json",
-   "transport_listen_port": 60724
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "sparke",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/sparke/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "sparke",
+    "port": 19574
+   }
   },
   {
+   "rank_index": 15,
    "stage_index": 15,
-   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
-   "host": "sparkf",
    "runtime_root": "/home/sparkf/sparkdata/glm5_next.tp16",
-   "stage_config": "config/stage_15.json",
-   "transport_listen_port": 60725
+   "node_target": "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8",
+   "transport_host": "sparkf",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "/home/sparkf/kvcache/glm5_next.tp16",
+   "kv_backing_maximum_bytes": 8589934592,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "sparkf",
+    "port": 19575
+   }
   }
  ]
 }
