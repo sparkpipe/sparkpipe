@@ -695,3 +695,18 @@ Operator question: does two-model co-residency work? Phase-1 results:
   Reconciled 208305 with the process note: ratchet after EVERY conflict
   resolution. Staging agent's branch-in-main violation repaired earlier
   this sweep (lane/staging-v2 worktree).
+
+## 2026-08-29 ~1:5x — qwen-flash: official FP8 found; decisions issued
+
+- OFFICIAL Qwen3.8-Flash-Next-FP8 exists (publisher fine-grained FP8,
+  172.8G, verified fetch running) — top tier under the quant policy.
+  DECIDED: bf16 16-rank primary (first cell path, zero risk), official
+  FP8 as the fast-follow alternate (~10.8G/rank; scale-plane mapping =
+  the verified step). v3 self-quantized packs POLICY-VOID (validation
+  only; staging agent informed via this log).
+- Lane's pre-fixes: staged deploy_v3 had a HARDWIRED 12-rank adapter
+  (would have served 16 layers, no head) — fixed whole-stack-TP/PP
+  capable; new one-wave pid-file launcher (the old pgrep -f teardown
+  would have killed glm5_next's fleet — third fuzzy-kill near-miss of
+  the day). spark8 rank-8 + p1a's 27B = ~104G: under ceiling, wave
+  sequenced after p1a completes.
