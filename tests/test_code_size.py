@@ -771,7 +771,13 @@ from pathlib import Path
 # semantics ground truth — modeling_qwen4_exp.py is 2707 lines of
 # upstream code, not authored source), so the ceiling moves by the lane's
 # 835 authored lines only. 188714 is the exact count.
-CEILING = 188714
+# The DSV4 no-spec regression fix adds 23 authored lines: the
+# SPARK_DSV4_DSPARK env gate and tap gating in the module (restores the
+# lean B1 decode cell: 40.2-40.5 tok/s, exact 211462f2 token hash on
+# merged main) and the continuation-lease advance mirroring in the
+# residentd (no-spec chains complete their full 128 tokens again).
+# 188737 is the exact count.
+CEILING = 188737
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
