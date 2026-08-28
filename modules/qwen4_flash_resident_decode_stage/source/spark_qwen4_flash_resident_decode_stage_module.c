@@ -55,8 +55,12 @@ typedef struct SparkQwen4FlashModuleSlot
 	uint32_t *context_lengths;
 	uint32_t *row_cold;
 	uint64_t *row_positions;
-	void *hidden_bf16;
-	void *normalized_bf16;
+	void *hidden_bf16;      /* hc stream vector [rows, 4H] */
+	void *hc_normed_bf16;   /* group-normed streams [rows, 4H] */
+	void *hc_up_bf16;       /* up-projection output [rows, 4H] */
+	void *hc_lowrank_bf16;  /* down-projection output [rows, lowrank] */
+	void *hc_inject_bf16;   /* raw inject projection [rows, hc_count] */
+	void *normalized_bf16;  /* the mixed sublayer input [rows, H] */
 	void *delta_bf16;
 	void *qkv_bf16;
 	void *conv_out_bf16;
@@ -93,6 +97,21 @@ typedef struct SparkQwen4FlashModuleSlot
 	float *chunk_w_f32;
 	float *chunk_kg_f32;
 	uint32_t *mtp_draft_ids;
+	/* Indexer scratch: the frame's rotated queries [rows, 4*128], the u8
+	 * token mask [rows, mask_stride], and the per-row block score keys. */
+	void *indexer_query_bf16;
+	uint8_t *indexer_mask_u8;
+	uint32_t *indexer_scores_u32;
+	/* PLE scratch: n-gram embeddings [rows*tokens, 2560] (all-reduce
+	 * target), key/value projections, gated value + its norm [rows, 4H]. */
+	void *ple_embedding_bf16;
+	void *ple_key_bf16;
+	void *ple_value_bf16;
+	void *ple_gated_bf16;
+	void *ple_gated_normed_bf16;
+	void *ple_conv_out_bf16;
+	uint32_t *ple_history_u32;
+	uint32_t *ple_host_history_u32;
 	/* Screened head: coarse logits + screen candidates (the exact
 	 * full-vocab matvec reads 4 GB of head weight PER ROW; the shadow
 	 * path reads the 4-bit copy instead and rescores a certified
@@ -152,6 +171,20 @@ typedef struct SparkQwen4FlashModuleState
 	void *kv_cache_bf16;
 	uint64_t cache_layer_stride;
 	uint64_t cache_block_stride;
+	/* Indexer caches (one plane per attn layer incl. the MTP ordinal): raw
+	 * per-token keys in the paged layout (128/token) and the pooled
+	 * per-block keys [blocks, 128]; both sized by the module's KV pool. */
+	uint32_t indexer_cache_layer_count;
+	void *indexer_raw_key_cache_bf16;
+	void *indexer_pooled_key_cache_bf16;
+	uint64_t indexer_raw_layer_stride;
+	uint64_t indexer_pooled_layer_stride;
+	uint32_t indexer_mask_stride;
+	/* PLE carried state: the lane's last 2 token ids (u32, EOS-seeded) and
+	 * the dilated conv tail [lanes, 4H, 9] bf16. */
+	uint32_t *ple_prev_context_u32;
+	void *ple_conv_tail_bf16;
+	uint64_t ple_conv_tail_lane_stride;
 	SparkQwen4FlashModuleSlot slots[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t stage_count;
 	uint32_t stage_index;
@@ -178,9 +211,11 @@ typedef struct SparkQwen4FlashModuleState
 	uint32_t attn_layer_count;
 	uint32_t gdn_ordinal_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	uint32_t attn_ordinal_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	uint32_t layer_seen_bits[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	uint32_t global_seen_bits;
-	uint32_t mtp_seen_bits;
+	/* v2 packs carry 55 tensor kinds, so the per-layer coverage bitfields
+	 * widened from u32 to u64 (kind ids 32..54 live in the high word). */
+	uint64_t layer_seen_bits[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
+	uint64_t global_seen_bits;
+	uint64_t mtp_seen_bits;
 	SparkQwen4FlashMtpWeights mtp;
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
@@ -190,6 +225,19 @@ typedef struct SparkQwen4FlashModuleState
 	uint8_t *head_shadow_payload;
 	uint8_t *head_shadow_scale;
 	float *head_error_norm_f32;
+	/* Hyper-connection residual: per-layer per-sublayer mixers, the global
+	 * readout mixer, and the PLE block (layer PLE_LAYER_INDEX only). The
+	 * hc group-norm weights ride the classic ATTENTION_NORM/MLP_NORM slots
+	 * at their true [4H] width. */
+	SparkQwen4FlashHcWeights attn_hc_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
+	SparkQwen4FlashHcWeights mlp_hc_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
+	SparkQwen4FlashHcMixer readout_mixer;
+	SparkQwen4FlashPleWeights ple;
+	uint32_t owns_ple;
+	uint32_t allow_missing_ple;
+	/* Indexer per full-attention layer: pooled-block key cache
+	 * [layers, kv_block_count, 128] bf16, recomputed pool-on-write. */
+	SparkQwen4FlashIndexerWeights indexer_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	const void *attention_norm_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	const void *mlp_norm_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	SparkQwen4FlashGdnLayerWeights gdn_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
@@ -331,6 +379,17 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_BLOCKS",1u,1u << 20u,&state->kv_block_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	/* PLE omission gate: synthesized mid-pipeline packs cannot carry the
+	 * 23.8 GiB n-gram table at true shape, so the ten PLE tensors may be
+	 * absent EN BLOC when this env names the reason - real v3 packs always
+	 * carry them and load with the env unset (fail closed by default). */
+	if ( state->first_layer_index <= SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && state->first_layer_index + state->layer_count > SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX )
+	{
+		const char *reason = getenv("SPARK_QWEN4_FLASH_STAGE_ALLOW_MISSING_PLE");
+		state->allow_missing_ple = reason != 0 ? 1u : 0u;
+		if ( state->allow_missing_ple != 0u )
+			fprintf(stderr,"%s ple_block_absent gate=%s (synthetic pack semantics; layer %u runs without the n-gram injection)\n",SPARK_QWEN4_FLASH_MODULE_TAG,reason,SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX);
+	}
 	if ( state->stage_index >= state->stage_count || state->first_layer_index + state->layer_count > SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT )
 	{
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
@@ -463,8 +522,17 @@ static SparkStatus SparkQwen4FlashModuleBindMtp(SparkQwen4FlashModuleState *stat
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC: SparkQwen4FlashModuleFillLinearView(&state->mtp.fc,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM: state->mtp.attention_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM: state->mtp.mlp_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM: state->mtp.attention_hc.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM: state->mtp.mlp_hc.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK: SparkQwen4FlashModuleFillLinearView(&state->mtp.indexer.index_qk,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM: state->mtp.indexer.q_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM: state->mtp.indexer.k_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.query,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.key,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.value,entry,payload,scale); return(SPARK_STATUS_OK);
@@ -488,7 +556,17 @@ static SparkStatus SparkQwen4FlashModuleBindGlobal(SparkQwen4FlashModuleState *s
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM:
 		if ( state->owns_final_head == 0u )
 			return(SPARK_STATUS_VALIDATION_FAILED);
-		state->final_norm_weight_bf16 = payload;
+		state->readout_mixer.hc_norm_weight_bf16 = payload;
+		return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN:
+		if ( state->owns_final_head == 0u )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		SparkQwen4FlashModuleFillLinearView(&state->readout_mixer.mix_down,entry,payload,0);
+		return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP:
+		if ( state->owns_final_head == 0u )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		SparkQwen4FlashModuleFillLinearView(&state->readout_mixer.mix_up,entry,payload,0);
 		return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD:
 		if ( state->owns_final_head == 0u )
@@ -497,7 +575,13 @@ static SparkStatus SparkQwen4FlashModuleBindGlobal(SparkQwen4FlashModuleState *s
 		return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM: state->mtp.embed_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM: state->mtp.hidden_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.final_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.readout_mixer.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN:
+		SparkQwen4FlashModuleFillLinearView(&state->mtp.readout_mixer.mix_down,entry,payload,0);
+		return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP:
+		SparkQwen4FlashModuleFillLinearView(&state->mtp.readout_mixer.mix_up,entry,payload,0);
+		return(SPARK_STATUS_OK);
 	default:
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
@@ -526,6 +610,25 @@ static SparkStatus SparkQwen4FlashModuleBindLayer(SparkQwen4FlashModuleState *st
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].output,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->attn_by_layer[layer].query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->attn_by_layer[layer].key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK: SparkQwen4FlashModuleFillLinearView(&state->indexer_by_layer[layer].index_qk,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM: state->indexer_by_layer[layer].q_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM: state->indexer_by_layer[layer].k_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_KEY: SparkQwen4FlashModuleFillLinearView(&state->ple.key_proj,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_VALUE: SparkQwen4FlashModuleFillLinearView(&state->ple.value_proj,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_KEY: state->ple.norm_key_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_QUERY: state->ple.norm_query_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_CONV: state->ple.norm_conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_CONV: state->ple.conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_MULTIPLIERS: state->ple.layer_multipliers = (const int64_t *)payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_VOCABS: state->ple.head_vocab_sizes = (const int64_t *)payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS: state->ple.head_offsets = (const int64_t *)payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NGRAM: state->ple.ngram_embedding_bf16 = payload; state->owns_ple = 1u; return(SPARK_STATUS_OK);
 	default:
 		status = SparkQwen4FlashModuleBindMoe(&state->moe_by_layer[layer],entry,payload,scale);
 		if ( status == SPARK_STATUS_OK )
@@ -537,8 +640,9 @@ static SparkStatus SparkQwen4FlashModuleBindLayer(SparkQwen4FlashModuleState *st
 static SparkStatus SparkQwen4FlashModuleLoadEntry(SparkQwen4FlashModuleState *state, FILE *file, const SparkQwen4FlashStagePackEntry *entry, uint64_t file_bytes)
 {
 	SparkStatus status;
-	uint32_t is_global = 0u,bit = 1u << entry->tensor_kind;
-	uint32_t *seen;
+	uint32_t is_global = 0u;
+	uint64_t bit = 1ull << entry->tensor_kind;
+	uint64_t *seen;
 	void *payload = 0,*scale = 0;
 	status = SparkQwen4FlashModuleValidateEntry(state,entry,file_bytes,&is_global);
 	if ( status != SPARK_STATUS_OK )
@@ -568,35 +672,38 @@ static SparkStatus SparkQwen4FlashModuleLoadEntry(SparkQwen4FlashModuleState *st
 
 static SparkStatus SparkQwen4FlashModuleVerifyCoverage(SparkQwen4FlashModuleState *state)
 {
-	uint32_t layer,expected_global = 0u,expected_layer;
+	uint32_t layer;
+	uint64_t expected_global = 0u,expected_layer;
 	if ( state->owns_embedding != 0u || state->owns_final_head != 0u )
-		expected_global |= 1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_EMBEDDING;
+		expected_global |= 1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_EMBEDDING;
 	if ( state->owns_final_head != 0u )
-		expected_global |= (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD);
+		expected_global |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP);
 	if ( state->owns_final_head != 0u )
 	{
-		uint32_t expected_mtp = (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM);
+		uint64_t expected_mtp = (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM);
 		if ( state->mtp_seen_bits != expected_mtp )
 		{
-			fprintf(stderr,"%s pack_mtp_incomplete seen=%08x expected=%08x\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->mtp_seen_bits,expected_mtp);
+			fprintf(stderr,"%s pack_mtp_incomplete seen=%016llx expected=%016llx\n",SPARK_QWEN4_FLASH_MODULE_TAG,(unsigned long long)state->mtp_seen_bits,(unsigned long long)expected_mtp);
 			return(SPARK_STATUS_VALIDATION_FAILED);
 		}
 	}
 	if ( state->global_seen_bits != expected_global )
 	{
-		fprintf(stderr,"%s pack_globals_incomplete seen=%08x expected=%08x\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->global_seen_bits,expected_global);
+		fprintf(stderr,"%s pack_globals_incomplete seen=%016llx expected=%016llx\n",SPARK_QWEN4_FLASH_MODULE_TAG,(unsigned long long)state->global_seen_bits,(unsigned long long)expected_global);
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
 	{
-		expected_layer = (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT);
+		expected_layer = (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT);
 		if ( SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer) != 0u )
-			expected_layer |= (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_QKV) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_GATE) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_BETA) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DECAY) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_OUTPUT) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_CONV_WEIGHT) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_A_LOG) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DT_BIAS) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_NORM);
+			expected_layer |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_QKV) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_BETA) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DECAY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_OUTPUT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_CONV_WEIGHT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_A_LOG) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DT_BIAS) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_NORM);
 		else
-			expected_layer |= (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1u << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM);
+			expected_layer |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM);
+		if ( layer == SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && state->allow_missing_ple == 0u )
+			expected_layer |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_VALUE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_QUERY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_CONV) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_CONV) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_MULTIPLIERS) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_VOCABS) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NGRAM);
 		if ( state->layer_seen_bits[layer] != expected_layer )
 		{
-			fprintf(stderr,"%s pack_layer_incomplete layer=%u seen=%08x expected=%08x\n",SPARK_QWEN4_FLASH_MODULE_TAG,layer,state->layer_seen_bits[layer],expected_layer);
+			fprintf(stderr,"%s pack_layer_incomplete layer=%u seen=%016llx expected=%016llx\n",SPARK_QWEN4_FLASH_MODULE_TAG,layer,(unsigned long long)state->layer_seen_bits[layer],(unsigned long long)expected_layer);
 			return(SPARK_STATUS_VALIDATION_FAILED);
 		}
 	}
@@ -619,7 +726,7 @@ static SparkStatus SparkQwen4FlashModuleLoadPack(SparkQwen4FlashModuleState *sta
 	status = SparkStageModulePackRead(SPARK_QWEN4_FLASH_MODULE_TAG,file,0u,&header,sizeof(header));
 	if ( status == SPARK_STATUS_OK )
 	{
-		SparkQwen4FlashStagePackExpectedGeometry(&expected,state->first_layer_index,state->layer_count);
+		SparkQwen4FlashStagePackExpectedGeometry(&expected,state->first_layer_index,state->layer_count,state->allow_missing_ple == 0u ? 1u : 0u);
 		if ( SparkQwen4FlashStagePackHeaderMatches(&header,&expected) != 0 || header.directory_offset != SPARK_QWEN4_FLASH_STAGEPACK_HEADER_BYTES )
 		{
 			fprintf(stderr,"%s pack_geometry_mismatch code=%d slice=%u+%u tensor_count=%u/%u hidden=%u/%u layers=%u/%u first=%u/%u total=%u/%u mtp=%u/%u dir=%llu\n",
@@ -705,7 +812,7 @@ static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *s
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_WORKERS",1u,64u,&workers);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	SparkQwen4FlashStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
+	SparkQwen4FlashStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count,1u);
 	model_fp = SparkQwen4FlashModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	block_record_elements = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_ATTN_CACHE_TOKEN_ELEMENTS * state->attn_layer_count;
 	layout_bits[0] = block_record_elements;
@@ -1125,6 +1232,20 @@ extern cudaError_t SparkQwen4FlashLaunchHeadMaxLocUnpack(cudaStream_t stream, co
 extern cudaError_t SparkQwen4FlashLaunchEmbeddingGatherSharded(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t vocab_base, uint32_t vocab_rows);
 extern cudaError_t SparkQwen4FlashLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
 extern cudaError_t SparkQwen4FlashLaunchTpCombineU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
+/* Hyper-connection residual kernels. */
+extern cudaError_t SparkQwen4FlashLaunchHcStreamReplicate(cudaStream_t stream, const void *input_bf16, void *streams_bf16, uint32_t row_count);
+extern cudaError_t SparkQwen4FlashLaunchHcGroupNorm(cudaStream_t stream, const void *streams_bf16, const void *weight_bf16, void *normed_bf16, uint32_t row_count, float epsilon);
+extern cudaError_t SparkQwen4FlashLaunchHcSiluQuarter(cudaStream_t stream, void *lowrank_bf16, uint32_t row_count);
+extern cudaError_t SparkQwen4FlashLaunchHcMix(cudaStream_t stream, const void *up_bf16, const void *normed_bf16, void *mixed_bf16, uint32_t row_count);
+extern cudaError_t SparkQwen4FlashLaunchHcInject(cudaStream_t stream, void *streams_bf16, const void *inject_pre_bf16, const void *sublayer_out_bf16, uint32_t row_count);
+/* Indexer kernels. */
+extern cudaError_t SparkQwen4FlashLaunchIndexerPrepare(cudaStream_t stream, const void *qk_bf16, const SparkQwen4FlashIndexerWeights *weights, void *query_bf16, void *raw_key_cache, void *pooled_key_cache, const uint32_t *slot_mapping, const uint32_t *block_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t lane_stride, uint64_t cache_block_stride);
+extern cudaError_t SparkQwen4FlashLaunchIndexerSelect(cudaStream_t stream, const void *query_bf16, const void *pooled_key_cache, const SparkQwen4FlashKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, uint8_t *token_mask, uint32_t *score_keys_u32, uint32_t row_count, uint32_t mask_stride, uint32_t score_stride);
+/* PLE kernels. */
+extern cudaError_t SparkQwen4FlashLaunchPleHashGather(cudaStream_t stream, const uint32_t *history_u32, uint32_t token_count, const SparkQwen4FlashPleWeights *ple, void *embedding_bf16, uint32_t row_count, uint32_t vocab_base, uint32_t vocab_rows);
+extern cudaError_t SparkQwen4FlashLaunchPleGate(cudaStream_t stream, const void *key_normed_bf16, const void *query_normed_bf16, const void *value_bf16, void *gated_value_bf16, uint32_t row_count);
+extern cudaError_t SparkQwen4FlashLaunchPleConvUpdate(cudaStream_t stream, const void *input_bf16, const SparkQwen4FlashPleWeights *ple, void *output_bf16, void *tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint64_t tail_lane_stride);
+extern cudaError_t SparkQwen4FlashLaunchPleConvChunk(cudaStream_t stream, const void *input_bf16, const SparkQwen4FlashPleWeights *ple, void *output_bf16, void *tail_bf16, uint32_t token_count);
 
 /* --------------------------------------------------------------------------
  * Tensor-parallel collective: one residual all-reduce per layer. The
@@ -1536,6 +1657,12 @@ void SparkQwen4FlashResidentDecodeStageDestroy(void *module_state)
 	if ( state == 0 )
 		return;
 	SparkStageKvClientClose(&state->kv_client);
+	free(state->ple_prev_context_u32);
+	{
+		uint32_t slot_index;
+		for (slot_index = 0u; slot_index < SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; slot_index++)
+			free(state->slots[slot_index].ple_host_history_u32);
+	}
 	if ( state->tp_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	free(state->kv_logical_to_slot);
@@ -1574,7 +1701,7 @@ extern cudaError_t SparkQwen4FlashLaunchDecayBeta(cudaStream_t stream, const voi
 extern cudaError_t SparkQwen4FlashLaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen4FlashGdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree);
 extern cudaError_t SparkQwen4FlashLaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen4FlashGdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon, uint32_t tp_degree);
 extern cudaError_t SparkQwen4FlashLaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen4FlashAttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon, uint32_t tp_degree, uint32_t tp_rank);
-extern cudaError_t SparkQwen4FlashLaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen4FlashKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank);
+extern cudaError_t SparkQwen4FlashLaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen4FlashKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank, const uint8_t *token_mask, uint32_t mask_stride);
 extern cudaError_t SparkQwen4FlashLaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension);
 extern cudaError_t SparkQwen4FlashLaunchGateScores(cudaStream_t stream, const SparkQwen4FlashLinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count);
 extern cudaError_t SparkQwen4FlashLaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32);
@@ -1598,6 +1725,9 @@ extern cudaError_t SparkQwen4FlashLaunchSharedGate(cudaStream_t stream, void *ac
 static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot)
 {
 	uint64_t rows = state->max_active_sequence_count;
+	/* The residual vector is the hc STREAM tensor [rows, 4H]; the sublayer
+	 * input (the hc mean-mix) is [rows, H] in normalized_bf16. */
+	uint64_t stream_bytes = rows * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t hidden_bytes = rows * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t expert_bytes = rows * SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t moe_up_bytes = rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
@@ -1645,7 +1775,15 @@ static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint64_t),(void **)&slot->row_positions);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->hidden_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,stream_bytes,&slot->hidden_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,stream_bytes,&slot->hc_normed_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,stream_bytes,&slot->hc_up_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&slot->hc_lowrank_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&slot->hc_inject_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->normalized_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -1698,6 +1836,33 @@ static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState 
 		status = SparkStageModuleDeviceAllocate(&state->ledger,moe_up_bytes,&slot->moe_slot_up_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,moe_down_bytes,&slot->moe_slot_out_bf16);
+	/* Indexer scratch (attn layers exist on every whole-stack slice). */
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&slot->indexer_query_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * state->indexer_mask_stride,(void **)&slot->indexer_mask_u8);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * state->kv_block_count * sizeof(uint32_t),(void **)&slot->indexer_scores_u32);
+	/* PLE scratch [rows, *] at stream/hidh widths (owns_ple set post-pack). */
+	if ( status == SPARK_STATUS_OK && state->owns_ple != 0u )
+	{
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->ple_embedding_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,stream_bytes,&slot->ple_key_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->ple_value_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,stream_bytes,&slot->ple_gated_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,stream_bytes,&slot->ple_gated_normed_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,stream_bytes,&slot->ple_conv_out_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,rows * 3u * sizeof(uint32_t),(void **)&slot->ple_history_u32);
+		slot->ple_host_history_u32 = slot->ple_history_u32 != 0 ? (uint32_t *)malloc((size_t)rows * 3u * sizeof(uint32_t)) : 0;
+		if ( status == SPARK_STATUS_OK && slot->ple_host_history_u32 == 0 )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,expert_bytes,&slot->shared_gate_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -1751,9 +1916,10 @@ typedef struct SparkQwen4FlashAttnRowsView
 	const uint32_t *context_lengths;
 } SparkQwen4FlashAttnRowsView;
 
-static SparkStatus SparkQwen4FlashModuleRunAttnLayer(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashKvBlockTableView *table, const SparkQwen4FlashAttnLayerWeights *weights, uint32_t ordinal, const SparkQwen4FlashAttnRowsView *rows_view, uint32_t rows)
+static SparkStatus SparkQwen4FlashModuleRunAttnLayer(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashKvBlockTableView *table, const SparkQwen4FlashAttnLayerWeights *weights, const SparkQwen4FlashIndexerWeights *indexer, uint32_t ordinal, uint32_t indexer_ordinal, const SparkQwen4FlashAttnRowsView *rows_view, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint8_t *token_mask = 0;
 	cudaError_t error;
 	error = SparkQwen4FlashLaunchLinear(stream,&weights->query,slot->normalized_bf16,slot->q_fused_bf16,rows);
 	if ( error == cudaSuccess )
@@ -1762,19 +1928,37 @@ static SparkStatus SparkQwen4FlashModuleRunAttnLayer(SparkQwen4FlashModuleState 
 		error = SparkQwen4FlashLaunchLinear(stream,&weights->value,slot->normalized_bf16,slot->v_bf16,rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchAttnPrepare(stream,slot->q_fused_bf16,slot->k_bf16,slot->v_bf16,weights,state->kv_cache_bf16,rows_view->slot_mapping,rows_view->row_positions,rows,ordinal,state->cache_layer_stride,state->cache_block_stride,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON,state->tp_degree,state->tp_rank);
+	/* Indexer: project + prepare the frame's queries and keys (pooling any
+	 * completing block), then score/select into the u8 token mask the
+	 * decode kernel consumes. Contexts under budget+ratio-1 select every
+	 * visible token, so short contexts run bit-identically to before. */
+	if ( error == cudaSuccess && indexer != 0 )
+	{
+		void *raw_plane = (uint8_t *)state->indexer_raw_key_cache_bf16 + ((uint64_t)indexer_ordinal * state->indexer_raw_layer_stride * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES);
+		void *pooled_plane = (uint8_t *)state->indexer_pooled_key_cache_bf16 + ((uint64_t)indexer_ordinal * state->indexer_pooled_layer_stride * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES);
+		error = SparkQwen4FlashLaunchLinear(stream,&indexer->index_qk,slot->normalized_bf16,slot->qkv_bf16,rows);
+		if ( error == cudaSuccess )
+			error = SparkQwen4FlashLaunchIndexerPrepare(stream,slot->qkv_bf16,indexer,slot->indexer_query_bf16,raw_plane,pooled_plane,rows_view->slot_mapping,table->physical_block_indices,rows_view->row_positions,rows,table->lane_stride,state->indexer_raw_layer_stride / SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+		if ( error == cudaSuccess )
+			error = SparkQwen4FlashLaunchIndexerSelect(stream,slot->indexer_query_bf16,pooled_plane,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->indexer_mask_u8,slot->indexer_scores_u32,rows,state->indexer_mask_stride,state->kv_block_count);
+		if ( error == cudaSuccess )
+			token_mask = slot->indexer_mask_u8;
+	}
 	if ( error == cudaSuccess )
-		error = SparkQwen4FlashLaunchAttnDecode(stream,slot->q_fused_bf16,state->kv_cache_bf16,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->head_out_bf16,rows,ordinal,state->cache_layer_stride,state->cache_block_stride,state->tp_degree,state->tp_rank);
+		error = SparkQwen4FlashLaunchAttnDecode(stream,slot->q_fused_bf16,state->kv_cache_bf16,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->head_out_bf16,rows,ordinal,state->cache_layer_stride,state->cache_block_stride,state->tp_degree,state->tp_rank,token_mask,token_mask != 0 ? state->indexer_mask_stride : 0u);
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchLinear(stream,&weights->output,slot->head_out_bf16,slot->delta_bf16,rows);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"attn_layer"));
 }
 
 /*
- * Routed MoE + shared expert, the layer's FFN side. The fused residual norm
- * already folded the attention/GDN delta into hidden, so delta_bf16 is
- * OVERWRITTEN by the routed expert mixture (weighted pair reduce from zero)
- * and then accumulates the shared expert output (scalar-gate-multiplied)
- * before the final residual add.
+ * Routed MoE + shared expert, the layer's FFN side. The hc mean-mix already
+ * produced the sublayer input in normalized_bf16 (the reference SparseMoe
+ * block applies NO input norm of its own); delta_bf16 is OVERWRITTEN by the
+ * routed expert mixture, then accumulates the shared expert partial, and the
+ * single TP all-reduce completes BOTH partial sums (routed experts are
+ * expert-sharded and the shared expert's down projection is column-sharded -
+ * reducing before the shared add left the ranks divergent at live TP>1).
  */
 /* The route's group base for this rank: a REPLICATED gate (full expert rows)
  * routes the same global top-k on every rank, so this rank executes the
@@ -1789,15 +1973,13 @@ static uint32_t SparkQwen4FlashModuleRouteGroupBase(SparkQwen4FlashModuleState *
 	return(0u);
 }
 
-static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const void *mlp_norm_bf16, const SparkQwen4FlashMoeWeights *weights, uint32_t rows)
+static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashMoeWeights *weights, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint32_t route_group_base = SparkQwen4FlashModuleRouteGroupBase(state,weights);
 	cudaError_t error;
 	SparkStatus status;
-	error = SparkQwen4FlashLaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->delta_bf16,mlp_norm_bf16,slot->normalized_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess )
-		error = SparkQwen4FlashLaunchGateScores(stream,&weights->gate,slot->normalized_bf16,slot->moe_scores_f32,rows);
+	error = SparkQwen4FlashLaunchGateScores(stream,&weights->gate,slot->normalized_bf16,slot->moe_scores_f32,rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchGateSelect(stream,slot->moe_scores_f32,0,rows,weights->gate.output_dimension,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,1.0f,slot->moe_indices_u32,slot->moe_weights_f32);
 	if ( error == cudaSuccess )
@@ -1829,16 +2011,6 @@ static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state
 	}
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchMoePairReduceOverwrite(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->delta_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
-	if ( error == cudaSuccess && state->tp_degree > 1u )
-	{
-		/* Expert-sharded TP: the pair reduce holds only THIS rank's
-		 * experts' contribution. Reduce the DELTA before the replicated
-		 * shared expert and the residual add join it - reducing the hidden
-		 * instead would double-count the shared expert and the base. */
-		status = SparkQwen4FlashModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-	}
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchLinear(stream,&weights->shared_gate,slot->normalized_bf16,slot->shared_gate_bf16,rows);
 	if ( error == cudaSuccess )
@@ -1851,8 +2023,18 @@ static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state
 		error = SparkQwen4FlashLaunchSharedGate(stream,slot->shared_down_bf16,weights->shared_gate_weight_bf16,slot->normalized_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchResidualAdd(stream,slot->delta_bf16,slot->shared_down_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
-	if ( error == cudaSuccess )
-		error = SparkQwen4FlashLaunchResidualAdd(stream,slot->hidden_bf16,slot->delta_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess && state->tp_degree > 1u )
+	{
+		/* Expert-sharded TP: the pair reduce holds only THIS rank's
+		 * experts' contribution and the shared expert's down projection is
+		 * column-sharded, so the sum completing delta must cover both
+		 * (reducing between them left the shared partial rank-local and the
+		 * streams diverged from the next layer on - invisible under the
+		 * standalone bypass, fatal for the live collective). */
+		status = SparkQwen4FlashModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"moe"));
 }
 
@@ -1872,28 +2054,172 @@ static uint32_t SparkQwen4FlashModuleDebugDumpHidden(SparkQwen4FlashModuleState 
 	if ( out == 0 )
 		return(0u);
 	{
-		static uint16_t staging[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION];
-		if ( cudaMemcpy(staging,slot->hidden_bf16,(size_t)rows * SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToHost) == cudaSuccess )
-			fwrite(staging,SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES,rows,out);
+		static uint16_t staging[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
+		uint64_t stream_row_bytes = (uint64_t)SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
+		if ( cudaMemcpy(staging,slot->hidden_bf16,(size_t)rows * stream_row_bytes,cudaMemcpyDeviceToHost) == cudaSuccess )
+			fwrite(staging,(size_t)stream_row_bytes,rows,out);
 	}
 	fclose(out);
 	return(0u);
+}
+
+/* One hc sublayer front half: group-norm the streams, low-rank mean-mix into
+ * the sublayer input (normalized_bf16), and stage the raw inject projection.
+ * The reference chain: silu(down(normed)/hc_count) -> up -> sigmoid gates the
+ * stream mean. */
+static SparkStatus SparkQwen4FlashModuleRunHcPrep(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashHcWeights *hc, const void *hc_norm_weight, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	(void)state;
+	cudaError_t error = SparkQwen4FlashLaunchHcGroupNorm(stream,slot->hidden_bf16,hc_norm_weight,slot->hc_normed_bf16,rows,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&hc->mix_down,slot->hc_normed_bf16,slot->hc_lowrank_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcSiluQuarter(stream,slot->hc_lowrank_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&hc->mix_up,slot->hc_lowrank_bf16,slot->hc_up_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcMix(stream,slot->hc_up_bf16,slot->hc_normed_bf16,slot->normalized_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&hc->block_inject,slot->hc_normed_bf16,slot->hc_inject_bf16,rows);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"hc_prep"));
+}
+
+/* Back half: fold the (already all-reduced) sublayer output back into every
+ * stream at the per-stream inject scale. */
+static SparkStatus SparkQwen4FlashModuleRunHcInject(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	(void)state;
+	cudaError_t error = SparkQwen4FlashLaunchHcInject(stream,slot->hidden_bf16,slot->hc_inject_bf16,slot->delta_bf16,rows);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"hc_inject"));
+}
+
+/* Readout mixer (use_combine=False): group norm + low-rank mean-mix, no
+ * inject, no further norm - the stack's final readout and the MTP copies. */
+static SparkStatus SparkQwen4FlashModuleRunHcReadout(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashHcMixer *mixer, const void *streams, void *mixed_out, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	(void)state;
+	cudaError_t error = SparkQwen4FlashLaunchHcGroupNorm(stream,streams,mixer->hc_norm_weight_bf16,slot->hc_normed_bf16,rows,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&mixer->mix_down,slot->hc_normed_bf16,slot->hc_lowrank_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcSiluQuarter(stream,slot->hc_lowrank_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&mixer->mix_up,slot->hc_lowrank_bf16,slot->hc_up_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcMix(stream,slot->hc_up_bf16,slot->hc_normed_bf16,mixed_out,rows);
+	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"hc_readout"));
+}
+
+/* PLE injection for the PLE layer, run BEFORE the attention hc (the
+ * reference DecoderLayer order): hash the lane's EOS-segmented 3-gram
+ * history per head, gather the vocab-sharded n-gram table (the bf16
+ * all-reduce completes the [rows, 2560] embedding), then key/value/gate/
+ * dilated-conv into a [rows, 4H] delta added to the stream vector. The
+ * module walks one token per row (decode microbatch or the per-token
+ * prefill), so token_count is always 1 and the conv is the update form. */
+static SparkStatus SparkQwen4FlashModuleRunPle(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	SparkStatus status;
+	cudaError_t error;
+	uint32_t row;
+	/* Stage the hash window per row: [prev0, prev1, current id]; cold rows
+	 * read EOS EOS (the reference initialization). */
+	for (row = 0u; row < rows; row++)
+	{
+		uint32_t lane = slot->host_row_lane_indices[row];
+		uint32_t cold = slot->host_row_cold[row];
+		uint64_t lane_base = (uint64_t)lane * SPARK_QWEN4_FLASH_MODEL_PLE_CONTEXT_LENGTH;
+		slot->ple_host_history_u32[row * 3u + 0u] = cold != 0u ? SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID : state->ple_prev_context_u32[lane_base + 0u];
+		slot->ple_host_history_u32[row * 3u + 1u] = cold != 0u ? SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID : state->ple_prev_context_u32[lane_base + 1u];
+		slot->ple_host_history_u32[row * 3u + 2u] = slot->input_token_ids[row];
+	}
+	error = cudaMemcpyAsync(slot->ple_history_u32,slot->ple_host_history_u32,(size_t)rows * 3u * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"ple_history"));
+	error = SparkQwen4FlashLaunchPleHashGather(stream,slot->ple_history_u32,1u,&state->ple,slot->ple_embedding_bf16,rows,state->tp_degree > 1u ? (uint32_t)((uint64_t)state->tp_rank * ((uint64_t)SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_ROW_COUNT / state->tp_degree)) : 0u,state->tp_degree > 1u ? SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_ROW_COUNT / state->tp_degree : SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_ROW_COUNT);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"ple_hash"));
+	if ( state->tp_degree > 1u )
+	{
+		status = SparkQwen4FlashModuleTpAllReduceHidden(state,slot,slot->ple_embedding_bf16,rows);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
+	/* Key/value projections and the group norms (query norm reads the
+	 * CURRENT stream vector; the hc_normed scratch holds the query side,
+	 * ple_gated_normed the key side). */
+	error = SparkQwen4FlashLaunchHcGroupNorm(stream,slot->hidden_bf16,state->ple.norm_query_weight_bf16,slot->hc_normed_bf16,rows,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&state->ple.key_proj,slot->ple_embedding_bf16,slot->ple_key_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcGroupNorm(stream,slot->ple_key_bf16,state->ple.norm_key_weight_bf16,slot->ple_gated_normed_bf16,rows,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&state->ple.value_proj,slot->ple_embedding_bf16,slot->ple_value_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchPleGate(stream,slot->ple_gated_normed_bf16,slot->hc_normed_bf16,slot->ple_value_bf16,slot->ple_gated_bf16,rows);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcGroupNorm(stream,slot->ple_gated_bf16,state->ple.norm_conv_weight_bf16,slot->ple_gated_normed_bf16,rows,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchPleConvUpdate(stream,slot->ple_gated_normed_bf16,&state->ple,slot->ple_conv_out_bf16,state->ple_conv_tail_bf16,slot->row_lane_indices,slot->row_cold,rows,state->ple_conv_tail_lane_stride);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchResidualAdd(stream,slot->hidden_bf16,slot->ple_gated_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchResidualAdd(stream,slot->hidden_bf16,slot->ple_conv_out_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"ple_core"));
+	/* Carry the last two tokens (prev1, current) for the next frame. */
+	for (row = 0u; row < rows; row++)
+	{
+		uint32_t lane = slot->host_row_lane_indices[row];
+		uint64_t lane_base = (uint64_t)lane * SPARK_QWEN4_FLASH_MODEL_PLE_CONTEXT_LENGTH;
+		state->ple_prev_context_u32[lane_base] = slot->ple_host_history_u32[row * 3u + 1u];
+		state->ple_prev_context_u32[lane_base + 1u] = slot->ple_host_history_u32[row * 3u + 2u];
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashKvBlockTableView *table, uint32_t layer, uint32_t rows)
 {
 	SparkQwen4FlashAttnRowsView rows_view;
 	SparkStatus status;
-	cudaError_t error = SparkQwen4FlashLaunchRmsNorm((cudaStream_t)slot->cuda_stream,slot->hidden_bf16,state->attention_norm_by_layer[layer],slot->normalized_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
 	rows_view.slot_mapping = slot->slot_mapping;
 	rows_view.row_positions = slot->row_positions;
 	rows_view.row_lane_indices = slot->row_lane_indices;
 	rows_view.context_lengths = slot->context_lengths;
-	status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"attention_norm");
+	/* PLE first (the reference DecoderLayer runs the n-gram injection
+	 * before the attention hyper-connection). */
+	if ( layer == SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && state->owns_ple != 0u )
+	{
+		status = SparkQwen4FlashModuleRunPle(state,slot,rows);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
+	/* Attention/GDN sublayer: hc mean-mix in, output projection is
+	 * column-parallel at tp>1 so the delta all-reduce completes it before
+	 * the per-stream inject (the missing reduce was invisible under the
+	 * standalone bypass and fatal for the live collective). */
+	status = SparkQwen4FlashModuleRunHcPrep(state,slot,&state->attn_hc_by_layer[layer],state->attention_norm_by_layer[layer],rows);
 	if ( status == SPARK_STATUS_OK && state->debug_skip_gdn == 0u )
-		status = SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen4FlashModuleRunGdnLayer(state,slot,layer,rows) : SparkQwen4FlashModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
+		status = SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen4FlashModuleRunGdnLayer(state,slot,layer,rows) : SparkQwen4FlashModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],&state->indexer_by_layer[layer],state->attn_ordinal_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
+	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u )
+	{
+		status = SparkQwen4FlashModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunHcInject(state,slot,rows);
+	/* MoE sublayer on the same stream machinery. */
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunHcPrep(state,slot,&state->mlp_hc_by_layer[layer],state->mlp_norm_by_layer[layer],rows);
 	if ( status == SPARK_STATUS_OK && state->debug_skip_moe == 0u )
-		status = SparkQwen4FlashModuleRunMoe(state,slot,state->mlp_norm_by_layer[layer],&state->moe_by_layer[layer],rows);
+		status = SparkQwen4FlashModuleRunMoe(state,slot,&state->moe_by_layer[layer],rows);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunHcInject(state,slot,rows);
 	if ( status == SPARK_STATUS_OK )
 		state->debug_dump_hidden(state,slot,layer,rows);
 	return(status);
@@ -1942,6 +2268,32 @@ static SparkStatus SparkQwen4FlashModuleAllocatePools(SparkQwen4FlashModuleState
 		state->cache_block_stride = state->cache_layer_stride * state->cache_layer_count;
 		cache_elements = state->cache_block_stride * state->kv_block_count;
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->kv_cache_bf16);
+	}
+	/* Indexer caches: raw per-token keys [layers, blocks, 64, 128] and
+	 * pooled per-block keys [layers, blocks, 128]; one plane per attention
+	 * layer plus the MTP ordinal when this stage owns the head. */
+	state->indexer_cache_layer_count = state->cache_layer_count;
+	state->indexer_mask_stride = state->kv_block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	if ( status == SPARK_STATUS_OK && state->indexer_cache_layer_count != 0u )
+	{
+		uint64_t raw_elements = (uint64_t)state->indexer_cache_layer_count * state->kv_block_count *
+			SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		uint64_t pooled_elements = (uint64_t)state->indexer_cache_layer_count * state->kv_block_count * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		state->indexer_raw_layer_stride = (uint64_t)state->kv_block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		state->indexer_pooled_layer_stride = (uint64_t)state->kv_block_count * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,raw_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->indexer_raw_key_cache_bf16);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,pooled_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->indexer_pooled_key_cache_bf16);
+	}
+	/* PLE carried state: [lanes, 2] u32 prev context (host-resident, tiny)
+	 * and the dilated conv tail [lanes, 4H, 9] bf16 on device. */
+	if ( status == SPARK_STATUS_OK && state->owns_ple != 0u )
+	{
+		state->ple_conv_tail_lane_stride = (uint64_t)SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS;
+		state->ple_prev_context_u32 = (uint32_t *)calloc((size_t)state->max_active_sequence_count * SPARK_QWEN4_FLASH_MODEL_PLE_CONTEXT_LENGTH,sizeof(uint32_t));
+		status = state->ple_prev_context_u32 != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,(uint64_t)state->max_active_sequence_count * state->ple_conv_tail_lane_stride * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->ple_conv_tail_bf16);
 	}
 	return(status);
 }
@@ -2020,7 +2372,13 @@ static cudaError_t SparkQwen4FlashModuleEmitHead(SparkQwen4FlashModuleState *sta
 	cudaError_t error;
 	if ( frame->buffer_count <= out_index || frame->buffers == 0 || frame->buffers[out_index].address == 0 )
 		return(cudaErrorInvalidValue);
-	error = SparkQwen4FlashLaunchRmsNorm(stream,slot->hidden_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	/* Final readout = the hyper_connection_mixer (use_combine=False): group
+	 * norm + low-rank mean-mix over the streams, NO final norm (the Flash
+	 * checkpoint has no model.norm; the old stream-0-section approximation
+	 * is retired). */
+	if ( SparkQwen4FlashModuleRunHcReadout(state,slot,&state->readout_mixer,slot->hidden_bf16,slot->normalized_bf16,rows) != SPARK_STATUS_OK )
+		return(cudaErrorLaunchFailure);
+	error = cudaSuccess;
 	if ( state->tp_degree > 1u )
 	{
 		/* Sharded head (the 27b flow): screen THIS rank's vocab shard with
@@ -2089,10 +2447,10 @@ static SparkStatus SparkQwen4FlashModuleConsumeHiddenInput(SparkQwen4FlashModule
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( packet->hidden_bf16 == 0 || packet->active_sequence_count < rows ||
-		packet->hidden_dimension != SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION ||
-		packet->bytes_per_sequence < SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES )
+		packet->hidden_dimension != SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH ||
+		packet->bytes_per_sequence < SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	error = cudaMemcpyAsync(slot->hidden_bf16,packet->hidden_bf16,(uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,stream);
+	error = cudaMemcpyAsync(slot->hidden_bf16,packet->hidden_bf16,(uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,cudaMemcpyDeviceToDevice,stream);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"hidden_input"));
 }
 
@@ -2105,8 +2463,8 @@ static SparkStatus SparkQwen4FlashModuleEmitHiddenOutput(SparkQwen4FlashModuleSl
 	packet->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_PACKET_BYTES;
 	packet->flags = SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 | SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER;
 	packet->active_sequence_count = rows;
-	packet->hidden_dimension = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
-	packet->bytes_per_sequence = SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES;
+	packet->hidden_dimension = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+	packet->bytes_per_sequence = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
 	packet->hidden_bf16 = slot->hidden_bf16;
 	packet->cuda_stream = slot->cuda_stream;
 	return(context->hidden_output_send_function(context->hidden_output_transport_session,packet));
@@ -2114,75 +2472,132 @@ static SparkStatus SparkQwen4FlashModuleEmitHiddenOutput(SparkQwen4FlashModuleSl
 
 /* Embedding gather across the vocab-sharded packs: at tp>1 every rank
  * gathers the tokens inside its own vocab block (zeros elsewhere) and the
- * bf16 all-reduce completes the full embedding on every rank. Under the
- * standalone bypass the reduce no-ops and the result stays rank-partial
- * (validation semantics). tp1 keeps the full-width gather. */
-static SparkStatus SparkQwen4FlashModuleEmbedRows(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const uint32_t *token_ids, void *hidden_bf16, uint32_t rows)
+ * bf16 all-reduce completes the full [rows, H] embedding on every rank.
+ * The stream vector is then seeded by REPLICATING the embedding into all
+ * hc_count streams (the reference `hidden_states.repeat(1, 1, hc_count)`).
+ * Under the standalone bypass the reduce no-ops and the result stays
+ * rank-partial (validation semantics). */
+static SparkStatus SparkQwen4FlashModuleEmbedRows(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const uint32_t *token_ids, void *streams_bf16, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkStatus status;
 	if ( state->tp_degree > 1u )
 	{
-		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchEmbeddingGatherSharded(stream,token_ids,state->token_embedding_bf16,hidden_bf16,rows,state->tp_vocab_base,state->tp_vocab_rows),"embedding_sharded");
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchEmbeddingGatherSharded(stream,token_ids,state->token_embedding_bf16,slot->normalized_bf16,rows,state->tp_vocab_base,state->tp_vocab_rows),"embedding_sharded");
 		if ( status != SPARK_STATUS_OK )
 			return(status);
-		return(SparkQwen4FlashModuleTpAllReduceHidden(state,slot,hidden_bf16,rows));
+		status = SparkQwen4FlashModuleTpAllReduceHidden(state,slot,slot->normalized_bf16,rows);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
 	}
-	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchEmbeddingGather(stream,token_ids,state->token_embedding_bf16,hidden_bf16,rows),"embedding"));
+	else
+	{
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchEmbeddingGather(stream,token_ids,state->token_embedding_bf16,slot->normalized_bf16,rows),"embedding");
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
+	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchHcStreamReplicate(stream,slot->normalized_bf16,streams_bf16,rows),"embedding_replicate"));
 }
 
 /* MTP draft chain (ported from the proven qwen38_27b unit; the max
  * lineage never wired the pack's MTP tensors into execution). The TP>1
  * draft argmax runs the sharded screening + maxloc collective, same as the
  * head emit. */
-static SparkStatus SparkQwen4FlashModuleRunMtpPackInput(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const uint32_t *token_src, const void *hnorm_src, uint32_t rows_p)
+/* MTP pack input (EAGLE convention, hc-adapted): the embed side is the
+ * normed token embedding [H]; the hidden side is the mtp readout mixer over
+ * the backbone's final stream vector, pre-normed by the [4H]
+ * pre_fc_norm_hidden group norm (both sections at their true checkpoint
+ * widths). fc concatenates them and the fc output seeds the MTP layer's
+ * stream vector by replication. */
+static SparkStatus SparkQwen4FlashModuleRunMtpPackInput(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const uint32_t *token_src, const void *streams_src, uint32_t rows_p)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint64_t half_bytes = SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES,pack_pitch = 2u * half_bytes;
 	cudaError_t error;
 	SparkStatus status;
-	status = SparkQwen4FlashModuleEmbedRows(state,slot,token_src,slot->gated_bf16,rows_p);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
+	/* Embed side: vocab-sharded gather into normalized (no replication),
+	 * then the [H] embed norm. */
+	if ( state->tp_degree > 1u )
+	{
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchEmbeddingGatherSharded(stream,token_src,state->token_embedding_bf16,slot->gated_bf16,rows_p,state->tp_vocab_base,state->tp_vocab_rows),"mtp_embed_sharded");
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		status = SparkQwen4FlashModuleTpAllReduceHidden(state,slot,slot->gated_bf16,rows_p);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
+	else
+	{
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchEmbeddingGather(stream,token_src,state->token_embedding_bf16,slot->gated_bf16,rows_p),"mtp_embed");
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	error = SparkQwen4FlashLaunchRmsNorm(stream,slot->gated_bf16,state->mtp.embed_norm_weight_bf16,slot->normalized_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	/* Hidden side: pre_fc_norm_hidden group norm, then the mtp readout
+	 * mixer's own group norm and low-rank mean-mix. */
 	if ( error == cudaSuccess )
-		error = SparkQwen4FlashLaunchRmsNorm(stream,hnorm_src,state->mtp.hidden_norm_weight_bf16,slot->delta_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+		error = SparkQwen4FlashLaunchHcGroupNorm(stream,streams_src,state->mtp.hidden_norm_weight_bf16,slot->hc_up_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcGroupNorm(stream,slot->hc_up_bf16,state->mtp.readout_mixer.hc_norm_weight_bf16,slot->hc_normed_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&state->mtp.readout_mixer.mix_down,slot->hc_normed_bf16,slot->hc_lowrank_bf16,rows_p);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcSiluQuarter(stream,slot->hc_lowrank_bf16,rows_p);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchLinear(stream,&state->mtp.readout_mixer.mix_up,slot->hc_lowrank_bf16,slot->hc_up_bf16,rows_p);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcMix(stream,slot->hc_up_bf16,slot->hc_normed_bf16,slot->delta_bf16,rows_p);
 	if ( error == cudaSuccess )
 		error = cudaMemcpy2DAsync(slot->qkv_bf16,pack_pitch,slot->normalized_bf16,half_bytes,half_bytes,rows_p,cudaMemcpyDeviceToDevice,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemcpy2DAsync((uint8_t *)slot->qkv_bf16 + half_bytes,pack_pitch,slot->delta_bf16,half_bytes,half_bytes,rows_p,cudaMemcpyDeviceToDevice,stream);
 	if ( error == cudaSuccess )
-		error = SparkQwen4FlashLaunchLinear(stream,&state->mtp.fc,slot->qkv_bf16,slot->hidden_bf16,rows_p);
+		error = SparkQwen4FlashLaunchLinear(stream,&state->mtp.fc,slot->qkv_bf16,slot->normalized_bf16,rows_p);
+	if ( error == cudaSuccess )
+		error = SparkQwen4FlashLaunchHcStreamReplicate(stream,slot->normalized_bf16,slot->hidden_bf16,rows_p);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"mtp_pack"));
 }
 
 static SparkStatus SparkQwen4FlashModuleRunMtpDecoderPass(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashKvBlockTableView *table, const SparkQwen4FlashAttnRowsView *rows_view, uint32_t rows_p)
 {
-	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkStatus status;
-	cudaError_t error = SparkQwen4FlashLaunchRmsNorm(stream,slot->hidden_bf16,state->mtp.attention_norm_weight_bf16,slot->normalized_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
-	status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"mtp_attn_norm");
+	/* The MTP decoder layer is a full DecoderLayer: both sublayers run the
+	 * same hc mean-mix/inject machinery as main layers, over the MTP layer's
+	 * own mixer tensors. */
+	status = SparkQwen4FlashModuleRunHcPrep(state,slot,&state->mtp.attention_hc,state->mtp.attention_hc.hc_norm_weight_bf16,rows_p);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen4FlashModuleRunAttnLayer(state,slot,table,&state->mtp.attention,state->mtp_cache_ordinal,rows_view,rows_p);
+		status = SparkQwen4FlashModuleRunAttnLayer(state,slot,table,&state->mtp.attention,&state->mtp.indexer,state->mtp_cache_ordinal,state->mtp_cache_ordinal,rows_view,rows_p);
+	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u )
+	{
+		status = SparkQwen4FlashModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows_p);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchResidualAdd(stream,slot->hidden_bf16,slot->delta_bf16,rows_p,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION),"mtp_residual");
+		status = SparkQwen4FlashModuleRunHcInject(state,slot,rows_p);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen4FlashModuleRunMoe(state,slot,state->mtp.mlp_norm_weight_bf16,&state->mtp.moe,rows_p);
+		status = SparkQwen4FlashModuleRunHcPrep(state,slot,&state->mtp.mlp_hc,state->mtp.mlp_hc.hc_norm_weight_bf16,rows_p);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunMoe(state,slot,&state->mtp.moe,rows_p);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleRunHcInject(state,slot,rows_p);
 	return(status);
 }
 
 static SparkStatus SparkQwen4FlashModuleRunMtpArgmaxRow(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t row, uint32_t draft_index)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
-	const void *row_hidden = (const uint8_t *)slot->hidden_bf16 + ((uint64_t)row * SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES);
+	const void *row_streams = (const uint8_t *)slot->hidden_bf16 + ((uint64_t)row * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES);
 	cudaError_t error;
+	/* Draft readout: the mtp readout mixer over the row's stream vector
+	 * (same use_combine=False mean-mix as the backbone head). */
+	if ( SparkQwen4FlashModuleRunHcReadout(state,slot,&state->mtp.readout_mixer,row_streams,slot->normalized_bf16,1u) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->tp_degree > 1u )
 	{
 		/* Sharded draft argmax: screen the rank's vocab shard, maxloc pack,
 		 * cross-rank u64 max, unpack - the head emit flow at one row. */
-		error = SparkQwen4FlashLaunchRmsNorm(stream,row_hidden,state->mtp.final_norm_weight_bf16,slot->normalized_bf16,1u,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
-		if ( error == cudaSuccess )
-			error = SparkQwen4FlashLaunchHeadScreenedArgmaxScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids,slot->head_candidate_counts,slot->mtp_draft_ids + draft_index,slot->head_scores_f32,state->tp_vocab_base,1u,state->tp_vocab_rows);
+		error = SparkQwen4FlashLaunchHeadScreenedArgmaxScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids,slot->head_candidate_counts,slot->mtp_draft_ids + draft_index,slot->head_scores_f32,state->tp_vocab_base,1u,state->tp_vocab_rows);
 		if ( error == cudaSuccess )
 			error = SparkQwen4FlashLaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->mtp_draft_ids + draft_index,slot->head_maxloc_u64,1u);
 		if ( error == cudaSuccess && SparkQwen4FlashModuleTpReduceU64Max(state,slot,slot->head_maxloc_u64,1u) != SPARK_STATUS_OK )
@@ -2191,9 +2606,7 @@ static SparkStatus SparkQwen4FlashModuleRunMtpArgmaxRow(SparkQwen4FlashModuleSta
 			error = SparkQwen4FlashLaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->mtp_draft_ids + draft_index,1u);
 		return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"mtp_argmax_sharded"));
 	}
-	error = SparkQwen4FlashLaunchRmsNorm(stream,row_hidden,state->mtp.final_norm_weight_bf16,slot->normalized_bf16,1u,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess )
-		error = SparkQwen4FlashLaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids,slot->head_candidate_counts,slot->mtp_draft_ids + draft_index,1u,SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT);
+	error = SparkQwen4FlashLaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids,slot->head_candidate_counts,slot->mtp_draft_ids + draft_index,1u,SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"mtp_argmax"));
 }
 

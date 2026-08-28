@@ -107,15 +107,36 @@
 #define SPARK_QWEN4_FLASH_MODEL_INDEXER_BUDGET 2048u
 #define SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO 4u
 
-// PLE n-gram embedding block: tensors live on layer 1 (weights truth; the
-// config's ple_layer_ids [2] is drifted - see the contract census). 3-gram,
-// 8 heads per n-gram, embedding dim = hidden, conv kernel 4, 128 shards.
+// PLE n-gram embedding block: tensors live on layer 1. The referenceDecoder
+// layer resolves ple via `layer_idx + 1 in config.ple_layer_ids`, so the
+// config's ple_layer_ids [2] MEANS layer index 1 (the M1 census note called
+// this drift; against modeling_qwen4_exp.py it is a convention, not drift).
+// 3-gram (2-token carried context), 8 heads per n-gram order -> 16 heads x
+// 160 dims = 2560 embed dim, conv kernel 4 dilated by ngram_size (3).
 #define SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX 1u
 #define SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_SIZE 3u
 #define SPARK_QWEN4_FLASH_MODEL_PLE_HEADS_PER_NGRAM 8u
+#define SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_COUNT \
+	(SPARK_QWEN4_FLASH_MODEL_PLE_HEADS_PER_NGRAM * \
+	 (SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_SIZE - 1u))
+#define SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_DIMENSION \
+	(SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION / \
+	 SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_COUNT)
+#define SPARK_QWEN4_FLASH_MODEL_PLE_CONTEXT_LENGTH \
+	(SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_SIZE - 1u)
 #define SPARK_QWEN4_FLASH_MODEL_PLE_SHARD_COUNT 128u
 #define SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION
 #define SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL 4u
+#define SPARK_QWEN4_FLASH_MODEL_PLE_CONV_DILATION SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_SIZE
+#define SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS \
+	((SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL - 1u) * \
+	 SPARK_QWEN4_FLASH_MODEL_PLE_CONV_DILATION)
+// Padded n-gram table rows: 16 head vocab primes just above the 20,000,000
+// base, summed (320,001,446) and padded to the divisor 128. The checkpoint
+// stores this as 128 shards x [2,500,012, 160]; row space is head-major
+// (head h owns [offsets[h], offsets[h] + vocab_sizes[h])).
+#define SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_ROW_COUNT 320001536u
+#define SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID 248044u
 
 #define SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES 2u
 #define SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES \

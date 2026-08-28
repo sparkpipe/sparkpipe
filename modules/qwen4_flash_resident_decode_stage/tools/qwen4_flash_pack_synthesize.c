@@ -25,7 +25,7 @@
  * any PP-N stage is the same tool with its own slice.
  */
 
-#define SPARK_QWEN4_FLASH_SYNTHESIZE_MAX_TENSORS 1024u
+#define SPARK_QWEN4_FLASH_SYNTHESIZE_MAX_TENSORS 2048u
 #define SPARK_QWEN4_FLASH_SYNTHESIZE_CHUNK_BYTES (8u * 1024u * 1024u)
 
 typedef struct SparkQwen4FlashSynthesizeContext
@@ -98,6 +98,16 @@ static int32_t SparkQwen4FlashSynthesizeAppendEveryLayer(SparkQwen4FlashSynthesi
 		return(-1);
 	if ( SparkQwen4FlashSynthesizeAppend(context,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM,layer_index,0u,quantize) < 0 )
 		return(-2);
+		static const uint32_t hc_kinds[6] =
+	{
+		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP,
+		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN,
+		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT
+	};
+	uint32_t hc_index;
+	for (hc_index = 0; hc_index < 6u; hc_index++)
+		if ( SparkQwen4FlashSynthesizeAppend(context,hc_kinds[hc_index],layer_index,0u,quantize) < 0 )
+			return(-9 - (int32_t)hc_index);
 	static const uint32_t moe_kinds[8] =
 	{
 		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1,
@@ -131,14 +141,16 @@ static int32_t SparkQwen4FlashSynthesizeAppendGdnLayer(SparkQwen4FlashSynthesize
 
 static int32_t SparkQwen4FlashSynthesizeAppendAttnLayer(SparkQwen4FlashSynthesizeContext *context, uint32_t layer_index, uint32_t quantize)
 {
-	static const uint32_t kinds[6] =
+	static const uint32_t kinds[9] =
 	{
 		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY,
 		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT,
-		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM
+		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM,
+		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM,
+		SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM
 	};
 	uint32_t index;
-	for (index = 0; index < 6u; index++)
+	for (index = 0; index < 9u; index++)
 		if ( SparkQwen4FlashSynthesizeAppend(context,kinds[index],layer_index,0u,quantize) < 0 )
 			return(-1 - (int32_t)index);
 	return(0);
@@ -162,10 +174,12 @@ static int32_t SparkQwen4FlashSynthesizeBuildDirectory(SparkQwen4FlashSynthesize
 	}
 	if ( last == SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT )
 	{
-		static const uint32_t mtp_globals[4] =
+		static const uint32_t mtp_globals[8] =
 		{
 			SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM,
-			SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM
+			SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM,
+			SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP,
+			SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP
 		};
 		uint32_t mtp_index;
 		if ( context->first_layer_index != 0u )
@@ -175,7 +189,7 @@ static int32_t SparkQwen4FlashSynthesizeBuildDirectory(SparkQwen4FlashSynthesize
 			return(-3);
 		if ( SparkQwen4FlashSynthesizeAppend(context,SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD,0u,1u,quantize) < 0 )
 			return(-4);
-		for (mtp_index = 0; mtp_index < 4u; mtp_index++)
+		for (mtp_index = 0; mtp_index < 8u; mtp_index++)
 			if ( SparkQwen4FlashSynthesizeAppend(context,mtp_globals[mtp_index],0u,1u,quantize) < 0 )
 				return(-6);
 		if ( SparkQwen4FlashSynthesizeAppendEveryLayer(context,SPARK_QWEN4_FLASH_STAGEPACK_MTP_LAYER,quantize) < 0 )
@@ -376,7 +390,7 @@ int main(int argc, char **argv)
 	}
 	payload_base = SparkQwen4FlashSynthesizeAlign(SPARK_QWEN4_FLASH_STAGEPACK_HEADER_BYTES + ((uint64_t)context.entry_count * SPARK_QWEN4_FLASH_STAGEPACK_ENTRY_BYTES));
 	SparkQwen4FlashSynthesizeShiftPayload(&context,payload_base);
-	SparkQwen4FlashStagePackExpectedGeometry(&header,context.first_layer_index,context.layer_count);
+	SparkQwen4FlashStagePackExpectedGeometry(&header,context.first_layer_index,context.layer_count,0u);
 	header.directory_offset = SPARK_QWEN4_FLASH_STAGEPACK_HEADER_BYTES;
 	header.file_bytes = payload_base + context.payload_cursor;
 	SparkQwen4FlashSynthesizeReport(&context,&header);

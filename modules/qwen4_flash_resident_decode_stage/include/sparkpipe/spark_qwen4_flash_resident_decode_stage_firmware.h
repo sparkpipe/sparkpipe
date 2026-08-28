@@ -80,6 +80,9 @@ extern "C" {
  * tensors; decode is the shared common-kernel MX grid (a per-build numerics
  * baseline, same as the 27b module's format-6 packs). */
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 6u
+/* Raw little-endian int64 elements (PLE hash constants: layer multipliers,
+ * head vocab sizes, head offsets). Never quantized, never converted. */
+#define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64 7u
 
 /*
  * One linear projection, bf16 or MXFP4 payload with per-group E8M0 scales.
@@ -158,6 +161,74 @@ typedef struct SparkQwen4FlashMoeWeights
 } SparkQwen4FlashMoeWeights;
 
 /*
+ * Hyper-connection residual, PINNED against model_contracts/references/
+ * modeling_qwen4_exp.py (Qwen4ExpTextGatedResidual, fetched 2026-08-28).
+ * The residual stream is hc_count x hidden wide (10240). Per sublayer:
+ * hc_norm is a GROUP RMS norm (per-stream, group = hidden, weight [4H]);
+ * the sublayer input is the sigmoid-weighted mean over streams of
+ *   sigmoid(up(silu(down(normed)/hc_count)))
+ * and the sublayer output re-enters every stream as
+ *   stream += 2 * sigmoid(inject(normed)/hc_count) * sublayer_out
+ * (added to the RAW pre-norm stream vector). The stack's final readout is
+ * the same mean-mix without the inject (use_combine=False).
+ */
+typedef struct SparkQwen4FlashHcWeights
+{
+	const void *hc_norm_weight_bf16; /* [hc_stream_width] */
+	SparkQwen4FlashLinearView mix_down;   /* [lowrank, 4H] */
+	SparkQwen4FlashLinearView mix_up;     /* [4H, lowrank] */
+	SparkQwen4FlashLinearView block_inject; /* [hc_count, 4H] */
+} SparkQwen4FlashHcWeights;
+
+/* Readout-only mixer (the global hyper_connection_mixer and the MTP copy):
+ * group norm + low-rank mean-mix, no inject. */
+typedef struct SparkQwen4FlashHcMixer
+{
+	const void *hc_norm_weight_bf16;
+	SparkQwen4FlashLinearView mix_down;
+	SparkQwen4FlashLinearView mix_up;
+} SparkQwen4FlashHcMixer;
+
+/*
+ * Attention indexer (Qwen4ExpTextQSAIndexer), per full-attention layer: one
+ * 640-row projection = 4 query heads + 1 kv head at 128. Per-token keys are
+ * RMSNorm'd raw and cached; complete 4-token blocks pool their keys (f32
+ * mean -> bf16 -> RMSNorm -> RoPE at the block START position); each query
+ * scores relu(q.k).sum(heads)/sqrt(128) per block and the top budget/4
+ * blocks (plus the incomplete tail tokens) are the only tokens the main
+ * attention may see. Contexts under budget + compress - 1 select everything,
+ * so short-context behavior is unchanged.
+ */
+typedef struct SparkQwen4FlashIndexerWeights
+{
+	SparkQwen4FlashLinearView index_qk; /* [(q_heads+kv_heads)*128, H] */
+	const void *q_norm_weight_bf16; /* [128] */
+	const void *k_norm_weight_bf16; /* [128] */
+} SparkQwen4FlashIndexerWeights;
+
+/*
+ * PLE block (Qwen4ExpTextPLELayer + Qwen4ExpTextNGramEmbedding), layer
+ * PLE_LAYER_INDEX only. The n-gram table is vocab-sharded across TP ranks
+ * (the decided plan: bf16, no quantization loss): a token's head-h id maps
+ * to the global row offsets[h] + (mixed mod vocab[h]); the rank covering
+ * that row gathers, the others contribute zero, the bf16 all-reduce
+ * completes the [.., 16 x 160] embedding.
+ */
+typedef struct SparkQwen4FlashPleWeights
+{
+	SparkQwen4FlashLinearView key_proj;   /* [4H, ple_embed] */
+	SparkQwen4FlashLinearView value_proj; /* [H, ple_embed] */
+	const void *norm_key_weight_bf16;   /* [4H] */
+	const void *norm_query_weight_bf16; /* [4H] */
+	const void *norm_conv_weight_bf16;  /* [4H] */
+	const void *conv_weight_bf16;       /* [4H, conv_kernel] */
+	const int64_t *layer_multipliers;   /* [ngram_size] */
+	const int64_t *head_vocab_sizes;    /* [ngram_heads] */
+	const int64_t *head_offsets;        /* [ngram_heads] */
+	const void *ngram_embedding_bf16;   /* [ngram_rows/tp, head_dim] rank slice */
+} SparkQwen4FlashPleWeights;
+
+/*
  * MTP head, one draft layer, pinned from the checkpoint safetensors index:
  * next_hidden = decoder(fc([enorm(embed(token)) | hnorm(hidden)])), decoder
  * geometry identical to a main full-attention layer (fused query|gate, the
@@ -168,10 +239,11 @@ typedef struct SparkQwen4FlashMtpWeights
 {
 	SparkQwen4FlashLinearView fc;
 	const void *embed_norm_weight_bf16;
-	const void *hidden_norm_weight_bf16;
-	const void *final_norm_weight_bf16;
-	const void *attention_norm_weight_bf16;
-	const void *mlp_norm_weight_bf16;
+	const void *hidden_norm_weight_bf16;   /* [4H] group norm over streams */
+	SparkQwen4FlashHcMixer readout_mixer;  /* mtp.hyper_connection_mixer */
+	SparkQwen4FlashHcWeights attention_hc;
+	SparkQwen4FlashHcWeights mlp_hc;
+	SparkQwen4FlashIndexerWeights indexer;
 	SparkQwen4FlashAttnLayerWeights attention;
 	SparkQwen4FlashMoeWeights moe;
 } SparkQwen4FlashMtpWeights;

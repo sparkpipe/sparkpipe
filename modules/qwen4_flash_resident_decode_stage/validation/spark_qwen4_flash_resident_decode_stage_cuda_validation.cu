@@ -874,16 +874,16 @@ typedef struct SparkQwen4FlashValCapture
 {
 	/* A prefill frame sends token_count rows, so the capture must hold the
 	 * larger of the prefill width and the decode row count. */
-	uint16_t hidden[SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION];
+	uint16_t hidden[SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
 	uint32_t sends;
 } SparkQwen4FlashValCapture;
 
 static SparkStatus SparkQwen4FlashValCaptureSend(SparkHiddenTransportSession *session, const SparkHiddenTransportPacket *packet)
 {
 	SparkQwen4FlashValCapture *capture = (SparkQwen4FlashValCapture *)session;
-	uint64_t bytes = (uint64_t)packet->active_sequence_count * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION * 2u;
+	uint64_t bytes = (uint64_t)packet->active_sequence_count * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * 2u;
 	if (packet->hidden_bf16 == 0 || packet->active_sequence_count > SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS ||
-		packet->hidden_dimension != SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION)
+		packet->hidden_dimension != SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH)
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if (cudaMemcpy(capture->hidden,packet->hidden_bf16,bytes,cudaMemcpyDeviceToHost) != cudaSuccess)
 		return(SPARK_STATUS_IO_ERROR);
@@ -1096,9 +1096,9 @@ static int SparkQwen4FlashValCheckMtpDraft(SparkQwen4FlashValModule *module)
 static int SparkQwen4FlashValCheckModule(void)
 {
 	SparkQwen4FlashValModule module;
-	uint16_t decode_hidden[SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION];
-	uint16_t prefill_hidden[SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION];
-	uint16_t rerun_hidden[SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION];
+	uint16_t decode_hidden[SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
+	uint16_t prefill_hidden[SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
+	uint16_t rerun_hidden[SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
 	uint32_t decode_token = 0u,prefill_token = 0u,rerun_token = 0u;
 	uint32_t index;
 	SparkQwen4FlashValMetrics metrics;
@@ -1169,14 +1169,14 @@ static int SparkQwen4FlashValCheckModule(void)
 	{
 		memcpy(prefill_hidden,module.capture.hidden,sizeof(prefill_hidden));
 		{
-			float actual[SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION];
-			float reference[SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION];
-			for (index = 0u; index < SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION; index++)
+			float actual[SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
+			float reference[SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
+			for (index = 0u; index < SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH; index++)
 			{
 				actual[index] = SparkQwen4FlashValFromBf16(decode_hidden[index]);
 				reference[index] = SparkQwen4FlashValFromBf16(prefill_hidden[index]);
 			}
-			SparkQwen4FlashValMeasure(&metrics,actual,reference,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+			SparkQwen4FlashValMeasure(&metrics,actual,reference,SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH);
 			if (SparkQwen4FlashValReport("module_decode_vs_prefill",&metrics,5e-2,0.999) != 0)
 				return(1);
 		}
