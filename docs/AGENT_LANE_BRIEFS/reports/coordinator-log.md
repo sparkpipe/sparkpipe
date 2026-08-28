@@ -1147,3 +1147,21 @@ failure is ever diagnosable through the wire.
   the 3 stale dry2 queue entries to cancel.
 - DRY consolidation total: 5/5 families, ~700 pasted lines dead,
   memory-M1 handles live in 3 families, provider slot designed.
+
+## 2026-08-30 ~2:0x — BULK-PACKS2 merged (f6b55cb): the honest inventory
+
+- BUILT: the DFlash2 drafter (incoai, round_trip ok, 3.58G, placed on
+  the 27B trio) + the OFFICIAL 27B FP8 (27.89G, verify PASS, zero
+  requant, new path on spark2/9/a — incumbent untouched). 12/12 source
+  integrity.
+- THE REAL FINDING: 10 of 11 speculator sources + ALL NVFP4 arms are
+  blocked on FORMATS, not effort — DSpark drafters (62-tensor layout),
+  max/k3 drafter wire paths (adapters declare max_spec=0), NVFP4 decode
+  (no module supports the natural format). All sources verified+pinned
+  for the day those kernel lanes land. The bake-off's true critical
+  path is the DRAFT-FORMAT kernel lane, not packing.
+- Incidents: spark4 ceph client 1.7MB/s (routed to spark5; flagged);
+  stale lane-glm5rt fleet reservation noted for cleanup.
+- IMPLICATION for sequencing: the DFlash2 drafter + official-FP8 packs
+  mean the 27B spec bake-off CAN run first (DFlash2 vs incumbent) as
+  soon as real tokens normalize the fleet — the only pair not blocked.
