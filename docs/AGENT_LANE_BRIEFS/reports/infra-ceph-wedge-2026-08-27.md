@@ -117,3 +117,18 @@ rc=124 or a MB/s figure in the double digits = still wedged.
 A completion at hundreds of MB/s = recovered; resume ceph work and note
 it in your next report. The coordinator will also message lanes directly
 when confirmed.
+
+## ESCALATION 3 (2026-08-28 ~16:1x): MDS metadata INCONSISTENCY — readdir/stat disagree
+
+Canary file model-00080-of-000096.safetensors: `ls` LISTS it (97 files
+in dir), `stat`/`open` return ENOENT — persistent across nodes (sparke,
+spark6) and across a 45s retest. NOT the transient failover blip.
+Both MDS daemons alive (spark2 up 20h, spark3 up 2.5h) but hosts at
+84-90G memory used with GPU daemons co-located (27B dev on spark2, knee
+sweep at 96% on spark3). SYSADMIN: `ceph fs status` — which MDS is
+active, is a failover mid-flight/damaged; an MDS restart of the standby
+(or failover) likely clears the inconsistency; the standing asks (move
+the pair off GPU nodes / MemoryMin) now have an integrity incident, not
+just a perf incident, behind them. LANES: kimi-k3 warm reads may ENOENT
+intermittently — treat warm kimi-k3 as DEGRADED until cleared; the K3
+lane's stage-0 source reads are directly affected (cold RAID6 unaffected).
