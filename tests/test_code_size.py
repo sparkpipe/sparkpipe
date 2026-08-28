@@ -860,7 +860,8 @@ from pathlib import Path
 # W2 items 2-5 (adapter template + memory-M1 handles + stagepack
 # library + provider slot; qwen38_27b + dsv4 cut over — families 1-2 of
 # 5, remaining families follow post-review) + build fixes. 216634 exact.
-CEILING = 216634
+# IR-6 (LmCopyRowsKernel dim3 fix + explanatory comment). 216642 exact.
+CEILING = 216642
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
