@@ -585,7 +585,15 @@ static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32
 		return(status);
 	// hidden starts as the attention-side output; the weighted pair reduce
 	// ADDS the routed experts into it.
-	LM_LAUNCH((LmCopyRowsKernel<QWEN38_LAYER_THREADS>), rows, QWEN38_LAYER_THREADS, 0, stream,
+	/* The kernel indexes row=blockIdx.y, element=blockIdx.x*THREADS+tid —
+	 * a 1-D grid of `rows` blocks copies only rows[0..rows) x elements
+	 * [0..THREADS) of each row (one thread-block-width slice of hidden).
+	 * dim3(elements_per_row, rows) covers the tensor. (IR-6 from the
+	 * hygiene lane; the same kernel's k3 call sites are the verified
+	 * pattern.) */
+	LM_LAUNCH((LmCopyRowsKernel<QWEN38_LAYER_THREADS>),
+		dim3((QWEN38_HIDDEN + QWEN38_LAYER_THREADS - 1u) / QWEN38_LAYER_THREADS,rows),
+		QWEN38_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,b->hidden_bf16,rows,QWEN38_HIDDEN);
 	LM_LAUNCH((LmMoeFinalizeKernel<QWEN38_LAYER_THREADS>), dim3((QWEN38_HIDDEN + QWEN38_LAYER_THREADS - 1u) / QWEN38_LAYER_THREADS,rows), QWEN38_LAYER_THREADS, 0, stream,
 		b->packed_down_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16, rows,QWEN38_TOP_K,QWEN38_HIDDEN);
