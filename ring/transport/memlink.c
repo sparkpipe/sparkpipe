@@ -75,6 +75,52 @@ SparkStatus SparkMemlinkResolveNeighborRank(
     return SPARK_STATUS_INVALID_ARGUMENT;
 }
 
+/* The template is configuration data, never a format string: at most
+ * ONE of %x/%u/%d may appear, %% pairs are literal percent signs, and
+ * every other conversion - including %n - is a hard INVALID_ARGUMENT so
+ * no specifier is ever interpreted against the rank argument and no
+ * malformed template silently becomes a literal hostname. Returns 0 for
+ * a placeholder-free template, 1 when *placeholder is set. */
+static int SparkMemlinkTemplatePlaceholder(
+    const char *host_template,
+    const char **placeholder)
+{
+	const char *found = NULL;
+	const char *cursor = host_template;
+
+	*placeholder = NULL;
+	if (host_template == NULL)
+		return(-1);
+	while (*cursor != '\0')
+	{
+		if (cursor[0] != '%' || cursor[1] == '\0')
+		{
+			++cursor;
+			continue;
+		}
+		if (cursor[1] == 'x' || cursor[1] == 'u' || cursor[1] == 'd')
+		{
+			if (found != NULL)
+				return(-1);
+			found = cursor;
+			cursor += 2u;
+			continue;
+		}
+		if (cursor[1] == '%')
+		{
+			cursor += 2u;
+			continue;
+		}
+		return(-1);
+	}
+	if (found != NULL)
+	{
+		*placeholder = found;
+		return(1);
+	}
+	return(0);
+}
+
 SparkStatus SparkMemlinkFormatHostFromTemplate(
     const char *host_template,
     uint32_t rank,
@@ -86,32 +132,26 @@ SparkStatus SparkMemlinkFormatHostFromTemplate(
 
     if (host_template == NULL || host == NULL || host_capacity == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        return(SPARK_STATUS_INVALID_ARGUMENT);
     }
-
-    placeholder = strstr(host_template, "%x");
-    if (placeholder != NULL)
     {
-        written = snprintf(host, host_capacity, host_template, rank);
-    }
-    else
-    {
-        placeholder = strstr(host_template, "%u");
-        if (placeholder != NULL)
+        int template_kind = SparkMemlinkTemplatePlaceholder(
+            host_template,&placeholder);
+        if (template_kind < 0)
         {
-            written = snprintf(host, host_capacity, host_template, rank);
+            return(SPARK_STATUS_INVALID_ARGUMENT);
+        }
+        if (template_kind == 0)
+        {
+            written = snprintf(host, host_capacity, "%s", host_template);
+        }
+        else if (placeholder[1] == 'd')
+        {
+            written = snprintf(host, host_capacity, host_template, (int)rank);
         }
         else
         {
-            placeholder = strstr(host_template, "%d");
-            if (placeholder != NULL)
-            {
-                written = snprintf(host, host_capacity, host_template, (int)rank);
-            }
-            else
-            {
-                written = snprintf(host, host_capacity, "%s", host_template);
-            }
+            written = snprintf(host, host_capacity, host_template, rank);
         }
     }
 
