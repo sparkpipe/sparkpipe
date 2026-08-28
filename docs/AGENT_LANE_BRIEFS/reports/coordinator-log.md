@@ -431,3 +431,14 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
 - Lane resumed: whole-stack publish → all-16 deploy (fleet-only,
   all-16 reservations, coordinate spark4-7 with bisect's closing run) →
   M5 exact-32K B1 = first glm53 scoreboard number.
+
+## 2026-08-28 ~20:4x KST — glm53 whole-stack PUBLISHED; all-16 staged at 12/16
+
+- glm53 whole-stack TP16 publish SUCCEEDED on the real rank-0 pack
+  (validator PASS 0 failures, validation=executed, artifact 3219f204...).
+  Deployment tree generated (16 per-rank configs, hidden_transport TP16,
+  kv_backing as directory). HOLDS spark0-3+8-f (12/16); spark4-7 staged
+  pending the bisect release. Staging runtime trees meanwhile so launch
+  is one command per node.
+- Bisect asked directly: 32K run complete / in-flight / done-unreported?
+  (its TP4 fleet still up, GPUs idle, worktree quiet for hours).
