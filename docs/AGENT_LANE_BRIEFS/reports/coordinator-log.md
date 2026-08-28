@@ -1134,3 +1134,16 @@ failure is ever diagnosable through the wire.
   - K3 build loop had died AGAIN on sparke (0 procs); re-armed, build
     resumed (1 k3_pack running). The loop's fragility is a pattern —
     fold a systemd-style keepalive into the staging/bulk-pack lane.
+
+## 2026-08-30 ~1:4x — W2 COMPLETE: 5/5 families (glm52+k3 merged, d1b763c)
+
+- HOUSECLEANING IS DONE: the final-families merge closes W2 — glm52's
+  ~340-line pasted TP parser dead (template w/ policy-as-data), k3
+  verified NOT pasted (memory-M1 typed buffers adopted instead; its
+  shape is genuinely different — documented, not skipped), glm5_next
+  the flagged last family (active lane). Net −229 lines; dup_report
+  83→77; gates green on merge. The prior lane's ratchet spend banked.
+- QUEUED: dryfinal-cells-vs-main on spark5 when real-tokens frees it;
+  the 3 stale dry2 queue entries to cancel.
+- DRY consolidation total: 5/5 families, ~700 pasted lines dead,
+  memory-M1 handles live in 3 families, provider slot designed.
