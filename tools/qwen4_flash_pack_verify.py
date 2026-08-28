@@ -257,6 +257,24 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                             problems.append(f"kind=54 ngram row {probe} mismatch (shard {shard_index})")
                             break
                     continue
+                if kind in (6, 7, 8) and entry["weight_format"] == WEIGHT_BF16:
+                    # BF16-expert repackage (policy): byte-exact vs the rank's
+                    # expert slab, mirroring the packer's fused read + split.
+                    import numpy as np
+                    expert_start, expert_count = getattr(ref, "expert_slice", (0, EXPERT_COUNT))
+                    if kind == 8:
+                        matrix = source_matrix(source, layer_tensor_name(kind, layer))
+                        packed = matrix[expert_start:expert_start + expert_count].reshape(-1, EXPERT_INTERMEDIATE)
+                    else:
+                        gate_up = source_matrix(source, layer_tensor_name(6, layer))
+                        section = gate_up[expert_start:expert_start + expert_count]
+                        half = section.shape[1] // 2
+                        packed = (section[:, :half, :] if kind == 6 else section[:, half:, :]).reshape(-1, HIDDEN)
+                    got = np.frombuffer(payload, dtype="<u2")
+                    want = np.ascontiguousarray(packed, dtype="<u2").reshape(-1)
+                    if not np.array_equal(got, want):
+                        problems.append(f"kind={kind} layer={layer} bf16 expert byte mismatch ({len(got)} vs {len(want)})")
+                    continue
                 if kind in (1, 31) or kind in (3, 4, 30, 47, 48, 49):
                     # Full-width [4H] group-norm vectors (v2: the stream-0
                     # section approximation is retired).
