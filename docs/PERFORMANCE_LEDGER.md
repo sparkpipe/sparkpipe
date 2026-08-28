@@ -17,7 +17,7 @@ tools/perf_scoreboard.py parses this section; edit HERE, never downstream.
 | Qwen 3.8 27B | 24.5 (spec) / 8.45 (no-spec) | B1 TP1 DFlash2 k8 / B1 TP1 71.1GiB cfg | ~21.7 | p256 B16 PFR8 | main | 2026-08-28 |
 | Qwen 3.8 27B aggregate | 55.44 (B=1/2/4: 8.45/16.75/55.44) | B4 TP1 continuous batching, 71.1GiB cfg | — | — | main f8f2ea0 | 2026-08-28 |
 | DSV4 Flash | 40.48 branch / 33.55 main | B1 TP4 exact-32K | — | not measured | 3d962820 / main | 2026-08-17 / 08-28 |
-| GLM 5.2 (donor) | 6.91 | B1 TP8 | — | not measured | pre-audit code | historical |
+| GLM 5.2 (donor) | 6.91 | B1 TP8 (historical); CORRECTNESS RESTORED on current code: full validator PASS + 8-rank B1 e2e decode (PR #728, timing not claimed) | — | not measured | main b313cd5 | 2026-08-28 |
 | GLM 5.2 aggregate (donor) | 75.55 | B16 TP8 | — | not measured | pre-audit code | historical |
 | Qwen 3.8 Max | 1.29 | B1 TP4xPP4 anchors | — | not measured | anchors | 2026-08 |
 | K3 | 18.0 | B1 single-stage; MODULE CHAIN VERIFIED through collective on real deployed pack (fleet bring-up = first fleet number) | — | not measured | single-stage + main fixes | 2026-08-28 |
