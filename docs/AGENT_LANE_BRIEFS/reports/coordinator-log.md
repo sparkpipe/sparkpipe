@@ -1021,3 +1021,21 @@ failure is ever diagnosable through the wire.
   spawned (fleet live as reproducer). K3 pack build checked.
 - Doctrine going forward: a lane session ending does NOT park its
   backlog — the next spawn carries the remaining items immediately.
+
+## 2026-08-29 ~21:4x — NVFP4 WAVE ARRIVED (the precision portfolio)
+
+- 11 new NVFP4 checkpoints on warm + NVFP4-MODEL-DEFAULTS-v1 notes:
+  every major model now has an NVFP4 variant (dsv4-flash + pro,
+  glm5.3 + 5.3-flash, k3, qwen27b ×4 quantizers, qwen-flash, qwen-max).
+  POLICY in the notes: NVFP4 preferred, MXFP4 skipped when NVFP4
+  exists (supersedes the earlier MXFP4-for-qwen-max plan), AWQ/GGUF
+  excluded; QUALITY BOUNDARY = quantize routed experts/dense MLP ONLY,
+  preserve spine/lm_head/MTP at source precision; full-res-spine
+  variants present (qwen27b nvfp4a16-bf16-spine, qwen-max nvfp4-
+  bf16-spine) enabling the 3-way quality study; every entry
+  download-verified w/ pinned revision + license basis; runtime
+  accuracy/perf honestly 'not_tested'.
+- FLEET IMPLICATION: NVFP4 kernels become first-class (currently only
+  probed; MXFP4 in-tree). The e2m1 dequant machinery overlaps; the
+  grouped-expert kernel paths need an NVFP4 lane once the basics land.
+  The island catalog's precision-variant axis is now fully populated.
