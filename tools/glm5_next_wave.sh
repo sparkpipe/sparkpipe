@@ -47,20 +47,20 @@ ssh_run() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$1" "$2"; }
 stop_wave() {
     echo "== TERM model daemons on ${#HOSTS[@]} hosts =="
     for h in "${HOSTS[@]}"; do
-        ssh_run "$h" "pkill -x sparkpipe_model 2>/dev/null; pkill -x sparkpipe_model_residentd 2>/dev/null; pkill -x sparkpipe_model_api 2>/dev/null; true" || true
+        ssh_run "$h" "pkill -x sparkpipe_model 2>/dev/null; true" || true
     done
     for i in $(seq 1 10); do
         alive=0
         for h in "${HOSTS[@]}"; do
-            n=$(ssh_run "$h" "pgrep -x sparkpipe_model_residentd | wc -l" 2>/dev/null || echo 1)
+            n=$(ssh_run "$h" "pgrep -x sparkpipe_model | wc -l" 2>/dev/null || echo 1)
             alive=$((alive + n))
         done
         [[ $alive -eq 0 ]] && break
         sleep 2
     done
-    echo "== verifying zero cuda processes =="
+    echo "== verifying zero model processes (comm match, not -f) =="
     for h in "${HOSTS[@]}"; do
-        n=$(ssh_run "$h" "pgrep -f 'sparkpipe_model|nvidia' -a 2>/dev/null | grep -c sparkpipe_model || true")
+        n=$(ssh_run "$h" "pgrep -x sparkpipe_model | wc -l" 2>/dev/null || echo 0)
         [[ "$n" -gt 0 ]] && echo "WARNING: $h still has $n model procs" >&2
     done
     echo "== 45s TIME_WAIT settle =="
@@ -76,7 +76,7 @@ start_wave() {
         env_prefix=""
         [[ $DEBUG_RDMA -eq 1 ]] && env_prefix="SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG=1 "
         ssh -o BatchMode=yes -o ConnectTimeout=10 "$h" \
-            "cd '$rr' && rm -f residentd.log && env $env_prefix LD_LIBRARY_PATH='$rr/lib' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $idx > residentd.log 2>&1 &" &
+            "cd '$rr' && rm -f residentd.log && env $env_prefix LD_LIBRARY_PATH='$rr/lib' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $idx > residentd.log 2>&1 < /dev/null &" </dev/null &
         pids+=($!)
         idx=$((idx + 1))
     done
@@ -109,7 +109,7 @@ ready_wave() {
 start_api() {
     rr="$(runtime_root "$API_HOST")"
     echo "== api on $API_HOST:$API_PORT =="
-    ssh_run "$API_HOST" "cd '$rr' && nohup ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root '$rr' --port $API_PORT > api.log 2>&1 &"
+    ssh_run "$API_HOST" "cd '$rr' && nohup ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root '$rr' --port $API_PORT > api.log 2>&1 < /dev/null &"
     sleep 3
     ssh_run "$API_HOST" "tail -3 '$rr/api.log'"
 }
