@@ -1131,3 +1131,6 @@ failure is ever diagnosable through the wire.
   (~15min in, setup phase); sparke k3_pack shows 0 — CHECK whether the
   probe loop died again (it has restarted itself before); re-arm on
   next window if so.
+  - K3 build loop had died AGAIN on sparke (0 procs); re-armed, build
+    resumed (1 k3_pack running). The loop's fragility is a pattern —
+    fold a systemd-style keepalive into the staging/bulk-pack lane.
