@@ -968,3 +968,11 @@ operator.
   deployed spark0 api binary predates 11260f4 (the /v1/models +
   error-shape build); W5 live-verify needs the api rebuilt+redeployed
   from main (queued — the wave's binaries came from the lane's staging).
+
+## 2026-08-29 ~17:4x — fleet steady 16/16; lanes quiet (work in flight)
+
+- glm5_next fleet holding (spark0 ready, API ok/served). W2's tip 2h
+  old — the dsv4 cutover is the big one (validation builds run long);
+  worktree reservations active (spark5). Diag lane quiet 3h — the
+  final-emit hunt awaits its next window or the coordinator takes it
+  (the live fleet is the repro). Scoreboard unchanged.

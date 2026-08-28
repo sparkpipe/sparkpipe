@@ -1,10 +1,4 @@
 {
- "spark2": {
-  "acquired_at": "2026-08-28T18:06:47",
-  "holder": "lane-dry",
-  "id": "manual:lane-dry",
-  "ttl_minutes": 90.0
- },
  "spark5": {
   "acquired_at": "2026-08-28T18:01:22",
   "holder": "lane-dry",
