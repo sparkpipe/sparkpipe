@@ -331,3 +331,14 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   post-reserve; resume keeps them).
 - Resume stagger to conserve budget: bisect now; glm53 next sweep;
   qwen-flash/K3/p1a after, as capacity allows.
+
+## 2026-08-28 ~15:3x KST — resumes issued; verification UNCERTAIN
+
+- Bisect (resumed ~15:00) and glm53 (resumed ~15:30) both show NO
+  failure notifications but ALSO no worktree activity yet (bisect wt
+  stale 5.5h, glm53 wt stale ~30m). Either long read/plan phases after
+  resume, or the resumes are not executing. DEFINITIVE check next sweep:
+  worktree mtimes + any notifications. NO further spawns until resolved
+  (budget conservation + uncertainty).
+- Survivors healthy; queue reservations unchanged (glm53's spark9-f set
+  persists). Scoreboard unchanged.
