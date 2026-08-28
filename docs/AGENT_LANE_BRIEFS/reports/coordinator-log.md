@@ -379,3 +379,15 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   post-measurement analysis or lane wrap-up. No completion notification
   yet; next notification resolves. glm53 2h between pushes (mid-M4
   emission I/O — plausible). Scoreboard unchanged.
+
+## 2026-08-28 ~18:1x KST — glm53 M4 COMPLETE: 16/16 TP16 packs shape-gated
+
+- All 16 real packs (21.7GB each, 347.3GB; fleet table corrected +1.2GB
+  replicated set) pass the module's own shape gate (1160 tensors, 0
+  fail/rank). The gate caught 3 invalidating packer bugs pre-ship
+  (payload_bytes collapse, magic byte-order, wrongly-TP-sliced
+  replicated classes) + an --mtp loop bug. Lane RESUMED for bring-up:
+  distribute → loader-init verify → whole-stack publish → all-16 deploy
+  (fleet-only, reservations on all 16) → M5 exact-32K B1 cell.
+- Stale lane-p1a reservation on spark8 already gone (TTL audit). Bisect
+  mid-A/B on spark5 (ef8fa302-side deployment cycling).

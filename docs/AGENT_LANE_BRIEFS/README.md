@@ -33,7 +33,7 @@ guide decides), but the deployment set is always all 16.
 | Qwen 3.8 27B | TP4xPP4 (4 KV heads) | ~3.4 GB | re-emit sharded |
 | DSV4 Flash -0731 | TP16 | ~9.8 GB | building (spark4) → shard |
 | Qwen 3.8 Flash | TP16 | ~10.5 GB | pending M5 kernels |
-| GLM 5.3 Flash | TP16 (first guess) | ~19.1 GB | lane launching |
+| GLM 5.3 Flash | TP16 | 21.7 GB (replicated indexer/router set) | 16/16 built+shape-gated, bring-up next |
 | DSV4 Pro | TP4xPP4 | ~93 GB (DSpark draft replicated) | 16/16 built, 14/16 deployed |
 | Qwen Max | TP4xPP4 | ~80 GB | sharding sprint (spark7) |
 | K3 | TP16 | ~94 GB | building (sparke) → shard |
