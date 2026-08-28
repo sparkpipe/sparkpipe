@@ -949,3 +949,12 @@ operator.
   provider-abstraction bake-off harness — head-to-head per-spark
   acceptance + tok/s per (model, speculator) pair, feeding the
   tournament-provider decision with data.
+
+## 2026-08-29 ~16:4x KST — spark0 RESTORED (3rd power-cycle)
+
+- Up 3 min, 110G avail, ceph mon+osd both Sl (recovering), driver
+  580.159.03 up, NO residentd actually running (earlier count was the
+  pgrep shell itself). SETTLE WINDOW in effect per the post-cycle
+  doctrine: NO wave until ceph recovery quiesces + the operator's
+  go — this node burned us twice exactly here (recovery racing GPU
+  alloc). The glm5_next relaunch is staged and waiting.
