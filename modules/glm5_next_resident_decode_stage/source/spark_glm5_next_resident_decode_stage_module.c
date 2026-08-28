@@ -1532,7 +1532,16 @@ static SparkStatus SparkGlm5NextModuleReduceHidden(SparkGlm5NextTpChain *chain,v
 	submission.cuda_stream = chain->slot->stream;
 	submission.completion_function = SparkGlm5NextModuleTpCompletion;
 	submission.completion_context = chain;
-	return(SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission));
+	{
+		SparkStatus submit_status;
+		submit_status = SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission);
+		if ( submit_status != SPARK_STATUS_OK )
+			fprintf(stderr,"G5N-DBG reduce submit -> %d (rows %u slot %u dev %p stream %p maxact %u)\n",
+				(int)submit_status,(unsigned)chain->wave_rows,(unsigned)chain->slot_index,
+				device_bf16,chain->slot->stream,
+				(unsigned)state->tp_device_collective.max_active_sequence_count);
+		return(submit_status);
+	}
 }
 
 static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
