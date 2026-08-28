@@ -312,8 +312,18 @@ before committing).
   `pkill qwen38_stagepack` (by name) during its restart; the coordinator
   TERMed its processes, left COORDINATOR-HALT.md in its staging dir and
   worktree (commit the packer, wait for ceph recovery — osd.14/sparke
-  DOWN, build from COLD, coordinate nodes, never pkill by name), and
-  ruled spark0 mine until my 4 packs finish + verify.
+  DOWN, build from COLD, coordinate nodes, kill ONLY spawn-captured pids,
+  never fuzzy-match), and ruled spark0 mine until my 4 packs finish.
+* SECOND incident ~11:5x: the shard lane killed my three builds AGAIN via
+  a fuzzy `*qwen38max.tp4*` PATH match (my output filenames contain the
+  substring). It self-reported; the coordinator has made the shard lane
+  completely hands-off spark0 and hardened the rule fleet-wide to the
+  positive form: kill ONLY pids captured at spawn time. All three builds
+  relaunched fresh (stage1 was untouched: 573.04 GiB, sha
+  07876868c6ca2110..., receipt on disk). Lesson recorded: on shared
+  nodes, output filenames that substring-match another lane's patterns
+  are collateral damage bait; the durable fix is the spawn-captured-pid
+  rule now in the lane rules.
 * This report's F1/F2/F3 + sprint scope fed that decision; the pkill-by-
   name ban goes into the shared lane rules.
 
