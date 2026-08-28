@@ -73,6 +73,21 @@ abstraction, silent fallbacks) gets rejected at merge, not admired.
 6. Serving completion: B-ladder honest re-measure (P1b cliff fixed),
    prefill regressions closed, prefix caching + JIT-KV tiers live.
 
+## The island-catalog manifest (operator-ratified abstraction)
+
+An ISLAND = compute nodes + fabric + a CATALOG of pre-vetted model
+descriptions. The catalog entry = contract (pinned source, quant-policy
+compliant) + topology for that hardware + resource envelope (vs the
+110 GiB ceiling) + qualification receipts — one per model PER HARDWARE
+CONFIGURATION. It is the recipe compiler's output format, the object
+liteLLM islands register against, and the single source of truth any
+future UI (operator + request console) reads — never the UI's own
+state. Multi-island federation routes through liteLLM (priority/
+health/load in its config, not our runtime). Named dependency for
+text-in island routing: the Phase-4 tokenizer sidecar at the island
+edge (today's token-ID contract works via LiteLLM's /vllm/ passthrough
+— proven, merged).
+
 ## Long-term
 
 The platform plan's end state, restated: SparkPipe as the inference
