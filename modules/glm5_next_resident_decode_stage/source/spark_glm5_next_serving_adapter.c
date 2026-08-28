@@ -634,6 +634,13 @@ static void SparkGlm5NextServingDriverCompletion(
 		for (index=0u; index<completion.token_count; index++)
 			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
 	}
+	fprintf(stderr,"G5N-DBG completion emit: sub %llu status %u flags %u tokcnt %u tps %u acc %u ext %u resid_zero %d\n",
+		(unsigned long long)completion.submission_id,(unsigned)completion.status,
+		(unsigned)completion.completion_flags,(unsigned)completion.token_count,
+		(unsigned)completion.tokens_per_sequence,
+		(unsigned)completion.accepted_token_count,
+		(unsigned)completion.model_extension_bytes,
+		(int)(completion.residency.word0 == 0u));
 	pending->active = 0u;
 	state->completion_function(state->completion_context,&completion);
 }
