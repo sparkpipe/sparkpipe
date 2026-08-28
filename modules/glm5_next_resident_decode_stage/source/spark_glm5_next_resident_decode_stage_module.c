@@ -1800,19 +1800,50 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 		return;
 	slot = &state->slots[async->slot_index];
 	if ( slot->host_kv_access_error[0] != 0u )
+	{
+		fprintf(stderr,"G5N-DBG complete: kv_access_error code %u kind %u row %u seq %u pos %u page %u (slot %u status_in %u)\n",
+			(unsigned)slot->host_kv_access_error[0],(unsigned)slot->host_kv_access_error[1],
+			(unsigned)slot->host_kv_access_error[2],(unsigned)slot->host_kv_access_error[3],
+			(unsigned)slot->host_kv_access_error[4],(unsigned)slot->host_kv_access_error[5],
+			(unsigned)async->slot_index,(unsigned)async->completion.status);
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+	}
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )
 			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)async->row_count * sizeof(uint32_t));
 		for (lane=0u; lane<async->lane_count; lane++)
 		{
+			SparkStatus complete_status;
+			const SparkModelDriverCacheLane *remembered;
+			const SparkKvPageCacheSequence *sequence;
 			resident = async->lane_indices[lane];
 			atomic_store_explicit(&state->lane_bound[resident],async->lane_bound[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
-			if ( SparkKvPageCacheCompleteLane(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident]) != SPARK_STATUS_OK )
+			remembered = &state->kv_lane_cache_lanes[resident];
+			sequence = &state->kv_page_cache.sequences[resident];
+			complete_status = SparkKvPageCacheCompleteLane(&state->kv_page_cache,remembered);
+			if ( complete_status != SPARK_STATUS_OK )
+			{
+				fprintf(stderr,"G5N-DBG complete: CompleteLane resident %u -> %d | lane seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx | cache seq %llu next %llu mut %u | block %u async(pos %llu rows %u lanes %u bound %llu nextpos %llu)\n",
+					(unsigned)resident,(int)complete_status,
+					(unsigned long long)remembered->sequence_id,
+					(unsigned long long)remembered->sequence_position,
+					(unsigned long long)remembered->context_token_count,
+					(unsigned long long)remembered->prefix_token_count,
+					(unsigned long long)remembered->publish_token_count,
+					(unsigned long long)remembered->flags,
+					(unsigned long long)sequence->sequence_id,
+					(unsigned long long)sequence->next_token_position,
+					(unsigned)sequence->mutable_logical_page_index,
+					(unsigned)state->kv_page_cache.kv_cache_arena->block_token_count,
+					(unsigned long long)async->completion.sequence_position,
+					(unsigned)async->row_count,(unsigned)async->lane_count,
+					(unsigned long long)async->lane_bound[lane],
+					(unsigned long long)async->lane_next_positions[lane]);
 				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+			}
 		}
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
 	}
@@ -1820,13 +1851,23 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 	{
 		for (lane=0u; lane<async->lane_count; lane++)
 		{
+			SparkStatus rollback_status;
 			resident = async->lane_indices[lane];
-			if ( SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident],state->kv_lane_mutation_flags[resident]) != SPARK_STATUS_OK )
+			rollback_status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident],state->kv_lane_mutation_flags[resident]);
+			if ( rollback_status != SPARK_STATUS_OK )
+			{
+				fprintf(stderr,"G5N-DBG complete: RollbackLane resident %u -> %d (status_in %u)\n",
+					(unsigned)resident,(int)rollback_status,(unsigned)async->completion.status);
 				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+			}
 			atomic_store_explicit(&state->lane_bound[resident],0u,memory_order_release);
 		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	}
+	fprintf(stderr,"G5N-DBG complete: exit slot %u status %u pos %llu rows %u lanes %u\n",
+		(unsigned)async->slot_index,(unsigned)async->completion.status,
+		(unsigned long long)async->completion.sequence_position,
+		(unsigned)async->row_count,(unsigned)async->lane_count);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
@@ -1871,6 +1912,25 @@ static SparkStatus SparkGlm5NextExecuteBatch(
 	SparkStatus status;
 	cudaError_t error;
 	batch = context->batch;
+	fprintf(stderr,"G5N-DBG execute: frame req %llu seq %llu pos %llu new %u slots %u rows %u act %u flags %llx frame_lanes %u\n",
+		(unsigned long long)frame->request_id,(unsigned long long)frame->sequence_id,
+		(unsigned long long)frame->sequence_position,(unsigned)frame->new_token_count,
+		(unsigned)frame->active_slot_count,(unsigned)batch->row_count,
+		(unsigned)batch->active_sequence_count,
+		(unsigned long long)frame->flags,
+		(unsigned)frame->cache_lane_count);
+	if ( frame->cache_lane_count != 0u )
+	{
+		const SparkModelDriverCacheLane *frame_lane = &frame->cache_lanes[0];
+		fprintf(stderr,"G5N-DBG execute: frame_lane[0] slot %u seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx\n",
+			(unsigned)frame_lane->resident_sequence_slot,
+			(unsigned long long)frame_lane->sequence_id,
+			(unsigned long long)frame_lane->sequence_position,
+			(unsigned long long)frame_lane->context_token_count,
+			(unsigned long long)frame_lane->prefix_token_count,
+			(unsigned long long)frame_lane->publish_token_count,
+			(unsigned long long)frame_lane->flags);
+	}
 	continuity.state = state;
 	continuity.batch = batch;
 	continuity.bound = simulated_bound;
