@@ -551,3 +551,11 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   API ports), measure both models' tok/s solo-vs-paired + memory/OSD
   health — surfaces the co-residency issue class (mem pressure, one-
   client slots are per-daemon=OK, launch-wave interactions).
+
+## 2026-08-28 ~00:1x KST — glm53 submit-debug window; fleet steady
+
+- Fleet 16/16 steady (reservations + daemons); glm53 lane in its
+  submit-path debug window (tip = blocker checkpoint 41m old; API
+  restarted during debug, served counter reset). No merges this pass.
+- Canary: healthy/known-blip class (MDS migration window). Scoreboard
+  carries the RETRACTED-curve correction from the operator's catch.
