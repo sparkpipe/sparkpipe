@@ -830,7 +830,11 @@ from pathlib import Path
 # does not build (the nvcc-guarded test_qwen38_math_kernels/execute
 # targets emit SKIP, and the loop then tried to execute the missing
 # file) - one guard line. 210810 exact.
-CEILING = 210810
+# Hygiene lane (8/8): re-pinned stale gates w/ commit citations, flake
+# root-caused (SIGTERM-vs-EOF race, teardown race-tolerant 30/30),
+# header dep, qwen38max harness wired (+1714), make-test host guards.
+# Post-merge exact: 210835.
+CEILING = 210835
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
