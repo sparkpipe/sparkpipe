@@ -593,3 +593,10 @@ Operator question: does two-model co-residency work? Phase-1 results:
 - TRUE TWO-MODEL LOAD still gated on glm53 first token (admit bug in
   flight). Phase 2 = proper launch tooling + reduced-pool config +
   concurrent B-load on both models + interference measurement.
+
+## 2026-08-28 ~03:0x KST — glm53: submit path FULLY OPEN (0482ccc)
+
+- Lane's newest push (3 min old): submit path fully open, wave cycling
+  during hunts 2-4. Mid-sequence — merging waits for the milestone
+  (first token or the kv-admit fix). Fleet+API on spark0 mid-wave.
+- Scoreboard unchanged.
