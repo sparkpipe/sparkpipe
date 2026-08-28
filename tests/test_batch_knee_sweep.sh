@@ -18,6 +18,10 @@
 #       tests/test_batch_knee_sweep.sh
 #
 # stdout: CSV "B,budget_hi,wall_hi_ms,tokens_hi,aggregate_tok_s,decode_tok_s"
+# UNITS FIX 2026-08-28: tokens_hi already totals ALL rows' tokens (it is
+# 256xB at window 256) — the old (b * ht[b]) double-counted the batch,
+# inflating every rate xB (1469 -> true 41.3 at B32; operator-caught via
+# roofline). Rates are tokens/wall, nothing more.
 # stderr: residentd lifecycle chatter. Starts and TERMs the residentd.
 
 set -u
@@ -127,7 +131,7 @@ awk -F, -v hi="$HI_BUDGET" '
 	END {
 		for (b in hb)
 			printf "%s,%s,%d,%d,%.2f,%.2f\n", b, hi, hb[b], ht[b], \
-				(b * ht[b] * 1000) / hb[b], \
-				(b * (ht[b] - lt[b]) * 1000) / (hb[b] - lb[b])
+				(ht[b] * 1000) / hb[b], \
+				((ht[b] - lt[b]) * 1000) / (hb[b] - lb[b])
 	}
 ' "$WORK/rows.csv" | sort -t, -k1,1n
