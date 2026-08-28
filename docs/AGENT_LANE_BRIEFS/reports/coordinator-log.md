@@ -268,3 +268,24 @@
   pending — all three outcomes (proven/not-reproduced/refuted) valid.
 - Queue: spark3 released (MDS duty), spark8 → lane-p1a. No lane merges
   this pass (glm53/qwen-flash advancing, no new tips).
+
+## 2026-08-28 ~18:3x — GLM53 M3 COMPLETE: validator full pass + module PUBLISHED
+
+- The KDA step-0 ghost resolved via independent-reference arbitration
+  (mac-side C transcription + xorshift32 grid replication + full-vector
+  dumps): THREE real defects — (1) KDA o_norm must be F32 in the pack
+  (k3 donor convention): the bf16 store made the gated-norm kernel read
+  past the 128-element tensor, silently zeroing channels 64-127 of every
+  head (the coordinator's first-position/edge hint pointed here);
+  (2) fixture kv_slot 512-vs-8192 width (fixture-only overflow); (3) the
+  oracle skipping the RMS norm of the HC-collapsed input (~1000x).
+- Gates: tier1 KDA+dense+mHC rel_l2 0.0033 cos 0.99999 (4-token walk),
+  bit-exact determinism both attention kinds, mid-pipeline PUBLISH
+  SUCCEEDED (validation=executed, artifact 1987cb9c). Scoreboard updated
+  (2907584). Honest non-claims: tier2a numeric, MoE leg, kpool 2b = the
+  pack bring-up increment.
+- LESSON for the memory design: the o_norm overread is a silent
+  width-mismatch read past a tensor with no fault — cited as provenance
+  for typed buffers/provenance tagging in the inference-OS memory model.
+- Lane RESUMED for M4: 16-rank TP16 packs on spark8-d/f (reservations
+  first; warm reads from non-sparke clients per the stale-cache caveat).
