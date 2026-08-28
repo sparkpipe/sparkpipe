@@ -143,6 +143,63 @@ synthesizable at true shape; real v3 packs load with the env unset).
      the 4H stream vector (hidden_dimension 10240); the serving adapter's
      capture and any PP stage boundaries must match.
 
+## S4/S5 progress (same session, continued)
+
+### S4 v3 packs — rank 0 + rank 1 COMPLETE and verified; 2-3 building
+
+```
+qwen4_flash_stagepack slice=0+48 tp=4/0 tensors=1246 file_gib=56.06 wrote ...packs_v3/qwen4_flash_full.tp4-rank0.qwen4_flashsp
+PASS qwen4_flash_full.tp4-rank0.qwen4_flashsp: header geometry, 1246 directory entries (tp 4/0), 12 byte-traced samples receipt=verified
+qwen4_flash_stagepack slice=0+48 tp=4/1 tensors=1246 file_gib=56.06 wrote ...rank1...
+PASS qwen4_flash_full.tp4-rank1.qwen4_flashsp: header geometry, 1246 directory entries (tp 4/1), 12 byte-traced samples receipt=verified
+```
+
+Whole-stack TP4 STANDALONE on the REAL v3 rank0 pack (all three new
+components live, real weights):
+
+```
+qwen4_flash_stage tp_standalone degree=4 rank=0 (collective skipped; ...)
+qwen4_flash_stage initialize ok slice=0+48 gdn=36 attn=12 owns_embedding=1 owns_head=1
+qwen4_flash_validation check=module_decode_vs_prefill decode_token=45088 prefill_token=45088 bit_exact=1
+qwen4_flash_validation check=module_mtp_draft in_vocab=1 drafts=[6351,52697]
+qwen4_flash_validation check=module_determinism bit_exact=1
+qwen4_flash_validation PASS
+```
+
+Two more real bugs fixed on the way to that PASS:
+
+  3. The MTP-mixer coverage expectation put kinds 43/44 in mtp_seen_bits
+     while the loader files them under global_seen_bits (ids > 31).
+  4. RunPle staged the hash history by reading slot->input_token_ids - a
+     DEVICE pointer - on the host (segfault; gdb backtrace pinned it);
+     host token ids now thread through RunLayer from the frame buffers.
+
+Also fixed build-side: the rsync to spark4 was copying the mac's build/
+over the node's Linux objects (Mach-O archives -> "file format not
+recognized"); the sync now excludes build/ and the archives were rebuilt
+clean on the node.
+
+### S5 M6 serving stack — COMPILED and deployed (live smoke pending packs)
+
+  * Firmware description with the stages schema (27b-mirrored - the
+    qwen38max-shard pattern): INTEGRATION REQUEST, committed in the
+    worktree (examples/ is outside the lane write set).
+  * Module PUBLISHED through the GPU validator (publish re-runs the
+    whole-stack ladder: PASS).
+  * Driver compiled: model_driver.so (model sha256
+    fb7d6e2c4fdcc1047bf5c54f9d57c854daeae1d26952d91aa810453bf10a2b89),
+    package manifest 534dc99b... - the stages schema compiled clean.
+  * Built: sparkpipe_model_residentd/api/batch,
+    libqwen4_flash_serving_adapter.so (a root-Makefile target does NOT
+    exist for the qwen4_flash adapter - built directly from the family
+    source; INTEGRATION REQUEST), libhidden_transport_spark_host_rdma_verbs.so.
+  * deploy_v3 assembled on spark4 and replicated to spark5-7: bin/{residentd,
+    api,batch}, lib/{model_driver.so, adapter, transport .so}, deployment.json
+    (4 ranks, stage 0, host-rdma 66640, tcp control 18180+r), per-rank
+    adapter configs (tp_degree 4, node-local packs, 32768 max positions).
+  * tools/qwen4_flash_live_launch.sh: parameterized 4-rank launcher
+    (TERM-only teardown, ready-line wait, --rank/--api-only modes).
+
 ## Next (session 2)
 
   1. v3 rank0 pack verify (pack_verify) + whole-stack TP4 standalone
