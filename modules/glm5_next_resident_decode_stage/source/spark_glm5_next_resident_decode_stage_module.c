@@ -1823,26 +1823,37 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
 			remembered = &state->kv_lane_cache_lanes[resident];
 			sequence = &state->kv_page_cache.sequences[resident];
-			complete_status = SparkKvPageCacheCompleteLane(&state->kv_page_cache,remembered);
-			if ( complete_status != SPARK_STATUS_OK )
+			/* Commit only when the admission ladder actually plumbed a cache
+			 * lane for THIS sequence: a cache-free frame (cache_lane_count 0)
+			 * leaves the remembered lane zeroed, and committing it made
+			 * SparkKvPageCacheCompleteLane return INVALID_ARGUMENT — the
+			 * final-emit INTERNAL_ERROR that killed every first token. KV
+			 * addressing is the static identity page table, so skipping the
+			 * page-cache commit is semantically neutral. */
+			if ( remembered->sequence_id != 0u &&
+				remembered->sequence_id == async->lane_sequence_ids[lane] )
 			{
-				fprintf(stderr,"G5N-DBG complete: CompleteLane resident %u -> %d | lane seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx | cache seq %llu next %llu mut %u | block %u async(pos %llu rows %u lanes %u bound %llu nextpos %llu)\n",
-					(unsigned)resident,(int)complete_status,
-					(unsigned long long)remembered->sequence_id,
-					(unsigned long long)remembered->sequence_position,
-					(unsigned long long)remembered->context_token_count,
-					(unsigned long long)remembered->prefix_token_count,
-					(unsigned long long)remembered->publish_token_count,
-					(unsigned long long)remembered->flags,
-					(unsigned long long)sequence->sequence_id,
-					(unsigned long long)sequence->next_token_position,
-					(unsigned)sequence->mutable_logical_page_index,
-					(unsigned)state->kv_page_cache.kv_cache_arena->block_token_count,
-					(unsigned long long)async->completion.sequence_position,
-					(unsigned)async->row_count,(unsigned)async->lane_count,
-					(unsigned long long)async->lane_bound[lane],
-					(unsigned long long)async->lane_next_positions[lane]);
-				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+				complete_status = SparkKvPageCacheCompleteLane(&state->kv_page_cache,remembered);
+				if ( complete_status != SPARK_STATUS_OK )
+				{
+					fprintf(stderr,"G5N-DBG complete: CompleteLane resident %u -> %d | lane seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx | cache seq %llu next %llu mut %u | block %u async(pos %llu rows %u lanes %u bound %llu nextpos %llu)\n",
+						(unsigned)resident,(int)complete_status,
+						(unsigned long long)remembered->sequence_id,
+						(unsigned long long)remembered->sequence_position,
+						(unsigned long long)remembered->context_token_count,
+						(unsigned long long)remembered->prefix_token_count,
+						(unsigned long long)remembered->publish_token_count,
+						(unsigned long long)remembered->flags,
+						(unsigned long long)sequence->sequence_id,
+						(unsigned long long)sequence->next_token_position,
+						(unsigned)sequence->mutable_logical_page_index,
+						(unsigned)state->kv_page_cache.kv_cache_arena->block_token_count,
+						(unsigned long long)async->completion.sequence_position,
+						(unsigned)async->row_count,(unsigned)async->lane_count,
+						(unsigned long long)async->lane_bound[lane],
+						(unsigned long long)async->lane_next_positions[lane]);
+					async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+				}
 			}
 		}
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
@@ -1852,13 +1863,20 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 		for (lane=0u; lane<async->lane_count; lane++)
 		{
 			SparkStatus rollback_status;
+			const SparkModelDriverCacheLane *remembered;
 			resident = async->lane_indices[lane];
-			rollback_status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident],state->kv_lane_mutation_flags[resident]);
-			if ( rollback_status != SPARK_STATUS_OK )
+			remembered = &state->kv_lane_cache_lanes[resident];
+			/* Same cache-free-frame guard as the commit path above. */
+			if ( remembered->sequence_id != 0u &&
+				remembered->sequence_id == async->lane_sequence_ids[lane] )
 			{
-				fprintf(stderr,"G5N-DBG complete: RollbackLane resident %u -> %d (status_in %u)\n",
-					(unsigned)resident,(int)rollback_status,(unsigned)async->completion.status);
-				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+				rollback_status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,remembered,state->kv_lane_mutation_flags[resident]);
+				if ( rollback_status != SPARK_STATUS_OK )
+				{
+					fprintf(stderr,"G5N-DBG complete: RollbackLane resident %u -> %d (status_in %u)\n",
+						(unsigned)resident,(int)rollback_status,(unsigned)async->completion.status);
+					async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+				}
 			}
 			atomic_store_explicit(&state->lane_bound[resident],0u,memory_order_release);
 		}

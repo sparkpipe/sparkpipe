@@ -637,8 +637,15 @@ static void SparkGlm5NextServingDriverCompletion(
 		completion.accepted_token_count = 0u;
 		completion.completion_flags = 0u;
 	}
-	if ( state->stage_index + 1u == SPARK_GLM5_NEXT_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
+	if ( completion.status == SPARK_STATUS_OK )
 	{
+		/* Pure TP fanout (this adapter's only topology): every rank runs the
+		 * whole stack and the head reduce is a U64-max argmax reduction, so
+		 * every rank holds the SAME global token. The validator admits a
+		 * token payload from every stage of a parallel fanout, and the
+		 * client face is whichever rank the API connects to (rank 0), so
+		 * the old final-stage-only gate left that rank's clients with
+		 * status-only completions forever. */
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
