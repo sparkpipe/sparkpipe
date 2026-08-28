@@ -1100,7 +1100,17 @@ static SparkStatus SparkTpDeviceCollectiveBuildOperationPackets(
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return SparkTpDeviceCollectiveBuildRingPackets(
             implementation,operation,step_index,send_packet,receive_packet);
-    binding = &implementation->bindings[step_index][operation->credit_index];
+    /* RegisterCredits remaps the step through RouteBinding; the op-build
+     * read it RAW, so under a non-identity remap (TP16's 4-step tree:
+     * step 2 -> row 1) the receive template came from a different row
+     * than the packets — ActivatePersistentReceive rejected the size
+     * mismatch (8 credits x 128KiB = 0x100000, the exact observed
+     * delta) and every completion arrived async-INVALID_ARGUMENT,
+     * terminating the whole glm5_next TP16 fleet at layer 0. TP8/TP4
+     * are identity remaps, which is why glm52/DSV4 never hit it. */
+    binding = &implementation->bindings[
+        SparkTpDeviceCollectiveRouteBinding(implementation,step_index)]
+        [operation->credit_index];
     send_binding = operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_KIND ?
         &implementation->bindings[0u][operation->credit_index] : binding;
@@ -1384,7 +1394,9 @@ static uint32_t SparkTpDeviceCollectiveCanCombineRelayBf16(
     {
         return 0u;
     }
-    next_binding = &implementation->bindings[operation->current_step + 1u]
+    next_binding = &implementation->bindings[
+        SparkTpDeviceCollectiveRouteBinding(implementation,
+            operation->current_step + 1u)]
         [operation->credit_index];
     return (next_binding->flags &
             SPARK_TP_DEVICE_COLLECTIVE_BINDING_SEND_MAPPED_ALIAS) != 0u ||
