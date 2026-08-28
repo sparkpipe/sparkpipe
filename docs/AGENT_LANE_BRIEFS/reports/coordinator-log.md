@@ -391,3 +391,18 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   (fleet-only, reservations on all 16) → M5 exact-32K B1 cell.
 - Stale lane-p1a reservation on spark8 already gone (TTL audit). Bisect
   mid-A/B on spark5 (ef8fa302-side deployment cycling).
+
+## 2026-08-28 ~19:0x KST — DSV4 REQUALIFICATION LANDED (PR #731 merged, 71d52a6)
+
+- THE FRAMING CORRECTION: main was BROKEN at the no-spec B1 cell (9
+  tokens + FAILURE_CONTINUE_LEASE), not slower; the ledger's 33.55 was
+  main@Aug-14. And the 40.4-at-exact-32K attribution was wrong — 40.4
+  is the O128 cell; 32K tops at ~29 even on lean source (attention
+  scaling ~10 tok/s). Scoreboard now carries the true cells: main+fix
+  40.46/40.35/40.19 (O128, exact hash 211462f2).
+- TWO REGRESSIONS FIXED: (1) the dspark always-on machinery gated behind
+  SPARK_DSV4_DSPARK=1 (default off) — SPEC QUALS NOW NEED THIS ENV;
+  (2) the lease-advance mirror bug (daemon advanced by accepted count=1,
+  client by chain width 8). Lean reproduced at 39.81/39.77 exact-hash.
+- Bisect lane doing one closing 32K re-run on the staged deployment.
+- Stagger slot freed → qwen-flash resumes next sweep (S4 finish).
