@@ -299,6 +299,13 @@ sparkpipe_model_batch_status=0 terminal=1 requests=1
 (prefill of the 7-token prompt in two 4+3 waves + 8 decode steps, all
 admitted, zero rejections, terminal completion.)
 
+Timing: NOT claimed. The B1 event stream carries no timestamps and the
+run did not capture the tool's sparkpipe_stage_profile lines (queue_ns /
+service_ns / elapsed_ns, node/model_batch.c:433) - a per-token rate from 8
+tokens would be noise even if it had. The scoreboard's glm52 row should
+stay historical until a B8/B16 run with --profile-stages lands on the
+reserved band; this lane claims correctness only.
+
 FLEET RULE COMPLIANCE: after evidence capture the entire band was TERMed
 (all 8 nodes verified dark) - a half-lit fleet or a lone rank holding
 ~114GB is a neighbor-killer (the coordinator TERMed an earlier rank-6 on
