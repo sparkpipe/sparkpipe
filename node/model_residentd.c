@@ -765,18 +765,21 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
 		/* The lease must land on the position the engine actually advanced
-		 * to: the completion's EMITTED count (1 + accepted), not the
-		 * coordinator-rank chain width (spec bucket = 8). A partial-accept
-		 * verify burst emits fewer tokens than the admitted chain; the
-		 * batch side (c8f76e5) already mirrors this, so both leases must
-		 * advance by the same count. */
-		/* accepted_token_count already includes the anchor (the module sets it
-		 * to 1 + accepted), so it IS the emitted count — no +1. */
-		uint32_t completed_tokens = route->completion.accepted_token_count;
-		if ( completed_tokens == 0u ||
-			(completed_tokens > route->completion.tokens_per_sequence &&
-			 route->completion.tokens_per_sequence != 0u) )
-			completed_tokens = route->completion.tokens_per_sequence;
+		 * to: the completion's EMITTED count, and BOTH sides must compute
+		 * it the same way. The batch side (c8f76e5) advances by
+		 * completion.tokens_per_sequence (falling back to the admitted
+		 * chain width), and the module reports tokens_per_sequence = the
+		 * emitted count on both paths: the DSpark verify override sets it
+		 * to 1 + accepted, and the no-spec resident chain keeps it at the
+		 * chain width. Reading accepted_token_count here advanced the
+		 * daemon lease by 1 (the continuation's new_token_count) while
+		 * the client advanced by 8 - every no-spec continuation then
+		 * failed the lease schema gate and the request terminated after
+		 * one chain. Mirror the client: tokens_per_sequence first,
+		 * accepted only when the completion carries none. */
+		uint32_t completed_tokens = route->completion.tokens_per_sequence;
+		if ( completed_tokens == 0u )
+			completed_tokens = route->submission.tokens_per_sequence;
 		if ( completed_tokens != 0u )
 		{
 			status = SparkModelContinuationLeaseDecodePosition(
