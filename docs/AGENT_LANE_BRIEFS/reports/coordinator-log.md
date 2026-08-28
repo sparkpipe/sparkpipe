@@ -416,3 +416,18 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   glm53 bring-up continuing (tip = its checkpoint). Stagger holds at 2;
   qwen-flash resumes when the bisect's completion notification lands.
 - Scoreboard unchanged this pass.
+
+## 2026-08-28 ~20:1x KST — glm53 bring-up: loader-init PASS on real packs (9986eab)
+
+- All 16 packs distributed (rank r → spark{hex r}); the module's FULL
+  init chain runs clean against real 21.7GB TP16 packs (provenance
+  digests, 1160 entries, device upload, caches, KV page-store) — the
+  last verification-critical unknown retired.
+- Three bring-up fixes: KV pool 64.96→5.9GB (DSA_LAYER_COUNT stride
+  double-multiply), O_TMPFILE needs a DIRECTORY (fallback named a file),
+  module link set completion.
+- CROSS-LANE FINDING for glm52's follow-up bench: glm52's KV page-store
+  fallback has the SAME O_TMPFILE file-path shape (ENOTDIR risk).
+- Lane resumed: whole-stack publish → all-16 deploy (fleet-only,
+  all-16 reservations, coordinate spark4-7 with bisect's closing run) →
+  M5 exact-32K B1 = first glm53 scoreboard number.
