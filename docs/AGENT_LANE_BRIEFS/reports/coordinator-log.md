@@ -406,3 +406,13 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   client by chain width 8). Lean reproduced at 39.81/39.77 exact-hash.
 - Bisect lane doing one closing 32K re-run on the staged deployment.
 - Stagger slot freed → qwen-flash resumes next sweep (S4 finish).
+
+## 2026-08-28 ~19:3x KST — discovery: qwen-flash S4 already COMPLETE pre-pause
+
+- lane/qwen-flash 4c3ff91 (pre-pause) = 'S4 COMPLETE - 4/4 v3 ranks
+  verified' — the pause hit AFTER S4, so its resume is S5 (M6 driver/
+  deploy) + S6 (live 4-node smoke + first perf cell), not S4.
+- Bisect agent re-reserved spark4-7 for its closing 32K run (mid-cycle).
+  glm53 bring-up continuing (tip = its checkpoint). Stagger holds at 2;
+  qwen-flash resumes when the bisect's completion notification lands.
+- Scoreboard unchanged this pass.
