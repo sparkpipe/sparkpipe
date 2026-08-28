@@ -72,6 +72,40 @@ enum entry — not five family edits.
    contract already records 'speculation provider + verification
    contract' per MODEL_SUPPORT.md).
 
+
+## Slot landed in the adapter template (W2, 2026-08-28)
+
+The slot exists: `include/sparkpipe/spark_speculation_provider.h` (the
+interface), `runtime/speculation_provider.c` (the one validation point),
+and `tests/test_speculation_provider_slot.c` (the proof that both
+binding shapes fit). No family migrates this sprint.
+
+The recorded mapping - every existing provider shape onto the interface:
+
+| Design element | Module-provider shape | Embedded-provider shape |
+|---|---|---|
+| kind | `SparkSpeculationProviderKind` value published in the descriptor | same (compiled into the adapter's static descriptor) |
+| capability query | the module's geometry gate, resolved at bind | the adapter's load-time drafter-pack geometry check |
+| draft | the backend module's drafter entry (provider-owned batching, KV taps, graphs) | the adapter's drafter frames (anchor-first, block emission) |
+| verify contract | `SparkSpeculationVerifyContract` - accepted_token_count/chain_width/tokens_per_sequence reported once by the provider | same; today's adapter-side accounting moves behind `verify_account` at migration |
+| KV interaction | the module's frame flags + block-history depth | the scratch/tail split + multi-block draft matrix, declared |
+| env/config | the canonical `SPEC_METHOD`/`DRAFT_COUNT` schema in the descriptor | same keys; the family env names become aliases, dropped last (most receipts) |
+
+Binding rules the two shapes must keep:
+
+1. The adapter never dereferences method internals - only the ops table
+   (dispatch, config, KV contract, verify accounting). Inner loops stay
+   provider-owned .cu; zero hot-path indirection.
+2. A failed capability query names its reason (the supports()->WHY rule);
+   the wire surface can render it instead of a bare UNSUPPORTED.
+3. Verify accounting is called ONCE per verify round, by the adapter,
+   and its output is the only source of accepted_token_count in the
+   completion - the lease-advance bug class is structurally dead at
+   migration.
+4. The DFlash2 env contract migrates last and keeps byte-identical
+   receipts (the launch-env contract is family-LOCAL today; the
+   descriptor's environment_schema is where it canonicalizes).
+
 ## Addendum: the tournament provider (operator idea, assessed)
 
 "Run multiple speculators in realtime and use it to improve quality" —

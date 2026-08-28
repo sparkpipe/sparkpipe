@@ -10,8 +10,10 @@
 #include "sparkpipe/spark_dsv4_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_admission.h"
+#include "sparkpipe/spark_memory_buffer.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_row_layout.h"
+#include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 
 #if SPARK_DSV4_SERVING_TOPOLOGY == 404
@@ -222,23 +224,10 @@ static const char *const SparkDsv4ServingConfigurationMembersTp[] =
 typedef struct SparkDsv4ServingPending
 {
 	struct SparkDsv4ServingAdapterState *owner;
-	uint32_t active;
-	uint32_t row_count;
-	uint32_t lane_count;
-	uint32_t active_sequence_count;
-	uint32_t work_kind;
+	/* The shared submission view (the serving-adapter template fills it). */
+	SparkServingAdapterPendingCommon common;
 	uint32_t emit_count;
 	uint32_t cache_lane_count;
-	uint32_t tokens_per_sequence;
-	uint64_t submission_id;
-	uint64_t request_id;
-	uint64_t sequence_id;
-	uint64_t sequence_position;
-	uint64_t control_generation;
-	uint64_t transaction_id;
-	uint64_t dispatch_generation;
-	uint64_t request_generation;
-	uint64_t step_generation;
 	uint32_t last_row_by_lane[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t emit_row_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t emit_lane_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -249,6 +238,9 @@ typedef struct SparkDsv4ServingPending
 
 typedef struct SparkDsv4ServingAdapterState
 {
+	/* This state's own allocation, typed (memory-M1): freed through the
+	 * handle so the space the state lives in is named, not assumed. */
+	SparkMemoryBuffer allocation; /* HOST_COHERENT, this state */
 	SparkLoadedModelDriver driver;
 	void *driver_instance;
 	const SparkModelDriverProgramDescriptor *program;
@@ -296,9 +288,23 @@ static _Thread_local SparkModelDriverCacheLane SparkDsv4ServingPrefetchLanes[
 
 static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 {
-	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
-	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_DSV4_SERVING_TOPOLOGY_FLAG | SPARK_DSV4_SERVING_EXTRA_CAPABILITY | (SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT : 0u) | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_DSV4_SERVING_CHAIN_CAPABILITY,
+	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
+		SPARK_DSV4_SERVING_ADAPTER_ID,
+		SPARK_DSV4_SERVING_MODEL_ID,
+		SPARK_DSV4_SERVING_MODEL_REVISION,
+		SPARK_DSV4_SERVING_PROGRAM_NAME,
+		SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256),
+	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
+		SPARK_DSV4_SERVING_TOPOLOGY_FLAG |
+		SPARK_DSV4_SERVING_EXTRA_CAPABILITY |
+		(SPARK_DSV4_SERVING_TOPOLOGY_FLAG == 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT : 0u) |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
+		SPARK_DSV4_SERVING_CHAIN_CAPABILITY),
 	.stage_count = SPARK_DSV4_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_DSV4_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -314,11 +320,6 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.max_output_token_count = SPARK_DSV4_SERVING_OUTPUT_TOKEN_CAPACITY,
 	.max_speculative_token_count = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
-	.adapter_id = SPARK_DSV4_SERVING_ADAPTER_ID,
-	.model_id = SPARK_DSV4_SERVING_MODEL_ID,
-	.model_revision = SPARK_DSV4_SERVING_MODEL_REVISION,
-	.driver_program_name = SPARK_DSV4_SERVING_PROGRAM_NAME,
-	.artifact_sha256 = SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256,
 	.stage_layer_counts = SPARK_DSV4_SERVING_STAGE_LAYERS,
 	.minimum_efficient_submission_row_count = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? 1u : 16u,
 	.cache_block_token_count =
@@ -327,192 +328,18 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 		SPARK_DSV4_SERVING_TP_DEGREE : 0u
 };
 
-static int32_t SparkDsv4ServingJsonMember(
-	const SparkJsonDocument *document,
-	int32_t root,
-	const char *name)
+/* The tp_collective parse is the serving-adapter template's; the family
+ * policy is the rail-fabric flavor: the full known algorithm set, ordered
+ * non-zero payload thresholds, peer arrays staged per pipeline stage, and
+ * contiguous peer ports (the overflow-guarded base derivation). */
+static const SparkTpCollectiveConfigPolicy SparkDsv4ServingTpCollectivePolicy =
 {
-	return(SparkJsonFindObjectMember(document,root,name));
-}
-
-static SparkStatus SparkDsv4ServingJsonUnsigned(
-	const SparkJsonDocument *document,
-	int32_t root,
-	const char *name,
-	uint32_t *value)
-{
-	int32_t token;
-	token = SparkDsv4ServingJsonMember(document,root,name);
-	return(token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,token,value));
-}
-
-static SparkStatus SparkDsv4ServingLoadTpAlgorithms(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkTpDeviceCollectiveTopology *topology)
-{
-	int32_t element,token;
-	uint32_t count,index,mask;
-	token = SparkDsv4ServingJsonMember(document,object,"algorithms");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	mask = 0u;
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		if ( SparkJsonStringEquals(document,element,"recursive_doubling") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-		else if ( SparkJsonStringEquals(document,element,
-				"counter_rotating_split_ring") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
-		else if ( SparkJsonStringEquals(document,element,"direct_all_to_all") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
-		else
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	if ( count != 3u || mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	topology->algorithm_mask = mask;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkDsv4ServingLoadTpStepRails(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkTpDeviceCollectiveTopology *topology)
-{
-	int32_t element,token;
-	uint32_t count,index,value;
-	SparkStatus status;
-	token = SparkDsv4ServingJsonMember(document,object,"step_rail_indices");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
-		SparkJsonGetArrayElementCount(document,token) !=
-			SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-			SparkJsonGetUInt32(document,element,&value);
-		if ( status != SPARK_STATUS_OK || value >=
-			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		topology->step_rail_indices[index] = value;
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkDsv4ServingLoadTpRailHosts(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkTpDeviceCollectiveTopology *topology)
-{
-	int32_t element,host_element,token;
-	uint32_t host_count,index,rail;
-	char *host;
-	SparkStatus status;
-	token = SparkDsv4ServingJsonMember(document,object,"rail_peer_hosts");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
-		SparkJsonGetArrayElementCount(document,token) !=
-			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	topology->rail_count = SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT;
-	for (rail=0u; rail<topology->rail_count; rail++)
-	{
-		element = SparkJsonGetArrayElement(document,token,rail);
-		if ( element < 0 ||
-			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		host_count = SparkJsonGetArrayElementCount(document,element);
-		if ( host_count != SPARK_DSV4_SERVING_STAGE_COUNT )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		for (index=0u; index<host_count; index++)
-		{
-			host_element = SparkJsonGetArrayElement(document,element,index);
-			host = 0;
-			status = host_element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-				SparkJsonCopyString(document,host_element,&host);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkCopyString(
-					topology->rail_rank_hosts[rail][index],
-					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
-			free(host);
-			if ( status != SPARK_STATUS_OK )
-				return(status);
-		}
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkDsv4ServingValidateTpCollectiveMembers(
-	const SparkJsonDocument *document,
-	int32_t object,
-	uint32_t backend_kind)
-{
-	static const char *const base_members[] =
-	{
-		"backend","backend_module_path","collective_identifier",
-		"listen_port","connect_timeout_milli","operation_timeout_milli",
-		"peer_hosts","peer_ports"
-	};
-	static const char *const adaptive_members[] =
-	{
-		"backend","backend_module_path","collective_identifier",
-		"listen_port","connect_timeout_milli","operation_timeout_milli",
-		"peer_hosts","peer_ports","algorithms",
-		"direct_all_to_all_max_payload_bytes",
-		"split_ring_min_payload_bytes","rail_peer_hosts",
-		"step_rail_indices"
-	};
-	const char *const *members;
-	uint32_t member_count;
-	members = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
-		adaptive_members : base_members;
-	member_count = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
-		(uint32_t)(sizeof(adaptive_members) / sizeof(adaptive_members[0])) :
-		(uint32_t)(sizeof(base_members) / sizeof(base_members[0]));
-	return(SparkJsonValidateObjectMembersExact(document,object,members,
-		member_count));
-}
-
-static SparkStatus SparkDsv4ServingLoadTpAdaptiveFabric(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkDsv4ServingAdapterState *state)
-{
-	SparkStatus status;
-	if ( state->tp_collective_backend_kind !=
-		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-		return(SPARK_STATUS_OK);
-	status = SparkDsv4ServingLoadTpAlgorithms(document,object,
-		&state->tp_collective_topology);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ServingJsonUnsigned(document,object,
-			"direct_all_to_all_max_payload_bytes",
-			&state->tp_collective_topology.direct_all_to_all_max_payload_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ServingJsonUnsigned(document,object,
-			"split_ring_min_payload_bytes",
-			&state->tp_collective_topology.split_ring_min_payload_bytes);
-	if ( status == SPARK_STATUS_OK &&
-		(state->tp_collective_topology.direct_all_to_all_max_payload_bytes == 0u ||
-		 state->tp_collective_topology.split_ring_min_payload_bytes == 0u ||
-		 state->tp_collective_topology.direct_all_to_all_max_payload_bytes >=
-			state->tp_collective_topology.split_ring_min_payload_bytes) )
-		status = SPARK_STATUS_SCHEMA_ERROR;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ServingLoadTpRailHosts(document,object,
-			&state->tp_collective_topology);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ServingLoadTpStepRails(document,object,
-			&state->tp_collective_topology);
-	return(status);
-}
+	.peer_count = SPARK_DSV4_SERVING_STAGE_COUNT,
+	.allow_zero_collective_identifier = 0u,
+	.require_contiguous_peer_ports = 1u,
+	.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_FULL_KNOWN_SET,
+	.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ORDERED_NONZERO
+};
 
 static SparkStatus SparkDsv4ServingLoadTpCollective(
 	const SparkJsonDocument *document,
@@ -520,99 +347,24 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 	const char *runtime_root,
 	SparkDsv4ServingAdapterState *state)
 {
-	int32_t object,token,element;
-	uint32_t count,index,port;
-	uint64_t collective_identifier;
-	char *host,*relative_backend_path;
+	SparkTpCollectiveAdapterConfig config;
 	SparkStatus status;
-	if ( document == 0 || runtime_root == 0 || state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(&state->tp_collective_topology,0,
-		sizeof(state->tp_collective_topology));
-	state->tp_collective_topology.abi_version =
-		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
-	state->tp_collective_topology.descriptor_bytes =
-		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
-	object = SparkDsv4ServingJsonMember(document,root,"tp_collective");
-	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	token = SparkDsv4ServingJsonMember(document,object,"backend");
-	if ( token < 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( SparkJsonStringEquals(document,token,"nccl") )
-		state->tp_collective_backend_kind =
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
-	else if ( SparkJsonStringEquals(document,token,"hidden_transport") )
-		state->tp_collective_backend_kind =
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-	else
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkDsv4ServingValidateTpCollectiveMembers(document,object,
-		state->tp_collective_backend_kind);
+	memset(&config,0,sizeof(config));
+	config.backend_module_path_buffer = state->tp_collective_backend_path;
+	config.backend_module_path_bytes = sizeof(state->tp_collective_backend_path);
+	status = SparkServingAdapterTemplateLoadTpCollective(document,root,
+		runtime_root,&SparkDsv4ServingTpCollectivePolicy,&config);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	relative_backend_path = 0;
-	token = SparkDsv4ServingJsonMember(document,object,"backend_module_path");
-	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-		SparkJsonCopyString(document,token,&relative_backend_path);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkResolveRuntimePath(runtime_root,relative_backend_path,
-			state->tp_collective_backend_path,
-			sizeof(state->tp_collective_backend_path));
-	free(relative_backend_path);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	token = SparkDsv4ServingJsonMember(document,object,"collective_identifier");
-	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt64(document,token,&collective_identifier);
-	if ( status != SPARK_STATUS_OK || collective_identifier == 0u )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	state->tp_collective_identifier = collective_identifier;
-	status = SparkDsv4ServingJsonUnsigned(document,object,"listen_port",&port);
-	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	state->tp_listen_port = (uint16_t)port;
-	status = SparkDsv4ServingJsonUnsigned(document,object,"connect_timeout_milli",&state->tp_connect_timeout_milli);
-	if ( status != SPARK_STATUS_OK || state->tp_connect_timeout_milli == 0u )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	status = SparkDsv4ServingJsonUnsigned(document,object,"operation_timeout_milli",&state->tp_operation_timeout_milli);
-	if ( status != SPARK_STATUS_OK || state->tp_operation_timeout_milli == 0u )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	token = SparkDsv4ServingJsonMember(document,object,"peer_hosts");
-	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != SPARK_DSV4_SERVING_STAGE_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	state->tp_collective_topology.rank_count = count;
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		host = 0;
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(document,element,&host);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkCopyString(
-				state->tp_collective_topology.rank_hosts[index],
-				SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
-		free(host);
-		if ( status != SPARK_STATUS_OK ||
-			state->tp_collective_topology.rank_hosts[index][0] == '\0' )
-			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	}
-	token = SparkDsv4ServingJsonMember(document,object,"peer_ports");
-	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != SPARK_DSV4_SERVING_STAGE_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,element,&port);
-		if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
-			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-		state->tp_peer_ports[index] = (uint16_t)port;
-	}
-	return(SparkDsv4ServingLoadTpAdaptiveFabric(document,object,state));
+	state->tp_collective_backend_kind = config.backend_kind;
+	state->tp_collective_identifier = config.collective_identifier;
+	state->tp_listen_port = config.listen_port;
+	memcpy(state->tp_peer_ports,config.peer_ports,sizeof(state->tp_peer_ports));
+	state->tp_connect_timeout_milli = config.connect_timeout_milli;
+	state->tp_operation_timeout_milli = config.operation_timeout_milli;
+	state->tp_collective_control_port_base = config.control_port_base;
+	state->tp_collective_topology = config.topology;
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
@@ -626,7 +378,7 @@ static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
 	SparkStatus status;
 	if ( document == 0 || state == 0 || cuda_graph_count == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	token = SparkDsv4ServingJsonMember(document,root,
+	token = SparkServingAdapterTemplateJsonMember(document,root,
 		"cuda_graph_count_by_pp_stage");
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
@@ -674,9 +426,9 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	has_cuda_graphs = SparkDsv4ServingJsonMember(&document,root,
+	has_cuda_graphs = SparkServingAdapterTemplateJsonMember(&document,root,
 		"cuda_graph_count") >= 0 ? 1u : 0u;
-	has_tp_collective = SparkDsv4ServingJsonMember(&document,root,"tp_collective") >= 0 ? 1u : 0u;
+	has_tp_collective = SparkServingAdapterTemplateJsonMember(&document,root,"tp_collective") >= 0 ? 1u : 0u;
 	if ( SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 	{
 		members = SparkDsv4ServingConfigurationMembersTp;
@@ -695,17 +447,17 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkJsonValidateObjectMembersExact(&document,root,members,member_count);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ServingJsonUnsigned(&document,root,"schema_version",&schema_version);
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_DSV4_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	token = status == SPARK_STATUS_OK ? SparkDsv4ServingJsonMember(&document,root,"model_revision") : -1;
+	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"model_revision") : -1;
 	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,SPARK_DSV4_SERVING_MODEL_REVISION)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	token = status == SPARK_STATUS_OK ? SparkDsv4ServingJsonMember(&document,root,"stage_pack_path") : -1;
+	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"stage_pack_path") : -1;
 	if ( status == SPARK_STATUS_OK )
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ServingJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
 	*cuda_graph_count = 0u;
 	if ( status == SPARK_STATUS_OK && SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 		status = SparkDsv4ServingLoadTpGraphCounts(&document,root,state,
@@ -713,7 +465,7 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	else
 	{
 		token = status == SPARK_STATUS_OK ?
-			SparkDsv4ServingJsonMember(&document,root,"cuda_graph_count") : -1;
+			SparkServingAdapterTemplateJsonMember(&document,root,"cuda_graph_count") : -1;
 		if ( status == SPARK_STATUS_OK && token >= 0 )
 			status = SparkJsonGetUInt32(&document,token,cuda_graph_count);
 		if ( status == SPARK_STATUS_OK && *cuda_graph_count >
@@ -775,51 +527,37 @@ static SparkStatus SparkDsv4ServingReservePending(
 	SparkDsv4ServingPending **pending_out)
 {
 	SparkDsv4ServingPending *pending;
-	uint32_t index,row;
 	SparkStatus status;
 	if ( pending_out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*pending_out = 0;
-	for (index=0u; index<state->pipeline_slot_count; index++)
+	/* The common reservation spine is the serving-adapter template's; the
+	 * cache lanes and emit rows below are this family's frame shape, and a
+	 * failed fill leaves the slot free (the template never marks active). */
+	pending = (SparkDsv4ServingPending *)SparkServingAdapterTemplateReservePending(
+		state->pending,sizeof(*pending),state->pipeline_slot_count,
+		(uint32_t)offsetof(SparkDsv4ServingPending,last_row_by_lane),submission);
+	if ( pending == 0 )
+		return(SPARK_STATUS_BUSY);
+	status = SparkModelServingAdapterBuildDriverCacheLanes(submission,pending->cache_lanes,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&pending->cache_lane_count);
+	if ( status == SPARK_STATUS_OK &&
+		submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		status = SparkModelServingAdapterSelectEmitRows(submission,pending->emit_row_indices,pending->emit_lane_indices,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&pending->emit_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	pending->owner = state;
 	{
-		pending = &state->pending[index];
-		if ( pending->active == 0u )
+		uint32_t row;
+		for (row=0u; row<submission->row_count; row++)
 		{
-			memset(pending,0,sizeof(*pending));
-			status = SparkModelServingAdapterBuildDriverCacheLanes(submission,pending->cache_lanes,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&pending->cache_lane_count);
-			if ( status == SPARK_STATUS_OK &&
-				submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-				status = SparkModelServingAdapterSelectEmitRows(submission,pending->emit_row_indices,pending->emit_lane_indices,SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&pending->emit_count);
-			if ( status != SPARK_STATUS_OK )
-				return(status);
-			pending->owner = state;
-			pending->row_count = submission->row_count;
-			pending->lane_count = submission->lane_count;
-			pending->active_sequence_count = submission->active_sequence_count;
-			pending->work_kind = submission->work_kind;
-			pending->tokens_per_sequence = submission->tokens_per_sequence;
-			pending->submission_id = submission->submission_id;
-			pending->request_id = submission->request_id;
-			pending->sequence_id = submission->sequence_id;
-			pending->sequence_position = submission->sequence_position;
-			pending->control_generation = submission->control_generation;
-			pending->transaction_id = submission->transaction_id;
-			pending->dispatch_generation = submission->dispatch_generation;
-			pending->request_generation = submission->request_generation;
-			pending->step_generation = submission->step_generation;
-			for (row=0u; row<submission->row_count; row++)
-			{
-				uint32_t lane;
-				lane = submission->row_lane_indices[row];
-				pending->last_row_by_lane[lane] = row;
-				pending->resident_row_lane_indices[row] = submission->lanes[lane].resident_sequence_slot;
-			}
-			pending->active = 1u;
-			*pending_out = pending;
-			return(SPARK_STATUS_OK);
+			uint32_t lane;
+			lane = submission->row_lane_indices[row];
+			pending->resident_row_lane_indices[row] = submission->lanes[lane].resident_sequence_slot;
 		}
 	}
-	return(SPARK_STATUS_BUSY);
+	pending->common.active = 1u;
+	*pending_out = pending;
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkDsv4ServingOrphanDriverCompletion(
@@ -844,22 +582,22 @@ static void SparkDsv4ServingDriverCompletion(
 	uint32_t index;
 	pending = (SparkDsv4ServingPending *)completion_context;
 	state = pending != 0 ? pending->owner : 0;
-	if ( state == 0 || pending->active == 0u || driver_completion == 0 )
+	if ( state == 0 || pending->common.active == 0u || driver_completion == 0 )
 		return;
-	matches = driver_completion->request_id == pending->request_id && driver_completion->sequence_id == pending->sequence_id && driver_completion->sequence_position == pending->sequence_position && driver_completion->program_id == state->program->program_id;
+	matches = driver_completion->request_id == pending->common.request_id && driver_completion->sequence_id == pending->common.sequence_id && driver_completion->sequence_position == pending->common.sequence_position && driver_completion->program_id == state->program->program_id;
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
 	completion.status = matches != 0u ? (uint32_t)driver_completion->status : SPARK_STATUS_SCHEMA_ERROR;
-	completion.submission_id = pending->submission_id;
-	completion.request_id = pending->request_id;
-	completion.sequence_id = pending->sequence_id;
-	completion.sequence_position = pending->sequence_position;
-	completion.control_generation = pending->control_generation;
-	completion.transaction_id = pending->transaction_id;
-	completion.dispatch_generation = pending->dispatch_generation;
-	completion.request_generation = pending->request_generation;
-	completion.step_generation = pending->step_generation;
+	completion.submission_id = pending->common.submission_id;
+	completion.request_id = pending->common.request_id;
+	completion.sequence_id = pending->common.sequence_id;
+	completion.sequence_position = pending->common.sequence_position;
+	completion.control_generation = pending->common.control_generation;
+	completion.transaction_id = pending->common.transaction_id;
+	completion.dispatch_generation = pending->common.dispatch_generation;
+	completion.request_generation = pending->common.request_generation;
+	completion.step_generation = pending->common.step_generation;
 	if ( matches != 0u )
 		completion.residency = driver_completion->residency;
 	completion.accepted_token_count = driver_completion->accepted_token_count;
@@ -869,10 +607,10 @@ static void SparkDsv4ServingDriverCompletion(
 	 * contract and must NOT be fenced by this gate (a RELEASE would otherwise
 	 * be rejected as SCHEMA_ERROR). */
 	if ( matches != 0u &&
-		pending->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE &&
+		pending->common.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE &&
 		(driver_completion->tokens_per_sequence == 0u ||
 		 driver_completion->tokens_per_sequence >
-			pending->tokens_per_sequence +
+			pending->common.tokens_per_sequence +
 			SparkDsv4ServingDescriptor.max_speculative_token_count) )
 		completion.status = SPARK_STATUS_SCHEMA_ERROR;
 	completion.queue_delay_ns = driver_completion->queue_delay_ns;
@@ -880,26 +618,26 @@ static void SparkDsv4ServingDriverCompletion(
 	completion.device_memcpy_bytes = driver_completion->device_memcpy_bytes;
 	completion.host_staging_bytes = driver_completion->host_staging_bytes;
 	if ( driver_completion->status != SPARK_STATUS_OK )
-		fprintf(stderr,"dsv4_adapter driver_completion status=%s stage=%u submission=%llu accepted=%u\n",SparkStatusToString((SparkStatus)driver_completion->status),state->stage_index,(unsigned long long)pending->submission_id,driver_completion->accepted_token_count);
+		fprintf(stderr,"dsv4_adapter driver_completion status=%s stage=%u submission=%llu accepted=%u\n",SparkStatusToString((SparkStatus)driver_completion->status),state->stage_index,(unsigned long long)pending->common.submission_id,driver_completion->accepted_token_count);
 	if ( matches == 0u )
 		state->orphan_completion_count++;
 	if ( state->stage_index + 1u == SPARK_DSV4_SERVING_STAGE_COUNT &&
-		pending->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE &&
+		pending->common.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE &&
 		completion.status == SPARK_STATUS_OK )
 	{
 		completion.tokens_per_sequence = driver_completion->tokens_per_sequence;
-		completion.token_count = pending->active_sequence_count *
+		completion.token_count = pending->common.active_sequence_count *
 			completion.tokens_per_sequence;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
-		if ( pending->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
-			for (index=0u; index<pending->active_sequence_count; index++)
+		if ( pending->common.work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+			for (index=0u; index<pending->common.active_sequence_count; index++)
 				completion.token_ids[index] =
 					pending->output_token_ids[index];
 		else
 			memcpy(completion.token_ids,pending->output_token_ids,
 				(uint64_t)completion.token_count * sizeof(uint32_t));
 	}
-	pending->active = 0u;
+	pending->common.active = 0u;
 	state->completion_function(state->completion_context,&completion);
 }
 
@@ -920,7 +658,7 @@ static void SparkDsv4ServingDestroy(void *adapter_state)
 	if ( state == 0 )
 		return;
 	for (index=0u; index<state->pipeline_slot_count; index++)
-		if ( state->pending[index].active != 0u )
+		if ( state->pending[index].common.active != 0u )
 			return;
 	if ( state->driver.interface != 0 && state->driver.interface->snapshot != 0 && state->driver_instance != 0 && state->program != 0 )
 	{
@@ -931,47 +669,44 @@ static void SparkDsv4ServingDestroy(void *adapter_state)
 	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
 		state->driver.interface->destroy(state->driver_instance);
 	SparkUnloadModelDriver(&state->driver);
-	free(state);
+	SparkMemoryBufferFree(&state->allocation);
+}
+
+/* The program's runtime-limits contract, family policy on the shared spine:
+ * a shared approximation would change accept/reject on real descriptors. */
+static SparkStatus SparkDsv4ServingAcceptsProgram(
+	const SparkModelDriverProgramDescriptor *program,
+	void *accept_context)
+{
+	SparkDsv4ServingAdapterState *state;
+	state = (SparkDsv4ServingAdapterState *)accept_context;
+	if ( SparkModelDriverProgramSupportsRuntimeLimits(program,SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
+		return(SPARK_STATUS_TARGET_MISMATCH);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkDsv4ServingLoadDriver(
 	SparkDsv4ServingAdapterState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
-	const SparkModelDriverDescriptor *descriptor;
-	SparkModelDriverCreateRequest request;
-	char error_buffer[512];
+	SparkServingAdapterDriverRequest request;
+	const SparkModelDriverProgramDescriptor *program;
 	SparkStatus status;
-	SparkLoadedModelDriverReset(&state->driver);
-	status = SparkLoadModelDriver(configuration->driver_shared_object_path,configuration->node_target,&state->driver,error_buffer,sizeof(error_buffer));
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	descriptor = state->driver.interface->descriptor;
-	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_DSV4_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_DSV4_SERVING_DRIVER_STAGE_NAME) != 0 || strcmp(descriptor->model_description_sha256,SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256) != 0 )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
-	if ( state->program == 0 )
-		return(SPARK_STATUS_NOT_FOUND);
-	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || SparkModelDriverProgramSupportsRuntimeLimits(state->program,SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	SparkModelDriverInitializeCreateRequest(&request);
-	request.node_id = configuration->node_id;
-	request.node_target = configuration->node_target;
+	request.contract.driver_model_id = SPARK_DSV4_SERVING_DRIVER_MODEL_ID;
+	request.contract.driver_model_revision = SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION;
+	request.contract.driver_stage_name = SPARK_DSV4_SERVING_DRIVER_STAGE_NAME;
+	request.contract.driver_target = 0; /* this family does not pin the target */
+	request.contract.model_description_sha256 = SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256;
 	request.node_context = &state->node_context;
-	request.kv_logical_page_capacity =
-		configuration->runtime_limits.kv_logical_page_capacity;
-	request.kv_physical_page_capacity =
-		configuration->runtime_limits.kv_physical_page_capacity;
-	request.kv_backing_directory = configuration->kv_backing_directory;
-	request.kv_backing_maximum_bytes =
-		configuration->kv_backing_maximum_bytes;
-	request.execution_stream = configuration->execution_stream;
-	request.completion_function = SparkDsv4ServingOrphanDriverCompletion;
 	request.completion_context = state;
+	request.completion_function = SparkDsv4ServingOrphanDriverCompletion;
 	request.wake_function = SparkDsv4ServingDriverWake;
-	request.wake_context = state;
-	status = state->driver.interface->create(&request,&state->driver_instance);
-	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
+	program = 0;
+	status = SparkServingAdapterTemplateLoadDriver(&request,configuration,
+		&state->driver,&program,SparkDsv4ServingAcceptsProgram,state,
+		&state->driver_instance);
+	state->program = program;
+	return(status);
 }
 
 static SparkStatus SparkDsv4ServingInitializeRunner(
@@ -1141,37 +876,28 @@ static SparkStatus SparkDsv4ServingInitialize(
 	void **adapter_state)
 {
 	SparkDsv4ServingAdapterState *state;
+	SparkMemoryBuffer state_buffer;
 	uint32_t max_sequence_positions,cuda_graph_count;
 	SparkStatus status;
+	SparkMemoryBufferReset(&state_buffer);
 	if ( adapter_state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*adapter_state = 0;
 	status = SparkDsv4ServingValidateConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	state = (SparkDsv4ServingAdapterState *)calloc(1u,sizeof(*state));
-	if ( state == 0 )
+	status = SparkMemoryBufferAllocate(&state_buffer,
+		SPARK_MEMORY_SPACE_HOST_COHERENT,sizeof(SparkDsv4ServingAdapterState));
+	if ( status == SPARK_STATUS_OK )
+		memset(state_buffer.pointer,0,sizeof(SparkDsv4ServingAdapterState)); /* calloc semantics */
+	if ( status != SPARK_STATUS_OK )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	state = (SparkDsv4ServingAdapterState *)state_buffer.pointer;
+	state->allocation = state_buffer;
 	SparkDsv4ServingInitializeState(state,configuration);
 	status = SparkDsv4ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&cuda_graph_count);
-	if ( status == SPARK_STATUS_OK && SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
-	{
-		uint32_t rank_index;
-		uint32_t control_port_base = state->tp_peer_ports[0];
-		if ( control_port_base == 0u )
-			status = SPARK_STATUS_SCHEMA_ERROR;
-		for (rank_index=0u;
-			status == SPARK_STATUS_OK && rank_index < SPARK_DSV4_SERVING_STAGE_COUNT;
-			rank_index++)
-		{
-			if ( control_port_base > UINT16_MAX - rank_index ||
-				state->tp_peer_ports[rank_index] !=
-				(uint16_t)(control_port_base + rank_index) )
-				status = SPARK_STATUS_SCHEMA_ERROR;
-		}
-		if ( status == SPARK_STATUS_OK )
-			state->tp_collective_control_port_base = control_port_base;
-	}
+	/* The peer-port contiguity (with its overflow guard) is the template's
+	 * contiguous-peer-ports policy now, checked inside the parse. */
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
@@ -1370,7 +1096,7 @@ static SparkStatus SparkDsv4ServingSubmit(
 	{
 		status = SparkDsv4ServingSubmitRelease(state,submission,pending);
 		if ( status != SPARK_STATUS_OK )
-			pending->active = 0u;
+			pending->common.active = 0u;
 		return(status);
 	}
 	memset(&dispatch,0,sizeof(dispatch));
@@ -1425,7 +1151,7 @@ static SparkStatus SparkDsv4ServingSubmit(
 		fprintf(stderr,"dsv4_adapter runner_submit status=%s stage=%u submission=%llu kind=%u rows=%u lanes=%u cache_lanes=%u last=%u rejected=%llu admitted=%llu\n",SparkStatusToString(status),state->stage_index,(unsigned long long)submission->submission_id,submission->work_kind,submission->row_count,submission->active_sequence_count,dispatch.cache_lane_count,stats.last_status,(unsigned long long)stats.rejected_count,(unsigned long long)stats.admitted_count);
 	}
 	if ( status != SPARK_STATUS_OK )
-		pending->active = 0u;
+		pending->common.active = 0u;
 	return(status);
 }
 
@@ -1443,7 +1169,7 @@ static uint32_t SparkDsv4ServingAvailableSubmissionCount(
 	uint32_t available,index;
 	available = 0u;
 	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += state->pending[index].active == 0u ? 1u : 0u;
+		available += state->pending[index].common.active == 0u ? 1u : 0u;
 	return(available);
 }
 

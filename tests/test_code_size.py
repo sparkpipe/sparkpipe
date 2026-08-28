@@ -857,7 +857,10 @@ from pathlib import Path
 # glm5_next first-tokens lane: the adapter unmask (wire contract),
 # the final-emit INTERNAL_ERROR fix + fanout token emission, and the
 # completion-tail instrumentation. 215418 exact.
-CEILING = 215418
+# W2 items 2-5 (adapter template + memory-M1 handles + stagepack
+# library + provider slot; qwen38_27b + dsv4 cut over — families 1-2 of
+# 5, remaining families follow post-review) + build fixes. 216634 exact.
+CEILING = 216634
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
