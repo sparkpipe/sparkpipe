@@ -643,3 +643,6 @@ Operator question: does two-model co-residency work? Phase-1 results:
   are spark0..sparkf, never bare hex.
 - glm53 API mid-wave during the lane's transport .so instrument work
   (curl empty; tip = the 33m-old handoff receipt). Scoreboard unchanged.
+  - CORRECTION: the release also cleared the real set (the lane's
+    reserves live in its worktree's runs/, advisory only; no contention
+    at this hour — fleet exclusivity remains by lane ownership).
