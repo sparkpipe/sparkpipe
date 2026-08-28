@@ -710,3 +710,19 @@ Operator question: does two-model co-residency work? Phase-1 results:
   would have killed glm5_next's fleet — third fuzzy-kill near-miss of
   the day). spark8 rank-8 + p1a's 27B = ~104G: under ceiling, wave
   sequenced after p1a completes.
+
+## 2026-08-29 ~2:3x — LITELLM FRONT DOOR LIVE (PR734 merged 7aaa03a)
+
+- Proxy on the Mac :4000 (bearer auth, config committed). CENTRAL
+  FINDING: our token-ID contract requires LiteLLM's /vllm/ passthrough
+  (transformed /v1/completions cannot serve it) — byte-for-byte
+  forwarding proven via contract-exact mock. Routing proven by connect
+  evidence (all upstreams down in-window: glm53 mid-debug, 27B staged).
+  The lane followed the new merge gates unprompted (ratchet reconciled
+  in-commit +101).
+- OWED: one live completion curl when an upstream serves; spark9's port
+  at its launch.
+- DESIGN NOTE for the island/catalog discussion: the token-ID edge is
+  why LiteLLM's native chat path can't serve us yet — the Phase-4
+  tokenizer sidecar at the island edge is the named dependency for
+  multi-island text-in routing.
