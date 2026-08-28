@@ -768,7 +768,13 @@ from pathlib import Path
 # 49-kind stagepack format, kv geometry header, Makefile tier knobs, and
 # the synthesized-pack tool; ~7100 lines, nvcc sm_121a compile gate PASS).
 # 195716 is the exact count after M3.
-CEILING = 195716
+# The glm53 lane's family module lands as one assembly on the rebased main
+# (b313cd5): the glm52 skeleton with k3's KDA chain, dsv4's mHC site
+# machinery, new kpool pool kernels, the 49-kind .g5nsp stagepack format,
+# hybrid cache allocation, the synthesized-pack tool, and the M1/M2
+# contract + name-map tooling (nvcc sm_121a compile gate PASS).
+# 204581 is the exact count at this landing.
+CEILING = 204581
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
