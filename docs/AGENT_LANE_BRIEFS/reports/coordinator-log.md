@@ -669,3 +669,11 @@ Operator question: does two-model co-residency work? Phase-1 results:
   stale. First fully-quiet sweep since the resume; if the next sweep
   shows the same, the lane gets a direct ping + re-resume (the harness
   error classes have killed it silently before). Scoreboard unchanged.
+
+## 2026-08-29 ~0:0x KST — 5-agent fleet in setup phase; glm53 wave ready
+
+- The debug wave's spark0 daemon shows READY (1) with the patched .so +
+  debug env live; zero diagnostic lines yet (no curl since relaunch —
+  the diag agent fires it). All 5 new lanes in setup (no pushes at
+  30min; inventories/builds running). k3-fleet branched from main.
+- Scoreboard unchanged.
