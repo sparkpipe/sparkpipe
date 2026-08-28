@@ -56,6 +56,15 @@ abstraction, silent fallbacks) gets rejected at merge, not admired.
    multi-topology fleet layout; internal NVMe kept clear of
    non-essentials so topology variants coexist.
 
+## SPECULATION: all providers, one contract (operator directive)
+
+Support every speculation type — MTP, DFlash, DSpark, DFlash2, the
+coming DSpark2, and whatever follows — because not every model gets
+today's best. Design + sequencing: docs/SPECULATION_PROVIDER_DESIGN.md
+(provider = capability unit behind the adapter; lifecycle+contract
+abstracted, inner loops stay provider-owned for zero hot-path cost;
+DSpark2 = a new provider module, not five family edits).
+
 ## Medium-term (weeks)
 
 1. All product-set models serving honest perf+quality cells; the
