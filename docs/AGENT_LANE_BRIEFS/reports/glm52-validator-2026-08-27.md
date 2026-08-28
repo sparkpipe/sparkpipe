@@ -112,21 +112,157 @@ expert 1 aliasing slab 0 was invisible), and it asserts only finiteness.
 The referenced harness tests/test_glm52_cuda_validator_tier2_oracle.py did
 not exist.
 
-## F3 Fix
+## F3 Fix — TWO defects found, both on the oracle/fixture side; kernel correct
 
-Mirror the kernel's expert-major payload addressing in the oracle:
-`SparkGlm52ValDequantWeight` now offsets the payload by
+Fix 1 (the blocker): mirror the kernel's expert-major payload addressing in
+the oracle. `SparkGlm52ValDequantWeight` now offsets the payload base by
 `expert * payload_bytes_per_expert` (new helper `SparkGlm52ValPayloadExpertOffset`,
 the mirror of `SparkGlm52ValScaleExpertOffset`), matching the weight tensor
-map's group stride. Callers are unchanged (they already pass the
-expert-major base). The selftest now fills TWO distinguishable slabs and
-asserts per-expert reads differ (payload plane) and scale plane patches
-scale the result bit-exactly (scale plane). A new host-executable gate
-tests/test_glm52_cuda_validator_tier2_oracle.py compiles the validator TU's
-selftest entry with tests/cuda_stub on any host (no GPU needed).
+map's group stride. Callers are unchanged. The selftest now fills TWO
+distinguishable slabs and asserts per-expert reads differ (payload plane)
+and that a power-of-two scale patch of expert 1's plane rescales its weights
+bit-exactly (scale plane); against the old code it fails with
+`codec=2 expert payload planes alias: 0/256 positions differ`. Result:
+`routed_expert_forward` 0.3359/0.9426 -> 0.00497/0.9999961.
 
-(sections F4/F5 below filled as the milestones land)
+Fix 2 (unmasked by fix 1): the fixture's fp8/nvfp4/mxfp4 code grids were
+positive-mean (fp8: mean +0.76 vs std ~1.0), making the expert forward
+QUADRATIC in the activation's ones-component (gate/up ~ mean*S,
+silu(gate)*up ~ (mean*S)^2 with S = sum(normed)). Evidence trail:
+after fix 1, `routed_layer_forward` failed at 0.0356 while every component
+matched — per-expert rows 0.3-0.6%, shared 0.47%, weights 6.2e-5, and the
+decomposition probe proved the device hidden bit-exactly equals the weighted
+sum of its own captured rows (`hidden_vs_own_rows rel_l2=0 cosine=1`), with
+normed/attention_out/residual all ~0.35% (dense-tier normal; the dense tier
+itself passes at 0.6%). A 4-token walk showed the amplification is
+token-dependent (token 1 rows 2-7% off, token 3 rows 0.6-1% off at identical
+chain quality) - the signature of mean-amplification through S^2, not a
+layout bug. All six codec grids are now exactly zero-mean sign-symmetric
+sets (e.g. fp8 {0,±0.015625,±0.375,±0.75,±1.5,±3.0}); `routed_layer_forward`
+dropped to 0.0068. This also retroactively explains commit 9f56300's
+fp8-vs-int8 split: int8's near-zero-mean grid gave sqrt(2) (uncorrelated
+slabs) while fp8's mean-heavy grid gave 0.336 (correlated slabs).
+
+New host gate: tests/test_glm52_cuda_validator_tier2_oracle.py compiles the
+validator TU's SPARK_GLM52_VALIDATOR_ORACLE_SELFTEST entry against
+tests/cuda_stub (tests/glm52_validator_oracle_selftest_stubs.cpp closes the
+module launcher symbols) and runs it on any host.
+
+F3 gate output (spark8, make ... validate, full log
+/home/spark8/glm52_fix_f3_clean.log):
+
+```
+glm52_validation check=layer_forward_hidden elements=6144 relative_l2=0.00603604963 cosine=0.999981849
+glm52_validation check=layer_forward_residual elements=6144 relative_l2=0.0035535041 cosine=0.999993692
+glm52_validation check=determinism elements=12288 bit_exact=1
+glm52_validation tier=dense PASS
+glm52_validation check=routed_selection token=0 experts=5,1,0,3,7,6,4,2
+glm52_validation check=routed_selection token=1 experts=1,7,5,3,4,0,6,2
+glm52_validation check=routed_selection_set elements=16 exact=1 max_weight_delta=6.24359e-05
+glm52_validation check=routed_expert_forward elements=6144 relative_l2=0.00502641659 cosine=0.99998737 max_abs=16384
+glm52_validation check=routed_layer_forward elements=6144 relative_l2=0.00683001012 cosine=0.999976681 max_abs=14336
+glm52_validation check=routed_layer_forward_residual elements=6144 relative_l2=0.00324159129 cosine=0.999994776
+glm52_validation check=routed_determinism routes=16 bit_exact=1
+glm52_validation tier=routed PASS
+glm52_validation check=dsa_shaping top_min=1.24239874 tail_max=1.32821069e-05 bucket=191
+glm52_validation check=dsa_selection elements=2048 exact=1
+glm52_validation check=dsa_sparse_attention elements=6144 relative_l2=0.00350011726 cosine=0.999993882
+glm52_validation check=dsa_rerun elements=8192 set_and_tolerance_exact=1
+glm52_validation tier=dsa PASS
+glm52_validation PASS
+```
+
+The routed and DSA tiers are green for the first time since the validator
+restore. Ratchet 186401 -> 189979 in the same commit (+3492 pre-existing
+from the packs lane's head b845f70, verified by running the test on the
+unmodified branch; +86 this fix).
+
+## F4 Publish + smoke — publish/compile DONE; TP8 bring-up BLOCKED by sparke wedging
+
+Publish (spark8, the packs lane's P4 command verbatim):
+
+```
+glm52_validation PASS
+module=spark.glm52.resident_decode_stage.bf16.expert_fp8.h6144.l78.e256.k8.v2
+  target=cuda.sm121.glm52.resident_decode_stage.bf16.expert_fp8
+  artifact=b7437e4600985506c75f55c82aecdb50681ef53d3404c7f1a0a7cdc62373cb47
+  validator=1099fae7971402a73095335b1e8a4e18df615dbd58cfc0b7099f1566933b66e1
+  kind=static_archive validation=executed
+  record=build/module_library/active/94584cd8702a66cdc27ab68f127304a47ccc51c27b82ffa93c363049546ced3a.json
+```
+
+Driver compile: the packs report's command failed at link with undefined
+SparkKvPageCache*/SparkKvPageStore* — glm52's module (unlike dsv4's, which
+bundles its own paged-cache implementation) calls the shared
+cache/kv_page_cache.c that lives in build/libsparkpipe_model_common.a.
+Adding `make model_common` + `--cc-arg build/libsparkpipe_model_common.a`
+to the compile command links clean:
+
+```
+package_manifest=/home/spark8/sparkdata/glm52.tp8.fp8/model_package.json
+  stages=1 programs=1 operations=1 collected_link_units=1
+  model_sha256=ec5afd74...94095f82165b47
+stages/stage_000/model_driver.so (2,035,056 bytes)
+```
+
+Adapter: the module Makefile's adapter rule passed the whole
+MODULE_BATCH_VARIANT_BUCKETS list into -DSPARK_BATCH_BUCKET= (link error
+"cannot find 128/256/..."); fixed to build the b1024 bucket (= the
+unflagged archive). Runtime layout staged to all 8 nodes:
+lib/{model_driver.so, model_serving_adapter.so, hidden_transport.so} +
+bin/{residentd,api,batch}.
+
+### WEDGED NODE REPORT (immediate attention): sparke (rank 6)
+
+Timeline (all times this lane): sparke staged artifacts fine (09:0x),
+launched rank 6 in the 8-way parallel start, then degraded within ~5
+minutes: first ssh "Connection timed out during banner exchange", then
+full packet loss. Evidence from sparkf:
+
+```
+$ ssh sparkf 'ping -c 2 -W 2 sparke'
+2 packets transmitted, 0 received, 100% packet loss
+$ ssh sparkf 'ssh -o ConnectTimeout=5 sparke uptime'
+Connection closed by UNKNOWN port 65535
+```
+
+sparke's own daemon log (last lines before the node went dark) matched the
+other ranks: GLM52-ADAPTER LoadTpCollective rc=0 / LoadConfiguration rc=0,
+then collective waits. Per the lane rules I did NOT reboot or power-cycle
+it. The other 7 nodes are healthy and clean after the failed bring-up
+(no sparkpipe processes, ~108-110 GB available each).
+
+The TP8 ring cannot form without rank 6: every surviving rank's failure
+line is a route involving sparke or a transitive dependency of it (rank 0
+waited on sparkc, whose own wait was on sparke):
+
+```
+spark8: hidden_spark_rdma_open_timeout route=tp-device...2.0.4 host=sparkc port=63752 waited_ms=180000
+spark9: hidden_spark_rdma_open_timeout route=tp-device...2.1.5 host=sparkd port=63753 waited_ms=180000
+sparka: hidden_spark_rdma_open_timeout route=tp-device...2.2.6 host=sparke port=63754 waited_ms=180000
+sparkb: hidden_spark_rdma_open_timeout route=tp-device...2.3.7 host=sparkf port=63755 waited_ms=180000
+sparkc: hidden_spark_rdma_open_timeout route=tp-device...1.4.6 host=sparke port=63690 waited_ms=180000
+sparkd: hidden_spark_rdma_open_timeout route=tp-device...1.5.7 host=sparkf port=63691 waited_ms=180000
+sparkf: hidden_spark_rdma_open_timeout route=tp-device...0.6.7 role=receiver port=63627 waited_ms=180000
+```
+
+All 8 daemons exited route_failed (status=4 reason=9) after their 180s
+collective windows; no CUDA device memory was allocated (all died in
+adapter_initialize, before LoadDriver completed). The relaunch once sparke
+is back is one command per node (setsid nohup bin/sparkpipe_model_residentd
+--deployment config/model_resident.json --rank-index r, all 8 within 180s
+of each other), then bin/sparkpipe_model_api on spark8 for the B1 decode.
 
 ## INTEGRATION REQUESTS
 
-(to be finalized in F5)
+1. tests/test_glm52_cuda_validator_tier2_oracle.py (new, this lane) and
+   tests/test_glm52_pack_fp8_source.py (packs lane) are NOT registered in
+   the Makefile test list (outside my write set) - please add both to the
+   gate.
+2. The packs lane's P4 driver-compile command needs
+   `make model_common` + `--cc-arg build/libsparkpipe_model_common.a`
+   appended (glm52 module depends on the shared kv page cache). Either fix
+   the runbook text or teach sparkpipe_model_compile to link
+   model_common itself.
+3. sparke (rank 6) is wedged at the network level and needs operator
+   attention; I did not reboot it.
