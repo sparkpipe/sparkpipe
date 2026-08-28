@@ -208,7 +208,12 @@ int main(void)
 		w->mla_q_norm_weight = ones_weight; w->mla_kv_a_norm_weight = ones_weight;
 		w->kda_out_norm_weight = ones_f32;
 		w->kda_qkv_beta_weight = qkvb_weight;
-		w->kda_decay_gate_down_weight = decay_gate_weight;
+		/* PACK V2 gate reconciliation (commit 55cd2f9): the fused
+		 * decay|gate_down tensor became the standalone 128-wide
+		 * kda_decay_down_weight plus the checkpoint's full-rank
+		 * kda_gate_weight (docs/K3_GATE_RECONCILIATION.md). */
+		w->kda_decay_down_weight = decay_gate_weight;
+		w->kda_gate_weight = decay_gate_weight;
 		w->kda_q_conv_weight = conv_weight; w->kda_k_conv_weight = conv_weight;
 		w->kda_v_conv_weight = conv_weight;
 		w->kda_decay_bias = decay_bias; w->kda_head_log_scale = head_log_scale;

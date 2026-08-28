@@ -388,7 +388,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		// MLP-side retrieval: the retrieval's partial mix must contain the
 		// post-attention contribution on every rank.
 		if ( state->layer_collective != 0 )
-			state->layer_collective(state->collective_context,stream,layer,0u);
+			state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,0u);
 		// MLP-side retrieval, over the post-append bank and the post-attention
 		// partial. It runs at layer 0 as well: b_0 is in the bank by then.
 		K3AttnRes(buffers,buffers->attnres_mlp_weight,
@@ -406,14 +406,14 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			 * current 3*hidden host buffer). */
 			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
 			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
-				state->layer_collective(state->collective_context,stream,layer,2u);
+				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,2u);
 			if ( status == LM_LAUNCH_OK )
 				status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
 		}
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		if ( state->layer_collective != 0 )
-			state->layer_collective(state->collective_context,stream,layer,1u);
+			state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,1u);
 		// THE DRAFTER READS THE STREAM, AND THE PARTIAL IS THE STREAM. What
 		// flows between blocks under AttnRes is the running partial - the next
 		// block's first act is a retrieval that REPLACES its input - so the
