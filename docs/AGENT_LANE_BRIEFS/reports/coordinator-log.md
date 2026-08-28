@@ -255,3 +255,16 @@
        scheduler/dispatch structural bug.
 - Exact-32K at 128 lanes mathematically infeasible on this hardware
   (517 blocks/lane → ~278 GiB KV); documented by the lane.
+
+## 2026-08-28 ~17:5x — sweep: MDS recovered; P1a FIXED on main; retest agent on spark8
+
+- MDS metadata inconsistency CLEARED (shard 80 stats + reads 238 MB/s
+  from spark6). Residual: sparke's ceph CLIENT serves a stale negative
+  cache (shard 12 ENOENTs sparke-local, fine elsewhere) — age-out or
+  remount (sysadmin); K3 lane informed (source reads from other nodes).
+- P1a FIXED (dcd3824): idempotent slot release + abort-path fences
+  instead of client-fatal. Retest agent launched on spark8 (B=24/48
+  reproduce-attempt + B=16/32 regression check, reserved). Verdict
+  pending — all three outcomes (proven/not-reproduced/refuted) valid.
+- Queue: spark3 released (MDS duty), spark8 → lane-p1a. No lane merges
+  this pass (glm53/qwen-flash advancing, no new tips).
