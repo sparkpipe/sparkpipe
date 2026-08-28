@@ -191,3 +191,24 @@
   (transport-wait); spark3 is knee-reserved AND an MDS host. Marker left
   in its deployment dir; fleet-only + storage-host rules re-cited.
   spark2's rank-0 daemon = the legitimate 27B dev instance.
+
+## 2026-08-28 ~15:4x — DSV4 PRO LANE COMPLETE: PR 729 merged; Aug-15 ghost fixed
+
+- MERGED lane/dsv4pro (3c83bf7 + ratchet d471853): 16/16 TP4xPP4 rank
+  packs built+verified (~93GB EACH — the DSpark draft block is fully
+  replicated per rank; fleet table corrected from ~52GB), 14/16 deployed
+  (ranks 1/2 stashed on warm: spark1/2 unavailable). OLD PACKS WERE NEVER
+  CORRUPT — the contract verifier derives full-width records and fails
+  rank packs BY CONSTRUCTION; real failure was deployment-side.
+- THE AUG-15 GHOST: examples/deployments/dsv4_pro...stage.json carried a
+  placeholder model_revision since creation, pinned by a test — no Pro
+  daemon could EVER pass adapter validation. Fixed on main + deployed
+  configs (be03caa).
+- REMAINING for Pro's ready line: driver-lane rebuild from current main
+  (Aug-17 binaries fail validation status=9 after the config fix) —
+  owner: follow-up dsv4 driver work; then ranks 1/2 when spark1/2 free.
+  NOTE for the 16-rank fleet: spark2/3 are MDS hosts — the full-fleet
+  bring-up needs the MDS-relocation decision or an envelope exception.
+- Third fuzzy-match incident (Pro's smoke cleanup hit bisect's daemons on
+  spark4-7; they self-restarted) — the spawn-captured-pids rule covers
+  it; no further action.
