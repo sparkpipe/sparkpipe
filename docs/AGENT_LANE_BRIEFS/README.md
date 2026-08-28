@@ -204,8 +204,12 @@ GPU and heavy remote work is scheduled through the run queue
   job past the envelope OOMs the MDS/OSDs (spark3 rebooted this way at
   ~104 GiB on 2026-08-28, and its reboots bounce the MDS pair fleet-wide:
   transient ENOENT + slow uncached reads = MDS failover/warm-up, wait and
-  retest). (2) ALL other nodes run GPU work under a ~85-90 GiB device
-  memory envelope so the local OSD survives. (3) Fleet-wide SLOW UNCACHED
+  retest). (2) ALL other nodes run GPU work under the OPERATOR CEILING of
+  110 GiB device allocation (of 119 GiB unified — kernel+OSD+driver
+  need the rest; NVRM NV_ERR_NO_MEMORY at ~114 GiB kills daemons
+  SILENTLY, confirmed twice 2026-08-28). Size deployments so
+  weights+KV+overhead stays under 110; co-resident configs compute
+  the sum per node BEFORE launch and cut KV pools to fit. (3) Fleet-wide SLOW UNCACHED
   reads + fast cached = MDS host trouble; SINGLE-OBJECT stall with healthy
   neighbors = degraded PG (node/OSD down — like sparke/osd.14).
 

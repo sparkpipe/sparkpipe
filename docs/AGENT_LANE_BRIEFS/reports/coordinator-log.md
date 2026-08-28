@@ -600,3 +600,16 @@ Operator question: does two-model co-residency work? Phase-1 results:
   during hunts 2-4. Mid-sequence — merging waits for the milestone
   (first token or the kv-admit fix). Fleet+API on spark0 mid-wave.
 - Scoreboard unchanged.
+
+## 2026-08-28 ~03:2x — OPERATOR CEILING: 110 GiB (the silent-exit root cause)
+
+- User diagnosis confirmed: kernel log shows NVRM NV_ERR_NO_MEMORY at
+  22:35:53 = the exact moment the sparka co-resident daemon exited
+  silently (driver-allocator OOM at ~114/119 GiB; same class as this
+  morning's spark3 crash). Not the Linux OOM-killer — the GPU driver's
+  allocator; identical practical lesson.
+- NEW HARD RULE (README): device allocation ceiling 110 GiB of 119.
+  Deployments sized weights+KV+overhead <= 110; co-resident sums
+  computed per node pre-launch, KV pools cut to fit. Co-resident
+  phase-2 numbers: 27B (29G) + reduced 35G KV + glm53 rank (21.7G)
+  ≈ 92G — comfortable.
