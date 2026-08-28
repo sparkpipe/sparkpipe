@@ -988,7 +988,15 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 			lane = &request->cache_lanes[lane_index];
 			status = SparkKvPageCachePrepareLane(&state->kv_page_cache,lane,state->kv_lane_logical_pages + (uint64_t)lane->resident_sequence_slot * state->pages_per_sequence,state->pages_per_sequence,&state->kv_lane_page_count[lane->resident_sequence_slot]);
 			if ( status != SPARK_STATUS_OK )
+			{
+				fprintf(stderr,"G5N-DBG admit: PrepareLane -> %d lane ctx %llu pos %llu flags %llu pub %llu pre %llu\n",
+					(int)status,(unsigned long long)lane->context_token_count,
+					(unsigned long long)lane->sequence_position,
+					(unsigned long long)lane->flags,
+					(unsigned long long)lane->publish_token_count,
+					(unsigned long long)lane->prefix_token_count);
 				return(status);
+			}
 		}
 	}
 	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) != 0u )
@@ -999,7 +1007,15 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 			status = SparkKvPageCacheBeginLaneTransaction(&state->kv_page_cache,lane,&state->kv_lane_mutable_page[lane->resident_sequence_slot],&mutation_flags);
 			state->kv_lane_mutation_flags[lane->resident_sequence_slot] = mutation_flags;
 			if ( status != SPARK_STATUS_OK )
+			{
+				fprintf(stderr,"G5N-DBG admit: BeginTxn -> %d lane ctx %llu pos %llu flags %llu pub %llu pre %llu\n",
+					(int)status,(unsigned long long)lane->context_token_count,
+					(unsigned long long)lane->sequence_position,
+					(unsigned long long)lane->flags,
+					(unsigned long long)lane->publish_token_count,
+					(unsigned long long)lane->prefix_token_count);
 				return(status);
+			}
 		}
 	}
 	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) != 0u )
@@ -1012,6 +1028,15 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 				return(status);
 		}
 	}
+	/* ACCEPT SHORT-CIRCUIT (glm52 hit the identical wall at its bring-up:
+	 * InitializeAdmissionDecision defaults rejection_reason to
+	 * UNSUPPORTED_SHAPE, so a predicate that falls through every branch
+	 * with the decision untouched reads as a shape reject and the whole
+	 * submit dies with adapter_submit status=unsupported). The cache
+	 * branches above either returned an error or only mutated the page
+	 * cache; the shape was already vetted by the rule block. Accept. */
+	decision->accepted = 1u;
+	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
 	return(SPARK_STATUS_OK);
 }
 
@@ -1948,9 +1973,19 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	table.predicate_context = state;
 	table.cost = SparkGlm5NextAdmissionCost;
 	table.cost_context = state;
+	fprintf(stderr,"G5N-DBG admit-entry: prog %u slots %u new %u pos %llu flags %llx lanes %u admflags %u avail %u\n",
+		(unsigned)request->program_id,(unsigned)request->active_slot_count,
+		(unsigned)request->new_token_count,
+		(unsigned long long)request->sequence_position,
+		(unsigned long long)request->frame_flags,
+		(unsigned)request->cache_lane_count,
+		(unsigned)request->admission_flags,(unsigned)available);
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( decision->accepted == 0u )
+		fprintf(stderr,"G5N-DBG admit: shape-rejected reason %u\n",
+			(unsigned)decision->rejection_reason);
 	if ( decision->accepted == 0u )
 		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
 	return(status);
