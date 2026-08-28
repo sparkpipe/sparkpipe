@@ -511,3 +511,10 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
     intermittent MDS signature. Possibly the MacStudio MDS migration
     work itself (failovers during the move); glm53's launch is
     local-NVMe-only, unaffected. Watching.
+
+## 2026-08-28 ~22:1x KST — glm53 died TRANSIENT (model error, not budget); retried
+
+- Launch agent died on a model-request failure mid-staging (all-16
+  reservations held). Resume retried with handoff-discoverability
+  instruction (LAUNCH-STATE.md). Fallback if infra errors persist:
+  coordinator launches manually — one command per node, fully staged.
