@@ -930,3 +930,22 @@ operator.
   fleet's API node is structural risk — the MacStudio MDS move
   should extend to the mon), or (b) hardware. The glm53 fleet waits
   on spark0's stability; no cycling from us.
+
+## 2026-08-29 ~15:0x — SPECULATOR PORTFOLIO ARRIVED (11 sources + license notes)
+
+- Warm now carries 11 new model/speculator sources w/ pinned revisions
+  + LICENSE-ADMISSION-v2 notes (policy: reject noncommercial; accept
+  grants above business scale; permissive-upstream repos recorded):
+  glm5.3-nvfp4-radixark (465G, Z.AI commercial grant), qwen3.8-27b-fp8
+  OFFICIAL (Apache), 27b-dflash2-incoai, kimi-k3 dspark x3
+  (redhatai/inferact/radixark) + k3-dflash2 x2 (lightseek/modal),
+  dsv4-flash-dflash-redhatai, qwen-max dspark-radixark +
+  dflash-modal, glm-5.3-flash-dflash2.
+- THE PORTFOLIO IS COMPLETE ENOUGH FOR THE BAKE-OFF: 5 target models x
+  2-4 speculator options each. Every source satisfies the quant/
+  license policy as recorded (vetting receipts to be re-verified at
+  first use per policy).
+- NEXT (when the operator pause lifts + spark0 restores): the
+  provider-abstraction bake-off harness — head-to-head per-spark
+  acceptance + tok/s per (model, speculator) pair, feeding the
+  tournament-provider decision with data.
