@@ -18,3 +18,22 @@
   'stages' schema in examples/ — coordinator fix queued next sweep.
 - Ceph canary: transient ENOENT + slow uncached reads = MDS cold after the
   08:59 reboot (expected, self-heals); kimi-k3 warm copy intact (96 shards).
+
+## 2026-08-28 ~10:0x — qwen-flash M5 merged; modeling reference found+ pinned; lane resumed
+
+- MERGED lane/qwen-flash final (e3b795a, ratchet green): M5 whole-stack TP4
+  standalone validator gate PASSED on sparka AND spark4 (cross-node
+  bit-reproducible, token 37853); five real bugs fixed behind the retired
+  guard incl. the 1.4e-3 decode-vs-prefill drift -> bit-exact and an MTP KV
+  OOB write; router-gate corrected -> v2 packs (replicated gates) deployed
+  sha-identical spark4-7.
+- BLOCKER CLEARED: modeling reference for hc/indexer/PLE found in
+  huggingface/transformers main — pinned at
+  model_contracts/references/modeling_qwen4_exp.py (sha 77fec77d...):
+  GatedResidual (=hc), QSAIndexer, NGramEmbedding (=PLE) all present.
+- PLE DECISION (operator quality preference): vocab-shard 23.9 GiB/rank
+  BF16, no quantization loss; fp8 only as reported fallback.
+- Lane RESUMED as new agent: S1-S4 semantics ports + v3 packs, S5 M6
+  residentd/api, S6 live 4-node smoke + first perf cell.
+- Standing integration request #4 (tests wiring) verified ALREADY DONE
+  (Makefile:260).
