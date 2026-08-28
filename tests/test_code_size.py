@@ -843,7 +843,14 @@ from pathlib import Path
 # staged identical on all 16; wave HELD per operator pause. Plus the
 # verifier's bf16-expert byte-trace branch and the two pre-launch
 # staging fixes. 213815 exact.
-CEILING = 213815
+# Redundancy lane (PR737): dup_report.py (93 hits triaged: shared dirs
+# ZERO duplication — all modules/-side; 16+26+2 handed to W2, 27 parked
+# kernel templates, 22 justified), complexity_report.py (max 157
+# = DsparkBlockForward, 151 hotspots dispositioned, 12 named plans),
+# gen_geometry_header.py (qwen38_27b BYTE-IDENTICAL proof; glm5_next +
+# qwen4_flash cut over w/ corrections), dead-field deletion. 215055 exact
+# post-merge.
+CEILING = 215055
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

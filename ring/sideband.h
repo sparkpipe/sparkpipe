@@ -86,7 +86,6 @@ typedef struct LmTapPlan
 	uint32_t tap_layer[8];
 	uint32_t tap_count;
 	uint32_t consumer_rank;          /* which rank runs the drafter */
-	uint32_t hidden_elements;
 }
 LmTapPlan;
 
