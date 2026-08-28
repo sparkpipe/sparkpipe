@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -811,8 +812,13 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		/* Fallback for serving configs that predate the backing fields: keep
 		 * the store functional with a well-known default (the page store
 		 * opens the path once; it does not retain the pointer). */
+		/* The page store opens with O_TMPFILE: the backing path is a
+		 * DIRECTORY, never a file (glm52's file-path fallback fails the
+		 * open with ENOTDIR -> IO_ERROR; ours names a per-model
+		 * directory under /tmp). */
 		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
 			"/tmp/sparkpipe_glm5_next_kv_%s",state->model_revision);
+		mkdir(state->kv_backing_default,0700);
 		table.page_store_config.backing_path = state->kv_backing_default;
 	}
 	table.page_store_config.maximum_backing_bytes =
@@ -877,11 +883,11 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 	/* Block-major pages: 64 tokens x slot bytes x layer count of the
 	 * owning class (must equal Glm5NextKv/Glm5NextIndexKv::kPageBytes in
 	 * layer.cuh - the compile-time check lives in unity.cu). */
-	main_page_bytes = (uint64_t)64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES *
-		SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
+	/* per-layer page bytes: the pool is layer-major, one sub-pool per
+	 * DSA layer (see Glm5NextKv) - no layer factor here. */
+	main_page_bytes = (uint64_t)64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES;
 	index_page_bytes = (uint64_t)64u *
-		SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u *
-		SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
+		SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
 	kda_window_stride = (uint64_t)state->resident_sequence_capacity *
 		SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER;
 	state->kv_layer_stride_bytes = (uint64_t)state->page_count * main_page_bytes;

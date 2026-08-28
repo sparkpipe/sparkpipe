@@ -20,11 +20,16 @@
 // DSA-layer offset, so SlotInPage stays the within-block token index.
 struct Glm5NextKv
 {
+    /* PER-LAYER view: one DSA layer's sub-pool. The module's pool is
+     * layer-major - layer l's sub-pool sits at pool + l * (pages * 64 *
+     * slot) - and the kernel addresses pages within its layer's sub-pool,
+     * so this page stride covers ONE layer's tokens, not eleven. (The
+     * first bring-up sized it x DSA_COUNT and the pool came out 65 GB.)
+     */
     static constexpr uint32_t kSlotBytes = GLM5_NEXT_KV_SLOT_BYTES;
     static constexpr uint32_t kPageSlots = GLM5_NEXT_KV_PAGE_SLOTS;
     static constexpr uint32_t kPageBytes =
-        GLM5_NEXT_KV_SLOT_BYTES * GLM5_NEXT_KV_PAGE_SLOTS *
-        SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
+        GLM5_NEXT_KV_SLOT_BYTES * GLM5_NEXT_KV_PAGE_SLOTS;
     static constexpr bool kGrows = true;
     static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
     { return position / GLM5_NEXT_KV_PAGE_SLOTS; }

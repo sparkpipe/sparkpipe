@@ -48,7 +48,11 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \
-	../../ring/transport/tp_device_collective_nccl.c
+	../../ring/transport/tp_device_collective_nccl.c \
+	../../cache/kv_cache.c \
+	../../cache/kv_page_cache.c \
+	../../cache/kv_page_store.c \
+	../../cache/kv_model_table.c
 MODULE_CUDA_SOURCE := source/spark_glm5_next_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=$(GLM5_NEXT_EXPERT_CODEC_ID) -DGLM5_NEXT_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM5_NEXT_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM5_NEXT_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
 

@@ -660,7 +660,7 @@ def assemble_header(packer: Packer, header_extra: Dict[str, Any], file_bytes: in
         header_extra.get("flags", 0),
         len(packer.plan),
         header_extra["stage_count"], header_extra["stage_index"],
-        header_extra["first_layer"], header_extra["layer_count"], LAYERS + 1,
+        header_extra["first_layer"], header_extra["layer_count"], LAYERS,  # total = weight layers (module expects MODEL_LAYER_COUNT)
         HIDDEN, VOCAB, EXPERTS,
         CODEC_BF16, packer.expert_codec, CODEC_BF16,
         packer.tp_degree, packer.tp_rank,
