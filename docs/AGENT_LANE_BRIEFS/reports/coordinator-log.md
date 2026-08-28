@@ -1116,3 +1116,18 @@ failure is ever diagnosable through the wire.
    the template (their lanes are done — no longer mid-flight; glm5_next
    skipped as genuinely active). Completes DRY to 5/5 families.
 - W2 items 2-5 MERGED (270be02) — housecleaning core COMPLETE.
+
+## 2026-08-30 ~1:1x — IR queue executed: IR-6 + IR-2 landed; IR-1 was already in via W2
+
+- IR-6 (REAL BUG, 2d09d1e): qwen_3_8's LmCopyRowsKernel launched a 1-D
+  grid — the kernel reads row=blockIdx.y, so only a THREADS-wide slice
+  of hidden ever copied. Fixed dim3 per k3's pattern. Every qwen_3_8
+  family hidden copy was silently partial.
+- IR-2 (d5b61c7): rdma send-validate printf %u->%llu for uint64_t.
+- IR-1 (ring const): already landed via the W2 merge (5759dca).
+- IR-7 (memory contracts, 248) + the qwen38max lane merge remain —
+  agent-scale, queued.
+- Lane watch: real-tokens2 / bulk-packs2 / dry-final no pushes yet
+  (~15min in, setup phase); sparke k3_pack shows 0 — CHECK whether the
+  probe loop died again (it has restarted itself before); re-arm on
+  next window if so.
