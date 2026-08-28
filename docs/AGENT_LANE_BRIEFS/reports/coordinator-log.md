@@ -810,3 +810,22 @@ Operator question: does two-model co-residency work? Phase-1 results:
   hygiene lane's placeholder item resolves to 'deliberately absent';
   reopens on operator word. (Source-model licenses still apply to the
   models themselves — this is only about SparkPipe's code.)
+
+## 2026-08-29 ~9:0x — HYGIENE LANE 8/8 MERGED; both fenced items FIXED
+
+- Merged (48020f9): both stale C gates re-pinned w/ commit citations
+  (757e6bb MTP-draft, 84efd5b native widths — tests were wrong, impl
+  right); 9/15 red python gates fixed; the flake root-caused (SIGTERM-
+  vs-EOF race in residentd teardown — both exits legit; race-tolerant,
+  30/30); header dep; qwen38max harness wired (+1714); make-test host
+  guards.
+- COORDINATOR-APPLIED IRs: IR-9 memlink template validator (a0269a4 —
+  config-is-never-a-format-string; %n/%s%x/%x%u all hard-rejected,
+  strict-compile clean) and IR-10 dflash2 frame bound (7a4b645 — named
+  2056 constant in the shared dspark_format.h, module+kernel twin
+  guards, no clamps). THE AUDITOR'S TWO FENCED-NOT-FIXED ITEMS ARE
+  FIXED. Remaining IRs (ring const one-liner, LmCopyRowsKernel dim3
+  REAL BUG, rdma format strings, memory-contracts inventory,
+  qwen38max lane merge) queued for the next coordinator window — the
+  LmCopyRowsKernel 1D-grid bug is next priority (it's a correctness
+  fix, not hygiene).
