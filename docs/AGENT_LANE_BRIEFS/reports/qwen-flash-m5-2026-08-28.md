@@ -221,10 +221,20 @@ qwen4_flash_validation PASS
 
 Tokens differ from the v1 pack run (17776 vs 37853) exactly as expected:
 the global top-10 over 512 experts is a different mixture than rank 0's
-local top-10 over 128. Ranks 1-3 build+verify with the same loop
-(/tmp/q4f_v2_build.log on spark4); deploy = rsync packs_v2 to spark5-7 and
-point the launchers at it (next session; the deployed v1 packs remain
-valid for standalone validation).
+local top-10 over 128.
+
+COMPLETE (same loop, /tmp/q4f_v2_build.log on spark4): all four ranks
+built + verified (PASS x 4, 899 entries each, byte-traced receipts), then
+deployed to packs_v2/ on spark4-7, sha-identical fleet-wide:
+
+```
+rank0 ee4c8a27fe80b11f  rank1 cbd9b52b1a5cd2c9
+rank2 deba25e548a90bae  rank3 93b59704bbf28a23   (spark4=spark5=spark6=spark7)
+```
+
+The v1 deployed packs remain in packs/ (still valid for standalone
+validation); packs_v2 is the serving-correct generation for the live
+collective run.
 
 ## INTEGRATION REQUEST
 
