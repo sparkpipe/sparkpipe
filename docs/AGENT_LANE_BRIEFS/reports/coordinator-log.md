@@ -726,3 +726,19 @@ Operator question: does two-model co-residency work? Phase-1 results:
   why LiteLLM's native chat path can't serve us yet — the Phase-4
   tokenizer sidecar at the island edge is the named dependency for
   multi-island text-in routing.
+
+## 2026-08-29 ~3:4x — INCIDENT OWNED: coordinator wave launcher caused spark8 crash
+
+- The p1a lane's B=48 was killed by MY glm53 wave launcher's TERM sweep
+  (pattern-matched sparkpipe_model* — the fuzzy-kill class I outlawed,
+  violated by my own tooling), and the wave's relaunch stacked 80.6G on
+  their residentd -> NV_ERR_NO_MEMORY -> spark8 dark ~7min, auto-reboot
+  16:48. Node recovered; rank-8 reclaimed. THE RULE APPLIES TO THE
+  COORDINATOR: launchers TERM by deployment-cwd-matched pids ONLY.
+- P1a VERDICT: NOT-REPRODUCED (partial) — B=24 505-submission point
+  clean (exit 0, no route_failed, no fencing lines); one pass can't
+  prove a ~1/500 intermittent; completing points (B48/32/16, B24x2,
+  ~40min exclusive) queued after glm53's number. PR 735.
+- Also: sweep tool's pgrep -f guard self-matches its launcher shell
+  (lane's fix suggestion in their report); my current wave-fire ssh
+  hold-open recurs — launcher going ssh -f detached.
