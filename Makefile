@@ -940,6 +940,7 @@ build/test_weight_codec: tests/test_weight_codec.c include/sparkpipe/spark_weigh
 test: $(TEST_BINARIES)
 	@set -e; \
 	for test_binary in $(TEST_BINARIES); do \
+		if [ ! -x "$$test_binary" ]; then echo "SKIP $$test_binary (host does not build it)"; continue; fi; \
 		echo "RUN $$test_binary"; \
 		./$$test_binary; \
 	done; \

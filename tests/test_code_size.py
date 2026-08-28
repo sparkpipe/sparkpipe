@@ -826,7 +826,11 @@ from pathlib import Path
 # exact (the lane's own +2518 ratchet additionally covers the v2
 # packer/verifier and module sources that stay on the lane pending the
 # coordinator's merge).
-CEILING = 210809
+# The make-test run loop learns to skip binaries a host deliberately
+# does not build (the nvcc-guarded test_qwen38_math_kernels/execute
+# targets emit SKIP, and the loop then tried to execute the missing
+# file) - one guard line. 210810 exact.
+CEILING = 210810
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
