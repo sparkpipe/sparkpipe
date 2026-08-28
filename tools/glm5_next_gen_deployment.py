@@ -49,6 +49,9 @@ TP_COLLECTIVE = {
 
 def stage_config(rank: int) -> dict:
     host = HOSTS[rank]
+    # The adapter validates members EXACTLY: only these nine. The
+    # capacities ride the module firmware header defaults; the KV backing
+    # directory flows through the deployment node (not the stage config).
     return {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
@@ -56,13 +59,9 @@ def stage_config(rank: int) -> dict:
         "stage_pack_path": "packs/glm5_next_stage.tp16.rank%d.g5nsp" % rank,
         "max_sequence_positions": 32768,
         "execution_row_capacity": 16,
-        "resident_sequence_capacity": 16,
-        "pipeline_slot_count": 2,
         "tp_degree": TP,
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),
-        "kv_backing_directory": "/home/%s/kvcache/glm5_next.tp16" % host,
-        "kv_backing_maximum_bytes": 0,
     }
 
 
@@ -102,8 +101,12 @@ def resident_deployment() -> dict:
             "max_active_sequences": 16,
             "max_input_rows": 16,
             "resident_sequence_capacity": 16,
-            "kv_logical_page_capacity": 16 * ((32768 + 63) // 64),
-            "kv_physical_page_capacity": 16 * ((32768 + 63) // 64),
+            # The schema requires BOTH kv capacity members (exact-member
+            # validation) and the adapter (no JIT_KV) requires both ZERO;
+            # the module owns its KV pool internally (DRIVER_OWNS_KV).
+            # Adopting glm52's JIT_KV lane wiring is the follow-up.
+            "kv_logical_page_capacity": 0,
+            "kv_physical_page_capacity": 0,
         },
         "nodes": nodes,
     }

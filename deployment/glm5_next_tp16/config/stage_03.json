@@ -5,8 +5,6 @@
  "stage_pack_path": "packs/glm5_next_stage.tp16.rank3.g5nsp",
  "max_sequence_positions": 32768,
  "execution_row_capacity": 16,
- "resident_sequence_capacity": 16,
- "pipeline_slot_count": 2,
  "tp_degree": 16,
  "tp_rank": 3,
  "tp_collective": {
@@ -100,7 +98,5 @@
    0,
    1
   ]
- },
- "kv_backing_directory": "/home/spark3/kvcache/glm5_next.tp16",
- "kv_backing_maximum_bytes": 0
+ }
 }

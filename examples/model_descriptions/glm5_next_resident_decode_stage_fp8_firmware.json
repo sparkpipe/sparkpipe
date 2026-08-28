@@ -55,13 +55,13 @@
       "runtime_backend_selection": "forbidden"
     },
     "source_model": {
-      "id": "zai-org/GLM-5.2-FP8",
-      "revision": "b4734de4facf877f85769a911abafc5283eab3d9"
+      "id": "zai-org/GLM-5.3-Flash",
+      "revision": "84c6a6aa9497188e15a635ba793b0f95a79b1033"
     }
   },
   "model": {
-    "id": "zai.glm-5.2.resident-decode-stage-firmware",
-    "revision": "b4734de4facf877f85769a911abafc5283eab3d9"
+    "id": "zai.glm-5.3-flash.resident-decode-stage-firmware",
+    "revision": "84c6a6aa9497188e15a635ba793b0f95a79b1033"
   },
   "schema_version": 1,
   "stages": [

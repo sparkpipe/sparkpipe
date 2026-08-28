@@ -28,15 +28,22 @@
  * stage. The residentd fans each submission out to every rank
  * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
  * adapter maps flat rank -> tp_rank and pins the firmware stage to 0. */
-#define SPARK_GLM5_NEXT_SERVING_STAGE_COUNT 8u
-#define SPARK_GLM5_NEXT_SERVING_TP_DEGREE 8u
+/* glm5_next: TP16 whole-stack - every rank holds all 45 weight layers
+ * (the deployment counts each rank as a stage; PARALLEL_FANOUT fans each
+ * submission to all 16, exactly glm52's TP8 shape at 16). The MTP layer
+ * rides the spec path. NOTE: HIDDEN_TRANSPORT must NOT be declared with
+ * FANOUT unless HYBRID_TP_PP - the descriptor validator rejects that
+ * combination (found at bring-up); the TP collective rides the node
+ * context, not the adapter capability bits. */
+#define SPARK_GLM5_NEXT_SERVING_STAGE_COUNT 16u
+#define SPARK_GLM5_NEXT_SERVING_TP_DEGREE 16u
 #define SPARK_GLM5_NEXT_SERVING_STAGE_LAYERS \
-	{78u,78u,78u,78u,78u,78u,78u,78u}
+	{45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u}
 #define SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
-#define SPARK_GLM5_NEXT_SERVING_MODEL_ID "zai-org/GLM-5.2"
+#define SPARK_GLM5_NEXT_SERVING_MODEL_ID "zai-org/GLM-5.3-Flash"
 #define SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID \
-	"zai.glm-5.2.resident-decode-stage-firmware"
+	"zai.glm-5.3-flash.resident-decode-stage-firmware"
 #define SPARK_GLM5_NEXT_SERVING_STAGE_NAME "glm5_next_resident_decode_stage"
 #define SPARK_GLM5_NEXT_SERVING_PROGRAM_NAME "resident_decode"
 #define SPARK_GLM5_NEXT_SERVING_TARGET \
@@ -122,7 +129,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG |SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
 	.stage_count = SPARK_GLM5_NEXT_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
