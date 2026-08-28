@@ -454,9 +454,17 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	resp = malloc(req->tokens_json_len + 128);
 	if (resp != 0)
 	{
-		(void)snprintf(resp, req->tokens_json_len + 128,
-			"{\"object\":\"text_completion\",\"tokens\":[%s],\"status\":%u}",
-			req->tokens_json, req->status);
+		if (req->status == 0)
+			(void)snprintf(resp, req->tokens_json_len + 128,
+				"{\"object\":\"text_completion\",\"tokens\":[%s],\"status\":0}",
+				req->tokens_json);
+		else
+			/* OpenAI error shape: front doors (liteLLM) and clients read
+			 * {"error":{...}}, not a completion object under a 500. */
+			(void)snprintf(resp, 128,
+				"{\"error\":{\"message\":\"model status %u\","
+				"\"type\":\"model_error\",\"code\":%u}}",
+				req->status, req->status);
 		send_response(fd, req->status == 0 ? 200 : 500, resp);
 		free(resp);
 	}
@@ -521,6 +529,23 @@ static void *api_connection(void *arg)
 		char b[96];
 		(void)snprintf(b, sizeof(b), "{\"status\":\"ok\",\"served\":%llu}",
 			(unsigned long long)S.served);
+		send_response(fd, 200, b);
+	}
+	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
+	{
+		/* OpenAI model-list: what liteLLM's model discovery and health
+		 * probing read. The served id comes from SPARK_MODEL_ID (the
+		 * island-catalog registration will formalize the source; env is
+		 * the honest bridge until then). */
+		const char *model_id = getenv("SPARK_MODEL_ID");
+		char b[256];
+		if (model_id == 0 || model_id[0] == '\0')
+			model_id = "sparkpipe-model";
+		(void)snprintf(b, sizeof(b),
+			"{\"object\":\"list\",\"data\":[{\"id\":\"%s\","
+			"\"object\":\"model\",\"owned_by\":\"sparkpipe\","
+			"\"served\":%llu}]}",
+			model_id, (unsigned long long)S.served);
 		send_response(fd, 200, b);
 	}
 	else if (strcmp(method, "POST") == 0 &&
