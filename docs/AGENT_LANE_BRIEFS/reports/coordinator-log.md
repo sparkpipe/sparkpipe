@@ -958,3 +958,13 @@ operator.
   doctrine: NO wave until ceph recovery quiesces + the operator's
   go — this node burned us twice exactly here (recovery racing GPU
   alloc). The glm5_next relaunch is staged and waiting.
+
+## 2026-08-29 ~17:1x KST — glm5_next FLEET RESTORED 16/16 (settle honored)
+
+- spark0 settled 23 min (ceph Sl, warm 80MB/s) → full-16 preflight
+  ALL CLEAN → wave fired → READY 16/16. API up; the first-token curl
+  still status-4 (the final-emit bug — the diag lane's hunt resumes
+  on live state). W5 NOTE: /v1/models returned "not found" — the
+  deployed spark0 api binary predates 11260f4 (the /v1/models +
+  error-shape build); W5 live-verify needs the api rebuilt+redeployed
+  from main (queued — the wave's binaries came from the lane's staging).
