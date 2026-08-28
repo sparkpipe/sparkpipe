@@ -86,6 +86,31 @@ read it before writing allocation code):
    REQUEST with call sites — the family pack loader's mapping is the
    sanctioned file-backed path; do not invent a second one.
 
+## QUALITY GATE: ds4_eval at the "not horrible" transition (hard, 2026-08-28)
+
+A perf cell alone does not make a model "not horrible" — inference can
+be fast AND broken. When a model's first honest serving cell lands
+(operator directive), the lane runs the ds4_eval capability-regression
+suite against the deployed API BEFORE the model is called usable:
+
+1. **COMPSEC-17 first** (the sanity tier): the 17 COMPSEC questions
+   through the live /v1 endpoint, minutes at low concurrency. Working
+   models score 15-17/17 (see the retained records); horribly broken
+   inference (degenerate repetition, garbage, all-refusal) scores near
+   zero or errors — that is a STOP, not a footnote.
+2. **Full 92x** (the not-horrible tier): 25 GPQA + 25 SuperGPQA +
+   25 AIME2025 + 17 COMPSEC. Reference bands from the retained records:
+   API-class 70-81/92, local-quantized 73-78/92. A first 92x sets the
+   model's quality baseline; big drops on later runs are regressions.
+
+Records and protocol: qualification/ds4_eval/README.md (canonical archive
+format: REPORT.md + INTEGRITY.json + summary.json + cases.json +
+responses/*.json per run — copy the retained runs' structure; harness and
+fixture SHAs are pinned there). New runs land at
+qualification/ds4_eval/runs/<model>-<deployment>-<date>/ and the lane
+report cites the score. The scoreboard ledger notes quality alongside
+perf: a perf cell without a COMPSEC-17 pass stays marked provisional.
+
 ## Run queue + node reservations (hard, 2026-08-28)
 
 GPU and heavy remote work is scheduled through the run queue
