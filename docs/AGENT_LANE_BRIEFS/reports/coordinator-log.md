@@ -1039,3 +1039,13 @@ failure is ever diagnosable through the wire.
   probed; MXFP4 in-tree). The e2m1 dequant machinery overlaps; the
   grouped-expert kernel paths need an NVFP4 lane once the basics land.
   The island catalog's precision-variant axis is now fully populated.
+
+## 2026-08-29 ~22:0x — BULK STAGEPACK agent launched (operator directive)
+
+- Long-running data lane: ALL new sources → stagepacks → all sparks.
+  Priority: speculators first (the bake-off is next), official 27B
+  FP8 second, NVFP4 variants third (27B's four for the quality study,
+  then the rest). Existing family packers only (repackage-never-
+  quantize); NVFP4 natural-format gaps get RECORDED not converted
+  (kernel-lane dependency); verify+receipts per pack; staging manifest
+  stays the checked state; builds on spark4/5 (wedge-route pattern).
