@@ -1,13 +1,15 @@
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "spark_filesystem.h"
+#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm52_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
-#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_serving_adapter_template.h"
 
 #ifndef GLM52_EXPERT_WEIGHT_CODEC
 #error "GLM52_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -68,19 +70,8 @@ static const char *const SparkGlm52ServingConfigurationMembers[] =
 typedef struct SparkGlm52ServingPending
 {
 	struct SparkGlm52ServingState *owner;
-	uint32_t active;
-	uint32_t row_count;
-	uint32_t lane_count;
-	uint32_t active_sequence_count;
-	uint64_t submission_id;
-	uint64_t request_id;
-	uint64_t sequence_id;
-	uint64_t sequence_position;
-	uint64_t control_generation;
-	uint64_t transaction_id;
-	uint64_t dispatch_generation;
-	uint64_t request_generation;
-	uint64_t step_generation;
+	/* The shared submission view (the serving-adapter template fills it). */
+	SparkServingAdapterPendingCommon common;
 	uint32_t last_row_by_lane[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
@@ -123,9 +114,18 @@ typedef struct SparkGlm52ServingState
 
 static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 {
-	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
-	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_GLM52_SERVING_TOPOLOGY_FLAG | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
+		SPARK_GLM52_SERVING_ADAPTER_ID,
+		SPARK_GLM52_SERVING_MODEL_ID,
+		GLM52_MODEL_REVISION,
+		SPARK_GLM52_SERVING_PROGRAM_NAME,
+		GLM52_CONTRACT_SHA256),
+	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
+		SPARK_GLM52_SERVING_TOPOLOGY_FLAG |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV),
 	.stage_count = SPARK_GLM52_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -142,173 +142,17 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.max_speculative_token_count = 0u,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.cache_block_token_count = 64u,
-	.adapter_id = SPARK_GLM52_SERVING_ADAPTER_ID,
-	.model_id = SPARK_GLM52_SERVING_MODEL_ID,
-	.model_revision = GLM52_MODEL_REVISION,
-	.driver_program_name = SPARK_GLM52_SERVING_PROGRAM_NAME,
-	.artifact_sha256 = GLM52_CONTRACT_SHA256,
 	.stage_layer_counts = SPARK_GLM52_SERVING_STAGE_LAYERS,
 	.boundary_sideband_kinds = {0u},
 	.boundary_sideband_bytes_per_sequence = {0u}
 };
 
-static int32_t SparkGlm52ServingJsonMember(
-	const SparkJsonDocument *document,
-	int32_t root,
-	const char *name)
-{
-	return(SparkJsonFindObjectMember(document,root,name));
-}
-
-static SparkStatus SparkGlm52ServingJsonUnsigned(
-	const SparkJsonDocument *document,
-	int32_t root,
-	const char *name,
-	uint32_t *value)
-{
-	int32_t token;
-	token = SparkGlm52ServingJsonMember(document,root,name);
-	return(token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,token,value));
-}
-
-static SparkStatus SparkGlm52ServingLoadTpAlgorithms(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkTpDeviceCollectiveTopology *topology)
-{
-	int32_t element,token;
-	uint32_t count,index,mask;
-	token = SparkGlm52ServingJsonMember(document,object,"algorithms");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	mask = 0u;
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		if ( SparkJsonStringEquals(document,element,"recursive_doubling") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-		else if ( SparkJsonStringEquals(document,element,
-				"counter_rotating_split_ring") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
-		else if ( SparkJsonStringEquals(document,element,"direct_all_to_all") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
-		else
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	/* The collective implements split-ring and direct-all-to-all only at
-	 * tp_degree 4, so TP8 runs recursive_doubling alone and the two
-	 * algorithm-specific thresholds must be zero. */
-	if ( count != 1u || mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	topology->algorithm_mask = mask;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkGlm52ServingLoadTpStepRails(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkTpDeviceCollectiveTopology *topology)
-{
-	int32_t element,token;
-	uint32_t count,index,value;
-	SparkStatus status;
-	token = SparkGlm52ServingJsonMember(document,object,"step_rail_indices");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
-		SparkJsonGetArrayElementCount(document,token) !=
-			SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-			SparkJsonGetUInt32(document,element,&value);
-		if ( status != SPARK_STATUS_OK || value >=
-			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		topology->step_rail_indices[index] = value;
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkGlm52ServingLoadTpRailHosts(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkTpDeviceCollectiveTopology *topology,
-	uint32_t tp_degree)
-{
-	int32_t element,host_element,token;
-	uint32_t host_count,index,rail;
-	char *host;
-	SparkStatus status;
-	token = SparkGlm52ServingJsonMember(document,object,"rail_peer_hosts");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
-		SparkJsonGetArrayElementCount(document,token) !=
-			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	topology->rail_count = SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT;
-	for (rail=0u; rail<topology->rail_count; rail++)
-	{
-		element = SparkJsonGetArrayElement(document,token,rail);
-		if ( element < 0 ||
-			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		host_count = SparkJsonGetArrayElementCount(document,element);
-		if ( host_count != tp_degree )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		for (index=0u; index<host_count; index++)
-		{
-			host_element = SparkJsonGetArrayElement(document,element,index);
-			host = 0;
-			status = host_element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-				SparkJsonCopyString(document,host_element,&host);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkCopyString(
-					topology->rail_rank_hosts[rail][index],
-					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
-			free(host);
-			if ( status != SPARK_STATUS_OK )
-				return(status);
-		}
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkGlm52ServingValidateTpCollectiveMembers(
-	const SparkJsonDocument *document,
-	int32_t object,
-	uint32_t backend_kind)
-{
-	static const char *const base_members[] =
-	{
-		"backend","backend_module_path","collective_identifier",
-		"listen_port","connect_timeout_milli","operation_timeout_milli",
-		"peer_hosts","peer_ports"
-	};
-	static const char *const adaptive_members[] =
-	{
-		"backend","backend_module_path","collective_identifier",
-		"listen_port","connect_timeout_milli","operation_timeout_milli",
-		"peer_hosts","peer_ports","algorithms",
-		"direct_all_to_all_max_payload_bytes",
-		"split_ring_min_payload_bytes","rail_peer_hosts",
-		"step_rail_indices"
-	};
-	const char *const *members;
-	uint32_t member_count;
-	members = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
-		adaptive_members : base_members;
-	member_count = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
-		(uint32_t)(sizeof(adaptive_members) / sizeof(adaptive_members[0])) :
-		(uint32_t)(sizeof(base_members) / sizeof(base_members[0]));
-	return(SparkJsonValidateObjectMembersExact(document,object,members,
-		member_count));
-}
-
+/* The tp_collective parse is the serving-adapter template's; the family
+ * policy is glm52's TP8 flavor: recursive doubling alone with both
+ * algorithm-specific thresholds zero, the degraded single-rank zero
+ * identifier allowed, and contiguous peer ports deriving the control-port
+ * base. The peer arrays stage against the configuration's tp_degree - the
+ * parse runs before the tp_degree==8 cross-check, exactly as pasted. */
 static SparkStatus SparkGlm52ServingLoadTpCollective(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -316,132 +160,31 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	SparkGlm52ServingState *state,
 	uint32_t tp_degree)
 {
-	int32_t object,token,element;
-	uint32_t count,index,port;
-	uint64_t collective_identifier;
-	char *host,*relative_backend_path;
+	SparkTpCollectiveConfigPolicy policy;
+	SparkTpCollectiveAdapterConfig config;
 	SparkStatus status;
-	if ( document == 0 || runtime_root == 0 || state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(&state->tp_collective_topology,0,
-		sizeof(state->tp_collective_topology));
-	state->tp_collective_topology.abi_version =
-		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
-	state->tp_collective_topology.descriptor_bytes =
-		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
-	object = SparkGlm52ServingJsonMember(document,root,"tp_collective");
-	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	token = SparkGlm52ServingJsonMember(document,object,"backend");
-	if ( token < 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( SparkJsonStringEquals(document,token,"nccl") )
-		state->tp_collective_backend_kind =
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
-	else if ( SparkJsonStringEquals(document,token,"hidden_transport") )
-		state->tp_collective_backend_kind =
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-	else
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkGlm52ServingValidateTpCollectiveMembers(document,object,
-		state->tp_collective_backend_kind);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	relative_backend_path = 0;
-	token = SparkGlm52ServingJsonMember(document,object,"backend_module_path");
-	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-		SparkJsonCopyString(document,token,&relative_backend_path);
+	policy.peer_count = tp_degree;
+	policy.allow_zero_collective_identifier = 1u;
+	policy.require_contiguous_peer_ports = 1u;
+	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_RECURSIVE_DOUBLING_ONLY;
+	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED;
+	memset(&config,0,sizeof(config));
+	config.backend_module_path_buffer = state->tp_collective_backend_path;
+	config.backend_module_path_bytes = sizeof(state->tp_collective_backend_path);
+	status = SparkServingAdapterTemplateLoadTpCollective(document,root,
+		runtime_root,&policy,&config);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkResolveRuntimePath(runtime_root,relative_backend_path,
-			state->tp_collective_backend_path,
-			sizeof(state->tp_collective_backend_path));
-	free(relative_backend_path);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	token = SparkGlm52ServingJsonMember(document,object,"collective_identifier");
-	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt64(document,token,&collective_identifier);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	/* Identifier zero is the degraded single-rank bringup mode: the module
-	 * keeps the pack's tp geometry but runs with every reduce elided. */
-	state->tp_collective_identifier = collective_identifier;
-	status = SparkGlm52ServingJsonUnsigned(document,object,"listen_port",&port);
-	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	state->tp_listen_port = (uint16_t)port;
-	status = SparkGlm52ServingJsonUnsigned(document,object,"connect_timeout_milli",&state->tp_connect_timeout_milli);
-	if ( status != SPARK_STATUS_OK || state->tp_connect_timeout_milli == 0u )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	status = SparkGlm52ServingJsonUnsigned(document,object,"operation_timeout_milli",&state->tp_operation_timeout_milli);
-	if ( status != SPARK_STATUS_OK || state->tp_operation_timeout_milli == 0u )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	token = SparkGlm52ServingJsonMember(document,object,"peer_hosts");
-	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	state->tp_collective_topology.rank_count = count;
-	for (index=0u; index<count; index++)
 	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		host = 0;
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(document,element,&host);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkCopyString(
-				state->tp_collective_topology.rank_hosts[index],
-				SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
-		free(host);
-		if ( status != SPARK_STATUS_OK ||
-			state->tp_collective_topology.rank_hosts[index][0] == '\0' )
-			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
+		state->tp_collective_backend_kind = config.backend_kind;
+		state->tp_collective_identifier = config.collective_identifier;
+		state->tp_listen_port = config.listen_port;
+		memcpy(state->tp_peer_ports,config.peer_ports,sizeof(state->tp_peer_ports));
+		state->tp_connect_timeout_milli = config.connect_timeout_milli;
+		state->tp_operation_timeout_milli = config.operation_timeout_milli;
+		state->tp_collective_control_port_base = config.control_port_base;
+		state->tp_collective_topology = config.topology;
 	}
-	token = SparkGlm52ServingJsonMember(document,object,"peer_ports");
-	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,element,&port);
-		if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
-			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-		state->tp_peer_ports[index] = (uint16_t)port;
-	}
-	state->tp_collective_control_port_base = state->tp_peer_ports[0];
-	for (index=1u; index<count; index++)
-	{
-		if ( state->tp_peer_ports[index] !=
-			(uint16_t)(state->tp_collective_control_port_base + index) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	if ( state->tp_collective_backend_kind ==
-		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-	{
-		status = SparkGlm52ServingLoadTpAlgorithms(document,object,
-			&state->tp_collective_topology);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm52ServingJsonUnsigned(document,object,
-				"direct_all_to_all_max_payload_bytes",
-				&state->tp_collective_topology.direct_all_to_all_max_payload_bytes);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm52ServingJsonUnsigned(document,object,
-				"split_ring_min_payload_bytes",
-				&state->tp_collective_topology.split_ring_min_payload_bytes);
-		if ( status == SPARK_STATUS_OK &&
-			(state->tp_collective_topology.direct_all_to_all_max_payload_bytes != 0u ||
-			 state->tp_collective_topology.split_ring_min_payload_bytes != 0u) )
-			status = SPARK_STATUS_SCHEMA_ERROR;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm52ServingLoadTpRailHosts(document,object,
-				&state->tp_collective_topology,tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm52ServingLoadTpStepRails(document,object,
-				&state->tp_collective_topology);
-	}
-	(void)fprintf(stderr,"GLM52-ADAPTER LoadTpCollective rc=%d backend=%u\n",(int)status,state->tp_collective_backend_kind);
+	(void)fprintf(stderr,"GLM52-ADAPTER LoadTpCollective rc=%d backend=%u\n",(int)status,config.backend_kind);
 	return(status);
 }
 
@@ -468,26 +211,26 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkJsonValidateObjectMembersExact(&document,root,SparkGlm52ServingConfigurationMembers,(uint32_t)(sizeof(SparkGlm52ServingConfigurationMembers) / sizeof(SparkGlm52ServingConfigurationMembers[0])));
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"schema_version",&schema_version);
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	token = status == SPARK_STATUS_OK ? SparkGlm52ServingJsonMember(&document,root,"model_revision") : -1;
+	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"model_revision") : -1;
 	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,GLM52_MODEL_REVISION)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	token = status == SPARK_STATUS_OK ? SparkGlm52ServingJsonMember(&document,root,"expert_weight_codec") : -1;
+	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"expert_weight_codec") : -1;
 	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,GLM52_EXPERT_CODEC_NAME)) )
 		status = SPARK_STATUS_TARGET_MISMATCH;
-	token = status == SPARK_STATUS_OK ? SparkGlm52ServingJsonMember(&document,root,"stage_pack_path") : -1;
+	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"stage_pack_path") : -1;
 	if ( status == SPARK_STATUS_OK )
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"execution_row_capacity",execution_row_capacity);
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"execution_row_capacity",execution_row_capacity);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"tp_degree",tp_degree);
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"tp_degree",tp_degree);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ServingJsonUnsigned(&document,root,"tp_rank",tp_rank);
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"tp_rank",tp_rank);
 	if ( status == SPARK_STATUS_OK && (*tp_degree == 0u || *tp_rank >= *tp_degree) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
@@ -538,37 +281,23 @@ static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 	const SparkModelServingSubmission *submission)
 {
 	SparkGlm52ServingPending *pending;
-	uint32_t index,lane,row;
-	for (index=0u; index<state->pipeline_slot_count; index++)
-	{
-		pending = &state->pending[index];
-		if ( pending->active == 0u )
-		{
-			memset(pending,0,sizeof(*pending));
-			pending->owner = state;
-			pending->active = 1u;
-			pending->row_count = submission->row_count;
-			pending->lane_count = submission->lane_count;
-			pending->active_sequence_count = submission->active_sequence_count;
-			pending->submission_id = submission->submission_id;
-			pending->request_id = submission->request_id;
-			pending->sequence_id = submission->sequence_id;
-			pending->sequence_position = submission->sequence_position;
-			pending->control_generation = submission->control_generation;
-			pending->transaction_id = submission->transaction_id;
-			pending->dispatch_generation = submission->dispatch_generation;
-			pending->request_generation = submission->request_generation;
-			pending->step_generation = submission->step_generation;
-			for (row=0u; row<submission->row_count; row++)
-			{
-				lane = submission->row_lane_indices[row];
-				pending->last_row_by_lane[lane] = row;
-				pending->resident_slots[row] = submission->lanes[lane].resident_sequence_slot;
-			}
-			return(pending);
-		}
-	}
-	return(0);
+	uint32_t row;
+	pending = (SparkGlm52ServingPending *)
+		SparkServingAdapterTemplateReservePending(state->pending,
+			sizeof(*pending),state->pipeline_slot_count,
+			(uint32_t)offsetof(SparkGlm52ServingPending,last_row_by_lane),
+			submission);
+	if ( pending == 0 )
+		return(0);
+	pending->owner = state;
+	pending->common.active = 1u;
+	/* glm52 stages resident slots per ROW: the TP8 fanout's row order is
+	 * the slot order (the family fill step; the template owns the common
+	 * view and last_row_by_lane). */
+	for (row=0u; row<submission->row_count; row++)
+		pending->resident_slots[row] =
+			submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot;
+	return(pending);
 }
 
 static void SparkGlm52ServingOrphanDriverCompletion(
@@ -592,22 +321,22 @@ static void SparkGlm52ServingDriverCompletion(
 	uint32_t index,matches;
 	pending = (SparkGlm52ServingPending *)completion_context;
 	state = pending != 0 ? pending->owner : 0;
-	if ( state == 0 || pending->active == 0u || driver_completion == 0 )
+	if ( state == 0 || pending->common.active == 0u || driver_completion == 0 )
 		return;
-	matches = driver_completion->request_id == pending->request_id && driver_completion->sequence_id == pending->sequence_id && driver_completion->sequence_position == pending->sequence_position && driver_completion->program_id == state->program->program_id;
+	matches = driver_completion->request_id == pending->common.request_id && driver_completion->sequence_id == pending->common.sequence_id && driver_completion->sequence_position == pending->common.sequence_position && driver_completion->program_id == state->program->program_id;
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
 	completion.status = matches != 0u ? (uint32_t)driver_completion->status : SPARK_STATUS_SCHEMA_ERROR;
-	completion.submission_id = pending->submission_id;
-	completion.request_id = pending->request_id;
-	completion.sequence_id = pending->sequence_id;
-	completion.sequence_position = pending->sequence_position;
-	completion.control_generation = pending->control_generation;
-	completion.transaction_id = pending->transaction_id;
-	completion.dispatch_generation = pending->dispatch_generation;
-	completion.request_generation = pending->request_generation;
-	completion.step_generation = pending->step_generation;
+	completion.submission_id = pending->common.submission_id;
+	completion.request_id = pending->common.request_id;
+	completion.sequence_id = pending->common.sequence_id;
+	completion.sequence_position = pending->common.sequence_position;
+	completion.control_generation = pending->common.control_generation;
+	completion.transaction_id = pending->common.transaction_id;
+	completion.dispatch_generation = pending->common.dispatch_generation;
+	completion.request_generation = pending->common.request_generation;
+	completion.step_generation = pending->common.step_generation;
 	completion.accepted_token_count = driver_completion->accepted_token_count;
 	completion.queue_delay_ns = driver_completion->queue_delay_ns;
 	completion.service_time_ns = driver_completion->service_time_ns;
@@ -621,12 +350,12 @@ static void SparkGlm52ServingDriverCompletion(
 	if ( state->stage_index + 1u == SPARK_GLM52_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
 	{
 		completion.tokens_per_sequence = 1u;
-		completion.token_count = pending->active_sequence_count;
+		completion.token_count = pending->common.active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		for (index=0u; index<completion.token_count; index++)
 			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
 	}
-	pending->active = 0u;
+	pending->common.active = 0u;
 	state->completion_function(state->completion_context,&completion);
 }
 
@@ -644,7 +373,7 @@ static uint32_t SparkGlm52ServingAvailableSubmissionCount(
 	uint32_t available,index;
 	available = 0u;
 	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += state->pending[index].active == 0u ? 1u : 0u;
+		available += state->pending[index].common.active == 0u ? 1u : 0u;
 	return(available);
 }
 
@@ -669,45 +398,45 @@ static void SparkGlm52ServingDestroy(void *adapter_state)
 	free(state);
 }
 
+/* The program's flag/profile contract stays family policy on the shared
+ * spine: SparkModelDriverProgramSupportsRuntimeLimits also checks the
+ * profile's max_inflight and max_resident_sequences, which the pasted
+ * inline conditions did not - a shared approximation would change
+ * accept/reject behavior on real descriptors. */
+static SparkStatus SparkGlm52ServingAcceptsProgram(
+	const SparkModelDriverProgramDescriptor *program,
+	void *accept_context)
+{
+	SparkGlm52ServingState *state;
+	state = (SparkGlm52ServingState *)accept_context;
+	if ( SparkModelDriverProgramSupportsRuntimeLimits(program,SPARK_GLM52_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
+		return(SPARK_STATUS_TARGET_MISMATCH);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm52ServingLoadDriver(
 	SparkGlm52ServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
-	const SparkModelDriverDescriptor *descriptor;
-	SparkModelDriverCreateRequest request;
-	char error_buffer[512];
+	SparkServingAdapterDriverRequest request;
+	const SparkModelDriverProgramDescriptor *program;
 	SparkStatus status;
-	SparkLoadedModelDriverReset(&state->driver);
-	status = SparkLoadModelDriver(configuration->driver_shared_object_path,configuration->node_target,&state->driver,error_buffer,sizeof(error_buffer));
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	descriptor = state->driver.interface->descriptor;
-	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM52_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM52_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM52_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM52_SERVING_TARGET) != 0 || strcmp(descriptor->model_description_sha256,GLM52_CONTRACT_SHA256) != 0 )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
-	if ( state->program == 0 )
-		return(SPARK_STATUS_NOT_FOUND);
-	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || SparkModelDriverProgramSupportsRuntimeLimits(state->program,SPARK_GLM52_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	SparkModelDriverInitializeCreateRequest(&request);
-	request.node_id = configuration->node_id;
-	request.node_target = configuration->node_target;
+	request.contract.driver_model_id = SPARK_GLM52_SERVING_DRIVER_MODEL_ID;
+	request.contract.driver_model_revision = GLM52_MODEL_REVISION;
+	request.contract.driver_stage_name = SPARK_GLM52_SERVING_STAGE_NAME;
+	request.contract.driver_target = SPARK_GLM52_SERVING_TARGET;
+	request.contract.model_description_sha256 = GLM52_CONTRACT_SHA256;
 	request.node_context = &state->node_context;
-	request.kv_logical_page_capacity =
-		configuration->runtime_limits.kv_logical_page_capacity;
-	request.kv_physical_page_capacity =
-		configuration->runtime_limits.kv_physical_page_capacity;
-	request.kv_backing_directory = configuration->kv_backing_directory;
-	request.kv_backing_maximum_bytes =
-		configuration->kv_backing_maximum_bytes;
-	request.execution_stream = configuration->execution_stream;
-	request.completion_function = SparkGlm52ServingOrphanDriverCompletion;
 	request.completion_context = state;
+	request.completion_function = SparkGlm52ServingOrphanDriverCompletion;
 	request.wake_function = SparkGlm52ServingDriverWake;
-	request.wake_context = state;
-	status = state->driver.interface->create(&request,&state->driver_instance);
+	program = 0;
+	status = SparkServingAdapterTemplateLoadDriver(&request,configuration,
+		&state->driver,&program,SparkGlm52ServingAcceptsProgram,state,
+		&state->driver_instance);
+	state->program = program;
 	(void)fprintf(stderr,"GLM52-ADAPTER LoadDriver rc=%d\n",(int)status);
-	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
+	return(status);
 }
 
 static SparkStatus SparkGlm52ServingValidateConfiguration(
@@ -1014,7 +743,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 		&pending->cache_lane_count);
 	if ( status != SPARK_STATUS_OK )
 	{
-		pending->active = 0u;
+		pending->common.active = 0u;
 		return(status);
 	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
@@ -1027,7 +756,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 		if ( status == SPARK_STATUS_OK )
 			status = state->program->submit(state->driver_instance,&frame);
 		if ( status != SPARK_STATUS_OK )
-			pending->active = 0u;
+			pending->common.active = 0u;
 		return(status);
 	}
 	SparkGlm52ServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
@@ -1037,7 +766,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 	if ( status == SPARK_STATUS_OK )
 		status = state->program->submit(state->driver_instance,&frame);
 	if ( status != SPARK_STATUS_OK )
-		pending->active = 0u;
+		pending->common.active = 0u;
 	return(status);
 }
 
