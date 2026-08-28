@@ -107,7 +107,7 @@ void SparkStageModuleLifecycleDestroy(
 /*
  * Publish the five firmware-module entry points (the names the module
  * library resolves) as delegations to the shared lifecycle. entry_prefix is
- * the family's MODULE_ENTRY_PREFIX (e.g. SparkQwen38_27bResidentDecodeStage)
+ * the family's MODULE_ENTRY_PREFIX (e.g. the family's entry symbol)
  * and ops_address is the address of the family's static ops table.
  */
 #define SPARK_STAGE_MODULE_LIFECYCLE_ENTRY_POINTS(entry_prefix, ops_address) \
