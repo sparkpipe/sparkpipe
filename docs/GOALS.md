@@ -20,6 +20,26 @@ inventing one. Ideas like "our own NVFP4/FP8 requant" are void; a
 future precision change means adopting a NEW official/vetted source
 and re qualifying.
 
+## OPERATING PRINCIPLE: the jigsaw (operator directive)
+
+Solve corners and edges first — the well-defined, independently
+completable pieces (front-door integrations, staging/manifests,
+quality gates, scoreboard, infra rules) — each completion gives the
+internal work a solid reference and removes a worry. Prioritize
+completions over open-ended explorations when choosing next work.
+
+## SLOP GATES (operator directive)
+
+Incoming code is audited at merge: (a) cyclomatic complexity audit
+(mean and max; the historical baseline is mean 7.33 / max 157 —
+regressions need in-commit justification); (b) the value metric
+Solutions/(Codesize^2) MAXIMIZED — a change that adds lines must
+add disproportionately more solution; (c) NO high-level DRY
+violations: the ~3,500 pasted adapter-lifecycle lines are the known
+debt and the DRY template is its fix; new pasted-lifecycle code is
+refused at review. AI slop (plausible filler, unjustified
+abstraction, silent fallbacks) gets rejected at merge, not admired.
+
 ## Near-term (days)
 
 1. glm5.3 Flash first tokens -> M5 exact-32K B1 + COMPSEC-17.
@@ -30,6 +50,11 @@ and re qualifying.
 4. Staging complete + tools/staging_manifest.py in the test gate.
 5. Every first cell quality-gated (COMPSEC-17 before "usable", full
    92x before "not horrible").
+6. liteLLM front door live (controller-side proxy routing every
+   deployment; one OpenAI-compatible endpoint for clients).
+7. Qwen Flash planned as TP4xPP4 16-rank bf16 (~21G/rank) per the
+   multi-topology fleet layout; internal NVMe kept clear of
+   non-essentials so topology variants coexist.
 
 ## Medium-term (weeks)
 

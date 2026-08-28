@@ -97,6 +97,16 @@ read it before writing allocation code):
    REQUEST with call sites — the family pack loader's mapping is the
    sanctioned file-backed path; do not invent a second one.
 
+## MERGE GATES (operator directive: no slop)
+
+Every merge into main passes: (a) the code-size ratchet RE-RUN AFTER
+ANY CONFLICT RESOLUTION (tonight's +15K drift came from resolutions
+keeping stale numbers); (b) a cyclomatic check on changed files
+(mean/max vs the 7.33/157 baseline; regressions justify in-commit);
+(c) the value test Solutions/(Codesize^2) — additions must buy
+disproportionate solution; (d) NO new high-level DRY violations
+(pasted adapter lifecycle = refused; the DRY template is the cure).
+
 ## QUANTIZATION POLICY (hard, operator directive 2026-08-29 — docs/GOALS.md)
 
 NO self-made quantizations. Weights arrive already-quantized from
