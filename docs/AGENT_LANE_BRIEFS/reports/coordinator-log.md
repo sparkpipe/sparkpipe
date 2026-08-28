@@ -829,3 +829,12 @@ Operator question: does two-model co-residency work? Phase-1 results:
   qwen38max lane merge) queued for the next coordinator window — the
   LmCopyRowsKernel 1D-grid bug is next priority (it's a correctness
   fix, not hygiene).
+
+## 2026-08-29 ~9:3x — QWEN-FLASH PACK-COMPLETE + HELD (merged)
+
+- 16/16 v4 packs (bf16 repackage of warm source, quant-policy clean),
+  byte-trace verified, receipts per pack; serving stack staged
+  IDENTICAL on all 16 nodes; wave = one command, HELD per operator
+  pause. Two latent staging bugs fixed pre-launch (TP4xPP3 geometry,
+  pgrep -f teardown). Verifier gained the bf16-expert branch. spark4-7
+  reservations released to the housecleaning sprint.
