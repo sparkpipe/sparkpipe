@@ -22,7 +22,7 @@ tools/perf_scoreboard.py parses this section; edit HERE, never downstream.
 | Qwen 3.8 Max | 1.29 | B1 TP4xPP4 anchors | — | not measured | anchors | 2026-08 |
 | K3 | 18.0 | B1 single-stage; MODULE CHAIN VERIFIED through collective on real deployed pack (fleet bring-up = first fleet number) | — | not measured | single-stage + main fixes | 2026-08-28 |
 | Qwen 3.8 Flash | — | M5 whole-stack TP4 gate PASSED (bit-exact, cross-node); M6 live smoke + hc/indexer/PLE ports next | — | — | main e3b795a | 2026-08-28 |
-| GLM 5.3 Flash | — | lane M1-M3 done, validator pending | — | — | — | — |
+| GLM 5.3 Flash | — | M3 validator on GPU: mHC chain EXACT on device (rel_l2 0.0016), tier1 bit-exact; one isolated KDA step-0 defect (element 0) under chase (PR #727, rebased on glm52 fix) | — | — | lane/glm53 | 2026-08-28 |
 | DSV4 Pro | — | 16 TP4xPP4 rank packs built+verified (~93GB each, DSpark draft replicated), 14/16 deployed; old packs were never corrupt (verifier mismatch by construction); driver rebuild pending ready line (PR #729) | — | — | lane/dsv4pro merged | 2026-08-28 |
 <!-- scoreboard:end -->
 
