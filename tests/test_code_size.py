@@ -813,7 +813,12 @@ from pathlib import Path
 # RouteBinding variant (convergent with 20539c6; the guard preserves the
 # TP4 ring alias's purpose while fixing recursive-only degrees) + wave
 # launcher tooling. 209028 exact.
-CEILING = 209028
+# Prefix-cache content verification (external audit's TOP correctness
+# item): SHA-256 per-block digest stored on every entry, compared on
+# every hash-chain hit — wrong-KV reuse goes from a silent 2^-192-ish
+# hash collision to a 2^-256 non-event. LIVE_ONLY placeholders are
+# sequence-bound and skipped by the compare. 209095 exact.
+CEILING = 209095
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

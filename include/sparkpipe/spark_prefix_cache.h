@@ -62,6 +62,13 @@ typedef struct SparkPrefixCacheEntry
     uint64_t lookahead_protection_epoch;
     uint32_t hash_next;
     uint32_t reserved1;
+    /* Content digest: SHA-256 of this block's token IDs, compared on
+     * every hash-chain hit. The three 64-bit chain hashes are fast
+     * lookups, NOT identity — a collision silently reused another
+     * request's KV (external audit's top correctness concern). The
+     * digest makes wrong-KV reuse a 2^-256 event instead of a
+     * quiet 2^-192-ish one, at 32 bytes per entry. */
+    uint8_t content_digest[32];
 } SparkPrefixCacheEntry;
 
 typedef struct SparkPrefixCacheSequenceBinding
