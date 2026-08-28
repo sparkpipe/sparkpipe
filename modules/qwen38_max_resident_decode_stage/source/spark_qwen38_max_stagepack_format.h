@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
 
 /*
@@ -197,36 +198,47 @@ static inline void SparkQwen38MaxStagePackExpectedGeometry(SparkQwen38MaxStagePa
 	header->file_bytes = 0u;
 }
 
-/* Field-by-field comparison; returns 0 on match, nonzero on any drift. */
+/* Field-by-field comparison; returns 0 on match, nonzero on any drift.
+ * The comparison is the library's; the layout proof is this family's
+ * compile-time admission ticket to it. */
+SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(SparkQwen38MaxStagePackHeader);
 static inline int32_t SparkQwen38MaxStagePackHeaderMatches(const SparkQwen38MaxStagePackHeader *file_header, const SparkQwen38MaxStagePackHeader *expected)
 {
-	if ( file_header->magic != expected->magic || file_header->format_version != expected->format_version || file_header->header_bytes != expected->header_bytes || file_header->directory_entry_bytes != expected->directory_entry_bytes )
-		return(-1);
-	if ( file_header->tensor_count != expected->tensor_count || file_header->hidden_dimension != expected->hidden_dimension || file_header->layer_count != expected->layer_count || file_header->first_layer_index != expected->first_layer_index || file_header->total_layer_count != expected->total_layer_count )
-		return(-2);
-	if ( file_header->attention_period != expected->attention_period || file_header->full_attention_phase != expected->full_attention_phase || file_header->gdn_key_head_count != expected->gdn_key_head_count || file_header->gdn_value_head_count != expected->gdn_value_head_count || file_header->gdn_head_key_dimension != expected->gdn_head_key_dimension || file_header->gdn_head_value_dimension != expected->gdn_head_value_dimension || file_header->gdn_conv_kernel != expected->gdn_conv_kernel )
-		return(-3);
-	if ( file_header->attn_query_head_count != expected->attn_query_head_count || file_header->attn_kv_head_count != expected->attn_kv_head_count || file_header->attn_head_dimension != expected->attn_head_dimension || file_header->attn_rope_dimension != expected->attn_rope_dimension )
-		return(-4);
-	if ( file_header->routed_expert_count != expected->routed_expert_count || file_header->experts_per_token != expected->experts_per_token || file_header->expert_intermediate_dimension != expected->expert_intermediate_dimension || file_header->output_vocab_count != expected->output_vocab_count || file_header->mxfp4_group_size != expected->mxfp4_group_size || file_header->mtp_layer_count != expected->mtp_layer_count )
-		return(-5);
-	return(0);
+	return(SparkStagePackHeaderMatches(
+		(const SparkStagePackHeaderCommon *)file_header,
+		(const SparkStagePackHeaderCommon *)expected));
 }
 
-typedef struct SparkQwen38MaxStagePackTensorShape
+/* The shape algebra and header comparison are the stagepack format
+ * library's; this family states its geometry as data and keeps only the
+ * tensors that are genuinely its own. The static asserts pin the family's
+ * ABI codes to the shared ones so neither side can drift silently. */
+typedef SparkStagePackTensorShape SparkQwen38MaxStagePackTensorShape;
+
+_Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"qwen38 bf16 weight code must match the shared format");
+_Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"qwen38 f32 weight code must match the shared format");
+_Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 == SPARK_STAGEPACK_FORMAT_WEIGHT_FP8_E4M3_F32B128,"qwen38 fp8 weight code must match the shared format");
+_Static_assert(SPARK_QWEN38_MAX_STAGEPACK_CLASS_GLOBAL == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL,"qwen38 global class must match the shared format");
+_Static_assert(SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER,"qwen38 every-layer class must match the shared format");
+_Static_assert(SPARK_QWEN38_MAX_STAGEPACK_CLASS_GDN_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GDN_LAYER,"qwen38 gdn class must match the shared format");
+_Static_assert(SPARK_QWEN38_MAX_STAGEPACK_CLASS_ATTN_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_ATTN_LAYER,"qwen38 attn class must match the shared format");
+
+static const SparkStagePackGeometryTable SparkQwen38MaxStagePackGeometry =
 {
-	uint32_t rows;
-	uint32_t columns;
-	uint32_t natural_format;
-	uint32_t layer_class;
-} SparkQwen38MaxStagePackTensorShape;
+	.norm_width = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,
+	.hidden_dimension = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,
+	.routed_expert_count = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,
+	.expert_intermediate_dimension = SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,
+	.gdn_conv_channels = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS,
+	.gdn_value_dimension = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION,
+	.gdn_value_head_count = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT,
+	.gdn_head_value_dimension = SPARK_QWEN38_MAX_MODEL_GDN_HEAD_VALUE_DIMENSION,
+	.gdn_conv_kernel = SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL
+};
 
 static inline void SparkQwen38MaxStagePackShapeInit(SparkQwen38MaxStagePackTensorShape *shape)
 {
-	shape->rows = 0u;
-	shape->columns = 0u;
-	shape->natural_format = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16;
-	shape->layer_class = SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER;
+	SparkStagePackShapeInit(shape);
 }
 
 static inline int32_t SparkQwen38MaxStagePackShapeGlobal(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
@@ -260,83 +272,16 @@ static inline int32_t SparkQwen38MaxStagePackShapeGlobal(uint32_t tensor_kind, S
 
 static inline int32_t SparkQwen38MaxStagePackShapeEveryLayer(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
 {
-	shape->layer_class = SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER;
-	switch ( tensor_kind )
-	{
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM:
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM:
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1:
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		shape->natural_format = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		shape->natural_format = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE:
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_UP:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_DOWN:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-		return(0);
-	default:
-		return(-1);
-	}
+	/* The whole every-layer inventory of this family is the shared axis. */
+	return(SparkStagePackShapeEveryLayerCommon(tensor_kind,
+		&SparkQwen38MaxStagePackGeometry,shape));
 }
 
 static inline int32_t SparkQwen38MaxStagePackShapeGdn(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
 {
-	shape->layer_class = SPARK_QWEN38_MAX_STAGEPACK_CLASS_GDN_LAYER;
-	switch ( tensor_kind )
-	{
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_QKV:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_GATE:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA:
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_OUTPUT:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_CONV_WEIGHT:
-		shape->rows = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_A_LOG:
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DT_BIAS:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT;
-		shape->natural_format = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32;
-		return(0);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_NORM:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_MAX_MODEL_GDN_HEAD_VALUE_DIMENSION;
-		return(0);
-	default:
-		return(-1);
-	}
+	/* The whole GDN inventory of this family is the shared axis. */
+	return(SparkStagePackShapeGdnCommon(tensor_kind,
+		&SparkQwen38MaxStagePackGeometry,shape));
 }
 
 static inline int32_t SparkQwen38MaxStagePackShapeAttn(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
