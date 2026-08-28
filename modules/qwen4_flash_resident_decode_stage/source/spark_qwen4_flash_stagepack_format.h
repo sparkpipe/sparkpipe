@@ -22,7 +22,11 @@
  */
 
 #define SPARK_QWEN4_FLASH_STAGEPACK_MAGIC 0x50533451u /* 'Q4SP' little endian: the Flash family pack format (own magic, not the qwen38 'Q8SP') */
-#define SPARK_QWEN4_FLASH_STAGEPACK_FORMAT_VERSION 1u
+/* Version 2: the hyper-connection residual (full 4-stream hc_norm on the
+ * norm slots plus the per-sublayer mixers), the attention indexer, the PLE
+ * n-gram block and the global/mtp readout mixers join the inventory; the
+ * norm-slot widths change 2560 -> 10240, so v1 packs fail closed at load. */
+#define SPARK_QWEN4_FLASH_STAGEPACK_FORMAT_VERSION 2u
 #define SPARK_QWEN4_FLASH_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_QWEN4_FLASH_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
 #define SPARK_QWEN4_FLASH_STAGEPACK_PAYLOAD_ALIGNMENT 256u
@@ -61,13 +65,40 @@ typedef enum SparkQwen4FlashStagePackTensorKind
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM = 29,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM = 30,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM = 31,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_KIND_COUNT = 32
+	/* v2: hyper-connection residual, per sublayer (attn and mlp sets),
+	 * the attention indexer (attn-layer class), the readout mixers and
+	 * the PLE block (layer PLE_LAYER_INDEX only). */
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN = 32,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP = 33,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT = 34,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN = 35,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP = 36,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT = 37,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK = 38,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM = 39,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM = 40,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN = 41,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP = 42,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN = 43,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP = 44,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_KEY = 45,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_VALUE = 46,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_KEY = 47,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_QUERY = 48,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_CONV = 49,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_CONV = 50,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_MULTIPLIERS = 51,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_VOCABS = 52,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS = 53,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NGRAM = 54,
+	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_KIND_COUNT = 55
 } SparkQwen4FlashStagePackTensorKind;
 
 #define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_GLOBAL 0u
 #define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_EVERY_LAYER 1u
 #define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_GDN_LAYER 2u
 #define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_ATTN_LAYER 3u
+#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_PLE_LAYER 4u
 
 typedef struct SparkQwen4FlashStagePackHeader
 {
@@ -147,31 +178,45 @@ static inline uint32_t SparkQwen4FlashStagePackFullAttentionLayersBelow(uint32_t
 }
 
 /*
- * The tensor inventory of a slice, computed, never declared: ten tensors on
- * every layer (two norms and the eight MoE tensors), nine more on a GDN
- * layer, six more on a full-attention layer, the embedding on stage zero and
- * the final norm, LM head, four MTP globals, sixteen MTP layer tensors and
+ * The tensor inventory of a slice, computed, never declared: sixteen tensors
+ * on every layer (two hc norms and the eight MoE tensors plus the six hc
+ * mixer tensors), nine more on a GDN layer, nine more on a full-attention
+ * layer (attn tensors + indexer), ten PLE tensors on the PLE layer, the
+ * embedding on stage zero and the final norm, LM head, mixer pair, four MTP
+ * globals plus the MTP mixer pair, twenty-five MTP layer tensors and
  * (multi-stage only) a second embedding copy on the last stage.
  */
 static inline uint32_t SparkQwen4FlashStagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {
 	uint32_t full = SparkQwen4FlashStagePackFullAttentionLayersBelow(first_layer_index + layer_count) - SparkQwen4FlashStagePackFullAttentionLayersBelow(first_layer_index);
 	uint32_t gdn = layer_count - full;
-	uint32_t tensors = (layer_count * 10u) + (gdn * 9u) + (full * 6u);
+	uint32_t tensors = (layer_count * 16u) + (gdn * 9u) + (full * 9u);
 	if ( first_layer_index == 0u )
 		tensors += 1u;
 	if ( first_layer_index + layer_count == SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT )
-		tensors += 2u + 4u + 16u + (first_layer_index != 0u ? 1u : 0u);
+		tensors += 2u + 4u + 4u + 25u + (first_layer_index != 0u ? 1u : 0u);
 	return(tensors);
 }
 
-static inline void SparkQwen4FlashStagePackExpectedGeometry(SparkQwen4FlashStagePackHeader *header, uint32_t first_layer_index, uint32_t layer_count)
+/* Real packs always carry the ten PLE tensors when the slice covers the PLE
+ * layer; synthesized mid-pipeline test packs may omit the whole block (the
+ * 23.8 GiB n-gram table is not synthesizable at true shape), which the
+ * module accepts ONLY under the explicit allow-missing-ple env gate. */
+static inline uint32_t SparkQwen4FlashStagePackExpectedTensorCountWithPle(uint32_t first_layer_index, uint32_t layer_count, uint32_t include_ple)
+{
+	uint32_t tensors = SparkQwen4FlashStagePackExpectedTensorCount(first_layer_index,layer_count);
+	if ( include_ple != 0u && first_layer_index <= SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && first_layer_index + layer_count > SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX )
+		tensors += 10u;
+	return(tensors);
+}
+
+static inline void SparkQwen4FlashStagePackExpectedGeometry(SparkQwen4FlashStagePackHeader *header, uint32_t first_layer_index, uint32_t layer_count, uint32_t include_ple)
 {
 	header->magic = SPARK_QWEN4_FLASH_STAGEPACK_MAGIC;
 	header->format_version = SPARK_QWEN4_FLASH_STAGEPACK_FORMAT_VERSION;
 	header->header_bytes = SPARK_QWEN4_FLASH_STAGEPACK_HEADER_BYTES;
 	header->directory_entry_bytes = SPARK_QWEN4_FLASH_STAGEPACK_ENTRY_BYTES;
-	header->tensor_count = SparkQwen4FlashStagePackExpectedTensorCount(first_layer_index,layer_count);
+	header->tensor_count = SparkQwen4FlashStagePackExpectedTensorCountWithPle(first_layer_index,layer_count,include_ple);
 	header->hidden_dimension = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
 	header->layer_count = layer_count;
 	header->first_layer_index = first_layer_index;
@@ -241,17 +286,30 @@ static inline int32_t SparkQwen4FlashStagePackShapeGlobal(uint32_t tensor_kind, 
 		return(0);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM:
 		shape->rows = 1u;
-		shape->columns = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
 		return(0);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC:
 		shape->rows = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
 		shape->columns = 2u * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
 		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION;
+		return(0);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM:
+		shape->rows = 1u;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+		return(0);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM:
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM:
 		shape->rows = 1u;
-		shape->columns = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
 		return(0);
 	default:
 		return(-1);
@@ -265,9 +323,27 @@ static inline int32_t SparkQwen4FlashStagePackShapeEveryLayer(uint32_t tensor_ki
 	{
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM:
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM:
+		shape->rows = 1u;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+		return(0);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT:
 		shape->rows = 1u;
 		shape->columns = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
 		return(0);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE:
 		shape->rows = SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT;
@@ -362,6 +438,61 @@ static inline int32_t SparkQwen4FlashStagePackShapeAttn(uint32_t tensor_kind, Sp
 		shape->rows = 1u;
 		shape->columns = SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION;
 		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK:
+		shape->rows = (SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + SPARK_QWEN4_FLASH_MODEL_INDEXER_KV_HEAD_COUNT) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM:
+		shape->rows = 1u;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		return(0);
+	default:
+		return(-1);
+	}
+}
+
+/* PLE block shapes; only valid on the PLE layer (layer PLE_LAYER_INDEX).
+ * The I64 metadata rows are exact hash constants - they travel as raw
+ * little-endian int64, never converted. */
+static inline int32_t SparkQwen4FlashStagePackShapePle(uint32_t tensor_kind, SparkQwen4FlashStagePackTensorShape *shape)
+{
+	shape->layer_class = SPARK_QWEN4_FLASH_STAGEPACK_CLASS_PLE_LAYER;
+	switch ( tensor_kind )
+	{
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_KEY:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_VALUE:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_KEY:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_QUERY:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_CONV:
+		shape->rows = 1u;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_CONV:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_MULTIPLIERS:
+		shape->rows = 1u;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_SIZE;
+		shape->natural_format = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_VOCABS:
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS:
+		shape->rows = 1u;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_COUNT;
+		shape->natural_format = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64;
+		return(0);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NGRAM:
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_ROW_COUNT;
+		shape->columns = SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_DIMENSION;
+		return(0);
 	default:
 		return(-1);
 	}
@@ -380,6 +511,9 @@ static inline int32_t SparkQwen4FlashStagePackTensorShapeOf(uint32_t tensor_kind
 		return(0);
 	SparkQwen4FlashStagePackShapeInit(shape);
 	if ( SparkQwen4FlashStagePackShapeAttn(tensor_kind,shape) == 0 )
+		return(0);
+	SparkQwen4FlashStagePackShapeInit(shape);
+	if ( SparkQwen4FlashStagePackShapePle(tensor_kind,shape) == 0 )
 		return(0);
 	return(-1);
 }
@@ -455,6 +589,13 @@ static inline void SparkQwen4FlashStagePackNarrowShape(SparkQwen4FlashStagePackT
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD:
 		shape->rows = SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT / tp_degree;
 		break;
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NGRAM:
+		/* Vocab-sharded n-gram table (the decided plan): rank r holds rows
+		 * [r*rows/tp, (r+1)*rows/tp) of the head-major concatenated row
+		 * space; out-of-shard ids gather zero and the bf16 all-reduce
+		 * completes the embedding, exactly the main embedding pattern. */
+		shape->rows = SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_ROW_COUNT / tp_degree;
+		break;
 	default:
 		break; /* replicated: norms, scalars, MTP globals */
 	}
@@ -483,6 +624,8 @@ static inline int32_t SparkQwen4FlashStagePackResolvedShape(uint32_t tensor_kind
 		return(-4);
 	if ( shape->layer_class == SPARK_QWEN4_FLASH_STAGEPACK_CLASS_ATTN_LAYER && SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer_index) != 0u )
 		return(-5);
+	if ( shape->layer_class == SPARK_QWEN4_FLASH_STAGEPACK_CLASS_PLE_LAYER && layer_index != SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX )
+		return(-7);
 	return(0);
 }
 
@@ -496,6 +639,8 @@ static inline uint64_t SparkQwen4FlashStagePackPayloadBytes(uint32_t weight_form
 		return(elements);
 	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 || weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 )
 		return(elements * 4u);
+	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64 )
+		return(elements * 8u);
 	return(elements * (uint64_t)SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES);
 }
 

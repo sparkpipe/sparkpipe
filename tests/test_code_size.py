@@ -838,7 +838,12 @@ from pathlib import Path
 # template validator (config-never-format-string, %n hard-rejected) and
 # the dflash2 2056-row frame bound with module+kernel twins sharing one
 # define in dspark_format.h. 210893 exact.
-CEILING = 210893
+# qwen-flash-s6 pack-complete (a602037): 16/16 v4 bf16 packs built
+# (repackage-only, policy-clean) + byte-trace-verified; serving stack
+# staged identical on all 16; wave HELD per operator pause. Plus the
+# verifier's bf16-expert byte-trace branch and the two pre-launch
+# staging fixes. 213815 exact.
+CEILING = 213815
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

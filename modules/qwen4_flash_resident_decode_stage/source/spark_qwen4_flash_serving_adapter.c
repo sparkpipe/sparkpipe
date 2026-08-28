@@ -54,7 +54,7 @@
 #endif
 
 #define SPARK_QWEN4_FLASH_SERVING_ADAPTER_ID \
-	"spark.qwen4_flash.serving-adapter.tp4-pp3.v1"
+	"spark.qwen4_flash.serving-adapter.tp4pp4.v1"
 #define SPARK_QWEN4_FLASH_SERVING_MODEL_ID "Qwen/Qwen3.8-Flash-Next"
 #define SPARK_QWEN4_FLASH_SERVING_DRIVER_MODEL_ID \
 	"qwen4_flash.resident-decode-stage-firmware"
@@ -62,16 +62,23 @@
 #define SPARK_QWEN4_FLASH_SERVING_TARGET \
 	"cuda.sm121.qwen4_flash.resident_decode_stage.fp8"
 #define SPARK_QWEN4_FLASH_SERVING_PROGRAM_NAME "resident_decode"
-/* 12 world ranks at TP4xPP3 (48 layers, 4 per stage); stage_index is the world rank. The TP degree is a
- * RUNTIME value from the stage configuration ("tp_degree": 4 -> TP4xPP4,
- * 16 -> TP16xPP1), so one adapter serves both topologies. Pipeline
- * boundaries (hidden in/out, token in/out) are PP boundaries and the
- * per-PP-stage layer counts derive from the degree. The TP-rank tensor
- * sharding (column/row-parallel hidden slices and the router/expert
- * all-reduces) is OUTSTANDING and lands with the rank-local packs. */
-#define SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT 12u
+/* Primary fleet topology (coordinator directive 2026-08-28): TP4xPP4 =
+ * 16 world ranks, one per node; the deployment validator requires
+ * node_count == stage_count and the HYBRID_TP_PP layout groups
+ * parallel_group_size consecutive nodes into one TP group (4 groups of 4
+ * here). Every node of a TP group lists the group's layer count (12),
+ * and the group counts sum to the model's 48. The module-side slice plan
+ * is pp_stage_count = stage_count / tp_degree = 4 stages of 12 layers;
+ * stage 0 owns the embedding (+ PLE at layer 1), stage 3 the head/MTP.
+ * The 4-rank whole-stack shape (stage_count 4, one group of 48) is the
+ * alternate build. */
+#define SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT 16u
 #define SPARK_QWEN4_FLASH_SERVING_DEFAULT_TP_DEGREE 4u
-#define SPARK_QWEN4_FLASH_SERVING_MAX_PP_STAGE_COUNT 4u
+#define SPARK_QWEN4_FLASH_SERVING_PARALLEL_GROUP_SIZE 4u
+#define SPARK_QWEN4_FLASH_SERVING_PP_STAGE_COUNT \
+	(SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT / SPARK_QWEN4_FLASH_SERVING_PARALLEL_GROUP_SIZE)
+#define SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT \
+	(SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT / SPARK_QWEN4_FLASH_SERVING_PP_STAGE_COUNT)
 /* Serving caps context at the model's native 262144 until the KV-tier
  * plan lands; the module's KV pool is sized from the deployment's
  * kv_block_count, and the cap merely refuses configs past the model. */
@@ -161,7 +168,7 @@ typedef struct SparkQwen4FlashServingState
 	uint32_t stage_index;
 	uint32_t tp_degree;
 	uint32_t pp_stage_count;
-	uint32_t stage_layer_counts[SPARK_QWEN4_FLASH_SERVING_MAX_PP_STAGE_COUNT];
+	uint32_t stage_layer_counts[SPARK_QWEN4_FLASH_SERVING_PP_STAGE_COUNT];
 	uint32_t first_layer_index;
 	uint32_t stage_layer_count;
 	uint32_t stage_attn_layer_count;
@@ -195,14 +202,15 @@ static uint32_t SparkQwen4FlashServingPpStageIndex(const SparkQwen4FlashServingS
 
 static uint32_t SparkQwen4FlashServingPpStageCount(const SparkQwen4FlashServingState *state)
 {
-	return(state->pp_stage_count != 0u ? state->pp_stage_count : SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT / SPARK_QWEN4_FLASH_SERVING_DEFAULT_TP_DEGREE);
+	return(state->pp_stage_count != 0u ? state->pp_stage_count : (uint32_t)SPARK_QWEN4_FLASH_SERVING_PP_STAGE_COUNT);
 }
 
 static const SparkModelServingAdapterDescriptor SparkQwen4FlashServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
+	.parallel_group_size = SPARK_QWEN4_FLASH_SERVING_PARALLEL_GROUP_SIZE,
 	.stage_count = SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -226,7 +234,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen4FlashServingDescriptor
 	.model_revision = QWEN4_FLASH_MODEL_REVISION,
 	.driver_program_name = SPARK_QWEN4_FLASH_SERVING_PROGRAM_NAME,
 	.artifact_sha256 = QWEN4_FLASH_CONTRACT_SHA256,
-	.stage_layer_counts = {0u,0u,0u,0u},
+	.stage_layer_counts = {SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT},
 	.minimum_efficient_submission_row_count = 0u
 };
 
@@ -277,7 +285,7 @@ static SparkStatus SparkQwen4FlashServingLoadConfiguration(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen4FlashServingJsonUnsigned(&document,root,"tp_degree",&state->tp_degree);
-	if ( status == SPARK_STATUS_OK && (state->tp_degree == 0u || SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT % state->tp_degree != 0u || state->tp_degree > SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT) )
+	if ( status == SPARK_STATUS_OK && state->tp_degree != SPARK_QWEN4_FLASH_SERVING_PARALLEL_GROUP_SIZE )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	token = status == SPARK_STATUS_OK ? SparkQwen4FlashServingJsonMember(&document,root,"stage_pack_path") : -1;
 	if ( status == SPARK_STATUS_OK )
@@ -320,8 +328,11 @@ static SparkStatus SparkQwen4FlashServingSetEnvironment(
 	do { snprintf(value,sizeof(value),"%u",(uint32_t)(number)); SPARK_QWEN4_FLASH_SERVING_SET_TEXT(name,value); } while (0)
 	SPARK_QWEN4_FLASH_SERVING_SET_TEXT("SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION","1");
 	SPARK_QWEN4_FLASH_SERVING_SET_TEXT("SPARK_QWEN4_FLASH_STAGE_PACK_PATH",state->stage_pack_path);
-	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_COUNT",SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT);
-	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_INDEX",state->stage_index);
+	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_COUNT",state->pp_stage_count);
+	/* configuration->stage_index is the NODE's unique chain position
+	 * (0..node_count-1); the module's slice plan indexes PP stages, so
+	 * hand it the group stage, not the chain position. */
+	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_INDEX",SparkQwen4FlashServingPpStageIndex(state,state->stage_index));
 	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_FIRST_LAYER",state->first_layer_index);
 	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_LAYER_COUNT",state->stage_layer_count);
 	SPARK_QWEN4_FLASH_SERVING_SET_UNSIGNED("SPARK_QWEN4_FLASH_STAGE_MAX_ACTIVE_SEQUENCES",state->max_active_sequence_count);
@@ -1199,12 +1210,13 @@ static SparkStatus SparkQwen4FlashServingInitialize(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
-		/* PP geometry derives from the config's tp_degree: TP4 -> four
-		 * stages of 23 layers, TP16 -> one stage of 92. */
+		/* TP4xPP4: stage_count (16) nodes form stage_count/tp_degree (4)
+		 * pipeline stages of consecutive TP groups; the module slice
+		 * plan walks those PP stages. */
 		uint32_t pp,base,extra;
 		state->pp_stage_count = SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT / state->tp_degree;
-		if ( state->pp_stage_count > SPARK_QWEN4_FLASH_SERVING_MAX_PP_STAGE_COUNT )
-			state->pp_stage_count = SPARK_QWEN4_FLASH_SERVING_MAX_PP_STAGE_COUNT;
+		if ( state->pp_stage_count > SPARK_QWEN4_FLASH_SERVING_PP_STAGE_COUNT )
+			state->pp_stage_count = SPARK_QWEN4_FLASH_SERVING_PP_STAGE_COUNT;
 		base = SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT / state->pp_stage_count;
 		extra = SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT % state->pp_stage_count;
 		for (pp = 0u; pp < state->pp_stage_count; pp++)

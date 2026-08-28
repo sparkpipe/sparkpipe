@@ -433,7 +433,7 @@ static __device__ __forceinline__ uint64_t SparkQwen4FlashAttnTokenBase(const ui
 // query, warp-reduce, fixed 1/sqrt(head_dim) = 1/16 scale.
 
 
-static __global__ void SparkQwen4FlashAttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
+static __global__ void SparkQwen4FlashAttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank, const uint8_t *token_mask, uint32_t mask_stride)
 {
     /* Head-parallel geometry, mirroring the prepare kernel: local query
      * heads per rank and the rank's local KV head slice; tp_degree 1 is
@@ -586,6 +586,11 @@ static __global__ void SparkQwen4FlashAttnDecodeKernel(const void *q_fused_bf16,
     lane_base = (uint64_t)lane_index * lane_stride;
     for (token = warp; token < context; token += SPARK_LM_CTA_WARPS)
     {
+        /* Indexer selection: masked-out tokens never contribute to the
+         * softmax (a null mask = every visible token passes, the
+         * pre-indexer behavior). */
+        if (token_mask != 0 && token_mask[((uint64_t)row * mask_stride) + token] == 0u)
+            continue;
         token_base = SparkQwen4FlashAttnTokenBase(
             block_indices,
             lane_base,
@@ -1307,7 +1312,7 @@ extern "C" cudaError_t SparkQwen4FlashLaunchAttnPrepare(cudaStream_t stream, voi
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen4FlashLaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen4FlashKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
+extern "C" cudaError_t SparkQwen4FlashLaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen4FlashKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank, const uint8_t *token_mask, uint32_t mask_stride)
 {
     if ( tp_degree == 0u || tp_degree > SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || 0u )
         return(cudaErrorInvalidValue);
@@ -1338,7 +1343,9 @@ extern "C" cudaError_t SparkQwen4FlashLaunchAttnDecode(cudaStream_t stream, cons
         cache_layer_stride,
         cache_block_stride,
         tp_degree,
-        tp_rank);
+        tp_rank,
+        token_mask,
+        mask_stride);
     return cudaGetLastError();
 }
 
@@ -1595,6 +1602,729 @@ extern "C" cudaError_t SparkQwen4FlashLaunchEmbeddingGatherSharded(cudaStream_t 
 		return(cudaErrorInvalidValue);
 	SparkQwen4FlashEmbeddingGatherShardedKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(token_ids,embedding_bf16,hidden_bf16,row_count,vocab_base,vocab_rows);
 	return(cudaGetLastError());
+}
+
+/* --------------------------------------------------------------------------
+ * Hyper-connection residual (Qwen4ExpTextGatedResidual, reference-pinned).
+ * The stream vector is [rows, hc_count*hidden]; the group norm is a
+ * per-stream RMSNorm(2560) with the [4H] weight; the sublayer input is the
+ * sigmoid-weighted stream mean; the output re-enters every stream scaled by
+ * 2*sigmoid(inject/4). The final readout is the mean-mix without inject.
+ * ------------------------------------------------------------------------ */
+
+// Replicate the [rows, H] embedding into all hc streams: out[r,s*H+d]=in[r,d].
+static __global__ void SparkQwen4FlashHcStreamReplicateKernel(const void *input_bf16, void *streams_bf16, uint32_t row_count)
+{
+	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint64_t element_count = (uint64_t)row_count * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+	if ( index >= element_count )
+		return;
+	uint32_t stream = (uint32_t)(index / SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION) / SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT;
+	uint64_t source = ((uint64_t)(index / SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH)) * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION + (index % SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+	(void)stream;
+	SparkLmFloatToBf16(streams_bf16,index,SparkLmBf16ToFloat(input_bf16,source));
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchHcStreamReplicate(cudaStream_t stream, const void *input_bf16, void *streams_bf16, uint32_t row_count)
+{
+	uint64_t elements = (uint64_t)row_count * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+	SparkQwen4FlashHcStreamReplicateKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(input_bf16,streams_bf16,row_count);
+	return(cudaGetLastError());
+}
+
+// Group RMS norm over the stream vector: one block per (row, stream), fp32
+// accumulation, per-stream mean of squares over hidden, weight applied after
+// the inverse rms - the reference Qwen4ExpTextRMSNorm(group_size=hidden).
+static __global__ void SparkQwen4FlashHcGroupNormKernel(const void *streams_bf16, const void *weight_bf16, void *normed_bf16, uint32_t row_count, float epsilon)
+{
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint64_t row = blockIdx.y;
+	uint32_t stream = blockIdx.x;
+	uint64_t base = (row * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH) + ((uint64_t)stream * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+	float sum_squares = 0.0f;
+	float value;
+	if ( row >= row_count )
+		return;
+	for (uint32_t element = threadIdx.x; element < SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION; element += blockDim.x)
+	{
+		value = SparkLmBf16ToFloat(streams_bf16,base + element);
+		sum_squares += value * value;
+	}
+	sum_squares = SparkLmBlockReduceSum(sum_squares,reduce_scratch);
+	float inverse_rms = rsqrtf(sum_squares / (float)SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION + epsilon);
+	for (uint32_t element = threadIdx.x; element < SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION; element += blockDim.x)
+	{
+		value = SparkLmBf16ToFloat(streams_bf16,base + element) * inverse_rms *
+			SparkLmBf16ToFloat(weight_bf16,(uint64_t)stream * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION + element);
+		SparkLmFloatToBf16(normed_bf16,base + element,value);
+	}
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchHcGroupNorm(cudaStream_t stream, const void *streams_bf16, const void *weight_bf16, void *normed_bf16, uint32_t row_count, float epsilon)
+{
+	dim3 grid(SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT,row_count,1u);
+	SparkQwen4FlashHcGroupNormKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,weight_bf16,normed_bf16,row_count,epsilon);
+	return(cudaGetLastError());
+}
+
+// silu(x / hc_count) on the [rows, lowrank] down-projection output, in place
+// (the reference feeds silu(down(normed)/hc_count) into the up projection).
+static __global__ void SparkQwen4FlashHcSiluQuarterKernel(void *lowrank_bf16, uint64_t element_count)
+{
+	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	if ( index >= element_count )
+		return;
+	SparkLmFloatToBf16(lowrank_bf16,index,SparkLmSwish(SparkLmBf16ToFloat(lowrank_bf16,index) / (float)SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT));
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchHcSiluQuarter(cudaStream_t stream, void *lowrank_bf16, uint32_t row_count)
+{
+	uint64_t elements = (uint64_t)row_count * SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION;
+	uint32_t blocks = (uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS);
+	SparkQwen4FlashHcSiluQuarterKernel<<<blocks == 0u ? 1u : blocks,SPARK_LM_CTA_THREADS,0,stream>>>(lowrank_bf16,elements);
+	return(cudaGetLastError());
+}
+
+// Mean-mix readout: mixed[r,d] = (1/hc_count) * sum_s sigmoid(up[r,s*H+d]) *
+// normed[r,s*H+d]. One thread per (row, d); the four sigmoid weights are
+// recomputed per thread (cheap) so the streams stay coalesced.
+static __global__ void SparkQwen4FlashHcMixKernel(const void *up_bf16, const void *normed_bf16, void *mixed_bf16, uint32_t row_count)
+{
+	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t element = (uint32_t)(index % SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+	uint64_t row = index / SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+	float sum;
+	if ( row >= row_count )
+		return;
+	sum = 0.0f;
+	for (uint32_t stream = 0u; stream < SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT; stream++)
+	{
+		uint64_t at = (row * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH) + ((uint64_t)stream * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION) + element;
+		sum += SparkLmSigmoid(SparkLmBf16ToFloat(up_bf16,at)) * SparkLmBf16ToFloat(normed_bf16,at);
+	}
+	SparkLmFloatToBf16(mixed_bf16,index,sum / (float)SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT);
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchHcMix(cudaStream_t stream, const void *up_bf16, const void *normed_bf16, void *mixed_bf16, uint32_t row_count)
+{
+	uint64_t elements = (uint64_t)row_count * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+	SparkQwen4FlashHcMixKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(up_bf16,normed_bf16,mixed_bf16,row_count);
+	return(cudaGetLastError());
+}
+
+// Stream inject: streams[r,s*H+d] += 2*sigmoid(inject[r,s]/hc_count) *
+// sublayer_out[r,d]. inject_pre is the RAW [rows, hc_count] projection.
+// The streams buffer is both input (raw pre-norm residual) and output.
+static __global__ void SparkQwen4FlashHcInjectKernel(void *streams_bf16, const void *inject_pre_bf16, const void *sublayer_out_bf16, uint32_t row_count)
+{
+	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t element = (uint32_t)(index % SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+	uint64_t row = index / SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+	uint32_t stream = (uint32_t)((index / SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION) % SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT);
+	float scale;
+	if ( row >= row_count )
+		return;
+	scale = 2.0f * SparkLmSigmoid(SparkLmBf16ToFloat(inject_pre_bf16,(row * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT) + stream) / (float)SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT);
+	SparkLmFloatToBf16(streams_bf16,index,SparkLmBf16ToFloat(streams_bf16,index) +
+		scale * SparkLmBf16ToFloat(sublayer_out_bf16,(row * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION) + element));
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchHcInject(cudaStream_t stream, void *streams_bf16, const void *inject_pre_bf16, const void *sublayer_out_bf16, uint32_t row_count)
+{
+	uint64_t elements = (uint64_t)row_count * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+	SparkQwen4FlashHcInjectKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,inject_pre_bf16,sublayer_out_bf16,row_count);
+	return(cudaGetLastError());
+}
+
+/* --------------------------------------------------------------------------
+ * Attention indexer (Qwen4ExpTextQSAIndexer, reference-pinned). Per-token
+ * keys (RMSNorm'd, unrotated) land in a raw key cache shaped like the main
+ * KV cache at 128 elements/token; when a compress-ratio block completes its
+ * four keys pool (f32 mean -> bf16 -> RMSNorm -> partial RoPE at the block
+ * START position) into a pooled cache. Per query: relu(q.k).sum(heads)
+ * /sqrt(128) per block, top budget/4 blocks + the incomplete tail tokens
+ * pass, everything else masks OUT of the main attention. Contexts under
+ * budget + ratio - 1 select every visible token (mask all-ones), so short
+ * contexts are bit-identical to the pre-indexer behavior.
+ * ------------------------------------------------------------------------ */
+
+// Prepare one frame's indexer rows: split the 640-wide projection, per-head
+// RMSNorm + partial RoPE (first 64 dims, 32 pairs - the shared frequency
+// function) on the 4 query heads, RMSNorm on the single key head, key into
+// the raw cache at the row's slot, and pool a completing block.
+static __global__ void SparkQwen4FlashIndexerPrepareKernel(
+    const void *qk_bf16,
+    const void *q_norm_bf16,
+    const void *k_norm_bf16,
+    void *query_bf16,          /* [rows, 4, 128] out */
+    void *raw_key_cache,       /* paged, 128/token */
+    void *pooled_key_cache,    /* [blocks, 128] per layer */
+    const uint32_t *slot_mapping,
+    const uint32_t *block_indices, /* lane-major table */
+    const uint64_t *row_positions,
+    uint32_t row_count,
+    uint32_t lane_stride,
+    uint64_t cache_block_stride)
+{
+    __shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+    __shared__ float head_shared[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+    __shared__ float rope_cosine[SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u];
+    __shared__ float rope_sine[SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u];
+    uint32_t row = blockIdx.y;
+    uint32_t column = threadIdx.x;
+    uint32_t slot,block,offset;
+    uint64_t key_base;
+    float value,sum_squares,inverse_rms;
+    if ( row >= row_count || column >= SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION )
+        return;
+    /* Query heads: rows [head*128, (head+1)*128) of the projection. */
+    {
+        uint32_t head = blockIdx.x;
+        uint64_t qk_base = ((uint64_t)row * ((SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + SPARK_QWEN4_FLASH_MODEL_INDEXER_KV_HEAD_COUNT) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION)) + ((uint64_t)head * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION);
+        value = SparkLmBf16ToFloat(qk_bf16,qk_base + column);
+        sum_squares = SparkLmBlockReduceSum(value * value,reduce_scratch);
+        inverse_rms = rsqrtf(sum_squares / (float)SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + 1e-6f);
+        head_shared[column] = value * inverse_rms * SparkLmBf16ToFloat(q_norm_bf16,column);
+        __syncthreads();
+        if ( column < SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u )
+        {
+            float angle = (float)row_positions[row] * SparkQwen4FlashRopeFrequency(column);
+            sincosf(angle,&rope_sine[column],&rope_cosine[column]);
+        }
+        __syncthreads();
+        if ( column < SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u )
+        {
+            float real = head_shared[column];
+            float imaginary = head_shared[column + SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u];
+            head_shared[column] = real * rope_cosine[column] - imaginary * rope_sine[column];
+            head_shared[column + SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u] = imaginary * rope_cosine[column] + real * rope_sine[column];
+        }
+        __syncthreads();
+        SparkLmFloatToBf16(query_bf16,((uint64_t)row * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + ((uint64_t)head * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + column,head_shared[column]);
+        __syncthreads();
+    }
+    /* Key head (index 4): the surviving thread block (head 0) writes it. */
+    if ( blockIdx.x != 0u )
+        return;
+    {
+        uint64_t k_base = ((uint64_t)row * ((SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + SPARK_QWEN4_FLASH_MODEL_INDEXER_KV_HEAD_COUNT) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION)) + ((uint64_t)SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION);
+        value = SparkLmBf16ToFloat(qk_bf16,k_base + column);
+        sum_squares = SparkLmBlockReduceSum(value * value,reduce_scratch);
+        inverse_rms = rsqrtf(sum_squares / (float)SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + 1e-6f);
+        head_shared[column] = value * inverse_rms * SparkLmBf16ToFloat(k_norm_bf16,column);
+        __syncthreads();
+        slot = slot_mapping[row];
+        block = slot / SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+        offset = slot % SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+        key_base = ((uint64_t)block * cache_block_stride) + ((uint64_t)offset * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION);
+        SparkLmFloatToBf16(raw_key_cache,key_base + column,head_shared[column]);
+        /* Block completion (the compress ratio's last in-block offset): pool
+         * mean -> bf16 -> RMSNorm -> RoPE at the block START position. */
+        if ( (offset % SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO) == SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO - 1u )
+        {
+            uint32_t first = offset - (SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO - 1u);
+            float sum = 0.0f;
+            for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO; tap++)
+                sum += SparkLmBf16ToFloat(raw_key_cache,((uint64_t)block * cache_block_stride) + ((uint64_t)(first + tap) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + column);
+            /* f32 mean cast back to bf16 (the reference `.to(raw_keys.dtype)`),
+             * THEN the RMSNorm reads the rounded value. */
+            __shared__ float pooled[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+            pooled[column] = __bfloat162float(__float2bfloat16(sum / (float)SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO));
+            __syncthreads();
+            float psum = pooled[column] * pooled[column];
+            psum = SparkLmBlockReduceSum(psum,reduce_scratch);
+            float prms = rsqrtf(psum / (float)SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + 1e-6f);
+            pooled[column] = pooled[column] * prms * SparkLmBf16ToFloat(k_norm_bf16,column);
+            __syncthreads();
+            if ( column < SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u )
+            {
+                /* Block START position: the completing row's position minus
+                 * ratio-1 (contiguous within the block by construction). */
+                float angle = (float)(row_positions[row] - (SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO - 1u)) * SparkQwen4FlashRopeFrequency(column);
+                sincosf(angle,&rope_sine[column],&rope_cosine[column]);
+            }
+            __syncthreads();
+            if ( column < SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u )
+            {
+                float real = pooled[column];
+                float imaginary = pooled[column + SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u];
+                pooled[column] = real * rope_cosine[column] - imaginary * rope_sine[column];
+                pooled[column + SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION / 2u] = imaginary * rope_cosine[column] + real * rope_sine[column];
+            }
+            __syncthreads();
+            (void)block_indices; (void)lane_stride;
+            /* The pooled plane is indexed by COMPRESSED block (slot/4):
+             * one pooled row per compress-ratio tokens, KV_BLOCK_TOKENS/4
+             * rows per KV block (the first cut wrote per KV block and every
+             * 4-token pool overwrote the previous 15). */
+            SparkLmFloatToBf16(pooled_key_cache,((uint64_t)(slot / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + column,pooled[column]);
+        }
+    }
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchIndexerPrepare(
+    cudaStream_t stream,
+    const void *qk_bf16,
+    const SparkQwen4FlashIndexerWeights *weights,
+    void *query_bf16,
+    void *raw_key_cache,
+    void *pooled_key_cache,
+    const uint32_t *slot_mapping,
+    const uint32_t *block_indices,
+    const uint64_t *row_positions,
+    uint32_t row_count,
+    uint32_t lane_stride,
+    uint64_t cache_block_stride)
+{
+    dim3 grid(SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT,row_count,1u);
+    if ( qk_bf16 == 0 || weights == 0 || query_bf16 == 0 || raw_key_cache == 0 || pooled_key_cache == 0 || slot_mapping == 0 || row_positions == 0 || row_count == 0u )
+        return(cudaErrorInvalidValue);
+    SparkQwen4FlashIndexerPrepareKernel<<<grid,SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION,0,stream>>>(qk_bf16,weights->q_norm_weight_bf16,weights->k_norm_weight_bf16,query_bf16,raw_key_cache,pooled_key_cache,slot_mapping,block_indices,row_positions,row_count,lane_stride,cache_block_stride);
+    return(cudaGetLastError());
+}
+
+/* Score + select: one CTA per row. Scores every visible COMPLETE block
+ * (per-head dot -> relu -> head sum, /sqrt(128)) into the row's slice of a
+ * global score buffer (one u32 ordered-key per block), binary-searches the
+ * k-th largest over the ordered keys (32 rounds), then marks the u8 token
+ * mask: blocks with key > threshold plus the lowest-index blocks with
+ * key == threshold, and the incomplete TAIL tokens, pass. Deterministic:
+ * equal scores resolve to the smaller block index, matching the CPU oracle.
+ * Contexts with <= budget/ratio complete blocks select everything. */
+static __global__ void SparkQwen4FlashIndexerSelectKernel(
+    const void *query_bf16,
+    const void *pooled_key_cache,
+    const uint32_t *block_indices,
+    const uint32_t *block_counts,
+    const uint32_t *row_lane_indices,
+    const uint32_t *context_lengths,
+    uint8_t *token_mask,        /* [row, mask_stride] */
+    uint32_t *score_keys_u32,   /* [row, score_stride] scratch */
+    uint32_t row_count,
+    uint32_t lane_stride,
+    uint32_t mask_stride,
+    uint32_t score_stride)
+{
+    __shared__ float q_shared[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+    __shared__ float count_scratch_f32[SPARK_LM_CTA_WARPS];
+    __shared__ uint32_t threshold_key;
+    __shared__ uint32_t strict_count;
+    __shared__ uint32_t equal_taken;
+    uint32_t row = blockIdx.x;
+    uint32_t lane_index,context,available,required,visible;
+    uint32_t complete_blocks,tail_start,block_topk;
+    uint32_t *row_keys;
+    if ( row >= row_count )
+        return;
+    lane_index = row_lane_indices[row];
+    context = context_lengths[row];
+    available = __ldg(block_counts + lane_index);
+    required = (context + SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+    (void)required;
+    /* Visibility mirrors the decode attention's guard: a lane whose table
+     * cannot cover the context contributes nothing. */
+    visible = context;
+    if ( available > lane_stride )
+        visible = 0u;
+    else if ( (context + SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS > available )
+        visible = available * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+    for (uint32_t element = threadIdx.x; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element += blockDim.x)
+        q_shared[element] = SparkLmBf16ToFloat(query_bf16,((uint64_t)row * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + element);
+    __syncthreads();
+    for (uint32_t token = threadIdx.x; token < visible; token += blockDim.x)
+        token_mask[(uint64_t)row * mask_stride + token] = 0u;
+    __syncthreads();
+    if ( visible == 0u )
+        return;
+    complete_blocks = visible / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+    tail_start = complete_blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+    block_topk = SPARK_QWEN4_FLASH_MODEL_INDEXER_BUDGET / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+    /* The incomplete tail always passes. */
+    for (uint32_t token = tail_start + threadIdx.x; token < visible; token += blockDim.x)
+        token_mask[(uint64_t)row * mask_stride + token] = 1u;
+    if ( complete_blocks == 0u || complete_blocks <= block_topk )
+    {
+        for (uint32_t token = threadIdx.x; token < tail_start; token += blockDim.x)
+            token_mask[(uint64_t)row * mask_stride + token] = 1u;
+        return;
+    }
+    row_keys = score_keys_u32 + (uint64_t)row * score_stride;
+    /* Phase 1: per-thread block scores (full 4x128 dot each, deterministic
+     * accumulation order), stored as ordered u32 keys. */
+    for (uint32_t b = threadIdx.x; b < complete_blocks; b += blockDim.x)
+    {
+        float total = 0.0f;
+        for (uint32_t head = 0u; head < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT; head++)
+        {
+            float dot = 0.0f;
+            const float *q_head = q_shared + (head * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION);
+            for (uint32_t element = 0u; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element++)
+                dot = fmaf(q_head[element],SparkLmBf16ToFloat(pooled_key_cache,((uint64_t)b * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + element),dot);
+            total += fmaxf(dot,0.0f);
+        }
+        total /= sqrtf((float)SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION);
+        uint32_t bits = __float_as_uint(total);
+        bits = (bits & 0x80000000u) != 0u ? ~bits : bits | 0x80000000u;
+        row_keys[b] = bits;
+    }
+    __syncthreads();
+    /* Phase 2: binary-search the k-th largest ordered key (greatest value K
+     * with count(key >= K) >= block_topk). */
+    if ( threadIdx.x == 0u )
+    {
+        threshold_key = 0u;
+        strict_count = 0u;
+        equal_taken = 0u;
+    }
+    __syncthreads();
+    {
+        uint32_t low = 0u,high = 0xffffffffu;
+        for (uint32_t round = 0u; round < 32u; round++)
+        {
+            uint32_t mid,count = 0u;
+            if ( threadIdx.x == 0u )
+                threshold_key = low + ((high - low) >> 1u); /* overflow-safe midpoint: ordered keys live near 0xbf.. and low+high wraps u32 */
+            __syncthreads();
+            mid = threshold_key;
+            for (uint32_t b = threadIdx.x; b < complete_blocks; b += blockDim.x)
+                if ( row_keys[b] >= mid )
+                    count++;
+            /* CTA sum via the float reduce, cast back (counts stay small). */
+            count = (uint32_t)(SparkLmBlockReduceSum((float)count,count_scratch_f32) + 0.5f);
+            if ( threadIdx.x == 0u )
+            {
+                if ( count >= block_topk )
+                    low = mid;
+                else
+                    high = mid - 1u;
+                threshold_key = low;
+            }
+            __syncthreads();
+        }
+    }
+    const uint32_t threshold = threshold_key;
+    /* Phase 3: select blocks with key > threshold, plus the lowest-index
+     * blocks with key == threshold up to the quota. The strict count and
+     * the equal-index ranking run serially in thread 0 (ties are rare and
+     * the pass is a few thousand comparisons at worst). */
+    if ( threadIdx.x == 0u )
+    {
+        uint32_t strict = 0u;
+        for (uint32_t b = 0u; b < complete_blocks; b++)
+            if ( row_keys[b] > threshold )
+                strict++;
+        strict_count = strict;
+        equal_taken = block_topk - strict;
+    }
+    __syncthreads();
+    if ( threadIdx.x == 0u )
+    {
+        uint32_t equal_seen = 0u;
+        for (uint32_t b = 0u; b < complete_blocks; b++)
+        {
+            if ( row_keys[b] > threshold )
+                continue;
+            if ( row_keys[b] == threshold )
+            {
+                if ( equal_seen < equal_taken )
+                    equal_seen++;
+                else
+                    row_keys[b] = 0u; /* deselected equal-key block */
+            }
+            else
+                row_keys[b] = 0u; /* below threshold: deselected */
+        }
+    }
+    __syncthreads();
+    /* Phase 4: expand selected blocks to their four token-mask bytes. */
+    for (uint32_t b = threadIdx.x; b < complete_blocks; b += blockDim.x)
+    {
+        if ( row_keys[b] == 0u )
+            continue;
+        uint32_t base = b * SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+        for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO; tap++)
+            token_mask[(uint64_t)row * mask_stride + base + tap] = 1u;
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * PLE block (Qwen4ExpTextNGramEmbedding + Qwen4ExpTextPLELayer, reference-
+ * pinned). Hash: for each output position, the n-gram (n=2..3) of the EOS-
+ * segmented token history mixes as XOR of shifted_token * multiplier (i64
+ * wrapping multiply), then maps per head to offsets[h] + (mixed mod
+ * vocab[h]) - torch.remainder semantics (non-negative). The 16 head ids
+ * gather from the vocab-sharded table (out-of-shard contributes zero; the
+ * bf16 all-reduce completes the [.., 2560] embedding). The layer: per-stream
+ * key/query group norms, a signed-sqrt dot gate on the value, a group norm,
+ * and a kernel-4 DILATED (3) depthwise conv; the sum re-enters the streams.
+ * ------------------------------------------------------------------------ */
+
+/* Hash one (row, token) against the history window and gather one head's
+ * slice. history holds [prev_context (2), frame tokens]; token_index counts
+ * from the frame start. Thread per (row*token_count + token, head). */
+static __global__ void SparkQwen4FlashPleHashGatherKernel(
+    const uint32_t *history_u32,      /* [rows, 2 + token_count] */
+    uint32_t token_count,
+    const int64_t *multipliers,       /* [ngram_size] */
+    const int64_t *head_vocab_sizes,  /* [ngram_heads] */
+    const int64_t *head_offsets,      /* [ngram_heads] */
+    const void *ngram_table_bf16,     /* rank slice [rows_ngram, head_dim] */
+    void *embedding_bf16,             /* [rows*token_count, 16*head_dim] */
+    uint32_t row_count,
+    uint32_t vocab_base,
+    uint32_t vocab_rows)
+{
+    uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+    uint64_t cells = (uint64_t)row_count * token_count * SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_COUNT;
+    if ( index >= cells )
+        return;
+    uint32_t head = (uint32_t)(index % SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_COUNT);
+    uint64_t row_token = index / SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_COUNT;
+    uint32_t row = (uint32_t)(row_token / token_count);
+    uint32_t token = (uint32_t)(row_token % token_count);
+    const uint32_t *window = history_u32 + ((uint64_t)row * (2u + token_count));
+    uint32_t position = 2u + token; /* window index of this output token */
+    /* n-gram order for this head: heads [0,8) are bigrams, [8,16) trigrams
+     * (the reference builds blocks of heads_per_ngram per ngram size). */
+    uint32_t ngram = (head / SPARK_QWEN4_FLASH_MODEL_PLE_HEADS_PER_NGRAM) + 2u;
+    /* EOS segmentation over the window: shifted[s] is hist[position-s] if
+     * position-s lies in the SAME segment (no EOS between) and >= 0, else
+     * EOS (the reference _shift_right_ignore_eos). */
+    uint32_t shifted[3];
+    for (uint32_t s = 0u; s < ngram; s++)
+    {
+        int32_t source = (int32_t)position - (int32_t)s;
+        uint32_t valid = source >= 0 ? 1u : 0u;
+        for (int32_t p = source >= 0 ? source : 0; p < (int32_t)position && valid != 0u; p++)
+            if ( window[p] == SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID )
+                valid = 0u;
+        shifted[s] = valid != 0u ? window[source] : SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID;
+    }
+    /* i64 wrapping multiply + XOR (computed in u64 to keep the wrap
+     * defined; bit-identical to torch's int64 wraparound). Bigram heads mix
+     * two shifted tokens, trigram heads three (the reference n-gram blocks). */
+    uint64_t mixed = (uint64_t)((int64_t)shifted[0] * multipliers[0]);
+    for (uint32_t s = 1u; s < ngram; s++)
+        mixed ^= (uint64_t)((int64_t)shifted[s] * multipliers[s]);
+    int64_t head_vocab = head_vocab_sizes[head];
+    int64_t head_offset = head_offsets[head];
+    int64_t m = (int64_t)mixed % head_vocab;
+    if ( m < 0 )
+        m += head_vocab; /* torch.remainder sign convention */
+    uint64_t global_id = (uint64_t)(head_offset + m);
+    uint64_t out_base = (row_token * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION) + ((uint64_t)head * SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_DIMENSION);
+    if ( global_id >= (uint64_t)vocab_base && global_id < (uint64_t)vocab_base + vocab_rows )
+    {
+        const uint8_t *src = (const uint8_t *)ngram_table_bf16 + ((global_id - vocab_base) * SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_DIMENSION * 2u);
+        uint8_t *dst = (uint8_t *)embedding_bf16 + (out_base * 2u);
+        for (uint32_t d = 0u; d < SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_DIMENSION * 2u; d++)
+            dst[d] = src[d];
+    }
+    else
+    {
+        uint8_t *dst = (uint8_t *)embedding_bf16 + (out_base * 2u);
+        for (uint32_t d = 0u; d < SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_DIMENSION * 2u; d++)
+            dst[d] = 0u;
+    }
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchPleHashGather(
+    cudaStream_t stream,
+    const uint32_t *history_u32,
+    uint32_t token_count,
+    const SparkQwen4FlashPleWeights *ple,
+    void *embedding_bf16,
+    uint32_t row_count,
+    uint32_t vocab_base,
+    uint32_t vocab_rows)
+{
+    uint64_t cells = (uint64_t)row_count * token_count * SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_COUNT;
+    uint32_t blocks = (uint32_t)((cells + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS);
+    if ( history_u32 == 0 || ple == 0 || ple->layer_multipliers == 0 || ple->head_vocab_sizes == 0 || ple->head_offsets == 0 || ple->ngram_embedding_bf16 == 0 || embedding_bf16 == 0 || row_count == 0u || token_count == 0u )
+        return(cudaErrorInvalidValue);
+    SparkQwen4FlashPleHashGatherKernel<<<blocks == 0u ? 1u : blocks,SPARK_LM_CTA_THREADS,0,stream>>>(
+        history_u32,token_count,ple->layer_multipliers,ple->head_vocab_sizes,ple->head_offsets,
+        ple->ngram_embedding_bf16,embedding_bf16,row_count,vocab_base,vocab_rows);
+    return(cudaGetLastError());
+}
+
+/* Gate + value core: one block per (row, stream). gate = signed-sqrt dot of
+ * the group-normed key and query streams / sqrt(H), gated_value =
+ * sigmoid(gate) * value broadcast to the stream. */
+static __global__ void SparkQwen4FlashPleGateKernel(
+    const void *key_normed_bf16,   /* [rows, 4H] */
+    const void *query_normed_bf16, /* [rows, 4H] */
+    const void *value_bf16,        /* [rows, H] */
+    void *gated_value_bf16)        /* [rows, 4H] */
+{
+    __shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+    uint64_t row = blockIdx.y;
+    uint32_t stream = blockIdx.x;
+    uint64_t stream_base = (row * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH) + ((uint64_t)stream * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+    float dot = 0.0f;
+    if ( row >= (uint64_t)gridDim.y )
+        return;
+    for (uint32_t element = threadIdx.x; element < SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION; element += blockDim.x)
+        dot = fmaf(SparkLmBf16ToFloat(key_normed_bf16,stream_base + element),SparkLmBf16ToFloat(query_normed_bf16,stream_base + element),dot);
+    dot = SparkLmBlockReduceSum(dot,reduce_scratch) / sqrtf((float)SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+    /* abs().clamp_min(1e-6).sqrt() * sign() - the signed sqrt. */
+    float magnitude = sqrtf(fmaxf(fabsf(dot),1e-6f));
+    float gate = copysignf(magnitude,dot);
+    gate = SparkLmSigmoid(gate);
+    for (uint32_t element = threadIdx.x; element < SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION; element += blockDim.x)
+        SparkLmFloatToBf16(gated_value_bf16,stream_base + element,gate * SparkLmBf16ToFloat(value_bf16,(row * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION) + element));
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchPleGate(
+    cudaStream_t stream,
+    const void *key_normed_bf16,
+    const void *query_normed_bf16,
+    const void *value_bf16,
+    void *gated_value_bf16,
+    uint32_t row_count)
+{
+    dim3 grid(SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT,row_count,1u);
+    SparkQwen4FlashPleGateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(key_normed_bf16,query_normed_bf16,value_bf16,gated_value_bf16);
+    return(cudaGetLastError());
+}
+
+/* Dilated depthwise conv update for one decode token per row: taps at
+ * offsets 0, dilation, 2*dilation, 3*dilation back from the fresh input;
+ * the tail carries the last (kernel-1)*dilation = 9 inputs per channel,
+ * silu on the output. Channel count = 4H (one channel per stream element).
+ * cold rows read a zero tail. */
+static __global__ void SparkQwen4FlashPleConvUpdateKernel(
+    const void *input_bf16,      /* [rows, 4H] */
+    const void *conv_weight_bf16,
+    void *output_bf16,           /* [rows, 4H] */
+    void *tail_bf16,             /* [lanes, 4H, 9] */
+    const uint32_t *row_lane_indices,
+    const uint32_t *state_cold_by_row,
+    uint32_t row_count,
+    uint64_t tail_lane_stride)
+{
+    uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+    uint64_t channels = (uint64_t)SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+    if ( index >= channels )
+        return;
+    for (uint32_t row = 0u; row < row_count; row++)
+    {
+        uint64_t tail_base = ((uint64_t)row_lane_indices[row] * tail_lane_stride) + (index * SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS);
+        uint32_t cold = state_cold_by_row[row] != 0u;
+        float window[SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL];
+        float weight[SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL];
+        float accumulator = 0.0f;
+        for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL; tap++)
+            weight[tap] = SparkLmBf16ToFloat(conv_weight_bf16,(index * SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL) + tap);
+        /* window[k] = x[t - k*dilation]; the fresh input is window[0]. */
+        window[0] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * channels) + index);
+        /* tail[j] = x[t-1-j]; the dilated tap k reads x[t - k*dilation]
+         * = tail[k*dilation - 1]. */
+        for (uint32_t tap = 1u; tap < SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL; tap++)
+            window[tap] = cold != 0u ? 0.0f : SparkLmBf16ToFloat(tail_bf16,tail_base + ((tap * SPARK_QWEN4_FLASH_MODEL_PLE_CONV_DILATION) - 1u));
+        for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL; tap++)
+            accumulator += window[tap] * weight[tap];
+        SparkLmFloatToBf16(output_bf16,((uint64_t)row * channels) + index,SparkLmSwish(accumulator));
+        /* Rotate the tail: drop x[t-9], append the fresh input. */
+        for (uint32_t tap = SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS; tap > 1u; tap--)
+            SparkLmFloatToBf16(tail_bf16,tail_base + (tap - 1u),SparkLmBf16ToFloat(tail_bf16,tail_base + (tap - 2u)));
+        SparkLmFloatToBf16(tail_bf16,tail_base + 0u,window[0]);
+    }
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchPleConvUpdate(
+    cudaStream_t stream,
+    const void *input_bf16,
+    const SparkQwen4FlashPleWeights *ple,
+    void *output_bf16,
+    void *tail_bf16,
+    const uint32_t *row_lane_indices,
+    const uint32_t *state_cold_by_row,
+    uint32_t row_count,
+    uint64_t tail_lane_stride)
+{
+    uint64_t channels = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+    uint32_t blocks = (uint32_t)((channels + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS);
+    SparkQwen4FlashPleConvUpdateKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(input_bf16,ple->conv_weight_bf16,output_bf16,tail_bf16,row_lane_indices,state_cold_by_row,row_count,tail_lane_stride);
+    return(cudaGetLastError());
+}
+
+/* Prefill conv walk for ONE lane: per channel slide the dilated window over
+ * token_count inputs seeded by the tail; every output = silu(sum w[k] *
+ * x[t-k*dilation]); the register window holds the last 9 inputs. */
+static __global__ void SparkQwen4FlashPleConvChunkKernel(
+    const void *input_bf16,      /* [token_count, 4H] */
+    const void *conv_weight_bf16,
+    void *output_bf16,           /* [token_count, 4H] */
+    void *tail_bf16,             /* [1 lane, 4H, 9] */
+    uint32_t token_count,
+    uint64_t tail_lane_stride)
+{
+    uint64_t channel = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+    uint64_t channels = (uint64_t)SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+    if ( channel >= channels )
+        return;
+    uint64_t tail_base = channel * SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS;
+    /* window[i] = x[t - (9-i)]: window[9] is the newest input; the carried
+     * tail[j] = x[t-1-j] seeds window[0..8] REVERSED. */
+    float window[SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS + 1u];
+    float weight[SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL];
+    for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS; tap++)
+        window[tap] = SparkLmBf16ToFloat(tail_bf16,tail_base + (SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS - 1u - tap));
+    window[SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS] = 0.0f;
+    for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL; tap++)
+        weight[tap] = SparkLmBf16ToFloat(conv_weight_bf16,(channel * SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL) + tap);
+    for (uint32_t token = 0u; token < token_count; token++)
+    {
+        float accumulator = 0.0f;
+        uint64_t at = ((uint64_t)token * channels) + channel;
+        for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS; tap++)
+            window[tap] = window[tap + 1u];
+        window[SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS] = SparkLmBf16ToFloat(input_bf16,at);
+        for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL; tap++)
+            accumulator += window[SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS - (tap * SPARK_QWEN4_FLASH_MODEL_PLE_CONV_DILATION)] * weight[tap];
+        SparkLmFloatToBf16(output_bf16,at,SparkLmSwish(accumulator));
+    }
+    for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS; tap++)
+        SparkLmFloatToBf16(tail_bf16,tail_base + tap,window[SPARK_QWEN4_FLASH_MODEL_PLE_CONV_TAIL_COLUMNS - 1u - tap]);
+    (void)tail_lane_stride;
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchPleConvChunk(
+    cudaStream_t stream,
+    const void *input_bf16,
+    const SparkQwen4FlashPleWeights *ple,
+    void *output_bf16,
+    void *tail_bf16,
+    uint32_t token_count)
+{
+    uint64_t channels = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
+    uint32_t blocks = (uint32_t)((channels + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS);
+    if ( token_count == 0u )
+        return(cudaErrorInvalidValue);
+    SparkQwen4FlashPleConvChunkKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(input_bf16,ple->conv_weight_bf16,output_bf16,tail_bf16,token_count,0);
+    return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchIndexerSelect(
+    cudaStream_t stream,
+    const void *query_bf16,
+    const void *pooled_key_cache,
+    const SparkQwen4FlashKvBlockTableView *table,
+    const uint32_t *row_lane_indices,
+    const uint32_t *context_lengths,
+    uint8_t *token_mask,
+    uint32_t *score_keys_u32,
+    uint32_t row_count,
+    uint32_t mask_stride,
+    uint32_t score_stride)
+{
+    if ( query_bf16 == 0 || pooled_key_cache == 0 || table == 0 || row_lane_indices == 0 || context_lengths == 0 || token_mask == 0 || score_keys_u32 == 0 || row_count == 0u || mask_stride == 0u || score_stride == 0u )
+        return(cudaErrorInvalidValue);
+    SparkQwen4FlashIndexerSelectKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(
+        query_bf16,pooled_key_cache,table->physical_block_indices,table->lane_physical_block_counts,
+        row_lane_indices,context_lengths,token_mask,score_keys_u32,row_count,table->lane_stride,mask_stride,score_stride);
+    return(cudaGetLastError());
 }
 /*
  * Routed MoE execution, Qwen 3.8: BF16 router gate -> per-row top-k
@@ -1861,12 +2591,16 @@ extern "C" cudaError_t SparkQwen4FlashConfigureCudaKernels(void)
         return status;
     }
     /* The scalar Linear path stages the input row in dynamic shared memory;
-     * the widest qwen38 input is the 16384-wide attention/GDN output
-     * projection (64KB of floats), past the 48KB static ceiling. */
+     * the widest inputs are the 10240-wide hc stream vectors (down/inject
+     * mixers: 40KB of floats) and the 16384-wide attention/GDN output
+     * projections - all past the 48KB static ceiling. Size for the max. */
+    uint32_t widest = SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_DIMENSION;
+    if ( SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH > widest )
+        widest = SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
     return cudaFuncSetAttribute(
         (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_CTA_WARPS>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
-        (int)(SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_DIMENSION * sizeof(float)));
+        (int)(widest * sizeof(float)));
 }
 
 /*
@@ -2003,8 +2737,10 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 	if ( view == 0 || input_bf16 == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
 		(view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
-			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128) ||
-		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 &&
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
+		view->weight_payload == 0 ||
+		(view->weight_scale_e8m0 == 0 && view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
 		(source_row_map == 0 && source_row_count == 0u) ||
 		tp_degree == 0u || tp_rank >= tp_degree ||
 		(SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
@@ -2018,13 +2754,21 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 		return(cudaErrorInvalidValue);
 	payload_stride = rows_per_expert * view->input_dimension;
 	/* F32B128: one f32 per 128x128 tile; E8M0B128: one exponent byte per
-	 * (row, 128-column block) - the per-row MX plane. */
+	 * (row, 128-column block) - the per-row MX plane; BF16: the policy
+	 * repackage (2 bytes per element, no scale plane - the shared kernel's
+	 * SparkLmDotRowBf16 branch never touches a scale). */
 	if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
 	{
 		if ( (view->input_dimension % 128u) != 0u )
 			return(cudaErrorInvalidValue);
 		scale_stride = rows_per_expert * ((uint64_t)view->input_dimension / 128u);
 		lm_format = SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128;
+	}
+	else if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+	{
+		payload_stride *= 2u;
+		scale_stride = 0u;
+		lm_format = SPARK_LM_WEIGHT_FORMAT_BF16;
 	}
 	else
 	{
@@ -2096,9 +2840,11 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 	const uint32_t *offsets;
 	if ( view == 0 || input_bf16 == 0 || group_row_offset == 0 || output_bf16 == 0 ||
 		(view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
-			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128) ||
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 &&
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
 		view->input_dimension % 64u != 0u ||
-		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
+		view->weight_payload == 0 ||
+		(view->weight_scale_e8m0 == 0 && view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
 		source_row_count == 0u ||
 		tp_degree == 0u || tp_rank >= tp_degree ||
 		(SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
@@ -2109,6 +2855,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 	if ( rows_per_expert * experts_per_rank != view->output_dimension || rows_per_expert % SPARK_LM_TILE_N != 0u )
 		return(cudaErrorInvalidValue);
 	payload_stride = rows_per_expert * view->input_dimension;
+	if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+		payload_stride *= 2u;
 	m_blocks = (source_row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	n_tiles = (uint32_t)(rows_per_expert / SPARK_LM_TILE_N);
 	(void)m_blocks;
@@ -2140,6 +2888,20 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 			view->input_dimension,(uint32_t)rows_per_expert,
 			experts_per_rank);
 		return(cudaGetLastError());
+	}
+	if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+	{
+		/* Policy bf16 repackage: the tile stager's BF16 branch copies raw
+		 * fragments and never dereferences a scale, so the scale plane is
+		 * absent (null base, zero stride). */
+		return(SparkLmHostLaunchGroupedExpertTileMloop(
+			stream,
+			SPARK_LM_WEIGHT_FORMAT_BF16,
+			payload,(const uint8_t *)0,
+			payload_stride,0u,
+			input_bf16,source_row_map,offsets,output_bf16,
+			view->input_dimension,(uint32_t)rows_per_expert,
+			experts_per_rank));
 	}
 	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * ((rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u));
 	return(SparkLmHostLaunchGroupedExpertTileMloop(

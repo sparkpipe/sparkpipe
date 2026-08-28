@@ -1,0 +1,100 @@
+{
+ "schema_version": 1,
+ "model": {
+  "id": "alibaba.qwen3.8-flash.resident-decode-stage-firmware",
+  "revision": "bf16-h2560-l48-gdn36-full12-v248320-mtp1-hc4-ple-v3pack-v1"
+ },
+ "metadata": {
+  "architecture": "qwen4_flash_resident_decode_stage",
+  "purpose": "resident decode-stage firmware for Qwen3.8-Flash-Next: 3:1 Gated DeltaNet to indexer-gated full attention, 4-stream hyper-connection residual, layer-1 PLE n-gram block, routed MoE (512 experts, top-10, one shared), block-128 FP8 experts, BF16 spine, one-layer MTP",
+  "provenance": {
+   "status": "in bring-up; whole-stack TP4 standalone validator PASS, v3 packs (hc+indexer+PLE) building",
+   "disclosed_source": [
+    "local warm checkpoint /mnt/model-warm/qwen3.8-flash-next (index sha pinned in the pack receipts)",
+    "modeling semantics pinned from model_contracts/references/modeling_qwen4_exp.py sha256 77fec77d87f2a0eb23b95fa04276fb5779698a7c7f523cf5061e49c118bcc459"
+   ]
+  },
+  "module_geometry": {
+   "hidden_dimension": 2560,
+   "layer_count": 48,
+   "gdn_layer_count": 36,
+   "full_attention_layer_count": 12,
+   "attention_period": 4,
+   "full_attention_phase": 3,
+   "gdn_key_head_count": 16,
+   "gdn_value_head_count": 48,
+   "gdn_head_key_dimension": 128,
+   "gdn_head_value_dimension": 128,
+   "gdn_conv_kernel": 4,
+   "gdn_chunk_tokens": 64,
+   "attn_query_head_count": 24,
+   "attn_kv_head_count": 2,
+   "attn_head_dimension": 256,
+   "attn_rope_dimension": 64,
+   "indexer_head_count": 4,
+   "indexer_kv_head_count": 1,
+   "indexer_head_dimension": 128,
+   "indexer_budget": 2048,
+   "indexer_compress_ratio": 4,
+   "hc_stream_count": 4,
+   "hc_lowrank_dimension": 320,
+   "ple_layer_index": 1,
+   "routed_expert_count": 512,
+   "experts_per_token": 10,
+   "expert_intermediate_dimension": 640,
+   "shared_expert_count": 1,
+   "output_vocab_count": 248320,
+   "mtp_layer_count": 1
+  },
+  "precision": {
+   "routed_expert_weight_codec": "fp8_e4m3",
+   "routed_expert_scale": "f32_block_128x128_scale_inv_or_e8m0_per_row",
+   "non_expert_weight_format": "bf16",
+   "activation_format": "bf16",
+   "kv_cache_codec": "bf16",
+   "accumulator_format": "fp32",
+   "ple_ngram_table": "bf16 vocab-sharded across TP ranks (23.84 GiB/rank at TP4, no quantization loss)"
+  }
+ },
+ "stages": [
+  {
+   "name": "qwen4_flash_resident_decode_stage",
+   "target": "cuda.sm121.qwen4_flash.resident_decode_stage.fp8",
+   "programs": [
+    {
+     "name": "resident_decode",
+     "id": 1,
+     "max_inflight": 4,
+     "completion": "submit_return",
+     "scheduling": {
+      "flags": [
+       "stream_ordered",
+       "driver_owns_resident_state",
+       "driver_owns_kv_cache",
+       "fixed_firmware",
+       "requires_hidden_transport",
+       "no_file_transport",
+       "no_shell_transport"
+      ],
+      "max_active_slots": 512,
+      "max_new_tokens": 512,
+      "max_resident_sequences": 512,
+      "max_sequence_tokens": 262144
+     },
+     "operations": [
+      {
+       "name": "qwen4_flash_resident_decode_stage",
+       "module": "spark.qwen4_flash.resident_decode_stage.fp8.h2560.l48.gdn36.e512k10.v1",
+       "configuration": {
+        "qualification_status": "GPU_VALIDATED",
+        "production_ready": false,
+        "fallback_allowed": false,
+        "runtime_backend_selection": "forbidden"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

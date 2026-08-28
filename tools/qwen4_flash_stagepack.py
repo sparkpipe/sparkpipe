@@ -77,7 +77,8 @@ CONFIG_NAME = "config.json"
 
 # Wire constants, mirroring spark_qwen4_flash_stagepack_format.h.
 MAGIC = 0x50533451  # 'Q4SP' little endian
-FORMAT_VERSION = 1
+# v2: full-width hc norms, per-sublayer hc mixers, indexer, PLE, mixers.
+FORMAT_VERSION = 2
 HEADER_BYTES = 120
 ENTRY_BYTES = 56
 GLOBAL_LAYER = 0xFFFFFFFF
@@ -88,8 +89,19 @@ WEIGHT_BF16 = 0
 WEIGHT_F32 = 1
 WEIGHT_FP8_F32B128 = 4
 WEIGHT_FP8_E8M0B128 = 6
+WEIGHT_I64 = 7
 
 HIDDEN = 2560
+HC_STREAMS = 4
+HC_LOWRANK = 320
+STREAM_WIDTH = HC_STREAMS * HIDDEN  # 10240
+INDEXER_HEADS = 4
+INDEXER_KV_HEADS = 1
+INDEXER_HEAD_DIM = 128
+PLE_LAYER = 1
+PLE_NGRAM_HEADS = 16
+PLE_NGRAM_HEAD_DIM = 160
+PLE_NGRAM_ROWS = 320001536
 LAYER_COUNT = 48
 ATTENTION_PERIOD = 4
 FULL_PHASE = 3
@@ -130,6 +142,14 @@ assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
  KIND_ATTN_VALUE, KIND_ATTN_OUTPUT, KIND_ATTN_QUERY_NORM,
  KIND_ATTN_KEY_NORM, KIND_MTP_FC, KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM,
  KIND_MTP_FINAL_NORM) = range(32)
+(KIND_ATTN_HC_DOWN, KIND_ATTN_HC_UP, KIND_ATTN_HC_INJECT,
+ KIND_MLP_HC_DOWN, KIND_MLP_HC_UP, KIND_MLP_HC_INJECT,
+ KIND_INDEXER_QK, KIND_INDEXER_Q_NORM, KIND_INDEXER_K_NORM,
+ KIND_MIXER_DOWN, KIND_MIXER_UP, KIND_MTP_MIXER_DOWN, KIND_MTP_MIXER_UP,
+ KIND_PLE_KEY, KIND_PLE_VALUE, KIND_PLE_NORM_KEY, KIND_PLE_NORM_QUERY,
+ KIND_PLE_NORM_CONV, KIND_PLE_CONV, KIND_PLE_MULTIPLIERS,
+ KIND_PLE_HEAD_VOCABS, KIND_PLE_HEAD_OFFSETS,
+ KIND_PLE_NGRAM) = range(32, 55)
 
 CHUNK_BYTES = 8 * 1024 * 1024
 BF16_BYTES = 2
@@ -148,10 +168,10 @@ def is_gdn_layer(layer_index: int) -> bool:
 def kind_shape(kind: int) -> tuple[int, int, int]:
     table = {
         KIND_EMBEDDING: (VOCAB, HIDDEN, WEIGHT_BF16),
-        KIND_FINAL_NORM: (1, HIDDEN, WEIGHT_BF16),
+        KIND_FINAL_NORM: (1, STREAM_WIDTH, WEIGHT_BF16),
         KIND_LM_HEAD: (VOCAB, HIDDEN, WEIGHT_BF16),
-        KIND_ATTENTION_NORM: (1, HIDDEN, WEIGHT_BF16),
-        KIND_MLP_NORM: (1, HIDDEN, WEIGHT_BF16),
+        KIND_ATTENTION_NORM: (1, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_MLP_NORM: (1, STREAM_WIDTH, WEIGHT_BF16),
         KIND_MOE_GATE: (EXPERT_COUNT, HIDDEN, WEIGHT_BF16),
         KIND_MOE_W1: (EXPERT_COUNT * EXPERT_INTERMEDIATE, HIDDEN, WEIGHT_FP8_F32B128),
         KIND_MOE_W3: (EXPERT_COUNT * EXPERT_INTERMEDIATE, HIDDEN, WEIGHT_FP8_F32B128),
@@ -176,9 +196,33 @@ def kind_shape(kind: int) -> tuple[int, int, int]:
         KIND_ATTN_QUERY_NORM: (1, ATTN_HEAD_DIM, WEIGHT_BF16),
         KIND_ATTN_KEY_NORM: (1, ATTN_HEAD_DIM, WEIGHT_BF16),
         KIND_MTP_FC: (HIDDEN, 2 * HIDDEN, WEIGHT_BF16),
+        # v2: the norm slots carry the FULL 4-stream hc_norm widths.
         KIND_MTP_EMBED_NORM: (1, HIDDEN, WEIGHT_BF16),
-        KIND_MTP_HIDDEN_NORM: (1, HIDDEN, WEIGHT_BF16),
-        KIND_MTP_FINAL_NORM: (1, HIDDEN, WEIGHT_BF16),
+        KIND_MTP_HIDDEN_NORM: (1, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_MTP_FINAL_NORM: (1, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_ATTN_HC_DOWN: (HC_LOWRANK, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_ATTN_HC_UP: (STREAM_WIDTH, HC_LOWRANK, WEIGHT_BF16),
+        KIND_ATTN_HC_INJECT: (HC_STREAMS, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_MLP_HC_DOWN: (HC_LOWRANK, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_MLP_HC_UP: (STREAM_WIDTH, HC_LOWRANK, WEIGHT_BF16),
+        KIND_MLP_HC_INJECT: (HC_STREAMS, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_INDEXER_QK: ((INDEXER_HEADS + INDEXER_KV_HEADS) * INDEXER_HEAD_DIM, HIDDEN, WEIGHT_BF16),
+        KIND_INDEXER_Q_NORM: (1, INDEXER_HEAD_DIM, WEIGHT_BF16),
+        KIND_INDEXER_K_NORM: (1, INDEXER_HEAD_DIM, WEIGHT_BF16),
+        KIND_MIXER_DOWN: (HC_LOWRANK, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_MIXER_UP: (STREAM_WIDTH, HC_LOWRANK, WEIGHT_BF16),
+        KIND_MTP_MIXER_DOWN: (HC_LOWRANK, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_MTP_MIXER_UP: (STREAM_WIDTH, HC_LOWRANK, WEIGHT_BF16),
+        KIND_PLE_KEY: (STREAM_WIDTH, HIDDEN, WEIGHT_BF16),
+        KIND_PLE_VALUE: (HIDDEN, HIDDEN, WEIGHT_BF16),
+        KIND_PLE_NORM_KEY: (1, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_PLE_NORM_QUERY: (1, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_PLE_NORM_CONV: (1, STREAM_WIDTH, WEIGHT_BF16),
+        KIND_PLE_CONV: (STREAM_WIDTH, 4, WEIGHT_BF16),
+        KIND_PLE_MULTIPLIERS: (1, 3, WEIGHT_I64),
+        KIND_PLE_HEAD_VOCABS: (1, PLE_NGRAM_HEADS, WEIGHT_I64),
+        KIND_PLE_HEAD_OFFSETS: (1, PLE_NGRAM_HEADS, WEIGHT_I64),
+        KIND_PLE_NGRAM: (PLE_NGRAM_ROWS, PLE_NGRAM_HEAD_DIM, WEIGHT_BF16),
     }
     return table[kind]
 
@@ -203,14 +247,35 @@ def layer_tensor_name(kind: int, layer: int) -> str:
         KIND_ATTN_OUTPUT: "self_attn.o_proj.weight",
         KIND_ATTN_QUERY_NORM: "self_attn.q_norm.weight",
         KIND_ATTN_KEY_NORM: "self_attn.k_norm.weight",
+        KIND_INDEXER_QK: "self_attn.indexer.index_qk_proj.weight",
+        KIND_INDEXER_Q_NORM: "self_attn.indexer.q_layernorm.weight",
+        KIND_INDEXER_K_NORM: "self_attn.indexer.k_layernorm.weight",
+    }
+    ple = {
+        KIND_PLE_KEY: "ple.key_proj.weight",
+        KIND_PLE_VALUE: "ple.value_proj.weight",
+        KIND_PLE_NORM_KEY: "ple.norm_key.weight",
+        KIND_PLE_NORM_QUERY: "ple.norm_query.weight",
+        KIND_PLE_NORM_CONV: "ple.norm_conv.weight",
+        KIND_PLE_CONV: "ple.conv1d.weight",
+        KIND_PLE_MULTIPLIERS: "ple.ple_embedding.layer_multipliers",
+        KIND_PLE_HEAD_VOCABS: "ple.ple_embedding.ngram_heads_vocab_sizes",
+        KIND_PLE_HEAD_OFFSETS: "ple.ple_embedding.ngram_heads_offsets",
+        # The n-gram table is 128 checkpoint shards; the name is a sentinel -
+        # check_shape and the copier handle the shard span specially.
+        KIND_PLE_NGRAM: "ple.ple_embedding.ngram_embedding",
     }
     every = {
-        # Flash has no input/post_attention_layernorm: the hyper-connection
-        # hc_norm carries the per-sublayer norm role over the 4-stream
-        # residual; the stream-0 section fills the [1, H] slot (receipted
-        # under hc_approximations).
+        # v2 exact semantics (modeling_qwen4_exp.py): the hc_norm IS the
+        # per-sublayer norm over the 4-stream residual, full [4H] width.
         KIND_ATTENTION_NORM: "attn_hyper_connection.hc_norm.weight",
         KIND_MLP_NORM: "mlp_hyper_connection.hc_norm.weight",
+        KIND_ATTN_HC_DOWN: "attn_hyper_connection.input_mix_weight_down.weight",
+        KIND_ATTN_HC_UP: "attn_hyper_connection.input_mix_weight_up.weight",
+        KIND_ATTN_HC_INJECT: "attn_hyper_connection.block_inject_weight.weight",
+        KIND_MLP_HC_DOWN: "mlp_hyper_connection.input_mix_weight_down.weight",
+        KIND_MLP_HC_UP: "mlp_hyper_connection.input_mix_weight_up.weight",
+        KIND_MLP_HC_INJECT: "mlp_hyper_connection.block_inject_weight.weight",
         KIND_MOE_GATE: "mlp.gate.weight",
         KIND_MOE_W1: "mlp.experts.gate_up_proj",
         KIND_MOE_W3: "mlp.experts.gate_up_proj",
@@ -220,7 +285,7 @@ def layer_tensor_name(kind: int, layer: int) -> str:
         KIND_MOE_SHARED_DOWN: "mlp.shared_expert.down_proj.weight",
         KIND_MOE_SHARED_GATE_WEIGHT: "mlp.shared_expert_gate.weight",
     }
-    for mapping in (every, gdn, attn):
+    for mapping in (every, gdn, attn, ple):
         if kind in mapping:
             return prefix + mapping[kind]
     raise PackFailure(f"kind {kind} is not a per-layer tensor")
@@ -228,25 +293,36 @@ def layer_tensor_name(kind: int, layer: int) -> str:
 
 GLOBAL_TENSORS = {
     KIND_EMBEDDING: "model.language_model.embed_tokens.weight",
-    # Flash readout: no plain model.norm; stream-0 section of the mixer's
-    # hc_norm stands in (receipted under hc_approximations).
+    # v2: the readout is the hyper_connection_mixer itself - hc_norm plus
+    # the low-rank mix pair (use_combine=False: mean-mix, no inject).
     KIND_FINAL_NORM: "model.language_model.hyper_connection_mixer.hc_norm.weight",
+    KIND_MIXER_DOWN: "model.language_model.hyper_connection_mixer.input_mix_weight_down.weight",
+    KIND_MIXER_UP: "model.language_model.hyper_connection_mixer.input_mix_weight_up.weight",
     KIND_LM_HEAD: "lm_head.weight",
     KIND_MTP_FC: MTP_PREFIX + "fc_embedding.weight+" + MTP_PREFIX + "fc_hidden.weight",
     KIND_MTP_EMBED_NORM: MTP_PREFIX + "pre_fc_norm_embedding.weight",
     KIND_MTP_HIDDEN_NORM: MTP_PREFIX + "pre_fc_norm_hidden.weight",
-    KIND_MTP_FINAL_NORM: MTP_PREFIX + "pre_fc_norm_embedding.weight",
+    KIND_MTP_FINAL_NORM: MTP_PREFIX + "hyper_connection_mixer.hc_norm.weight",
+    KIND_MTP_MIXER_DOWN: MTP_PREFIX + "hyper_connection_mixer.input_mix_weight_down.weight",
+    KIND_MTP_MIXER_UP: MTP_PREFIX + "hyper_connection_mixer.input_mix_weight_up.weight",
 }
 
-EVERY_LAYER_KINDS = (KIND_ATTENTION_NORM, KIND_MLP_NORM, KIND_MOE_GATE,
-                     KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN,
+EVERY_LAYER_KINDS = (KIND_ATTENTION_NORM, KIND_MLP_NORM,
+                     KIND_ATTN_HC_DOWN, KIND_ATTN_HC_UP, KIND_ATTN_HC_INJECT,
+                     KIND_MLP_HC_DOWN, KIND_MLP_HC_UP, KIND_MLP_HC_INJECT,
+                     KIND_MOE_GATE, KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN,
                      KIND_MOE_SHARED_GATE, KIND_MOE_SHARED_UP,
                      KIND_MOE_SHARED_DOWN, KIND_MOE_SHARED_GATE_WEIGHT)
 GDN_LAYER_KINDS = (KIND_GDN_QKV, KIND_GDN_GATE, KIND_GDN_BETA, KIND_GDN_DECAY,
                    KIND_GDN_OUTPUT, KIND_GDN_CONV_WEIGHT, KIND_GDN_A_LOG,
                    KIND_GDN_DT_BIAS, KIND_GDN_NORM)
 ATTN_LAYER_KINDS = (KIND_ATTN_QUERY, KIND_ATTN_KEY, KIND_ATTN_VALUE,
-                    KIND_ATTN_OUTPUT, KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM)
+                    KIND_ATTN_OUTPUT, KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM,
+                    KIND_INDEXER_QK, KIND_INDEXER_Q_NORM, KIND_INDEXER_K_NORM)
+PLE_LAYER_KINDS = (KIND_PLE_KEY, KIND_PLE_VALUE, KIND_PLE_NORM_KEY,
+                   KIND_PLE_NORM_QUERY, KIND_PLE_NORM_CONV, KIND_PLE_CONV,
+                   KIND_PLE_MULTIPLIERS, KIND_PLE_HEAD_VOCABS,
+                   KIND_PLE_HEAD_OFFSETS, KIND_PLE_NGRAM)
 
 # Replicated (never sliced) kinds: norms, scalars, and the MTP globals per
 # the family rule in spark_pack_common.spark_pack_replicated_draft_rows.
@@ -265,6 +341,17 @@ REPLICATED_KINDS = frozenset({
     # deployed pack generation narrowed it - the module still accepts and
     # runs those (self-consistent, wrong mixture); rebuilt packs replicate.
     KIND_MOE_GATE,
+    # v2 hc/indexer/PLE-side tensors replicate: the stream vector is
+    # replicated across ranks (each sublayer output is all-reduced before
+    # the inject), so every rank runs the identical mixer math on the
+    # identical inputs. The n-gram table is the exception (vocab-sharded).
+    KIND_ATTN_HC_DOWN, KIND_ATTN_HC_UP, KIND_ATTN_HC_INJECT,
+    KIND_MLP_HC_DOWN, KIND_MLP_HC_UP, KIND_MLP_HC_INJECT,
+    KIND_INDEXER_QK, KIND_INDEXER_Q_NORM, KIND_INDEXER_K_NORM,
+    KIND_MIXER_DOWN, KIND_MIXER_UP, KIND_MTP_MIXER_DOWN, KIND_MTP_MIXER_UP,
+    KIND_PLE_KEY, KIND_PLE_VALUE, KIND_PLE_NORM_KEY, KIND_PLE_NORM_QUERY,
+    KIND_PLE_NORM_CONV, KIND_PLE_CONV, KIND_PLE_MULTIPLIERS,
+    KIND_PLE_HEAD_VOCABS, KIND_PLE_HEAD_OFFSETS,
 })
 
 
@@ -288,11 +375,13 @@ def expected_tensor_count(first_layer: int, layer_count: int) -> int:
     full_below = lambda n: n // ATTENTION_PERIOD
     full = full_below(first_layer + layer_count) - full_below(first_layer)
     gdn = layer_count - full
-    tensors = layer_count * 10 + gdn * 9 + full * 6
+    tensors = layer_count * 16 + gdn * 9 + full * 9
+    if first_layer <= PLE_LAYER < first_layer + layer_count:
+        tensors += 10
     if first_layer == 0:
         tensors += 1
     if first_layer + layer_count == LAYER_COUNT:
-        tensors += 2 + 4 + 16 + (1 if first_layer != 0 else 0)
+        tensors += 2 + 4 + 4 + 25 + (1 if first_layer != 0 else 0)
     return tensors
 
 
@@ -306,11 +395,16 @@ def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
         class_kinds = GDN_LAYER_KINDS if is_gdn_layer(layer) else ATTN_LAYER_KINDS
         for kind in EVERY_LAYER_KINDS + class_kinds:
             refs.append(TensorRef(kind, layer, layer_tensor_name(kind, layer)))
+        if layer == PLE_LAYER:
+            for kind in PLE_LAYER_KINDS:
+                refs.append(TensorRef(kind, layer, layer_tensor_name(kind, layer)))
     if first_layer + layer_count == LAYER_COUNT:
         if first_layer != 0:
             refs.append(TensorRef(KIND_EMBEDDING, GLOBAL_LAYER, GLOBAL_TENSORS[KIND_EMBEDDING]))
-        for kind in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_MTP_FC,
-                     KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM):
+        for kind in (KIND_FINAL_NORM, KIND_MIXER_DOWN, KIND_MIXER_UP,
+                     KIND_LM_HEAD, KIND_MTP_FC, KIND_MTP_EMBED_NORM,
+                     KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM,
+                     KIND_MTP_MIXER_DOWN, KIND_MTP_MIXER_UP):
             refs.append(TensorRef(kind, GLOBAL_LAYER, GLOBAL_TENSORS[kind]))
         for kind in EVERY_LAYER_KINDS + ATTN_LAYER_KINDS:
             refs.append(TensorRef(kind, MTP_LAYER, layer_tensor_name(kind, MTP_LAYER))
@@ -360,13 +454,41 @@ class SafetensorsSource(_BaseSafetensorsSource):
             if meta["dtype"] != "BF16" or meta["shape"] != [rows, 1, columns]:
                 raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected BF16 [{rows},1,{columns}]")
             return shard, meta, offset
-        if ref.kind in (KIND_FINAL_NORM, KIND_MTP_HIDDEN_NORM, KIND_ATTENTION_NORM, KIND_MLP_NORM):
+        if ref.kind in (KIND_FINAL_NORM, KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM,
+                        KIND_ATTENTION_NORM, KIND_MLP_NORM,
+                        KIND_PLE_NORM_KEY, KIND_PLE_NORM_QUERY, KIND_PLE_NORM_CONV):
             shard, meta, offset = self.resolve(name)
-            if ref.kind in (KIND_ATTENTION_NORM, KIND_MLP_NORM) and ref.layer != GLOBAL_LAYER:
-                prefix = f"{LAYER_PREFIX}{ref.layer}." if ref.layer != MTP_LAYER else MTP_PREFIX + "layers.0."
-                shard, meta, offset = self.resolve(prefix + ("attn_hyper_connection.hc_norm.weight" if ref.kind == KIND_ATTENTION_NORM else "mlp_hyper_connection.hc_norm.weight"))
             if meta["dtype"] != "BF16" or meta["shape"] != [4 * HIDDEN]:
-                raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected BF16 [{4 * HIDDEN}] (4-stream hc norm)")
+                raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected BF16 [{4 * HIDDEN}] (4-stream group norm)")
+            return shard, meta, offset
+        if ref.kind in (KIND_ATTN_HC_DOWN, KIND_MLP_HC_DOWN, KIND_MIXER_DOWN, KIND_MTP_MIXER_DOWN):
+            return super().check_shape(name, HC_LOWRANK, STREAM_WIDTH)
+        if ref.kind in (KIND_ATTN_HC_UP, KIND_MLP_HC_UP, KIND_MIXER_UP, KIND_MTP_MIXER_UP):
+            return super().check_shape(name, STREAM_WIDTH, HC_LOWRANK)
+        if ref.kind in (KIND_ATTN_HC_INJECT, KIND_MLP_HC_INJECT):
+            return super().check_shape(name, HC_STREAMS, STREAM_WIDTH)
+        if ref.kind == KIND_INDEXER_QK:
+            return super().check_shape(name, (INDEXER_HEADS + INDEXER_KV_HEADS) * INDEXER_HEAD_DIM, HIDDEN)
+        if ref.kind in (KIND_INDEXER_Q_NORM, KIND_INDEXER_K_NORM):
+            return super().check_shape(name, 1, INDEXER_HEAD_DIM)
+        if ref.kind == KIND_PLE_KEY:
+            return super().check_shape(name, STREAM_WIDTH, HIDDEN)
+        if ref.kind == KIND_PLE_VALUE:
+            return super().check_shape(name, HIDDEN, HIDDEN)
+        if ref.kind == KIND_PLE_CONV:
+            shard, meta, offset = self.resolve(name)
+            if meta["dtype"] != "BF16" or meta["shape"] != [STREAM_WIDTH, 1, 4]:
+                raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected BF16 [{STREAM_WIDTH},1,4]")
+            return shard, meta, offset
+        if ref.kind in (KIND_PLE_MULTIPLIERS, KIND_PLE_HEAD_VOCABS, KIND_PLE_HEAD_OFFSETS):
+            shard, meta, offset = self.resolve(name)
+            if meta["dtype"] != "I64" or meta["shape"] != [ref.columns]:
+                raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected I64 [{ref.columns}]")
+            return shard, meta, offset
+        if ref.kind == KIND_PLE_NGRAM:
+            shard, meta, offset = self.resolve(f"{LAYER_PREFIX}{PLE_LAYER}.ple.ple_embedding.ngram_embedding.shard_0.weight")
+            if meta["dtype"] != "BF16" or meta["shape"] != [PLE_NGRAM_ROWS // 128, PLE_NGRAM_HEAD_DIM]:
+                raise PackFailure(f"ngram shard_0: {meta['dtype']} {meta['shape']}, expected BF16 [{PLE_NGRAM_ROWS // 128},{PLE_NGRAM_HEAD_DIM}]")
             return shard, meta, offset
         if ref.kind in (KIND_GDN_A_LOG, KIND_GDN_DT_BIAS):
             shard, meta, offset = self.resolve(name)
@@ -555,6 +677,14 @@ def shard_ref(ref: TensorRef, tp_degree: int, tp_rank: int) -> TensorRef:
         start, count = tp_shard_range(VOCAB, tp_degree, tp_rank)
         ref.rows = count
         ref.row_slice = (start, count)
+    elif ref.kind == KIND_PLE_NGRAM:
+        # Vocab-sharded n-gram table: rank r owns the contiguous row span
+        # [r*rows/tp, (r+1)*rows/tp) of the head-major concatenated space,
+        # which is exactly shards [r*128/tp, (r+1)*128/tp) of the 128
+        # checkpoint shards (each shard is rows/128 rows).
+        ref.rows = PLE_NGRAM_ROWS // tp_degree
+        ref.ngram_shard_range = (tp_rank * (128 // tp_degree),
+                                 (tp_rank + 1) * (128 // tp_degree))
     else:
         raise PackFailure(f"kind {ref.kind} has no TP shard rule")
     ref.tp_degree, ref.tp_rank = tp_degree, tp_rank
@@ -604,6 +734,30 @@ def bf16_to_f32_matrix(packed_u16) -> "np.ndarray":
 
 def copy_sharded_bf16(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
     import numpy as np
+    # I64 hash constants: raw little-endian copy, never converted.
+    if ref.weight_format == WEIGHT_I64:
+        with (source.root / source.weight_map[ref.name]).open("rb") as file:
+            file.seek(source.resolve(ref.name)[2])
+            raw = file.read(ref.columns * 8)
+        if len(raw) != ref.columns * 8:
+            raise PackFailure(f"short read on {ref.name}")
+        out.write(raw)
+        return
+    # N-gram table: stream this rank's contiguous shard span in row order.
+    if ref.kind == KIND_PLE_NGRAM:
+        shard_start, shard_end = getattr(ref, "ngram_shard_range", (0, 128))
+        for shard_index in range(shard_start, shard_end):
+            shard_name = f"{LAYER_PREFIX}{PLE_LAYER}.ple.ple_embedding.ngram_embedding.shard_{shard_index}.weight"
+            with (source.root / source.weight_map[shard_name]).open("rb") as file:
+                file.seek(source.resolve(shard_name)[2])
+                remaining = (PLE_NGRAM_ROWS // 128) * PLE_NGRAM_HEAD_DIM * BF16_BYTES
+                while remaining > 0:
+                    chunk = file.read(min(remaining, CHUNK_BYTES))
+                    if len(chunk) != min(remaining, CHUNK_BYTES):
+                        raise PackFailure(f"short read on {shard_name}")
+                    remaining -= len(chunk)
+                    out.write(chunk)
+        return
     if getattr(ref, "triple_slice", None):
         # Fused q|k|v planes re-gathered per rank.
         key_start, key_count, value_start, value_count = ref.triple_slice
@@ -640,12 +794,35 @@ def copy_sharded_bf16(source: SafetensorsSource, ref: TensorRef, offset: int, ou
                     widened[3::4] = chunk[1::2]
                     out.write(widened)
         return
-    full = read_source_matrix(source, ref.name)
-    if ref.kind in (KIND_FINAL_NORM, KIND_MTP_HIDDEN_NORM, KIND_ATTENTION_NORM, KIND_MLP_NORM):
-        # 4-stream hc norm: take the stream-0 section (receipted).
-        section = full.reshape(-1)[:ref.columns]
-        out.write(section.astype("<u2").tobytes())
+    if ref.kind == KIND_PLE_NGRAM:
+        # Stream this rank's contiguous shard span (128/tp shards) in row
+        # order - a raw byte stream, no conversion.
+        shard_start, shard_end = getattr(ref, "ngram_shard_range", (0, 128))
+        for shard_index in range(shard_start, shard_end):
+            shard_name = f"{LAYER_PREFIX}{PLE_LAYER}.ple.ple_embedding.ngram_embedding.shard_{shard_index}.weight"
+            path = source.root / source.weight_map[shard_name]
+            with path.open("rb") as file:
+                remaining = (PLE_NGRAM_ROWS // 128) * PLE_NGRAM_HEAD_DIM * BF16_BYTES
+                file.seek(source.resolve(shard_name)[2])
+                while remaining > 0:
+                    chunk = file.read(min(remaining, CHUNK_BYTES))
+                    if len(chunk) != min(remaining, CHUNK_BYTES):
+                        raise PackFailure(f"short read on {shard_name}")
+                    remaining -= len(chunk)
+                    out.write(chunk)
         return
+    if ref.weight_format == WEIGHT_I64:
+        path = source.root / source.weight_map[ref.name]
+        with path.open("rb") as file:
+            file.seek(source.resolve(ref.name)[2])
+            raw = file.read(ref.columns * 8)
+        if len(raw) != ref.columns * 8:
+            raise PackFailure(f"short read on {ref.name}")
+        out.write(raw)
+        return
+    full = read_source_matrix(source, ref.name)
+    if full.ndim == 3 and ref.kind == KIND_PLE_CONV:
+        full = full[:, 0, :]
     if full.ndim == 3:
         full = full.reshape(full.shape[0], -1)
     if full.ndim == 1:
@@ -675,7 +852,9 @@ def copy_mtp_fc(source: SafetensorsSource, ref: TensorRef, out) -> None:
 def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: str, out) -> None:
     """Read the fused per-layer expert tensors [E, 2I, H] / [E, H, I],
     split w1/w3 per expert, quantize per 128x128 block, and stack the
-    rank's experts expert-major with the scale plane after the payload."""
+    rank's experts expert-major with the scale plane after the payload.
+    --expert-format bf16 writes the source BF16 bits verbatim (the
+    quantization policy: repackage-only, never quantize)."""
     import numpy as np
     expert_start, expert_count = getattr(ref, "expert_slice", (0, EXPERT_COUNT))
     if ref.kind == KIND_MOE_DOWN:
@@ -687,6 +866,9 @@ def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: s
         half = section.shape[1] // 2
         matrix = (section[:, :half, :] if ref.kind == KIND_MOE_W1
                   else section[:, half:, :]).reshape(-1, HIDDEN)
+    if expert_format == "bf16":
+        out.write(np.ascontiguousarray(matrix, dtype="<u2").tobytes())
+        return
     payload, scales = quantize_fp8_blocks(bf16_to_f32_matrix(matrix), expert_format)
     out.write(payload)
     out.write(scales)
@@ -707,23 +889,30 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         _, _, offset = source.check_shape(full_ref)
         full_ref.source_offset = offset
     refs = [shard_ref(ref, tp_degree, tp_rank) for ref in inventory]
-    # The routed experts' WIRE format (natural is F32B128; the CLI flag swaps
-    # in the per-row MX plane). The plan below must price the scale bytes by
-    # the WIRE format - the writer emits exactly this plane.
-    expert_wire_format = WEIGHT_FP8_E8M0B128 if expert_format == "fp8-e8m0b128" else WEIGHT_FP8_F32B128
+    # The routed experts' WIRE format (natural is F32B128; the CLI flag
+    # swaps in the per-row MX plane or the policy-mandated BF16
+    # repackage). The plan below must price payload and scale bytes by
+    # the WIRE format - the writer emits exactly this layout.
+    expert_wire_format = {"fp8-f32b128": WEIGHT_FP8_F32B128,
+                          "fp8-e8m0b128": WEIGHT_FP8_E8M0B128,
+                          "bf16": WEIGHT_BF16}[expert_format]
     plans = []
     cursor = 0
     for ref in refs:
-        if ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
+        wire = expert_wire_format if ref.weight_format == WEIGHT_FP8_F32B128 else ref.weight_format
+        if wire in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
             payload_bytes = ref.rows * ref.columns
             # F32B128: one f32 per 128x128 tile; E8M0B128: one exponent byte
             # per (row, 128-column block) - the per-row MX plane the module's
             # grouped expert kernels decode.
             scale_bytes = ((ref.rows // FP8_BLOCK) * (ref.columns // FP8_BLOCK) * F32_BYTES
-                           if expert_wire_format == WEIGHT_FP8_F32B128
+                           if wire == WEIGHT_FP8_F32B128
                            else ref.rows * (ref.columns // FP8_BLOCK))
+        elif ref.weight_format == WEIGHT_I64:
+            payload_bytes = ref.rows * ref.columns * 8
+            scale_bytes = 0
         else:
-            payload_bytes = ref.rows * ref.columns * (BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES)
+            payload_bytes = ref.rows * ref.columns * (BF16_BYTES if wire == WEIGHT_BF16 else F32_BYTES)
             scale_bytes = 0
         payload_offset = align_up(cursor, PAYLOAD_ALIGNMENT)
         plans.append((ref, payload_offset, payload_bytes, scale_bytes))
@@ -745,7 +934,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             ref.kind, ref.layer,
             expert_wire_format if ref.weight_format == WEIGHT_FP8_F32B128 else ref.weight_format,
             ref.rows, ref.columns,
-            FP8_BLOCK if ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128) else 0,
+            FP8_BLOCK if (ref.weight_format == WEIGHT_FP8_F32B128 and expert_wire_format != WEIGHT_BF16) or ref.weight_format == WEIGHT_FP8_E8M0B128 else 0,
             payload_base + payload_offset, payload_bytes,
             payload_base + payload_offset + payload_bytes if scale_bytes else 0,
             scale_bytes)
@@ -810,7 +999,7 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path, help="receipt output (default: <output>.receipt.json)")
     parser.add_argument("--tp-degree", type=int, default=1)
     parser.add_argument("--tp-rank", type=int, default=0)
-    parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128"), default="fp8-f32b128")
+    parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128", "bf16"), default="fp8-f32b128")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -828,15 +1017,12 @@ def main() -> int:
         "weight_formats": {"routed_experts": args.expert_format,
                            "non_expert": "bf16",
                            "gdn_a_log_dt_bias": "f32"},
-        "hc_approximations": [
-            "FINAL_NORM packed from hyper_connection_mixer.hc_norm stream-0 section (Flash has no plain model.norm)",
-            "MTP_HIDDEN_NORM packed from mtp.pre_fc_norm_hidden stream-0 section (source is 10240-wide)",
-            "MTP_FC packed as column-concat(mtp.fc_embedding, mtp.fc_hidden) [2560,5120]",
+        "hc_semantics": [
+            "v2 packs the EXACT reference semantics (modeling_qwen4_exp.py, sha256 77fec77d): full [4H] hc_norm on the norm slots, per-sublayer low-rank mixers + block_inject, the hyper_connection_mixer readout (use_combine=False), the attention indexer, and the layer-1 PLE block",
+            "PLE ngram table is vocab-sharded bf16 (operator decision 2026-08-28: 23.84 GiB/rank at TP4, no quantization loss)",
+            "MTP: pre_fc_norm_hidden [4H] group-norms the streams, the mtp.hyper_connection_mixer mean-mixes (the publisher reference ignores mtp.* keys, so this composition is the in-house EAGLE convention)",
         ],
         "unmapped_checkpoint_tensors": {
-            "per_layer_hyper_connection": "attn_hyper_connection/mlp_hyper_connection (4 tensors x 48 layers) + global mixer",
-            "attention_indexer": "self_attn.indexer.* on 12 full-attention layers + MTP layer",
-            "ple_layer_1": "layers.1.ple.* (137 tensors, ngram embedding)",
             "vision_tower": "model.visual.* (out of scope by contract)",
         },
     }
