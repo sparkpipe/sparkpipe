@@ -796,3 +796,10 @@ Operator question: does two-model co-residency work? Phase-1 results:
   status-4 empty (the final-emit bug under hunt by the diag lane, tip
   28m old). qwen-flash retarget pushed (16-rank bf16 repackaging).
   Hygiene lane just spawned (no pushes yet). Scoreboard unchanged.
+
+## 2026-08-29 ~7:0x — hygiene lane landing fixes (Makefile dep 3m old); probes steady
+
+- Hygiene lane's first fix pushed (hidden-transport test module header
+  dep — the stale-dylib gate). Diag lane mid-hunt (35m since tip;
+  deep-debug cadence). qwen-flash repackaging. Live probe: API down
+  (mid-wave cycling during the diag's work). Scoreboard unchanged.
