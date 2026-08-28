@@ -854,7 +854,20 @@ from pathlib import Path
 # dsv4 cut over, families 1-2 of 5; glm52/glm5_next/k3 follow): the
 # dsv4 cutover alone NET-DELETED 40 lines while sharing the lifecycle.
 # 215321 exact post-merge.
-CEILING = 215321
+# W2 dry-template items 2-5 (serving-adapter template + stagepack format
+# library + memory-M1 handles + speculation-provider slot; families
+# qwen38_27b + dsv4 cut over on the adapter template, qwen38_max +
+# qwen4_flash on the stagepack library): the libraries are paid for ONCE
+# (the adapters' TP-collective parse, reserve/load spines, descriptor
+# identity, and the two families' shape/header compares now have one
+# implementation) while only two of five families have cut over, so the
+# counter moves +1123 now. The remaining cutovers are PURE DELETION:
+# glm52/glm5_next/k3 adapters (~500 lines of TP-config parse + spines
+# each pair-share) and qwen38_max/qwen4_flash adapters (the qmax<->q4f
+# paste pair), after which the counter returns under the old ceiling.
+# dup_report: 93 -> 84 hits (every 27b/dsv4 adapter row and both C3
+# stagepack rows died). 216444 exact post-merge.
+CEILING = 216444
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
