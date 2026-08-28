@@ -738,7 +738,16 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 	for (lane=0u; lane<route->submission.active_sequence_count; lane++)
 	{
 		slot = route->submission.lanes[lane].resident_sequence_slot;
-		if ( slot >= runtime->runtime_limits.resident_sequence_capacity || runtime->sequence_slots[slot].active_owner != owner )
+		/* active_owner == 0 is an ALREADY-RELEASED slot (the adapter's
+		 * prefetch-abort resolution may have released it first) - skip
+		 * it; only a slot owned by ANOTHER route is corruption. The old
+		 * != owner check made the second release of a legal double
+		 * cleanup a client-fatal INTERNAL_ERROR (the B>=24 knee-sweep
+		 * FAILURE_DEACTIVATE_ROUTE receipts). */
+		if ( slot >= runtime->runtime_limits.resident_sequence_capacity )
+			return(SPARK_STATUS_INTERNAL_ERROR);
+		if ( runtime->sequence_slots[slot].active_owner != owner &&
+			runtime->sequence_slots[slot].active_owner != 0u )
 			return(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	for (lane=0u; lane<route->submission.active_sequence_count; lane++)
@@ -1413,8 +1422,21 @@ static void SparkModelResidentdCloseClient(SparkModelResidentdRuntime *runtime)
 				cleanup_status = SparkModelResidentdDeactivateRouteLocked(
 					runtime,route);
 				if ( cleanup_status != SPARK_STATUS_OK )
-					SparkModelResidentdFailLocked(runtime,cleanup_status,
-						SPARK_MODEL_RESIDENTD_FAILURE_DEACTIVATE_ROUTE,route);
+				{
+					/* The route was ALREADY being discarded - a cleanup
+					 * failure must fence it (orphan for later reclaim)
+					 * and log loudly, not kill the client that asked for
+					 * the abort. The old client-fatal path turned a
+					 * bookkeeping disagreement with the adapter's own
+					 * abort cleanup into terminal INTERNAL_ERROR for
+					 * every connected client (knee-sweep B=24/48). */
+					fprintf(stderr,"model_residentd deactivate_after_abort "
+						"failed status=%d route=%u - fencing route\n",
+						(int)cleanup_status,route->slot_index);
+					route->active = 0u;
+					route->state = SPARK_MODEL_RESIDENTD_ROUTE_FENCED;
+					route->abandoned = 1u;
+				}
 			}
 			else
 			{
