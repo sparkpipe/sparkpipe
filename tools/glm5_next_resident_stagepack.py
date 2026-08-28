@@ -579,7 +579,8 @@ class Packer:
     def build(self) -> None:
         s = self.s
         p = f"model.language_model.layers"
-        for layer in range(self.first_layer, self.first_layer + self.layer_count):
+        last_layer = self.first_layer + self.layer_count - (0 if self.include_mtp else 1)
+        for layer in range(self.first_layer, last_layer + 1):
             a = f"{p}.{layer}.self_attn."
             m = f"{p}.{layer}.mlp."
             self.add_spine_bf16(K_ATTN_NORM, layer, f"{p}.{layer}.input_layernorm.weight")
