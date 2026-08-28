@@ -598,11 +598,12 @@ static void SparkGlm5NextServingDriverCompletion(
 	SparkGlm5NextServingPending *pending;
 	SparkGlm5NextServingState *state;
 	SparkModelServingCompletion completion;
-	uint32_t index,matches;
+	uint32_t index,matches,raw_accepted;
 	pending = (SparkGlm5NextServingPending *)completion_context;
 	state = pending != 0 ? pending->owner : 0;
 	if ( state == 0 || pending->active == 0u || driver_completion == 0 )
 		return;
+	raw_accepted = driver_completion->accepted_token_count;
 	matches = driver_completion->request_id == pending->request_id && driver_completion->sequence_id == pending->sequence_id && driver_completion->sequence_position == pending->sequence_position && driver_completion->program_id == state->program->program_id;
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
@@ -626,19 +627,37 @@ static void SparkGlm5NextServingDriverCompletion(
 		completion.residency = driver_completion->residency;
 	else
 		state->orphan_completion_count++;
-	if ( state->stage_index + 1u == SPARK_GLM5_NEXT_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
+	if ( completion.status != SPARK_STATUS_OK )
 	{
+		/* Wire contract (SparkModelServingAdapterValidateCompletion): a
+		 * non-OK completion must carry completion_flags == 0 and
+		 * accepted_token_count == 0, or the residentd rejects the STRUCT
+		 * with INVALID_ARGUMENT before reading the driver's true status
+		 * — masking the real failure as status 1/reason 2. */
+		completion.accepted_token_count = 0u;
+		completion.completion_flags = 0u;
+	}
+	if ( completion.status == SPARK_STATUS_OK )
+	{
+		/* Pure TP fanout (this adapter's only topology): every rank runs the
+		 * whole stack and the head reduce is a U64-max argmax reduction, so
+		 * every rank holds the SAME global token. The validator admits a
+		 * token payload from every stage of a parallel fanout, and the
+		 * client face is whichever rank the API connects to (rank 0), so
+		 * the old final-stage-only gate left that rank's clients with
+		 * status-only completions forever. */
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		for (index=0u; index<completion.token_count; index++)
 			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
 	}
-	fprintf(stderr,"G5N-DBG completion emit: sub %llu status %u flags %u tokcnt %u tps %u acc %u ext %u resid_zero %d\n",
+	fprintf(stderr,"G5N-DBG completion emit: sub %llu status %u flags %u tokcnt %u tps %u acc %u raw_acc %u ext %u resid_zero %d\n",
 		(unsigned long long)completion.submission_id,(unsigned)completion.status,
 		(unsigned)completion.completion_flags,(unsigned)completion.token_count,
 		(unsigned)completion.tokens_per_sequence,
 		(unsigned)completion.accepted_token_count,
+		(unsigned)raw_accepted,
 		(unsigned)completion.model_extension_bytes,
 		(int)(completion.residency.word0 == 0u));
 	pending->active = 0u;
