@@ -40,7 +40,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_pack_common import PackFailure, sha256_bytes, tp_shard_range  # noqa: E402
 
-MAGIC = 0x47584C33  # "GLX3" wire identity for .g5nsp v1
+MAGIC = 0x33584C47  # matches SPARK_GLM5_NEXT_STAGEPACK_MAGIC ("3LXG" LE)
 FORMAT_VERSION = 1
 HEADER_BYTES = 264
 ENTRY_BYTES = 64
@@ -319,6 +319,7 @@ class Packer:
             cols = s1
         entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, rows, cols)
         expected = rows * cols * 2
+        entry.payload_bytes = expected
         source, shard_axis, off, count = self.s, shard, s0, s1
 
         def produce() -> Iterator[bytes]:
@@ -342,6 +343,7 @@ class Packer:
         rows, cols = shape if len(shape) == 2 else (1, shape[0])
         entry = Entry(kind, layer, PAYLOAD_F32, CODEC_NONE, SCALE_NONE, 1, rows, cols)
         expected = rows * cols * 4
+        entry.payload_bytes = expected
         source = self.s
 
         def produce() -> Iterator[bytes]:
@@ -370,6 +372,7 @@ class Packer:
         entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, rows_out,
                       HIDDEN)
         expected = rows_out * HIDDEN * 2
+        entry.payload_bytes = expected
         source, shard_axis, off, count = self.s, shard, s0, s1
         widths = list(checkpoint_rows)
 
@@ -397,6 +400,7 @@ class Packer:
             rows = s1
         entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, rows, kernel)
         expected = rows * kernel * 2
+        entry.payload_bytes = expected
         source, off, count = self.s, s0, s1
 
         def produce() -> Iterator[bytes]:
@@ -413,22 +417,24 @@ class Packer:
         self.plan.append(PlanItem(entry, produce))
 
     def add_f32_slice(self, kind: int, layer: int, name: str, axis: str = "cols"):
-        """f32 vector sharded along its one axis (decay bias / A_log)."""
+        """f32 vector sharded along its one axis (decay bias / A_log),
+        or replicated with axis="none"."""
         dtype, shape, _ = self.s.meta(name)
         vector = self.s.spine_f32(name).reshape(-1)
         total = vector.shape[0]
         cols = total
         s0 = s1 = 0
-        if self.tp_degree > 1:
+        if self.tp_degree > 1 and axis != "none":
             s0, s1 = (self._cols_slice(total) if axis == "cols" else self._rows_slice(total))
             cols = s1
         entry = Entry(kind, layer, PAYLOAD_F32, CODEC_NONE, SCALE_NONE, 1, 1, cols)
         expected = cols * 4
+        entry.payload_bytes = expected
         source, off, count, ax = self.s, s0, s1, axis
 
         def produce() -> Iterator[bytes]:
             v = source.spine_f32(name).reshape(-1)
-            if self.tp_degree > 1:
+            if self.tp_degree > 1 and ax != "none":
                 v = v[off:off + count]
             blob = to_bytes(v)
             if len(blob) != expected:
@@ -456,6 +462,8 @@ class Packer:
         source = self.s
         key_expected = MLA_HEADS * LATENT * NOPE * 2
         value_expected = MLA_HEADS * VDIM * LATENT * 2
+        key_entry.payload_bytes = key_expected
+        value_entry.payload_bytes = value_expected
 
         def produce_key() -> Iterator[bytes]:
             matrix = source.spine_bf16(name).reshape(MLA_HEADS, NOPE + VDIM, LATENT)
@@ -490,6 +498,7 @@ class Packer:
             rows_out = s1
         entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, rows_out, cols)
         expected = rows_out * cols * 2
+        entry.payload_bytes = expected
         source, off, count = self.s, s0, s1
 
         def produce() -> Iterator[bytes]:
@@ -602,9 +611,9 @@ class Packer:
                 self.add_kv_b(layer)
                 self.add_spine_bf16(K_ATTN_OUTPUT, layer, f"{a}o_proj.weight", shard="rows")
                 i = f"{a}indexer."
-                self.add_spine_bf16(K_INDEX_Q, layer, f"{i}wq_b.weight", shard="rows")
+                self.add_spine_bf16(K_INDEX_Q, layer, f"{i}wq_b.weight")  # replicated (glm52 pattern)
                 self.add_spine_bf16(K_INDEX_K, layer, f"{i}wk.weight")
-                self.add_spine_bf16(K_INDEX_HEAD, layer, f"{i}weights_proj.weight", shard="rows")
+                self.add_spine_bf16(K_INDEX_HEAD, layer, f"{i}weights_proj.weight")  # replicated: the format table keeps the full 32 head weights per rank
                 self.add_spine_bf16(K_INDEX_NORM_W, layer, f"{i}k_norm.weight")
                 self.add_spine_bf16(K_INDEX_NORM_B, layer, f"{i}k_norm.bias")
                 self.add_spine_f32(K_INDEX_COMPRESS_APE, layer, f"{i}index_kpool_compress_ape")
@@ -623,7 +632,7 @@ class Packer:
                 self.add_spine_bf16(K_DENSE_DOWN, layer, f"{m}down_proj.weight", shard="cols")
             else:
                 self.add_spine_bf16(K_ROUTER, layer, f"{m}gate.weight")
-                self.add_f32_slice(K_ROUTER_CORRECTION, layer, f"{m}gate.e_score_correction_bias", axis="cols")
+                self.add_f32_slice(K_ROUTER_CORRECTION, layer, f"{m}gate.e_score_correction_bias", axis="none")  # replicated
                 self.add_experts(layer)
                 self.add_up_gate_fused(K_SHARED_GATE_UP, layer,
                     f"{m}shared_experts.up_proj.weight", f"{m}shared_experts.gate_proj.weight",
