@@ -677,3 +677,21 @@ Operator question: does two-model co-residency work? Phase-1 results:
   the diag agent fires it). All 5 new lanes in setup (no pushes at
   30min; inventories/builds running). k3-fleet branched from main.
 - Scoreboard unchanged.
+
+## 2026-08-29 ~0:5x — K3-FLEET (PR733 merged f2be759): 16-rank contract proven; ASAN CLOSED
+
+- The stage-3 4-rank slice CANNOT serve standalone (3 code locks + live
+  transport receipt: rank12 receives from rank8). First K3 number needs
+  ALL 16 stages. Delivered: module fixes verified, ranks 12-15 staged
+  digest-clean, ASAN smoke PASS zero reports (the destroy-path item
+  closes not-reproducible), k3_fleet_wave.sh (fleet-only rule built in),
+  memory math ~96G/rank (fits 110 ALONE; exclusive window vs glm5_next).
+- CRITICAL PATH: stage-0/2 packs — build loop RE-ARMED on sparke by
+  coordinator (was stalled since the reboot). Stage-1 built-not-deployed.
+- SEQUENCING ARBITRATION (mine): glm5_next's first number first (diag
+  agent live), then K3's exclusive window for its wave.
+- RATCHET AUDIT: ceiling drift +15K found (glm5_next module content
+  through successive merges; several resolutions kept stale numbers).
+  Reconciled 208305 with the process note: ratchet after EVERY conflict
+  resolution. Staging agent's branch-in-main violation repaired earlier
+  this sweep (lane/staging-v2 worktree).
