@@ -734,6 +734,30 @@ def bf16_to_f32_matrix(packed_u16) -> "np.ndarray":
 
 def copy_sharded_bf16(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
     import numpy as np
+    # I64 hash constants: raw little-endian copy, never converted.
+    if ref.weight_format == WEIGHT_I64:
+        with (source.root / source.weight_map[ref.name]).open("rb") as file:
+            file.seek(source.resolve(ref.name)[2])
+            raw = file.read(ref.columns * 8)
+        if len(raw) != ref.columns * 8:
+            raise PackFailure(f"short read on {ref.name}")
+        out.write(raw)
+        return
+    # N-gram table: stream this rank's contiguous shard span in row order.
+    if ref.kind == KIND_PLE_NGRAM:
+        shard_start, shard_end = getattr(ref, "ngram_shard_range", (0, 128))
+        for shard_index in range(shard_start, shard_end):
+            shard_name = f"{LAYER_PREFIX}{PLE_LAYER}.ple.ple_embedding.ngram_embedding.shard_{shard_index}.weight"
+            with (source.root / source.weight_map[shard_name]).open("rb") as file:
+                file.seek(source.resolve(shard_name)[2])
+                remaining = (PLE_NGRAM_ROWS // 128) * PLE_NGRAM_HEAD_DIM * BF16_BYTES
+                while remaining > 0:
+                    chunk = file.read(min(remaining, CHUNK_BYTES))
+                    if len(chunk) != min(remaining, CHUNK_BYTES):
+                        raise PackFailure(f"short read on {shard_name}")
+                    remaining -= len(chunk)
+                    out.write(chunk)
+        return
     if getattr(ref, "triple_slice", None):
         # Fused q|k|v planes re-gathered per rank.
         key_start, key_count, value_start, value_count = ref.triple_slice

@@ -261,6 +261,7 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                     # Full-width [4H] group-norm vectors (v2: the stream-0
                     # section approximation is retired).
                     vector = source_vector(source, ref.name)
+                    expected = vector[:entry["columns"]].reshape(1, -1) if entry["columns"] < len(vector) else vector.reshape(1, -1)
                 elif row_slice is None and column_slice is None:
                     expected = source_matrix(source, ref.name)
                     if expected.ndim == 3:

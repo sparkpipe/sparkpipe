@@ -677,10 +677,10 @@ static SparkStatus SparkQwen4FlashModuleVerifyCoverage(SparkQwen4FlashModuleStat
 	if ( state->owns_embedding != 0u || state->owns_final_head != 0u )
 		expected_global |= 1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_EMBEDDING;
 	if ( state->owns_final_head != 0u )
-		expected_global |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP);
+		expected_global |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP);
 	if ( state->owns_final_head != 0u )
 	{
-		uint64_t expected_mtp = (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM);
+		uint64_t expected_mtp = (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM);
 		if ( state->mtp_seen_bits != expected_mtp )
 		{
 			fprintf(stderr,"%s pack_mtp_incomplete seen=%016llx expected=%016llx\n",SPARK_QWEN4_FLASH_MODULE_TAG,(unsigned long long)state->mtp_seen_bits,(unsigned long long)expected_mtp);
@@ -2120,7 +2120,7 @@ static SparkStatus SparkQwen4FlashModuleRunHcReadout(SparkQwen4FlashModuleState 
  * dilated-conv into a [rows, 4H] delta added to the stream vector. The
  * module walks one token per row (decode microbatch or the per-token
  * prefill), so token_count is always 1 and the conv is the update form. */
-static SparkStatus SparkQwen4FlashModuleRunPle(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t rows)
+static SparkStatus SparkQwen4FlashModuleRunPle(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const uint32_t *host_token_ids, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkStatus status;
@@ -2135,7 +2135,7 @@ static SparkStatus SparkQwen4FlashModuleRunPle(SparkQwen4FlashModuleState *state
 		uint64_t lane_base = (uint64_t)lane * SPARK_QWEN4_FLASH_MODEL_PLE_CONTEXT_LENGTH;
 		slot->ple_host_history_u32[row * 3u + 0u] = cold != 0u ? SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID : state->ple_prev_context_u32[lane_base + 0u];
 		slot->ple_host_history_u32[row * 3u + 1u] = cold != 0u ? SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID : state->ple_prev_context_u32[lane_base + 1u];
-		slot->ple_host_history_u32[row * 3u + 2u] = slot->input_token_ids[row];
+		slot->ple_host_history_u32[row * 3u + 2u] = host_token_ids[row];
 	}
 	error = cudaMemcpyAsync(slot->ple_history_u32,slot->ple_host_history_u32,(size_t)rows * 3u * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error != cudaSuccess )
@@ -2182,7 +2182,7 @@ static SparkStatus SparkQwen4FlashModuleRunPle(SparkQwen4FlashModuleState *state
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashKvBlockTableView *table, uint32_t layer, uint32_t rows)
+static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashKvBlockTableView *table, uint32_t layer, uint32_t rows, const uint32_t *host_token_ids)
 {
 	SparkQwen4FlashAttnRowsView rows_view;
 	SparkStatus status;
@@ -2194,7 +2194,7 @@ static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *sta
 	 * before the attention hyper-connection). */
 	if ( layer == SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && state->owns_ple != 0u )
 	{
-		status = SparkQwen4FlashModuleRunPle(state,slot,rows);
+		status = SparkQwen4FlashModuleRunPle(state,slot,host_token_ids,rows);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -2731,7 +2731,7 @@ static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *st
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
-		status = SparkQwen4FlashModuleRunLayer(state,slot,&table,layer,rows);
+		status = SparkQwen4FlashModuleRunLayer(state,slot,&table,layer,rows,(const uint32_t *)frame->buffers[0].address);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->owns_final_head != 0u )
@@ -2828,7 +2828,7 @@ static SparkStatus SparkQwen4FlashModuleRunPrefill(SparkQwen4FlashModuleState *s
 		else if ( wants_input != 0u )
 			status = SparkQwen4FlashModuleConsumeHiddenInput(slot,context,1u);
 		for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
-			status = SparkQwen4FlashModuleRunLayer(state,slot,&table,layer,1u);
+			status = SparkQwen4FlashModuleRunLayer(state,slot,&table,layer,1u,(const uint32_t *)row_buffers[0].address);
 		state->debug_token_serial++;
 		if ( status != SPARK_STATUS_OK )
 			return(status);
