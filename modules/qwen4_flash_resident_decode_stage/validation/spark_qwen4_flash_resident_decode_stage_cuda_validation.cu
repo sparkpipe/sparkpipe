@@ -65,6 +65,7 @@ extern "C" cudaError_t SparkQwen4FlashLaunchHcMix(cudaStream_t stream, const voi
 extern "C" cudaError_t SparkQwen4FlashLaunchHcInject(cudaStream_t stream, void *streams_bf16, const void *inject_pre_bf16, const void *sublayer_out_bf16, uint32_t row_count);
 extern "C" cudaError_t SparkQwen4FlashLaunchIndexerPrepare(cudaStream_t stream, const void *qk_bf16, const SparkQwen4FlashIndexerWeights *weights, void *query_bf16, void *raw_key_cache, void *pooled_key_cache, const uint32_t *slot_mapping, const uint32_t *block_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t lane_stride, uint64_t cache_block_stride);
 extern "C" cudaError_t SparkQwen4FlashLaunchIndexerSelect(cudaStream_t stream, const void *query_bf16, const void *pooled_key_cache, const SparkQwen4FlashKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, uint8_t *token_mask, uint32_t *score_keys_u32, uint32_t row_count, uint32_t mask_stride, uint32_t score_stride);
+extern "C" cudaError_t SparkQwen4FlashLaunchPleHashGather(cudaStream_t stream, const uint32_t *history_u32, uint32_t token_count, const SparkQwen4FlashPleWeights *ple, void *embedding_bf16, uint32_t row_count, uint32_t vocab_base, uint32_t vocab_rows);
 extern "C" cudaError_t SparkQwen4FlashLaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen4FlashGdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree);
 
 static uint32_t SparkQwen4FlashValRandomState;
@@ -1668,6 +1669,121 @@ static int SparkQwen4FlashValCheckIndexer(void)
 	return(0);
 }
 
+/* -- v2 semantics oracle: PLE n-gram block (Qwen4ExpTextNGramEmbedding +
+ * Qwen4ExpTextPLELayer) ---------------------------------------------- */
+
+/* Small head vocab primes so the whole table fits in a test buffer; the
+ * hash math (i64 wrap multiply + XOR, torch.remainder sign, EOS-segmented
+ * shifts) is exactly the checkpoint-scale math. The gather must be
+ * BIT-EXACT (ids are integers; rows are bf16 copies). The gate + dilated
+ * conv chain compares at the family's bf16 cosine thresholds. */
+#define SPARK_QWEN4_FLASH_VALIDATION_PLE_ROWS 4u
+static int SparkQwen4FlashValCheckPle(void)
+{
+	const uint32_t rows = SPARK_QWEN4_FLASH_VALIDATION_PLE_ROWS;
+	const uint32_t heads = SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_COUNT;
+	const uint32_t head_dim = SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_HEAD_DIMENSION;
+	static const int64_t head_vocabs[16] = {97,89,101,103,107,109,113,127,131,137,139,149,151,157,163,167};
+	int64_t head_offsets[16];
+	int64_t total_rows = 0;
+	int64_t multipliers[3] = {(int64_t)0x2545f4914f6cdd1dull,(int64_t)-0x9e3779b97f4a7c15ll,(int64_t)0xbf58476d1ce4e5b9ull};
+	uint32_t histories[rows * 3u];
+	uint32_t current[rows];
+	/* Row 1 carries an EOS in the carried context (segment reset); row 3 is
+	 * cold (both context slots EOS by module convention). */
+	histories[0] = 11u; histories[1] = 12u;
+	histories[3] = SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID; histories[4] = 7u;
+	histories[6] = 3u; histories[7] = SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID;
+	histories[9] = 5u; histories[10] = 6u;
+	current[0] = 4242u; current[1] = 4243u; current[2] = 4244u; current[3] = 4245u;
+	histories[2] = current[0]; histories[5] = current[1]; histories[8] = current[2]; histories[11] = current[3];
+	for (uint32_t head = 0u; head < heads; head++)
+	{
+		head_offsets[head] = total_rows;
+		total_rows += head_vocabs[head];
+	}
+	static uint16_t table_host[2000u * 160u];
+	static uint16_t embedding_host[SPARK_QWEN4_FLASH_VALIDATION_PLE_ROWS * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION];
+	static uint16_t embedding_reference[SPARK_QWEN4_FLASH_VALIDATION_PLE_ROWS * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION];
+	SparkQwen4FlashValRandomState = 31337u;
+	for (int64_t index = 0; index < total_rows * (int64_t)head_dim; index++)
+		table_host[index] = SparkQwen4FlashValBf16(SparkQwen4FlashValUniform(1.0f));
+	void *table_bf16 = 0,*history_u32 = 0,*embedding_bf16 = 0;
+	int64_t *multipliers_dev = 0,*vocabs_dev = 0,*offsets_dev = 0;
+	cudaError_t error;
+	error = cudaMalloc(&table_bf16,(uint64_t)total_rows * head_dim * 2u);
+	if (error == cudaSuccess) error = cudaMalloc(&history_u32,(uint64_t)rows * 3u * sizeof(uint32_t));
+	if (error == cudaSuccess) error = cudaMalloc(&embedding_bf16,(uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION * 2u);
+	if (error == cudaSuccess) error = cudaMalloc((void **)&multipliers_dev,sizeof(multipliers));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&vocabs_dev,sizeof(head_vocabs));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&offsets_dev,sizeof(head_offsets));
+	if (error != cudaSuccess)
+		return(SparkQwen4FlashValCuda(error,"ple_alloc"));
+	error = cudaMemcpy(table_bf16,table_host,(uint64_t)total_rows * head_dim * 2u,cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(history_u32,histories,(uint64_t)rows * 3u * sizeof(uint32_t),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(multipliers_dev,multipliers,sizeof(multipliers),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(vocabs_dev,head_vocabs,sizeof(head_vocabs),cudaMemcpyHostToDevice);
+	if (error == cudaSuccess) error = cudaMemcpy(offsets_dev,head_offsets,sizeof(head_offsets),cudaMemcpyHostToDevice);
+	{
+		SparkQwen4FlashPleWeights ple;
+		memset(&ple,0,sizeof(ple));
+		ple.layer_multipliers = multipliers_dev;
+		ple.head_vocab_sizes = vocabs_dev;
+		ple.head_offsets = offsets_dev;
+		ple.ngram_embedding_bf16 = table_bf16;
+		if (error == cudaSuccess)
+			error = SparkQwen4FlashLaunchPleHashGather(cudaStreamPerThread,(const uint32_t *)history_u32,1u,&ple,embedding_bf16,rows,0u,(uint32_t)total_rows);
+		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+	}
+	if (error == cudaSuccess) error = cudaMemcpy(embedding_host,embedding_bf16,(uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION * 2u,cudaMemcpyDeviceToHost);
+	if (SparkQwen4FlashValCuda(error,"ple_hash") != 0)
+		return(1);
+	cudaFree(table_bf16); cudaFree(history_u32); cudaFree(multipliers_dev); cudaFree(vocabs_dev); cudaFree(offsets_dev);
+	/* CPU hash: per head, n-gram order 2 (heads 0..7) mixes 2 shifted
+	 * tokens, order 3 (heads 8..15) mixes 3; EOS segmentation over the
+	 * 3-token window; u64 wrapping multiply; non-negative remainder. */
+	for (uint32_t row = 0u; row < rows; row++)
+	{
+		const uint32_t *window = histories + (row * 3u);
+		for (uint32_t head = 0u; head < heads; head++)
+		{
+			uint32_t ngram = (head / SPARK_QWEN4_FLASH_MODEL_PLE_HEADS_PER_NGRAM) + 2u;
+			uint64_t mixed = 0;
+			for (uint32_t part = 0u; part < ngram; part++)
+			{
+				uint32_t shifted;
+				int32_t source = 2 - (int32_t)part;
+				uint32_t valid = source >= 0 ? 1u : 0u;
+				for (int32_t p = source >= 0 ? source : 0; p < 2 && valid != 0u; p++)
+					if ( window[p] == SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID )
+						valid = 0u;
+				shifted = valid != 0u ? window[source] : SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID;
+				uint64_t term = (uint64_t)((int64_t)shifted * multipliers[part]);
+				mixed = part == 0u ? term : (mixed ^ term);
+			}
+			int64_t m = (int64_t)mixed % head_vocabs[head];
+			if ( m < 0 )
+				m += head_vocabs[head];
+			uint64_t global_id = (uint64_t)(head_offsets[head] + m);
+			for (uint32_t d = 0u; d < head_dim; d++)
+				embedding_reference[(row * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION) + (head * head_dim) + d] = table_host[(global_id * head_dim) + d];
+		}
+	}
+	if ( memcmp(embedding_host,embedding_reference,sizeof(embedding_reference)) != 0 )
+		return(SparkQwen4FlashValFail("ple_hash_gather","embedding_mismatch"));
+	{
+		uint64_t zeros = 0;
+		for (uint64_t index = 0; index < (uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION; index++)
+			if ( embedding_reference[index] == 0u )
+				zeros++;
+		printf("qwen4_flash_validation check=ple_hash_gather rows=%u heads=%u bit_exact=1 nonzero=%llu/%llu\n",
+			rows,heads,(unsigned long long)((uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION - zeros),
+			(unsigned long long)((uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION));
+	}
+	cudaFree(embedding_bf16);
+	return(0);
+}
+
 int main(int argc, char **argv)
 {
 	SparkQwen4FlashValDevice device;
@@ -1689,6 +1805,7 @@ int main(int argc, char **argv)
 	if (result == 0) result = SparkQwen4FlashValCheckGdnChunk(&device);
 	if (result == 0) result = SparkQwen4FlashValCheckHcResidual();
 	if (result == 0) result = SparkQwen4FlashValCheckIndexer();
+	if (result == 0) result = SparkQwen4FlashValCheckPle();
 	if (result == 0) result = SparkQwen4FlashValCheckModule();
 	if (result == 0)
 		printf("qwen4_flash_validation PASS\n");
