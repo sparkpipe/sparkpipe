@@ -289,3 +289,30 @@
   for typed buffers/provenance tagging in the inference-OS memory model.
 - Lane RESUMED for M4: 16-rank TP16 packs on spark8-d/f (reservations
   first; warm reads from non-sparke clients per the stale-cache caveat).
+
+## 2026-08-28 ~14:3x KST — FLEET-WIDE AGENT PAUSE: 5h usage limit hit by all 8 lanes
+
+All background agents died simultaneously on the account usage limit
+(reset ~13:28 UTC). Remote NOHUP'D work survived; interactive
+(agent-driven) work died:
+
+SURVIVING (unattended, cooking):
+- spark0: 3 qwen-max stage builds (journaled, self-resuming)
+- spark7: 3 MXFP4 download loops (write to warm; receipt chain verifiable)
+- spark2: the 27B dev daemon (normal resident)
+
+DEAD MID-FLIGHT (resume points recorded):
+- dsv4-bisect: active TP4 measurement on spark4-7 (client died with
+  agent; daemons gone). Worktree /tmp/lane-dsv4bisect holds D-milestone
+  state; packs v3+v4 built+validated on spark5. RESUME: D-measurement.
+- glm53: M4 never started (agent died ~30s after resume). M3 complete
+  and published. RESUME: M4 packs on spark8-d/f.
+- qwen-flash: S4 rank2/3 builds died on spark4 (verify build state
+  first). RESUME: S4 finish -> S5/S6.
+- K3: probe/resume chain dead on sparke. RESUME: stage-0 journal.
+- p1a-retest: died at launch, nothing started. RELAUNCH fresh.
+- qwen38max full-width: agent dead, builds survive on spark0.
+
+RULE for this window: no agent spawns until the limit resets; the sweeps
+monitor the survivors; resumes happen in priority order (bisect verdict >
+glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
