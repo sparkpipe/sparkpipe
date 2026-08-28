@@ -316,3 +316,18 @@ DEAD MID-FLIGHT (resume points recorded):
 RULE for this window: no agent spawns until the limit resets; the sweeps
 monitor the survivors; resumes happen in priority order (bisect verdict >
 glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
+
+## 2026-08-28 ~15:0x KST — budget reset confirmed-ish; MXFP4 download COMPLETE
+
+- Usage-limit window passed (reset 13:28 KST < now 15:00 KST). Bisect
+  agent resumed as the budget probe + top priority (D-measurement).
+- MILESTONE: the AMD Quark MXFP4 source download is COMPLETE on warm —
+  213/213 shards at /mnt/model-warm/packbuild/qwen38max/amd-mxfp4
+  (12T used on warm total). The shard sprint's 16-pack build is
+  unblocked on resume; receipt-chain re-hash still required (downloaded
+  during ceph degradation).
+- Survivors healthy: spark0 3 stage builds, spark7 download/verify
+  loops winding down. glm53's spark9-f reservations persist (lane died
+  post-reserve; resume keeps them).
+- Resume stagger to conserve budget: bisect now; glm53 next sweep;
+  qwen-flash/K3/p1a after, as capacity allows.
