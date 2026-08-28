@@ -464,3 +464,15 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   releases spark4-7; glm53 waits for the clear, re-reserves all 16,
   launches simultaneous per fleet rule, checkpoints right after
   ready-lines, then M5.
+
+## 2026-08-28 ~20:4x KST — BISECT LANE TRULY DONE; spark4-7 → glm53
+
+- spark4-7 released + verified dark. The closing 32K run was cut at 141
+  min (prefill, never reached decode) → recorded as OPEN ITEM: >=8x 32K
+  row-serial prefill regression main-family vs lean's 17.3 min at the
+  identical cell/pack/fleet; candidate axes: batch-engine prefill
+  row-budget planning, v4 pack layout, prefill admission, client spin
+  (perf-top/ptrace before rerun). Decode restoration stands (71d52a6).
+  PR #732 = docs-only follow-up. Staged fix runtime + v4 packs remain on
+  spark4-7/spark5 for the prefill investigation; glm53 may reclaim /tmp.
+- glm53's last gate is GONE: all 16 nodes free, launch sequence live.
