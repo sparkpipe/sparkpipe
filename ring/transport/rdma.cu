@@ -5289,6 +5289,11 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         return SPARK_STATUS_INTERNAL_ERROR;
     }
     state->endpoint = *endpoint;
+    /* Diagnostics were dead code: debug_enabled had no config path and
+     * stayed 0 forever. The control-error/completion reports (which name
+     * the message type behind async INVALID_ARGUMENT completions) are
+     * now reachable via SPARK_RDMA_DEBUG=1 in the daemon environment. */
+    state->debug_enabled = getenv("SPARK_RDMA_DEBUG") != 0 ? 1u : 0u;
     if ((endpoint->configuration_flags &
             SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT) != 0u)
     {
