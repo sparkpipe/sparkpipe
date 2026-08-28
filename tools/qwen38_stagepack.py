@@ -300,7 +300,27 @@ def build_inventory(first_layer: int, layer_count: int, tp_degree: int) -> list[
 
 class SafetensorsSource(_BaseSafetensorsSource):
     """qwen38 checkpoint reader: shared index/header/payload resolution plus
-    the model's config expectations and per-source expert checks."""
+    the model's config expectations and per-source expert checks.
+
+    Shard handles are cached: the expert inventory opens one file per
+    tensor (35k+ opens per stage at 512 experts x 3 tensors x 23 layers),
+    and the open/seek latency - not bandwidth - dominates otherwise."""
+
+    _handle_cache: dict = {}
+    _handle_order: list = []
+
+    def open_shard(self, shard: str):
+        handle = self._handle_cache.get(shard)
+        if handle is None:
+            if len(self._handle_order) >= 12:
+                evicted = self._handle_order.pop(0)
+                closeable = self._handle_cache.pop(evicted, None)
+                if closeable is not None:
+                    closeable.close()
+            handle = (self.root / shard).open("rb")
+            self._handle_cache[shard] = handle
+            self._handle_order.append(shard)
+        return handle
 
     def check_config(self) -> None:
         expectations = {
@@ -479,18 +499,18 @@ def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
     for e in range(experts):
         name = ref.name.replace("{e}", str(first_expert + e))
         shard, meta, off = source.resolve(name)
-        with (source.root / shard).open("rb") as f:
-            f.seek(off)
-            raw = f.read(rows_per_expert * ref.columns)
+        f = source.open_shard(shard)
+        f.seek(off)
+        raw = f.read(rows_per_expert * ref.columns)
         if len(raw) != rows_per_expert * ref.columns:
             raise PackFailure(f"short read on {name}")
         base = e * rows_per_expert * ref.columns
         payload[base:base + len(raw)] = raw
         scale_name = name + "_scale_inv"
         s_shard, s_meta, s_off = source.resolve(scale_name)
-        with (source.root / s_shard).open("rb") as f:
-            f.seek(s_off)
-            sraw = f.read(scale_rows * scale_cols * 2)
+        sf = source.open_shard(s_shard)
+        sf.seek(s_off)
+        sraw = sf.read(scale_rows * scale_cols * 2)
         s16 = np.frombuffer(sraw, dtype="<u2").astype(np.uint32)
         s32 = ((s16 << 16).astype(np.uint32)).view(np.float32).astype("<f4").tobytes()
         sbase = e * scale_rows * scale_cols * 4
@@ -513,17 +533,17 @@ def copy_quark_mxfp4_experts(source: SafetensorsSource, ref: TensorRef, out) -> 
     for e in range(experts):
         name = ref.name.replace("{e}", str(first_expert + e))
         shard, meta, off = source.resolve(name)
-        with (source.root / shard).open("rb") as f:
-            f.seek(off)
-            raw = f.read(payload_row_bytes)
+        f = source.open_shard(shard)
+        f.seek(off)
+        raw = f.read(payload_row_bytes)
         if len(raw) != payload_row_bytes:
             raise PackFailure(f"short read on {name}")
         payload[e * payload_row_bytes:(e + 1) * payload_row_bytes] = raw
         scale_name = name + "_scale"
         s_shard, s_meta, s_off = source.resolve(scale_name)
-        with (source.root / s_shard).open("rb") as f:
-            f.seek(s_off)
-            sraw = f.read(scale_row_bytes)
+        sf = source.open_shard(s_shard)
+        sf.seek(s_off)
+        sraw = sf.read(scale_row_bytes)
         if len(sraw) != scale_row_bytes:
             raise PackFailure(f"short read on {scale_name}")
         scales[e * scale_row_bytes:(e + 1) * scale_row_bytes] = sraw
