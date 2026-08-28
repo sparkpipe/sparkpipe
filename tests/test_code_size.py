@@ -752,6 +752,14 @@ from pathlib import Path
 # The M1 contract freeze adds the authoritative JSON's census section and
 # the M5-prep module work (MTP chain, TP narrowing, admission/snapshot
 # ports) lands in the same window; 186345 is the exact count.
+# The glm52 validator-fix lane (PR #728) + the packs-lane head remainder it
+# carries: the expert-dimension dequant oracle fix with its host-executable
+# tier-2 oracle gate, zero-mean fixture grids, the KV page-cache adapter
+# lane + admission predicate + JIT_KV config fixes that carried the TP8
+# band to a completed B1 decode, plus the packs lane's verify_source /
+# deploy tooling and packer evolution (glm52_verify_source.py 278,
+# glm52_deploy_packs.sh 88, stagepack +728, pack test +335).
+# 192659 is the exact count.
 # The glm52 fp8-source packer adoption (from the pack lane) lands the
 # numpy-only fp8->bf16 spine dequant packer plus its hermetic test in the
 # gate; it emits the deployed TP8 fleet packs.
@@ -775,7 +783,7 @@ from pathlib import Path
 # tp4pp4 pack/deploy tooling (172+55) and the stagepack rewrite (net
 # 37) that built the four 573 GiB stage packs with receipts. 189314 is
 # the exact count.
-CEILING = 189314
+CEILING = 192659
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

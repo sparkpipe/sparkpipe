@@ -190,6 +190,8 @@ GPU and heavy remote work is scheduled through the run queue
    --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm --cc-arg -ldl
    --cc-arg -pthread`
    (publish FIRST - the library links the published unit, not your .a).
+   NOTE: links that need model_common add --cc-arg -lmodel_common (the
+   glm52 F4 cycle hit this - driver compile failed without it).
 4. Deployment dir: bin/{residentd,api,batch} + lib/{model_driver.so,
    model_serving_adapter.so,hidden_transport.so} + config (hostnames must
    match YOUR node!) + packs. Canonical launcher pattern: TERM-kill, wait,

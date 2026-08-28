@@ -10,13 +10,17 @@ import json
 import os
 import sys
 
-HOSTS = ["spark8", "spark9", "sparka", "sparkb",
-         "sparkc", "sparkd", "sparke", "sparkf"]
+# The host band is parameterized (lane rule: no hardcoded nodes). The default
+# is the lane's TP8 band spark8..sparkf as ranks 0..7 (registry order).
+HOSTS = [h for h in os.environ.get(
+    "GLM52_TP_HOSTS",
+    "spark8,spark9,sparka,sparkb,sparkc,sparkd,sparke,sparkf").split(",") if h]
 TP = len(HOSTS)
-RUNTIME_ROOT = "/home/{host}/sparkdata/glm52.tp8.fp8"
-CONTROL_BASE = 19480
-COLLECTIVE_BASE = 63620
-TRANSPORT_BASE = 60700
+RUNTIME_ROOT = os.environ.get(
+    "GLM52_RUNTIME_ROOT", "/home/{host}/sparkdata/glm52.tp8.fp8")
+CONTROL_BASE = int(os.environ.get("GLM52_CONTROL_BASE", "19480"))
+COLLECTIVE_BASE = int(os.environ.get("GLM52_COLLECTIVE_BASE", "63620"))
+TRANSPORT_BASE = int(os.environ.get("GLM52_TRANSPORT_BASE", "60700"))
 COLLECTIVE_ID = 8811223344556678
 MODEL_REVISION = "b4734de4facf877f85769a911abafc5283eab3d9"
 NODE_TARGET = "cuda.sm121.glm52.resident_decode_stage.bf16.expert_fp8"
@@ -89,8 +93,13 @@ def resident_deployment() -> dict:
             "max_active_sequences": 16,
             "max_input_rows": 16,
             "resident_sequence_capacity": 16,
-            "kv_logical_page_capacity": 0,
-            "kv_physical_page_capacity": 0,
+            # The adapter declares CAPABILITY_JIT_KV (the module's KV page
+            # cache prepares/commits lanes through the admission ladder), so
+            # the limits must state the pool geometry: one logical page per
+            # 64-token block per resident sequence, all of them physically
+            # resident in the device pool the module allocates.
+            "kv_logical_page_capacity": 16 * ((32768 + 63) // 64),
+            "kv_physical_page_capacity": 16 * ((32768 + 63) // 64),
         },
         "nodes": nodes,
     }

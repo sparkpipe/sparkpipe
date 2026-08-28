@@ -877,6 +877,17 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 				return(status);
 		}
 	}
+	/* Decide: the admission ladder terminates with whatever the decision
+	 * holds when a predicate returns, and the initializer's default is
+	 * REJECTED/UNSUPPORTED_SHAPE - a predicate that only performs its
+	 * cache mutations and returns would reject EVERY submission as an
+	 * unsupported shape (first seen as adapter_submit status=unsupported
+	 * on every rank at bring-up). The cache branches above either returned
+	 * an error or only mutated the page cache, so this request's shape was
+	 * already vetted by SparkAdmissionEvaluateShape's rule block: accept.
+	 * The cache-release branch decides for itself above. */
+	decision->accepted = 1u;
+	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
 	return(SPARK_STATUS_OK);
 }
 

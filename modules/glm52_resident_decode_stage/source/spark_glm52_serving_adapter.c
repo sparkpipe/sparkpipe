@@ -84,6 +84,8 @@ typedef struct SparkGlm52ServingPending
 	uint32_t last_row_by_lane[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	SparkModelDriverCacheLane cache_lanes[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t cache_lane_count;
 } SparkGlm52ServingPending;
 
 typedef struct SparkGlm52ServingState
@@ -115,6 +117,7 @@ typedef struct SparkGlm52ServingState
 	char tp_collective_backend_path[SPARK_INTERNAL_PATH_BYTES];
 	uint32_t tp_collective_control_port_base;
 	SparkModelServingRuntimeLimits runtime_limits;
+	SparkModelDriverCacheLane prefetch_lanes[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkGlm52ServingPending pending[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkGlm52ServingState;
 
@@ -122,7 +125,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_GLM52_SERVING_TOPOLOGY_FLAG | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_GLM52_SERVING_TOPOLOGY_FLAG | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
 	.stage_count = SPARK_GLM52_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -138,6 +141,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.max_output_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
+	.cache_block_token_count = 64u,
 	.adapter_id = SPARK_GLM52_SERVING_ADAPTER_ID,
 	.model_id = SPARK_GLM52_SERVING_MODEL_ID,
 	.model_revision = GLM52_MODEL_REVISION,
@@ -613,6 +617,7 @@ static void SparkGlm52ServingDriverCompletion(
 		completion.residency = driver_completion->residency;
 	else
 		state->orphan_completion_count++;
+
 	if ( state->stage_index + 1u == SPARK_GLM52_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
 	{
 		completion.tokens_per_sequence = 1u;
@@ -888,17 +893,101 @@ static void SparkGlm52ServingBuildFrame(
 static SparkStatus SparkGlm52ServingAdmit(
 	SparkGlm52ServingState *state,
 	const SparkModelServingSubmission *submission,
-	SparkModelDriverFrame *frame)
+	SparkModelDriverFrame *frame,
+	SparkModelDriverCacheLane *cache_lanes,
+	uint32_t admission_flags)
 {
 	SparkModelDriverAdmissionRequest request;
 	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
 	status = SparkAdmissionRequestFromSubmission(
-		state->program->program_id,submission,0,0u,&request);
+		state->program->program_id,submission,cache_lanes,admission_flags,&request);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	return(SparkAdmissionEvaluateAndApply(
 		state->driver.interface,state->driver_instance,&request,frame,&decision));
+}
+
+/* The module's KV page cache is driven through the admission ladder: PREPARE
+ * maps the submission's lanes (resident calls this after validation, before
+ * the route is reserved), COMMIT makes the prepared ownership visible once
+ * the coordinator resolves, ABORT discards it, and the RELEASE frame flag
+ * frees lanes through the module's own predicate. Without this wiring the
+ * lanes reach SparkKvPageCacheCompleteLane never prepared and every request
+ * completes INTERNAL_ERROR (first seen at B1 bring-up). Mirrors the dsv4
+ * adapter's prefetch contract. */
+static SparkStatus SparkGlm52ServingPrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submissions,
+	uint32_t submission_count)
+{
+	SparkGlm52ServingState *state;
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	uint32_t cache_lane_count,index;
+	SparkStatus status;
+	state = (SparkGlm52ServingState *)adapter_state;
+	if ( state == 0 || submissions == 0 || submission_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SPARK_STATUS_OK;
+	for (index=0u; status==SPARK_STATUS_OK && index<submission_count; index++)
+	{
+		status = SparkGlm52ServingValidateSubmission(state,&submissions[index]);
+		if ( status == SPARK_STATUS_OK && submissions[index].work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+			continue;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkModelServingAdapterBuildDriverCacheLanes(&submissions[index],
+				state->prefetch_lanes,
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+				&cache_lane_count);
+		if ( status == SPARK_STATUS_OK )
+		{
+			status = SparkAdmissionRequestFromSubmission(state->program->program_id,
+				&submissions[index],state->prefetch_lanes,
+				SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,&request);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkAdmissionEvaluate(state->driver.interface,
+					state->driver_instance,&request,&decision);
+		}
+	}
+	return(status);
+}
+
+static SparkStatus SparkGlm52ServingResolvePrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	SparkGlm52ServingState *state;
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	uint32_t admission_flag,cache_lane_count;
+	SparkStatus status;
+	state = (SparkGlm52ServingState *)adapter_state;
+	if ( state == 0 || submission == 0 ||
+		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkGlm52ServingValidateSubmission(state,submission);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_STATUS_OK);
+	status = SparkModelServingAdapterBuildDriverCacheLanes(submission,
+		state->prefetch_lanes,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+		&cache_lane_count);
+	if ( status != SPARK_STATUS_OK || cache_lane_count != submission->active_sequence_count )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INTERNAL_ERROR);
+	admission_flag = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	status = SparkAdmissionRequestFromSubmission(state->program->program_id,
+		submission,state->prefetch_lanes,admission_flag,&request);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkAdmissionEvaluate(state->driver.interface,
+		state->driver_instance,&request,&decision));
 }
 
 static SparkStatus SparkGlm52ServingSubmit(
@@ -919,8 +1008,32 @@ static SparkStatus SparkGlm52ServingSubmit(
 	pending = SparkGlm52ServingReservePending(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
+	status = SparkModelServingAdapterBuildDriverCacheLanes(submission,
+		pending->cache_lanes,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+		&pending->cache_lane_count);
+	if ( status != SPARK_STATUS_OK )
+	{
+		pending->active = 0u;
+		return(status);
+	}
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	{
+		SparkGlm52ServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
+		frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
+		frame.cache_lane_count = pending->cache_lane_count;
+		frame.cache_lanes = pending->cache_lanes;
+		status = SparkGlm52ServingAdmit(state,submission,&frame,pending->cache_lanes,0u);
+		if ( status == SPARK_STATUS_OK )
+			status = state->program->submit(state->driver_instance,&frame);
+		if ( status != SPARK_STATUS_OK )
+			pending->active = 0u;
+		return(status);
+	}
 	SparkGlm52ServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
-	status = SparkGlm52ServingAdmit(state,submission,&frame);
+	frame.cache_lane_count = pending->cache_lane_count;
+	frame.cache_lanes = pending->cache_lanes;
+	status = SparkGlm52ServingAdmit(state,submission,&frame,pending->cache_lanes,0u);
 	if ( status == SPARK_STATUS_OK )
 		status = state->program->submit(state->driver_instance,&frame);
 	if ( status != SPARK_STATUS_OK )
@@ -999,6 +1112,8 @@ static const SparkModelServingAdapterInterface SparkGlm52ServingInterface =
 	.destroy = SparkGlm52ServingDestroy,
 	.validate_submission = SparkGlm52ServingValidateSubmission,
 	.submit = SparkGlm52ServingSubmit,
+	.prefetch = SparkGlm52ServingPrefetch,
+	.resolve_prefetch = SparkGlm52ServingResolvePrefetch,
 	.progress = SparkGlm52ServingProgress,
 	.quiesce = SparkGlm52ServingQuiesce,
 	.snapshot = SparkGlm52ServingSnapshot
