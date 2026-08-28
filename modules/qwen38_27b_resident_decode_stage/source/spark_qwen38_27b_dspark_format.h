@@ -25,6 +25,15 @@
  * the pack slot / D2H mirror / byte accounting carry over verbatim).
  */
 
+/* The DFlash2 draft-attention frame is sized for the no-history walk:
+ * positions staging AND the cache-attn kernel's dynamic score smem both
+ * cover 2048 window rows + 8 tail rows. The persistent block-KV history
+ * rides AFTER those rows and must never push the frame past this bound -
+ * hard-fail, never clamp: a silently dropped KV row is a silently wrong
+ * draft. (Restored here after the hygiene merge dropped the define while
+ * keeping its uses; both the host module and the cuda TU read it.) */
+#define SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS 2056u
+
 #define SPARK_QWEN38_27B_DSPARK_LAYER_COUNT 5u
 #define SPARK_QWEN38_27B_DSPARK_ATTN_QUERY_HEADS 32u
 #define SPARK_QWEN38_27B_DSPARK_ATTN_KV_HEADS 8u
