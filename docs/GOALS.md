@@ -115,6 +115,21 @@ abstraction (SPECULATION_PROVIDER_DESIGN.md) is the harness for it.
 The operator's multi-speculator-live idea is assessed as the
 TOURNAMENT PROVIDER: see the design doc's addendum.
 
+## MARKETPLACE TRACK (docs/MARKETPLACE_PLAN.md — the commercial frame)
+
+The long-term platform goal has a business model: a two-sided compute
+marketplace (SparkPipe-required supply, liteLLM demand door, 10%-
+in-compute take, anti-cheating via off-node replay of real traffic).
+BUILD HOOKS in priority order (§7): (1) liteLLM door DONE; (2)
+REQUEST-LOGGING PIPELINE keyed (driver hash, contract hash, request) —
+the audit substrate, first real build item; (3) audit service; (4)
+provider onboarding; (5) fee metering. TECHNICAL GATES from the
+determinism appendix: API logprob RETURN support (the temp-independent
+audit signal — today the API returns tokens only); seed field passthru
++ logging when sampling lands (counter-based RNG, no runtime-varying
+state); receipts language notes greedy-only (temp=0 proofs). Provider
+contract: no forcing temp>0, no refusing seed logs.
+
 ## The island-catalog manifest (operator-ratified abstraction)
 
 An ISLAND = compute nodes + fabric + a CATALOG of pre-vetted model

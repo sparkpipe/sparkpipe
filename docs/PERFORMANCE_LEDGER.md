@@ -5,6 +5,13 @@ Every number here has a receipt. Numbers not in this file are not claims.
 
 Updated: 2026-08-28 (UTC)
 
+## NOTE ON DETERMINISM (2026-08-29, per the marketplace appendix)
+
+All exact-token receipts are GREEDY (temp=0) proofs — the tree is
+argmax-only. Valid as determinism evidence for replay audits of
+temp=0 traffic; the sampling path (seeded, counter-based RNG) is
+defined but unbuilt.
+
 ## SCOREBOARD (machine-read; rendered every coordinator sweep)
 
 One row per model: best MEASURED decode and prefill, with the cell that
