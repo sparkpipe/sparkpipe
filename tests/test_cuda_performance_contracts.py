@@ -369,6 +369,31 @@ def validate_fragment_swizzle_contract() -> None:
         forbid(source, "LmSwizzledOffset(row,0u,", f"{name} row-base-only swizzle")
 
 
+def dsv4_sync_inventory(module_text: str):
+    """(enclosing function, DSpark-scoped?) for every stream sync.
+
+    DSpark-scoped means the function's name mentions DSpark or the text
+    from the function's start through the sync references dspark - the
+    opt-in speculation stage's host fences are legal, everything else on
+    a successful wave is not.
+    """
+    lines = module_text.split("\n")
+    function_starts = [
+        index for index, line in enumerate(lines)
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_ \t\*]*\(", line)
+    ]
+    inventory = []
+    for index, line in enumerate(lines):
+        if "cudaStreamSynchronize(" not in line:
+            continue
+        start = max((f for f in function_starts if f <= index), default=0)
+        match = re.match(r"^[A-Za-z0-9_ \t\*]*\(", lines[start])
+        name = match.group(0)[:-1].split()[-1] if match else "<unknown>"
+        scoped = "dspark" in "\n".join(lines[start:index + 1]).lower()
+        inventory.append((name, scoped))
+    return inventory
+
+
 def validate_stream_ordered_dispatch() -> None:
     module = read(
         "modules/glm52_resident_decode_stage/source/"
@@ -393,10 +418,13 @@ def validate_stream_ordered_dispatch() -> None:
         "external completion adapter contract",
     )
     forbid(cuda, "cudaStreamSynchronize(", "successful CUDA wave synchronization")
-    if module.count("cudaStreamSynchronize(") != 2:
+    # Three sanctioned sites: the async TP chain's fail branch (added with
+    # the TP8 continuation chunk chain, commit 42505e2), the submit error
+    # branch, and Destroy's quiesce. All are failure/teardown paths.
+    if module.count("cudaStreamSynchronize(") != 3:
         raise AssertionError(
             "GLM host module synchronization must be limited to failed-enqueue "
-            "cleanup and teardown"
+            "cleanup (including the TP chain fail branch) and teardown"
         )
 
     dsv4_module = read(
@@ -419,10 +447,31 @@ def validate_stream_ordered_dispatch() -> None:
         "SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION",
         "DSV4 external completion adapter contract",
     )
-    if dsv4_module.count("cudaStreamSynchronize(") != 4:
+    # The no-speculation B1 path keeps the original four fences: three
+    # initialization gates (freq upload, hash-table validation, head shadow)
+    # and the failed-slot cleanup. The DSpark speculation stage added
+    # opt-in host fences (acc6783 bring-up, gated behind
+    # SPARK_DSV4_DSPARK by 8d1856c) - the module itself documents that
+    # host syncs are legal on the DSpark submission path. Every sync
+    # outside the four gates must therefore be DSpark-scoped.
+    dsv4_init_and_cleanup_sync_functions = {
+        "SparkDsv4ModuleUploadFreqs",
+        "SparkDsv4ModuleValidateHashTables",
+        "SparkDsv4ModuleBuildHeadShadow",
+        "SparkDsv4ModuleSynchronizeFailedSlot",
+    }
+    base_syncs, unscoped_syncs = 0, []
+    for name, dspark_scoped in dsv4_sync_inventory(dsv4_module):
+        if name in dsv4_init_and_cleanup_sync_functions:
+            base_syncs += 1
+        elif not dspark_scoped:
+            unscoped_syncs.append(name)
+    if base_syncs != 4 or unscoped_syncs:
         raise AssertionError(
             "DSV4 synchronization must be limited to three initialization "
-            "gates and failed-enqueue cleanup"
+            "gates, failed-enqueue cleanup, and the opt-in DSpark "
+            f"speculation path (base fences: {base_syncs}, unscoped extras "
+            f"in {sorted(set(unscoped_syncs))})"
         )
 
 
