@@ -1569,6 +1569,8 @@ static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus sta
 	SparkGlm5NextModuleState *state;
 	SparkGlm5NextAsyncCompletion *async;
 	state = chain->state;
+	fprintf(stderr,"G5N-DBG chainfail: stage %u next_layer %u rows %u status %d\n",
+		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
 	(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
 	async = &state->completions[chain->slot_index];
 	async->completion.status = status;
