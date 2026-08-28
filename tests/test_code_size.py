@@ -854,7 +854,10 @@ from pathlib import Path
 # dsv4 cut over, families 1-2 of 5; glm52/glm5_next/k3 follow): the
 # dsv4 cutover alone NET-DELETED 40 lines while sharing the lifecycle.
 # 215321 exact post-merge.
-CEILING = 215321
+# glm5_next first-tokens lane: the adapter unmask (wire contract),
+# the final-emit INTERNAL_ERROR fix + fanout token emission, and the
+# completion-tail instrumentation. 215418 exact.
+CEILING = 215418
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

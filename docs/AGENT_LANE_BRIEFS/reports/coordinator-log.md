@@ -1049,3 +1049,32 @@ failure is ever diagnosable through the wire.
   quantize); NVFP4 natural-format gaps get RECORDED not converted
   (kernel-lane dependency); verify+receipts per pack; staging manifest
   stays the checked state; builds on spark4/5 (wedge-route pattern).
+
+## 2026-08-29 ~23:4x — FIRST TOKENS (structurally): status 0, emission plumbing works; VALUE bug remains
+
+- The unmask+emit-fix chain (merged 9cd3f61) WORKS: completions now
+  status 0, tokcnt 1, tokens flow api→engine→client→residentd→adapter→
+  45 layers→head→maxloc-reduce→D2H→completion→IPC (token_ids round-trip
+  verified in the wire encode/decode)→engine AcceptToken→EVENT_TOKEN→
+  the API's json. THE WHOLE STACK SERVES.
+- REMAINING: emitted values are all ZERO (deterministic across calls).
+  Emit line: status 0 flags 1 tokcnt 1 tps 1 acc 1 — one token, zero
+  value. The head path: embedding→...→HcHeadMean→RMSNorm→HeadCandidate
+  →HeadCommit→MaxlocPack→U64Max-reduce→Unpack. Candidates ranked:
+  (1) the maxloc pack reads slot->output_score/ output_token written by
+  HeadCommit — but the REDUCE_HEAD stage unpacks chain->wave_rows from
+  head_maxloc_u64 whose pack ran on the same slot buffers PER-CHAIN;
+  first_row offsets between pack (rows in chain) vs final D2H (base)
+  mismatch would read ZEROS from the calloc'd staging tail;
+  (2) embedding kernel writes value=0 when token < rank_offset — rank0
+  owns tokens < vocab/16 so OUR tokens (154819 etc.) live on ranks 7-9;
+  the CROSS-RANK embedding gather (each rank zero-fills outside its
+  shard, then hidden allreduce) must run BEFORE layer 0 — verify the
+  per-layer residual reduce includes the embedding buffer or an initial
+  allreduce exists; if the embedding shards never sum, hidden stays
+  ~zero on 15/16 ranks → head produces zeros on the head-owning rank.
+  THIS IS THE PRIME SUSPECT: the initial hidden allreduce after
+  embed-sharding appears MISSING from the chain stages.
+- Hand to next agent window or coordinator: check for an initial
+  hidden all-reduce (stage EMBEDDING_REDUCE) in the TP chain; the 27B's
+  chain has one (its embedding is sharded the same way).
