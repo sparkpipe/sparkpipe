@@ -755,3 +755,20 @@ Operator question: does two-model co-residency work? Phase-1 results:
   status 17 with tokcnt 0 after the clean walk — final head/MTP/
   completion-accounting class. acc 10 in the emit line is a clue.
   Handed to the diag agent with the exact live state.
+
+## 2026-08-29 ~5:1x — CONVERGENT CLOSURE: both fixes landed; ONE hunt remains
+
+- The original glm53 lane independently root-caused + fixed the same
+  transport bug (8b116c7: algorithm-guarded RouteBinding alias —
+  convergent with my remap-everywhere 20539c6; both proven: 919
+  consecutive status-0 completions, 45 layers + MTP). Lane branch
+  merged (d4a648f) — its guard variant is canonical (preserves the
+  ring alias's purpose), my remap is subsumed. Deep lesson recorded:
+  the TP4 ring alias was latently incompatible with ANY recursive-only
+  degree (log2 != 3) — first TP16 family found it.
+- WAVE-OWNER RULE adopted (the lane's proposal; today's EADDRINUSE
+  races): ONE fleet cycler at a time; tools/glm5_next_wave.sh is the
+  encoded pattern.
+- THE LAST BLOCKER (both lanes converged on it): final emit status 17,
+  tokcnt 0, acc 10 after the clean full-model walk — final head/MTP/
+  accounting class. Diag agent has the live wave-28.
