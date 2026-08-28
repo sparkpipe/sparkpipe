@@ -773,8 +773,8 @@ from pathlib import Path
 # machinery, new kpool pool kernels, the 49-kind .g5nsp stagepack format,
 # hybrid cache allocation, the synthesized-pack tool, and the M1/M2
 # contract + name-map tooling (nvcc sm_121a compile gate PASS).
-# 207920 is the exact count after the reduce probe + hunt-7.
-CEILING = 207920
+# 207930 is the exact count after the tp-completion probe (handoff receipt).
+CEILING = 207930
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

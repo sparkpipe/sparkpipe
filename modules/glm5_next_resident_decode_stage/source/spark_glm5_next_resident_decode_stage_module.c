@@ -1503,6 +1503,12 @@ static void SparkGlm5NextModuleTpCompletion(
 	chain = (SparkGlm5NextTpChain *)context;
 	if ( chain == 0 || chain->active == 0u || completion == 0 )
 		return;
+	fprintf(stderr,"G5N-DBG tp completion: status %u ordinal %llu slot %u rows %llu stage %u layer %u\n",
+		(unsigned)completion->status,
+		(unsigned long long)completion->ordinal,
+		(unsigned)completion->slot_index,
+		(unsigned long long)0u,
+		(unsigned)chain->stage,(unsigned)chain->next_layer);
 	SparkGlm5NextTpChainAdvance(chain,completion->status);
 }
 
