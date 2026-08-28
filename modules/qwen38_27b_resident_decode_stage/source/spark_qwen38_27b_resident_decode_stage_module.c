@@ -3582,13 +3582,16 @@ static void SparkQwen38_27bModuleDescribe(
  * The lifecycle allocated and zeroed the state and initialized the ledger
  * tag and counters before this runs, and routes any failure to the full
  * destroy path. */
-static SparkStatus SparkQwen38_27bModulePrepare(void *module_state)
+static SparkStatus SparkQwen38_27bModulePrepare(
+    void *module_state,
+    const SparkFirmwareModuleHostServices *host_services)
 {
     SparkQwen38_27bModuleState *state;
     const char *pack_path;
     uint32_t slot_index;
     SparkStatus status;
 
+    (void)host_services;
     state = (SparkQwen38_27bModuleState *)module_state;
     pack_path = 0;
     {

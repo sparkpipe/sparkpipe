@@ -20,6 +20,7 @@
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "spark_dsv4_lane_continuity.h"
 #include "spark_dsv4_hc_splitk.h"
@@ -5616,15 +5617,17 @@ static SparkStatus SparkDsv4ModuleExecuteRelease(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkDsv4ResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame)
+/* Frame execution hook for the shared firmware-module lifecycle (the
+ * lifecycle shell already rejected null state/frame). */
+static SparkStatus SparkDsv4ModuleExecute(
+	void *module_state, SparkModelDriverFrame *frame)
 {
 	SparkDsv4ModuleState *state;
 	const SparkDsv4ResidentDecodeStageFrameContext *context,*cache_context;
 	SparkStatus status,cleanup_status;
 	state = (SparkDsv4ModuleState *)module_state;
 	context = 0;
-	if ( state != 0 && frame != 0 &&
-		(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
+	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 	{
 		status = SparkDsv4ModuleValidateReleaseFrame(state,frame);
 		if ( status == SPARK_STATUS_OK &&
@@ -5959,7 +5962,9 @@ static SparkStatus SparkDsv4ModuleRequireCommittedCacheAdmission(
 	return(status);
 }
 
-SparkStatus SparkDsv4ResidentDecodeStageAdmit(
+/* Admission hook for the shared firmware-module lifecycle (the shell
+ * already rejected null arguments). */
+static SparkStatus SparkDsv4ModuleAdmit(
 	void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
 	SparkModelDriverAdmissionDecision *decision)
@@ -5968,8 +5973,6 @@ SparkStatus SparkDsv4ResidentDecodeStageAdmit(
 	uint32_t available,is_prefill,preparing,committing,aborting,releasing;
 	SparkStatus status;
 	state = (SparkDsv4ModuleState *)module_state;
-	if ( state == 0 || request == 0 || decision == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
 	SparkStageModuleAdmissionDecisionInitialize(decision,available);
 	if ( request->descriptor_bytes < (uint32_t)sizeof(*request) ||
@@ -6038,32 +6041,15 @@ SparkStatus SparkDsv4ResidentDecodeStageAdmit(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkDsv4ResidentDecodeStageSnapshot(
+/* Snapshot extension hook: the paged-cache and host-completion counters on
+ * top of the shared slot/counter base. */
+static void SparkDsv4ModuleSnapshotExtend(
     void *module_state,
-    uint32_t program_id,
     SparkModelDriverRuntimeSnapshot *snapshot)
 {
     SparkDsv4ModuleState *state;
 
     state = (SparkDsv4ModuleState *)module_state;
-    if (state == 0 || snapshot == 0 || program_id == 0u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    SparkStageModuleRuntimeSnapshotInitialize(
-        snapshot,
-        program_id,
-        state->slot_states,
-        state->pipeline_slot_count);
-    snapshot->submitted_count = atomic_load_explicit(
-        &state->submitted_count,
-        memory_order_relaxed);
-    snapshot->completed_count = atomic_load_explicit(
-        &state->completed_count,
-        memory_order_relaxed);
-    snapshot->rejected_count = atomic_load_explicit(
-        &state->rejected_count,
-        memory_order_relaxed);
 	snapshot->resident_sequence_count =
 		state->paged_cache.page_cache.live_sequence_count;
 	snapshot->resident_token_count =
@@ -6073,27 +6059,17 @@ SparkStatus SparkDsv4ResidentDecodeStageSnapshot(
 		(uint64_t)state->paged_cache.physical_page_capacity *
 		state->paged_cache.arena.block_token_count;
 	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
-    return SPARK_STATUS_OK;
 }
 
-void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
+/* Teardown hook for the shared firmware-module lifecycle: runs after the
+ * lifecycle's quiesce wait; the lifecycle releases the ledger and frees the
+ * state afterwards. */
+static void SparkDsv4ModuleStateTeardown(void *module_state)
 {
     SparkDsv4ModuleState *state;
 	uint32_t slot_index,admission_index;
 
     state = (SparkDsv4ModuleState *)module_state;
-    if (state == 0)
-    {
-        return;
-    }
-    if (SparkStageModuleWaitForSlots(
-            SPARK_DSV4_MODULE_TAG,
-            state->slot_states,
-            state->pipeline_slot_count,
-            SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK)
-    {
-        return;
-	}
 	for (slot_index = 0u; slot_index < state->pipeline_slot_count; ++slot_index)
 	{
 		if ( state->slots[slot_index].tp_host_copy_event != 0 )
@@ -6179,75 +6155,60 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 		(void)pthread_mutex_destroy(&state->cache_mutex);
 		state->cache_mutex_initialized = 0u;
 	}
-    SparkStageModuleLedgerRelease(&state->ledger);
-    free(state);
 }
 
-static SparkStatus SparkDsv4ModuleAllocateState(
-	const SparkFirmwareModuleHostServices *host_services,
-	SparkDsv4ModuleState **state_out,
-	const char **pack_path_out)
+/*
+ * Shared firmware-module lifecycle wiring (see
+ * include/sparkpipe/spark_stage_module_lifecycle.h). Everything above this
+ * point is family work; the five ABI entry points below are the template's.
+ */
+static void SparkDsv4ModuleDescribe(
+	void *module_state,
+	SparkStageModuleLifecycle *lifecycle)
 {
 	SparkDsv4ModuleState *state;
+
+	state = (SparkDsv4ModuleState *)module_state;
+	lifecycle->module_tag = SPARK_DSV4_MODULE_TAG;
+	lifecycle->ledger = &state->ledger;
+	lifecycle->slot_states = state->slot_states;
+	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
+	lifecycle->submitted_count = &state->submitted_count;
+	lifecycle->completed_count = &state->completed_count;
+	lifecycle->rejected_count = &state->rejected_count;
+	lifecycle->failed_count = &state->failed_count;
+	lifecycle->tokens_emitted = &state->tokens_emitted;
+}
+
+/* Configuration, pack load, pools and slots in the family's original order.
+ * The lifecycle allocated and zeroed the state and initialized the ledger
+ * tag and the five submission counters before this runs, and routes any
+ * failure to the full destroy path (the pre-lifecycle manual teardown of a
+ * half-configured state is subsumed by it: zeroed slots quiesce instantly
+ * and every teardown branch is guarded). */
+static SparkStatus SparkDsv4ModulePrepare(
+	void *module_state,
+	const SparkFirmwareModuleHostServices *host_services)
+{
+	SparkDsv4ModuleState *state = (SparkDsv4ModuleState *)module_state;
+	const char *pack_path;
+	uint32_t slot_index;
 	SparkStatus status;
-	state = (SparkDsv4ModuleState *)calloc(1u,sizeof(*state));
-	if ( state == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+
 	if ( pthread_mutex_init(&state->cache_mutex,0) != 0 )
-	{
-		free(state);
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	}
 	state->cache_mutex_initialized = 1u;
-	state->ledger.module_tag = SPARK_DSV4_MODULE_TAG;
-	atomic_init(&state->submitted_count,0u);
-	atomic_init(&state->completed_count,0u);
-	atomic_init(&state->rejected_count,0u);
-	atomic_init(&state->failed_count,0u);
-	atomic_init(&state->tokens_emitted,0u);
 	atomic_init(&state->host_callback_completion_count,0u);
 	atomic_init(&state->tp_next_ordinal,0u);
-	status = SparkDsv4ModuleConfigure(state,host_services,pack_path_out);
+	status = SparkDsv4ModuleConfigure(state,host_services,&pack_path);
 	if ( status != SPARK_STATUS_OK )
-	{
-		if ( state->tp_device_collective_initialized != 0u )
-			SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
-		if ( state->tp_host_credit_send_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_host_credit_send_bf16);
-		if ( state->tp_host_credit_receive_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_host_credit_receive_bf16);
-		SparkStageModuleLedgerRelease(&state->ledger);
-		(void)pthread_mutex_destroy(&state->cache_mutex);
-		free(state);
 		return(status);
-	}
 	state->tp_continuations = (SparkDsv4TpFrameContinuation *)calloc(
 		state->pipeline_slot_count,sizeof(*state->tp_continuations));
 	if ( state->tp_continuations == 0 )
-	{
-		if ( state->tp_device_collective_initialized != 0u )
-			SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
-		if ( state->tp_host_credit_send_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_host_credit_send_bf16);
-		if ( state->tp_host_credit_receive_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_host_credit_receive_bf16);
-		SparkStageModuleLedgerRelease(&state->ledger);
-		(void)pthread_mutex_destroy(&state->cache_mutex);
-		free(state);
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
 	SparkStageModuleAtomicStateArrayInitialize(state->slot_states,state->pipeline_slot_count);
 	SparkStageModuleAtomicStateArrayInitialize(state->lane_states,state->resident_sequence_capacity);
-	*state_out = state;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkDsv4ModulePrepareState(
-	SparkDsv4ModuleState *state,
-	const char *pack_path)
-{
-	uint32_t slot_index;
-	SparkStatus status;
 	status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
 		SparkDsv4ConfigureCudaKernels(&state->multiprocessor_count),"configure_cuda_kernels");
 	if ( status == SPARK_STATUS_OK )
@@ -6292,8 +6253,9 @@ static SparkStatus SparkDsv4ModulePrepareState(
 	return(status);
 }
 
-static void SparkDsv4ModuleReportReady(const SparkDsv4ModuleState *state)
+static void SparkDsv4ModuleReportReady(void *module_state)
 {
+	const SparkDsv4ModuleState *state = (const SparkDsv4ModuleState *)module_state;
 	fprintf(stderr,
 		"%s ready stage=%u/%u slice=%u+%u compress=%u csa=%u lanes=%u max_seq=%u graphs=%u backing=%u page_kib=%.1f state_gib=%.3f device_gib=%.1f\n",
 		SPARK_DSV4_MODULE_TAG,state->stage_index,state->stage_count,
@@ -6307,28 +6269,19 @@ static void SparkDsv4ModuleReportReady(const SparkDsv4ModuleState *state)
 		(1024.0 * 1024.0 * 1024.0));
 }
 
-SparkStatus SparkDsv4ResidentDecodeStageInitialize(
-	const SparkFirmwareModuleConfiguration *configuration,
-	const SparkFirmwareModuleHostServices *host_services,
-	void **module_state)
+static const SparkStageModuleLifecycleOps SparkDsv4ModuleLifecycle =
 {
-	SparkDsv4ModuleState *state;
-	const char *pack_path;
-	SparkStatus status;
-	pack_path = 0;
-	status = SparkFirmwareModuleValidateInitialization(configuration,host_services,module_state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkDsv4ModuleAllocateState(host_services,&state,&pack_path);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkDsv4ModulePrepareState(state,pack_path);
-	if ( status != SPARK_STATUS_OK )
-	{
-		SparkDsv4ResidentDecodeStageDestroy(state);
-		return(status);
-	}
-	SparkDsv4ModuleReportReady(state);
-	*module_state = state;
-	return(SPARK_STATUS_OK);
-}
+	sizeof(SparkDsv4ModuleState),
+	0,
+	SparkDsv4ModuleDescribe,
+	SparkDsv4ModulePrepare,
+	SparkDsv4ModuleReportReady,
+	SparkDsv4ModuleStateTeardown,
+	SparkDsv4ModuleExecute,
+	SparkDsv4ModuleAdmit,
+	SparkDsv4ModuleSnapshotExtend
+};
+
+SPARK_STAGE_MODULE_LIFECYCLE_ENTRY_POINTS(
+	SparkDsv4ResidentDecodeStage,
+	&SparkDsv4ModuleLifecycle)
