@@ -35,7 +35,10 @@ OUT="${1:?usage: k3_gen_deployment.sh OUT_PATH}"
   for i in $(seq 0 15); do
     hex=$(printf '%x' "$i")
     host="spark$hex"
-    stage=$((i / 4))
+    # stage_index is the LINEAR pipe position (must be unique per node:
+    # the deployment schema treats every rank as a stage). The K3 adapter
+    # derives its PP stage as stage_index / tp_degree itself.
+    stage=$i
     comma=","
     [ "$i" = "15" ] && comma=""
     echo '    {'
