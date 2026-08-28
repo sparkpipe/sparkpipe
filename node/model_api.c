@@ -42,6 +42,8 @@
 #define API_MAX_OUTPUT_TOKENS	(8192u)
 #define API_TOKEN_BUF_BYTES	(64u * 1024u)
 
+#define API_MAX_INFLIGHT 16u
+
 typedef struct ApiRequest
 {
 	uint64_t id;
@@ -52,6 +54,8 @@ typedef struct ApiRequest
 	volatile uint32_t tokens_json_len;
 	volatile int done;
 	volatile int submitted;
+	volatile int inflight;   /* worker snapshot in hand: defer unlink+free */
+	volatile int orphaned;   /* waiter gone; worker completes the free */
 	volatile uint32_t status;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -121,38 +125,90 @@ static void *api_worker(void *arg)
 		 * concurrent submissions into shared prefill/decode rounds, so
 		 * holding back everything behind the head serialized the API and
 		 * starved batching (audit: "strictly serial queue head"). */
-		pthread_mutex_lock(&S.queue_mutex);
+		/* SUBMIT MUST RUN OUTSIDE THE QUEUE LOCK. The engine can invoke
+		 * the event callback synchronously from Submit (admission
+		 * rejection, immediate completion), and api_event takes this
+		 * same non-recursive mutex - calling Submit under it self-
+		 * deadlocks the worker (gdb receipt: worker parked in
+		 * pthread_mutex_lock at api_event while holding the lock at
+		 * the Submit call site; every connection thread piles up on
+		 * the same mutex). Snapshot pending requests under the lock,
+		 * submit after unlocking; inflight defers the connection
+		 * thread's unlink+free until the worker's last touch. */
 		{
+			ApiRequest *pending[API_MAX_INFLIGHT];
+			uint32_t pending_count = 0;
 			ApiRequest *r;
-			for (r = S.queue_head; r != 0; r = r->next)
+			uint32_t i;
+			pthread_mutex_lock(&S.queue_mutex);
 			{
-			if (!r->done && !r->submitted)
-			{
-			SparkModelBatchSubmitRequest sub;
-			SparkModelBatchRequestHandle h;
-			SparkStatus st;
-			memset(&sub, 0, sizeof(sub));
-			sub.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
-			sub.descriptor_bytes = (uint32_t)sizeof(sub);
-			sub.request_id = r->id;
-			sub.sequence_id = r->id;
-			sub.output_token_budget = r->max_tokens;
-			sub.prompt_token_ids = r->prompt_tokens;
-			sub.prompt_token_count = r->prompt_count;
-			(void)SparkModelBatchEngineReopenAdmission(S.engine);
-			st = SparkModelBatchEngineSubmit(S.engine, &sub, &h);
-			if (st == SPARK_STATUS_OK)
-				r->submitted = 1;
-			else
-			{
-				r->status = (uint32_t)st;
-				r->done = 1;
-				pthread_cond_signal(&r->cond);
+				ApiRequest **pp = &S.queue_head;
+				while (*pp != 0)
+				{
+					ApiRequest *victim = *pp;
+					if (victim->orphaned && !victim->inflight)
+					{
+						*pp = victim->next;
+						if (S.queue_tail == victim)
+							S.queue_tail = 0;
+						pthread_mutex_unlock(&S.queue_mutex);
+						pthread_mutex_destroy(&victim->mutex);
+						pthread_cond_destroy(&victim->cond);
+						free(victim->prompt_tokens);
+						free(victim);
+						pthread_mutex_lock(&S.queue_mutex);
+						continue;
+					}
+					pp = &victim->next;
+				}
 			}
+			for (r = S.queue_head; r != 0 && pending_count < API_MAX_INFLIGHT; r = r->next)
+			{
+				if (!r->done && !r->submitted && !r->inflight)
+				{
+					r->inflight = 1;
+					pending[pending_count++] = r;
+				}
 			}
+			pthread_mutex_unlock(&S.queue_mutex);
+			for (i = 0; i < pending_count; i++)
+			{
+				SparkModelBatchSubmitRequest sub;
+				SparkModelBatchRequestHandle h;
+				SparkStatus st;
+				r = pending[i];
+				if (r->done)
+				{
+					pthread_mutex_lock(&S.queue_mutex);
+					r->inflight = 0;
+					pthread_mutex_unlock(&S.queue_mutex);
+					continue;
+				}
+				memset(&sub, 0, sizeof(sub));
+				sub.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+				sub.descriptor_bytes = (uint32_t)sizeof(sub);
+				sub.request_id = r->id;
+				sub.sequence_id = r->id;
+				sub.output_token_budget = r->max_tokens;
+				sub.prompt_token_ids = r->prompt_tokens;
+				sub.prompt_token_count = r->prompt_count;
+				(void)SparkModelBatchEngineReopenAdmission(S.engine);
+				st = SparkModelBatchEngineSubmit(S.engine, &sub, &h);
+				pthread_mutex_lock(&S.queue_mutex);
+				if (st == SPARK_STATUS_OK)
+					r->submitted = 1;
+				else
+				{
+					r->status = (uint32_t)st;
+					r->done = 1;
+					pthread_mutex_lock(&r->mutex);
+					pthread_cond_signal(&r->cond);
+					pthread_mutex_unlock(&r->mutex);
+				}
+				r->inflight = 0;
+				pthread_mutex_unlock(&S.queue_mutex);
 			}
 		}
-		pthread_mutex_unlock(&S.queue_mutex);
 		/* drive the engine only when we have submitted work — calling
 		 * Progress/poll on a freshly-connected idle engine segfaults */
 		if (S.queue_head != 0)
@@ -406,8 +462,17 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	else
 		send_response(fd, 500, "{\"error\":\"oom\"}");
-	/* dequeue */
+	/* dequeue - DEFERRED while the worker holds a submit snapshot
+	 * (inflight): the worker touches the request after Submit outside
+	 * the lock, so freeing here would race; the worker reaps the
+	 * orphan at the top of its loop. */
 	pthread_mutex_lock(&S.queue_mutex);
+	if (req->inflight)
+	{
+		req->orphaned = 1;
+		pthread_mutex_unlock(&S.queue_mutex);
+		return;
+	}
 	{
 		ApiRequest **pp = &S.queue_head;
 		while (*pp != 0)

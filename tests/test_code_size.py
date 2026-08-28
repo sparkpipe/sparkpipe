@@ -773,8 +773,8 @@ from pathlib import Path
 # machinery, new kpool pool kernels, the 49-kind .g5nsp stagepack format,
 # hybrid cache allocation, the synthesized-pack tool, and the M1/M2
 # contract + name-map tooling (nvcc sm_121a compile gate PASS).
-# 207765 is the exact count after the firmware description + schema v2.
-CEILING = 207765
+# 207863 is the exact count after the api deadlock fix + adapter capabilities.
+CEILING = 207863
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

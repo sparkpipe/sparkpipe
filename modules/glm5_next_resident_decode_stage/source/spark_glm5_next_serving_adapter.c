@@ -129,7 +129,13 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG |SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
+		SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
 	.stage_count = SPARK_GLM5_NEXT_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -827,12 +833,23 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkGlm5NextServingDescriptor,&state->runtime_limits,submission);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"G5N-DBG validate: runtime_submission -> %d (kind %u rows %u lanes %u ext %u)\n",
+			(int)status,submission->work_kind,submission->row_count,submission->active_sequence_count,submission->model_extension_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingValidateBoundaries(state,submission);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"G5N-DBG validate: boundaries -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingValidateRowOrder(state,submission);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"G5N-DBG validate: row_order -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
+	{
+		fprintf(stderr,"G5N-DBG validate: model_extension_bytes=%u kind=%u\n",
+			submission->model_extension_bytes,submission->model_extension_kind);
 		status = SPARK_STATUS_UNSUPPORTED;
+	}
 	return(status);
 }
 
@@ -928,8 +945,14 @@ static SparkStatus SparkGlm5NextServingSubmit(
 		return(SPARK_STATUS_BUSY);
 	SparkGlm5NextServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
 	status = SparkGlm5NextServingAdmit(state,submission,&frame);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"G5N-DBG submit: admit -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = state->program->submit(state->driver_instance,&frame);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"G5N-DBG submit: program->submit -> %d\n",(int)status);
+	}
 	if ( status != SPARK_STATUS_OK )
 		pending->active = 0u;
 	return(status);
