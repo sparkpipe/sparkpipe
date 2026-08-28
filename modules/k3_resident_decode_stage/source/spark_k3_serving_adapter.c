@@ -487,7 +487,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.artifact_sha256 =
 		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217",
 	/* Stage-major (PP stage × TP rank): TP4 groups have equal counts (hybrid
-	 * contract); PP stage layer splits sum to 93. */ */
+	 * contract); PP stage layer splits sum to 93. */
 	.stage_layer_counts = { 24u, 24u, 24u, 24u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u },
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },
