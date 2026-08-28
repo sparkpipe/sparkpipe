@@ -1,5 +1,16 @@
 # Agent lane rules (shared, binding for every driver lane)
 
+## Operating model (operator directive, 2026-08-29)
+
+Agents are one step below the coordinator: briefs carry EXACT steps,
+standards, and fleet-wide context (other lanes' state, the overall
+goal) — not just missions. The coordinator neither solves everything
+solo (bottleneck) nor babysits loops; it intervenes directly only for
+(a) shared-write-set fixes, (b) cross-lane arbitration, (c) incidents,
+then hands follow-through to a fresh, precisely-briefed agent. Every
+lane report states how its current milestone serves the scoreboard /
+fleet goal so all agents pull consistently.
+
 You are one lane of a small pipeline. You own ONE model driver. Other
 lanes and the coordinator work in parallel. These rules exist because a
 larger agent fleet failed here; every rule below encodes a real failure.
