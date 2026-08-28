@@ -818,7 +818,21 @@ from pathlib import Path
 # every hash-chain hit — wrong-KV reuse goes from a silent 2^-192-ish
 # hash collision to a 2^-256 non-event. LIVE_ONLY placeholders are
 # sequence-bound and skipped by the compare. 209095 exact.
-CEILING = 209095
+# The W4 redundancy lane (2026-08-27) lands the prevention tooling of
+# docs/HOUSECLEANING_PLAN.md item 4: tools/dup_report.py (305: the token-
+# clone duplicate detector over modules/runtime/node/cache/ring),
+# tools/complexity_report.py (83: the CCN hotspot scan whose max-157
+# reproduces the external audit exactly), tools/gen_geometry_header.py
+# (807: contract->geometry-header generator; qwen38_27b regenerates
+# byte-identical, glm5_next + qwen4_flash cut over after diff review) and
+# the generated qwen38_27b serving-constants header (37), plus the
+# generated-marker banners on the two cut-over headers (+10), minus the
+# dead LmTapPlan.hidden_elements field (-1) and one duplicated glm5_next
+# define the generator refuses to re-emit (-1). Net +1240 to the exact
+# count; every line is detection/prevention/generation that deletes
+# hand-work going forward (the W2 consolidation it feeds is projected
+# -3,500 pasted adapter lines). 210335 is the exact count.
+CEILING = 210335
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
