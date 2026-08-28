@@ -998,3 +998,17 @@ failure is ever diagnosable through the wire.
   - HANDOFF: diag-lane agent not currently active (session window) —
     the finding + FIX-1/FIX-2 assignments are in this log and the
     report; the next diag-lane spawn or coordinator window executes.
+
+## 2026-08-29 ~21:0x — SWEEP AUTOMATION STOPPED (operator)
+
+- The 30-min sweep cron is DELETED — it was producing cadence-driven
+  noise instead of judgment. The operator pings to keep on track;
+  agent completions trigger self-prioritization instead (plenty of
+  context exists in GOALS/HOUSECLEANING/ledger).
+- HOUSECLEANING STATUS (honest): W3 hygiene 8/8 MERGED; W4 redundancy
+  MERGED (PR737); W1 staging DONE+merged (2.53T, manifest tool in
+  gate); W2 DRY-template IN FLIGHT — its dsv4-cutover commit is 2h old
+  and the worktree went quiet ~18:03Z; NOT confirmed done. Next
+  coordinator action on any wake: check W2, finish or re-task it.
+- QUALITY STUDY queued in GOALS (full-res vs quant-spine+full-spine
+  vs fully-quant, via ds4_eval 92x) — explicitly AFTER basics.

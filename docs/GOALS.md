@@ -90,6 +90,16 @@ head-to-head SOTA++ baseline FIRST; topology stacking (TP/PP/EP) is a
 SEPARATE, second-axis gain reported alongside, never blended into the
 per-spark number. The scoreboard carries both axes explicitly.
 
+## QUALITY STUDY (queued, AFTER the basics work)
+
+Quantized-experts-with-FULL-RESOLUTION spines now available for some
+models — enables a three-way quality comparison per model: (a) full
+resolution everywhere, (b) quantized experts + full-res spine, (c)
+fully quantized. The ds4_eval 92x suite is the instrument (quality,
+not vibes). Priority: after first tokens + COMPSEC-17 on the fleet —
+the format-quality map feeds the island catalog's precision-variant
+recommendations.
+
 ## INCOMING SOURCES (sysadmin, ~1 day)
 
 GLM 5.3 (full) official BF16 + FP8 + radixark NVFP4 (community —
