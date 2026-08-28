@@ -518,3 +518,11 @@ glm53 M4 > qwen-flash S4 > K3 > p1a retest) as budget returns.
   reservations held). Resume retried with handoff-discoverability
   instruction (LAUNCH-STATE.md). Fallback if infra errors persist:
   coordinator launches manually — one command per node, fully staged.
+
+## 2026-08-28 ~22:4x KST — GLM53 TP16 FLEET IS UP (16/16 daemons)
+
+- All-16 reservations held + residentd running on every sampled node
+  (spark0/3/8/c/f all carry their rank). Launch survived the transient
+  death via the retried agent. Next: ready-line verification + M5
+  exact-32K B1 = first GLM 5.3 Flash scoreboard number. LETTING IT COOK
+  (no invasive checks during measurement).
