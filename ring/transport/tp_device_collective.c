@@ -317,7 +317,7 @@ static uint64_t SparkTpDeviceCollectiveTransportGeneration(
 }
 
 static uint32_t SparkTpDeviceCollectiveRouteBinding(
-    SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveImplementation *implementation,
     uint32_t route_index)
 {
     if (implementation->binding_route_count ==
