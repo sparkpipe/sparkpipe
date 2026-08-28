@@ -134,6 +134,13 @@ struct SparkGlm5NextModuleState
 	atomic_ullong failed_count;
 	atomic_ullong host_callback_completion_count;
 	SparkTpDeviceCollective tp_device_collective;
+	/* The HC-wide twin: hidden_bf16 carries HC streams per row, so its
+	 * reduces need a collective priced at HC x hidden per sequence. The
+	 * narrow instance stays for attention_out (single-width). ONE-width
+	 * collectives summed only the first hidden-slice of the hidden
+	 * state - the all-zeros first-token bug. */
+	SparkTpDeviceCollective tp_device_collective_hc;
+	uint32_t tp_device_collective_hc_initialized;
 	uint32_t tp_device_collective_initialized;
 	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
 	uint32_t tp_credit_binding_count;
@@ -1365,7 +1372,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	SparkGlm5NextModuleState *state,
 	const SparkGlm5NextResidentDecodeStageNodeContext *context)
 {
-	SparkTpDeviceCollectiveConfig configuration;
+	SparkTpDeviceCollectiveConfig configuration,configuration_hc;
 	uint64_t credit_bytes,offset,total_bytes;
 	uint32_t credit,hidden,memory_mode,route,route_count;
 	void *mapped_receive,*mapped_send;
@@ -1394,6 +1401,9 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	configuration.backend_module_path = context->tp_collective_backend_module_path;
 	configuration.registration_cuda_stream = state->execution_stream;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration_hc);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
@@ -1492,7 +1502,70 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		return(status);
 	}
 	state->tp_device_collective_initialized = 1u;
+	/* The HC-wide twin: its own credit pool at HC x hidden per sequence.
+	 * Mapped-host mode is skipped for the twin (device buffers suffice;
+	 * the narrow instance carries the host-mapped path if configured). */
+	{
+		uint32_t hc_credit_count = configuration_hc.credit_count;
+		uint64_t hc_credit_bytes = (uint64_t)configuration_hc.max_active_sequence_count *
+			configuration_hc.local_hidden_dimension * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
+		uint64_t hc_total = hc_credit_bytes * hc_credit_count;
+		SparkTpDeviceCollectiveCreditBinding *hc_bindings;
+		uint32_t hc_index;
+		if ( hc_total != 0u )
+		{
+			void *hc_send,*hc_receive;
+			status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&hc_send);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&hc_receive);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			hc_bindings = (SparkTpDeviceCollectiveCreditBinding *)calloc(
+				(size_t)hc_credit_count * route_count,
+				sizeof(*hc_bindings));
+			if ( hc_bindings == 0 )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			hc_index = 0u;
+			for (route=0u; route<route_count; route++)
+			{
+				for (credit=0u; credit<hc_credit_count; credit++)
+				{
+					SparkTpDeviceCollectiveCreditBinding *binding;
+					if ( hc_index >= (size_t)hc_credit_count * route_count )
+						break;
+					binding = &hc_bindings[hc_index++];
+					binding->step_index = route;
+					binding->credit_index = credit;
+					binding->send_device = (uint8_t *)hc_send + (uint64_t)route * hc_credit_count * hc_credit_bytes + (uint64_t)credit * hc_credit_bytes;
+					binding->receive_device = (uint8_t *)hc_receive + (uint64_t)route * hc_credit_count * hc_credit_bytes + (uint64_t)credit * hc_credit_bytes;
+					binding->send_transport = binding->send_device;
+					binding->receive_transport = binding->receive_device;
+					binding->flags = 0u;
+					binding->reserved0 = 0u;
+				}
+			}
+			configuration_hc.credit_bindings = hc_bindings;
+			configuration_hc.credit_binding_count = hc_index;
+			configuration_hc.memory_mode = SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE;
+			status = SparkTpDeviceCollectiveCreate(&configuration_hc,&state->tp_device_collective_hc);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			state->tp_device_collective_hc_initialized = 1u;
+		}
+	}
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextModuleReduceHidden(SparkGlm5NextTpChain *chain,void *device_bf16)
+{
+	/* hidden_bf16 carries HC streams per row - ALWAYS the wide twin. */
+	return(SparkGlm5NextModuleReduceHiddenWide(chain,device_bf16,1u));
+}
+
+static SparkStatus SparkGlm5NextModuleReduceAttentionOut(SparkGlm5NextTpChain *chain,void *device_bf16)
+{
+	/* attention_out is single-width - the narrow collective. */
+	return(SparkGlm5NextModuleReduceHiddenWide(chain,device_bf16,0u));
 }
 
 static void SparkGlm5NextModuleTpCompletion(
@@ -1512,10 +1585,12 @@ static void SparkGlm5NextModuleTpCompletion(
 	SparkGlm5NextTpChainAdvance(chain,completion->status);
 }
 
-static SparkStatus SparkGlm5NextModuleReduceHidden(SparkGlm5NextTpChain *chain,void *device_bf16)
+static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *chain,
+	void *device_bf16,uint32_t hc_wide)
 {
 	SparkGlm5NextModuleState *state;
 	SparkTpDeviceCollectiveSubmission submission;
+	SparkTpDeviceCollective *collective;
 	uint64_t ordinal;
 	state = chain->state;
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
@@ -1525,6 +1600,14 @@ static SparkStatus SparkGlm5NextModuleReduceHidden(SparkGlm5NextTpChain *chain,v
 	}
 	if ( state->tp_device_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
+	if ( hc_wide != 0u )
+	{
+		if ( state->tp_device_collective_hc_initialized == 0u )
+			return(SPARK_STATUS_INTERNAL_ERROR);
+		collective = &state->tp_device_collective_hc;
+	}
+	else
+		collective = &state->tp_device_collective;
 	ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -1540,7 +1623,7 @@ static SparkStatus SparkGlm5NextModuleReduceHidden(SparkGlm5NextTpChain *chain,v
 	submission.completion_context = chain;
 	{
 		SparkStatus submit_status;
-		submit_status = SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission);
+		submit_status = SparkTpDeviceCollectiveSubmitBf16(collective,&submission);
 		if ( submit_status != SPARK_STATUS_OK )
 			fprintf(stderr,"G5N-DBG reduce submit -> %d (rows %u slot %u dev %p stream %p maxact %u)\n",
 				(int)submit_status,(unsigned)chain->wave_rows,(unsigned)chain->slot_index,
@@ -1635,7 +1718,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		/* The attention writes its partial output into attention_out_bf16,
 		 * NOT hidden_bf16: the hidden buffer still holds the pre-attention
 		 * stream and must not be reduced again. */
-		launch_status = SparkGlm5NextModuleReduceHidden(chain,chain->slot->attention_out_bf16);
+		launch_status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
@@ -2121,6 +2204,8 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		if ( state->tp_device_collective_hc_initialized != 0u )
+			SparkTpDeviceCollectiveDestroy(&state->tp_device_collective_hc);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm5NextReleaseSlotHost(state);
