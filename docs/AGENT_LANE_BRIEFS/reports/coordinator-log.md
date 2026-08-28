@@ -742,3 +742,16 @@ Operator question: does two-model co-residency work? Phase-1 results:
 - Also: sweep tool's pgrep -f guard self-matches its launcher shell
   (lane's fix suggestion in their report); my current wave-fire ssh
   hold-open recurs — launcher going ssh -f detached.
+
+## 2026-08-29 ~4:4x — ROUTE-BINDING FIX PROVEN: 45/45 layers, status 0
+
+- The fixed transport (20539c6) on a clean 16/16 wave: every TP
+  completion arrives status 0; the execution walks ALL 45 layers (logs
+  show layers 43→45 completing). The async-INVALID_ARGUMENT fleet-killer
+  is DEAD. (Wave required: cuda_storage failures diagnosed as surviving
+  API processes holding 31.8G CUDA contexts post-TERM — the API class
+  joined the teardown checklist; cwd-matched sweep + refire = 16/16.)
+- REMAINING (new, later, different): final completion emit reports
+  status 17 with tokcnt 0 after the clean walk — final head/MTP/
+  completion-accounting class. acc 10 in the emit line is a clue.
+  Handed to the diag agent with the exact live state.
