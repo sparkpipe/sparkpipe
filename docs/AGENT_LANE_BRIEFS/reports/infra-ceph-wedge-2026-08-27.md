@@ -30,6 +30,18 @@ lane is granted a ONE-TIME exception on spark3 at the VERIFIED 71.1 GiB
 envelope only (its 104 GiB config is dropped), one-B-per-session with
 checkpoints; it stops if the node reboots twice more.
 
+## ADDENDUM 09:4x — object-specific stalls = recovery aftermath (sysadmin: `ceph -s`)
+
+Ceph is NOT globally slow anymore (shard 60: 145 MB/s direct on sparke),
+but kimi-k3 shard 12 has hung a builder in D-state (folio_wait_bit_common)
+for 25+ min — single-object stall with healthy neighbors. This is the
+recovery-backfill signature: spark3's reboots took osd.3+osd.17 down, so
+PGs are degraded/recovering, and objects on recovering PGs stall until
+backfill completes. Ask: `ceph -s` (degraded PGs, recovery progress/ETA);
+expect self-heal. No cold bypass exists (staged cold kimi-k3 = 6/96
+shards, shard 12 absent). The K3 lane TERMs the builder at its journal
+and probe-then-resumes shard 12 when it serves.
+
 ---
 
 # INFRA: ceph /mnt/model-warm wedge — RESOLVED 2026-08-28 (root cause: spark3, not ceph)
