@@ -919,3 +919,14 @@ operator.
   cycling-it-until-it-works pattern is exactly what wedges nodes.
 - FLEET NOTE: post-power-cycle nodes hosting mon/osd need a settle
   window before GPU work; the preflight gains a ceph-recovery check.
+
+## 2026-08-29 ~14:3x — spark0 STILL unreachable (2h+ post-second-failure)
+
+- No recovery; holding the stand-down (no launches). W2 dry-template
+  active (dsv4 cutover, spark2/5 reserved). NEEDS USER/SYSADMIN: spark0
+  requires console attention again — after the second post-cycle
+  failure with ceph-recovery racing GPU alloc, suspect (a) the node's
+  ceph roles need settling/re-homing (mon.spark0 + osd.0 on the
+  fleet's API node is structural risk — the MacStudio MDS move
+  should extend to the mon), or (b) hardware. The glm53 fleet waits
+  on spark0's stability; no cycling from us.
