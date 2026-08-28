@@ -72,3 +72,23 @@
   never pkill by name).
 - NEW HARD RULE in README: no pkill-by-name on shared nodes (own pids
   only); remote staging from committed branches only.
+
+## 2026-08-28 ~11:3x — K3 findings A+E fixed on main; lane merged; ratchet accounting corrected
+
+- FINDING E FIXED (the real heap corruption): every self-cleanup failure
+  path in SparkK3StageRunnerInitialize deletes `state` but never clears
+  the early-assigned runner->private_state — the adapter's error-path
+  destroy then double-frees. All 7 sites now clear the published pointer
+  first. (Findings B/C/D were already fixed in 01b7ae4.)
+- FINDING A FIXED: -lcuda added to the K3 serving adapter link (the
+  runner's TMA driver API made the .so un-dlopen-able).
+- MERGED lane/k3 (verifiers, smoke launcher, report): k3_verify_pack.py
+  cross-checks every rank byte-level vs the stage pack (negative
+  controlled), k3_verify_source.py pins the 38-field contract.
+- RATCHET ACCOUNTING: my earlier modeling-reference pin (2707 lines of
+  upstream modeling_qwen4_exp.py) slipped in without a ratchet run —
+  references/ (vendored publisher semantics files) is now an excluded
+  component by policy, and the ceiling moves by the lane's real 835
+  authored lines (188714).
+- K3 lane HOLDING for sparke (stage-0 journal at 266 tensors on its
+  NVMe); auto-resume script noted — needs restart if the node rebooted.

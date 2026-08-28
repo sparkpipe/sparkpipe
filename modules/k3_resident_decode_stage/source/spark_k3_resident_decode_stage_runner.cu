@@ -715,21 +715,21 @@ SparkStatus SparkK3StageRunnerInitialize(
 			configuration->rank_pack_path, first_layer, layer_count);
 	}
 	if ( status != SPARK_STATUS_OK )
-		{ delete state; return status; }
+		{ runner->private_state = 0; delete state; return status; }
 	if ( SparkK3DispatchCreate(&state->dispatch,&state->module.sizing,
 		configuration->max_active_sequence_count,
 		configuration->max_input_row_count,
 		configuration->kv_pages_per_sequence,
 		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
-		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	/* The pack mmap registers (in chunks) for UVA weight access: the tensor
 	 * maps encode the registered addresses, so a failed registration is
 	 * fatal - the unregistered path cannot launch the GEMMs. */
 	if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK )
-		{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+		{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	if ( SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
 			state->module.bound,state->module.bound_count) != SPARK_K3_DISPATCH_OK )
-		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	/* The page tables start all-zero (every position maps to physical page
 	 * 0); the serving tier owns the real mappings and rewrites them before
 	 * publishing a step, but an uninitialised table would be a wild read. */
@@ -756,14 +756,14 @@ SparkStatus SparkK3StageRunnerInitialize(
 	if ( configuration->tp_degree > 1u )
 	{
 		if ( configuration->tp_collective == 0 )
-			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
 		fprintf(stderr, "sparkpipe_k3: creating host collective tp=%u rank=%u port=%u\n",
 			configuration->tp_degree, configuration->tp_rank,
 			configuration->tp_collective->listen_port);
 		status = SparkTpCollectiveCreate(configuration->tp_collective,&state->collective);
 		fprintf(stderr, "sparkpipe_k3: host collective create -> %d\n", (int)status);
 		if ( status != SPARK_STATUS_OK )
-			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return status; }
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
 		state->collective_created = 1;
 	}
 	/* The diagnostic override wins over the TP hook (tests use it at
@@ -801,7 +801,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 		status = SparkTpDeviceCollectiveCreate(&device_config,
 			&state->device_collective);
 		if ( status != SPARK_STATUS_OK )
-			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); delete state; return status; }
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
 		state->device_collective_created = 1;
 	}
 	/* Stage 0 and the head stage need the model-level tensors. */

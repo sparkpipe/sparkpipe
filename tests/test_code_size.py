@@ -762,7 +762,16 @@ from pathlib import Path
 # kernels, dual-width router gate, format-6 E8M0B128 grouped expert
 # kernels incl. the family-local scalar variant, MTP draft chain fixes)
 # + packer/verifier format-6 per-row plane and gate replication.
-CEILING = 187879
+# The K3 pack lane lands its verification chain: k3_verify_pack.py (450:
+# byte-level cross-check of every rank vs the stage pack, negative-
+# controlled), k3_verify_source.py (262: 38-field contract check), the
+# rank-0 smoke launcher, and the export-shim diagnostic (retired once the
+# canonical-symbol fix merged). model_contracts/references/ joins
+# EXCLUDED_COMPONENTS (vendored publisher modeling files pinned as
+# semantics ground truth — modeling_qwen4_exp.py is 2707 lines of
+# upstream code, not authored source), so the ceiling moves by the lane's
+# 835 authored lines only. 188714 is the exact count.
+CEILING = 188714
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
@@ -770,7 +779,7 @@ EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # their copies are tooling infrastructure, not authored source, and must
 # never move the counter.
 EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
-                      '__pycache__', '.agents', 'devcycle'}
+                      '__pycache__', '.agents', 'devcycle', 'references'}
 # tools/devcycle holds host-recovery / fleet-ops scripts (GRUB staging,
 # fstab fastboot fix): operational infrastructure, not serving-engine
 # source, and must never consume the authored-code budget.
