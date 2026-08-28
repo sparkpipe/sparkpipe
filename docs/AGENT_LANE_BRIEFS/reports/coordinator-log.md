@@ -976,3 +976,22 @@ operator.
   worktree reservations active (spark5). Diag lane quiet 3h — the
   final-emit hunt awaits its next window or the coordinator takes it
   (the live fleet is the repro). Scoreboard unchanged.
+
+## 2026-08-29 ~18:1x — FINAL-EMIT HUNT: two mechanisms named
+
+Status 17 = INTERNAL_ERROR (enum value 17; the emit's matches==1 —
+the DRIVER itself failed). Route_failed status=1/reason=2 DECODED:
+the completion violates the WIRE CONTRACT at model_serving_adapter.c
+line 536 — a non-OK completion carrying accepted_token_count=4 (the
+adapter copies driver_completion->accepted_token_count
+unconditionally) is INVALID_ARGUMENT; the residentd rejects the
+STRUCT before reading the true status, masking the real failure.
+
+FIX-1 (adapter, glm5_next lane write set — unmask): zero
+accepted_token_count + flags when status != OK. Every failure becomes
+readable; the true status then reaches the client.
+FIX-2 (the root cause, next hunt): why the driver returns
+INTERNAL_ERROR after the clean 45-layer walk with acc=4 — partial
+progress then failure; likely finalization (head/MTP/emit accounting).
+The two conspired: FIX-1 alone won't produce tokens but without it no
+failure is ever diagnosable through the wire.
