@@ -2278,9 +2278,12 @@ static SparkStatus SparkQwen4FlashModuleAllocatePools(SparkQwen4FlashModuleState
 	{
 		uint64_t raw_elements = (uint64_t)state->indexer_cache_layer_count * state->kv_block_count *
 			SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
-		uint64_t pooled_elements = (uint64_t)state->indexer_cache_layer_count * state->kv_block_count * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		/* Pooled rows are per COMPRESSED block: kv_block_count x
+		 * (KV_BLOCK_TOKENS / compress_ratio) rows of 128. */
+		uint64_t pooled_rows_per_block = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+		uint64_t pooled_elements = (uint64_t)state->indexer_cache_layer_count * state->kv_block_count * pooled_rows_per_block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
 		state->indexer_raw_layer_stride = (uint64_t)state->kv_block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
-		state->indexer_pooled_layer_stride = (uint64_t)state->kv_block_count * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		state->indexer_pooled_layer_stride = (uint64_t)state->kv_block_count * pooled_rows_per_block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,raw_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->indexer_raw_key_cache_bf16);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,pooled_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->indexer_pooled_key_cache_bf16);

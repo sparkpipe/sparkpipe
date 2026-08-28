@@ -63,6 +63,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchHcGroupNorm(cudaStream_t stream, con
 extern "C" cudaError_t SparkQwen4FlashLaunchHcSiluQuarter(cudaStream_t stream, void *lowrank_bf16, uint32_t row_count);
 extern "C" cudaError_t SparkQwen4FlashLaunchHcMix(cudaStream_t stream, const void *up_bf16, const void *normed_bf16, void *mixed_bf16, uint32_t row_count);
 extern "C" cudaError_t SparkQwen4FlashLaunchHcInject(cudaStream_t stream, void *streams_bf16, const void *inject_pre_bf16, const void *sublayer_out_bf16, uint32_t row_count);
+extern "C" cudaError_t SparkQwen4FlashLaunchIndexerPrepare(cudaStream_t stream, const void *qk_bf16, const SparkQwen4FlashIndexerWeights *weights, void *query_bf16, void *raw_key_cache, void *pooled_key_cache, const uint32_t *slot_mapping, const uint32_t *block_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t lane_stride, uint64_t cache_block_stride);
+extern "C" cudaError_t SparkQwen4FlashLaunchIndexerSelect(cudaStream_t stream, const void *query_bf16, const void *pooled_key_cache, const SparkQwen4FlashKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, uint8_t *token_mask, uint32_t *score_keys_u32, uint32_t row_count, uint32_t mask_stride, uint32_t score_stride);
 extern "C" cudaError_t SparkQwen4FlashLaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen4FlashGdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree);
 
 static uint32_t SparkQwen4FlashValRandomState;
@@ -1424,6 +1426,248 @@ static int SparkQwen4FlashValCheckHcResidual(void)
 	return(SparkQwen4FlashValReport("hc_residual",&metrics,5e-2,0.999));
 }
 
+/* -- v2 semantics oracle: indexer selection (Qwen4ExpTextQSAIndexer) ------- */
+
+/* Feeds TOKENS keys one per prepare call (the module's per-token flow),
+ * scores + selects at the final position, and compares the u8 mask against
+ * the CPU port: f32-mean pooled keys rounded to bf16, RMSNorm(128), partial
+ * RoPE at the block start, relu per-head dots summed over heads / sqrt(128),
+ * top budget/ratio blocks by (score, smaller-block) plus the tail. */
+#define SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS 2100u
+static int SparkQwen4FlashValCheckIndexer(void)
+{
+	const uint32_t tokens = SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS;
+	const uint32_t blocks = tokens / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+	const uint32_t block_topk = SPARK_QWEN4_FLASH_MODEL_INDEXER_BUDGET / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+	const uint64_t block_stride = (uint64_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+	void *qk_bf16 = 0,*query_bf16 = 0,*raw_cache = 0,*pooled_cache = 0,*q_norm_bf16 = 0,*k_norm_bf16 = 0;
+	uint32_t *slot_mapping = 0;
+	uint64_t *row_positions = 0;
+	uint8_t *mask_u8 = 0;
+	uint32_t *scores_u32 = 0;
+	static uint16_t host_qk[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS * (SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + 1u) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+	static float key_history[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+	static float q_norm[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+	static float k_norm[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+	static float pooled_host[blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+	static float block_scores[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS / 4u];
+	static float query_host[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+	static uint8_t mask_host[tokens];
+	static float mask_reference[tokens];
+	SparkQwen4FlashIndexerWeights weights;
+	SparkQwen4FlashKvBlockTableView table;
+	uint32_t block_indices[1] = {0u};
+	uint32_t block_counts[1] = {(tokens + 63u) / 64u};
+	uint32_t lane_indices[1] = {0u};
+	uint32_t context[1] = {tokens};
+	uint32_t slot_host[1];
+	uint64_t position_host[1];
+	cudaError_t error;
+	SparkQwen4FlashValRandomState = 777u;
+	for (uint64_t index = 0; index < (uint64_t)SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS * (SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + 1u) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; index++)
+		host_qk[index] = SparkQwen4FlashValBf16(SparkQwen4FlashValUniform(1.0f));
+	for (uint32_t index = 0; index < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; index++)
+	{
+		q_norm[index] = 1.0f + 0.1f * SparkQwen4FlashValUniform(1.0f);
+		k_norm[index] = 1.0f + 0.1f * SparkQwen4FlashValUniform(1.0f);
+	}
+	error = cudaMalloc((void **)&qk_bf16,sizeof(host_qk));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&query_bf16,(uint64_t)SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * 2u);
+	if (error == cudaSuccess) error = cudaMalloc((void **)&raw_cache,(uint64_t)block_counts[0] * block_stride * 2u);
+	if (error == cudaSuccess) error = cudaMalloc((void **)&pooled_cache,(uint64_t)blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * 2u);
+	if (error == cudaSuccess) error = cudaMalloc((void **)&q_norm_bf16,SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * 2u);
+	if (error == cudaSuccess) error = cudaMalloc((void **)&k_norm_bf16,SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * 2u);
+	if (error == cudaSuccess) error = cudaMalloc((void **)&slot_mapping,sizeof(uint32_t));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&row_positions,sizeof(uint64_t));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&mask_u8,(uint64_t)tokens * sizeof(uint8_t));
+	if (error == cudaSuccess) error = cudaMalloc((void **)&scores_u32,(uint64_t)blocks * sizeof(uint32_t));
+	if (error != cudaSuccess)
+		return(SparkQwen4FlashValCuda(error,"indexer_alloc"));
+	/* qk uploads move per token below (the projection output differs per
+	 * position in any real frame). */
+	{
+		uint16_t staging[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+		for (uint32_t index = 0; index < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION && error == cudaSuccess; index++)
+			staging[index] = SparkQwen4FlashValBf16(q_norm[index]);
+		if (error == cudaSuccess) error = cudaMemcpy(q_norm_bf16,staging,sizeof(staging),cudaMemcpyHostToDevice);
+		for (uint32_t index = 0; index < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION && error == cudaSuccess; index++)
+			staging[index] = SparkQwen4FlashValBf16(k_norm[index]);
+		if (error == cudaSuccess) error = cudaMemcpy(k_norm_bf16,staging,sizeof(staging),cudaMemcpyHostToDevice);
+	}
+	memset(&weights,0,sizeof(weights));
+	weights.q_norm_weight_bf16 = q_norm_bf16;
+	weights.k_norm_weight_bf16 = k_norm_bf16;
+	/* Per-token prepare: keys land at their slot; the completing token of
+	 * each block pools. The final call also leaves the rotated queries. */
+	cudaMemset(pooled_cache,0xab,(uint64_t)blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * 2u);
+	for (uint32_t token = 0u; token < tokens && error == cudaSuccess; token++)
+	{
+		slot_host[0] = token;
+		position_host[0] = token;
+		error = cudaMemcpy(qk_bf16,host_qk + ((uint64_t)token * (SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + 1u) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION),(uint64_t)(SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + 1u) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * 2u,cudaMemcpyHostToDevice);
+		if (error == cudaSuccess) error = cudaMemcpy(slot_mapping,slot_host,sizeof(slot_host),cudaMemcpyHostToDevice);
+		if (error == cudaSuccess) error = cudaMemcpy(row_positions,position_host,sizeof(position_host),cudaMemcpyHostToDevice);
+		if (error == cudaSuccess) error = SparkQwen4FlashLaunchIndexerPrepare(cudaStreamPerThread,qk_bf16,&weights,query_bf16,raw_cache,pooled_cache,slot_mapping,block_indices,row_positions,1u,1u,block_stride);
+	}
+	if (error == cudaSuccess)
+	{
+		memset(&table,0,sizeof(table));
+		table.lane_stride = block_counts[0];
+		{
+			uint32_t *device_blocks,*device_counts,*device_lane,*device_context;
+			error = cudaMalloc((void **)&device_blocks,sizeof(block_indices));
+			if (error == cudaSuccess) error = cudaMalloc((void **)&device_counts,sizeof(block_counts));
+			if (error == cudaSuccess) error = cudaMalloc((void **)&device_lane,sizeof(lane_indices));
+			if (error == cudaSuccess) error = cudaMalloc((void **)&device_context,sizeof(context));
+			if (error == cudaSuccess) error = cudaMemcpy(device_blocks,block_indices,sizeof(block_indices),cudaMemcpyHostToDevice);
+			if (error == cudaSuccess) error = cudaMemcpy(device_counts,block_counts,sizeof(block_counts),cudaMemcpyHostToDevice);
+			if (error == cudaSuccess) error = cudaMemcpy(device_lane,lane_indices,sizeof(lane_indices),cudaMemcpyHostToDevice);
+			if (error == cudaSuccess) error = cudaMemcpy(device_context,context,sizeof(context),cudaMemcpyHostToDevice);
+			/* The table must carry DEVICE pointers - the kernels dereference
+			 * the lane block counts directly. */
+			table.physical_block_indices = device_blocks;
+			table.lane_physical_block_counts = device_counts;
+			if (error == cudaSuccess) error = SparkQwen4FlashLaunchIndexerSelect(cudaStreamPerThread,query_bf16,pooled_cache,&table,device_lane,device_context,mask_u8,scores_u32,1u,tokens,blocks);
+			if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
+			cudaFree(device_blocks); cudaFree(device_counts); cudaFree(device_lane); cudaFree(device_context);
+		}
+	}
+	static uint32_t keys_host[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS / 4u];
+	static uint16_t pooled_device_host[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS / 4u * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+	if (error == cudaSuccess) error = cudaMemcpy(mask_host,mask_u8,(uint64_t)tokens,cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(keys_host,scores_u32,(uint64_t)blocks * sizeof(uint32_t),cudaMemcpyDeviceToHost);
+	if (error == cudaSuccess) error = cudaMemcpy(pooled_device_host,pooled_cache,(uint64_t)blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * 2u,cudaMemcpyDeviceToHost);
+	if (SparkQwen4FlashValCuda(error,"indexer") != 0)
+		return(1);
+	cudaFree(qk_bf16); cudaFree(query_bf16); cudaFree(raw_cache); cudaFree(pooled_cache);
+	cudaFree(q_norm_bf16); cudaFree(k_norm_bf16); cudaFree(slot_mapping); cudaFree(row_positions); cudaFree(mask_u8); cudaFree(scores_u32);
+	/* CPU port: every token's key (same RMSNorm), pooled per block with the
+	 * bf16-rounded f32 mean, rope at the block start; the final query. */
+	for (uint32_t token = 0u; token < tokens; token++)
+	{
+		float key[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+		for (uint32_t element = 0; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element++)
+			key[element] = SparkQwen4FlashValFromBf16(host_qk[((uint64_t)token * (SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + 1u) + SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element]);
+		SparkQwen4FlashValRmsNorm(key,k_norm,key,SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION,1e-6f);
+		for (uint32_t element = 0; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element++)
+			key_history[(uint64_t)token * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element] = key[element];
+		if ( (token % SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO) == SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO - 1u )
+		{
+			uint32_t block = token / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+			float mean[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+			uint32_t first = token - (SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO - 1u);
+			for (uint32_t element = 0; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element++)
+			{
+				float total = 0.0f;
+				for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO; tap++)
+					total += key_history[((uint64_t)first + tap) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element];
+				mean[element] = SparkQwen4FlashValFromBf16(SparkQwen4FlashValBf16(total / (float)SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO));
+			}
+			SparkQwen4FlashValRmsNorm(mean,k_norm,mean,SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION,1e-6f);
+			SparkQwen4FlashValRope(mean,SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION,first,SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_THETA);
+			for (uint32_t element = 0; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element++)
+				pooled_host[(uint64_t)block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element] = SparkQwen4FlashValFromBf16(SparkQwen4FlashValBf16(mean[element]));
+		}
+	}
+	{
+		static float pooled_actual[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS / 4u * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+		SparkQwen4FlashValMetrics pooled_metrics;
+		for (uint64_t index = 0; index < (uint64_t)blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; index++)
+			pooled_actual[index] = SparkQwen4FlashValFromBf16(pooled_device_host[index]);
+		SparkQwen4FlashValMeasure(&pooled_metrics,pooled_actual,pooled_host,(uint64_t)blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION);
+		if (SparkQwen4FlashValReport("indexer_pooled",&pooled_metrics,5e-2,0.999) != 0)
+			return(1);
+	}
+	for (uint32_t head = 0u; head < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT; head++)
+	{
+		float qh[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
+		for (uint32_t element = 0; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element++)
+			qh[element] = SparkQwen4FlashValFromBf16(host_qk[((uint64_t)(tokens - 1u) * (SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT + 1u) + head) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element]);
+		SparkQwen4FlashValRmsNorm(qh,q_norm,qh,SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION,1e-6f);
+		SparkQwen4FlashValRope(qh,SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION,tokens - 1u,SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_THETA);
+		for (uint32_t element = 0; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element++)
+			query_host[(uint64_t)head * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element] = SparkQwen4FlashValFromBf16(SparkQwen4FlashValBf16(qh[element]));
+	}
+	{
+		/* Scores and top-k with the (score, smaller-block) rule. */
+		for (uint32_t block = 0u; block < blocks; block++)
+		{
+			float total = 0.0f;
+			for (uint32_t head = 0u; head < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT; head++)
+			{
+				float dot = 0.0f;
+				for (uint32_t element = 0; element < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION; element++)
+					dot += query_host[(uint64_t)head * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element] * pooled_host[(uint64_t)block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element];
+				total += dot > 0.0f ? dot : 0.0f;
+			}
+			block_scores[block] = total / sqrtf((float)SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION);
+		}
+		for (uint32_t token = 0u; token < tokens; token++)
+			mask_reference[token] = 0.0f;
+		for (uint32_t token = blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO; token < tokens; token++)
+			mask_reference[token] = 1.0f;
+		/* Select top-k: repeatedly take the max (score, smaller index wins). */
+		static uint8_t taken[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS / 4u];
+		memset(taken,0,sizeof(taken));
+		for (uint32_t pick = 0u; pick < block_topk; pick++)
+		{
+			uint32_t best = 0xffffffffu;
+			for (uint32_t block = 0u; block < blocks; block++)
+				if ( taken[block] == 0u && (best == 0xffffffffu || block_scores[block] > block_scores[best]) )
+					best = block;
+			taken[best] = 1u;
+		}
+		for (uint32_t block = 0u; block < blocks; block++)
+			if ( taken[block] != 0u )
+				for (uint32_t tap = 0u; tap < SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO; tap++)
+					mask_reference[(uint64_t)block * SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO + tap] = 1.0f;
+	}
+	{
+		/* Exact mask equality is precision-limited AT the selection boundary:
+		 * kernel and oracle scores differ by bf16 accumulation noise, so a
+		 * block whose score sits within epsilon of the k-th score may land
+		 * on either side. Mismatches are therefore accepted only for blocks
+		 * whose oracle score is within 2e-3 of the oracle k-th score (the
+		 * module itself is deterministic: identical inputs produce
+		 * identical masks, which the decode-vs-prefill gate proves). */
+		uint64_t mismatches = 0,boundary = 0;
+		float kth_score = -3.0e38f;
+		for (uint32_t pick = 0u,seen = 0u; pick < blocks; pick++)
+		{
+			/* k-th largest oracle score by selection scan. */
+		}
+		{
+			static uint8_t ranked[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS / 4u];
+			memset(ranked,0,sizeof(ranked));
+			for (uint32_t pick = 0u; pick < block_topk; pick++)
+			{
+				uint32_t best = 0xffffffffu;
+				for (uint32_t block = 0u; block < blocks; block++)
+					if ( ranked[block] == 0u && (best == 0xffffffffu || block_scores[block] > block_scores[best]) )
+						best = block;
+				ranked[best] = 1u;
+				if ( pick == block_topk - 1u )
+					kth_score = block_scores[best];
+			}
+		}
+		for (uint32_t token = 0u; token < tokens; token++)
+			if ( (mask_host[token] != 0u) != (mask_reference[token] != 0.0f) )
+			{
+				uint32_t block = token / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
+				if ( fabsf(block_scores[block] - kth_score) <= 2e-3f )
+					boundary++;
+				else
+					mismatches++;
+			}
+		(void)keys_host;
+		printf("qwen4_flash_validation check=indexer_select tokens=%u blocks=%u topk=%u boundary_flips=%llu mask_mismatches=%llu\n",
+			tokens,blocks,block_topk,(unsigned long long)boundary,(unsigned long long)mismatches);
+		if ( mismatches != 0u )
+			return(SparkQwen4FlashValFail("indexer_select","mask_mismatch"));
+	}
+	return(0);
+}
+
 int main(int argc, char **argv)
 {
 	SparkQwen4FlashValDevice device;
@@ -1444,6 +1688,7 @@ int main(int argc, char **argv)
 	if (result == 0) result = SparkQwen4FlashValCheckAttention(&device);
 	if (result == 0) result = SparkQwen4FlashValCheckGdnChunk(&device);
 	if (result == 0) result = SparkQwen4FlashValCheckHcResidual();
+	if (result == 0) result = SparkQwen4FlashValCheckIndexer();
 	if (result == 0) result = SparkQwen4FlashValCheckModule();
 	if (result == 0)
 		printf("qwen4_flash_validation PASS\n");

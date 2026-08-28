@@ -1828,7 +1828,6 @@ static __global__ void SparkQwen4FlashIndexerPrepareKernel(
                 sum += SparkLmBf16ToFloat(raw_key_cache,((uint64_t)block * cache_block_stride) + ((uint64_t)(first + tap) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + column);
             /* f32 mean cast back to bf16 (the reference `.to(raw_keys.dtype)`),
              * THEN the RMSNorm reads the rounded value. */
-            SparkLmFloatToBf16(raw_key_cache,((uint64_t)block * cache_block_stride) + ((uint64_t)offset * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + column,0.0f); /* guard padding, unused */
             __shared__ float pooled[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
             pooled[column] = __bfloat162float(__float2bfloat16(sum / (float)SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO));
             __syncthreads();
@@ -1854,7 +1853,11 @@ static __global__ void SparkQwen4FlashIndexerPrepareKernel(
             }
             __syncthreads();
             (void)block_indices; (void)lane_stride;
-            SparkLmFloatToBf16(pooled_key_cache,((uint64_t)block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + column,pooled[column]);
+            /* The pooled plane is indexed by COMPRESSED block (slot/4):
+             * one pooled row per compress-ratio tokens, KV_BLOCK_TOKENS/4
+             * rows per KV block (the first cut wrote per KV block and every
+             * 4-token pool overwrote the previous 15). */
+            SparkLmFloatToBf16(pooled_key_cache,((uint64_t)(slot / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO) * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION) + column,pooled[column]);
         }
     }
 }
@@ -1980,7 +1983,7 @@ static __global__ void SparkQwen4FlashIndexerSelectKernel(
         {
             uint32_t mid,count = 0u;
             if ( threadIdx.x == 0u )
-                threshold_key = (low + high) >> 1u;
+                threshold_key = low + ((high - low) >> 1u); /* overflow-safe midpoint: ordered keys live near 0xbf.. and low+high wraps u32 */
             __syncthreads();
             mid = threshold_key;
             for (uint32_t b = threadIdx.x; b < complete_blocks; b += blockDim.x)
