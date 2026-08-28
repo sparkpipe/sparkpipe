@@ -236,3 +236,22 @@
   all lanes on local-NVMe paths unaffected.
 - No merges this pass. GPUs: spark3 96% (knee finishing), spark4 idle
   (qwen-flash between build/verify), spark2 idle (glm53 probe analysis).
+
+## 2026-08-28 ~17:2x — KNEE LANE COMPLETE: PR 730 merged; two P1s queued
+
+- MERGED lane/knee-sweep (3c2f1ac): full curve + L64 ladder + structural
+  findings on the scoreboard with cell qualifications (B4 is config-
+  specific per the attestation; the old ledger 'B16 ~9' is now 406.65).
+  spark3 reservation RELEASED — node returns to MDS duty per storage rule.
+- THE R-LAW (operational): per-step time ∝ B×64/lanes — configured lane
+  capacity taxes every small batch (B=4: 64-lane 1.64× faster than
+  128-lane). Deployment guidance: right-size lanes to workload.
+- KNEE VERDICT: classical knee NOT reached; B*≈106 unproven, not
+  contradicted. The walls are software —
+  P1a: FAILURE_DEACTIVATE_ROUTE client-fatal bug (model_residentd.c:
+       1410-1417, intermittent B≥24, 505-submission receipt) — FIX NEXT.
+  P1b: ratio cliff at B ≥ lanes/2 (~3.5 tok/s, 96% GPU, no errors;
+       identical at 64-lane B32 and 128-lane B64; not page/row-bound) —
+       scheduler/dispatch structural bug.
+- Exact-32K at 128 lanes mathematically infeasible on this hardware
+  (517 blocks/lane → ~278 GiB KV); documented by the lane.
