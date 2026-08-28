@@ -225,3 +225,14 @@
   checkpoint report). spark3 knee sweep 96% (ladder finishing). Bisect
   fleet measurements live on spark4-7 (per Pro lane's accidental
   confirmation). All OSDs healthy; disks fine (spark0 1.7T, spark5 1.9T).
+
+## 2026-08-28 ~16:5x — sweep: qwen-flash S4 advancing; MDS issue unchanged
+
+- qwen-flash S4 in flight: v3 rank packs (hc+indexer+PLE vocab-sharded,
+  56.06 GiB/rank, 1246 entries) rank0+rank1 verified 7 min ago — on pace
+  for S5 (M6 driver) and S6 (live 4-node smoke + first perf cell).
+- MDS metadata inconsistency UNCHANGED (shard 80 ENOENT persists) —
+  sysadmin action still pending; K3 stage-0 warm reads remain blocked;
+  all lanes on local-NVMe paths unaffected.
+- No merges this pass. GPUs: spark3 96% (knee finishing), spark4 idle
+  (qwen-flash between build/verify), spark2 idle (glm53 probe analysis).
