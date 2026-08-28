@@ -389,8 +389,16 @@ SparkStatus SparkServingAdapterTemplateLoadTpCollective(
 		policy->peer_count > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE ||
 		config->backend_module_path_buffer == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(config,0,sizeof(*config));
+	/* Reset the outputs but keep the caller-set destination pointers. */
 	memset(&config->topology,0,sizeof(config->topology));
+	config->backend_kind = 0u;
+	config->collective_identifier = 0u;
+	config->listen_port = 0u;
+	memset(config->peer_ports,0,sizeof(config->peer_ports));
+	config->peer_count = 0u;
+	config->connect_timeout_milli = 0u;
+	config->operation_timeout_milli = 0u;
+	config->control_port_base = 0u;
 	config->topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
 	config->topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
 	object = SparkServingAdapterTemplateJsonMember(document,root,"tp_collective");
