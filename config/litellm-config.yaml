@@ -1,0 +1,65 @@
+# SparkPipe LiteLLM front end — model-name routing table.
+# One OpenAI-compatible door (the LiteLLM proxy on the controller Mac) for
+# every per-deployment model_api on the sparks.
+#
+# THE prompt_token_ids NUANCE (read docs/LITELLM_FRONTEND.md before changing):
+#   SparkPipe's model_api (node/model_api.c) serves
+#     POST /v1/completions  body {"prompt_token_ids":[int,...],"max_tokens":N}
+#     -> {"object":"text_completion","tokens":[int,...],"status":0}
+#   It has NO text-prompt path and no /v1/models route. LiteLLM's standard
+#   transformed routes rewrite the body into the OpenAI chat/completions shape
+#   and DROP unknown fields (prompt_token_ids) — they cannot serve this API.
+#   LiteLLM's PASS-THROUGH route is the integration point: clients POST to
+#     {proxy}/vllm/v1/completions   (any /vllm/<upstream-path>)
+#   with the model_api body plus a "model" field naming the deployment below;
+#   LiteLLM forwards the JSON body VERBATIM (only "model" is rewritten) to the
+#   matched deployment's api_base and returns the upstream bytes/status as-is.
+#   Verified against a contract-exact mock upstream (tools/litellm_mock_upstream.py).
+#
+# Deployment model strings MUST use the vllm/ prefix: the vllm provider is the
+# one with a registered passthrough config (openai/ has none — "Provider openai
+# not found", LiteLLM 1.74.0).
+#
+# Ports are the model_api HTTP ports (NOT the residentd control ports):
+#   glm-5.3-flash : spark0:8433  (glm5_next TP16; glm53 lane, mid-debug)
+#   27B TP1       : sparka:8534  (proven in sparka:~/sparkdata/qwen38.fp8.tp1/co_resident_api.log)
+#                   spark9:8434  (PROVISIONAL — spark9's api never reached ready;
+#                                 no port recorded on the node; confirm at launch)
+model_list:
+  # GLM-5.3-Flash (glm5_next TP16, spark0-f) — one API instance on the head node
+  - model_name: glm-5.3-flash
+    litellm_params:
+      model: vllm/glm-5.3-flash
+      api_base: http://spark0:8433
+      api_key: os.environ/SPARKPIPE_UPSTREAM_KEY
+
+  # Qwen 3.8 27B TP1 — two staged instances (spark9, sparka). Same model_name
+  # = LiteLLM load-balances/fails-over between them; the -a/-9 aliases pin one.
+  - model_name: qwen-3.8-27b
+    litellm_params:
+      model: vllm/qwen-3.8-27b
+      api_base: http://sparka:8534
+      api_key: os.environ/SPARKPIPE_UPSTREAM_KEY
+  - model_name: qwen-3.8-27b
+    litellm_params:
+      model: vllm/qwen-3.8-27b
+      api_base: http://spark9:8434
+      api_key: os.environ/SPARKPIPE_UPSTREAM_KEY
+  - model_name: qwen-3.8-27b-a
+    litellm_params:
+      model: vllm/qwen-3.8-27b
+      api_base: http://sparka:8534
+      api_key: os.environ/SPARKPIPE_UPSTREAM_KEY
+  - model_name: qwen-3.8-27b-9
+    litellm_params:
+      model: vllm/qwen-3.8-27b
+      api_base: http://spark9:8434
+      api_key: os.environ/SPARKPIPE_UPSTREAM_KEY
+
+litellm_settings:
+  drop_params: true
+  num_retries: 0          # surface upstream status on first attempt; no masking
+  request_timeout: 300    # model_api holds the request for the whole generation
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

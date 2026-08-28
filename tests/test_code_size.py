@@ -795,7 +795,13 @@ from pathlib import Path
 # rdma diagnostics, GOALS/policy docs. Several merge resolutions (incl.
 # coordinator ones) kept stale numbers without remeasuring — the process
 # gap is noted; ratchet must be rerun after EVERY conflict resolution.
-CEILING = 208305
+# The litellm front-end lane (2026-08-28) adds tools/litellm_mock_upstream.py
+# (101 counted lines): the contract-exact stand-in for node/model_api.c used
+# to verify LiteLLM's passthrough forwarding of prompt_token_ids byte-for-
+# byte without occupying a spark. The proxy config is .yaml (uncounted) and
+# the runbook/report live in docs/ (excluded). Ceiling moves by those
+# tooling lines only; no production source grew.
+CEILING = 208406
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
