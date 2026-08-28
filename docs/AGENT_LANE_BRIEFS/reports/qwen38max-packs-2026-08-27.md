@@ -301,6 +301,22 @@ honest. "1-2 days" only covers the packer side or skips GPU validation
 the MXFP4 requant quality trade (or land the validator first and measure
 before committing).
 
+## Format arbitration (coordinator ruling, 2026-08-27 ~09:40 spark0-time)
+
+* The sharded v2 rank format (qwen38max-SHARD lane) WINS for deployment —
+  their module side went through a new validator on spark7, and the
+  all-16 fleet policy requires rank packs. My full-width stage packs are
+  the PACKER-AT-SCALE PROOF + verifier receipts, parked on sparkb; not
+  deployment artifacts. Approved by the coordinator.
+* The 09:15 kill of my stage0/stage2 builds was the shard lane's
+  `pkill qwen38_stagepack` (by name) during its restart; the coordinator
+  TERMed its processes, left COORDINATOR-HALT.md in its staging dir and
+  worktree (commit the packer, wait for ceph recovery — osd.14/sparke
+  DOWN, build from COLD, coordinate nodes, never pkill by name), and
+  ruled spark0 mine until my 4 packs finish + verify.
+* This report's F1/F2/F3 + sprint scope fed that decision; the pkill-by-
+  name ban goes into the shared lane rules.
+
 ## Node plan (coordinator updates, 2026-08-27)
 
 1. First correction: sparkc/sparkd are contended (GLM+K3+QwenMax) — lane
