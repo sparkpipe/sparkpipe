@@ -783,7 +783,10 @@ from pathlib import Path
 # tp4pp4 pack/deploy tooling (172+55) and the stagepack rewrite (net
 # 37) that built the four 573 GiB stage packs with receipts. 189314 is
 # the exact count.
-CEILING = 192659
+# The dsv4pro pack lane (PR #729): parameterized deploy/scaffold/smoke
+# tooling (4 scripts) + the report; the 16-rank pack chain with receipts.
+# 192936 is the exact count.
+CEILING = 192936
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
