@@ -3074,6 +3074,10 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpControl(SparkHiddenSparkHostRdmaS
         }
         else
         {
+            fprintf(stderr,
+                "G5N-TP rdma-ctl-unknown route=%s type=%u status=%u\n",
+                state->endpoint.route_name,(unsigned)message.type,
+                (unsigned)SPARK_STATUS_INVALID_ARGUMENT);
             SparkHiddenSparkHostRdmaReportControlError(
                 state,&message,SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -4003,6 +4007,9 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(
     if (send->doorbell != 0u && remote_receive->receive_index ==
             SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX)
     {
+        fprintf(stderr,
+            "G5N-TP rdma-send-doorbell-noindex route=%s remote=%u\n",
+            state->endpoint.route_name,remote_receive_index);
         status = SPARK_STATUS_INVALID_ARGUMENT;
         goto fail_send;
     }
@@ -4672,11 +4679,19 @@ static SparkStatus SparkHiddenSparkHostRdmaReservePersistentSend(
         generation == 0u || credit_index >=
             SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
     {
+        fprintf(stderr,
+            "G5N-TP rdma-reserve-guard state=%p packet=%p sender=%u gen=%llu credit=%u\n",
+            state,(const void *)packet,state != 0 ? state->is_sender : 0u,
+            (unsigned long long)generation,credit_index);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     status = SparkHiddenSparkHostRdmaPumpProgress(state);
     if (status != SPARK_STATUS_OK)
     {
+        fprintf(stderr,
+            "G5N-TP rdma-reserve-pump route=%s status=%u credit=%u gen=%llu\n",
+            state != 0 ? state->endpoint.route_name : "?",
+            (unsigned)status,credit_index,(unsigned long long)generation);
         return status;
     }
     receive = &state->remote_receives[credit_index];
@@ -4780,6 +4795,15 @@ static SparkStatus SparkHiddenSparkHostRdmaActivatePersistentReceive(
         packet->sideband_bytes_per_sequence !=
             receive->packet_template.sideband_bytes_per_sequence)
     {
+        fprintf(stderr,
+            "G5N-TP rdma-activate-template route=%s credit=%u reg=%u hidden=%p/%p side=%p/%p kind=%u/%u bps=%u/%u\n",
+            state->endpoint.route_name,credit_index,
+            receive->persistent_registered,
+            packet->hidden_bf16,receive->packet_template.hidden_bf16,
+            packet->sideband_payload,receive->packet_template.sideband_payload,
+            packet->sideband_kind,receive->packet_template.sideband_kind,
+            packet->sideband_bytes_per_sequence,
+            receive->packet_template.sideband_bytes_per_sequence);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (receive->active != 0u)
@@ -4876,6 +4900,10 @@ static SparkStatus SparkHiddenSparkHostRdmaSendPersistent(
         generation == 0u || credit_index >=
             SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
     {
+        fprintf(stderr,
+            "G5N-TP rdma-send-guard sender=%u credit=%u gen=%llu\n",
+            state != 0 ? state->is_sender : 0u,credit_index,
+            (unsigned long long)generation);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     status = SparkHiddenSparkHostRdmaTerminalStatus(state);
@@ -4887,6 +4915,16 @@ static SparkStatus SparkHiddenSparkHostRdmaSendPersistent(
         SparkHiddenSparkHostRdmaRemoteReceiveMatchesPacket(
             receive,packet) == 0u)
     {
+        fprintf(stderr,
+            "G5N-TP rdma-send-validate route=%s persistent=%u used=%u gen=%llu/%llu seq=%llu/%llu tok=%u/%u rows=%u/%u\n",
+            state->endpoint.route_name,receive->persistent,receive->used,
+            (unsigned long long)receive->generation,
+            (unsigned long long)generation,
+            (unsigned long long)receive->sequence_id,
+            (unsigned long long)(packet != 0 ? packet->sequence_id : 0u),
+            receive->token_index,packet != 0 ? packet->token_index : 0u,
+            receive->active_sequence_count,
+            packet != 0 ? packet->active_sequence_count : 0u);
         return SPARK_STATUS_VALIDATION_FAILED;
     }
     return SparkHiddenSparkHostRdmaPrepareInflightSend(state,packet);
