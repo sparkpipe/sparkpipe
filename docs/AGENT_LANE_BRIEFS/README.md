@@ -97,6 +97,17 @@ read it before writing allocation code):
    REQUEST with call sites — the family pack loader's mapping is the
    sanctioned file-backed path; do not invent a second one.
 
+## QUANTIZATION POLICY (hard, operator directive 2026-08-29 — docs/GOALS.md)
+
+NO self-made quantizations. Weights arrive already-quantized from
+official publisher releases or VETTED community quantizations (pinned
+provenance + full receipt hashes + quality gate on first serve). Our
+packers REPACKAGE (stagepack format, TP/PP sharding, scale planes) —
+they never quantize a master. No acceptable source exists? Serve the
+publisher's native precision (BF16 fits the fleet) instead of
+inventing one. Precision changes = adopting a new official/vetted
+SOURCE + full re-qualification.
+
 ## QUALITY GATE: ds4_eval at the "not horrible" transition (hard, 2026-08-28)
 
 A perf cell alone does not make a model "not horrible" — inference can
