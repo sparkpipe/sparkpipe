@@ -140,15 +140,16 @@ GPU and heavy remote work is scheduled through the run queue
   bug in the runtime, report it as an integration request.
 - Each residentd accepts ONE client. The model_api holds that slot; for
   direct batch-tool tests, stop the api first, restore it after.
-- **PROCESS HYGIENE ON SHARED NODES (hard, from the 2026-08-28 spark0
-  collision):** NEVER `pkill`/`killall` by process name on any shared
-  node — name kills catch OTHER lanes' builds (a qwen38 packer
-  name-kill took out a sibling lane's two builds that way). Kill only
-  YOUR OWN pids. Remote staging runs FROM YOUR COMMITTED BRANCH (a git
-  checkout on the node), never a hand-copied tools/ dir — if the code
-  isn't committed, the artifacts built from it are unreproducible.
-  Before starting a heavy build on a node, check what else runs there
-  (`ps` + the queue reservations) and coordinate via the reports.
+- **PROCESS HYGIENE ON SHARED NODES (hard, from TWO 2026-08-28 spark0
+  incidents):** kill ONLY pids you captured at spawn time and recorded
+  in your own log. There is NO safe fuzzy match on a shared node — not
+  by process name, not by output-path pattern ('*qwen38max.tp4*' caught
+  a sibling's builds TWICE: once by name, once by path), not by parent
+  shell. Remote staging runs FROM YOUR COMMITTED BRANCH (a git checkout
+  on the node), never a hand-copied tools/ dir — if the code isn't
+  committed, the artifacts built from it are unreproducible. Before
+  starting a heavy build on a node, check what else runs there (`ps` +
+  the queue reservations) and coordinate via the reports.
 - The DFlash2 launch environment is MANDATORY for spec runs (missing it
   produces degenerate output - this cost us a day):
   SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPEC_METHOD=dflash2 DRAFT_COUNT=8

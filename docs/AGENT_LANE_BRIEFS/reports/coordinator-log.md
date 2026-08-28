@@ -92,3 +92,17 @@
   authored lines (188714).
 - K3 lane HOLDING for sparke (stage-0 journal at 266 tensors on its
   NVMe); auto-resume script noted — needs restart if the node rebooted.
+
+## 2026-08-28 ~12:0x — SECOND spark0 kill incident; rule hardened to positive form
+
+- The shard lane's "kill my own pids" cleanup used a fuzzy
+  '*qwen38max.tp4*' PATH match — caught the sibling's stage0/2/3 builds
+  (pids 1288558/1316337/1316338). Self-reported immediately; agent now
+  fully hands-off spark0 (no process mgmt, builds, or cleanup there).
+  Its earlier 09:15 kill identified as the same class (pkill -f bash -s
+  restart pattern). Sibling notified to relaunch (stage1 receipt + pack
+  unaffected; shard rehearsal dead = I/O share returns).
+- Coordinator removed the two orphaned shard tmp files by explicit path
+  (48G reclaimed, spark0 /home now 970G free).
+- RULE HARDENED (README): kill ONLY spawn-captured pids; no fuzzy match
+  by name, path, or parent — the agent's own root-cause line, verbatim.
