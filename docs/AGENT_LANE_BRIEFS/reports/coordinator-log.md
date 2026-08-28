@@ -654,3 +654,11 @@ Operator question: does two-model co-residency work? Phase-1 results:
   spark0 (3 residentd procs — the lane's wave cycling; its node).
   Scoreboard unchanged; next event = the instrumented curl naming the
   async-op origin.
+
+## 2026-08-28 ~06:1x KST — lane deep in remote build/test cycle (driver .so 5m old)
+
+- model_driver.so on spark0 rebuilt 5 MINUTES ago — the lane is alive
+  and mid instrument-build/deploy/test cycle (worktree quiet during
+  remote builds; the earlier staleness was the build phase). 3
+  residentd procs = its wave cycling. No intervention; next push or
+  first tokens resolves. Scoreboard unchanged.
