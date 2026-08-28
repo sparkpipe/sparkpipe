@@ -786,7 +786,10 @@ from pathlib import Path
 # The dsv4pro pack lane (PR #729): parameterized deploy/scaffold/smoke
 # tooling (4 scripts) + the report; the 16-rank pack chain with receipts.
 # 192936 is the exact count.
-CEILING = 192936
+# The dsv4 requalification (PR #731): the DSpark gate (env-driven,
+# default off) + the lease-advance mirror fix that restored 40+ at the
+# no-spec O128 cell with exact canonical hash. 192981 is the exact count.
+CEILING = 192981
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

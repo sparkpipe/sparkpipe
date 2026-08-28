@@ -784,6 +784,16 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	return(SPARK_STATUS_OK);
 }
 
+/* DSpark is deployment-opt-in: SPARK_DSV4_DSPARK=1 arms the speculative
+ * path (draft drive, verify expansion, taps, acceptance). Anything else,
+ * including an unset environment, leaves the no-spec path free of the
+ * draft machinery's host work. */
+static uint32_t SparkDsv4ModuleDsparkEnvEnabled(void)
+{
+	const char *value = getenv("SPARK_DSV4_DSPARK");
+	return(value != 0 && value[0] == '1' && value[1] == '\0') ? 1u : 0u;
+}
+
 static SparkStatus SparkDsv4ModuleConfigure(
 	SparkDsv4ModuleState *state,
 	const SparkFirmwareModuleHostServices *host_services,
@@ -877,7 +887,14 @@ static SparkStatus SparkDsv4ModuleConfigure(
 			host_services->kv_backing_maximum_bytes;
 	}
 	state->mtp_armed = 0u;
-	state->dspark_enabled = 1u;
+	/* DSpark speculation is opt-in per deployment via SPARK_DSV4_DSPARK=1
+	 * (the launch-env pattern the qwen38 spec envs use). The former
+	 * hardcoded 1u made every no-spec frame pay the draft-path host work:
+	 * the layer-40..42 tap + cudaStreamSynchronize, the head-max
+	 * acceptance sync, and per-frame staging traffic - measured ~17% at
+	 * the B1 no-spec decode cell. Speculative deployments export the env
+	 * in their launch configuration. */
+	state->dspark_enabled = SparkDsv4ModuleDsparkEnvEnabled();
 	status = SparkDsv4ModuleInitializeTpCollective(state,context);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -2526,8 +2543,10 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 	row_count = prefill != 0u ? context->prefill_batch->row_count : context->decode_batch->row_count;
 	/* DSpark: if the previous step published a ready lane, run the draft
 	 * from the LANE store on the submission path (host syncs are legal
-	 * here, unlike the completion callback). */
-	fprintf(stderr,"dspark_staging tp_rank=%u prefill=%u enabled=%u rows=%u\n",state->tp_rank,prefill,state->dspark_enabled,row_count);
+	 * here, unlike the completion callback). The per-frame staging trace
+	 * print that lived here fired on every submission (prefill and decode
+	 * alike) and was removed: stderr is unbuffered, it is pure
+	 * instrumentation, and it sat ahead of the dspark gate. */
 	if ( SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u &&
 		state->dspark_enabled != 0u && row_count == 1u )
 	{
@@ -3808,6 +3827,7 @@ static void SparkDsv4ModuleContinueLayers(void *context,SparkStatus status)
 				SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"ffn_enter");
 		}
 		if ( status == SPARK_STATUS_OK &&
+			state->dspark_enabled != 0u &&
 			SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u &&
 			continuation->layer_index >= SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST &&
 			continuation->layer_index < SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST +
