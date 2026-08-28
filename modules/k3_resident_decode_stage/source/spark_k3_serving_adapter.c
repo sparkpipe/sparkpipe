@@ -5,6 +5,8 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_serving_adapter.h"
+#include "sparkpipe/spark_memory_buffer.h"
+#include "sparkpipe/spark_serving_adapter_template.h"
 
 typedef struct SparkK3ServingState
 {
@@ -23,16 +25,16 @@ typedef struct SparkK3ServingState
 	char device_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
 		[SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
 	int device_collective_present;
-	/* per-submit host-converted arrays */
-	uint32_t *positions_host;
-	uint32_t *context_host;
-	uint32_t *state_host;
-	/* per-submit device arrays */
-	uint32_t *positions_device;
-	uint32_t *context_device;
-	uint32_t *state_device;
-	uint32_t *output_tokens;
-	float *output_scores;
+	/* Per-submit host-converted arrays and their device twins, every
+	 * allocation naming its space (memory-M1, riding the template). */
+	SparkMemoryBuffer positions_host;   /* HOST_COHERENT */
+	SparkMemoryBuffer context_host;     /* HOST_COHERENT */
+	SparkMemoryBuffer state_host;       /* HOST_COHERENT */
+	SparkMemoryBuffer positions_device; /* DEVICE_PRIVATE */
+	SparkMemoryBuffer context_device;   /* DEVICE_PRIVATE */
+	SparkMemoryBuffer state_device;     /* DEVICE_PRIVATE */
+	SparkMemoryBuffer output_tokens;    /* DEVICE_PRIVATE */
+	SparkMemoryBuffer output_scores;    /* DEVICE_PRIVATE */
 } SparkK3ServingState;
 
 static uint32_t K3ServingJsonU32(SparkJsonDocument *doc, int32_t root,
@@ -257,16 +259,32 @@ static SparkStatus K3ServingInitialize(
 	state->max_rows = state->runner_config.max_input_row_count;
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
-	state->positions_host = (uint32_t *)malloc((uint64_t)state->max_rows * 4u);
-	state->context_host = (uint32_t *)malloc((uint64_t)state->max_rows * 4u);
-	state->state_host = (uint32_t *)malloc((uint64_t)state->max_rows * 4u);
-	if ( state->positions_host == 0 || state->context_host == 0 || state->state_host == 0 ||
-		cudaMalloc(&state->positions_device, (uint64_t)state->max_rows * 4u) != cudaSuccess ||
-		cudaMalloc(&state->context_device, (uint64_t)state->max_rows * 4u) != cudaSuccess ||
-		cudaMalloc(&state->state_device, (uint64_t)state->max_rows * 4u) != cudaSuccess ||
-		cudaMalloc(&state->output_tokens, (uint64_t)state->max_rows * 4u) != cudaSuccess ||
-		cudaMalloc(&state->output_scores, (uint64_t)state->max_rows * 4u) != cudaSuccess )
-		{ K3ServingDestroy(state); return SPARK_STATUS_CAPACITY_EXCEEDED; }
+	status = SparkMemoryBufferAllocate(&state->positions_host,
+		SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)state->max_rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->context_host,
+			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)state->max_rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->state_host,
+			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)state->max_rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->positions_device,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->context_device,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->state_device,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->output_tokens,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->output_scores,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+	if ( status != SPARK_STATUS_OK )
+		{ K3ServingDestroy(state); return status == SPARK_STATUS_CAPACITY_EXCEEDED ?
+			SPARK_STATUS_CAPACITY_EXCEEDED : status; }
 	status = SparkK3StageRunnerInitialize(&state->runner, &state->runner_config);
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status; }
@@ -280,15 +298,15 @@ static void K3ServingDestroy(void *adapter_state)
 	if ( state == 0 )
 		return;
 	SparkK3StageRunnerDestroy(&state->runner);
-	free(state->positions_host);
-	free(state->context_host);
-	free(state->state_host);
+	SparkMemoryBufferFree(&state->positions_host);
+	SparkMemoryBufferFree(&state->context_host);
+	SparkMemoryBufferFree(&state->state_host);
+	SparkMemoryBufferFree(&state->positions_device);
+	SparkMemoryBufferFree(&state->context_device);
+	SparkMemoryBufferFree(&state->state_device);
+	SparkMemoryBufferFree(&state->output_tokens);
+	SparkMemoryBufferFree(&state->output_scores);
 	free(state->pack_path);
-	cudaFree(state->positions_device);
-	cudaFree(state->context_device);
-	cudaFree(state->state_device);
-	cudaFree(state->output_tokens);
-	cudaFree(state->output_scores);
 	free(state);
 }
 
@@ -325,20 +343,22 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		(uint64_t)rows * sizeof(uint64_t));
 	for ( uint32_t i = 0u; i < rows; ++i )
 	{
-		state->positions_host[i] = (uint32_t)positions_host64[i];
-		state->context_host[i] = (uint32_t)positions_host64[i] + 1u;
-		state->state_host[i] = submission->lanes != 0
+		((uint32_t *)state->positions_host.pointer)[i] = (uint32_t)positions_host64[i];
+		((uint32_t *)state->context_host.pointer)[i] = (uint32_t)positions_host64[i] + 1u;
+		((uint32_t *)state->state_host.pointer)[i] = submission->lanes != 0
 			? submission->lanes[submission->row_lane_indices != 0
 				? submission->row_lane_indices[i] : i].resident_sequence_slot
 			: i;
 	}
 	free(positions_host64);
-	cudaMemcpy(state->positions_device, state->positions_host,
-		(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
-	cudaMemcpy(state->context_device, state->context_host,
-		(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
-	cudaMemcpy(state->state_device, state->state_host,
-		(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
+	/* Space-aware copies (the tags resolve host-to-device); the pasted
+	 * submits ignore copy errors and that is unchanged here. */
+	(void)SparkMemoryBufferCopy(&state->positions_device,
+		&state->positions_host, (uint64_t)rows * 4u, 0);
+	(void)SparkMemoryBufferCopy(&state->context_device,
+		&state->context_host, (uint64_t)rows * 4u, 0);
+	(void)SparkMemoryBufferCopy(&state->state_device,
+		&state->state_host, (uint64_t)rows * 4u, 0);
 	memset(&dispatch, 0, sizeof(dispatch));
 	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
@@ -350,16 +370,16 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	dispatch.active_sequence_count = submission->active_sequence_count != 0u
 		? submission->active_sequence_count : rows;
 	dispatch.token_ids = submission->token_ids;
-	dispatch.positions = state->positions_device;
-	dispatch.context_length = state->context_device;
-	dispatch.sequence_of_row = state->state_device;
-	dispatch.kda_state_index = state->state_device;
+	dispatch.positions = state->positions_device.pointer;
+	dispatch.context_length = state->context_device.pointer;
+	dispatch.sequence_of_row = state->state_device.pointer;
+	dispatch.kda_state_index = state->state_device.pointer;
 	dispatch.hidden_input_bf16 = submission->hidden_input_address;
 	dispatch.hidden_input_bytes = submission->hidden_input_bytes;
 	dispatch.hidden_output_bf16 = submission->hidden_output_address;
 	dispatch.hidden_output_bytes = submission->hidden_output_bytes;
-	dispatch.output_token_ids = state->output_tokens;
-	dispatch.output_scores = state->output_scores;
+	dispatch.output_token_ids = state->output_tokens.pointer;
+	dispatch.output_scores = state->output_scores.pointer;
 	dispatch.completion_function = 0;
 	dispatch.completion_context = 0;
 	status = SparkK3StageRunnerSubmit(&state->runner, &dispatch);
@@ -375,7 +395,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		memset(&completion, 0, sizeof(completion));
 		completion.abi_version = submission->abi_version;
-		completion.descriptor_bytes = (uint32_t)sizeof(completion);
+		completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
 		completion.submission_id = submission->submission_id;
 		completion.request_id = submission->request_id;
 		completion.sequence_id = submission->sequence_id;
@@ -384,8 +404,12 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		completion.accepted_token_count = rows;
 		completion.token_count = rows;
 		completion.tokens_per_sequence = 1u;
-		cudaMemcpy(tokens_host, state->output_tokens, (uint64_t)rows * 4u,
-			cudaMemcpyDeviceToHost);
+		/* A copy-destination view of the per-submit scratch: the tags
+		 * resolve device-to-host; the pasted submit ignored copy errors. */
+		SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
+			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * 4u);
+		(void)SparkMemoryBufferCopy(&tokens, &state->output_tokens,
+			(uint64_t)rows * 4u, 0);
 		for ( uint32_t i = 0u; i < rows && i < SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT; ++i )
 			completion.token_ids[i] = tokens_host[i];
 		free(tokens_host);
@@ -438,7 +462,7 @@ static SparkStatus K3ServingSnapshot(void *adapter_state,
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(snapshot, 0, sizeof(*snapshot));
 	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
-	snapshot->descriptor_bytes = (uint32_t)sizeof(*snapshot);
+	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
 	snapshot->available_submission_count = state->max_rows;
 	SparkK3StageRunnerGetStats(&state->runner, &stats);
 	snapshot->submitted_count = stats.submitted_count;
@@ -455,8 +479,17 @@ static SparkStatus K3ServingReset(void *adapter_state, uint64_t control_generati
 
 static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 {
-	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
-	.descriptor_bytes = (uint32_t)sizeof(SparkModelServingAdapterDescriptor),
+	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
+		"k3-tp4pp4",
+		"moonshotai/Kimi-K3-MXFP4",
+		"k3-tp4pp4",
+		"k3",
+		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"),
+	/* The shared capability chain's base carries DRIVER_OWNS_KV, which k3
+	 * must NOT declare: its slot-reuse contract is NONE and the shared
+	 * descriptor validator pins the two together
+	 * (runtime/model_serving_adapter.c). This list is the family's honest
+	 * difference, not an un-migrated paste. */
 	.capability_flags =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
@@ -480,12 +513,6 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_output_token_count = 16u,
 	.max_speculative_token_count = 0u,
 	.resident_sequence_slot_reuse = 0u,
-	.adapter_id = "k3-tp4pp4",
-	.model_id = "moonshotai/Kimi-K3-MXFP4",
-	.model_revision = "k3-tp4pp4",
-	.driver_program_name = "k3",
-	.artifact_sha256 =
-		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217",
 	/* Stage-major (PP stage × TP rank): TP4 groups have equal counts (hybrid
 	 * contract); PP stage layer splits sum to 93. */
 	.stage_layer_counts = { 24u, 24u, 24u, 24u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u },
@@ -499,7 +526,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 static const SparkModelServingAdapterInterface K3ServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
-	.interface_bytes = (uint32_t)sizeof(K3ServingInterface),
+	.interface_bytes = SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES,
 	.descriptor = &K3ServingDescriptor,
 	.initialize = K3ServingInitialize,
 	.destroy = K3ServingDestroy,
