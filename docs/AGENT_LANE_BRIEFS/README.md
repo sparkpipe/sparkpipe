@@ -150,6 +150,13 @@ GPU and heavy remote work is scheduled through the run queue
   committed, the artifacts built from it are unreproducible. Before
   starting a heavy build on a node, check what else runs there (`ps` +
   the queue reservations) and coordinate via the reports.
+- **RESIDENTD FLEET-ONLY RULE (from the 2026-08-28 sparke OOM):** ranks
+  come up ONLY as part of a coordinated fleet bring-up (all ranks
+  near-simultaneously per the deployment plan) and the node set gets
+  queue reservations FIRST. A lone rank without its fleet sits in
+  transport-wait holding its full weight in unified memory — one
+  OOM-killed a sibling lane's pack build and nearly re-OOMed the local
+  OSD on a storage node. Single-rank smoke tests run on YOUR OWN node.
 - The DFlash2 launch environment is MANDATORY for spec runs (missing it
   produces degenerate output - this cost us a day):
   SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPEC_METHOD=dflash2 DRAFT_COUNT=8
