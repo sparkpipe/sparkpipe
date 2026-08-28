@@ -1,3 +1,23 @@
+# INFRA ESCALATION (2026-08-28 09:05): spark3 reboot-crash-loop — SYSADMIN NEEDED
+
+spark3 rebooted twice inside one hour (~08:13 and ~08:59, "up 3 min" at
+09:02; third reboot in ~24h). Yesterday's GPU wedge showed arm-smmu-v3
+CMD_SYNC timeout storms and an NVRM full-chip-reset assertion — the
+recurring reboots fit that same hardware/driver instability signature.
+Two asks for the sysadmin:
+1. Investigate spark3 (hardware/driver — smmu/NVRM; crash logs will be
+   in the journal around 08:1x and 08:5x).
+2. MOVE `mds.ds4warm.spark3` to a stable host (sparkc runs osd.12 and
+   has been rock solid). Fleet storage health is currently coupled to
+   the least stable node: every spark3 reboot restarts the model-warm
+   metadata server cold → transient ENOENT blips + slow uncached reads
+   fleet-wide for minutes (NOT a new ceph wedge — do not diagnose it as
+   one; wait 10-15 min for MDS warm-up and retest).
+Until cleared: spark3 is UNSTABLE — the knee-sweep lane has been told
+to checkpoint every measurement and stop if it reboots twice more.
+
+---
+
 # INFRA: ceph /mnt/model-warm wedge — RESOLVED 2026-08-28 (root cause: spark3, not ceph)
 
 RESOLUTION + CORRECTION: ceph itself was never wedged. spark3 hosts

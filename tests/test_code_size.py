@@ -754,8 +754,15 @@ from pathlib import Path
 # ports) lands in the same window; 186345 is the exact count.
 # The glm52 fp8-source packer adoption (from the pack lane) lands the
 # numpy-only fp8->bf16 spine dequant packer plus its hermetic test in the
-# gate; it emits the deployed TP8 fleet packs. 186844 is the exact count.
-CEILING = 186844
+# gate; it emits the deployed TP8 fleet packs.
+# The qwen-flash M5 kernel port window (merged from lane/qwen-flash):
+# whole-stack TP4 enablement in modules/qwen4_flash_resident_decode_stage
+# (TP_STANDALONE bypass, vocab-sharded embedding gather + all-reduce,
+# sharded head argmax with the maxloc u64 collective, rank-local GDN
+# kernels, dual-width router gate, format-6 E8M0B128 grouped expert
+# kernels incl. the family-local scalar variant, MTP draft chain fixes)
+# + packer/verifier format-6 per-row plane and gate replication.
+CEILING = 187879
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

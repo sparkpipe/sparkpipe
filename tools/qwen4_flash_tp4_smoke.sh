@@ -12,9 +12,13 @@
 #   --packs-dir DIR       directory holding qwen4_flash_full.tp4-rank<R>.qwen4_flashsp
 #   --worktree DIR        lane worktree with the module sources
 #
-# Exit evidence: harness log; initialize success is the smoke target, the
-# documented fail-closed TP whole-stack guards (tp_whole_stack_pending /
-# MTP UNSUPPORTED at tp>1) may follow and are expected at this milestone.
+# Exit evidence: harness log. Since the M5 sharded port (vocab-block
+# embedding gather + all-reduce, sharded head argmax through the maxloc
+# collective, MTP draft chain at tp>1) initialize should PASS and the full
+# check ladder runs. Standalone (TP_STANDALONE=1, the default here) skips
+# the collective: embedding/head results stay rank-partial BY DESIGN -
+# validation semantics, never serving. Pass --live-collective to connect
+# the real peer group instead.
 set -euo pipefail
 
 spark_host="$(hostname)"
