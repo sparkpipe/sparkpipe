@@ -866,8 +866,10 @@ from pathlib import Path
 # each pair-share) and qwen38_max/qwen4_flash adapters (the qmax<->q4f
 # paste pair), after which the counter returns under the old ceiling.
 # dup_report: 93 -> 84 hits (every 27b/dsv4 adapter row and both C3
-# stagepack rows died). 216444 exact post-merge.
-CEILING = 216444
+# stagepack rows died). 216444 exact post-merge; +8 for the tp_collective
+# config reset fix (destination pointers preserved) and the dsv4 .so
+# cudart link lines. 216452 exact.
+CEILING = 216452
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
