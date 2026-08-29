@@ -263,6 +263,7 @@ PYTHON_TESTS := \
 	tests/test_api_stress.py \
 	tests/test_batch_variants.py \
 	tests/test_code_size.py \
+	tests/test_complexity_ceiling.py \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_cuda_math_policy.py \
@@ -343,6 +344,7 @@ PYTHON_TESTS := \
 	tests/test_ptx_capability_gate.py \
 	tests/test_python_syntax.py \
 	tests/test_qwen38_27b_bf16_contract.py \
+	tests/test_qwen38_27b_dflash2_config.py \
 	tests/test_qwen38_27b_layer_host.py \
 	tests/test_qwen38_27b_stagepack.py \
 	tests/test_qwen38_max_validation_harness.py \

@@ -885,7 +885,9 @@ from pathlib import Path
 # Template-adoption gate (the audits' loop-closer): families consume
 # the shared patterns or sit in the ratcheting offender set; new
 # families hit it at merge by construction. 215868 exact.
-CEILING = 215868
+# ccn lane merge (PR742): env-soup eviction + dump deletes +
+# verbatim-motion extraction + validator tables; nets −2,226. 214793 exact.
+CEILING = 214793
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
