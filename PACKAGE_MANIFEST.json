@@ -3483,8 +3483,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "3cba78f8cc378e661a4d10005a1ccc6dd58d34c3b0cc234bdd537f8a0169c643",
-      "size_bytes": 33552
+      "sha256": "457a45bac89d88845e812fb9061f15de340360c0133b52e98bdbf01aed73710b",
+      "size_bytes": 33567
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
@@ -8335,5 +8335,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30632612
+  "total_bytes": 30632627
 }
