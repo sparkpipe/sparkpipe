@@ -1183,3 +1183,18 @@ failure is ever diagnosable through the wire.
   reference. One kernel-input bug from real tokens.
 - Fleet: 16/16 standing on the corrected driver; new API live (W5
   binary finally deployed — /v1/models active on spark0:8433).
+
+## 2026-08-30 ~3:1x — GLM 5.3-FULL lane launched (operator directive)
+
+- VERIFIED before spawning: 5.3-full (GlmMoeDsaForCausalLM) scalars
+  IDENTICAL to 5.2 (6144/78L/256+1 top-8/kv512/q2048/nope192/rope64/
+  v256/vocab154880) — the glm52 module IS the 5.3 module, pure repack.
+  One open: indexer_types (5.2's 21-full/57-shared split absent in the
+  NVFP4 variant config — check against BF16 when it lands).
+- SOURCES: NVFP4 radixark COMPLETE (433G, verified receipt); BF16
+  mid-download (635G/~1.2T in .staging); second staging dir to ID
+  (FP8?). All three → TP16 packs (~76/39/27 G/rank, all under 110).
+- The three-resolution quality/perf study has its model: same
+  checkpoint, same module, same topology — only expert precision
+  varies. Deprecation of 5.2 rides the lane (policy marks, manifest
+  flags).
