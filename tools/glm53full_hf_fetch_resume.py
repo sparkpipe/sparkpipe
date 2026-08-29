@@ -203,6 +203,9 @@ def main() -> int:
                         help="fetch this partition's files only; skip the "
                              "full-stage verify and the promotion (exactly "
                              "one later unpartitioned run does those)")
+    parser.add_argument("--part", default=None, metavar="I/N",
+                        help="fetch only files whose manifest index %% N "
+                             "== I (even partitioning across nodes)")
     args = parser.parse_args()
 
     warm_root = Path(args.warm_root)
@@ -239,6 +242,12 @@ def main() -> int:
         expected = [item for item in expected
                     if (include is None or include.search(item["path"]))
                     and (exclude is None or not exclude.search(item["path"]))]
+    if args.part:
+        part_i, part_n = (int(v) for v in args.part.split("/"))
+        if not 0 <= part_i < part_n:
+            raise RuntimeError(f"bad --part {args.part}")
+        expected = [item for index, item in enumerate(expected)
+                    if index % part_n == part_i]
     total_bytes = sum(item["expected_bytes"] for item in expected)
     started = utc_now()
     atomic_json(
