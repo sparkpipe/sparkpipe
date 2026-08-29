@@ -70,11 +70,20 @@ the DSpark-only tensors (own embed/lm_head, confidence head).
   source and measured **~3 MB/s**; now one sequential file-offset-order
   pass with pwrite into the planned slots.
 
-**REAL PACK BUILT (spark5, /tmp/draftfmt-build/kimi-k3-dspark-redhatai.k3dsp
-+ .receipt.json): `wrote ... tensors=64 file_gib=8.84 block=8
-taps=[24, 48, 72, 88, 92] round_trip=ok`** — 9,489,8xx,xxx bytes; sha256 in
-the receipt beside the pack. (This is a scratch build for verification; the
-placement-worthy rebuild belongs to bulk-packs the day the branch merges.)
+**FULL-SIZE PACK BUILD: IN FLIGHT on spark5**
+(`/tmp/draftfmt-build/kimi-k3-dspark-redhatai.k3dsp`, spawned pid recorded,
+nohup): the header/entries write completed and the payload stream is filling
+under heavy storage contention — the closeout lane's 15-rank repack is
+reading the same warm storage concurrently, and measured throughput fell to
+~1-2 MB/s (first attempt: ~3 MB/s under the same contention; a clean-storage
+run is minutes). Attempt history, honestly: build #1 TERM'd BY ME (captured
+pid) when the random-seek stall was diagnosed; build #2 TERM'd BY ME
+(captured pid) when the VERIFY phase was found to have the same
+random-seek stall; build #3 (current) has both fixes. The tool itself is
+proven: mini-source round-trip PASS plus every gate; the full-size
+round_trip=ok line lands in `/tmp/draftfmt-build/build.log` when storage
+calms. Placement of a placement-worthy pack belongs to bulk-packs after
+merge; nobody should serve this scratch build without its receipt.
 
 ### Module bind + validator (b8769a4)
 
