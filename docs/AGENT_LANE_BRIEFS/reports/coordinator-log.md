@@ -1470,3 +1470,22 @@ appendix).
   closeout respawn's). The error-shape endpoint (OpenAI {"error"})
   verified LIVE in production by this cycle's curls — W5's live
   verification box ticked.
+
+## 2026-08-30 ~14:0x — cycle: fleet mesh-flap diagnosed; STOPPED cycling (doctrine)
+
+- The rank bring-up is FLAPPING: sub-wave for 8 down ranks -> the
+  ready-set regressed 9->5 (sparka etc. died on transport re-open) —
+  the ranks' transport sessions are mutually timing out in
+  cascade: each restart invalidates peers' sessions, peers re-open,
+  hitting ranks mid-restart. This is a STARTUP-ORDERING failure mode
+  under partial restarts, NOT per-node health (all nodes clean on
+  preflight; every rank that got a full window reached ready at some
+  point this cycle).
+- STOPPED: further cycling entrenches the flap (and is exactly the
+  pattern that wedges nodes). The correct fix is ONE clean full-fleet
+  cold wave — all 16 TERMed by cwd, full settle, one simultaneous
+  fire — which needs a window with no other GPU work. Next cycle's
+  one thing. spark0+f remain ready as witnesses.
+- Agent states: 3res download-blocked; P3 + closeout worktrees stale
+  (silent deaths — respawn queue forms behind the fleet stabilization;
+  one window at a time).
