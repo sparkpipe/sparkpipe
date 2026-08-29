@@ -1242,7 +1242,39 @@ CEILING = 228248
 # (pre-exec pids) and stop TERMed nothing while 16 real daemons lived;
 # the cwd-scoped rule is the same one the census and the launch capture
 # already use. 228841 exact.
-CEILING = 232500
+# cell-runner lane: main's dispatcher commit (1a62d97) and the k3-finish
+# residue landed WITHOUT a remeasure (+82 by this counter); bumped here at
+# the merge. tools/devcycle is EXCLUDED by construction (host-recovery /
+# fleet-ops scripts), so the r3flash cell repair (r3flash_exact_cell.sh:
+# fleet band spark8..sparkf, the kill-switch key rendered into
+# config/glm52_stage.json where the serving adapter parses it, per-rank
+# pack symlinks, 19480+rank ready check, 32K-admissible stage configs)
+# rides free. +7: runtime/spark_weightd_attach.c - the W3 GPU receipt
+# (first real-hardware run of the staged vmm verify) failed
+# reason=import_handle on EVERY import: cuMemImportFromShareableHandle's
+# osHandle carries the POSIX fd BY VALUE (cuda.h) and the code passed the
+# fd's ADDRESS, so the driver read a stack address as an fd number
+# (CUDA_ERROR_INVALID_HANDLE); the stub modeled the by-value contract, so
+# only hardware exposed it. One-expression fix + the comment recording it.
+# +8 more: the same import failure branch now prints the driver's CUresult +
+# fd under SPARK_WEIGHTD_IMPORT_DIAG (the reason code names the stage but
+# not the driver error; the cross-process leg's exact divergence needed it).
+# A standalone probe (create/export/import same-process, re-export,
+# SCM_RIGHTS to a fresh-exec child with the cudaFree(0) bootstrap) proves
+# the driver 580.159.03/GB10 path fully capable - so the remaining
+# cross-process failure is consumer-path, and the diag names it.
+# +7: the diag caught the ACTUAL consumer-path defect -
+# CUDA_ERROR_NOT_INITIALIZED (curesult=3): the only lazy-context bootstrap
+# (SparkWeightdAttachDeviceId, the cudaFree(0)) sat at the SetAccess tail
+# of ImportMap, AFTER the whole import loop, so a fresh-exec consumer with
+# no prior CUDA calls imported with no driver state. The bootstrap now runs
+# at function entry. The in-process leg never saw it (its caller had
+# already made CUDA calls); the stub cannot model a context-less process.
+# +8: runtime/serving_adapter_template.c - LoadDriver discarded its
+# SparkSetError buffer, so a boot loop reported only a status code; it now
+# prints the exact failing check to stderr (the r3 cell's hash_mismatch
+# boot loop named nothing). 229937 exact.
+CEILING = 232530
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

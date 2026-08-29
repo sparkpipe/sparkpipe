@@ -6,6 +6,7 @@
  * family owns its policy; this file owns the walk.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -438,7 +439,14 @@ SparkStatus SparkServingAdapterTemplateLoadDriver(
 	status = SparkLoadModelDriver(configuration->driver_shared_object_path,
 		configuration->node_target,driver,error_buffer,sizeof(error_buffer));
 	if ( status != SPARK_STATUS_OK )
+	{
+		/* the caller only sees the status code; the buffer names the exact
+		 * failing check (receipt debugging, cell-runner 2026-08-29: a
+		 * hash_mismatch boot loop named nothing) */
+		(void)fprintf(stderr, "serving load driver '%s' failed: %s\n",
+			configuration->driver_shared_object_path, error_buffer);
 		return(status);
+	}
 	descriptor = driver->interface->descriptor;
 	if ( descriptor == 0 ||
 		strcmp(descriptor->model_id,request->contract.driver_model_id) != 0 ||

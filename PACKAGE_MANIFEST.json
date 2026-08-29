@@ -1,5 +1,5 @@
 {
-  "file_count": 1719,
+  "file_count": 1720,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -317,6 +317,11 @@
       "size_bytes": 10027
     },
     {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/cell-runner-2026-08-29.md",
+      "sha256": "fbdb860cf973123943600a1b22d978366505677789b48f2510849c002e43b5bc",
+      "size_bytes": 15226
+    },
+    {
       "path": "docs/AGENT_LANE_BRIEFS/reports/cfg-audit-2026-08-29.md",
       "sha256": "458bf2db241f42e39844e3878cccf8f910955cf194a9bb107ad67aa6b46eb816",
       "size_bytes": 8077
@@ -333,8 +338,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "de2739ced126f62d435721e48583c54cd25bd49d78deae4c1caa1d08cc35c23c",
-      "size_bytes": 123623
+      "sha256": "595b1db58a1d92c26f0b6f315884acc98819c7f442a8dd9a04547423262629ad",
+      "size_bytes": 126744
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -5448,18 +5453,18 @@
     },
     {
       "path": "runs/queue.jsonl",
-      "sha256": "99df5cedf51c43cdc57dfee8c44155ee8696176e7c05a1b05bde3a52fefce3e8",
-      "size_bytes": 5034
+      "sha256": "7928cfb264bcf46e2e6bed0f8cd8eb7d36d8131a3c72b51c77e60cf390329d70",
+      "size_bytes": 3171
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "37818d01146a4f7fed6156f456c68c7878be75a22e266f465662a1913d00f060",
-      "size_bytes": 1466
+      "sha256": "1745cc42a374a4cc62616d24dacf97e226c1d9318b5ec144822f662ece5d6dab",
+      "size_bytes": 153
     },
     {
       "path": "runs/results.jsonl",
-      "sha256": "330c0b3d452910e0bae76ced63eb8e1b64a446c35ac433477451592fdacc3638",
-      "size_bytes": 50113
+      "sha256": "41a766113c101f9b8c3781ff3fe7018a256948002cea3c508534648b03bd6568",
+      "size_bytes": 53857
     },
     {
       "path": "runtime/README",
@@ -5588,8 +5593,8 @@
     },
     {
       "path": "runtime/serving_adapter_template.c",
-      "sha256": "c32fe9cba33c57800cdac298f47a53f60674fa4494a0071e6363f207cd80dd69",
-      "size_bytes": 20700
+      "sha256": "c562253967c20bd76b84f1214e920cb5812c799214cb71c93b03ffcf39643a71",
+      "size_bytes": 21032
     },
     {
       "path": "runtime/spark_kv_backing.c",
@@ -5603,8 +5608,8 @@
     },
     {
       "path": "runtime/spark_weightd_attach.c",
-      "sha256": "549fa2eafa1d7597a8719b40fcb4410c4b8d15d2e9ecc2fde0b198a78ca3af21",
-      "size_bytes": 17903
+      "sha256": "3e88e370166eca71eb7211f126f0e843db4046ef9839c6cd4b31600fbb801a0c",
+      "size_bytes": 19290
     },
     {
       "path": "runtime/speculation_provider.c",
@@ -5728,8 +5733,8 @@
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_stub.c",
-      "sha256": "5ab234f9308545d2fc95d062da38449ca8912771ed023bb957f9f6f23dbd9c94",
-      "size_bytes": 31417
+      "sha256": "7d612653eef92584a790dcf1f33df10f9c8f7df179984128378ff1ef8afab712",
+      "size_bytes": 31783
     },
     {
       "path": "tests/fake_model_kernel_probe_module.c",
@@ -6153,8 +6158,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "c6d18d62f299d9acf4d99d101d7c0c78e888d906ea9e9cbfb4fc192d9325bb58",
-      "size_bytes": 84225
+      "sha256": "de2c395d5511195db71c06e9a3b2e2f4181dcbee19b652341f927e423eef2da5",
+      "size_bytes": 86476
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7573,8 +7578,8 @@
     },
     {
       "path": "tools/devcycle/r3flash_exact_cell.sh",
-      "sha256": "2b6aab71a9aca011ef8e579a48ca9a8bf1dbf319c7ae593e50e362d79eb022e2",
-      "size_bytes": 8501
+      "sha256": "2ea471ab598a6460cd32f8cbdf85ad38f2b9c67a2895c0d3bf46dfec334ebf42",
+      "size_bytes": 11648
     },
     {
       "path": "tools/devcycle/rankpacks_ship_pro.sh",
@@ -8600,5 +8605,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31718408
+  "total_bytes": 31744806
 }

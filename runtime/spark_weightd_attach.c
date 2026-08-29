@@ -255,6 +255,13 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    /* the lazy-context bootstrap MUST precede the import loop: a fresh
+     * consumer process has no driver state yet, and the GPU receipt caught
+     * the imports failing CUDA_ERROR_NOT_INITIALIZED (curesult=3, fd=4)
+     * because the only DeviceId() call sat at the SetAccess tail - the
+     * in-process leg never noticed (the caller had already made CUDA
+     * calls). Initialize here, at function entry. */
+    (void)SparkWeightdAttachDeviceId();
     if (outcome->client == 0)
     {
         SparkWeightdAttachSetReason(reason, "not_attached");
@@ -356,9 +363,24 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         for (index = 0u; index < batch.batch_count; index++)
         {
             CUmemGenericAllocationHandle handle = 0;
-            if (cuMemImportFromShareableHandle(&handle, &batch.fds[index],
-                    CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) != CUDA_SUCCESS)
+            CUresult import_rc;
+            /* osHandle carries the POSIX fd BY VALUE (cuda.h: "Shareable
+             * Handle representing the memory allocation") - the real driver
+             * reads the pointer's integer value as the fd; passing the
+             * fd's ADDRESS fed it a stack address as an fd number and every
+             * import failed CUDA_ERROR_INVALID_HANDLE (GPU receipt,
+             * cell-runner 2026-08-29: reason=import_handle on real HW). */
+            import_rc = cuMemImportFromShareableHandle(&handle,
+                    (void *)(uintptr_t)batch.fds[index],
+                    CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+            if (import_rc != CUDA_SUCCESS)
             {
+                /* the reason code names the stage; this names the driver
+                 * error (receipt instrumentation, SPARK_WEIGHTD_IMPORT_DIAG) */
+                if (getenv("SPARK_WEIGHTD_IMPORT_DIAG") != 0)
+                    fprintf(stderr,
+                        "weightd import diag: fd=%d curesult=%d\n",
+                        batch.fds[index], (int)import_rc);
                 (void)close(batch.fds[index]);
                 SparkWeightdAttachCloseBatchFds(&batch);
                 SparkWeightdAttachMapUndo(outcome);
