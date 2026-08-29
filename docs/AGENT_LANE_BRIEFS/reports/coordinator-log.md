@@ -1715,3 +1715,16 @@ appendix).
   fire harness; 3 daemons on spark0 = its restart). Not mine to
   touch; one wave owner.
 - No merges pending. Nothing else changed.
+
+## 2026-08-30 ~13:0x — cycle: r2-prefill + k3-finish MERGED (a7f32a3→34fa045)
+
+- R2b LANDED: prefill chunks to max_input_row_count (the 1-row-per-
+  frame = one weight re-stream per token = 21.7 tok/s bug) + the
+  chunk-contract pin test. The engine-budget raise + dsv4 bulk
+  kernel continue in-lane.
+- k3-finish: the keepalive tool + the wave's 110GiB envelope check
+  (refuses <100G/node, reports the reading — the capacity-tax lesson
+  as code).
+- 5/5 agents alive (r2/k3 pushing, probe-fix/w1/kernel-crew deep).
+  Fleet: probe-fix's waves continue. Next: the three quiet lanes'
+  first pushes.
