@@ -187,7 +187,8 @@ TOOL_NAMES := \
     spark_transport_characterize \
     spark_topology_characterize \
     spark_pmtu_characterize \
-    sparkpipe_registrar
+    sparkpipe_registrar \
+    sparkpipe_weightd
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -245,6 +246,7 @@ TEST_NAMES := \
     test_model_description \
     test_stage_module_common \
     test_dsv4_w1_loader \
+    test_weightd \
     test_module_library \
     test_speculation_provider_slot \
     test_driver_compiler \
@@ -942,6 +944,15 @@ build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_m
 build/test_dsv4_w1_loader: tests/test_dsv4_w1_loader.c src/spark_sha256.c src/spark_status.c runtime/stage_module_common.c tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) $^ $(LDFLAGS) -o $@
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Itests/cuda_stub -Itests $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+# W2 weightd (docs/WEIGHTD_DESIGN.md): the residency daemon links like
+# model_residentd (real cudart where CUDA_HOME exists, the host stub where
+# it does not); its test is stub-pinned like test_stage_module_common.
+build/sparkpipe_weightd: node/weightd.c runtime/spark_weightd.c src/spark_sha256.c src/spark_status.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+build/test_weightd: tests/test_weightd.c runtime/spark_weightd.c src/spark_sha256.c src/spark_status.c tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub -DSPARK_TEST_WEIGHTD_BINARY=\"build/sparkpipe_weightd\" $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(TEST_VALIDATOR_CHANGED) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

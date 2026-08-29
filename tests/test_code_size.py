@@ -944,7 +944,26 @@ from pathlib import Path
 # one-pass loops + the test_json equivalence contract. Config-scale
 # loops (adapter template, deployment) stay indexed: bounded counts.
 # 222168 exact.
-CEILING = 222168
+# W2 weightd skeleton (docs/WEIGHTD_DESIGN.md W2a): the residency daemon
+# - include/sparkpipe/spark_weightd.h (326): the content identity
+#   (model, revision, topology, pack SHA-256, geometry fingerprint, ABI),
+#   the fixed-frame wire protocol, and the server/client surfaces.
+# - runtime/spark_weightd.c (1515): the identity-keyed arena map with
+#   connection-scoped refcounts (consumer death drops them via EOF), the
+#   verify-before-allocate cold path (digest + size claim + post-load
+#   stat re-check, HASH_MISMATCH fail-closed), the NO-2x gate (cold
+#   reclaim only, live arenas never evicted, CAPACITY_EXCEEDED else),
+#   the poll-driven Step/Run loop with the TERM-bounded poll quantum and
+#   the atomic stop-flag load (signal handler + test-thread callers),
+#   and the deadline client.
+# - node/weightd.c (157): the daemon process (args/env, signal flags,
+#   clean teardown; the 110 GiB device law is the default ceiling).
+# - Makefile (+11 net): sparkpipe_weightd tool + test_weightd registration.
+# The family-neutral daemon replaces per-process cold loads (the
+# scoreboard's cold-start line item) and makes warm code redeploys
+# sub-second identity hits; test is excluded by construction, the
+# package-manifest regen is uncounted (.json). 224177 exact.
+CEILING = 224177
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
