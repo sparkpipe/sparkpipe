@@ -53,7 +53,7 @@ for i in $(seq 0 15); do
     echo "    \"local_host\": \"$host\","
     echo "    \"collective_identifier\": 1,"
     echo "    \"listen_port\": 64620,"
-    echo "    \"connect_timeout_milli\": 5000,"
+    echo "    \"connect_timeout_milli\": 300000,"
     echo "    \"operation_timeout_milli\": 30000,"
     echo "    \"peer_hosts\": ["
     first=1
@@ -71,7 +71,7 @@ for i in $(seq 0 15); do
       echo "  ,"
       echo "  \"tp_collective\": {"
       echo "    \"listen_port\": $((61620 + rank)),"
-      echo "    \"connect_timeout_milli\": 5000,"
+      echo "    \"connect_timeout_milli\": 300000,"
       echo "    \"operation_timeout_milli\": 30000,"
       echo "    \"collective_identifier\": 1,"
       echo "    \"peers\": ["

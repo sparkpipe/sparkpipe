@@ -443,8 +443,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-finish-2026-08-30c.md",
-      "sha256": "f69e264ab736b3ed8f0c0d40b685ceef0faf059665b0ebe308214ece740a6aaf",
-      "size_bytes": 10028
+      "sha256": "ecf45861c3519fa02710fd91afc19fab8d398713f11334260dc80121f1496907",
+      "size_bytes": 12812
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-fleet-2026-08-28.md",
@@ -3623,83 +3623,83 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark0.json",
-      "sha256": "09e8c9784e9f30397b93c1e703b95c494577c0ab82d1c5aac4332dfc1db828cd",
-      "size_bytes": 884
+      "sha256": "7fed0a020dda88703eff18af987255a0346e3f540ddb498100b8c03b962fb52d",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark1.json",
-      "sha256": "32ec05409057b21df8e5c50f83411f28dd1df505b755f313af92cf5905ae7bf8",
-      "size_bytes": 884
+      "sha256": "b2c940aae76d51a24d55f2c3d2c05777dae5b575e546077433adff88b12cb8d2",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark2.json",
-      "sha256": "d75eac57adde8313eba8ae1d5b603bca18b0b9953751695812572c1611c93051",
-      "size_bytes": 884
+      "sha256": "7da0ceb6f586b2e425c199875444766ca97434a050063edc64420afa718d68b0",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark3.json",
-      "sha256": "992bb2febc13986004311c83ffd0c2781885dc92ce773e56fb3b0784387cfc68",
-      "size_bytes": 884
+      "sha256": "afd62f5c4b57c9d4f1dab5b595b68cf8e477af2dcd40ee9cfb7e1d9c97e27dd1",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark4.json",
-      "sha256": "546c55bae0fd380a77a6ea75002cb4c7e8f2720a30db0548c48187a7e7798e71",
-      "size_bytes": 884
+      "sha256": "448e6670b04bcbec7816b51da5e1372ee4597c49b3152e0f4bbfdf0517c0b555",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark5.json",
-      "sha256": "6ced8807c559616555205ce24ddd26ea3c58755ddbb307c00a8532a95765b23b",
-      "size_bytes": 884
+      "sha256": "61b3d6b8a5fbc1cc62bd319c087f6128136f52cfdbcac002c64b3fbce7e4c4b9",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark6.json",
-      "sha256": "5dfffe980dc1e2521d03b5e6011a1d774f56c97a61c6ad6496f970b8502e8022",
-      "size_bytes": 884
+      "sha256": "97f53d2874160704b4281164549cb719925b7574b0cd7b6e93257044c5822c39",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark7.json",
-      "sha256": "f77e22ccfb6514fc734b393e9c06f449ef215a98d6c641a67b39012d4a78129c",
-      "size_bytes": 884
+      "sha256": "17810af18b2f92bbfd6cd66bcdbbad65ddaee8ebd1a16f58edd1af5fe41c39b6",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark8.json",
-      "sha256": "7702e86111ed4bab0fbb7480c289abf79f9daabcc87505ec7311d9fc8eb7f760",
-      "size_bytes": 884
+      "sha256": "d3a937232eb3af5b6303fa417d3d6c9c760106c7b0d6e3550e3c82866e5aeb95",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark9.json",
-      "sha256": "8b790039c84b81c5c9db1366bfe01a5707faa1fa23483968f261378bdbd1687f",
-      "size_bytes": 884
+      "sha256": "10fb2e82b37f8e63bfcb805d6621d73ff19c49b0ac7b03b5b6a8f94b0d06af6e",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparka.json",
-      "sha256": "cbf10a21465bfc525017950fac671b7e4351771f3606263eea0e6ec724f2af8f",
-      "size_bytes": 884
+      "sha256": "0fc18ac025921fa9054130bf09d57a0f6b15038fdf6db796a398ba1b8c39b912",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparkb.json",
-      "sha256": "55ef49df2a00f2b8e6586de237161ea1466695ebcb0f06d2fb462c18660623bc",
-      "size_bytes": 884
+      "sha256": "ed5400e23dc18f4a597e9746e6d9e3846be648078df28176cfe84b3c15eacd40",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparkc.json",
-      "sha256": "bc4e5ab52133d69ab60aea2f304b8fad47a6b332010514d48db821b4464c7b69",
-      "size_bytes": 884
+      "sha256": "ef85ab5f1d14ef5afe0016282a06883e0f12b7fa918062c71f7c62f2508d05ff",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparkd.json",
-      "sha256": "cd68a9dcfabfb696ebf062385b1ed7294116fcbed1b442c8c0f95db4940e091f",
-      "size_bytes": 884
+      "sha256": "19577951d9b7516334e41218fd7e9c4c8c1d3992084a311efb595e88443ff4d4",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparke.json",
-      "sha256": "690e2b7ee79d07455b621cfa0f40604bf9109c0195d1b5a097c365a38e9ce1d7",
-      "size_bytes": 884
+      "sha256": "f9b504af3b2786e7fe5033c268c255a2d7404e6b1bdfff52b696aeefc3373d00",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparkf.json",
-      "sha256": "2141f5f3ad24c015daef6e399000c9429b52513f769910935a083d5cff8d22e0",
-      "size_bytes": 884
+      "sha256": "a2a08d1d8231426b96ba939fc222802e8227d38976c4fd69c2d9d8822ce45da1",
+      "size_bytes": 888
     },
     {
       "path": "modules/k3_resident_decode_stage/example_k3_adapter_config.json",
@@ -6093,8 +6093,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "4f6a35c04307d5711ba29ff75048c92182e1748c2452aab77d4226f49e36f0e2",
-      "size_bytes": 76517
+      "sha256": "9b17171beb27f382e2a42d2f415cb51a5659176dd571e70a0e4729eba2672142",
+      "size_bytes": 76847
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7988,13 +7988,13 @@
     },
     {
       "path": "tools/k3_fleet_wave.sh",
-      "sha256": "d02c088a0b8f2849a52618593b78d1c99a0479c430bf7ebdddcc2303c4c518e4",
-      "size_bytes": 6252
+      "sha256": "5c34cbba48bbbf55c49f33967ab682523e872e34a3edc87fa3ac768274f3ec45",
+      "size_bytes": 6891
     },
     {
       "path": "tools/k3_gen_adapter_configs.sh",
-      "sha256": "c3df0ce6dffce535070ffea2a221fca59a171cce15ded10a25533915ffec3b06",
-      "size_bytes": 3571
+      "sha256": "0de303a3eadf1577af6205d7d1cc47709e88468a4266f07188ad05a4f23b800c",
+      "size_bytes": 3575
     },
     {
       "path": "tools/k3_gen_deployment.sh",
@@ -8505,5 +8505,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31282852
+  "total_bytes": 31286673
 }

@@ -79,7 +79,18 @@ cmd_stop() {
         if kill -0 \$pid 2>/dev/null; then
           kill -TERM \$pid && echo \"$host TERM \$pid\"
         else echo \"$host pid \$pid already gone\"; fi
-      else echo \"$host no pidfile\"; fi" 2>&1
+      else echo \"$host no pidfile\"; fi
+      # pidfile gap (live 2026-08-30: captured pre-exec pids that later
+      # vanished while the real daemon lived): also sweep THIS rank's own
+      # runtime-root daemons by anchored cmdline + exact cwd match - the
+      # same deployment-scoped rule the census and the launch capture use.
+      # Never touches another family's daemon (cwd filter is OUR rt).
+      for p in \$(pgrep -f 'bin/sparkpipe_model_residentd'); do
+        [ \"\$p\" = \"\$\$\" ] && continue
+        [ \"\$(readlink /proc/\$p/cwd 2>/dev/null)\" = \"$rt\" ] && {
+          kill -TERM \$p 2>/dev/null && echo \"$host TERM \$p (cwd-scoped)\"
+        }
+      done" 2>&1
   done
   echo "waiting for TERM to settle (30s)"; sleep 30
   cmd_status
