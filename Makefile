@@ -223,8 +223,9 @@ TEST_NAMES := \
     test_kv_cache \
 	test_k3_kv_cache \
 	test_k3_dspark_pack \
-    test_kv_model_table \
+	test_kv_model_table \
     test_nvme_tier \
+    test_jit_kv_slice \
     test_kv_mooncake \
     test_qwen38_27b_work_control \
     test_qwen38_work_control \
@@ -856,6 +857,9 @@ build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
 # archive to link for two translation units.
 build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_nvme_tier.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_jit_kv_slice: tests/test_jit_kv_slice.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_jit_kv_slice.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
 # The switch machine sits on the same mock-drive tier: two translation units,
 # vtable devices, compiled directly like the tier test above.

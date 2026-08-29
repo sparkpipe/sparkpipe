@@ -963,7 +963,25 @@ from pathlib import Path
 # scoreboard's cold-start line item) and makes warm code redeploys
 # sub-second identity hits; test is excluded by construction, the
 # package-manifest regen is uncounted (.json). 224177 exact.
-CEILING = 224177
+CEILING = 225017
+# The JIT-KV vertical slice (lane/jikv-slice, 2026-08-29): the pager
+# adapter joining the resident arena to the nvme tier -
+# include/sparkpipe/spark_kv_pager.h + cache/kv_pager.c (the park/
+# restore/backpressure policy, 725 lines: save/restore module seam,
+# digest-verified page-out through ReserveWrite/CommitWrite, page-in with
+# landing re-verification and a landing buffer that releases tier staging
+# before make-room, admission with exact overflow arithmetic and the
+# queue-not-wedge rule of docs/JIT_KV_RESPONSE.md C1) +
+# SparkKvCacheArenaMarkParkedBlockResident (cache/kv_cache.c +13, the
+# restore-half primitive: re-attach a parked block; MarkBlockResident
+# refuses backing-valid blocks by design, so the pager path had no way
+# back) + the header declaration +13 and the Makefile test rule +5. The
+# slice's host proof lives in tests/ and is excluded by construction.
+# Every line runs a path no existing file covers (park, rewind,
+# backpressure); the alternative - threading JIT-KV through the prefix
+# cache or page store - would have grown those files more and blurred
+# their contracts. # Merged on a base already carrying W2a (224177); re-measured at
+# merge resolution: 225017 exact.
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

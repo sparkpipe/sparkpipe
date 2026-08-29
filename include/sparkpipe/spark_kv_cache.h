@@ -504,6 +504,19 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
 
+/*
+ * The JIT-KV restore half: re-attach a PARKED block (ALLOCATED, non-resident,
+ * BACKING_VALID - the state residency eviction leaves) after the pager has
+ * restored its bytes from the backing tier. Makes room by evicting the LRU
+ * resident victim through the arena's evict function, assigns the resident
+ * slot, keeps BACKING_VALID and keeps DIRTY clear. Refuses blocks that were
+ * never parked: blanks go through SparkKvCacheArenaMarkBlockResident, whose
+ * BACKING_VALID refusal this function is the counterpart of.
+ */
+SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
+    SparkKvCacheArena *arena,
+    uint32_t logical_block_index);
+
 SparkStatus SparkKvCacheArenaFreeBlock(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
