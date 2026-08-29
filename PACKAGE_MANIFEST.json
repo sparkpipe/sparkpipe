@@ -1,5 +1,5 @@
 {
-  "file_count": 1698,
+  "file_count": 1700,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -53,8 +53,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "435b5d3055b485a425b3c436c60bf4a000246d51ba7a8dd0ec186c402b12c617",
-      "size_bytes": 85681
+      "sha256": "369c7b67ba7c188481c163819493df5ea945a01978cb547574c800910fbf39d3",
+      "size_bytes": 85760
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -312,14 +312,19 @@
       "size_bytes": 10027
     },
     {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/cfg-audit-2026-08-29.md",
+      "sha256": "458bf2db241f42e39844e3878cccf8f910955cf194a9bb107ad67aa6b46eb816",
+      "size_bytes": 8077
+    },
+    {
       "path": "docs/AGENT_LANE_BRIEFS/reports/continuous-batching-2026-08-27.md",
       "sha256": "c9fb80fe9898f570e0b2ef2ece632b13bccd14632b30fb1ce3a2b97f2b3ff4e5",
       "size_bytes": 13114
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "5d486603a61d44c745d247d22d60a78fbdbd0eb9bb78fab2558ddcb6936e1aa8",
-      "size_bytes": 115226
+      "sha256": "d5ec6f728cb8f62855b2fbafe17a34dccd4663c82e4d11caae4b8dff42628f9d",
+      "size_bytes": 117230
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -1938,33 +1943,33 @@
     },
     {
       "path": "examples/deployments/dsv4_flash_tp16_b1_gpudirect_rdma.spec.json",
-      "sha256": "c47f55deb9d7b7abc871ddd1a4c9f6933a6d5f4f32f31c34297f467ca92ab16f",
-      "size_bytes": 1330
+      "sha256": "73a921eab9b07571f412d6556bb12f2fe65b584ebb5328b164da0d91e91ed6f6",
+      "size_bytes": 1617
     },
     {
       "path": "examples/deployments/dsv4_flash_tp16_b1_host_rdma.spec.json",
-      "sha256": "93edd65b555259a7a6901b030e21c05c2708d4515b332d7024c6da2d19a999da",
-      "size_bytes": 1325
+      "sha256": "875ef0c91baf8c37de65a0d68a08613fc736622f205f60125a5a87ca505ecb0a",
+      "size_bytes": 1612
     },
     {
       "path": "examples/deployments/dsv4_flash_tp4_b1_host_rdma.spec.json",
-      "sha256": "79ae92b0a0a7d1246e00b7e88ca926ceb51ac5883c580af0172344d265bda1e3",
-      "size_bytes": 1138
+      "sha256": "2f070dafde52b776f4f4cf2b0764726ce0c31dcea888a75e2e9ddc2932388873",
+      "size_bytes": 1203
     },
     {
       "path": "examples/deployments/dsv4_flash_tp4_pp4_b1_gpudirect_rdma.spec.json",
-      "sha256": "53e2d3afb6d206f110b46a8872953624171747bd29de5230922c188dc5feefd1",
-      "size_bytes": 1365
+      "sha256": "1642f67230bca5ecd79888442f675e10bebe64f3c5bba7310fc25f954736155b",
+      "size_bytes": 1652
     },
     {
       "path": "examples/deployments/dsv4_flash_tp4_pp4_b1_host_rdma.spec.json",
-      "sha256": "591b209e9f6d0b5c1b4dbfc4e05b8e2d1ceccced93518ae49e41985b8de94dd9",
-      "size_bytes": 1360
+      "sha256": "af51e1f2831c770816795508fec480d56e291e699eacb2d5f3c720d2530208ac",
+      "size_bytes": 1647
     },
     {
       "path": "examples/deployments/dsv4_flash_tp4_pp4_host_rdma.spec.json",
-      "sha256": "f3ef9786ac4269a3149299649ddb74f2e0d3a30a3d5b9f66b83c1234808559fc",
-      "size_bytes": 1418
+      "sha256": "cb69313987d970a051b6d2f19938b4a134f9987a3dd0b19c827f9b9b87e1efdc",
+      "size_bytes": 1705
     },
     {
       "path": "examples/deployments/dsv4_flash_tp4_pp4_stage.json",
@@ -1998,13 +2003,13 @@
     },
     {
       "path": "examples/deployments/qwen36_pp13_host_rdma.spec.json",
-      "sha256": "1f7abb6684586e79f01ee0d2ecb0a40aab825ab6934778aba5ebb0663468988b",
-      "size_bytes": 1293
+      "sha256": "7d24e4d6e28e71229ad9965d32a169820fe5bf74ec40195735b6f17f8de40807",
+      "size_bytes": 1532
     },
     {
       "path": "examples/deployments/qwen36_pp16_host_rdma.spec.json",
-      "sha256": "cd83597881990eb211f432a458fe292007a5cfdf0f2c2610291b582bf74b0f42",
-      "size_bytes": 1450
+      "sha256": "768114cad0d1b911d20a501c72b6d941c3627a59e5202ef93906cca4d5027256",
+      "size_bytes": 1737
     },
     {
       "path": "examples/deployments/qwen36_tp4_host_rdma.spec.json",
@@ -2033,8 +2038,8 @@
     },
     {
       "path": "examples/deployments/qwen38_fp8_tp16_host_rdma.spec.json",
-      "sha256": "aefa728b519d4edab2ce19b154d68213de80f63451f0e6f696f0a0044fb73f27",
-      "size_bytes": 1365
+      "sha256": "4057e4779e272e6771755d5d1af4e8ef80b1b09affa7602b7f3f189edc3c3680",
+      "size_bytes": 1652
     },
     {
       "path": "examples/deployments/qwen38_fp8_tp16_stage.json",
@@ -2043,8 +2048,8 @@
     },
     {
       "path": "examples/deployments/qwen38_fp8_tp4_pp4_host_rdma.spec.json",
-      "sha256": "ad2bbde39a40ef400aa6918e515d22dab316f1ca85b7f58c640cdb15ee578a24",
-      "size_bytes": 1380
+      "sha256": "635238525116ff39a7db233a1bbeee2510a52be10c12a09dc5e7780a0f33e817",
+      "size_bytes": 1667
     },
     {
       "path": "examples/deployments/qwen38_fp8_tp4_pp4_stage.json",
@@ -6083,8 +6088,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "e6ef715576b55731a742545e6837b0bd65d3385d030079bf794769dbb2f985f4",
-      "size_bytes": 76786
+      "sha256": "44664d39fcd7b04b7e4855711c75cd1dd16abf471c7bbc98ffe8996a65c116cf",
+      "size_bytes": 77536
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6105,6 +6110,11 @@
       "path": "tests/test_cuda_performance_contracts.py",
       "sha256": "95fbb5f6027b88f8814c8e8f011d00d05dda111987ca2e49779ed94de19d0c6b",
       "size_bytes": 21586
+    },
+    {
+      "path": "tests/test_deployment_config_drift.py",
+      "sha256": "f10707ec63783bb425832bedf3cf880c206f811398eb1264b1a31f3c2589aa59",
+      "size_bytes": 6471
     },
     {
       "path": "tests/test_dequant.c",
@@ -7718,8 +7728,8 @@
     },
     {
       "path": "tools/glm52_gen_deployment.py",
-      "sha256": "a6c7fa876596d4154cd243c53372840f6147648b4df1c44076469f7aa8f7b10c",
-      "size_bytes": 4668
+      "sha256": "0e6b428b8828eaa9888bf76f5a82ebc668cc07996e13f9b6a3daea514105b590",
+      "size_bytes": 5058
     },
     {
       "path": "tools/glm52_hash_diff.py",
@@ -7803,8 +7813,8 @@
     },
     {
       "path": "tools/glm5_next_gen_deployment.py",
-      "sha256": "79f5001a9a812584832678e7cfe1c68afaa8efaf5f74c9def5fef3523547e537",
-      "size_bytes": 5235
+      "sha256": "1a0759d446b11eb68b0c72156b3242cab71e20f380f8888b7770c82a45e4fe9c",
+      "size_bytes": 5551
     },
     {
       "path": "tools/glm5_next_gen_name_map.py",
@@ -8495,5 +8505,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31334766
+  "total_bytes": 31355453
 }

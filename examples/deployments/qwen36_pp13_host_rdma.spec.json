@@ -37,6 +37,21 @@
       "sparkb",
       "sparkc"
     ],
+    "transport_hosts": [
+      "spark0",
+      "spark1",
+      "spark2",
+      "spark3",
+      "spark4",
+      "spark5",
+      "spark6",
+      "spark7",
+      "spark8",
+      "spark9",
+      "sparka",
+      "sparkb",
+      "sparkc"
+    ],
     "stage_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     "runtime_dataset": "qwen3.6_27b.bf16.pp13",
     "node_target": "cuda.sm121.qwen38_27b.resident_decode_stage.bf16",

@@ -23,6 +23,7 @@
   },
   "topology": {
     "rank_hosts": ["spark0", "spark1", "spark2", "spark3"],
+    "transport_hosts": ["spark0", "spark1", "spark2", "spark3"],
     "stage_indices": [0, 1, 2, 3],
     "runtime_dataset": "dsv4_flash.fp8.tp4.b1",
     "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",

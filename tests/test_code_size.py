@@ -1134,7 +1134,18 @@ CEILING = 228248
 # registers test_weightd_map (+8). tests/cuda_stub/* (export/import pair,
 # ledger mutex, multi-chunk map/unmap fidelity, ~+390) and the new tests
 # are excluded by construction. 227593 exact.
-CEILING = 229750
+# cfg-audit lane (2026-08-29): the one-shot checked-in-config drift audit.
+# No production source grew. The +13 are the deployment-config generator
+# fixes and their wiring: tools/glm5_next_gen_deployment.py and
+# tools/glm52_gen_deployment.py each gain the decode_split_context_threshold
+# member their adapters' exact-member lists REQUIRE (a config missing it is
+# rejected SCHEMA_ERROR at load - the r3-flashdecode drift) plus the
+# corrected comment, and the Makefile registers
+# tests/test_deployment_config_drift.py and the previously unwired
+# tests/test_k3_deployment_config.py in PYTHON_TESTS (+2). The audit test
+# itself and the 10 repaired specs (transport_hosts) are test/data files
+# the counter excludes by construction. 228777 exact.
+CEILING = 229763
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
