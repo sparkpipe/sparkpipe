@@ -1465,10 +1465,24 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE(stream,"delta_out_gated",buffers->attention_out_bf16,256u);
         GLM5_NEXT_KDA_PROBE(stream,"kda_gate",buffers->kda_gate_bf16,256u);
     }
-    status = Glm5NextLaunchBf16Linear(
+    /* Stage the gated y in kv_slot (the k scratch is dead once the delta
+     * rule has consumed it) so the out-GEMM writes the FULL-WIDTH rank
+     * partial straight into attention_out_bf16 - the buffer the chain
+     * reduces, shared with the MLA path and the MLP finalize. */
+    LM_LAUNCH(
+        (LmCopyRowsKernel<GLM5_NEXT_LAYER_THREADS>),
+        dim3((rank_v + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS,rows),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
         buffers->attention_out_bf16,
+        buffers->kv_slot_bf16,
+        rows,
+        rank_v);
+    status = Glm5NextLaunchBf16Linear(
+        buffers->kv_slot_bf16,
         buffers->kda_out_weight,
-        buffers->kda_output_bf16,
+        buffers->attention_out_bf16,
         buffers->dense_row_offset,
         buffers->dense_tile_prefix,
         rows,
@@ -1480,7 +1494,7 @@ static int32_t Glm5NextLayerKda(
         stream);
     if ( status == LM_LAUNCH_OK && Glm5NextKdaProbeActive(buffers) )
     {
-        GLM5_NEXT_KDA_PROBE(stream,"kda_output",buffers->kda_output_bf16,256u);
+        GLM5_NEXT_KDA_PROBE(stream,"kda_out_partial",buffers->attention_out_bf16,256u);
         GLM5_NEXT_KDA_PROBE_STATE(stream,"state_post",buffers->kda_state_pool);
     }
     return(status);

@@ -1704,8 +1704,8 @@ static int SparkGlm5NextValRunTier1AttentionStep0(SparkGlm5NextValFixture *fixtu
 }
 
 /* Isolation walk: attention site only, comparing the KDA sublayer output
- * (kda_output_bf16, BEFORE the HC post step) and the collapsed input per
- * step. This is the debugging probe that localises a streams mismatch to
+ * (the full-width rank partial in attention_out_bf16, BEFORE the HC post
+ * step) and the collapsed input per step. This is the debugging probe that localises a streams mismatch to
  * the sublayer or the HC site. */
 static int SparkGlm5NextValRunTier1AttentionOnly(SparkGlm5NextValFixture *fixture,uint16_t *sublayer_out)
 {
@@ -1973,7 +1973,7 @@ int main(int argc,char **argv)
 		}
 		if (cudaMemcpy(read_collapsed,fixture.hc_collapsed,
 			(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
-			cudaMemcpy(read_sublayer,fixture.kda_output,
+			cudaMemcpy(read_sublayer,fixture.attention_out,
 			(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail("probe","readback"));
 		for (i = 0u; i < SPARK_GLM5_NEXT_VHIDDEN; i++)
@@ -2025,7 +2025,7 @@ int main(int argc,char **argv)
 				/* the o_proj INPUT: post norm+gate y, first head */
 				{
 					uint16_t y_read[8];
-					if (cudaMemcpy(y_read,fixture.attention_out,8u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
+					if (cudaMemcpy(y_read,fixture.kv_slot,8u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
 						printf("probe y post-norm-gate head0 [0..3] %f %f %f %f\n",
 							SparkGlm5NextValFromBf16(y_read[0]),SparkGlm5NextValFromBf16(y_read[1]),
 							SparkGlm5NextValFromBf16(y_read[2]),SparkGlm5NextValFromBf16(y_read[3]));
@@ -2041,9 +2041,9 @@ int main(int argc,char **argv)
 					uint16_t out_read[SPARK_GLM5_NEXT_VHIDDEN];
 					uint32_t row, column;
 					SparkGlm5NextValMetrics gemm_metrics;
-					if (cudaMemcpy(y_all,fixture.attention_out,
+					if (cudaMemcpy(y_all,fixture.kv_slot,
 						(uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(out_read,fixture.kda_output,
+						cudaMemcpy(out_read,fixture.attention_out,
 						(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
 					{
 						for (row = 0u; row < SPARK_GLM5_NEXT_VHIDDEN; row++)

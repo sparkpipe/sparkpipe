@@ -473,7 +473,6 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	Glm5NextLayerBuffers buffers;
 	uint32_t layer;
 	int32_t status;
-	cudaError_t error;
 	cudaStream_t stream;
 	layer = wave->first_layer_index + local_layer;
 	stream = (cudaStream_t)wave->slot->stream;
@@ -491,20 +490,11 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	}
 	if ( SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer) )
 	{
-		/* Decode: one row per sequence, null run begins. */
-		status = Glm5NextLayerKda(&buffers,wave->row_count,wave->row_count,1u,wave->multiprocessor_count,stream);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-		/* The KDA out-GEMM lands its full-width rank partial in
-		 * kda_output_bf16 (attention_out_bf16 was its input scratch); the
-		 * chain reduces attention_out_bf16, so move the partial there. The
-		 * HC placement runs AFTER that reduce - see
+		/* Decode: one row per sequence, null run begins. The KDA out-GEMM
+		 * already lands its full-width rank partial in attention_out_bf16;
+		 * the HC placement runs AFTER the chain's reduce - see
 		 * SparkGlm5NextLaunchCudaLayerAttentionPost. */
-		LmCopyRowsKernel<SPARK_GLM5_NEXT_CUDA_THREADS><<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,wave->row_count),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(buffers.kda_output_bf16,buffers.attention_out_bf16,wave->row_count,GLM5_NEXT_HIDDEN);
-		error = cudaPeekAtLastError();
-		if ( error != cudaSuccess )
-			return(SparkGlm5NextCudaStatus(error));
-		return(LM_LAUNCH_OK);
+		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->row_count,1u,wave->multiprocessor_count,stream));
 	}
 	status = Glm5NextLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
