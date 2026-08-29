@@ -159,11 +159,15 @@ for h in $HOSTS; do
 done
 wait
 for h in $HOSTS; do
+	r=${RANKOF[$h]}
+	fleet_root="$(printf "$FLEET_ROOT_TEMPLATE" "$r")"
 	rsync -aq "$LANE/build/sparkpipe_model_residentd" "$LANE/build/sparkpipe_model_batch" "$h:$ROOT/bin/"
 	rsync -aq "$LANE/build/model_driver.so" "$LANE/build/model_serving_adapter.so" \
 		"$LANE/build/hidden_transport.so" "$h:$ROOT/lib/"
-	# packs stay at the fleet root - symlink them into the cell runtime root
-	ssh -o BatchMode=yes "$h" "ln -sfn $HOME/sparkdata/glm52.tp8.fp8/packs $ROOT/packs"
+	# packs stay at the rank's own fleet root - symlink them into the cell
+	# runtime root (NOTE: expand fleet_root here, not $HOME - the script
+	# runs on one host and ssh targets the rest)
+	ssh -o BatchMode=yes "$h" "ln -sfn $fleet_root/packs $ROOT/packs"
 done
 for h in $HOSTS; do
 	r=${RANKOF[$h]}
