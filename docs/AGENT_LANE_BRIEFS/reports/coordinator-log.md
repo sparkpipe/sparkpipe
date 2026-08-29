@@ -2068,3 +2068,30 @@ appendix).
   since Aug 15 + the K3 rot gate never registered in PYTHON_TESTS —
   all fixed, permanent drift gate added (catches the r3 class on
   revert). Automation prompt updated: cap 8, nurse-first reads.
+
+## 2026-08-29 ~19:4x — 1a62d97: TASK-BASED GPU QUEUE (operator directive); k3 merged (8f1a8c8)
+
+- OPERATOR diagnosed the real inefficiency: waves are minutes, holds
+  were hours (rolling renewals = soft indefinite squat). The task
+  queue EXISTED but nothing dispatched it — bookkeeping disconnected
+  from the lease layer lanes actually used.
+- FIX (1a62d97): `spark_queue.py dispatch` — picks the highest-
+  priority runnable task, verifies nodes lease-free, holds nodes ONLY
+  for the task's duration (45min default TTL), launches detached with
+  pid + exit-file contract, reaps and releases on exit, appends
+  results. Standing 60s loop live on the controller (nohup, Mac has
+  no setsid — noted). README: lanes never hold nodes while coding;
+  wave owners submit waves ad hoc and take fleets down between debug
+  cycles; note-only entries never dispatch.
+- COMPLIANCE IMMEDIATE: glm5-dsa TERMed its fleet 16/16 (cwd-scoped,
+  verified zero) for its driver swap, is RELEASING the x16
+  reservations, and will submit each wave as a priority-0 task —
+  CPU-side oracle work between waves. cell-runner briefed to convert
+  note-entries into executable tasks.
+- MERGED k3-finish s2+s3 (8f1a8c8): 16-rank pack map complete+receipted
+  (the stage-2 47_23 catch — the module would have refused ranks 8-11
+  at init), kv_pages 2->64, hardened wave tool, TP4 7168/7168 finite.
+  The k3 launch is now a queue task away, not a window away.
+- Respawned k3 taker deferred: the DISPATCHER is the taker now; the
+  k3 launch task gets submitted by cell-runner or the next k3 session
+  with the check-gate in its cmd.
