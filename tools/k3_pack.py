@@ -161,19 +161,6 @@ def kda_fused_qkvb_sections(heads, key_dim, value_dim):
     return sections, row
 
 
-def kda_fused_decay_gate_down_sections(head_dim):
-    """decay_down|gate_down: the REPLICATED half. Bottleneck widths are not
-    head-split by the TP table, so rows_per_head is 0 - the section exists for
-    bind arithmetic, not for slicing."""
-    sections = []
-    row = 0
-    for name in ("decay_down", "gate_down"):
-        sections.append({"name": name, "row_offset": row, "rows": head_dim,
-                         "rows_per_head": 0})
-        row += head_dim
-    return sections, row
-
-
 # -- interleaved weight+scale geometry ----------------------------------------
 #
 # One expert is a byte grid of 64-byte rows:

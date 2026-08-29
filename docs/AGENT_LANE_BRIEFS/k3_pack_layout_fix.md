@@ -1,5 +1,11 @@
 # k3-finish: delegated — repair test_k3_pack_layout.py fixture (offline-gates red)
 
+> EXECUTED BY THE COORDINATOR 2026-08-29 (~14:2x): subagent spawns were down
+> (provider misconfiguration after the app restart), so this brief was done
+> directly on main. See the coordinator log. REMAINING for k3-finish: item 2
+> of the brief below (the fleet wave) — item 0 (report) landed as 0be9505 on
+> lane/k3-finish.
+
 Owner: k3-finish lane (worktree /tmp/lane-k3finish). Delegated by the
 coordinator at merge b0daf75 (2026-08-29); this is the ONLY remaining red
 gate in `make offline-gates`.

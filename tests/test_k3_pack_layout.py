@@ -133,10 +133,6 @@ def unit_sections():
           [0, 12288, 24576, 36864], "qkvb section offsets are wrong")
     check([s["rows_per_head"] for s in sections] == [128, 128, 128, 1],
           "qkvb per-head split widths are wrong")
-    sections, rows = k3_pack.kda_fused_decay_gate_down_sections(128)
-    check([s["name"] for s in sections] == ["decay_down", "gate_down"]
-          and rows == 256 and sections[1]["row_offset"] == 128,
-          "decay/gate down fused table is wrong")
 
 
 # -- end to end: pack the mini ----------------------------------------------------
@@ -178,7 +174,9 @@ def mini_checkpoint(root, latent=None, poison_scale=False):
                                               rand_bf16(hidden))
     for layer, kind in enumerate(config["layer_types"]):
         p = f"model.layers.{layer}."
-        a, m = p + "self_attn.", p + "mlp."
+        # Routed layers ship their MoE under block_sparse_moe (the dense
+        # replacement layer would keep mlp.gate_proj naming).
+        a, m = p + "self_attn.", p + "block_sparse_moe."
         t[p + "input_layernorm.weight"] = ("BF16", (hidden,), rand_bf16(hidden))
         t[p + "post_attention_layernorm.weight"] = ("BF16", (hidden,),
                                                     rand_bf16(hidden))
@@ -200,10 +198,11 @@ def mini_checkpoint(root, latent=None, poison_scale=False):
             t[a + "A_log"] = ("F32", (128,), rand_f32(128))
             t[a + "b_proj.weight"] = ("BF16", (g["kda_heads"], hidden),
                                       rand_bf16(g["kda_heads"] * hidden))
-            t[a + "g_a_proj.weight"] = ("BF16", (g["kda_head"], hidden),
-                                        rand_bf16(g["kda_head"] * hidden))
-            t[a + "g_b_proj.weight"] = ("BF16", (kda_dim, g["kda_head"]),
-                                        rand_bf16(kda_dim * g["kda_head"]))
+            # Released checkpoint (55cd2f9 full-rank gate reconciliation):
+            # the low-rank g_a/g_b pair does not exist - the gate is the
+            # checkpoint's full-rank g_proj, read [kda_dim, hidden].
+            t[a + "g_proj.weight"] = ("BF16", (kda_dim, hidden),
+                                      rand_bf16(kda_dim * hidden))
             t[a + "o_norm.weight"] = ("F32", (g["kda_head"],),
                                       rand_f32(g["kda_head"]))
             t[a + "o_proj.weight"] = ("BF16", (hidden, kda_dim),
@@ -224,11 +223,10 @@ def mini_checkpoint(root, latent=None, poison_scale=False):
             t[a + "kv_b_proj.weight"] = (
                 "BF16", (g["heads"] * (g["nope"] + g["v_head"]), g["kv_lora"]),
                 rand_bf16(g["heads"] * (g["nope"] + g["v_head"]) * g["kv_lora"]))
-            t[a + "g_a_proj.weight"] = ("BF16", (g["v_head"], hidden),
-                                        rand_bf16(g["v_head"] * hidden))
-            t[a + "g_b_proj.weight"] = (
-                "BF16", (g["heads"] * g["v_head"], g["v_head"]),
-                rand_bf16(g["heads"] * g["v_head"] * g["v_head"]))
+            # Same 55cd2f9 reconciliation on the full-attention side.
+            t[a + "g_proj.weight"] = (
+                "BF16", (g["heads"] * g["v_head"], hidden),
+                rand_bf16(g["heads"] * g["v_head"] * hidden))
             t[a + "o_proj.weight"] = (
                 "BF16", (hidden, g["heads"] * g["v_head"]),
                 rand_bf16(hidden * g["heads"] * g["v_head"]))
@@ -345,13 +343,19 @@ def end_to_end():
         check([s["row_offset"] for s in entry["sections"]] == [0, 128, 256, 384]
               and entry["shape"] == [386, 64],
               "fused qkv|beta section table does not tile the tensor")
-        want = src[a + "f_a_proj.weight"][2] + src[a + "g_a_proj.weight"][2]
-        check(tensor(p + "kda_decay_gate_down_weight") == want,
-              "fused decay|gate down bytes are not the section concatenation")
-        check(entries[p + "kda_decay_gate_down_weight"]["shard_class"]
-              == "replicated", "fused decay|gate shard class is wrong")
+        # 55cd2f9 full-rank gate reconciliation: no fused decay|gate tensor;
+        # the standalone replicated decay_down (f_a_proj) and the full-rank
+        # head-split gate (g_proj) are separate pack tensors.
+        check(tensor(p + "kda_decay_down_weight") == src[a + "f_a_proj.weight"][2],
+              "decay_down bytes are not the checkpoint's f_a_proj")
+        check(entries[p + "kda_decay_down_weight"]["shard_class"] == "replicated",
+              "decay_down shard class is wrong")
+        check(tensor(p + "kda_gate_weight") == src[a + "g_proj.weight"][2],
+              "gate bytes are not the checkpoint's full-rank g_proj")
+        check(entries[p + "kda_gate_weight"]["shard_class"] == "output_dim_heads",
+              "gate shard class is wrong")
         for gone in ("kda_q_weight", "kda_k_weight", "kda_v_weight",
-                     "kda_beta_weight", "kda_decay_down_weight",
+                     "kda_beta_weight", "kda_decay_gate_down_weight",
                      "kda_gate_down_weight", "expert_w1_scale",
                      "expert_w2_scale"):
             check(p + gone not in entries, f"{gone} should not exist in V2")
@@ -365,10 +369,10 @@ def end_to_end():
               "interleaved w1 byte count is off")
         mismatches = 0
         for e in range(MINI["experts"]):
-            pay = src[f"{p}mlp.experts.{e}.w1.weight"][2] + \
-                src[f"{p}mlp.experts.{e}.w3.weight"][2]
-            sc = src[f"{p}mlp.experts.{e}.w1.weight_scale"][2] + \
-                src[f"{p}mlp.experts.{e}.w3.weight_scale"][2]
+            pay = src[f"{p}block_sparse_moe.experts.{e}.w1.weight"][2] + \
+                src[f"{p}block_sparse_moe.experts.{e}.w3.weight"][2]
+            sc = src[f"{p}block_sparse_moe.experts.{e}.w1.weight_scale"][2] + \
+                src[f"{p}block_sparse_moe.experts.{e}.w3.weight_scale"][2]
             for n in range(0, 2 * MINI["inter"], 16):
                 prow = n * (MINI["latent"] // 2)
                 at = k3_pack.interleave_byte_offset(geom, e, 0, n, "payload", 0)
