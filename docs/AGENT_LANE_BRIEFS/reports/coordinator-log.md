@@ -1307,3 +1307,21 @@ appendix).
   no write-stacking.
 - Closeout agent owns the finish: verify 16/16 → swap → wave →
   coherence curl → COMPSEC-17 → M5.
+
+## 2026-08-30 ~7:4x — KIMI AUDIT RESPONSE: overclaim OWNED + CTX_TAIL closed
+
+- THE AUDIT IS RIGHT AND THE TRUTH-RULE VIOLATION IS MINE: my
+  "zero red gates" ran the python/ratchet/offline set and NOT the C
+  serving-adapter binary gates (built+run individually they fail:
+  5 adapter gates + e2e on a fresh build; plus memory_contracts 285
+  and model_serving_architecture red — the latter two MISSED by my
+  sweep's selection, not just its scope). The claim was scoped in a
+  way the log didn't say. CORRECTION RECORDED here; the gates get
+  fixed-or-explicitly-parked by a spawned lane, and the offline-gate
+  SET gets defined (a named list in the Makefile) so "pass" has a
+  testable meaning.
+- CTX_TAIL LEG CLOSED at the source (env clamp + fail-loud at the
+  getenv, before the positions_host writes; completes the 2056 twins'
+  third leg — audit's last memory-safety item).
+- test_qwen38_pack_load.c orphan: registering or removing in the fix
+  lane.

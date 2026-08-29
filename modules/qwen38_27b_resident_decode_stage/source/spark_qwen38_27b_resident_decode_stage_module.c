@@ -2397,7 +2397,17 @@ static SparkStatus SparkQwen38_27bModuleRunDsparkBlockForward(
 	 * negative, default 0. */
 	{
 		const char *tenv = getenv("SPARK_QWEN38_27B_DFLASH2_CTX_TAIL");
+		/* The 2056-row frame bound (dspark_format.h) prices
+		 * window(2048) + tail(8); an env tail >= 8 overflows
+		 * dflash_positions_host before any later guard fires —
+		 * clamp HERE, at the source, fail-loud not silent. */
 		ctx_tail = tenv != 0 ? (uint32_t)strtoul(tenv,0,0) : 0u;
+		if ( ctx_tail >= SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS - 2048u )
+		{
+			fprintf(stderr,"qwen38_27b_stage dflash2_ctx_tail_out_of_range tail=%u max=%u\n",
+				ctx_tail,SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS - 2048u - 1u);
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
 	}
 	uint16_t *ctx_kv = (uint16_t *)state->dflash_ctx_kv;
 	uint16_t *kv_k;
