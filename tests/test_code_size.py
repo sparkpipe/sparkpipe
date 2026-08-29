@@ -1156,7 +1156,24 @@ CEILING = 228248
 # 4,096 positions at ~0.45-0.62 GiB/rank) with the pool arithmetic
 # documented at the knob. Rebased on main's 228764: 228826 exact (+62 =
 # the three k3-finish items above).
-CEILING = 229825
+# cell-runner lane: tools/devcycle/r3flash_exact_cell.sh repair (+82, the
+# queued GPU receipt was unrunnable as committed): the host band corrected
+# spark0-7 -> the deployed glm52.tp8.fp8 band spark8..sparkf (ranks 0..7 per
+# tools/glm52_gen_deployment.py - spark0-7 carry no fleet roots); the
+# kill-switch key decode_split_context_threshold now written to the surface
+# the serving adapter actually parses (config/glm52_stage.json, exact-member
+# list) instead of the top of model_resident.json; stage configs rendered
+# with max_sequence_positions=32768 so the 32K leg is admissible; the fleet
+# ready check moved to the band's own control ports (19480+rank, was the
+# dsv4 18480); packs staged via per-rank symlinks (40 GB copies avoided).
+# +7: runtime/spark_weightd_attach.c - the W3 GPU receipt (first real-hardware
+# run of the staged vmm verify) failed reason=import_handle on EVERY import:
+# cuMemImportFromShareableHandle's osHandle carries the POSIX fd BY VALUE
+# (cuda.h) and the code passed the fd's ADDRESS, so the driver read a stack
+# address as an fd number (CUDA_ERROR_INVALID_HANDLE); the stub modeled the
+# by-value contract, so only hardware exposed it. One-expression fix + the
+# comment recording it. 229914 exact.
+CEILING = 229914
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # R3 flash-decode exact-cell, glm52 TP8 fleet (lane-r3flashdecode). Runs ON
-# spark8; drives the eight glm52.tp8.fp8 ranks on spark0..spark7. Self-
-# contained and idempotent: distributes the lane's published b1 driver +
-# serving adapter, re-stages the deployment config from the retained fleet
-# roots (packs stay in place - each rank reads its own sparkdata), runs the
-# O128 decode gate on BOTH deployment variants, then the long-context decode
-# timing cell on the split path.
+# spark8; drives the eight glm52.tp8.fp8 ranks on spark8..sparkf (the fleet
+# band, ranks 0..7 per tools/glm52_gen_deployment.py). Self-contained and
+# idempotent: distributes the lane's published b1 driver + serving adapter,
+# re-stages the per-rank runtime roots (packs stay in place - each rank
+# reads its own sparkdata packs dir through a symlink), runs the O128 decode
+# gate on BOTH deployment variants, then the long-context decode timing cell
+# on the split path.
 #
 # The variants differ in ONE deployment key: decode_split_context_threshold.
 #   phase A  threshold 0    - the shipped byte-for-byte single-pass attention
 #   phase B  threshold 2048 - R3 flash-decode above the selection width
 #   phase C  timing at 32K context on the split path vs the phase A control
+#
+# The key lives in the ADAPTER stage config (config/glm52_stage.json - the
+# serving adapter parses it and rejects the config without it), and the
+# cell's runtime roots point at /tmp/r3flash-glm52 so the staged r3 driver
+# .so is the one that loads. The stage configs are rendered with
+# max_sequence_positions=32768 so the 32K leg is admissible (the deployed
+# fleet configs cap 4096; the O128 gates never reach it; the KV pool admits
+# or refuses the 32K sequence loudly at admission).
 #
 # KILL-SWITCH (before any timing): the phase B O128 token stream must equal
 # the phase A stream bit for bit. The split path's combine is a fixed-order
@@ -27,15 +36,17 @@ LANE=/home/spark8/lane-r3flash
 ROOT=/tmp/r3flash-glm52
 RES=/tmp/r3flash-results
 FLEET_ROOT_TEMPLATE=/home/sparkRANK/sparkdata/glm52.tp8.fp8
+PACK_TEMPLATE='glm52_tp8_rank%02d.fp8.glms52sp'
 O128_BATCH=${O128_BATCH:-/tmp/r3flash-o128-batch.json}
 B32K_BATCH=${B32K_BATCH:-/tmp/r3flash-32k-batch.json}
 SPLIT_THRESHOLD=${SPLIT_THRESHOLD:-2048}
+MAX_POSITIONS=${MAX_POSITIONS:-32768}
 RUN_SECONDS_32K=${RUN_SECONDS_32K:-5400}
-CONTROL_PORT=18480
+CONTROL_PORT_BASE=19480
 
-HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7"
-declare -A RANKOF=( [spark0]=0 [spark1]=1 [spark2]=2 [spark3]=3 \
-	[spark4]=4 [spark5]=5 [spark6]=6 [spark7]=7 )
+HOSTS="spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
+declare -A RANKOF=( [spark8]=0 [spark9]=1 [sparka]=2 [sparkb]=3 \
+	[sparkc]=4 [sparkd]=5 [sparke]=6 [sparkf]=7 )
 
 mkdir -p "$RES"
 
@@ -78,13 +89,14 @@ fleet() { # fleet stop|start|ready
 		done
 		;;
 	ready)
-		local attempt h r ok
+		local attempt h r ok port
 		for attempt in $(seq 1 120); do
 			ok=8
 			for h in $HOSTS; do
 				r=${RANKOF[$h]}
+				port=$((CONTROL_PORT_BASE + r))
 				[[ -n "$(rank_pid "$h" "$r")" ]] || { ok=$((ok - 1)); continue; }
-				ssh -o BatchMode=yes "$h" "ss -ltnH | awk '{print \$4}' | grep -q ':$CONTROL_PORT\$'" \
+				ssh -o BatchMode=yes "$h" "ss -ltnH | awk '{print \$4}' | grep -q ':$port\$'" \
 					2>/dev/null || ok=$((ok - 1))
 			done
 			[[ "$ok" == 8 ]] && { log "fleet ready"; return 0; }
@@ -117,18 +129,24 @@ bench() { # bench BATCH_JSON OUT_JSON TAG [TIMEOUT_S]
 	return "$rc"
 }
 
-write_config() { # write_config THRESHOLD - render every rank's config
+write_config() { # write_config THRESHOLD - render every rank's two configs
 	local threshold="$1" h r
 	for h in $HOSTS; do
 		r=${RANKOF[$h]}
-		ssh -o BatchMode=yes "$h" "mkdir -p $ROOT/config $ROOT/kv"
-		ssh -o BatchMode=yes "$h" "cat > $ROOT/config/model_resident.json" <<CFG
-$(ssh -o BatchMode=yes "$h" "cat $FLEET_ROOT_TEMPLATE/config/model_resident.json 2>/dev/null || cat /home/spark8/sparkdata/glm52.tp8.fp8/config/model_resident.json") \
-	| jq --arg root "$(printf "$FLEET_ROOT_TEMPLATE" "$r")" \
-		--argjson threshold "$threshold" \
-		'.nodes |= map(.runtime_root = \$root) | .decode_split_context_threshold = \$threshold' \
-		> $ROOT/config/model_resident.json
-CFG
+		ssh -o BatchMode=yes "$h" "mkdir -p $ROOT/config $ROOT/kv" &
+	done
+	wait
+	for h in $HOSTS; do
+		r=${RANKOF[$h]}
+		fleet_root="$(printf "$FLEET_ROOT_TEMPLATE" "$r")"
+		ssh -o BatchMode=yes "$h" "
+			jq '.nodes |= map(.runtime_root = \"$ROOT\")' \
+				$fleet_root/config/model_resident.json > $ROOT/config/model_resident.json &&
+			jq --argjson threshold '$threshold' --argjson positions '$MAX_POSITIONS' \
+				'.decode_split_context_threshold = \$threshold
+				| .max_sequence_positions = \$positions' \
+				$fleet_root/config/glm52_stage.json > $ROOT/config/glm52_stage.json" \
+			|| { log "FATAL config render failed on $h"; exit 8; }
 	done
 }
 
@@ -142,7 +160,16 @@ done
 wait
 for h in $HOSTS; do
 	rsync -aq "$LANE/build/sparkpipe_model_residentd" "$LANE/build/sparkpipe_model_batch" "$h:$ROOT/bin/"
-	rsync -aq "$LANE/build/"*.so "$h:$ROOT/lib/"
+	rsync -aq "$LANE/build/model_driver.so" "$LANE/build/model_serving_adapter.so" \
+		"$LANE/build/hidden_transport.so" "$h:$ROOT/lib/"
+	# packs stay at the fleet root - symlink them into the cell runtime root
+	ssh -o BatchMode=yes "$h" "ln -sfn $HOME/sparkdata/glm52.tp8.fp8/packs $ROOT/packs"
+done
+for h in $HOSTS; do
+	r=${RANKOF[$h]}
+	pack="$(printf "$PACK_TEMPLATE" "$r")"
+	ssh -o BatchMode=yes "$h" "test -s $ROOT/packs/$pack" \
+		|| { log "FATAL pack missing on $h ($pack)"; exit 9; }
 done
 # the batch payloads: prefer retained files, else synthesize the O128 decode
 # batch from the fleet's own generator contract
@@ -223,6 +250,6 @@ for name in ("o128_threshold0", "o128_threshold2048",
         entry["error"] = repr(error)
     summary[name] = entry
 with open(os.path.join(res, "summary.json"), "w") as output:
-    json.dump(summary, output, indent=1)
+	json.dump(summary, output, indent=1)
 print(json.dumps(summary, indent=1))
 PYEOF
