@@ -988,7 +988,24 @@ from pathlib import Path
 # kernel, the bulk launcher pair, and the whole-frame module wiring
 # (shadow+scatter+one attention launch per prefill frame), net +241
 # authored lines. Rebased onto the W2a + JIT-KV main; re-measured at resolution: 225258 exact.
-CEILING = 225258
+CEILING = 225841
+# The JIT-KV family wiring (lane/jikv-wire, 2026-08-29) connects the slice
+# to its reference family, per the slice report's remaining-work list and
+# docs/JIT_KV_RESPONSE.md W1+C2: the decode stage module's frame-op seam
+# (modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c/.h: the
+# KV_BLOCKS_SAVE_OUT 0x1000 / KV_BLOCKS_RESTORE_IN 0x2000 function
+# pointers the pager's SparkKvPagerBlockView contract calls, staging each
+# device-plane copy and refusing UNSUPPORTED without the spark-side module
+# receipt; plus the deployment parkability condition) + the shared
+# parkability predicate SparkKvCacheArenaBlockIsParkable (cache/kv_cache.c,
+# header decl) - ONE definition of the resident-eviction selector's
+# exclusions, which the pager's admission pool count now calls instead of
+# restating - + the C2 dispatch gate SparkKvPagerDispatchBlock
+# (spark_kv_pager.h, kv_pager.c: READY only on a verified RESIDENT block,
+# QUEUED while the restore is incomplete - the queue-not-wedge discipline
+# on the dispatch path - RECOMPUTE for degraded blocks, one statistics
+# quad) + the Makefile rule. The host proof tests/test_jit_kv_wire.c is
+# excluded by construction. 225600 exact.
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -226,6 +226,7 @@ TEST_NAMES := \
 	test_kv_model_table \
     test_nvme_tier \
     test_jit_kv_slice \
+    test_jit_kv_wire \
     test_kv_mooncake \
     test_qwen38_27b_work_control \
     test_qwen38_work_control \
@@ -860,6 +861,12 @@ build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.
 
 build/test_jit_kv_slice: tests/test_jit_kv_slice.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_jit_kv_slice.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
+
+# The family wiring proof: the pager over the decode stage module's frame
+# ops (spark_dsv4_jit_kv.c), the parkability condition, and the C2 dispatch
+# gate, end to end on the host.
+build/test_jit_kv_wire: tests/test_jit_kv_wire.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Imodules/dsv4_resident_decode_stage/source tests/test_jit_kv_wire.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
 # The switch machine sits on the same mock-drive tier: two translation units,
 # vtable devices, compiled directly like the tier test above.

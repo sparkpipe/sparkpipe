@@ -517,6 +517,22 @@ SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
 
+/*
+ * The parkability predicate: ONE definition of the resident-eviction
+ * selector's structural exclusions (SparkKvCacheArenaSelectResidentEviction-
+ * Victim). A block may park only when it is allocated and resident and
+ * neither residency protection applies - a residency reference (the active
+ * set's pin) or a residency reservation makes it structurally unparkable,
+ * exactly as it makes the block unselectable as a victim. The pager's
+ * admission pool count and every model adapter's parkability decision call
+ * THIS, so a deployment's "which blocks may park" can never disagree with
+ * what the selector may evict. Per-call protection lists (prefetch plans)
+ * are not block state and stay with their callers.
+ */
+uint32_t SparkKvCacheArenaBlockIsParkable(
+    const SparkKvCacheArena *arena,
+    uint32_t logical_block_index);
+
 SparkStatus SparkKvCacheArenaFreeBlock(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
