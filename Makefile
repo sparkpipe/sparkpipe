@@ -865,6 +865,14 @@ build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38
 build/test_qwen38_execute: tests/test_qwen38_execute.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 	@if command -v $(NVCC) >/dev/null 2>&1 && [ -n "$${TEST_QWEN38_MAX_EXECUTE_PACK:-}" ] && [ -s "$$TEST_QWEN38_MAX_EXECUTE_PACK" ]; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c -L$(CUDA_HOME)/lib64 -lcudart -o $@ && ./$@ "$$TEST_QWEN38_MAX_EXECUTE_PACK"; else echo "SKIP test_qwen38_execute (set TEST_QWEN38_MAX_EXECUTE_PACK and provide nvcc to run the pack smoke)"; fi
 
+# The pack-LOAD half of the execute smoke (was an orphan: d19d159 noted it
+# needed Makefile wiring). Same nvcc + pack-on-host contract as
+# test_qwen38_execute above, and deliberately NOT in TEST_NAMES: the
+# offline mac gate never depends on node-local packs. On a spark node:
+#   make build/test_qwen38_pack_load && ./build/test_qwen38_pack_load <pack>
+build/test_qwen38_pack_load: tests/test_qwen38_pack_load.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP build/test_qwen38_pack_load (nvcc unavailable; spark-gated pack-load smoke)"; fi
+
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
@@ -954,6 +962,42 @@ test: $(TEST_BINARIES)
 		echo "RUN $$python_test"; \
 		python3 $$python_test; \
 	done
+
+# ============================================================
+# THE OFFLINE GATE SET (red-gate lane, 2026-08-28). The kimi audit found
+# the previous "zero red gates" claim ran a selection of gates, not a
+# set. This variable IS the set: a claim of an "offline gate pass" means
+# exactly `make offline-gates` succeeded, and nothing else.
+#
+#   build-all          make -j1 all          (fresh build, the README path)
+#   run-tests          make -j1 test         (every registered C test
+#                      binary that builds on this host + every registered
+#                      python gate: code-size ratchet, dry-law, staging
+#                      manifest, the memory-contract ratchet, ...)
+#   package-manifest   python3 tools/verify_package_manifest.py
+#
+# Hardware-gated work is NOT part of an offline pass and must never be
+# claimed by one: nvcc/CUDA artifacts (the K3 serving adapter, the
+# qwen38_max execute/pack-load smokes, cuda13_sm121a_compile_gate.sh,
+# hardware_* tools) SKIP with a notice when nvcc is absent and are
+# validated on spark nodes. C test binaries that a host cannot build are
+# skipped by `make test` with the same notice contract.
+# ============================================================
+OFFLINE_GATES := build-all run-tests package-manifest
+
+.PHONY: offline-gates
+offline-gates:
+	@set -e; \
+	for gate in $(OFFLINE_GATES); do \
+		echo "OFFLINE GATE: $$gate"; \
+		case $$gate in \
+			build-all) $(MAKE) -j1 all;; \
+			run-tests) $(MAKE) -j1 test;; \
+			package-manifest) python3 tools/verify_package_manifest.py;; \
+			*) echo "unknown offline gate: $$gate" >&2; exit 2;; \
+		esac; \
+	done; \
+	echo "OFFLINE GATE PASS: $(OFFLINE_GATES)"
 
 demo: all $(TEST_MODULE_OBJECTS) $(TEST_VALIDATOR)
 	rm -rf build/demo
