@@ -9,6 +9,8 @@
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <unistd.h>
 
 static const char *SparkStageModuleSafeText(const char *text)
 {
@@ -668,7 +670,7 @@ SparkStatus SparkStageModulePackRead(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkStageModuleLoadDeviceRegion(
+static SparkStatus SparkStageModuleLoadRegionSynchronous(
     SparkStageModuleLedger *ledger,
     FILE *file,
     uint64_t offset,
@@ -746,6 +748,523 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
 
     *pointer = device;
     return SPARK_STATUS_OK;
+}
+
+/*
+ * The pipelined pack loader (W1, docs/WEIGHTD_DESIGN.md L1). One worker
+ * thread owns all file reads (pread, so the stdio position is untouched);
+ * the calling thread owns every CUDA call and the allocation ledger. A
+ * two-slot ring of pinned host staging buffers decouples them: the worker
+ * fills chunk N+1 while the device copy of chunk N runs. Chunks are
+ * copied onto one internal stream strictly in enqueue order, so the
+ * device bytes and their arrival order match the synchronous loader bit
+ * for bit - only the wall time changes.
+ *
+ * Order/safety invariants (S = SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS):
+ * - The main thread issues copies only from Drain, always in chunk
+ *   order, and records one event per slot after each copy.
+ * - The worker starts reading chunk N only after chunk N-S's copy was
+ *   ISSUED (copy_issued_count >= N-S+1, so the slot event is the record
+ *   of exactly that copy) and COMPLETED (cudaEventSynchronize) - it can
+ *   never rewrite a buffer a live DMA is still reading.
+ * - The main thread may reuse a ring descriptor (chunk N+S) only once
+ *   chunk N's copy was issued, which the ring-full predicate enforces;
+ *   by then the worker published chunk N's read, so descriptors and
+ *   buffers never race.
+ */
+#define SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS 2u
+
+typedef struct SparkStageModuleLoadChunk
+{
+    uint64_t file_offset;
+    uint64_t bytes;
+    uint8_t *device_address;
+    SparkStatus status;
+} SparkStageModuleLoadChunk;
+
+struct SparkStageModuleLoadPipeline
+{
+    const char *module_tag;
+    int file_descriptor;
+    pthread_t worker_thread;
+    int worker_started;
+    int worker_joined;
+    pthread_mutex_t mutex;
+    pthread_cond_t progress;
+    /* pinned (cudaHostAlloc) host staging: the H2D DMA reads these slots */
+    void *slot_staging[SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS];
+    cudaEvent_t slot_copy_events[SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS];
+    cudaStream_t upload_stream;
+    uint64_t slot_bytes;
+    SparkStageModuleLoadChunk chunk_ring[SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS];
+    uint64_t enqueued_count;
+    uint64_t read_done_count;
+    uint64_t copy_issued_count;
+    int abort_requested;
+    SparkStatus failure;
+};
+
+SparkStatus SparkStageModuleLoadPipelineRequested(void)
+{
+    const char *text = getenv("SPARK_STAGE_MODULE_LOAD_PIPELINE");
+    return (text != 0 && text[0] == '0' && text[1] == '\0')
+        ? SPARK_STATUS_BUSY
+        : SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkStageModuleLoadPipelineWaitForSlotCopyIssued(
+    SparkStageModuleLoadPipeline *pipeline,
+    uint64_t chunk_index)
+{
+    /* Called from the worker WITHOUT the mutex held: wait until the main
+     * thread issued chunk (index - S), then block on its completion
+     * event; the event for this slot is exactly that copy's record. */
+    pthread_mutex_lock(&pipeline->mutex);
+    while (pipeline->copy_issued_count + 1u + SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS <=
+               chunk_index + 1u &&
+           pipeline->failure == SPARK_STATUS_OK &&
+           !pipeline->abort_requested)
+    {
+        pthread_cond_wait(&pipeline->progress, &pipeline->mutex);
+    }
+    pthread_mutex_unlock(&pipeline->mutex);
+    if (chunk_index >= SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS)
+    {
+        cudaError_t error = cudaEventSynchronize(
+            pipeline->slot_copy_events[
+                chunk_index % SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS]);
+        if (error != cudaSuccess)
+        {
+            return SparkStageModuleCudaStatus(
+                pipeline->module_tag, error, "load_pipeline_slot_event");
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkStageModuleLoadPipelineReadChunk(
+    SparkStageModuleLoadPipeline *pipeline,
+    uint64_t file_offset,
+    void *staging,
+    uint64_t bytes)
+{
+    uint64_t moved = 0u;
+    while (moved < bytes)
+    {
+        ssize_t read_bytes = pread(
+            pipeline->file_descriptor,
+            (uint8_t *)staging + moved,
+            (size_t)(bytes - moved),
+            (off_t)(file_offset + moved));
+        if (read_bytes <= 0)
+        {
+            if (read_bytes < 0 && (errno == EINTR))
+            {
+                continue;
+            }
+            fprintf(
+                stderr,
+                "%s pack_read_failed offset=%llu bytes=%llu read=%llu\n",
+                pipeline->module_tag,
+                (unsigned long long)(file_offset + moved),
+                (unsigned long long)bytes,
+                (unsigned long long)moved);
+            return SPARK_STATUS_IO_ERROR;
+        }
+        moved += (uint64_t)read_bytes;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static void *SparkStageModuleLoadPipelineWorker(void *argument)
+{
+    SparkStageModuleLoadPipeline *pipeline =
+        (SparkStageModuleLoadPipeline *)argument;
+
+    for (;;)
+    {
+        uint64_t chunk_index;
+        SparkStageModuleLoadChunk chunk;
+        SparkStatus status;
+
+        pthread_mutex_lock(&pipeline->mutex);
+        while (pipeline->read_done_count == pipeline->enqueued_count &&
+            pipeline->failure == SPARK_STATUS_OK &&
+            !pipeline->abort_requested)
+        {
+            pthread_cond_wait(&pipeline->progress, &pipeline->mutex);
+        }
+        if (pipeline->read_done_count == pipeline->enqueued_count)
+        {
+            /* drained, and (failed or aborting): go home */
+            pthread_mutex_unlock(&pipeline->mutex);
+            break;
+        }
+        chunk_index = pipeline->read_done_count;
+        chunk = pipeline->chunk_ring[
+            chunk_index % SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS];
+        pthread_mutex_unlock(&pipeline->mutex);
+
+        status = SparkStageModuleLoadPipelineWaitForSlotCopyIssued(
+            pipeline, chunk_index);
+        if (status == SPARK_STATUS_OK)
+        {
+            status = SparkStageModuleLoadPipelineReadChunk(
+                pipeline,
+                chunk.file_offset,
+                pipeline->slot_staging[
+                    chunk_index % SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS],
+                chunk.bytes);
+        }
+
+        pthread_mutex_lock(&pipeline->mutex);
+        pipeline->chunk_ring[
+            chunk_index % SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS].status =
+            status;
+        pipeline->read_done_count = chunk_index + 1u;
+        if (status != SPARK_STATUS_OK &&
+            pipeline->failure == SPARK_STATUS_OK)
+        {
+            pipeline->failure = status;
+        }
+        pthread_cond_broadcast(&pipeline->progress);
+        pthread_mutex_unlock(&pipeline->mutex);
+    }
+    return 0;
+}
+
+SparkStatus SparkStageModuleLoadPipelineCreate(
+    const char *module_tag,
+    FILE *file,
+    SparkStageModuleLoadPipeline **pipeline_pointer)
+{
+    SparkStageModuleLoadPipeline *pipeline;
+    cudaError_t error;
+    uint32_t slot;
+
+    if (module_tag == 0 || module_tag[0] == '\0' || file == 0 ||
+        pipeline_pointer == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *pipeline_pointer = 0;
+    pipeline = (SparkStageModuleLoadPipeline *)calloc(1u, sizeof(*pipeline));
+    if (pipeline == 0)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    pipeline->module_tag = module_tag;
+    pipeline->failure = SPARK_STATUS_OK;
+    pipeline->file_descriptor = fileno(file);
+    if (pipeline->file_descriptor < 0)
+    {
+        free(pipeline);
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    pipeline->slot_bytes = SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES;
+    if (pthread_mutex_init(&pipeline->mutex, 0) != 0)
+    {
+        free(pipeline);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (pthread_cond_init(&pipeline->progress, 0) != 0)
+    {
+        pthread_mutex_destroy(&pipeline->mutex);
+        free(pipeline);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    error = cudaStreamCreateWithFlags(
+        &pipeline->upload_stream, cudaStreamNonBlocking);
+    for (slot = 0u; error == cudaSuccess &&
+        slot < SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS; ++slot)
+    {
+        error = cudaEventCreateWithFlags(
+            &pipeline->slot_copy_events[slot], cudaEventDisableTiming);
+    }
+    /* pinned host staging so the H2D copies run without a bounce buffer */
+    for (slot = 0u; error == cudaSuccess &&
+        slot < SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS; ++slot)
+    {
+        error = cudaHostAlloc(
+            &pipeline->slot_staging[slot],
+            (size_t)pipeline->slot_bytes,
+            cudaHostAllocDefault);
+    }
+    if (error != cudaSuccess)
+    {
+        SparkStageModuleCudaStatus(module_tag, error, "load_pipeline_create");
+        SparkStageModuleLoadPipelineDestroy(pipeline);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (pthread_create(
+            &pipeline->worker_thread, 0,
+            SparkStageModuleLoadPipelineWorker, pipeline) != 0)
+    {
+        fprintf(stderr, "%s load_pipeline_worker_spawn_failed\n", module_tag);
+        SparkStageModuleLoadPipelineDestroy(pipeline);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    pipeline->worker_started = 1;
+    *pipeline_pointer = pipeline;
+    return SPARK_STATUS_OK;
+}
+
+/* Issue the oldest read chunk's copy onto the upload stream; the mutex
+ * must be held. The copy is pinned-host staging -> device-private space.
+ * Returns 1 when a copy was issued, 0 when nothing is issuable, and
+ * records CUDA failures in pipeline->failure. */
+static int SparkStageModuleLoadPipelineIssueNext(
+    SparkStageModuleLoadPipeline *pipeline)
+{
+    SparkStageModuleLoadChunk *chunk;
+    cudaError_t error;
+    if (pipeline->copy_issued_count >= pipeline->read_done_count)
+    {
+        return 0;
+    }
+    chunk = &pipeline->chunk_ring[
+        pipeline->copy_issued_count % SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS];
+    error = cudaMemcpyAsync(
+        chunk->device_address,
+        pipeline->slot_staging[
+            pipeline->copy_issued_count % SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS],
+        (size_t)chunk->bytes,
+        cudaMemcpyHostToDevice,
+        pipeline->upload_stream);
+    if (error == cudaSuccess)
+    {
+        error = cudaEventRecord(
+            pipeline->slot_copy_events[
+                pipeline->copy_issued_count %
+                SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS],
+            pipeline->upload_stream);
+    }
+    if (error != cudaSuccess)
+    {
+        pipeline->failure = SparkStageModuleCudaStatus(
+            pipeline->module_tag, error, "load_pipeline_h2d");
+        return 0;
+    }
+    pipeline->copy_issued_count++;
+    pthread_cond_broadcast(&pipeline->progress);
+    return 1;
+}
+
+static SparkStatus SparkStageModuleLoadPipelineDrain(
+    SparkStageModuleLoadPipeline *pipeline,
+    int blocking)
+{
+    /* Issue every copy whose chunk read has published, in order; with
+     * blocking set, also wait for reads so every enqueued chunk issues.
+     * The mutex is held throughout: the CUDA calls here are enqueues
+     * (async copy, event record), not waits. */
+    SparkStatus status = SPARK_STATUS_OK;
+    pthread_mutex_lock(&pipeline->mutex);
+    for (;;)
+    {
+        if (pipeline->failure != SPARK_STATUS_OK)
+        {
+            status = pipeline->failure;
+            break;
+        }
+        if (SparkStageModuleLoadPipelineIssueNext(pipeline) != 0)
+        {
+            continue;
+        }
+        if (!blocking || pipeline->copy_issued_count == pipeline->enqueued_count)
+        {
+            break;
+        }
+        pthread_cond_wait(&pipeline->progress, &pipeline->mutex);
+    }
+    pthread_mutex_unlock(&pipeline->mutex);
+    return status;
+}
+
+SparkStatus SparkStageModuleLoadPipelineRegion(
+    SparkStageModuleLoadPipeline *pipeline,
+    SparkStageModuleLedger *ledger,
+    uint64_t offset,
+    uint64_t bytes,
+    void **pointer)
+{
+    void *device = 0;
+    SparkStatus status;
+    uint64_t moved;
+
+    if (pipeline == 0 || ledger == 0 || pointer == 0 || bytes == 0u ||
+        bytes > (uint64_t)SIZE_MAX || offset > UINT64_MAX - bytes)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *pointer = 0;
+    if (pipeline->failure != SPARK_STATUS_OK)
+    {
+        return pipeline->failure;
+    }
+    status = SparkStageModuleDeviceAllocate(ledger, bytes, &device);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SPARK_STATUS_OK;
+    moved = 0u;
+    while (status == SPARK_STATUS_OK && moved < bytes)
+    {
+        uint64_t chunk_bytes = bytes - moved;
+        uint64_t slot;
+        if (chunk_bytes > pipeline->slot_bytes)
+        {
+            chunk_bytes = pipeline->slot_bytes;
+        }
+        pthread_mutex_lock(&pipeline->mutex);
+        while (pipeline->failure == SPARK_STATUS_OK &&
+            pipeline->enqueued_count - pipeline->copy_issued_count >=
+                SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS)
+        {
+            /* ring full: issue the next copy to free the oldest slot */
+            if (SparkStageModuleLoadPipelineIssueNext(pipeline) != 0)
+            {
+                continue;
+            }
+            pthread_cond_wait(&pipeline->progress, &pipeline->mutex);
+        }
+        if (pipeline->failure != SPARK_STATUS_OK)
+        {
+            pthread_mutex_unlock(&pipeline->mutex);
+            status = pipeline->failure;
+            break;
+        }
+        slot = pipeline->enqueued_count % SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS;
+        pipeline->chunk_ring[slot].file_offset = offset + moved;
+        pipeline->chunk_ring[slot].bytes = chunk_bytes;
+        pipeline->chunk_ring[slot].device_address = (uint8_t *)device + moved;
+        pipeline->chunk_ring[slot].status = SPARK_STATUS_INTERNAL_ERROR;
+        pipeline->enqueued_count++;
+        pthread_cond_broadcast(&pipeline->progress);
+        pthread_mutex_unlock(&pipeline->mutex);
+        moved += chunk_bytes;
+    }
+    if (status == SPARK_STATUS_OK)
+        status = SparkStageModuleLoadPipelineDrain(pipeline, 0);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkStageModuleReleaseLastAllocation(ledger, device);
+        return status;
+    }
+    *pointer = device;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkStageModuleLoadPipelineFinish(
+    SparkStageModuleLoadPipeline *pipeline)
+{
+    SparkStatus status;
+    cudaError_t error;
+
+    if (pipeline == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkStageModuleLoadPipelineDrain(pipeline, 1);
+    error = cudaStreamSynchronize(pipeline->upload_stream);
+    if (error != cudaSuccess)
+    {
+        status = SparkStageModuleCudaStatus(
+            pipeline->module_tag, error, "load_pipeline_finish");
+    }
+    /* stop the worker: it exits once the reads drain or a failure lands */
+    pthread_mutex_lock(&pipeline->mutex);
+    pipeline->abort_requested = 1;
+    pthread_cond_broadcast(&pipeline->progress);
+    pthread_mutex_unlock(&pipeline->mutex);
+    if (pipeline->worker_started && !pipeline->worker_joined)
+    {
+        if (pthread_join(pipeline->worker_thread, 0) == 0)
+        {
+            pipeline->worker_joined = 1;
+        }
+    }
+    if (status == SPARK_STATUS_OK && pipeline->failure != SPARK_STATUS_OK)
+    {
+        status = pipeline->failure;
+    }
+    return status;
+}
+
+void SparkStageModuleLoadPipelineDestroy(
+    SparkStageModuleLoadPipeline *pipeline)
+{
+    uint32_t slot;
+    if (pipeline == 0)
+    {
+        return;
+    }
+    if (pipeline->worker_started && !pipeline->worker_joined)
+    {
+        pthread_mutex_lock(&pipeline->mutex);
+        pipeline->abort_requested = 1;
+        pthread_cond_broadcast(&pipeline->progress);
+        pthread_mutex_unlock(&pipeline->mutex);
+        if (pthread_join(pipeline->worker_thread, 0) == 0)
+        {
+            pipeline->worker_joined = 1;
+        }
+    }
+    /* in-flight DMA may still read a staging slot: drain before freeing */
+    if (pipeline->upload_stream != 0)
+    {
+        (void)cudaStreamSynchronize(pipeline->upload_stream);
+        (void)cudaStreamDestroy(pipeline->upload_stream);
+    }
+    for (slot = 0u; slot < SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS; ++slot)
+    {
+        if (pipeline->slot_copy_events[slot] != 0)
+        {
+            (void)cudaEventDestroy(pipeline->slot_copy_events[slot]);
+        }
+        if (pipeline->slot_staging[slot] != 0)
+        {
+            (void)cudaFreeHost(pipeline->slot_staging[slot]);
+        }
+    }
+    pthread_cond_destroy(&pipeline->progress);
+    pthread_mutex_destroy(&pipeline->mutex);
+    free(pipeline);
+}
+
+SparkStatus SparkStageModuleLoadDeviceRegion(
+    SparkStageModuleLedger *ledger,
+    FILE *file,
+    uint64_t offset,
+    uint64_t bytes,
+    void **pointer)
+{
+    SparkStageModuleLoadPipeline *pipeline = 0;
+    SparkStatus status;
+
+    /* The pipelined path pays off (and pays its pinned-slot/thread setup)
+     * only on the large regions; small tensors keep the synchronous loop. */
+    if (SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK &&
+        bytes >= SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES)
+    {
+        status = SparkStageModuleLoadPipelineCreate(
+            ledger->module_tag, file, &pipeline);
+        if (status == SPARK_STATUS_OK)
+        {
+            status = SparkStageModuleLoadPipelineRegion(
+                pipeline, ledger, offset, bytes, pointer);
+            if (status == SPARK_STATUS_OK)
+            {
+                status = SparkStageModuleLoadPipelineFinish(pipeline);
+            }
+            SparkStageModuleLoadPipelineDestroy(pipeline);
+            return status;
+        }
+        /* fall through: no pipeline is a performance loss, not an error */
+    }
+    return SparkStageModuleLoadRegionSynchronous(
+        ledger, file, offset, bytes, pointer);
 }
 
 static uint64_t SparkStageModuleMonotonicNanoseconds(void)

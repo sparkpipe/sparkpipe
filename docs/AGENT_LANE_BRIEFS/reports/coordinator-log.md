@@ -1705,3 +1705,13 @@ appendix).
   two decode steps at the layer-17 first-zero neighborhood, vs the
   M3 oracle references) and P3 (the verdict's fix → coherent curl →
   staged COMPSEC-17 → staged M5) — the whole remaining chain.
+
+## 2026-08-30 ~12:4x — cycle: 5/5 agents alive; probe-fix mid-wave (13/16)
+
+- DUTY 3: all five productive (worktrees fresh 12:16-12:33; builds
+  running on spark5/7/e). No spawns needed. No lane pushes yet —
+  all five in their deep-work phases (<35min since spawn).
+- Fleet: probe-fix agent cycling waves (13/16 at census — its TERM/
+  fire harness; 3 daemons on spark0 = its restart). Not mine to
+  touch; one wave owner.
+- No merges pending. Nothing else changed.

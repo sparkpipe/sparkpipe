@@ -1254,7 +1254,9 @@ static SparkStatus SparkDsv4ModuleBindLayer(SparkDsv4ModuleState *state, const S
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state, FILE *file, const SparkDsv4StagePackEntry *entry, uint64_t file_bytes)
+static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state,
+	SparkStageModuleLoadPipeline *pipeline, FILE *file,
+	const SparkDsv4StagePackEntry *entry, uint64_t file_bytes)
 {
 	uint64_t payload_bytes = SparkDsv4StagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns);
 	uint64_t scale_bytes = SparkDsv4StagePackScaleBytes(entry->weight_format,entry->rows,entry->columns);
@@ -1266,9 +1268,21 @@ static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state, FILE *f
 		fprintf(stderr,"%s pack_entry_invalid kind=%u layer=%u\n",SPARK_DSV4_MODULE_TAG,entry->tensor_kind,entry->layer_index);
 		return(status);
 	}
-	status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,payload_bytes,&payload);
+	/* Through the shared pipeline the reads overlap the copies; the
+	 * payload-then-scale enqueue order and the per-tensor directory order
+	 * are preserved, so the device arrival order matches the synchronous
+	 * loader. The binds below only record addresses. */
+	if ( pipeline != 0 )
+		status = SparkStageModuleLoadPipelineRegion(pipeline,&state->ledger,entry->payload_offset,payload_bytes,&payload);
+	else
+		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,payload_bytes,&payload);
 	if ( status == SPARK_STATUS_OK && scale_bytes != 0u )
-		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,scale_bytes,&scale);
+	{
+		if ( pipeline != 0 )
+			status = SparkStageModuleLoadPipelineRegion(pipeline,&state->ledger,entry->scale_offset,scale_bytes,&scale);
+		else
+			status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,scale_bytes,&scale);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( is_global != 0u )
@@ -1349,6 +1363,7 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 {
 	SparkDsv4StagePackHeader header,expected;
 	SparkDsv4StagePackEntry *directory;
+	SparkStageModuleLoadPipeline *pipeline;
 	FILE *file;
 	SparkStatus status;
 	int32_t compare;
@@ -1381,8 +1396,25 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_DSV4_MODULE_TAG,file,header.directory_offset,directory,(uint64_t)header.tensor_count * sizeof(SparkDsv4StagePackEntry));
+	/* One pack-wide load pipeline: the worker thread reads tensor N+1's
+	 * staging while tensor N's upload runs (docs/WEIGHTD_DESIGN.md L1).
+	 * Every fill is per-tensor independent and the single upload stream
+	 * keeps the directory arrival order, so the device image is identical
+	 * to the sequential load; SPARK_STAGE_MODULE_LOAD_PIPELINE=0 restores
+	 * the synchronous path. */
+	pipeline = 0;
+	if ( status == SPARK_STATUS_OK &&
+		SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK )
+		status = SparkStageModuleLoadPipelineCreate(SPARK_DSV4_MODULE_TAG,file,&pipeline);
 	for (index = 0; status == SPARK_STATUS_OK && index < header.tensor_count; index++)
-		status = SparkDsv4ModuleLoadEntry(state,file,&directory[index],header.file_bytes);
+		status = SparkDsv4ModuleLoadEntry(state,pipeline,file,&directory[index],header.file_bytes);
+	if ( pipeline != 0 )
+	{
+		SparkStatus finish_status = SparkStageModuleLoadPipelineFinish(pipeline);
+		if ( status == SPARK_STATUS_OK )
+			status = finish_status;
+		SparkStageModuleLoadPipelineDestroy(pipeline);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleVerifyCoverage(state);
 	free(directory);

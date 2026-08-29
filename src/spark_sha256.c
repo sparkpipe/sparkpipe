@@ -1,11 +1,17 @@
 #include "sparkpipe/spark_sha256.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <errno.h>
 
 #define SPARK_SHA256_BLOCK_BYTES 64u
 #define SPARK_SHA256_ROUND_COUNT 64u
 #define SPARK_SHA256_READ_BUFFER_BYTES 65536u
+#define SPARK_SHA256_PIPELINE_BUFFER_BYTES (4ull * 1024ull * 1024ull)
+#define SPARK_SHA256_PIPELINE_BUFFERS 2u
 
 static const uint32_t SparkSha256RoundConstants[SPARK_SHA256_ROUND_COUNT] =
 {

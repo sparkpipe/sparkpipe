@@ -46,6 +46,8 @@ typedef struct SparkStageModuleCudaReadAhead
     atomic_uint state;
 } SparkStageModuleCudaReadAhead;
 
+typedef struct SparkStageModuleLoadPipeline SparkStageModuleLoadPipeline;
+
 typedef cudaError_t (*SparkStageModuleCudaReadAheadLaunchFunction)(
     cudaStream_t stream,
     uint32_t *sink_u32,
@@ -128,6 +130,30 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     uint64_t offset,
     uint64_t bytes,
     void **pointer);
+/* Pipelined pack loading (docs/WEIGHTD_DESIGN.md L1): a worker thread
+ * reads pack regions into a two-slot ring of pinned host staging while
+ * the calling thread issues the H2D copies onto one internal stream.
+ * Regions may be enqueued back to back (a whole pack directory), and the
+ * copies are issued strictly in enqueue order, so the device bytes and
+ * their arrival order match the synchronous loader bit for bit - only
+ * the host read and the device copy now overlap. Every pointer returned
+ * by Region becomes safe to use only after Finish reports OK; Finish
+ * issues the remaining copies and blocks until the stream drains. */
+SparkStatus SparkStageModuleLoadPipelineRequested(void);
+SparkStatus SparkStageModuleLoadPipelineCreate(
+    const char *module_tag,
+    FILE *file,
+    SparkStageModuleLoadPipeline **pipeline);
+SparkStatus SparkStageModuleLoadPipelineRegion(
+    SparkStageModuleLoadPipeline *pipeline,
+    SparkStageModuleLedger *ledger,
+    uint64_t offset,
+    uint64_t bytes,
+    void **pointer);
+SparkStatus SparkStageModuleLoadPipelineFinish(
+    SparkStageModuleLoadPipeline *pipeline);
+void SparkStageModuleLoadPipelineDestroy(
+    SparkStageModuleLoadPipeline *pipeline);
 void SparkStageModuleAdmissionDecisionInitialize(
     SparkModelDriverAdmissionDecision *decision,
     uint32_t available_dispatch_slot_count);
