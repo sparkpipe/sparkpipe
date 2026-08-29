@@ -305,6 +305,8 @@ struct Glm5NextLayerBuffers
     // cache keeps all heads on every rank.
     uint32_t tp_degree;
     uint32_t tp_rank;
+    /* G5N-PROBE only: the layer's global index, for ordinal-gated dumps. */
+    uint32_t layer_index;
     uint32_t attn_heads;
     uint32_t q_b_rows;
     uint32_t attn_output_columns;
@@ -995,6 +997,119 @@ static int32_t Glm5NextDeltaRuleOptIn(uint32_t shared_bytes)
         shared_bytes));
 }
 
+/* -- G5N-PROBE (kda lane, diag only, env SPARK_GLM5_NEXT_PROBE) ---------------
+ * Rank-0 checksums of the KDA stage buffers between launches. Every dump
+ * synchronizes the stream and copies device->host: probe builds stall the
+ * chain BY DESIGN and must never ship in a serving binary. */
+
+#include <stdlib.h>
+#include <stdio.h>
+
+static int Glm5NextKdaProbeActive(const Glm5NextLayerBuffers *buffers)
+{
+    static int probe_enabled = -1;
+    if ( probe_enabled < 0 )
+        probe_enabled = getenv("SPARK_GLM5_NEXT_PROBE") != 0 ? 1 : 0;
+    return(probe_enabled != 0 && buffers != 0 && buffers->tp_rank == 0u);
+}
+
+/* Deep-dive gate: healthy reference layer 0 + the first-zero neighbourhood
+ * 16..20 + the last weight layer 44 before the head. */
+static int Glm5NextKdaProbeDeep(const Glm5NextLayerBuffers *buffers)
+{
+    uint32_t layer = buffers != 0 ? buffers->layer_index : 0u;
+    return(Glm5NextKdaProbeActive(buffers) &&
+        (layer == 0u || (layer >= 16u && layer <= 20u) || layer >= 43u));
+}
+
+/* first8 raw u16 + their float values, to separate zeros from garbage from
+ * huge from NaN - the bit-pattern sum cannot. LYR is the layer index for the
+ * tag; dev is a device pointer. */
+#define GLM5_NEXT_KDA_PROBE_RAW(stream,lyr,label,dev) \
+    do { \
+        uint16_t probe_h[256]; float probe_f[8]; uint32_t probe_i; \
+        if ( cudaStreamSynchronize((stream)) == cudaSuccess && \
+             cudaMemcpy(probe_h,(dev),256 * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess ) \
+        { \
+            for ( probe_i = 0u; probe_i < 8u; probe_i++ ) \
+            { \
+                uint32_t probe_bits = ((uint32_t)probe_h[probe_i]) << 16; \
+                (void)memcpy(&probe_f[probe_i],&probe_bits,sizeof(float)); \
+            } \
+            fprintf(stderr,"G5N-PROBE kda L%u %s raw %u %u %u %u %u %u %u %u f %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g\n", \
+                (unsigned)(lyr),(label),probe_h[0],probe_h[1],probe_h[2],probe_h[3], \
+                probe_h[4],probe_h[5],probe_h[6],probe_h[7], \
+                (double)probe_f[0],(double)probe_f[1],(double)probe_f[2],(double)probe_f[3], \
+                (double)probe_f[4],(double)probe_f[5],(double)probe_f[6],(double)probe_f[7]); \
+        } \
+    } while (0)
+
+/* Sum of the RAW uint16 bit patterns of the first count elements (the same
+ * quantity the module-level probes print as bf16sum, so numbers compare). */
+static uint64_t Glm5NextProbeBf16Sum(cudaStream_t stream,const uint16_t *device,uint32_t count)
+{
+    uint16_t host[256];
+    uint64_t total;
+    uint32_t i,taken;
+    total = 0u;
+    if ( cudaStreamSynchronize(stream) != cudaSuccess )
+        return(0xDEADDEADu);
+    while ( count != 0u )
+    {
+        taken = count < 256u ? count : 256u;
+        if ( cudaMemcpy(host,device,taken * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+            return(0xDEADDEADu);
+        for ( i = 0u; i < taken; i++ )
+            total += host[i];
+        count -= taken;
+        device += taken;
+    }
+    return(total);
+}
+
+static void Glm5NextProbeFloats(cudaStream_t stream,const float *device,uint32_t count,float *host)
+{
+    if ( cudaStreamSynchronize(stream) != cudaSuccess )
+        return;
+    (void)cudaMemcpy(host,device,count * sizeof(float),cudaMemcpyDeviceToHost);
+}
+
+/* Same, for a bf16 device buffer: decode to floats host-side. */
+static void Glm5NextProbeBf16Floats(cudaStream_t stream,const uint16_t *device,uint32_t count,float *host)
+{
+    uint16_t probe_b[8];
+    uint32_t probe_i;
+    if ( count > 8u || cudaStreamSynchronize(stream) != cudaSuccess ||
+         cudaMemcpy(probe_b,device,count * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+        return;
+    for ( probe_i = 0u; probe_i < count; probe_i++ )
+    {
+        uint32_t probe_bits = ((uint32_t)probe_b[probe_i]) << 16;
+        (void)memcpy(&host[probe_i],&probe_bits,sizeof(float));
+    }
+}
+
+#define GLM5_NEXT_KDA_PROBE(stream,label,dev,cnt) \
+    do { fprintf(stderr,"G5N-PROBE kda L%u %s bf16sum %llu\n", \
+        buffers->layer_index,(label), \
+        (unsigned long long)Glm5NextProbeBf16Sum((stream),(const uint16_t *)(dev),(cnt))); } while (0)
+
+#define GLM5_NEXT_KDA_PROBE_STATE(stream,label,pool) \
+    do { \
+        float probe_s[4]; uint32_t probe_w; uint64_t probe_bits = 0u; \
+        uint32_t probe_words[1024]; \
+        Glm5NextProbeFloats((stream),(const float *)(pool),4u,probe_s); \
+        if ( cudaStreamSynchronize((stream)) == cudaSuccess && \
+             cudaMemcpy(probe_words,(pool),sizeof(probe_words),cudaMemcpyDeviceToHost) == cudaSuccess ) \
+            for ( probe_w = 0u; probe_w < 1024u; probe_w++ ) \
+                probe_bits += probe_words[probe_w]; \
+        else \
+            probe_bits = 0xDEADDEADu; \
+        fprintf(stderr,"G5N-PROBE kda L%u %s f %.6g %.6g %.6g %.6g bits4096B %llu\n", \
+            buffers->layer_index,(label),(double)probe_s[0],(double)probe_s[1], \
+            (double)probe_s[2],(double)probe_s[3],(unsigned long long)probe_bits); \
+    } while (0)
+
 /* KDA linear attention, 34 of 45 layers - k3's launch chain with the
  * glm5_next deltas:
  *
@@ -1063,6 +1178,26 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
 
+    if ( Glm5NextKdaProbeActive(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE(stream,"collapsed",buffers->hc_collapsed_bf16,256u);
+        GLM5_NEXT_KDA_PROBE(stream,"normed",buffers->normed_bf16,256u);
+    }
+    if ( Glm5NextKdaProbeDeep(buffers) )
+    {
+        float probe_pre[4],probe_post[4],probe_comb[4];
+        Glm5NextProbeFloats(stream,buffers->hc_pre_f32,4u,probe_pre);
+        Glm5NextProbeFloats(stream,buffers->hc_post_f32,4u,probe_post);
+        Glm5NextProbeFloats(stream,buffers->hc_comb_f32,4u,probe_comb);
+        fprintf(stderr,"G5N-PROBE kda L%u hc pre %.6g %.6g %.6g %.6g post %.6g %.6g %.6g %.6g comb %.6g %.6g %.6g %.6g\n",
+            buffers->layer_index,(double)probe_pre[0],(double)probe_pre[1],(double)probe_pre[2],(double)probe_pre[3],
+            (double)probe_post[0],(double)probe_post[1],(double)probe_post[2],(double)probe_post[3],
+            (double)probe_comb[0],(double)probe_comb[1],(double)probe_comb[2],(double)probe_comb[3]);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"collapsed",buffers->hc_collapsed_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"normed",buffers->normed_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
+    }
     /* TWO WIDE GEMMs over one activation read: the fused q|k|v|beta tensor
      * (OUTPUT_DIM_HEADS class) and the fused decay|gate-down bottleneck
      * (replicated). Both read normed_bf16 back to back. */
@@ -1124,6 +1259,19 @@ static int32_t Glm5NextLayerKda(
         buffers->kda_gate_latent_bf16,
         rows);
 
+    if ( Glm5NextKdaProbeActive(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE(stream,"fused_qkvb",buffers->fused_qkvb_bf16,256u);
+        GLM5_NEXT_KDA_PROBE(stream,"decay_latent",buffers->kda_decay_latent_bf16,64u);
+        GLM5_NEXT_KDA_PROBE(stream,"gate_latent",buffers->kda_gate_latent_bf16,64u);
+    }
+    if ( Glm5NextKdaProbeDeep(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"fused_qkvb",buffers->fused_qkvb_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"decay_latent",buffers->kda_decay_latent_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"gate_latent",buffers->kda_gate_latent_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"beta_logit",buffers->kda_beta_logit);
+    }
     /* THREE CONVOLUTIONS, each with its own window; the weights are the
      * checkpoint's BF16 tensors unconverted. */
     LM_LAUNCH(
@@ -1196,6 +1344,19 @@ static int32_t Glm5NextLayerKda(
         rows,
         GLM5_NEXT_RMS_EPSILON);
 
+    if ( Glm5NextKdaProbeActive(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE(stream,"q_postconv",buffers->q_bf16,256u);
+        GLM5_NEXT_KDA_PROBE(stream,"k_postconv",buffers->kv_slot_bf16,256u);
+        GLM5_NEXT_KDA_PROBE(stream,"v_postconv",buffers->gate_up_bf16,256u);
+        GLM5_NEXT_KDA_PROBE(stream,"beta_logit",buffers->kda_beta_logit,64u);
+    }
+    if ( Glm5NextKdaProbeDeep(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"q_postconv",buffers->q_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"k_postconv",buffers->kv_slot_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"v_postconv",buffers->gate_up_bf16);
+    }
     /* The two up-projections: decay logits (bounded-decay input) and the
      * gate (waits for the delta rule to finish). */
     status = Glm5NextLaunchBf16Linear(
@@ -1228,6 +1389,10 @@ static int32_t Glm5NextLayerKda(
         stream);
     if (status != LM_LAUNCH_OK)
         return status;
+    if ( Glm5NextKdaProbeActive(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE(stream,"decay_logit",buffers->kda_decay_logit_bf16,256u);
+    }
     LM_LAUNCH(
         (LmBoundedDecayKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
         dim3(rows,rank_heads),
@@ -1250,6 +1415,16 @@ static int32_t Glm5NextLayerKda(
         buffers->kda_beta_logit,
         buffers->kda_write_gate,
         rank_heads);
+    if ( Glm5NextKdaProbeActive(buffers) )
+    {
+        float probe_r[4],probe_b[4];
+        Glm5NextProbeFloats(stream,buffers->kda_retention,4u,probe_r);
+        Glm5NextProbeFloats(stream,buffers->kda_write_gate,4u,probe_b);
+        fprintf(stderr,"G5N-PROBE kda L%u retention %.6g %.6g %.6g %.6g write_gate %.6g %.6g %.6g %.6g\n",
+            buffers->layer_index,(double)probe_r[0],(double)probe_r[1],(double)probe_r[2],
+            (double)probe_r[3],(double)probe_b[0],(double)probe_b[1],(double)probe_b[2],(double)probe_b[3]);
+        GLM5_NEXT_KDA_PROBE_STATE(stream,"state_pre",buffers->kda_state_pool);
+    }
     /* THE DELTA RULE'S 64 KiB OF DYNAMIC SHARED IS PAST THE 48 KiB DEFAULT
      * (k3's identical lesson): the launch fails with invalid argument on
      * device unless cudaFuncSetAttribute opts this instantiation in. */
@@ -1286,6 +1461,10 @@ static int32_t Glm5NextLayerKda(
         1u,
         sequences,
         commit);
+    if ( Glm5NextKdaProbeActive(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE(stream,"delta_out_raw",buffers->attention_out_bf16,256u);
+    }
     /* RMSNorm before the gate (head-wise, fp32 strict), then the sigmoid
      * gate that has been waiting in kda_gate_bf16. */
 #ifdef GLM5_NEXT_KDA_DEBUG_LAUNCHES
@@ -1317,10 +1496,29 @@ static int32_t Glm5NextLayerKda(
         buffers->attention_out_bf16,
         buffers->kda_gate_bf16,
         rank_v);
-    return Glm5NextLaunchBf16Linear(
+    if ( Glm5NextKdaProbeActive(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE(stream,"delta_out_gated",buffers->attention_out_bf16,256u);
+        GLM5_NEXT_KDA_PROBE(stream,"kda_gate",buffers->kda_gate_bf16,256u);
+    }
+    /* Stage the gated y in kv_slot (the k scratch is dead once the delta
+     * rule has consumed it) so the out-GEMM writes the FULL-WIDTH rank
+     * partial straight into attention_out_bf16 - the buffer the chain
+     * reduces, shared with the MLA path and the MLP finalize. */
+    LM_LAUNCH(
+        (LmCopyRowsKernel<GLM5_NEXT_LAYER_THREADS>),
+        dim3((rank_v + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS,rows),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
         buffers->attention_out_bf16,
+        buffers->kv_slot_bf16,
+        rows,
+        rank_v);
+    status = Glm5NextLaunchBf16Linear(
+        buffers->kv_slot_bf16,
         buffers->kda_out_weight,
-        buffers->kda_output_bf16,
+        buffers->attention_out_bf16,
         buffers->dense_row_offset,
         buffers->dense_tile_prefix,
         rows,
@@ -1330,6 +1528,16 @@ static int32_t Glm5NextLayerKda(
         0u,
         multiprocessors,
         stream);
+    if ( status == LM_LAUNCH_OK && Glm5NextKdaProbeActive(buffers) )
+    {
+        float probe_o[4];
+        GLM5_NEXT_KDA_PROBE(stream,"kda_out_partial",buffers->attention_out_bf16,256u);
+        Glm5NextProbeBf16Floats(stream,buffers->attention_out_bf16,4u,probe_o);
+        fprintf(stderr,"G5N-PROBE kda L%u out_partial_f %.6g %.6g %.6g %.6g\n",
+            buffers->layer_index,(double)probe_o[0],(double)probe_o[1],(double)probe_o[2],(double)probe_o[3]);
+        GLM5_NEXT_KDA_PROBE_STATE(stream,"state_post",buffers->kda_state_pool);
+    }
+    return(status);
 }
 
 /* -- hyper-connections (dsv4 donor, glm5_next constants) ---------------------

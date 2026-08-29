@@ -359,28 +359,41 @@ class Packer:
         """Fuse several checkpoint tensors' ROWS into one pack tensor
         (the pack-V2 convention). Row sharding slices every section by
         whole rows; the beta/bottleneck sections are narrow but the
-        loader prices the fused rows as one tensor."""
+        loader prices the fused rows as one tensor.
+
+        THE SLICE IS PER SECTION. Slicing the concatenated tensor
+        contiguously puts section boundaries at global row r*width_total/N,
+        which for KDA q|k|v|beta hands every rank except rank-0-q sections
+        of the WRONG projection (rank 0's "v" was q_proj rows 1024..1535):
+        the per-head kernels index local head ids, so rank r's k/v/beta
+        must be k/v/b_proj rows [r*w/tp, (r+1)*w/tp). At TP1 the two
+        layouts coincide, which is how this passed the M3 gates."""
         total = sum(checkpoint_rows)
         dtype, _, _ = self.s.meta(names[0])
         if dtype not in ("BF16", "F8_E4M3"):
             raise PackFailure(f"{names[0]}: fused dtype {dtype}")
         s0 = s1 = 0
         rows_out = total
+        section_slices: List[Tuple[int, int]] = []
         if shard == "rows" and self.tp_degree > 1:
-            s0, s1 = self._rows_slice(total)
-            rows_out = s1
+            for width in checkpoint_rows:
+                section_slices.append(self._rows_slice(width))
+            rows_out = sum(count for _, count in section_slices)
+        else:
+            section_slices = [(0, width) for width in checkpoint_rows]
         entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, rows_out,
                       HIDDEN)
         expected = rows_out * HIDDEN * 2
         entry.payload_bytes = expected
-        source, shard_axis, off, count = self.s, shard, s0, s1
-        widths = list(checkpoint_rows)
+        source = self.s
 
         def produce() -> Iterator[bytes]:
             matrices = [source.spine_bf16(n) for n in names]
-            fused = np.concatenate(matrices, axis=0)
-            if shard_axis == "rows" and self.tp_degree > 1:
-                fused = fused[off:off + count, :]
+            if self.tp_degree > 1 and shard == "rows":
+                parts = [m[a:b, :] for m, (a, b) in zip(matrices, section_slices)]
+            else:
+                parts = matrices
+            fused = np.concatenate(parts, axis=0)
             blob = to_bytes(fused)
             if len(blob) != expected:
                 raise PackFailure(f"fused {names}: {len(blob)} bytes, planned {expected}")
@@ -491,21 +504,28 @@ class Packer:
         up_rows, cols = self.s.meta(up_name)[1]
         gate_rows = self.s.meta(gate_name)[1][0]
         total = up_rows + gate_rows
-        s0 = s1 = 0
         rows_out = total
+        up_slice = (0, up_rows)
+        gate_slice = (0, gate_rows)
         if shard == "rows" and self.tp_degree > 1:
-            s0, s1 = self._rows_slice(total)
-            rows_out = s1
+            # per-section rows (see add_fused_rows): a contiguous slice of
+            # [up | gate] crosses the section boundary and every rank past
+            # the first reads the wrong tensor in each section.
+            up_slice = self._rows_slice(up_rows)
+            gate_slice = self._rows_slice(gate_rows)
+            rows_out = up_slice[1] + gate_slice[1]
         entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, rows_out, cols)
         expected = rows_out * cols * 2
         entry.payload_bytes = expected
-        source, off, count = self.s, s0, s1
+        source = self.s
 
         def produce() -> Iterator[bytes]:
-            fused = np.concatenate(
-                (source.spine_bf16(up_name), source.spine_bf16(gate_name)), axis=0)
-            if self.tp_degree > 1:
-                fused = fused[off:off + count, :]
+            up = source.spine_bf16(up_name)
+            gate = source.spine_bf16(gate_name)
+            if self.tp_degree > 1 and shard == "rows":
+                up = up[up_slice[0]:up_slice[0] + up_slice[1], :]
+                gate = gate[gate_slice[0]:gate_slice[0] + gate_slice[1], :]
+            fused = np.concatenate((up, gate), axis=0)
             blob = to_bytes(fused)
             if len(blob) != expected:
                 raise PackFailure(f"{up_name}|{gate_name}: {len(blob)} vs {expected}")
