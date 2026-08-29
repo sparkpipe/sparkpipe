@@ -91,6 +91,34 @@ had four defects. Fixed in `609bb59`/`31d5302`:
    wave3's deploy swept /tmp mid-flight (t4 died of that sweep ten seconds
    in).
 
+## The r3 boot failures, root-caused one by one (all fixed on this lane)
+
+The first fleet boots failed at `adapter_initialize`, and each failure
+named the next defect:
+
+1. `LoadDriver rc=11 TARGET_MISMATCH` — the committed
+   `glm52_resident_decode_stage_fp8_firmware.json` moved in `771c638`
+   (`6d4410d8…`) while the deployed packs + adapter contract are the Aug-28
+   identity (`ec5afd74…`, verified byte-level in the deployed pack header:
+   model_revision `b4734de4…`, contract `ec5afd74…`). The driver must be
+   compiled from the FLEET's firmware description; the ec5afd74 json is
+   extracted from git (`771c638^`) and staged at
+   spark8:/home/spark8/lane-r3flash/cell/. Driver `77c69c5eb1a2d8f3…`
+   embeds ec5afd74 + b4734de4 (strings-verified). **Recorded for owners:
+   the committed firmware json and the deployed 78-layer fp8 pack contract
+   have drifted; the next repack must re-pin them together.**
+2. `LoadDriver rc=7 HASH_MISMATCH` — suspect: the KV backing geometry
+   identity (the fleet-era backing is a 4096-position deployment; the cell
+   rendered 32768). Being tested empirically: the gates run
+   (`r3flash-glm52-exact-cell-t10b`) uses the deployed geometry
+   (`MAX_POSITIONS=4096`) — the O128 kill-switch legs never need 32K — and
+   phase C (32K) will get a fresh per-cell KV backing if the geometry is
+   confirmed as the cause.
+3. Diagnosticability fixes landed en route (`fb08075`): the serving
+   LoadDriver template built a SparkSetError message and DISCARDED it
+   (callers print only the status code); it now prints the exact failing
+   check to stderr. Ratchet 229929 → 229937 exact.
+
 Supporting work on spark8 (the r3 lane left the publish unfinished —
 `lane-r3flash/build` had objects and static libs but no binaries/.so):
 finished it with the FLEET's exact identity (`MODEL_REVISION=b4734de4…`,
