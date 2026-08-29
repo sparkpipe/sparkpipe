@@ -2178,3 +2178,19 @@ appendix).
 - My earlier k3-daemon TERM error recontextualized: those were part of
   K3's live/serving fleet, not stale stage daemons — worse than first
   logged; the armed k3 task's idempotent census re-brings them.
+
+## 2026-08-29 ~22:5x — collision recontextualized (bilateral); L4 zero-partial lead
+
+- CORRECTION LOGGED: glm5-dsa's wave3/4/5 were queue-dispatched; the
+  22:0xZ collision was BILATERAL — K3's ready fleet held nodes outside
+  the queue (pre-lock, dispatcher-invisible). The every-fleet-launch-
+  is-a-queue-task rule binds all lanes symmetrically. g5dsa-wave6 vs
+  k3fin-first-number: both p0, FCFS by entry time, no manual promotion.
+- COHERENCE LEAD (the night's biggest signal): layer-4's KDA attention
+  partial is ZERO in all 199 waves FROM BIRTH — L0-3 alive, L4+ dead,
+  head_mean all-zero. A dead boundary at the first KDA-after-full-
+  attention layer points at binding/slicing at the stage or section
+  edge; the lane is instrumenting L4 dumps + weight-row checksums to
+  convict the binding. This is the remaining coherence-blocker
+  candidate; the gate chain (curl -> COMPSEC-17 -> 92x -> M5) queues
+  behind its verdict.
