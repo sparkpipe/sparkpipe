@@ -179,26 +179,20 @@ SparkStatus SparkKvPagerAdmit(
 	if ( deficit != 0u )
 	{
 		/* C1: name the refusal BEFORE touching anything. Parkable is the
-		 * exact victim pool of the arena's own selector: residency-evictable
-		 * blocks (residency references and reservations are protected - that
-		 * is the "never evict an active lane for a younger requester" rule
-		 * in its enforceable form). Backing headroom is the park budget:
-		 * when it cannot hold the deficit, the request QUEUES - parking
-		 * into a full horizon would degrade blocks the tier could have
-		 * kept, which is the thrash the design forbids. */
+		 * exact victim pool of the arena's own selector, through the ONE
+		 * shared predicate (SparkKvCacheArenaBlockIsParkable): residency
+		 * references and reservations are protected - that is the "never
+		 * evict an active lane for a younger requester" rule in its
+		 * enforceable form, and an adapter's parkability decision counts
+		 * the very same test. Backing headroom is the park budget: when it
+		 * cannot hold the deficit, the request QUEUES - parking into a
+		 * full horizon would degrade blocks the tier could have kept,
+		 * which is the thrash the design forbids. */
 		parkable = 0u;
 		for ( block_index = 0u; block_index < arena->logical_block_count;
 			++block_index )
 		{
-			if ( (arena->blocks[block_index].flags &
-					SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
-				(arena->blocks[block_index].flags &
-					SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
-				arena->blocks[block_index].residency_reference_count != 0u )
-			{
-				continue;
-			}
-			parkable += 1u;
+			parkable += SparkKvCacheArenaBlockIsParkable(arena,block_index);
 		}
 		if ( parkable < deficit )
 		{
@@ -451,6 +445,80 @@ SparkStatus SparkKvPagerRestoreBlock(
 			pager->statistics.page_in_bytes += pager->block_bytes;
 		}
 	}
+	return(status);
+}
+
+/* C2 (docs/JIT_KV_RESPONSE.md): the dispatch gate. ONE restore path feeds
+ * it - SparkKvPagerRestoreBlock, the same digest-verified page-in every
+ * rewind takes - and READY is answered only AFTER the residency flag is
+ * verified, because a pre-restore dispatch is the cliff the contract
+ * reverses. BUSY is the tier saturated: QUEUED, the dispatch waits, and
+ * the repeated offer IS the queue (nothing wedged, nothing dropped, no
+ * half-restored residency). MISS has no bytes to gate on: RECOMPUTE.
+ * Everything else stays loud. */
+SparkStatus SparkKvPagerDispatchBlock(
+	SparkKvPager *pager,
+	const SparkKvPagerDispatch *dispatch,
+	SparkKvPagerDispatchDecision *decision_out)
+{
+	SparkKvPagerDispatchDecision decision;
+	SparkKvCacheBlockView block_view;
+	SparkStatus status;
+
+	if ( SparkKvPagerIsValid(pager) == 0u || dispatch == 0 ||
+		decision_out == 0 ||
+		dispatch->abi_version != SPARK_KV_PAGER_DISPATCH_ABI_VERSION ||
+		dispatch->descriptor_bytes !=
+			SPARK_KV_PAGER_DISPATCH_DESCRIPTOR_BYTES ||
+		dispatch->reserved0 != 0u ||
+		SparkKvPagerDigestIsUsable(dispatch->content_digest) == 0u )
+	{
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	memset(decision_out,0,sizeof(*decision_out));
+	memset(&decision,0,sizeof(decision));
+	decision.abi_version = SPARK_KV_PAGER_DISPATCH_ABI_VERSION;
+	decision.descriptor_bytes =
+		SPARK_KV_PAGER_DISPATCH_DECISION_DESCRIPTOR_BYTES;
+	decision.logical_block_index = dispatch->logical_block_index;
+	pager->statistics.dispatch_requests += 1u;
+	status = SparkKvPagerRestoreBlock(pager,
+		dispatch->logical_block_index,dispatch->content_digest);
+	if ( status == SPARK_STATUS_OK )
+	{
+		status = SparkKvCacheArenaResolveBlock(pager->configuration.arena,
+			dispatch->logical_block_index,&block_view);
+		if ( status == SPARK_STATUS_OK &&
+			(block_view.flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u )
+		{
+			/* the restore path claimed success without residency: never
+			   answer READY on trust, only on the verified flag. */
+			status = SPARK_STATUS_INTERNAL_ERROR;
+		}
+		if ( status == SPARK_STATUS_OK )
+		{
+			decision.outcome = SPARK_KV_PAGER_DISPATCH_READY;
+			decision.resident = 1u;
+			pager->statistics.dispatch_ready += 1u;
+		}
+	}
+	else if ( status == SPARK_STATUS_BUSY )
+	{
+		/* backpressure: the dispatch waits; the re-offer is the queue. */
+		decision.outcome = SPARK_KV_PAGER_DISPATCH_QUEUED;
+		pager->statistics.dispatch_queued += 1u;
+		status = SPARK_STATUS_OK;
+	}
+	else if ( status == SPARK_STATUS_NOT_FOUND )
+	{
+		/* no backing bytes (degraded or blank): the recompute path owns
+		   the block; dispatch never runs on partial state. */
+		decision.outcome = SPARK_KV_PAGER_DISPATCH_RECOMPUTE;
+		pager->statistics.dispatch_recompute += 1u;
+		status = SPARK_STATUS_OK;
+	}
+	if ( status == SPARK_STATUS_OK )
+		*decision_out = decision;
 	return(status);
 }
 

@@ -1458,6 +1458,32 @@ SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     return SPARK_STATUS_OK;
 }
 
+/*
+ * The parkability predicate (see spark_kv_cache.h): the resident-eviction
+ * selector's structural exclusions as a single answer. The selector and the
+ * pager's admission pool count must agree with this test, not restate it.
+ */
+uint32_t SparkKvCacheArenaBlockIsParkable(
+    const SparkKvCacheArena *arena,
+    uint32_t logical_block_index)
+{
+    const SparkKvCacheBlock *block;
+
+    if (arena == 0 || logical_block_index >= arena->logical_block_count)
+    {
+        return 0u;
+    }
+    block = &arena->blocks[logical_block_index];
+    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
+        (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
+        (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
+        block->residency_reference_count != 0u)
+    {
+        return 0u;
+    }
+    return 1u;
+}
+
 SparkStatus SparkKvCacheArenaFreeBlock(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index)

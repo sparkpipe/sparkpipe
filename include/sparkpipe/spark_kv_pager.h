@@ -147,6 +147,10 @@ typedef struct SparkKvPagerStatistics
     uint64_t admission_accepted;
     uint64_t admission_queued_device;   /* no evictable resident block */
     uint64_t admission_queued_backing;  /* park horizon reached: queue, never thrash */
+    uint64_t dispatch_requests;         /* C2: dispatch offers through the gate */
+    uint64_t dispatch_ready;            /* answered READY: restore complete */
+    uint64_t dispatch_queued;           /* restore incomplete: the offer repeats */
+    uint64_t dispatch_recompute;        /* no backing bytes: recompute path */
     uint32_t park_evictions;            /* blocks parked by the last admission */
     uint32_t page_out_history_count;
     uint32_t page_out_history[SPARK_KV_PAGER_PAGE_OUT_HISTORY_CAPACITY];
@@ -197,6 +201,50 @@ typedef struct SparkKvPagerAdmissionDecision
 }
 SparkKvPagerAdmissionDecision;
 
+/* C2 (docs/JIT_KV_RESPONSE.md): DISPATCH GATES ON RESTORE COMPLETE - not a
+ * hint. The dispatcher presents a block it is about to run against; the
+ * answer is READY only once the block is RESIDENT with its verified bytes
+ * in the device planes. A parked block restores INSIDE the gate (the same
+ * single restore path page-in uses); while the tier is saturated the answer
+ * is QUEUED - the dispatch waits and the offer is repeated, nothing wedged
+ * and nothing dropped, which is C1's queue-not-wedge discipline carried to
+ * the dispatch path. A block with no backing bytes answers RECOMPUTE: the
+ * caller rebuilds it, dispatch never runs on partial state. */
+#define SPARK_KV_PAGER_DISPATCH_ABI_VERSION 1u
+#define SPARK_KV_PAGER_DISPATCH_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkKvPagerDispatch))
+#define SPARK_KV_PAGER_DISPATCH_DECISION_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkKvPagerDispatchDecision))
+
+typedef enum SparkKvPagerDispatchOutcome
+{
+    SPARK_KV_PAGER_DISPATCH_READY = 0,
+    SPARK_KV_PAGER_DISPATCH_QUEUED = 1,
+    SPARK_KV_PAGER_DISPATCH_RECOMPUTE = 2
+}
+SparkKvPagerDispatchOutcome;
+
+typedef struct SparkKvPagerDispatch
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t logical_block_index;
+    uint32_t reserved0;
+    uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES];
+}
+SparkKvPagerDispatch;
+
+typedef struct SparkKvPagerDispatchDecision
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t outcome;             /* SparkKvPagerDispatchOutcome */
+    uint32_t logical_block_index;
+    uint32_t resident;            /* READY: the RESIDENT flag was verified */
+    uint32_t reserved0;
+}
+SparkKvPagerDispatchDecision;
+
 /* Installs the pager as the arena's evict function (refusing an arena that
  * already has another owner) and fences the configuration: the arena's whole
  * resident capacity must fit the device budget, and the budget must not
@@ -232,6 +280,15 @@ SparkStatus SparkKvPagerRestoreBlock(
     SparkKvPager *pager,
     uint32_t logical_block_index,
     const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES]);
+
+/* C2: the dispatch gate. Returns OK with the decision filled (READY,
+ * QUEUED, or RECOMPUTE - see the outcome above). Only a hard failure
+ * (bad arguments, a dead tier) surfaces as an error status: backpressure
+ * is an answer, not an exception. */
+SparkStatus SparkKvPagerDispatchBlock(
+    SparkKvPager *pager,
+    const SparkKvPagerDispatch *dispatch,
+    SparkKvPagerDispatchDecision *decision_out);
 
 /* The arena's evict function under the pager: stage the victim's planes,
  * hash them, reserve a tier record under the digest, write the backing bytes
