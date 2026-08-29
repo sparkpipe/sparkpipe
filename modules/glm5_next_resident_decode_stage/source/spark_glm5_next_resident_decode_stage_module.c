@@ -20,6 +20,7 @@
  * path itself - only its duration budget, see the connect-timeout scale
  * in SparkGlm5NextModuleInitializeTpCollective. */
 #define SPARK_GLM5_NEXT_PROBE_CONNECT_TIMEOUT_SCALE 4u
+#define SPARK_GLM5_NEXT_PROBE_OPERATION_TIMEOUT_SCALE 8u
 static int SparkGlm5NextProbeEnabled(void)
 {
 	static int probe_enabled = -1;
@@ -1463,7 +1464,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	const SparkGlm5NextResidentDecodeStageNodeContext *context)
 {
 	SparkTpDeviceCollectiveConfig configuration,configuration_hc;
-	uint32_t probe_connect_timeout_milli;
+	uint32_t probe_connect_timeout_milli,probe_operation_timeout_milli;
 	uint64_t credit_bytes,offset,total_bytes;
 	uint32_t credit,hidden,memory_mode,route,route_count;
 	void *mapped_receive,*mapped_send;
@@ -1478,7 +1479,11 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	 * dead peer (the 2026-08-29 probe wave died 16/16 with
 	 * initialize=busy rc=15 inside the 180000ms window). Scale the connect
 	 * window only when the ladder is armed; the serving default is
-	 * untouched. */
+	 * untouched. The OPERATION deadline gets the same relief with a wider
+	 * factor: rank 0's deep per-layer dumps run BETWEEN two TP collectives
+	 * and the peers' 30s operation wait expired first (2026-08-29 receipt:
+	 * tp completion status 4 ordinal 1 on ranks 1-15 while rank 0 was still
+	 * printing the L0 KDA ladder). */
 	probe_connect_timeout_milli = context->tp_connect_timeout_milli;
 	if ( SparkGlm5NextProbeEnabled() )
 	{
@@ -1486,6 +1491,14 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 			UINT32_MAX / SPARK_GLM5_NEXT_PROBE_CONNECT_TIMEOUT_SCALE )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		probe_connect_timeout_milli *= SPARK_GLM5_NEXT_PROBE_CONNECT_TIMEOUT_SCALE;
+	}
+	probe_operation_timeout_milli = context->tp_operation_timeout_milli;
+	if ( SparkGlm5NextProbeEnabled() )
+	{
+		if ( probe_operation_timeout_milli >
+			UINT32_MAX / SPARK_GLM5_NEXT_PROBE_OPERATION_TIMEOUT_SCALE )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		probe_operation_timeout_milli *= SPARK_GLM5_NEXT_PROBE_OPERATION_TIMEOUT_SCALE;
 	}
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -1500,7 +1513,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	 * absolute input-row ceiling. */
 	configuration.max_active_sequence_count = state->execution_row_capacity;
 	configuration.connect_timeout_milli = probe_connect_timeout_milli;
-	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
+	configuration.operation_timeout_milli = probe_operation_timeout_milli;
 	configuration.control_port_base = context->tp_collective_control_port_base;
 	configuration.collective_identifier = context->tp_collective_identifier;
 	configuration.backend_module_path = context->tp_collective_backend_module_path;
@@ -1525,7 +1538,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * SPARK_GLM5_NEXT_MODEL_HC_MULT;
 	configuration_hc.max_active_sequence_count = configuration.max_active_sequence_count;
 	configuration_hc.connect_timeout_milli = probe_connect_timeout_milli;
-	configuration_hc.operation_timeout_milli = context->tp_operation_timeout_milli;
+	configuration_hc.operation_timeout_milli = probe_operation_timeout_milli;
 	configuration_hc.control_port_base = context->tp_collective_control_port_base +
 		SPARK_GLM5_NEXT_TP_COLLECTIVE_HC_PORT_STRIDE;
 	configuration_hc.collective_identifier = context->tp_collective_identifier + 1u;
