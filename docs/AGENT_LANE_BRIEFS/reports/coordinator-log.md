@@ -1165,3 +1165,21 @@ failure is ever diagnosable through the wire.
 - IMPLICATION for sequencing: the DFlash2 drafter + official-FP8 packs
   mean the 27B spec bake-off CAN run first (DFlash2 vs incumbent) as
   soon as real tokens normalize the fleet — the only pair not blocked.
+
+## 2026-08-30 ~2:4x — realtokens2 merged (7490f5c): the chase narrows to ONE KDA kernel-input
+
+- HUMBLING + CORRECT: my 8043d83 fix was BROKEN AS COMMITTED (no
+  memory_mode member, unpopulated twin config, no HC scaling) — the
+  mandated syntax gate caught it, the lane corrected it (523bcaa) and
+  added the host-gate test that would have caught mine. The twin is
+  verified WORKING on device (post-embed hidden non-zero, byte-equal
+  across ranks).
+- THE LOCALIZATION (probe ladder, 5 diag commits): still token-0, but
+  now pinned to layer 34's KDA sublayer emitting EXACT ZERO (partials
+  zero from layer 33, healthy 0-4; pack exonerated per-tensor-kind by
+  checksums; head/emit exonerated). KDA agent spawned with the suspect
+  neighborhood (stateful recurrence seeding, conv left edge, o_norm
+  f32-read class, position off-by-one) and the M3 tier-2 oracle as the
+  reference. One kernel-input bug from real tokens.
+- Fleet: 16/16 standing on the corrected driver; new API live (W5
+  binary finally deployed — /v1/models active on spark0:8433).
