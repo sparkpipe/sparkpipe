@@ -20,6 +20,10 @@ WHITELIST = {
     "qualification/ds4_eval/compare_runs.py",
     "runtime/pack/fp8_resident_pack.py",
     "runtime/pack/stage_pack.py",
+    # pinned publisher modeling references: vendored semantics ground
+    # truth for kernel ports (provenance + sha in the file's header
+    # dir README) — not executed, never linked into serving.
+    "model_contracts/references/modeling_qwen4_exp.py",
 }
 
 
