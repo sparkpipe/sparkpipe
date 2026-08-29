@@ -43,6 +43,22 @@ never spawns lanes.
    escalate with the log tail.
 
 
+
+## THE ACCEPTANCE GATE (operator, binding): telemetry is the ONLY truth
+
+Until http://127.0.0.1:8765/api/summary confirms it, it did not happen
+— agent claims, coordinator claims, and log lines are NARRATIVE, not
+state. Every sweep STARTS and ENDS with:
+`curl -s http://127.0.0.1:8765/api/summary` — record
+active_nodes/avg_gpu_pct/busy_gpu_nodes/input_tok_s. If a lane reports
+"fleet up / wave running / GPUs busy" while the summary shows zeros,
+THE REPORT IS THE BUG: escalate the discrepancy itself (the operator's
+word: "until telemetry confirms things, it is just a hallucination").
+Note: `down_after_errors` in the feed is a threshold constant (3), not
+a counter — error_streak is the live one. The collector lives at
+/Users/mac/.local/share/ds4_telemetry/ (collector pid serves
+/tmp/ds4_telemetry/mac/, dashboard on 127.0.0.1:8765).
+
 ## OPERATOR DIRECTIVE (2026-08-29 evening): the queue is load-bearing — it gets FIXED every sweep
 
 Fleet utilization is the metric: allocate, memory fills, GPUs compute,
