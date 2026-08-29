@@ -1,5 +1,5 @@
 {
-  "file_count": 1632,
+  "file_count": 1633,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -308,8 +308,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "f5db383f18cdd0a4b9598c3c7527308d5facf29130acf6cf47d4dc6d55f17cf6",
-      "size_bytes": 90851
+      "sha256": "6d89a81a01f9250784a9dbb98c9a2f2e966f3250207f7c64663509df61ae3422",
+      "size_bytes": 92658
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -460,6 +460,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/redundancy-2026-08-27.md",
       "sha256": "c03cee6ba551aca246dfc616ff85cf07711ab5680b06c5929fdaba831e8199f3",
       "size_bytes": 70323
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/registrar-2026-08-30.md",
+      "sha256": "adc5805df30f1794c6dbabcdb6d85482696c9ba3271389be215f1b38fb2a1780",
+      "size_bytes": 11546
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/staging-2026-08-28.md",
@@ -8165,5 +8170,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30256967
+  "total_bytes": 30270320
 }
