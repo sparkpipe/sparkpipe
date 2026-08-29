@@ -1231,7 +1231,18 @@ CEILING = 228248
 # (tests/test_continuous_batch.c: bit-exact resident streams under
 # mid-flight joins, queue-not-wedge, slot reclaim, policy/reservation,
 # the per-step row law) are excluded by construction. 230769 exact.
-CEILING = 231107
+# the three k3-finish items above). +4 more: the serving-adapter fix —
+# parse tp_collective for every tp_degree > 1 (the runner's init
+# unconditionally creates the host tier and refused the null config with
+# INVALID_ARGUMENT on every device-collective deployment; the fleet wave
+# died 16/16 at adapter_initialize on it, live-reproduced and
+# live-verified by the A/B smoke). +11 more: k3_fleet_wave.sh stop now
+# also sweeps THIS rank's own runtime-root daemons (anchored cmdline +
+# exact cwd match) - the live wave's pidfile captures went stale
+# (pre-exec pids) and stop TERMed nothing while 16 real daemons lived;
+# the cwd-scoped rule is the same one the census and the launch capture
+# already use. 228841 exact.
+CEILING = 232500
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

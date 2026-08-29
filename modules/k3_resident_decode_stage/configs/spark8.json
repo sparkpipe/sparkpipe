@@ -15,7 +15,7 @@
     "local_host": "spark8",
     "collective_identifier": 1,
     "listen_port": 64620,
-    "connect_timeout_milli": 5000,
+    "connect_timeout_milli": 300000,
     "operation_timeout_milli": 30000,
     "peer_hosts": [
       "10.20.0.18",
@@ -27,7 +27,7 @@
   ,
   "tp_collective": {
     "listen_port": 61620,
-    "connect_timeout_milli": 5000,
+    "connect_timeout_milli": 300000,
     "operation_timeout_milli": 30000,
     "collective_identifier": 1,
     "peers": [

@@ -193,13 +193,17 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	state->runner_config.execution_stream = configuration->execution_stream;
 	state->runner_config.multiprocessors = 48u;
 	/* The host TCP tier caps at SPARK_TP_COLLECTIVE_MAX_STEPS ranks; wider
-	 * placements (TP16) must carry a device_collective. When the device tier
-	 * is present the host tier is optional (a fallback for TP4). */
+	 * placements (TP16) must carry a device_collective. The host tier is
+	 * parsed for EVERY tp_degree > 1 (device tier or not): the runner's
+	 * init unconditionally creates the host collective at tp_degree > 1
+	 * and refuses a null tp_collective with INVALID_ARGUMENT - skipping
+	 * the parse here handed the runner a null config on every
+	 * device-collective deployment (the 2026-08-30 fleet wave died
+	 * 16/16 at adapter_initialize on exactly this). */
 	if ( state->runner_config.tp_degree > SPARK_TP_COLLECTIVE_MAX_STEPS &&
 		state->device_collective_present == 0 )
 		{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
-	if ( state->runner_config.tp_degree > 1u &&
-		state->device_collective_present == 0 )
+	if ( state->runner_config.tp_degree > 1u )
 	{
 		int32_t coll = SparkJsonFindObjectMember(&doc, root, "tp_collective");
 		if ( coll < 0 )
