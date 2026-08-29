@@ -89,15 +89,15 @@ int main(void)
 
 	CHECK(cudaMalloc((void **)&arena,arena_bytes));
 	CHECK(cudaMalloc((void **)&scales,scale_bytes));
-	CHECK(cudaMalloc((void **)&input,(uint64_t)MAX_ROWS * K_DIM * 2u));
-	CHECK(cudaMalloc((void **)&output_scalar,(uint64_t)MAX_ROWS * N_DIM * 2u));
-	CHECK(cudaMalloc((void **)&output_batched,(uint64_t)MAX_ROWS * N_DIM * 2u));
+	CHECK(cudaMalloc((void **)&input,(uint64_t)MAX_ROWS * K_DIM * sizeof(uint16_t)));
+	CHECK(cudaMalloc((void **)&output_scalar,(uint64_t)MAX_ROWS * N_DIM * sizeof(uint16_t)));
+	CHECK(cudaMalloc((void **)&output_batched,(uint64_t)MAX_ROWS * N_DIM * sizeof(uint16_t)));
 
 	/* Host-fill the first matrix + input with a pattern, then let the GPU
 	 * replicate the first matrix across the arena (one-time cost, untimed). */
 	{
 		uint8_t *host_matrix = (uint8_t *)malloc(matrix_bytes);
-		uint16_t *host_input = (uint16_t *)malloc((uint64_t)MAX_ROWS * K_DIM * 2u);
+		uint16_t *host_input = (uint16_t *)malloc((uint64_t)MAX_ROWS * K_DIM * sizeof(uint16_t));
 		uint8_t *host_scales = (uint8_t *)malloc(scale_bytes);
 		uint64_t index;
 		uint32_t row;
@@ -116,7 +116,7 @@ int main(void)
 		for (index = 0u; index < scale_bytes; index++)
 			host_scales[index] = (uint8_t)(120u + (bench_next() % 15u));
 		CHECK(cudaMemcpy(arena,host_matrix,matrix_bytes,cudaMemcpyHostToDevice));
-		CHECK(cudaMemcpy(input,host_input,(uint64_t)MAX_ROWS * K_DIM * 2u,cudaMemcpyHostToDevice));
+		CHECK(cudaMemcpy(input,host_input,(uint64_t)MAX_ROWS * K_DIM * sizeof(uint16_t),cudaMemcpyHostToDevice));
 		CHECK(cudaMemcpy(scales,host_scales,scale_bytes,cudaMemcpyHostToDevice));
 		/* Replicate matrix 0 across the arena (the kernels only stream the
 		 * bytes; every matrix holding the same pattern is fine and the
@@ -201,10 +201,10 @@ int main(void)
 		CHECK(cudaGetLastError());
 		CHECK(cudaDeviceSynchronize());
 		{
-			uint16_t *host_scalar = (uint16_t *)malloc(4u * N_DIM * 2u);
-			uint16_t *host_batched = (uint16_t *)malloc(4u * N_DIM * 2u);
-			CHECK(cudaMemcpy(host_scalar,output_scalar,4u * N_DIM * 2u,cudaMemcpyDeviceToHost));
-			CHECK(cudaMemcpy(host_batched,output_batched,4u * N_DIM * 2u,cudaMemcpyDeviceToHost));
+			uint16_t *host_scalar = (uint16_t *)malloc(4ull * N_DIM * sizeof(uint16_t));
+			uint16_t *host_batched = (uint16_t *)malloc(4ull * N_DIM * sizeof(uint16_t));
+			CHECK(cudaMemcpy(host_scalar,output_scalar,4ull * N_DIM * sizeof(uint16_t),cudaMemcpyDeviceToHost));
+			CHECK(cudaMemcpy(host_batched,output_batched,4ull * N_DIM * sizeof(uint16_t),cudaMemcpyDeviceToHost));
 			for (uint64_t index = 0u; index < 4ull * N_DIM; index++)
 				if ( host_scalar[index] != host_batched[index] )
 					mismatch++;
