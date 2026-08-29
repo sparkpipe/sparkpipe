@@ -1755,3 +1755,15 @@ appendix).
   hidden-transport ignores it (pre-registered frames) — the twin WAS
   the widening mechanism; extraction to a shared helper deferred
   (glm5_next module = probe-fix's active write set; conflict).
+
+## 2026-08-30 ~13:3x — the spark5 block: TTLs trimmed + the CPU carve-out
+
+- The probe-fix agent's blanket 16-node/6h reservation blocked three
+  lanes' queued entries. ROOT: reservations were gating ALL work, but
+  they exist to protect GPUs. FIXED: (1) TTLs 6h→90-min rolling (a
+  live fleet renews per wave — same protection, no squatting);
+  (2) hard README rule: CPU-only work (builds, oracles, verify) NEVER
+  needs a reservation (0dd2091); (3) w1-loader briefed (its agent
+  turn had ended — L2 already committed: FEAT_SHA2 bulk transform,
+  identical digest ~8x — it banked and will see the rule on resume);
+  probe-fix briefed on rolling renew + GPU-window notes.
