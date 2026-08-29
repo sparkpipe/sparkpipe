@@ -1915,3 +1915,21 @@ appendix).
   coordinator gates and lane tests can never collide again.
 - Queue-state handling: live reservations.json preserved around the
   merge (runtime state, not source; k3-finish fleet window restored).
+
+## 2026-08-29 ~17:1x — 90baf2e: W2b merged; FP8 packs built+validated, placing
+
+- MERGED lane/w2-weightd-b: cuMem* VMM arenas (W2a contract tests
+  unchanged over the VMM path) + the first real consumer (dsv4
+  LoadPack binds tensors INTO the arena; unconditional fallback; daemon
+  is the bytes authority). Ratchet re-measured 226607 exact — resolved
+  the ratchet conflict with a line-based tool this time (both
+  justifications, single ceiling; the regex approach missed the merged
+  block shape). offline-gates clean. Respawned as w3-weightd (POSIX-fd
+  export + consumer import/map tier — unblocks the real-GPU dsv4 attach
+  receipt).
+- GLM 5.3 FULL FP8 resolution: fetch PUBLISHED (755.66GB verified) ->
+  16 rank packs BUILT (54.14GB each) -> all 16 VALIDATED (0 errors,
+  expert codec 5, tp16) -> PLACEMENT in flight detached (two-pass
+  proof: pass 2 must say already-placed 16/16). Next: contract
+  re-freeze; nvfp4 local retirement frees spark5 for the bf16 build
+  (bf16 bytes 100% staged, verify ongoing).
