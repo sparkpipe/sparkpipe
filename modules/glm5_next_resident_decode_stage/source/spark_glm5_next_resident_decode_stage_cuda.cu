@@ -217,6 +217,39 @@ extern "C" cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64
 	return(cudaPeekAtLastError());
 }
 
+/* Zero every KDA layer's state + conv-window slot for rows at position 0
+ * (fresh sequences; see the call in StageWaveMetadata). grid.x walks the
+ * KDA layer ordinals, grid.y the wave rows; a row past position 0 (every
+ * decode wave) early-outs. Slot geometry mirrors the kernels that read
+ * these pools: state at kda_state_index[slot] * STATE_BYTES_PER_LAYER per
+ * layer slab (LmDeltaRuleKernel), windows at kda_state_index[slot] *
+ * channels * KERNEL bf16 taps per layer (LmCausalConvKernel). */
+__global__ static void SparkGlm5NextKdaResetKernel(
+	uint8_t *state_pools, uint64_t state_layer_stride, uint64_t state_slot_bytes,
+	uint8_t *q_windows, uint8_t *k_windows, uint8_t *v_windows,
+	uint64_t window_layer_stride, uint64_t qk_window_slot_bytes, uint64_t v_window_slot_bytes,
+	const uint32_t *state_index, const uint32_t *positions, uint32_t layer_count, uint32_t rows)
+{
+	uint32_t layer = blockIdx.x, row = blockIdx.y, i;
+	uint64_t slot;
+	uint8_t *base;
+	if ( row >= rows || layer >= layer_count || positions[row] != 0u )
+		return;
+	slot = state_index[row];
+	base = state_pools + (uint64_t)layer * state_layer_stride + slot * state_slot_bytes;
+	for ( i = threadIdx.x; i < state_slot_bytes; i += blockDim.x )
+		base[i] = 0u;
+	base = q_windows + (uint64_t)layer * window_layer_stride + slot * qk_window_slot_bytes;
+	for ( i = threadIdx.x; i < qk_window_slot_bytes; i += blockDim.x )
+		base[i] = 0u;
+	base = k_windows + (uint64_t)layer * window_layer_stride + slot * qk_window_slot_bytes;
+	for ( i = threadIdx.x; i < qk_window_slot_bytes; i += blockDim.x )
+		base[i] = 0u;
+	base = v_windows + (uint64_t)layer * window_layer_stride + slot * v_window_slot_bytes;
+	for ( i = threadIdx.x; i < v_window_slot_bytes; i += blockDim.x )
+		base[i] = 0u;
+}
+
 static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 {
 	SparkGlm5NextExecutionSlot *slot;
@@ -232,6 +265,27 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 	if ( error == cudaSuccess )
 	{
 		SparkGlm5NextWaveMetadataKernel<<<(wave->row_count + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
+		error = cudaPeekAtLastError();
+	}
+	/* STATE RESET ON SLOT RE-ACQUIRE (closeout item 2, glm5-dsa lane): a
+	 * row at position 0 is a FRESH sequence, and the KDA recurrence must
+	 * start from zero - the fp32 state and the three conv windows carry
+	 * the PREVIOUS request's tail otherwise, so every second request on a
+	 * resident slot differs from the first (only served:0 firsts were
+	 * canonical). Zeroing is a no-op for rows past position 0 (decode
+	 * waves), and KV pages / context_lengths already self-heal per slot.
+	 * Runs on the slot stream before any layer work of this wave. */
+	if ( error == cudaSuccess && wave->kda_state_pools != 0 &&
+		wave->kda_layer_count != 0u )
+	{
+		SparkGlm5NextKdaResetKernel<<<dim3(wave->kda_layer_count,wave->row_count),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(
+			wave->kda_state_pools,wave->kda_state_layer_stride_bytes,
+			(uint64_t)SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER,
+			wave->kda_q_window_pool,wave->kda_k_window_pool,wave->kda_v_window_pool,
+			wave->kda_window_layer_stride_bytes,
+			(uint64_t)(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree) * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_CONV_KERNEL * 2u,
+			(uint64_t)(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree) * GLM5_NEXT_KDA_VALUE_DIM * GLM5_NEXT_KDA_CONV_KERNEL * 2u,
+			wave->kda_state_index,slot->positions,wave->kda_layer_count,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	return(SparkGlm5NextCudaStatus(error));

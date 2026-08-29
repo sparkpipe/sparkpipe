@@ -1431,6 +1431,7 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->kda_v_window_pool = state->kda_v_window_pool;
 	wave->kda_window_layer_stride_bytes = state->kda_window_layer_stride_bytes;
 	wave->kda_state_index = state->kda_state_index_device;
+	wave->kda_layer_count = state->kda_layer_count;
 	wave->page_table = state->page_table;
 	wave->multiprocessor_count = state->multiprocessor_count;
 	wave->decode_split_context_threshold = state->decode_split_context_threshold;
