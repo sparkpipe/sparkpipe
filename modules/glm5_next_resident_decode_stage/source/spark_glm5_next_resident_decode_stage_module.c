@@ -1830,8 +1830,9 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 				for ( probe_i = 0u; probe_i < 256u; probe_i++ )
 					probe_sum += probe_hidden[probe_i];
 			}
-			fprintf(stderr,"G5N-PROBE layer %u hidden row0 [0,1024) bf16sum %llu first8 %u %u %u %u %u %u %u %u\n",
+			fprintf(stderr,"G5N-PROBE layer %u rows %u hidden row0 [0,1024) bf16sum %llu first8 %u %u %u %u %u %u %u %u\n",
 				(unsigned)chain->next_layer,
+				(unsigned)chain->wave_rows,
 				(unsigned long long)probe_sum,
 				(unsigned)probe_hidden[0],(unsigned)probe_hidden[1],(unsigned)probe_hidden[2],(unsigned)probe_hidden[3],
 				(unsigned)probe_hidden[4],(unsigned)probe_hidden[5],(unsigned)probe_hidden[6],(unsigned)probe_hidden[7]);

@@ -481,6 +481,11 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	if ( wave->tp_rank == 0u && getenv("SPARK_GLM5_NEXT_PROBE") != 0 )
 		fprintf(stderr,"G5N-PROBE attn L%u collapsed bf16sum %llu\n",(unsigned)layer,
 			(unsigned long long)Glm5NextProbeBf16Sum(stream,(const uint16_t *)buffers.hc_collapsed_bf16,256u));
+	if ( wave->tp_rank == 0u && Glm5NextKdaProbeDeep(&buffers) )
+	{
+		GLM5_NEXT_KDA_PROBE_RAW(stream,layer,"attnsite_collapsed",buffers.hc_collapsed_bf16);
+		GLM5_NEXT_KDA_PROBE_RAW(stream,layer,"attnsite_attn_norm_weight",buffers.attn_norm_weight);
+	}
 	if ( SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer) )
 	{
 		/* Decode: one row per sequence, null run begins. */
@@ -508,6 +513,11 @@ static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32
 	packed_rows = wave->row_count * GLM5_NEXT_TOP_K;
 	stream = (cudaStream_t)wave->slot->stream;
 	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
+	if ( wave->tp_rank == 0u && Glm5NextKdaProbeDeep(&buffers) )
+	{
+		GLM5_NEXT_KDA_PROBE_RAW(stream,layer,"mlpsite_collapsed",buffers.hc_collapsed_bf16);
+		GLM5_NEXT_KDA_PROBE_RAW(stream,layer,"mlpsite_mlp_norm_weight",buffers.mlp_norm_weight);
+	}
 	status = Glm5NextHcSite(&buffers,buffers.hc_ffn_fn,buffers.hc_ffn_base,buffers.hc_ffn_scale,wave->row_count,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);

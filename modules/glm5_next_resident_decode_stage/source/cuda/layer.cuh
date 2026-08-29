@@ -1013,6 +1013,34 @@ static int Glm5NextKdaProbeActive(const Glm5NextLayerBuffers *buffers)
     return(probe_enabled != 0 && buffers != 0 && buffers->tp_rank == 0u);
 }
 
+/* Deep-dive gate: healthy reference layer 0 + the first-zero neighbourhood
+ * 16..20 (first zero at 17, rank 0, wave 1). */
+static int Glm5NextKdaProbeDeep(const Glm5NextLayerBuffers *buffers)
+{
+    uint32_t layer = buffers != 0 ? buffers->layer_index : 0u;
+    return(Glm5NextKdaProbeActive(buffers) &&
+        (layer == 0u || (layer >= 16u && layer <= 20u)));
+}
+
+/* first8 raw u16 + their float values, to separate zeros from garbage from
+ * huge from NaN - the bit-pattern sum cannot. LYR is the layer index for the
+ * tag; dev is a device pointer. */
+#define GLM5_NEXT_KDA_PROBE_RAW(stream,lyr,label,dev) \
+    do { \
+        uint16_t probe_h[256]; float probe_f[8]; uint32_t probe_i; \
+        if ( cudaStreamSynchronize((stream)) == cudaSuccess && \
+             cudaMemcpy(probe_h,(dev),256 * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess ) \
+        { \
+            for ( probe_i = 0u; probe_i < 8u; probe_i++ ) \
+                probe_f[probe_i] = LmBf16ToFloat(probe_h[probe_i]); \
+            fprintf(stderr,"G5N-PROBE kda L%u %s raw %u %u %u %u %u %u %u %u f %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g\n", \
+                (unsigned)(lyr),(label),probe_h[0],probe_h[1],probe_h[2],probe_h[3], \
+                probe_h[4],probe_h[5],probe_h[6],probe_h[7], \
+                (double)probe_f[0],(double)probe_f[1],(double)probe_f[2],(double)probe_f[3], \
+                (double)probe_f[4],(double)probe_f[5],(double)probe_f[6],(double)probe_f[7]); \
+        } \
+    } while (0)
+
 /* Sum of the RAW uint16 bit patterns of the first count elements (the same
  * quantity the module-level probes print as bf16sum, so numbers compare). */
 static uint64_t Glm5NextProbeBf16Sum(cudaStream_t stream,const uint16_t *device,uint32_t count)
@@ -1136,6 +1164,13 @@ static int32_t Glm5NextLayerKda(
     {
         GLM5_NEXT_KDA_PROBE(stream,"collapsed",buffers->hc_collapsed_bf16,256u);
         GLM5_NEXT_KDA_PROBE(stream,"normed",buffers->normed_bf16,256u);
+    }
+    if ( Glm5NextKdaProbeDeep(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"collapsed",buffers->hc_collapsed_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"normed",buffers->normed_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
     }
     /* TWO WIDE GEMMs over one activation read: the fused q|k|v|beta tensor
      * (OUTPUT_DIM_HEADS class) and the fused decay|gate-down bottleneck

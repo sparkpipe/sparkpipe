@@ -1,9 +1,9 @@
 {
  "spark0": {
-  "acquired_at": "2026-08-28T22:28:27",
-  "holder": "lane-glm5rt",
-  "id": "manual:lane-glm5rt",
-  "ttl_minutes": 480.0
+  "acquired_at": "2026-08-29T02:00:54",
+  "holder": "lane-glm5-kda",
+  "id": "manual:lane-glm5-kda",
+  "ttl_minutes": 240.0
  },
  "spark1": {
   "acquired_at": "2026-08-28T22:28:27",
