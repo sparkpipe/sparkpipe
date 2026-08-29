@@ -72,12 +72,18 @@ def hub_manifest(repo: str, revision: str) -> tuple[str, list[dict]]:
     return info["sha"], expected
 
 
-def fetch_one(stage: Path, base: dict, attempts: int = 4) -> dict:
-    """Download one file (skipping an exact-size hit; Range-resuming .ds4tmp)."""
+def fetch_one(stage: Path, base: dict, attempts: int | None = None) -> dict:
+    """Download one file (skipping an exact-size hit; Range-resuming .ds4tmp).
+
+    The attempt budget scales with file size: the CDN path drops
+    connections mid-stream on multi-GB shards, and every retry resumes
+    from the partial, so budget ~1 retry per 512 MB plus a floor."""
     relative = base["path"]
     final = stage / relative
     if final.is_file() and final.stat().st_size == base["expected_bytes"]:
         return {"path": relative, "action": "already_complete"}
+    if attempts is None:
+        attempts = 6 + base["expected_bytes"] // (512 * 1024 * 1024)
     partial = stage / (relative + ".ds4tmp")
     partial.parent.mkdir(parents=True, exist_ok=True)
     last_error = None
