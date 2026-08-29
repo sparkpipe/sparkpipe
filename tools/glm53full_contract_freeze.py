@@ -33,6 +33,25 @@ DEFAULT_SOURCE = "/mnt/model-warm/glm-5.3-nvfp4-radixark"
 DEFAULT_CACHE = ROOT / ".lane_cache" / "glm53full_source"
 DEFAULT_OUTPUT = ROOT / "model_contracts" / "glm53_full_authoritative.json"
 
+# The three-resolution study admits three OFFICIAL/pinned sources of the
+# same checkpoint. The FP8 and BF16 staging dirs keep their final
+# config.json long before promotion, so the freeze records them from
+# staging and upgrades to full receipt pinning once PUBLISHED lands.
+SIBLING_SOURCES = {
+    "fp8": {
+        "repo": "zai-org/GLM-5.3",
+        "revision": "935644c05e76fc198714f4cca449fd8b970ff6d7",
+        "default_path": "/mnt/model-warm/.staging/glm-5.3-935644c0",
+        "note": "official FP8 release (e4m3 dynamic act, weight_block_size [128,128])",
+    },
+    "bf16": {
+        "repo": "zai-org/GLM-5.3-BF16",
+        "revision": "304b8051cfb2b260b61ce0cbe330e02a98e73639",
+        "default_path": "/mnt/model-warm/.staging/glm-5.3-bf16-304b8051",
+        "note": "official native-precision release (quant policy: serve native)",
+    },
+}
+
 SMALL_FILES = [
     "config.json",
     "generation_config.json",
@@ -109,6 +128,60 @@ print(json.dumps(census))
 """
 
 
+REMOTE_SIBLING_SCRIPT = r"""#!/usr/bin/env python3
+import hashlib, json, os, sys
+path = sys.argv[1]
+config_path = os.path.join(path, "config.json")
+cfg = json.load(open(config_path))
+raw = open(config_path, "rb").read()
+out = {"config_sha256": hashlib.sha256(raw).hexdigest(), "config_bytes": len(raw)}
+it = cfg.get("indexer_types")
+if it is not None:
+    layers = len(it)
+    full = [i for i in range(layers) if it[i] == "full"]
+    out["indexer_types"] = {"layer_count": layers,
+                            "full_layers": full,
+                            "full_count": len(full),
+                            "shared_count": layers - len(full)}
+q = cfg.get("quantization_config")
+if q is None:
+    out["quantization_config"] = None
+else:
+    out["quantization_config"] = {
+        "quant_method": q.get("quant_method"),
+        "fmt": q.get("fmt"),
+        "activation_scheme": q.get("activation_scheme"),
+        "weight_block_size": q.get("weight_block_size"),
+        "excluded_module_count": len(q.get("modules_to_not_convert") or []),
+    }
+receipt_path = os.path.join(path, "DOWNLOAD-RECEIPT.json")
+if os.path.isfile(receipt_path):
+    r = json.load(open(receipt_path))
+    out["receipt"] = {k: r[k] for k in ("format", "repo", "revision",
+                                        "license_class", "files", "bytes",
+                                        "verified_at")}
+    h = hashlib.sha256()
+    with open(receipt_path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    out["receipt_sha256"] = h.hexdigest()
+    out["published"] = os.path.isfile(os.path.join(path, "PUBLISHED"))
+else:
+    out["receipt"] = None
+    out["published"] = False
+print(json.dumps(out))
+"""
+
+
+def read_sibling(host: str, path: str, cache: Path) -> dict:
+    script = cache / "_sibling_probe.py"
+    script.write_text(REMOTE_SIBLING_SCRIPT, encoding="utf-8")
+    remote_script = "/tmp/glm53full_sibling_probe.py"
+    subprocess.run(["scp", "-q", str(script), f"{host}:{remote_script}"],
+                   check=True)
+    return json.loads(sh(host, f"python3 {remote_script} {path}"))
+
+
 def sh(host: str, command: str, timeout: int = 1800) -> str:
     proc = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", host, command],
@@ -174,8 +247,10 @@ def verify_against_receipt(cache: Path, host: str, source: str) -> dict:
     check_file.write_text(selected)
     subprocess.run(["scp", "-q", str(check_file),
                     f"{host}:/tmp/glm53full_strided.txt"], check=True)
+    # 4h ceiling: warm reads share ceph with any concurrent fetch/ rsync
+    # traffic; the hash itself is minutes, contention is the variable.
     out = sh(host, f"cd {source} && sha256sum -c /tmp/glm53full_strided.txt",
-             timeout=3600)
+             timeout=14400)
     ok = [l for l in out.splitlines() if l.endswith(": OK")]
     failed = [l for l in out.splitlines() if l.endswith(": FAILED")]
     return {
@@ -207,6 +282,10 @@ def main() -> int:
     parser.add_argument("--cache", default=str(DEFAULT_CACHE))
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--skip-fetch", action="store_true")
+    parser.add_argument("--fp8-path", default=SIBLING_SOURCES["fp8"]["default_path"],
+                        help="fp8 sibling source dir (staging or promoted)")
+    parser.add_argument("--bf16-path", default=SIBLING_SOURCES["bf16"]["default_path"],
+                        help="bf16 sibling source dir (staging or promoted)")
     args = parser.parse_args()
     cache = Path(args.cache)
     if not args.skip_fetch:
@@ -244,6 +323,36 @@ def main() -> int:
 
     excludes = quant["exclude_modules"]
     assert quant["quant_algo"] == "NVFP4" and quant["group_size"] == 16
+
+    # R3 (indexer_types): probe the FP8/BF16 sibling configs. Both carry
+    # the explicit key; their full-layer split must equal the NVFP4
+    # checkpoint's tensor census exactly (metadata-only omission on the
+    # NVFP4 config, no semantic difference in indexer sharing).
+    expected_body = [l for l in range(78) if l < 3 or (l >= 6 and (l - 6) % 4 == 0)]
+    siblings = {}
+    for name, spec in SIBLING_SOURCES.items():
+        path = args.fp8_path if name == "fp8" else args.bf16_path
+        probe = read_sibling(args.spark, path, cache)
+        assert probe["receipt"] is None or \
+            probe["receipt"]["revision"] == spec["revision"], \
+            f"{name} sibling revision drifted: {probe.get('receipt')}"
+        it = probe.get("indexer_types")
+        assert it is not None, f"{name} config has no indexer_types key"
+        assert it["full_layers"] == expected_body, \
+            f"{name} indexer split {it['full_layers']} != census {expected_body}"
+        assert it["full_count"] == 21 and it["shared_count"] == 57, it
+        siblings[name] = {
+            "repo": spec["repo"],
+            "revision": spec["revision"],
+            "path": path,
+            "note": spec["note"],
+            "published": probe["published"],
+            "receipt": probe["receipt"],
+            "receipt_sha256": probe.get("receipt_sha256"),
+            "config_sha256": probe["config_sha256"],
+            "indexer_types": it,
+            "quantization_config": probe["quantization_config"],
+        }
 
     contract = {
         "schema_version": 1,
@@ -316,6 +425,26 @@ def main() -> int:
                        "— the same share-group-4 pattern as 5.2; the glm52 "
                        "has_full_indexer rule needs no change"),
             "evidence_layers": full_layers,
+            "sibling_confirmation": ("the official FP8 and BF16 configs of the "
+                                     "same checkpoint both carry indexer_types "
+                                     "explicitly with the identical 21 full / 57 "
+                                     "shared split (full layers == this "
+                                     "checkpoint's tensor census) — the NVFP4 "
+                                     "config's omission is metadata-only"),
+        },
+        "three_resolution_sources": {
+            "nvfp4": {
+                "repo": receipt_check["receipt"]["repo"],
+                "revision": receipt_check["receipt"]["revision"],
+                "path": args.source,
+                "receipt": receipt_check["receipt"],
+                "receipt_sha256": receipt_check["receipt_sha256"],
+            },
+            "fp8": siblings["fp8"],
+            "bf16": siblings["bf16"],
+            "pack_resolutions": ("nvfp4=codec 6, fp8=codec 5, bf16=codec 1 "
+                                 "(packer --expert-codec); all three REPACKAGE "
+                                 "only"),
         },
         "structural_census": {
             "tensor_count": census["tensor_count"],
