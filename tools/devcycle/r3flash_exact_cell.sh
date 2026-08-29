@@ -143,13 +143,14 @@ write_config() { # write_config THRESHOLD - render every rank's two configs
 	local threshold="$1" h r
 	for h in $HOSTS; do
 		r=${RANKOF[$h]}
-		ssh -o BatchMode=yes "$h" "mkdir -p $(root_of "$h")/config $(root_of "$h")/kv" &
+		ssh -o BatchMode=yes "$h" "mkdir -p $(root_of "$h")/config $(root_of "$h")/kv /home/$h/kvcache/r3flash-cell" &
 	done
 	wait
 	for h in $HOSTS; do
 		fleet_root="/home/$h/sparkdata/glm52.tp8.fp8"
 		ssh -o BatchMode=yes "$h" "
-			jq '.nodes |= map(.runtime_root = (\"/home/\" + .transport_host + \"/lane-r3flash/cell/runtime\"))' \
+			jq '.nodes |= map(.runtime_root = (\"/home/\" + .transport_host + \"/lane-r3flash/cell/runtime\")
+				| .kv_backing_directory = (\"/home/\" + .transport_host + \"/kvcache/r3flash-cell\"))' \
 				$fleet_root/config/model_resident.json > $(root_of "$h")/config/model_resident.json &&
 			jq --argjson threshold '$threshold' --argjson positions '$MAX_POSITIONS' \
 				'.decode_split_context_threshold = \$threshold
