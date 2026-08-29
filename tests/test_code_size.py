@@ -878,7 +878,11 @@ from pathlib import Path
 # rewire; net +7. 216868 exact. The validator tier walks then mirror the
 # reduce-then-place chain (post entries after each sublayer in tier1 and
 # tier2a; isolation/probe0 stay pre-post by design); net +12. 216880 exact.
-CEILING = 216880
+# glm5-kda lane: HC-post placement fix (dace693 — the double-reduce
+# that exploded streams to 1e18 by L17), packer per-section fused-row
+# slicing (1dac68b — the context-free degeneration), probe ladder
+# extensions. 216956 exact.
+CEILING = 216956
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
