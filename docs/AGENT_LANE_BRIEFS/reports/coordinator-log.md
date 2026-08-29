@@ -2049,3 +2049,22 @@ appendix).
   the arm). Recommendation: accept codec-1 for the glm53full BF16 arm
   only — reference-precision config, 98GB/rank fits the 110GiB law
   with ~12G headroom; the FP8/NVFP4 arms stay the serving defaults.
+
+## 2026-08-29 ~19:1x — CAP TO 8; nurse standing; BF16 ruled; cfg-audit merged (e77fca9)
+
+- OPERATOR: cap raised to 8; nurse lane endorsed (the 4-hour BF16
+  zombie was the trigger). Fleet 8/8: glm5-dsa, k3-finish s3,
+  p1d2-steploop, tokenizer-sidecar, contbatch2, NURSE (standing slot,
+  ~10min sweeps: lane liveness + remote detached pids + phase-label-vs-
+  process-table truth + documented fetch re-arms; NEVER kills),
+  cell-runner (owns the queued GPU receipts: R2c cell, R3 cell,
+  weightd VMM verify), debts (c5 hintless-queue follow-up, the
+  never-existed qwen38 spec, weightd PROT_READ prep + batch knob).
+- OPERATOR RULING LANDED: BF16-expert codec-1 ACCEPTED for the
+  glm53full arm (scoped, FP8/NVFP4 defaults unchanged) — delivered to
+  glm5-dsa (its write set), queued after the coherence chain.
+- MERGED lane/cfg-audit (e77fca9, gates 151 clean): r3's generator
+  drift (fresh deployments would not have booted) + 10 stale specs
+  since Aug 15 + the K3 rot gate never registered in PYTHON_TESTS —
+  all fixed, permanent drift gate added (catches the r3 class on
+  revert). Automation prompt updated: cap 8, nurse-first reads.
