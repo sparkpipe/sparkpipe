@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -115,10 +116,24 @@ def fetch_one(stage: Path, base: dict, attempts: int | None = None) -> dict:
                         stream.write(buf[:read])
             got = partial.stat().st_size
             want = expected if mode == "wb" else resume_from + expected
+            if got > want:
+                # oversize partial = unsalvageable range state; restart clean
+                partial.unlink(missing_ok=True)
+                raise RuntimeError(f"oversize partial: have {got} want {want}")
             if got != want:
                 raise RuntimeError(f"size mismatch mid-stream: have {got} want {want}")
             os.replace(partial, final)
             return {"path": relative, "action": "resumed" if mode == "ab" else "downloaded"}
+        except urllib.error.HTTPError as error:
+            if error.code == 416 and partial.is_file():
+                # Range Not Satisfiable: the partial is past EOF (oversize or
+                # truncated-server state) — it cannot be resumed; restart it.
+                partial.unlink(missing_ok=True)
+                last_error = error
+                time.sleep(min(2 ** attempt * 2, 30))
+                continue
+            last_error = error
+            time.sleep(min(2 ** attempt * 2, 30))
         except Exception as error:  # noqa: BLE001 - retry with backoff
             last_error = error
             time.sleep(min(2 ** attempt * 2, 30))
