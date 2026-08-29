@@ -43,6 +43,7 @@ rm -rf are refused - the no-KILL and no-reboot rules apply to the queue.
 
 import argparse
 import json
+from datetime import datetime
 import os
 import shlex
 import subprocess
@@ -232,7 +233,8 @@ def pick_runnable(entries, results_ids):
             continue
         if any(a not in done_ids for a in e.get("after", [])):
             continue
-        if best is None or (-e["priority"], e["submitted_at"]) <                 (-best["priority"], best["submitted_at"]):
+        if best is None or (e["priority"], e["submitted_at"]) < \
+                (best["priority"], best["submitted_at"]):
             best = e
     return best
 
@@ -275,14 +277,38 @@ def cmd_dispatch(args):
                         del res[n]
                 print(f"reaped {e['id']} pid-gone (nodes released)")
         entries = [e for e in entries if e.get("state") != "done"]
-        task = pick_runnable(entries, results_ids)
+        candidates = [e for e in entries if e.get("state") == "queued"
+                      and e.get("cmd")
+                      and not any(a not in results_ids for a in e.get("after", []))]
+        # Operator policy: equal priority -> longest-waiting wins (FCFS in
+        # class); any task waiting over AGE_ELEVATE_MINUTES is elevated to
+        # the highest priority (anti-starvation aging). Effective priority
+        # drives both the sort and the priority barrier.
+        def eff_priority(e):
+            try:
+                age_min = (datetime.utcnow() - datetime.strptime(
+                    e["submitted_at"], "%Y-%m-%dT%H:%M:%S")).total_seconds() / 60.0
+            except Exception:
+                age_min = 0.0
+            return 0 if age_min > 120.0 else e["priority"]
+        candidates.sort(key=lambda e: (eff_priority(e), e["submitted_at"]))
+        task = None
+        for cand in candidates:
+            if not nodes_free(cand["nodes"], res):
+                print(f"blocked: {cand['id']} nodes busy")
+                continue
+            held_by = next((o for o in candidates
+                if o["id"] != cand["id"] and eff_priority(o) < eff_priority(cand)
+                and set(cand["nodes"]).intersection(o["nodes"])), None)
+            if held_by is not None:
+                print(f"held: {cand['id']} — priority barrier for "
+                      f"{held_by['id']} (p{held_by['priority']})")
+                continue
+            task = cand
+            break
         if task is None:
             rewrite_queue(entries); save_reservations(res)
-            print("nothing runnable")
-            return
-        if not nodes_free(task["nodes"], res):
-            rewrite_queue(entries); save_reservations(res)
-            print(f"blocked: {task['id']} nodes busy")
+            print("nothing dispatched this pass")
             return
         # PRIORITY BARRIER: if a strictly-higher-priority task is queued and
         # waiting for nodes this candidate would take, hold the candidate —
