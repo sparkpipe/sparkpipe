@@ -1244,3 +1244,30 @@ failure is ever diagnosable through the wire.
   wedges >30min in D, requeue that rank solo.
 - MORE AGENTS: spawning 3res-respawn, glm5-closeout (wave+COMPSEC+M5
   when packs land), draft-format kernel lane (the bake-off gate).
+
+## 2026-08-30 ~6:2x — AUDIT-READINESS SWEEP (operator ask: kimi audit of main)
+
+FULL GATE PASS on main @ 7af7de4: code-size ratchet (215,503-class,
+shrinking), dry-law (model-neutral shared code), staging manifest
+(148 checks), glm52 tier-2 oracle, generator byte-identity,
+batch-variant contract, dsv4 contracts, config coverage, 5-family
+check, k3 pack layout, no-python (1 red found — the pinned modeling
+reference unwhitelisted — FIXED 7af7de4). Zero red gates remain on
+the offline set.
+
+HONEST AUDIT MAP (what kimi will find, pre-stated):
+CLOSED since last audit: prefix-cache SHA-256 content verification;
+memlink %n; dflash2 2056-bound twins; both stale C gates + 9 python
+gates re-pinned w/ commit citations; the pipeline flake (SIGTERM/EOF
+race) 30/30; header dep; qwen38max harness wired; LmCopyRowsKernel
+dim3 REAL BUG; rdma formats; DRY 5/5 families (~700 pasted lines dead,
+W2 final net −229); zero duplication in shared dirs (all 82 remaining
+hits are family modules/, parked kernel-template class + the two
+justified glm52↔glm5_next MoE clones pending glm5_next's post-closeout
+cutover); recipe-v0 generators byte-identical; staging a checked state.
+KNOWN-OPEN (stated, not hidden): CCN mean 8.01 (baseline 7.33 — from
+the glm5_next bring-up; the 157-max has its named plan); IR-7 memory-
+contracts inventory (248) still queued; the qwen38max lane merge
+pending; glm5_next's adapter cutover deliberately post-closeout;
+greedy-only determinism (documented in the ledger + marketplace
+appendix).
