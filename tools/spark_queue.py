@@ -222,6 +222,84 @@ def cmd_done(args):
     print(f"done {args.id} (exit {args.exit})")
 
 
+
+def pick_runnable(entries, results_ids):
+    done_ids = results_ids
+    best = None
+    for e in entries:
+        if e.get("state") != "queued" or not e.get("cmd"):
+            continue
+        if any(a not in done_ids for a in e.get("after", [])):
+            continue
+        if best is None or (-e["priority"], e["submitted_at"]) <                 (-best["priority"], best["submitted_at"]):
+            best = e
+    return best
+
+
+def nodes_free(nodes, res):
+    return all(n not in res for n in nodes)
+
+
+def cmd_dispatch(args):
+    """Task-based dispatch: run the head runnable task NOW if its nodes are
+    lease-free; hold nodes only for the task's duration; release on exit.
+    This is the operator's contract: the queue is TASK-based, not
+    wall-clock-based - a lane codes on CPU while the sparks serve the
+    next task."""
+    with acquire_lock():
+        entries = load_queue()
+        res = load_reservations()
+        results_ids = {json.loads(l)["id"] for l in open(RESULTS) \
+            if l.strip()} if os.path.exists(RESULTS) else set()
+        # reap: any running task whose remote pid is gone and exit file says done
+        for e in [x for x in entries if x.get("state") == "running"]:
+            n0 = e["nodes"][0]
+            pid = res.get(n0, {}).get("pid")
+            exit_path = f"/tmp/sparkqueue-{e['id']}.exit"
+            _, rc_txt = ssh(n0, f"cat {exit_path} 2>/dev/null", timeout=10)
+            if rc_txt.strip().lstrip('-').isdigit():
+                rc = int(rc_txt.strip())
+                e["state"] = "done"
+                append_result(e, rc, "dispatch reaped")
+                for n in e["nodes"]:
+                    if res.get(n, {}).get("id") == e["id"]:
+                        del res[n]
+                print(f"reaped {e['id']} exit={rc} (nodes released)")
+                continue
+            if pid and not pid_alive(n0, pid):
+                e["state"] = "done"
+                append_result(e, -1, "dispatch: pid gone without exit file")
+                for n in e["nodes"]:
+                    if res.get(n, {}).get("id") == e["id"]:
+                        del res[n]
+                print(f"reaped {e['id']} pid-gone (nodes released)")
+        entries = [e for e in entries if e.get("state") != "done"]
+        task = pick_runnable(entries, results_ids)
+        if task is None:
+            rewrite_queue(entries); save_reservations(res)
+            print("nothing runnable")
+            return
+        if not nodes_free(task["nodes"], res):
+            rewrite_queue(entries); save_reservations(res)
+            print(f"blocked: {task['id']} nodes busy")
+            return
+        for n in task["nodes"]:
+            res[n] = dict(id=task["id"], holder=f"task:{task['id']}",
+                acquired_at=now(), ttl_minutes=float(args.ttl),
+                pid=None)
+        n0 = task["nodes"][0]
+        inner = task['cmd'] + "; echo \"$?\" > /tmp/sparkqueue-" + task['id'] + ".exit"
+        wrapper = ("cd " + task.get('cwd', '$HOME') + " && nohup setsid bash -c "
+                   + shlex.quote(inner)
+                   + " >/tmp/sparkqueue-" + task['id'] + ".log 2>&1 & echo $!")
+        _, out = ssh(n0, wrapper, timeout=20)
+        pid = out.splitlines()[-1] if out else None
+        res[n0]["pid"] = pid
+        task["state"] = "running"
+        task["dispatched_at"] = now()
+        rewrite_queue(entries); save_reservations(res)
+        print(f"dispatched {task['id']} nodes={','.join(task['nodes'])} pid={pid}")
+
 def cmd_cancel(args):
     entries = load_queue()
     res = load_reservations()
@@ -365,6 +443,10 @@ def main():
     a.add_argument("--id", required=True)
     a.add_argument("--exit", type=int, default=0)
     a.set_defaults(fn=cmd_done)
+    a = sub.add_parser("dispatch")
+    a.add_argument("--ttl", type=int, default=45,
+        help="lease minutes held for the TASK (not the lane)")
+    a.set_defaults(fn=cmd_dispatch)
     a = sub.add_parser("cancel")
     a.add_argument("--id", required=True)
     a.set_defaults(fn=cmd_cancel)

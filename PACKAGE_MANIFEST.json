@@ -263,8 +263,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/README.md",
-      "sha256": "e808ab39153dc3e28414a9d41f35a497a8998874068ae3495266f184e2a85fa4",
-      "size_bytes": 18438
+      "sha256": "bf58ed97605d34d13d37a19bb06c5a2ef214a53c1a9b04a5c5353020835c00a1",
+      "size_bytes": 19638
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/continuous_batching.md",
@@ -5408,8 +5408,8 @@
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "6c9832cccd5bb9e5a0a5fa36beba74893f2495f2b34096cfc0049d2bd4f43e1e",
-      "size_bytes": 2402
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "size_bytes": 2
     },
     {
       "path": "runs/results.jsonl",
@@ -8423,8 +8423,8 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "82faa9d156839a95ad248c3e9bcbf8a77bfd1c24fedaaf9c845c2d54a9b87816",
-      "size_bytes": 13887
+      "sha256": "7f8631216203f625620a19bfc846cb128b25f0e68d4f820f0841ac4305be43a3",
+      "size_bytes": 17555
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -8520,5 +8520,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31390746
+  "total_bytes": 31393214
 }

@@ -1,3 +1,23 @@
+## THE GPU QUEUE IS TASK-BASED (operator directive 2026-08-29; supersedes rolling-reservation usage)
+
+- Lanes NEVER hold wall-clock reservations while coding/analyzing. The
+  5-hour x16 hold with a few minutes of waves was named by the operator
+  as the anti-pattern; rolling renewals by a live lane are the same bug.
+- GPU work is submitted as a TASK: `tools/spark_queue.py add <id>
+  --nodes <list> --cmd '<real command>' --priority <0=highest>` (with
+  optional --after <ids> for ordering). The standing DISPATCHER
+  (`spark_queue.py dispatch`, 60s loop on the controller) runs the
+  highest-priority runnable task the moment its nodes are free, holds
+  the nodes ONLY for the task's duration, and releases them on exit
+  (result appended to runs/results).
+- Wave owners: submit each wave as a task when you need it. Between
+  waves, TAKE YOUR FLEET DOWN (TERM by cwd-filter rule) if the gap
+  exceeds ~15 minutes — registrar bring-up is ~1s/node and the W1
+  loader minimizes reload. Your idle time is the fleet's throughput.
+- Entries without a real cmd never dispatch (notes belong in reports).
+- CPU work (nvcc builds, host oracles, pack verification) still never
+  needs the queue at all.
+
 # Agent lane rules (shared, binding for every driver lane)
 
 ## Operating model (operator directive, 2026-08-29)
