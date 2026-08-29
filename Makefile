@@ -621,6 +621,12 @@ build/sparkpipe_model_batch: node/model_batch.c $(RUNTIME_LIBRARY) $(MODEL_COMMO
 build/spark_kv_backing_test: tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY)
 	$(CC) $(CFLAGS) -Iinclude tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+# Fleet startup protocol phase 1+1b registrar (docs/FLEET_STARTUP_PROTOCOL.md):
+# pure POSIX TCP, poll-driven, no threads; deliberately links NOTHING — it
+# must start in milliseconds on every node with zero library dependencies.
+build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
+	$(CC) $(CFLAGS) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE tools/sparkpipe_registrar.c $(LDFLAGS) -o $@
+
 build/sparkpipe_model_api: node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
