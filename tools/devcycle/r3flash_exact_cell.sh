@@ -33,8 +33,11 @@
 set -uo pipefail
 
 LANE=/home/spark8/lane-r3flash
-ROOT=/tmp/r3flash-glm52
-RES=/tmp/r3flash-results
+# durable roots: the wave deployments clean /tmp mid-flight (the t4 run
+# lost its runtime root to a concurrent wave's /tmp sweep) - live in the
+# lane home, which survived every wave today
+ROOT=/home/spark8/lane-r3flash/cell/runtime
+RES=/home/spark8/lane-r3flash/cell/results
 FLEET_ROOT_TEMPLATE=/home/sparkRANK/sparkdata/glm52.tp8.fp8
 PACK_TEMPLATE='glm52_tp8_rank%02d.fp8.glms52sp'
 O128_BATCH=${O128_BATCH:-/tmp/r3flash-o128-batch.json}
