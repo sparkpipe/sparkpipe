@@ -1557,3 +1557,18 @@ appendix).
   mine to touch while it owns the wave).
 - JIT-SAFETY lane mid-B1 (kv_cache.c write-back wedge under edit).
 - 3res tip 18m (downloads). No merges pending.
+
+## 2026-08-30 ~17:5x — JIT-SAFETY MERGED (5958cb0): all four disqualifying bugs closed
+
+- B1 WEDGE→DEGRADE: ENOSPC/IO drop+recompute (30/30 fault-injected,
+  real full-disk EFBIG repro, serving continues); B2 ARENA OOB: the
+  4.09x stride contradiction fenced + init-pinned (slot==block
+  identity, fail-loud); B3 TIER DIGESTS: SHA-256 per slot, collision
+  = HASH_MISMATCH never alias, verified-on-landing (ABI 3); B4
+  HYGIENE: 0600+fchmod-migrate+O_NOFOLLOW, namespaced tenant paths.
+- NOTE: the lane's push failed on an INVALID STORED TOKEN — my PAT
+  wrapper also just failed. Merged locally; the operator should
+  refresh the GitHub token when convenient (pushes will fail until
+  then; local main is the source of truth meanwhile).
+- Fleet: registrar lane still owns the wave (10/16 mid-acceptance at
+  last census — its harness cycling).
