@@ -1836,6 +1836,22 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION:
+		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
+		{
+			uint16_t probe_attn[256];
+			uint32_t probe_i,probe_block;
+			uint64_t probe_sum;
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			probe_sum = 0u;
+			for ( probe_block = 0u; probe_block < 4u; probe_block++ )
+			{
+				error = cudaMemcpy(probe_attn,(uint8_t *)chain->slot->attention_out_bf16 + (uint64_t)probe_block * sizeof(probe_attn),sizeof(probe_attn),cudaMemcpyDeviceToHost);
+				for ( probe_i = 0u; probe_i < 256u; probe_i++ )
+					probe_sum += probe_attn[probe_i];
+			}
+			(void)error;
+			fprintf(stderr,"G5N-PROBE layer %u attn_out [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_sum);
+		}
 		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_MLP;
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
@@ -1852,6 +1868,22 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP:
+		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
+		{
+			uint16_t probe_post[256];
+			uint32_t probe_pi,probe_pb;
+			uint64_t probe_ps;
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			probe_ps = 0u;
+			for ( probe_pb = 0u; probe_pb < 4u; probe_pb++ )
+			{
+				error = cudaMemcpy(probe_post,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_pb * sizeof(probe_post),sizeof(probe_post),cudaMemcpyDeviceToHost);
+				for ( probe_pi = 0u; probe_pi < 256u; probe_pi++ )
+					probe_ps += probe_post[probe_pi];
+			}
+			(void)error;
+			fprintf(stderr,"G5N-PROBE layer %u post-mlp hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ps);
+		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
 		{
