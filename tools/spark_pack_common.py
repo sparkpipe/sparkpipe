@@ -45,9 +45,9 @@ class PackFailure(RuntimeError):
     """A source or wire-contract error that must stop pack generation.
 
     Standardizes a drift across the packers: qwen38_27b/qwen38 subclassed
-    Exception (so a bare except did not catch it the same way), glm52_stagepack
-    raised plain ValueError, and the rest used RuntimeError. The shared
-    contract is always RuntimeError.
+    Exception (so a bare except did not catch it the same way) and
+    glm52_stagepack raised plain ValueError until its 2026-08 migration onto
+    this core. The shared contract is always RuntimeError.
     """
 
 

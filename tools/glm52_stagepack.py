@@ -21,6 +21,7 @@ TOOLS_DIRECTORY = Path(__file__).resolve().parent
 if str(TOOLS_DIRECTORY) not in sys.path:
     sys.path.insert(0,str(TOOLS_DIRECTORY))
 from glm52_model_contract import load_model_contract
+from spark_pack_common import PackFailure, align_up, sha256_file
 
 
 MAGIC = 0x32534C47
@@ -148,37 +149,37 @@ class TensorSource:
         self.index_path = model_dir / "model.safetensors.index.json"
         self.config_path = model_dir / "config.json"
         if not self.index_path.is_file() or not self.config_path.is_file():
-            raise ValueError("model directory requires config.json and model.safetensors.index.json")
+            raise PackFailure("model directory requires config.json and model.safetensors.index.json")
         index = json.loads(self.index_path.read_text(encoding="utf-8"))
         self.weight_map = index.get("weight_map")
         if not isinstance(self.weight_map, dict) or not self.weight_map:
-            raise ValueError("safetensors index has no weight_map")
+            raise PackFailure("safetensors index has no weight_map")
 
     def validate_names(self, names: Iterable[str]) -> None:
         missing_names = sorted({name for name in names if name not in self.weight_map})
         if missing_names:
-            raise ValueError(f"source index is missing tensors: {missing_names[:8]}")
+            raise PackFailure(f"source index is missing tensors: {missing_names[:8]}")
         missing_files = sorted({
             self.weight_map[name]
             for name in names
             if not (self.model_dir / self.weight_map[name]).is_file()
         })
         if missing_files:
-            raise ValueError(f"rank-local source is missing shards: {missing_files[:8]}")
+            raise PackFailure(f"rank-local source is missing shards: {missing_files[:8]}")
 
     def load(self, name: str, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
         shard = self.model_dir / self.weight_map[name]
         with safe_open(str(shard), framework="pt", device="cpu") as handle:
             tensor = handle.get_tensor(name)
         if tensor.dtype != dtype or tuple(tensor.shape) != shape:
-            raise ValueError(
+            raise PackFailure(
                 f"{name}: expected {dtype} {shape}, got {tensor.dtype} {tuple(tensor.shape)}"
             )
         return tensor.contiguous()
 
 
 def align(value: int) -> int:
-    return (value + ALIGNMENT - 1) // ALIGNMENT * ALIGNMENT
+    return align_up(value, ALIGNMENT)
 
 
 def has_full_indexer(layer: int) -> bool:
@@ -313,7 +314,7 @@ def source_names_for_record(record: Record) -> list[str]:
 
 def write_tensor(file, offset: int, tensor: torch.Tensor, dtype: torch.dtype) -> None:
     if tensor.dtype != dtype:
-        raise ValueError(f"write dtype mismatch: {tensor.dtype} != {dtype}")
+        raise PackFailure(f"write dtype mismatch: {tensor.dtype} != {dtype}")
     flat = tensor.contiguous().view(torch.uint16 if dtype == torch.bfloat16 else torch.float32).reshape(-1)
     chunk_elements = 16 * 1024 * 1024
     file.seek(offset)
@@ -325,7 +326,7 @@ def write_tensor(file, offset: int, tensor: torch.Tensor, dtype: torch.dtype) ->
 def pack_subbyte(codes: np.ndarray, bits: int) -> bytes:
     rows, columns = codes.shape
     if columns % 8 != 0:
-        raise ValueError("packed rows require a whole eight-code group")
+        raise PackFailure("packed rows require a whole eight-code group")
     octets = (codes.astype(np.int16, copy=False) & ((1 << bits) - 1)).astype(np.uint64)
     octets = octets.reshape(rows, columns // 8, 8)
     packed = np.zeros(octets.shape[:2], dtype=np.uint64)
@@ -373,7 +374,7 @@ def quantize_matrix(
     _, bits, group_size, _ = CODECS[codec_name]
     rows, columns = matrix.shape
     if columns % group_size != 0 or columns * bits % 8 != 0:
-        raise ValueError(f"{codec_name} cannot tile matrix shape {tuple(matrix.shape)}")
+        raise PackFailure(f"{codec_name} cannot tile matrix shape {tuple(matrix.shape)}")
     values = matrix.to(device=device, dtype=torch.float32)
     blocks = values.reshape(rows, columns // group_size, group_size)
     block_amax = blocks.abs().amax(dim=2)
@@ -463,7 +464,7 @@ def write_experts(
             matrix = source.load(f"{prefix}.{expert}.down_proj.weight", (HIDDEN, EXPERT_INTERMEDIATE), torch.bfloat16)
         payload,global_scale,block_scales = quantize_matrix(matrix,codec_name,device)
         if len(payload) != payload_per_expert or len(block_scales) != scale_per_expert:
-            raise ValueError("quantizer emitted a geometry inconsistent with the stage-pack directory")
+            raise PackFailure("quantizer emitted a geometry inconsistent with the stage-pack directory")
         file.seek(record.payload_offset + expert * payload_per_expert)
         file.write(payload)
         if global_scale:
@@ -487,7 +488,7 @@ def pack_header(
 ) -> bytes:
     revision = model_revision.encode("ascii")
     if len(revision) > 64:
-        raise ValueError("model revision exceeds 64 ASCII bytes")
+        raise PackFailure("model revision exceeds 64 ASCII bytes")
     revision = revision + bytes(65 - len(revision))
     return HEADER.pack(
         MAGIC,FORMAT_VERSION,HEADER_BYTES,ENTRY_BYTES,CODEC_ABI_VERSION,0,
@@ -505,19 +506,11 @@ def pack_directory(records: list[Record]) -> bytes:
     ) for record in records)
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(16 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def build(args: argparse.Namespace) -> dict[str, object]:
     if args.device != "cuda" or not torch.cuda.is_available():
-        raise ValueError("production stage packing requires an explicit working CUDA device")
+        raise PackFailure("production stage packing requires an explicit working CUDA device")
     if len(args.contract_sha256) != 64 or any(c not in "0123456789abcdef" for c in args.contract_sha256):
-        raise ValueError("contract sha256 must be 64 lowercase hexadecimal characters")
+        raise PackFailure("contract sha256 must be 64 lowercase hexadecimal characters")
     source = TensorSource(args.model_dir)
     records = records_for_stage(args.stage_index,args.expert_codec)
     source.validate_names(name for record in records for name in source_names_for_record(record))
@@ -558,7 +551,7 @@ def build(args: argparse.Namespace) -> dict[str, object]:
                 tensor = load_nonexpert(source,record)
                 expected = record.groups * record.rows * record.columns
                 if tensor.numel() != expected:
-                    raise ValueError(f"{KIND_NAMES[record.kind]} produced {tensor.numel()} elements, expected {expected}")
+                    raise PackFailure(f"{KIND_NAMES[record.kind]} produced {tensor.numel()} elements, expected {expected}")
                 write_tensor(file,record.payload_offset,tensor,torch.float32 if record.payload_type == PAYLOAD_F32 else torch.bfloat16)
         file.flush()
         os.fsync(file.fileno())

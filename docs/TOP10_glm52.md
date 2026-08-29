@@ -70,7 +70,7 @@ six expert codecs. Measured TP8 receipts: B1 6.91 / B8 43.46 / B16 75.55 tok/s.
    and uses plain `ValueError`. Delta **negative**. Owner: glm52. First step:
    swap the inline primitives for the shared names.
 
-8. **Delete the dormant `glm52_resident_pack_common.py` (DRY).** 99 lines imported
+8. **DONE 2026-08-28 (lane/dry-wave1): deleted, and glm52_stagepack.py migrated onto spark_pack_common.py (item 7's inline align/sha256_file/ValueError too).** Was: "Delete the dormant `glm52_resident_pack_common.py` (DRY)." 99 lines imported
    by nothing, side-effect-loads the contract, fully superseded by
    `spark_pack_common.py`. Delta **-99**. Owner: coordinator. First step: move its
    `tp_shard_range`/`parse_layers`/`tensor_name` into the shared module, then delete.

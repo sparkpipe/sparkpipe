@@ -1,5 +1,5 @@
 {
-  "file_count": 1443,
+  "file_count": 1442,
   "files": [
     {
       "path": ".gitattributes",
@@ -6687,11 +6687,6 @@
       "size_bytes": 1577
     },
     {
-      "path": "tools/glm52_resident_pack_common.py",
-      "sha256": "89d4cc7dbd580d62891e8747b972ac130e7fa189bca5293dc2791b9f492b1bcc",
-      "size_bytes": 3697
-    },
-    {
       "path": "tools/glm52_resident_stagepack.py",
       "sha256": "61500179bae2694ff09ea34a33ff2824748b985c2c7aedd253bda5f58fa05ed9",
       "size_bytes": 22679
@@ -7220,5 +7215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 26033115
+  "total_bytes": 26029418
 }
