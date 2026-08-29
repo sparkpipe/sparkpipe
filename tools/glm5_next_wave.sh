@@ -27,7 +27,7 @@
 #   tools/registrar_stage.sh
 #
 # usage: glm5_next_wave.sh [--spark HEX ...] [--api-host spark0] [--api-port 8433]
-#                          [--debug-rdma] [--skip-kill] [--skip-registrar]
+#                          [--debug-rdma] [--probe] [--skip-kill] [--skip-registrar]
 #                          [stop|start|ready|api|full|registrars]
 set -euo pipefail
 
@@ -37,6 +37,7 @@ HOSTS=()
 API_HOST=spark0
 API_PORT=8433
 DEBUG_RDMA=0
+PROBE=0
 SKIP_KILL=0
 SKIP_REGISTRAR=0
 REGISTRAR_PORT_BASE=22480
@@ -48,7 +49,9 @@ while [[ $# -gt 0 ]]; do
         --spark)      shift; while [[ $# -gt 0 && "$1" != --* ]]; do HOSTS+=("$1"); shift; done ;;
         --api-host)   API_HOST="$2"; shift 2 ;;
         --api-port)   API_PORT="$2"; shift 2 ;;
+        --api-port)   API_PORT="$2"; shift 2 ;;
         --debug-rdma) DEBUG_RDMA=1; shift ;;
+        --probe)      PROBE=1; shift ;;
         --skip-kill)  SKIP_KILL=1; shift ;;
         --skip-registrar) SKIP_REGISTRAR=1; shift ;;
         stop|start|ready|api|full|registrars) CMD="$1"; shift ;;
@@ -109,22 +112,29 @@ registrar_phase() {
 }
 
 stop_wave() {
-    echo "== TERM model daemons on ${#HOSTS[@]} hosts =="
+    echo "== TERM model daemons on ${#HOSTS[@]} hosts (cwd-scoped) =="
+    # CWD-SCOPED TERM ONLY: pkill -x sparkpipe_model also hits OTHER lanes'
+    # daemons sharing a node (the spark5 dry2 / sparke K3 incidents). Match
+    # the residentd/api by exe path + exact deployment cwd, TERM, never KILL.
+    # The [r]/[a] bracket keeps pgrep -f from matching this very shell.
     for h in "${HOSTS[@]}"; do
-        ssh_run "$h" "pkill -x sparkpipe_model 2>/dev/null; true" || true
+        rr="$(runtime_root "$h")"
+        ssh_run "$h" "rr='$rr'; for p in \$(pgrep -f 'bin/sparkpipe_model_[r]esidentd'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -TERM \$p; done; for p in \$(pgrep -f 'bin/sparkpipe_model_[a]pi'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -TERM \$p; done; true" || true
     done
     for i in $(seq 1 10); do
         alive=0
         for h in "${HOSTS[@]}"; do
-            n=$(ssh_run "$h" "pgrep -x sparkpipe_model | wc -l" 2>/dev/null || echo 1)
+            rr="$(runtime_root "$h")"
+            n=$(ssh_run "$h" "rr='$rr'; a=0; for p in \$(pgrep -f 'bin/sparkpipe_model_[r]esidentd'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && a=\$((a+1)); done; for p in \$(pgrep -f 'bin/sparkpipe_model_[a]pi'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && a=\$((a+1)); done; echo \$a" 2>/dev/null || echo 1)
             alive=$((alive + n))
         done
         [[ $alive -eq 0 ]] && break
         sleep 2
     done
-    echo "== verifying zero model processes (comm match, not -f) =="
+    echo "== verifying zero model processes (cwd-scoped, not -x) =="
     for h in "${HOSTS[@]}"; do
-        n=$(ssh_run "$h" "pgrep -x sparkpipe_model | wc -l" 2>/dev/null || echo 0)
+        rr="$(runtime_root "$h")"
+        n=$(ssh_run "$h" "rr='$rr'; a=0; for p in \$(pgrep -f 'bin/sparkpipe_model_[r]esidentd'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && a=\$((a+1)); done; echo \$a" 2>/dev/null || echo 0)
         [[ "$n" -gt 0 ]] && echo "WARNING: $h still has $n model procs" >&2
     done
     sleep 75
@@ -132,13 +142,18 @@ stop_wave() {
 }
 
 start_wave() {
-    echo "== simultaneous residentd launch on ${#HOSTS[@]} hosts (debug-rdma=$DEBUG_RDMA) =="
+    echo "== simultaneous residentd launch on ${#HOSTS[@]} hosts (debug-rdma=$DEBUG_RDMA probe=$PROBE) =="
     pids=()
     idx=0
     for h in "${HOSTS[@]}"; do
         rr="$(runtime_root "$h")"
         env_prefix=""
         [[ $DEBUG_RDMA -eq 1 ]] && env_prefix="SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG=1 "
+        # probe=$PROBE arms the G5N-PROBE diag ladder fleet-wide; the probe
+        # build scales the TP connect window itself (SPARK_GLM5_NEXT_PROBE,
+        # lane/probe-fix) so the open deadline no longer expires while the
+        # ladder-armed ranks are still coming up.
+        [[ $PROBE -eq 1 ]] && env_prefix="${env_prefix}SPARK_GLM5_NEXT_PROBE=1 "
         ssh -o BatchMode=yes -o ConnectTimeout=10 "$h" \
             "cd '$rr' && mv residentd.log residentd.log.prev-\$(date +%s) 2>/dev/null || true; env $env_prefix LD_LIBRARY_PATH='$rr/lib' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $idx > residentd.log 2>&1 < /dev/null &" </dev/null &
         pids+=($!)
@@ -149,7 +164,13 @@ start_wave() {
 }
 
 ready_wave() {
-    deadline=$(( $(date +%s) + 180 ))
+    # Under the probe the ladder-armed ranks may legitimately take longer to
+    # become ready (rank 0 loads the embedding+head pack), and the probe build
+    # scales the connect window to 720s: a 180s poll would call a healthy
+    # probe wave dead.
+    local wait_s=180
+    [[ $PROBE -eq 1 ]] && wait_s=780
+    deadline=$(( $(date +%s) + wait_s ))
     while [[ $(date +%s) -lt $deadline ]]; do
         ready=0
         for h in "${HOSTS[@]}"; do
