@@ -34,10 +34,17 @@ for i in $(seq 0 15); do
     echo "  \"tp_degree\": $TP,"
     echo "  \"tp_rank\": $rank,"
     echo "  \"world_size\": $WORLD,"
-    echo "  \"max_sequences\": 16,"
-    echo "  \"max_rows\": 16,"
-    echo "  \"resident_capacity\": 16,"
-    echo "  \"kv_pages\": 2,"
+  echo "  \"max_sequences\": 16,"
+  echo "  \"max_rows\": 16,"
+  echo "  \"resident_capacity\": 16,"
+  # kv_pages: 64 pages x 64 slots x 1152 B (MLA latent row) = 4,096
+  # positions/sequence - 5x the largest quality fixture (769 tokens) plus
+  # generation room. Per-rank device cost is mla_count x 64 x 73,728 B x
+  # 16 sequences ~= 0.45-0.62 GiB (stage MLA counts 6/5/6/7); the smoke
+  # value 2 (128 positions) overflowed on every real prompt. The 224K-token
+  # fixtures need 3,500 pages ~= 25 GiB/rank at 16 sequences - re-plan
+  # memory before that step, or run them at lower sequence occupancy.
+  echo "  \"kv_pages\": 64,"
     echo "  \"capture_graphs\": 1,"
     echo "  \"hidden\": 7168,"
     echo "  \"device_collective\": {"

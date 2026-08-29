@@ -5,6 +5,12 @@
 > directly on main. See the coordinator log. REMAINING for k3-finish: item 2
 > of the brief below (the fleet wave) — item 0 (report) landed as 0be9505 on
 > lane/k3-finish.
+>
+> 2026-08-30 session 2: the wave is STAGED and window-gated — stage-2 was
+> found built against the wrong slice (48_23; the runner's stage table wants
+> 47_23) and rebuilt; stage-0 deployed with receipts; the taker chain lives
+> in reports/k3-finish-2026-08-30b.md section 7. The window went to
+> lane-glm5attractor at 17:01 UTC; k3-finish holds fire until the next one.
 
 Owner: k3-finish lane (worktree /tmp/lane-k3finish). Delegated by the
 coordinator at merge b0daf75 (2026-08-29); this is the ONLY remaining red

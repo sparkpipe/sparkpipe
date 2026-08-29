@@ -1145,7 +1145,18 @@ CEILING = 228248
 # tests/test_k3_deployment_config.py in PYTHON_TESTS (+2). The audit test
 # itself and the 10 repaired specs (transport_hosts) are test/data files
 # the counter excludes by construction. 228777 exact.
-CEILING = 229763
+# k3-finish lane: tools/k3_deploy_stage_par.sh (+37, the 4-concurrent
+# resumable-rsync stage deploy driver; landed d2b35f4 without its bump) and
+# tools/k3_fleet_wave.sh (+18: the exclusive-window daemon census and the
+# launch pid capture move off deployment-blind pgrep -x onto anchored
+# cmdline match + cwd filter + self-exclusion - the same comm is shared by
+# every family's residentd, and -f self-matches the ssh wrapper). +7 more:
+# tools/k3_gen_adapter_configs.sh kv_pages 2 -> 64 (smoke scale 128
+# positions/sequence overflowed every real quality fixture; 64 pages =
+# 4,096 positions at ~0.45-0.62 GiB/rank) with the pool arithmetic
+# documented at the knob. Rebased on main's 228764: 228826 exact (+62 =
+# the three k3-finish items above).
+CEILING = 229825
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
