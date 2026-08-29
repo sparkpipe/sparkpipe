@@ -28,6 +28,7 @@ import sys
 import numpy as np
 
 CKPT = os.environ.get("G5N_CKPT", "/mnt/model-warm/glm-5.3-flash")
+LAYER = 0
 TP = 16
 RANK = 0
 HIDDEN = 4096
@@ -97,7 +98,7 @@ def bf16_round_f32(x):
 
 
 # ---------------------------------------------------------------- log parsing
-def parse_log(path, max_pass=64):
+def parse_log(path, max_pass=4096):
     """-> passes{p: {label: np.uint16/uint32 array}}, head_rows{p: (score,token)}"""
     vec_re = re.compile(r"G5N-VEC L(\d+) P(\d+) (\S+) (\d+)((?: [0-9a-f]{4,8})+)")
     head_re = re.compile(r"G5N-PROBE head score (\S+) token (\d+)")
@@ -162,8 +163,34 @@ class Report:
         return bad
 
 
+def conv(raw_f32, cw, win):
+    """short causal conv + swish; win carries the last CONV-1 raw taps
+    (uint16, oldest first) across passes."""
+    u = f32_to_bf16_u16(raw_f32).reshape(-1, 1)
+    t = np.concatenate([win[:, 1:], u], axis=1)
+    acc = (bf16_to_f32(t) * cw).sum(axis=1)
+    sw = acc * (1.0 / (1.0 + np.exp(-acc)))
+    return bf16_round_f32(sw), t
+
+
+def l2_per_head(x_f32, heads=RANK_HEADS, dim=KD, eps=RMS_EPS):
+    m = x_f32.reshape(heads, dim)
+    inv = 1.0 / np.sqrt((m * m).sum(axis=1, keepdims=True) + eps)
+    return (m * inv).reshape(-1)
+
+
 def rmsnorm(x, w, eps):
     return x / np.sqrt(np.mean(x * x) + eps) * w
+
+
+def _top(*names):
+    """checkpoint tops vary across publishes: use the first name present."""
+    import json as _json
+    idx = _json.load(open(os.path.join(CKPT, "model.safetensors.index.json")))
+    for n in names:
+        if n in idx["weight_map"]:
+            return n
+    raise KeyError(names)
 
 
 def main():
@@ -173,7 +200,7 @@ def main():
         prompt_ids = prompt_ids["prompt_token_ids"]
     prompt_len = len(prompt_ids)
     st = Safetensors(CKPT)
-    P = PREFIX + f"{LAYER}."
+    P = PREFIX + f"{LAYER}.self_attn."
 
     # --- checkpoint weights, rank-0 shards (the audited byte-clean contract)
     q_w = bf16_to_f32(st.raw(P + "q_proj.weight")[RANK * RANK_QK:(RANK + 1) * RANK_QK])
@@ -191,8 +218,8 @@ def main():
     dt_bias = st.raw(P + "dt_bias")[RANK * RANK_QK:(RANK + 1) * RANK_QK].astype(np.float32)
     o_norm_w = bf16_to_f32(st.raw(P + "o_norm.weight").reshape(-1)).astype(np.float32)
     o_w = bf16_to_f32(st.raw(P + "o_proj.weight")[:, RANK * RANK_V:(RANK + 1) * RANK_V])  # [4096, 512]
-    attn_norm_w = bf16_to_f32(st.raw(P + "input_layernorm.weight"))
-    final_norm_w = bf16_to_f32(st.raw("model.language_model.norm.weight"))
+    attn_norm_w = bf16_to_f32(st.raw(PREFIX + f"{LAYER}.input_layernorm.weight"))
+    final_norm_w = bf16_to_f32(st.raw(_top("model.language_model.norm.weight", "norm.weight")))
     print(f"loaded checkpoint shards for layer {LAYER} rank {RANK}/{TP}")
 
     passes, head_rows = parse_log(log)
@@ -215,7 +242,6 @@ def main():
         normed = d["normed"][1]
         fused = d["fused_qkvb"][1]
         decay_latent = d["decay_latent"][1]
-        gate_latent = d["gate_latent"][1]
         q_pc, k_pc, v_pc = d["q_postconv"][1], d["k_postconv"][1], d["v_postconv"][1]
         decay_logit = d["decay_logit"][1]
         retention = d["retention"][1]
@@ -236,7 +262,7 @@ def main():
         if attn_norm_kind:
             rep.add("attn_norm", p, f32_to_bf16_u16(rmsnorm(cx, attn_norm_w, RMS_EPS)), normed, "bf16")
 
-        # 1) fused q|k|v|beta projection (rank sections), fp32 acc -> bf16
+        # 1) fused q|k|v|beta projection: MY GEMM vs the dump (bf16 patterns)
         q_raw = bf16_round_f32(x @ q_w.T)
         k_raw = bf16_round_f32(x @ k_w.T)
         v_raw = bf16_round_f32(x @ v_w.T)
@@ -244,63 +270,65 @@ def main():
         rep.add("fused_qkvb", p, np.concatenate([f32_to_bf16_u16(q_raw), f32_to_bf16_u16(k_raw),
                                                  f32_to_bf16_u16(v_raw), f32_to_bf16_u16(b_raw)]), fused, "bf16")
 
-        # 2) short conv + swish, window carried across passes (taps oldest->newest)
-        def conv(raw_f32, raw_u16, cw, win):
-            u = f32_to_bf16_u16(raw_f32)
-            out = np.empty_like(u, dtype=np.float32)
-            t = np.concatenate([win[:, 1:], u], axis=1)
-            acc = (bf16_to_f32(t) * cw).sum(axis=1)
-            sw = acc * (1.0 / (1.0 + np.exp(-acc)))
-            out[:] = sw
-            return bf16_round_f32(out), t
+        # from here on every stage consumes the DUMPED buffer, so a divergence
+        # convicts that stage's kernel (not an upstream accumulation):
+        q_raw = bf16_to_f32(fused[0:RANK_QK]).astype(np.float32)
+        k_raw = bf16_to_f32(fused[RANK_QK:2 * RANK_QK]).astype(np.float32)
+        v_raw = bf16_to_f32(fused[2 * RANK_QK:2 * RANK_QK + RANK_V]).astype(np.float32)
+        b_raw = bf16_to_f32(fused[2 * RANK_QK + RANK_V:]).astype(np.float32)
 
-        q_conv, win_q = conv(q_raw, None, qc_w.reshape(RANK_QK, CONV), win_q)
-        k_conv, win_k = conv(k_raw, None, kc_w.reshape(RANK_QK, CONV), win_k)
-        v_conv, win_v = conv(v_raw, None, vc_w.reshape(RANK_V, CONV), win_v)
-        rep.add("q_postconv", p, f32_to_bf16_u16(q_conv), q_pc, "bf16")
-        rep.add("k_postconv", p, f32_to_bf16_u16(k_conv), k_pc, "bf16")
+        # 2) short conv + swish (window tracked across passes), then the layer's
+        # per-head L2 norm for q/k (eps 1e-5) - the dump is post-L2 for q/k
+        q_conv, win_q = conv(q_raw, qc_w.reshape(RANK_QK, CONV), win_q)
+        k_conv, win_k = conv(k_raw, kc_w.reshape(RANK_QK, CONV), win_k)
+        v_conv, win_v = conv(v_raw, vc_w.reshape(RANK_V, CONV), win_v)
         rep.add("v_postconv", p, f32_to_bf16_u16(v_conv), v_pc, "bf16")
+        rep.add("q_postconv", p, f32_to_bf16_u16(l2_per_head(q_conv)), q_pc, "bf16")
+        rep.add("k_postconv", p, f32_to_bf16_u16(l2_per_head(k_conv)), k_pc, "bf16")
 
-        # 3) decay chain: latent -> logit -> bounded retention
-        dl = bf16_to_f32(decay_logit_latent(decay_latent, fb_w))
+        # 3) decay chain: latent (dump) -> logit -> bounded retention
+        lat = bf16_to_f32(decay_latent).astype(np.float32)
+        dl = bf16_round_f32(lat @ fb_w.T)
         rep.add("decay_logit", p, f32_to_bf16_u16(dl), decay_logit, "bf16")
         lg = bf16_to_f32(decay_logit).astype(np.float32).reshape(RANK_HEADS, KD)
         dtb = dt_bias.reshape(RANK_HEADS, KD)
         scaled = np.exp(a_log).reshape(RANK_HEADS, 1) * (lg + dtb)
         sig = 1.0 / (1.0 + np.exp(-scaled))
-        ret = np.exp(GATE_LB * sig).reshape(-1)
-        rep.add("retention", p, ret.view(np.uint32), retention, "f32")
+        ret_mine = np.exp(GATE_LB * sig).reshape(-1)
+        rep.add("retention", p, ret_mine.view(np.uint32), retention, "f32")
 
-        # 4) write gate
-        beta = (1.0 / (1.0 + np.exp(-bf16_to_f32(b_raw)))).astype(np.float32)
+        # 4) write gate: sigmoid of the dumped beta section
+        beta = (1.0 / (1.0 + np.exp(-b_raw))).astype(np.float32)
         rep.add("write_gate", p, beta.view(np.uint32), write_gate, "f32")
 
-        # 5) delta rule per head, decay-before-predict, post-update read
+        # 5) delta rule per head, decay-before-predict, post-update read.
+        # consumes the DUMPED post-L2 q/k/v, dumped retention and beta: any
+        # divergence here is the recurrence/state path itself.
+        ret = retention.view(np.float32).astype(np.float32)
         k2 = bf16_to_f32(k_pc).astype(np.float32).reshape(RANK_HEADS, KD)
         qv = bf16_to_f32(q_pc).astype(np.float32).reshape(RANK_HEADS, KD)
         vv = bf16_to_f32(v_pc).astype(np.float32).reshape(RANK_HEADS, VD)
         k2 = k2 / np.sqrt((k2 * k2).sum(axis=1, keepdims=True) + QK_L2_EPS_DELTA)
         q2 = qv / np.sqrt((qv * qv).sum(axis=1, keepdims=True) + QK_L2_EPS_DELTA)
         a2 = ret.reshape(RANK_HEADS, KD)
+        b2 = beta.reshape(RANK_HEADS)
         o_all = np.empty((RANK_HEADS, VD), dtype=np.float32)
         for h in range(RANK_HEADS):
             pred = (state[h] * (k2[h] * a2[h])[:, None]).sum(axis=0)
-            state[h] = a2[h][:, None] * state[h] + beta[h] * (vv[h] - pred)[None, :] * k2[h][:, None]
+            state[h] = a2[h][:, None] * state[h] + b2[h] * (vv[h] - pred)[None, :] * k2[h][:, None]
             o_all[h] = (state[h] * q2[h][:, None]).sum(axis=0)
         rep.add("delta_out", p, f32_to_bf16_u16(o_all.reshape(-1)), delta_out, "bf16")
 
-        # 6) output norm (per head, RMS) then sigmoid gate
-        gate = bf16_round_f32(bf16_to_f32(gate_latent).astype(np.float32) @ gb_w.T)
-        rep.add("kda_gate", p, f32_to_bf16_u16(gate), kda_gate, "bf16")
-        gs = (1.0 / (1.0 + np.exp(-bf16_to_f32(gate)))).astype(np.float32)
-        o32 = o_all.reshape(RANK_HEADS, VD)
+        # 6) output norm (per head, RMS) then sigmoid gate, from dumps
+        gs = (1.0 / (1.0 + np.exp(-bf16_to_f32(kda_gate)))).astype(np.float32)
+        o32 = bf16_to_f32(delta_out).astype(np.float32).reshape(RANK_HEADS, VD)
         rms = np.sqrt((o32 * o32).sum(axis=1) / VD + RMS_EPS)
         normed_o = (o32 / rms[:, None] * o_norm_w[None, :])
         gated = (normed_o * gs.reshape(RANK_HEADS, VD)).reshape(-1)
         rep.add("delta_gated", p, f32_to_bf16_u16(gated), delta_gated, "bf16")
 
-        # 7) o_proj rank partial
-        part = bf16_round_f32(bf16_to_f32(f32_to_bf16_u16(gated)).astype(np.float32) @ o_w.T)
+        # 7) o_proj rank partial, from the dumped gated rows
+        part = bf16_round_f32(bf16_to_f32(delta_gated).astype(np.float32) @ o_w.T)
         rep.add("out_partial", p, f32_to_bf16_u16(part), out_partial, "bf16")
 
         # 8) the oracle's state vs the dumped state (f32 words)
@@ -312,7 +340,7 @@ def main():
     # 9) head arbitration: rmsnorm(head_mean) @ lm_head -> argmax (a few passes:
     # the lm_head read is 1.2 GB; every pass would dominate the runtime)
     hf = bf16_to_f32(final_norm_w).astype(np.float32)
-    lm = st.raw("model.language_model.lm_head.weight")
+    lm = st.raw(_top("model.language_model.lm_head.weight", "lm_head.weight"))
     want = sorted(set(got[:2] + [p for p in (prompt_len, prompt_len + 1) if p in head_rows] + got[-2:]))
     head_n, head_miss = 0, 0
     for p in want:

@@ -1050,7 +1050,16 @@ from pathlib import Path
 # repeat-attractor suspects stage by stage; --probe-vec wave wiring. All
 # diag/instrument lines: the serving path is untouched. To be trimmed with
 # the ratchet when the attractor closes. 227169 exact.
-CEILING = 227169
+# glm5-attractor II: the cold-first-request root cause #2 - the routed-MoE
+# finalize wrote its sum into hidden_bf16 (the HC streams surface) and the
+# shared-expert add then overwrote it with attention_out + shared_out, so
+# the routed experts never reached the residual and REDUCE_MLP summed
+# sixteen identical copies of the already-reduced attention output
+# (receipt: second r0 post == 16.000000x first r0 post on L42/L44). The
+# tail now lands routed+shared in attention_out_bf16, the buffer the
+# chain reduces. +40 lines, the fix comment; evidence in the commit and
+# the lane report. 227209 exact.
+CEILING = 227209
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

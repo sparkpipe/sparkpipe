@@ -2323,7 +2323,7 @@ static int32_t Glm5NextLayerMoe(
         buffers->expert_out_bf16,
         buffers->route_packed_row,
         buffers->route_weight,
-        buffers->hidden_bf16,
+        buffers->attention_out_bf16,
         rows,
         GLM5_NEXT_TOP_K,
         GLM5_NEXT_HIDDEN);
@@ -2371,6 +2371,18 @@ static int32_t Glm5NextLayerMoe(
     {
         return status;
     }
+    /* THE MOE PARTIAL LANDS IN attention_out_bf16 - the buffer the chain
+     * reduces - as the routed sum, then the replicated-compute shared
+     * expert's rank partial adds IN PLACE. The finalize previously wrote
+     * the routed sum into hidden_bf16 (the HC streams surface) and the
+     * add overwrote it with attention_out + shared_out: the routed experts
+     * never reached the residual, and REDUCE_MLP summed sixteen identical
+     * copies of the already-reduced attention output - every MoE layer
+     * placed 16x the attention sublayer output as its "FFN" contribution
+     * (receipt: second r0 post == 16.000000x first r0 post on L42/L44).
+     * Rank-invariant, TP1-invisible (the reduce no-ops), and the TP1
+     * oracle mirrored the chain, so every gate passed. The dense tail
+     * (layers 0-2) always wrote attention_out directly and was correct. */
     LM_LAUNCH(
         (LmAddRowsKernel<GLM5_NEXT_LAYER_THREADS>),
         dim3(
@@ -2382,7 +2394,7 @@ static int32_t Glm5NextLayerMoe(
         stream,
         buffers->attention_out_bf16,
         buffers->shared_out_bf16,
-        buffers->hidden_bf16,
+        buffers->attention_out_bf16,
         rows,
         GLM5_NEXT_HIDDEN);
     return cudaPeekAtLastError() == cudaSuccess
