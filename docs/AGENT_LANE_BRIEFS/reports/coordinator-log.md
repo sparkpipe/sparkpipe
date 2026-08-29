@@ -1214,3 +1214,16 @@ failure is ever diagnosable through the wire.
 - FLEET STATUS: realtokens done; 3res lane ACTIVE (nvfp4 branch
   landed 5m ago); K3 build DEAD AGAIN on sparke (0 procs — 3rd
   death); kda agent completed. Respawn K3-build keepalive next.
+
+## 2026-08-30 ~5:2x — cycle 1: repack fired; rank>0 packer bug caught; kda respawned
+
+- THE ONE THING executed: rank-0 fixed pack COMPLETE (21.7G, 1160
+  tensors) → launched r1-r15 parallel (one node each). ALL 15 FAILED
+  identically: fused q|k|v|b reads 0 bytes vs planned 12615680 — the
+  NEW per-section slicing is empty-ranged for tp_rank>0 (rank 0's
+  full-sections path masked it; classic untested-branch). Warm healthy
+  (178MB/s; shard order non-sequential is a red herring — index
+  resolves). Kda agent respawned with the exact failure + receipts.
+- Duty 1: 3res active (tip 22m); kda completed->respawned; K3 build
+  running. Duty 2: closer — root causes all landed; one sharded-slice
+  bug between us and the cell.
