@@ -1844,3 +1844,19 @@ appendix).
   chain — nvcc build of the probe module (CPU, no reservation), then the
   16-rank wave with the x8 window (GPU, 90-min rolling reservation, one
   wave owner = coordinator), then the layer-34 retention discriminator.
+
+## 2026-08-29 ~14:2x — SPAWNS RESTORED: full 5-lane fleet relaunched
+
+- Operator restored the subagent provider (probe agent verified OK at
+  14:26). Relaunched the entire backlog in one batch, briefs updated to
+  main 9eb58ef: probe-fix (glm5_next chain — probe wave w/ x8 window ->
+  retention discriminator -> fix -> COMPSEC-17 -> 92x -> M5; wave owner),
+  r2-prefill (R2a budget receipt + R2c bulk-prefill; drop stale model_api
+  silencing at rebase), k3-finish (fixtures report + layout fixture DONE
+  by coordinator — straight to the K3 fleet wave + TP4 equivalence),
+  w2-weightd (NEW: W2a daemon skeleton on the merged W1 primitives),
+  jikv-slice (NEW: JIT-KV vertical slice, cuda-stub). GPU arbitration
+  via queue rolling reservations; nvcc builds reservation-free.
+- This cycle's one thing IS the restoration: 5/5 slots productive again
+  after two coordinator-executed cycles. Fleet untouched (residentd up
+  on spark0).
