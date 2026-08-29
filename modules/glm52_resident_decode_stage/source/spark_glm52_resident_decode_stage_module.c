@@ -249,8 +249,43 @@ static SparkStatus SparkGlm52PackValidateHeader(
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
-	if ( SparkGlm52ContractHash(contract_sha256) < 0 || header->model_revision[SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 || memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)) != 0 || SparkGlm52BytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)) != 0u || SparkGlm52BytesAreZero(header->pack_recipe_sha256,sizeof(header->pack_recipe_sha256)) != 0u )
+	/* The pack identity gate, one named conjunct per return so a
+	 * hash_mismatch in the daemon log says WHICH identity failed
+	 * (the R3 cell died here with the sub-condition unobservable). */
+	if ( SparkGlm52ContractHash(contract_sha256) < 0 )
+	{
+		fprintf(stderr,"glm52 pack gate: contract hash unreadable\n");
 		return(SPARK_STATUS_HASH_MISMATCH);
+	}
+	if ( header->model_revision[SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 )
+	{
+		fprintf(stderr,"glm52 pack gate: model_revision %.*s != expected %s\n",
+			SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES,header->model_revision,
+			state->model_revision);
+		return(SPARK_STATUS_HASH_MISMATCH);
+	}
+	if ( memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)) != 0 )
+	{
+		uint32_t hash_index;
+		fprintf(stderr,"glm52 pack gate: contract_sha256 pack=");
+		for ( hash_index = 0u; hash_index < sizeof(contract_sha256); hash_index++ )
+			fprintf(stderr,"%02x",header->contract_sha256[hash_index]);
+		fprintf(stderr," expected=");
+		for ( hash_index = 0u; hash_index < sizeof(contract_sha256); hash_index++ )
+			fprintf(stderr,"%02x",((const unsigned char *)contract_sha256)[hash_index]);
+		fprintf(stderr,"\n");
+		return(SPARK_STATUS_HASH_MISMATCH);
+	}
+	if ( SparkGlm52BytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)) != 0u )
+	{
+		fprintf(stderr,"glm52 pack gate: source_config_sha256 all zero\n");
+		return(SPARK_STATUS_HASH_MISMATCH);
+	}
+	if ( SparkGlm52BytesAreZero(header->pack_recipe_sha256,sizeof(header->pack_recipe_sha256)) != 0u )
+	{
+		fprintf(stderr,"glm52 pack gate: pack_recipe_sha256 all zero\n");
+		return(SPARK_STATUS_HASH_MISMATCH);
+	}
 	if ( header->file_bytes != file_bytes || header->directory_offset < header->header_bytes || header->directory_offset % SPARK_GLM52_STAGEPACK_ALIGNMENT_BYTES != 0u || header->tensor_count > UINT64_MAX / header->directory_entry_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;

@@ -1274,7 +1274,11 @@ CEILING = 228248
 # SparkSetError buffer, so a boot loop reported only a status code; it now
 # prints the exact failing check to stderr (the r3 cell's hash_mismatch
 # boot loop named nothing). 229937 exact.
-CEILING = 232530
+# glm52 pack identity gate made observable: the one-conjunct hash
+# return split into named per-conjunct returns with stderr details
+# (revision/contract-hash-hex/zero-sha) — the R3 cell died on
+# hash_mismatch with the failing sub-condition unobservable.
+CEILING = 232565
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
