@@ -14,7 +14,12 @@
 
 /* Real-tokens lane diagnostic: SPARK_GLM5_NEXT_PROBE=1 arms the
  * G5N-PROBE dumps (token ids seen by Execute, post-embed hidden row,
- * post-reduce head maxloc). Print-only, off by default. */
+ * post-reduce head maxloc). Print-only, off by default. The env is read
+ * lazily on the FIRST probe-gated call (all of them run in the Execute
+ * chain, none in create), so arming the ladder never changes the create
+ * path itself - only its duration budget, see the connect-timeout scale
+ * in SparkGlm5NextModuleInitializeTpCollective. */
+#define SPARK_GLM5_NEXT_PROBE_CONNECT_TIMEOUT_SCALE 4u
 static int SparkGlm5NextProbeEnabled(void)
 {
 	static int probe_enabled = -1;
@@ -1458,6 +1463,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	const SparkGlm5NextResidentDecodeStageNodeContext *context)
 {
 	SparkTpDeviceCollectiveConfig configuration,configuration_hc;
+	uint32_t probe_connect_timeout_milli;
 	uint64_t credit_bytes,offset,total_bytes;
 	uint32_t credit,hidden,memory_mode,route,route_count;
 	void *mapped_receive,*mapped_send;
@@ -1467,6 +1473,20 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
+	/* Probe-BUSY relief (lane/probe-fix): a probe-armed build is slower BY
+	 * DESIGN, and the transport open deadline must not read that stall as a
+	 * dead peer (the 2026-08-29 probe wave died 16/16 with
+	 * initialize=busy rc=15 inside the 180000ms window). Scale the connect
+	 * window only when the ladder is armed; the serving default is
+	 * untouched. */
+	probe_connect_timeout_milli = context->tp_connect_timeout_milli;
+	if ( SparkGlm5NextProbeEnabled() )
+	{
+		if ( probe_connect_timeout_milli >
+			UINT32_MAX / SPARK_GLM5_NEXT_PROBE_CONNECT_TIMEOUT_SCALE )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		probe_connect_timeout_milli *= SPARK_GLM5_NEXT_PROBE_CONNECT_TIMEOUT_SCALE;
+	}
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	configuration.backend_kind = context->tp_collective_backend_kind;
@@ -1479,7 +1499,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	 * credit buffers are priced by execution_row_capacity, not the bucket's
 	 * absolute input-row ceiling. */
 	configuration.max_active_sequence_count = state->execution_row_capacity;
-	configuration.connect_timeout_milli = context->tp_connect_timeout_milli;
+	configuration.connect_timeout_milli = probe_connect_timeout_milli;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
 	configuration.control_port_base = context->tp_collective_control_port_base;
 	configuration.collective_identifier = context->tp_collective_identifier;
@@ -1504,7 +1524,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	configuration_hc.local_hidden_dimension =
 		SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * SPARK_GLM5_NEXT_MODEL_HC_MULT;
 	configuration_hc.max_active_sequence_count = configuration.max_active_sequence_count;
-	configuration_hc.connect_timeout_milli = context->tp_connect_timeout_milli;
+	configuration_hc.connect_timeout_milli = probe_connect_timeout_milli;
 	configuration_hc.operation_timeout_milli = context->tp_operation_timeout_milli;
 	configuration_hc.control_port_base = context->tp_collective_control_port_base +
 		SPARK_GLM5_NEXT_TP_COLLECTIVE_HC_PORT_STRIDE;
