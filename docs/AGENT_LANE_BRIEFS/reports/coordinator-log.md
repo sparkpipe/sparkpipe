@@ -1408,3 +1408,17 @@ appendix).
   position>0).
 - No merge this window (3 lanes mid-flight, tips pending). 3res tip
   4m old — active.
+
+## 2026-08-30 ~11:1x — PERF PROGRAM LANDED (fa337b7): kimi's Rosetta Stone + P3 spawned
+
+- The meta-cause accepted verbatim: the specialization bet paid at B1
+  (dsv4 beats vLLM there); the generalized stacks win on LOOP SHAPE —
+  async scheduling, chaining, full-graph replay, fast collectives —
+  all adoptable WITHOUT giving up the firmware model. dsv4 proves it.
+- P3 (batched kernels from B=2) SPAWNED — the one fleet-independent
+  item; host-oracle-first, device bench when a GPU frees. The 'r-law'
+  was a dispatch artifact (scalar GEMV per-row weight re-streams).
+- P1 (chain+async port) is fleet-gated behind the closeout — the
+  biggest single item (>10% and the no-spec-cell gap). P2 (collective
+  program) designs in the next window. Capacity rule LIVE in the
+  README (spec-default footguns named).
