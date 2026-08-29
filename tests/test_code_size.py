@@ -908,7 +908,14 @@ from pathlib import Path
 # glm5-closeout (PR746): pack verifier+orchestrator+swap/wave tools,
 # the provenance header patch (the hard deploy gate), COMPSEC/M5
 # harnesses, LAUNCH-STATE updates. 219673 exact.
-CEILING = 219673
+# r2-prefill (PERF_PROGRAM2 rock R2b): the qwen38_27b prefill chunk width
+# tracks max_input_row_count instead of max_active_sequence_count - the
+# module frame-row scratch/validation/admission/TP width now derive from
+# one helper, the adapter chunk + gather scratch follow the deployment's
+# max_input_rows, and the regression case pins one-frame-per-4-row-prefill
+# (revert-checked). model_api.c: the hardcoded 16-row engine budget tracks
+# the deployment limit. Net +66; 219739 exact.
+CEILING = 219739
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
