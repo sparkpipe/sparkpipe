@@ -118,7 +118,10 @@ def main():
     for codec in CODECS:
         build = subprocess.run(
             [host_cuda_cxx(), "-std=c++17", "-O1",
-             f"-DEXPERT_CODEC={codec}", *INCLUDES,
+             f"-DEXPERT_CODEC={codec}",
+             # the firmware header (the split-partials sizing) names the codec
+             # in its variant module id; the string is unused identity here.
+             '-DGLM52_EXPERT_CODEC_NAME="int8"', *INCLUDES,
              "-x", "c++", str(SOURCE), "-o", str(BINARY)],
             capture_output=True, text=True)
         if build.returncode != 0:
@@ -270,6 +273,13 @@ def main():
             for e in range(8))
     failures = compare("latent attention math", want_small,
                        series["smallattn"], failures, 5e-2)
+    # R3 flash-decode: the split path over the same three positions (the
+    # launcher engages 16 partitions, 13 of them empty tails) is the same
+    # softmax to rounding, and the bit-level receipts must both hold.
+    failures = exact("split receipts", [1, 1], series["splitreceipt"],
+                     failures)
+    failures = compare("latent attention split math", want_small,
+                       series["smallattnsplit"], failures, 5e-2)
 
     # MoE: the second norm folds the attention output into the stream.
     res2, normed2 = [], []

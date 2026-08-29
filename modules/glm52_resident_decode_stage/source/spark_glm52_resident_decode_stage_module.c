@@ -70,6 +70,7 @@ struct SparkGlm52ModuleState
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
 	uint32_t execution_row_capacity;
+	uint32_t decode_split_context_threshold;
 	uint32_t pages_per_sequence;
 	uint32_t page_count;
 	uint32_t index_layer_count;
@@ -175,7 +176,7 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	context = (const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context;
 	if ( context->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( context->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
+	if ( context->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->decode_split_context_threshold > context->max_sequence_positions || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -203,6 +204,7 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->pipeline_slot_count = context->pipeline_slot_count;
 	state->max_sequence_positions = context->max_sequence_positions;
 	state->execution_row_capacity = context->execution_row_capacity;
+	state->decode_split_context_threshold = context->decode_split_context_threshold;
 	state->owns_embedding = context->stage_index == 0u ? 1u : 0u;
 	state->owns_final_head = context->stage_index + 1u == context->stage_count ? 1u : 0u;
 	state->execution_stream = host_services->execution_stream;
@@ -597,6 +599,7 @@ static SparkStatus SparkGlm52AllocateSlotMlp(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->shared_out_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,rows,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT,sizeof(float),(void **)&slot->router_logits_f32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,rows,state->max_sequence_positions,sizeof(float),(void **)&slot->selection_scores_f32);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(rows,SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree),SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS,sizeof(float),(void **)&slot->attention_split_partials_f32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,rows,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,sizeof(uint32_t),(void **)&slot->selected_positions);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_expert);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,packed_rows,1u,sizeof(float),(void **)&slot->route_weight);
@@ -1179,6 +1182,10 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->index_ordinal_by_local_layer = state->index_ordinal_by_local_layer;
 	wave->page_table = state->page_table;
 	wave->multiprocessor_count = state->multiprocessor_count;
+	wave->decode_split_context_threshold = state->decode_split_context_threshold;
+	wave->attention_split_partials_f32 = slot->attention_split_partials_f32;
+	wave->attention_split_partial_blocks = SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(
+		state->execution_row_capacity,SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree);
 }
 
 static SparkStatus SparkGlm52ModuleCombineBf16(

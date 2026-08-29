@@ -405,6 +405,94 @@ int main(void)
                 test_query_latent, test_query_rope, test_cache,
                 test_sequence, test_context, 0, 0u, 2u, 0.5f, test_out, 0)));
         Emit("smallattn", test_out, 2u * 8u);
+
+        // R3 flash-decode receipts at the same tiny geometry, where one
+        // thread covers everything and the single-pass output above is the
+        // ground truth:
+        //  1. one live position through TWO partitions (the second empty) -
+        //     the combine multiplies by exp(0) = 1 and adds zeros, so the
+        //     bytes must equal the single-pass kernel bit for bit;
+        //  2. the launcher below the threshold must reproduce the single-pass
+        //     launch bit for byte;
+        //  3. the launcher above the threshold (16 partitions over three
+        //     positions) must be deterministic across runs, and its bytes are
+        //     emitted for the python oracle comparison - the multi-partition
+        //     combine is the same softmax up to where the rescale multiplies
+        //     round, so it matches within tolerance, not bitwise.
+        {
+            static float split_partials[2u * 16u * (8u + 2u)];
+            static uint16_t split_out[2u * 8u];
+            static uint16_t split_out_again[2u * 8u];
+            static uint16_t split_off[2u * 8u];
+            static uint16_t base_one[2u * 8u];
+            static uint32_t context1 = 1u;
+            uint32_t split_flags[2];
+            int exact, deterministic;
+
+            // The one-position single-pass reference for receipt (1).
+            LM_HOST_LAUNCH(
+                dim3(1u, 2u),
+                (LmLatentAttentionDecodeKernel<TestKv, 1u, 8u, 8u>(
+                    test_query_latent, test_query_rope, test_cache,
+                    test_sequence, &context1, 0, 0u, 2u, 0.5f, base_one,
+                    0)));
+
+            // (1) context 1, partitions 2: partition 1 is an empty tail.
+            memset(split_partials, 0, sizeof(split_partials));
+            LM_HOST_LAUNCH(
+                dim3(1u, 2u, 2u),
+                (LmLatentAttentionDecodeSplitKernel<TestKv, 1u, 8u, 8u>(
+                    test_query_latent, test_query_rope, test_cache,
+                    test_sequence, &context1, 0, 0u, 2u, 2u, 0.5f,
+                    split_partials, 0)));
+            LM_HOST_LAUNCH(
+                dim3(1u, 2u),
+                (LmLatentAttentionDecodeSplitCombineKernel<1u, 8u>(
+                    split_partials, split_out, 2u, 2u)));
+            exact = memcmp(split_out, base_one, sizeof(split_out)) == 0;
+
+            // (2) the launcher, threshold 0: the single-pass launch itself.
+            if (LmLatentAttentionDecodeSplitLaunch<
+                    TestKv, 1u, 8u, 8u>(
+                    test_query_latent, test_query_rope, test_cache,
+                    test_sequence, test_context, 0, 0u, 2u, 0.5f,
+                    split_off, 0, 1u, 3u, 0u, split_partials,
+                    sizeof(split_partials) / sizeof(float), 48u, 0) != 0)
+            {
+                exact = 0;
+            }
+            if (memcmp(split_off, test_out, sizeof(split_off)) != 0)
+            {
+                exact = 0;
+            }
+
+            // (3) the launcher, threshold 1: the split+combine path, twice.
+            if (LmLatentAttentionDecodeSplitLaunch<
+                    TestKv, 1u, 8u, 8u>(
+                    test_query_latent, test_query_rope, test_cache,
+                    test_sequence, test_context, 0, 0u, 2u, 0.5f,
+                    split_out, 0, 1u, 3u, 1u, split_partials,
+                    sizeof(split_partials) / sizeof(float), 48u, 0) != 0 ||
+                LmLatentAttentionDecodeSplitLaunch<
+                    TestKv, 1u, 8u, 8u>(
+                    test_query_latent, test_query_rope, test_cache,
+                    test_sequence, test_context, 0, 0u, 2u, 0.5f,
+                    split_out_again, 0, 1u, 3u, 1u, split_partials,
+                    sizeof(split_partials) / sizeof(float), 48u, 0) != 0)
+            {
+                deterministic = 0;
+            }
+            else
+            {
+                deterministic =
+                    memcmp(split_out, split_out_again,
+                           sizeof(split_out)) == 0;
+            }
+            split_flags[0] = (uint32_t)exact;
+            split_flags[1] = (uint32_t)deterministic;
+            EmitU32("splitreceipt", split_flags, 2u);
+            Emit("smallattnsplit", split_out, 2u * 8u);
+        }
     }
 
     status = Glm52LayerMoe<EXPERT_CODEC>(

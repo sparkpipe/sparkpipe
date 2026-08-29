@@ -988,7 +988,7 @@ from pathlib import Path
 # kernel, the bulk launcher pair, and the whole-frame module wiring
 # (shadow+scatter+one attention launch per prefill frame), net +241
 # authored lines. Rebased onto the W2a + JIT-KV main; re-measured at resolution: 225258 exact.
-CEILING = 227318
+CEILING = 227933
 # The JIT-KV family wiring (lane/jikv-wire, 2026-08-29) connects the slice
 # to its reference family, per the slice report's remaining-work list and
 # docs/JIT_KV_RESPONSE.md W1+C2: the decode stage module's frame-op seam
@@ -1056,6 +1056,24 @@ CEILING = 227318
 # cache/kv_pager.c +600/-60 net 540, spark_kv_pager.h +136, Makefile rule
 # +8; the host proof tests/test_jit_kv_c3c4.c is excluded by construction.
 # 226466 exact (re-measured after the RestoreBlock BUSY-contract note in the pager header; +1 doc line).
+# The r3-flashdecode lane (2026-08-29) lands PERF_PROGRAM2's R3: flash-decode
+# for the shared latent decode attention (inference/kernels/attn.cuh), the
+# kernel the perf program pinned as "24-64 CTA grids, block reduction per
+# position, KV read twice, no split-K". The split kernel partitions the
+# position range across a third grid axis, runs the IDENTICAL per-position
+# body per partition, and a fixed-order combine merges the per-partition
+# softmax states (attn.cuh +330: split kernel, combine kernel, the
+# threshold-gated auto launcher whose below-threshold branch is the
+# byte-for-byte single-pass launch). Wiring is the two consumers -
+# glm52 and glm5_next layer.cuh call sites, the buffers/wave/slot fields,
+# the NodeContext knob decode_split_context_threshold (ABI 4->5 both
+# families, serving adapters parse the deployment key, 16 glm5_next stage
+# configs gain the key at 0 = disabled = byte-for-byte shipped behavior),
+# the per-slot partials workspace (16 x (latent+2) floats per
+# (row,head)), and the glm52 validator's split leg (oracle bounds still
+# hold + split-walk bit-exact determinism). tests/ additions are excluded
+# by construction; the ratchet bump carries the launcher wiring only.
+# 227933 exact (re-measured after factoring the validator split leg into SparkGlm52ValRunSplitLeg for the CCN budget).
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
