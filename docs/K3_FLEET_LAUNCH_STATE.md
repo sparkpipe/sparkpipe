@@ -120,19 +120,34 @@ one wave owner).
 
 ## Current blockers to the first K3 fleet number
 
-1. Stage-0/1/2 packs (lane/k3-finish, 2026-08-29): stage-0 sliced+verify
-   in flight; stage-1 cross-verify then deploy; stage-2 building under
-   keepalive. THE BUILD CAN NO LONGER DIE SILENTLY:
-   /home/sparke/k3build/keepalive.sh (committed as tools/k3_keepalive.sh)
-   restarts the journal-resuming packer if it dies and logs every restart
-   to /home/sparke/k3build/keepalive.log; it exits DONE when the pack
-   completes. If sparke rebooted: re-run
-   `cd /home/sparke/k3build && nohup bash keepalive.sh 48 23 /home/sparke/k3build/k3_stage_48_23.pack >> keepalive.log 2>&1 &`.
-2. Exclusive fleet window: glm5_next TP16 fleet holds all 16 nodes (the
-   probe-fix lane: connect-window fix landed; retention-advance
-   discriminator → verdict fix → COMPSEC-17 → M5 remain). K3 cannot
-   coexist (memory above). When their M5 lands and their fleet TERMs:
-   `k3_fleet_wave.sh check` (must be fully green incl. memory), then
+1. Stage packs (lane/k3-finish, 2026-08-30): stage-0 (spark0-3) and
+   stage-1 (spark4-7) DEPLOYED with sha receipts (k3_stage_0_24.deploys/
+   00:41, k3_stage_24_23.deploys/ 22:11); stage-3 (sparkc-f) deployed
+   earlier. Stage-2 rebuilt as 47_23 (see the stage table warning below)
+   and its slice/verify/deploy chain completing on sparke
+   (finish_stage2b.log; receipts land in k3_stage_47_23.deploys/). The
+   build can no longer die silently: /home/sparke/k3build/keepalive.sh
+   (committed as tools/k3_keepalive.sh) restarts the journal-resuming
+   packer if it dies and logs every restart to keepalive.log; it exits
+   DONE when the pack completes. If sparke rebooted: re-run
+   `cd /home/sparke/k3build && nohup bash keepalive.sh 47 23 /home/sparke/k3build/k3_stage_47_23.pack >> keepalive.log 2>&1 &`.
+   STAGE TABLE WARNING (the 48_23 defect, caught 2026-08-30): the runner's
+   PP4 stage table is {first: 0,24,47,70} x {count: 24,23,23,23}
+   (spark_k3_resident_decode_stage_runner.cu K3RunnerFirstLayer/
+   K3RunnerLayerCount). Stage-2 is 47_23, NOT 48_23 — a 48_23 pack fails
+   SparkK3ModuleInitialize's first_layer check on ranks 8-11 and would
+   have silently dropped layer 47 while duplicating 70. The 47_23 pack
+   (388,835,087,872 B, keepalive DONE 00:46:43 node time) replaced it;
+   its four rank packs sliced and cross-verified (534 tensors, 23 layers,
+   verify_stage2_ranks.log). The wrong 48_23 pack is left on sparke
+   (~389 G reclaimable — coordinator's call).
+2. Exclusive fleet window: glm5_next TP16 fleet holds all 16 nodes;
+   glm5-dsa is the wave owner for glm5_next (the lane-glm5attractor x16
+   hold transferred to them). K3 cannot coexist (memory above). Windows
+   are taken ONLY via the queue's 90-min rolling reservations — when the
+   glm5 lease lapses AND no residentd of any family is live
+   (`k3_fleet_wave.sh check` is the census): reserve all 16 for
+   lane-k3-finish, then `check` (must be fully green incl. memory), then
    `launch`. NOTE: spark2/spark3 are the active-MDS hosts per the storage
    rule — check `ceph fs status` before lighting; if the MacStudio MDS
    relocation has not landed, the operator owes an envelope exception for

@@ -623,8 +623,8 @@
     },
     {
       "path": "docs/K3_FLEET_LAUNCH_STATE.md",
-      "sha256": "29f85d17d2aaf946d9c9602215229c80415a48d871f574b94638b98ec0f15744",
-      "size_bytes": 8568
+      "sha256": "b72db221bf8e442ef5cda52c09fb30c30fbec7e375b4591f3b8efccf316199a6",
+      "size_bytes": 9616
     },
     {
       "path": "docs/K3_PERF.md",
@@ -8500,5 +8500,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31268074
+  "total_bytes": 31269122
 }
