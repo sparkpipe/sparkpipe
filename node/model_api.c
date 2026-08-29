@@ -436,6 +436,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	SparkJsonDocumentDestroy(&doc);
 	(void)request_stops; /* TODO(next commit): thread to req + TOKEN-event check */
+	(void)request_stop_count; /* silenced alongside request_stops (gcc -Werror: set-but-not-used broke the Linux API build) */
 	if (prompt_len == 0)
 	{
 		send_response(fd, 400, "{\"error\":\"prompt_token_ids required\"}");
