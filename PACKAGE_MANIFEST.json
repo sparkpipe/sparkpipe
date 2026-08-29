@@ -438,8 +438,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-finish-2026-08-30b.md",
-      "sha256": "ab24eaddd9d12f1d1f68bfb1dadcc3a8668acd65d4403214eae36f704ed71e5e",
-      "size_bytes": 10188
+      "sha256": "b79887f0ed63718f20cdf4bb9c26e1c985763a5ab6daca65e371e1200d07aeaf",
+      "size_bytes": 10899
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-fleet-2026-08-28.md",
@@ -8500,5 +8500,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31270783
+  "total_bytes": 31271494
 }
