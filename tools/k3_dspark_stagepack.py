@@ -244,10 +244,15 @@ def pack(checkpoint: Path, output: Path, receipt: dict) -> dict:
             raise PackFailure(
                 f"{name}: dtype {src.dtype(name)} - the format carries BF16 only; "
                 "repackage-never-quantize forbids converting")
-        if src.shape(name) != [rows, cols]:
+        # element-count equality: the wire stores rows x cols, so the source's
+        # 1-D norm vectors ([64], [1]) and 2-D weights land identically
+        src_numel = 1
+        for dim in src.shape(name):
+            src_numel *= dim
+        if src_numel != rows * cols:
             raise PackFailure(
                 f"shape mismatch {name}: safetensors {src.shape(name)} "
-                f"vs plan [{rows}, {cols}] (config geometry)")
+                f"({src_numel} elements) vs plan [{rows}, {cols}] (config geometry)")
         if nbytes != payload_bytes:
             raise PackFailure(f"size mismatch {name}: header {nbytes} vs plan {payload_bytes}")
         plans.append((kind, layer, name, payload_offset, payload_bytes, offset, rows, cols))
@@ -314,15 +319,27 @@ def pack(checkpoint: Path, output: Path, receipt: dict) -> dict:
         temp.write(ext)
         temp.write(entries)
         temp.write(b"\0" * (payload_base - temp.tell()))
-        for kind, layer, name, payload_offset, payload_bytes, src_offset, _, _ in plans:
-            with open(checkpoint / "model.safetensors", "rb") as f:
-                f.seek(src_offset)
-                payload = f.read(payload_bytes)
-            temp.write(payload)
-            pad = ((temp.tell() + PAYLOAD_ALIGNMENT - 1) & ~(PAYLOAD_ALIGNMENT - 1)) - temp.tell()
-            if pad:
-                temp.write(b"\0" * pad)
         temp.flush()
+        # payloads stream from the source in FILE-OFFSET order (one
+        # sequential pass - random seeks are what make warm-storage reads
+        # crawl) into their planned pack slots via pwrite; the safetensors
+        # file is opened ONCE
+        with open(checkpoint / "model.safetensors", "rb") as src_file:
+            for plan in sorted(plans, key=lambda p: p[5]):
+                kind, layer, name, payload_offset, payload_bytes, src_offset, _, _ = plan
+                src_file.seek(src_offset)
+                remaining = payload_bytes
+                chunk_off = payload_base + payload_offset
+                while remaining > 0:
+                    chunk = src_file.read(min(remaining, 8 * 1024 * 1024))
+                    if not chunk:
+                        raise PackFailure(f"{name}: source ended early")
+                    os.pwrite(temp.fileno(), chunk, chunk_off)
+                    chunk_off += len(chunk)
+                    remaining -= len(chunk)
+        # extend to the header's aligned file_bytes so the tail pad exists
+        # (holes between payloads are already implicit zeros)
+        os.ftruncate(temp.fileno(), file_bytes)
         os.fsync(temp.fileno())
     os.replace(temp_path, output)
     receipt["output_sha256"] = sha256_file(output)
