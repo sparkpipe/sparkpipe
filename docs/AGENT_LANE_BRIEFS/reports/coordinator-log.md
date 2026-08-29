@@ -1675,3 +1675,19 @@ appendix).
   (no random rank death). N more waves accumulate confidence; the
   degeneration hunt (retention-advance probe: conv-edge vs fused-
   shape) proceeds on this stable base.
+
+## 2026-08-30 ~24:1x — CLOSEOUT MERGED (4103ac2→f2b4c62): the hunt's exact state
+
+- THE DEGENERATION IS VALUE-CORRECT-ADJACENT BUT STILL DEGENERATE:
+  fixed packs changed the cold distribution (116315→66188) and
+  COLD-first-request is already broken → candidates 2/3 stand
+  (conv-window edge / fused-section shape vs kernel). State bleed is
+  REAL but SECONDARY (same-prompt-different-repeats across requests)
+  — the recurrence-reset IR + the primary fix both land next.
+- THE PROBE LADDER IS BROKEN: driver 6ca5f16b returns BUSY from
+  create() whenever SPARK_GLM5_NEXT_PROBE armed — a REGRESSION from
+  the kda-era driver that blocks all per-layer diagnostics. THE NEXT
+  HUNT'S PREREQ (mine, next window).
+- NEW HARD GATE documented: provenance header patch (the repack packer
+  emits zeros; module rejects zeros) — packer-side fix is the IR.
+- Wave law: node-to-node fanout FROM spark0 is the reliable form.
