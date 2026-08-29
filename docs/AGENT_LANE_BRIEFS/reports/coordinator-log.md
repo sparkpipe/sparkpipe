@@ -2033,3 +2033,19 @@ appendix).
 - Slot 6 filled: contbatch2 (step-boundary continuous admission,
   C1-mirrored refusals, starvation bound; barred from model_api.c).
   Fleet 6/6 at cap.
+
+## 2026-08-29 ~18:4x — BF16 PUBLISHED; pack build fired
+
+- BF16 published at 18:35:17Z (all 1,506,693,048,081 bytes verified
+  against the Hub pins; the re-arm's verify+promote took ~10min on
+  warm cache). ALL THREE GLM 5.3 full resolutions are now
+  source-complete: nvfp4 (banked packs), fp8 (placed), bf16 (building).
+- BF16 16-rank pack build FIRED detached on spark5 (1.8T free;
+  98.02GB/rank x16 = 1.568T). On completion: validate 16, place,
+  contract re-freeze with the bf16 promoted path.
+- OPERATOR RULING QUEUED (BF16-expert arm): the glm5_next module's
+  static_assert refuses expert codec 1 (BF16 experts) by deliberate
+  default; the BF16 resolution packs require accepting it (or building
+  the arm). Recommendation: accept codec-1 for the glm53full BF16 arm
+  only — reference-precision config, 98GB/rank fits the 110GiB law
+  with ~12G headroom; the FP8/NVFP4 arms stay the serving defaults.
