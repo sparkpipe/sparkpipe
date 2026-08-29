@@ -9,7 +9,7 @@ checkpoint-derived execution package.
 | Family | Variants | Typical placement |
 | --- | --- | --- |
 | DeepSeek V4 | Flash, Pro | TP4 x PP4 on sixteen Sparks for large resident execution |
-| GLM | 5.3 Flash (active), 5.2 (deprecated: kernel donor only) | model-profiled TP/PP placement |
+| GLM | 5.3 Flash (active), 5.3 Full (onboarding: NVFP4/FP8/BF16 repack), 5.2 (fully deprecated: kernel-donor role superseded by 5.3 Full — same glm52 module, new weights) | model-profiled TP/PP placement |
 | Kimi | K3 | model-profiled TP/PP placement |
 | MiniMax | H3 | model-profiled TP/PP placement |
 | Qwen | 3.8 Max, 3.8 27B, 3.8 Flash (Qwen4-exp arch, onboarding) | global TP for smaller dense variants or profiled large-model placement |
