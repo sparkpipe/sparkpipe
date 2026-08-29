@@ -186,7 +186,8 @@ TOOL_NAMES := \
     spark_model_kernel_characterize \
     spark_transport_characterize \
     spark_topology_characterize \
-    spark_pmtu_characterize
+    spark_pmtu_characterize \
+    sparkpipe_registrar
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -272,6 +273,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_compressor_emission_source.py \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_ga_reference_fixture.py \
+	tests/test_fleet_registrar.py \
 	tests/test_dsv4_native_compute_source.py \
 	tests/test_dsv4_module_host_syntax.py \
 	tests/test_dsv4_stage_source.py \

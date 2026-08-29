@@ -887,7 +887,14 @@ from pathlib import Path
 # families hit it at merge by construction. 215868 exact.
 # ccn lane merge (PR742): env-soup eviction + dump deletes +
 # verbatim-motion extraction + validator tables; nets −2,226. 214793 exact.
-CEILING = 214793
+# registrar lane: the fleet startup protocol phases 1+1b land as shared
+# tooling — tools/sparkpipe_registrar.c (797: announce/merge, three-level
+# ready, GO relay, fail-loud MISSING/PARTIAL-VIEW/STALE/STALE-IMMUNE diff,
+# TERM-by-exact-cwd cleanslate, zero repo deps) + its Makefile rule (+5),
+# tools/registrar_stage.sh (33: compile-once-copy-fleet), and the wave
+# integration in tools/glm5_next_wave.sh (+79 net: registrar fanout +
+# GO gate before the heavy wave, settled-75s, log archiving). 215700 exact.
+CEILING = 215700
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
