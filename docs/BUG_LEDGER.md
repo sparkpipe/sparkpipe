@@ -63,3 +63,17 @@ SEQUENCING: correctness bugs first (they gate the measurements), then
 R1/R5 (cheap wins, receipts), then D1 before any new family hits the
 collective, then P1/D2 (the loop), then R3/R4 kernel projects, then
 D3. The ledger is THE checklist for the next kimi pass.
+
+## The salvage list (from the PR triage 2026-08-30 — value to re-land, each re-pointed)
+
+S1 16-BYTE VECTORIZED GEMV loads (ex-#651 MXFP4/FP8, ex-#652 BF16):
+   R4-class kernel filling; re-measure vs CURRENT baseline (the
+   B1=B2 correction is why), then land through the oracle gates.
+S2 DSPARK SPEC_STEP PRO ALIAS (ex-#672): small real mapping — folds
+   into the Pro driver-rebuild item.
+S3 EXACT-32K ADMISSION (ex-#719): the math was right, the KV budget
+   wasn't — re-opens with the JIT-KV tier or sized-down lanes.
+S4 P1A COMPLETING POINTS (ex-#735): B48/32/16 + B24x2 behind the
+   fleet window (queued).
+19 PRs triaged total: 11 superseded/rejected closed, 8 value-carrying
+re-pointed (7 closed into programs, #740's lane continues live).
