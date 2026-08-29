@@ -1170,8 +1170,15 @@ CEILING = 228248
 # fd's ADDRESS, so the driver read a stack address as an fd number
 # (CUDA_ERROR_INVALID_HANDLE); the stub modeled the by-value contract, so
 # only hardware exposed it. One-expression fix + the comment recording it.
-# 229914 exact.
-CEILING = 229914
+# +8 more: the same import failure branch now prints the driver's CUresult +
+# fd under SPARK_WEIGHTD_IMPORT_DIAG (the reason code names the stage but
+# not the driver error; the cross-process leg's exact divergence needed it).
+# A standalone probe (create/export/import same-process, re-export,
+# SCM_RIGHTS to a fresh-exec child with the cudaFree(0) bootstrap) proves
+# the driver 580.159.03/GB10 path fully capable - so the remaining
+# cross-process failure is consumer-path, and the diag names it.
+# 229922 exact.
+CEILING = 229922
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
