@@ -1740,3 +1740,18 @@ appendix).
 - Also merged this cycle: R2b (prefill chunk width — the 21.7 tok/s
   bug) + k3-finish's keepalive/envelope tools.
 - 5/5 agents alive (2 pushed + merged, 3 deep).
+
+## 2026-08-30 ~13:2x — THE ONE THING: EOS request-threading COMPLETE (ab47a3d)
+
+- Per-request stop_token_ids now honored end-to-end: parsed → threaded
+  to the request → checked at every TOKEN event → a match emits the
+  token, completes the request (OpenAI semantics), and CANCELS the
+  engine submission (no GPU past the client's stop). Frees ride the
+  orphan/unlink paths. Strict -Werror clean. With the env EOS set:
+  the stop machinery is whole (kimi's correctness pair closed).
+- Also merged: r2's gcc fix (the -Werror Linux break). 5/5 agents
+  alive; r2 pushing steadily; probe-fix/w1/kernel-crew deep.
+- D1 surveyed: reserved0 (element override) already exists but
+  hidden-transport ignores it (pre-registered frames) — the twin WAS
+  the widening mechanism; extraction to a shared helper deferred
+  (glm5_next module = probe-fix's active write set; conflict).
