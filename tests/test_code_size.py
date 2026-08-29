@@ -887,7 +887,18 @@ from pathlib import Path
 # families hit it at merge by construction. 215868 exact.
 # ccn lane merge (PR742): env-soup eviction + dump deletes +
 # verbatim-motion extraction + validator tables; nets −2,226. 214793 exact.
-CEILING = 214793
+# jit-safety lane: kimi's four disqualifying JIT-KV bugs (docs/
+# JIT_KV_RESPONSE.md B1-B4), each the cheapest safe design for its hazard:
+# B1 the eviction write-back DEGRADE path in cache/kv_cache.c (ENOSPC drops
+# the block and marks backing invalid instead of wedging admission; fault-
+# injection tests incl. an RLIMIT_FSIZE full-disk repro), B2 the glm5_next
+# arena geometry fix + fail-loud init fence + compile-time slot/arena
+# identity assert (the OOB-DMA class), B3 per-slot SHA-256 digests through
+# cache/nvme_tier.c (+ scheduler/topology_switch.c consumer, + Makefile
+# sha256 links; restore-verified, collision = HASH_MISMATCH), B4 the
+# spark_kv_backing 0600/O_NOFOLLOW/fchmod-migration open + namespaced path
+# helpers. 215374 exact.
+CEILING = 215374
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

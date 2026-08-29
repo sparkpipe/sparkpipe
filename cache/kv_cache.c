@@ -1153,10 +1153,41 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
             arena->value_block_stride_bytes);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            /* B1 WRITE-BACK WEDGE (docs/JIT_KV_RESPONSE.md): the backing
+             * store refused the write (ENOSPC / full disk surface here as
+             * IO_ERROR; no free backing slot or no device room as
+             * CAPACITY_EXCEEDED). Retrying forever wedges the arena: the
+             * block can never be written, so it can never stop being a
+             * victim, so no new resident slot can ever be granted and
+             * admission stalls permanently. DEGRADE instead, per the JIT-KV
+             * contract: drop the block and let the sequence recompute it on
+             * demand. Clearing BACKING_VALID alongside DIRTY is what makes
+             * the drop safe - restore (SparkKvPageStorePrefetch) gates on
+             * BACKING_VALID and answers NOT_FOUND, never reading a stale or
+             * partial slot. Transient statuses are NOT degradation: BUSY is
+             * the async write-back in flight (the ordinary backpressure
+             * path), and any other status is a program error that must stay
+             * loud. */
+            if (status == SPARK_STATUS_IO_ERROR ||
+                status == SPARK_STATUS_CAPACITY_EXCEEDED)
+            {
+                if (arena->write_back_degraded_block_count != UINT32_MAX)
+                {
+                    arena->write_back_degraded_block_count += 1u;
+                }
+                block->flags &= ~SPARK_KV_CACHE_BLOCK_FLAG_DIRTY;
+                block->flags &= ~SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
+            }
+            else
+            {
+                return status;
+            }
         }
-        block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
-        block->flags &= ~SPARK_KV_CACHE_BLOCK_FLAG_DIRTY;
+        else
+        {
+            block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
+            block->flags &= ~SPARK_KV_CACHE_BLOCK_FLAG_DIRTY;
+        }
     }
     status = SparkKvCacheArenaReleaseResidentSlot(arena, block);
     if (status != SPARK_STATUS_OK)

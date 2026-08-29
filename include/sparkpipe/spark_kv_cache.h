@@ -425,7 +425,11 @@ typedef struct SparkKvCacheArena
     uint32_t free_logical_block_head;
     uint32_t next_resident_slot_scan;
     atomic_uint unassigned_resident_block_count;
-    uint32_t reserved1;
+    /* B1 write-back degradation counter (was padding): times an eviction
+     * write-back failed with an IO-class status and the block was DEGRADED
+     * (dropped, recompute-on-demand) instead of stalling admission.
+     * Saturates at UINT32_MAX. Same struct size as the reserved field. */
+    uint32_t write_back_degraded_block_count;
     uint64_t epoch;
     uint64_t allocated_block_count;
     uint64_t recycled_block_count;

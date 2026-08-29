@@ -43,6 +43,20 @@ static int SparkGlm5NextProbeEnabled(void)
 #define SPARK_GLM5_NEXT_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT 6u
 
+/* B2: slot geometry and arena geometry must describe the SAME per-DSA-
+ * layer page bytes. KV_SLOT_BYTES is the token slot (MLA_KV_A_DIMENSION
+ * bf16 scalars); the arena sees one block as kv_head_count=1 row of
+ * ARENA_HEAD_DIM per token. If these diverge, the arena's derived block
+ * stride stops matching the allocated pool and the init fence in
+ * SparkGlm5NextKvInitialize fails loud - this assert catches it at
+ * compile time. */
+#if SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES != \
+	( SPARK_GLM5_NEXT_KV_ARENA_KV_HEAD_COUNT * \
+	  SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM * \
+	  SPARK_GLM5_NEXT_KV_BYTES_PER_SCALAR )
+#error "glm5_next KV slot bytes and arena block geometry disagree"
+#endif
+
 typedef struct SparkGlm5NextPackRange
 {
 	uint64_t offset;
@@ -788,8 +802,24 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	uint64_t block_bytes;
 	uint64_t lane_page_entries;
 	SparkStatus status;
+	/* B2 ARENA GEOMETRY (docs/JIT_KV_RESPONSE.md): the tier machinery's
+	 * block is the DSA layer count of THIS stage - the KDA layers carry no
+	 * per-token KV (fp32 state + conv windows live in their own pools), so
+	 * sizing the arena or the page store by state->layer_count (all 45
+	 * weight layers in the STAGE_COUNT=1 build) computes a block stride
+	 * ~4.09x the real per-page pool slice. The arena then addresses
+	 * resident slots at key_device_base + slot * stride and the page store
+	 * copies page_bytes per block: restore writes and eviction reads run
+	 * past the end of state->kv_cache - an OOB DMA the moment lanes wire
+	 * to the page directory. The device pool below is allocated with
+	 * state->kv_layer_count (the per-stage DSA ordinals), so the machinery
+	 * must use the same number. The fence at the end of this function
+	 * fails loud at init if the arena's derived stride and the allocated
+	 * pool ever disagree again. */
+	if ( state->kv_layer_count == 0u )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	block_bytes = (uint64_t)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT *
-		(uint64_t)state->layer_count * SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM *
+		(uint64_t)state->kv_layer_count * SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM *
 		SPARK_GLM5_NEXT_KV_BYTES_PER_SCALAR;
 	lane_page_entries = (uint64_t)state->resident_sequence_capacity *
 		state->pages_per_sequence;
@@ -818,7 +848,9 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.arena_configuration.logical_block_count = state->page_count;
 	table.arena_configuration.block_token_count = SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT;
 	table.arena_configuration.resident_block_capacity = state->page_count;
-	table.arena_configuration.layer_count = state->layer_count;
+	/* B2: the machinery layer count is THIS STAGE'S DSA count - never
+	 * state->layer_count (see the block comment above). */
+	table.arena_configuration.layer_count = state->kv_layer_count;
 	table.arena_configuration.kv_head_count = SPARK_GLM5_NEXT_KV_ARENA_KV_HEAD_COUNT;
 	table.arena_configuration.head_dim = SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM;
 	table.arena_configuration.bytes_per_scalar = SPARK_GLM5_NEXT_KV_BYTES_PER_SCALAR;
@@ -869,6 +901,34 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.cache_layout_fingerprint = "compressed-key-value-bf16-block-major";
 
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	/* B2 FENCE, fail loud NOW: the arena's address space must be exactly
+	 * the device pool that backs it. The arena hands out resident-slot
+	 * addresses as key_device_base + slot * key_block_stride_bytes and the
+	 * page store moves block_bytes per page; if either number drifts from
+	 * the SparkGlm5NextAllocateCaches pool (the kda-lane's 64.96 GB
+	 * double-multiplied stride is the precedent), restore/eviction DMAs
+	 * run off the end of state->kv_cache. Refuse to come up rather than
+	 * corrupt silently. */
+	if ( state->kv_arena.key_block_stride_bytes != block_bytes ||
+		state->kv_arena.logical_block_count != state->page_count ||
+		state->kv_layer_stride_bytes == 0u ||
+		block_bytes != ( state->kv_layer_stride_bytes /
+				(uint64_t)state->page_count ) *
+			(uint64_t)state->kv_layer_count ||
+		(uint64_t)state->page_count * block_bytes !=
+			state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	/* LAYOUT ORIENTATION CONTRACT for the page-directory wiring (W1): the
+	 * device pool is LAYER-MAJOR - Glm5NextKv's per-layer base sits at
+	 * kv_cache + layer * kv_layer_stride_bytes and the kernel addresses
+	 * pages inside its layer's sub-pool - while the arena names whole
+	 * blocks contiguously. Until the page directory translates between
+	 * the two, the arena's slot addresses and the page store's contiguous
+	 * block copies must stay UNWIRED (evict_function is deliberately not
+	 * set in this table). Wiring either raw is the OOB this fence exists
+	 * to make impossible to miss. */
 	return(status);
 }
 

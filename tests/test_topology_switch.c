@@ -10,6 +10,8 @@
 // extra step" rather than hoping.
 #include "sparkpipe/spark_topology_switch.h"
 
+#include "sparkpipe/spark_sha256.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -248,7 +250,17 @@ static SparkStatus FixturePublishCommitted(
 	SparkNvmeTierWriteReservation reservation;
 	SparkStatus status;
 
-	status = SparkNvmeTierReserveWrite(tier,content_hash,&reservation);
+	/* Serving write-back always presents the payload's SHA-256 (B3): the
+	 * fixture's stand-in content is the key itself, digested for real. */
+	{
+		uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES];
+		SparkSha256Context digest_context;
+		SparkSha256Initialize(&digest_context);
+		SparkSha256Update(&digest_context,&content_hash,sizeof(content_hash));
+		SparkSha256Finalize(&digest_context,content_digest);
+		status = SparkNvmeTierReserveWrite(tier,content_hash,content_digest,
+			&reservation);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	*device_offset_out = reservation.device_offset;
@@ -454,7 +466,7 @@ int main(void)
 			"the clock met the pins and stepped over them");
 		for ( index = 0u; index < 4u; ++index )
 			if ( SparkNvmeTierOffsetOf(&fixture.tier,
-				SparkTopologySwitchKvKey(TEST_NAMESPACE,blocks[index]),
+				SparkTopologySwitchKvKey(TEST_NAMESPACE,blocks[index]),0,
 				&offset) == SPARK_STATUS_OK )
 				alive++;
 		expect(alive == 4u, "every pinned block survived the flood");

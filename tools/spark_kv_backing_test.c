@@ -1,12 +1,15 @@
 /* Unit test for the JIT-KV backing store (docs/JIT_KV_DESIGN.md step 1).
  * Verifies: open/geometry, alloc/free lifecycle, 4 MiB block round-trip
  * integrity, horizon exhaustion (-1 -> backpressure signal, not thrash),
- * release-then-realloc, reopen-with-mismatch refusal.
+ * release-then-realloc, reopen-with-mismatch refusal, and the B4 hygiene
+ * contract (0600 at creation, 0644 migrated on open, symlink refused,
+ * namespaced paths with traversal rejected).
  * Build: make build/spark_kv_backing_test && ./build/spark_kv_backing_test
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "sparkpipe/spark_kv_backing.h"
@@ -16,6 +19,13 @@ static int failures = 0;
 #define CHECK(cond, name) do { \
 	if ( !(cond) ) { printf("FAIL %s\n", name); failures++; } \
 	else printf("ok   %s\n", name); } while (0)
+
+static int file_mode_is(const char *path, unsigned int expected_mode)
+{
+	struct stat status;
+	return stat(path,&status) == 0 &&
+		(unsigned int)(status.st_mode & 0777u) == expected_mode;
+}
 
 int main(void)
 {
@@ -34,6 +44,7 @@ int main(void)
 	configuration.maximum_bytes = 3ull * 1024ull * 1024ull * 1024ull; /* 3 GB = 768 slots */
 	CHECK(SparkKvBackingOpen(&configuration,&backing) == SPARK_STATUS_OK, "open");
 	CHECK(backing.slot_count == 768u, "geometry 768 slots");
+	CHECK(file_mode_is(path,0600u), "B4: fresh slot file is 0600, world-blind");
 	a = SparkKvBackingAllocate(&backing);
 	b = SparkKvBackingAllocate(&backing);
 	CHECK(a == 0 && b == 1, "sequential alloc");
@@ -74,6 +85,82 @@ int main(void)
 			fclose(foreign);
 		}
 		CHECK(SparkKvBackingOpen(&configuration,&backing) == SPARK_STATUS_TARGET_MISMATCH, "foreign header refused");
+	}
+	/* B4: a legacy 0644 file is migrated to 0600 by open */
+	{
+		FILE *legacy = fopen(path,"wb");
+		if ( legacy != 0 )
+			fclose(legacy);
+		(void)chmod(path,0644u);
+		CHECK(file_mode_is(path,0644u), "B4: legacy file starts 0644");
+		CHECK(SparkKvBackingOpen(&configuration,&backing) == SPARK_STATUS_OK, "empty legacy file opens as fresh");
+		SparkKvBackingClose(&backing);
+		CHECK(file_mode_is(path,0600u), "B4: open migrated 0644 to 0600");
+		unlink(path);
+	}
+	/* B4: a symlink at the slot path is refused, not followed */
+	{
+		const char *target = "/tmp/spark_kv_backing_symlink_target.bin";
+		unlink(target);
+		unlink(path);
+		{
+			FILE *real_file = fopen(target,"wb");
+			if ( real_file != 0 )
+				fclose(real_file);
+		}
+		CHECK(symlink(target,path) == 0, "B4: symlink planted");
+		CHECK(SparkKvBackingOpen(&configuration,&backing) == SPARK_STATUS_IO_ERROR, "B4: symlink at slot path refused (O_NOFOLLOW)");
+		unlink(path);
+		unlink(target);
+	}
+	/* B4: namespaced paths - traversal and separators rejected, layout
+	 * created 0700, composed path lands inside the namespace */
+	{
+		char resolved[1024];
+		char expected[1024];
+		const char *root = "/tmp/spark_kv_backing_namespaces";
+		CHECK(SparkKvBackingResolvePath(resolved,sizeof(resolved),root,
+			"deploy1","tenant-a","glm5_next") == SPARK_STATUS_OK,
+			"B4: namespaced path resolves");
+		snprintf(expected,sizeof(expected),"%s/deploy1/tenant-a/glm5_next.slots",root);
+		CHECK(strcmp(resolved,expected) == 0, "B4: namespaced path layout");
+		CHECK(SparkKvBackingResolvePath(resolved,sizeof(resolved),root,
+			"../escape","tenant-a","glm5_next") == SPARK_STATUS_INVALID_ARGUMENT,
+			"B4: traversal deployment id rejected");
+		CHECK(SparkKvBackingResolvePath(resolved,sizeof(resolved),root,
+			"deploy1","..","glm5_next") == SPARK_STATUS_INVALID_ARGUMENT,
+			"B4: traversal tenant id rejected");
+		CHECK(SparkKvBackingResolvePath(resolved,sizeof(resolved),root,
+			"de ploy","tenant-a","glm5_next") == SPARK_STATUS_INVALID_ARGUMENT,
+			"B4: separator/space in id rejected");
+		CHECK(SparkKvBackingResolvePath(resolved,sizeof(resolved),root,
+			"deploy1","tenant-a","") == SPARK_STATUS_INVALID_ARGUMENT,
+			"B4: empty model id rejected");
+		CHECK(SparkKvBackingCreateNamespaces(root,"deploy1","tenant-a") ==
+			SPARK_STATUS_OK, "B4: namespaces created");
+		CHECK(file_mode_is(root,0700u), "B4: root namespace 0700");
+		{
+			char tenant_dir[1024];
+			snprintf(tenant_dir,sizeof(tenant_dir),"%s/deploy1/tenant-a",root);
+			CHECK(file_mode_is(tenant_dir,0700u), "B4: tenant namespace 0700");
+		}
+		{
+			char deployment_dir[1024];
+			snprintf(deployment_dir,sizeof(deployment_dir),"%s/deploy1",root);
+			(void)chmod(deployment_dir,0755u);
+			CHECK(SparkKvBackingCreateNamespaces(root,"deploy1","tenant-a") ==
+				SPARK_STATUS_OK, "B4: namespace reopen ok");
+			CHECK(file_mode_is(deployment_dir,0700u),
+				"B4: loose namespace tightened to 0700");
+		}
+		{
+			char cleanup[1024];
+			snprintf(cleanup,sizeof(cleanup),"%s/deploy1/tenant-a",root);
+			unlink(cleanup);
+			snprintf(cleanup,sizeof(cleanup),"%s/deploy1",root);
+			rmdir(cleanup);
+			rmdir(root);
+		}
 	}
 	free(block);
 	free(verify);

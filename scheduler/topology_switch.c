@@ -1,5 +1,7 @@
 #include "sparkpipe/spark_topology_switch.h"
 
+#include "sparkpipe/spark_sha256.h"
+
 #include <string.h>
 
 // The mechanics behind the contract in spark_topology_switch.h. Three
@@ -315,7 +317,7 @@ SparkStatus SparkTopologySwitchSequenceComplete(
 		const uint64_t *keys = TopologySwitchBlockKeysOf(sw,(uint32_t)slot);
 		uint32_t index;
 		for ( index = 0u; index < sequence->block_count; ++index )
-			(void)SparkNvmeTierPin(sw->configuration.tier,keys[index],0);
+			(void)SparkNvmeTierPin(sw->configuration.tier,keys[index],0,0);
 	}
 	if ( sw->state != SPARK_TOPOLOGY_SWITCH_STEADY
 		&& sequence->checkpointed == 0u )
@@ -391,7 +393,7 @@ static SparkStatus TopologySwitchCheckpointOne(
 	{
 		for ( index = 0u; index < sequence->block_count; ++index )
 		{
-			status = SparkNvmeTierPin(sw->configuration.tier,keys[index],1);
+			status = SparkNvmeTierPin(sw->configuration.tier,keys[index],0,1);
 			if ( status == SPARK_STATUS_NOT_FOUND )
 			{
 				// Never written back during serving. Counted, not repaired:
@@ -416,8 +418,19 @@ static SparkStatus TopologySwitchCheckpointOne(
 	memcpy(manifest + 24u,keys,(uint64_t)sequence->block_count * sizeof(uint64_t));
 	manifest_key = TopologySwitchManifestKey(
 		sw->configuration.kv_namespace,sequence->sequence_id);
-	status = SparkNvmeTierReserveWrite(
-		sw->configuration.tier,manifest_key,&reservation);
+	{
+		/* B3: the tier's records carry the SHA-256 of their payload; the
+		 * switch wrote the manifest bytes, so it presents their digest. */
+		uint8_t manifest_digest[SPARK_NVME_TIER_DIGEST_BYTES];
+		SparkSha256Context digest_context;
+		SparkSha256Initialize(&digest_context);
+		SparkSha256Update(&digest_context,manifest,
+			sw->configuration.manifest_block_bytes);
+		SparkSha256Finalize(&digest_context,manifest_digest);
+		status = SparkNvmeTierReserveWrite(
+			sw->configuration.tier,manifest_key,manifest_digest,
+			&reservation);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	device_offset = reservation.device_offset;
@@ -488,14 +501,14 @@ static void TopologySwitchResumeOne(
 	uint64_t device_offset;
 	for ( index = 0u; index < sequence->block_count; ++index )
 	{
-		if ( SparkNvmeTierOffsetOf(sw->configuration.tier,keys[index],&device_offset)
-			!= SPARK_STATUS_OK )
+		if ( SparkNvmeTierOffsetOf(sw->configuration.tier,keys[index],0,
+				&device_offset) != SPARK_STATUS_OK )
 		{
 			warm = 0u;
 		}
 		// The pin drops either way: its job was to protect the block between
 		// checkpoint and this moment, and this moment has arrived.
-		(void)SparkNvmeTierPin(sw->configuration.tier,keys[index],0);
+		(void)SparkNvmeTierPin(sw->configuration.tier,keys[index],0,0);
 	}
 	if ( warm != 0u && sequence->block_count != 0u )
 	{
@@ -517,6 +530,11 @@ static void TopologySwitchResumeOne(
 				// honest version of "now".
 				needs[fill].need_by_step = step_now + 1u;
 				needs[fill].reserved0 = 0u;
+				/* Key-only planning: the switch classifies, it never hands
+				 * bytes over - landing still verifies against each record's
+				 * stored digest before anything becomes readable. */
+				memset(needs[fill].content_digest,0,
+					sizeof(needs[fill].content_digest));
 			}
 			// A plan failure costs prefetch, never correctness: the demand
 			// path is the fallback, so the result is deliberately unchecked.

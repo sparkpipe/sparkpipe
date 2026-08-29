@@ -1,12 +1,17 @@
 // The NVMe tier: budget enforcement, JIT lookahead, eviction under churn,
-// and the priority contract between demand loads and prefetch.
+// and the priority contract between demand loads and prefetch - plus the
+// B3 tier-integrity contract: every record carries the SHA-256 of its
+// payload, every landing is verified before it becomes readable, and a
+// 64-bit hash collision fails loud instead of aliasing two tenants' KV.
 //
 // Everything the tier decides is arithmetic over a schedule, so all of it is
 // checkable on a host: the device is a mock that completes a read after a
-// programmed number of polls and remembers every offset it was asked for,
-// which is how the assertions can say "arrived before its need-by step" and
-// "read from the record the hash actually owns" rather than hoping.
+// programmed number of polls and serves the bytes of a real drive image,
+// which is how the assertions can say "arrived before its need-by step",
+// "read from the record the hash actually owns", and "corrupted bytes never
+// reached a caller" rather than hoping.
 #include "sparkpipe/spark_nvme_tier.h"
+#include "sparkpipe/spark_sha256.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +50,9 @@ typedef struct MockDevice
 	uint32_t submits;
 	uint32_t cancels;
 	uint32_t data_fills;
+	const uint8_t *drive;            /* the bytes the "drive" holds */
+	uint64_t drive_base;             /* device offset of drive[0] */
+	uint64_t drive_bytes;
 }
 MockDevice;
 
@@ -55,15 +63,25 @@ static void MockDeviceReset(MockDevice *device, uint32_t polls_per_read)
 	device->next_ticket = 1u;
 }
 
-// What the "drive" holds at an offset is a function of the offset, so a
+// The landing serves the drive image at the offset the tier asked for, so a
 // landing proves two things at once: the tier asked for the right record,
-// and the bytes reached the right staging buffer.
+// and the bytes reached the right staging buffer. What the bytes ARE is the
+// writer's business - the test fills the image at publish time.
 static void MockDeviceFill(MockDevice *device, MockRead *read)
 {
-	uint32_t index;
-	uint8_t pattern = (uint8_t)( read->offset / MOCK_BLOCK_BYTES );
-	for ( index = 0u; index < MOCK_BLOCK_BYTES; ++index )
-		read->destination[index] = (uint8_t)( pattern ^ (uint8_t)index );
+	uint64_t index;
+	if ( device->drive != 0 && read->offset >= device->drive_base &&
+		read->offset + MOCK_BLOCK_BYTES <=
+			device->drive_base + device->drive_bytes )
+	{
+		memcpy(read->destination,
+			device->drive + (read->offset - device->drive_base),
+			MOCK_BLOCK_BYTES);
+	}
+	else
+		memset(read->destination,0xAAu,MOCK_BLOCK_BYTES);
+	for ( index = 0u; index < MOCK_MAX_READS; ++index )
+		(void)index;
 	device->data_fills++;
 }
 
@@ -156,8 +174,89 @@ typedef struct TierFixture
 	SparkNvmeTierConfiguration configuration;
 	_Alignas(64) uint8_t tables[128u * 1024u];
 	_Alignas(MOCK_BLOCK_BYTES) uint8_t staging[TIER_TEST_MAX_STAGING * MOCK_BLOCK_BYTES];
+	_Alignas(MOCK_BLOCK_BYTES) uint8_t drive[TIER_TEST_MAX_SLOTS * MOCK_BLOCK_BYTES];
 }
 TierFixture;
+
+// B3 content discipline: a publish's payload is a deterministic function of
+// its content seed, and its digest is the real SHA-256 of that payload. The
+// writer writes the payload into the drive image at its reserved offset;
+// readers present the same seed's digest.
+static void TierContentFill(uint64_t content_seed, uint8_t *block)
+{
+	uint32_t index;
+	for ( index = 0u; index < MOCK_BLOCK_BYTES; ++index )
+		block[index] = (uint8_t)( content_seed ^ (uint8_t)(index * 7u +
+			(uint8_t)(content_seed >> 8) + 1u) );
+}
+
+static void TierContentDigest(uint64_t content_seed, uint8_t *digest)
+{
+	uint8_t block[MOCK_BLOCK_BYTES];
+	SparkSha256Context context;
+	TierContentFill(content_seed,block);
+	SparkSha256Initialize(&context);
+	SparkSha256Update(&context,block,MOCK_BLOCK_BYTES);
+	SparkSha256Finalize(&context,digest);
+}
+
+static SparkStatus TierFixturePublishSeed(
+	TierFixture *fixture,
+	uint64_t content_hash,
+	uint64_t content_seed,
+	uint64_t *device_offset_out)
+{
+	uint8_t content[MOCK_BLOCK_BYTES];
+	uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
+	SparkNvmeTierWriteReservation reservation;
+	SparkStatus status;
+	uint64_t drive_index;
+
+	TierContentFill(content_seed,content);
+	TierContentDigest(content_seed,digest);
+	status = SparkNvmeTierReserveWrite(&fixture->tier,content_hash,digest,
+		&reservation);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( reservation.already_present == 0u )
+	{
+		if ( reservation.device_offset < fixture->configuration.base_offset ||
+			reservation.device_offset + MOCK_BLOCK_BYTES >
+				fixture->configuration.base_offset + sizeof(fixture->drive) )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		drive_index = reservation.device_offset -
+			fixture->configuration.base_offset;
+		memcpy(fixture->drive + drive_index,content,MOCK_BLOCK_BYTES);
+	}
+	*device_offset_out = reservation.device_offset;
+	return(SparkNvmeTierCommitWrite(&fixture->tier,&reservation));
+}
+
+static SparkStatus TierFixturePublish(
+	TierFixture *fixture,
+	uint64_t content_hash,
+	uint64_t *device_offset_out)
+{
+	return(TierFixturePublishSeed(fixture,content_hash,content_hash,
+		device_offset_out));
+}
+
+// Pump until no mock read remains active, bounded so a wedged device fails
+// the test rather than hanging it.
+static void TierFixtureDrain(TierFixture *fixture, uint32_t first_step)
+{
+	uint32_t step;
+	for ( step = first_step; step < first_step + 64u; ++step )
+	{
+		uint32_t index,active = 0u;
+		SparkNvmeTierPump(&fixture->tier,step);
+		for ( index = 0u; index < MOCK_MAX_READS; ++index )
+			if ( fixture->device.reads[index].active )
+				active = 1u;
+		if ( !active )
+			return;
+	}
+}
 
 static SparkStatus TierFixtureOpen(
 	TierFixture *fixture,
@@ -170,6 +269,9 @@ static SparkStatus TierFixtureOpen(
 	uint64_t table_bytes;
 	memset(fixture,0,sizeof(*fixture));
 	MockDeviceReset(&fixture->device,polls_per_read);
+	fixture->device.drive = fixture->drive;
+	fixture->device.drive_base = 1u << 20;
+	fixture->device.drive_bytes = sizeof(fixture->drive);
 	fixture->vtable.context = &fixture->device;
 	fixture->vtable.submit_read = MockSubmitRead;
 	fixture->vtable.poll_read = MockPollRead;
@@ -197,38 +299,6 @@ static SparkStatus TierFixtureOpen(
 	return(status);
 }
 
-static SparkStatus TierFixturePublish(
-	SparkNvmeTier *tier,
-	uint64_t content_hash,
-	uint64_t *device_offset_out)
-{
-	SparkNvmeTierWriteReservation reservation;
-	SparkStatus status;
-
-	status = SparkNvmeTierReserveWrite(tier,content_hash,&reservation);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	*device_offset_out = reservation.device_offset;
-	return(SparkNvmeTierCommitWrite(tier,&reservation));
-}
-
-// Pump until no mock read remains active, bounded so a wedged device fails
-// the test rather than hanging it.
-static void TierFixtureDrain(TierFixture *fixture, uint32_t first_step)
-{
-	uint32_t step;
-	for ( step = first_step; step < first_step + 64u; ++step )
-	{
-		uint32_t index,active = 0u;
-		SparkNvmeTierPump(&fixture->tier,step);
-		for ( index = 0u; index < MOCK_MAX_READS; ++index )
-			if ( fixture->device.reads[index].active )
-				active = 1u;
-		if ( !active )
-			return;
-	}
-}
-
 int main(void)
 {
 	printf("nvme tier\n\npartitioning: the budget is a real ceiling\n");
@@ -243,7 +313,7 @@ int main(void)
 		expect(fixture.tier.transfer_steps == 2u,
 			"the transfer ETA is precomputed: one block is two steps");
 		for ( index = 0u; index < 8u; ++index )
-			expect(TierFixturePublish(&fixture.tier,1000u + index,&offset[index])
+			expect(TierFixturePublish(&fixture,1000u + index,&offset[index])
 				== SPARK_STATUS_OK, "publish within budget");
 		{
 			int32_t distinct = 1;
@@ -254,12 +324,12 @@ int main(void)
 						distinct = 0;
 			expect(distinct, "every record owns a distinct device offset");
 		}
-		expect(TierFixturePublish(&fixture.tier,9999u,&extra) == SPARK_STATUS_OK,
+		expect(TierFixturePublish(&fixture,9999u,&extra) == SPARK_STATUS_OK,
 			"the ninth publish still succeeds: eviction is cheap, not fatal");
 		SparkNvmeTierGetStatistics(&fixture.tier,&statistics);
 		expect(statistics.slots_in_use == 8u && statistics.evictions == 1u,
 			"capacity never moves: one in, one out");
-		expect(SparkNvmeTierOffsetOf(&fixture.tier,9999u,&extra) == SPARK_STATUS_OK
+		expect(SparkNvmeTierOffsetOf(&fixture.tier,9999u,0,&extra) == SPARK_STATUS_OK
 			&& extra >= fixture.configuration.base_offset
 			&& extra < fixture.configuration.base_offset + 8u * MOCK_BLOCK_BYTES,
 			"and the recycled record stays inside the budget region");
@@ -307,33 +377,36 @@ int main(void)
 		SparkNvmeTierWriteReservation second;
 		SparkNvmeTierDemandResult demand;
 		SparkNvmeTierStatistics statistics;
+		uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
 		uint64_t offset;
 
 		expect(TierFixtureOpen(&fixture,4u,2u,1u,1u) == SPARK_STATUS_OK,
 			"reservation fixture initialises");
-		expect(SparkNvmeTierReserveWrite(&fixture.tier,3500u,&first)
+		TierContentDigest(3500u,digest);
+		expect(SparkNvmeTierReserveWrite(&fixture.tier,3500u,digest,&first)
 			== SPARK_STATUS_OK && first.already_present == 0u,
 			"a new hash reserves one private device slot");
-		expect(SparkNvmeTierOffsetOf(&fixture.tier,3500u,&offset)
+		expect(SparkNvmeTierOffsetOf(&fixture.tier,3500u,digest,&offset)
 			== SPARK_STATUS_NOT_FOUND,
 			"an uncommitted write is invisible to OffsetOf");
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,3500u,0u,&demand)
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,3500u,digest,0u,&demand)
 			== SPARK_STATUS_OK && demand.state == SPARK_NVME_TIER_DEMAND_MISS,
 			"an uncommitted write is invisible to readers");
 		expect(SparkNvmeTierCommitWrite(&fixture.tier,&first) == SPARK_STATUS_OK,
 			"commit publishes the completed write");
-		expect(SparkNvmeTierOffsetOf(&fixture.tier,3500u,&offset)
+		expect(SparkNvmeTierOffsetOf(&fixture.tier,3500u,digest,&offset)
 			== SPARK_STATUS_OK && offset == first.device_offset,
 			"the committed hash resolves to its reserved offset");
-		expect(SparkNvmeTierReserveWrite(&fixture.tier,3500u,&second)
+		expect(SparkNvmeTierReserveWrite(&fixture.tier,3500u,digest,&second)
 			== SPARK_STATUS_OK && second.already_present != 0u
 			&& second.device_offset == first.device_offset,
-			"reserving an existing hash returns the committed record");
+			"reserving an existing hash with the same digest returns the record");
 		expect(SparkNvmeTierCommitWrite(&fixture.tier,&second)
 			== SPARK_STATUS_OK,
 			"commit of an already-present reservation is idempotent");
 
-		expect(SparkNvmeTierReserveWrite(&fixture.tier,3501u,&first)
+		TierContentDigest(3501u,digest);
+		expect(SparkNvmeTierReserveWrite(&fixture.tier,3501u,digest,&first)
 			== SPARK_STATUS_OK && first.already_present == 0u,
 			"another hash reserves a fresh slot");
 		expect(SparkNvmeTierAbortWrite(&fixture.tier,&first) == SPARK_STATUS_OK,
@@ -341,7 +414,8 @@ int main(void)
 		expect(SparkNvmeTierCommitWrite(&fixture.tier,&first)
 			== SPARK_STATUS_VALIDATION_FAILED,
 			"a stale aborted reservation cannot publish later");
-		expect(SparkNvmeTierReserveWrite(&fixture.tier,3502u,&second)
+		TierContentDigest(3502u,digest);
+		expect(SparkNvmeTierReserveWrite(&fixture.tier,3502u,digest,&second)
 			== SPARK_STATUS_OK && second.already_present == 0u,
 			"the aborted capacity can be reused with a new generation");
 		expect(SparkNvmeTierCommitWrite(&fixture.tier,&first)
@@ -354,6 +428,12 @@ int main(void)
 			&& statistics.publishes == 2u
 			&& statistics.write_aborts == 1u,
 			"write lifecycle accounting distinguishes reserve, commit, and abort");
+		{
+			SparkNvmeTierWriteReservation no_digest;
+			expect(SparkNvmeTierReserveWrite(&fixture.tier,3503u,0,&no_digest)
+				== SPARK_STATUS_INVALID_ARGUMENT,
+				"a write reservation without a digest is refused");
+		}
 	}
 
 	printf("\ninitialisation rejects undersized ownership regions\n");
@@ -368,12 +448,12 @@ int main(void)
 		required_staging = (uint64_t)fixture.configuration.staging_buffer_count
 			* fixture.configuration.block_bytes;
 		expect(SparkNvmeTierInitialize(&fixture.tier,&fixture.configuration,
-			&fixture.vtable,fixture.tables,required_tables - 1u,
-			fixture.staging,required_staging) == SPARK_STATUS_CAPACITY_EXCEEDED,
+                    &fixture.vtable,fixture.tables,required_tables - 1u,
+                    fixture.staging,required_staging) == SPARK_STATUS_CAPACITY_EXCEEDED,
 			"undersized table ownership is rejected");
 		expect(SparkNvmeTierInitialize(&fixture.tier,&fixture.configuration,
-			&fixture.vtable,fixture.tables,required_tables,
-			fixture.staging,required_staging - 1u) == SPARK_STATUS_CAPACITY_EXCEEDED,
+                    &fixture.vtable,fixture.tables,required_tables,
+                    fixture.staging,required_staging - 1u) == SPARK_STATUS_CAPACITY_EXCEEDED,
 			"undersized staging ownership is rejected");
 	}
 
@@ -382,39 +462,130 @@ int main(void)
 		TierFixture fixture;
 		SparkNvmeTierDemandResult result;
 		SparkNvmeTierStatistics statistics;
+		uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
+		uint8_t expected[MOCK_BLOCK_BYTES];
 		uint64_t offset,hash = 4242u;
-		uint32_t index;
 		int32_t intact;
 		TierFixtureOpen(&fixture,8u,2u,1u,2u);
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,0u,&result) == SPARK_STATUS_OK
+		TierContentDigest(hash,digest);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,digest,0u,&result) == SPARK_STATUS_OK
 			&& result.state == SPARK_NVME_TIER_DEMAND_MISS,
 			"an absent block is a miss, not a wait");
-		TierFixturePublish(&fixture.tier,hash,&offset);
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,0u,&result) == SPARK_STATUS_OK
+		TierFixturePublish(&fixture,hash,&offset);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,digest,0u,&result) == SPARK_STATUS_OK
 			&& result.state == SPARK_NVME_TIER_DEMAND_STARTED,
 			"a present block starts a demand read immediately");
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,0u,&result) == SPARK_STATUS_OK
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,digest,0u,&result) == SPARK_STATUS_OK
 			&& result.state == SPARK_NVME_TIER_DEMAND_IN_FLIGHT,
 			"a second requester joins the same read instead of issuing another");
 		TierFixtureDrain(&fixture,1u);
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,3u,&result) == SPARK_STATUS_OK
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,digest,3u,&result) == SPARK_STATUS_OK
 			&& result.state == SPARK_NVME_TIER_DEMAND_READY
 			&& result.staging_pointer != 0,
 			"once landed, the hit is immediate");
-		intact = 1;
-		for ( index = 0u; index < MOCK_BLOCK_BYTES; ++index )
-			if ( ((const uint8_t *)result.staging_pointer)[index]
-				!= (uint8_t)( (uint8_t)( offset / MOCK_BLOCK_BYTES ) ^ (uint8_t)index ) )
-				intact = 0;
-		expect(intact, "the bytes are the record the hash owns, read at its offset");
+		TierContentFill(hash,expected);
+		intact = memcmp(result.staging_pointer,expected,MOCK_BLOCK_BYTES) == 0;
+		expect(intact, "the bytes are the record the hash owns, verified against its digest");
 		SparkNvmeTierGetStatistics(&fixture.tier,&statistics);
+		expect(statistics.digest_verifications >= 1u && statistics.digest_mismatches == 0u,
+			"the landing was digest-verified before it was served");
 		expect(statistics.demand_misses == 1u && statistics.demand_loads == 1u
 			&& statistics.demand_joins == 1u && statistics.demand_hits == 1u,
 			"and the accounting says exactly what happened");
-		expect(SparkNvmeTierConsume(&fixture.tier,hash) == SPARK_STATUS_OK,
+		expect(SparkNvmeTierConsume(&fixture.tier,hash,digest) == SPARK_STATUS_OK,
 			"consumption releases the staging buffer");
-		expect(SparkNvmeTierOffsetOf(&fixture.tier,hash,&offset) == SPARK_STATUS_OK,
+		expect(SparkNvmeTierOffsetOf(&fixture.tier,hash,digest,&offset) == SPARK_STATUS_OK,
 			"while the on-drive record stays: consumption is a copy, not a move");
+	}
+
+	printf("\nB3: corrupted bytes are quarantined, never served\n");
+	{
+		TierFixture fixture;
+		SparkNvmeTierDemandResult result;
+		SparkNvmeTierStatistics statistics;
+		uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
+		uint64_t offset,hash = 4243u;
+		TierFixtureOpen(&fixture,8u,2u,1u,2u);
+		TierContentDigest(hash,digest);
+		expect(TierFixturePublish(&fixture,hash,&offset) == SPARK_STATUS_OK,
+			"the record publishes");
+		/* flip one byte of the on-drive copy after the commit */
+		fixture.drive[offset - fixture.configuration.base_offset] ^= 0x40u;
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,digest,0u,&result)
+			== SPARK_STATUS_OK && result.state == SPARK_NVME_TIER_DEMAND_STARTED,
+			"the demand read is issued (the tier cannot pre-read the drive)");
+		{
+			uint32_t step;
+			SparkStatus pump_status = SPARK_STATUS_OK;
+			for ( step = 1u; step < 8u; ++step )
+			{
+				pump_status = SparkNvmeTierPump(&fixture.tier,step);
+				if ( pump_status == SPARK_STATUS_HASH_MISMATCH )
+					break;
+			}
+			expect(pump_status == SPARK_STATUS_HASH_MISMATCH,
+				"the landing fails its digest and the tier answers HASH_MISMATCH");
+		}
+		SparkNvmeTierGetStatistics(&fixture.tier,&statistics);
+		expect(statistics.digest_mismatches == 1u,
+			"the mismatch is counted");
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,digest,2u,&result)
+			== SPARK_STATUS_OK && result.state == SPARK_NVME_TIER_DEMAND_MISS,
+			"the quarantined record is gone: the caller recomputes, never consumes bad bytes");
+		expect(TierFixturePublish(&fixture,hash,&offset) == SPARK_STATUS_OK,
+			"and the slot is recyclable by an honest write-back");
+	}
+
+	printf("\nB3: a 64-bit hash collision fails loud, never aliases\n");
+	{
+		TierFixture fixture;
+		SparkNvmeTierWriteReservation reservation;
+		SparkNvmeTierDemandResult result;
+		SparkNvmeTierStatistics statistics;
+		uint8_t tenant_a[SPARK_NVME_TIER_DIGEST_BYTES];
+		uint8_t tenant_b[SPARK_NVME_TIER_DIGEST_BYTES];
+		uint64_t offset,shared_hash = 5150u;
+		TierFixtureOpen(&fixture,8u,2u,1u,2u);
+		TierContentDigest(shared_hash,tenant_a);
+		TierContentDigest(shared_hash + 1u,tenant_b);   /* different payload */
+		expect(TierFixturePublish(&fixture,shared_hash,&offset) == SPARK_STATUS_OK,
+			"tenant A commits the shared hash with its digest");
+		expect(SparkNvmeTierReserveWrite(&fixture.tier,shared_hash,tenant_b,
+				&reservation) == SPARK_STATUS_HASH_MISMATCH,
+			"tenant B's write-back under the same hash is refused, not aliased");
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,shared_hash,tenant_b,0u,
+				&result) == SPARK_STATUS_HASH_MISMATCH,
+			"tenant B's demand under the same hash is refused, not served A's bytes");
+		expect(SparkNvmeTierConsume(&fixture.tier,shared_hash,tenant_b)
+			== SPARK_STATUS_HASH_MISMATCH,
+			"consumption refuses a digest that is not the record's");
+		expect(SparkNvmeTierPin(&fixture.tier,shared_hash,tenant_b,1)
+			== SPARK_STATUS_HASH_MISMATCH,
+			"even pinning refuses a contradicting digest");
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,shared_hash,tenant_a,0u,
+				&result) == SPARK_STATUS_OK
+			&& result.state == SPARK_NVME_TIER_DEMAND_STARTED,
+			"tenant A is unaffected: its own digest still resolves");
+		SparkNvmeTierGetStatistics(&fixture.tier,&statistics);
+		expect(statistics.digest_mismatches >= 3u,
+			"every refused access is counted");
+	}
+
+	printf("\nB3: a wrong digest is an argument error even off-drive\n");
+	{
+		TierFixture fixture;
+		SparkNvmeTierDemandResult result;
+		uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
+		uint64_t offset,hash = 5151u;
+		TierFixtureOpen(&fixture,8u,2u,1u,2u);
+		TierFixturePublish(&fixture,hash,&offset);
+		memset(digest,0,sizeof(digest));
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,digest,0u,&result)
+			== SPARK_STATUS_INVALID_ARGUMENT,
+			"an all-zero digest is not an identity: refused");
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,hash,0,0u,&result)
+			== SPARK_STATUS_INVALID_ARGUMENT,
+			"the decode path cannot request bytes without an identity");
 	}
 
 	printf("\nthe lookahead: blocks land before their need-by step\n");
@@ -429,10 +600,11 @@ int main(void)
 		TierFixtureOpen(&fixture,16u,4u,1u,2u);
 		for ( index = 0u; index < 4u; ++index )
 		{
-			TierFixturePublish(&fixture.tier,5000u + index,&offset);
+			TierFixturePublish(&fixture,5000u + index,&offset);
 			needs[index].content_hash = 5000u + index;
 			needs[index].need_by_step = 4u + index;
 			needs[index].reserved0 = 0u;
+			TierContentDigest(5000u + index,needs[index].content_digest);
 		}
 		expect(SparkNvmeTierPlanLookahead(&fixture.tier,needs,4u,0u,&report)
 			== SPARK_STATUS_OK && report.queued_count == 4u
@@ -448,10 +620,12 @@ int main(void)
 				if ( needs[index].need_by_step != step )
 					continue;
 				expect(SparkNvmeTierRequestDemand(
-						&fixture.tier,needs[index].content_hash,step,&result)
+						&fixture.tier,needs[index].content_hash,
+						needs[index].content_digest,step,&result)
 					== SPARK_STATUS_OK && result.state == SPARK_NVME_TIER_DEMAND_READY,
 					"at its need-by step the block is already there");
-				SparkNvmeTierConsume(&fixture.tier,needs[index].content_hash);
+				SparkNvmeTierConsume(&fixture.tier,needs[index].content_hash,
+					needs[index].content_digest);
 			}
 		}
 		SparkNvmeTierGetStatistics(&fixture.tier,&statistics);
@@ -462,9 +636,13 @@ int main(void)
 			"four prefetches issued, four landed");
 		expect(statistics.read_bytes == 4u * MOCK_BLOCK_BYTES,
 			"and the byte counter the acceptance run wants says 4 blocks");
+		expect(statistics.digest_verifications >= 4u
+			&& statistics.digest_mismatches == 0u,
+			"every landing was digest-verified on the way in");
 		/* a need closer than the transfer time is flagged, not hidden */
 		needs[0].content_hash = 5000u;
 		needs[0].need_by_step = 1u;
+		TierContentDigest(5000u,needs[0].content_digest);
 		expect(SparkNvmeTierPlanLookahead(&fixture.tier,needs,1u,0u,&report)
 			== SPARK_STATUS_OK && report.late_risk_count == 1u,
 			"a deadline inside the transfer time is reported as late risk");
@@ -481,20 +659,25 @@ int main(void)
 		/* reserve 0: prefetch may fill every buffer, so demand must take one */
 		TierFixtureOpen(&fixture,16u,2u,0u,8u);
 		for ( index = 0u; index < 3u; ++index )
-			TierFixturePublish(&fixture.tier,7000u + index,&offset);
+			TierFixturePublish(&fixture,7000u + index,&offset);
 		for ( index = 0u; index < 2u; ++index )
 		{
 			needs[index].content_hash = 7000u + index;
 			needs[index].need_by_step = 20u + index;
 			needs[index].reserved0 = 0u;
+			TierContentDigest(7000u + index,needs[index].content_digest);
 		}
 		SparkNvmeTierPlanLookahead(&fixture.tier,needs,2u,0u,0);
 		SparkNvmeTierPump(&fixture.tier,0u);
 		expect(fixture.device.submits == 2u,
 			"with no reserve, both buffers fill with prefetch reads");
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,7002u,1u,&result)
-			== SPARK_STATUS_OK && result.state == SPARK_NVME_TIER_DEMAND_STARTED,
-			"demand does not wait behind prefetch: it preempts");
+		{
+			uint8_t demand_digest[SPARK_NVME_TIER_DIGEST_BYTES];
+			TierContentDigest(7002u,demand_digest);
+			expect(SparkNvmeTierRequestDemand(&fixture.tier,7002u,demand_digest,1u,&result)
+				== SPARK_STATUS_OK && result.state == SPARK_NVME_TIER_DEMAND_STARTED,
+				"demand does not wait behind prefetch: it preempts");
+		}
 		SparkNvmeTierGetStatistics(&fixture.tier,&statistics);
 		expect(statistics.prefetch_preemptions == 1u && statistics.demand_stalls == 0u,
 			"one preemption, zero stalls");
@@ -514,21 +697,24 @@ int main(void)
 		SparkNvmeTierDemandResult result;
 		uint64_t offset;
 		uint32_t index;
+		uint8_t demand_digest[SPARK_NVME_TIER_DIGEST_BYTES];
 		/* reserve 1: the last buffer is not prefetch's to take */
 		TierFixtureOpen(&fixture,16u,2u,1u,8u);
 		for ( index = 0u; index < 3u; ++index )
-			TierFixturePublish(&fixture.tier,7100u + index,&offset);
+			TierFixturePublish(&fixture,7100u + index,&offset);
 		for ( index = 0u; index < 2u; ++index )
 		{
 			needs[index].content_hash = 7100u + index;
 			needs[index].need_by_step = 20u + index;
 			needs[index].reserved0 = 0u;
+			TierContentDigest(7100u + index,needs[index].content_digest);
 		}
 		SparkNvmeTierPlanLookahead(&fixture.tier,needs,2u,0u,0);
 		SparkNvmeTierPump(&fixture.tier,0u);
 		expect(fixture.device.submits == 1u,
 			"the demand reserve holds one buffer back from prefetch");
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,7102u,1u,&result)
+		TierContentDigest(7102u,demand_digest);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,7102u,demand_digest,1u,&result)
 			== SPARK_STATUS_OK && result.state == SPARK_NVME_TIER_DEMAND_STARTED,
 			"so demand finds a buffer without preempting anything");
 	}
@@ -538,21 +724,30 @@ int main(void)
 		TierFixture fixture;
 		SparkNvmeTierDemandResult result;
 		SparkNvmeTierStatistics statistics;
+		uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
 		uint64_t offset;
 		TierFixtureOpen(&fixture,16u,2u,0u,1u);
-		TierFixturePublish(&fixture.tier,8000u,&offset);
-		TierFixturePublish(&fixture.tier,8001u,&offset);
-		TierFixturePublish(&fixture.tier,8002u,&offset);
-		SparkNvmeTierRequestDemand(&fixture.tier,8000u,0u,&result);
-		SparkNvmeTierRequestDemand(&fixture.tier,8001u,0u,&result);
+		TierFixturePublish(&fixture,8000u,&offset);
+		TierFixturePublish(&fixture,8001u,&offset);
+		TierFixturePublish(&fixture,8002u,&offset);
+		TierContentDigest(8000u,digest);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,8000u,digest,0u,&result)
+			== SPARK_STATUS_OK, "first demand load");
+		TierContentDigest(8001u,digest);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,8001u,digest,0u,&result)
+			== SPARK_STATUS_OK, "second demand load");
 		TierFixtureDrain(&fixture,1u);
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,8002u,2u,&result)
+		TierContentDigest(8002u,digest);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,8002u,digest,2u,&result)
 			== SPARK_STATUS_BUSY,
 			"unconsumed demand data is a sizing bug: BUSY, never a silent wait");
 		SparkNvmeTierGetStatistics(&fixture.tier,&statistics);
 		expect(statistics.demand_stalls == 1u, "and it is counted as one");
-		expect(SparkNvmeTierConsume(&fixture.tier,8000u) == SPARK_STATUS_OK
-			&& SparkNvmeTierRequestDemand(&fixture.tier,8002u,3u,&result) == SPARK_STATUS_OK
+		TierContentDigest(8000u,digest);
+		expect(SparkNvmeTierConsume(&fixture.tier,8000u,digest) == SPARK_STATUS_OK,
+			"consume the first holder");
+		TierContentDigest(8002u,digest);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,8002u,digest,3u,&result) == SPARK_STATUS_OK
 			&& result.state == SPARK_NVME_TIER_DEMAND_STARTED,
 			"consuming upstream unblocks it");
 	}
@@ -562,15 +757,17 @@ int main(void)
 		TierFixture fixture;
 		SparkNvmeTierDemandResult result;
 		SparkNvmeTierStatistics statistics;
+		uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
 		uint64_t offset;
 		uint32_t index;
 		TierFixtureOpen(&fixture,8u,2u,1u,1u);
-		TierFixturePublish(&fixture.tier,9000u,&offset);
-		expect(SparkNvmeTierPin(&fixture.tier,9000u,1) == SPARK_STATUS_OK,
+		TierFixturePublish(&fixture,9000u,&offset);
+		TierContentDigest(9000u,digest);
+		expect(SparkNvmeTierPin(&fixture.tier,9000u,digest,1) == SPARK_STATUS_OK,
 			"pin the block an admitted sequence needs");
 		for ( index = 0u; index < 60u; ++index )
-			TierFixturePublish(&fixture.tier,10000u + index,&offset);
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,9000u,0u,&result)
+			TierFixturePublish(&fixture,10000u + index,&offset);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,9000u,digest,0u,&result)
 			== SPARK_STATUS_OK && result.state != SPARK_NVME_TIER_DEMAND_MISS,
 			"60 publishes through 8 records, and the pinned one is still there");
 		SparkNvmeTierGetStatistics(&fixture.tier,&statistics);
@@ -580,12 +777,12 @@ int main(void)
 		   demand-held is unevictable by design, which is not what this churn
 		   is measuring */
 		TierFixtureDrain(&fixture,1u);
-		expect(SparkNvmeTierConsume(&fixture.tier,9000u) == SPARK_STATUS_OK,
+		expect(SparkNvmeTierConsume(&fixture.tier,9000u,digest) == SPARK_STATUS_OK,
 			"drain and consume it first");
-		expect(SparkNvmeTierPin(&fixture.tier,9000u,0) == SPARK_STATUS_OK, "unpin");
+		expect(SparkNvmeTierPin(&fixture.tier,9000u,digest,0) == SPARK_STATUS_OK, "unpin");
 		for ( index = 0u; index < 60u; ++index )
-			TierFixturePublish(&fixture.tier,20000u + index,&offset);
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,9000u,1u,&result)
+			TierFixturePublish(&fixture,20000u + index,&offset);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,9000u,digest,1u,&result)
 			== SPARK_STATUS_OK && result.state == SPARK_NVME_TIER_DEMAND_MISS,
 			"unpinned, the same churn reclaims it - eviction is cheap in both directions");
 	}
@@ -595,11 +792,16 @@ int main(void)
 		TierFixture fixture;
 		uint64_t offset;
 		TierFixtureOpen(&fixture,2u,2u,1u,1u);
-		TierFixturePublish(&fixture.tier,30000u,&offset);
-		TierFixturePublish(&fixture.tier,30001u,&offset);
-		SparkNvmeTierPin(&fixture.tier,30000u,1);
-		SparkNvmeTierPin(&fixture.tier,30001u,1);
-		expect(TierFixturePublish(&fixture.tier,30002u,&offset) == SPARK_STATUS_BUSY,
+		TierFixturePublish(&fixture,30000u,&offset);
+		TierFixturePublish(&fixture,30001u,&offset);
+		{
+			uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
+			TierContentDigest(30000u,digest);
+			SparkNvmeTierPin(&fixture.tier,30000u,digest,1);
+			TierContentDigest(30001u,digest);
+			SparkNvmeTierPin(&fixture.tier,30001u,digest,1);
+		}
+		expect(TierFixturePublish(&fixture,30002u,&offset) == SPARK_STATUS_BUSY,
 			"nothing evictable is BUSY, not a silently evicted promise");
 	}
 
@@ -610,17 +812,19 @@ int main(void)
 		SparkNvmeTierStatistics statistics;
 		uint64_t offset;
 		TierFixtureOpen(&fixture,2u,2u,0u,8u);
-		TierFixturePublish(&fixture.tier,40000u,&offset);
-		TierFixturePublish(&fixture.tier,40001u,&offset);
+		TierFixturePublish(&fixture,40000u,&offset);
+		TierFixturePublish(&fixture,40001u,&offset);
 		need.content_hash = 40000u;
 		need.need_by_step = 30u;
 		need.reserved0 = 0u;
+		TierContentDigest(40000u,need.content_digest);
 		SparkNvmeTierPlanLookahead(&fixture.tier,&need,1u,0u,0);
 		need.content_hash = 40001u;
+		TierContentDigest(40001u,need.content_digest);
 		SparkNvmeTierPlanLookahead(&fixture.tier,&need,1u,0u,0);
 		SparkNvmeTierPump(&fixture.tier,0u);
 		expect(fixture.device.submits == 2u, "both records mid-flight");
-		expect(TierFixturePublish(&fixture.tier,40002u,&offset) == SPARK_STATUS_OK,
+		expect(TierFixturePublish(&fixture,40002u,&offset) == SPARK_STATUS_OK,
 			"evicting a filling record cancels its read and moves on");
 		expect(fixture.device.cancels == 1u,
 			"the cancelled read will never touch the buffer again");
@@ -636,33 +840,37 @@ int main(void)
 		SparkNvmeTierNeed needs[2];
 		SparkNvmeTierDemandResult result;
 		SparkNvmeTierStatistics statistics;
+		uint8_t demand_digest[SPARK_NVME_TIER_DIGEST_BYTES];
 		uint64_t offset;
 		uint32_t submits_before;
 
 		TierFixtureOpen(&fixture,4u,2u,0u,32u);
 		fixture.device.cancel_polls_per_read = 2u;
-		TierFixturePublish(&fixture.tier,45000u,&offset);
-		TierFixturePublish(&fixture.tier,45001u,&offset);
-		TierFixturePublish(&fixture.tier,45002u,&offset);
+		TierFixturePublish(&fixture,45000u,&offset);
+		TierFixturePublish(&fixture,45001u,&offset);
+		TierFixturePublish(&fixture,45002u,&offset);
 		needs[0].content_hash = 45000u;
 		needs[0].need_by_step = 40u;
 		needs[0].reserved0 = 0u;
+		TierContentDigest(45000u,needs[0].content_digest);
 		needs[1].content_hash = 45001u;
 		needs[1].need_by_step = 41u;
 		needs[1].reserved0 = 0u;
+		TierContentDigest(45001u,needs[1].content_digest);
 		SparkNvmeTierPlanLookahead(&fixture.tier,needs,2u,0u,0);
 		SparkNvmeTierPump(&fixture.tier,0u);
 		expect(fixture.device.submits == 2u,
 			"both staging buffers are owned by in-flight prefetch reads");
 		submits_before = fixture.device.submits;
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,45002u,1u,&result)
+		TierContentDigest(45002u,demand_digest);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,45002u,demand_digest,1u,&result)
 			== SPARK_STATUS_BUSY,
 			"demand does not reuse a buffer whose cancellation is pending");
 		expect(fixture.device.submits == submits_before
 			&& fixture.device.cancels == 2u,
 			"no replacement DMA starts while either old DMA still owns memory");
 		SparkNvmeTierPump(&fixture.tier,2u);
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,45002u,2u,&result)
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,45002u,demand_digest,2u,&result)
 			== SPARK_STATUS_BUSY,
 			"pending cancellation remains unavailable after a nonterminal poll");
 		SparkNvmeTierPump(&fixture.tier,3u);
@@ -670,7 +878,7 @@ int main(void)
 		expect(fixture.device.submits > submits_before,
 			"terminal cancellation proof releases the buffer for queued work");
 		fixture.device.cancel_polls_per_read = 0u;
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,45002u,5u,&result)
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,45002u,demand_digest,5u,&result)
 			== SPARK_STATUS_OK
 			&& result.state == SPARK_NVME_TIER_DEMAND_STARTED,
 			"demand can reclaim the released buffer without a late DMA owner");
@@ -685,20 +893,23 @@ int main(void)
 		TierFixture fixture;
 		SparkNvmeTierNeed need;
 		SparkNvmeTierDemandResult result;
+		uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
 		uint64_t offset;
 		uint32_t index;
 		TierFixtureOpen(&fixture,8u,2u,1u,1u);
-		TierFixturePublish(&fixture.tier,50000u,&offset);
+		TierFixturePublish(&fixture,50000u,&offset);
 		need.content_hash = 50000u;
 		need.need_by_step = 40u;
 		need.reserved0 = 0u;
+		TierContentDigest(50000u,need.content_digest);
 		SparkNvmeTierPlanLookahead(&fixture.tier,&need,1u,0u,0);
 		for ( index = 0u; index < 40u; ++index )
-			TierFixturePublish(&fixture.tier,60000u + index,&offset);
+			TierFixturePublish(&fixture,60000u + index,&offset);
 		SparkNvmeTierPump(&fixture.tier,1u);
 		expect(fixture.device.submits == 0u,
 			"the queue entry died with its record's generation");
-		expect(SparkNvmeTierRequestDemand(&fixture.tier,50000u,2u,&result)
+		TierContentDigest(50000u,digest);
+		expect(SparkNvmeTierRequestDemand(&fixture.tier,50000u,digest,2u,&result)
 			== SPARK_STATUS_OK && result.state == SPARK_NVME_TIER_DEMAND_MISS,
 			"and the block reports honestly as gone");
 	}
@@ -706,18 +917,29 @@ int main(void)
 	printf("\nadmission asks: will these blocks be resident by step N?\n");
 	{
 		TierFixture fixture;
+		SparkNvmeTierNeed warm[2],mixed[3];
 		SparkNvmeTierResidencyAssessment assessment;
 		uint64_t offset;
-		uint64_t warm[2] = { 70000u, 70001u };
-		uint64_t mixed[3] = { 70000u, 70001u, 70002u };
 		TierFixtureOpen(&fixture,16u,4u,1u,1u);
-		TierFixturePublish(&fixture.tier,70000u,&offset);
-		TierFixturePublish(&fixture.tier,70001u,&offset);
+		TierFixturePublish(&fixture,70000u,&offset);
+		TierFixturePublish(&fixture,70001u,&offset);
 		{
 			SparkNvmeTierDemandResult result;
-			SparkNvmeTierRequestDemand(&fixture.tier,70000u,0u,&result);
+			uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
+			TierContentDigest(70000u,digest);
+			SparkNvmeTierRequestDemand(&fixture.tier,70000u,digest,0u,&result);
 			TierFixtureDrain(&fixture,1u);
 		}
+		memset(warm,0,sizeof(warm));
+		memset(mixed,0,sizeof(mixed));
+		warm[0].content_hash = 70000u;
+		TierContentDigest(70000u,warm[0].content_digest);
+		warm[1].content_hash = 70001u;
+		TierContentDigest(70001u,warm[1].content_digest);
+		mixed[0] = warm[0];
+		mixed[1] = warm[1];
+		mixed[2].content_hash = 70002u;
+		TierContentDigest(70002u,mixed[2].content_digest);
 		expect(SparkNvmeTierWillBeResidentBy(&fixture.tier,warm,2u,3u,20u,&assessment)
 			== SPARK_STATUS_OK
 			&& assessment.confidence == SPARK_NVME_TIER_CONFIDENCE_ALL
