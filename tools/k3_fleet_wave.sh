@@ -42,7 +42,14 @@ cmd_check() {
       test -s $rt/config/model_resident.json || echo 'no deployment json'
       test -s $rt/config/adapter.json || echo 'no adapter json'
       test -s $rt/packs/$pack || echo 'no pack'
-      pgrep -x sparkpipe_model >/dev/null && echo 'DAEMON RUNNING'" 2>&1)
+      # exclusive window: ANY resident sparkpipe_model daemon counts, but
+      # pgrep -f self-matches this ssh wrapper (\$\$) and -x cannot tell
+      # whose daemon it is - enumerate, skip self, report
+      for p in \$(pgrep -f 'bin/sparkpipe_model_residentd'); do
+        [ \"\$p\" = \"\$\$\" ] && continue
+        echo 'DAEMON RUNNING'
+        break
+      done" 2>&1)
     # memory envelope (operator ceiling 110 GiB of 119 unified): one rank
     # holds ~91.4 GiB weights + ~1.8 GiB pools + ~2-4 GiB context
     # ~= 96-97 GiB. Refuse any node reporting < 100 GiB available -
@@ -90,8 +97,19 @@ cmd_launch() {
       LD_LIBRARY_PATH=\$PWD/lib setsid -f \
         ./bin/sparkpipe_model_residentd --deployment config/model_resident.json \
         --rank-index $i >residentd-r$i.log 2>&1 < /dev/null
-      # setsid -f double-forks; capture the real daemon pid by name match
-      pid=\$(pgrep -n -x sparkpipe_model)
+      # setsid -f double-forks; capture the real daemon pid: cmdline match
+      # (comm -x is deployment-blind: glm5_next's daemon has the same comm),
+      # cwd-filtered to THIS runtime root, self(\$\$)-excluded; retried up
+      # to 10s because the forked child is only pgrep-visible after exec
+      pid=""
+      for t in 1 2 3 4 5 6 7 8 9 10; do
+        pid=\$(for p in \$(pgrep -f 'bin/sparkpipe_model_residentd'); do
+          [ \"\$p\" = \"\$\$\" ] && continue
+          [ \"\$(readlink /proc/\$p/cwd 2>/dev/null)\" = \"\$PWD\" ] && echo \"\$p\"
+        done | tail -1)
+        [ -n \"\$pid\" ] && break
+        sleep 1
+      done
       echo \$pid > residentd.pid
       echo \"$host rank=$i pid=\$pid\"" 2>&1 &
   done

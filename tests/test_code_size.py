@@ -1115,6 +1115,14 @@ CEILING = 228248
 # chain reduces. +40 lines, the fix comment; evidence in the commit and
 # the lane report. 227209 exact.
 CEILING = 228764
+# k3-finish lane: tools/k3_deploy_stage_par.sh (+37, the 4-concurrent
+# resumable-rsync stage deploy driver; landed d2b35f4 without its bump) and
+# tools/k3_fleet_wave.sh (+18: the exclusive-window daemon census and the
+# launch pid capture move off deployment-blind pgrep -x onto anchored
+# cmdline match + cwd filter + self-exclusion - the same comm is shared by
+# every family's residentd, and -f self-matches the ssh wrapper). Exact
+# value recomputed post-rebase.
+CEILING = 228764
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
