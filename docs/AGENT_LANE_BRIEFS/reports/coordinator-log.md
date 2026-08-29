@@ -1895,3 +1895,23 @@ appendix).
   it). Committed as its own commit before merging. Lesson: after any
   merge whose resolution includes a regen, commit the regen in the same
   window, not implicitly later.
+
+## 2026-08-29 ~16:4x — a68b176: jikv-wire merged; r2-prefill merged (4c65b23); port-collision incident closed
+
+- MERGED lane/r2-prefill (4c65b23): R2a closed with the Linux -Werror
+  receipt (which caught a real cross-compiler bug — FEAT_SHA2 no-op
+  vreinterpretq wrapper, Apple-clang-only; fixed bit-identical) + R2c
+  bulk causal-prefill kernel, offline-qualified. NO PERF CLAIM until the
+  queued exact-32K cell runs (priority 0, lean-hash kill-switch).
+- MERGED lane/jikv-wire (a68b176): dsv4 frame ops (receipt-gated),
+  the one-parkability-predicate, C2 restore-gated dispatch. Ratchet
+  225841 exact. offline-gates 151 PASS clean.
+- INCIDENT + STRUCTURAL FIX: my offline-gates run hit EADDRINUSE on the
+  registrar test port and I TERMed what I thought was a stale process —
+  it was w2b's LIVE lane test (port collision, not staleness). Lane
+  notified with apology + re-run instruction; root cause fixed on main
+  (d19367c): registrar tests now use pid-derived per-run port bases
+  (512-port windows, max span +315, below the 22480 default) —
+  coordinator gates and lane tests can never collide again.
+- Queue-state handling: live reservations.json preserved around the
+  merge (runtime state, not source; k3-finish fleet window restored).
