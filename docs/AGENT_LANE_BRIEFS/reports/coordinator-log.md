@@ -2136,3 +2136,24 @@ appendix).
   the fleet's tasks behind it until spark8 returns. The moment it
   reboots: wave3 dispatches, then the qwen27b build, weightd-t3, and
   the cells cycle through.
+
+## 2026-08-29 ~22:0x — nurse2 cycle consumed; b1abf4a tokenizer merged; cleanup error owned
+
+- MERGED tokenizer-sidecar (b1abf4a): text-in/out API + the real-tokenizer
+  92/92 round-trip + 3 real model_api fixes (mutex freeze >250ms, ABBA
+  cancel deadlock). LiteLLM chat path unblocked. Ratchet 232485.
+- Nurse2 escalations consumed: wave3 survivors cleared — WITH AN ERROR
+  OWNED: the daemons TERMed on spark9/a/c carried K3 tp4pp4 cwds (the
+  k3 deployment's stage daemons), not the glm5 wave survivors the nurse
+  named (those pids were already gone). Pattern-matched-all instead of
+  cwd-FILTERED. Recoverable (k3 launch re-brings its fleet) but the
+  discipline breach is noted: print-then-kill-unconditionally is not a
+  filter. The r3 band is clear — t9's phase-A hang likely had these
+  occupants as its cause.
+- bf16 true size confirmed by the nurse (98,019,454,976; the +86,528
+  spec delta) — my dependent re-verify task already carries it; pass2
+  ETA ~21:55Z.
+- Ghost-work class open: wave3 (28min, 0%, exit 1 at api stage — the
+  lane's setsid fix is queued as wave4), t8/t9 phase-A hangs. The
+  dispatch pid-capture bug ("pid gone without exit file") still open —
+  exit-file reaping covers it functionally.
