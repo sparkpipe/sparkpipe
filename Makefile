@@ -351,6 +351,8 @@ PYTHON_TESTS := \
 	tests/test_measured_status.py \
 	tests/test_memory_contracts.py \
 	tests/test_generate_model_resident_deployment.py \
+	tests/test_deployment_config_drift.py \
+	tests/test_k3_deployment_config.py \
 	tests/test_model_serving_architecture.py \
 	tests/test_mimo25_layer_host.py \
 	tests/test_mla_absorption.py \

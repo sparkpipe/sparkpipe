@@ -43,6 +43,11 @@ TP_COLLECTIVE = {
 
 
 def stage_config(rank: int) -> dict:
+    # The glm52 serving adapter validates members EXACTLY: these ten (the
+    # R3 flash-decode lane added decode_split_context_threshold to the
+    # exact-member list and to the deployed fleet configs; a config missing
+    # the member is rejected SCHEMA_ERROR at load). 0 = the split path is
+    # disabled, the shipped single-pass behavior.
     cfg = {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
@@ -50,6 +55,7 @@ def stage_config(rank: int) -> dict:
         "stage_pack_path": "packs/glm52_tp8_rank%02d.fp8.glms52sp" % rank,
         "max_sequence_positions": 4096,
         "execution_row_capacity": 16,
+        "decode_split_context_threshold": 0,
         "tp_degree": TP,
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE),

@@ -40,6 +40,24 @@
       "sparke",
       "sparkf"
     ],
+    "transport_hosts": [
+      "spark0",
+      "spark1",
+      "spark2",
+      "spark3",
+      "spark4",
+      "spark5",
+      "spark6",
+      "spark7",
+      "spark8",
+      "spark9",
+      "sparka",
+      "sparkb",
+      "sparkc",
+      "sparkd",
+      "sparke",
+      "sparkf"
+    ],
     "stage_indices": [
       0,
       1,

@@ -1114,7 +1114,18 @@ CEILING = 228248
 # tail now lands routed+shared in attention_out_bf16, the buffer the
 # chain reduces. +40 lines, the fix comment; evidence in the commit and
 # the lane report. 227209 exact.
-CEILING = 228764
+# cfg-audit lane (2026-08-29): the one-shot checked-in-config drift audit.
+# No production source grew. The +13 are the deployment-config generator
+# fixes and their wiring: tools/glm5_next_gen_deployment.py and
+# tools/glm52_gen_deployment.py each gain the decode_split_context_threshold
+# member their adapters' exact-member lists REQUIRE (a config missing it is
+# rejected SCHEMA_ERROR at load - the r3-flashdecode drift) plus the
+# corrected comment, and the Makefile registers
+# tests/test_deployment_config_drift.py and the previously unwired
+# tests/test_k3_deployment_config.py in PYTHON_TESTS (+2). The audit test
+# itself and the 10 repaired specs (transport_hosts) are test/data files
+# the counter excludes by construction. 228777 exact.
+CEILING = 228777
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

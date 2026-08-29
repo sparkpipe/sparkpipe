@@ -53,9 +53,13 @@ TP_COLLECTIVE = {
 
 def stage_config(rank: int) -> dict:
     host = HOSTS[rank]
-    # The adapter validates members EXACTLY: only these nine. The
-    # capacities ride the module firmware header defaults; the KV backing
-    # directory flows through the deployment node (not the stage config).
+    # The adapter validates members EXACTLY: these ten (the R3 flash-decode
+    # lane added decode_split_context_threshold to the exact-member list and
+    # to every committed stage config; a config missing the member is
+    # rejected SCHEMA_ERROR at load). 0 = the split path is disabled, the
+    # shipped single-pass behavior. The capacities ride the module firmware
+    # header defaults; the KV backing directory flows through the deployment
+    # node (not the stage config).
     return {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
@@ -63,6 +67,7 @@ def stage_config(rank: int) -> dict:
         "stage_pack_path": "packs/glm5_next_stage.tp16.rank%d.g5nsp" % rank,
         "max_sequence_positions": 32768,
         "execution_row_capacity": 16,
+        "decode_split_context_threshold": 0,
         "tp_degree": TP,
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),
