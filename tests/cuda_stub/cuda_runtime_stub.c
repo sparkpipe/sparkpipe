@@ -1,4 +1,5 @@
 #include "cuda_runtime_api.h"
+#include "cuda.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -398,3 +399,262 @@ const char *cudaGetErrorString(cudaError_t error)
 {
     return error == cudaSuccess ? "cudaSuccess" : "cudaTestError";
 }
+
+cudaError_t cudaGetDevice(int *device)
+{
+    if (device == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    *device = 0;
+    return cudaSuccess;
+}
+
+/* ------------------------------ cuMem* VMM ------------------------------ */
+
+/* The VMM stand-in models the real physical/virtual split closely enough to
+ * catch daemon lifecycle bugs: a physical chunk is a small tracked record
+ * (cuMemCreate), a virtual reservation is a tracked real allocation sized to
+ * the full span so mapped reads and writes touch real bytes (cuMemAddress-
+ * Reserve), and cuMemMap/cuMemUnmap enforce exact (pointer, bytes) pairs per
+ * chunk with cuMemRelease/cuMemAddressFree refusing while anything is still
+ * mapped - the same orderings the real driver enforces. Both records go
+ * through the shared tracked allocator, so the tests' zero-outstanding-
+ * allocations check covers the VMM path too. */
+
+#define CUDA_STUB_VMM_MAGIC UINT32_C(0x564D4D31) /* "VMM1" */
+#define CUDA_STUB_VMM_MAPPED_MAX 64
+
+typedef struct cuda_stub_vmm_phys
+{
+    uint32_t magic;
+    uint32_t mapped_count;
+    uint64_t bytes;
+    CUmemAllocationProp prop;
+} cuda_stub_vmm_phys;
+
+typedef struct cuda_stub_vmm_reservation
+{
+    uint32_t magic;
+    uint32_t mapped_count;
+    uint64_t bytes;
+    uint64_t mapped_bytes;
+    struct
+    {
+        CUdeviceptr pointer;
+        size_t bytes;
+        cuda_stub_vmm_phys *phys;
+    } mappings[CUDA_STUB_VMM_MAPPED_MAX];
+} cuda_stub_vmm_reservation;
+
+static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_at(
+    void *user_pointer)
+{
+    cuda_stub_alloc_header *header =
+        ((cuda_stub_alloc_header *)user_pointer) - 1;
+    cuda_stub_vmm_reservation *reservation;
+    if (header->magic != CUDA_STUB_ALLOC_MAGIC)
+    {
+        return 0;
+    }
+    reservation = (cuda_stub_vmm_reservation *)user_pointer;
+    return reservation->magic == CUDA_STUB_VMM_MAGIC ? reservation : 0;
+}
+
+/* The reservation owning a mapped virtual address: the VA handed out is the
+ * tail of the tracked allocation (struct end), so walk the tracked headers
+ * and match struct+1. */
+static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_for_va(
+    CUdeviceptr pointer)
+{
+    uint32_t index;
+    for (index = 0u; index < cuda_stub_tracked_count; index++)
+    {
+        cuda_stub_vmm_reservation *reservation = cuda_stub_vmm_reservation_at(
+            cuda_stub_tracked[index]);
+        if (reservation != 0 && (CUdeviceptr)(reservation + 1) == pointer)
+        {
+            return reservation;
+        }
+    }
+    return 0;
+}
+
+CUresult cuMemGetAllocationGranularity(size_t *granularity,
+    const CUmemAllocationProp *prop,
+    CUmemAllocationGranularity_flags option)
+{
+    if (granularity == 0 || prop == 0 ||
+        prop->type != CU_MEM_ALLOCATION_TYPE_PINNED ||
+        prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    *granularity = option == CU_MEM_ALLOC_GRANULARITY_MINIMUM
+        ? (size_t)65536
+        : (size_t)(2ull * 1024ull * 1024ull); /* the 2 MiB page law */
+    return CUDA_SUCCESS;
+}
+
+CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
+    size_t bytes,
+    const CUmemAllocationProp *prop,
+    unsigned long long flags)
+{
+    cuda_stub_vmm_phys *phys;
+    if (handle == 0 || prop == 0 ||
+        prop->type != CU_MEM_ALLOCATION_TYPE_PINNED ||
+        prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
+        flags != 0ull || bytes == 0u)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    /* one tracked allocation per physical chunk; the alloc-call family fault
+     * index (cudaMalloc + cudaHostAlloc + cuMemCreate) injects here too */
+    if (cuda_stub_alloc((void **)&phys, sizeof(*phys)) != cudaSuccess)
+    {
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    phys->magic = CUDA_STUB_VMM_MAGIC;
+    phys->mapped_count = 0u;
+    phys->bytes = (uint64_t)bytes;
+    phys->prop = *prop;
+    *handle = (CUmemGenericAllocationHandle)phys;
+    return CUDA_SUCCESS;
+}
+
+CUresult cuMemAddressReserve(CUdeviceptr *pointer,
+    size_t bytes,
+    size_t alignment,
+    CUdeviceptr address,
+    unsigned long long flags)
+{
+    cuda_stub_vmm_reservation *reservation;
+    if (pointer == 0 || bytes == 0u || alignment > (size_t)4096u ||
+        address != 0ull || flags != 0ull)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (cuda_stub_alloc((void **)&reservation,
+            sizeof(*reservation) + bytes) != cudaSuccess)
+    {
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    memset(reservation, 0, sizeof(*reservation) + bytes);
+    reservation->magic = CUDA_STUB_VMM_MAGIC;
+    reservation->bytes = (uint64_t)bytes;
+    *pointer = (CUdeviceptr)(reservation + 1);
+    return CUDA_SUCCESS;
+}
+
+CUresult cuMemMap(CUdeviceptr pointer,
+    size_t bytes,
+    size_t offset,
+    CUmemGenericAllocationHandle handle,
+    unsigned long long flags)
+{
+    cuda_stub_vmm_reservation *reservation;
+    cuda_stub_vmm_phys *phys = (cuda_stub_vmm_phys *)handle;
+    if (phys == 0 || ((cuda_stub_alloc_header *)phys - 1)->magic !=
+                         CUDA_STUB_ALLOC_MAGIC ||
+        phys->magic != CUDA_STUB_VMM_MAGIC || offset != (size_t)0u ||
+        flags != 0ull || bytes == 0u || (uint64_t)bytes != phys->bytes)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    reservation = cuda_stub_vmm_reservation_for_va(pointer);
+    if (reservation == 0 ||
+        (uint64_t)bytes > reservation->bytes - reservation->mapped_bytes)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (reservation->mapped_count >= CUDA_STUB_VMM_MAPPED_MAX)
+    {
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    reservation->mappings[reservation->mapped_count].pointer = pointer;
+    reservation->mappings[reservation->mapped_count].bytes = bytes;
+    reservation->mappings[reservation->mapped_count].phys = phys;
+    reservation->mapped_count++;
+    reservation->mapped_bytes += (uint64_t)bytes;
+    phys->mapped_count++;
+    return CUDA_SUCCESS;
+}
+
+CUresult cuMemSetAccess(CUdeviceptr pointer,
+    size_t bytes,
+    const CUmemAccessDesc *descriptors,
+    size_t descriptor_count)
+{
+    cuda_stub_vmm_reservation *reservation;
+    if (descriptors == 0 || descriptor_count != (size_t)1u ||
+        descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
+        (descriptors[0].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    reservation = cuda_stub_vmm_reservation_for_va(pointer);
+    if (reservation != 0 && reservation->bytes == (uint64_t)bytes)
+    {
+        return CUDA_SUCCESS;
+    }
+    return CUDA_ERROR_INVALID_VALUE;
+}
+
+CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
+{
+    cuda_stub_vmm_reservation *reservation =
+        cuda_stub_vmm_reservation_for_va(pointer);
+    uint32_t mapping_index;
+    if (reservation != 0)
+    {
+        for (mapping_index = 0u; mapping_index < reservation->mapped_count;
+            mapping_index++)
+        {
+            if (reservation->mappings[mapping_index].pointer == pointer &&
+                reservation->mappings[mapping_index].bytes == bytes)
+            {
+                reservation->mappings[mapping_index].phys->mapped_count--;
+                reservation->mapped_bytes -= (uint64_t)bytes;
+                reservation->mappings[mapping_index] =
+                    reservation->mappings[reservation->mapped_count - 1u];
+                reservation->mapped_count--;
+                return CUDA_SUCCESS;
+            }
+        }
+    }
+    return CUDA_ERROR_INVALID_VALUE;
+}
+
+CUresult cuMemRelease(CUmemGenericAllocationHandle handle)
+{
+    cuda_stub_vmm_phys *phys = (cuda_stub_vmm_phys *)handle;
+    if (phys == 0 || ((cuda_stub_alloc_header *)phys - 1)->magic !=
+                         CUDA_STUB_ALLOC_MAGIC ||
+        phys->magic != CUDA_STUB_VMM_MAGIC)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (phys->mapped_count != 0u)
+    {
+        return CUDA_ERROR_INVALID_VALUE; /* still mapped somewhere */
+    }
+    return cuda_stub_free(phys);
+}
+
+CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
+{
+    cuda_stub_vmm_reservation *reservation =
+        cuda_stub_vmm_reservation_for_va(pointer);
+    (void)bytes;
+    if (reservation == 0)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (reservation->mapped_count != 0u)
+    {
+        return CUDA_ERROR_INVALID_VALUE; /* mappings still live */
+    }
+    return cuda_stub_free(reservation);
+}
+

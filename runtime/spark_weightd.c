@@ -9,8 +9,10 @@
  *   background-load variant (design doc), so an update is stop-attach-
  *   start and the transient copy count is exactly zero.
  * - Every allocation names its space kind (the memory-space rule):
- *   arenas are device-private (cudaMalloc — the W2b VMM stand-in, see the
- *   header), pack staging is host anonymous memory, one bounded chunk.
+ *   arenas are cuMem* VMM virtual arenas (cuMemCreate physical chunks at
+ *   2 MiB granularity mapped into a reserved span — W2b; consumer import+
+ *   map is the staged tier), pack staging is host anonymous memory, one
+ *   bounded chunk.
  * - The pack digest is verified BEFORE any arena allocation, from the one
  *   open file that then supplies the load, and the file's identity (size
  *   + mtime) is re-checked after the load: attach-by-hash never lands
@@ -41,16 +43,27 @@
 #include <unistd.h>
 
 #include <cuda_runtime.h>
+#include <cuda.h>
 
 #include "sparkpipe/spark_sha256.h"
 
 #define SPARK_WEIGHTD_LOAD_CHUNK_BYTES (4ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS 10000000000ull
 
+/* The VMM page law (docs/WEIGHTD_DESIGN.md): a 25-100 GiB arena must not
+ * drown the TLB in 4 KiB pages. Physical chunks are created at the driver's
+ * recommended allocation granularity but never below 2 MiB, and every chunk
+ * size stays a multiple of that granularity (cuMemCreate requires it). */
+#define SPARK_WEIGHTD_VMM_CHUNK_BYTES (2ull * 1024ull * 1024ull)
+
 typedef struct SparkWeightdArena
 {
     SparkWeightdIdentity identity; /* canonical (prepared) */
-    void *device_base;             /* device-private (cudaMalloc; VMM in W2b) */
+    void *device_base;             /* mapped VMM virtual base (stable VA) */
+    uint64_t virtual_bytes;        /* reserved span: chunk_count * chunk_bytes */
+    uint64_t chunk_bytes;          /* physical chunk granularity */
+    void **chunk_handles;          /* cuMem physical handles, one per chunk */
+    uint32_t chunk_count;
     uint64_t generation;
     uint32_t refcount;
 } SparkWeightdArena;
@@ -294,6 +307,137 @@ static SparkStatus SparkWeightdStatusFromWire(uint32_t wire_status)
     return (SparkStatus)wire_status;
 }
 
+/* ------------------------------ server: VMM arenas ------------------------------ */
+
+/* W2b (docs/WEIGHTD_DESIGN.md): arenas are cuMem* VMM virtual arenas, not
+ * cudaMalloc blocks. The virtual span is reserved ONCE and stays put for the
+ * arena's whole life; the physical backing is a vector of independent
+ * 2 MiB-granular cuMemCreate handles mapped into that span one by one. A
+ * later tier can therefore attach or detach individual physical chunks (or
+ * export them POSIX-fd for a consumer's read-only import + map) without
+ * moving the base or copying a byte - the pointer IS the weight. */
+
+static uint64_t SparkWeightdVmmRoundUp(uint64_t value, uint64_t multiple)
+{
+    return (value + multiple - 1ull) / multiple * multiple;
+}
+
+static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
+{
+    CUdeviceptr base = (CUdeviceptr)(uintptr_t)arena->device_base;
+    uint32_t index;
+    /* full teardown of a mapped arena; nothing here can recover, so every
+     * result is ignored - the stub's leak ledger catches ordering bugs in
+     * the host tests */
+    (void)cuMemUnmap(base, (size_t)arena->virtual_bytes);
+    for (index = 0u; index < arena->chunk_count; index++)
+    {
+        (void)cuMemRelease((CUmemGenericAllocationHandle)arena->chunk_handles[index]);
+    }
+    (void)cuMemAddressFree(base, (size_t)arena->virtual_bytes);
+    free(arena->chunk_handles);
+    arena->chunk_handles = 0;
+    arena->chunk_count = 0u;
+    arena->device_base = 0;
+    arena->virtual_bytes = 0ull;
+    arena->chunk_bytes = 0ull;
+}
+
+static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
+    SparkWeightdArena *arena)
+{
+    CUmemAllocationProp prop;
+    CUmemAccessDesc access;
+    CUdeviceptr base = 0;
+    size_t granularity = 0;
+    uint64_t chunk_bytes;
+    uint32_t chunk_count;
+    uint32_t created = 0u;
+    uint32_t mapped = 0u;
+    uint32_t index;
+    int device = 0;
+
+    if (cudaGetDevice(&device) != cudaSuccess)
+    {
+        return SPARK_STATUS_UNSUPPORTED;
+    }
+    memset(&prop, 0, sizeof(prop));
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = device;
+    /* the shareable-handle shape the consumer import+map tier attaches
+     * through; requesting it costs nothing today */
+    prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+    if (cuMemGetAllocationGranularity(&granularity, &prop,
+            CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) != CUDA_SUCCESS ||
+        granularity == 0u)
+    {
+        return SPARK_STATUS_UNSUPPORTED;
+    }
+    chunk_bytes = SparkWeightdVmmRoundUp(
+        (uint64_t)granularity < SPARK_WEIGHTD_VMM_CHUNK_BYTES
+            ? SPARK_WEIGHTD_VMM_CHUNK_BYTES
+            : (uint64_t)granularity,
+        (uint64_t)granularity);
+    chunk_count = (uint32_t)((arena_bytes + chunk_bytes - 1ull) / chunk_bytes);
+
+    arena->chunk_handles = (void **)calloc(chunk_count, sizeof(void *));
+    if (arena->chunk_handles == 0)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    if (cuMemAddressReserve(&base,
+            (size_t)(chunk_count * chunk_bytes), 0u, 0ull, 0ull) != CUDA_SUCCESS)
+    {
+        free(arena->chunk_handles);
+        arena->chunk_handles = 0;
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    for (index = 0u; index < chunk_count; index++)
+    {
+        CUmemGenericAllocationHandle handle = 0;
+        if (cuMemCreate(&handle, (size_t)chunk_bytes, &prop, 0ull) !=
+            CUDA_SUCCESS)
+        {
+            break;
+        }
+        arena->chunk_handles[index] = (void *)handle;
+        created++;
+        if (cuMemMap(base + (CUdeviceptr)index * chunk_bytes,
+                (size_t)chunk_bytes, 0u, handle, 0ull) != CUDA_SUCCESS)
+        {
+            break;
+        }
+        mapped++;
+    }
+    access.location.type = prop.location.type;
+    access.location.id = prop.location.id;
+    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    if (mapped == chunk_count &&
+        cuMemSetAccess(base, (size_t)(chunk_count * chunk_bytes), &access,
+            1u) == CUDA_SUCCESS)
+    {
+        arena->device_base = (void *)(uintptr_t)base;
+        arena->virtual_bytes = chunk_count * chunk_bytes;
+        arena->chunk_bytes = chunk_bytes;
+        arena->chunk_count = chunk_count;
+        return SPARK_STATUS_OK;
+    }
+    /* unwind: unmap what was mapped, release what was created, free the VA */
+    if (mapped != 0u)
+    {
+        (void)cuMemUnmap(base, (size_t)(mapped * chunk_bytes));
+    }
+    for (index = 0u; index < created; index++)
+    {
+        (void)cuMemRelease((CUmemGenericAllocationHandle)arena->chunk_handles[index]);
+    }
+    (void)cuMemAddressFree(base, (size_t)(chunk_count * chunk_bytes));
+    free(arena->chunk_handles);
+    arena->chunk_handles = 0;
+    return SPARK_STATUS_CAPACITY_EXCEEDED;
+}
+
 /* ------------------------------ server: arena map ------------------------------ */
 
 static SparkWeightdArena *SparkWeightdServerFindArena(SparkWeightdServer *server,
@@ -310,11 +454,11 @@ static SparkWeightdArena *SparkWeightdServerFindArena(SparkWeightdServer *server
     return 0;
 }
 
-/* Free the arena at `slot` (device-private bytes back to the runtime) and
- * close the slot by moving the tail arena into it. Content-addressed means
- * no external order to preserve — but every connection attach reference
- * that named the MOVED arena must follow it, or its detach would miss and
- * pin the refcount forever. */
+/* Free the arena at `slot` (the VMM span's physical chunks released, the
+ * virtual reservation torn down) and close the slot by moving the tail arena
+ * into it. Content-addressed means no external order to preserve — but every
+ * connection attach reference that named the MOVED arena must follow it, or
+ * its detach would miss and pin the refcount forever. */
 static void SparkWeightdServerFreeArenaSlot(SparkWeightdServer *server,
     uint32_t slot)
 {
@@ -323,8 +467,7 @@ static void SparkWeightdServerFreeArenaSlot(SparkWeightdServer *server,
     uint32_t index;
     if (server->arenas[slot].device_base != 0)
     {
-        (void)cudaFree(server->arenas[slot].device_base);
-        server->arenas[slot].device_base = 0;
+        SparkWeightdVmmRelease(&server->arenas[slot]);
     }
     server->resident_bytes -= server->arenas[slot].identity.arena_bytes;
     server->arena_count--;
@@ -493,16 +636,17 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
 {
     SparkWeightdIdentity identity = request->identity;
     SparkWeightdArena *arena;
+    SparkWeightdArena pending;
     char pack_sha256[SPARK_SHA256_HEX_BYTES];
-    void *device_base = 0;
     struct stat pack_stat_before;
     struct stat pack_stat_after;
     uint8_t *staging = 0;
     FILE *file = 0;
     SparkStatus status;
-    cudaError_t cuda_status;
     uint64_t loaded = 0ull;
     uint32_t slot;
+
+    memset(&pending, 0, sizeof(pending));
 
     result->resident_bytes = server->resident_bytes;
     result->arena_count = server->arena_count;
@@ -582,21 +726,25 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
 
-    cuda_status = cudaMalloc(&device_base, (size_t)identity.arena_bytes);
-    if (cuda_status != cudaSuccess)
+    /* the VMM arena: a reserved virtual span carrying 2 MiB physical chunks
+     * mapped read-write for the load below. The identity — not the
+     * allocation — is the contract; the span's chunks can be attached or
+     * detached later without moving the base (docs/WEIGHTD_DESIGN.md). */
+    if (SparkWeightdVmmAllocate(identity.arena_bytes, &pending) !=
+        SPARK_STATUS_OK)
     {
         (void)fclose(file);
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         return;
     }
-    /* staging: host anonymous memory; the copy is host -> device-private
-     * (cross-space, named per the rule; W2b replaces this with the VMM
-     * create + the W1 pipelined loader on the daemon side) */
+    /* staging: host anonymous memory; the copy is host -> device arena
+     * (cross-space, named per the rule; the W1 pipelined loader is the
+     * staged daemon-side cold-path successor) */
     staging = (uint8_t *)malloc(SPARK_WEIGHTD_LOAD_CHUNK_BYTES);
     if (staging == 0)
     {
         (void)fclose(file);
-        (void)cudaFree(device_base);
+        SparkWeightdVmmRelease(&pending);
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         return;
     }
@@ -607,12 +755,12 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
             ? (size_t)remaining
             : (size_t)SPARK_WEIGHTD_LOAD_CHUNK_BYTES;
         if (fread(staging, 1u, chunk, file) != chunk ||
-            cudaMemcpy((void *)((uint8_t *)device_base + loaded), staging,
-                chunk, cudaMemcpyHostToDevice) != cudaSuccess)
+            cudaMemcpy((void *)((uint8_t *)pending.device_base + loaded),
+                staging, chunk, cudaMemcpyHostToDevice) != cudaSuccess)
         {
             free(staging);
             (void)fclose(file);
-            (void)cudaFree(device_base);
+            SparkWeightdVmmRelease(&pending);
             result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
             return;
         }
@@ -626,7 +774,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     {
         /* the pack changed under the load: nothing served from it */
         (void)fclose(file);
-        (void)cudaFree(device_base);
+        SparkWeightdVmmRelease(&pending);
         result->status = (uint32_t)SPARK_STATUS_HASH_MISMATCH;
         return;
     }
@@ -635,7 +783,11 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     slot = server->arena_count;
     memset(&server->arenas[slot], 0, sizeof(server->arenas[slot]));
     server->arenas[slot].identity = identity;
-    server->arenas[slot].device_base = device_base;
+    server->arenas[slot].device_base = pending.device_base;
+    server->arenas[slot].virtual_bytes = pending.virtual_bytes;
+    server->arenas[slot].chunk_bytes = pending.chunk_bytes;
+    server->arenas[slot].chunk_handles = pending.chunk_handles;
+    server->arenas[slot].chunk_count = pending.chunk_count;
     server->next_arena_generation++;
     server->arenas[slot].generation = server->next_arena_generation;
     server->arena_count++;

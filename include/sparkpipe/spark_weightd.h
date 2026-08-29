@@ -16,12 +16,15 @@
  * fails closed with CAPACITY_EXCEEDED and nothing is allocated), and the
  * clean TERM path. The device ceiling below is the operator's 110 GiB law.
  *
- * Device-memory note (extraction inventory): W2a stands in for the VMM
- * surface with cudaMalloc (device-private). W2b replaces it with
- * cuMemCreate + CU_MEM_HANDLE_TYPE_POSIX_FD export (2 MiB pages) and the
- * consumer-side cuMemImportFromShareableHandle + cuMemMap read-only map;
- * `device_handle` in the attach result is the pid-local stand-in for the
- * exported shareable handle and means nothing across processes until then.
+ * Device-memory note (extraction inventory): since W2b the arenas are cuMem*
+ * VMM virtual arenas — cuMemCreate physical chunks at 2 MiB granularity
+ * mapped with cuMemMap/cuMemSetAccess into a cuMemAddressReserve span, so a
+ * later tier can attach/detach physical pages (or export them
+ * CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR for a consumer's
+ * cuMemImportFromShareableHandle + read-only cuMemMap) without moving the
+ * base or copying. Until that consumer tier lands, `device_handle` in the
+ * attach result names the daemon's pid-local mapping and means nothing in
+ * another process; the client API shape is already the import surface.
  */
 
 #include <signal.h>

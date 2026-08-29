@@ -36,6 +36,8 @@ SPARKPIPE_RUNTIME_SOURCES := \
 	runtime/model_resident_ipc.c \
 	runtime/model_resident_client.c \
 	runtime/model_pipeline_client.c \
+	runtime/spark_weightd.c \
+	runtime/spark_weightd_attach.c \
 	runtime/model_batch_engine.c \
 	runtime/pipeline_runtime.c
 

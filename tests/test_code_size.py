@@ -963,7 +963,22 @@ from pathlib import Path
 # scoreboard's cold-start line item) and makes warm code redeploys
 # sub-second identity hits; test is excluded by construction, the
 # package-manifest regen is uncounted (.json). 224177 exact.
-CEILING = 224177
+# W2b (2026-08-29, lane/w2-weightd-b) makes the arenas VMM truth and lands
+# the first consumer: runtime/spark_weightd.c swaps the cudaMalloc stand-in
+# for the cuMem* virtual arena (cuMemAddressReserve span + cuMemCreate
+# physical chunks at 2 MiB granularity, cuMemMap + cuMemSetAccess RW for
+# the load; identity/protocol/refcount/NO-2x untouched, +198);
+# runtime/spark_weightd_attach.c + include/sparkpipe/spark_weightd_attach.h
+# are the serving-side attach surface (env kill-switch parity, env-published
+# identity, deadline-client, unconditional direct-load fallback, +307);
+# the dsv4 reference module binds tensors into the attached arena instead of
+# per-tensor file copies and closes the client at teardown (+141);
+# Makefile/sources.mk move the daemon core into $(RUNTIME_LIBRARY) and
+# register test_weightd_attach (+16); tools/sparkpipe_weightd_vmm_verify.sh
+# stages the spark-gated GPU receipt for the real VMM path (+230, never run
+# offline). tests/cuda_stub/* (the cuMem* stand-in) is excluded by
+# construction; tests are excluded. 224943 exact.
+CEILING = 224943
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
