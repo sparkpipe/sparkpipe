@@ -37,8 +37,9 @@ first (negative code), then level buys ranked by value-per-line.
 
 ## The DRY block (do in this order; all negative code)
 
-1. glm52 dead/dormant deletions: glm52_resident_pack_common.py (-99),
-   glm52_stagepack.py migration onto spark_pack_common.py (last packer).
+1. DONE 2026-08-28 (lane/dry-wave1): glm52_resident_pack_common.py deleted
+   (-99, zero importers) and glm52_stagepack.py migrated onto
+   spark_pack_common.py (last packer).
 2. KV demotions: cache/cache.h -> spec (-600), EstimateCapacity single
    authority (-100), DSv4 cache_plan vs paged_cache reconcile (-300).
 3. Scheduler DRY set: reject-map fix, ServingAdmit collapse, module-admit

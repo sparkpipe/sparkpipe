@@ -1,43 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    echo "usage: $0 VALIDATION_CONFIGURATION_SHA256 MODULE_ARCHIVE" >&2
-    exit 2
-fi
+# dsv4 resident decode stage, retained-receipt GPU validation. The
+# mechanical skeleton is the shared validation driver; the batch-bucket
+# gate, the stage-0 reference-fixture gate, and the pass-through validation
+# defines below are dsv4's own.
 
-configuration_hash="$1"
-module_archive="$2"
-batch_bucket="${SPARK_MODULE_BATCH_BUCKET:-}"
-script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-module_directory="$(cd "${script_directory}/.." && pwd)"
-repository_root="$(cd "${module_directory}/../.." && pwd)"
-validation_directory="$(mktemp -d)"
-reference_fixture_directory="${repository_root}/qualification/dsv4/reference_vectors/ga_stage0_compsec076_p128"
-reference_verifier="${repository_root}/tools/verify_dsv4_ga_reference_fixture.py"
-cuda_validator="${script_directory}/spark_dsv4_resident_decode_stage_cuda_validation.cu"
-trap 'rm -rf "${validation_directory}"' EXIT
+validation_label="DSV4"
+validation_digest_label="DSV4"
+validation_gate_label="dsv4"
+validation_env_prefix="SPARK_DSV4"
+validation_validator_file="spark_dsv4_resident_decode_stage_cuda_validation.cu"
+validation_oracle_file=""
+validation_output_name="dsv4_resident_decode_stage_validator"
+validation_hash_format_check=1
+validation_nvcc_splice=mid
 
-require_source_digest() {
-    local expected="$1"
-    local path="$2"
-    local label="$3"
-    local actual remainder
-    if [[ ! "${expected}" =~ ^[0-9a-f]{64}$ ]]; then
-        echo "${label} expected SHA-256 is invalid" >&2
-        exit 2
-    fi
-    read -r actual remainder < <(sha256sum "${path}")
-    if [[ "${actual}" != "${expected}" ]]; then
-        echo "${label} SHA-256 mismatch" >&2
-        exit 2
+validation_include_dirs() {
+    printf '%s\n' "model-families/dsv4/include"
+}
+
+validation_nvcc_extra_args() {
+    printf '%s\n' "-DSPARK_BATCH_BUCKET=${batch_bucket}"
+    if [[ -n "${validation_defines:-}" ]]; then
+        printf '%s\n' ${validation_defines:+"${validation_defines}"}
     fi
 }
 
-if [[ ! "${configuration_hash}" =~ ^[0-9a-f]{64}$ ]]; then
-    echo "validation configuration must be a lowercase SHA-256 digest" >&2
-    exit 2
-fi
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${script_directory}/../../spark_resident_decode_stage_cuda_validation_common.sh"
+
+batch_bucket="${SPARK_MODULE_BATCH_BUCKET:-}"
+validation_defines="${SPARK_DSV4_VALIDATION_DEFINES:-}"
+
+spark_cuda_validation_begin "$@"
+reference_fixture_directory="${repository_root}/qualification/dsv4/reference_vectors/ga_stage0_compsec076_p128"
+reference_verifier="${repository_root}/tools/verify_dsv4_ga_reference_fixture.py"
+spark_cuda_validation_check_hash_format
 case "${batch_bucket}" in
     1|2|4|8|16|32|64|128|256|512|1024)
         ;;
@@ -46,15 +45,9 @@ case "${batch_bucket}" in
         exit 2
         ;;
 esac
-if [[ ! -s "${module_archive}" ]]; then
-    echo "module archive is missing or empty: ${module_archive}" >&2
-    exit 2
-fi
-if [[ -z "${SPARK_DSV4_STAGE_PACK_PATH:-}" || ! -s "${SPARK_DSV4_STAGE_PACK_PATH}" ]]; then
-    echo "SPARK_DSV4_STAGE_PACK_PATH must name a readable non-empty stage pack" >&2
-    exit 2
-fi
-require_source_digest "${SPARK_DSV4_CUDA_VALIDATOR_SHA256:-}" "${cuda_validator}" "DSV4 CUDA validator"
+spark_cuda_validation_check_archive
+spark_cuda_validation_check_pack
+spark_cuda_validation_check_source_digests
 require_source_digest "${SPARK_DSV4_REFERENCE_VERIFIER_SHA256:-}" "${reference_verifier}" "DSV4 reference verifier"
 
 unset SPARK_DSV4_REFERENCE_TOKEN_PATH
@@ -73,43 +66,5 @@ if [[ "${SPARK_DSV4_STAGE_INDEX:-}" == "0" &&
     export SPARK_DSV4_REFERENCE_OUTPUT_PATH="${reference_fixture_directory}/after_layer_2.bf16le"
 fi
 
-nvcc_path="${NVCC:-nvcc}"
-cuda_architecture="${CUDA_ARCH:-sm_121a}"
-validation_defines="${SPARK_DSV4_VALIDATION_DEFINES:-}"
-if [[ "${cuda_architecture}" != "sm_121a" ]]; then
-    echo "DSV4 hardware validation admits only CUDA_ARCH=sm_121a" >&2
-    exit 2
-fi
-if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
-    echo "nvcc unavailable for DSV4 hardware validation" >&2
-    exit 2
-fi
-
-make -C "${repository_root}" \
-    build/libsparkpipe_core.a \
-    build/libsparkpipe_runtime.a
-
-"${nvcc_path}" \
-    -std=c++17 \
-    -O3 \
-    --expt-relaxed-constexpr \
-    -gencode arch=compute_121a,code=sm_121a \
-    "-DSPARK_BATCH_BUCKET=${batch_bucket}" \
-    ${validation_defines:+"${validation_defines}"} \
-    -I"${repository_root}/include" \
-    -I"${repository_root}/model-families/dsv4/include" \
-    -I"${module_directory}/include" \
-    -I"${module_directory}/source" \
-    "${cuda_validator}" \
-    "${module_archive}" \
-    "${repository_root}/build/libsparkpipe_runtime.a" \
-    "${repository_root}/build/libsparkpipe_core.a" \
-    -L"${CUDA_HOME:-/usr/local/cuda}/lib64" \
-	-lcuda \
-    -lcudart \
-    -ldl \
-    -lm \
-    -Xcompiler -pthread \
-    -o "${validation_directory}/dsv4_resident_decode_stage_validator"
-
-"${validation_directory}/dsv4_resident_decode_stage_validator" "${configuration_hash}"
+spark_cuda_validation_check_toolchain
+spark_cuda_validation_build_and_run

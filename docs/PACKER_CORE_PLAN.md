@@ -26,11 +26,10 @@ Corrections from the GLM52 agent's inventory (grep-verified):
   tools/glm52_dspark_manifest.py and the MTP layer is a separate weight
   file. The replicated-draft rule is therefore a DSV4+qwen consolidation,
   NOT a GLM52 consumer.
-- tools/glm52_resident_pack_common.py (99 lines) is a DORMANT seed already
-  holding PackFailure/SafetensorReader/align_up/tp_shard_range - imported
-  by nothing and side-effect-loading the GLM52 contract at import. It is
-  the natural starting point for the neutral module once the side-effect
-  import is removed.
+- tools/glm52_resident_pack_common.py (99 lines) WAS a DORMANT seed holding
+  PackFailure/SafetensorReader/align_up/tp_shard_range; the neutral module
+  landed as spark_pack_common.py and the dormant seed was deleted
+  2026-08-28 (lane/dry-wave1), its tp_shard_range already superseded.
 - PackFailure drift: RuntimeError in 6 files, Exception in qwen38_27b/qwen38
   (inconsistent), plain ValueError in glm52_stagepack. The shared core
   standardizes on RuntimeError.

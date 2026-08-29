@@ -1,59 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    echo "usage: $0 VALIDATION_CONFIGURATION_SHA256 MODULE_ARCHIVE" >&2
-    exit 2
-fi
+# qwen38_max resident decode stage, retained-receipt GPU validation. The
+# mechanical skeleton is the shared validation driver; the admission gates
+# below are qwen38_max's own tier policy.
 
-configuration_hash="$1"
-module_archive="$2"
+validation_label="Qwen38_max"
+validation_digest_label="Qwen38_max"
+validation_gate_label="qwen38_max"
+validation_env_prefix="SPARK_QWEN38_MAX"
+validation_validator_file="spark_qwen38_max_resident_decode_stage_cuda_validation.cu"
+validation_oracle_file=""
+validation_output_name="qwen38_max_resident_decode_stage_validator"
+validation_hash_format_check=1
+validation_nvcc_splice=std
+
+validation_include_dirs() {
+    printf '%s\n' "model-families/common/include" "model-families/qwen38_max/include"
+}
+
+validation_nvcc_extra_args() {
+    printf '%s\n' "-DSPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES=${SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES:-8}"
+}
+
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-module_directory="$(cd "${script_directory}/.." && pwd)"
-repository_root="$(cd "${module_directory}/../.." && pwd)"
-validation_directory="$(mktemp -d)"
-cuda_validator="${script_directory}/spark_qwen38_max_resident_decode_stage_cuda_validation.cu"
-trap 'rm -rf "${validation_directory}"' EXIT
+source "${script_directory}/../../spark_resident_decode_stage_cuda_validation_common.sh"
 
-require_source_digest() {
-    local expected="$1"
-    local path="$2"
-    local label="$3"
-    local actual remainder
-    if [[ ! "${expected}" =~ ^[0-9a-f]{64}$ ]]; then
-        echo "${label} expected SHA-256 is invalid" >&2
-        exit 2
-    fi
-    read -r actual remainder < <(sha256sum "${path}")
-    if [[ "${actual}" != "${expected}" ]]; then
-        echo "${label} SHA-256 mismatch" >&2
-        exit 2
-    fi
-}
-
-require_configuration_value() {
-    local name="$1"
-    local expected="$2"
-    local actual="${!name:-}"
-    if [[ "${actual}" != "${expected}" ]]; then
-        echo "qwen38_max hardware validation requires ${name}=${expected}, got '${actual}'" >&2
-        exit 2
-    fi
-}
-
-if [[ ! "${configuration_hash}" =~ ^[0-9a-f]{64}$ ]]; then
-    echo "validation configuration must be a lowercase SHA-256 digest" >&2
-    exit 2
-fi
-if [[ ! -s "${module_archive}" ]]; then
-    echo "module archive is missing or empty: ${module_archive}" >&2
-    exit 2
-fi
-if [[ -z "${SPARK_QWEN38_MAX_STAGE_PACK_PATH:-}" || ! -s "${SPARK_QWEN38_MAX_STAGE_PACK_PATH}" ]]; then
-    echo "SPARK_QWEN38_MAX_STAGE_PACK_PATH must name a readable non-empty stage pack" >&2
-    exit 2
-fi
-require_source_digest "${SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256:-}" "${cuda_validator}" "Qwen38_max CUDA validator"
+spark_cuda_validation_begin "$@"
+spark_cuda_validation_check_hash_format
+spark_cuda_validation_check_archive
+spark_cuda_validation_check_pack
+spark_cuda_validation_check_source_digests
 
 # The module tier drives decode frames through the module's own unqualified
 # smoke path (the serving adapter owns the qualified one), so the gate must
@@ -95,42 +72,5 @@ if (( ${SPARK_QWEN38_MAX_STAGE_KV_BLOCKS:-0} < 8 )); then
     exit 2
 fi
 
-nvcc_path="${NVCC:-nvcc}"
-cuda_architecture="${CUDA_ARCH:-sm_121a}"
-if [[ "${cuda_architecture}" != "sm_121a" ]]; then
-    echo "Qwen38_max hardware validation admits only CUDA_ARCH=sm_121a" >&2
-    exit 2
-fi
-if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
-    echo "nvcc unavailable for Qwen38_max hardware validation" >&2
-    exit 2
-fi
-
-make -C "${repository_root}" \
-    build/libsparkpipe_core.a \
-    build/libsparkpipe_runtime.a
-
-"${nvcc_path}" \
-    -std=c++17 \
-    -DSPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES=${SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES:-8} \
-    -O3 \
-    --expt-relaxed-constexpr \
-    -gencode arch=compute_121a,code=sm_121a \
-    -I"${repository_root}/include" \
-    -I"${repository_root}/model-families/common/include" \
-    -I"${repository_root}/model-families/qwen38_max/include" \
-    -I"${module_directory}/include" \
-    -I"${module_directory}/source" \
-    "${cuda_validator}" \
-    "${module_archive}" \
-    "${repository_root}/build/libsparkpipe_runtime.a" \
-    "${repository_root}/build/libsparkpipe_core.a" \
-    -L"${CUDA_HOME:-/usr/local/cuda}/lib64" \
-	-lcuda \
-    -lcudart \
-    -ldl \
-    -lm \
-    -Xcompiler -pthread \
-    -o "${validation_directory}/qwen38_max_resident_decode_stage_validator"
-
-"${validation_directory}/qwen38_max_resident_decode_stage_validator" "${configuration_hash}"
+spark_cuda_validation_check_toolchain
+spark_cuda_validation_build_and_run
