@@ -653,9 +653,21 @@ def main() -> int:
         "submission->lanes[lane].resident_sequence_slot" in adapter,
         "DSV4 adapter does not translate batch lanes to persistent KV slots",
     )
+    # Re-pinned for the f0bd7c8 serving-adapter cutover: the family
+    # adapter no longer hand-fills the driver create request; the shared
+    # template spine (runtime/serving_adapter_template.c) copies
+    # kv_logical_page_capacity / kv_physical_page_capacity /
+    # kv_backing_directory / kv_backing_maximum_bytes from
+    # configuration->runtime_limits into the create request, and the
+    # module consumes them from host_services unchanged.
+    template_spine = (
+        ROOT / "runtime/serving_adapter_template.c"
+    ).read_text(encoding="utf-8")
     require(
-        "request.kv_logical_page_capacity =" in adapter
-        and "request.kv_physical_page_capacity =" in adapter
+        "create_request.kv_logical_page_capacity =\n\t\tconfiguration->runtime_limits.kv_logical_page_capacity"
+        in template_spine
+        and "create_request.kv_physical_page_capacity =\n\t\tconfiguration->runtime_limits.kv_physical_page_capacity"
+        in template_spine
         and "state->logical_page_capacity = host_services->kv_logical_page_capacity"
         in module
         and "state->physical_page_capacity = host_services->kv_physical_page_capacity"

@@ -785,14 +785,14 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	return(SPARK_STATUS_OK);
 }
 
-/* DSpark is deployment-opt-in: SPARK_DSV4_DSPARK=1 arms the speculative
- * path (draft drive, verify expansion, taps, acceptance). Anything else,
- * including an unset environment, leaves the no-spec path free of the
- * draft machinery's host work. */
-static uint32_t SparkDsv4ModuleDsparkEnvEnabled(void)
+/* DSpark is deployment-opt-in: the serving adapter translates the
+ * SPARK_DSV4_DSPARK=1 launch environment into the typed node-context
+ * flag FLAG_DSPARK. The module never reads the process environment. */
+static uint32_t SparkDsv4ModuleDsparkContextEnabled(
+	const SparkDsv4ResidentDecodeStageNodeContext *context)
 {
-	const char *value = getenv("SPARK_DSV4_DSPARK");
-	return(value != 0 && value[0] == '1' && value[1] == '\0') ? 1u : 0u;
+	return(context != 0 &&
+		(context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_DSPARK) != 0u) ? 1u : 0u;
 }
 
 static SparkStatus SparkDsv4ModuleConfigure(
@@ -888,14 +888,15 @@ static SparkStatus SparkDsv4ModuleConfigure(
 			host_services->kv_backing_maximum_bytes;
 	}
 	state->mtp_armed = 0u;
-	/* DSpark speculation is opt-in per deployment via SPARK_DSV4_DSPARK=1
-	 * (the launch-env pattern the qwen38 spec envs use). The former
-	 * hardcoded 1u made every no-spec frame pay the draft-path host work:
-	 * the layer-40..42 tap + cudaStreamSynchronize, the head-max
-	 * acceptance sync, and per-frame staging traffic - measured ~17% at
-	 * the B1 no-spec decode cell. Speculative deployments export the env
-	 * in their launch configuration. */
-	state->dspark_enabled = SparkDsv4ModuleDsparkEnvEnabled();
+	/* DSpark speculation is opt-in per deployment: the adapter sets
+	 * FLAG_DSPARK from SPARK_DSV4_DSPARK=1 (the launch-env pattern the
+	 * qwen38 spec envs use). The former hardcoded 1u made every no-spec
+	 * frame pay the draft-path host work: the layer-40..42 tap +
+	 * cudaStreamSynchronize, the head-max acceptance sync, and per-frame
+	 * staging traffic - measured ~17% at the B1 no-spec decode cell.
+	 * Speculative deployments export the env in their launch
+	 * configuration. */
+	state->dspark_enabled = SparkDsv4ModuleDsparkContextEnabled(context);
 	status = SparkDsv4ModuleInitializeTpCollective(state,context);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
