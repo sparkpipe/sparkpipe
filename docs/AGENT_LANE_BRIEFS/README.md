@@ -172,6 +172,13 @@ GPU and heavy remote work is scheduled through the run queue
   after glm52 oracle fix merges").
 - Entry kinds: run / gate / note. `after:` = dependency ids. Logs land
   at `/tmp/sparkq/<id>.log` on the node; `status --id` tails them.
+- **RESERVATIONS GATE GPU WORK ONLY** (2026-08-30, the spark5 block):
+   CPU-only work — nvcc/cc builds, host oracles, pack verification,
+   manifest regeneration — does NOT need a queue reservation and is
+   never blocked by one; reserve before GPU benchmarks, waves, or any
+   daemon interaction. Long TTLs are for LIVE fleets (rolling renew
+   per wave); a blanket multi-hour hold that squats idle GPUs is a
+   finding, not a plan.
 - The queue REFUSES commands containing rm -rf, reboot, kill -9 and
   friends — destructive cleanup is a human-visible coordinator action,
   never a queued one.
