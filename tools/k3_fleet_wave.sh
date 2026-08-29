@@ -43,8 +43,20 @@ cmd_check() {
       test -s $rt/config/adapter.json || echo 'no adapter json'
       test -s $rt/packs/$pack || echo 'no pack'
       pgrep -x sparkpipe_model >/dev/null && echo 'DAEMON RUNNING'" 2>&1)
+    # memory envelope (operator ceiling 110 GiB of 119 unified): one rank
+    # holds ~91.4 GiB weights + ~1.8 GiB pools + ~2-4 GiB context
+    # ~= 96-97 GiB. Refuse any node reporting < 100 GiB available -
+    # NVRM kills silently near 114 GiB, and co-resident ranks do not fit.
+    avail=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" \
+      "free -g | awk '/^Mem:/{print \$7}'" 2>/dev/null)
+    case "$avail" in
+      ''|*[!0-9]*) echo "MISSING $host rank=$i: no readable memory figure"; bad=1; continue ;;
+    esac
+    if [ "$avail" -lt 100 ]; then
+      out="$out MEM ${avail}G available < 100G envelope"
+    fi
     if [ -n "$out" ]; then echo "MISSING $host rank=$i: $out"; bad=1
-    else echo "ok $host rank=$i stage=$((i / 4)) pack=$pack"; fi
+    else echo "ok $host rank=$i stage=$((i / 4)) pack=$pack avail=${avail}G"; fi
   done
   [ "$bad" = 0 ] && echo "FLEET PREREQUISITES COMPLETE" || echo "FLEET INCOMPLETE (do not launch)"
   return "$bad"
