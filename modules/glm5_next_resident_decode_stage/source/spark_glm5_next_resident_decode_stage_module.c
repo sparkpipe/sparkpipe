@@ -1851,7 +1851,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION:
-		if ( SparkGlm5NextProbeEnabled() && (chain->next_layer <= 4u || (chain->next_layer >= 33u && chain->next_layer <= 35u)) )
+		if ( SparkGlm5NextProbeEnabled() ) /* kda lane: EVERY layer - first-zero ordinal bisect */
 		{
 			uint16_t probe_attn[256];
 			uint32_t probe_i,probe_block;
@@ -1871,7 +1871,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_MLP:
-		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
+		if ( SparkGlm5NextProbeEnabled() ) /* kda lane: EVERY layer - stream death bisect */
 		{
 			uint16_t probe_mlp0[256];
 			uint32_t probe_mi,probe_mb;

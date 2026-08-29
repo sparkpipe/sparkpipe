@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu"
@@ -305,6 +306,7 @@ static void SparkGlm5NextBindLayer(
 	memset(buffers,0,sizeof(*buffers));
 	buffers->tp_degree = wave->tp_degree;
 	buffers->tp_rank = wave->tp_rank;
+	buffers->layer_index = layer;
 	buffers->attn_heads = SPARK_GLM5_NEXT_MODEL_MLA_HEAD_COUNT / wave->tp_degree;
 	buffers->q_b_rows = buffers->attn_heads * (SPARK_GLM5_NEXT_MODEL_MLA_QK_NOPE_HEAD_DIMENSION + SPARK_GLM5_NEXT_MODEL_MLA_QK_ROPE_HEAD_DIMENSION);
 	buffers->attn_output_columns = buffers->attn_heads * SPARK_GLM5_NEXT_MODEL_MLA_VALUE_HEAD_DIMENSION;
@@ -476,6 +478,9 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	status = Glm5NextHcSite(&buffers,buffers.hc_attn_fn,buffers.hc_attn_base,buffers.hc_attn_scale,wave->row_count,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( wave->tp_rank == 0u && getenv("SPARK_GLM5_NEXT_PROBE") != 0 )
+		fprintf(stderr,"G5N-PROBE attn L%u collapsed bf16sum %llu\n",(unsigned)layer,
+			(unsigned long long)Glm5NextProbeBf16Sum(stream,(const uint16_t *)buffers.hc_collapsed_bf16,256u));
 	if ( SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer) )
 	{
 		/* Decode: one row per sequence, null run begins. */
@@ -487,6 +492,9 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	status = Glm5NextLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( wave->tp_rank == 0u && getenv("SPARK_GLM5_NEXT_PROBE") != 0 )
+		fprintf(stderr,"G5N-PROBE attn L%u dsa_partial bf16sum %llu\n",(unsigned)layer,
+			(unsigned long long)Glm5NextProbeBf16Sum(stream,(const uint16_t *)buffers.attention_out_bf16,256u));
 	return(Glm5NextHcPost(&buffers,buffers.attention_out_bf16,wave->row_count,stream));
 }
 
