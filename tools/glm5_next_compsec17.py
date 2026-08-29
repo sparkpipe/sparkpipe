@@ -29,6 +29,43 @@ from pathlib import Path
 
 COMPSEC_IDS = [f"compsec-{i:03d}" for i in range(76, 93)]
 
+# GPT-2 style byte-level BPE reverse alphabet (the GLM tokenizer.json vocab
+# uses the same byte-unicode mapping).
+def _bytes_to_unicode() -> dict:
+    bs = (list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256)))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return {b: chr(c) for b, c in zip(bs, cs)}
+
+
+_BYTE_TO_CHAR = _bytes_to_unicode()
+_CHAR_TO_BYTE = {v: k for k, v in _BYTE_TO_CHAR.items()}
+
+
+def load_decoder(tokenizer_path: Path):
+    """Return fn(token_ids) -> text (vocab pieces joined + byte-decoded)."""
+    tok = json.loads(tokenizer_path.read_text())
+    model = tok.get("model", {})
+    vocab = model.get("vocab") or {}
+    id_to_piece = {v: k for k, v in vocab.items()}
+
+    def decode(ids: list) -> str:
+        out = bytearray()
+        for i in ids:
+            p = id_to_piece.get(int(i))
+            if p is None:
+                out += b"\xef\xbf\xbd"  # U+FFFD
+                continue
+            out += bytes(_CHAR_TO_BYTE.get(ch, 0xFF) for ch in p)
+        return out.decode("utf-8", errors="replace")
+
+    return decode
+
 
 def call(endpoint: str, prompt_ids: list, max_tokens: int, temperature: float,
          timeout: int = 600) -> dict:
@@ -56,11 +93,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--endpoint", default="http://127.0.0.1:8433")
     ap.add_argument("--fixture", required=True)
+    ap.add_argument("--tokenizer", required=True,
+                    help="tokenizer.json (vocab used to decode token ids)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-tokens", type=int, default=256)
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--timeout", type=int, default=600)
     args = ap.parse_args()
+
+    decode = load_decoder(Path(args.tokenizer))
 
     fixture = json.loads(Path(args.fixture).read_text())
     cases = [c for c in fixture["cases"] if c["id"] in COMPSEC_IDS]
@@ -77,8 +118,8 @@ def main() -> int:
         r = call(args.endpoint, c["prompt_token_ids"], args.max_tokens,
                  args.temperature, args.timeout)
         payload = r["payload"]
-        text = payload.get("text") or payload.get("content") or ""
         tokens = payload.get("tokens") or []
+        text = decode(tokens) if tokens else (payload.get("text") or "")
         passed, extracted = grade(text, c["answer"])
         rec = {
             "index": i,
@@ -104,6 +145,7 @@ def main() -> int:
                 "temperature": args.temperature,
             },
             "response": payload,
+            "decoded_text": text,
             "grade": rec,
         }
         fname = f"{i:03d}-{c['id']}.json"
