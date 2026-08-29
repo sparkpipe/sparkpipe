@@ -1933,3 +1933,18 @@ appendix).
   proof: pass 2 must say already-placed 16/16). Next: contract
   re-freeze; nvfp4 local retirement frees spark5 for the bf16 build
   (bf16 bytes 100% staged, verify ongoing).
+
+## 2026-08-29 ~17:3x — FP8 resolution COMPLETE through placement; spark5 staged for bf16
+
+- FP8 PLACEMENT PROVEN: pass-2 "already placed" all 16 ranks + direct
+  16/16 node sweep. The FP8 resolution of GLM 5.3 full is now
+  source-published -> built -> validated -> placed end to end. R5 GPU
+  load-verify remains (fleet-gated, after the glm5_next chain).
+- LOCAL RETIREMENTS per the runbook's derived-artifact rule (fleet
+  copies proven): nvfp4 local packs (491G) AND fp8 local packs (866G —
+  also placed) -> spark5 1.8T free, enough for the bf16 build (1.568T).
+- BF16: bytes 100% staged, verify process alive; promote pending — the
+  bf16 pack build fires the moment /mnt/model-warm/glm-5.3-bf16 exists.
+- Contract re-freeze re-armed DETACHED with the promoted fp8 path (the
+  tool takes --fp8-path/--bf16-path staging-or-promoted; the report's
+  default-args command predates the promote).
