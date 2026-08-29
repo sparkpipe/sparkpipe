@@ -1032,7 +1032,10 @@ static int Glm5NextKdaProbeDeep(const Glm5NextLayerBuffers *buffers)
              cudaMemcpy(probe_h,(dev),256 * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess ) \
         { \
             for ( probe_i = 0u; probe_i < 8u; probe_i++ ) \
-                probe_f[probe_i] = LmBf16ToFloat(probe_h[probe_i]); \
+            { \
+                uint32_t probe_bits = ((uint32_t)probe_h[probe_i]) << 16; \
+                (void)memcpy(&probe_f[probe_i],&probe_bits,sizeof(float)); \
+            } \
             fprintf(stderr,"G5N-PROBE kda L%u %s raw %u %u %u %u %u %u %u %u f %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g\n", \
                 (unsigned)(lyr),(label),probe_h[0],probe_h[1],probe_h[2],probe_h[3], \
                 probe_h[4],probe_h[5],probe_h[6],probe_h[7], \
