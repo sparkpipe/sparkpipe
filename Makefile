@@ -342,6 +342,7 @@ PYTHON_TESTS := \
 	tests/test_ptx_capability_gate.py \
 	tests/test_python_syntax.py \
 	tests/test_qwen38_27b_bf16_contract.py \
+	tests/test_qwen38_27b_dflash2_config.py \
 	tests/test_qwen38_27b_layer_host.py \
 	tests/test_qwen38_27b_stagepack.py \
 	tests/test_qwen38_max_validation_harness.py \
