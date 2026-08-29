@@ -235,6 +235,7 @@ TEST_NAMES := \
     test_jit_kv_slice \
     test_jit_kv_wire \
     test_jit_kv_c3c4 \
+    test_jit_kv_c5w2 \
     test_kv_mooncake \
     test_qwen38_27b_work_control \
     test_qwen38_work_control \
@@ -883,6 +884,13 @@ build/test_jit_kv_wire: tests/test_jit_kv_wire.c cache/kv_pager.c cache/kv_cache
 # TERM mid-park consistency) over the read-vtable fake backing.
 build/test_jit_kv_c3c4: tests/test_jit_kv_c3c4.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_jit_kv_c3c4.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
+
+# The C5+W2 proof: the reuse-value park policy (victim choice vs LRU under a
+# selectable knob, budget accounting invariant) and the dispatch gate's
+# deadline hint riding the tier's read path (EDF debt ordering under
+# saturation vs the hintless FIFO starvation) over the read-vtable fake.
+build/test_jit_kv_c5w2: tests/test_jit_kv_c5w2.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_jit_kv_c5w2.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
 # The switch machine sits on the same mock-drive tier: two translation units,
 # vtable devices, compiled directly like the tier test above.

@@ -179,7 +179,11 @@ SparkNvmeTierWriteReservation;
 typedef struct SparkNvmeTierDemandResult
 {
 	SparkNvmeTierDemandState state;
-	uint32_t reserved0;
+	/* W2: set (1) when a hinted demand found the tier saturated and ORDERED
+	 * the record in the pending debt instead of stealing staging - the BUSY
+	 * means "queued at its deadline", not "spun and failed". The caller's
+	 * re-offer is the queue. 0 on every legacy (hintless) path. */
+	uint32_t ordered;
 	void *staging_pointer;         /* valid only while state is READY, until Consume */
 }
 SparkNvmeTierDemandResult;
@@ -243,6 +247,9 @@ typedef struct SparkNvmeTierStatistics
 	uint64_t digest_verifications; /* restore landings whose SHA-256 matched */
 	uint64_t digest_mismatches;    /* restored bytes that failed their digest:
 	                                  quarantined, never served */
+	uint64_t demand_deadline_orders; /* W2: gated blocks the dispatch hint
+	                                  pulled forward in the pending debt
+	                                  (tightened or enqueued at deadline) */
 }
 SparkNvmeTierStatistics;
 
@@ -353,6 +360,27 @@ SparkStatus SparkNvmeTierRequestDemand(
 	uint64_t content_hash,
 	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	uint32_t step_now,
+	SparkNvmeTierDemandResult *result_out);
+
+// W2: the same decode-path question with an optional deadline hint - the
+// dispatch gate's contribution to the restore-debt ordering. The tier stays
+// the one arbiter of its queue; the hint only says WHICH block a caller is
+// blocked on RIGHT NOW. On a PRESENT record the hint never steals staging
+// the legacy path would not have taken: if staging is free the read issues
+// immediately (as the legacy path would), and when the tier is saturated
+// the record is ORDERED instead of stalled - a queued entry tightens to the
+// hint (the pending heap is earliest-deadline-first, so the gated block
+// becomes the next read issued), an unqueued one is enqueued at the hint.
+// FILLING records tighten their staging deadline for the late-landing
+// statistics. 0 = no hint: byte-for-byte RequestDemand (the legacy yank-
+// then-stall semantics are exactly preserved). Deadline values live in the
+// caller's step domain; 0 cannot name one, so it is the no-hint sentinel.
+SparkStatus SparkNvmeTierRequestDemandDeadline(
+	SparkNvmeTier *tier,
+	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
+	uint32_t step_now,
+	uint32_t deadline_step,
 	SparkNvmeTierDemandResult *result_out);
 
 // The between-steps driver: poll in-flight reads, promote landed buffers to
