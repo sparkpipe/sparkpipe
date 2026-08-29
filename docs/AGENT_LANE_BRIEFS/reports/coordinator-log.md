@@ -1271,3 +1271,24 @@ contracts inventory (248) still queued; the qwen38max lane merge
 pending; glm5_next's adapter cutover deliberately post-closeout;
 greedy-only determinism (documented in the ledger + marketplace
 appendix).
+
+## 2026-08-30 ~6:4x — INDEXER SHARDING (operator observation; design recorded)
+
+- CONFIRMED: the glm5.x spark indexer is REPLICATED full-width on all
+  ranks (packer lines 640-648: wq_b/wk/weights_proj/k_norm/compressor
+  all 'replicated, glm52 pattern'; the kernel's sharding struct says
+  'indexer keeps full dims'; the KV cache likewise all-heads-per-rank).
+  The +1.2GB/rank over the fleet-table estimate IS this.
+- THE SHARDING DESIGN (the post's approach, adapted): shard the 32
+  index HEADS across ranks (2/rank at TP16); each rank scores its
+  heads; a small cross-rank top-k MERGE (16×2048 candidates → global
+  2048) per DSA layer; selected tokens stay LOCAL because DSA KV is
+  replicated. Payoff: format-table memory /16, indexer compute /16
+  (scales with context — the long-context lever), cost = one tiny
+  collective per DSA layer (the per-layer collective already runs).
+- SEQUENCING DISCIPLINE: NOT mid-closeout — it would invalidate the
+  16 packs building right now. It is the FIRST perf lane after the
+  quality gate lands, gated on exact-token equality (head-sharded
+  scores + exact merge should be bit-identical: per-head dot products
+  don't reorder accumulation). glm-5.3-FULL (more DSA layers) gains
+  most.
