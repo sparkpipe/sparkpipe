@@ -3726,7 +3726,12 @@ static __device__ __forceinline__ void SparkLmTileDecodeRun(uint32_t weight_form
 // a partial trailing K tile reads past the row. Callers whose width is not a
 // multiple of SPARK_LM_TILE_K must not use the tile path; see
 // SparkLmHostLaunchBatchedLinear, which routes those to the scalar kernel.
-static __device__ __forceinline__ void SparkLmTileStageInput(const void *input_bf16, const uint32_t *input_row_map, uint32_t slot_base, uint32_t slot_count, uint32_t k_base, uint32_t input_dimension, __nv_bfloat16 *tile)
+// source_row_count bounds the route map: a mapped row past the activation
+// tensor is route-map corruption (frame_error.cuh, K1) - this stager clamps
+// to row 0 so the load stays in bounds, the tile holds bounded bytes instead
+// of a wild global read, and the driver's frame-error slot names the frame.
+// Every caller passes its launch's source row count; there is no default.
+static __device__ __forceinline__ void SparkLmTileStageInput(const void *input_bf16, const uint32_t *input_row_map, uint32_t slot_base, uint32_t slot_count, uint32_t source_row_count, uint32_t k_base, uint32_t input_dimension, __nv_bfloat16 *tile)
 {
 	uint32_t entry,slot,source_row;
 	float2 pair_value;
@@ -3736,6 +3741,8 @@ static __device__ __forceinline__ void SparkLmTileStageInput(const void *input_b
 		if ( slot < slot_count )
 		{
 			source_row = input_row_map != 0 ? input_row_map[slot] : slot;
+			if ( source_row >= source_row_count )
+				source_row = 0u;
 			pair_value = SparkLmLoadBf16Pair(input_bf16,((((uint64_t)source_row * input_dimension) + k_base) >> 1u) + (entry % (SPARK_LM_TILE_K >> 1u)));
 			((__nv_bfloat162 *)tile)[entry] = __floats2bfloat162_rn(pair_value.x,pair_value.y);
 		}
@@ -3965,7 +3972,7 @@ static __device__ void SparkLmExpertTileBodyAllWarps(
 		if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
 			LmActivationStageFp8Qdq<SPARK_LM_TILE,SPARK_LM_TILE_K,false,ACTIVATION_CODEC>(input_bf16,input_row_map,slot_count,slot_base,slot_count,k_base,input_dimension,tile_input,0u,SPARK_LM_CTA_WARPS);
 		else
-			SparkLmTileStageInput(input_bf16,input_row_map,slot_base,slot_count,k_base,input_dimension,tile_input);
+			SparkLmTileStageInput(input_bf16,input_row_map,slot_base,slot_count,slot_count,k_base,input_dimension,tile_input);
         SparkLmTileStageWeightAll<GROUP_SIZE>(
             weight_format,
             weight_payload,
@@ -4077,7 +4084,7 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
 	if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
 		LmActivationStageFp8Qdq<SPARK_LM_TILE,SPARK_LM_TILE_K,false,ACTIVATION_CODEC>(input_bf16,input_row_map,slot_count,slot_base,slot_count,0u,input_dimension,tile_input[current_buffer],0u,SPARK_LM_CTA_WARPS);
 	else
-		SparkLmTileStageInput(input_bf16,input_row_map,slot_base,slot_count,0u,input_dimension,tile_input[current_buffer]);
+		SparkLmTileStageInput(input_bf16,input_row_map,slot_base,slot_count,slot_count,0u,input_dimension,tile_input[current_buffer]);
     SparkLmTileStageWeightAll<GROUP_SIZE>(
         weight_format,
         weight_payload,

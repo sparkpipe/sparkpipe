@@ -5,6 +5,7 @@
 #include "spark_dsv4_hc_splitk.h"
 #include "spark_dsv4_sparse_attention_split.h"
 #include "spark_dsv4_stagepack_format.h"
+#include "inference/kernels/frame_error.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/weight_codec.cuh"
 #include "runtime/gemm.cuh"
@@ -440,7 +441,9 @@ static __global__ void SparkDsv4SparseAttnKernel(
     const uint32_t *row_page_table_indices,
     const uint32_t *physical_page_table,
     uint32_t page_table_stride,
+    uint32_t page_table_rows,
     uint32_t compressed_entries_per_page,
+    uint32_t pool_page_count,
     const int32_t *topk_idxs,
     const uint32_t *valid_topk_counts,
     uint32_t topk,
@@ -451,7 +454,8 @@ static __global__ void SparkDsv4SparseAttnKernel(
     uint32_t row_count,
     uint32_t head_count,
     uint32_t head_dim,
-    uint32_t split_count)
+    uint32_t split_count,
+    const void *frame_error_void)
 {
     static const uint32_t heads_per_cta = SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
     static const uint32_t maximum_pairs_per_lane =
@@ -465,6 +469,8 @@ static __global__ void SparkDsv4SparseAttnKernel(
     __shared__ float merge_scale[
         heads_per_cta * SPARK_LM_CTA_WARPS];
     __shared__ float inverse_denominator[heads_per_cta];
+    LmFrameError *frame_error =
+        (LmFrameError *)frame_error_void;
     float *query_shared;
     float *merge_accumulator;
     float running_max[heads_per_cta];
@@ -544,7 +550,23 @@ static __global__ void SparkDsv4SparseAttnKernel(
     }
     __syncthreads();
 
+    /* K2 (BUG_LEDGER): the top-k indices come from an on-device indexer
+     * build. A corrupt build used to send this kernel through the page
+     * table with an unchecked ordinal and back with an unchecked physical
+     * page - a wild KV address. Bounds-check at the index consumer and
+     * report through the frame's error record: the slot is skipped, the
+     * frame is failed by the module's end-of-frame check, and the context
+     * lives. Field packing per frame_error.cuh: row = attention row,
+     * sequence = raw cache index, position = the derived position or page,
+     * page = the bound violated. */
     page_ordinal = row_page_table_indices[row];
+    if ( page_ordinal >= page_table_rows )
+    {
+        LmFrameErrorReport(frame_error,
+            (uint32_t)LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE,
+            0u,row,page_ordinal,0u,page_table_rows);
+        return;
+    }
     for (selected_slot = split_index * SPARK_LM_CTA_WARPS + warp_index;
          selected_slot < valid_topk;
          selected_slot += split_count * SPARK_LM_CTA_WARPS)
@@ -578,10 +600,24 @@ static __global__ void SparkDsv4SparseAttnKernel(
                 compressed_index = local_cache_index -
                     SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS;
                 source_page = compressed_index / compressed_entries_per_page;
+                if ( source_page >= page_table_stride )
+                {
+                    LmFrameErrorReport(frame_error,
+                        (uint32_t)LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE,
+                        0u,row,cache_index,source_page,page_table_stride);
+                    continue;
+                }
                 local_cache_index = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
                     (compressed_index % compressed_entries_per_page);
                 physical_page = physical_page_table[
                     ((uint64_t)page_ordinal * page_table_stride) + source_page];
+            }
+            if ( physical_page >= pool_page_count )
+            {
+                LmFrameErrorReport(frame_error,
+                    (uint32_t)LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE,
+                    0u,row,cache_index,physical_page,pool_page_count);
+                continue;
             }
             cache_vector_base = ((uint64_t)physical_page *
                 lane_stride_elements) + ((uint64_t)local_cache_index * head_dim);
@@ -2798,7 +2834,9 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     const uint32_t *row_page_table_indices,
     const uint32_t *physical_page_table,
     uint32_t page_table_stride,
+    uint32_t page_table_rows,
     uint32_t compressed_entries_per_page,
+    uint32_t pool_page_count,
     const int32_t *topk_idxs,
     const uint32_t *valid_topk_counts,
     uint32_t topk,
@@ -2810,7 +2848,8 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     uint32_t multiprocessor_count,
     uint32_t row_count,
     uint32_t head_count,
-    uint32_t head_dim)
+    uint32_t head_dim,
+    const void *frame_error)
 {
     static const uint32_t heads_per_cta = SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
     dim3 grid;
@@ -2821,6 +2860,8 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     if (q_bf16 == 0 || kv_cache_bf16 == 0 ||
         row_lane_indices == 0 || row_page_table_indices == 0 ||
         physical_page_table == 0 || page_table_stride == 0u ||
+        page_table_rows == 0u || pool_page_count == 0u ||
+        frame_error == 0 ||
         topk_idxs == 0 || valid_topk_counts == 0 || out_bf16 == 0 ||
         partials_f32 == 0 ||
         topk == 0u || row_count == 0u || head_count == 0u ||
@@ -2851,7 +2892,9 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
         row_page_table_indices,
         physical_page_table,
         page_table_stride,
+        page_table_rows,
         compressed_entries_per_page,
+        pool_page_count,
         topk_idxs,
         valid_topk_counts,
         topk,
@@ -2862,7 +2905,8 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
         row_count,
         head_count,
         head_dim,
-        split_count);
+        split_count,
+        frame_error);
     error = cudaGetLastError();
     if ( error != cudaSuccess || split_count == 1u )
         return(error);

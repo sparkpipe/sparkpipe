@@ -165,11 +165,18 @@ static __device__ __forceinline__ float2 LmE2m1PairToFloat(uint8_t packed)
 // UE8M0 is a bare power of two, used by MXFP4 over 32-element groups. UE4M3 has
 // a mantissa, used by NVFP4 over 16-element groups. Both are unsigned: a scale
 // is a magnitude, and the sign lives in the data.
-
+//
+// THE ENCODE ROUNDS TO NEAREST, not down. The first spelling used cvt.rz,
+// which truncates the exponent toward zero: every scale whose mantissa fraction
+// exceeded half an octave lost a bit of range, so the block's largest values
+// saturated one step early - a systematic extra quantization error on every
+// UE8M0 scale this tree produces (BUG_LEDGER C-UE8M0). cvt.rn is the PTX
+// round-to-nearest-even form of the same conversion; the certified weight-pack
+// paths do not consume this function, so their receipts are unaffected.
 static __device__ __forceinline__ uint8_t LmFloatToUe8m0(float value)
 {
 	uint16_t encoded;
-	asm volatile("cvt.rz.satfinite.ue8m0x2.f32 %0, %1, %2;\n"
+	asm volatile("cvt.rn.satfinite.ue8m0x2.f32 %0, %1, %2;\n"
 		: "=h"(encoded) : "f"(0.0f), "f"(value));
 	return((uint8_t)(encoded >> 8u));
 }

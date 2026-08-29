@@ -39,6 +39,9 @@
  * common CUDA header (module.c cannot include that header under cc). */
 #define SPARK_QWEN4_FLASH_MODULE_HEAD_SCREEN_CAP 4096u
 #define SPARK_QWEN4_FLASH_MODULE_HEAD_SHADOW_GROUP 32u
+/* Mirrors LM_FRAME_ERROR_WORDS (frame_error.cuh): the six-word per-frame
+ * error record {code, kind, row, sequence, position, page}. */
+#define SPARK_FRAME_ERROR_WORDS 6u
 
 typedef struct SparkQwen4FlashModuleSlot
 {
@@ -124,6 +127,12 @@ typedef struct SparkQwen4FlashModuleSlot
 	uint32_t *head_candidate_counts;
 	float *head_scores_f32;
 	uint64_t *head_maxloc_u64;
+	/* The per-frame error record (inference/kernels/frame_error.cuh):
+	 * device-private slot the kernels report corruption into; the host
+	 * mirror is copied back at frame end and checked before the frame is
+	 * declared complete. frame_error lives 6 words. */
+	uint32_t *frame_error;
+	uint32_t *host_frame_error;
 } SparkQwen4FlashModuleSlot;
 
 typedef struct SparkQwen4FlashModuleState
@@ -1710,7 +1719,7 @@ extern cudaError_t SparkQwen4FlashLaunchFusedExpertW13Act(cudaStream_t stream, c
 extern cudaError_t SparkQwen4FlashLaunchExpertDown(cudaStream_t stream, const SparkQwen4FlashLinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count);
 extern cudaError_t SparkQwen4FlashLaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen4FlashLaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension);
-extern cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(cudaStream_t stream, const SparkQwen4FlashLinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank, uint32_t route_group_base);
+extern cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(cudaStream_t stream, const SparkQwen4FlashLinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank, uint32_t route_group_base, const void *frame_error);
 extern cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(cudaStream_t stream, const SparkQwen4FlashLinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, void *output_bf16, uint32_t source_row_count, uint32_t tp_degree, uint32_t tp_rank, uint32_t route_group_base);
 /* The MoE switches from the scalar grouped path to the tensor-core tile
  * path (SparkLmExpertTileAllKernel / SparkLmExpertTileAllMloopKernel) at
@@ -1740,7 +1749,10 @@ static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState 
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	slot->cuda_stream = stream;
-	status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->input_token_ids);
+	/* device-private: the frame error slot kernels report corruption into. */
+	status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),(void **)&slot->frame_error);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->input_token_ids);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->output_token_ids);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
@@ -2000,13 +2012,13 @@ static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state
 		}
 		else
 		{
-			error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_gate_packed_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base);
+			error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_gate_packed_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
 			if ( error == cudaSuccess )
-				error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base);
+				error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
 			if ( error == cudaSuccess )
 				error = SparkQwen4FlashLaunchSwiGlu(stream,slot->moe_gate_packed_bf16,slot->moe_slot_up_bf16,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
 			if ( error == cudaSuccess )
-				error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base);
+				error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
 		}
 	}
 	if ( error == cudaSuccess )
@@ -2310,9 +2322,10 @@ static SparkStatus SparkQwen4FlashModuleAllocateSlotHostMirrors(SparkQwen4FlashM
 	slot->host_row_cold = (uint32_t *)malloc(rows * sizeof(uint32_t));
 	slot->host_slot_mapping = (uint32_t *)malloc(SPARK_QWEN4_FLASH_MODULE_HOST_ROW_CAPACITY * sizeof(uint32_t));
 	slot->host_context_lengths = (uint32_t *)malloc(SPARK_QWEN4_FLASH_MODULE_HOST_ROW_CAPACITY * sizeof(uint32_t));
+	slot->host_frame_error = (uint32_t *)malloc(SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t));
 	if ( slot->host_row_lane_indices == 0 || slot->host_row_positions == 0 ||
 		slot->host_row_cold == 0 || slot->host_slot_mapping == 0 ||
-		slot->host_context_lengths == 0 )
+		slot->host_context_lengths == 0 || slot->host_frame_error == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(status);
 }
@@ -2322,7 +2335,13 @@ static SparkStatus SparkQwen4FlashModuleUploadRows(SparkQwen4FlashModuleState *s
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
 	uint32_t token_guard;
-	error = cudaMemcpyAsync(slot->row_lane_indices,slot->host_row_lane_indices,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	/* Fresh frame, fresh error record: kernels report route-map corruption
+	 * here; the copy-back + check at frame end turns a non-zero code into a
+	 * failed frame instead of a dead context (frame_error.cuh). */
+	error = cudaMemsetAsync(slot->frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),stream);
+	memset(slot->host_frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t));
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->row_lane_indices,slot->host_row_lane_indices,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(slot->row_positions,slot->host_row_positions,rows * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
@@ -2742,9 +2761,23 @@ static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *st
 	wants_output = context != 0 && (context->flags & SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && wants_output != 0u )
 		status = SparkQwen4FlashModuleEmitHiddenOutput(slot,context,rows);
+	/* Frame error check (frame_error.cuh): copy the record back on the
+	 * stream so it lands after every launch, and fail the frame if any
+	 * kernel reported corruption. The context lives; the frame does not. */
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,cudaMemcpyAsync(slot->host_frame_error,slot->frame_error,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream),"frame_error_copyback");
 	error = cudaStreamSynchronize(stream);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"stream_sync");
+	if ( status == SPARK_STATUS_OK && slot->host_frame_error[0] != 0u )
+	{
+		fprintf(stderr,"qwen4-flash frame %u: kernel frame-error code %u kind %u row %u seq %u pos %u page %u\n",
+			(unsigned)state->debug_frame_serial,(unsigned)slot->host_frame_error[0],
+			(unsigned)slot->host_frame_error[1],(unsigned)slot->host_frame_error[2],
+			(unsigned)slot->host_frame_error[3],(unsigned)slot->host_frame_error[4],
+			(unsigned)slot->host_frame_error[5]);
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	}
 	if ( status == SPARK_STATUS_OK )
 		SparkQwen4FlashModuleKvMarkWritten(state,slot,rows);
 	return(status);
@@ -2839,9 +2872,19 @@ static SparkStatus SparkQwen4FlashModuleRunPrefill(SparkQwen4FlashModuleState *s
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashModuleEmitHead(state,slot,frame,1u),"head_emit");
 	else if ( wants_output != 0u )
 		status = SparkQwen4FlashModuleEmitHiddenOutput(slot,context,1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,cudaMemcpyAsync(slot->host_frame_error,slot->frame_error,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream),"frame_error_copyback");
 	error = cudaStreamSynchronize(stream);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"stream_sync");
+	if ( status == SPARK_STATUS_OK && slot->host_frame_error[0] != 0u )
+	{
+		fprintf(stderr,"qwen4-flash prefill: kernel frame-error code %u kind %u row %u seq %u pos %u page %u\n",
+			(unsigned)slot->host_frame_error[0],(unsigned)slot->host_frame_error[1],
+			(unsigned)slot->host_frame_error[2],(unsigned)slot->host_frame_error[3],
+			(unsigned)slot->host_frame_error[4],(unsigned)slot->host_frame_error[5]);
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	}
 	if ( status == SPARK_STATUS_OK )
 		SparkQwen4FlashModuleKvMarkWritten(state,slot,1u);
 	return(status);

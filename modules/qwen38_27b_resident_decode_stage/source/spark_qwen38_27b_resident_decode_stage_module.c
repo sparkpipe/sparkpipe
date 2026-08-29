@@ -213,6 +213,9 @@ typedef struct SparkQwen38_27bModuleState
 	uint32_t mtp_armed;
 	uint32_t mtp_cache_ordinal;
 	uint32_t gdn_snapshot_slot_count;
+	/* Host mirror of the module's frame error record (frame_error.cuh):
+	 * read back at the frame's sync contract; non-zero code fails the frame. */
+	uint32_t host_frame_error[6];
 	float *snapshot_state_f32;
 	void *snapshot_tail_bf16;
 	float *prefix_state_f32;
@@ -2249,6 +2252,8 @@ static SparkStatus SparkQwen38_27bModuleFinish(SparkQwen38_27bModuleState *state
 	 * wrapper syncs after the replay instead, preserving the contract */
 	if ( status == SPARK_STATUS_OK && slot->capturing == 0u )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaStreamSynchronize(stream),"sync");
+	if ( status == SPARK_STATUS_OK && slot->capturing == 0u )
+		status = SparkQwen38_27bModuleCheckFrameError(state,slot,status);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head == 0u )
 		status = context->hidden_output_send_function(context->hidden_output_transport_session,&context->hidden_output_packet);
 	return(status);
@@ -3125,10 +3130,43 @@ static SparkStatus SparkQwen38_27bModuleCaptureDsparkTap(
 	return(SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,error,"dflash_tap_store"));
 }
 
+extern cudaError_t SparkQwen38_27bFrameErrorClear(cudaStream_t stream);
+extern cudaError_t SparkQwen38_27bFrameErrorRead(void *destination, cudaStream_t stream);
+
+/* Frame error check (inference/kernels/frame_error.cuh): copy the record
+ * back after the frame's stream work and fail the frame if any kernel
+ * reported corruption (oversized rANS payload windows today). The context
+ * lives; the frame does not. */
+static SparkStatus SparkQwen38_27bModuleCheckFrameError(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, SparkStatus status)
+{
+	cudaError_t error;
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	error = SparkQwen38_27bFrameErrorRead(state->host_frame_error,(cudaStream_t)slot->cuda_stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,error,"frame_error_read"));
+	error = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,error,"frame_error_sync"));
+	if ( state->host_frame_error[0] != 0u )
+	{
+		fprintf(stderr,"qwen38-27b frame_error code %u kind %u row %u seq %u pos %u page %u\n",
+			(unsigned)state->host_frame_error[0],(unsigned)state->host_frame_error[1],
+			(unsigned)state->host_frame_error[2],(unsigned)state->host_frame_error[3],
+			(unsigned)state->host_frame_error[4],(unsigned)state->host_frame_error[5]);
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, SparkQwen38_27bResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen38_27bPrefillFrameView *prefill, uint32_t rows)
 {
 	uint64_t frame_start = state->profile_enabled != 0u ? SparkQwen38_27bProfileNow() : 0ull;
 	uint64_t profile_stage_end = frame_start, profile_walk_end = frame_start;
+	cudaError_t frame_error_clear = SparkQwen38_27bFrameErrorClear((cudaStream_t)slot->cuda_stream);
+	memset(state->host_frame_error,0,sizeof(state->host_frame_error));
+	if ( frame_error_clear != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,frame_error_clear,"frame_error_clear"));
 	SparkStatus status = SparkQwen38_27bModuleUploadRows(state,slot,context,frame,prefill,rows);
 	slot->replay_frame = (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST) != 0u ? 1u : 0u;
 	slot->verify_frame = (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY) != 0u ? 1u : 0u;
@@ -3266,7 +3304,11 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 						/* the capture round did not execute - replay now so this
 						 * frame produces its output (the K3 pattern) */
 						if ( cudaGraphLaunch(exec,(cudaStream_t)slot->cuda_stream) == cudaSuccess )
+						{
 							status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),"graph_sync");
+							if ( status == SPARK_STATUS_OK )
+								status = SparkQwen38_27bModuleCheckFrameError(state,slot,status);
+						}
 						else
 						{
 							state->graphs_broken = 1u;

@@ -31,6 +31,7 @@
 // the per-stage completion count.
 
 #include "inference/kernels/activation.cuh"
+#include "inference/kernels/frame_error.cuh"
 #include "inference/kernels/layout.cuh"
 #include "inference/kernels/mma.cuh"
 #include "inference/kernels/route.cuh"
@@ -287,9 +288,14 @@ static __device__ __forceinline__ void LmPipelineProduce(
 // bytes past row_limit are the NEXT group's indices - in range and wrong.
 // Tail rows clamp to row_base, a live row; their stores are already dropped by
 // the GEMM's row_limit check, so the duplicate load is dead traffic, never
-// wrong output. The trap is the other half of that guard: a mapped row past
-// source_row_count means the route build wrote past its own arrays, and a
-// wild bulk copy faults or, worse, does not.
+// wrong output. A mapped row past source_row_count means the route build
+// wrote past its own arrays - route-map corruption, a FRAME failure, never a
+// context failure: the first thread to see it records
+// LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE in the frame's error slot and every
+// thread stages row 0 for that packed row instead, which keeps the mbarrier
+// transaction count exact (a skipped bulk copy would hang the phase forever)
+// and keeps every address in bounds. The staged tile is dead on arrival and
+// the driver fails the frame when it reads the slot; the context lives.
 template<class FormatA, uint32_t TILE_K, bool INTERLEAVED_B = false>
 static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 	const LmTileGeometry *a,
@@ -308,7 +314,8 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 	uint32_t k_tile,
 	uint32_t group_index,
 	bool grouped,
-	uint32_t cells_total)
+	uint32_t cells_total,
+	LmFrameError *frame_error = 0)
 {
 	const uint32_t row_pitch = LmTileBytes(1u,a->depth,a->element_bits);
 	const uint32_t chunk_count = row_pitch / LM_SWIZZLE_CHUNK_BYTES;
@@ -331,7 +338,12 @@ static __device__ __forceinline__ void LmPipelineProduceIndirectA(
 		packed_row = row_base + local_row < row_limit ? row_base + local_row : row_base;
 		source_row = LmRouteSourceRow(source_row_map,packed_row);
 		if ( source_row >= source_row_count )
-			asm volatile("trap;\n");
+		{
+			LmFrameErrorReport(frame_error,
+				(uint32_t)LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE,
+				0u,packed_row,source_row,row_base,source_row_count);
+			source_row = 0u;
+		}
 		source_offset = ((uint64_t)source_row * ((input_dimension * FormatA::kStoredBits) / 8u))
 			+ (k_tile * row_pitch) + (chunk * LM_SWIZZLE_CHUNK_BYTES);
 		if constexpr ( INTERLEAVED_B && TILE_K == 128u )
@@ -386,7 +398,8 @@ static __device__ __forceinline__ void LmPipelineProduceManualA(
 	uint32_t neuron_base,
 	uint32_t k_tile,
 	uint32_t group_index,
-	bool grouped)
+	bool grouped,
+	LmFrameError *frame_error = 0)
 {
 	static_assert(ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE,
 		"the codec-free indirect path is LmPipelineProduceIndirectA");
@@ -411,7 +424,8 @@ static __device__ __forceinline__ void LmPipelineProduceManualA(
 		static_assert(FormatA::kStoredBits == 16u,"FP8 QDQ source must be BF16");
 		LmActivationStageFp8Qdq<TILE_ROWS,TILE_K,FormatA::kTmaSwizzle,ACTIVATION_CODEC>(
 			activation_bytes,source_row_map,source_row_count,row_base,row_limit,
-			k_tile * TILE_K,input_dimension,stage_a,0u,blockDim.x / 32u);
+			k_tile * TILE_K,input_dimension,stage_a,0u,blockDim.x / 32u,
+			frame_error);
 	}
 }
 

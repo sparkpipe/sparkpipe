@@ -89,9 +89,15 @@ struct LmKvGeometry
 //
 // Access failures are first-class device results. A missing page is not an
 // empty position and must never be converted into a plausible attention row.
-// The first failing thread records the exact access and then traps on CUDA so
-// the stream becomes terminal. Host emulation records the same error without
-// aborting the process, allowing deterministic contract tests.
+// The first failing thread records the exact access in the frame's error slot
+// (inference/kernels/frame_error.cuh) and the kernel returns a bounded
+// result - it NEVER traps. A device trap kills the whole CUDA context, and
+// the context is shared by every resident model and every request; the frame
+// is the failure boundary. The driver copies the slot back at the end of the
+// frame, and a non-zero code fails the frame with the recorded access for
+// diagnosis (glm5_next's execution slots are the reference wiring). Host
+// emulation records the same error without aborting the process, allowing
+// deterministic contract tests.
 typedef enum LmKvAccessKind
 {
 	LM_KV_ACCESS_READ = 1u,
@@ -99,30 +105,23 @@ typedef enum LmKvAccessKind
 }
 LmKvAccessKind;
 
-typedef enum LmKvAccessErrorCode
-{
-	LM_KV_ACCESS_ERROR_NONE = 0u,
-	LM_KV_ACCESS_ERROR_INVALID_VIEW = 1u,
-	LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE = 2u,
-	LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE = 3u,
-	LM_KV_ACCESS_ERROR_PAGE_UNMAPPED = 4u,
-	LM_KV_ACCESS_ERROR_POOL_PAGE_OUT_OF_RANGE = 5u,
-	LM_KV_ACCESS_ERROR_INVALID_GQA_GEOMETRY = 6u
-}
-LmKvAccessErrorCode;
+// The per-frame error record is defined once in frame_error.cuh and shared
+// by every kernel family - KV accesses, route maps, sparse indices, payload
+// windows all publish the same six words through the same first-writer-wins
+// protocol. The names below are this subsystem's historical spelling.
+#include "inference/kernels/frame_error.cuh"
 
-#define LM_KV_ACCESS_ERROR_RECORDING 0xffffffffu
+typedef LmFrameError LmKvAccessError;
+typedef LmFrameErrorCode LmKvAccessErrorCode;
 
-typedef struct LmKvAccessError
-{
-	uint32_t error_code;
-	uint32_t access_kind;
-	uint32_t row;
-	uint32_t sequence;
-	uint32_t position;
-	uint32_t page;
-}
-LmKvAccessError;
+#define LM_KV_ACCESS_ERROR_NONE LM_FRAME_ERROR_NONE
+#define LM_KV_ACCESS_ERROR_INVALID_VIEW LM_FRAME_ERROR_INVALID_VIEW
+#define LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE LM_FRAME_ERROR_SEQUENCE_OUT_OF_RANGE
+#define LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE LM_FRAME_ERROR_PAGE_TABLE_OUT_OF_RANGE
+#define LM_KV_ACCESS_ERROR_PAGE_UNMAPPED LM_FRAME_ERROR_PAGE_UNMAPPED
+#define LM_KV_ACCESS_ERROR_POOL_PAGE_OUT_OF_RANGE LM_FRAME_ERROR_POOL_PAGE_OUT_OF_RANGE
+#define LM_KV_ACCESS_ERROR_INVALID_GQA_GEOMETRY LM_FRAME_ERROR_INVALID_GQA_GEOMETRY
+#define LM_KV_ACCESS_ERROR_RECORDING LM_FRAME_ERROR_RECORDING
 
 struct LmKvView
 {
@@ -137,14 +136,7 @@ struct LmKvView
 static __host__ __device__ __forceinline__ void LmKvAccessErrorReset(
 	LmKvAccessError *error)
 {
-	if ( error == 0 )
-		return;
-	error->error_code = LM_KV_ACCESS_ERROR_NONE;
-	error->access_kind = 0u;
-	error->row = 0xffffffffu;
-	error->sequence = 0xffffffffu;
-	error->position = 0xffffffffu;
-	error->page = 0xffffffffu;
+	LmFrameErrorReset(error);
 }
 
 static __host__ __forceinline__ int32_t LmKvViewInitialize(
@@ -172,40 +164,6 @@ static __host__ __forceinline__ int32_t LmKvViewInitialize(
 	return(0);
 }
 
-static __device__ __forceinline__ uint32_t LmKvErrorCompareExchange(
-	uint32_t *address,
-	uint32_t expected,
-	uint32_t desired)
-{
-#if defined(__CUDA_ARCH__)
-	return(atomicCAS(address,expected,desired));
-#else
-	uint32_t previous = *address;
-	if ( previous == expected )
-		*address = desired;
-	return(previous);
-#endif
-}
-
-static __device__ __forceinline__ void LmKvErrorPublish(
-	uint32_t *address,
-	uint32_t value)
-{
-#if defined(__CUDA_ARCH__)
-	__threadfence_system();
-	atomicExch(address,value);
-#else
-	*address = value;
-#endif
-}
-
-static __device__ __forceinline__ void LmKvTrap(void)
-{
-#if defined(__CUDA_ARCH__)
-	asm volatile("trap;");
-#endif
-}
-
 static __device__ __forceinline__ void LmKvReportRequiredAccessFailure(
 	const LmKvView &view,
 	LmKvAccessErrorCode error_code,
@@ -215,22 +173,17 @@ static __device__ __forceinline__ void LmKvReportRequiredAccessFailure(
 	uint32_t position,
 	uint32_t page)
 {
-	if ( view.access_error != 0
-		&& LmKvErrorCompareExchange(
-			&view.access_error->error_code,
-			LM_KV_ACCESS_ERROR_NONE,
-			LM_KV_ACCESS_ERROR_RECORDING) == LM_KV_ACCESS_ERROR_NONE )
-	{
-		view.access_error->access_kind = (uint32_t)access_kind;
-		view.access_error->row = row;
-		view.access_error->sequence = sequence;
-		view.access_error->position = position;
-		view.access_error->page = page;
-		LmKvErrorPublish(
-			&view.access_error->error_code,
-			(uint32_t)error_code);
-	}
-	LmKvTrap();
+	// FIRST-WRITER-WINS into the frame's error slot, then a bounded return.
+	// No trap: the caller sees a null slot pointer, skips the access, and
+	// the driver fails the frame when it reads the slot at frame end.
+	LmFrameErrorReport(
+		view.access_error,
+		(uint32_t)error_code,
+		(uint32_t)access_kind,
+		row,
+		sequence,
+		position,
+		page);
 }
 
 static __host__ __device__ __forceinline__ int32_t LmKvViewIsConfigured(
@@ -245,8 +198,10 @@ static __host__ __device__ __forceinline__ int32_t LmKvViewIsConfigured(
 }
 
 // Address one required slot. Any missing or invalid mapping records the first
-// access failure and traps the CUDA stream. The row and access kind are carried
-// for request-level diagnosis rather than inferred after the fact.
+// access failure in the frame's error slot and returns null; the caller skips
+// the access and the driver fails the frame at slot-check time. The row and
+// access kind are carried for request-level diagnosis rather than inferred
+// after the fact.
 template<class Geometry>
 static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
 	const LmKvView &view,
