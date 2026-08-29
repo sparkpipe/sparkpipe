@@ -1797,3 +1797,31 @@ appendix).
   — at its merge, drop it: main threads stop counts for real now),
   kernel-crew (7823325 K1-K4), k3-finish (e793289; + this delegation),
   w1-loader (done → merged, slot frees next cycle).
+
+## 2026-08-29 ~14:2x — 0b4e84a: last red gate closed, offline-gates 151/0; SPAWNS DOWN (provider)
+
+- MERGED kernel-crew K1-K4 as 66e174a. The lane's committed state did not
+  compile (its finishing WIP sat uncommitted when the turn died) — applied
+  the lane's own WIP (frame_error_clear rename) into the merge; ratchet
+  222131 exact; mean CCN ledgered 7.86 (fail-frame clear+check branches).
+- Landed k3-finish's stranded report (0be9505 on lane/k3-finish) — the
+  92-case/17-COMPSEC tiktoken fixtures work was complete but unlanded.
+- EXECUTED the delegated k3_pack_layout fix myself as 0b4e84a: fixture
+  reconciled to the released checkpoint (full-rank g_proj both attention
+  sides, block_sparse_moe MoE, dead fused-helper removed from the packer).
+  make offline-gates: 151 PASS / 0 FAIL — fully green for the first time
+  since 61d6edc this morning.
+- INCIDENT — SUBAGENT SPAWNS BROKEN: all five attempted spawns (probe-fix,
+  r2-prefill, k3-finish, w2-weightd NEW, jikv-slice NEW) failed instantly
+  with "Model provider is not configured: builtin:zai". Restart casualty;
+  NOT fixable from inside the session (~/.zcode/v2/config.json has no
+  model/provider key to repair). OPERATOR ACTION NEEDED to restore the
+  spawn capability. Until then the coordinator is the sole executor; lane
+  backlogs are recorded in briefs + lane tips. Work NOT lost: briefs
+  preserved (k3_pack_layout_fix.md annotated EXECUTED; the spawn prompts'
+  full backlogs live in this log's 13:5x spawn batch and lane reports).
+- Queue with no fleet work running: the glm5_next chain (probe wave with
+  the x8 window -> retention discriminator -> verdict -> fix -> COMPSEC-17
+  -> 92x -> M5) is THE critical path and needs either spawns restored or
+  coordinator windows; next cycle picks it up directly if spawns remain
+  down.
