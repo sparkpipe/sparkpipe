@@ -179,14 +179,18 @@ def main() -> int:
         "columns": it.entry.columns, "payload_bytes": it.entry.payload_bytes,
         "scale_bytes": it.entry.scale_bytes,
     } for it in packer.plan]
+    cmp_keys = ["kind", "layer", "payload_type", "weight_codec",
+                "scale_encoding", "group_count", "rows", "columns",
+                "payload_bytes", "scale_bytes"]
     if len(want) != len(entries):
         fail(f"plan entry count {len(want)} != pack {len(entries)}")
     mismatches = 0
     for i, (w, e) in enumerate(zip(want, entries)):
-        if w != e:
+        e_sub = {k: e[k] for k in cmp_keys}
+        if w != e_sub:
             mismatches += 1
             if mismatches <= 5:
-                print(f"FAIL entry {i}: pack {e} != plan {w}")
+                print(f"FAIL entry {i}: pack {e_sub} != plan {w}")
     if mismatches:
         fail(f"plan diff: {mismatches}/{len(entries)} entries differ")
     print(f"PASS plan diff: all {len(entries)} entries match the fixed "
