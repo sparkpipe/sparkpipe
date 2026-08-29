@@ -1633,3 +1633,15 @@ appendix).
 - F2 wave-owner race (a second actor fired over the serving fleet):
   the rule is load-bearing; enforcement idea = the registrar's GO
   epoch as a lease. F5 TERM-immune: real, handled, zero KILLs.
+
+## 2026-08-30 ~21:5x — F1 FIXED (50335a2) + deployed; wave cycling continues
+
+- THE FLAKE: getaddrinfo transient under wave load (both real
+  ROUTE_NOT_FOUND producers are name-resolution sites; verified the
+  binaries/config were identical cross-node first — not a descriptor
+  bug). FIX: bounded 4x25ms retry in the client + listener. Committed.
+- Deployed fleet-wide (atomic .new+mv past ETXTBSY). The post-deploy
+  wave is cycling (ranks at rc=15 busy = the transport window; the
+  flake's random-death signature will show over repeated waves — the
+  proof is N consecutive 16/16). Continue cycling next windows; the
+  registrar's GO-gated pattern is the launcher.
