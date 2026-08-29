@@ -5,21 +5,26 @@
 #
 # Usage (from the controller or the holding node):
 #   tools/glm53full_place_packs.sh --from <holding-spark> [--ranks "0 1 2 ..."]
+#                                  [--packs-rel <dir>] [--bytes <N>]
+#                                  [--prefix <pack-name-prefix>]
 # The holding node reads its LOCAL copy and pushes over ssh; every target
-# path is $HOME/sparkdata/glm53full.nvfp4.tp16/packs/. Ranks already
-# present with the right byte size are skipped (resumable).
+# path is $HOME/<packs-rel>/. Ranks already present with the right byte
+# size are skipped (resumable).
 set -euo pipefail
 
 FROM=""
 PACKS_REL="sparkdata/glm53full.nvfp4.tp16/packs"
 RANKS="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
 BYTES=32903038976
+PREFIX="glm53full.nvfp4.tp16"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --from) FROM="$2"; shift 2 ;;
         --packs-rel) PACKS_REL="$2"; shift 2 ;;
         --ranks) RANKS="$2"; shift 2 ;;
+        --bytes) BYTES="$2"; shift 2 ;;
+        --prefix) PREFIX="$2"; shift 2 ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
     esac
 done
@@ -30,9 +35,9 @@ done
 # $2="0" and $3="1" (that bug placed rank 0 with a bytes-test of 1 and
 # exited 0 on every run; printf %q survives the hop).
 ssh -o BatchMode=yes "$FROM" \
-    "bash -s $(printf '%q' "$PACKS_REL") $(printf '%q' "$RANKS") $(printf '%q' "$BYTES")" <<'REMOTE'
+    "bash -s $(printf '%q' "$PACKS_REL") $(printf '%q' "$RANKS") $(printf '%q' "$BYTES") $(printf '%q' "$PREFIX")" <<'REMOTE'
 set -euo pipefail
-packs_rel="$1"; ranks="$2"; bytes="$3"
+packs_rel="$1"; ranks="$2"; bytes="$3"; prefix="$4"
 # 2026-08-29 first run created a literal '$HOME' directory under the
 # targets' homes (over-escaped variable); remove exactly that path.
 # EVERY inner ssh takes -n and rsync </dev/null: bash -s reads THIS
@@ -45,7 +50,7 @@ for rank in $ranks; do
 done
 for rank in $ranks; do
     target="spark$(printf '%x' "$rank")"
-    name="glm53full.nvfp4.tp16-rank${rank}.glm52sp"
+    name="${prefix}-rank${rank}.glm52sp"
     local_path="$HOME/$packs_rel/$name"
     # RELATIVE remote path: rsync/ssh resolve it against the TARGET
     # user's home (homes are per-node: /home/spark<hex>), never against
