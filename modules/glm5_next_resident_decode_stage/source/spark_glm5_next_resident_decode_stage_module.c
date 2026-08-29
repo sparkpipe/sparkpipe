@@ -1802,17 +1802,21 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION:
-		if ( SparkGlm5NextProbeEnabled() && chain->next_layer == 0u )
+		if ( SparkGlm5NextProbeEnabled() )
 		{
-			uint16_t probe_hidden[16];
-			uint32_t probe_i;
+			uint16_t probe_hidden[256];
+			uint32_t probe_i,probe_block;
 			uint64_t probe_sum;
 			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			error = cudaMemcpy(probe_hidden,chain->slot->hidden_bf16,sizeof(probe_hidden),cudaMemcpyDeviceToHost);
 			probe_sum = 0u;
-			for ( probe_i = 0u; probe_i < 16u; probe_i++ )
-				probe_sum += probe_hidden[probe_i];
-			fprintf(stderr,"G5N-PROBE post-embed-reduce hidden row0 first16 bf16sum %llu first8 %u %u %u %u %u %u %u %u\n",
+			for ( probe_block = 0u; probe_block < 4u; probe_block++ )
+			{
+				error = cudaMemcpy(probe_hidden,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_block * sizeof(probe_hidden),sizeof(probe_hidden),cudaMemcpyDeviceToHost);
+				for ( probe_i = 0u; probe_i < 256u; probe_i++ )
+					probe_sum += probe_hidden[probe_i];
+			}
+			fprintf(stderr,"G5N-PROBE layer %u hidden row0 [0,1024) bf16sum %llu first8 %u %u %u %u %u %u %u %u\n",
+				(unsigned)chain->next_layer,
 				(unsigned long long)probe_sum,
 				(unsigned)probe_hidden[0],(unsigned)probe_hidden[1],(unsigned)probe_hidden[2],(unsigned)probe_hidden[3],
 				(unsigned)probe_hidden[4],(unsigned)probe_hidden[5],(unsigned)probe_hidden[6],(unsigned)probe_hidden[7]);
