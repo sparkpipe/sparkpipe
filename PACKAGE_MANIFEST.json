@@ -1,5 +1,5 @@
 {
-  "file_count": 1698,
+  "file_count": 1702,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -53,8 +53,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "435b5d3055b485a425b3c436c60bf4a000246d51ba7a8dd0ec186c402b12c617",
-      "size_bytes": 85681
+      "sha256": "ac858e1dc5bc21ec4cbf3636474b400598fcd9b77df2ab3e1a3a4cf2dba04710",
+      "size_bytes": 86233
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -310,6 +310,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/ccn-2026-08-28.md",
       "sha256": "30acf6649a925c0b7a122e59868bc0e18fef5f8d4d6a0ee88c3b2289672bc07e",
       "size_bytes": 10027
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/contbatch2-2026-08-29.md",
+      "sha256": "bda10bee73734863ad7aed81f4ecc8cdae795f6bad410f69456602df0357811d",
+      "size_bytes": 9226
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/continuous-batching-2026-08-27.md",
@@ -2427,6 +2432,11 @@
       "size_bytes": 6897
     },
     {
+      "path": "include/sparkpipe/spark_continuous_batch.h",
+      "sha256": "a8857de0e4f02a9d8cc1b599c8f39dc9e7f469de0320e7a50190a73d42640061",
+      "size_bytes": 11277
+    },
+    {
       "path": "include/sparkpipe/spark_distributed_work.h",
       "sha256": "5915f0a652656be4192c8107880a1ab89157b0879ad298f2b9437b0d4f104ea8",
       "size_bytes": 8590
@@ -4008,8 +4018,8 @@
     },
     {
       "path": "node/model_batch.c",
-      "sha256": "344d73d2ee9cd99402e78e5c13efca6db5fddc05e092f7b2a1223816928b96fb",
-      "size_bytes": 28312
+      "sha256": "c657949869c7a4ff3227f01468665a24b57f1e60ba89dbf110bce0ae2df3f4a8",
+      "size_bytes": 36050
     },
     {
       "path": "node/model_residentd.c",
@@ -5582,6 +5592,11 @@
       "size_bytes": 13669
     },
     {
+      "path": "scheduler/continuous_batch.c",
+      "sha256": "e5477ae9cc2ae4da4a54ae208ed7051edeb1f67dd0ca990f7adde397bbf9665c",
+      "size_bytes": 21048
+    },
+    {
       "path": "scheduler/topology_switch.c",
       "sha256": "4b51d173733b3990396696065eaec620ae7aa740338a5d98f4ec8a395118a087",
       "size_bytes": 24651
@@ -6083,8 +6098,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "e6ef715576b55731a742545e6837b0bd65d3385d030079bf794769dbb2f985f4",
-      "size_bytes": 76786
+      "sha256": "9c144c3530bcb9c91e806d9fccda7ad68b5e2305cf21917e7f60b1c99c2b5fb4",
+      "size_bytes": 77955
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6095,6 +6110,11 @@
       "path": "tests/test_config_coverage.py",
       "sha256": "bb133eaf6ebbf702b3443f5e848bd61e0fdd969f17ba0039af0c3a4ec97ac957",
       "size_bytes": 9628
+    },
+    {
+      "path": "tests/test_continuous_batch.c",
+      "sha256": "2f527dc75fcd612ccd390d43afa0b07f68a0b447cc96c1a503b749ab5bb05d47",
+      "size_bytes": 30073
     },
     {
       "path": "tests/test_cuda_math_policy.py",
@@ -8495,5 +8515,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31334766
+  "total_bytes": 31415849
 }
