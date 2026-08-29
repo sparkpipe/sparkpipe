@@ -1227,3 +1227,20 @@ failure is ever diagnosable through the wire.
 - Duty 1: 3res active (tip 22m); kda completed->respawned; K3 build
   running. Duty 2: closer — root causes all landed; one sharded-slice
   bug between us and the cell.
+
+## 2026-08-30 ~5:5x — cycle 2 (early): packer FIXED by coordinator; 15 rebuilds live; spark4 kicked
+
+- THE RANK>0 BUG WAS ONE LINE (4758e68): fused section_slices carry
+  (start,count) but produce() sliced m[a:b] as (start,end) — rank 0's
+  start=0 masked it for every prior build; rank>0 = m[start:count] =
+  empty. Fixed to m[a:a+b] per the spine path's own convention; fix
+  synced to spark1-f; ALL 15 rank rebuilds relaunched and PAST the
+  failure point (2 procs each, running).
+- SPARK4 KICKSTART: no 6h-stuck python found (old ones are system
+  telemetry/centaur, 259h, healthy S-state) — the stuck reader had
+  already exited or was the sysadmin's view pre-fix; spark4's NEW
+  build (r4) briefly showed D-state in ceph read, ceph issues are
+  sysadmin's active work — builds are running anyway; if a rank
+  wedges >30min in D, requeue that rank solo.
+- MORE AGENTS: spawning 3res-respawn, glm5-closeout (wave+COMPSEC+M5
+  when packs land), draft-format kernel lane (the bake-off gate).
