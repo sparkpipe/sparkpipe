@@ -1993,3 +1993,24 @@ appendix).
   + spark-gated receipts (fleet-gated). Respawned the slot as
   tokenizer-sidecar (Phase 4: text-in/text-out — the serve-ourselves
   pivot's front door; node/model_api.c is unowned).
+
+## 2026-08-29 ~18:2x — 8780fc1: THE ATTRACTOR ROOT CAUSE MERGED; fleet to 6
+
+- MERGED lane/glm5-attractor: the routed-MoE sum NEVER reached the
+  residual (AddRows overwrote the finalize's hidden_bf16 write with
+  attention_out+shared; every MoE layer placed 16x attention output as
+  its FFN; rank-invariant, TP1-invisible, M3-blind — the exact trap
+  the brief named). 16.000000x receipt; 0/45 layers post-fix. Cold
+  curl: [98218 x20] -> 'way,ive database:' word fragments — no
+  attractor, not yet coherent; gates stay blocked. KDA CLOSED CLEAN
+  via independent checkpoint-semantics host oracle (199 waves, all
+  stages exact/fp32-noise). Ratchet 228764; gates 151 clean.
+- CAP RAISED 5->6 (operator asked; evidence: today's 8-for-8 lane
+  completion rate, merge bandwidth measured at ~1/hour). Spawned:
+  glm5-dsa (the attractor report's own next steps — DSA donor-diff,
+  mHC comb/sinkhorn, swiglu_limit, state reset, then gates+M5),
+  k3-finish session 3 (stage-2 defect + wave), cfg-audit (the K3-rot
+  one-shot, read-only on glm5_next configs), p1d2-steploop (the last
+  unowned BUG_LEDGER structural item; barred from model_api.c —
+  tokenizer-sidecar owns it). The 7th (continuous batching) is NAMED
+  but held one cycle to measure merge load at 6.
