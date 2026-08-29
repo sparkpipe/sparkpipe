@@ -35,7 +35,12 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parents[1]
 BINARY = REPOSITORY / "build" / "sparkpipe_registrar"
 HOSTS_16 = ",".join(["127.0.0.1"] * 16)
-PORT_BASE = 25480
+# Per-run port base: concurrent suites (coordinator offline-gates vs a lane
+# worktree) must not collide on the registrar's fixed offsets (scenario
+# +0/+100/+200/+300, then rank r = +r, max span +315). pid-derived
+# 512-port windows keep runs disjoint and below the registrar's own
+# default base (22480); ephemeral ports (49152+) are never touched.
+PORT_BASE = 12000 + (os.getpid() % 80) * 512
 HAVE_PROC = os.path.isdir("/proc")
 
 failures: list[str] = []

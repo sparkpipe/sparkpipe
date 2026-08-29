@@ -5338,8 +5338,8 @@
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "4b53cb0fe7618bdcdc321b0bb3c3266857cd1d5a46ec5f53f60f06771082c14b",
-      "size_bytes": 148
+      "sha256": "b014dbc065cbc42f5adf5f7139f327dcc9d3811223816858397b2f5476007c03",
+      "size_bytes": 2274
     },
     {
       "path": "runs/results.jsonl",
@@ -6228,8 +6228,8 @@
     },
     {
       "path": "tests/test_fleet_registrar.py",
-      "sha256": "d68d000c96d01bd5ebb0b9c2bb038e1e081cc5738067b784101b38190aa0679f",
-      "size_bytes": 12074
+      "sha256": "5cf83fa9aa318eba63cc9532c9deaaa76d34bab52ca9057c7ef13d552dc6dcfd",
+      "size_bytes": 12452
     },
     {
       "path": "tests/test_frame_error_host.py",
@@ -8390,5 +8390,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30849780
+  "total_bytes": 30852284
 }
