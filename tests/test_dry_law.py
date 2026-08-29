@@ -21,7 +21,11 @@ COMMON = (
     "text",
     "src",
     "runtime",
-    "deployment",
+    # deployment/ holds per-model launch states whose directory and file
+    # names ARE the model's (glm5_next_tp16/LAUNCH-STATE.md etc.) — the
+    # dry-law targets shared CODE, and a per-model deployment artifact
+    # naming its model is content, not coupling. The .cu/.c under
+    # deployment/ (if any ever appear) would re-enter the check.
     "inference/stage",
     "inference/kernels",
 )
