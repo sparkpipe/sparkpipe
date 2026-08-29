@@ -917,7 +917,20 @@ from pathlib import Path
 # the deployment limit. Net +66; 219739 exact.
 # k3-finish: the fleet-wave 110GiB envelope check (refuse <100G,
 # report the reading) + the build keepalive. 220456 exact.
-CEILING = 220506
+# W1 loader (docs/WEIGHTD_DESIGN.md L1+L2): the shared pipelined pack
+# loader (worker read thread + 2-slot pinned staging + ordered async
+# H2D; the synchronous path retained as the kill-switch fallback), the
+# pack-wide pipeline wired through the dsv4 reference LoadPack, and the
+# identical-digest sha256 file read pipeline. Justification: the load
+# path is the whole cold-start cost of every family and the weightd
+# cold path inherits it (design doc); measured claims land in the lane
+# report. Merged on a base that already carried r2b+k3-finish (the
+# be3e066 contamination makes this merge ALSO the decontamination);
+# re-measured at merge resolution: 221260 exact (below the naive sum
+# because be3e066 had already counted ~598 lines of L1 on main), +5 for
+# the coordinator-applied Makefile test registration from the same
+# integration request. 221265 exact.
+CEILING = 221265
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

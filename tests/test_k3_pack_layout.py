@@ -260,9 +260,13 @@ def mini_checkpoint(root, latent=None, poison_scale=False):
                     scale[0] = 0xFF
                 t[base + name + ".weight_scale"] = ("U8", (rows, cols // 32),
                                                     bytes(scale))
+    # The released Kimi-K3 checkpoint prefixes every tensor with
+    # "language_model." and the packer reads that spelling (2d30fec); the
+    # fixture's dict stays unprefixed so its keys remain the test's own
+    # manifest names.
     header, offset, blobs = {}, 0, []
     for name, (dtype, shape, raw) in t.items():
-        header[name] = {"dtype": dtype, "shape": list(shape),
+        header["language_model." + name] = {"dtype": dtype, "shape": list(shape),
                         "data_offsets": [offset, offset + len(raw)]}
         blobs.append(raw)
         offset += len(raw)

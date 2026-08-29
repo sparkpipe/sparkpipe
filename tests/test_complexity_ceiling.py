@@ -47,6 +47,19 @@ Ledger (exact counts, newest last):
   status; none nests. Receipts in
   docs/AGENT_LANE_BRIEFS/reports/jit-safety-2026-08-29.md. Mean
   ceiling commits to 7.84.
+- 2026-08-29 W1 loader merge: production mean 7.84 -> 7.85 over a scope
+  grown 2948 -> 2963 functions; max unchanged at 75. The +15 functions are
+  the pipelined pack loader and the FEAT_SHA2 sha256 path, and their
+  branches are the fail-closed contract itself: SparkStageModuleLoad
+  PipelineRegion/Finish propagate worker-read and copy errors by poisoning
+  the pipeline (Region-after-poison refuses; splitting moves the decision,
+  not removes it), the per-slot cudaEvent guards decide buffer reuse, the
+  env-and-size dispatch selects the retained synchronous body, and
+  SparkSha256Update carries the block-boundary chunk cases plus the runtime
+  FEAT_SHA2 selection (portable fallback must stay reachable). Every added
+  branch returns a status or selects a path; none nests. Digest identity
+  receipts in docs/AGENT_LANE_BRIEFS/reports/w1-loader-2026-08-29.md.
+  Mean ceiling commits to 7.85.
 """
 import pathlib
 import sys
@@ -60,7 +73,7 @@ CEILING = 75
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
-MEAN_CEILING_X100 = 784
+MEAN_CEILING_X100 = 785
 
 # The validation harnesses (control-vs-candidate CUDA units, never merged
 # into production) carry their OWN budget. It does not gate the production
