@@ -1,5 +1,5 @@
 {
-  "file_count": 1666,
+  "file_count": 1667,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -143,8 +143,8 @@
     },
     {
       "path": "deployment/glm5_next_tp16/LAUNCH-STATE.md",
-      "sha256": "fe00389c8afbebc5f117d0be313c1af2126171af598cb0ca6e6d8ea50b4dfcb4",
-      "size_bytes": 4369
+      "sha256": "1f88432b2a67d2d9b374c46129a4f0c32877413cf62269883dc4df36a92dc8b2",
+      "size_bytes": 4676
     },
     {
       "path": "deployment/glm5_next_tp16/config/stage_00.json",
@@ -430,6 +430,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/perf-r1-2026-08-28.md",
       "sha256": "75a8ed7e8849d8d20276d2daa14c39c945066c773c007d6506c8d102cabe7e7b",
       "size_bytes": 10672
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/probe-fix-2026-08-29.md",
+      "sha256": "83dd39ed034e77a46af11e8c9ad2818ec04404d0510b5c91e8bdbe8cfd1e4e27",
+      "size_bytes": 8250
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-2026-08-27.md",
@@ -5303,7 +5308,7 @@
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "af1cd8118d6d63f692ffe8a3e2797543374b3863d0e75b17d21b4a728adb0649",
+      "sha256": "ca58fa967807c5c51ba08af1aa9508d82b47287720b89f95308945cb91ebba2c",
       "size_bytes": 2242
     },
     {
@@ -8335,5 +8340,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30632627
+  "total_bytes": 30641184
 }

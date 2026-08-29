@@ -1,22 +1,34 @@
-# glm5_next TP16 LAUNCH-STATE (glm5-closeout lane, 2026-08-29)
+# glm5_next TP16 LAUNCH-STATE (probe-fix lane, 2026-08-29/30)
 
 Runtime roots: /home/<host>/sparkdata/glm5_next.tp16 (host = rank index
-in hex: spark0..sparkf = ranks 0..15). Deployed binary set 16/16:
-lib/model_driver.so sha256-prefix 6ca5f16b8b4259c5 (2,290,016 B, the
-coordinator's 2026-08-29 12:50 UTC deploy; the kda receipt
-0292a3e55f45b2fd is STALE), serving adapter + api + residentd unchanged.
-NOTE: this driver returns BUSY from create() when SPARK_GLM5_NEXT_PROBE
-is armed — the per-layer diag ladder does NOT arm on this build
-(initialize=busy rc=15 fleet-wide; see
-docs/AGENT_LANE_BRIEFS/reports/glm5-closeout-2026-08-29.md).
+in hex: spark0..sparkf = ranks 0..15). Current deployed driver set 16/16:
+lib/model_driver.so sha256-prefix 43a5fda4df5b889b (the DIAG build: probe
+ladder + cross-rank checksum, SPARK_GLM5_NEXT_PROBE-gated; non-probe twin
+of the same source is 980fd0fcb42b39cb). Module artifact 01b22fb6…,
+`glm5_next validator: PASS (0 failures)` against the CURRENT rank-0 pack.
+Branch lane/probe-fix tip d1235a9.
 
-PACKS (the FIXED repack, LANDED 2026-08-29): packs/<name>.g5nsp is a
-SYMLINK -> ~/glm53_packs_fixed/glm5_next_stage.tp16.rank<r>.g5nsp on each
-node (the pre-repack packs remain at ~/glm53_packs/ for rollback; the
-swap left .pre-closeout-bak symlinks in packs/). Every pack: 1160 tensors,
-21,706,046,976 bytes, plan-diff + round-trip verified 16/16 (directory
-sha256 421ef0989c054f67 on all ranks; rank 4 was rebuilt on spark9 and
-delivered sha-identical 4a36178167143d4d).
+PACKS (the COLS-SHARD o_proj repack, LANDED 2026-08-30):
+packs/<name>.g5nsp is a SYMLINK ->
+~/glm53_packs_fixed2/glm5_next_stage.tp16.rank<r>.g5nsp (the previous
+row-sharded packs remain at ~/glm53_packs_fixed/, rollback = rename the
+.pre-probefix2-bak symlinks back; the ORIGINAL packs remain at
+~/glm53_packs/). Every pack: 1160 tensors, 21,706,046,976 bytes,
+directory sha256 54e2474be88a2544 uniform on all ranks; verifier PASS
+16/16; deep spot round-trips PASS on ranks 0/1/8/15. Rank 8 and rank 11
+builders hit the slow-ceph path and were requeued solo on spark0/spark9,
+shipped, sha-verified.
+
+WHY THE REPACK: the attention OUT projections (ATTN_OUTPUT/KDA_OUT,
+checkpoint [hidden, heads*dim]) were row-sharded (pack [hidden/tp, width])
+while the out-GEMM consumes the col-shard TP partial [hidden, width/tp] —
+a silently transposed o_proj on every rank, the cold-first-request
+degeneration. Fixed on lane/probe-fix (2cc9de3): module policy col-shards
+them, packer `shard="cols"`, all packs rebuilt. Generation changed but
+STILL degenerates (see
+docs/AGENT_LANE_BRIEFS/reports/probe-fix-2026-08-29.md) — remaining
+defect is rank-invariant (post-reduce checksums bit-identical 16/16);
+next instrument = reference semantic diff, per the report.
 
 REQUIRED AFTER ANY REPACK: header provenance patch — the packer emits
 zeros for contract/config/recipe and the module rejects the pack
@@ -27,43 +39,38 @@ zeros for contract/config/recipe and the module rejects the pack
       --reference ~/glm53_packs/<same pack name> \
       --expect-contract-hex a40e9ec5fbfb0c1a180162c9d82915c887e8549fbd779c9f5dacb780a1498db4
 
-(branch lane/glm5-closeout; ship via git bundle -> `git fetch` ->
-`git archive` to a scratch dir — see the closeout report for the flow.)
+NOTE: run it only AFTER the builder writes its final receipt line (the
+tool patches a mid-build file happily; verify size = 21706046976 first).
+Then verify: tools/glm5_next_pack_verify.py --pack <p> --source
+/mnt/model-warm/glm-5.3-flash --tp-rank <r> --tp-degree 16 [--skip-spot].
 
-STATUS: 16/16 residentd ready on the fixed packs, api healthy on
-spark0:8433. GENERATION STILL DEGENERATE on a served=0 first request
-([66188 x21, ...] on the standing prompt); the same prompt yields
-DIFFERENT repeats across requests — recurrence state persists across
-client sessions (api restarts do NOT reset it; only a residentd wave
-does). COMPSEC-17 and the M5 exact-32K cell remain BLOCKED on coherence.
+STATUS: 16/16 residentd ready on the fixed2 packs + DIAG driver, api
+healthy on spark0:8433. Generation still degenerate (repeat attractors).
+COMPSEC-17 and the M5 exact-32K cell remain BLOCKED on coherence. For
+gate runs, relaunch the wave WITHOUT --probe (the diag ladder stalls the
+chain by design; the same source builds the non-probe driver
+980fd0fcb42b39cb).
 
 STOP (cwd-scoped TERM — never -f, never other cwds; spark5 runs the
-dry-template2 lane's processes under /tmp/dry2-* and /home/spark5/sparkpipe,
-sparke the K3 build):
+dry-template2 lane's processes, sparke the K3 build):
 
     for h in spark0 spark1 ... sparkf; do ssh $h "rr=/home/$h/sparkdata/glm5_next.tp16; \
-      for p in \$(pgrep -x sparkpipe_model); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); \
+      for p in \$(pgrep -f 'bin/sparkpipe_model_[r]esidentd'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); \
+      [ \"\$c\" = \"\$rr\" ] && kill -TERM \$p; done; \
+      for p in \$(pgrep -f 'bin/sparkpipe_model_[a]pi'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); \
       [ \"\$c\" = \"\$rr\" ] && kill -TERM \$p; done; exit 0"; done
     # wait for zero glm5 procs (collective teardown can take ~60 s), then 45 s settle
 
-START (RELIABLE FORM — run the launch fan-out FROM spark0, node-to-node:
-true same-second launch, 16/16 first try. Controller-side 16-parallel
-fan-outs trip the controller ssh proxy; controller-side 1-2s staggers work
-but randomly lose 1-2 ranks per wave to route_not_found/BUSY, and a late
-SOLO relaunch of the missing rank is REFUSED after the window):
+START (RELIABLE FORM — run tools/glm5_next_wave.sh FROM spark0 so the
+fan-out is node-to-node; controller-side 16-parallel fan-outs randomly
+hang/lose ranks):
 
-    ssh spark0 "
-      for i in \$(seq 0 15); do h=\$(printf \"spark%x\" \$i); rr=/home/\$h/sparkdata/glm5_next.tp16
-        if [ \$h = spark0 ]; then
-          cd \$rr && rm -f residentd.log && setsid nohup env LD_LIBRARY_PATH=\$rr/lib ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index 0 > residentd.log 2>&1 < /dev/null &
-        else
-          ssh -o BatchMode=yes \$h \"cd \$rr && rm -f residentd.log && setsid nohup env LD_LIBRARY_PATH=\$rr/lib ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index \$i > residentd.log 2>&1 < /dev/null &\"
-        fi
-      done"
-    # poll from the controller: grep -q "model_residentd ready" on all 16
+    ssh spark0 "cd ~/g5rt2-src && bash tools/glm5_next_wave.sh [--probe] full"
+    # --probe arms the G5N-PROBE diag ladder + cross-rank checksums and
+    # waits 780s for ready (rank 0's L0 ladder is slow BY DESIGN); the
+    # probe build scales the TP connect (x4) and operation (x8) windows.
 
-READY: `grep -c "model_residentd ready" residentd.log` = 1 on all 16
-(verify readiness in a fresh loop).
+READY: `grep -c "model_residentd ready" residentd.log` = 1 on all 16.
 
 API (after 16/16 ready): on spark0 only -
 `cd ~/sparkdata/glm5_next.tp16 && setsid nohup ./bin/sparkpipe_model_api
@@ -72,7 +79,7 @@ api.log 2>&1 < /dev/null &` then GET /health — CHECK "served":0 for a
 canonical first-request reading (recurrence state survives api restarts;
 only a residentd wave resets slots).
 
-Known state: fixed packs changed the output distribution (cold first
-token 116315 on the OLD packs -> 66188 on the FIXED packs) but generation
-still collapses into a repeat attractor. Ranked candidates + evidence in
-the closeout report.
+Known state: cold first request still degenerate; same prompt repeats
+differently across waves (weights changed the attractor:
+66188-row-sharded → 113235/13765/1617/80346 col-sharded). Cross-rank
+reduce checksums bit-identical; retention advances; layout audits clean.
