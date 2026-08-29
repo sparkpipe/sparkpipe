@@ -25,7 +25,12 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$FROM" ]] || { echo "--from <holding-spark> required" >&2; exit 2; }
 
-ssh -o BatchMode=yes "$FROM" bash -s "$PACKS_REL" "$RANKS" "$BYTES" <<'REMOTE'
+# NOTE: ssh joins its command args with spaces, so a multi-word RANKS
+# argument must be shell-quoted HERE — otherwise the remote bash sees
+# $2="0" and $3="1" (that bug placed rank 0 with a bytes-test of 1 and
+# exited 0 on every run; printf %q survives the hop).
+ssh -o BatchMode=yes "$FROM" \
+    "bash -s $(printf '%q' "$PACKS_REL") $(printf '%q' "$RANKS") $(printf '%q' "$BYTES")" <<'REMOTE'
 set -euo pipefail
 packs_rel="$1"; ranks="$2"; bytes="$3"
 # 2026-08-29 first run created a literal '$HOME' directory under the
