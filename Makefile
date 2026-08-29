@@ -186,7 +186,8 @@ TOOL_NAMES := \
     spark_model_kernel_characterize \
     spark_transport_characterize \
     spark_topology_characterize \
-    spark_pmtu_characterize
+    spark_pmtu_characterize \
+    sparkpipe_registrar
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -272,6 +273,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_compressor_emission_source.py \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_ga_reference_fixture.py \
+	tests/test_fleet_registrar.py \
 	tests/test_dsv4_native_compute_source.py \
 	tests/test_dsv4_module_host_syntax.py \
 	tests/test_dsv4_stage_source.py \
@@ -621,6 +623,12 @@ build/sparkpipe_model_batch: node/model_batch.c $(RUNTIME_LIBRARY) $(MODEL_COMMO
 
 build/spark_kv_backing_test: tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY)
 	$(CC) $(CFLAGS) -Iinclude tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# Fleet startup protocol phase 1+1b registrar (docs/FLEET_STARTUP_PROTOCOL.md):
+# pure POSIX TCP, poll-driven, no threads; deliberately links NOTHING — it
+# must start in milliseconds on every node with zero library dependencies.
+build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
+	$(CC) $(CFLAGS) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE tools/sparkpipe_registrar.c $(LDFLAGS) -o $@
 
 build/sparkpipe_model_api: node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@

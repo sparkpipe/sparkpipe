@@ -1,5 +1,5 @@
 {
-  "file_count": 1622,
+  "file_count": 1629,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -53,8 +53,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "4a928fc021ab55472764e8f0114c42091ab377b2a6ef7b5fa83a00154fa13c97",
-      "size_bytes": 79834
+      "sha256": "dfc5457240eb8344bc53a0240ff5eae3981ded72f014e715824fabfe893ba045",
+      "size_bytes": 80295
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -308,8 +308,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "dc4d571f78de5713bc422014585d7be026ab8961c7a9779580321262aa70b493",
-      "size_bytes": 89197
+      "sha256": "eff41d87fefc5c2c048945028d52a633a9441a5c29102389ba9de36e0ffc1159",
+      "size_bytes": 90111
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -470,6 +470,11 @@
       "path": "docs/BACKLOG.md",
       "sha256": "6cbdc857151c5c841aa2e37be5be014c35401b01989bc9d3b8b0431d22dba86d",
       "size_bytes": 5964
+    },
+    {
+      "path": "docs/BUG_LEDGER.md",
+      "sha256": "0ffe412504730a7fb68ac6531b15812dced71ca214e607eb56673ed4d34fcbcd",
+      "size_bytes": 4515
     },
     {
       "path": "docs/CLEANUP_PROGRAM.md",
@@ -730,6 +735,11 @@
       "path": "docs/PERF_PROGRAM.md",
       "sha256": "bafe21fc83615cdc3f8c6444e1457893718ca18d7cca1d5395737620664590e7",
       "size_bytes": 2601
+    },
+    {
+      "path": "docs/PERF_PROGRAM2.md",
+      "sha256": "30a70500cf076d8e175772e44bcccabec6ef3a1708e2c9801289762bc1236735",
+      "size_bytes": 3308
     },
     {
       "path": "docs/PROPOSAL_ADMISSION_CORE.md",
@@ -3853,8 +3863,8 @@
     },
     {
       "path": "node/model_api.c",
-      "sha256": "048f8acd0ab2337a063161751b3e596451df75e3d587cd4c2890661b640487b5",
-      "size_bytes": 18219
+      "sha256": "0383e8f58c691def1cabc1806c12e9ef8bdeb90a7983539217d05c3bb7d7e9d1",
+      "size_bytes": 19652
     },
     {
       "path": "node/model_batch.c",
@@ -5908,7 +5918,7 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "6129568e727d81c78684000ff0a1b8585952f3a463f6e3b431b734d595fee7b7",
+      "sha256": "40b4c7915434f9a46974b7cf8913902d796a911825387a3c08b488d1981c2d9d",
       "size_bytes": 60541
     },
     {
@@ -6110,6 +6120,11 @@
       "path": "tests/test_fabric_topology.c",
       "sha256": "e71576a70075c37f21d681d10031c09a9789ed64599fd98f1d4c23a9a98530fa",
       "size_bytes": 4578
+    },
+    {
+      "path": "tests/test_fleet_registrar.py",
+      "sha256": "d68d000c96d01bd5ebb0b9c2bb038e1e081cc5738067b784101b38190aa0679f",
+      "size_bytes": 12074
     },
     {
       "path": "tests/test_gemm_descriptor_cache.cpp",
@@ -7222,6 +7237,11 @@
       "size_bytes": 1645
     },
     {
+      "path": "tools/devcycle/registrar_fleet_probe.sh",
+      "sha256": "7e0c3e5d2cf34e1c2a5a4045f032c29662817e93f4e385cc465ff5b589b17766",
+      "size_bytes": 1281
+    },
+    {
       "path": "tools/devcycle/show_node_context.py",
       "sha256": "5de4d947b8a58122775560bbf61daefdc4aa2a2e3005ead03b074a602e042920",
       "size_bytes": 238
@@ -7265,6 +7285,11 @@
       "path": "tools/devcycle/templates/model_resident.template.json",
       "sha256": "aa9e098fbd6a34e9bc3c47d71ccff2981d2451a79ee038e3bbc50b2b2122ef6b",
       "size_bytes": 2881
+    },
+    {
+      "path": "tools/devcycle/term_by_cwd_sweep.sh",
+      "sha256": "0ff7de3833d8b36e4725bd78a5f31b331dfded8b850967cc82fd705fb85486b9",
+      "size_bytes": 2162
     },
     {
       "path": "tools/devcycle/validate_ga_pro.sh",
@@ -7513,8 +7538,8 @@
     },
     {
       "path": "tools/glm5_next_wave.sh",
-      "sha256": "9dc486a0f172ba7eb66a53725bd40bbc1364f0eb330aaa3672cb4837b380aa1a",
-      "size_bytes": 4671
+      "sha256": "74d722347266fe5f9156290b981ab1cf762368ad0941ddd2858e141afd42c3d0",
+      "size_bytes": 7995
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -7997,6 +8022,11 @@
       "size_bytes": 8538
     },
     {
+      "path": "tools/registrar_stage.sh",
+      "sha256": "2fc58f6fedfe241fa85cbc79a17b2c99559e0e049172869ee133a64399853495",
+      "size_bytes": 1868
+    },
+    {
       "path": "tools/runtime/apply_runtime_completion_overlay.py",
       "sha256": "cb2acd339aa467bdc904cd43d839111b881bb0a802437385d8a91016b017195b",
       "size_bytes": 4065
@@ -8067,6 +8097,11 @@
       "size_bytes": 3680
     },
     {
+      "path": "tools/sparkpipe_registrar.c",
+      "sha256": "7162ee83666b28d406d1e97fcd103f7aeff4bc810fe2985fc435e53c200d19a4",
+      "size_bytes": 31063
+    },
+    {
       "path": "tools/sparkpipe_release_assemble.py",
       "sha256": "2e49cad581432d5cee9c77d2254cb67d851b26de8d3ef8709f85297288b75680",
       "size_bytes": 11058
@@ -8115,5 +8150,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30153491
+  "total_bytes": 30215894
 }
