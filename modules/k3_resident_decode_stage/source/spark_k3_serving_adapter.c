@@ -1,12 +1,17 @@
 #include <cuda_runtime.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_k3_dspark_pack.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_serving_adapter.h"
 #include "sparkpipe/spark_memory_buffer.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
+#include "sparkpipe/spark_speculation_provider.h"
+
+#include "spark_k3_dspark_format.h"
 
 typedef struct SparkK3ServingState
 {
@@ -35,6 +40,16 @@ typedef struct SparkK3ServingState
 	SparkMemoryBuffer state_device;     /* DEVICE_PRIVATE */
 	SparkMemoryBuffer output_tokens;    /* DEVICE_PRIVATE */
 	SparkMemoryBuffer output_scores;    /* DEVICE_PRIVATE */
+	/* The speculation-provider slot's first real use: the DSpark drafter
+	 * pack binds file-backed at initialize when the operator arms it, and
+	 * the provider rides on the bound pack. The draft forward is NOT
+	 * landed - the draft ops fail closed naming that - so arming proves
+	 * the wire path (bind + contract + refusal surfacing) without
+	 * changing a serving cell. */
+	SparkK3DsparkPack drafter_pack;
+	uint32_t drafter_pack_bound;
+	char speculation_refusal[SPARK_K3_DSPARK_MAX_REFUSAL_BYTES];
+	SparkSpeculationProvider provider;
 } SparkK3ServingState;
 
 static uint32_t K3ServingJsonU32(SparkJsonDocument *doc, int32_t root,
@@ -242,6 +257,172 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 }
 static void K3ServingDestroy(void *adapter_state);
 
+/*
+ * The embedded DSpark provider (the block-drafter binding shape from
+ * tests/test_speculation_provider_slot.c): a static ops table whose state
+ * is the bound drafter pack. LIFECYCLE + CONTRACT only - the draft inner
+ * loop stays provider-owned kernels, which this family has not landed, so
+ * draft_begin refuses with the reason instead of pretending (the
+ * supports() -> WHY rule; the wire surface renders it, never a bare
+ * UNSUPPORTED without a cause).
+ */
+
+static SparkStatus K3DsparkProviderCapabilityQuery(
+	const SparkSpeculationGeometryQuery *geometry,
+	char *refusal_buffer, uint32_t refusal_buffer_bytes)
+{
+	if ( geometry == 0 || geometry->hidden_dimension != K3_HIDDEN ||
+		geometry->layer_count < 93u )
+	{
+		if ( refusal_buffer != 0 && refusal_buffer_bytes != 0u )
+			(void)snprintf(refusal_buffer, refusal_buffer_bytes,
+				"k3 dspark drafter requires the k3 target geometry "
+				"(hidden %u, 93 layers), got hidden %u layers %u",
+				(uint32_t)K3_HIDDEN,
+				geometry != 0 ? geometry->hidden_dimension : 0u,
+				geometry != 0 ? geometry->layer_count : 0u);
+		return(SPARK_STATUS_UNSUPPORTED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus K3DsparkProviderDraftBegin(void *provider_state,
+	const SparkSpeculationDraftRequest *request)
+{
+	(void)provider_state;
+	(void)request;
+	/* fail closed with the reason: the DSpark draft forward (5-layer
+	 * backbone walk, markov bias, confidence gate) is not landed; only
+	 * the wire path (pack format + bind) exists. Recorded as the kernel
+	 * follow-up in the lane report. */
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
+static SparkStatus K3DsparkProviderDraftNext(void *provider_state,
+	SparkSpeculationDraft *draft)
+{
+	(void)provider_state;
+	(void)draft;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
+static void K3DsparkProviderDraftCancel(void *provider_state)
+{
+	(void)provider_state;
+}
+
+/* THE one accepted-prefix accounting (where the lease-advance bug class
+ * dies): block drafts are anchor-first, so a verified chain of N rows
+ * commits N-1 drafts, and each sequence carries exactly what it accepted. */
+static SparkStatus K3DsparkProviderVerifyAccount(void *provider_state,
+	uint32_t verified_count, SparkSpeculationVerifyContract *contract_out)
+{
+	(void)provider_state;
+	if ( contract_out == 0 || verified_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(contract_out, 0, sizeof(*contract_out));
+	contract_out->chain_width = verified_count;
+	contract_out->accepted_token_count = verified_count - 1u;
+	contract_out->tokens_per_sequence = contract_out->accepted_token_count;
+	contract_out->chain_live = 1u;
+	return(SPARK_STATUS_OK);
+}
+
+static const SparkSpeculationKvContract K3DsparkKvContract =
+{
+	/* block-local v1: the drafter reads its scratch frame plus the
+	 * anchor's tail frame; no multi-block history yet (the 27B's
+	 * BLOCK_KV is the precedent to grow into) */
+	.frame_flags = SPARK_SPECULATION_KV_FLAG_SCRATCH_FRAME |
+		SPARK_SPECULATION_KV_FLAG_TAIL_FRAME,
+	.block_history_depth = 0u
+};
+
+static const SparkSpeculationKvContract *K3DsparkProviderKvContract(
+	void *provider_state)
+{
+	(void)provider_state;
+	return(&K3DsparkKvContract);
+}
+
+static const SparkSpeculationProviderOps K3DsparkProviderOps =
+{
+	.capability_query = K3DsparkProviderCapabilityQuery,
+	.draft_begin = K3DsparkProviderDraftBegin,
+	.draft_next = K3DsparkProviderDraftNext,
+	.draft_cancel = K3DsparkProviderDraftCancel,
+	.verify_account = K3DsparkProviderVerifyAccount,
+	.kv_contract = K3DsparkProviderKvContract
+};
+
+/* The canonical launch contract keys (the family env names
+ * SPARK_K3_SERVING_SPECULATE / SPARK_K3_DSPARK_PACK_PATH are aliases
+ * until the env migration, per the design's sequencing). */
+static const char *const K3DsparkEnvironmentSchema[] =
+{
+	"SPEC_METHOD",
+	"DRAFT_COUNT",
+	"DSPARK_PACK_PATH"
+};
+
+static const SparkSpeculationProviderDescriptor K3DsparkProviderDescriptor =
+{
+	.abi_version = SPARK_SPECULATION_PROVIDER_ABI_VERSION,
+	.descriptor_bytes = SPARK_SPECULATION_PROVIDER_DESCRIPTOR_BYTES,
+	.kind = SPARK_SPECULATION_PROVIDER_DSPARK,
+	.provider_id = "k3.dspark-drafter.redhatai.v1",
+	.max_draft_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
+	.default_draft_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
+	.environment_schema = K3DsparkEnvironmentSchema,
+	.environment_schema_count = 3u
+};
+
+static SparkStatus K3ServingBindSpeculationProvider(SparkK3ServingState *state)
+{
+	const char *speculate = getenv("SPARK_K3_SERVING_SPECULATE");
+	const char *pack_path;
+	SparkStatus status;
+	if ( speculate == 0 || speculate[0] == '\0' || strcmp(speculate, "0") == 0 )
+		return(SPARK_STATUS_OK); /* unarmed: cell-unchanged serving */
+	pack_path = getenv("SPARK_K3_DSPARK_PACK_PATH");
+	if ( pack_path == 0 || pack_path[0] == '\0' )
+	{
+		fprintf(stderr, "k3_serving speculation armed without a drafter: "
+			"set SPARK_K3_DSPARK_PACK_PATH\n");
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	status = SparkK3DsparkPackBind(pack_path, &state->drafter_pack,
+		state->speculation_refusal, sizeof(state->speculation_refusal));
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "k3_serving drafter pack refused: %s\n",
+			state->speculation_refusal);
+		return(status);
+	}
+	state->drafter_pack_bound = 1u;
+	state->provider.descriptor = &K3DsparkProviderDescriptor;
+	state->provider.ops = &K3DsparkProviderOps;
+	state->provider.provider_state = &state->drafter_pack;
+	status = SparkSpeculationProviderValidate(&state->provider);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "k3_serving speculation provider invalid: status=%d\n",
+			(int)status);
+		return(status);
+	}
+	fprintf(stderr, "k3_serving drafter bound pack=%s block=%u draft_depth=%u "
+		"taps=[%u,%u,%u,%u,%u] tensors=%u draft_forward=%s\n",
+		pack_path, state->drafter_pack.block_size,
+		state->drafter_pack.draft_token_count,
+		state->drafter_pack.target_tap_layers[0],
+		state->drafter_pack.target_tap_layers[1],
+		state->drafter_pack.target_tap_layers[2],
+		state->drafter_pack.target_tap_layers[3],
+		state->drafter_pack.target_tap_layers[4],
+		state->drafter_pack.tensor_count, "not_landed_fail_closed");
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus K3ServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
@@ -288,6 +469,9 @@ static SparkStatus K3ServingInitialize(
 	status = SparkK3StageRunnerInitialize(&state->runner, &state->runner_config);
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status; }
+	status = K3ServingBindSpeculationProvider(state);
+	if ( status != SPARK_STATUS_OK )
+		{ K3ServingDestroy(state); return status; }
 	*adapter_state = state;
 	return SPARK_STATUS_OK;
 }
@@ -306,6 +490,8 @@ static void K3ServingDestroy(void *adapter_state)
 	SparkMemoryBufferFree(&state->state_device);
 	SparkMemoryBufferFree(&state->output_tokens);
 	SparkMemoryBufferFree(&state->output_scores);
+	if ( state->drafter_pack_bound != 0u )
+		SparkK3DsparkPackRelease(&state->drafter_pack);
 	free(state->pack_path);
 	free(state);
 }
@@ -495,6 +681,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
 	/* One node per RANK (the hybrid's contract): the residentd checks the
 	 * node count against this. */
@@ -511,7 +698,11 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_input_row_count = 16u,
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
-	.max_speculative_token_count = 0u,
+	/* the DSpark drafter's envelope: block-1 draft tokens per round behind
+	 * the provider slot (the descriptor is the envelope; the provider's
+	 * capability query + bind carry the evidence). The shared validator
+	 * pins this count to the SPECULATION capability flag above. */
+	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
 	.resident_sequence_slot_reuse = 0u,
 	/* Stage-major (PP stage × TP rank): TP4 groups have equal counts (hybrid
 	 * contract); PP stage layer splits sum to 93. */
