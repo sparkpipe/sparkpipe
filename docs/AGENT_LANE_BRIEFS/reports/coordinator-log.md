@@ -1514,3 +1514,20 @@ appendix).
   ports mid-teardown.
 - Registrar lane briefed mid-build. Fleet currently 2/16 ready + a
   mixed stale state — exactly the test bed acceptance A needs.
+
+## 2026-08-30 ~15:4x — JIT-KV: the analysis becomes the contract (8caa9d8) + safety lane spawned
+
+- NO AUDIT ITEM IS FORGOTTEN: the running audit-response ledger —
+  redgates merged (offline set defined, template regression fixed),
+  wave1-DRY merged (−1,541, sha-identical receipts), ccn merged
+  (ceiling binds at 75), template-adoption gate live, perf program
+  landed (P1-P4 ranked), registrar (cleanslate spec) in build, P3
+  batched-kernels running. The NEXT kimi pass has its checklist in
+  the tree, not in promises.
+- JIT-KV (the 15% reality accepted): kimi's five contract conditions
+  (active-set never overcommits; dispatch gates on restore complete —
+  REVERSING the seam narrowing; aggregate bandwidth accounting; async
+  park; reuse-value park policy) + four disqualifying bugs (write-
+  back wedge, glm5_next arena OOB, tier checksums/cross-tenant
+  aliasing, backing-store permissions) + the 85% wiring sequenced.
+  SAFETY LANE spawned for B1-B4 first — they gate everything.
