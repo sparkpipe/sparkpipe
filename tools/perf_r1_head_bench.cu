@@ -178,7 +178,9 @@ int RunGeometry(uint32_t candidate_count)
 		uint32_t id_host[2];
 		float score_host[2];
 		cudaMemcpy(id_host, direct_ids, sizeof(id_host), cudaMemcpyDeviceToHost);
-		cudaMemcpy(score_host, direct_scores, sizeof(score_host),
+		cudaMemcpy(&score_host[0], direct_scores, sizeof(float),
+			cudaMemcpyDeviceToHost);
+		cudaMemcpy(&score_host[1], certified_scores, sizeof(float),
 			cudaMemcpyDeviceToHost);
 		if (id_host[0] != id_host[1])
 		{
