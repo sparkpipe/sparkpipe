@@ -1454,3 +1454,19 @@ appendix).
   is structurally over. Next targets named: SubmitSpeculativeDecode
   73, InitializeTpCollective 70.
 - Lane nets −2,226. All four audit-response lanes now MERGED.
+
+## 2026-08-30 ~13:1x — cycle: fleet wave myself (closeout agent died mid-cycle); 15/16 + spark2 flake
+
+- The closeout lane died silently mid-wave-restart (worktree 2h+
+  stale; fleet found DOWN except spark0's stuck rank at
+  transport-wait). EXECUTED: full preflight (clean) → TERM-by-cwd →
+  simultaneous fire → READY 15/16 + API. spark2 failed TWICE solo on
+  adapter_initialize rc=15 (LoadDriver busy class — the flaky
+  transport-open pattern, not a pack issue; 75G free, no daemon
+  conflict). The one-armed-rank state serves status-4 via the error
+  shape (working as designed).
+- The state-bleed hunt is UNBLOCKED on 15 ranks but the coherent test
+  needs 16 — spark2's third attempt rides the next window (or the
+  closeout respawn's). The error-shape endpoint (OpenAI {"error"})
+  verified LIVE in production by this cycle's curls — W5's live
+  verification box ticked.
