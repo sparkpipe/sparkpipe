@@ -33,6 +33,26 @@ milliseconds, links nothing heavy) per node:
   the subset (the registrar's expected set comes from flags/config).
   Default: the full table.
 
+## Phase 1b — CLEANSLATE CHECK (in the registrar, before GO)
+
+The registrar's GO also requires the PREVIOUS heavy daemon to be gone
+on every node: for each expected member, the registrar checks (and
+reports) whether a residentd with the deployment's cwd is still
+running there. Discovery includes the daemon state in every announce:
+{rank, host, view, stale_daemon: pid|0}. The two-level ready condition
+extends to three levels: (a) my view == expected, (b) everyone's
+latest view == expected, (c) everyone reports stale_daemon == 0 —
+including MY OWN node (self-check first; a registrar on a node whose
+old daemon lingers reports it and withholds GO).
+- TERM is the registrar's ONLY action (by deployment cwd, never
+  pattern-kill): if a stale daemon is found, the registrar sends TERM,
+  waits for exit, and only then clears its own stale_daemon field.
+  TERM-immune daemons are reported as such in the FAIL-LOUD diff
+  (STALE-IMMUNE: rank->pid) — the operator/sysadmin path, never KILL.
+- This kills the restart-race class at its root: the flap's cascade
+  came partly from new sessions opening against OLD daemons' ports
+  mid-teardown.
+
 ## Phase 2 — the existing startup, gated
 
 The wave tools (and LAUNCH-STATE.md's canonical pattern) become:
