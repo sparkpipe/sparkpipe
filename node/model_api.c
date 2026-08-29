@@ -58,6 +58,7 @@ typedef struct ApiRequest
 	volatile int inflight;   /* worker snapshot in hand: defer unlink+free */
 	volatile int orphaned;   /* waiter gone; worker completes the free */
 	volatile uint32_t status;
+	SparkModelBatchRequestHandle handle; /* 0 until accepted; the cancel path */
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 	struct ApiRequest *next;
@@ -197,7 +198,10 @@ static void *api_worker(void *arg)
 				st = SparkModelBatchEngineSubmit(S.engine, &sub, &h);
 				pthread_mutex_lock(&S.queue_mutex);
 				if (st == SPARK_STATUS_OK)
+				{
 					r->submitted = 1;
+					r->handle = h;
+				}
 				else
 				{
 					r->status = (uint32_t)st;
@@ -463,8 +467,53 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	S.queue_tail = req;
 	pthread_mutex_unlock(&S.queue_mutex);
 	pthread_mutex_lock(&req->mutex);
+	/* Disconnect-aware wait (the unwired-cancel correctness bug): a
+	 * departed client must stop burning GPU. Poll the socket for EOF
+	 * alongside the condition; recv(MSG_PEEK|DONTWAIT)==0 = peer gone
+	 * -> cancel the engine request, mark orphaned, stop waiting. The
+	 * worker's completion path already honors `orphaned` (deferred
+	 * free), so this only ADDS the disconnect branch. */
 	while (!req->done && S.running)
-		pthread_cond_wait(&req->cond, &req->mutex);
+	{
+		struct pollfd disconnect_probe;
+		int poll_status;
+		disconnect_probe.fd = fd;
+		disconnect_probe.events = POLLIN;
+		poll_status = poll(&disconnect_probe, 1, 250);
+		if (poll_status > 0 && (disconnect_probe.revents & (POLLHUP | POLLERR)) != 0)
+			break;
+		if (poll_status > 0 && (disconnect_probe.revents & POLLIN) != 0)
+		{
+			char probe;
+			ssize_t received = recv(fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+			if (received == 0)
+				break;
+		}
+		if (!req->done)
+		{
+			pthread_mutex_lock(&req->mutex);
+			if (!req->done)
+				{
+					struct timespec api_wait_until;
+					clock_gettime(CLOCK_REALTIME, &api_wait_until);
+					api_wait_until.tv_nsec += 250000000L;
+					if (api_wait_until.tv_nsec >= 1000000000L)
+					{
+						api_wait_until.tv_sec += 1u;
+						api_wait_until.tv_nsec -= 1000000000L;
+					}
+					pthread_cond_timedwait(&req->cond, &req->mutex, &api_wait_until);
+				}
+			pthread_mutex_unlock(&req->mutex);
+		}
+	}
+	if (!req->done && S.running)
+	{
+		/* the disconnect branch: cancel if submitted, mark orphaned */
+		if (req->submitted && req->handle != 0)
+			(void)SparkModelBatchEngineCancel(S.engine, req->handle);
+		req->orphaned = 1;
+	}
 	pthread_mutex_unlock(&req->mutex);
 	resp = malloc(req->tokens_json_len + 128);
 	if (resp != 0)
