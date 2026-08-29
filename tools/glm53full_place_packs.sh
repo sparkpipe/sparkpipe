@@ -38,17 +38,20 @@ for rank in $ranks; do
     target="spark$(printf '%x' "$rank")"
     name="glm53full.nvfp4.tp16-rank${rank}.glm52sp"
     local_path="$HOME/$packs_rel/$name"
-    remote_path="$HOME/$packs_rel/$name"
+    # RELATIVE remote path: rsync/ssh resolve it against the TARGET
+    # user's home (homes are per-node: /home/spark<hex>), never against
+    # the holding node's $HOME.
+    remote_rel="$packs_rel/$name"
     if [[ ! -s "$local_path" ]]; then
         echo "rank $rank: LOCAL MISSING $local_path, skipped"
         continue
     fi
-    if ssh -o BatchMode=yes "$target" "test -s '$remote_path' && [[ \$(stat -c%s '$remote_path') -eq $bytes ]]" 2>/dev/null; then
+    if ssh -o BatchMode=yes "$target" "test -s '$remote_rel' && [[ \$(stat -c%s '$remote_rel') -eq $bytes ]]" 2>/dev/null; then
         echo "rank $rank -> $target: already placed"
         continue
     fi
-    if rsync -q --inplace --rsync-path="mkdir -p '$HOME/$packs_rel' && rsync" \
-        -e "ssh -o BatchMode=yes" "$local_path" "$target:$remote_path"; then
+    if rsync -q --inplace --rsync-path="mkdir -p '$packs_rel' && rsync" \
+        -e "ssh -o BatchMode=yes" "$local_path" "$target:$remote_rel"; then
         echo "rank $rank -> $target: placed"
     else
         echo "rank $rank -> $target: RSYNC FAILED"
