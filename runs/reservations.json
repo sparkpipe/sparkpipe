@@ -1,1 +1,30 @@
-{}
+{
+ "spark4": {
+  "acquired_at": "2026-08-29T23:33:12",
+  "holder": "lane-r2-prefill",
+  "id": "r2prefill-exact32k-cell",
+  "pid": 239292,
+  "ttl_minutes": 0
+ },
+ "spark5": {
+  "acquired_at": "2026-08-29T23:33:12",
+  "holder": "lane-r2-prefill",
+  "id": "r2prefill-exact32k-cell",
+  "pid": 239292,
+  "ttl_minutes": 0
+ },
+ "spark6": {
+  "acquired_at": "2026-08-29T23:33:12",
+  "holder": "lane-r2-prefill",
+  "id": "r2prefill-exact32k-cell",
+  "pid": 239292,
+  "ttl_minutes": 0
+ },
+ "spark7": {
+  "acquired_at": "2026-08-29T23:33:12",
+  "holder": "lane-r2-prefill",
+  "id": "r2prefill-exact32k-cell",
+  "pid": 239292,
+  "ttl_minutes": 0
+ }
+}
