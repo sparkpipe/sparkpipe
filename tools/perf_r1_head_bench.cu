@@ -119,7 +119,7 @@ int RunGeometry(uint32_t candidate_count)
 	error = cudaMalloc(&candidate_ids,
 		(uint64_t)candidate_count * sizeof(uint32_t));
 	error = cudaMalloc(&candidate_count_dev, sizeof(uint32_t));
-	error = cudaMalloc(&direct_ids, sizeof(uint32_t));
+	error = cudaMalloc(&direct_ids, 2u * sizeof(uint32_t)); /* [0]=direct out, [1]=certified out */
 	error = cudaMalloc(&direct_scores, sizeof(float));
 	error = cudaMalloc(&certified_scores, sizeof(float));
 	error = cudaMalloc(&rng_state, 1024u * sizeof(uint64_t));
