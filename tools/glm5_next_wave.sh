@@ -15,7 +15,8 @@
 #   1. TERM-kill model daemons on every spark (pkill -x; -f kills the ssh
 #      wrapper of this very script), wait for zero cuda processes. Post-GO
 #      this verifies the cleanslate and catches the api.
-#   2. 45s TIME_WAIT sleep (EADDRINUSE killed wave 2).
+#   2. 75s TIME_WAIT sleep (EADDRINUSE killed wave 2; 45s was the classic
+#      number, +30s headroom since cleanslate TERMs land mid-registrar-phase).
 #   3. Launch residentd on ALL 16 hosts within the same second — the hidden
 #      transport connect window is 180s and late joiners are REJECTED
 #      (staggered launch killed every early rank at wave 1).
@@ -126,7 +127,7 @@ stop_wave() {
         n=$(ssh_run "$h" "pgrep -x sparkpipe_model | wc -l" 2>/dev/null || echo 0)
         [[ "$n" -gt 0 ]] && echo "WARNING: $h still has $n model procs" >&2
     done
-    echo "== 45s TIME_WAIT settle =="
+    sleep 75
     sleep 45
 }
 
