@@ -47,6 +47,53 @@ static void SparkTestSha256NistVectors(void)
         hex, "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
 }
 
+/* Long-message ground truth: the sha256 of the LCG(42) byte stream
+ * (1,000,003 bytes, one byte per step), computed externally with python
+ * hashlib. This pins the BULK block path of the selected transform -
+ * portable or aarch64 FEAT_SHA2 - to an external authority, via two
+ * different chunkings (one giant Update and 7-byte Updates). */
+static void SparkTestSha256LongMessageVector(void)
+{
+    static const uint32_t stream_bytes = 1000003u;
+    uint8_t *stream =
+        (uint8_t *)malloc((size_t)stream_bytes);
+    SparkSha256Context context;
+    uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+    char hex[SPARK_SHA256_HEX_BYTES];
+    uint32_t state = 42u;
+    uint32_t index;
+    size_t fed;
+
+    assert(stream != 0);
+    for (index = 0u; index < stream_bytes; index++)
+    {
+        state = state * 1664525u + 1013904223u;
+        stream[index] = (uint8_t)(state >> 24u);
+    }
+
+    /* one giant Update: straight through the bulk transform */
+    SparkSha256Initialize(&context);
+    SparkSha256Update(&context, stream, (size_t)stream_bytes);
+    SparkSha256Finalize(&context, digest);
+    SparkSha256DigestToHex(digest, hex);
+    SparkTestAssertHexEquals(
+        hex, "e1c2b53ce00fca4ba820d0207d7bca19adbd4fdcd492188bd9015f2284bbe6fc");
+
+    /* awkward 7-byte Updates: every block boundary path */
+    SparkSha256Initialize(&context);
+    for (fed = 0u; fed < (size_t)stream_bytes; fed += 7u)
+    {
+        size_t remaining = (size_t)stream_bytes - fed;
+        SparkSha256Update(&context, stream + fed,
+            remaining < 7u ? remaining : 7u);
+    }
+    SparkSha256Finalize(&context, digest);
+    SparkSha256DigestToHex(digest, hex);
+    SparkTestAssertHexEquals(
+        hex, "e1c2b53ce00fca4ba820d0207d7bca19adbd4fdcd492188bd9015f2284bbe6fc");
+    free(stream);
+}
+
 static void SparkTestWritePatternFile(
     const char *path,
     const uint32_t *pattern_words,
@@ -375,6 +422,7 @@ static void SparkTestLoaderRegionDispatcherHonorsKillSwitch(void)
 int main(void)
 {
     SparkTestSha256NistVectors();
+    SparkTestSha256LongMessageVector();
     SparkTestSha256FileSizes();
     SparkTestSha256FileMultiBufferBoundaries();
     SparkTestLoaderPipelineLandsExactBytes();

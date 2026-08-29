@@ -192,7 +192,6 @@ static void SparkBenchSha(const char *path)
     printf("sha pipe: %.3fs digest=%s\n",
         SparkBenchSecondsSince(start), pipelined_hex);
 
-    SparkBenchDropPageCache(0);
     setenv("SPARK_SHA256_FILE_PIPELINE", "0", 1);
     clock_gettime(CLOCK_MONOTONIC, &start);
     if (SparkSha256File(path, sequential_hex) != SPARK_STATUS_OK)
@@ -207,11 +206,48 @@ static void SparkBenchSha(const char *path)
     setenv("SPARK_SHA256_FILE_PIPELINE", "1", 1);
 }
 
+/* whole-file digest on an arbitrary path (no pack parsing): the L2
+ * timing harness for any large file on the measurement host */
+static int SparkBenchRawSha(const char *path)
+{
+    struct timespec start;
+    char pipelined_hex[SPARK_SHA256_HEX_BYTES];
+    char sequential_hex[SPARK_SHA256_HEX_BYTES];
+    double pipelined_seconds;
+    double sequential_seconds;
+
+    setenv("SPARK_SHA256_FILE_PIPELINE", "1", 1);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    if (SparkSha256File(path, pipelined_hex) != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "%s sha_pipeline_failed\n", BENCH_TAG);
+        return 1;
+    }
+    pipelined_seconds = SparkBenchSecondsSince(start);
+
+    setenv("SPARK_SHA256_FILE_PIPELINE", "0", 1);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    if (SparkSha256File(path, sequential_hex) != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "%s sha_sequential_failed\n", BENCH_TAG);
+        return 1;
+    }
+    sequential_seconds = SparkBenchSecondsSince(start);
+
+    printf("raw-sha %s\n", path);
+    printf("sha seq: %.3fs digest=%s\n", sequential_seconds, sequential_hex);
+    printf("sha pipe: %.3fs digest=%s\n", pipelined_seconds, pipelined_hex);
+    printf("sha identity: %s\n",
+        strcmp(pipelined_hex, sequential_hex) == 0 ? "IDENTICAL" : "MISMATCH");
+    return strcmp(pipelined_hex, sequential_hex) == 0 ? 0 : 1;
+}
+
 int main(int argument_count, char **arguments)
 {
     const char *path;
     int run_sha = 0;
     int run_load = 0;
+    int run_raw_sha = 0;
     FILE *file;
     SparkDsv4StagePackHeader header;
     SparkDsv4StagePackEntry *directory = 0;
@@ -220,7 +256,8 @@ int main(int argument_count, char **arguments)
 
     if (argument_count < 2)
     {
-        fprintf(stderr, "usage: %s <pack-path> [--load|--sha|--all]\n",
+        fprintf(stderr,
+            "usage: %s <pack-path> [--load|--sha|--all] | --raw-sha <file>\n",
             arguments[0]);
         return 2;
     }
@@ -240,6 +277,14 @@ int main(int argument_count, char **arguments)
             run_load = 1;
             run_sha = 1;
         }
+        else if (strcmp(arguments[argument], "--raw-sha") == 0)
+        {
+            run_raw_sha = 1;
+        }
+    }
+    if (run_raw_sha)
+    {
+        return SparkBenchRawSha(path);
     }
     if (!run_load && !run_sha)
     {

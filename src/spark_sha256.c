@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_sha256.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,7 +58,7 @@ static void SparkSha256StoreBigEndianU64(uint8_t *bytes, uint64_t value)
     }
 }
 
-static void SparkSha256Transform(SparkSha256Context *context, const uint8_t block[SPARK_SHA256_BLOCK_BYTES])
+static void SparkSha256Transform(uint32_t state[8], const uint8_t block[SPARK_SHA256_BLOCK_BYTES])
 {
     uint32_t words[SPARK_SHA256_ROUND_COUNT];
     uint32_t working[8];
@@ -81,7 +82,7 @@ static void SparkSha256Transform(SparkSha256Context *context, const uint8_t bloc
         words[round_index] = words[round_index - 16u] + sigma_zero + words[round_index - 7u] + sigma_one;
     }
 
-    memcpy(working, context->state, sizeof(working));
+    memcpy(working, state, sizeof(working));
     for (round_index = 0u; round_index < SPARK_SHA256_ROUND_COUNT; ++round_index)
     {
         uint32_t choice;
@@ -114,9 +115,157 @@ static void SparkSha256Transform(SparkSha256Context *context, const uint8_t bloc
 
     for (round_index = 0u; round_index < 8u; ++round_index)
     {
-        context->state[round_index] += working[round_index];
+        state[round_index] += working[round_index];
     }
 }
+
+/* Bulk transform: `block_count` consecutive 64-byte blocks folded into
+ * `state` in order. The portable loop and the ARMv8 SHA-2 crypto-extension
+ * loop below are two implementations of the same FIPS 180-4 function -
+ * the digest is identical either way (proven per call site by the lane
+ * tests, which cross-check both against the NIST vectors). */
+static void SparkSha256TransformBlocksPortability(
+    uint32_t state[8],
+    const uint8_t *data,
+    size_t block_count)
+{
+    while (block_count != 0u)
+    {
+        SparkSha256Transform(state, data);
+        data += SPARK_SHA256_BLOCK_BYTES;
+        block_count--;
+    }
+}
+
+typedef void (*SparkSha256TransformBlocksFunction)(
+    uint32_t state[8],
+    const uint8_t *data,
+    size_t block_count);
+
+/* selected once per process by the first hash call; points at the
+ * accelerated transform when this CPU has aarch64 FEAT_SHA2 */
+static SparkSha256TransformBlocksFunction g_transform_blocks =
+    SparkSha256TransformBlocksPortability;
+
+#if defined(__aarch64__) && defined(__ARM_NEON) && \
+    (defined(__GNUC__) || defined(__clang__)) && !defined(__CUDACC__)
+#include <arm_neon.h>
+#if defined(__GNUC__) && !defined(__clang__)
+#define SPARK_SHA256_SHA2_TARGET __attribute__((target("arch=armv8-a+sha2")))
+#else
+#define SPARK_SHA256_SHA2_TARGET __attribute__((target("sha2")))
+#endif
+
+/* aarch64 FEAT_SHA2 path: the h/h2 pairs run four rounds each (the
+ * round constants are added to the message words here), and the su0/su1
+ * pairs expand the schedule. Same compression function, same digest. */
+SPARK_SHA256_SHA2_TARGET
+static void SparkSha256TransformBlocksSha2(
+    uint32_t state[8],
+    const uint8_t *data,
+    size_t block_count)
+{
+    uint32x4_t state_save_abcd;
+    uint32x4_t state_save_efgh;
+    uint32x4_t abcd;
+    uint32x4_t efgh;
+    uint32x4_t m[4];
+    size_t quad;
+
+    while (block_count != 0u)
+    {
+        const uint32_t *constants = SparkSha256RoundConstants;
+        state_save_abcd = vld1q_u32(state);
+        state_save_efgh = vld1q_u32(state + 4u);
+        abcd = state_save_abcd;
+        efgh = state_save_efgh;
+        m[0] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(
+            vld1q_u8(data))));
+        m[1] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(
+            vld1q_u8(data + 16u))));
+        m[2] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(
+            vld1q_u8(data + 32u))));
+        m[3] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(
+            vld1q_u8(data + 48u))));
+#define SPARK_SHA256_SHA2_ROUND(message_quad)                                  \
+        do                                                                     \
+        {                                                                      \
+            uint32x4_t message =                                               \
+                vaddq_u32((message_quad), vld1q_u32(constants));               \
+            uint32x4_t abcd_before = abcd;                                     \
+            constants += 4u;                                                   \
+            abcd = vsha256hq_u32(abcd, efgh, message);                         \
+            efgh = vsha256h2q_u32(efgh, abcd_before, message);                 \
+        } while (0)
+        SPARK_SHA256_SHA2_ROUND(m[0]);
+        SPARK_SHA256_SHA2_ROUND(m[1]);
+        SPARK_SHA256_SHA2_ROUND(m[2]);
+        SPARK_SHA256_SHA2_ROUND(m[3]);
+        for (quad = 4u; quad < 16u; ++quad)
+        {
+            /* m[quad&3] holds W[quad-4], m[(quad+1)&3] W[quad-3],
+             * m[(quad+2)&3] W[quad-2], m[(quad+3)&3] W[quad-1] */
+            uint32x4_t schedule_partial =
+                vsha256su0q_u32(m[quad & 3u], m[(quad + 1u) & 3u]);
+            m[quad & 3u] = vsha256su1q_u32(
+                schedule_partial, m[(quad + 2u) & 3u], m[(quad + 3u) & 3u]);
+            SPARK_SHA256_SHA2_ROUND(m[quad & 3u]);
+        }
+#undef SPARK_SHA256_SHA2_ROUND
+        vst1q_u32(state, vaddq_u32(abcd, state_save_abcd));
+        vst1q_u32(state + 4u, vaddq_u32(efgh, state_save_efgh));
+        data += 64u;
+        block_count--;
+    }
+}
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+static int SparkSha256CpuHasSha2(void)
+{
+    int value = 0;
+    size_t value_size = sizeof(value);
+    return sysctlbyname(
+        "hw.optional.arm.FEAT_SHA256", &value, &value_size, 0, 0) == 0 &&
+        value == 1;
+}
+#elif defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_SHA2
+#define HWCAP_SHA2 (1u << 6)
+#endif
+static int SparkSha256CpuHasSha2(void)
+{
+    return (getauxval(AT_HWCAP) & (unsigned long)HWCAP_SHA2) != 0u;
+}
+#else
+static int SparkSha256CpuHasSha2(void)
+{
+    return 0;
+}
+#endif
+
+static SparkSha256TransformBlocksFunction SparkSha256TransformForThisCpu(void)
+{
+    /* the choice is a pure function of the CPU; racing first calls all
+     * write the same pointer */
+    static atomic_uint selected;
+    unsigned int expected = 0u;
+    if (atomic_compare_exchange_strong(&selected, &expected, 1u))
+    {
+        if (SparkSha256CpuHasSha2())
+        {
+            g_transform_blocks = SparkSha256TransformBlocksSha2;
+        }
+    }
+    return g_transform_blocks;
+}
+#else
+static SparkSha256TransformBlocksFunction SparkSha256TransformForThisCpu(void)
+{
+    return SparkSha256TransformBlocksPortability;
+}
+#endif
 
 void SparkSha256Initialize(SparkSha256Context *context)
 {
@@ -152,7 +301,7 @@ void SparkSha256Update(SparkSha256Context *context, const void *data, size_t dat
     remaining_bytes = data_bytes;
     context->total_bytes += (uint64_t)data_bytes;
 
-    while (remaining_bytes != 0u)
+    if (context->block_bytes != 0u)
     {
         size_t available_bytes;
         size_t copy_bytes;
@@ -166,9 +315,23 @@ void SparkSha256Update(SparkSha256Context *context, const void *data, size_t dat
 
         if (context->block_bytes == SPARK_SHA256_BLOCK_BYTES)
         {
-            SparkSha256Transform(context, context->block);
+            SparkSha256Transform(context->state, context->block);
             context->block_bytes = 0u;
         }
+    }
+    if (remaining_bytes >= SPARK_SHA256_BLOCK_BYTES)
+    {
+        /* bulk: complete blocks go straight from the caller's buffer
+         * through the per-CPU transform (portable or FEAT_SHA2) */
+        size_t block_count = remaining_bytes / SPARK_SHA256_BLOCK_BYTES;
+        SparkSha256TransformForThisCpu()(context->state, input, block_count);
+        input += block_count * SPARK_SHA256_BLOCK_BYTES;
+        remaining_bytes -= block_count * SPARK_SHA256_BLOCK_BYTES;
+    }
+    if (remaining_bytes != 0u)
+    {
+        memcpy(context->block, input, remaining_bytes);
+        context->block_bytes = (uint32_t)remaining_bytes;
     }
 }
 
@@ -187,12 +350,12 @@ void SparkSha256Finalize(SparkSha256Context *context, uint8_t digest[SPARK_SHA25
     if (context->block_bytes > 56u)
     {
         memset(context->block + context->block_bytes, 0, SPARK_SHA256_BLOCK_BYTES - context->block_bytes);
-        SparkSha256Transform(context, context->block);
+        SparkSha256Transform(context->state, context->block);
         context->block_bytes = 0u;
     }
     memset(context->block + context->block_bytes, 0, 56u - context->block_bytes);
     SparkSha256StoreBigEndianU64(context->block + 56u, total_bits);
-    SparkSha256Transform(context, context->block);
+    SparkSha256Transform(context->state, context->block);
 
     for (state_index = 0u; state_index < 8u; ++state_index)
     {
