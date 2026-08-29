@@ -1,5 +1,5 @@
 {
-  "file_count": 1713,
+  "file_count": 1718,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -53,8 +53,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "e11a83ea1000ba224d57ec67f1047f7d55df57e4a13dccfff35a59a67590db82",
-      "size_bytes": 87146
+      "sha256": "7d409800d9edc30be6b18ab209e028126b7fb0352c6961b9e4337d3e62bbf2d0",
+      "size_bytes": 88474
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -333,8 +333,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "8c3c5c0d3fa39915d8201ea58f4b4f8fc95c8b3a52c17138ed8bc3206e29e9ec",
-      "size_bytes": 121159
+      "sha256": "f2d0e7c76719a83d568931440c9c3b3892de130dd5aec13a23d6c5c8ec3e6768",
+      "size_bytes": 122385
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -570,6 +570,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/staging-inventory-2026-08-28.md",
       "sha256": "9865c0f0bdebe2143178dcacea480e9fe82b3818520d31252aa81567cc8cef93",
       "size_bytes": 15496
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/tokenizer-sidecar-2026-08-29.md",
+      "sha256": "db882315668ab582e3fcb05d2ca1b0e652f6e65a18f91c5f0ccfec7437953f85",
+      "size_bytes": 9116
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/w1-loader-2026-08-29.md",
@@ -2603,8 +2608,8 @@
     },
     {
       "path": "include/sparkpipe/spark_model_resident_deployment.h",
-      "sha256": "80de0483dc362cae442243721c1d2311b91804e861834f43d2e2d637d95678af",
-      "size_bytes": 2443
+      "sha256": "a1edddec07e42c1315eeb5e586d8dde8c4aebb87a1822b3cd67cf32156935b44",
+      "size_bytes": 2745
     },
     {
       "path": "include/sparkpipe/spark_model_resident_endpoint.h",
@@ -2723,8 +2728,13 @@
     },
     {
       "path": "include/sparkpipe/spark_tokenizer.h",
-      "sha256": "9c313b6164fe0d2861885c7dc65c7c296451bf55c183cdeda7908d61103b6c71",
-      "size_bytes": 9133
+      "sha256": "dbe00539f2625d7fee63b3a0e1026fc6de70ac4521c1d3ed66935085cda2594f",
+      "size_bytes": 10368
+    },
+    {
+      "path": "include/sparkpipe/spark_tokenizer_sidecar.h",
+      "sha256": "c85105d3bc4af50d60cecfdfb50d21d94bde7ef43ac26a7130448c01fb029f26",
+      "size_bytes": 4208
     },
     {
       "path": "include/sparkpipe/spark_topology_switch.h",
@@ -4048,8 +4058,8 @@
     },
     {
       "path": "node/model_api.c",
-      "sha256": "7b05352f1cd684064124d883d24cd6dafc6912c29084369548ab090b5f2dfca1",
-      "size_bytes": 22591
+      "sha256": "58d5ec06a18e0b94c837f009ab491267d90f280c3a08c72cfc0de93f4f63735c",
+      "size_bytes": 35808
     },
     {
       "path": "node/model_batch.c",
@@ -5433,18 +5443,18 @@
     },
     {
       "path": "runs/queue.jsonl",
-      "sha256": "8791d44655d8a691b1c7673106b8d255bdd2f51cea285a40d5ef0e4b5cdbc11f",
-      "size_bytes": 3007
+      "sha256": "144fcfee485e303285cd11dece6a58ebe827e240bc7443b36b66126f8c5a3ad1",
+      "size_bytes": 4601
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "7a1e96368e218fe259854ba02e3f9f88c2adf0b299ef66d15b70ec9232e1e5c4",
-      "size_bytes": 177
+      "sha256": "dd63b9cbd828cfbfe1f3fe0c5c0bfafccf46dc80764852a2093baaeddf284911",
+      "size_bytes": 1601
     },
     {
       "path": "runs/results.jsonl",
-      "sha256": "3e71ee6fd1a096b59988d20b77b9122818472a965e78b5a186c7645468164b14",
-      "size_bytes": 26016
+      "sha256": "b8b80f35a6643b4e00c26f6e216dac9e0a73d79e5a2e429558f8ea6ee5169cee",
+      "size_bytes": 40376
     },
     {
       "path": "runtime/README",
@@ -5518,8 +5528,8 @@
     },
     {
       "path": "runtime/model_resident_deployment.c",
-      "sha256": "d1c0a52911765ad62b04e3ba1d805830693bc17d2db719fae470234b3159c255",
-      "size_bytes": 22510
+      "sha256": "2c90fcfd87c3e6b41c55692b62ecc296c76150efadc16c48cbbaed47bbc5d724",
+      "size_bytes": 26481
     },
     {
       "path": "runtime/model_resident_endpoint.c",
@@ -5648,8 +5658,8 @@
     },
     {
       "path": "sources.mk",
-      "sha256": "0955c5e0617b613067ce9905d67f639db6bf5492883754f5cf2e74a06bf6b767",
-      "size_bytes": 3410
+      "sha256": "aca24fb02913196f7054301f1bbd5ddfd8d3868d1775c6d34621ce3aae1befd6",
+      "size_bytes": 3441
     },
     {
       "path": "src/spark_admission.c",
@@ -5798,13 +5808,13 @@
     },
     {
       "path": "tests/fixtures/model_resident_deployment_fixture.c",
-      "sha256": "159a061a2361a48b9c8043d523e41eea2029033fad8599a767c775d2a8ab4b2f",
-      "size_bytes": 5796
+      "sha256": "78478eeccd2e15a637d76c75d8416b6d7adb4eb60a7a3145c76c3426711cb019",
+      "size_bytes": 6284
     },
     {
       "path": "tests/fixtures/model_resident_deployment_fixture.h",
-      "sha256": "7354bb4a123c3458c5a2628243b923bb4fdc9b724a5d3adf6e39c01c4ec53cf9",
-      "size_bytes": 961
+      "sha256": "a51ca12d470631917e37e30d909dce00ec57556770eadb9d0b38fc66392d55e8",
+      "size_bytes": 1164
     },
     {
       "path": "tests/fixtures/model_resident_deployment_unknown.json",
@@ -6138,8 +6148,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "2d103c1f5401217e72ab17471efdd23d3075176e8af22ba12fac0c513ac74c87",
-      "size_bytes": 81304
+      "sha256": "a5611446bd8496bc062324e6561338d9fb2a0c391ffefacdd574ea21aa022104",
+      "size_bytes": 83500
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6817,6 +6827,11 @@
       "size_bytes": 34140
     },
     {
+      "path": "tests/test_model_api_text.c",
+      "sha256": "c7612f30a412b2dcbfb4c1850bbf3552a753d2f0fcaf5b4da0b26d17d0d7cee6",
+      "size_bytes": 24110
+    },
+    {
       "path": "tests/test_model_constants.c",
       "sha256": "44d001cddf0ead1ad64fd3cd8343d9abed304bf8eb0ac99f9859b56434ffe523",
       "size_bytes": 789
@@ -7177,6 +7192,11 @@
       "size_bytes": 30289
     },
     {
+      "path": "tests/test_tokenizer_sidecar.c",
+      "sha256": "440dfff0b54897dd1f54a4953a92206787f1a6a0940242cc388d04ca95e1f7d1",
+      "size_bytes": 24727
+    },
+    {
       "path": "tests/test_topology_switch.c",
       "sha256": "88c873ab3495ed544ea1011021b1aac06dbe7b4f85e2167a0976804e02797fad",
       "size_bytes": 21843
@@ -7228,8 +7248,13 @@
     },
     {
       "path": "text/tokenizer.c",
-      "sha256": "60cc0ae88df7404eea87a8810a55d86f2d4455ccc7b8fc3f4568cf1f741640a6",
-      "size_bytes": 107632
+      "sha256": "c9c1019ca5f66d0fd02d18b06755497464c1c71c8a7bea15fae823dedb7bea24",
+      "size_bytes": 124186
+    },
+    {
+      "path": "text/tokenizer_sidecar.c",
+      "sha256": "2a5585d6ed3eb900b10dac91e1627cd5771eaf7362d7e43c9484df73069bdd6f",
+      "size_bytes": 9764
     },
     {
       "path": "tools/audit_core_boundaries.py",
@@ -8570,5 +8595,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31562104
+  "total_bytes": 31692158
 }

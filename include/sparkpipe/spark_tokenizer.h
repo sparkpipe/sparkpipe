@@ -14,6 +14,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkTokenizer))
 #define SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkTokenizerHuggingFaceJsonConfiguration))
+#define SPARK_TOKENIZER_TIKTOKEN_RANKS_CONFIGURATION_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkTokenizerTiktokenRanksConfiguration))
 #define SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkTokenizerCompiledFileConfiguration))
 #define SPARK_TOKENIZER_ENCODING_DESCRIPTOR_BYTES \
@@ -99,6 +101,18 @@ typedef struct SparkTokenizerHuggingFaceJsonConfiguration
     uint32_t reserved1;
 } SparkTokenizerHuggingFaceJsonConfiguration;
 
+/* The tiktoken ranks format: one "base64(piece) rank" line per vocabulary
+ * entry (the .model / .tiktoken asset family). Merge priority IS the rank of
+ * the concatenated piece; no merges list exists. */
+typedef struct SparkTokenizerTiktokenRanksConfiguration
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    const char *ranks_path;
+    uint32_t reserved0;
+    uint32_t reserved1;
+} SparkTokenizerTiktokenRanksConfiguration;
+
 typedef struct SparkTokenizerCompiledFileConfiguration
 {
     uint32_t abi_version;
@@ -181,6 +195,14 @@ typedef struct SparkTokenizer
     uint32_t unk_token_id;
     uint32_t maximum_token_id;
     uint32_t byte_level_use_regex;
+    /* ignore_merges: a pretokenized piece found wholly in the vocabulary
+     * encodes as that single token, bypassing the merge loop (the HF
+     * tokenizer.json model flag). rank_ordered_merges: merge priority is the
+     * vocabulary id of the concatenated piece (the tiktoken ranks rule), not
+     * a merges list. Both default to zero/false and are set only by the text
+     * asset loaders (the compiled file keeps its v2 field layout). */
+    uint32_t ignore_merges;
+    uint32_t rank_ordered_merges;
     char **token_text_by_id;
     uint32_t *token_text_bytes_by_id;
     uint32_t vocabulary_count;
@@ -229,6 +251,10 @@ SparkStatus SparkTokenizerFindTokenId(
 SparkStatus SparkTokenizerLoadHuggingFaceJson(
     SparkTokenizer *tokenizer,
     const SparkTokenizerHuggingFaceJsonConfiguration *configuration);
+
+SparkStatus SparkTokenizerLoadTiktokenRanks(
+    SparkTokenizer *tokenizer,
+    const SparkTokenizerTiktokenRanksConfiguration *configuration);
 
 SparkStatus SparkTokenizerLoadCompiledFile(
     SparkTokenizer *tokenizer,

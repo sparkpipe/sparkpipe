@@ -988,6 +988,37 @@ from pathlib import Path
 # kernel, the bulk launcher pair, and the whole-frame module wiring
 # (shadow+scatter+one attention launch per prefill frame), net +241
 # authored lines. Rebased onto the W2a + JIT-KV main; re-measured at resolution: 225258 exact.
+# The tokenizer-sidecar lane (2026-08-29) lands Phase 4's text-in/text-out
+# edge as MODEL-NEUTRAL shared infrastructure. The sidecar itself
+# (include/sparkpipe/spark_tokenizer_sidecar.h + text/tokenizer_sidecar.c):
+# per-deployment tokenizer-asset loading with content-based format detection
+# (HuggingFace tokenizer.json / tiktoken ranks / compiled), encode, and the
+# stop-token-aware decode edge sized by a per-token byte bound computed at
+# load. The tokenizer engine (text/tokenizer.c) gains the pieces the real
+# families need: the digit-runs Split variant (\p{N}{1,3}) alongside the
+# single-digit extended pattern, the HF ignore_merges flag (whole-piece
+# vocabulary lookup before the merge loop, glyph-encoded), and the tiktoken
+# ranks loader (base64(piece) rank lines; merge priority = the vocabulary id
+# of the concatenated piece, resolved by text - that format ships no merges
+# list). The deployment config (spark_model_resident_deployment.h +
+# runtime/model_resident_deployment.c) gains the one OPTIONAL root member
+# ("tokenizer":{"path":...}, resolved against the runtime root like every
+# pack asset; 7-member files parse byte-identically). The API edge
+# (node/model_api.c) accepts {"prompt": text} when the deployment loaded a
+# sidecar, answers the loud 400 naming the missing sidecar when it did not,
+# decodes generated ids into the response's additive "text", reports sidecar
+# presence on /health, and refuses startup when a configured asset cannot
+# load. The lane also fixes three REAL concurrency defects the new e2e test
+# exposed in model_api's pre-existing paths (no gate ever exercised
+# model_api before): the wait loop held req->mutex across its own
+# per-iteration relock (every >250ms request froze its connection thread),
+# and both Cancel call sites ran under a lock the engine's synchronous event
+# callback re-acquires (worker queue->req vs connection req->queue ABBA).
+# The host proofs (tests/test_tokenizer_sidecar.c,
+# tests/test_model_api_text.c) are excluded by construction; the committed
+# ground-truth assets live under qualification/ds4_eval/tokenizer/
+# (excluded). Makefile/sources.mk carry the registration. 229008 exact.
+CEILING = 232485
 # The jikv-c5 lane (2026-08-29) lands the last two named JIT-KV remainders
 # (docs/JIT_KV_RESPONSE.md C5+W2) in the pager/tier path. C5's reuse-value
 # park policy: the victim rank (cache/kv_cache.c: the keepness helper - one
