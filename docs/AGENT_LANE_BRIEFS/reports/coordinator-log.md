@@ -1664,3 +1664,14 @@ appendix).
 - 3res banked+merged (27312cb): NVFP4 placed 16/16 verified; BF16
   arm ready; FP8 fetch-fleet autonomous; both staging deaths
   root-caused (dead downloader, not slow ceph).
+
+## 2026-08-30 ~23:4x — 16/16 CLEAN WAVE + SERVING on the fixed binaries
+
+- Full TERM (working pattern) → true exit → simultaneous fire:
+  READY 16/16. API up. Serving confirmed: [154819,11,1875,525]→
+  [66188 x4], [525,154819,11,13]→[8489 x4] — deterministic,
+  prompt-dependent (state-bleed stays ruled out).
+- F1's proof standard met for wave 1-of-N: the fleet CAME UP CLEAN
+  (no random rank death). N more waves accumulate confidence; the
+  degeneration hunt (retention-advance probe: conv-edge vs fused-
+  shape) proceeds on this stable base.
