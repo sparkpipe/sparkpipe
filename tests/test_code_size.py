@@ -885,7 +885,16 @@ from pathlib import Path
 # Template-adoption gate (the audits' loop-closer): families consume
 # the shared patterns or sit in the ratcheting offender set; new
 # families hit it at merge by construction. 215868 exact.
-CEILING = 215868
+# The P3 batched-small-rows lane (2026-08-28) lands, in the shared family
+# kernel header: the one-weight-stream batched linear kernel for rows 2..15
+# (SparkLmBatchedLinearKernel + apply helpers, ~250 lines), the
+# SPARK_LM_LAUNCH host/device syntax guard wrapped around every launch
+# statement (~80 lines, the shared header's host-compilability proof - the
+# THREADS==1 oracle compiles the whole header with a plain C++ compiler),
+# and the B2..B15 dispatch wiring in the shared gate and the head shadow
+# branch. The oracle harness (tests/host_cuda/spark_lm_batched_host.cu)
+# sits under tests/ and is excluded. 216193 is the exact count.
+CEILING = 216193
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

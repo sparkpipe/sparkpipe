@@ -161,9 +161,35 @@ static inline unsigned atomicMax(unsigned *address, unsigned value)
 	unsigned old = *address; if (value > old) *address = value; return old;
 }
 
+// Read-only / streaming loads are plain reads: the cache-hint distinction a
+// __ldg or __ldcs carries does not exist with one thread. The half/bf16 pack
+// helpers exist so the shared model-family kernels
+// (model-families/common/include/sparkpipe/spark_lm_kernels.cuh) compile and
+// run here; conversions reuse the shim's own __half/__nv_bfloat16 semantics,
+// which is what makes scalar-vs-batched diffing bit-exact - both kernels go
+// through the same conversion.
+template <typename T> static inline T __ldg(const T *pointer) { return *pointer; }
+template <typename T> static inline T __ldcs(const T *pointer) { return *pointer; }
+static inline __half2 __floats2half2_rn(float low, float high)
+{
+	__half2 out;
+	out.x = __float2half(low);
+	out.y = __float2half(high);
+	return out;
+}
+static inline float2 __half22float2(__half2 value)
+{
+	float2 out;
+	out.x = __half2float(value.x);
+	out.y = __half2float(value.y);
+	return out;
+}
+
 typedef int cudaStream_t;
 typedef int cudaError_t;
 #define cudaSuccess 0
+#define cudaErrorInvalidValue 1
+#define cudaErrorNotSupported 801
 static inline cudaError_t cudaPeekAtLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaGetLastError(void) { return cudaSuccess; }
 
