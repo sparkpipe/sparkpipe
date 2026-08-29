@@ -882,7 +882,10 @@ from pathlib import Path
 # that exploded streams to 1e18 by L17), packer per-section fused-row
 # slicing (1dac68b — the context-free degeneration), probe ladder
 # extensions. 216956 exact.
-CEILING = 215867
+# Template-adoption gate (the audits' loop-closer): families consume
+# the shared patterns or sit in the ratcheting offender set; new
+# families hit it at merge by construction. 215868 exact.
+CEILING = 215868
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

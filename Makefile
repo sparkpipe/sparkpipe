@@ -355,6 +355,7 @@ PYTHON_TESTS := \
 	tests/test_situ_activation.py \
 	tests/test_sources_exist.py \
 	tests/test_staging_manifest.py \
+	tests/test_template_adoption.py \
 	tests/test_status_truth.py
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
