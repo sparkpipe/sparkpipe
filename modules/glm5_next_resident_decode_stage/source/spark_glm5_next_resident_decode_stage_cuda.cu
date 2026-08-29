@@ -528,6 +528,13 @@ static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32
 	status = layer < GLM5_NEXT_FIRST_ROUTED_LAYER ? Glm5NextLayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,stream) : Glm5NextLayerMoe<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( wave->tp_rank == 0u && Glm5NextKdaProbeDeep(&buffers) )
+	{
+		float probe_m[4];
+		Glm5NextProbeBf16Floats(stream,buffers.attention_out_bf16,4u,probe_m);
+		fprintf(stderr,"G5N-PROBE kda L%u mlp_partial_f %.6g %.6g %.6g %.6g\n",
+			(unsigned)buffers.layer_index,(double)probe_m[0],(double)probe_m[1],(double)probe_m[2],(double)probe_m[3]);
+	}
 	/* dense/MoE wrote the full-width rank partial into attention_out_bf16;
 	 * the HC placement runs after the chain's reduce - see
 	 * SparkGlm5NextLaunchCudaLayerMlpPost. */
@@ -604,6 +611,15 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 		error = cudaPeekAtLastError();
 		if ( error != cudaSuccess )
 			return(SparkGlm5NextCudaStatus(error));
+		if ( wave->tp_rank == 0u && getenv("SPARK_GLM5_NEXT_PROBE") != 0 )
+		{
+			float probe_m[4],pb_f[4];
+			Glm5NextProbeBf16Floats(stream,slot->hc_mean_bf16,4u,probe_m);
+			Glm5NextProbeBf16Floats(stream,slot->hidden_bf16,4u,pb_f);
+			fprintf(stderr,"G5N-PROBE head mean_f %.6g %.6g %.6g %.6g stream0_f %.6g %.6g %.6g %.6g\n",
+				(double)probe_m[0],(double)probe_m[1],(double)probe_m[2],(double)probe_m[3],
+				(double)pb_f[0],(double)pb_f[1],(double)pb_f[2],(double)pb_f[3]);
+		}
 		status = Glm5NextHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);

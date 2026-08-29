@@ -1014,12 +1014,12 @@ static int Glm5NextKdaProbeActive(const Glm5NextLayerBuffers *buffers)
 }
 
 /* Deep-dive gate: healthy reference layer 0 + the first-zero neighbourhood
- * 16..20 (first zero at 17, rank 0, wave 1). */
+ * 16..20 + the last weight layer 44 before the head. */
 static int Glm5NextKdaProbeDeep(const Glm5NextLayerBuffers *buffers)
 {
     uint32_t layer = buffers != 0 ? buffers->layer_index : 0u;
     return(Glm5NextKdaProbeActive(buffers) &&
-        (layer == 0u || (layer >= 16u && layer <= 20u)));
+        (layer == 0u || (layer >= 16u && layer <= 20u) || layer >= 43u));
 }
 
 /* first8 raw u16 + their float values, to separate zeros from garbage from
@@ -1072,6 +1072,21 @@ static void Glm5NextProbeFloats(cudaStream_t stream,const float *device,uint32_t
     if ( cudaStreamSynchronize(stream) != cudaSuccess )
         return;
     (void)cudaMemcpy(host,device,count * sizeof(float),cudaMemcpyDeviceToHost);
+}
+
+/* Same, for a bf16 device buffer: decode to floats host-side. */
+static void Glm5NextProbeBf16Floats(cudaStream_t stream,const uint16_t *device,uint32_t count,float *host)
+{
+    uint16_t probe_b[8];
+    uint32_t probe_i;
+    if ( count > 8u || cudaStreamSynchronize(stream) != cudaSuccess ||
+         cudaMemcpy(probe_b,device,count * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+        return;
+    for ( probe_i = 0u; probe_i < count; probe_i++ )
+    {
+        uint32_t probe_bits = ((uint32_t)probe_b[probe_i]) << 16;
+        (void)memcpy(&host[probe_i],&probe_bits,sizeof(float));
+    }
 }
 
 #define GLM5_NEXT_KDA_PROBE(stream,label,dev,cnt) \
@@ -1170,6 +1185,14 @@ static int32_t Glm5NextLayerKda(
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
+        float probe_pre[4],probe_post[4],probe_comb[4];
+        Glm5NextProbeFloats(stream,buffers->hc_pre_f32,4u,probe_pre);
+        Glm5NextProbeFloats(stream,buffers->hc_post_f32,4u,probe_post);
+        Glm5NextProbeFloats(stream,buffers->hc_comb_f32,4u,probe_comb);
+        fprintf(stderr,"G5N-PROBE kda L%u hc pre %.6g %.6g %.6g %.6g post %.6g %.6g %.6g %.6g comb %.6g %.6g %.6g %.6g\n",
+            buffers->layer_index,(double)probe_pre[0],(double)probe_pre[1],(double)probe_pre[2],(double)probe_pre[3],
+            (double)probe_post[0],(double)probe_post[1],(double)probe_post[2],(double)probe_post[3],
+            (double)probe_comb[0],(double)probe_comb[1],(double)probe_comb[2],(double)probe_comb[3]);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"collapsed",buffers->hc_collapsed_bf16);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"normed",buffers->normed_bf16);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
@@ -1494,7 +1517,11 @@ static int32_t Glm5NextLayerKda(
         stream);
     if ( status == LM_LAUNCH_OK && Glm5NextKdaProbeActive(buffers) )
     {
+        float probe_o[4];
         GLM5_NEXT_KDA_PROBE(stream,"kda_out_partial",buffers->attention_out_bf16,256u);
+        Glm5NextProbeBf16Floats(stream,buffers->attention_out_bf16,4u,probe_o);
+        fprintf(stderr,"G5N-PROBE kda L%u out_partial_f %.6g %.6g %.6g %.6g\n",
+            buffers->layer_index,(double)probe_o[0],(double)probe_o[1],(double)probe_o[2],(double)probe_o[3]);
         GLM5_NEXT_KDA_PROBE_STATE(stream,"state_post",buffers->kda_state_pool);
     }
     return(status);
