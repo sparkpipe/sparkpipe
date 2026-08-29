@@ -168,3 +168,25 @@ co-resident; and the stack PROVABLY hardware-independent below the
 module boundary: cuda (production), host oracle (CI), Metal (the
 controller Mac), ROCm (rented, budget-approved) — one memory model,
 one comms model, recipes not hand-built drivers.
+
+## AGENT FLEET POLICY (operator, 2026-08-30)
+
+CAP 5 — with the standing expectation they are ALWAYS productive and
+on the critical path. The 15-min cycle's duty 3 enforces this: count,
+think, spawn to cap, never make-work. TEMPORARY SPRINTS: when a phase
+warrants more (e.g. a change applied to all 8 models at once, plus
+the normal working lanes), the coordinator PROPOSES the boost with a
+reason and an end condition; the operator approves. Budget reality:
+TEAM ACCOUNT live — 2 independent 5h windows now (~2.5h combined
+drain), a THIRD when the weekly renews in a few days. Bursts to 8-10
+become cheap; the cap stays 5 between bursts.
+
+## STRATEGIC PIVOT: SERVE OURSELVES (operator, 2026-08-30)
+
+The moment glm-5.3 (full) + glm-5.3-flash serve on the sparks, the
+DEV FLEET runs ON THEM — agents' own inference (drafting, analysis,
+doc summarization) stops burning API credits and starts burning
+sparks we already own. Priority ordering implications: the glm5_next
+closeout chain and the glm53full 3-res packs are not just scoreboard
+items; they are the API-cost-elimination path. The liteLLM front
+door is the seam: agents point at it, the fleet serves.
