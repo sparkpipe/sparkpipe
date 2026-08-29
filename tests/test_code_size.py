@@ -1042,7 +1042,15 @@ from pathlib import Path
 # partial must be bit-identical across ranks) - the instrument that
 # separates a collective-path defect from a per-rank partial-math one.
 # 222250 exact.
-CEILING = 226696
+# glm5-attractor: the G5N-VEC full-vector diag dumps (layer-0 KDA stage
+# buffers + head input as hex rows, env-gated SPARK_GLM5_NEXT_PROBE_VEC,
+# rank 0, pass-capped) plus tools/glm5_next_kda_host_oracle.py - the
+# independent host reimplementation of the KDA cell from CHECKPOINT
+# semantics (fla reference math, not module kernels) that arbitrates the
+# repeat-attractor suspects stage by stage; --probe-vec wave wiring. All
+# diag/instrument lines: the serving path is untouched. To be trimmed with
+# the ratchet when the attractor closes. 227169 exact.
+CEILING = 227169
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

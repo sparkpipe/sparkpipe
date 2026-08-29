@@ -38,6 +38,7 @@ API_HOST=spark0
 API_PORT=8433
 DEBUG_RDMA=0
 PROBE=0
+PROBE_VEC=0
 SKIP_KILL=0
 SKIP_REGISTRAR=0
 REGISTRAR_PORT_BASE=22480
@@ -52,6 +53,7 @@ while [[ $# -gt 0 ]]; do
         --api-port)   API_PORT="$2"; shift 2 ;;
         --debug-rdma) DEBUG_RDMA=1; shift ;;
         --probe)      PROBE=1; shift ;;
+        --probe-vec)  PROBE=1; PROBE_VEC=1; shift ;;
         --skip-kill)  SKIP_KILL=1; shift ;;
         --skip-registrar) SKIP_REGISTRAR=1; shift ;;
         stop|start|ready|api|full|registrars) CMD="$1"; shift ;;
@@ -154,6 +156,11 @@ start_wave() {
         # lane/probe-fix) so the open deadline no longer expires while the
         # ladder-armed ranks are still coming up.
         [[ $PROBE -eq 1 ]] && env_prefix="${env_prefix}SPARK_GLM5_NEXT_PROBE=1 "
+        # --probe-vec implies --probe and arms the G5N-VEC full-vector dumps
+        # (glm5-attractor lane, layer-0 KDA stages + head, diag only); the
+        # pass cap is overridable (G5N_VEC_PASSES) - a 176-token prompt needs
+        # >= prompt_len+decode passes for the oracle's zero-state tracking.
+        [[ $PROBE_VEC -eq 1 ]] && env_prefix="${env_prefix}SPARK_GLM5_NEXT_PROBE_VEC=1 SPARK_GLM5_NEXT_PROBE_VEC_PASSES=${G5N_VEC_PASSES:-30} "
         ssh -o BatchMode=yes -o ConnectTimeout=10 "$h" \
             "cd '$rr' && mv residentd.log residentd.log.prev-\$(date +%s) 2>/dev/null || true; env $env_prefix LD_LIBRARY_PATH='$rr/lib' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $idx > residentd.log 2>&1 < /dev/null &" </dev/null &
         pids+=($!)
