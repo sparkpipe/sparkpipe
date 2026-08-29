@@ -105,7 +105,7 @@ int RunGeometry(uint32_t candidate_count)
 
 	error = cudaMalloc(&head_bf16, head_bytes);
 	if (error != cudaSuccess) { printf("alloc head failed\n"); return 1; }
-	error = cudaMalloc(&hidden_bf16, kHidden * 2u);
+	error = cudaMalloc(&hidden_bf16, kHidden * sizeof(uint16_t));
 	error = cudaMalloc(&fp8_payload, head_bytes);
 	error = cudaMalloc(&fp8_scale, groups * sizeof(float));
 	error = cudaMalloc(&fp8_norm, groups * sizeof(float));
