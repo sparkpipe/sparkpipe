@@ -56,6 +56,13 @@ typedef struct NvmeTierSlot
 	uint8_t referenced;            /* the clock's second-chance bit */
 	uint8_t queued;                /* sits in the pending queue */
 	uint8_t reserved0;
+	uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
+	/* B3 TIER INTEGRITY: SHA-256 of the payload this record stands for,
+	 * presented by the writer at ReserveWrite and demanded back by every
+	 * reader and every landing. The 64-bit content_hash buckets; THIS is
+	 * the identity. A digest that does not match is a collision or drive
+	 * corruption: fail loud (HASH_MISMATCH), quarantine the record, never
+	 * hand back wrong-KV. */
 }
 NvmeTierSlot;
 
@@ -221,6 +228,69 @@ static uint32_t NvmeTierLookup(
 		walk = slots[walk].next_in_bucket;
 	}
 	return(SPARK_NVME_TIER_NO_SLOT);
+}
+
+// B3 TIER INTEGRITY. The 64-bit content_hash is a bucket key, not an
+// identity: two tenants' blocks can collide on it, and serving either
+// caller the other's bytes is silent cross-tenant KV corruption. Every
+// record stores the SHA-256 its writer presented; every reader must present
+// the digest it expects and every restored buffer must match the record's
+// digest. Mismatch is SPARK_STATUS_HASH_MISMATCH - loud, never wrong-KV.
+static uint32_t NvmeTierDigestIsUsable(
+	const uint8_t *digest)
+{
+	uint32_t index;
+	if ( digest == 0 )
+		return(0u);
+	for ( index = 0u; index < SPARK_NVME_TIER_DIGEST_BYTES; ++index )
+		if ( digest[index] != 0u )
+			return(1u);
+	return(0u);
+}
+
+static uint32_t NvmeTierDigestMatches(
+	const uint8_t *stored,
+	const uint8_t *presented)
+{
+	return( memcmp(stored,presented,SPARK_NVME_TIER_DIGEST_BYTES) == 0 ?
+		1u : 0u );
+}
+
+// Resolve hash -> slot AND bind the presented digest to it when one is
+// given. Returns the slot index, or SPARK_NVME_TIER_NO_SLOT with a status
+// explaining: NOT_FOUND (absent), HASH_MISMATCH (collision or corruption -
+// never alias), OK. An unusable (NULL/zero) digest is KEY-ONLY bookkeeping
+// access: OffsetOf, Pin and the planning paths classify records they never
+// hand bytes from, so they may pass NULL. The data-carrying APIs
+// (ReserveWrite, RequestDemand, Consume) reject an unusable digest before
+// reaching here - bytes never move on a key-only match.
+static uint32_t NvmeTierLookupVerified(
+	const SparkNvmeTier *tier,
+	uint64_t content_hash,
+	const uint8_t *content_digest,
+	SparkStatus *status_out)
+{
+	uint32_t slot_index = NvmeTierLookup(tier,content_hash);
+	if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
+	{
+		if ( status_out != 0 )
+			*status_out = SPARK_STATUS_NOT_FOUND;
+		return(SPARK_NVME_TIER_NO_SLOT);
+	}
+	if ( NvmeTierDigestIsUsable(content_digest) != 0u )
+	{
+		const NvmeTierSlot *slots = (const NvmeTierSlot *)tier->slots;
+		if ( NvmeTierDigestMatches(slots[slot_index].digest,
+				content_digest) == 0u )
+		{
+			if ( status_out != 0 )
+				*status_out = SPARK_STATUS_HASH_MISMATCH;
+			return(SPARK_NVME_TIER_NO_SLOT);
+		}
+	}
+	if ( status_out != 0 )
+		*status_out = SPARK_STATUS_OK;
+	return(slot_index);
 }
 
 static void NvmeTierBucketInsert(SparkNvmeTier *tier, uint32_t slot_index)
@@ -514,6 +584,7 @@ static uint32_t NvmeTierClockEvict(SparkNvmeTier *tier)
 		slot->queued = 0u;
 		NvmeTierBucketRemove(tier,index);
 		slot->content_hash = 0u;
+		memset(slot->digest,0,sizeof(slot->digest));
 		slot->state = NVME_TIER_SLOT_EMPTY;
 		slot->generation++;
 		if ( slot->generation == 0u )
@@ -559,6 +630,7 @@ static void NvmeTierReleaseReservedSlot(
 	slots = (NvmeTierSlot *)tier->slots;
 	slot = &slots[slot_index];
 	slot->content_hash = 0u;
+	memset(slot->digest,0,sizeof(slot->digest));
 	slot->state = NVME_TIER_SLOT_EMPTY;
 	slot->generation++;
 	if ( slot->generation == 0u )
@@ -576,20 +648,32 @@ static void NvmeTierReleaseReservedSlot(
 SparkStatus SparkNvmeTierReserveWrite(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	SparkNvmeTierWriteReservation *reservation_out)
 {
 	NvmeTierSlot *slots;
 	uint32_t slot_index;
 	uint32_t index;
 
-	if ( tier == 0 || content_hash == 0u || reservation_out == 0 )
+	if ( tier == 0 || content_hash == 0u || reservation_out == 0 ||
+		NvmeTierDigestIsUsable(content_digest) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(reservation_out,0,sizeof(*reservation_out));
+	memcpy(reservation_out->content_digest,content_digest,
+		SPARK_NVME_TIER_DIGEST_BYTES);
 	slots = (NvmeTierSlot *)tier->slots;
 
 	slot_index = NvmeTierLookup(tier,content_hash);
 	if ( slot_index != SPARK_NVME_TIER_NO_SLOT )
 	{
+		/* B3: same 64-bit hash, DIFFERENT digest = collision. Fail loud;
+		 * treating it as already_present would alias two tenants' KV. */
+		if ( NvmeTierDigestMatches(slots[slot_index].digest,
+				content_digest) == 0u )
+		{
+			tier->statistics.digest_mismatches++;
+			return(SPARK_STATUS_HASH_MISMATCH);
+		}
 		slots[slot_index].last_use = tier->tick++;
 		slots[slot_index].referenced = 1u;
 		reservation_out->content_hash = content_hash;
@@ -605,7 +689,15 @@ SparkStatus SparkNvmeTierReserveWrite(
 	{
 		if ( slots[index].state == NVME_TIER_SLOT_WRITING
 			&& slots[index].content_hash == content_hash )
+		{
+			if ( NvmeTierDigestMatches(slots[index].digest,
+					content_digest) == 0u )
+			{
+				tier->statistics.digest_mismatches++;
+				return(SPARK_STATUS_HASH_MISMATCH);
+			}
 			return(SPARK_STATUS_BUSY);
+		}
 	}
 
 	slot_index = NvmeTierSlotAcquire(tier);
@@ -616,6 +708,8 @@ SparkStatus SparkNvmeTierReserveWrite(
 	if ( slots[slot_index].generation == 0u )
 		slots[slot_index].generation = 1u;
 	slots[slot_index].content_hash = content_hash;
+	memcpy(slots[slot_index].digest,content_digest,
+		SPARK_NVME_TIER_DIGEST_BYTES);
 	slots[slot_index].state = NVME_TIER_SLOT_WRITING;
 	slots[slot_index].last_use = tier->tick++;
 	slots[slot_index].referenced = 1u;
@@ -645,7 +739,8 @@ SparkStatus SparkNvmeTierCommitWrite(
 	NvmeTierSlot *slot;
 	uint32_t existing;
 
-	if ( tier == 0 || reservation == 0 || reservation->content_hash == 0u )
+	if ( tier == 0 || reservation == 0 || reservation->content_hash == 0u ||
+		NvmeTierDigestIsUsable(reservation->content_digest) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	slots = (NvmeTierSlot *)tier->slots;
 	if ( reservation->already_present != 0u )
@@ -663,6 +758,8 @@ SparkStatus SparkNvmeTierCommitWrite(
 	if ( slot->state != NVME_TIER_SLOT_WRITING
 		|| slot->content_hash != reservation->content_hash
 		|| slot->generation != reservation->generation
+		|| NvmeTierDigestMatches(slot->digest,
+			reservation->content_digest) == 0u
 		|| reservation->device_offset != tier->configuration.base_offset
 			+ (uint64_t)reservation->slot_index * tier->configuration.block_bytes )
 		return(SPARK_STATUS_VALIDATION_FAILED);
@@ -700,14 +797,17 @@ SparkStatus SparkNvmeTierAbortWrite(
 SparkStatus SparkNvmeTierOffsetOf(
 	const SparkNvmeTier *tier,
 	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	uint64_t *device_offset_out)
 {
 	uint32_t slot_index;
+	SparkStatus status;
 	if ( tier == 0 || device_offset_out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	slot_index = NvmeTierLookup(tier,content_hash);
+	slot_index = NvmeTierLookupVerified(tier,content_hash,content_digest,
+		&status);
 	if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
-		return(SPARK_STATUS_NOT_FOUND);
+		return(status);
 	*device_offset_out = tier->configuration.base_offset
 		+ (uint64_t)slot_index * tier->configuration.block_bytes;
 	return(SPARK_STATUS_OK);
@@ -876,8 +976,17 @@ SparkStatus SparkNvmeTierPlanLookahead(
 	{
 		uint64_t hash = needs[index].content_hash;
 		uint32_t need_by = needs[index].need_by_step;
-		uint32_t slot_index = NvmeTierLookup(tier,hash);
+		SparkStatus lookup_status;
+		uint32_t slot_index = NvmeTierLookupVerified(tier,hash,
+			needs[index].content_digest,&lookup_status);
 		NvmeTierSlot *slot;
+		if ( slot_index == SPARK_NVME_TIER_NO_SLOT &&
+			lookup_status == SPARK_STATUS_HASH_MISMATCH )
+		{
+			// The hash resolves but the digest contradicts it: admitting
+			// against this record would serve the wrong tenant's KV.
+			return(SPARK_STATUS_HASH_MISMATCH);
+		}
 		if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
 		{
 			// Not on the drive. Admission must see this: planning around an
@@ -1103,17 +1212,31 @@ static SparkStatus NvmeTierIssueRead(
 SparkStatus SparkNvmeTierRequestDemand(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	uint32_t step_now,
 	SparkNvmeTierDemandResult *result_out)
 {
 	NvmeTierSlot *slots;
 	uint32_t slot_index;
 	NvmeTierSlot *slot;
-	if ( tier == 0 || result_out == 0 || content_hash == 0u )
+	SparkStatus status;
+	if ( tier == 0 || result_out == 0 || content_hash == 0u ||
+		NvmeTierDigestIsUsable(content_digest) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(result_out,0,sizeof(*result_out));
 	slots = (NvmeTierSlot *)tier->slots;
-	slot_index = NvmeTierLookup(tier,content_hash);
+	slot_index = NvmeTierLookupVerified(tier,content_hash,content_digest,
+		&status);
+	if ( slot_index == SPARK_NVME_TIER_NO_SLOT &&
+		status == SPARK_STATUS_HASH_MISMATCH )
+	{
+		// A hash collision against a committed record: the caller would be
+		// handed another tenant's bytes. MISS would silently recompute from
+		// the wrong sequence's tokens; this fails loud instead.
+		tier->statistics.digest_mismatches++;
+		result_out->state = SPARK_NVME_TIER_DEMAND_MISS;
+		return(SPARK_STATUS_HASH_MISMATCH);
+	}
 	if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
 	{
 		// The genuine miss, and the only one: the bytes are not on this tier
@@ -1184,6 +1307,60 @@ SparkStatus SparkNvmeTierRequestDemand(
 	return(SPARK_STATUS_OK);
 }
 
+// A record whose bytes failed their digest is gone, not served: drop it
+// from the index, recycle the slot, and let the caller's recompute path
+// rebuild the block. Quarantine keeps a corrupt on-drive record from being
+// re-read forever while keeping the failure LOUD (Pump answers
+// HASH_MISMATCH for the call that found it).
+static void NvmeTierQuarantineSlot(SparkNvmeTier *tier, uint32_t slot_index)
+{
+	NvmeTierSlot *slots = (NvmeTierSlot *)tier->slots;
+	NvmeTierSlot *slot = &slots[slot_index];
+	slot->queued = 0u;
+	NvmeTierBucketRemove(tier,slot_index);
+	slot->content_hash = 0u;
+	memset(slot->digest,0,sizeof(slot->digest));
+	slot->state = NVME_TIER_SLOT_EMPTY;
+	slot->generation++;
+	if ( slot->generation == 0u )
+		slot->generation = 1u;
+	slot->pin_count = 0u;
+	slot->need_by_step = 0xffffffffu;
+	slot->staging_index = SPARK_NVME_TIER_NO_SLOT;
+	slot->next_free = tier->free_head;
+	tier->free_head = slot_index;
+	if ( tier->slots_in_use != 0u )
+		tier->slots_in_use--;
+	tier->statistics.slots_in_use = tier->slots_in_use;
+}
+
+// Verify a landed staging buffer against its record's digest. The buffer
+// becomes READY only on a match; a mismatch quarantines the record and
+// answers HASH_MISMATCH - restored bytes are verified-correct or never
+// handed to a caller.
+static SparkStatus NvmeTierVerifyLanding(
+	SparkNvmeTier *tier,
+	uint32_t slot_index,
+	uint32_t staging_index)
+{
+	SparkSha256Context context;
+	uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
+	NvmeTierSlot *slots = (NvmeTierSlot *)tier->slots;
+	SparkSha256Initialize(&context);
+	SparkSha256Update(&context,
+		tier->staging + (uint64_t)staging_index *
+			tier->configuration.block_bytes,
+		tier->configuration.block_bytes);
+	SparkSha256Finalize(&context,digest);
+	tier->statistics.digest_verifications++;
+	if ( NvmeTierDigestMatches(slots[slot_index].digest,digest) == 0u )
+	{
+		tier->statistics.digest_mismatches++;
+		return(SPARK_STATUS_HASH_MISMATCH);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 {
 	NvmeTierSlot *slots;
@@ -1244,6 +1421,17 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 			NvmeTierStagingRelease(tier,index);
 			continue;
 		}
+		/* B3: the bytes just landed are checked against the record's
+		 * digest BEFORE they become readable. On mismatch the record is
+		 * quarantined (the next demand is a MISS -> recompute) and the
+		 * failure is loud. */
+		if ( NvmeTierVerifyLanding(tier,slot_index,index) !=
+			SPARK_STATUS_OK )
+		{
+			NvmeTierStagingRelease(tier,index);
+			NvmeTierQuarantineSlot(tier,slot_index);
+			return(SPARK_STATUS_HASH_MISMATCH);
+		}
 		held->state = NVME_TIER_STAGING_READY;
 		slots[slot_index].state = NVME_TIER_SLOT_READY;
 		if ( held->holder == NVME_TIER_HOLDER_PREFETCH )
@@ -1294,16 +1482,26 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkNvmeTierConsume(SparkNvmeTier *tier, uint64_t content_hash)
+SparkStatus SparkNvmeTierConsume(
+	SparkNvmeTier *tier,
+	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES])
 {
 	NvmeTierSlot *slots;
 	uint32_t slot_index;
-	if ( tier == 0 || content_hash == 0u )
+	SparkStatus status;
+	if ( tier == 0 || content_hash == 0u ||
+		NvmeTierDigestIsUsable(content_digest) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	slots = (NvmeTierSlot *)tier->slots;
-	slot_index = NvmeTierLookup(tier,content_hash);
+	slot_index = NvmeTierLookupVerified(tier,content_hash,content_digest,
+		&status);
 	if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
-		return(SPARK_STATUS_NOT_FOUND);
+	{
+		if ( status == SPARK_STATUS_HASH_MISMATCH )
+			tier->statistics.digest_mismatches++;
+		return(status);
+	}
 	if ( slots[slot_index].state != NVME_TIER_SLOT_READY )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	slots[slot_index].last_use = tier->tick++;
@@ -1317,16 +1515,23 @@ SparkStatus SparkNvmeTierConsume(SparkNvmeTier *tier, uint64_t content_hash)
 SparkStatus SparkNvmeTierPin(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	int32_t pin)
 {
 	uint32_t slot_index;
 	NvmeTierSlot *slots;
+	SparkStatus status;
 	if ( tier == 0 || content_hash == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	slots = (NvmeTierSlot *)tier->slots;
-	slot_index = NvmeTierLookup(tier,content_hash);
+	slot_index = NvmeTierLookupVerified(tier,content_hash,content_digest,
+		&status);
 	if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
-		return(SPARK_STATUS_NOT_FOUND);
+	{
+		if ( status == SPARK_STATUS_HASH_MISMATCH )
+			tier->statistics.digest_mismatches++;
+		return(status);
+	}
 	if ( pin )
 		slots[slot_index].pin_count++;
 	else if ( slots[slot_index].pin_count != 0u )
@@ -1336,24 +1541,30 @@ SparkStatus SparkNvmeTierPin(
 
 SparkStatus SparkNvmeTierWillBeResidentBy(
 	const SparkNvmeTier *tier,
-	const uint64_t *content_hashes,
-	uint32_t hash_count,
+	const SparkNvmeTierNeed *needs,
+	uint32_t need_count,
 	uint32_t step_now,
 	uint32_t step_deadline,
 	SparkNvmeTierResidencyAssessment *assessment_out)
 {
 	const NvmeTierSlot *slots;
 	uint32_t index,confident;
-	if ( tier == 0 || ( content_hashes == 0 && hash_count != 0u )
+	if ( tier == 0 || ( needs == 0 && need_count != 0u )
 		|| assessment_out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(assessment_out,0,sizeof(*assessment_out));
 	slots = (const NvmeTierSlot *)tier->slots;
-	for ( index = 0u; index < hash_count; ++index )
+	for ( index = 0u; index < need_count; ++index )
 	{
-		uint32_t slot_index = NvmeTierLookup(tier,content_hashes[index]);
+		SparkStatus lookup_status;
+		uint32_t slot_index = NvmeTierLookupVerified(tier,
+			needs[index].content_hash,needs[index].content_digest,
+			&lookup_status);
 		const NvmeTierSlot *slot;
 		uint64_t eta_steps;
+		if ( slot_index == SPARK_NVME_TIER_NO_SLOT &&
+			lookup_status == SPARK_STATUS_HASH_MISMATCH )
+			return(SPARK_STATUS_HASH_MISMATCH);
 		if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
 		{
 			assessment_out->absent_count++;

@@ -41,6 +41,28 @@ typedef struct SparkKvBackingConfiguration
 	uint32_t reserved;
 } SparkKvBackingConfiguration;
 
+/*
+ * B4 BACKING-STORE HYGIENE (docs/JIT_KV_RESPONSE.md): slot files hold
+ * tenant KV at rest. Open creates mode 0600 and - because earlier builds
+ * created 0644 files - fchmods EVERY open to 0600 (permission migration);
+ * the open is O_NOFOLLOW so a symlink planted at the path is refused, not
+ * followed. New deployments must not drop files at shared predictable
+ * /tmp names: build per-deployment/per-tenant paths instead.
+ */
+
+/* Compose "<root>/<deployment>/<tenant>/<model>.slots". Components must be
+ * non-empty and limited to [A-Za-z0-9_.-] with no leading dot, so a tenant
+ * or deployment id can never traverse out of its namespace. Does not touch
+ * the filesystem. */
+SparkStatus SparkKvBackingResolvePath(char *path_out, size_t path_out_bytes,
+	const char *root_directory, const char *deployment_id,
+	const char *tenant_id, const char *model_id);
+
+/* Create the namespace directories for ResolvePath's layout, all mode
+ * 0700 (existing directories are tightened to 0700 as well). */
+SparkStatus SparkKvBackingCreateNamespaces(const char *root_directory,
+	const char *deployment_id, const char *tenant_id);
+
 SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
 	SparkKvBacking *backing);
 void SparkKvBackingClose(SparkKvBacking *backing);

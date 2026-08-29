@@ -33,6 +33,20 @@ Ledger (exact counts, newest last):
   75. The named P1 decomposition plan (qwen38_27b
   SubmitSpeculativeDecode 73, glm5_next InitializeTpCollective 70)
   continues from here — the next landing moves this number DOWN again.
+- 2026-08-29 jit-safety lane: production mean 7.81 -> 7.84 over the
+  same 2948-function scope; max unchanged at 75. The mean moves only
+  because the four named safety hazards each add irreducible decision
+  points to exactly the functions that own them: SparkKvCacheArenaEvict
+  ResidentBlock branches IO-class vs loud write-back failures (the B1
+  degrade-not-wedge contract; splitting the branch into a helper moves
+  the decision, not removes it), SparkNvmeTierReserveWrite/Pump verify
+  presented and landed SHA-256 digests (B3 collision/corruption fail-
+  loud; the checks ARE the feature), SparkKvBackingResolvePath rejects
+  path traversal per component (B4), and the glm5_next KV init fence
+  (B2) is one guard on one identity. Every added branch returns a
+  status; none nests. Receipts in
+  docs/AGENT_LANE_BRIEFS/reports/jit-safety-2026-08-29.md. Mean
+  ceiling commits to 7.84.
 """
 import pathlib
 import sys
@@ -46,7 +60,7 @@ CEILING = 75
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
-MEAN_CEILING_X100 = 781
+MEAN_CEILING_X100 = 784
 
 # The validation harnesses (control-vs-candidate CUDA units, never merged
 # into production) carry their OWN budget. It does not gate the production

@@ -3,12 +3,15 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #define SPARK_KV_BACKING_TAG "kv_backing"
+#define SPARK_KV_BACKING_FILE_MODE 0600
+#define SPARK_KV_BACKING_DIRECTORY_MODE 0700
 
 typedef struct SparkKvBackingHeader
 {
@@ -34,6 +37,103 @@ static SparkStatus spark_kv_backing_write_header(SparkKvBacking *backing)
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkKvBackingResolvePath(char *path_out, size_t path_out_bytes,
+	const char *root_directory, const char *deployment_id,
+	const char *tenant_id, const char *model_id)
+{
+	size_t used;
+	int written;
+	static const char allowed[] =
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-";
+	if ( path_out == 0 || path_out_bytes == 0 || root_directory == 0 ||
+		root_directory[0] == '\0' || deployment_id == 0 || tenant_id == 0 ||
+		model_id == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	used = 0u;
+	{
+		const char *components[3];
+		uint32_t index;
+		components[0] = deployment_id;
+		components[1] = tenant_id;
+		components[2] = model_id;
+		used = (size_t)snprintf(path_out,path_out_bytes,"%s/",
+			root_directory);
+		if ( used >= path_out_bytes )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		for ( index = 0u; index < 3u; index++ )
+		{
+			const char *component = components[index];
+			uint32_t position;
+			if ( component[0] == '\0' )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			/* Path-traversal and separator hygiene: a namespaced KV
+			 * store must never escape its deployment/tenant prefix. */
+			for ( position = 0u; component[position] != '\0'; position++ )
+			{
+				if ( component[position] == '/' ||
+					component[position] == '\\' )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+				if ( position == 0u && component[position] == '.' )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+				if ( (size_t)(unsigned char)component[position] >= 128u )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+				if ( strchr(allowed,component[position]) == 0 )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+			}
+			written = snprintf(path_out + used,path_out_bytes - used,
+				"%s%s",component,index < 2u ? "/" : "");
+			if ( written < 0 || (size_t)written >= path_out_bytes - used )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			used += (size_t)written;
+		}
+		written = snprintf(path_out + used,path_out_bytes - used,".slots");
+		if ( written < 0 || (size_t)written >= path_out_bytes - used )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvBackingCreateNamespaces(const char *root_directory,
+	const char *deployment_id, const char *tenant_id)
+{
+	char path[1024];
+	size_t root_length;
+	if ( root_directory == 0 || root_directory[0] == '\0' ||
+		deployment_id == 0 || deployment_id[0] == '\0' ||
+		tenant_id == 0 || tenant_id[0] == '\0' )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	/* Every directory on the path is owner-only: a world-traversable
+	 * prefix would let other local tenants stat and brute-force names.
+	 * Pre-existing directories are TIGHTENED to 0700, the same migration
+	 * rule the slot file itself gets on open. */
+	if ( mkdir(root_directory,SPARK_KV_BACKING_DIRECTORY_MODE) != 0 )
+	{
+		if ( errno != EEXIST )
+			return(SPARK_STATUS_IO_ERROR);
+		(void)chmod(root_directory,SPARK_KV_BACKING_DIRECTORY_MODE);
+	}
+	root_length = (size_t)snprintf(path,sizeof(path),"%s/%s",
+		root_directory,deployment_id);
+	if ( root_length >= sizeof(path) )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( mkdir(path,SPARK_KV_BACKING_DIRECTORY_MODE) != 0 )
+	{
+		if ( errno != EEXIST )
+			return(SPARK_STATUS_IO_ERROR);
+		(void)chmod(path,SPARK_KV_BACKING_DIRECTORY_MODE);
+	}
+	if ( snprintf(path,sizeof(path),"%s/%s/%s",root_directory,
+			deployment_id,tenant_id) >= (int)sizeof(path) )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( mkdir(path,SPARK_KV_BACKING_DIRECTORY_MODE) != 0 )
+	{
+		if ( errno != EEXIST )
+			return(SPARK_STATUS_IO_ERROR);
+		(void)chmod(path,SPARK_KV_BACKING_DIRECTORY_MODE);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
 	SparkKvBacking *backing)
 {
@@ -53,9 +153,24 @@ SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
 	if ( backing->slot_count == 0u || backing->slot_count >
 		SPARK_KV_BACKING_MAX_SLOT_COUNT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	descriptor = open(configuration->path,O_RDWR | O_CREAT,0644);
+	/* B4 BACKING-STORE HYGIENE (docs/JIT_KV_RESPONSE.md): tenant KV at
+	 * rest is tenant-readable ONLY. Mode 0600 at creation, O_NOFOLLOW
+	 * against a symlink swap, and - because files created by earlier
+	 * builds were 0644 - fchmod on EVERY open migrates existing files'
+	 * permissions to 0600. */
+	descriptor = open(configuration->path,
+		O_RDWR | O_CREAT | O_NOFOLLOW
+#ifdef O_CLOEXEC
+		| O_CLOEXEC
+#endif
+		,SPARK_KV_BACKING_FILE_MODE);
 	if ( descriptor < 0 )
 		return(SPARK_STATUS_IO_ERROR);
+	if ( fchmod(descriptor,SPARK_KV_BACKING_FILE_MODE) != 0 )
+	{
+		close(descriptor);
+		return(SPARK_STATUS_IO_ERROR);
+	}
 	/* Advisory read-ahead hint only; POSIX_FADV_RANDOM does not exist on
 	 * Darwin, so the hint is skipped there (no behavior change on Linux). */
 #ifdef POSIX_FADV_RANDOM

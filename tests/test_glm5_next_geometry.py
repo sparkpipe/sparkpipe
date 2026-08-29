@@ -284,6 +284,55 @@ def main() -> int:
     check("nope indexer delta recorded",
           any("NoPE" in d for d in deltas))
 
+    # ---- 4. JIT-KV machinery geometry (B2, docs/JIT_KV_RESPONSE.md):
+    #         the cache machinery's block must be the DSA layer count of
+    #         the stage, sized in slot geometry - never the stage's whole
+    #         weight-layer count. The kda-lane's 64.96 GB double-multiplied
+    #         stride is the regression class; the module's init fence is
+    #         the runtime enforcement, these checks are the host gate.
+    module_path = ROOT / ("modules/glm5_next_resident_decode_stage/source/"
+                          "spark_glm5_next_resident_decode_stage_module.c")
+    module_source = module_path.read_text()
+
+    slot_bytes = eval_dim(macros, macros["SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES"])
+    block_tokens = 64  # SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT (kv_geometry.h)
+    dsa_layers = len(contract["hybrid_attention"]["dsa_layers"])
+    arena_head_dim = eval_dim(
+        macros, macros["SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION"])
+    # arena-geometry block bytes: tokens * layers * 1 head * dim * bf16
+    arena_block_bytes = block_tokens * dsa_layers * 1 * arena_head_dim * 2
+    # slot-geometry pool identity: tokens * slot bytes * DSA layers per page
+    slot_block_bytes = block_tokens * slot_bytes * dsa_layers
+    check("arena-geometry block bytes == slot-geometry block bytes "
+          "(DSA layer count)", arena_block_bytes == slot_block_bytes)
+    check("machinery block (11 DSA layers) is not the whole-stage block",
+          arena_block_bytes != block_tokens * 45 * slot_bytes)
+    # every DSA layer of the whole model must be counted by the pool
+    check("pool total identity: page_count * block_bytes == "
+          "kv_layer_stride_bytes * kv_layer_count holds symbolically",
+          arena_block_bytes % block_tokens == 0
+          and (arena_block_bytes // block_tokens) == slot_bytes * dsa_layers)
+
+    # the module must size the machinery from the per-stage DSA ordinals
+    check("module sets arena layer_count from state->kv_layer_count",
+          "table.arena_configuration.layer_count = state->kv_layer_count;"
+          in module_source)
+    check("module does not size the arena by state->layer_count",
+          "table.arena_configuration.layer_count = state->layer_count;"
+          not in module_source)
+    check("module computes block_bytes from state->kv_layer_count",
+          "(uint64_t)state->kv_layer_count * SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM"
+          in module_source)
+    check("module fences arena stride against the allocated pool",
+          "state->kv_arena.key_block_stride_bytes != block_bytes"
+          in module_source
+          and "SPARK_STATUS_INTERNAL_ERROR" in module_source)
+    check("module refuses a DSA-free stage at KV init",
+          "if ( state->kv_layer_count == 0u )" in module_source)
+    check("module keeps slot/arena per-layer bytes equal at compile time",
+          "glm5_next KV slot bytes and arena block geometry disagree"
+          in module_source)
+
     print()
     if failures:
         print(f"{len(failures)} FAILED")

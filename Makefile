@@ -840,13 +840,13 @@ build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
 # The tier and its mock device, compiled together directly: the test's device
 # is a vtable implementation, so there is no library boundary to cross and no
 # archive to link for two translation units.
-build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c include/sparkpipe/spark_nvme_tier.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c $(LDFLAGS) $(LDLIBS) -o $@
+build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_nvme_tier.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
 # The switch machine sits on the same mock-drive tier: two translation units,
 # vtable devices, compiled directly like the tier test above.
-build/test_topology_switch: tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c include/sparkpipe/spark_topology_switch.h include/sparkpipe/spark_nvme_tier.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c $(LDFLAGS) $(LDLIBS) -o $@
+build/test_topology_switch: tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_topology_switch.h include/sparkpipe/spark_nvme_tier.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_kv_mooncake: tests/test_kv_mooncake.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@

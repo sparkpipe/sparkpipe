@@ -38,13 +38,15 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_NVME_TIER_ABI_VERSION 2u
+#define SPARK_NVME_TIER_ABI_VERSION 3u
+#define SPARK_NVME_TIER_DIGEST_BYTES SPARK_SHA256_DIGEST_BYTES
 #define SPARK_NVME_TIER_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkNvmeTierConfiguration))
 #define SPARK_NVME_TIER_DEFAULT_BUDGET_BYTES (1099511627776ULL)  /* 1 TB */
@@ -78,11 +80,20 @@ extern "C" {
 // What the scheduler knows about a near-future need. need_by_step is the
 // decode step at which the first layer reads this block; the planner works
 // backwards from it.
+//
+// B3 TIER INTEGRITY (docs/JIT_KV_RESPONSE.md): content_hash alone is the
+// SAME chained 64-bit hash cache/cache.h uses - a bucket key, never an
+// identity. Two tenants' blocks can collide on it, and aliasing them is
+// silent cross-tenant KV corruption. content_digest is the SHA-256 of the
+// block payload (the prefix-cache content-digest precedent): every call
+// that resolves a hash carries it, every slot stores it, and a mismatch is
+// SPARK_STATUS_HASH_MISMATCH - fail loud, never wrong-KV.
 typedef struct SparkNvmeTierNeed
 {
 	uint64_t content_hash;         /* the same chained hash cache/cache.h uses */
 	uint32_t need_by_step;
 	uint32_t reserved0;
+	uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES];
 }
 SparkNvmeTierNeed;
 
@@ -161,6 +172,7 @@ typedef struct SparkNvmeTierWriteReservation
 	uint32_t generation;
 	uint32_t already_present;
 	uint32_t reserved0;
+	uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES];
 }
 SparkNvmeTierWriteReservation;
 
@@ -228,6 +240,9 @@ typedef struct SparkNvmeTierStatistics
 	                                  report per generated token */
 	uint64_t slot_count;           /* budget-derived capacity, for the report */
 	uint64_t slots_in_use;
+	uint64_t digest_verifications; /* restore landings whose SHA-256 matched */
+	uint64_t digest_mismatches;    /* restored bytes that failed their digest:
+	                                  quarantined, never served */
 }
 SparkNvmeTierStatistics;
 
@@ -270,13 +285,18 @@ SparkStatus SparkNvmeTierInitialize(
 	void *staging,
 	uint64_t staging_bytes);
 
-// Reserve a device slot for a write-back. A reservation is not visible to
-// readers and is never returned by OffsetOf or RequestDemand. The caller owns
-// the reservation until CommitWrite or AbortWrite. If the hash is already
-// committed, already_present is set and no new slot is allocated.
+// Reserve a device slot for a write-back. content_digest is the SHA-256 of
+// the payload the caller is about to write at the returned offset; a
+// reservation is not visible to readers and is never returned by OffsetOf
+// or RequestDemand. The caller owns the reservation until CommitWrite or
+// AbortWrite. If the hash is already committed, the digest decides:
+// matching bytes return the committed record (already_present set), and a
+// DIFFERENT digest under the same 64-bit hash is a collision -
+// SPARK_STATUS_HASH_MISMATCH, never a silent alias.
 SparkStatus SparkNvmeTierReserveWrite(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	SparkNvmeTierWriteReservation *reservation_out);
 
 // Publish the reserved record only after the asynchronous or synchronous
@@ -293,9 +313,11 @@ SparkStatus SparkNvmeTierAbortWrite(
 	const SparkNvmeTierWriteReservation *reservation);
 
 // Where a committed block's bytes are, for diagnostics and read planning.
+// HASH_MISMATCH if the digest does not match the record the hash finds.
 SparkStatus SparkNvmeTierOffsetOf(
 	const SparkNvmeTier *tier,
 	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	uint64_t *device_offset_out);
 
 // The lookahead planner. For each need: already upstairs or moving - tighten
@@ -323,22 +345,30 @@ SparkStatus SparkNvmeTierPlanLookahead(
 
 // The decode-path question. Never blocks, never allocates a slot, never
 // evicts. A miss is counted and handed back as a state; the caller's recompute
-// fallback is its own business.
+// fallback is its own business. content_digest is the caller's expected
+// SHA-256: a hash that resolves to a record with a different digest is a
+// collision and answers HASH_MISMATCH, never another tenant's bytes.
 SparkStatus SparkNvmeTierRequestDemand(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	uint32_t step_now,
 	SparkNvmeTierDemandResult *result_out);
 
 // The between-steps driver: poll in-flight reads, promote landed buffers to
 // READY (checking the slot generation, because an evicted slot's late read is
 // waste, not data), then issue queued prefetches into whatever staging the
-// demand reserve leaves free, earliest deadline first.
+// demand reserve leaves free, earliest deadline first. Every landing is
+// verified against the record's digest before it becomes READY or a demand
+// pointer; verified-correct or quarantined, never handed through on faith.
 SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now);
 
 // The upper tier has copied the READY staging buffer out; release it. The
 // on-drive copy stays: eviction is what reclaims records, not consumption.
-SparkStatus SparkNvmeTierConsume(SparkNvmeTier *tier, uint64_t content_hash);
+SparkStatus SparkNvmeTierConsume(
+	SparkNvmeTier *tier,
+	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES]);
 
 // A pinned block is invisible to the eviction clock and to demand preemption
 // of its staging. This is what an admission lookahead buys: the scheduler
@@ -348,13 +378,16 @@ SparkStatus SparkNvmeTierConsume(SparkNvmeTier *tier, uint64_t content_hash);
 SparkStatus SparkNvmeTierPin(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
 	int32_t pin);
 
 // The admission interface: "will these blocks be resident by step_deadline?"
+// Each need carries its own digest; a digest that contradicts the record its
+// hash finds answers HASH_MISMATCH for the whole call.
 SparkStatus SparkNvmeTierWillBeResidentBy(
 	const SparkNvmeTier *tier,
-	const uint64_t *content_hashes,
-	uint32_t hash_count,
+	const SparkNvmeTierNeed *needs,
+	uint32_t need_count,
 	uint32_t step_now,
 	uint32_t step_deadline,
 	SparkNvmeTierResidencyAssessment *assessment_out);
