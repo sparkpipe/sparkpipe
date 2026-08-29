@@ -905,7 +905,10 @@ from pathlib import Path
 # 3res respawn (2a6342a lineage): the fetch-resume tool, bf16 native
 # packer arm (codec 1 + tests), indexer-split freeze assert, the two
 # placement-bug fixes, fp8 pilot receipts. 218621 exact.
-CEILING = 218621
+# glm5-closeout (PR746): pack verifier+orchestrator+swap/wave tools,
+# the provenance header patch (the hard deploy gate), COMPSEC/M5
+# harnesses, LAUNCH-STATE updates. 219673 exact.
+CEILING = 219673
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
