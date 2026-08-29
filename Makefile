@@ -240,8 +240,9 @@ TEST_NAMES := \
     test_kv_mooncake \
     test_qwen38_27b_work_control \
     test_qwen38_work_control \
-    test_dsv4_cache_plan \
+	test_dsv4_cache_plan \
 	test_dsv4_parallel_shape \
+	test_continuous_batch \
     test_dspark_drafter_pin \
     test_dsv4_pro_dspark_drafter_pin \
     test_gemm_tile_k_fallback \
@@ -640,8 +641,8 @@ build/sparkpipe_release_manager: deployment/tools/sparkpipe_release_manager.c $(
 build/sparkpipe_model_residentd: node/model_residentd.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_residentd.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-build/sparkpipe_model_batch: node/model_batch.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_batch.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/sparkpipe_model_batch: node/model_batch.c scheduler/continuous_batch.c include/sparkpipe/spark_continuous_batch.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_batch.c scheduler/continuous_batch.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/spark_kv_backing_test: tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY)
 	$(CC) $(CFLAGS) -Iinclude tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -903,6 +904,11 @@ build/test_jit_kv_c5w2: tests/test_jit_kv_c5w2.c cache/kv_pager.c cache/kv_cache
 # vtable devices, compiled directly like the tier test above.
 build/test_topology_switch: tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_topology_switch.h include/sparkpipe/spark_nvme_tier.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
+
+# The continuous-batching step-boundary contract: the admission controller
+# and its host proofs, engine-neutral (two translation units, no engine).
+build/test_continuous_batch: tests/test_continuous_batch.c scheduler/continuous_batch.c include/sparkpipe/spark_continuous_batch.h include/sparkpipe/spark_status.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_continuous_batch.c scheduler/continuous_batch.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_kv_mooncake: tests/test_kv_mooncake.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@

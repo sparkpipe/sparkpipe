@@ -1183,7 +1183,24 @@ CEILING = 228248
 # red-gate reactor pin in test_model_serving_architecture.py moves to
 # the new invariant (tests/ excluded by construction), as are the new
 # oracle test and the fixture's hold-completion mode. 230029 exact.
-CEILING = 999999
+# The contbatch2 lane (2026-08-29) lands Phase 4's serving-completion unit:
+# continuous batching's step-boundary admission contract as an engine-
+# neutral control plane. scheduler/continuous_batch.c + its header carry
+# the boundary admission controller - the C1 exact-per-lane-demand
+# arithmetic against the deployment's max_input_rows, the named-refusal
+# discipline mirrored from the kv_pager (queued_rows/queued_lanes/
+# oversize/queue_full/ahead, backpressure = queue, never a wedge), the
+# reclaim-at-next-boundary lane table, and the boundary scheduler policy
+# (smallest-first, oldest-aged-first starvation escape with the
+# reservation leg) (+826). node/model_batch.c gains the default-off
+# SPARK_MODEL_BATCH_CONTINUOUS seam: offers the file through the
+# controller, submits at boundary releases, retires on the engine's
+# terminal events, closes admission on the last submit (+187). Makefile
+# registers test_continuous_batch (+6). The host proofs
+# (tests/test_continuous_batch.c: bit-exact resident streams under
+# mid-flight joins, queue-not-wedge, slot reclaim, policy/reservation,
+# the per-step row law) are excluded by construction. 230769 exact.
+CEILING = 231107
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
