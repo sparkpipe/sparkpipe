@@ -191,6 +191,14 @@ def main() -> int:
     parser.add_argument("--warm-root", default="/mnt/model-warm")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--verify-workers", type=int, default=6)
+    parser.add_argument("--match", default=None,
+                        help="only fetch files whose relative path matches "
+                             "this regex (multi-node partitioning of one "
+                             "staging dir around impaired WAN routes; the "
+                             "last instance to finish runs the full "
+                             "verify+promote)")
+    parser.add_argument("--skip-match", default=None,
+                        help="inverse of --match")
     args = parser.parse_args()
 
     warm_root = Path(args.warm_root)
@@ -220,6 +228,13 @@ def main() -> int:
         raise RuntimeError(f"staging dir does not exist: {stage}")
 
     revision_sha, expected = hub_manifest(args.repo, args.revision)
+    if args.match or args.skip_match:
+        import re
+        include = re.compile(args.match) if args.match else None
+        exclude = re.compile(args.skip_match) if args.skip_match else None
+        expected = [item for item in expected
+                    if (include is None or include.search(item["path"]))
+                    and (exclude is None or not exclude.search(item["path"]))]
     total_bytes = sum(item["expected_bytes"] for item in expected)
     started = utc_now()
     atomic_json(
