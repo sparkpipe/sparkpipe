@@ -1948,3 +1948,22 @@ appendix).
 - Contract re-freeze re-armed DETACHED with the promoted fp8 path (the
   tool takes --fp8-path/--bf16-path staging-or-promoted; the report's
   default-args command predates the promote).
+
+## 2026-08-29 ~18:0x — d644c81: probe-fix merged (o_proj root cause); attractor hunt spawned
+
+- MERGED lane/probe-fix (f495300): the o_proj col-shard fix is THE
+  cold-first-request root cause (packer row-sharded a down-projection
+  the GEMM consumes col-sharded — silently transposed on every rank,
+  TP1-invariant, invisible to M3). 16 packs rebuilt+swapped with slice
+  proof. Verdicts: conv-window INNOCENT, collective INNOCENT
+  (bit-identical cross-rank checksums). RESIDUAL: rank-invariant
+  repeat attractor — the defect is shared math; gates stay blocked on
+  coherence (correct). Lane's sha256 aarch64 fix was byte-identical to
+  r2-prefill's merged fix. Ratchet 226696 exact; offline-gates clean.
+- Respawned as glm5-attractor: the report's ordered suspects (KDA
+  decay/norm-order -> MoE noaux_tc routing -> DSA indexer/rope) with
+  the layer-slice ladder + independent-host-math method (the
+  oracle-mirrors-module trap named explicitly), then fix -> curl ->
+  COMPSEC-17 -> 92x -> M5.
+- Fleet: UP 16/16 on fixed2 packs + diag driver; lane holds rolling
+  reservations.
