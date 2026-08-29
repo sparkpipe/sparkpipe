@@ -6,9 +6,12 @@
  * real <cuda.h> from CUDA_HOME instead. Only the cuMem* virtual-memory-
  * management family the weightd daemon uses is declared - the names and
  * enum values mirror the real driver API so the same source compiles
- * against both. The POSIX shareable-handle type is the fd export the W2b
- * design stages for the consumer import+map tier; the stub declares it
- * alongside the rest so the surface is complete. */
+ * against both. The POSIX shareable-handle pair (cuMemExportToShareable-
+ * Handle / cuMemImportFromShareableHandle over
+ * CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) is the W3 fd tier: the stub
+ * models an exported chunk as an ANONYMOUS owner-only (0600) regular file
+ * whose fd crosses processes by SCM_RIGHTS only - never by path - so the
+ * host tests exercise the exact fd-passing mechanics the GPU tier uses. */
 
 #include <stddef.h>
 
@@ -86,6 +89,13 @@ typedef struct CUmemAccessDesc_st
 CUresult cuMemGetAllocationGranularity(size_t *granularity,
     const CUmemAllocationProp *prop,
     CUmemAllocationGranularity_flags option);
+CUresult cuMemExportToShareableHandle(void *shareable_handle,
+    CUmemGenericAllocationHandle handle,
+    CUmemAllocationHandleType handle_type,
+    unsigned long long flags);
+CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
+    void *shareable_handle,
+    CUmemAllocationHandleType handle_type);
 CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
     size_t bytes,
     const CUmemAllocationProp *prop,

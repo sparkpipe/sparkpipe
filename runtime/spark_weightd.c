@@ -92,6 +92,13 @@ typedef struct SparkWeightdConnection
     uint8_t response[SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX];
     uint32_t response_bytes;
     uint32_t response_written;
+    /* W3 fd tier: the EXPORT_RESULT reply leaves with the chunk fds in its
+     * SCM_RIGHTS ancillary. The fds are staged here until the first
+     * completed send (the kernel takes its own references at send time, so
+     * they are handed across EXACTLY once) and are ours to close on every
+     * other path — flush error, connection death, server teardown. */
+    uint32_t response_fd_count;
+    int response_fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
     SparkWeightdAttachRef attaches[SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX];
 } SparkWeightdConnection;
 
@@ -229,6 +236,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return SPARK_WEIGHTD_IPC_RECLAIM_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM_RESULT:
             return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_EXPORT:
+            return SPARK_WEIGHTD_IPC_EXPORT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT:
+            return SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         default:
             return 0u;
     }
@@ -246,6 +257,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_DETACH_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM:
             return SPARK_WEIGHTD_IPC_KIND_RECLAIM_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_EXPORT:
+            return SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT;
         default:
             return 0u;
     }
@@ -813,6 +826,89 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     result->arena_count = server->arena_count;
 }
 
+/* ------------------------------ server: export (W3 fd tier) ------------------------------ */
+
+static void SparkWeightdServerCloseStagedFds(SparkWeightdConnection *connection)
+{
+    uint32_t index;
+    for (index = 0u; index < connection->response_fd_count; index++)
+    {
+        (void)close(connection->response_fds[index]);
+    }
+    connection->response_fd_count = 0u;
+}
+
+/* The daemon's half of the fd tier: hand the attached arena's physical
+ * chunks to THIS connection, one position-addressed batch at a time, each
+ * chunk as a CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR shareable fd. Access
+ * scoping is two-layered — the socket is 0600 (owner-only, the KV backing's
+ * file discipline carried to the socket) and the request's arena generation
+ * must be one THIS connection holds an attach reference for: the attach ref
+ * is the export capability, nothing else on the node can fish chunks out.
+ * The daemon holds its fd copies only until the reply flushes; the consumer
+ * closes each fd after its cuMemImportFromShareableHandle takes the driver's
+ * own reference. */
+static void SparkWeightdServerExportBatch(SparkWeightdServer *server,
+    SparkWeightdConnection *connection,
+    const SparkWeightdIpcExport *request,
+    SparkWeightdIpcExportResult *result)
+{
+    const SparkWeightdArena *arena = 0;
+    uint32_t index;
+    uint32_t count;
+
+    result->arena_generation = request->arena_generation;
+    result->batch_offset = request->batch_offset;
+    for (index = 0u; index < connection->attach_count; index++)
+    {
+        if (connection->attaches[index].arena_generation ==
+                request->arena_generation &&
+            connection->attaches[index].arena_slot < server->arena_count)
+        {
+            arena = &server->arenas[connection->attaches[index].arena_slot];
+            break;
+        }
+    }
+    if (arena == 0 || arena->generation != request->arena_generation)
+    {
+        result->status = (uint32_t)SPARK_STATUS_NOT_FOUND;
+        return;
+    }
+    if (request->batch_offset >= arena->chunk_count)
+    {
+        result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+        return;
+    }
+    count = arena->chunk_count - request->batch_offset;
+    if (count > SPARK_WEIGHTD_EXPORT_BATCH_MAX)
+    {
+        count = SPARK_WEIGHTD_EXPORT_BATCH_MAX;
+    }
+    for (index = 0u; index < count; index++)
+    {
+        int fd = -1;
+        if (cuMemExportToShareableHandle(&fd,
+                (CUmemGenericAllocationHandle)
+                    arena->chunk_handles[request->batch_offset + index],
+                CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+                0ull) != CUDA_SUCCESS ||
+            fd < 0)
+        {
+            SparkWeightdServerCloseStagedFds(connection);
+            result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
+            return;
+        }
+        /* the fd discipline: chunk fds never survive an exec in the daemon */
+        (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+        connection->response_fds[index] = fd;
+    }
+    connection->response_fd_count = count;
+    result->chunk_bytes = arena->chunk_bytes;
+    result->chunk_count = arena->chunk_count;
+    result->batch_count = count;
+    result->status = (uint32_t)SPARK_STATUS_OK;
+}
+
 /* ------------------------------ server: dispatch ------------------------------ */
 
 static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
@@ -856,6 +952,17 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
         SparkWeightdServerAttachCold(server, connection,
             (const SparkWeightdIpcAttach *)request, result);
         return SPARK_WEIGHTD_IPC_ATTACH_RESULT_BYTES;
+    }
+
+    if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_EXPORT)
+    {
+        SparkWeightdIpcExportResult *result =
+            (SparkWeightdIpcExportResult *)response;
+        memset(result, 0, sizeof(*result));
+        SparkWeightdBuildHeader(response, result_kind, request_id);
+        SparkWeightdServerExportBatch(server, connection,
+            (const SparkWeightdIpcExport *)request, result);
+        return SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES;
     }
 
     if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_DETACH)
@@ -932,6 +1039,7 @@ static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
     {
         (void)close(connection->fd);
     }
+    SparkWeightdServerCloseStagedFds(connection); /* unsent chunk fds die here */
     connection->fd = -1;
     connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
     connection->hello_done = 0u;
@@ -942,26 +1050,78 @@ static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
 
 /* Drain the pending response as far as the socket takes it. PENDING means
  * "not yet fully written — retry on the next step"; the connection is
- * failed closed only on a real write error. */
+ * failed closed only on a real write error. A response with staged fds
+ * leaves via sendmsg with the SCM_RIGHTS ancillary instead of write(): the
+ * fds cross EXACTLY once (the kernel dups them into the receiver's queue at
+ * send time), so the staged set clears on the first completed send whatever
+ * the byte count; on EAGAIN/EINTR nothing left the socket and the same fds
+ * retry on the next step. */
 static SparkStatus SparkWeightdServerFlushResponse(
     SparkWeightdConnection *connection)
 {
     while (connection->response_written < connection->response_bytes)
     {
-        ssize_t chunk = write(connection->fd,
-            connection->response + connection->response_written,
-            connection->response_bytes - connection->response_written);
-        if (chunk < 0)
+        ssize_t chunk;
+        if (connection->response_fd_count != 0u)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            struct msghdr message;
+            struct iovec vector;
+            char control[CMSG_SPACE(SPARK_WEIGHTD_EXPORT_BATCH_MAX *
+                sizeof(int))];
+            struct cmsghdr *control_header;
+            memset(&message, 0, sizeof(message));
+            vector.iov_base =
+                connection->response + connection->response_written;
+            vector.iov_len =
+                connection->response_bytes - connection->response_written;
+            message.msg_iov = &vector;
+            message.msg_iovlen = 1u;
+            message.msg_control = control;
+            message.msg_controllen = CMSG_SPACE(
+                connection->response_fd_count * sizeof(int));
+            control_header = CMSG_FIRSTHDR(&message);
+            control_header->cmsg_level = SOL_SOCKET;
+            control_header->cmsg_type = SCM_RIGHTS;
+            control_header->cmsg_len = CMSG_LEN(
+                connection->response_fd_count * sizeof(int));
+            memcpy(CMSG_DATA(control_header), connection->response_fds,
+                connection->response_fd_count * sizeof(int));
+            chunk = sendmsg(connection->fd, &message, 0);
+            if (chunk >= 0)
             {
-                return SPARK_STATUS_PENDING;
+                /* delivered: the receiver's dup holds the referent now */
+                SparkWeightdServerCloseStagedFds(connection);
             }
-            if (errno == EINTR)
+            else if (errno == EINTR)
             {
                 continue;
             }
-            return SPARK_STATUS_IO_ERROR;
+            else if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                return SPARK_STATUS_PENDING;
+            }
+            else
+            {
+                return SPARK_STATUS_IO_ERROR; /* fds close with the socket */
+            }
+        }
+        else
+        {
+            chunk = write(connection->fd,
+                connection->response + connection->response_written,
+                connection->response_bytes - connection->response_written);
+            if (chunk < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    return SPARK_STATUS_PENDING;
+                }
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                return SPARK_STATUS_IO_ERROR;
+            }
         }
         connection->response_written += (uint32_t)chunk;
     }
@@ -1120,6 +1280,7 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
                     connection->request_bytes = 0u;
                     connection->response_bytes = 0u;
                     connection->response_written = 0u;
+                    connection->response_fd_count = 0u;
                     connection->attach_count = 0u;
                     memset(connection->attaches, 0,
                         sizeof(connection->attaches));
@@ -1577,6 +1738,206 @@ SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
     result->refcount = wire_result.refcount;
     result->arena_count = wire_result.arena_count;
     result->loaded_from_pack = wire_result.loaded_from_pack;
+    return SPARK_STATUS_OK;
+}
+
+/* ------------------------------ client: export (W3 fd tier) ------------------------------ */
+
+/* Receive exactly `bytes` of a reply frame, collecting the SCM_RIGHTS
+ * ancillary that rides the FIRST data (fds always arrive with the frame's
+ * leading bytes, never detached from it). Every fd that lands is made
+ * close-on-exec and accounted into *fds_received; anything over capacity,
+ * or a short frame, or a dead daemon fails closed with ALL received fds
+ * closed — the caller never sees a partial hand it could miscount. */
+static SparkStatus SparkWeightdClientReadFrameWithFds(
+    SparkWeightdClient *client,
+    uint8_t *buffer,
+    uint32_t bytes,
+    uint64_t deadline_ns,
+    int *fds_out,
+    uint32_t fds_capacity,
+    uint32_t *fds_received)
+{
+    char control[CMSG_SPACE(SPARK_WEIGHTD_EXPORT_BATCH_MAX * sizeof(int))];
+    uint32_t received = 0u;
+    uint32_t fd_count = 0u;
+
+    *fds_received = 0u;
+    while (received < bytes)
+    {
+        ssize_t chunk;
+        struct pollfd poll_fd;
+        int timeout_ms;
+        SparkStatus deadline_status = SparkWeightdDeadlineRemaining(
+            deadline_ns, &timeout_ms);
+        if (deadline_status != SPARK_STATUS_OK)
+        {
+            goto fail;
+        }
+        poll_fd.fd = client->fd;
+        poll_fd.events = POLLIN;
+        poll_fd.revents = 0;
+        if (poll(&poll_fd, 1u, timeout_ms) <= 0)
+        {
+            goto fail; /* deadline expired or poll error */
+        }
+        if (received == 0u)
+        {
+            struct msghdr message;
+            struct iovec vector;
+            struct cmsghdr *control_header;
+            memset(&message, 0, sizeof(message));
+            vector.iov_base = buffer;
+            vector.iov_len = bytes;
+            message.msg_iov = &vector;
+            message.msg_iovlen = 1u;
+            message.msg_control = control;
+            message.msg_controllen = sizeof(control);
+#ifdef MSG_CMSG_CLOEXEC
+            chunk = recvmsg(client->fd, &message, MSG_CMSG_CLOEXEC);
+#else
+            chunk = recvmsg(client->fd, &message, 0);
+#endif
+            if (chunk < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            if (chunk <= 0)
+            {
+                goto fail; /* EOF mid-exchange: the daemon is gone */
+            }
+            if ((message.msg_flags & MSG_CTRUNC) != 0)
+            {
+                goto fail; /* truncated ancillary: a frame that cannot count */
+            }
+            for (control_header = CMSG_FIRSTHDR(&message); control_header != 0;
+                control_header = CMSG_NXTHDR(&message, control_header))
+            {
+                if (control_header->cmsg_level == SOL_SOCKET &&
+                    control_header->cmsg_type == SCM_RIGHTS)
+                {
+                    size_t payload = control_header->cmsg_len - CMSG_LEN(0);
+                    uint32_t count = (uint32_t)(payload / sizeof(int));
+                    if (payload % sizeof(int) != 0u ||
+                        fd_count + count > fds_capacity)
+                    {
+                        /* over the batch bound: a lying frame, never mapped.
+                         * Close what was copied; any overflow fds the kernel
+                         * already queued die with this socket, which the
+                         * caller closes on every failure path. */
+                        goto fail;
+                    }
+                    memcpy(fds_out + fd_count, CMSG_DATA(control_header),
+                        count * sizeof(int));
+                    fd_count += count;
+                }
+            }
+        }
+        else
+        {
+            chunk = recv(client->fd, buffer + received, bytes - received, 0);
+            if (chunk < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            if (chunk <= 0)
+            {
+                goto fail;
+            }
+        }
+        received += (uint32_t)chunk;
+    }
+#ifndef MSG_CMSG_CLOEXEC
+    {
+        uint32_t index;
+        for (index = 0u; index < fd_count; index++)
+        {
+            (void)fcntl(fds_out[index], F_SETFD, FD_CLOEXEC);
+        }
+    }
+#endif
+    *fds_received = fd_count;
+    return SPARK_STATUS_OK;
+fail:
+    while (fd_count != 0u)
+    {
+        (void)close(fds_out[--fd_count]);
+    }
+    *fds_received = 0u;
+    return SPARK_STATUS_IO_ERROR;
+}
+
+SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
+    uint64_t arena_generation,
+    uint32_t batch_offset,
+    SparkWeightdExportBatch *batch,
+    uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcExport wire;
+    SparkWeightdIpcExportResult wire_result;
+    uint64_t now;
+    uint64_t deadline_ns;
+    uint32_t fds_received = 0u;
+    SparkStatus status;
+
+    if (client == 0 || batch == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(batch, 0, sizeof(*batch));
+    now = SparkWeightdMonotonicTimeNs();
+    if (now == 0ull)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    deadline_ns = now + (timeout_nanoseconds != 0ull ? timeout_nanoseconds
+                                                     : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS);
+    memset(&wire, 0, sizeof(wire));
+    wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    wire.header.kind = SPARK_WEIGHTD_IPC_KIND_EXPORT;
+    wire.header.body_bytes =
+        SPARK_WEIGHTD_IPC_EXPORT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+    wire.header.request_id = ++client->next_request_id;
+    wire.arena_generation = arena_generation;
+    wire.batch_offset = batch_offset;
+    memset(&wire_result, 0, sizeof(wire_result));
+    status = SparkWeightdClientWriteAll(client, (const uint8_t *)&wire,
+        SPARK_WEIGHTD_IPC_EXPORT_BYTES, deadline_ns);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkWeightdClientReadFrameWithFds(client,
+            (uint8_t *)&wire_result, SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES,
+            deadline_ns, batch->fds, SPARK_WEIGHTD_EXPORT_BATCH_MAX,
+            &fds_received);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkWeightdIpcValidateHeader(&wire_result.header,
+        SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES,
+        SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT);
+    if (status != SPARK_STATUS_OK ||
+        wire_result.header.request_id != wire.header.request_id ||
+        wire_result.batch_offset != batch_offset ||
+        wire_result.batch_count > SPARK_WEIGHTD_EXPORT_BATCH_MAX ||
+        wire_result.batch_count != fds_received)
+    {
+        /* frame/refusal-shape faults close every fd already received: the
+         * batch is either exactly what the frame declares or it is nothing */
+        while (fds_received != 0u)
+        {
+            (void)close(batch->fds[--fds_received]);
+        }
+        return status != SPARK_STATUS_OK ? status : SPARK_STATUS_SCHEMA_ERROR;
+    }
+    batch->status = SparkWeightdStatusFromWire(wire_result.status);
+    batch->arena_generation = wire_result.arena_generation;
+    batch->chunk_bytes = wire_result.chunk_bytes;
+    batch->chunk_count = wire_result.chunk_count;
+    batch->batch_offset = wire_result.batch_offset;
+    batch->batch_count = wire_result.batch_count;
     return SPARK_STATUS_OK;
 }
 

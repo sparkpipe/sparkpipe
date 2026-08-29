@@ -1,9 +1,15 @@
 #include "cuda_runtime_api.h"
 #include "cuda.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static uint32_t cuda_capture_depth;
 
@@ -26,19 +32,38 @@ static uint32_t cuda_stub_alloc_calls;
 static int32_t cuda_stub_fail_alloc_at = -1; /* 1-based call index, -1 = off */
 static uint32_t cuda_stub_host_map_calls;
 static int32_t cuda_stub_fail_host_map_at = -1;
+/* W3: the daemon thread's cuMem* calls (export walks this ledger) and the
+ * consumer's (import inserts) overlap in-process, exactly as two driver
+ * calls from two threads overlap on the real GPU - the driver serializes
+ * its internals, so the stub serializes its ledger. */
+static pthread_mutex_t cuda_stub_ledger_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void cuda_stub_ledger_lock(void)
+{
+    (void)pthread_mutex_lock(&cuda_stub_ledger_mutex);
+}
+
+static void cuda_stub_ledger_unlock(void)
+{
+    (void)pthread_mutex_unlock(&cuda_stub_ledger_mutex);
+}
 
 static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
 {
     cuda_stub_alloc_header *header;
+    cudaError_t result;
+    cuda_stub_ledger_lock();
     cuda_stub_alloc_calls++;
     if (pointer == 0 || bytes == 0u || cuda_stub_alloc_calls ==
         (uint32_t)cuda_stub_fail_alloc_at)
     {
+        cuda_stub_ledger_unlock();
         return cudaErrorMemoryAllocation;
     }
     header = (cuda_stub_alloc_header *)malloc(bytes + sizeof(*header));
     if (header == 0)
     {
+        cuda_stub_ledger_unlock();
         return cudaErrorMemoryAllocation;
     }
     header->magic = CUDA_STUB_ALLOC_MAGIC;
@@ -52,20 +77,25 @@ static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
         header->tracked = 0u;
     }
     *pointer = header + 1;
-    return cudaSuccess;
+    result = cudaSuccess;
+    cuda_stub_ledger_unlock();
+    return result;
 }
 
 static cudaError_t cuda_stub_free(void *pointer)
 {
     cuda_stub_alloc_header *header;
     uint32_t index;
+    cudaError_t result;
     if (pointer == 0)
     {
         return cudaSuccess;
     }
+    cuda_stub_ledger_lock();
     header = ((cuda_stub_alloc_header *)pointer) - 1;
     if (header->magic != CUDA_STUB_ALLOC_MAGIC)
     {
+        cuda_stub_ledger_unlock();
         return cudaErrorInvalidValue;
     }
     header->magic = 0u;
@@ -81,20 +111,29 @@ static cudaError_t cuda_stub_free(void *pointer)
             }
         }
     }
+    result = cudaSuccess;
+    cuda_stub_ledger_unlock();
     free(header);
-    return cudaSuccess;
+    return result;
 }
 
 void spark_stub_cuda_reset_faults(void)
 {
+    cuda_stub_ledger_lock();
     while (cuda_stub_tracked_count != 0u)
     {
-        (void)cuda_stub_free(cuda_stub_tracked[0]);
+        void *pointer = cuda_stub_tracked[0];
+        cuda_stub_alloc_header *header =
+            ((cuda_stub_alloc_header *)pointer) - 1;
+        header->magic = 0u;
+        cuda_stub_tracked[0] = cuda_stub_tracked[--cuda_stub_tracked_count];
+        free(header);
     }
     cuda_stub_alloc_calls = 0u;
     cuda_stub_fail_alloc_at = -1;
     cuda_stub_host_map_calls = 0u;
     cuda_stub_fail_host_map_at = -1;
+    cuda_stub_ledger_unlock();
 }
 
 void spark_stub_cuda_fail_alloc_call(uint32_t one_based_call_index)
@@ -109,7 +148,11 @@ void spark_stub_cuda_fail_host_map_call(uint32_t one_based_call_index)
 
 uint32_t spark_stub_cuda_outstanding_allocs(void)
 {
-    return cuda_stub_tracked_count;
+    uint32_t outstanding;
+    cuda_stub_ledger_lock();
+    outstanding = cuda_stub_tracked_count;
+    cuda_stub_ledger_unlock();
+    return outstanding;
 }
 
 cudaError_t cudaMalloc(void **pointer, size_t bytes)
@@ -423,7 +466,7 @@ cudaError_t cudaGetDevice(int *device)
  * allocations check covers the VMM path too. */
 
 #define CUDA_STUB_VMM_MAGIC UINT32_C(0x564D4D31) /* "VMM1" */
-#define CUDA_STUB_VMM_MAPPED_MAX 64
+#define CUDA_STUB_VMM_MAPPED_MAX 128
 
 typedef struct cuda_stub_vmm_phys
 {
@@ -431,6 +474,12 @@ typedef struct cuda_stub_vmm_phys
     uint32_t mapped_count;
     uint64_t bytes;
     CUmemAllocationProp prop;
+    /* W3 fd tier: an IMPORTED physical chunk owns a host image of the bytes
+     * its shareable fd carried (heap pages cannot alias across that fd the
+     * way device pages do); cuMemMap of such a chunk reveals the image at
+     * the mapping. Chunks created here keep image == 0: their content lives
+     * at the (single) mapped span exactly as in W2b. */
+    uint8_t *image;
 } cuda_stub_vmm_phys;
 
 typedef struct cuda_stub_vmm_reservation
@@ -461,23 +510,33 @@ static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_at(
     return reservation->magic == CUDA_STUB_VMM_MAGIC ? reservation : 0;
 }
 
-/* The reservation owning a mapped virtual address: the VA handed out is the
- * tail of the tracked allocation (struct end), so walk the tracked headers
- * and match struct+1. */
+/* The reservation containing a mapped virtual address: the VA handed out is
+ * the tail of the tracked allocation (struct end), so walk the tracked
+ * headers and match struct+1. W3 fix: the match is CONTAINMENT, not equality
+ * - an arena maps chunk 2 at base+chunk_bytes, and a multi-chunk span is
+ * one reservation (W2b's tests never exceeded one 2 MiB chunk, so the old
+ * exact-start match stood untested; the real driver maps anywhere inside
+ * the reserved span). */
 static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_for_va(
     CUdeviceptr pointer)
 {
     uint32_t index;
+    cuda_stub_vmm_reservation *found = 0;
+    cuda_stub_ledger_lock();
     for (index = 0u; index < cuda_stub_tracked_count; index++)
     {
         cuda_stub_vmm_reservation *reservation = cuda_stub_vmm_reservation_at(
             cuda_stub_tracked[index]);
-        if (reservation != 0 && (CUdeviceptr)(reservation + 1) == pointer)
+        if (reservation != 0 &&
+            (CUdeviceptr)(reservation + 1) <= pointer &&
+            pointer < (CUdeviceptr)(reservation + 1) + reservation->bytes)
         {
-            return reservation;
+            found = reservation;
+            break;
         }
     }
-    return 0;
+    cuda_stub_ledger_unlock();
+    return found;
 }
 
 CUresult cuMemGetAllocationGranularity(size_t *granularity,
@@ -493,6 +552,258 @@ CUresult cuMemGetAllocationGranularity(size_t *granularity,
     *granularity = option == CU_MEM_ALLOC_GRANULARITY_MINIMUM
         ? (size_t)65536
         : (size_t)(2ull * 1024ull * 1024ull); /* the 2 MiB page law */
+    return CUDA_SUCCESS;
+}
+
+/* ------------------- W3 fd tier: shareable-handle export/import -------------------
+ *
+ * The stub models a shareable handle as what it is on the real OS: a POSIX
+ * file descriptor whose referent outlives the exporter and crosses processes
+ * by SCM_RIGHTS alone. Export writes the chunk's committed bytes into a
+ * freshly created ANONYMOUS regular file - mkstemp (mode 0600), immediate
+ * unlink, FD_CLOEXEC - so the bytes exist only behind the fd: no path to
+ * follow (the fd-world O_NOFOLLOW analog), no group/other access (the KV
+ * backing's owner-only discipline), no leak across exec. Import validates
+ * the fd (live, owner-only mode, magic header, exact byte count), material-
+ * izes a fresh local physical record, and copies the bytes into its image;
+ * the caller's fd is its own from there and close() is the caller's duty.
+ * The one fidelity trade vs the GPU: pages are copied at export, not
+ * aliased - sound here because arena bytes are frozen at cold load, and it
+ * is exactly what the spark-gated GPU receipt re-proves aliased. */
+
+#define CUDA_STUB_SHARE_MAGIC UINT32_C(0x53505846) /* "SPXF" */
+#define CUDA_STUB_SHARE_VERSION 1u
+
+typedef struct cuda_stub_share_header
+{
+    uint32_t magic;
+    uint32_t version;
+    uint64_t bytes;
+} cuda_stub_share_header;
+
+/* Locate the one live mapping of a created chunk: its committed bytes live
+ * at that mapped VA (the W2b model). */
+static int cuda_stub_vmm_single_mapping(const cuda_stub_vmm_phys *phys,
+    CUdeviceptr *pointer_out)
+{
+    uint32_t index;
+    uint32_t found = 0u;
+    cuda_stub_ledger_lock();
+    for (index = 0u; index < cuda_stub_tracked_count; index++)
+    {
+        cuda_stub_vmm_reservation *reservation = cuda_stub_vmm_reservation_at(
+            cuda_stub_tracked[index]);
+        uint32_t mapping_index;
+        if (reservation == 0)
+        {
+            continue;
+        }
+        for (mapping_index = 0u; mapping_index < reservation->mapped_count;
+            mapping_index++)
+        {
+            if (reservation->mappings[mapping_index].phys == phys)
+            {
+                *pointer_out = reservation->mappings[mapping_index].pointer;
+                found++;
+            }
+        }
+    }
+    cuda_stub_ledger_unlock();
+    return found == 1u;
+}
+
+CUresult cuMemExportToShareableHandle(void *shareable_handle,
+    CUmemGenericAllocationHandle handle,
+    CUmemAllocationHandleType handle_type,
+    unsigned long long flags)
+{
+    cuda_stub_vmm_phys *phys = (cuda_stub_vmm_phys *)handle;
+    cuda_stub_share_header header;
+    CUdeviceptr mapped_at = 0;
+    const char *tmp_dir;
+    char *template_path;
+    size_t tmp_bytes;
+    uint8_t *cursor;
+    size_t remaining;
+    int fd;
+    int written;
+    (void)flags;
+    if (shareable_handle == 0 || phys == 0 ||
+        ((cuda_stub_alloc_header *)phys - 1)->magic != CUDA_STUB_ALLOC_MAGIC ||
+        phys->magic != CUDA_STUB_VMM_MAGIC ||
+        handle_type != CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR ||
+        flags != 0ull || phys->bytes == 0ull)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    /* the exportable-property discipline: the chunk must have been created
+     * with the POSIX-fd handle type requested (the daemon's prop carries it) */
+    if ((phys->prop.requestedHandleTypes &
+            CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) == 0u)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (phys->image == 0 && !cuda_stub_vmm_single_mapping(phys, &mapped_at))
+    {
+        return CUDA_ERROR_INVALID_VALUE; /* nothing committed to export */
+    }
+    tmp_dir = getenv("TMPDIR");
+    if (tmp_dir == 0 || tmp_dir[0] == '\0')
+    {
+        tmp_dir = "/tmp";
+    }
+    tmp_bytes = strlen(tmp_dir) + sizeof("/sp_cuda_stub.XXXXXX");
+    template_path = (char *)malloc(tmp_bytes);
+    if (template_path == 0)
+    {
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    snprintf(template_path, tmp_bytes, "%s/sp_cuda_stub.XXXXXX", tmp_dir);
+    fd = mkstemp(template_path);
+    if (fd < 0)
+    {
+        free(template_path);
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    (void)unlink(template_path); /* anonymous from here: fd-only referent */
+    free(template_path);
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+    if (ftruncate(fd, (off_t)(sizeof(header) + phys->bytes)) != 0)
+    {
+        (void)close(fd);
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    header.magic = CUDA_STUB_SHARE_MAGIC;
+    header.version = CUDA_STUB_SHARE_VERSION;
+    header.bytes = phys->bytes;
+    cursor = (uint8_t *)&header;
+    remaining = sizeof(header);
+    while (remaining != 0u)
+    {
+        written = (int)write(fd, cursor, remaining);
+        if (written <= 0)
+        {
+            if (written < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            (void)close(fd);
+            return CUDA_ERROR_OUT_OF_MEMORY;
+        }
+        cursor += written;
+        remaining -= (size_t)written;
+    }
+    cursor = phys->image != 0 ? phys->image : (uint8_t *)(uintptr_t)mapped_at;
+    remaining = (size_t)phys->bytes;
+    while (remaining != 0u)
+    {
+        written = (int)write(fd, cursor, remaining);
+        if (written <= 0)
+        {
+            if (written < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            (void)close(fd);
+            return CUDA_ERROR_OUT_OF_MEMORY;
+        }
+        cursor += written;
+        remaining -= (size_t)written;
+    }
+    *(int *)shareable_handle = fd;
+    return CUDA_SUCCESS;
+}
+
+CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
+    void *shareable_handle,
+    CUmemAllocationHandleType handle_type)
+{
+    cuda_stub_vmm_phys *phys;
+    cuda_stub_share_header header;
+    uint8_t *image = 0;
+    struct stat status;
+    uint8_t *cursor;
+    uint8_t *header_cursor;
+    size_t remaining;
+    int fd;
+    int received;
+    if (handle == 0 || shareable_handle == 0 ||
+        handle_type != CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    fd = *(int *)shareable_handle;
+    if (fd < 0 || fcntl(fd, F_GETFD) < 0 || fstat(fd, &status) != 0)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    /* OS-level access scoping on the received fd: owner-only, exactly the
+     * discipline the exporter created it with (no group/other bits) */
+    if ((status.st_mode & 077) != 0 ||
+        (uint64_t)status.st_size < (uint64_t)sizeof(header))
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    header_cursor = (uint8_t *)&header;
+    remaining = sizeof(header);
+    while (remaining != 0u)
+    {
+        received = (int)pread(fd, header_cursor, remaining,
+            (off_t)(header_cursor - (uint8_t *)&header));
+        if (received <= 0)
+        {
+            if (received < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            return CUDA_ERROR_INVALID_VALUE;
+        }
+        header_cursor += received;
+        remaining -= (size_t)received;
+    }
+    if (header.magic != CUDA_STUB_SHARE_MAGIC ||
+        header.version != CUDA_STUB_SHARE_VERSION || header.bytes == 0ull ||
+        (uint64_t)status.st_size < (uint64_t)sizeof(header) + header.bytes)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (cuda_stub_alloc((void **)&phys, sizeof(*phys)) != cudaSuccess)
+    {
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    if (cuda_stub_alloc((void **)&image, (size_t)header.bytes) != cudaSuccess)
+    {
+        (void)cuda_stub_free(phys);
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    cursor = image;
+    remaining = (size_t)header.bytes;
+    while (remaining != 0u)
+    {
+        received = (int)pread(fd, cursor, remaining,
+            (off_t)(sizeof(header) + (cursor - image)));
+        if (received <= 0)
+        {
+            if (received < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            (void)cuda_stub_free(image);
+            (void)cuda_stub_free(phys);
+            return CUDA_ERROR_INVALID_VALUE;
+        }
+        cursor += received;
+        remaining -= (size_t)received;
+    }
+    phys->magic = CUDA_STUB_VMM_MAGIC;
+    phys->mapped_count = 0u;
+    phys->bytes = header.bytes;
+    phys->prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    phys->prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    phys->prop.location.id = 0;
+    phys->prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+    phys->image = image;
+    *handle = (CUmemGenericAllocationHandle)phys;
     return CUDA_SUCCESS;
 }
 
@@ -519,6 +830,7 @@ CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
     phys->mapped_count = 0u;
     phys->bytes = (uint64_t)bytes;
     phys->prop = *prop;
+    phys->image = 0;
     *handle = (CUmemGenericAllocationHandle)phys;
     return CUDA_SUCCESS;
 }
@@ -578,6 +890,13 @@ CUresult cuMemMap(CUdeviceptr pointer,
     reservation->mapped_count++;
     reservation->mapped_bytes += (uint64_t)bytes;
     phys->mapped_count++;
+    /* an imported chunk's bytes arrive with the map (the stub's stand-in for
+     * physical aliasing); created chunks keep the W2b behavior where the
+     * mapping's span itself is the storage */
+    if (phys->image != 0)
+    {
+        memcpy((void *)(uintptr_t)pointer, phys->image, bytes);
+    }
     return CUDA_SUCCESS;
 }
 
@@ -606,24 +925,37 @@ CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
     cuda_stub_vmm_reservation *reservation =
         cuda_stub_vmm_reservation_for_va(pointer);
     uint32_t mapping_index;
+    uint32_t removed = 0u;
     if (reservation != 0)
     {
+        /* driver range semantics: one unmap may cover several per-chunk
+         * mappings (the daemon maps chunk by chunk and tears the span down
+         * whole); every mapping fully inside the range goes, a partial
+         * overlap is refused, and an unmapped range is an error */
         for (mapping_index = 0u; mapping_index < reservation->mapped_count;
             mapping_index++)
         {
-            if (reservation->mappings[mapping_index].pointer == pointer &&
-                reservation->mappings[mapping_index].bytes == bytes)
+            CUdeviceptr mapped_at = reservation->mappings[mapping_index].pointer;
+            uint64_t mapped_bytes = reservation->mappings[mapping_index].bytes;
+            if (mapped_at >= pointer &&
+                mapped_at + mapped_bytes <= pointer + (uint64_t)bytes)
             {
                 reservation->mappings[mapping_index].phys->mapped_count--;
-                reservation->mapped_bytes -= (uint64_t)bytes;
+                reservation->mapped_bytes -= mapped_bytes;
                 reservation->mappings[mapping_index] =
                     reservation->mappings[reservation->mapped_count - 1u];
                 reservation->mapped_count--;
-                return CUDA_SUCCESS;
+                removed++;
+                mapping_index--; /* the swapped-in entry must be checked too */
+            }
+            else if (mapped_at < pointer + (uint64_t)bytes &&
+                pointer < mapped_at + mapped_bytes)
+            {
+                return CUDA_ERROR_INVALID_VALUE; /* partial overlap */
             }
         }
     }
-    return CUDA_ERROR_INVALID_VALUE;
+    return removed != 0u ? CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
 }
 
 CUresult cuMemRelease(CUmemGenericAllocationHandle handle)
@@ -639,6 +971,11 @@ CUresult cuMemRelease(CUmemGenericAllocationHandle handle)
     {
         return CUDA_ERROR_INVALID_VALUE; /* still mapped somewhere */
     }
+    if (phys->image != 0)
+    {
+        (void)cuda_stub_free(phys->image); /* the imported byte image */
+        phys->image = 0;
+    }
     return cuda_stub_free(phys);
 }
 
@@ -647,7 +984,8 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
     cuda_stub_vmm_reservation *reservation =
         cuda_stub_vmm_reservation_for_va(pointer);
     (void)bytes;
-    if (reservation == 0)
+    if (reservation == 0 ||
+        (CUdeviceptr)(reservation + 1) != pointer) /* the exact span base */
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
