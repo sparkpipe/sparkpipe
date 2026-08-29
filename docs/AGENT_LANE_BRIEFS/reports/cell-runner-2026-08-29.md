@@ -157,6 +157,44 @@ confirm the pack set to pin (v4_tp4rank0 bytes on rank0+rank3, v3_tp4rank1
 re-queue the full cell; or (b) have the r2-prefill lane re-publish its
 retained bisect staging. Everything else is staged and self-sufficient.
 
+## R3 cell final state at lane completion (evidence trail for the next runner)
+
+The kill-switch boots were blocked through seven task attempts (t6..t12);
+each attempt's failure was root-caused and fixed until the remaining
+defect sat inside the driver's own pack validation with no externally
+visible message:
+
+- FIXED: fleet band (spark8-f), kill-switch key surface (stage config),
+  32K-admissible stage configs, ready-check ports, per-host runtime roots
+  + packs symlinks (`$HOME`/`printf sparkRANK` expansion bugs — the
+  original script's `FLEET_ROOT_TEMPLATE` contains no printf directive, so
+  it NEVER substituted), phase-0 retry hardening against the flaky fleet
+  proxy, durable ROOT/RES (wave deploys sweep /tmp mid-flight), fresh
+  per-cell KV backing (fleet backing untouched).
+- FIXED: firmware drift — the committed
+  `glm52_resident_decode_stage_fp8_firmware.json` (`6d4410d8…`, moved in
+  `771c638`) vs the deployed packs/adapter contract (`ec5afd74…`). The
+  driver is now compiled from the git-extracted ec5afd74 description.
+- FIXED: stale archive objects — the first publish re-archived the r3
+  lane's objects (neither identity string baked). Objects force-rebuilt
+  with the fleet contract; `glm52_validation PASS` all tiers on the fresh
+  archive; driver `d0871236a899a0fb…` embeds ec5afd74 (strings-verified);
+  the deployed pack header parses clean against every compared field
+  (model_revision b4734de4, contract ec5afd74, source_config/recipe
+  non-zero, tp8/rank00 geometry).
+- REMAINING (for the r3 lane owner): rank0 still fails
+  `adapter_initialize hash_mismatch status=7` inside the driver create
+  path with the header verified clean — the failing sub-condition is not
+  observable because (a) the module's pack validation returns bare status
+  codes with no message, (b) the serving template discards its error
+  buffer on the create leg (my `fb08075` instrumentation covers only the
+  SparkLoadModelDriver leg), and (c) the wave deployments sweep /tmp where
+  the boot logs went (the rank logs should move to the durable cell root
+  next run). Everything is staged and one `spark_queue.py add` away:
+  spark8:/home/spark8/lane-r3flash/cell/ holds the script (md5 of the
+  latest staged version), both batch jsons, the ec5afd74 firmware json;
+  /home/spark8/lane-r3flash/build holds the full artifact set.
+
 ## Queue-mechanics findings for the coordinator (not my rocks)
 
 - **Double-launch at the transition** (old sweep + new dispatcher both
