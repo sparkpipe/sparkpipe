@@ -423,8 +423,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/redgates-2026-08-28.md",
-      "sha256": "3d2a086547011c58945ad5cf40b085cfc7150a48b661a1cee1ba4b67455d57f6",
-      "size_bytes": 65776
+      "sha256": "260f046650636be884027bbff3df71e21cfb6b0f71155ab310e54d9b52aeea7f",
+      "size_bytes": 65998
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/redundancy-2026-08-27.md",
@@ -7990,5 +7990,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 29912574
+  "total_bytes": 29912796
 }
