@@ -263,8 +263,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/README.md",
-      "sha256": "bf58ed97605d34d13d37a19bb06c5a2ef214a53c1a9b04a5c5353020835c00a1",
-      "size_bytes": 19638
+      "sha256": "b4729fbf89e7811113e4330bd85bf88ebbae13b111f3217c08a5016c184e4eff",
+      "size_bytes": 20054
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/continuous_batching.md",
@@ -323,8 +323,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "ca7ff0c9172714d837c1e52c78ed5a72fac198c171bfc60280f8ab77d3a5c17a",
-      "size_bytes": 118380
+      "sha256": "b40870119845d2ddd025baf6e9b194844da056817b5b0835e3c9051373a4bfde",
+      "size_bytes": 119998
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -5403,18 +5403,18 @@
     },
     {
       "path": "runs/queue.jsonl",
-      "sha256": "d69004640c91ebce845a925394513b8e462ac505ac2b5910748edb033b00f667",
-      "size_bytes": 6464
+      "sha256": "b6a82e76e3e166d46bb829349abf5e0b6160e480cf4f8c641d3bfc55b8e59954",
+      "size_bytes": 3221
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-      "size_bytes": 2
+      "sha256": "bdad78bcea9ea9bfd41f9ae0ddb492432180e9ac97c27563123f99420df7d72e",
+      "size_bytes": 694
     },
     {
       "path": "runs/results.jsonl",
-      "sha256": "84d2af12cea25765dbdca36e4c80b2adc63ff10e46f3860b0d8e2ab0ec11a499",
-      "size_bytes": 9007
+      "sha256": "5502cf51110d08b6837484700bc8e5ae9d7d214889196fc5bb78c9bdc5f95f90",
+      "size_bytes": 12645
     },
     {
       "path": "runtime/README",
@@ -8423,8 +8423,8 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "7f8631216203f625620a19bfc846cb128b25f0e68d4f820f0841ac4305be43a3",
-      "size_bytes": 17555
+      "sha256": "654d2a345fe3b19d981a891dbfb660f115597f8dd23eddba2fb2cf2dc829e329",
+      "size_bytes": 18533
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -8520,5 +8520,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31393214
+  "total_bytes": 31397313
 }

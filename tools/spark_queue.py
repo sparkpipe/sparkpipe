@@ -163,6 +163,7 @@ def cmd_add(args):
     if args.id in ids:
         sys.exit(f"id '{args.id}' already exists")
     entry = dict(id=args.id, nodes=args.nodes.split(","),
+        ttl_minutes=args.ttl_min,
         cmd=args.cmd or "", cwd=args.cwd or "$HOME",
         priority=args.priority, kind=args.kind, class_=args.klass,
         after=[a for a in (args.after or "").split(",") if a],
@@ -283,9 +284,24 @@ def cmd_dispatch(args):
             rewrite_queue(entries); save_reservations(res)
             print(f"blocked: {task['id']} nodes busy")
             return
+        # PRIORITY BARRIER: if a strictly-higher-priority task is queued and
+        # waiting for nodes this candidate would take, hold the candidate —
+        # running tasks finish naturally, but no NEW lower-priority work may
+        # extend a high-priority task's wait (the g5dsa-wave1 lesson).
+        need = set(task["nodes"])
+        for other in entries:
+            if (other.get("state") == "queued" and other.get("cmd")
+                    and other["id"] != task["id"]
+                    and other["priority"] < task["priority"]
+                    and need.intersection(other["nodes"])):
+                rewrite_queue(entries); save_reservations(res)
+                print(f"held: {task['id']} — priority barrier for "
+                      f"{other['id']} (p{other['priority']})")
+                return
+        ttl = float(task.get("ttl_minutes") or args.ttl)
         for n in task["nodes"]:
             res[n] = dict(id=task["id"], holder=f"task:{task['id']}",
-                acquired_at=now(), ttl_minutes=float(args.ttl),
+                acquired_at=now(), ttl_minutes=ttl,
                 pid=None)
         n0 = task["nodes"][0]
         inner = task['cmd'] + "; echo \"$?\" > /tmp/sparkqueue-" + task['id'] + ".exit"
@@ -444,8 +460,9 @@ def main():
     a.add_argument("--exit", type=int, default=0)
     a.set_defaults(fn=cmd_done)
     a = sub.add_parser("dispatch")
-    a.add_argument("--ttl", type=int, default=45,
-        help="lease minutes held for the TASK (not the lane)")
+    a.add_argument("--ttl", type=int, default=15,
+        help="lease minutes held for the TASK (not the lane); a task's "
+             "own --ttl at submit time overrides this default")
     a.set_defaults(fn=cmd_dispatch)
     a = sub.add_parser("cancel")
     a.add_argument("--id", required=True)

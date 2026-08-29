@@ -17,6 +17,12 @@
 - Entries without a real cmd never dispatch (notes belong in reports).
 - CPU work (nvcc builds, host oracles, pack verification) still never
   needs the queue at all.
+- Operator tuning (2026-08-29): dispatch TTL default is 15 minutes —
+  turnover over headroom. Tasks that legitimately run longer (exact-32K
+  timing cells, validator sweeps) MUST declare `--ttl-min <n>` at
+  submit or their lease expires mid-run and the nodes dispatch under
+  them. glm5.3-family tasks (glm5_next waves, glm53full verifies)
+  submit at priority 0 — the front of the queue (operator directive).
 
 # Agent lane rules (shared, binding for every driver lane)
 
