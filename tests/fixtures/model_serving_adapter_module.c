@@ -1,7 +1,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
+
+#define TEST_MODEL_SERVING_HOLD_CAPACITY 64u
 
 typedef struct TestModelServingPrepared
 {
@@ -16,6 +19,21 @@ typedef struct TestModelServingPrepared
 	uint64_t step_generation;
 } TestModelServingPrepared;
 
+/*
+ * Opt-in async-completion fidelity (p1d2 step-loop oracle): with
+ * "hold_completion_steps" set in the adapter configuration JSON, submit
+ * ENQUEUES the built completion and each progress() step countdown
+ * releases the held completions, oldest first — the dsv4-shaped
+ * contract the descriptor already declares. The default (absent or
+ * zero) keeps the historical inline completion byte-for-byte.
+ */
+typedef struct TestModelServingHeld
+{
+	uint32_t active;
+	uint32_t remaining_steps;
+	SparkModelServingCompletion completion;
+} TestModelServingHeld;
+
 typedef struct TestModelServingState
 {
 	SparkModelServingRuntimeLimits runtime_limits;
@@ -24,6 +42,10 @@ typedef struct TestModelServingState
 	uint32_t stage_index;
 	uint32_t quiescing;
 	uint32_t continuation_busy_returned;
+	uint32_t hold_completion_steps;
+	uint32_t held_count;
+	uint32_t held_head;
+	TestModelServingHeld held[TEST_MODEL_SERVING_HOLD_CAPACITY];
 	uint64_t submitted_count;
 	uint64_t completed_count;
 	uint64_t rejected_count;
@@ -78,6 +100,26 @@ static SparkStatus TestModelServingValidateConfiguration(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t TestModelServingHoldSteps(
+	const char *adapter_configuration_path)
+{
+	SparkJsonDocument document;
+	int32_t root,member;
+	uint32_t steps;
+	steps = 0u;
+	if ( adapter_configuration_path == 0 )
+		return(0u);
+	SparkJsonDocumentReset(&document);
+	if ( SparkJsonLoadFile(adapter_configuration_path,&document) != SPARK_STATUS_OK )
+		return(0u);
+	root = SparkJsonGetRootToken(&document);
+	member = SparkJsonFindObjectMember(&document,root,"hold_completion_steps");
+	if ( member >= 0 )
+		(void)SparkJsonGetUInt32(&document,member,&steps);
+	SparkJsonDocumentDestroy(&document);
+	return(steps);
+}
+
 static SparkStatus TestModelServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
@@ -97,6 +139,8 @@ static SparkStatus TestModelServingInitialize(
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
 	state->stage_index = configuration->stage_index;
+	state->hold_completion_steps = TestModelServingHoldSteps(
+		configuration->adapter_configuration_path);
 	*adapter_state = state;
 	return(SPARK_STATUS_OK);
 }
@@ -260,6 +304,22 @@ static SparkStatus TestModelServingSubmit(
 		memset(submission->boundary_sideband_output_address,0x5a,(size_t)submission->boundary_sideband_output_bytes);
 	TestModelServingBuildCompletion(state,submission,&completion);
 	state->completed_count++;
+	if ( state->hold_completion_steps != 0u )
+	{
+		/* Async-completion fidelity: enqueue instead of completing
+		 * inline; progress() releases after the configured countdown. */
+		uint32_t held_tail;
+		if ( state->held_count == TEST_MODEL_SERVING_HOLD_CAPACITY )
+			return(SPARK_STATUS_BUSY);
+		held_tail = (state->held_head + state->held_count) %
+			TEST_MODEL_SERVING_HOLD_CAPACITY;
+		state->held[held_tail].active = 1u;
+		state->held[held_tail].remaining_steps = state->hold_completion_steps;
+		state->held[held_tail].completion = completion;
+		state->held_count++;
+		memset(&state->prepared[index],0,sizeof(state->prepared[index]));
+		return(SPARK_STATUS_OK);
+	}
 	state->completion_function(state->completion_context,&completion);
 	memset(&state->prepared[index],0,sizeof(state->prepared[index]));
 	return(SPARK_STATUS_OK);
@@ -347,7 +407,42 @@ static SparkStatus TestModelServingProgress(
 	void *adapter_state,
 	uint32_t maximum_step_count)
 {
-	return(adapter_state != 0 && maximum_step_count != 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	TestModelServingState *state;
+	uint32_t released,scan;
+	if ( adapter_state == 0 || maximum_step_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (TestModelServingState *)adapter_state;
+	if ( state->hold_completion_steps == 0u || state->held_count == 0u )
+		return(SPARK_STATUS_OK);
+	released = 0u;
+	/* One progress step ticks every held completion's countdown; the
+	 * released prefix is the zeroed OLDEST entries, so completion order
+	 * stays submission order. */
+	for (scan=0u; scan<state->held_count; scan++)
+	{
+		TestModelServingHeld *held;
+		held = &state->held[(state->held_head + scan) %
+			TEST_MODEL_SERVING_HOLD_CAPACITY];
+		if ( held->remaining_steps != 0u )
+			held->remaining_steps--;
+	}
+	while ( released < maximum_step_count && state->held_count != 0u &&
+		state->held[state->held_head].remaining_steps == 0u )
+	{
+		SparkModelServingCompletion completion;
+		SparkModelServingCompletionFunction completion_function;
+		void *completion_context;
+		completion = state->held[state->held_head].completion;
+		completion_function = state->completion_function;
+		completion_context = state->completion_context;
+		state->held[state->held_head].active = 0u;
+		state->held_head = (state->held_head + 1u) %
+			TEST_MODEL_SERVING_HOLD_CAPACITY;
+		state->held_count--;
+		completion_function(completion_context,&completion);
+		released++;
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus TestModelServingQuiesce(

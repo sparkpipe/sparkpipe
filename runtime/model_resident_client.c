@@ -497,6 +497,12 @@ static SparkModelResidentClientPending *SparkModelResidentClientReservePending(
 	return(0);
 }
 
+/* Write-through contract (p1d2 step-loop): submissions and decisions hit
+ * the wire when they are queued, not on the next Progress — the loop
+ * shape that lets the batch engine dispatch without a compensating
+ * flush pass. */
+static SparkStatus SparkModelResidentClientFlush(SparkModelResidentClient *client);
+
 static void SparkModelResidentClientReleasePending(
 	SparkModelResidentClient *client,
 	SparkModelResidentClientPending *pending)
@@ -558,6 +564,10 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	client->output_count++;
 	client->submitted_count++;
 	client->last_submission_id = submission->submission_id;
+	/* Write-through: EAGAIN leaves the bytes queued for Progress and the
+	 * POLL_WRITE descriptor; a clean send means the resident sees this
+	 * submission in the same host step that built it. */
+	(void)SparkModelResidentClientFlush(client);
 	return(SPARK_STATUS_OK);
 }
 
@@ -651,6 +661,9 @@ static SparkStatus SparkModelResidentClientQueueDecision(
 	output->message_bytes = SPARK_MODEL_RESIDENT_IPC_DECISION_BYTES;
 	output->sent_bytes = 0u;
 	client->output_count++;
+	/* Write-through, same contract as SubmitKind: decisions reach the
+	 * resident in the step they were decided. */
+	(void)SparkModelResidentClientFlush(client);
 	return(SPARK_STATUS_OK);
 }
 
