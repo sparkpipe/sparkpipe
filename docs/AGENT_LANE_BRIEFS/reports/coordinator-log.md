@@ -2157,3 +2157,24 @@ appendix).
   lane's setsid fix is queued as wave4), t8/t9 phase-A hangs. The
   dispatch pid-capture bug ("pid gone without exit file") still open —
   exit-file reaping covers it functionally.
+
+## 2026-08-29 ~22:3x — 785f07a: k3-finish s3 merged; unqueued-launch enforcement
+
+- MERGED lane/k3-finish s3: the fleet-blocking adapter fix (tp_collective
+  parse skipped under device_collective — 16/16 dead at
+  adapter_initialize; one-line, A/B-proven, staged), connect timeouts
+  5s->300s (pack-load skew), stop-sweep hardening, stage-2 47_23 closed
+  with sha receipts. TP4 equivalence verdict committed as an HONEST FAIL
+  (103/7168 past 0.03, worst rel 0.047 — BF16 partial-sum tail across 4
+  layers; calibrated 1-layer instrument packing for a clean run). K3
+  fleet READY 16/16 twice. Ratchet 232500; gates clean. Runs-conflict
+  policy set: LIVE wins (operational truth) on runs/* merges.
+- ENFORCEMENT: glm5-dsa lit its fleet 3x with empty queues; the ~22:0xZ
+  launch clobbered K3's READY fleet (118GiB/node over the NVRM line,
+  their api TERMed, 21480 control plane cross-wired). Hard rule
+  delivered: every fleet launch = queue task; future unqueued fleet
+  actions drop their wave priority to 5. The k3fin-first-number task is
+  armed queue-natively and fires after g5dsa-wave4's window.
+- My earlier k3-daemon TERM error recontextualized: those were part of
+  K3's live/serving fleet, not stale stage daemons — worse than first
+  logged; the armed k3 task's idempotent census re-brings them.
