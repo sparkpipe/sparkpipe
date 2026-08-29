@@ -1531,3 +1531,17 @@ appendix).
   back wedge, glm5_next arena OOB, tier checksums/cross-tenant
   aliasing, backing-store permissions) + the 85% wiring sequenced.
   SAFETY LANE spawned for B1-B4 first — they gate everything.
+
+## 2026-08-30 ~16:2x — P3 MERGED (6080ecc→d78e0ee): measured-negative, honestly so
+
+- THE IMPORTANT OUTCOME: the lane DISPROVED its own premise with
+  device receipts — B1==B2 was a knee-CSV misread (8.31 was the B1
+  row; B2 measured 2.00x). GB10 overlaps concurrent per-row weight
+  streams; the batched one-pass kernel pays staging tax. The scalar
+  route stays default BY MEASUREMENT. No route change shipped on a
+  bad premise — the receipts culture working.
+- Durable value landed anyway: one-stream kernel for overlap-hostile
+  profiles, fully host-compilable family header, 68-check oracle, and
+  a REAL defect documented (odd-K multi-row scalar misread).
+- PERF FOCUS SHIFTS to P1 (chain+async): the serialized host bubble
+  is where the B<=4 story actually lives.
