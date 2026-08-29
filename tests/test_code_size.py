@@ -1184,8 +1184,11 @@ CEILING = 228248
 # no prior CUDA calls imported with no driver state. The bootstrap now runs
 # at function entry. The in-process leg never saw it (its caller had
 # already made CUDA calls); the stub cannot model a context-less process.
-# 229929 exact.
-CEILING = 229929
+# +8: runtime/serving_adapter_template.c - LoadDriver discarded its
+# SparkSetError buffer, so a boot loop reported only a status code; it now
+# prints the exact failing check to stderr (the r3 cell's hash_mismatch
+# boot loop named nothing). 229937 exact.
+CEILING = 229937
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
