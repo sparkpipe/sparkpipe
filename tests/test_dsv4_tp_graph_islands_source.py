@@ -45,7 +45,10 @@ assert "SparkTpDeviceCollectiveGraphFenceHost" not in MODULE
 assert "SparkDsv4LaunchWaitSystemU32" not in MODULE
 assert "cuStreamWaitValue32" not in MODULE
 
-prepare = body("static SparkStatus SparkDsv4ModulePrepareState(")
+# Re-pinned for the 1e38389 stage-module lifecycle cutover: the
+# SparkDsv4ModulePrepareState entry became the lifecycle prepare hook
+# SparkDsv4ModulePrepare; the prewarm-the-islands requirement is unchanged.
+prepare = body("static SparkStatus SparkDsv4ModulePrepare(")
 assert prepare.index("SparkDsv4ModulePrewarmTpGraphs(state)") < len(prepare)
 
 start = body("static SparkStatus SparkDsv4ModuleStartLayers(")
