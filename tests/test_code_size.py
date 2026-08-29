@@ -1020,7 +1020,27 @@ from pathlib import Path
 # stages the spark-gated GPU receipt for the real VMM path (+230, never run
 # offline). tests/cuda_stub/* (the cuMem* stand-in) is excluded by
 # construction; tests are excluded. 224943 exact.
-CEILING = 226607
+# W3 (2026-08-29, lane/w3-weightd) is the POSIX-fd export + consumer
+# import/map tier the W2b report staged: runtime/spark_weightd.c grows the
+# additive EXPORT/EXPORT_RESULT wire kinds (ABI 1 unchanged; SCM_RIGHTS
+# ancillary carries the chunk shareable fds, position-addressed batches of
+# 64 under the kernel's 253-fd cap, exact-once fd staging in the flush
+# path, attach-ref-gated export dispatch, +361);
+# runtime/spark_weightd_attach.c gains SparkWeightdAttachImportMap (batch
+# receipt, the identity check - the chunk set must cover the caller's
+# expected byte range BEFORE anything maps - cuMemImportFromShareableHandle
+# per fd, the consumer's own reserve + per-chunk map + cuMemSetAccess RW,
+# and Release unmaps/releases/frees WITHOUT detaching, +283); the headers
+# carry the frames, the batch view, the map state, and the W3 contract
+# (+117); the dsv4 reference module holds the outcome and calls ImportMap
+# so device_handle becomes the consumer-local base (+25);
+# tools/sparkpipe_weightd_vmm_verify.sh extends the staged GPU receipt with
+# the in-process import leg, a real second-process consumer, and the warm
+# re-attach after consumer exit, on per-run unique paths (+192); Makefile
+# registers test_weightd_map (+8). tests/cuda_stub/* (export/import pair,
+# ledger mutex, multi-chunk map/unmap fidelity, ~+390) and the new tests
+# are excluded by construction. 227593 exact.
+CEILING = 227593
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

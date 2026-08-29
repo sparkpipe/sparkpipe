@@ -19,12 +19,16 @@
  * Device-memory note (extraction inventory): since W2b the arenas are cuMem*
  * VMM virtual arenas — cuMemCreate physical chunks at 2 MiB granularity
  * mapped with cuMemMap/cuMemSetAccess into a cuMemAddressReserve span, so a
- * later tier can attach/detach physical pages (or export them
- * CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR for a consumer's
- * cuMemImportFromShareableHandle + read-only cuMemMap) without moving the
- * base or copying. Until that consumer tier lands, `device_handle` in the
- * attach result names the daemon's pid-local mapping and means nothing in
- * another process; the client API shape is already the import surface.
+ * later tier can attach/detach physical pages without moving the base or
+ * copying. Since W3 that tier exists: a consumer holding an attach reference
+ * receives each chunk's CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR shareable
+ * fd over the SCM_RIGHTS ancillary of an EXPORT_RESULT reply (batched — the
+ * ancillary stays far under the kernel's per-message fd limit) and builds
+ * its OWN map with cuMemImportFromShareableHandle + cuMemAddressReserve +
+ * cuMemMap + cuMemSetAccess. SparkWeightdClientExportBatch is the client
+ * half; the attach helper (spark_weightd_attach.h) composes the import/map.
+ * A raw attach result still names the daemon's pid-local span; the
+ * consumer-local mapping exists once the import leg has run.
  */
 
 #include <signal.h>
@@ -78,6 +82,24 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_DETACH_RESULT 6u
 #define SPARK_WEIGHTD_IPC_KIND_RECLAIM 7u
 #define SPARK_WEIGHTD_IPC_KIND_RECLAIM_RESULT 8u
+/* W3 fd tier (additive; the ABI version is unchanged — an older daemon
+ * closes a connection that sends EXPORT, which the consumer reads as its
+ * usual fallback signal, never as wrong bytes): */
+#define SPARK_WEIGHTD_IPC_KIND_EXPORT 9u
+#define SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT 10u
+
+/* W3 fd tier: the EXPORT exchange hands the arena's physical chunk shareable
+ * fds to the consumer in the SCM_RIGHTS ancillary of the EXPORT_RESULT
+ * frame. The kernel caps one message's fd payload (SCM_MAX_FD = 253), and a
+ * full arena is thousands of 2 MiB chunks, so the set is delivered in
+ * position-addressed batches no larger than this (comfortably inside the
+ * kernel cap); the consumer maps only after every batch verified. */
+#define SPARK_WEIGHTD_EXPORT_BATCH_MAX 64u
+
+/* The consumer-side map refuses a chunk-set shape beyond this before any
+ * allocation: the 110 GiB device law at 2 MiB chunks tops out well under it,
+ * so a larger claim is a lying/broken frame, not an arena. */
+#define SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX 65536u
 
 /* The content identity. `Prepare` canonicalizes (pads zeroed, strings
  * bounds-checked, digest shape-checked) so equality is plain memcmp over
@@ -173,6 +195,31 @@ typedef struct SparkWeightdIpcReclaimResult
     uint32_t reserved0;
 } SparkWeightdIpcReclaimResult;
 
+/* W3 fd tier frames. The request names an arena generation the CONNECTION
+ * holds an attach reference for (the attach ref is the export capability —
+ * the 0600 socket plus this check is the access scoping; there is no path
+ * and no other process's fd to touch). The reply's fd payload rides the
+ * SCM_RIGHTS ancillary, never the frame body. */
+typedef struct SparkWeightdIpcExport
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint32_t batch_offset; /* first chunk index carried by this reply */
+    uint32_t reserved0;
+} SparkWeightdIpcExport;
+
+typedef struct SparkWeightdIpcExportResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint64_t chunk_bytes;  /* one physical chunk (the arena granularity) */
+    uint32_t chunk_count;  /* chunks in the WHOLE arena */
+    uint32_t batch_offset; /* echo of the request's */
+    uint32_t batch_count;  /* fds in THIS reply's ancillary */
+    uint32_t status;
+    uint32_t reserved0;
+} SparkWeightdIpcExportResult;
+
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
 #define SPARK_WEIGHTD_IPC_HELLO_BYTES ((uint32_t)sizeof(SparkWeightdIpcHello))
 #define SPARK_WEIGHTD_IPC_HELLO_ACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcHelloAck))
@@ -182,6 +229,8 @@ typedef struct SparkWeightdIpcReclaimResult
 #define SPARK_WEIGHTD_IPC_DETACH_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcDetachResult))
 #define SPARK_WEIGHTD_IPC_RECLAIM_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaim))
 #define SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaimResult))
+#define SPARK_WEIGHTD_IPC_EXPORT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExport))
+#define SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExportResult))
 
 /* Canonicalize + validate an identity for use as a map key or over the
  * wire: strings must be NUL-terminated inside their arrays (the terminator
@@ -296,6 +345,33 @@ SparkStatus SparkWeightdClientConnect(const char *socket_path,
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
     const SparkWeightdAttachRequest *request,
     SparkWeightdAttachResult *result,
+    uint64_t timeout_nanoseconds);
+
+/* W3 fd tier, client half: one EXPORT exchange. `batch_offset` addresses the
+ * first chunk this reply carries; the reply reveals the arena's whole chunk
+ * geometry (chunk_bytes, chunk_count) and delivers up to
+ * SPARK_WEIGHTD_EXPORT_BATCH_MAX received fds in batch->fds. The RECEIVED
+ * fds are the caller's: close each one after cuMemImportFromShareableHandle
+ * takes its own reference, and on EVERY failure/close path — the helper's
+ * import/map composition owns this contract for its callers. The result-
+ * status convention matches Attach: OK return with batch->status carrying
+ * the daemon's verdict (NOT_FOUND for an unattached generation). */
+typedef struct SparkWeightdExportBatch
+{
+    SparkStatus status;
+    uint64_t arena_generation;
+    uint64_t chunk_bytes;
+    uint32_t chunk_count;
+    uint32_t batch_offset;
+    uint32_t batch_count;
+    uint32_t reserved0;
+    int fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+} SparkWeightdExportBatch;
+
+SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
+    uint64_t arena_generation,
+    uint32_t batch_offset,
+    SparkWeightdExportBatch *batch,
     uint64_t timeout_nanoseconds);
 
 /* Drops THIS connection's reference. The arena itself stays resident

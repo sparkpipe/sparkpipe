@@ -447,12 +447,17 @@ struct SparkDsv4ModuleState
 	atomic_ullong failed_count;
 	atomic_ullong tokens_emitted;
 	atomic_ullong host_callback_completion_count;
-	/* W2b serving-side attach: the weightd arena this slice's tensors bind
-	 * into when a running weightd served the identity, else 0 (direct pack
-	 * load). The bytes are DAEMON-owned - the module only borrows the
-	 * mapping and closes the client at teardown; the daemon reaps the
-	 * dropped connection and keeps the arena warm for the next attach. */
-	SparkWeightdClient *weightd_client;
+	/* W2b serving-side attach (W3 fd tier): the weightd arena this slice's
+	 * tensors bind into when a running weightd served the identity, else 0
+	 * (direct pack load). The outcome owns the full attach state - client,
+	 * and since W3 the consumer's OWN imported map (the daemon exports the
+	 * arena's chunks as POSIX shareable fds; ImportMap verifies the chunk
+	 * set against the pack's byte range, then maps them at this process's
+	 * own span). The bytes are DAEMON-owned - the module only borrows the
+	 * mapping; Release unmaps it and closes the client WITHOUT detaching,
+	 * the daemon reaps the dropped connection and keeps the arena warm for
+	 * the next attach. */
+	SparkWeightdAttachOutcome weightd_outcome;
 	void *weightd_arena_base;
 	uint64_t weightd_arena_bytes;
 };
@@ -1460,10 +1465,30 @@ static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, con
 		fprintf(stderr,"%s weightd_fallback reason=arena_mismatch\n",SPARK_DSV4_MODULE_TAG);
 		return(SPARK_STATUS_OK);
 	}
-	state->weightd_client = outcome.client;
-	state->weightd_arena_base = (void *)(uintptr_t)outcome.device_handle;
+	// W3 fd tier: the import leg. The daemon hands this process the arena's
+	// physical chunks as POSIX shareable fds; ImportMap verifies the chunk
+	// set covers the pack's byte range (the identity check) BEFORE mapping
+	// and maps them at this process's own span - device_handle becomes a
+	// real cross-process base here, not the daemon's pid-local stopgap.
+	// Every "not mapped" outcome is a fallback (the helper releases the
+	// attach), never a wrong-byte risk: the daemon's digest gate still
+	// owns the bytes.
+	status = SparkWeightdAttachImportMap(&outcome,(uint64_t)header->file_bytes,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,reason);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkWeightdAttachRelease(&outcome);
+		fprintf(stderr,"%s weightd_attach_error status=%s\n",SPARK_DSV4_MODULE_TAG,SparkStatusToString(status));
+		return(SPARK_STATUS_OK);
+	}
+	if ( outcome.client != 0 || outcome.map_base == 0 )
+	{
+		fprintf(stderr,"%s weightd_fallback reason=%s\n",SPARK_DSV4_MODULE_TAG,reason);
+		return(SPARK_STATUS_OK);
+	}
+	state->weightd_outcome = outcome;
+	state->weightd_arena_base = outcome.map_base;
 	state->weightd_arena_bytes = outcome.arena_bytes;
-	fprintf(stderr,"%s weightd_attach warm=%u generation=%llu bytes=%llu\n",SPARK_DSV4_MODULE_TAG,outcome.loaded_from_pack,(unsigned long long)outcome.arena_generation,(unsigned long long)outcome.arena_bytes);
+	fprintf(stderr,"%s weightd_attach warm=%u generation=%llu bytes=%llu chunks=%u chunk_bytes=%llu\n",SPARK_DSV4_MODULE_TAG,outcome.loaded_from_pack,(unsigned long long)outcome.arena_generation,(unsigned long long)outcome.arena_bytes,outcome.map_chunk_count,(unsigned long long)outcome.map_chunk_bytes);
 	return(SPARK_STATUS_OK);
 }
 
@@ -6330,15 +6355,15 @@ static void SparkDsv4ModuleStateTeardown(void *module_state)
 	uint32_t slot_index,admission_index;
 
     state = (SparkDsv4ModuleState *)module_state;
-	if ( state->weightd_client != 0 )
+	if ( state->weightd_outcome.client != 0 || state->weightd_outcome.map_base != 0 )
 	{
-		// W2b attach teardown: close WITHOUT detaching - the daemon reaps
-		// the dead socket, drops this process's reference, and the arena
-		// stays resident warm for the next attach (the sub-second
-		// code-redeploy path). The borrowed mapping dies with the process;
-		// the bytes never belonged to it.
-		SparkWeightdClientClose(state->weightd_client);
-		state->weightd_client = 0;
+		// W2b/W3 attach teardown: Release unmaps the consumer's imported
+		// chunks and closes WITHOUT detaching - the daemon reaps the dead
+		// socket, drops this process's reference, and the arena stays
+		// resident warm for the next attach (the sub-second code-redeploy
+		// path). The borrowed mapping dies here; the bytes never belonged
+		// to this process.
+		SparkWeightdAttachRelease(&state->weightd_outcome);
 	}
 	state->weightd_arena_base = 0;
 	state->weightd_arena_bytes = 0;
