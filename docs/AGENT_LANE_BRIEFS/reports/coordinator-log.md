@@ -1341,3 +1341,21 @@ appendix).
   typedef lane (the audit's highest-leverage HW move) next wave.
 - glm52's 14k deletion stays GATED on glm5_next qualification (the
   audit's own call — a deletion, not a refactor; take it in one shot).
+
+## 2026-08-30 ~8:5x — DRAFT-FORMATS MERGED (PR741): the bake-off's gate opens
+
+- G2 LANDED: the K3 DSpark wire format (the 62-tensor class unblocked
+  — source-verified, pinned, TWO RELEASES distinguished from the
+  tree's pin, self-describing packs, bind fail-loud with field names,
+  real-bytes BIND OK). Draft FORWARD kernels = the named follow-up.
+- G3 LANDED: the drafter slot's first real users — K3 embedded-DSPARK
+  provider + MAX in-checkpoint MTP behind ONE verify accounting. The
+  provider abstraction has its first three shapes live (glm52-module,
+  27B-embedded, K3-pack-state).
+- G1 STAGED: 27B DFlash2 serving one script away (host-correct, KV
+  halved for co-residency, env verbatim, acceptance telemetry) —
+  blocked only by the closeout's fleet reservation, correctly.
+- Integrations applied by coordinator (K3 link + test entry). IR-4
+  (z-lab incumbent copy to spark9/a) rides the closeout's aftermath.
+- The BAKE-OFF can start the moment the fleet frees: DFlash2-vs-
+  incumbent (one env var), K3 DSpark when its forward kernels land.
