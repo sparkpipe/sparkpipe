@@ -9,6 +9,7 @@
 #include "inference/kernels/head.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/weight_codec.cuh"
+#include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "modules/glm52_resident_decode_stage/source/cuda/config.h"
 
 // Block-major KV geometry: one logical block = GLM52_KV_PAGE_SLOTS tokens
@@ -166,7 +167,20 @@ struct Glm52LayerBuffers
     const uint32_t *row_positions;
     uint32_t *selected_positions;
     uint32_t selected_position_count;
+    /* R3 flash-decode: the split path engages only above the deployment
+     * threshold and only with the partials workspace bound. */
+    float *attention_split_partials;
+    uint64_t attention_split_partial_blocks;
+    uint32_t decode_split_context_threshold;
 };
+
+// The firmware header sizes the partials workspace; the shared kernel policy
+// owns the partition cap. One definition of the cap, checked not duplicated.
+static_assert(
+    LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS,
+    "the firmware's split-partials sizing must match the kernel's "
+    "partition cap");
 
 static int32_t Glm52LaunchBf16Linear(
     const uint16_t *activation_bf16,
@@ -613,27 +627,36 @@ static int32_t Glm52LayerAttention(
         buffers->positions,
         rows,
         GLM52_LATENT_ROW);
-    LM_LAUNCH(
-        (LmLatentAttentionDecodeKernel<
-            Glm52Kv,
-            GLM52_ATTN_THREADS,
-            GLM52_LATENT,
-            GLM52_ROPE_DIM>),
-        dim3(rows, buffers->attn_heads),
-        GLM52_ATTN_THREADS,
-        0,
-        stream,
-        buffers->query_latent_bf16,
-        buffers->query_rope_bf16,
-        buffers->cache,
-        buffers->sequence_of_row,
-        buffers->context_length,
-        selected_positions,
-        selected_position_count,
-        buffers->attn_heads,
-        buffers->qk_scale,
-        buffers->attention_latent_bf16,
-        buffers->row_positions);
+    // R3 flash-decode: below the deployment threshold (or with no workspace,
+    // or when the grid already fills the machine) this is the SAME
+    // single-pass launch as before, byte for byte. Above it, the position
+    // range splits across CTAs and a combine pass merges the partial
+    // softmax states deterministically. position_bound is the host-side walk
+    // bound: the selection width when the DSA selection is active, else the
+    // context.
+    if (LmLatentAttentionDecodeSplitLaunch<
+            Glm52Kv, GLM52_ATTN_THREADS, GLM52_LATENT, GLM52_ROPE_DIM>(
+            buffers->query_latent_bf16,
+            buffers->query_rope_bf16,
+            buffers->cache,
+            buffers->sequence_of_row,
+            buffers->context_length,
+            selected_positions,
+            selected_position_count,
+            buffers->attn_heads,
+            buffers->qk_scale,
+            buffers->attention_latent_bf16,
+            buffers->row_positions,
+            rows,
+            context > GLM52_DSA_SELECTED ? GLM52_DSA_SELECTED : context,
+            buffers->decode_split_context_threshold,
+            buffers->attention_split_partials,
+            (uint32_t)buffers->attention_split_partial_blocks,
+            multiprocessors,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
 
     LM_LAUNCH(
         (LmPerHeadProjectKernel<

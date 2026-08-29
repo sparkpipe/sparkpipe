@@ -703,6 +703,10 @@ typedef struct SparkGlm52ValFixture
 	uint32_t host_zero;
 	uint32_t host_position;
 	uint32_t host_token;
+	/* R3 flash-decode leg: nonzero engages the split decode attention for
+	 * the walks built after it is set; the partials workspace backs it. */
+	uint32_t split_threshold;
+	float *split_partials;
 } SparkGlm52ValFixture;
 
 static int SparkGlm52ValAllocMatrix(SparkGlm52ValMatrix *matrix,uint32_t rows,uint32_t columns,int mode,float scale)
@@ -1177,6 +1181,11 @@ static void SparkGlm52ValBuildWave(SparkGlm52ValFixture *fixture,uint32_t first_
 	wave->index_ordinal_by_local_layer = fixture->host_index_ordinals;
 	wave->page_table = fixture->page_table;
 	wave->multiprocessor_count = fixture->multiprocessors;
+	wave->decode_split_context_threshold = fixture->split_threshold;
+	wave->attention_split_partials_f32 = fixture->split_partials;
+	wave->attention_split_partial_blocks =
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(1u,
+		SPARK_GLM52_MODEL_HEAD_COUNT);
 }
 
 static int SparkGlm52ValRunWalk(SparkGlm52ValFixture *fixture)
@@ -1667,6 +1676,84 @@ static int SparkGlm52ValCompareStreams(SparkGlm52ValFixture *fixture,SparkGlm52V
 
 #ifndef SPARK_GLM52_VALIDATOR_ORACLE_SELFTEST
 
+/* R3 flash-decode leg: the dense walk through the SPLIT decode attention
+ * (threshold 1 engages it at every context; the partials workspace backs the
+ * partitions). The oracle bounds still hold - the combine is the same softmax
+ * up to where the rescale multiplies round - and the split walk re-runs
+ * bit-exact, the determinism property the combine's fixed order exists for. */
+static int SparkGlm52ValRunSplitLeg(SparkGlm52ValFixture *fixture,const SparkGlm52ValOracle *oracle)
+{
+	SparkGlm52ValMetrics metrics;
+	uint16_t *split_hidden = 0,*split_residual = 0,*rerun_hidden = 0,*rerun_residual = 0;
+	float actual[SPARK_GLM52_VHIDDEN],reference[SPARK_GLM52_VHIDDEN];
+	uint32_t index,split_mismatch = 0;
+	int local_result = 0;
+	/* the partials workspace lives only for this leg - the fixture setup
+	 * stays out of the split path's sizing business */
+	fixture->split_partials = (float *)SparkGlm52ValAllocZeroed(
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BYTES(1u,
+		SPARK_GLM52_MODEL_HEAD_COUNT));
+	if ( fixture->split_partials == 0 )
+		return(SparkGlm52ValFail("split","partials_alloc"));
+	split_hidden = (uint16_t *)malloc(SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
+	split_residual = (uint16_t *)malloc(SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
+	rerun_hidden = (uint16_t *)malloc(SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
+	rerun_residual = (uint16_t *)malloc(SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
+	if ( split_hidden == 0 || split_residual == 0 || rerun_hidden == 0 || rerun_residual == 0 )
+		local_result = SparkGlm52ValFail("split","host_alloc");
+	fixture->split_threshold = 1u;
+	if ( local_result == 0 && ( SparkGlm52ValRunWalk(fixture) != 0 ||
+		SparkGlm52ValCheckAccessError(fixture) != 0 ||
+		cudaMemcpy(split_hidden,fixture->hidden,SPARK_GLM52_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(split_residual,fixture->residual,SPARK_GLM52_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess ) )
+		local_result = SparkGlm52ValFail("split","walk_or_readback");
+	if ( local_result == 0 )
+	{
+		for (index = 0u; index < SPARK_GLM52_VHIDDEN; index++)
+		{
+			actual[index] = SparkGlm52ValFromBf16(split_hidden[index]);
+			reference[index] = oracle->hidden[index];
+		}
+		SparkGlm52ValMeasure(&metrics,actual,reference,SPARK_GLM52_VHIDDEN);
+		local_result = SparkGlm52ValReport("split_forward_hidden",&metrics,2e-2,0.999);
+		for (index = 0u; index < SPARK_GLM52_VHIDDEN; index++)
+		{
+			actual[index] = SparkGlm52ValFromBf16(split_residual[index]);
+			reference[index] = oracle->residual[index];
+		}
+		SparkGlm52ValMeasure(&metrics,actual,reference,SPARK_GLM52_VHIDDEN);
+		if ( local_result == 0 )
+			local_result = SparkGlm52ValReport("split_forward_residual",&metrics,2e-2,0.999);
+	}
+	/* the split walk re-runs bit-exact: the combine's fixed order */
+	if ( local_result == 0 && ( SparkGlm52ValRunWalk(fixture) != 0 ||
+		cudaMemcpy(rerun_hidden,fixture->hidden,SPARK_GLM52_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(rerun_residual,fixture->residual,SPARK_GLM52_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess ) )
+		local_result = SparkGlm52ValFail("split","rerun");
+	if ( local_result == 0 )
+	{
+		for (index = 0u; index < SPARK_GLM52_VHIDDEN && split_mismatch == 0; index++)
+			if ( rerun_hidden[index] != split_hidden[index] ||
+				rerun_residual[index] != split_residual[index] )
+				split_mismatch = 1;
+		printf("glm52_validation check=split_determinism elements=%u bit_exact=%d\n",
+			(unsigned)(2u * SPARK_GLM52_VHIDDEN),split_mismatch == 0 ? 1 : 0);
+		if ( split_mismatch != 0 )
+			local_result = SparkGlm52ValFail("split","repeat_walk_mismatch");
+	}
+	fixture->split_threshold = 0u;
+	if ( fixture->split_partials != 0 )
+	{
+		cudaFree(fixture->split_partials);
+		fixture->split_partials = 0;
+	}
+	free(split_hidden);
+	free(split_residual);
+	free(rerun_hidden);
+	free(rerun_residual);
+	return(local_result);
+}
+
 /* Tier 1: the original dense-layer walk, unchanged. */
 static int SparkGlm52ValRunDenseTier(SparkGlm52ValFixture *fixture,int *result)
 {
@@ -1736,6 +1823,10 @@ static int SparkGlm52ValRunDenseTier(SparkGlm52ValFixture *fixture,int *result)
 			if ( mismatch != 0 )
 				local_result = SparkGlm52ValFail("determinism","repeat_walk_mismatch");
 		}
+		/* R3 flash-decode leg: the same walk through the split decode
+		 * attention - oracle bounds plus bit-exact re-walk. */
+		if ( local_result == 0 )
+			local_result = SparkGlm52ValRunSplitLeg(fixture,&oracle);
 	}
 	free(device_hidden);
 	free(device_residual);

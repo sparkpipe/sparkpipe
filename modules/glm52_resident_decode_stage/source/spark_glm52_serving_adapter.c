@@ -62,6 +62,7 @@ static const char *const SparkGlm52ServingConfigurationMembers[] =
 	"stage_pack_path",
 	"max_sequence_positions",
 	"execution_row_capacity",
+	"decode_split_context_threshold",
 	"tp_degree",
 	"tp_rank",
 	"tp_collective"
@@ -194,6 +195,7 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 	SparkGlm52ServingState *state,
 	uint32_t *max_sequence_positions,
 	uint32_t *execution_row_capacity,
+	uint32_t *decode_split_context_threshold,
 	uint32_t *tp_degree,
 	uint32_t *tp_rank)
 {
@@ -227,6 +229,8 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"execution_row_capacity",execution_row_capacity);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"decode_split_context_threshold",decode_split_context_threshold);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"tp_degree",tp_degree);
 	if ( status == SPARK_STATUS_OK )
@@ -463,6 +467,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 {
 	SparkGlm52ServingState *state;
 	uint32_t max_sequence_positions,execution_row_capacity,tp_degree,tp_rank;
+	uint32_t decode_split_context_threshold;
 	SparkStatus status;
 	if ( adapter_state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -484,8 +489,8 @@ static SparkStatus SparkGlm52ServingInitialize(
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
-	status = SparkGlm52ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&tp_degree,&tp_rank);
-	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > state->resident_sequence_capacity) )
+	status = SparkGlm52ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
+	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > state->resident_sequence_capacity || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SPARK_GLM52_SERVING_TP_DEGREE) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -504,6 +509,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.pipeline_slot_count = state->pipeline_slot_count;
 		state->node_context.max_sequence_positions = max_sequence_positions;
 		state->node_context.execution_row_capacity = execution_row_capacity;
+		state->node_context.decode_split_context_threshold = decode_split_context_threshold;
 		state->node_context.tp_degree = tp_degree;
 		state->node_context.tp_rank = tp_rank;
 		state->node_context.stage_pack_path = state->stage_pack_path;

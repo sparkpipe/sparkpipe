@@ -116,6 +116,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *hc_mean_bf16;
 	float *router_logits_f32;
 	float *selection_scores_f32;
+	float *attention_split_partials_f32;
 	uint32_t *selected_positions;
 	uint32_t *route_expert;
 	float *route_weight;
@@ -180,6 +181,12 @@ typedef struct SparkGlm5NextCudaWave
 	const uint32_t *kda_state_index;
 	const uint32_t *page_table;
 	uint32_t multiprocessor_count;
+	/* R3 flash-decode: 0 keeps the single-pass decode attention byte-for-
+	 * byte; above the threshold the position range splits across CTAs and a
+	 * combine pass merges the per-partition softmax states. */
+	uint32_t decode_split_context_threshold;
+	float *attention_split_partials_f32;
+	uint64_t attention_split_partial_blocks;
 } SparkGlm5NextCudaWave;
 
 #ifdef __cplusplus

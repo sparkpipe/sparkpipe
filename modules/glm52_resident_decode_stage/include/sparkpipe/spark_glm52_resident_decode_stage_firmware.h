@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 4u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 5u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
 /*
@@ -41,6 +41,21 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT UINT32_C(0x00000004)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT UINT32_C(0x00000008)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT UINT32_C(0x00000010)
+
+/* R3 flash-decode partials workspace, sized per execution slot: one block of
+ * (max, sum, latent accumulator) floats per (row, head, partition). The
+ * partition cap is the module's copy of the shared split policy - layer.cuh
+ * static_asserts the two never drift. */
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS 16u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS \
+	(SPARK_GLM52_MODEL_LATENT_DIMENSION + 2u)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(rows,heads) \
+	((uint64_t)(rows) * (heads) * \
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BYTES(rows,heads) \
+	(SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(rows,heads) * \
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS * \
+	 (uint64_t)sizeof(float))
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_KNOWN_FLAGS \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL | \
 	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT | \
@@ -78,6 +93,11 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
 	 * kv_backing_directory / kv_backing_maximum_bytes). */
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
+	/* R3 flash-decode: the decode attention splits the position range across
+	 * CTAs once the walk reaches this many positions. 0 keeps the
+	 * single-pass kernel byte-for-byte at EVERY context - the shipped
+	 * default until the GPU cell qualifies the split path. */
+	uint32_t decode_split_context_threshold;
 } SparkGlm52ResidentDecodeStageNodeContext;
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \

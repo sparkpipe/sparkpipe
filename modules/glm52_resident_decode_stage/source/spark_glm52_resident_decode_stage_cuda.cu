@@ -366,6 +366,9 @@ static void SparkGlm52BindLayer(
 	buffers->context_length = slot->context_lengths;
 	buffers->positions = slot->positions;
 	buffers->row_positions = slot->positions;
+	buffers->attention_split_partials = wave->attention_split_partials_f32;
+	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
+	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
 	SparkGlm52BuildKvView(&buffers->cache,wave->kv_cache + ((uint64_t)local_layer * wave->kv_layer_stride_bytes),wave);
 	index_ordinal = wave->index_ordinal_by_local_layer[local_layer];
 	if ( index_ordinal != UINT32_MAX )

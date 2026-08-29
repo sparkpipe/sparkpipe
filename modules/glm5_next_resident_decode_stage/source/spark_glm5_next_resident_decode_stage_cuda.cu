@@ -405,6 +405,9 @@ static void SparkGlm5NextBindLayer(
 	buffers->shared_out_bf16 = slot->shared_out_bf16;
 	buffers->router_logits = slot->router_logits_f32;
 	buffers->selection_scores = slot->selection_scores_f32;
+	buffers->attention_split_partials = wave->attention_split_partials_f32;
+	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
+	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
 	buffers->route_expert = slot->route_expert;
 	buffers->route_weight = slot->route_weight;
 	buffers->route_source_token = slot->route_source_token;

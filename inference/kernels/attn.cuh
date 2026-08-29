@@ -343,6 +343,396 @@ void LmLatentAttentionDecodeKernel(
     }
 }
 
+// -- split-K decode attention (flash-decode) -----------------------------------
+//
+// One (row, head) CTA walks its whole context serially - at decode the grid is
+// rows x heads (24-64 CTAs against 48 SMs at one row), every CTA holds eight
+// warps at a twelfth of an SM, and each position costs a full-block reduction
+// plus two reads of the same slot. Long contexts leave the machine idle inside
+// a full grid. The split form partitions the position range across a third
+// grid axis, runs the IDENTICAL per-position body per partition (same block
+// reduction width, same online-softmax update - a partition is the base
+// kernel restricted to a contiguous range), and a combine pass merges the
+// per-partition (max, sum, accumulator) states.
+//
+// The merge is a fixed-order deterministic combine, not a bit-exact
+// reproduction: the base kernel's running rescale chains through every
+// position, and re-partitioning the chain changes where the multiplies round.
+// The formula is the same softmax (sum exp(s-M) v over sum exp(s-M)), the
+// order is fixed (ascending partition), and the extremes are exact:
+//  - one active partition (splits == 1, or every other partition empty):
+//    the combine multiplies by exp(0) = 1 and adds zeros, so the output is
+//    bit-identical to the base kernel;
+//  - an empty context: every partial max stays -INFINITY, the combine scales
+//    to zero, and 0 / 1e-20 reproduces the base kernel's 0.
+// The engagement threshold is deployment policy, not kernel policy: below it
+// the caller launches the base kernel byte-for-byte.
+#define LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS 16u
+#define LM_LATENT_ATTN_SPLIT_CTAS_PER_SM 4u
+#define LM_LATENT_ATTN_SPLIT_BLOCK_FLOATS(l) ((l) + 2u)
+
+template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
+__global__ __launch_bounds__(THREADS, 1)
+void LmLatentAttentionDecodeSplitKernel(
+    const uint16_t *__restrict__ query_latent_bf16,
+    const uint16_t *__restrict__ query_rope_bf16,
+    LmKvView cache,
+    const uint32_t *__restrict__ sequence_of_row,
+    const uint32_t *__restrict__ context_length,
+    const uint32_t *__restrict__ selected_positions,
+    uint32_t selected_count,
+    uint32_t heads,
+    uint32_t partitions,
+    float qk_scale,
+    float *__restrict__ partials,
+    const uint32_t *__restrict__ row_position)
+{
+    static_assert(
+        LATENT <= 8u * THREADS,
+        "the latent must fit the per-thread accumulator");
+    __shared__ float reduction[THREADS / LM_WARP_LANES];
+    __shared__ float shared_query[LATENT + ROPE];
+    float accumulator[8];
+    uint32_t row = blockIdx.x;
+    uint32_t head = blockIdx.y;
+    uint32_t partition = blockIdx.z;
+    uint32_t index;
+    uint32_t step;
+    uint32_t position_count;
+    uint32_t first_position;
+    uint32_t last_position;
+    uint32_t partition_span;
+    uint32_t sequence = sequence_of_row[row];
+    uint64_t latent_base = ((uint64_t)row * heads + head) * LATENT;
+    uint64_t rope_base = ((uint64_t)row * heads + head) * ROPE;
+    uint64_t partial_base;
+    float running_max = -INFINITY;
+    float running_sum = 0.0f;
+
+    if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
+    {
+        LmKvReportRequiredAccessFailure(
+            cache,
+            !LmKvViewIsConfigured(cache)
+                ? LM_KV_ACCESS_ERROR_INVALID_VIEW
+                : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
+            LM_KV_ACCESS_READ,
+            row,
+            sequence,
+            0xffffffffu,
+            0xffffffffu);
+        return;
+    }
+    if (partition >= partitions)
+    {
+        return;
+    }
+
+    for (index = 0u; index < 8u; ++index)
+    {
+        accumulator[index] = 0.0f;
+    }
+    for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
+    {
+        shared_query[index] = index < LATENT
+            ? LmBf16ToFloat(query_latent_bf16[latent_base + index])
+            : LmBf16ToFloat(query_rope_bf16[rope_base + index - LATENT]);
+    }
+    __syncthreads();
+
+    // Contiguous partitions of the position range: a partition is the base
+    // kernel's walk restricted to [first, last). The span comes from the
+    // DEVICE-side position count, so the boundaries are data, not policy.
+    position_count = selected_positions != 0
+        ? selected_count
+        : context_length[sequence];
+    partition_span = (position_count + partitions - 1u) / partitions;
+    first_position = partition * partition_span;
+    last_position = first_position + partition_span;
+    if (last_position > position_count)
+    {
+        last_position = position_count;
+    }
+    partial_base = (((uint64_t)row * heads + head) * partitions + partition) *
+                   (LATENT + 2u);
+    if (first_position >= last_position)
+    {
+        // An over-partitioned tail: a -INFINITY max contributes nothing to
+        // the combine, so over-partitioning stays bit-identical to one
+        // partition covering the same range.
+        if (threadIdx.x == 0u)
+        {
+            partials[partial_base] = -INFINITY;
+            partials[partial_base + 1u] = 0.0f;
+        }
+        for (index = threadIdx.x; index < LATENT; index += THREADS)
+        {
+            partials[partial_base + 2u + index] = 0.0f;
+        }
+        return;
+    }
+    for (step = first_position; step < last_position; ++step)
+    {
+        uint32_t position = selected_positions != 0
+            ? selected_positions[(row * selected_count) + step]
+            : step;
+        const uint8_t *slot;
+        float score = 0.0f;
+        float scaled_previous;
+        float scaled_current;
+        float previous_max;
+
+        if (row_position != 0 && position > row_position[row])
+        {
+            continue;
+        }
+        slot = LmKvSlotRequired<Geometry>(
+            cache, sequence, position, row, LM_KV_ACCESS_READ);
+        if (slot == 0)
+        {
+            // The base kernel returns without writing output; the frame is
+            // already failed through the access-error channel. Publish the
+            // partial as it stands so the combine reads no stale bytes, and
+            // let the failed frame discard the result.
+            if (threadIdx.x == 0u)
+            {
+                partials[partial_base] = running_max;
+                partials[partial_base + 1u] = running_sum;
+            }
+            for (index = 0u; index < 8u; ++index)
+            {
+                uint32_t element = (index * THREADS) + threadIdx.x;
+
+                if (element < LATENT)
+                {
+                    partials[partial_base + 2u + element] = accumulator[index];
+                }
+            }
+            return;
+        }
+        for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
+        {
+            score += shared_query[index] *
+                LmBf16ToFloat(((const uint16_t *)slot)[index]);
+        }
+        score = LmBlockSum<THREADS>(score, reduction) * qk_scale;
+        previous_max = running_max;
+        running_max = fmaxf(running_max, score);
+        scaled_previous = __expf(previous_max - running_max);
+        scaled_current = __expf(score - running_max);
+        running_sum = (running_sum * scaled_previous) + scaled_current;
+        for (index = 0u; index < 8u; ++index)
+        {
+            uint32_t element = (index * THREADS) + threadIdx.x;
+
+            if (element < LATENT)
+            {
+                accumulator[index] =
+                    (accumulator[index] * scaled_previous) +
+                    (scaled_current *
+                        LmBf16ToFloat(((const uint16_t *)slot)[element]));
+            }
+        }
+    }
+    if (threadIdx.x == 0u)
+    {
+        partials[partial_base] = running_max;
+        partials[partial_base + 1u] = running_sum;
+    }
+    for (index = 0u; index < 8u; ++index)
+    {
+        uint32_t element = (index * THREADS) + threadIdx.x;
+
+        if (element < LATENT)
+        {
+            partials[partial_base + 2u + element] = accumulator[index];
+        }
+    }
+}
+
+// The deterministic combine: global max over the partition maxes, each
+// partition rescaled by exp(max - global max), denominator and accumulator
+// summed in ASCENDING partition order - one fixed evaluation order, so the
+// same inputs give the same bits on every run, on every GPU. One non-empty
+// partition (or none) reproduces the single-pass kernel bit for bit; the
+// general case is the same softmax up to where the multiplies round.
+template<uint32_t THREADS, uint32_t LATENT>
+__global__ __launch_bounds__(THREADS, 1)
+void LmLatentAttentionDecodeSplitCombineKernel(
+    const float *__restrict__ partials,
+    uint16_t *__restrict__ output_bf16,
+    uint32_t heads,
+    uint32_t partitions)
+{
+    __shared__ float scales[LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS];
+    __shared__ float denominator_shared;
+    uint32_t row = blockIdx.x;
+    uint32_t head = blockIdx.y;
+    uint32_t partition;
+    uint32_t element;
+    uint64_t block_base;
+    float global_max;
+    float denominator;
+
+    block_base = ((uint64_t)row * heads + head) * partitions *
+                 (LATENT + 2u);
+    if (threadIdx.x == 0u)
+    {
+        global_max = -INFINITY;
+        for (partition = 0u; partition < partitions; ++partition)
+        {
+            float candidate = partials[
+                block_base + (uint64_t)partition * (LATENT + 2u)];
+
+            global_max = candidate > global_max ? candidate : global_max;
+        }
+        denominator = 0.0f;
+        for (partition = 0u; partition < partitions; ++partition)
+        {
+            float partition_max = partials[
+                block_base + (uint64_t)partition * (LATENT + 2u)];
+            float scale = (global_max == -INFINITY ||
+                           partition_max == -INFINITY)
+                ? 0.0f
+                : __expf(partition_max - global_max);
+
+            scales[partition] = scale;
+            denominator = fmaf(
+                partials[block_base + (uint64_t)partition * (LATENT + 2u) +
+                         1u],
+                scale,
+                denominator);
+        }
+        // A division per element, matching the single-pass kernel's epilogue
+        // (x / max(den, 1e-20)) - a precomputed reciprocal would round
+        // differently and break the one-partition bit-exactness.
+        denominator_shared = denominator;
+    }
+    __syncthreads();
+    for (element = threadIdx.x; element < LATENT; element += THREADS)
+    {
+        float merged = 0.0f;
+
+        for (partition = 0u; partition < partitions; ++partition)
+        {
+            merged = fmaf(
+                partials[block_base + (uint64_t)partition * (LATENT + 2u) +
+                         2u + element],
+                scales[partition],
+                merged);
+        }
+        output_bf16[((uint64_t)row * heads + head) * LATENT + element] =
+            LmFloatToBf16(merged / fmaxf(denominator_shared, 1.0e-20f));
+    }
+}
+
+// THE FLASH-DECODE ENTRY: below the deployment threshold (or with no
+// workspace, or when the grid already fills the machine) this launches the
+// single-pass kernel byte-for-byte; above it, one split launch plus one
+// combine launch. split_context_threshold == 0 disables the split path
+// entirely - the shipped deployments keep it off until the GPU cell
+// qualifies it. position_bound is the caller's host-side upper bound on the
+// walk length (the selected count when selecting, else the context bound);
+// the partition boundaries themselves come from the device-side count.
+template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
+    const uint16_t *query_latent_bf16,
+    const uint16_t *query_rope_bf16,
+    LmKvView cache,
+    const uint32_t *sequence_of_row,
+    const uint32_t *context_length,
+    const uint32_t *selected_positions,
+    uint32_t selected_count,
+    uint32_t heads,
+    float qk_scale,
+    uint16_t *output_bf16,
+    const uint32_t *row_position,
+    uint32_t rows,
+    uint32_t position_bound,
+    uint32_t split_context_threshold,
+    float *split_partials,
+    uint32_t split_partial_blocks,
+    uint32_t multiprocessor_count,
+    cudaStream_t stream)
+{
+    uint32_t blocks;
+    uint32_t wanted;
+    uint32_t partitions;
+
+    blocks = rows * heads;
+    wanted = multiprocessor_count == 0u || blocks == 0u
+        ? 1u
+        : (multiprocessor_count * LM_LATENT_ATTN_SPLIT_CTAS_PER_SM +
+           blocks - 1u) / blocks;
+    partitions = wanted < 1u ? 1u : wanted;
+    if (partitions > LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS)
+    {
+        partitions = LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS;
+    }
+    if (split_context_threshold == 0u || split_partials == 0 ||
+        position_bound < split_context_threshold || partitions < 2u ||
+        blocks == 0u ||
+        (uint64_t)blocks * partitions > split_partial_blocks)
+    {
+        partitions = 1u;
+    }
+    if (partitions == 1u)
+    {
+        LM_LAUNCH(
+            (LmLatentAttentionDecodeKernel<Geometry, THREADS, LATENT, ROPE>),
+            dim3(rows, heads),
+            THREADS,
+            0,
+            stream,
+            query_latent_bf16,
+            query_rope_bf16,
+            cache,
+            sequence_of_row,
+            context_length,
+            selected_positions,
+            selected_count,
+            heads,
+            qk_scale,
+            output_bf16,
+            row_position);
+        return cudaPeekAtLastError();
+    }
+    LM_LAUNCH(
+        (LmLatentAttentionDecodeSplitKernel<
+            Geometry, THREADS, LATENT, ROPE>),
+        dim3(rows, heads, partitions),
+        THREADS,
+        0,
+        stream,
+        query_latent_bf16,
+        query_rope_bf16,
+        cache,
+        sequence_of_row,
+        context_length,
+        selected_positions,
+        selected_count,
+        heads,
+        partitions,
+        qk_scale,
+        split_partials,
+        row_position);
+    if (cudaPeekAtLastError() != cudaSuccess)
+    {
+        return cudaPeekAtLastError();
+    }
+    LM_LAUNCH(
+        (LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>),
+        dim3(rows, heads),
+        THREADS,
+        0,
+        stream,
+        split_partials,
+        output_bf16,
+        heads,
+        partitions);
+    return cudaPeekAtLastError();
+}
+
 // -- sparse selection ----------------------------------------------------------
 //
 // Score every cached position with a low-rank index head and keep the top K.
