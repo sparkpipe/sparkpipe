@@ -2032,6 +2032,10 @@ static SparkStatus SparkQwen38_27bModuleUploadRows(SparkQwen38_27bModuleState *s
 // A base-zero prefill claims the lane fresh: the chunk kernels read the
 // resident state unconditionally, so a reused lane's stale delta state and
 // conv tails are zeroed on the slot stream before the walk.
+// Forward declaration: SparkQwen38_27bModuleFinish (line ~2300) consumes the
+// frame-error check defined later in this file; without this the -Werror
+// host build dies on implicit-declaration (main-tip breakage, 2026-08-29).
+static SparkStatus SparkQwen38_27bModuleCheckFrameError(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, SparkStatus status);
 static SparkStatus SparkQwen38_27bModuleResetLaneState(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, uint32_t lane)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
