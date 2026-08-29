@@ -59,11 +59,14 @@ def hub_manifest(repo: str, revision: str) -> tuple[str, list[dict]]:
     expected = []
     for sibling in info.get("siblings", []):
         lfs = sibling.get("lfs") or {}
+        # python-lib shape is lfs.oid ("sha256:<hex>"); REST ?blobs=true
+        # shape is lfs.sha256 ("<hex>"). Accept both.
+        lfs_sha = (lfs.get("oid") or "").removeprefix("sha256:") or lfs.get("sha256") or None
         expected.append(
             {
                 "path": sibling["rfilename"],
                 "expected_bytes": int(sibling.get("size") or 0),
-                "expected_sha256": (lfs.get("oid") or "").removeprefix("sha256:") or None,
+                "expected_sha256": lfs_sha,
             }
         )
     return info["sha"], expected
