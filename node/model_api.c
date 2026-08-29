@@ -59,6 +59,8 @@ typedef struct ApiRequest
 	volatile int orphaned;   /* waiter gone; worker completes the free */
 	volatile uint32_t status;
 	SparkModelBatchRequestHandle handle; /* 0 until accepted; the cancel path */
+	uint32_t *stop_tokens;       /* per-request stops; freed at unlink */
+	uint32_t stop_token_count;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 	struct ApiRequest *next;
@@ -93,13 +95,38 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 	{
 		if (r->id != ev->request_id)
 			continue;
-		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN &&
-			r->tokens_json_len + 12u < sizeof(r->tokens_json))
-			r->tokens_json_len += (uint32_t)snprintf(
-				r->tokens_json + r->tokens_json_len,
-				sizeof(r->tokens_json) - r->tokens_json_len,
-				"%s%u", r->tokens_json_len ? "," : "",
-				(unsigned)ev->token_id);
+		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN)
+		{
+			uint32_t stop_index;
+			int is_request_stop = 0;
+			for ( stop_index = 0u; stop_index < r->stop_token_count; ++stop_index )
+				if ( r->stop_tokens[stop_index] == ev->token_id )
+				{
+					is_request_stop = 1;
+					break;
+				}
+			if ( is_request_stop )
+			{
+				/* OpenAI semantics: the stop token is emitted, then
+				 * generation ends. The engine's own EOS set can't see
+				 * per-request stops, so the API completes the request:
+				 * mark done (the worker's orphan/inflight reaping
+				 * handles an in-flight submission's natural end) and
+				 * cancel to stop paying GPU for further tokens. */
+				pthread_mutex_lock(&r->mutex);
+				r->done = 1;
+				pthread_cond_signal(&r->cond);
+				pthread_mutex_unlock(&r->mutex);
+				if ( r->submitted && r->handle != 0 )
+					(void)SparkModelBatchEngineCancel(S.engine, r->handle);
+			}
+			else if (r->tokens_json_len + 12u < sizeof(r->tokens_json))
+				r->tokens_json_len += (uint32_t)snprintf(
+					r->tokens_json + r->tokens_json_len,
+					sizeof(r->tokens_json) - r->tokens_json_len,
+					"%s%u", r->tokens_json_len ? "," : "",
+					(unsigned)ev->token_id);
+		}
 		if (ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ||
 			ev->kind == SPARK_MODEL_BATCH_EVENT_ERROR)
 		{
@@ -156,6 +183,7 @@ static void *api_worker(void *arg)
 						pthread_mutex_unlock(&S.queue_mutex);
 						pthread_mutex_destroy(&victim->mutex);
 						pthread_cond_destroy(&victim->cond);
+						free(victim->stop_tokens);
 						free(victim->prompt_tokens);
 						free(victim);
 						pthread_mutex_lock(&S.queue_mutex);
@@ -435,8 +463,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
 	}
 	SparkJsonDocumentDestroy(&doc);
-	(void)request_stops; /* TODO(next commit): thread to req + TOKEN-event check */
-	(void)request_stop_count; /* silenced alongside request_stops (gcc -Werror: set-but-not-used broke the Linux API build) */
 	if (prompt_len == 0)
 	{
 		send_response(fd, 400, "{\"error\":\"prompt_token_ids required\"}");
@@ -456,6 +482,8 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	pthread_mutex_init(&req->mutex, 0);
 	pthread_cond_init(&req->cond, 0);
+	req->stop_tokens = request_stops;
+	req->stop_token_count = request_stop_count;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;
@@ -567,6 +595,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	 * worker's last touch of this request preceded that signal. */
 	pthread_mutex_destroy(&req->mutex);
 	pthread_cond_destroy(&req->cond);
+	free(req->stop_tokens);
 	free(req->prompt_tokens);
 	free(req);
 }
