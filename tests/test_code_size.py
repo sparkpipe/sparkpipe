@@ -865,7 +865,15 @@ from pathlib import Path
 # was broken: no memory_mode member, unpopulated twin config, no HC
 # scaling), the host syntax gate that would have caught it, the probe
 # ladder, and the layer-34 zero-output localization. 216620 exact.
-CEILING = 216620
+# glm5-kda lane: (1) the env-gated G5N-PROBE diag ladder that bisected the
+# first-zero ordinal (every-layer attn/mlp-entry sums, KDA per-stage dumps,
+# raw u16+float views, layers 0/16-20 gated); (2) the fix that rewires the
+# HC placement to run on the REDUCED sublayer output (reduce-then-place at
+# both sublayer sites + the KDA full-width partial copy into the shared
+# reduce buffer), which deletes the x-tp_degree-per-layer residual
+# multiplication that killed layer 17's attention. Diag ladder stays until
+# the zero-token bug closes, then trims. 216861 exact.
+CEILING = 216861
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

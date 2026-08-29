@@ -466,11 +466,14 @@ static void SparkGlm5NextBindLayer(
 }
 
 /* One attention site: HC wrap + the layer-kind sublayer. */
+static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave);
+
 static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
 	uint32_t layer;
 	int32_t status;
+	cudaError_t error;
 	cudaStream_t stream;
 	layer = wave->first_layer_index + local_layer;
 	stream = (cudaStream_t)wave->slot->stream;
@@ -492,7 +495,16 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 		status = Glm5NextLayerKda(&buffers,wave->row_count,wave->row_count,1u,wave->multiprocessor_count,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
-		return(Glm5NextHcPost(&buffers,buffers.kda_output_bf16,wave->row_count,stream));
+		/* The KDA out-GEMM lands its full-width rank partial in
+		 * kda_output_bf16 (attention_out_bf16 was its input scratch); the
+		 * chain reduces attention_out_bf16, so move the partial there. The
+		 * HC placement runs AFTER that reduce - see
+		 * SparkGlm5NextLaunchCudaLayerAttentionPost. */
+		LmCopyRowsKernel<SPARK_GLM5_NEXT_CUDA_THREADS><<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,wave->row_count),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(buffers.kda_output_bf16,buffers.attention_out_bf16,wave->row_count,GLM5_NEXT_HIDDEN);
+		error = cudaPeekAtLastError();
+		if ( error != cudaSuccess )
+			return(SparkGlm5NextCudaStatus(error));
+		return(LM_LAUNCH_OK);
 	}
 	status = Glm5NextLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -500,7 +512,9 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	if ( wave->tp_rank == 0u && getenv("SPARK_GLM5_NEXT_PROBE") != 0 )
 		fprintf(stderr,"G5N-PROBE attn L%u dsa_partial bf16sum %llu\n",(unsigned)layer,
 			(unsigned long long)Glm5NextProbeBf16Sum(stream,(const uint16_t *)buffers.attention_out_bf16,256u));
-	return(Glm5NextHcPost(&buffers,buffers.attention_out_bf16,wave->row_count,stream));
+	/* MLA already writes its full-width rank partial into attention_out_bf16;
+	 * the HC placement runs after the chain's reduce, not here. */
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
@@ -524,7 +538,44 @@ static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32
 	status = layer < GLM5_NEXT_FIRST_ROUTED_LAYER ? Glm5NextLayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,stream) : Glm5NextLayerMoe<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	return(Glm5NextHcPost(&buffers,buffers.attention_out_bf16,wave->row_count,stream));
+	/* dense/MoE wrote the full-width rank partial into attention_out_bf16;
+	 * the HC placement runs after the chain's reduce - see
+	 * SparkGlm5NextLaunchCudaLayerMlpPost. */
+	return(LM_LAUNCH_OK);
+}
+
+/* HC placement for one sublayer, run on the REDUCED output. The placement
+ * mixes the residual snapshot and the sublayer output into the streams; it
+ * must see the SUMMED rank partial exactly once per sublayer. Running it
+ * before the reduce made every rank add the replicated snapshot term and
+ * the wide reduce then multiplied the residual streams by tp_degree every
+ * layer - the layer-17 attention death (values reached 1e18, the attention
+ * RMSNorm overflowed, every downstream stage emitted exact zeros). */
+static int32_t SparkGlm5NextRunLayerHcPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	Glm5NextLayerBuffers buffers;
+	int32_t status;
+	cudaStream_t stream;
+	if ( wave == 0 || wave->slot == 0 || local_layer >= wave->layer_count )
+		return(LM_LAUNCH_ERR_SHAPE);
+	stream = (cudaStream_t)wave->slot->stream;
+	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
+	status = Glm5NextHcPost(&buffers,buffers.attention_out_bf16,wave->row_count,stream);
+	return(status);
+}
+
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
+}
+
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
 }
 
 static int32_t SparkGlm5NextRunLayers(const SparkGlm5NextCudaWave *wave)

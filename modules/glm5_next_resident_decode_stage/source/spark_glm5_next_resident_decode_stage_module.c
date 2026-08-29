@@ -1852,7 +1852,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION:
-		if ( SparkGlm5NextProbeEnabled() ) /* kda lane: EVERY layer - first-zero ordinal bisect */
+		if ( SparkGlm5NextProbeEnabled() )
 		{
 			uint16_t probe_attn[256];
 			uint32_t probe_i,probe_block;
@@ -1867,6 +1867,15 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			}
 			(void)error;
 			fprintf(stderr,"G5N-PROBE layer %u attn_out [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_sum);
+		}
+		/* The reduce summed the full-width sublayer partial across ranks;
+		 * the HC placement runs NOW, once, on the summed output. Before this
+		 * placement ran pre-reduce on each rank's local partial and the wide
+		 * streams reduce multiplied the residual by tp_degree every layer. */
+		if ( SparkGlm5NextLaunchCudaLayerAttentionPost(&chain->wave,chain->next_layer) != 0 )
+		{
+			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+			return;
 		}
 		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_MLP;
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
@@ -1894,13 +1903,21 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			return;
 		}
 		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP;
-		/* The MLP finalize writes its partial stream into hidden_bf16. */
-		launch_status = SparkGlm5NextModuleReduceHidden(chain,chain->slot->hidden_bf16);
+		/* The MLP finalize wrote its full-width rank partial into
+		 * attention_out_bf16; reduce THAT, then place once (next stage). */
+		launch_status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP:
-		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
+		/* Placement on the summed MLP partial; the streams are identical on
+		 * every rank from here to the next layer's HC site. */
+		if ( SparkGlm5NextLaunchCudaLayerMlpPost(&chain->wave,chain->next_layer) != 0 )
+		{
+			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+			return;
+		}
+		if ( SparkGlm5NextProbeEnabled() ) /* kda lane: EVERY layer - stream death bisect */
 		{
 			uint16_t probe_post[256];
 			uint32_t probe_pi,probe_pb;
