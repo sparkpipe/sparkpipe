@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 typedef struct { uint16_t raw; } __half;
+typedef struct { __half x, y; } __half2;
 static inline float __half2float(__half value)
 {
 	uint32_t sign = (uint32_t)(value.raw >> 15) & 0x1u;

@@ -887,7 +887,13 @@ from pathlib import Path
 # families hit it at merge by construction. 215868 exact.
 # ccn lane merge (PR742): env-soup eviction + dump deletes +
 # verbatim-motion extraction + validator tables; nets −2,226. 214793 exact.
-CEILING = 214793
+# P3 batched-kernels lane (PR743): the measured-negative verdict on
+# the route change (per-row streams OVERLAP on GB10 — the premise's
+# B1==B2 was a CSV misread, real B2=2.00x) + the durable deliveries:
+# the one-stream kernel for overlap-hostile profiles, full host-
+# compilable family header via SPARK_LM_LAUNCH, 68-check oracle, the
+# odd-K scalar misread documented. 215362 exact.
+CEILING = 215362
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

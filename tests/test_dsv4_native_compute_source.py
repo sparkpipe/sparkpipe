@@ -72,8 +72,10 @@ def main() -> int:
             "cvt.rn.f16x2.e4m3x2", "packed E4M3 conversion")
     require(body(common, "SparkLmDotRowFp8"), "packed = __ldcs(",
             "streaming immutable FP8 payload load")
-    if common.count("__ldcs(") != 1:
-        raise AssertionError("streaming cache policy must stay limited to SparkLmDotRowFp8")
+    require(body(common, "SparkLmBatchedLinearKernel"), "packed = __ldcs(",
+            "streaming immutable FP8 payload load (batched small rows)")
+    if common.count("__ldcs(") != 2:
+        raise AssertionError("streaming cache policy must stay limited to the FP8 weight streams (SparkLmDotRowFp8, SparkLmBatchedLinearKernel)")
 
     shape = body(common, "SparkLmSm121NativeDecodeShape")
     require(shape, "rows == 1u || rows == 5u || rows == 7u || rows == 8u || rows == 16u || rows == 32u || rows == 64u || rows == 1024u", "exact decode buckets")
