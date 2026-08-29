@@ -1691,3 +1691,17 @@ appendix).
 - NEW HARD GATE documented: provenance header patch (the repack packer
   emits zeros; module rejects zeros) — packer-side fix is the IR.
 - Wave law: node-to-node fanout FROM spark0 is the reliable form.
+
+## 2026-08-30 ~24:5x — probe-BUSY root-caused from source; probe+discriminator agent spawned
+
+- MECHANISM (rdma.cu:832): the receiver open-wait returns BUSY on
+  deadline expiry; probe-armed ranks stall their handshake side (the
+  probe's deliberate cudaStreamSynchronize calls slow the module
+  warmup inside create, peers' accepts arrive past the window). The
+  probe slows execution by design; the open deadline doesn't know.
+  Fix options ranked (defer-probe-after-open / deadline-relief /
+  warmup-exclusion) handed to the agent with the fleet-repro loop.
+- The same agent runs P2 (the discriminator: retention-advance across
+  two decode steps at the layer-17 first-zero neighborhood, vs the
+  M3 oracle references) and P3 (the verdict's fix → coherent curl →
+  staged COMPSEC-17 → staged M5) — the whole remaining chain.
