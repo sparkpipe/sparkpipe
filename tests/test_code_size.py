@@ -898,7 +898,17 @@ from pathlib import Path
 # sha256 links; restore-verified, collision = HASH_MISMATCH), B4 the
 # spark_kv_backing 0600/O_NOFOLLOW/fchmod-migration open + namespaced path
 # helpers. 215374 exact.
-CEILING = 215943
+# perf-r1 lane (2026-08-28): R1 routes the qwen38 27B B1 head (decode row,
+# prefill final row, MTP argmax row) to the certified screened head —
+# module allocations + dispatch + the two CUDA wrappers (~+118), and R5
+# adds SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated with
+# its fail-loud comment and switches five call sites (~+70). The receipt
+# harnesses (tools/perf_r1_head_bench.cu ~250: bit-exact direct-vs-certified
+# parity + per-token head timing; tools/perf_r5_validate_timing.c ~145:
+# status parity + host timing) are receipts, kept out of the Makefile.
+# Also covers main's pre-existing +38 drift at 4e2f19f (EOS scaffold).
+# 216580 exact.
+CEILING = 216580
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

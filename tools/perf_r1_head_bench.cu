@@ -86,9 +86,6 @@ int RunGeometry(uint32_t candidate_count)
 	cudaError_t error;
 	uint16_t *head_bf16 = 0;
 	uint16_t *hidden_bf16 = 0;
-	uint8_t *fp4_payload = 0;
-	uint8_t *fp4_scale = 0;
-	float *fp4_norm = 0;
 	uint8_t *fp8_payload = 0;
 	float *fp8_scale = 0;
 	float *fp8_norm = 0;
@@ -109,9 +106,6 @@ int RunGeometry(uint32_t candidate_count)
 	error = cudaMalloc(&head_bf16, head_bytes);
 	if (error != cudaSuccess) { printf("alloc head failed\n"); return 1; }
 	error = cudaMalloc(&hidden_bf16, kHidden * 2u);
-	error = cudaMalloc(&fp4_payload, head_bytes / 2u);
-	error = cudaMalloc(&fp4_scale, head_bytes / 32u);
-	error = cudaMalloc(&fp4_norm, (uint64_t)candidate_count * sizeof(float));
 	error = cudaMalloc(&fp8_payload, head_bytes);
 	error = cudaMalloc(&fp8_scale, groups * sizeof(float));
 	error = cudaMalloc(&fp8_norm, groups * sizeof(float));
@@ -146,18 +140,10 @@ int RunGeometry(uint32_t candidate_count)
 		head_bf16, rng_state, (uint32_t)head_elements);
 	cudaDeviceSynchronize();
 
-	/* shadows: exactly the module's config-time construction */
-	{
-		uint32_t blocks = (candidate_count + SPARK_LM_CTA_WARPS - 1u) /
-			SPARK_LM_CTA_WARPS;
-		SparkLmHostLaunchHeadShadowQuantize<SPARK_LM_HEAD_SHADOW_GROUP>(
-			0, head_bf16, fp4_payload, fp4_scale, fp4_norm, candidate_count,
-			kHidden);
-		SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16, fp8_payload,
-			fp8_scale, fp8_norm, candidate_count, kHidden);
-		cudaDeviceSynchronize();
-		(void)blocks;
-	}
+	/* certified shadow: exactly the module's config-time construction */
+	SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16, fp8_payload,
+		fp8_scale, fp8_norm, candidate_count, kHidden);
+	cudaDeviceSynchronize();
 
 	/* PARITY: kTrials random hiddens, both routes, bit-exact required */
 	for (uint32_t trial = 0; trial < kTrials; trial++)
@@ -170,9 +156,6 @@ int RunGeometry(uint32_t candidate_count)
 			 * candidates land within a few ULP of each other */
 			FillSmallBf16Kernel<<<(uint32_t)((head_elements + 255u) / 256u),
 				256u>>>(head_bf16, 1.0f / 4096.0f, (uint32_t)head_elements);
-			SparkLmHostLaunchHeadShadowQuantize<SPARK_LM_HEAD_SHADOW_GROUP>(
-				0, head_bf16, fp4_payload, fp4_scale, fp4_norm,
-				candidate_count, kHidden);
 			SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16,
 				fp8_payload, fp8_scale, fp8_norm, candidate_count, kHidden);
 			FillSmallBf16Kernel<<<(kHidden + 255u) / 256u, 256u>>>(hidden_bf16,
@@ -215,15 +198,11 @@ int RunGeometry(uint32_t candidate_count)
 			/* restore random weights after the adversarial trial */
 			FillRandomBf16Kernel<<<(uint32_t)((head_elements + 255u) / 256u),
 				256u>>>(head_bf16, rng_state, (uint32_t)head_elements);
-			SparkLmHostLaunchHeadShadowQuantize<SPARK_LM_HEAD_SHADOW_GROUP>(
-				0, head_bf16, fp4_payload, fp4_scale, fp4_norm,
-				candidate_count, kHidden);
 			SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16,
 				fp8_payload, fp8_scale, fp8_norm, candidate_count, kHidden);
 			cudaDeviceSynchronize();
 		}
 	}
-	(void)fp4_payload; (void)fp4_scale; (void)fp4_norm; /* screened path's shadow; quantized for completeness */
 
 	/* TIMING */
 	float direct_ms[kIters];
@@ -287,8 +266,7 @@ int RunGeometry(uint32_t candidate_count)
 			100.0 * screened / candidate_count);
 	}
 
-	cudaFree(head_bf16); cudaFree(hidden_bf16); cudaFree(fp4_payload);
-	cudaFree(fp4_scale); cudaFree(fp4_norm); cudaFree(fp8_payload);
+	cudaFree(head_bf16); cudaFree(hidden_bf16); cudaFree(fp8_payload);
 	cudaFree(fp8_scale); cudaFree(fp8_norm); cudaFree(direct_scratch);
 	cudaFree(certified_scratch); cudaFree(candidate_ids);
 	cudaFree(candidate_count_dev); cudaFree(direct_ids);
