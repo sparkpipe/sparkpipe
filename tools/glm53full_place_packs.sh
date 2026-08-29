@@ -30,9 +30,13 @@ set -euo pipefail
 packs_rel="$1"; ranks="$2"; bytes="$3"
 # 2026-08-29 first run created a literal '$HOME' directory under the
 # targets' homes (over-escaped variable); remove exactly that path.
+# EVERY inner ssh takes -n and rsync </dev/null: bash -s reads THIS
+# SCRIPT from stdin, so an inner ssh/rsync without stdin pinned would
+# consume the unread remainder of the script and silently end it
+# (this is why the first fixed run placed ranks 0-a then stopped).
 for rank in $ranks; do
     target="spark$(printf '%x' "$rank")"
-    ssh -o BatchMode=yes "$target" 'rm -rf -- "./\$HOME"' 2>/dev/null || true
+    ssh -n -o BatchMode=yes "$target" 'rm -rf -- "./\$HOME"' 2>/dev/null || true
 done
 for rank in $ranks; do
     target="spark$(printf '%x' "$rank")"
@@ -46,12 +50,12 @@ for rank in $ranks; do
         echo "rank $rank: LOCAL MISSING $local_path, skipped"
         continue
     fi
-    if ssh -o BatchMode=yes "$target" "test -s '$remote_rel' && [[ \$(stat -c%s '$remote_rel') -eq $bytes ]]" 2>/dev/null; then
+    if ssh -n -o BatchMode=yes "$target" "test -s '$remote_rel' && [[ \$(stat -c%s '$remote_rel') -eq $bytes ]]" 2>/dev/null; then
         echo "rank $rank -> $target: already placed"
         continue
     fi
     if rsync -q --inplace --rsync-path="mkdir -p '$packs_rel' && rsync" \
-        -e "ssh -o BatchMode=yes" "$local_path" "$target:$remote_rel"; then
+        -e "ssh -o BatchMode=yes" "$local_path" "$target:$remote_rel" </dev/null; then
         echo "rank $rank -> $target: placed"
     else
         echo "rank $rank -> $target: RSYNC FAILED"
