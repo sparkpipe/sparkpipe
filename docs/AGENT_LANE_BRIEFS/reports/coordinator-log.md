@@ -1436,3 +1436,21 @@ appendix).
   check goes hard-fail next touch).
 - Manifest chaos reconciled (regen + sha re-pin; the qwen36-rename
   drift was pre-existing). Offline set green.
+
+## 2026-08-30 ~12:3x — CCN LANE MERGED (2febf0f): the plan binds; max 159→75
+
+- HONEST SCOPING: validation split to its own budget (8.98 mean/90
+  max — the audit's inflation confirmed, 5 of the old top-25 were
+  harness); production 8.01→7.90.
+- STAGE ZERO: the 159-CCN function → 75 (six getenvs → typed config
+  w/ pinning test; both /tmp dumps deleted; helpers proven by
+  fragment-equality + 1524-char exact match).
+- TABLES with verdict receipts: 462,672 shape tuples + 42,002 + 20,001
+  fuzz trials — all byte-identical verdicts old-vs-new; full C suites
+  PASS.
+- THE BINDING: test_complexity_ceiling wired FIRST in gates.sh —
+  production max must not exceed the committed ceiling, ratcheted to
+  75 this lane, negative-tested. The audit's 'grew while the plan sat'
+  is structurally over. Next targets named: SubmitSpeculativeDecode
+  73, InitializeTpCollective 70.
+- Lane nets −2,226. All four audit-response lanes now MERGED.
