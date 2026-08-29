@@ -42,7 +42,10 @@ LANE=/home/spark8/lane-r3flash
 ROOT=/home/spark8/lane-r3flash/cell/runtime
 RES=/home/spark8/lane-r3flash/cell/results
 root_of() { printf '/home/%s/lane-r3flash/cell/runtime' "$1"; }
-FLEET_ROOT_TEMPLATE=/home/sparkRANK/sparkdata/glm52.tp8.fp8
+# fleet root per rank host: /home/<host>/sparkdata/glm52.tp8.fp8
+# (NEVER printf a 'sparkRANK' template - 'sparkRANK' is not a printf
+# directive, so it never substitutes; that latent bug shipped in the
+# original lane script and survived every retry until t7)
 PACK_TEMPLATE='glm52_tp8_rank%02d.fp8.glms52sp'
 O128_BATCH=${O128_BATCH:-/tmp/r3flash-o128-batch.json}
 B32K_BATCH=${B32K_BATCH:-/tmp/r3flash-32k-batch.json}
@@ -144,8 +147,7 @@ write_config() { # write_config THRESHOLD - render every rank's two configs
 	done
 	wait
 	for h in $HOSTS; do
-		r=${RANKOF[$h]}
-		fleet_root="$(printf "$FLEET_ROOT_TEMPLATE" "$r")"
+		fleet_root="/home/$h/sparkdata/glm52.tp8.fp8"
 		ssh -o BatchMode=yes "$h" "
 			jq '.nodes |= map(.runtime_root = (\"/home/\" + .transport_host + \"/lane-r3flash/cell/runtime\"))' \
 				$fleet_root/config/model_resident.json > $(root_of "$h")/config/model_resident.json &&
@@ -180,8 +182,7 @@ for h in $HOSTS; do
 done
 wait
 for h in $HOSTS; do
-	r=${RANKOF[$h]}
-	fleet_root="$(printf "$FLEET_ROOT_TEMPLATE" "$r")"
+	fleet_root="/home/$h/sparkdata/glm52.tp8.fp8"
 	root="$(root_of "$h")"
 	rsync -aq -e "ssh -o BatchMode=yes -o ConnectTimeout=10" \
 		"$LANE/build/sparkpipe_model_residentd" "$LANE/build/sparkpipe_model_batch" "$h:$root/bin/" \
