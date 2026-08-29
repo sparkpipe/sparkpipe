@@ -78,6 +78,10 @@ typedef struct SparkDsv4LayerWeights
 } SparkDsv4LayerWeights;
 
 typedef struct SparkDsv4ModuleState SparkDsv4ModuleState;
+/* Mirrors LM_FRAME_ERROR_WORDS (frame_error.cuh): the six-word per-frame
+ * error record {code, kind, row, sequence, position, page}. */
+#define SPARK_DSV4_FRAME_ERROR_WORDS 6u
+
 typedef struct SparkDsv4ModuleSlot SparkDsv4ModuleSlot;
 typedef struct SparkDsv4TpFrameContinuation SparkDsv4TpFrameContinuation;
 
@@ -222,6 +226,12 @@ struct SparkDsv4ModuleSlot
 	void *dspark_verify_tap_bf16;
 	void *dspark_logits_bf16;
 	float *dspark_logits_f32;
+	/* Per-frame error record (inference/kernels/frame_error.cuh, 6 words):
+	 * kernels report sparse-index corruption here; the device slot is
+	 * cleared at frame start, copied back to the pinned mirror before the
+	 * completion callback, and a non-zero code fails the frame. */
+	uint32_t *frame_error;
+	uint32_t *host_frame_error;
 };
 
 typedef struct SparkDsv4AsyncCompletion
@@ -500,7 +510,7 @@ extern cudaError_t SparkDsv4LaunchQueryHeadRmsRope(cudaStream_t stream, void *da
 extern cudaError_t SparkDsv4LaunchKvPost(cudaStream_t stream, void *data_bf16, const void *gain_bf16, const float *freqs_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t head_dim, uint32_t rope_dim, uint32_t quant_width, uint32_t quant_block, float epsilon);
 extern cudaError_t SparkDsv4LaunchIndexerPost(cudaStream_t stream, void *data_bf16, const float *freqs_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t head_count, uint32_t head_dim, uint32_t rope_dim, uint32_t quant_block);
 extern cudaError_t SparkDsv4LaunchHadamard(cudaStream_t stream, void *data_bf16, uint32_t vector_count, uint32_t width);
-extern cudaError_t SparkDsv4LaunchSparseAttn(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t compressed_entries_per_page, const int32_t *topk_idxs, const uint32_t *valid_topk_counts, uint32_t topk, const float *sink_f32, float scale, void *out_bf16, float *partials_f32, uint32_t partial_capacity, uint32_t multiprocessor_count, uint32_t row_count, uint32_t head_count, uint32_t head_dim);
+extern cudaError_t SparkDsv4LaunchSparseAttn(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t page_table_rows, uint32_t compressed_entries_per_page, uint32_t pool_page_count, const int32_t *topk_idxs, const uint32_t *valid_topk_counts, uint32_t topk, const float *sink_f32, float scale, void *out_bf16, float *partials_f32, uint32_t partial_capacity, uint32_t multiprocessor_count, uint32_t row_count, uint32_t head_count, uint32_t head_dim, const void *frame_error);
 extern cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale);
 extern cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const void *kv_bf16, const void *score_bf16, const float *ape_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted);
 extern cudaError_t SparkDsv4LaunchKvEmission(cudaStream_t stream, void *emit_bf16, const uint32_t *emitted, const void *norm_weight_bf16, const float *freqs_f32, const uint64_t *row_emit_positions, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots, uint32_t rotate);
@@ -1802,7 +1812,7 @@ static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state,
 	uint64_t initialize_bytes = (uint64_t)head_rows * 2u * sizeof(uint32_t);
 	uint64_t metadata_bytes = (uint64_t)metadata_rows * (3u * sizeof(uint32_t) + 3u * sizeof(uint64_t));
 	uint64_t device_metadata_bytes = metadata_bytes + 2u * page_table_bytes + initialize_bytes;
-	uint64_t host_bytes = metadata_bytes + (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t) + 4u * page_table_bytes + initialize_bytes;
+	uint64_t host_bytes = metadata_bytes + (uint64_t)SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT * sizeof(uint32_t) + 4u * page_table_bytes + initialize_bytes + SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t);
 	SparkStatus status;
 	cudaError_t error;
 
@@ -1836,6 +1846,8 @@ static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state,
 	slot->host_initialize_page_indices = (uint32_t *)host_cursor;
 	host_cursor += (uint64_t)head_rows * sizeof(uint32_t);
 	slot->host_initialize_parent_page_indices = (uint32_t *)host_cursor;
+	slot->host_frame_error = (uint32_t *)host_cursor;
+	host_cursor += SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t);
 	status = SparkStageModuleDeviceAllocate(&state->ledger,device_metadata_bytes,(void **)&slot->input_token_ids);
 	device_cursor = (uint8_t *)slot->input_token_ids;
 	device_cursor += (uint64_t)metadata_rows * sizeof(uint32_t);
@@ -1885,6 +1897,9 @@ static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state,
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT * sizeof(float),(void **)&slot->moe_scores_f32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(float),(void **)&slot->moe_weights_f32);
+	/* device-private: the frame error slot kernels report corruption into. */
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t),(void **)&slot->frame_error);
 	return(status);
 }
 
@@ -3067,7 +3082,7 @@ static cudaError_t SparkDsv4ModuleRunAttentionRows(SparkDsv4ModuleState *state, 
 	cudaError_t error;
 	error = SparkDsv4LaunchCacheScatter(stream,(const uint8_t *)slot->kv_bf16 + kv_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,0,cache,lane_stride,slot->row_lane_indices + first_row,slot->row_positions + first_row,rows,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,0u,SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchSparseAttn(stream,(const uint8_t *)slot->q_bf16 + q_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,cache,lane_stride,slot->row_lane_indices + first_row,slot->row_page_table_indices + first_row,slot->physical_page_table,state->paged_cache.lane_page_capacity,SparkDsv4PagedPoolCompressedEntries(layer_kind),slot->topk_idxs + topk_offset,slot->attention_slot_counts + first_row,state->topk_column_count,sink_f32,1.0f / sqrtf((float)SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION),(uint8_t *)slot->attn_out_bf16 + q_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,slot->sparse_attn_partials_f32,state->sparse_attn_partial_capacity,state->multiprocessor_count,rows,SparkDsv4ModuleTpQueryHeads(state),SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION);
+		error = SparkDsv4LaunchSparseAttn(stream,(const uint8_t *)slot->q_bf16 + q_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,cache,lane_stride,slot->row_lane_indices + first_row,slot->row_page_table_indices + first_row,slot->physical_page_table,state->paged_cache.lane_page_capacity,state->resident_sequence_capacity,SparkDsv4PagedPoolCompressedEntries(layer_kind),state->paged_cache.physical_page_capacity,slot->topk_idxs + topk_offset,slot->attention_slot_counts + first_row,state->topk_column_count,sink_f32,1.0f / sqrtf((float)SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION),(uint8_t *)slot->attn_out_bf16 + q_offset * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,slot->sparse_attn_partials_f32,state->sparse_attn_partial_capacity,state->multiprocessor_count,rows,SparkDsv4ModuleTpQueryHeads(state),SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,slot->frame_error);
 	return(error);
 }
 
@@ -5445,6 +5460,19 @@ static void SparkDsv4ModuleCompleteAsync(void *context)
 		async->completion.status == SPARK_STATUS_OK ? 1u : 0u) !=
 		SPARK_STATUS_OK )
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( async->completion.status == SPARK_STATUS_OK &&
+		state->slots[async->slot_index].host_frame_error[0] != 0u )
+	{
+		fprintf(stderr,"dsv4_stage frame_error code %u kind %u row %u seq %u pos %u page %u (slot %u)\n",
+			(unsigned)state->slots[async->slot_index].host_frame_error[0],
+			(unsigned)state->slots[async->slot_index].host_frame_error[1],
+			(unsigned)state->slots[async->slot_index].host_frame_error[2],
+			(unsigned)state->slots[async->slot_index].host_frame_error[3],
+			(unsigned)state->slots[async->slot_index].host_frame_error[4],
+			(unsigned)state->slots[async->slot_index].host_frame_error[5],
+			(unsigned)async->slot_index);
+		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+	}
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )
@@ -5520,7 +5548,13 @@ static void SparkDsv4ModuleCompleteAfterFailedEnqueue(
 static SparkStatus SparkDsv4ModuleEnqueueAsync(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, uint32_t slot_index)
 {
 	cudaError_t error;
-	error = cudaLaunchHostFunc((cudaStream_t)slot->cuda_stream,SparkDsv4ModuleCompleteAsync,&state->completions[slot_index]);
+	/* Frame error copyback (frame_error.cuh): pinned mirror lands on the
+	 * stream before the host callback reads it. device -> pinned host. */
+	error = cudaMemcpyAsync(slot->host_frame_error,slot->frame_error,
+		SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t),
+		cudaMemcpyDeviceToHost,(cudaStream_t)slot->cuda_stream);
+	if ( error == cudaSuccess )
+		error = cudaLaunchHostFunc((cudaStream_t)slot->cuda_stream,SparkDsv4ModuleCompleteAsync,&state->completions[slot_index]);
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"async_completion"));
 }
 
@@ -5548,6 +5582,7 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 	SparkDsv4ModuleSlot *slot;
 	uint32_t emitted_token_count,lane_count,row_count,slot_index,tp_async_started;
 	SparkStatus status,synchronize_status;
+	cudaError_t frame_error_clear;
 	if ( state->tp_degree > 1u && state->tp_graphs_sealed == 0u )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	lane_count = frame->active_slot_count;
@@ -5574,6 +5609,14 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 	}
 	slot = &state->slots[slot_index];
 	slot->cuda_stream = frame->execution_stream;
+	/* Fresh frame, fresh error record (frame_error.cuh). Stream-ordered
+	 * ahead of every launch, including a graph replay of the decode step. */
+	frame_error_clear = cudaMemsetAsync(slot->frame_error,0,
+		SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t),
+		(cudaStream_t)slot->cuda_stream);
+	memset(slot->host_frame_error,0,SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t));
+	if ( frame_error_clear != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,frame_error_clear,"frame_error_clear"));
 	status = SparkDsv4ModulePrepareAsync(state,frame,context,slot_index,
 		lane_count,row_count,emitted_token_count,lane_indices,
 		lane_sequence_ids,lane_next_positions);

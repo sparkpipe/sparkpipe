@@ -326,6 +326,9 @@ PYTHON_TESTS := \
 	tests/test_kda_decay.py \
 	tests/test_kda_host.py \
 	tests/test_kv_failure_host.py \
+	tests/test_frame_error_host.py \
+	tests/test_kernel_frame_error_source.py \
+	tests/test_ue8m0_encoder_oracle.py \
 	tests/test_kernel_algorithms.py \
 	tests/test_kernel_launches.py \
 	tests/test_layer_dataflow.py \

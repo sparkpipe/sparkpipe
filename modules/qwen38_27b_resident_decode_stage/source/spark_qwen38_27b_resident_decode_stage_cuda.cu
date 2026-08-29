@@ -3,6 +3,7 @@
 
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
+#include "inference/kernels/frame_error.cuh"
 #include "spark_qwen38_27b_dspark_cuda.cuh"
 #include "spark_qwen38_27b_dspark_format.h"
 #include "spark_qwen38_27b_native_ws.cuh"
@@ -1400,6 +1401,39 @@ extern "C" cudaError_t SparkQwen38_27bLaunchRmsNorm(cudaStream_t stream, const v
 #define SPARK_QWEN38_27B_RANS_SUB_LEN 64u
 #define SPARK_QWEN38_27B_RANS_HEADER_BYTES 768u
 #define SPARK_QWEN38_27B_RANS_STAGE_BYTES 13312u
+/* THE FIXED STAGE WINDOW (K4, BUG_LEDGER): shared offsets below carve
+ * [24576, 44576) for the compressed chunk - exactly 20000 bytes between the
+ * c table and the double-buffered weight tiles. A chunk whose declared span
+ * exceeds the window, or whose offsets invert (end < off underflows the
+ * subtraction), used to be copied in unchecked and streamed past shared
+ * memory. The bound + fail-loud check in the decode loop closes that. */
+#define SPARK_QWEN38_27B_RANS_STAGE_WINDOW_BYTES 20000u
+
+/* The module's per-frame error record: kernels report payload corruption
+ * here; the module clears it at frame start and reads it back at the frame's
+ * sync contract (frame_error.cuh). Device-symbol storage: this module's
+ * launch ABI cannot carry a slot pointer through every linear dispatch, and
+ * the fail direction is loud-only - a stale record fails the NEXT frame's
+ * check rather than passing silently. */
+__device__ LmFrameError spark_qwen38_27b_frame_error;
+
+extern "C" cudaError_t SparkQwen38_27bFrameErrorClear(cudaStream_t stream)
+{
+	void *address = 0;
+	cudaError_t error = cudaGetSymbolAddress(&address,spark_qwen38_27b_frame_error);
+	if ( error != cudaSuccess )
+		return error;
+	return cudaMemsetAsync(address,0,sizeof(LmFrameError),stream);
+}
+
+extern "C" cudaError_t SparkQwen38_27bFrameErrorRead(void *destination, cudaStream_t stream)
+{
+	void *address = 0;
+	cudaError_t error = cudaGetSymbolAddress(&address,spark_qwen38_27b_frame_error);
+	if ( error != cudaSuccess )
+		return error;
+	return cudaMemcpyAsync(destination,address,sizeof(LmFrameError),cudaMemcpyDeviceToHost,stream);
+}
 
 static __device__ void SparkQwen38_27bRansBuildTable(uint32_t *s_sf, uint16_t *s_c, const uint32_t *entries3, uint32_t ndirect)
 {
@@ -1519,7 +1553,26 @@ static __global__ void __launch_bounds__(1024u, 1u) SparkQwen38_27bSmallBatchTil
 			const uint32_t off = offsets[ti];
 			const uint32_t end = (ti + 1u < chunk_count) ? offsets[ti + 1u] : (uint32_t)payload_bytes;
 			while ( *(volatile uint32_t *)&tile_done[t % 3u] < (t / 3u) ) {}
-			SparkQwen38_27bRansStageChunk(stage, payload + off, end - off);
+			if ( end < off || end - off > SPARK_QWEN38_27B_RANS_STAGE_WINDOW_BYTES )
+			{
+				/* K4: the chunk span does not fit the fixed shared window -
+				 * corrupt offsets array or truncated payload. Report once
+				 * through the frame record, stage ZEROS so every address the
+				 * decoder touches stays inside the window (decoding a zeroed
+				 * stage is bounded: the renorm loop reads at most ~9KB of it),
+				 * and let the barrier accounting run its normal course - the
+				 * consumers wait on tile_ready either way. The module fails
+				 * the frame at its sync contract; the context lives. */
+				uint32_t *window = (uint32_t *)stage;
+				LmFrameErrorReport(&spark_qwen38_27b_frame_error,
+					(uint32_t)LM_FRAME_ERROR_PAYLOAD_WINDOW_OUT_OF_RANGE,
+					0u,ti,end - off,SPARK_QWEN38_27B_RANS_STAGE_WINDOW_BYTES,0u);
+				for ( uint32_t zw = lane; zw < SPARK_QWEN38_27B_RANS_STAGE_WINDOW_BYTES / 4u; zw += 32u )
+					window[zw] = 0u;
+				__syncwarp();
+			}
+			else
+				SparkQwen38_27bRansStageChunk(stage, payload + off, end - off);
 			SparkQwen38_27bRansDecodeTileHalf(s_sf, s_c, stage, id_table, warp - 28u, weight_tile + (t % 3u) * SPARK_QWEN38_27B_SMALL_BATCH_TILE_N * SPARK_QWEN38_27B_SMALL_BATCH_K_CHUNK);
 			__threadfence_block();
 			atomicAdd(&tile_ready[t % 3u], 1u);

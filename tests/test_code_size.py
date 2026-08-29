@@ -930,7 +930,14 @@ from pathlib import Path
 # because be3e066 had already counted ~598 lines of L1 on main), +5 for
 # the coordinator-applied Makefile test registration from the same
 # integration request. 221265 exact.
-CEILING = 221265
+# kernel-crew (K1-K4): the per-frame error record + publish protocol
+# (frame_error.cuh, host_cuda probe + shim), trap-on-corruption and
+# sparse-attn bounds in the dsv4/qwen38_27b/qwen4_flash modules, the
+# UE8M0 round-down oracle, and the rANS bound - correctness surface,
+# receipts in the K1-K4 commit message and coverage entries. The lane
+# landed without its ratchet bump; measured at coordinator merge:
+# 222130 exact; +1 at merge = the frame_error_clear declaration completing the lane's own WIP (its committed state did not compile).
+CEILING = 222131
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

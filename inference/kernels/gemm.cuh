@@ -112,6 +112,15 @@ struct LmGemmArguments
 	uint32_t group_count;
 	uint32_t input_dimension;
 	uint32_t output_dimension;
+	// THE FRAME'S ERROR SLOT (frame_error.cuh). On any launch that stages A
+	// rows through source_row_map - the indirect path or the codec path - a
+	// corrupt map is a FRAME failure recorded here, never a trap: the kernel
+	// falls back to bounded staging and the driver fails the frame when it
+	// reads the slot at frame end. Null on launches no live corruption site
+	// can reach with a corrupt map yet; wiring the slot is what upgrades the
+	// fail-safe into fail-loud, and glm5_next's execution slots show the
+	// reference wiring.
+	LmFrameError *frame_error;
 };
 
 // Accumulate one staged K tile.
@@ -374,7 +383,8 @@ static __device__ __forceinline__ void LmGemmProduce(
             (const uint8_t *)args.activation_bytes,args.source_row_map,
             stage_a,stage_b,barrier,row_base,row_limit,
             INDIRECT_A ? args.source_row_count : args.group_row_offset[args.group_count],
-            args.input_dimension,neuron_base,k_tile,group,grouped);
+            args.input_dimension,neuron_base,k_tile,group,grouped,
+            args.frame_error);
         return;
     }
     if constexpr ( INDIRECT_A )
@@ -385,7 +395,8 @@ static __device__ __forceinline__ void LmGemmProduce(
             args.source_row_count,args.input_dimension,
             stage_a,stage_b,barrier,row_base,row_limit,
             neuron_base,k_tile,group,grouped,
-            args.output_dimension / 16u);
+            args.output_dimension / 16u,
+            args.frame_error);
         return;
     }
     LmPipelineProduce<TILE_K>(

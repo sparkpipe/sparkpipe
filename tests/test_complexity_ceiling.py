@@ -60,6 +60,14 @@ Ledger (exact counts, newest last):
   branch returns a status or selects a path; none nests. Digest identity
   receipts in docs/AGENT_LANE_BRIEFS/reports/w1-loader-2026-08-29.md.
   Mean ceiling commits to 7.85.
+- 2026-08-29 kernel-crew merge (K1-K4): production mean 7.85 -> 7.86;
+  max unchanged at 75. The movement is the fail-frame error record
+  itself: every integrated module's ExecuteFrame now clears the per-frame
+  error word stream-ordered ahead of launches and checks+publishes it at
+  completion (one clear + one check per frame path - the K1 contract),
+  and the bounds fixes add one guard each at exactly the three call
+  sites they own. Every added branch returns a status or publishes a
+  fail-frame record; none nests. Mean ceiling commits to 7.86.
 """
 import pathlib
 import sys
@@ -73,7 +81,7 @@ CEILING = 75
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
-MEAN_CEILING_X100 = 785
+MEAN_CEILING_X100 = 786
 
 # The validation harnesses (control-vs-candidate CUDA units, never merged
 # into production) carry their OWN budget. It does not gate the production

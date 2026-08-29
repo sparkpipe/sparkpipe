@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/dtype.cuh"
+#include "inference/kernels/frame_error.cuh"
 #include "inference/kernels/mma.cuh"
 #include "../../include/sparkpipe/spark_weight_codec.h"
 #include <math.h>
@@ -51,7 +52,8 @@ static __device__ void LmActivationStageFp8Qdq(
 	uint32_t input_dimension,
 	void *tile_bf16,
 	uint32_t producer_warp_base,
-	uint32_t producer_warp_count)
+	uint32_t producer_warp_count,
+	LmFrameError *frame_error = 0)
 {
 	static_assert(128u % TILE_K == 0u,"FP8 activation groups must contain whole K tiles");
 	static_assert(ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0,"unsupported FP8 activation codec");
@@ -68,7 +70,18 @@ static __device__ void LmActivationStageFp8Qdq(
 			continue;
 		source_row = source_row_map != 0 ? source_row_map[packed_row] : packed_row;
 		if ( source_row >= source_row_count )
-			asm volatile("trap;\n");
+		{
+			// ROUTE-MAP CORRUPTION IS A FRAME FAILURE, NOT A CONTEXT
+			// FAILURE (frame_error.cuh): record the first bad row and skip
+			// this row's staging. These are plain shared stores with no
+			// mbarrier accounting, so a skip cannot hang the tile; the row's
+			// output is dead regardless and the driver fails the frame when
+			// it reads the slot. The context lives.
+			LmFrameErrorReport(frame_error,
+				(uint32_t)LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE,
+				0u,packed_row,source_row,row_base,source_row_count);
+			continue;
+		}
 		amax = 0.0f;
 		for (element=lane; element<128u; element+=32u)
 			amax = fmaxf(amax,fabsf(LmBf16ToFloat(source[(uint64_t)source_row * input_dimension + (k_base / 128u) * 128u + element])));

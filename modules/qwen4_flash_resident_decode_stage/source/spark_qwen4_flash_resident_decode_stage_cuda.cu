@@ -3,6 +3,7 @@
 
 #include "sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
+#include "inference/kernels/frame_error.cuh"
 #include "inference/kernels/route.cuh"
 #include "runtime/launch.h"
 
@@ -2627,7 +2628,8 @@ static __global__ void SparkQwen4FlashGroupedScalarE8m0Kernel(
 	void *output_bf16,
 	uint32_t group_count,
 	uint32_t input_dimension,
-	uint32_t output_dimension)
+	uint32_t output_dimension,
+	const void *frame_error_void)
 {
 	extern __shared__ float shared_input[];
 	const uint32_t subtile_count = (SPARK_LM_TILE_N + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS;
@@ -2635,6 +2637,8 @@ static __global__ void SparkQwen4FlashGroupedScalarE8m0Kernel(
 	const void *group_payload;
 	const uint8_t *group_scale;
 	float accumulator;
+	LmFrameError *frame_error;
+	frame_error = (LmFrameError *)frame_error_void;
 	for (task = blockIdx.x; task < group_tile_prefix[group_count]; task += gridDim.x)
 	{
 		group = SparkLmGroupedScalarGroupOfTile(group_tile_prefix,group_count,task);
@@ -2652,8 +2656,17 @@ static __global__ void SparkQwen4FlashGroupedScalarE8m0Kernel(
 			source_row = source_row_map != 0 ? source_row_map[row] : row;
 			if ( source_row >= source_row_count )
 			{
-				asm volatile("trap;\n");
-				return;
+				/* Route-map corruption (K1): record it in the frame's error
+				 * slot and stage row 0 instead. A trap here killed the whole
+				 * CUDA context - every resident model with it - and a bare
+				 * return would strand the surviving threads at the
+				 * __syncthreads below. Row 0 keeps every address in bounds
+				 * and every thread marching; the staged row is dead output
+				 * and the module fails the frame when it reads the slot. */
+				LmFrameErrorReport(frame_error,
+					(uint32_t)LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE,
+					0u,row,source_row,row_base,source_row_count);
+				source_row = 0u;
 			}
 			for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
 				shared_input[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)source_row * input_dimension) + element);
@@ -2691,7 +2704,8 @@ static cudaError_t SparkQwen4FlashLaunchGroupedScalarE8m0(
 	uint32_t group_count,
 	uint32_t input_dimension,
 	uint32_t output_dimension,
-	uint32_t multiprocessor_count)
+	uint32_t multiprocessor_count,
+	const void *frame_error)
 {
 	uint32_t block_count;
 	size_t shared_bytes;
@@ -2699,7 +2713,8 @@ static cudaError_t SparkQwen4FlashLaunchGroupedScalarE8m0(
 		group_tile_prefix == 0 || output_bf16 == 0 || source_row_count == 0u || group_count == 0u ||
 		input_dimension == 0u || output_dimension == 0u || multiprocessor_count == 0u ||
 		payload_group_stride_bytes == 0u || scale_group_stride_bytes == 0u ||
-		(source_row_map == 0 && source_row_count == 0u) || (input_dimension % 128u) != 0u )
+		(source_row_map == 0 && source_row_count == 0u) || (input_dimension % 128u) != 0u ||
+		frame_error == 0 )
 		return(cudaErrorInvalidValue);
 	block_count = multiprocessor_count * 2u;
 	if ( block_count == 0u )
@@ -2708,7 +2723,7 @@ static cudaError_t SparkQwen4FlashLaunchGroupedScalarE8m0(
 	SparkQwen4FlashGroupedScalarE8m0Kernel<<<block_count,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(
 		payload_base,scale_base,payload_group_stride_bytes,scale_group_stride_bytes,
 		input_bf16,source_row_map,source_row_count,group_row_offset,group_tile_prefix,
-		output_bf16,group_count,input_dimension,output_dimension);
+		output_bf16,group_count,input_dimension,output_dimension,frame_error);
 	return(cudaGetLastError());
 }
 
@@ -2724,7 +2739,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 	uint32_t multiprocessor_count,
 	uint32_t tp_degree,
 	uint32_t tp_rank,
-	uint32_t route_group_base)
+	uint32_t route_group_base,
+	const void *frame_error)
 {
 	uint64_t rows_per_expert;
 	uint64_t payload_stride,scale_stride;
@@ -2795,7 +2811,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 			payload,scale,payload_stride,scale_stride,
 			input_bf16,source_row_map,source_row_count,offsets,prefix,
 			output_bf16,experts_per_rank,
-			view->input_dimension,(uint32_t)rows_per_expert,multiprocessor_count));
+			view->input_dimension,(uint32_t)rows_per_expert,multiprocessor_count,
+			frame_error));
 	}
 	return(SparkLmHostLaunchGroupedScalarLinear<32u>(stream,
 		lm_format,
