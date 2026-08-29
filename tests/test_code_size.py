@@ -963,7 +963,6 @@ from pathlib import Path
 # scoreboard's cold-start line item) and makes warm code redeploys
 # sub-second identity hits; test is excluded by construction, the
 # package-manifest regen is uncounted (.json). 224177 exact.
-CEILING = 225017
 # The JIT-KV vertical slice (lane/jikv-slice, 2026-08-29): the pager
 # adapter joining the resident arena to the nvme tier -
 # include/sparkpipe/spark_kv_pager.h + cache/kv_pager.c (the park/
@@ -982,6 +981,14 @@ CEILING = 225017
 # cache or page store - would have grown those files more and blurred
 # their contracts. # Merged on a base already carrying W2a (224177); re-measured at
 # merge resolution: 225017 exact.
+# The r2-prefill lane's R2c lands the dsv4 bulk causal-prefill attention
+# (the module header's prescribed replacement for the round-major
+# wavefront): the window-ring snapshot kernel, the staged-row/shadow
+# window fetch and shared source table inside the sparse attention
+# kernel, the bulk launcher pair, and the whole-frame module wiring
+# (shadow+scatter+one attention launch per prefill frame), net +241
+# authored lines. Rebased onto the W2a + JIT-KV main; re-measured at resolution: 225258 exact.
+CEILING = 225258
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
