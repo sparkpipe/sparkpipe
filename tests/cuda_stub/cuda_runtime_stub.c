@@ -732,7 +732,12 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    fd = *(int *)shareable_handle;
+    /* osHandle carries the POSIX fd BY VALUE - the real driver contract
+     * (cuda.h: "Shareable Handle representing the memory allocation";
+     * the value IS the fd integer). Modeling a dereference here hid a
+     * real-hardware import failure (reason=import_handle on every import)
+     * until the first GPU receipt ran - cell-runner 2026-08-29. */
+    fd = (int)(uintptr_t)shareable_handle;
     if (fd < 0 || fcntl(fd, F_GETFD) < 0 || fstat(fd, &status) != 0)
     {
         return CUDA_ERROR_INVALID_VALUE;
