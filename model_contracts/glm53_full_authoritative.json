@@ -1,0 +1,205 @@
+{
+ "architecture": "GlmMoeDsaForCausalLM",
+ "family": "glm52 (module family; the glm52 module IS the 5.3-full module)",
+ "freeze_policy": "packs must cite this contract's receipt block; re-freeze on any source change",
+ "geometry": {
+  "dense_intermediate_dimension": 12288,
+  "dsa_index_head_count": 32,
+  "dsa_index_head_dimension": 128,
+  "dsa_index_share_group_layer_count": 4,
+  "dsa_index_skip_topk_offset": 3,
+  "dsa_selected_token_count": 2048,
+  "eos_token_ids": [
+   154820,
+   154827,
+   154829
+  ],
+  "first_routed_layer": 3,
+  "head_count": 64,
+  "hidden_dimension": 6144,
+  "latent_dimension": 512,
+  "layer_count": 78,
+  "moe_expert_count": 256,
+  "moe_intermediate_dimension": 2048,
+  "moe_routed_scaling_factor": 2.5,
+  "moe_top_k": 8,
+  "mtp_nextn_predict_layers": 1,
+  "output_vocab_count": 154880,
+  "qk_nope_head_dimension": 192,
+  "query_a_dimension": 2048,
+  "rope_dimension": 64,
+  "router_scoring_func": "sigmoid",
+  "router_topk_method": "noaux_tc",
+  "value_head_dimension": 256
+ },
+ "indexer_types_resolution": {
+  "answer": "omitted, not dropped: the checkpoint carries full indexer sets (wq_b, wk, weights_proj, k_norm.{weight,bias}) on layers [0,1,2,6,10,...,74] (21 in 0-77) + the MTP layer 78 \u2014 the same share-group-4 pattern as 5.2; the glm52 has_full_indexer rule needs no change",
+  "evidence_layers": [
+   0,
+   1,
+   2,
+   6,
+   10,
+   14,
+   18,
+   22,
+   26,
+   30,
+   34,
+   38,
+   42,
+   46,
+   50,
+   54,
+   58,
+   62,
+   66,
+   70,
+   74,
+   78
+  ],
+  "question": "5.2 config splits full/shared indexer 21/57; the 5.3 NVFP4 config carries no indexer_types key \u2014 dropped or omitted?"
+ },
+ "license_class": "zai-commercial-use-granted",
+ "model_id": "RadixArk/GLM-5.3-NVFP4",
+ "quantization": {
+  "expert_layout": {
+   "fused_up_gate_note": "up_proj.weight_scale_2 == gate_proj.weight_scale_2 per expert (sampled), so the wire format's one-global-per-expert fused EXPERT_UP_GATE entry is exact verbatim",
+   "input_scale": "F32 static activation scale \u2014 not packed (module uses dynamic activation)",
+   "weight": "U8 packed e2m1, two 4-bit codes per byte, [rows, cols/2]",
+   "weight_scale": "F8_E4M3 per 16-element group, [rows, cols/16]",
+   "weight_scale_2": "F32 global per expert projection"
+  },
+  "full_resolution_spine": "embed, lm_head, all attention, indexer, router, shared experts, dense layers 0-2, MTP layer 78, all norms \u2014 BF16",
+  "group_size": 16,
+  "kv_cache_quant_algo": "FP8",
+  "producer": {
+   "name": "modelopt",
+   "version": "0.47.0.dev91+g7ff81dd79"
+  },
+  "quant_algo": "NVFP4",
+  "quantized_tensors": "routed-expert linears ONLY (mlp.experts.*) layers 3-77"
+ },
+ "quantization_policy": {
+  "class": "community quantization, VETTING per policy",
+  "packer_role": "REPACKAGE only: expert payloads+scales byte-verbatim",
+  "provenance": "pinned (receipt repo+revision+per-file sha256)",
+  "quality_gate": "PENDING first serve (COMPSEC-17 then 92x)",
+  "receipt_verification": "small files full + strided shard re-hash"
+ },
+ "receipt_verification": {
+  "receipt": {
+   "bytes": 464874334135,
+   "files": 58,
+   "format": "ds4-hf-warm-download-receipt-v1",
+   "license_class": "zai-commercial-use-granted",
+   "repo": "RadixArk/GLM-5.3-NVFP4",
+   "revision": "363e8f086905afd83db356a620f9aa401c23800a",
+   "verified_at": "2026-08-28T19:28:57.754570+00:00"
+  },
+  "receipt_sha256": "904cf82359bc853b51bc9b2ac89288531aea29ac2858e4641696b0cbec88e0ba",
+  "shard_check": {
+   "failed": [],
+   "ok": 7,
+   "sampled": [
+    "model-00001-of-00047.safetensors",
+    "model-00009-of-00047.safetensors",
+    "model-00017-of-00047.safetensors",
+    "model-00025-of-00047.safetensors",
+    "model-00033-of-00047.safetensors",
+    "model-00041-of-00047.safetensors",
+    "model-00047-of-00047.safetensors"
+   ],
+   "shard_count": 47,
+   "stride": 8
+  },
+  "small_files": {
+   "DOWNLOAD-RECEIPT.json": {
+    "bytes": 14721,
+    "sha256": "904cf82359bc853b51bc9b2ac89288531aea29ac2858e4641696b0cbec88e0ba"
+   },
+   "LICENSE": {
+    "bytes": 4246,
+    "matches_receipt": true,
+    "sha256": "ee7c633a46fc0f8bc3bd34f8987723fdeb11bd3c4764ba3c6f6e76ca67d4f268"
+   },
+   "README.md": {
+    "bytes": 5718,
+    "matches_receipt": true,
+    "sha256": "bb409ca7eac1a45d89ba7ec8ffb6dd79f1dafbce536dd2fd790dc30397ada093"
+   },
+   "chat_template.jinja": {
+    "bytes": 10465,
+    "matches_receipt": true,
+    "sha256": "69bb3ab52067898e2466b855407636de559568947f367945842aabcb7fcc1705"
+   },
+   "config.json": {
+    "bytes": 18519,
+    "matches_receipt": true,
+    "sha256": "1dd7f73e24d6a980c005b7faaa6fcfbc62c74647c792b4d236cd0fa55d772a77"
+   },
+   "generation_config.json": {
+    "bytes": 215,
+    "matches_receipt": true,
+    "sha256": "5250479c871aed26bb43a1c8432cc8a83c9f31875235c9bb1fd832fe7355c71d"
+   },
+   "hf_quant_config.json": {
+    "bytes": 10400,
+    "matches_receipt": true,
+    "sha256": "173ff253d12262db0699b45afc89bea36e65b012d72a6bb75be240d401286fb8"
+   },
+   "model.safetensors.index.json": {
+    "bytes": 22194492,
+    "matches_receipt": true,
+    "sha256": "2aa8397b501d9f6a232d153f328feb912f813c389061aac4cf72b04914fa5b74"
+   },
+   "tokenizer.json": {
+    "bytes": 20217442,
+    "matches_receipt": true,
+    "sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
+   },
+   "tokenizer_config.json": {
+    "bytes": 790,
+    "matches_receipt": true,
+    "sha256": "77af7d4769cd62c107b90495cac9b0ba81573c86486821bfba2980c04285ec7a"
+   }
+  }
+ },
+ "schema_version": 1,
+ "source_path": "/mnt/model-warm/glm-5.3-nvfp4-radixark",
+ "source_revision": "363e8f086905afd83db356a620f9aa401c23800a",
+ "structural_census": {
+  "dense_layers": [
+   0,
+   1,
+   2
+  ],
+  "indexer_full_layer_78_mtp": true,
+  "indexer_full_layers_0_77": [
+   0,
+   1,
+   2,
+   6,
+   10,
+   14,
+   18,
+   22,
+   26,
+   30,
+   34,
+   38,
+   42,
+   46,
+   50,
+   54,
+   58,
+   62,
+   66,
+   70,
+   74
+  ],
+  "routed_layers": "3-77 (76 layers)",
+  "shard_count": 47,
+  "tensor_count": 232385
+ }
+}
