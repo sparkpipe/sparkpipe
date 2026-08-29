@@ -455,6 +455,9 @@ static __global__ void SparkDsv4SparseAttnKernel(
     uint32_t head_count,
     uint32_t head_dim,
     uint32_t split_count,
+    const void *staged_kv_bf16,
+    const void *shadow_bf16,
+    const uint64_t *row_positions,
     const void *frame_error_void)
 {
     static const uint32_t heads_per_cta = SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
@@ -469,6 +472,13 @@ static __global__ void SparkDsv4SparseAttnKernel(
     __shared__ float merge_scale[
         heads_per_cta * SPARK_LM_CTA_WARPS];
     __shared__ float inverse_denominator[heads_per_cta];
+    /* R2c bulk prefill: window slot -> this frame's staged KV row.
+     * -1 = the slot was not written by this frame; the query reads the
+     * pre-frame ring snapshot instead. Filled serially by thread 0 in
+     * ascending row order, so a slot shared by two in-frame positions
+     * keeps the newest - the same value the wavefront would have left
+     * in the ring. */
+    __shared__ int32_t bulk_window_source[SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS];
     LmFrameError *frame_error =
         (LmFrameError *)frame_error_void;
     float *query_shared;
@@ -548,6 +558,30 @@ static __global__ void SparkDsv4SparseAttnKernel(
             accumulator[local_head][pair_index] = make_float2(0.0f, 0.0f);
         }
     }
+    if (staged_kv_bf16 != 0 && shadow_bf16 != 0 && threadIdx.x == 0u)
+    {
+        uint32_t source_row;
+        uint64_t own_position;
+
+        own_position = row_positions[row];
+        for (source_row = 0u;
+             source_row < SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS;
+             ++source_row)
+        {
+            bulk_window_source[source_row] = -1;
+        }
+        for (source_row = 0u; source_row < row_count; ++source_row)
+        {
+            if (row_lane_indices[source_row] == row_lane_indices[row] &&
+                row_positions[source_row] <= own_position)
+            {
+                bulk_window_source[
+                    (uint32_t)(row_positions[source_row] %
+                        SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS)] =
+                    (int32_t)source_row;
+            }
+        }
+    }
     __syncthreads();
 
     /* K2 (BUG_LEDGER): the top-k indices come from an on-device indexer
@@ -575,74 +609,100 @@ static __global__ void SparkDsv4SparseAttnKernel(
 
         cache_index = __ldg(
             topk_idxs + ((uint64_t)row * topk) + selected_slot);
-        if (cache_index >= 0)
-        {
-            float local_logit[heads_per_cta];
-            float logit[heads_per_cta];
-            float rescale[heads_per_cta];
-            float weight[heads_per_cta];
-            float2 selected_values[maximum_pairs_per_lane];
-            uint32_t local_cache_index;
-            uint32_t physical_page;
-            uint64_t cache_vector_base;
-
-            local_cache_index = (uint32_t)cache_index;
-            physical_page = row_lane_indices[row];
-            if (local_cache_index >= SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS)
+            if (cache_index >= 0)
             {
-                uint32_t compressed_index;
-                uint32_t source_page;
+                float local_logit[heads_per_cta];
+                float logit[heads_per_cta];
+                float rescale[heads_per_cta];
+                float weight[heads_per_cta];
+                float2 selected_values[maximum_pairs_per_lane];
+                const uint16_t *value_base;
+                uint32_t local_cache_index;
+                uint32_t physical_page;
+                uint64_t cache_vector_base;
 
-                if (compressed_entries_per_page == 0u)
+                value_base = (const uint16_t *)kv_cache_bf16;
+                local_cache_index = (uint32_t)cache_index;
+                physical_page = row_lane_indices[row];
+                if (staged_kv_bf16 != 0 && shadow_bf16 != 0 &&
+                    local_cache_index < SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS)
                 {
-                    continue;
+                    /* R2c bulk prefill window slot: this frame's staged
+                     * row when one wrote the slot (position <= the
+                     * query's), else the pre-frame ring snapshot. */
+                    int32_t source_row = bulk_window_source[local_cache_index];
+                    if (source_row >= 0)
+                    {
+                        value_base = (const uint16_t *)staged_kv_bf16;
+                        cache_vector_base = (uint64_t)source_row * head_dim;
+                    }
+                    else
+                    {
+                        value_base = (const uint16_t *)shadow_bf16;
+                        cache_vector_base =
+                            ((uint64_t)row *
+                                SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
+                                local_cache_index) * head_dim;
+                    }
                 }
-                compressed_index = local_cache_index -
-                    SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS;
-                source_page = compressed_index / compressed_entries_per_page;
-                if ( source_page >= page_table_stride )
+                else
+            {
+                if (local_cache_index >= SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS)
+                {
+                    uint32_t compressed_index;
+                    uint32_t source_page;
+
+                    if (compressed_entries_per_page == 0u)
+                    {
+                        continue;
+                    }
+                    compressed_index = local_cache_index -
+                        SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS;
+                    source_page = compressed_index / compressed_entries_per_page;
+                    if ( source_page >= page_table_stride )
+                    {
+                        LmFrameErrorReport(frame_error,
+                            (uint32_t)LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE,
+                            0u,row,cache_index,source_page,page_table_stride);
+                        continue;
+                    }
+                    local_cache_index = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
+                        (compressed_index % compressed_entries_per_page);
+                    physical_page = physical_page_table[
+                        ((uint64_t)page_ordinal * page_table_stride) + source_page];
+                }
+                if ( physical_page >= pool_page_count )
                 {
                     LmFrameErrorReport(frame_error,
                         (uint32_t)LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE,
-                        0u,row,cache_index,source_page,page_table_stride);
+                        0u,row,cache_index,physical_page,pool_page_count);
                     continue;
                 }
-                local_cache_index = SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS +
-                    (compressed_index % compressed_entries_per_page);
-                physical_page = physical_page_table[
-                    ((uint64_t)page_ordinal * page_table_stride) + source_page];
+                cache_vector_base = ((uint64_t)physical_page *
+                    lane_stride_elements) + ((uint64_t)local_cache_index * head_dim);
             }
-            if ( physical_page >= pool_page_count )
-            {
-                LmFrameErrorReport(frame_error,
-                    (uint32_t)LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE,
-                    0u,row,cache_index,physical_page,pool_page_count);
-                continue;
-            }
-            cache_vector_base = ((uint64_t)physical_page *
-                lane_stride_elements) + ((uint64_t)local_cache_index * head_dim);
             for (local_head = 0u;
                  local_head < heads_per_cta;
                  ++local_head)
             {
                 local_logit[local_head] = 0.0f;
             }
-            for (pair_index = 0u;
-                 pair_index < pairs_per_lane;
-                 ++pair_index)
-            {
-                uint32_t value_pair_index;
-
-                value_pair_index =
-                    (pair_index * SPARK_LM_WARP_LANES) + lane_index;
-                selected_values[pair_index] = make_float2(0.0f,0.0f);
-                if (value_pair_index < (head_dim >> 1u))
+                for (pair_index = 0u;
+                     pair_index < pairs_per_lane;
+                     ++pair_index)
                 {
-                    uint32_t query_element;
+                    uint32_t value_pair_index;
 
-                    selected_values[pair_index] = SparkLmLoadBf16Pair(
-                        kv_cache_bf16,
-                        (cache_vector_base >> 1u) + value_pair_index);
+                    value_pair_index =
+                        (pair_index * SPARK_LM_WARP_LANES) + lane_index;
+                    selected_values[pair_index] = make_float2(0.0f,0.0f);
+                    if (value_pair_index < (head_dim >> 1u))
+                    {
+                        uint32_t query_element;
+
+                        selected_values[pair_index] = SparkLmLoadBf16Pair(
+                            value_base,
+                            (cache_vector_base >> 1u) + value_pair_index);
                     query_element = value_pair_index << 1u;
                     for (local_head = 0u;
                          local_head < active_head_count;
@@ -1076,6 +1136,35 @@ static __global__ void SparkDsv4CacheScatterKernel(
 		return;
 	SparkDsv4CacheScatterRow(source_bf16,cache_bf16,cache_lane_stride,
 		row_lane_indices,row_positions,row,width,base_slot,ratio,ring_slots);
+}
+
+/*
+ * R2c bulk prefill, pass 1 of 3: snapshot each frame row's lane window
+ * ring page BEFORE the whole-frame KV scatter. The bulk attention reads
+ * these snapshots for window slots the frame did not write, which is
+ * exactly the value the replaced wavefront would have observed (its
+ * ring reads always predate any later in-frame scatter of the slot).
+ */
+static __global__ void SparkDsv4WindowShadowKernel(
+	const uint16_t *cache_bf16,
+	uint64_t cache_lane_stride,
+	const uint32_t *row_lane_indices,
+	uint16_t *shadow_bf16,
+	uint32_t row_count,
+	uint32_t head_dim,
+	uint32_t window_tokens)
+{
+	uint64_t source,destination;
+	uint32_t element,row,page;
+
+	row = blockIdx.x;
+	if ( row >= row_count )
+		return;
+	page = row_lane_indices[row];
+	source = (uint64_t)page * cache_lane_stride;
+	destination = (uint64_t)row * window_tokens * head_dim;
+	for (element=threadIdx.x; element<window_tokens*head_dim; element+=blockDim.x)
+		shadow_bf16[destination + element] = cache_bf16[source + element];
 }
 
 /*
@@ -2906,6 +2995,129 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
         head_count,
         head_dim,
         split_count,
+        0,
+        0,
+        0,
+        frame_error);
+    error = cudaGetLastError();
+    if ( error != cudaSuccess || split_count == 1u )
+        return(error);
+    SparkDsv4SparseAttnMergeKernel<<<dim3(row_count,grid.y),SPARK_LM_CTA_THREADS,0,
+        stream>>>(partials_f32,valid_topk_counts,sink_f32,out_bf16,row_count,
+        head_count,head_dim,split_count);
+    return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchWindowShadow(cudaStream_t stream,
+    const void *kv_cache_bf16, uint64_t lane_stride_elements,
+    const uint32_t *row_lane_indices, void *shadow_bf16, uint32_t row_count,
+    uint32_t head_dim, uint32_t window_tokens)
+{
+    if ( kv_cache_bf16 == 0 || row_lane_indices == 0 || shadow_bf16 == 0 ||
+        row_count == 0u || head_dim == 0u || window_tokens == 0u )
+        return cudaErrorInvalidValue;
+    SparkDsv4WindowShadowKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(
+        (const uint16_t *)kv_cache_bf16,lane_stride_elements,row_lane_indices,
+        (uint16_t *)shadow_bf16,row_count,head_dim,window_tokens);
+    return(cudaGetLastError());
+}
+
+/*
+ * R2c bulk causal prefill: the same sparse-attention kernel with the
+ * window slots resolved against this frame's staged KV rows and the
+ * pre-frame ring snapshot instead of the live ring. One launch covers
+ * the whole frame, so prefill no longer pays a scatter+attention pair
+ * per round-major wave; the per-row column order and values are
+ * identical to the wavefront.
+ */
+extern "C" cudaError_t SparkDsv4LaunchBulkPrefillAttn(
+    cudaStream_t stream,
+    const void *q_bf16,
+    const void *kv_cache_bf16,
+    uint64_t lane_stride_elements,
+    const void *staged_kv_bf16,
+    const uint64_t *row_positions,
+    const void *shadow_bf16,
+    const uint32_t *row_lane_indices,
+    const uint32_t *row_page_table_indices,
+    const uint32_t *physical_page_table,
+    uint32_t page_table_stride,
+    uint32_t page_table_rows,
+    uint32_t compressed_entries_per_page,
+    uint32_t pool_page_count,
+    const int32_t *topk_idxs,
+    const uint32_t *valid_topk_counts,
+    uint32_t topk,
+    const float *sink_f32,
+    float scale,
+    void *out_bf16,
+    float *partials_f32,
+    uint32_t partial_capacity,
+    uint32_t multiprocessor_count,
+    uint32_t row_count,
+    uint32_t head_count,
+    uint32_t head_dim,
+    const void *frame_error)
+{
+    static const uint32_t heads_per_cta = SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;
+    dim3 grid;
+    cudaError_t error;
+    size_t shared_bytes;
+    uint32_t split_count,partial_count;
+
+    if ( q_bf16 == 0 || kv_cache_bf16 == 0 || staged_kv_bf16 == 0 ||
+        row_positions == 0 || shadow_bf16 == 0 ||
+        row_lane_indices == 0 || row_page_table_indices == 0 ||
+        physical_page_table == 0 || page_table_stride == 0u ||
+        page_table_rows == 0u || pool_page_count == 0u ||
+        frame_error == 0 ||
+        topk_idxs == 0 || valid_topk_counts == 0 || out_bf16 == 0 ||
+        partials_f32 == 0 ||
+        topk == 0u || row_count == 0u || head_count == 0u ||
+        head_dim == 0u || head_dim > SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION ||
+        (head_dim & 1u) != 0u || partial_capacity == 0u ||
+        multiprocessor_count == 0u)
+    {
+        return cudaErrorInvalidValue;
+    }
+    split_count = SparkDsv4SparseAttnSplitCount(row_count,head_count,topk,
+        compressed_entries_per_page,multiprocessor_count);
+    partial_count = row_count *
+        ((head_count + heads_per_cta - 1u) / heads_per_cta) * split_count;
+    if ( split_count == 0u || partial_count > partial_capacity )
+        return(cudaErrorInvalidValue);
+    grid = dim3(row_count,(head_count + heads_per_cta - 1u) / heads_per_cta,
+        split_count);
+    shared_bytes = SparkDsv4SparseAttnSharedBytes(head_dim);
+    SparkDsv4SparseAttnKernel<<<
+        grid,
+        SPARK_LM_CTA_THREADS,
+        shared_bytes,
+        stream>>>(
+        q_bf16,
+        kv_cache_bf16,
+        lane_stride_elements,
+        row_lane_indices,
+        row_page_table_indices,
+        physical_page_table,
+        page_table_stride,
+        page_table_rows,
+        compressed_entries_per_page,
+        pool_page_count,
+        topk_idxs,
+        valid_topk_counts,
+        topk,
+        sink_f32,
+        scale,
+        out_bf16,
+        partials_f32,
+        row_count,
+        head_count,
+        head_dim,
+        split_count,
+        staged_kv_bf16,
+        shadow_bf16,
+        row_positions,
         frame_error);
     error = cudaGetLastError();
     if ( error != cudaSuccess || split_count == 1u )

@@ -143,6 +143,11 @@ struct SparkDsv4ModuleSlot
 	uint32_t *output_token_ids;
 	uint32_t *resident_token_ids;
 	uint32_t *prefill_emit_rows_u32;
+	/* R2c bulk prefill: per-row snapshot of the lane's window ring page
+	 * taken BEFORE the whole-frame KV scatter, so the bulk attention can
+	 * serve window columns from the pre-frame ring exactly like the
+	 * wavefront it replaced. rows x window x head_dim BF16. */
+	void *prefill_window_shadow_bf16;
 	uint32_t *row_lane_indices;
 	uint32_t *row_page_table_indices;
 	uint64_t *row_positions;
@@ -515,6 +520,9 @@ extern cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_b
 extern cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const void *kv_bf16, const void *score_bf16, const float *ape_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted);
 extern cudaError_t SparkDsv4LaunchKvEmission(cudaStream_t stream, void *emit_bf16, const uint32_t *emitted, const void *norm_weight_bf16, const float *freqs_f32, const uint64_t *row_emit_positions, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots, uint32_t rotate);
 extern cudaError_t SparkDsv4LaunchCacheScatter(cudaStream_t stream, const void *source_bf16, const uint32_t *emitted, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots);
+/* R2c bulk causal prefill: window-ring snapshot + whole-frame attention. */
+extern cudaError_t SparkDsv4LaunchWindowShadow(cudaStream_t stream, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, void *shadow_bf16, uint32_t row_count, uint32_t head_dim, uint32_t window_tokens);
+extern cudaError_t SparkDsv4LaunchBulkPrefillAttn(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const void *staged_kv_bf16, const uint64_t *row_positions, const void *shadow_bf16, const uint32_t *row_lane_indices, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t page_table_rows, uint32_t compressed_entries_per_page, uint32_t pool_page_count, const int32_t *topk_idxs, const uint32_t *valid_topk_counts, uint32_t topk, const float *sink_f32, float scale, void *out_bf16, float *partials_f32, uint32_t partial_capacity, uint32_t multiprocessor_count, uint32_t row_count, uint32_t head_count, uint32_t head_dim, const void *frame_error);
 extern cudaError_t SparkDsv4LaunchDsparkAttention(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, uint32_t lane_index, const void *block_kv_bf16, const float *sink_f32, float scale, void *out_bf16, uint32_t block_size, uint32_t head_count, uint32_t head_dim, uint32_t window_tokens);
 extern cudaError_t SparkDsv4LaunchDsparkMarkovBiasAccum(cudaStream_t stream, const void *logits_bf16, const void *markov_w2_bf16, const void *markov_embed_bf16, float *logits_f32, uint32_t vocab_offset, uint32_t shard_count, uint32_t rank, uint32_t position, uint32_t multiprocessor_count);
 extern cudaError_t SparkDsv4LaunchDsparkArgmax(cudaStream_t stream, const float *logits_f32, uint32_t shard_count, uint32_t vocab_offset, uint32_t *output_token_id, float *output_score);
@@ -1878,6 +1886,11 @@ static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state,
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)head_rows * sizeof(uint32_t),(void **)&slot->prefill_emit_rows_u32);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,
+			(uint64_t)rows * SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS *
+			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION *
+			SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,(void **)&slot->prefill_window_shadow_bf16);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * sizeof(uint32_t),(void **)&slot->slot_counts);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * sizeof(uint32_t),(void **)&slot->attention_slot_counts);
@@ -3064,14 +3077,6 @@ static uint64_t SparkDsv4ModuleHcHeadFunctionBytes(void)
 		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * sizeof(float));
 }
 
-static uint32_t SparkDsv4ModulePrefillWaveRowCount(
-	SparkDsv4ModuleState *state,
-	const SparkDsv4PrefillBatchView *prefill,
-	uint32_t first_row)
-{
-	return(SparkRowLayoutRoundMajorWaveRowCount(first_row,prefill->row_count,prefill->row_lane_indices,SparkDsv4ModuleClaimedLaneOrdinal,state));
-}
-
 static cudaError_t SparkDsv4ModuleRunAttentionRows(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, void *cache, uint64_t lane_stride, const float *sink_f32, uint32_t layer_kind, uint32_t first_row, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -3088,20 +3093,45 @@ static cudaError_t SparkDsv4ModuleRunAttentionRows(SparkDsv4ModuleState *state, 
 
 static cudaError_t SparkDsv4ModuleRunCausalAttention(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4PrefillBatchView *prefill, void *cache, uint64_t lane_stride, const float *sink_f32, uint32_t layer_kind, uint32_t rows)
 {
-	uint32_t row,wave_rows;
 	cudaError_t error;
 	if ( prefill == 0 )
 		return(SparkDsv4ModuleRunAttentionRows(state,slot,cache,lane_stride,sink_f32,layer_kind,0u,rows));
 	if ( prefill->row_count != rows )
 		return(cudaErrorInvalidValue);
-	error = cudaSuccess;
-	for (row=0u; error==cudaSuccess && row<rows; row+=wave_rows)
-	{
-		wave_rows = SparkDsv4ModulePrefillWaveRowCount(state,prefill,row);
-		if ( wave_rows == 0u )
-			return(cudaErrorInvalidValue);
-		error = SparkDsv4ModuleRunAttentionRows(state,slot,cache,lane_stride,sink_f32,layer_kind,row,wave_rows);
-	}
+	if ( rows == 1u )
+		return(SparkDsv4ModuleRunAttentionRows(state,slot,cache,lane_stride,sink_f32,layer_kind,0u,rows));
+	/* R2c bulk causal prefill: the old round-major wavefront launched a
+	 * scatter+attention pair per wave, so a one-sequence chunk ran
+	 * rows sequential near-empty grids. Now: snapshot every frame
+	 * lane's window ring page, scatter the whole frame's KV once, then
+	 * run one attention launch over all rows. The kernel keeps the
+	 * wavefront's per-row column order and values: in-frame window
+	 * slots resolve to the staged row, everything else falls back to
+	 * the pre-frame ring snapshot - identical math, wave-serial
+	 * causality without the wave serialization. */
+	error = SparkDsv4LaunchWindowShadow((cudaStream_t)slot->cuda_stream,cache,
+		lane_stride,slot->row_lane_indices,slot->prefill_window_shadow_bf16,
+		rows,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
+		SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchCacheScatter((cudaStream_t)slot->cuda_stream,
+			slot->kv_bf16,0,cache,lane_stride,slot->row_lane_indices,
+			slot->row_positions,rows,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,0u,0u,
+			SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS);
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchBulkPrefillAttn((cudaStream_t)slot->cuda_stream,
+			slot->q_bf16,cache,lane_stride,slot->kv_bf16,slot->row_positions,
+			slot->prefill_window_shadow_bf16,slot->row_lane_indices,
+			slot->row_page_table_indices,slot->physical_page_table,
+			state->paged_cache.lane_page_capacity,state->resident_sequence_capacity,
+			SparkDsv4PagedPoolCompressedEntries(layer_kind),
+			state->paged_cache.physical_page_capacity,slot->topk_idxs,
+			slot->attention_slot_counts,state->topk_column_count,sink_f32,
+			1.0f / sqrtf((float)SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION),
+			slot->attn_out_bf16,slot->sparse_attn_partials_f32,
+			state->sparse_attn_partial_capacity,state->multiprocessor_count,rows,
+			SparkDsv4ModuleTpQueryHeads(state),SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
+			slot->frame_error);
 	return(error);
 }
 

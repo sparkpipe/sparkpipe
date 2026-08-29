@@ -567,11 +567,14 @@ def main() -> int:
     )
     require(
         "SparkDsv4ModuleRunCausalAttention" in module
-        and "SparkDsv4ModulePrefillWaveRowCount" in module
+        and "SparkDsv4LaunchBulkPrefillAttn" in module
+        and "SparkDsv4LaunchWindowShadow" in module
+        and "SparkDsv4ModulePrefillWaveRowCount" not in module
         and "SparkDsv4ModuleRunFrame(" in module
         and "SparkDsv4ModuleRunFrameWaves" not in module
         and "SparkRowLayoutValidateRoundMajor" in module,
-        "DSV4 prefill does not bulk dense work around causal attention waves",
+        "DSV4 prefill is not the R2c bulk causal path (window shadow + "
+        "whole-frame scatter + one bulk attention launch)",
     )
     require(
         "cudaStreamCreate(" not in module
