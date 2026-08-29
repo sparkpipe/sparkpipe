@@ -443,8 +443,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-finish-2026-08-30c.md",
-      "sha256": "ecf45861c3519fa02710fd91afc19fab8d398713f11334260dc80121f1496907",
-      "size_bytes": 12812
+      "sha256": "cd413b8dd564e28ae785eba6f6ca6d46e967f26912fc661d5e0582b28fd8c903",
+      "size_bytes": 12857
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-fleet-2026-08-28.md",
@@ -5398,13 +5398,13 @@
     },
     {
       "path": "runs/queue.jsonl",
-      "sha256": "6e297cd469ddee70ce7cbb6e618faf6b558eb01d3006db71a0ace97e6f0212c1",
-      "size_bytes": 7288
+      "sha256": "c57b590170873faa354574299ec0dd72966f2c0115b750917c4a26c2b5da359c",
+      "size_bytes": 7928
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "4c9d63dc882ff372512bdd85213424b0baeeccc8abd40aa683c468de2feadda1",
-      "size_bytes": 2274
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "size_bytes": 2
     },
     {
       "path": "runs/results.jsonl",
@@ -8505,5 +8505,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31286673
+  "total_bytes": 31285086
 }
