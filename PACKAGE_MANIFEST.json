@@ -1,5 +1,5 @@
 {
-  "file_count": 1596,
+  "file_count": 1597,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -420,6 +420,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen38max-shard-2026-08-28.md",
       "sha256": "1b6cb0279aef796ae0fd20445032db60287e81d18b9988931ef0e9664578343b",
       "size_bytes": 12193
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/redgates-2026-08-28.md",
+      "sha256": "3d2a086547011c58945ad5cf40b085cfc7150a48b661a1cee1ba4b67455d57f6",
+      "size_bytes": 65776
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/redundancy-2026-08-27.md",
@@ -7985,5 +7990,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 29846798
+  "total_bytes": 29912574
 }
