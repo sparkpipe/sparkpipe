@@ -32,6 +32,7 @@
 // design's shared-prefix win), and a 64-bit collision is impossible to alias
 // because the digest decides.
 
+#include <stdatomic.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_kv_cache.h"
@@ -53,7 +54,11 @@ extern "C" {
     ((uint32_t)sizeof(SparkKvPagerAdmission))
 #define SPARK_KV_PAGER_ADMISSION_DECISION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkKvPagerAdmissionDecision))
-#define SPARK_KV_PAGER_ADMISSION_ABI_VERSION 1u
+/* ABI 2 (C3): the admission struct's former reserved0 slot became
+ * restore_slack_microseconds. ABI 1 remains named for the fence: a legacy
+ * admission is refused, not silently reinterpreted. */
+#define SPARK_KV_PAGER_ADMISSION_ABI_VERSION 2u
+#define SPARK_KV_PAGER_ADMISSION_ABI_VERSION_LEGACY 1u
 
 /* Bounded recency window of the logical blocks last paged out, newest last:
  * the LRU-order receipt. Total page-outs are page_out_count. */
@@ -78,6 +83,32 @@ extern "C" {
  * lands in a handful of polls; the async production pager replaces the loop,
  * not the bound's purpose - fail loud, never spin. */
 #define SPARK_KV_PAGER_RESTORE_POLL_LIMIT 64u
+
+/* C3 MEASURED BANDWIDTH. The admission arithmetic of docs/JIT_KV_RESPONSE.md
+ * C3 consumes the drive's REAL sustained number, not the nominal estimate:
+ * every observed page-in and page-out folds an instantaneous throughput
+ * (payload bytes / measured elapsed microseconds, alpha = 1/2 EMA) into
+ * SparkKvPagerStatistics.measured_bytes_per_second. The clock is injected -
+ * the pager has no time source of its own, and a host test stays
+ * deterministic by advancing a fake clock per poll. NULL keeps the EMA at 0
+ * and admission falls back to the tier's nominal configured bandwidth. The
+ * clock may be read from the park worker thread: pass one that is safe
+ * there (a monotonic clock read is). */
+typedef uint64_t (*SparkKvPagerClockFunction)(void *clock_context);
+
+/* C4 ASYNC PARK. The park write-out moves off the arena's clock onto a
+ * worker thread: eviction stages the block payload into the park entry's
+ * own plane and reserves the tier record inline (the slot accounting stays
+ * exact at enqueue time), the worker runs only the backing-write leg, and
+ * the OWNING thread publishes completions (the tier's readable index, the
+ * block's BACKING_VALID, the page-out receipt - or the B1 degrade for an
+ * IO-class failure). The worker follows the W2a weightd discipline: an
+ * atomic stop flag the owning thread stores, and a poll quantum that bounds
+ * how late the flag is seen - the true bound on a park is one backing
+ * write, never a wake-up promise. */
+#define SPARK_KV_PAGER_PARK_QUEUE_CAPACITY 8u
+#define SPARK_KV_PAGER_PARK_POLL_QUANTUM_MICROSECONDS 200u
+#define SPARK_KV_PAGER_PARK_WORKER_HANDLE_BYTES 32u
 
 typedef struct SparkKvPagerBlockView
 {
@@ -132,8 +163,53 @@ typedef struct SparkKvPagerConfiguration
     SparkKvPagerModuleRestoreFunction module_restore;
     void *backing_context;
     SparkKvPagerBackingWriteFunction backing_write;
+    /* C3: the injected clock (see the typedef above). NULL disables
+     * measurement; admission then predicts with the tier's nominal
+     * configured bandwidth. */
+    void *clock_context;
+    SparkKvPagerClockFunction clock_function;
+    /* C4: the park queue depth. 0 parks inline on the arena's clock (the
+     * pre-C4 behavior; nothing else below is required). >0 starts the
+     * worker thread; park_staging must then hold park_queue_blocks block
+     * payloads - one plane per staged park, so the arena can reuse the
+     * evicted device slot before the write lands. The backing_write
+     * callback may be called from the worker thread. */
+    uint32_t park_queue_blocks;
+    uint32_t reserved3;
+    void *park_staging;
+    uint64_t park_staging_bytes;
 }
 SparkKvPagerConfiguration;
+
+/* C4: one staged park between enqueue (the arena's eviction path) and
+ * publish. The payload is already captured into `staging` - the pager owns
+ * the bytes the moment the eviction returns, which is what lets the arena
+ * reuse the device slot while the write is still in flight. The tier record
+ * is RESERVED at enqueue (the slot accounting admission reads stays exact);
+ * only the backing write and the publish wait. */
+typedef struct SparkKvPagerParkEntry
+{
+    uint32_t logical_block_index;
+    uint32_t reserved0;
+    SparkNvmeTierWriteReservation reservation;
+    uint8_t *staging;
+    uint64_t payload_bytes;
+}
+SparkKvPagerParkEntry;
+
+/* C4: the completion record. OK publishes (CommitWrite + BACKING_VALID +
+ * the page-out receipt); an IO-class status aborts the reservation and
+ * DEGRADES the block exactly as the inline write-back's failure path does
+ * (B1: drop + recompute, never a wedge). The elapsed sample is the C3
+ * page-out measurement (0 when no clock is configured). */
+typedef struct SparkKvPagerParkCompletion
+{
+    uint32_t logical_block_index;
+    uint32_t status;               /* SparkStatus of the backing write leg */
+    SparkNvmeTierWriteReservation reservation;
+    uint64_t write_elapsed_microseconds;
+}
+SparkKvPagerParkCompletion;
 
 typedef struct SparkKvPagerStatistics
 {
@@ -151,6 +227,16 @@ typedef struct SparkKvPagerStatistics
     uint64_t dispatch_ready;            /* answered READY: restore complete */
     uint64_t dispatch_queued;           /* restore incomplete: the offer repeats */
     uint64_t dispatch_recompute;        /* no backing bytes: recompute path */
+    uint64_t admission_queued_bandwidth; /* C3: the restore debt cannot cross
+                                            the slack at the measured rate */
+    uint64_t park_completions_published; /* C4: write legs resolved at the
+                                            owning thread */
+    uint64_t park_write_failures;       /* C4: IO-class completions degraded
+                                           (the B1 transition, async leg) */
+    uint64_t measured_bandwidth_samples; /* C3: samples folded into the EMA */
+    uint64_t measured_bytes_per_second;  /* C3: EMA over observed page-in and
+                                            page-out throughput; 0 until the
+                                            first sample (nominal fallback) */
     uint32_t park_evictions;            /* blocks parked by the last admission */
     uint32_t page_out_history_count;
     uint32_t page_out_history[SPARK_KV_PAGER_PAGE_OUT_HISTORY_CAPACITY];
@@ -166,6 +252,26 @@ typedef struct SparkKvPager
     SparkKvPagerConfiguration configuration;
     void *landing_staging;         /* staging plane 1: the restore landing copy */
     SparkKvPagerStatistics statistics;
+    /* C4: the park ring (the owning thread produces, the worker consumes)
+     * and the completion ring (the worker produces, the owning thread
+     * publishes). SPSC both ways; the cursors carry the ordering. */
+    SparkKvPagerParkEntry park_queue[SPARK_KV_PAGER_PARK_QUEUE_CAPACITY];
+    SparkKvPagerParkCompletion
+        park_completions[SPARK_KV_PAGER_PARK_QUEUE_CAPACITY];
+    atomic_uint park_head;
+    atomic_uint park_tail;
+    atomic_uint park_completion_head;
+    atomic_uint park_completion_tail;
+    atomic_uint park_worker_stop;
+    /* the entry the worker is currently writing (published before the pop
+     * removes it from the ring, cleared after the completion is pushed):
+     * a restore offer on a MID-WRITE park must answer BUSY, not fall
+     * through to the tier and recompute bytes the pager is holding. */
+    atomic_uint park_write_inflight_valid;
+    SparkKvPagerParkEntry park_write_inflight;
+    uint32_t park_worker_active;   /* the worker thread was started */
+    uint32_t park_queue_blocks;    /* configuration copy, ring capacity */
+    uint8_t park_worker_handle[SPARK_KV_PAGER_PARK_WORKER_HANDLE_BYTES];
 }
 SparkKvPager;
 
@@ -173,13 +279,20 @@ SparkKvPager;
  * (unassigned resident capacity atomically held - commit it block by block
  * as they become resident, or release it on abort) or QUEUED (offer again
  * later; nothing was evicted, nothing wedged). QUEUED is a healthy answer
- * and carries its reason in the pager statistics. */
+ * and carries its reason in the pager statistics.
+ *
+ * ABI 2 (C3, docs/JIT_KV_RESPONSE.md): the former reserved0 slot is now
+ * restore_slack_microseconds - the decode slack the AGGREGATE restore debt
+ * (parked blocks awaiting their page-in) plus this admission's own
+ * park-outs must cross at the MEASURED bandwidth for the request to serve.
+ * 0 keeps the capacity-only decision, so pre-C3 callers behave exactly as
+ * before. */
 typedef struct SparkKvPagerAdmission
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
     uint32_t block_demand;
-    uint32_t reserved0;
+    uint32_t restore_slack_microseconds; /* C3: 0 = capacity checks only */
 }
 SparkKvPagerAdmission;
 
@@ -275,7 +388,8 @@ SparkStatus SparkKvPagerReleaseAdmission(
  * buffer, the arena re-attaches residency (parking the LRU victim if the
  * device budget is tight), and the module restore op copies into the device
  * planes. MISS answers NOT_FOUND - the caller recomputes. BUSY answers BUSY
- * - the tier or the arena is saturated; retry, never drop. */
+ * - the tier or the arena is saturated, or (C4) the block's own park
+ * write-out is still in flight; retry, never drop. */
 SparkStatus SparkKvPagerRestoreBlock(
     SparkKvPager *pager,
     uint32_t logical_block_index,
@@ -313,6 +427,23 @@ SparkStatus SparkKvPagerAssertDeviceBudget(const SparkKvPager *pager);
 void SparkKvPagerGetStatistics(
     const SparkKvPager *pager,
     SparkKvPagerStatistics *statistics_out);
+
+/* C4: publish every finished park write leg on the CALLING thread - the
+ * tier's readable index (CommitWrite), the block's BACKING_VALID flag, the
+ * page-out receipt, or the B1 degrade for an IO-class failure. The owning
+ * thread only (these touch the arena and the tier). The admit and restore
+ * paths call this themselves; an embedder driving the pager by hand polls
+ * between parks. Returns OK. */
+SparkStatus SparkKvPagerPollParkCompletions(SparkKvPager *pager);
+
+/* C4 TERM safety: stop the park worker (the atomic stop flag is seen within
+ * one poll quantum plus one backing write - the write is the bound), then
+ * finish the parks it left staged INLINE on the calling thread and publish
+ * every completion. Every reservation resolves commit-or-abort and every
+ * staged payload is accounted, so TERM mid-park leaves a consistent arena
+ * and a consistent tier. Idempotent; parks requested after shutdown
+ * complete inline on the arena's clock (worker off). */
+SparkStatus SparkKvPagerShutdown(SparkKvPager *pager);
 
 #ifdef __cplusplus
 }
