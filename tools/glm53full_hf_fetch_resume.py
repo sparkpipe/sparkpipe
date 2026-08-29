@@ -199,6 +199,10 @@ def main() -> int:
                              "verify+promote)")
     parser.add_argument("--skip-match", default=None,
                         help="inverse of --match")
+    parser.add_argument("--no-promote", action="store_true",
+                        help="fetch this partition's files only; skip the "
+                             "full-stage verify and the promotion (exactly "
+                             "one later unpartitioned run does those)")
     args = parser.parse_args()
 
     warm_root = Path(args.warm_root)
@@ -259,6 +263,11 @@ def main() -> int:
             done += 1
             if done % 10 == 0 or done == len(bases):
                 print(f"fetch {done}/{len(bases)}: {result['path']} {result['action']}", flush=True)
+
+    if args.no_promote:
+        print(f"partition done: {len(bases)} files assigned on this node "
+              f"({args.match or args.skip_match or 'all'})", flush=True)
+        return 0
 
     partials = find_partial_files(stage)
     if partials:
