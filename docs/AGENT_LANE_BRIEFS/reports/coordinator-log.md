@@ -2115,3 +2115,24 @@ appendix).
   RESTORE-not-report (documented nohup re-arm), failed-task
   reconciliation to owners each sweep, idle-node alarm (all-free +
   queued executable = pipeline bug, minute-for-minute loss class).
+
+## 2026-08-29 ~20:4x — 3215b72: three stacked merges; double-lease root-caused (pre-lock era)
+
+- MERGED debts + p1d2-steploop + contbatch2 in one stacked sequence:
+  universal queue-not-wedge + the TP4 spec + scribble-probe + fd guard;
+  the D2 serving-loop fix (one-adapter-op-per-pass was Pattern B);
+  step-boundary continuous admission. Stacked ratchet 231107 exact;
+  offline-gates clean.
+- glm5-dsa post-mortem root-caused: the spark4-7 double-lease (wave2
+  overlapped r2c-t2) happened at 19:38 — BEFORE the mutator locks
+  (~19:5x). The barrier was never buggy; unlocked cancels/reserves
+  corrupted the lease file under a dispatch's stale read. Post-lock
+  verification: lease map consistent (single holder). Their 15/16
+  fabric_ready receipt confirms the wave was converging when I killed
+  it — the miss was spark4's crowded rank only.
+- FLEET GATE: spark8 driver-wedged (operator power-cycle requested,
+  soft control exhausted), spark3 down. g5dsa-wave3 queued p0 — needs
+  all 16, so the priority barrier (glm5.3-first) intentionally holds
+  the fleet's tasks behind it until spark8 returns. The moment it
+  reboots: wave3 dispatches, then the qwen27b build, weightd-t3, and
+  the cells cycle through.
