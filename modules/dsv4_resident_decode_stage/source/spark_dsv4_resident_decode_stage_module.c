@@ -21,6 +21,7 @@
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
+#include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "spark_dsv4_lane_continuity.h"
 #include "spark_dsv4_hc_splitk.h"
@@ -446,6 +447,14 @@ struct SparkDsv4ModuleState
 	atomic_ullong failed_count;
 	atomic_ullong tokens_emitted;
 	atomic_ullong host_callback_completion_count;
+	/* W2b serving-side attach: the weightd arena this slice's tensors bind
+	 * into when a running weightd served the identity, else 0 (direct pack
+	 * load). The bytes are DAEMON-owned - the module only borrows the
+	 * mapping and closes the client at teardown; the daemon reaps the
+	 * dropped connection and keeps the arena warm for the next attach. */
+	SparkWeightdClient *weightd_client;
+	void *weightd_arena_base;
+	uint64_t weightd_arena_bytes;
 };
 
 static uint32_t SparkDsv4ModuleTpQueryHeads(const SparkDsv4ModuleState *state)
@@ -1286,20 +1295,34 @@ static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state,
 		fprintf(stderr,"%s pack_entry_invalid kind=%u layer=%u\n",SPARK_DSV4_MODULE_TAG,entry->tensor_kind,entry->layer_index);
 		return(status);
 	}
-	/* Through the shared pipeline the reads overlap the copies; the
-	 * payload-then-scale enqueue order and the per-tensor directory order
-	 * are preserved, so the device arrival order matches the synchronous
-	 * loader. The binds below only record addresses. */
-	if ( pipeline != 0 )
-		status = SparkStageModuleLoadPipelineRegion(pipeline,&state->ledger,entry->payload_offset,payload_bytes,&payload);
+	/* Attached arenas bind borrowed slices straight out of the weightd
+	 * arena - the verified pack image: no allocation, no copy, the pointer
+	 * IS the weight, and the ledger records nothing it would free.
+	 * ValidateEntry has already bounded every offset against file_bytes and
+	 * the attach proved arena_bytes == file_bytes. Otherwise the file
+	 * loads run: through the shared pipeline the reads overlap the copies;
+	 * the payload-then-scale enqueue order and the per-tensor directory
+	 * order are preserved, so the device arrival order matches the
+	 * synchronous loader. The binds below only record addresses. */
+	if ( state->weightd_arena_base != 0 )
+	{
+		payload = (void *)((uint8_t *)state->weightd_arena_base + entry->payload_offset);
+		if ( scale_bytes != 0u )
+			scale = (void *)((uint8_t *)state->weightd_arena_base + entry->scale_offset);
+	}
 	else
-		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,payload_bytes,&payload);
-	if ( status == SPARK_STATUS_OK && scale_bytes != 0u )
 	{
 		if ( pipeline != 0 )
-			status = SparkStageModuleLoadPipelineRegion(pipeline,&state->ledger,entry->scale_offset,scale_bytes,&scale);
+			status = SparkStageModuleLoadPipelineRegion(pipeline,&state->ledger,entry->payload_offset,payload_bytes,&payload);
 		else
-			status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,scale_bytes,&scale);
+			status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,payload_bytes,&payload);
+		if ( status == SPARK_STATUS_OK && scale_bytes != 0u )
+		{
+			if ( pipeline != 0 )
+				status = SparkStageModuleLoadPipelineRegion(pipeline,&state->ledger,entry->scale_offset,scale_bytes,&scale);
+			else
+				status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,scale_bytes,&scale);
+		}
 	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -1377,6 +1400,73 @@ static SparkStatus SparkDsv4ModuleVerifyCoverage(SparkDsv4ModuleState *state)
 	return(SPARK_STATUS_OK);
 }
 
+// W2b serving-side attach (docs/WEIGHTD_DESIGN.md): ask a running weightd
+// for this slice's arena BY IDENTITY before the direct load. The identity is
+// the deployment's, not computed per process: the pack digest comes from the
+// environment (the warm redeploy path cannot afford a full-pack re-hash
+// here), the topology is the tp configuration hash, and the geometry
+// fingerprint folds the pack header's geometry fields. The daemon stays the
+// bytes authority - it verifies the digest before any arena exists, so a
+// stale identity only falls back, never serves wrong bytes. Env-off is
+// silent (kill-switch parity with SPARK_STAGE_MODULE_LOAD_PIPELINE=0);
+// every other fallback logs one line and takes the direct pack load below.
+static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, const char *path, const SparkDsv4StagePackHeader *header)
+{
+	SparkWeightdPackSlice slice;
+	SparkWeightdAttachOutcome outcome;
+	char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
+	uint64_t geometry = UINT64_C(1469598103934665603);
+	SparkStatus status;
+	if ( SparkWeightdAttachRequested() != SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
+	geometry = SparkHashBytes(geometry,&header->format_version,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->codec_abi_version,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->linear_weight_codec,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->expert_weight_codec,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->kv_cache_codec,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->tensor_count,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->first_layer_index,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->layer_count,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->total_layer_count,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->hidden_dimension,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->vocab_count,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->routed_expert_count,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->mtp_layer_count,sizeof(uint32_t));
+	geometry = SparkHashBytes(geometry,&header->file_bytes,sizeof(uint64_t));
+	memset(&slice,0,sizeof(slice));
+	slice.model = "dsv4";
+	slice.revision = "";
+	slice.topology = state->tp_configuration_hash;
+	slice.geometry_fingerprint = geometry;
+	slice.pack_bytes = header->file_bytes;
+	status = SparkWeightdAttachPack(&slice,path,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&outcome,reason);
+	if ( status != SPARK_STATUS_OK )
+	{
+		// a transport fault out of the client itself must never fail the
+		// load - the direct pack read below is the contract
+		fprintf(stderr,"%s weightd_attach_error status=%s\n",SPARK_DSV4_MODULE_TAG,SparkStatusToString(status));
+		return(SPARK_STATUS_OK);
+	}
+	if ( outcome.client == 0 )
+	{
+		fprintf(stderr,"%s weightd_fallback reason=%s\n",SPARK_DSV4_MODULE_TAG,reason);
+		return(SPARK_STATUS_OK);
+	}
+	if ( outcome.arena_bytes != (uint64_t)header->file_bytes )
+	{
+		// the arena is the pack image by construction; a size disagreement
+		// means a different pack arrived under the claimed identity
+		SparkWeightdAttachRelease(&outcome);
+		fprintf(stderr,"%s weightd_fallback reason=arena_mismatch\n",SPARK_DSV4_MODULE_TAG);
+		return(SPARK_STATUS_OK);
+	}
+	state->weightd_client = outcome.client;
+	state->weightd_arena_base = (void *)(uintptr_t)outcome.device_handle;
+	state->weightd_arena_bytes = outcome.arena_bytes;
+	fprintf(stderr,"%s weightd_attach warm=%u generation=%llu bytes=%llu\n",SPARK_DSV4_MODULE_TAG,outcome.loaded_from_pack,(unsigned long long)outcome.arena_generation,(unsigned long long)outcome.arena_bytes);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const char *path)
 {
 	SparkDsv4StagePackHeader header,expected;
@@ -1414,14 +1504,19 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_DSV4_MODULE_TAG,file,header.directory_offset,directory,(uint64_t)header.tensor_count * sizeof(SparkDsv4StagePackEntry));
-	/* One pack-wide load pipeline: the worker thread reads tensor N+1's
-	 * staging while tensor N's upload runs (docs/WEIGHTD_DESIGN.md L1).
-	 * Every fill is per-tensor independent and the single upload stream
-	 * keeps the directory arrival order, so the device image is identical
-	 * to the sequential load; SPARK_STAGE_MODULE_LOAD_PIPELINE=0 restores
-	 * the synchronous path. */
+	/* Serving-side attach first: a running weightd serves the arena by
+	 * identity (digest-verified daemon-side) and the tensors bind straight
+	 * into it with no per-tensor copy. Any fallback lands on the direct
+	 * load below - one pack-wide load pipeline: the worker thread reads
+	 * tensor N+1's staging while tensor N's upload runs
+	 * (docs/WEIGHTD_DESIGN.md L1). Every fill is per-tensor independent
+	 * and the single upload stream keeps the directory arrival order, so
+	 * the device image is identical to the sequential load;
+	 * SPARK_STAGE_MODULE_LOAD_PIPELINE=0 restores the synchronous path. */
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleWeightdAttach(state,path,&header);
 	pipeline = 0;
-	if ( status == SPARK_STATUS_OK &&
+	if ( status == SPARK_STATUS_OK && state->weightd_arena_base == 0 &&
 		SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK )
 		status = SparkStageModuleLoadPipelineCreate(SPARK_DSV4_MODULE_TAG,file,&pipeline);
 	for (index = 0; status == SPARK_STATUS_OK && index < header.tensor_count; index++)
@@ -6235,6 +6330,18 @@ static void SparkDsv4ModuleStateTeardown(void *module_state)
 	uint32_t slot_index,admission_index;
 
     state = (SparkDsv4ModuleState *)module_state;
+	if ( state->weightd_client != 0 )
+	{
+		// W2b attach teardown: close WITHOUT detaching - the daemon reaps
+		// the dead socket, drops this process's reference, and the arena
+		// stays resident warm for the next attach (the sub-second
+		// code-redeploy path). The borrowed mapping dies with the process;
+		// the bytes never belonged to it.
+		SparkWeightdClientClose(state->weightd_client);
+		state->weightd_client = 0;
+	}
+	state->weightd_arena_base = 0;
+	state->weightd_arena_bytes = 0;
 	for (slot_index = 0u; slot_index < state->pipeline_slot_count; ++slot_index)
 	{
 		if ( state->slots[slot_index].tp_host_copy_event != 0 )

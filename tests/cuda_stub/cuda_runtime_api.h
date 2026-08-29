@@ -83,6 +83,7 @@ cudaError_t cudaStreamWaitEvent(
     cudaEvent_t event,
     unsigned int flags);
 cudaError_t cudaDeviceSynchronize(void);
+cudaError_t cudaGetDevice(int *device);
 cudaError_t cudaDeviceGetAttribute(int *value, int attribute, int device);
 cudaError_t cudaEventCreate(cudaEvent_t *event);
 cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags);
