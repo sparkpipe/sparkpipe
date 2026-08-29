@@ -178,8 +178,27 @@ typedef struct SparkKvPagerConfiguration
     uint32_t reserved3;
     void *park_staging;
     uint64_t park_staging_bytes;
+    /* C5 PARK POLICY (docs/JIT_KV_RESPONSE.md C5): the victim policy the
+     * pager installs on its arena for every admission-time park-out and
+     * restore make-room. LRU (0) is the default and the historical behavior
+     * byte for byte. REUSE_VALUE ranks victims by reuse value - restored-
+     * again history first (a block restored twice is hot), then dirtiness
+     * (a clean block is cheap to drop; endurance is a line item), then
+     * recency. The knob changes WHICH residents park, never the budget
+     * arithmetic: admission counts the same parkable pool, holds the same
+     * reservations, and the device-law receipt reads the same under both
+     * policies. The pager validates the value (an unknown policy is refused
+     * at Initialize). This slot is the configuration's former reserved2. */
+    uint32_t park_policy;
 }
 SparkKvPagerConfiguration;
+
+/* C5: the park policy values (the arena's eviction policy is the one
+ * definition; the pager names them for its configuration). */
+#define SPARK_KV_PAGER_PARK_POLICY_LRU \
+    SPARK_KV_CACHE_EVICTION_POLICY_LRU
+#define SPARK_KV_PAGER_PARK_POLICY_REUSE_VALUE \
+    SPARK_KV_CACHE_EVICTION_POLICY_REUSE_VALUE
 
 /* C4: one staged park between enqueue (the arena's eviction path) and
  * publish. The payload is already captured into `staging` - the pager owns
@@ -337,12 +356,23 @@ typedef enum SparkKvPagerDispatchOutcome
 }
 SparkKvPagerDispatchOutcome;
 
+/* W2 (docs/JIT_KV_RESPONSE.md): the dispatch offer's deadline hint. The gate
+ * is the only caller that knows WHICH block the dispatcher is waiting on, so
+ * it is the one place a restore-debt ordering can come from: the hint rides
+ * the restore into the tier's read path, where the pending queue (the
+ * deadline-ordered debt) tightens or enqueues the block at that deadline -
+ * earliest-deadline-first, so a saturated tier serves the gated block before
+ * older backlog instead of in FIFO issue order. 0 = no hint: the restore
+ * behaves exactly as before (this slot is the struct's former reserved0,
+ * which every historical caller held at zero). */
+#define SPARK_KV_PAGER_DISPATCH_NO_DEADLINE_HINT 0u
+
 typedef struct SparkKvPagerDispatch
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
     uint32_t logical_block_index;
-    uint32_t reserved0;
+    uint32_t deadline_step;       /* W2: 0 = no hint */
     uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES];
 }
 SparkKvPagerDispatch;
@@ -394,6 +424,17 @@ SparkStatus SparkKvPagerRestoreBlock(
     SparkKvPager *pager,
     uint32_t logical_block_index,
     const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES]);
+
+/* W2: the same restore with the dispatch gate's deadline hint. The hint is
+ * opaque to the pager - it forwards `deadline_step` to the tier's read path
+ * on every poll, so the pending restore debt (the tier's deadline-ordered
+ * queue) orders itself around the block the caller is actually waiting on.
+ * 0 is SparkKvPagerRestoreBlock's exact behavior. */
+SparkStatus SparkKvPagerRestoreBlockDeadline(
+    SparkKvPager *pager,
+    uint32_t logical_block_index,
+    const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES],
+    uint32_t deadline_step);
 
 /* C2: the dispatch gate. Returns OK with the decision filled (READY,
  * QUEUED, or RECOMPUTE - see the outcome above). Only a hard failure

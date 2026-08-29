@@ -988,7 +988,30 @@ from pathlib import Path
 # kernel, the bulk launcher pair, and the whole-frame module wiring
 # (shadow+scatter+one attention launch per prefill frame), net +241
 # authored lines. Rebased onto the W2a + JIT-KV main; re-measured at resolution: 225258 exact.
-CEILING = 227318
+CEILING = 227633
+# The jikv-c5 lane (2026-08-29) lands the last two named JIT-KV remainders
+# (docs/JIT_KV_RESPONSE.md C5+W2) in the pager/tier path. C5's reuse-value
+# park policy: the victim rank (cache/kv_cache.c: the keepness helper - one
+# restore-history term, one dirtiness term, recency residual - plus the
+# shared is-better-victim comparator both selectors now call) + the block's
+# restored-again counter (spark_kv_cache.h: the former reserved0 slot, same
+# struct size; bumped by MarkParkedBlockResident) + the arena's eviction-
+# policy field and the pager's park_policy knob (spark_kv_pager.h: the
+# configuration's former reserved2 slot; validated + installed at
+# Initialize). LRU (0) stays the default; the selectors' LRU branch is the
+# historical comparison, byte for byte. W2's deadline lookahead as the C2
+# gate's engine: the dispatch offer's deadline hint (the dispatch struct's
+# former reserved0, 0 = no hint) rides SparkKvPagerRestoreBlockDeadline
+# into SparkNvmeTierRequestDemandDeadline (cache/nvme_tier.c: the hinted
+# branch orders a saturated demand in the pending debt - tighten or enqueue
+# at the deadline - instead of the legacy yank-then-stall, which is kept
+# byte for byte on the hintless path; RequestDemand is now its hintless
+# wrapper) + the demand result's ordered flag (the former reserved0) + the
+# demand_deadline_orders statistic + the pager's ordered-BUSY early answer
+# (one pump, then QUEUED - the offer is the queue; the hintless spin-to-
+# poll-limit is untouched). Makefile rule +4 net. The host proof
+# tests/test_jit_kv_c5w2.c is excluded by construction; the report and the
+# manifest regen are docs/.json, uncounted. 227633 exact.
 # The JIT-KV family wiring (lane/jikv-wire, 2026-08-29) connects the slice
 # to its reference family, per the slice report's remaining-work list and
 # docs/JIT_KV_RESPONSE.md W1+C2: the decode stage module's frame-op seam

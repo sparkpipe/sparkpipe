@@ -30,6 +30,26 @@ extern "C" {
 #define SPARK_KV_CACHE_NO_BLOCK 0xffffffffu
 #define SPARK_KV_CACHE_NO_RESIDENT_SLOT 0xffffffffu
 
+/* C5 (docs/JIT_KV_RESPONSE.md): the resident-eviction victim policy. LRU is
+ * the default and the historical behavior byte for byte. REUSE_VALUE is the
+ * pager's park policy for the multi-turn workload: a block's reuse value is
+ * its restored-again history (a block restored twice came back on purpose -
+ * it is hot), its dirtiness (a clean block is cheap to drop - parking it
+ * costs no write, and endurance is a line item), and only then recency. */
+#define SPARK_KV_CACHE_EVICTION_POLICY_LRU 0u
+#define SPARK_KV_CACHE_EVICTION_POLICY_REUSE_VALUE 1u
+
+/* The reuse-value keepness arithmetic's exactness domain (see
+ * SparkKvCacheReuseValueKeepness in cache/kv_cache.c): ages are clamped to
+ * 2^54 residency epochs and restore histories to 2^16, so the int64_t
+ * keepness can never overflow and the weights order exactly:
+ * restore history (2^40 per restore) dominates the dirty bonus (2^20),
+ * which dominates any clamped age. */
+#define SPARK_KV_CACHE_REUSE_VALUE_RESTORE_WEIGHT (1ULL << 40)
+#define SPARK_KV_CACHE_REUSE_VALUE_DIRTY_BONUS (1ULL << 20)
+#define SPARK_KV_CACHE_REUSE_VALUE_AGE_CLAMP (1ULL << 54)
+#define SPARK_KV_CACHE_REUSE_VALUE_RESTORE_CLAMP (1ULL << 16)
+
 #define SPARK_KV_CACHE_MAX_BLOCK_TOKENS 256u
 
 #define SPARK_KV_CACHE_MAX_LAYER_COUNT 256u
@@ -330,7 +350,13 @@ typedef struct SparkKvCacheBlock
     uint32_t resident_slot_index;
     uint32_t residency_reference_count;
     uint32_t free_next;
-    uint32_t reserved0;
+    /* C5 reuse-value history (was reserved0, same struct size): times this
+     * block was restored from its backing copy - the restored-again count.
+     * Incremented by SparkKvCacheArenaMarkParkedBlockResident on each fresh
+     * re-attachment, cleared when the block is recycled. A block the
+     * workload keeps restoring is hot under the REUSE_VALUE victim policy;
+     * the LRU policy never reads it. */
+    uint32_t restore_count;
     uint64_t generation;
     uint64_t last_used_epoch;
     uintptr_t key_device_address;
@@ -424,6 +450,10 @@ typedef struct SparkKvCacheArena
     void *evict_context;
     uint32_t free_logical_block_head;
     uint32_t next_resident_slot_scan;
+    /* C5: the victim policy the two resident-eviction selectors apply
+     * (SPARK_KV_CACHE_EVICTION_POLICY_*). Set at configuration; 0 = LRU, the
+     * historical behavior. The pager's park policy knob lands here. */
+    uint32_t eviction_policy;
     atomic_uint unassigned_resident_block_count;
     /* B1 write-back degradation counter (was padding): times an eviction
      * write-back failed with an IO-class status and the block was DEGRADED

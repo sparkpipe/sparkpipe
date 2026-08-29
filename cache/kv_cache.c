@@ -1072,6 +1072,81 @@ static uint32_t SparkKvCacheBlockIsProtectedFromResidentEviction(
             logical_block_index);
 }
 
+/*
+ * C5 REUSE-VALUE KEEPNESS (docs/JIT_KV_RESPONSE.md C5). One number, higher
+ * = keep, computed only when the arena's eviction policy is REUSE_VALUE:
+ *
+ *   keepness = restore_count * RESTORE_WEIGHT - age + dirty * DIRTY_BONUS
+ *
+ * The restored-again history dominates: a block the workload restored twice
+ * came back on purpose, and no plausible recency gap outvotes the second
+ * restore (weights are orders of magnitude apart by construction - see the
+ * SPARK_KV_CACHE_REUSE_VALUE_* constants in spark_kv_cache.h). Dirtiness
+ * outranks recency too: parking a clean block is free (no write-back, no
+ * flash wear), so a clean block drops before a dirty one even when the
+ * clean one is the younger. Recency is the residual term, exactly the LRU
+ * direction. Inputs are clamped (ages beyond 2^54 epochs, histories beyond
+ * 2^16 restores) so the int64_t arithmetic can never overflow and the
+ * ordering stays exact inside the documented domain.
+ */
+static int64_t SparkKvCacheReuseValueKeepness(
+    const SparkKvCacheArena *arena,
+    const SparkKvCacheBlock *block)
+{
+    uint64_t age;
+    uint64_t restore_count;
+    int64_t keepness;
+
+    age = arena->epoch - block->last_used_epoch;
+    if (age > SPARK_KV_CACHE_REUSE_VALUE_AGE_CLAMP)
+    {
+        age = SPARK_KV_CACHE_REUSE_VALUE_AGE_CLAMP;
+    }
+    restore_count = block->restore_count;
+    if (restore_count > SPARK_KV_CACHE_REUSE_VALUE_RESTORE_CLAMP)
+    {
+        restore_count = SPARK_KV_CACHE_REUSE_VALUE_RESTORE_CLAMP;
+    }
+    keepness = (int64_t)(restore_count *
+        SPARK_KV_CACHE_REUSE_VALUE_RESTORE_WEIGHT);
+    keepness -= (int64_t)age;
+    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_DIRTY) != 0u)
+    {
+        keepness += (int64_t)SPARK_KV_CACHE_REUSE_VALUE_DIRTY_BONUS;
+    }
+    return keepness;
+}
+
+/* True when `block` is the better victim than `victim` under the arena's
+ * eviction policy. LRU (the default) is the historical order: fewer
+ * references first, then the older epoch. REUSE_VALUE keeps the
+ * reference-count primary and replaces the recency tiebreak with the
+ * keepness score above (references still lose first - a referenced block is
+ * someone's working set; the reuse-value policy only ranks the rest). */
+static uint32_t SparkKvCacheBlockIsBetterEvictionVictim(
+    const SparkKvCacheArena *arena,
+    const SparkKvCacheBlock *victim,
+    int64_t victim_keepness,
+    const SparkKvCacheBlock *block)
+{
+    int64_t keepness;
+
+    if (block->reference_count != victim->reference_count)
+    {
+        return block->reference_count < victim->reference_count;
+    }
+    if (arena->eviction_policy == SPARK_KV_CACHE_EVICTION_POLICY_REUSE_VALUE)
+    {
+        keepness = SparkKvCacheReuseValueKeepness(arena, block);
+        if (keepness != victim_keepness)
+        {
+            return keepness < victim_keepness;
+        }
+        return block->last_used_epoch < victim->last_used_epoch;
+    }
+    return block->last_used_epoch < victim->last_used_epoch;
+}
+
 static SparkKvCacheBlock *SparkKvCacheArenaSelectResidentEvictionVictim(
     SparkKvCacheArena *arena,
     const SparkKvCachePrefetchPlan *prefetch_plan,
@@ -1080,8 +1155,10 @@ static SparkKvCacheBlock *SparkKvCacheArenaSelectResidentEvictionVictim(
 {
     SparkKvCacheBlock *victim;
     uint32_t logical_block_index,resident_slot_index;
+    int64_t victim_keepness;
 
     victim = 0;
+    victim_keepness = 0;
     for (resident_slot_index = 0u;
          resident_slot_index < arena->resident_block_capacity;
          ++resident_slot_index)
@@ -1113,11 +1190,11 @@ static SparkKvCacheBlock *SparkKvCacheArenaSelectResidentEvictionVictim(
             continue;
         }
         if (victim == 0 ||
-            block->reference_count < victim->reference_count ||
-            (block->reference_count == victim->reference_count &&
-             block->last_used_epoch < victim->last_used_epoch))
+            SparkKvCacheBlockIsBetterEvictionVictim(
+                arena, victim, victim_keepness, block))
         {
             victim = block;
+            victim_keepness = SparkKvCacheReuseValueKeepness(arena, block);
         }
     }
     return victim;
@@ -1396,9 +1473,12 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
  * at the tier boundary). BACKING_VALID survives - the backing copy still
  * matches, so re-parking the block later is a deduplicated no-write - and
  * DIRTY stays clear. Room is made the same way as every other residency
- * grant: the LRU resident victim is evicted through the arena's evict
- * function, which under the pager IS a page-out. Blocks that were never
- * parked (blank) are refused: they go through MarkBlockResident.
+ * grant: the resident victim picked by the arena's eviction policy is
+ * evicted through the arena's evict function, which under the pager IS a
+ * page-out. Each fresh re-attachment also bumps the block's restore_count -
+ * the restored-again history the C5 REUSE_VALUE victim policy ranks (a block
+ * the workload keeps restoring is hot; LRU never reads it). Blocks that were
+ * never parked (blank) are refused: they go through MarkBlockResident.
  */
 SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     SparkKvCacheArena *arena,
@@ -1453,6 +1533,12 @@ SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     }
     arena->resident_block_count += 1u;
     block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT;
+    /* C5: a completed page-in is the restored-again event. Saturating: the
+     * count ranks victims, it is not an accounting quantity. */
+    if (block->restore_count != UINT32_MAX)
+    {
+        block->restore_count += 1u;
+    }
     arena->epoch += 1u;
     block->last_used_epoch = arena->epoch;
     return SPARK_STATUS_OK;
@@ -2147,9 +2233,11 @@ static uint32_t SparkKvCacheSelectResidentEvictionVictim(
     uint32_t logical_block_index;
     uint32_t victim_logical_block_index;
     const SparkKvCacheBlock *victim_block;
+    int64_t victim_keepness;
 
     victim_logical_block_index = SPARK_KV_CACHE_NO_BLOCK;
     victim_block = 0;
+    victim_keepness = 0;
     for (logical_block_index = 0u;
          logical_block_index < arena->logical_block_count;
          ++logical_block_index)
@@ -2169,12 +2257,12 @@ static uint32_t SparkKvCacheSelectResidentEvictionVictim(
             continue;
         }
         if (victim_block == 0 ||
-            block->reference_count < victim_block->reference_count ||
-            (block->reference_count == victim_block->reference_count &&
-             block->last_used_epoch < victim_block->last_used_epoch))
+            SparkKvCacheBlockIsBetterEvictionVictim(
+                arena, victim_block, victim_keepness, block))
         {
             victim_block = block;
             victim_logical_block_index = logical_block_index;
+            victim_keepness = SparkKvCacheReuseValueKeepness(arena, block);
         }
     }
     return victim_logical_block_index;

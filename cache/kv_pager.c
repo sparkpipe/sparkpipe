@@ -355,7 +355,6 @@ SparkStatus SparkKvPagerInitialize(
 		configuration->descriptor_bytes !=
 			SPARK_KV_PAGER_CONFIGURATION_DESCRIPTOR_BYTES ||
 		configuration->reserved0 != 0u || configuration->reserved1 != 0u ||
-		configuration->reserved2 != 0u ||
 		configuration->arena == 0 || configuration->tier == 0 ||
 		configuration->arena->abi_version != SPARK_KV_CACHE_ABI_VERSION ||
 		configuration->arena->descriptor_bytes !=
@@ -364,7 +363,9 @@ SparkStatus SparkKvPagerInitialize(
 		configuration->module_context == 0 ||
 		configuration->module_save == 0 ||
 		configuration->module_restore == 0 ||
-		configuration->backing_write == 0 )
+		configuration->backing_write == 0 ||
+		configuration->park_policy >
+			SPARK_KV_PAGER_PARK_POLICY_REUSE_VALUE)
 	{
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
@@ -423,6 +424,10 @@ SparkStatus SparkKvPagerInitialize(
 	atomic_init(&pager->park_completion_tail,0u);
 	atomic_init(&pager->park_worker_stop,0u);
 	atomic_init(&pager->park_write_inflight_valid,0u);
+	/* C5: the park policy is the arena's victim policy - ONE definition
+	 * lives in the arena's selectors; the pager installs it beside the
+	 * evict binding it owns (and unwinds it with that binding). */
+	configuration->arena->eviction_policy = configuration->park_policy;
 	configuration->arena->evict_function = SparkKvPagerEvictWriteback;
 	configuration->arena->evict_context = pager;
 	if ( pager->park_queue_blocks != 0u )
@@ -434,6 +439,8 @@ SparkStatus SparkKvPagerInitialize(
 			/* loud: the environment refused the worker. Unwind the
 			 * evict binding - the pager never runs half-installed - and
 			 * the caller may retry with park_queue_blocks 0 (inline). */
+			configuration->arena->eviction_policy =
+				SPARK_KV_PAGER_PARK_POLICY_LRU;
 			configuration->arena->evict_function = 0;
 			configuration->arena->evict_context = 0;
 			return(SPARK_STATUS_IO_ERROR);
@@ -741,19 +748,35 @@ SparkStatus SparkKvPagerRestoreBlock(
     uint32_t logical_block_index,
     const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES])
 {
-	SparkKvCacheArena *arena;
-	SparkKvCacheBlockView block_view;
-	SparkKvPagerBlockView view;
-	SparkNvmeTierDemandResult demand;
-	uint8_t landed_digest[SPARK_KV_PAGER_DIGEST_BYTES];
-	SparkStatus status;
-	uint32_t attempt;
+    return(SparkKvPagerRestoreBlockDeadline(pager,logical_block_index,
+        content_digest,SPARK_KV_PAGER_DISPATCH_NO_DEADLINE_HINT));
+}
 
-	if ( SparkKvPagerIsValid(pager) == 0u ||
-		SparkKvPagerDigestIsUsable(content_digest) == 0u )
-	{
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	}
+/* W2: `deadline_step` is the dispatch gate's hint (0 = none). The pager is
+ * transparent about it: every RequestDemand poll of THIS restore carries the
+ * same hint, so while the gate waits, the tier's pending restore debt keeps
+ * ordering itself around this block - earliest deadline first. The gate is
+ * the only caller that knows which block the dispatcher is blocked on; this
+ * is the wire that lets the tier's lookahead act on it. */
+SparkStatus SparkKvPagerRestoreBlockDeadline(
+    SparkKvPager *pager,
+    uint32_t logical_block_index,
+    const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES],
+    uint32_t deadline_step)
+{
+    SparkKvCacheArena *arena;
+    SparkKvCacheBlockView block_view;
+    SparkKvPagerBlockView view;
+    SparkNvmeTierDemandResult demand;
+    uint8_t landed_digest[SPARK_KV_PAGER_DIGEST_BYTES];
+    SparkStatus status;
+    uint32_t attempt;
+
+    if ( SparkKvPagerIsValid(pager) == 0u ||
+        SparkKvPagerDigestIsUsable(content_digest) == 0u )
+    {
+        return(SPARK_STATUS_INVALID_ARGUMENT);
+    }
 	/* publish first: the block this restore is asking about may have
 	 * finished its park write a moment ago - its commit is the state the
 	 * flag checks and the tier request below read. */
@@ -783,15 +806,21 @@ SparkStatus SparkKvPagerRestoreBlock(
 	/* Bring the record's bytes up digest-verified. STARTED/IN_FLIGHT pump;
 	 * MISS hands the recompute path back; anything else stays loud. Each
 	 * poll is a measured unit: the clock ticks across the transfer so the
-	 * landing's elapsed time is the C3 page-in sample. */
+	 * landing's elapsed time is the C3 page-in sample. The W2 deadline hint
+	 * rides every poll. An ORDERED busy - the tier could not take the read
+	 * yet and parked this block at its deadline in the pending debt - is
+	 * answered after ONE pump: the caller's re-offer is the queue, and
+	 * burning the poll budget spinning on a saturated tier is the wedge the
+	 * contract forbids. Without the hint the loop keeps the historical
+	 * spin-to-the-limit behavior byte for byte. */
 	{
 		uint64_t read_started = 0u;
 		uint32_t read_issued = 0u;
 		for ( attempt = 0u; attempt < SPARK_KV_PAGER_RESTORE_POLL_LIMIT; ++attempt )
 		{
-			status = SparkNvmeTierRequestDemand(pager->configuration.tier,
+			status = SparkNvmeTierRequestDemandDeadline(pager->configuration.tier,
 				SparkKvPagerHashFromDigest(content_digest),content_digest,attempt,
-				&demand);
+				deadline_step,&demand);
 			if ( status == SPARK_STATUS_OK &&
 				demand.state == SPARK_NVME_TIER_DEMAND_MISS )
 			{
@@ -805,6 +834,12 @@ SparkStatus SparkKvPagerRestoreBlock(
 			}
 			if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
 				return(status);
+			if ( status == SPARK_STATUS_BUSY && deadline_step != 0u &&
+				demand.ordered != 0u )
+			{
+				(void)SparkNvmeTierPump(pager->configuration.tier,attempt);
+				return(SPARK_STATUS_BUSY);
+			}
 			if ( read_issued == 0u )
 			{
 				read_issued = 1u;
@@ -896,7 +931,11 @@ SparkStatus SparkKvPagerRestoreBlock(
  * reverses. BUSY is the tier saturated: QUEUED, the dispatch waits, and
  * the repeated offer IS the queue (nothing wedged, nothing dropped, no
  * half-restored residency). MISS has no bytes to gate on: RECOMPUTE.
- * Everything else stays loud. */
+ * Everything else stays loud. W2: the offer's deadline hint (the struct's
+ * former reserved0) rides into the restore, so the tier's pending restore
+ * debt orders earliest-deadline-first around the block this gate is
+ * actually waiting on - under saturation the gated block completes before
+ * the FIFO backlog, not after it. */
 SparkStatus SparkKvPagerDispatchBlock(
 	SparkKvPager *pager,
 	const SparkKvPagerDispatch *dispatch,
@@ -911,7 +950,6 @@ SparkStatus SparkKvPagerDispatchBlock(
 		dispatch->abi_version != SPARK_KV_PAGER_DISPATCH_ABI_VERSION ||
 		dispatch->descriptor_bytes !=
 			SPARK_KV_PAGER_DISPATCH_DESCRIPTOR_BYTES ||
-		dispatch->reserved0 != 0u ||
 		SparkKvPagerDigestIsUsable(dispatch->content_digest) == 0u )
 	{
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -923,8 +961,9 @@ SparkStatus SparkKvPagerDispatchBlock(
 		SPARK_KV_PAGER_DISPATCH_DECISION_DESCRIPTOR_BYTES;
 	decision.logical_block_index = dispatch->logical_block_index;
 	pager->statistics.dispatch_requests += 1u;
-	status = SparkKvPagerRestoreBlock(pager,
-		dispatch->logical_block_index,dispatch->content_digest);
+	status = SparkKvPagerRestoreBlockDeadline(pager,
+		dispatch->logical_block_index,dispatch->content_digest,
+		dispatch->deadline_step);
 	if ( status == SPARK_STATUS_OK )
 	{
 		status = SparkKvCacheArenaResolveBlock(pager->configuration.arena,

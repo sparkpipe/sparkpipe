@@ -1216,6 +1216,23 @@ SparkStatus SparkNvmeTierRequestDemand(
 	uint32_t step_now,
 	SparkNvmeTierDemandResult *result_out)
 {
+	return(SparkNvmeTierRequestDemandDeadline(tier,content_hash,
+		content_digest,step_now,0u,result_out));
+}
+
+// The W2 semantics live here (see spark_nvme_tier.h): `deadline_step == 0`
+// is the legacy behavior on every branch - the yank of a queued entry
+// BEFORE staging acquisition, the immediate issue, the demand_stalls
+// accounting. A hint never takes MORE than the legacy path would; it only
+// converts a saturation stall into an ordered place in the deadline queue.
+SparkStatus SparkNvmeTierRequestDemandDeadline(
+	SparkNvmeTier *tier,
+	uint64_t content_hash,
+	const uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES],
+	uint32_t step_now,
+	uint32_t deadline_step,
+	SparkNvmeTierDemandResult *result_out)
+{
 	NvmeTierSlot *slots;
 	uint32_t slot_index;
 	NvmeTierSlot *slot;
@@ -1270,6 +1287,13 @@ SparkStatus SparkNvmeTierRequestDemand(
 		if ( slot->staging_index >= tier->configuration.staging_buffer_count )
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		held = &((NvmeTierStagingState *)tier->staging_state)[slot->staging_index];
+		if ( deadline_step != 0u && deadline_step < held->need_by_step )
+		{
+			// The gate waits on THIS read: its staging deadline tightens so
+			// late-landing statistics measure against the real need.
+			held->need_by_step = deadline_step;
+			tier->statistics.demand_deadline_orders++;
+		}
 		if ( held->state == NVME_TIER_STAGING_CANCEL_PENDING )
 		{
 			slot->need_by_step = step_now;
@@ -1281,9 +1305,66 @@ SparkStatus SparkNvmeTierRequestDemand(
 		result_out->state = SPARK_NVME_TIER_DEMAND_IN_FLIGHT;
 		return(SPARK_STATUS_OK);
 	}
-	// PRESENT. If the lookahead queued it, the queue loses it: demand is the
-	// deadline now, and a queued prefetch that a demand load duplicates is
-	// the inversion this whole design exists to prevent.
+	// PRESENT. The W2 branch first: under a hint, a SATURATED tier orders
+	// the gated block in the pending debt instead of stalling it - the
+	// pending heap is earliest-deadline-first, so the next staging buffer
+	// to free carries this read. Only after ordering fails (queue full)
+	// does the legacy stall answer.
+	if ( deadline_step != 0u )
+	{
+		NvmeTierPendingQueue *queue = (NvmeTierPendingQueue *)tier->pending;
+		uint32_t staging_index = NvmeTierStagingAcquireForDemand(tier);
+		if ( staging_index == SPARK_NVME_TIER_NO_SLOT )
+		{
+			int32_t position = NvmeTierPendingFind(queue,slot_index);
+			if ( position >= 0 )
+			{
+				uint32_t before = queue->entries[position].need_by_step;
+				NvmeTierPendingTighten(queue,(uint32_t)position,deadline_step);
+				/* Tighten applied iff the stale deadline was later; the
+				   sift-up may have moved a DIFFERENT entry into
+				   `position`, so the entry is not re-read here. */
+				if ( before > deadline_step )
+					tier->statistics.demand_deadline_orders++;
+				result_out->ordered = 1u;
+			}
+			else if ( queue->count < queue->capacity )
+			{
+				slot->queued = 1u;
+				NvmeTierPendingInsert(queue,slot_index,slot->generation,
+					deadline_step);
+				tier->statistics.demand_deadline_orders++;
+				result_out->ordered = 1u;
+			}
+			else
+			{
+				tier->statistics.demand_stalls++;
+			}
+			return(SPARK_STATUS_BUSY);
+		}
+		// Staging was free: the immediate issue the legacy path would have
+		// taken. Drop any stale queue entry first - the demand read IS the
+		// answer now.
+		if ( slot->queued != 0u )
+		{
+			int32_t position = NvmeTierPendingFind(queue,slot_index);
+			if ( position >= 0 )
+				NvmeTierPendingRemoveAt(queue,(uint32_t)position);
+			slot->queued = 0u;
+		}
+		status = NvmeTierIssueRead(tier,slot_index,staging_index,
+			NVME_TIER_HOLDER_DEMAND,deadline_step,step_now);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		tier->statistics.demand_loads++;
+		result_out->state = SPARK_NVME_TIER_DEMAND_STARTED;
+		return(SPARK_STATUS_OK);
+	}
+	// Legacy (no hint), byte-for-byte the pre-W2 behavior: the queue loses
+	// the entry BEFORE staging is attempted, and a saturated tier answers
+	// BUSY with the entry no longer ordered - the gated block then re-issues
+	// only after whatever the queue drains first. That inversion is exactly
+	// what the hint branch above exists to prevent.
 	if ( slot->queued != 0u )
 	{
 		NvmeTierPendingQueue *queue = (NvmeTierPendingQueue *)tier->pending;
