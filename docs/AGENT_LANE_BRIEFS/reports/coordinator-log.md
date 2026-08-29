@@ -1422,3 +1422,17 @@ appendix).
   biggest single item (>10% and the no-spec-cell gap). P2 (collective
   program) designs in the next window. Capacity rule LIVE in the
   README (spec-default footguns named).
+
+## 2026-08-30 ~11:5x — WAVE-1 DRY MERGED (5ed616f→2c1dc52): −1,541 net, all receipts
+
+- Five clusters, five equivalence proofs: the synthesize quartet's
+  nine packs regenerated sha256-IDENTICAL (78.5GB hashed — including
+  reproducing qwen38_max's pre-existing rc=4 rather than masking it);
+  work_control token-identical; batch_tuning macro-identical; the
+  validate driver argv-identical incl. 8 failure paths; the dormant
+  python (zero importers + a latent NameError) deleted.
+- dup_report 80→76, zero new; the adoption gate PASSES on all five
+  (they now consume the shared core — the offender set's synthesize
+  check goes hard-fail next touch).
+- Manifest chaos reconciled (regen + sha re-pin; the qwen36-rename
+  drift was pre-existing). Offline set green.
