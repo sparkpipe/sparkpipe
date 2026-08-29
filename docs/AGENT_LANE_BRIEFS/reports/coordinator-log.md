@@ -1292,3 +1292,18 @@ appendix).
   scores + exact merge should be bit-identical: per-head dot products
   don't reorder accumulation). glm-5.3-FULL (more DSA layers) gains
   most.
+
+## 2026-08-30 ~7:1x — cycle 3: 14/16 packs DONE; spark4 client wedged → rank-4 rerouted to spark5
+
+- Rebuild state: rank 0 + ranks 1-3,5-15 = 15 of 16 DONE (21G each,
+  matching rank-0's receipt size; spark6 finished during this cycle).
+  spark4's ceph CLIENT is the wedged one (0.25-0.5MB/s vs fleet GB/s;
+  new build session too — not a stale reader; sysadmin's ceph work
+  continues). ROUTED AROUND per doctrine: rank-4's build rerouted to
+  healthy spark5 (~700MB/s there... 201M@4min = slower than the others
+  were but 10x spark4; watching — if spark5's session also crawls,
+  ceph is still mid-repair and the closeout agent's requeue pattern
+  owns it). The 3-proc counts on 4/6 were transient monitor shells,
+  no write-stacking.
+- Closeout agent owns the finish: verify 16/16 → swap → wave →
+  coherence curl → COMPSEC-17 → M5.
