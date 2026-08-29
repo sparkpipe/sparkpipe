@@ -1671,7 +1671,10 @@ static SparkStatus SparkModelResidentdBindRoute(
 	route->message_bytes = message_bytes;
 	status = SparkModelResidentIpcDecodeSubmission(slot->message,message_bytes,&route->submission);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelServingAdapterValidateRuntimeSubmission(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&route->submission);
+		/* R5 hoist: (descriptor, limits) validated once at configure
+		 * (SparkModelResidentdBuildRuntime); per-submission checks and
+		 * statuses unchanged. */
+		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&route->submission);
 	hidden_bytes = status == SPARK_STATUS_OK &&
 		((runtime->rank_plan.flags &
 		 SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT) == 0u ||
@@ -1787,7 +1790,8 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		status = SparkModelResidentIpcValidateDirectSubmitDescriptor(
 			runtime->adapter_library.adapter_interface.descriptor);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelServingAdapterValidateRuntimeSubmission(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&submission);
+		/* R5 hoist: configure-time (descriptor, limits) validation. */
+		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&submission);
 	if ( status == SPARK_STATUS_OK && submission.submission_id <= runtime->client.last_submission_id )
 		status = submission.submission_id == runtime->client.last_submission_id ? SPARK_STATUS_DUPLICATE : SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK )
@@ -1937,7 +1941,8 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,
 		&submission);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelServingAdapterValidateRuntimeSubmission(
+		/* R5 hoist: configure-time (descriptor, limits) validation. */
+		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
 			runtime->adapter_library.adapter_interface.descriptor,
 			&runtime->runtime_limits,&submission);
 	if ( status == SPARK_STATUS_OK && submission.submission_id <=

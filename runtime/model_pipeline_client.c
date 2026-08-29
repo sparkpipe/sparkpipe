@@ -632,6 +632,13 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	pipeline->all_rank_mask = (UINT32_C(1) << pipeline->rank_count) - 1u;
 	pipeline->runtime_limits = configuration->deployment->runtime_limits;
 	pipeline->adapter_descriptor = pipeline->adapter_library.adapter_interface.descriptor;
+	/* R5 hoist: the (descriptor, limits) pair is immutable for the
+	 * client's lifetime — validate it ONCE here so the per-submission
+	 * path runs the prevalidated variant. Same statuses, computed at
+	 * connect time instead of on every submit. */
+	status = SparkModelServingAdapterValidateRuntimeLimits(pipeline->adapter_descriptor,&pipeline->runtime_limits);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	pipeline->submit_result_function = configuration->submit_result_function;
 	pipeline->submit_result_context = configuration->submit_result_context;
 	pipeline->completion_function = configuration->completion_function;
@@ -762,7 +769,9 @@ SparkStatus SparkModelPipelineClientSubmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pipeline->failed_status != SPARK_STATUS_OK )
 		return((SparkStatus)pipeline->failed_status);
-	status = SparkModelServingAdapterValidateRuntimeSubmission(pipeline->adapter_descriptor,&pipeline->runtime_limits,submission);
+	/* R5 hoist: (descriptor, limits) validated once at initialize (below);
+	 * per-submission checks and their statuses unchanged. */
+	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(pipeline->adapter_descriptor,&pipeline->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->submission_id <= pipeline->last_submission_id )

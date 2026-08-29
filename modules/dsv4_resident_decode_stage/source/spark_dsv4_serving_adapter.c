@@ -945,7 +945,8 @@ static SparkStatus SparkDsv4ServingValidateSubmissionBase(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
-	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkDsv4ServingDescriptor,&state->runtime_limits,submission);
+	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(&SparkDsv4ServingDescriptor,&state->runtime_limits,submission);
+	/* R5 hoist: the adapter validated (descriptor, limits) at configure; per-submission checks unchanged. */
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )

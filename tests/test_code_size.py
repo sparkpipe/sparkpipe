@@ -898,7 +898,11 @@ from pathlib import Path
 # sha256 links; restore-verified, collision = HASH_MISMATCH), B4 the
 # spark_kv_backing 0600/O_NOFOLLOW/fchmod-migration open + namespaced path
 # helpers. 215374 exact.
-CEILING = 216890
+# perf-r1 (PR744): B1/draft/MTP one-row sites route to the CERTIFIED
+# screened head (bit-exact receipts, 1.44-1.45x head-time); immutable
+# validation hoisted to connect-time (identical semantics, receipts).
+# 217489 exact.
+CEILING = 217489
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -498,7 +498,10 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	SparkStatus status;
 	if ( client == 0 || client->connected == 0u || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkModelServingAdapterValidateRuntimeSubmission(client->adapter_descriptor,&client->runtime_limits,submission);
+	/* R5 hoist: (descriptor, limits) validated once at configure
+	 * (SparkModelResidentClientValidateConfiguration); per-submission
+	 * checks and their statuses unchanged. */
+	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(client->adapter_descriptor,&client->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->submission_id <= client->last_submission_id )
@@ -567,7 +570,8 @@ SparkStatus SparkModelResidentClientCanQueueContinuation(
 	if ( (client->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
-	status = SparkModelServingAdapterValidateRuntimeSubmission(
+	/* R5 hoist: configure-time (descriptor, limits) validation. */
+	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
 		client->adapter_descriptor,&client->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
