@@ -908,7 +908,15 @@ from pathlib import Path
 # glm5-closeout (PR746): pack verifier+orchestrator+swap/wave tools,
 # the provenance header patch (the hard deploy gate), COMPSEC/M5
 # harnesses, LAUNCH-STATE updates. 219673 exact.
-CEILING = 219673
+# W1 loader (docs/WEIGHTD_DESIGN.md L1+L2): the shared pipelined pack
+# loader (worker read thread + 2-slot pinned staging + ordered async
+# H2D; the synchronous path retained as the kill-switch fallback), the
+# pack-wide pipeline wired through the dsv4 reference LoadPack, and the
+# identical-digest sha256 file read pipeline. Justification: the load
+# path is the whole cold-start cost of every family and the weightd
+# cold path inherits it (design doc); measured claims land in the lane
+# report. 220773 exact.
+CEILING = 220773
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

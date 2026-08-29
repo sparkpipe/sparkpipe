@@ -240,13 +240,219 @@ SparkStatus SparkSha256Bytes(const void *data, size_t data_bytes, char hex[SPARK
     return SPARK_STATUS_OK;
 }
 
+/*
+ * Whole-file digest (docs/WEIGHTD_DESIGN.md L2). FIPS 180-4 SHA-256 is a
+ * serial chaining: block N's compression consumes block N-1's state, so
+ * NO multi-thread split of one byte stream can reproduce the sequential
+ * digest - and identity keys (pack SHA-256 in attach identity) require
+ * exactly that value. "Parallel pre-hash then serial-combine" produces a
+ * different (tree) digest and is refused here. What CAN run in parallel
+ * is the read pass: a reader thread fills a double buffer ahead of the
+ * hashing thread, chunks are still hashed strictly in file order, and
+ * the digest is bit-identical to the sequential pass by construction.
+ * SPARK_SHA256_FILE_PIPELINE=0 forces the sequential reader (A/B).
+ */
+typedef struct SparkSha256FilePipeline
+{
+    int file_descriptor;
+    pthread_t reader_thread;
+    int reader_started;
+    pthread_mutex_t mutex;
+    pthread_cond_t progress;
+    /* host heap staging: fed to the CPU hashing thread only */
+    uint8_t *buffers[SPARK_SHA256_PIPELINE_BUFFERS];
+    size_t buffer_bytes[SPARK_SHA256_PIPELINE_BUFFERS];
+    uint64_t filled_count;
+    uint64_t hashed_count;
+    int end_of_file;
+    int failure;
+} SparkSha256FilePipeline;
+
+static void *SparkSha256FilePipelineReader(void *argument)
+{
+    SparkSha256FilePipeline *pipeline = (SparkSha256FilePipeline *)argument;
+    uint64_t fill_index = 0u;
+    for (;;)
+    {
+        size_t read_bytes = 0u;
+        pthread_mutex_lock(&pipeline->mutex);
+        while (pipeline->failure == 0 &&
+            fill_index >= pipeline->hashed_count + SPARK_SHA256_PIPELINE_BUFFERS)
+        {
+            /* both buffers hold unhashed data: wait for the hash thread */
+            pthread_cond_wait(&pipeline->progress, &pipeline->mutex);
+        }
+        pthread_mutex_unlock(&pipeline->mutex);
+        if (pipeline->failure != 0)
+        {
+            break;
+        }
+        for (;;)
+        {
+            ssize_t chunk = pread(
+                pipeline->file_descriptor,
+                pipeline->buffers[fill_index % SPARK_SHA256_PIPELINE_BUFFERS] +
+                    read_bytes,
+                (size_t)SPARK_SHA256_PIPELINE_BUFFER_BYTES - read_bytes,
+                (off_t)(fill_index * SPARK_SHA256_PIPELINE_BUFFER_BYTES +
+                    read_bytes));
+            if (chunk <= 0)
+            {
+                if (chunk < 0 && errno == EINTR)
+                {
+                    continue;
+                }
+                if (chunk < 0)
+                {
+                    pipeline->failure = 1;
+                }
+                else
+                {
+                    pipeline->end_of_file = 1;
+                }
+                break;
+            }
+            read_bytes += (size_t)chunk;
+            if (read_bytes == (size_t)SPARK_SHA256_PIPELINE_BUFFER_BYTES)
+            {
+                break;
+            }
+        }
+        pthread_mutex_lock(&pipeline->mutex);
+        pipeline->buffer_bytes[
+            fill_index % SPARK_SHA256_PIPELINE_BUFFERS] = read_bytes;
+        pipeline->filled_count = fill_index + 1u;
+        pthread_cond_broadcast(&pipeline->progress);
+        pthread_mutex_unlock(&pipeline->mutex);
+        if (pipeline->end_of_file != 0 || pipeline->failure != 0)
+        {
+            break;
+        }
+        fill_index++;
+    }
+    return 0;
+}
+
+static SparkStatus SparkSha256FilePipelined(
+    int file_descriptor,
+    SparkSha256Context *context)
+{
+    SparkSha256FilePipeline pipeline;
+    uint64_t hash_index = 0u;
+    int index;
+    if (pthread_mutex_init(&pipeline.mutex, 0) != 0)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (pthread_cond_init(&pipeline.progress, 0) != 0)
+    {
+        pthread_mutex_destroy(&pipeline.mutex);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    pipeline.file_descriptor = file_descriptor;
+    pipeline.reader_started = 0;
+    pipeline.end_of_file = 0;
+    pipeline.failure = 0;
+    pipeline.filled_count = 0u;
+    pipeline.hashed_count = 0u;
+    for (index = 0; index < (int)SPARK_SHA256_PIPELINE_BUFFERS; index++)
+    {
+        /* host heap staging (one buffer per pipeline slot) */
+        pipeline.buffers[index] =
+            (uint8_t *)malloc((size_t)SPARK_SHA256_PIPELINE_BUFFER_BYTES);
+        pipeline.buffer_bytes[index] = 0u;
+        if (pipeline.buffers[index] == 0)
+        {
+            pipeline.failure = 1;
+        }
+    }
+    if (pipeline.failure == 0 &&
+        pthread_create(
+            &pipeline.reader_thread, 0, SparkSha256FilePipelineReader,
+            &pipeline) == 0)
+    {
+        pipeline.reader_started = 1;
+    }
+    while (pipeline.reader_started != 0)
+    {
+        const uint8_t *data;
+        size_t bytes;
+        pthread_mutex_lock(&pipeline.mutex);
+        while (pipeline.hashed_count == pipeline.filled_count &&
+            pipeline.end_of_file == 0 && pipeline.failure == 0)
+        {
+            pthread_cond_wait(&pipeline.progress, &pipeline.mutex);
+        }
+        if (pipeline.hashed_count == pipeline.filled_count)
+        {
+            pthread_mutex_unlock(&pipeline.mutex);
+            break;
+        }
+        data = pipeline.buffers[hash_index % SPARK_SHA256_PIPELINE_BUFFERS];
+        bytes = pipeline.buffer_bytes[
+            hash_index % SPARK_SHA256_PIPELINE_BUFFERS];
+        pthread_mutex_unlock(&pipeline.mutex);
+        /* chunks hash strictly in file order: the digest equals the
+         * sequential one regardless of how the reads overlapped */
+        SparkSha256Update(context, data, bytes);
+        hash_index++;
+        pthread_mutex_lock(&pipeline.mutex);
+        pipeline.hashed_count = hash_index;
+        pthread_cond_broadcast(&pipeline.progress);
+        pthread_mutex_unlock(&pipeline.mutex);
+    }
+    if (pipeline.reader_started != 0)
+    {
+        void *reader_result = 0;
+        /* the reader stopped on its own (eof or failure); reap it */
+        (void)pthread_join(pipeline.reader_thread, &reader_result);
+    }
+    else if (pipeline.failure == 0)
+    {
+        /* no reader thread: hash the file on this thread instead */
+        uint8_t *buffer = pipeline.buffers[0];
+        if (buffer == 0)
+        {
+            pipeline.failure = 1;
+        }
+        for (;;)
+        {
+            ssize_t chunk = buffer == 0 ? 0
+                : pread(file_descriptor, buffer,
+                    (size_t)SPARK_SHA256_PIPELINE_BUFFER_BYTES,
+                    (off_t)(hash_index * SPARK_SHA256_PIPELINE_BUFFER_BYTES));
+            if (chunk <= 0)
+            {
+                if (chunk < 0 && errno == EINTR)
+                {
+                    continue;
+                }
+                if (chunk < 0)
+                {
+                    pipeline.failure = 1;
+                }
+                break;
+            }
+            SparkSha256Update(context, buffer, (size_t)chunk);
+            hash_index++;
+        }
+    }
+    for (index = 0; index < (int)SPARK_SHA256_PIPELINE_BUFFERS; index++)
+    {
+        free(pipeline.buffers[index]);
+    }
+    pthread_cond_destroy(&pipeline.progress);
+    pthread_mutex_destroy(&pipeline.mutex);
+    return pipeline.failure != 0 ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
+}
+
 SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES])
 {
     FILE *file;
     SparkSha256Context context;
     uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-    uint8_t buffer[SPARK_SHA256_READ_BUFFER_BYTES];
-    size_t bytes_read;
+    const char *pipeline_setting;
+    SparkStatus status;
 
     if (path == 0 || hex == 0)
     {
@@ -260,18 +466,35 @@ SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES])
     }
 
     SparkSha256Initialize(&context);
-    while ((bytes_read = fread(buffer, 1u, sizeof(buffer), file)) != 0u)
+    pipeline_setting = getenv("SPARK_SHA256_FILE_PIPELINE");
+    if (pipeline_setting != 0 && pipeline_setting[0] == '0' &&
+        pipeline_setting[1] == '\0')
     {
-        SparkSha256Update(&context, buffer, bytes_read);
+        /* sequential reference reader (the digest is identical either way) */
+        uint8_t buffer[SPARK_SHA256_READ_BUFFER_BYTES];
+        size_t bytes_read;
+        while ((bytes_read = fread(buffer, 1u, sizeof(buffer), file)) != 0u)
+        {
+            SparkSha256Update(&context, buffer, bytes_read);
+        }
+        if (ferror(file) != 0)
+        {
+            fclose(file);
+            return SPARK_STATUS_IO_ERROR;
+        }
+        status = SPARK_STATUS_OK;
     }
-    if (ferror(file) != 0)
+    else
     {
-        fclose(file);
+        status = SparkSha256FilePipelined(fileno(file), &context);
+    }
+    if (fclose(file) != 0 && status == SPARK_STATUS_OK)
+    {
         return SPARK_STATUS_IO_ERROR;
     }
-    if (fclose(file) != 0)
+    if (status != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_IO_ERROR;
+        return status;
     }
 
     SparkSha256Finalize(&context, digest);
