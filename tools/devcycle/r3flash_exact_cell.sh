@@ -36,8 +36,12 @@ LANE=/home/spark8/lane-r3flash
 # durable roots: the wave deployments clean /tmp mid-flight (the t4 run
 # lost its runtime root to a concurrent wave's /tmp sweep) - live in the
 # lane home, which survived every wave today
+# per-rank runtime roots (the driver host is spark8, ranks live on
+# spark8..sparkf - a single spark8-root mkdir'd on every host is wrong
+# by construction); RES is the driver host's own results dir
 ROOT=/home/spark8/lane-r3flash/cell/runtime
 RES=/home/spark8/lane-r3flash/cell/results
+root_of() { printf '/home/%s/lane-r3flash/cell/runtime' "$1"; }
 FLEET_ROOT_TEMPLATE=/home/sparkRANK/sparkdata/glm52.tp8.fp8
 PACK_TEMPLATE='glm52_tp8_rank%02d.fp8.glms52sp'
 O128_BATCH=${O128_BATCH:-/tmp/r3flash-o128-batch.json}
@@ -60,10 +64,10 @@ token_hash() {
 		| sha256sum | cut -d' ' -f1
 }
 
-rank_pid() { # rank_pid HOST RANK - residentd of $ROOT on that host (by cwd)
+rank_pid() { # rank_pid HOST RANK - residentd of that host's cell root (by cwd)
 	ssh -o BatchMode=yes -o ConnectTimeout=10 "$1" "
 		for p in \$(pgrep -f 'bin/sparkpipe_model_residentd'); do
-			[ \"\$(readlink /proc/\$p/cwd)\" = '$ROOT' ] && { echo \$p; break; }
+			[ \"\$(readlink /proc/\$p/cwd)\" = '$(root_of "$1")' ] && { echo \$p; break; }
 		done"
 }
 
@@ -83,8 +87,8 @@ fleet() { # fleet stop|start|ready
 			r=${RANKOF[$h]}
 			[[ -z "$(rank_pid "$h" "$r")" ]] || continue
 			ssh -o BatchMode=yes "$h" "
-				cd '$ROOT' &&
-				export LD_LIBRARY_PATH='$ROOT/lib':\$LD_LIBRARY_PATH \
+				cd '$(root_of "$h")' &&
+				export LD_LIBRARY_PATH='$(root_of "$h")/lib':\$LD_LIBRARY_PATH \
 					SPARKPIPE_RELEASE_ID='r3flash-rank$r'
 				setsid -f bin/sparkpipe_model_residentd \
 					--deployment config/model_resident.json --rank-index $r \
@@ -136,19 +140,19 @@ write_config() { # write_config THRESHOLD - render every rank's two configs
 	local threshold="$1" h r
 	for h in $HOSTS; do
 		r=${RANKOF[$h]}
-		ssh -o BatchMode=yes "$h" "mkdir -p $ROOT/config $ROOT/kv" &
+		ssh -o BatchMode=yes "$h" "mkdir -p $(root_of "$h")/config $(root_of "$h")/kv" &
 	done
 	wait
 	for h in $HOSTS; do
 		r=${RANKOF[$h]}
 		fleet_root="$(printf "$FLEET_ROOT_TEMPLATE" "$r")"
 		ssh -o BatchMode=yes "$h" "
-			jq '.nodes |= map(.runtime_root = \"$ROOT\")' \
-				$fleet_root/config/model_resident.json > $ROOT/config/model_resident.json &&
+			jq '.nodes |= map(.runtime_root = (\"/home/\" + .transport_host + \"/lane-r3flash/cell/runtime\"))' \
+				$fleet_root/config/model_resident.json > $(root_of "$h")/config/model_resident.json &&
 			jq --argjson threshold '$threshold' --argjson positions '$MAX_POSITIONS' \
 				'.decode_split_context_threshold = \$threshold
 				| .max_sequence_positions = \$positions' \
-				$fleet_root/config/glm52_stage.json > $ROOT/config/glm52_stage.json" \
+				$fleet_root/config/glm52_stage.json > $(root_of "$h")/config/glm52_stage.json" \
 			|| { log "FATAL config render failed on $h"; exit 8; }
 	done
 }
@@ -170,30 +174,34 @@ log "phase 0: distribute"
 [[ -f "$LANE/build/sparkpipe_model_residentd" && -f "$LANE/build/sparkpipe_model_batch" ]] \
 	|| { log "FATAL lane binaries missing in $LANE/build (run the publish first)"; exit 9; }
 for h in $HOSTS; do
-	retry_ssh "$h" "mkdir -p $ROOT/bin $ROOT/lib $ROOT/config $ROOT/kv" \
+	root="$(root_of "$h")"
+	retry_ssh "$h" "mkdir -p $root/bin $root/lib $root/config $root/kv" \
 		|| { log "FATAL mkdir failed on $h"; exit 8; } &
 done
 wait
 for h in $HOSTS; do
 	r=${RANKOF[$h]}
 	fleet_root="$(printf "$FLEET_ROOT_TEMPLATE" "$r")"
+	root="$(root_of "$h")"
 	rsync -aq -e "ssh -o BatchMode=yes -o ConnectTimeout=10" \
-		"$LANE/build/sparkpipe_model_residentd" "$LANE/build/sparkpipe_model_batch" "$h:$ROOT/bin/" \
+		"$LANE/build/sparkpipe_model_residentd" "$LANE/build/sparkpipe_model_batch" "$h:$root/bin/" \
 		|| { log "FATAL bin rsync failed on $h"; exit 8; }
 	rsync -aq -e "ssh -o BatchMode=yes -o ConnectTimeout=10" \
 		"$LANE/build/model_driver.so" "$LANE/build/model_serving_adapter.so" \
-		"$LANE/build/hidden_transport.so" "$h:$ROOT/lib/" \
+		"$LANE/build/hidden_transport.so" "$h:$root/lib/" \
 		|| { log "FATAL lib rsync failed on $h"; exit 8; }
 	# packs stay at the rank's own fleet root - symlink them into the cell
 	# runtime root (NOTE: expand fleet_root here, not $HOME - the script
 	# runs on one host and ssh targets the rest)
-	retry_ssh "$h" "ln -sfn $fleet_root/packs $ROOT/packs" \
+	root="$(root_of "$h")"
+	retry_ssh "$h" "ln -sfn $fleet_root/packs $root/packs" \
 		|| { log "FATAL packs symlink failed on $h"; exit 8; }
 done
 for h in $HOSTS; do
 	r=${RANKOF[$h]}
 	pack="$(printf "$PACK_TEMPLATE" "$r")"
-	retry_ssh "$h" "test -s $ROOT/packs/$pack" \
+	root="$(root_of "$h")"
+	retry_ssh "$h" "test -s $root/packs/$pack" \
 		|| { log "FATAL pack missing on $h ($pack)"; exit 9; }
 done
 # the batch payloads: prefer retained files, else synthesize the O128 decode

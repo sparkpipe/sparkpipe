@@ -1177,8 +1177,15 @@ CEILING = 228248
 # SCM_RIGHTS to a fresh-exec child with the cudaFree(0) bootstrap) proves
 # the driver 580.159.03/GB10 path fully capable - so the remaining
 # cross-process failure is consumer-path, and the diag names it.
-# 229922 exact.
-CEILING = 229922
+# +7: the diag caught the ACTUAL consumer-path defect -
+# CUDA_ERROR_NOT_INITIALIZED (curesult=3): the only lazy-context bootstrap
+# (SparkWeightdAttachDeviceId, the cudaFree(0)) sat at the SetAccess tail
+# of ImportMap, AFTER the whole import loop, so a fresh-exec consumer with
+# no prior CUDA calls imported with no driver state. The bootstrap now runs
+# at function entry. The in-process leg never saw it (its caller had
+# already made CUDA calls); the stub cannot model a context-less process.
+# 229929 exact.
+CEILING = 229929
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

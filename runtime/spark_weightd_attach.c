@@ -255,6 +255,13 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    /* the lazy-context bootstrap MUST precede the import loop: a fresh
+     * consumer process has no driver state yet, and the GPU receipt caught
+     * the imports failing CUDA_ERROR_NOT_INITIALIZED (curesult=3, fd=4)
+     * because the only DeviceId() call sat at the SetAccess tail - the
+     * in-process leg never noticed (the caller had already made CUDA
+     * calls). Initialize here, at function entry. */
+    (void)SparkWeightdAttachDeviceId();
     if (outcome->client == 0)
     {
         SparkWeightdAttachSetReason(reason, "not_attached");
