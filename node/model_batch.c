@@ -123,6 +123,7 @@ static SparkStatus SparkModelBatchParseTokenArray(
 {
 	uint32_t *tokens;
 	uint32_t count,index;
+	int32_t element;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -133,8 +134,15 @@ static SparkStatus SparkModelBatchParseTokenArray(
 	if ( tokens == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SPARK_STATUS_OK;
+	element = SparkJsonGetArrayElementFirst(document,array);
 	for (index=0u; status==SPARK_STATUS_OK && index<count; index++)
-		status = SparkJsonGetUInt32(document,SparkJsonGetArrayElement(document,array,index),&tokens[index]);
+	{
+		if ( element < 0 )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		else
+			status = SparkJsonGetUInt32(document,element,&tokens[index]);
+		element = SparkJsonGetArrayElementNext(document,array,element);
+	}
 	if ( status != SPARK_STATUS_OK )
 		free(tokens);
 	else
@@ -214,6 +222,7 @@ static SparkStatus SparkModelBatchParseRequests(
 	SparkModelBatchFile *file)
 {
 	uint32_t index;
+	int32_t element;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -224,8 +233,15 @@ static SparkStatus SparkModelBatchParseRequests(
 	if ( file->requests == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SPARK_STATUS_OK;
+	element = SparkJsonGetArrayElementFirst(document,array);
 	for (index=0u; status==SPARK_STATUS_OK && index<file->request_count; index++)
-		status = SparkModelBatchParseRequest(document,SparkJsonGetArrayElement(document,array,index),file->engine.max_context_tokens,&file->requests[index]);
+	{
+		if ( element < 0 )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		else
+			status = SparkModelBatchParseRequest(document,element,file->engine.max_context_tokens,&file->requests[index]);
+		element = SparkJsonGetArrayElementNext(document,array,element);
+	}
 	return(status == SPARK_STATUS_OK ? SparkModelBatchValidateUniqueIds(file) : status);
 }
 
@@ -235,6 +251,7 @@ static SparkStatus SparkModelBatchParseStopTokens(
 	SparkModelBatchFile *file)
 {
 	uint32_t index,left;
+	int32_t element;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -242,8 +259,15 @@ static SparkStatus SparkModelBatchParseStopTokens(
 	if ( file->engine.stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SPARK_STATUS_OK;
+	element = SparkJsonGetArrayElementFirst(document,array);
 	for (index=0u; status==SPARK_STATUS_OK && index<file->engine.stop_token_count; index++)
-		status = SparkJsonGetUInt32(document,SparkJsonGetArrayElement(document,array,index),&file->engine.stop_token_ids[index]);
+	{
+		if ( element < 0 )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		else
+			status = SparkJsonGetUInt32(document,element,&file->engine.stop_token_ids[index]);
+		element = SparkJsonGetArrayElementNext(document,array,element);
+	}
 	for (index=0u; status==SPARK_STATUS_OK && index<file->engine.stop_token_count; index++)
 		for (left=0u; left<index; left++)
 			if ( file->engine.stop_token_ids[left] == file->engine.stop_token_ids[index] )

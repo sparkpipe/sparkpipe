@@ -397,6 +397,7 @@ static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
 	const char *name, uint32_t **out)
 {
 	int32_t m = SparkJsonFindObjectMember(doc, root, name);
+	int32_t e;
 	uint32_t count, i;
 	uint32_t *tokens;
 	if (m < 0 || !SparkJsonTokenIsType(doc, m, SPARK_JSON_TOKEN_ARRAY))
@@ -407,17 +408,18 @@ static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
 	tokens = malloc((size_t)count * sizeof(uint32_t));
 	if (tokens == 0)
 		return 0;
+	e = SparkJsonGetArrayElementFirst(doc, m);
 	for (i = 0; i < count; i++)
 	{
 		uint32_t v;
-		if (SparkJsonGetUInt32(doc,
-			SparkJsonGetArrayElement(doc, m, (int32_t)i), &v)
-			!= SPARK_STATUS_OK || v > 260000)
+		if (e < 0 || SparkJsonGetUInt32(doc, e, &v) != SPARK_STATUS_OK ||
+			v > 260000)
 		{
 			free(tokens);
 			return 0;
 		}
 		tokens[i] = v;
+		e = SparkJsonGetArrayElementNext(doc, m, e);
 	}
 	*out = tokens;
 	return count;

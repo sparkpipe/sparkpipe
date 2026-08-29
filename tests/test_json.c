@@ -44,6 +44,29 @@ int main(void)
     assert(SparkJsonGetArrayElementCount(&document, values_token) == 3u);
     SparkJsonDocumentDestroy(&document);
 
+    /* Sequential array access walks the same tokens as indexed access
+     * (the one-pass contract request-scale loops rely on). */
+    {
+        static const char ArrayJson[] = "{\"ids\":[7,13,0,999,42,1]}";
+        SparkJsonDocumentReset(&document);
+        assert(SparkJsonParseText(ArrayJson, strlen(ArrayJson), &document) == SPARK_STATUS_OK);
+        root_token = SparkJsonGetRootToken(&document);
+        values_token = SparkJsonFindObjectMember(&document, root_token, "ids");
+        assert(SparkJsonGetArrayElementCount(&document, values_token) == 6u);
+        {
+            int32_t walk = SparkJsonGetArrayElementFirst(&document, values_token);
+            uint32_t index;
+            for (index = 0u; index < 6u; index++)
+            {
+                assert(walk == SparkJsonGetArrayElement(&document, values_token, index));
+                walk = SparkJsonGetArrayElementNext(&document, values_token, walk);
+            }
+            assert(walk < 0);
+        }
+        assert(SparkJsonGetArrayElementFirst(&document, root_token) < 0);
+        SparkJsonDocumentDestroy(&document);
+    }
+
     SparkJsonDocumentReset(&document);
     assert(SparkJsonParseText(InvalidJson, strlen(InvalidJson), &document) == SPARK_STATUS_PARSE_ERROR);
     SparkJsonDocumentDestroy(&document);

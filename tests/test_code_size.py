@@ -937,7 +937,14 @@ from pathlib import Path
 # receipts in the K1-K4 commit message and coverage entries. The lane
 # landed without its ratchet bump; measured at coordinator merge:
 # 222130 exact; +1 at merge = the frame_error_clear declaration completing the lane's own WIP (its committed state did not compile).
-CEILING = 222131
+# json one-pass: SparkJsonGetArrayElementFirst/Next (the sequential
+# accessors; indexed access walks the child chain per element - the
+# request-scale parse loops in model_api.c parse_token_array and the
+# three model_batch.c parsers were O(n^2) on 224K-token prompts) + the
+# one-pass loops + the test_json equivalence contract. Config-scale
+# loops (adapter template, deployment) stay indexed: bounded counts.
+# 222168 exact.
+CEILING = 222168
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

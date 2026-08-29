@@ -633,6 +633,24 @@ uint32_t SparkJsonGetArrayElementCount(const SparkJsonDocument *document, int32_
     return document->tokens[array_token_index].child_count;
 }
 
+int32_t SparkJsonGetArrayElementFirst(const SparkJsonDocument *document, int32_t array_token_index)
+{
+    if (!SparkJsonTokenIsType(document, array_token_index, SPARK_JSON_TOKEN_ARRAY))
+    {
+        return -1;
+    }
+    return SparkJsonFindNextDirectChild(document, array_token_index, array_token_index);
+}
+
+int32_t SparkJsonGetArrayElementNext(const SparkJsonDocument *document, int32_t array_token_index, int32_t element_token_index)
+{
+    if (!SparkJsonTokenIsType(document, array_token_index, SPARK_JSON_TOKEN_ARRAY) || element_token_index < 0)
+    {
+        return -1;
+    }
+    return SparkJsonFindNextDirectChild(document, array_token_index, element_token_index);
+}
+
 int32_t SparkJsonGetArrayElement(const SparkJsonDocument *document, int32_t array_token_index, uint32_t element_index)
 {
     int32_t child_token_index;
