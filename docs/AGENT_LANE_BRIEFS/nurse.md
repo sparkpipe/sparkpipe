@@ -42,6 +42,29 @@ never spawns lanes.
    its nodes for >10 min (and past its bring-up window) = GHOST WORK —
    escalate with the log tail.
 
+
+## OPERATOR DIRECTIVE (2026-08-29 evening): the queue is load-bearing — it gets FIXED every sweep
+
+Fleet utilization is the metric: allocate, memory fills, GPUs compute,
+test finishes, cycle repeats — seconds of gap, a minute at most. The
+queue being down delays completion minute-for-minute.
+
+6b. **Dispatcher health is YOUR responsibility to RESTORE, not just
+    report**: each sweep, `pgrep -f "spark_queue.py dispatch"` on the
+    controller; if dead, RESTART it (documented re-arm, idempotent):
+    `nohup /bin/bash -c 'cd <repo>; while true; do /opt/homebrew/bin/python3
+    tools/spark_queue.py dispatch >> /tmp/sparkqueue-dispatcher.log 2>&1;
+    sleep 5; done' </dev/null >/dev/null 2>&1 & disown` — then verify one
+    dispatch pass appears in the log.
+6c. **Failed-task reconciliation**: every entry in runs/results.jsonl
+    with a non-zero/fatal exit gets ONE line in your report naming the
+    task + its fatal message + which lane owns the prerequisite — the
+    coordinator routes the fix. A task that reaped on a missing
+    prerequisite is not done until its owner re-queues it.
+6d. **Idle-node alarm**: if ALL 16 nodes are lease-free for >2 sweeps
+    while any executable task sits queued = DISPATCH-PIPELINE BUG —
+    escalate immediately (this is the minute-for-minute loss class).
+
 ## Escalation protocol
 
 ESCALATE = a dedicated block at the TOP of your report:
