@@ -278,9 +278,11 @@ int main(void)
 	/* truncated file: the header's file_bytes disagrees with the actual size */
 	{
 		int fd;
-		(void)write_sparse("/tmp/k3dsp-test.k3dsp", &pack);
+		if ( write_sparse("/tmp/k3dsp-test.k3dsp", &pack) != 0 )
+			return(2);
 		fd = open("/tmp/k3dsp-test.k3dsp", O_RDWR);
-		(void)ftruncate(fd, (off_t)pack.file_bytes - 4096u);
+		if ( fd < 0 || ftruncate(fd, (off_t)pack.file_bytes - 4096u) != 0 )
+			return(2);
 		(void)close(fd);
 		if ( SparkK3DsparkPackBind("/tmp/k3dsp-test.k3dsp", &bound, refusal,
 			sizeof(refusal)) == SPARK_STATUS_OK ||
