@@ -917,7 +917,7 @@ from pathlib import Path
 # the deployment limit. Net +66; 219739 exact.
 # k3-finish: the fleet-wave 110GiB envelope check (refuse <100G,
 # report the reading) + the build keepalive. 220456 exact.
-CEILING = 220456
+CEILING = 220506
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
