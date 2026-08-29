@@ -1,1 +1,58 @@
-{}
+{
+ "spark8": {
+  "acquired_at": "2026-08-29T23:26:48",
+  "holder": "task:r3flash-glm52-exact-cell-t12",
+  "id": "r3flash-glm52-exact-cell-t12",
+  "pid": null,
+  "ttl_minutes": 15.0
+ },
+ "spark9": {
+  "acquired_at": "2026-08-29T23:26:48",
+  "holder": "task:r3flash-glm52-exact-cell-t12",
+  "id": "r3flash-glm52-exact-cell-t12",
+  "pid": null,
+  "ttl_minutes": 15.0
+ },
+ "sparka": {
+  "acquired_at": "2026-08-29T23:26:48",
+  "holder": "task:r3flash-glm52-exact-cell-t12",
+  "id": "r3flash-glm52-exact-cell-t12",
+  "pid": null,
+  "ttl_minutes": 15.0
+ },
+ "sparkb": {
+  "acquired_at": "2026-08-29T23:26:48",
+  "holder": "task:r3flash-glm52-exact-cell-t12",
+  "id": "r3flash-glm52-exact-cell-t12",
+  "pid": null,
+  "ttl_minutes": 15.0
+ },
+ "sparkc": {
+  "acquired_at": "2026-08-29T23:26:48",
+  "holder": "task:r3flash-glm52-exact-cell-t12",
+  "id": "r3flash-glm52-exact-cell-t12",
+  "pid": null,
+  "ttl_minutes": 15.0
+ },
+ "sparkd": {
+  "acquired_at": "2026-08-29T23:26:48",
+  "holder": "task:r3flash-glm52-exact-cell-t12",
+  "id": "r3flash-glm52-exact-cell-t12",
+  "pid": null,
+  "ttl_minutes": 15.0
+ },
+ "sparke": {
+  "acquired_at": "2026-08-29T23:26:48",
+  "holder": "task:r3flash-glm52-exact-cell-t12",
+  "id": "r3flash-glm52-exact-cell-t12",
+  "pid": null,
+  "ttl_minutes": 15.0
+ },
+ "sparkf": {
+  "acquired_at": "2026-08-29T23:26:48",
+  "holder": "task:r3flash-glm52-exact-cell-t12",
+  "id": "r3flash-glm52-exact-cell-t12",
+  "pid": null,
+  "ttl_minutes": 15.0
+ }
+}
