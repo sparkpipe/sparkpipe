@@ -944,7 +944,16 @@ from pathlib import Path
 # one-pass loops + the test_json equivalence contract. Config-scale
 # loops (adapter template, deployment) stay indexed: bounded counts.
 # 222168 exact.
-CEILING = 222168
+# probe-fix: the probe-armed build's TP window scaling under
+# SPARK_GLM5_NEXT_PROBE (connect x4, operation x8 for the probe-BUSY
+# fix: rank 0's L0 deep KDA diag ladder runs between TP ordinals and
+# peers' serving-length waits expired first) + the glm5_next_wave
+# --probe arming, 780s ready poll and cwd-scoped TERM stop, and the
+# src/spark_sha256.c aarch64 FEAT_SHA2 direction-of-reinterpret repair
+# (vreinterpretq_u8_u32(u8 vector) does not compile on aarch64 gcc;
+# net -4 lines there). Every scale is diag-only: the serving default is
+# untouched. 222218 exact.
+CEILING = 222218
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
