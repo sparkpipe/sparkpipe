@@ -882,7 +882,14 @@ from pathlib import Path
 # that exploded streams to 1e18 by L17), packer per-section fused-row
 # slicing (1dac68b — the context-free degeneration), probe ladder
 # extensions. 216956 exact.
-CEILING = 216956
+# Complexity lane (2026-08-28): honest complexity scoping
+# (complexity_report.py splits */validation/* into its own budget) +
+# stage zero on DsparkBlockForward (six getenv flags -> typed config,
+# inline /tmp dumps deleted) + the conjunction-soup table conversions +
+# the binding CCN ceiling gate (tests/test_complexity_ceiling.py).
+# NET-DELETED 2226 authored lines; 214730 exact post-landing, ceiling
+# lowered to the exact count per this ratchet's own note.
+CEILING = 214730
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

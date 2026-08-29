@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""THE COMPLEXITY CEILING — the merge gate that makes the plan bind.
+
+The 2026-08 audits' sharpest line: "the max grew 157->158 while the plan
+sat in a doc." This gate is the doc growing teeth. The committed ceiling
+is the maximum cyclomatic complexity of the PRODUCTION scope (functions
+under any */validation/* harness tree are budgeted separately below and
+never inflate the production metric — scoping per
+docs/CLEANUP_PROGRAM.md's cyclomatic section).
+
+Rules, mirroring tests/test_code_size.py (the size ratchet):
+- The ceiling moves DOWN whenever a landing shrinks the real max; run
+  `python3 tools/complexity_report.py`, read the production max, and set
+  CEILING to the exact number in the same change.
+- The ceiling moves UP only with an in-commit justification: a ledger
+  entry naming the function, the number, and why the growth is the
+  cheapest safe design — the same discipline the size ratchet requires.
+- A landing that raises the max without moving this constant FAILS the
+  gate; a landing that moves the constant without justification fails
+  review.
+
+Ledger (exact counts, newest last):
+- 2026-08-28 complexity lane: gate created. Production scope max at the
+  baseline scan was 159 (SparkQwen38_27bModuleRunDsparkBlockForward;
+  the audit line "max grew 157->158" measured the same function). This
+  lane: stage zero on that function (getenv flags -> typed config read
+  once at configure, inline /tmp dumps deleted, verbatim-motion helper
+  extraction; 159 -> 75) and the conjunction-soup conversions
+  (ValidateRankPlan 87 -> rows, ValidateDescriptor 80 -> rows,
+  Dsv4ModuleConfigure 75 -> 46, glm5_next StagePackExpectedShape
+  84 -> 21). Production max at landing: 75, all receipts in
+  docs/AGENT_LANE_BRIEFS/reports/ccn-2026-08-28.md. Ceiling commits to
+  75. The named P1 decomposition plan (qwen38_27b
+  SubmitSpeculativeDecode 73, glm5_next InitializeTpCollective 70)
+  continues from here — the next landing moves this number DOWN again.
+"""
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+from complexity_report import scan, scope_rows  # noqa: E402
+
+# The committed production max-CCN ceiling. MOVES DOWN with every
+# shrinking landing; moves up ONLY with a ledger entry above.
+CEILING = 75
+
+# The committed production MEAN-CCN ceiling (secondary guard: complexity
+# may not silently spread). At landing: 7.81.
+MEAN_CEILING_X100 = 781
+
+# The validation harnesses (control-vs-candidate CUDA units, never merged
+# into production) carry their OWN budget. It does not gate the production
+# metric; it exists so harness complexity is at least VISIBLE and bounded.
+# At landing: max 90 (SparkGlm52ValFixtureSetup), mean 8.98.
+VALIDATION_MAX_BUDGET = 90
+VALIDATION_MEAN_CEILING_X100 = 950
+
+
+def main() -> int:
+    rows = scan()
+    production = scope_rows(rows, "production")
+    validation = scope_rows(rows, "validation")
+
+    production_max = max(row["ccn"] for row in production)
+    production_mean_x100 = int(round(
+        sum(row["ccn"] for row in production) * 100 / len(production)))
+    validation_max = max(row["ccn"] for row in validation)
+    validation_mean_x100 = int(round(
+        sum(row["ccn"] for row in validation) * 100 / len(validation)))
+
+    worst = production[0]
+    print(f"production scope: {len(production)} functions, max CCN {production_max} "
+          f"(ceiling {CEILING}), mean {production_mean_x100 / 100:.2f}")
+    print(f"worst: {worst['file']}:{worst['function']}")
+    print(f"validation scope (own budget): {len(validation)} functions, "
+          f"max CCN {validation_max} (budget {VALIDATION_MAX_BUDGET})")
+
+    failures = []
+    if production_max > CEILING:
+        failures.append(
+            f"production max CCN {production_max} exceeds the committed "
+            f"ceiling {CEILING}. Shrink it, or justify a new ceiling in the "
+            f"same change: add a ledger entry to this test naming the "
+            f"function, the number, and why the growth is the cheapest safe "
+            f"design (see tests/test_code_size.py for the pattern).")
+    if production_mean_x100 > MEAN_CEILING_X100:
+        failures.append(
+            f"production mean CCN {production_mean_x100 / 100:.2f} exceeds the "
+            f"committed ceiling {MEAN_CEILING_X100 / 100:.2f}. Same rule: "
+            f"shrink or justify in-commit.")
+    if validation_max > VALIDATION_MAX_BUDGET:
+        failures.append(
+            f"validation harness max CCN {validation_max} exceeds its own "
+            f"budget {VALIDATION_MAX_BUDGET}. The harnesses are deliberately "
+            f"independent (control-vs-candidate doctrine) but they are not "
+            f"exempt from arithmetic: shrink or justify in-commit.")
+    if validation_mean_x100 > VALIDATION_MEAN_CEILING_X100:
+        failures.append(
+            f"validation harness mean CCN {validation_mean_x100 / 100:.2f} "
+            f"exceeds its budget {VALIDATION_MEAN_CEILING_X100 / 100:.2f}.")
+
+    if failures:
+        for failure in failures:
+            print("FAIL " + failure, file=sys.stderr)
+        return 1
+
+    if production_max < CEILING:
+        print(f"note: ceiling is {CEILING - production_max} above reality; "
+              f"lower CEILING to {production_max} with the next landing")
+    print("the complexity ceiling held")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
