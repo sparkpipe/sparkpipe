@@ -1588,3 +1588,16 @@ appendix).
 - NEXT for the hunt: the G5N probe's per-ordinal KDA dump on TWO
   decode steps of the SAME request (does the retention state advance
   between positions?) — that discriminates 2 vs 3 directly.
+
+## 2026-08-30 ~20:1x — REGISTRAR MERGED (a56c392): the flap's structural fix is fleet law
+
+- 797-line two-phase registrar (phases 1+1b per the operator's spec):
+  announce/merge/three-level GO (view agreement + cleanslate), TERM-
+  only remediation by exact exe+cwd, STALE-IMMUNE fail-loud,
+  subsets, per-node GO-latency timestamps. Acceptance A PASSED on
+  the live flap aftermath (every stale found, named diffs, GO
+  withheld until clean); C fail-loud PASSED (22/22 + 3 live events).
+- The fleet's bring-up now has a starting gun. glm5_next's state-
+  bleed was ruled out last cycle; the hunt's probe (retention-advance
+  across two decode steps) is the remaining discriminator.
+- perf-r1 active (tip 2m old). 3res download-blocked.
