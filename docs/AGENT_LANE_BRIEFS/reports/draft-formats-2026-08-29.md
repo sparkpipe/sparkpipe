@@ -85,7 +85,7 @@ round_trip=ok line lands in `/tmp/draftfmt-build/build.log` when storage
 calms. Placement of a placement-worthy pack belongs to bulk-packs after
 merge; nobody should serve this scratch build without its receipt.
 
-### Module bind + validator (b8769a4)
+### Module bind + validator (b8769a4, 95eead9)
 
 - `modules/k3_resident_decode_stage/source/spark_k3_dspark_format.h` —
   constants, kind enum, kind-shape table (mirrors the 27B header's style).
@@ -103,6 +103,19 @@ merge; nobody should serve this scratch build without its receipt.
   header/entries, holes for payloads — the bind never reads payload bytes).
 - The K3 adapter translation unit compile-gates clean under nvcc
   `-Wall -Wextra -Werror` (sm_121a) with the new code.
+- **END-TO-END ON REAL BYTES**: the in-flight pack's written header+entries
+  (first 64KB, sparse-extended to the declared file_bytes) were bound by
+  the probe (`/tmp/bindprobe` on spark5):
+  ```
+  BIND OK tensors=64 hidden=7168 layers=5 Q=96 KV=16 hd=64 ffn=14336
+  vocab=163840 block=8 depth=7 taps=[24,48,72,88,92] markov=256
+  mask=163837 window=2048 flags=0x1f conf_in=7424 file_bytes=9489806336
+  ```
+  The raw 64KB copy was REFUSED first (`actual size != header file_bytes`)
+  — the truncation gate firing on real input — and the probe caught one
+  real bind bug (required-flags must be a bitwise check; the pack's
+  sliding bit is informational), fixed in 95eead9. Real packer output and
+  real bind agree on every pinned field.
 
 ### What G2 does NOT include (honest)
 
