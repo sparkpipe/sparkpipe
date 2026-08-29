@@ -1124,8 +1124,9 @@ CEILING = 228764
 # tools/k3_gen_adapter_configs.sh kv_pages 2 -> 64 (smoke scale 128
 # positions/sequence overflowed every real quality fixture; 64 pages =
 # 4,096 positions at ~0.45-0.62 GiB/rank) with the pool arithmetic
-# documented at the knob. 222230 exact.
-CEILING = 228764
+# documented at the knob. Rebased on main's 228764: 228826 exact (+62 =
+# the three k3-finish items above).
+CEILING = 228826
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

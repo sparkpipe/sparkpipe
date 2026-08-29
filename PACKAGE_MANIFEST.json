@@ -1,5 +1,5 @@
 {
-  "file_count": 1696,
+  "file_count": 1699,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -283,8 +283,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/k3_pack_layout_fix.md",
-      "sha256": "7966149e141776e71db981cf435a5cbb614334f4ad135d4949e6833fde6faa02",
-      "size_bytes": 3137
+      "sha256": "e111e76340f1883e53840dd165f29da99e580cacb350c50130113cb81b6f13fc",
+      "size_bytes": 3512
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/pack_agent_rules.md",
@@ -430,6 +430,16 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-coordinator-2026-08-27.md",
       "sha256": "4450ead1c57fe56b5bfea87a65d57368dd5e91000f82274f24877eafb4b17d94",
       "size_bytes": 1587
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/k3-finish-2026-08-30.md",
+      "sha256": "3ea81665fe0a542d412817cebcd835fcf5a8801183d84d181a5fb60eb51ea9c4",
+      "size_bytes": 13170
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/k3-finish-2026-08-30b.md",
+      "sha256": "ab24eaddd9d12f1d1f68bfb1dadcc3a8668acd65d4403214eae36f704ed71e5e",
+      "size_bytes": 10188
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-fleet-2026-08-28.md",
@@ -613,8 +623,8 @@
     },
     {
       "path": "docs/K3_FLEET_LAUNCH_STATE.md",
-      "sha256": "936fd5595ffb9fecb472ac5fc50f127e0940c72942988668eedc885f81396787",
-      "size_bytes": 5257
+      "sha256": "29f85d17d2aaf946d9c9602215229c80415a48d871f574b94638b98ec0f15744",
+      "size_bytes": 8568
     },
     {
       "path": "docs/K3_PERF.md",
@@ -3608,83 +3618,83 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark0.json",
-      "sha256": "b97dfa83e49e99ab7386fdbab915769b6ec9d9eaf588df34efd730d62b0bef2a",
-      "size_bytes": 883
+      "sha256": "09e8c9784e9f30397b93c1e703b95c494577c0ab82d1c5aac4332dfc1db828cd",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark1.json",
-      "sha256": "aef9856a783bff5c71aee196c9de39b55eac08b70d9fadaa6c3df0c1c5d45583",
-      "size_bytes": 883
+      "sha256": "32ec05409057b21df8e5c50f83411f28dd1df505b755f313af92cf5905ae7bf8",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark2.json",
-      "sha256": "ddc70aa03ce9c75238b9964a6cbf1cfa0abc70f7a9da7ee67b5b9450ec149851",
-      "size_bytes": 883
+      "sha256": "d75eac57adde8313eba8ae1d5b603bca18b0b9953751695812572c1611c93051",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark3.json",
-      "sha256": "665ee7ccf3069c9bc81282499c7e3f6d606255cea8b948b1777bd0f2a2d85361",
-      "size_bytes": 883
+      "sha256": "992bb2febc13986004311c83ffd0c2781885dc92ce773e56fb3b0784387cfc68",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark4.json",
-      "sha256": "b4a87b4b87cd45911d297ca477607c3b78ee9a566e236f03631a4e2923324687",
-      "size_bytes": 883
+      "sha256": "546c55bae0fd380a77a6ea75002cb4c7e8f2720a30db0548c48187a7e7798e71",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark5.json",
-      "sha256": "e311934b475b436c1c1fbb292b055eda8b39721359c7278498a23a679b808b63",
-      "size_bytes": 883
+      "sha256": "6ced8807c559616555205ce24ddd26ea3c58755ddbb307c00a8532a95765b23b",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark6.json",
-      "sha256": "8395b3033b8f2728527222616a6dcca42c0cf91a403192cb8717855393947f92",
-      "size_bytes": 883
+      "sha256": "5dfffe980dc1e2521d03b5e6011a1d774f56c97a61c6ad6496f970b8502e8022",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark7.json",
-      "sha256": "0be907ed47660ace8441834ddc28025606c5c25481debf92f2d1d8f2496cc9f1",
-      "size_bytes": 883
+      "sha256": "f77e22ccfb6514fc734b393e9c06f449ef215a98d6c641a67b39012d4a78129c",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark8.json",
-      "sha256": "02b6bff1f1cb7a25287ce06ff080143ab987214a714e700197cb01f72966e9ca",
-      "size_bytes": 883
+      "sha256": "7702e86111ed4bab0fbb7480c289abf79f9daabcc87505ec7311d9fc8eb7f760",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/spark9.json",
-      "sha256": "554d0bd856bdde57e9afa3a3a5316ab611d7c524f7453803775331dfeae6abbe",
-      "size_bytes": 883
+      "sha256": "8b790039c84b81c5c9db1366bfe01a5707faa1fa23483968f261378bdbd1687f",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparka.json",
-      "sha256": "c8f38a7c6b40f3f04b8644b8fe2759f7b27702caab9eafa247ac960b07a78df4",
-      "size_bytes": 883
+      "sha256": "cbf10a21465bfc525017950fac671b7e4351771f3606263eea0e6ec724f2af8f",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparkb.json",
-      "sha256": "71885354230fd903148af2fb1fa8c7c798406ac1bb1cf32f1951a25a0aa9e80a",
-      "size_bytes": 883
+      "sha256": "55ef49df2a00f2b8e6586de237161ea1466695ebcb0f06d2fb462c18660623bc",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparkc.json",
-      "sha256": "162aa153adefc3cb34fa6d2e79a19eb64029eac26f521cffc977a84f6f01eef3",
-      "size_bytes": 883
+      "sha256": "bc4e5ab52133d69ab60aea2f304b8fad47a6b332010514d48db821b4464c7b69",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparkd.json",
-      "sha256": "a842fa55a04e8acac7ba68223eb2d14e370ecc3a2fe46d78d5b563f94597145e",
-      "size_bytes": 883
+      "sha256": "cd68a9dcfabfb696ebf062385b1ed7294116fcbed1b442c8c0f95db4940e091f",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparke.json",
-      "sha256": "abae33dd0a8ba8842c66fa5b37120811bb2049f3cabbdd8075a12ee89a91f498",
-      "size_bytes": 883
+      "sha256": "690e2b7ee79d07455b621cfa0f40604bf9109c0195d1b5a097c365a38e9ce1d7",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/sparkf.json",
-      "sha256": "07db22baabc4f8f5daa6c38437e3799ad2ced80459d0a5a87ee6703e6d380ba0",
-      "size_bytes": 883
+      "sha256": "2141f5f3ad24c015daef6e399000c9429b52513f769910935a083d5cff8d22e0",
+      "size_bytes": 884
     },
     {
       "path": "modules/k3_resident_decode_stage/example_k3_adapter_config.json",
@@ -6078,8 +6088,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "54f5ddc658cb07d916e5c54047fe292fc88fe6b7ad27ae8c83689cbbd10ea5b4",
-      "size_bytes": 75387
+      "sha256": "684e5147f958d71ec23b882ccd06b8e3ac12caf6ab026b1aa94438a98eff2e37",
+      "size_bytes": 76158
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7957,6 +7967,11 @@
       "size_bytes": 991
     },
     {
+      "path": "tools/k3_deploy_stage_par.sh",
+      "sha256": "a3ff87802eaf5b2808f0e0c0b9476743e156b5dfcf3128c967fb9569e1b1ac9a",
+      "size_bytes": 1587
+    },
+    {
       "path": "tools/k3_dispatch_compile_gate.sh",
       "sha256": "aa292b88a5a994e2591fe4c890406c350e787bbe4bb72f56967b0e3c383f68cb",
       "size_bytes": 830
@@ -7968,13 +7983,13 @@
     },
     {
       "path": "tools/k3_fleet_wave.sh",
-      "sha256": "0e1d15e5db4b3dc216827f8c6da58925ce0a85795f36b6b4a9f8a2ae779cafa5",
-      "size_bytes": 5427
+      "sha256": "d02c088a0b8f2849a52618593b78d1c99a0479c430bf7ebdddcc2303c4c518e4",
+      "size_bytes": 6252
     },
     {
       "path": "tools/k3_gen_adapter_configs.sh",
-      "sha256": "9b732a50c72c98372b1298cc71e8410ccfaa00706c330b8cd6564b415720a295",
-      "size_bytes": 3074
+      "sha256": "c3df0ce6dffce535070ffea2a221fca59a171cce15ded10a25533915ffec3b06",
+      "size_bytes": 3571
     },
     {
       "path": "tools/k3_gen_deployment.sh",
@@ -8485,5 +8500,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31237334
+  "total_bytes": 31268074
 }
