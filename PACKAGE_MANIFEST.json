@@ -1,5 +1,5 @@
 {
-  "file_count": 1670,
+  "file_count": 1671,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -313,8 +313,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "c49d4f08534203ec10b89c90f3676bbc4a36db44d738ae2330defc64dde59218",
-      "size_bytes": 105179
+      "sha256": "0e6d7c86c7a260691f95369023b1774ced4c9c651c3944d5a58ce8e88c6b603e",
+      "size_bytes": 106120
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -495,6 +495,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/w1-loader-2026-08-29.md",
       "sha256": "e3c2804f486b6a67b9523dcca9be33a5dd730967f3410493971cb0aed8feddb6",
       "size_bytes": 11052
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/w2-weightd-2026-08-29.md",
+      "sha256": "e74f00642f64be2986f25d7cf54ec0536d34775d1af1268bb143d7c7a311f148",
+      "size_bytes": 13318
     },
     {
       "path": "docs/ARCHIVE_INDEX.md",
@@ -5313,7 +5318,7 @@
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "87d64d8a38afc7028065cb89708f493bb23ad8116080f839fc2864fa07fff342",
+      "sha256": "b014dbc065cbc42f5adf5f7139f327dcc9d3811223816858397b2f5476007c03",
       "size_bytes": 2274
     },
     {
@@ -8355,5 +8360,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30728619
+  "total_bytes": 30742878
 }
