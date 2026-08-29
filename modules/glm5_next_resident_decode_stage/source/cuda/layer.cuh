@@ -1135,6 +1135,62 @@ static void Glm5NextProbeBf16Floats(cudaStream_t stream,const uint16_t *device,u
             (double)probe_s[2],(double)probe_s[3],(unsigned long long)probe_bits); \
     } while (0)
 
+/* -- G5N-VEC (glm5-attractor lane, diag only, env SPARK_GLM5_NEXT_PROBE_VEC) --
+ * FULL-vector hex dumps of the LAYER-0 KDA stage buffers: the raw material
+ * for the independent host oracle (a checkpoint-semantics reimplementation
+ * of the KDA cell that shares no math with this module). Same discipline as
+ * the checksum probes: rank 0 only, one stream sync per dump, never in a
+ * serving binary. The pass id counts Glm5NextLayerKda calls on layer 0
+ * (waves are single-row, so pass p of the first request IS position p). */
+
+static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
+{
+    static int vec_enabled = -1;
+    static uint32_t vec_pass = 0u;
+    uint32_t cap;
+    if ( vec_enabled < 0 )
+        vec_enabled = getenv("SPARK_GLM5_NEXT_PROBE_VEC") != 0 ? 1 : 0;
+    if ( vec_enabled == 0 || buffers == 0 || buffers->tp_rank != 0u ||
+        buffers->layer_index != 0u )
+        return(0);
+    cap = 30u;
+    {
+        const char *cap_env = getenv("SPARK_GLM5_NEXT_PROBE_VEC_PASSES");
+        if ( cap_env != 0 && *cap_env != 0 )
+            cap = (uint32_t)atoi(cap_env);
+    }
+    if ( vec_pass >= cap )
+        return(0);
+    vec_pass += 1u;
+    return((int)vec_pass);
+}
+
+static void Glm5NextProbeVecU16(cudaStream_t stream,const uint16_t *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
+{
+    static uint16_t vec_buf[8192];
+    uint32_t i;
+    if ( count > 8192u || cudaStreamSynchronize(stream) != cudaSuccess ||
+        cudaMemcpy(vec_buf,device,count * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+        return;
+    fprintf(stderr,"G5N-VEC L%u P%u %s %u",layer,pass,label,count);
+    for ( i = 0u; i < count; i++ )
+        fprintf(stderr," %04x",vec_buf[i]);
+    fputc('\n',stderr);
+}
+
+static void Glm5NextProbeVecF32(cudaStream_t stream,const float *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
+{
+    static uint32_t vec_buf[16384];
+    uint32_t i;
+    if ( count > 16384u || cudaStreamSynchronize(stream) != cudaSuccess ||
+        cudaMemcpy(vec_buf,device,count * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+        return;
+    fprintf(stderr,"G5N-VEC L%u P%u %s %u",layer,pass,label,count);
+    for ( i = 0u; i < count; i++ )
+        fprintf(stderr," %08x",vec_buf[i]);
+    fputc('\n',stderr);
+}
+
 /* KDA linear attention, 34 of 45 layers - k3's launch chain with the
  * glm5_next deltas:
  *
@@ -1160,6 +1216,7 @@ static int32_t Glm5NextLayerKda(
     const uint32_t rank_heads = buffers->kda_heads;
     const uint32_t rank_qk = rank_heads * GLM5_NEXT_KDA_KEY_DIM;
     const uint32_t rank_v = rank_heads * GLM5_NEXT_KDA_VALUE_DIM;
+    const int32_t vec_pass = (int32_t)Glm5NextKdaProbeVecPass(buffers);
     int32_t status;
 
     if (buffers == 0 || rows == 0u || sequences == 0u ||
@@ -1207,6 +1264,11 @@ static int32_t Glm5NextLayerKda(
     {
         GLM5_NEXT_KDA_PROBE(stream,"collapsed",buffers->hc_collapsed_bf16,256u);
         GLM5_NEXT_KDA_PROBE(stream,"normed",buffers->normed_bf16,256u);
+    }
+    if ( vec_pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"collapsed");
+        Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"normed");
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
@@ -1289,6 +1351,12 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE(stream,"fused_qkvb",buffers->fused_qkvb_bf16,256u);
         GLM5_NEXT_KDA_PROBE(stream,"decay_latent",buffers->kda_decay_latent_bf16,64u);
         GLM5_NEXT_KDA_PROBE(stream,"gate_latent",buffers->kda_gate_latent_bf16,64u);
+    }
+    if ( vec_pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->fused_qkvb_bf16,rank_qk * 2u + rank_v + rank_heads,0u,(uint32_t)vec_pass,"fused_qkvb");
+        Glm5NextProbeVecU16(stream,buffers->kda_decay_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,0u,(uint32_t)vec_pass,"decay_latent");
+        Glm5NextProbeVecU16(stream,buffers->kda_gate_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,0u,(uint32_t)vec_pass,"gate_latent");
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
@@ -1376,6 +1444,12 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE(stream,"v_postconv",buffers->gate_up_bf16,256u);
         GLM5_NEXT_KDA_PROBE(stream,"beta_logit",buffers->kda_beta_logit,64u);
     }
+    if ( vec_pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->q_bf16,rank_qk,0u,(uint32_t)vec_pass,"q_postconv");
+        Glm5NextProbeVecU16(stream,buffers->kv_slot_bf16,rank_qk,0u,(uint32_t)vec_pass,"k_postconv");
+        Glm5NextProbeVecU16(stream,buffers->gate_up_bf16,rank_v,0u,(uint32_t)vec_pass,"v_postconv");
+    }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"q_postconv",buffers->q_bf16);
@@ -1418,6 +1492,10 @@ static int32_t Glm5NextLayerKda(
     {
         GLM5_NEXT_KDA_PROBE(stream,"decay_logit",buffers->kda_decay_logit_bf16,256u);
     }
+    if ( vec_pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->kda_decay_logit_bf16,rank_qk,0u,(uint32_t)vec_pass,"decay_logit");
+    }
     LM_LAUNCH(
         (LmBoundedDecayKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
         dim3(rows,rank_heads),
@@ -1449,6 +1527,11 @@ static int32_t Glm5NextLayerKda(
             buffers->layer_index,(double)probe_r[0],(double)probe_r[1],(double)probe_r[2],
             (double)probe_r[3],(double)probe_b[0],(double)probe_b[1],(double)probe_b[2],(double)probe_b[3]);
         GLM5_NEXT_KDA_PROBE_STATE(stream,"state_pre",buffers->kda_state_pool);
+    }
+    if ( vec_pass != 0 )
+    {
+        Glm5NextProbeVecF32(stream,buffers->kda_retention,rank_qk,0u,(uint32_t)vec_pass,"retention");
+        Glm5NextProbeVecF32(stream,buffers->kda_write_gate,rank_heads,0u,(uint32_t)vec_pass,"write_gate");
     }
     /* THE DELTA RULE'S 64 KiB OF DYNAMIC SHARED IS PAST THE 48 KiB DEFAULT
      * (k3's identical lesson): the launch fails with invalid argument on
@@ -1490,6 +1573,10 @@ static int32_t Glm5NextLayerKda(
     {
         GLM5_NEXT_KDA_PROBE(stream,"delta_out_raw",buffers->attention_out_bf16,256u);
     }
+    if ( vec_pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,0u,(uint32_t)vec_pass,"delta_out");
+    }
     /* RMSNorm before the gate (head-wise, fp32 strict), then the sigmoid
      * gate that has been waiting in kda_gate_bf16. */
 #ifdef GLM5_NEXT_KDA_DEBUG_LAUNCHES
@@ -1526,6 +1613,11 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE(stream,"delta_out_gated",buffers->attention_out_bf16,256u);
         GLM5_NEXT_KDA_PROBE(stream,"kda_gate",buffers->kda_gate_bf16,256u);
     }
+    if ( vec_pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,0u,(uint32_t)vec_pass,"delta_gated");
+        Glm5NextProbeVecU16(stream,buffers->kda_gate_bf16,rank_v,0u,(uint32_t)vec_pass,"kda_gate");
+    }
     /* Stage the gated y in kv_slot (the k scratch is dead once the delta
      * rule has consumed it) so the out-GEMM writes the FULL-WIDTH rank
      * partial straight into attention_out_bf16 - the buffer the chain
@@ -1561,6 +1653,17 @@ static int32_t Glm5NextLayerKda(
         fprintf(stderr,"G5N-PROBE kda L%u out_partial_f %.6g %.6g %.6g %.6g\n",
             buffers->layer_index,(double)probe_o[0],(double)probe_o[1],(double)probe_o[2],(double)probe_o[3]);
         GLM5_NEXT_KDA_PROBE_STATE(stream,"state_post",buffers->kda_state_pool);
+    }
+    if ( status == LM_LAUNCH_OK && vec_pass != 0 )
+    {
+        uint32_t vec_head;
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"out_partial");
+        for ( vec_head = 0u; vec_head < rank_heads; vec_head++ )
+            Glm5NextProbeVecF32(stream,(const float *)buffers->kda_state_pool +
+                ((uint64_t)vec_head * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM),
+                GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM,0u,(uint32_t)vec_pass,
+                vec_head == 0u ? "state_h0" : (vec_head == 1u ? "state_h1" :
+                (vec_head == 2u ? "state_h2" : "state_h3")));
     }
     return(status);
 }
@@ -2245,7 +2348,7 @@ static int32_t Glm5NextLayerMoe(
         buffers->expert_out_bf16,
         buffers->route_packed_row,
         buffers->route_weight,
-        buffers->hidden_bf16,
+        buffers->attention_out_bf16,
         rows,
         GLM5_NEXT_TOP_K,
         GLM5_NEXT_HIDDEN);
@@ -2293,6 +2396,18 @@ static int32_t Glm5NextLayerMoe(
     {
         return status;
     }
+    /* THE MOE PARTIAL LANDS IN attention_out_bf16 - the buffer the chain
+     * reduces - as the routed sum, then the replicated-compute shared
+     * expert's rank partial adds IN PLACE. The finalize previously wrote
+     * the routed sum into hidden_bf16 (the HC streams surface) and the
+     * add overwrote it with attention_out + shared_out: the routed experts
+     * never reached the residual, and REDUCE_MLP summed sixteen identical
+     * copies of the already-reduced attention output - every MoE layer
+     * placed 16x the attention sublayer output as its "FFN" contribution
+     * (receipt: second r0 post == 16.000000x first r0 post on L42/L44).
+     * Rank-invariant, TP1-invisible (the reduce no-ops), and the TP1
+     * oracle mirrored the chain, so every gate passed. The dense tail
+     * (layers 0-2) always wrote attention_out directly and was correct. */
     LM_LAUNCH(
         (LmAddRowsKernel<GLM5_NEXT_LAYER_THREADS>),
         dim3(
@@ -2304,7 +2419,7 @@ static int32_t Glm5NextLayerMoe(
         stream,
         buffers->attention_out_bf16,
         buffers->shared_out_bf16,
-        buffers->hidden_bf16,
+        buffers->attention_out_bf16,
         rows,
         GLM5_NEXT_HIDDEN);
     return cudaPeekAtLastError() == cudaSuccess

@@ -637,6 +637,22 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 				(double)probe_m[0],(double)probe_m[1],(double)probe_m[2],(double)probe_m[3],
 				(double)pb_f[0],(double)pb_f[1],(double)pb_f[2],(double)pb_f[3]);
 		}
+		/* G5N-VEC (glm5-attractor lane): the head input, full width, one dump
+		 * per wave while the cap holds - the oracle's lm_head arbitration. */
+		if ( wave->tp_rank == 0u && getenv("SPARK_GLM5_NEXT_PROBE_VEC") != 0 )
+		{
+			static uint32_t head_vec_wave = 0u;
+			uint32_t cap = 30u;
+			const char *cap_env = getenv("SPARK_GLM5_NEXT_PROBE_VEC_PASSES");
+			if ( cap_env != 0 && *cap_env != 0 )
+				cap = (uint32_t)atoi(cap_env);
+			if ( head_vec_wave < cap )
+			{
+				head_vec_wave += 1u;
+				Glm5NextProbeVecU16(stream,slot->hc_mean_bf16,GLM5_NEXT_HIDDEN,45u,head_vec_wave,"head_mean");
+				Glm5NextProbeVecU16(stream,slot->hidden_bf16,GLM5_NEXT_HIDDEN,45u,head_vec_wave,"head_stream0");
+			}
+		}
 		status = Glm5NextHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
