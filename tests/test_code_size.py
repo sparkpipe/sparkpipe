@@ -988,6 +988,7 @@ from pathlib import Path
 # kernel, the bulk launcher pair, and the whole-frame module wiring
 # (shadow+scatter+one attention launch per prefill frame), net +241
 # authored lines. Rebased onto the W2a + JIT-KV main; re-measured at resolution: 225258 exact.
+CEILING = 227318
 # The JIT-KV family wiring (lane/jikv-wire, 2026-08-29) connects the slice
 # to its reference family, per the slice report's remaining-work list and
 # docs/JIT_KV_RESPONSE.md W1+C2: the decode stage module's frame-op seam
@@ -1042,7 +1043,19 @@ from pathlib import Path
 # partial must be bit-identical across ranks) - the instrument that
 # separates a collective-path defect from a per-rank partial-math one.
 # 222250 exact.
-CEILING = 226696
+# The jikv-c3c4 lane (2026-08-29) lands docs/JIT_KV_RESPONSE.md C3+C4 in the
+# JIT-KV pager: C3's MEASURED tier bandwidth (the injected-clock EMA over
+# observed page-in/page-out throughput, folded by the async park worker's
+# completion records too, consumed by the admission arithmetic as the
+# restore-debt-vs-slack prediction with the tier's nominal figure as
+# fallback; the admission ABI moves 1->2 for restore_slack_microseconds) and
+# C4's async park worker (the SPSC park ring + completion ring, the W2a
+# stop-flag + poll-quantum worker loop, completion publishing on the owning
+# thread - CommitWrite+BACKING_VALID or the B1 abort+degrade - the
+# mid-write BUSY deferral in restore, and TERM-safe SparkKvPagerShutdown).
+# cache/kv_pager.c +600/-60 net 540, spark_kv_pager.h +136, Makefile rule
+# +8; the host proof tests/test_jit_kv_c3c4.c is excluded by construction.
+# 226466 exact (re-measured after the RestoreBlock BUSY-contract note in the pager header; +1 doc line).
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

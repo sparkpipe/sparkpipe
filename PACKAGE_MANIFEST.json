@@ -1,5 +1,5 @@
 {
-  "file_count": 1688,
+  "file_count": 1690,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -53,8 +53,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "35b13fe5ed9c0e0bf1cb5845c78394198cba9a971b0d6e453f886b9a2fac94d5",
-      "size_bytes": 83767
+      "sha256": "f7ddbdd9d9a83d3aca105705de0a69cc3c91ecd0d2afde46c4ea8e92e43ee472",
+      "size_bytes": 84488
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -118,8 +118,8 @@
     },
     {
       "path": "cache/kv_pager.c",
-      "sha256": "a901ab1fc6d3570b6a8f10ff8cd445f73221aeff71acd2468efdf0641241386e",
-      "size_bytes": 20838
+      "sha256": "2d08aacaaf5cc15de0e3b34360f397f7f5200129be019a9b85653fc54da536c9",
+      "size_bytes": 39258
     },
     {
       "path": "cache/nvme_tier.c",
@@ -318,8 +318,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "4ebcbe8bcabd0b154c6d5a5f6af1c0fed13ffc2b756758854dd176a7a1350fda",
-      "size_bytes": 111381
+      "sha256": "0e08105732afb923eea55c30ae9b39aefa4fcaf9a696efa362b9dc0b89276224",
+      "size_bytes": 112471
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -395,6 +395,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/infra-ceph-wedge-2026-08-27.md",
       "sha256": "ee53d1a4749ccc2b3555f688ff38a4a0628b062f565693f991a2517c32fd35cc",
       "size_bytes": 8457
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/jikv-c3c4-2026-08-29.md",
+      "sha256": "91c7cf6366d5850e0e159bccfdfcf1840f15d4c35ea93260efcf6e5902e9738b",
+      "size_bytes": 10225
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/jikv-slice-2026-08-29.md",
@@ -2483,8 +2488,8 @@
     },
     {
       "path": "include/sparkpipe/spark_kv_pager.h",
-      "sha256": "21b42e89d3d5a16d3e153101a0dce2c4b751e225b0e7e37223d63258ba5742b1",
-      "size_bytes": 13534
+      "sha256": "7b4aa9e5f92a73122bcadb7fc3fd24e242d43c71428e9bec552f6a6ea86b44d6",
+      "size_bytes": 20929
     },
     {
       "path": "include/sparkpipe/spark_kv_store.h",
@@ -5368,8 +5373,8 @@
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "ca58fa967807c5c51ba08af1aa9508d82b47287720b89f95308945cb91ebba2c",
-      "size_bytes": 2242
+      "sha256": "c5e70cb3a4de61876efeab5fac000e23e78e7ca0f37f969e9806c09f80cb30b3",
+      "size_bytes": 2402
     },
     {
       "path": "runs/results.jsonl",
@@ -6058,8 +6063,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "ed74a5b8d8fcb330cbf55d4f38e9dc1967ffa17ad93f3800f6edfeea855ea26f",
-      "size_bytes": 70211
+      "sha256": "18c210a4b570066a02130359fbba49a563e6349bf9f8d09ddb9469aa40b6de65",
+      "size_bytes": 71196
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6460,6 +6465,11 @@
       "path": "tests/test_hidden_transport_rdma_source.py",
       "sha256": "0bc51a5bf7b8559aaa70d5ff477e5aa1488c73d4f2041eb042913bc7486c87db",
       "size_bytes": 7257
+    },
+    {
+      "path": "tests/test_jit_kv_c3c4.c",
+      "sha256": "7d817d8763c13d783177d943380bdea0807083f0bf99a9ea6fefe78dd7396521",
+      "size_bytes": 36139
     },
     {
       "path": "tests/test_jit_kv_slice.c",
@@ -8445,5 +8455,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31013341
+  "total_bytes": 31088476
 }

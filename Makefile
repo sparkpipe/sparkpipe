@@ -234,6 +234,7 @@ TEST_NAMES := \
     test_nvme_tier \
     test_jit_kv_slice \
     test_jit_kv_wire \
+    test_jit_kv_c3c4 \
     test_kv_mooncake \
     test_qwen38_27b_work_control \
     test_qwen38_work_control \
@@ -875,6 +876,13 @@ build/test_jit_kv_slice: tests/test_jit_kv_slice.c cache/kv_pager.c cache/kv_cac
 # gate, end to end on the host.
 build/test_jit_kv_wire: tests/test_jit_kv_wire.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Imodules/dsv4_resident_decode_stage/source tests/test_jit_kv_wire.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
+
+# The C3+C4 proof: measured bandwidth in admission (EMA over observed
+# page-in/page-out throughput against an injected fake clock) and the async
+# park worker (stop flag + poll quantum, completion publishing, B1 degrade,
+# TERM mid-park consistency) over the read-vtable fake backing.
+build/test_jit_kv_c3c4: tests/test_jit_kv_c3c4.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_jit_kv_c3c4.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
 # The switch machine sits on the same mock-drive tier: two translation units,
 # vtable devices, compiled directly like the tier test above.
