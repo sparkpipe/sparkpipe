@@ -1393,3 +1393,18 @@ appendix).
 - Closeout agent actively cycling (emit sub 492 status 0; packs dir
   populated; API mid-restart between waves). dry-wave1 + ccn lanes
   grinding (worktrees fresh, no pushes yet). 3res tip 15m old.
+
+## 2026-08-30 ~10:4x — cycle: FIXED PACKS CONFIRMED DEPLOYED 16/16; API restarted; coherence still degenerate → closeout chase continues
+
+- COORDINATOR VERIFIED (the closeout's swap landed): md5 deployed ==
+  fixed on ALL 16 nodes. The wave is on corrected weights.
+- API was down post-wave (the closeout's restart racing my probe);
+  restarted; fresh curl: STILL repetition (66188 x8). The fixed pack
+  alone did not cure degeneration — the closeout agent's chain
+  (verify→coherence stop-condition per its brief) is the active hunt;
+  its next diagnostics (G5N probe ladder on the fixed weights) decide
+  whether a THIRD value bug exists (candidates: state persistence
+  across requests noted by the kda lane; conv-window edge at
+  position>0).
+- No merge this window (3 lanes mid-flight, tips pending). 3res tip
+  4m old — active.
