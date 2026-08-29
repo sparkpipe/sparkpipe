@@ -2008,6 +2008,16 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 	pending = SparkQwen38_27bServingReservePending(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
+	if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		fprintf(stderr, "qwen38_27b_debug submission kind=%u rows=%u lanes=%u seqpos=%llu lane0=%u slot0=%u seqid0=%llu pos0=%llu reqgen=%llu subgen=%llu\n",
+			(unsigned)submission->work_kind, submission->row_count, submission->active_sequence_count,
+			(unsigned long long)submission->sequence_position,
+			submission->row_count != 0u ? submission->row_lane_indices[0] : 0u,
+			submission->row_count != 0u ? submission->lanes[submission->row_lane_indices[0]].resident_sequence_slot : 0u,
+			submission->row_count != 0u ? (unsigned long long)submission->row_sequence_ids[0] : 0u,
+			submission->row_count != 0u ? (unsigned long long)submission->row_positions[0] : 0u,
+			(unsigned long long)submission->request_generation,
+			(unsigned long long)submission->submission_id);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		/* REQUIRES_RELEASE contract: drop every lane's KV blocks (prefix
