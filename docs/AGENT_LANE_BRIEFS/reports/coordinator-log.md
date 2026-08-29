@@ -1825,3 +1825,22 @@ appendix).
   -> 92x -> M5) is THE critical path and needs either spawns restored or
   coordinator windows; next cycle picks it up directly if spawns remain
   down.
+
+## 2026-08-29 ~14:4x — f175099: O(n²) parse closed; spawns still down
+
+- Probe-spawned again this cycle: "Model provider is not configured:
+  builtin:zai" — still broken, operator action still needed. Coordinator
+  remains sole executor; 0 agents live.
+- THE ONE THING: the ledger's O(n²) token-parse item, executed as
+  f175099. Root: SparkJsonGetArrayElement re-walks the child chain per
+  indexed access; parse_token_array (model_api.c) + the three
+  model_batch.c parsers iterate it over request-scale arrays (224K-token
+  fixtures = ~2.5e10 walks). Added public first/next sequential
+  accessors, converted the hot loops, test_json pins the equivalence
+  (miscounts still fail closed). Config-scale loops deliberately left
+  indexed (bounded counts). offline-gates green; ratchet 222168.
+- Fleet: residentd still up on spark0 (serving fleet alive from the
+  close-out). NEXT CYCLE (critical path): the glm5_next probe-armed
+  chain — nvcc build of the probe module (CPU, no reservation), then the
+  16-rank wave with the x8 window (GPU, 90-min rolling reservation, one
+  wave owner = coordinator), then the layer-34 retention discriminator.
