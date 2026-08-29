@@ -1545,3 +1545,15 @@ appendix).
   a REAL defect documented (odd-K multi-row scalar misread).
 - PERF FOCUS SHIFTS to P1 (chain+async): the serialized host bubble
   is where the B<=4 story actually lives.
+
+## 2026-08-30 ~17:0x — cycle: registrar iterating live (GO-latency evidence added); jit-safety mid-B1
+
+- REGISTRAR LANE ACTIVE and iterating on the node: R1+R2 committed
+  (782-line registrar + wave integration + staging), now hardening
+  tests from REAL node runs (cleanslate subtests, TERM-owner-agnostic
+  assertions, immune-daemon readiness gates, per-node GO-latency
+  timestamps). Fleet deliberately DARK mid-iteration (0/16 — the
+  agent is cycling waves as its acceptance harness; not a flap, not
+  mine to touch while it owns the wave).
+- JIT-SAFETY lane mid-B1 (kv_cache.c write-back wedge under edit).
+- 3res tip 18m (downloads). No merges pending.
