@@ -403,14 +403,20 @@ def verify(pack_path: Path) -> dict:
 
 
 def verify_payload(pack_path: Path, checkpoint: Path) -> bool:
-    """Byte-for-byte round-trip: every packed payload equals its safetensors tensor."""
+    """Byte-for-byte round-trip: every packed payload equals its safetensors tensor.
+
+    The source is read in FILE-OFFSET order (one sequential warm-storage
+    pass; random seeks are what make ceph reads crawl). The pack side reads
+    are random but land on local NVMe.
+    """
     g = read_geometry(checkpoint)
     src = SafetensorsHeader(checkpoint / "model.safetensors")
     inv = build_inventory(g)
+    ok = True
     with open(pack_path, "rb") as f:
         f.seek(HEADER_BYTES)
         entries = [ENTRY_STRUCT.unpack(f.read(ENTRY_BYTES)) for _ in range(len(inv))]
-    ok = True
+    pairs = []
     for (kind, layer, name), entry in zip(inv, entries):
         e_kind, e_layer, e_fmt, e_rows, e_cols, e_sg, p_off, p_bytes, _, _ = entry
         rows, cols = kind_shape(kind, g)
@@ -419,15 +425,22 @@ def verify_payload(pack_path: Path, checkpoint: Path) -> bool:
             ok = False
             continue
         src_off, src_bytes = src.offset(name)
-        with open(checkpoint / "model.safetensors", "rb") as sf, \
-                open(pack_path, "rb") as pf:
+        if src_bytes != p_bytes:
+            print(f"size mismatch {name}", file=sys.stderr)
+            ok = False
+            continue
+        pairs.append((src_off, src_bytes, p_off, name))
+    pairs.sort()
+    with open(checkpoint / "model.safetensors", "rb") as sf, \
+            open(pack_path, "rb") as pf:
+        for src_off, src_bytes, p_off, name in pairs:
             sf.seek(src_off)
             a = sf.read(src_bytes)
             pf.seek(p_off)
-            b = pf.read(p_bytes)
-        if a != b:
-            print(f"payload mismatch {name}", file=sys.stderr)
-            ok = False
+            b = pf.read(src_bytes)
+            if a != b:
+                print(f"payload mismatch {name}", file=sys.stderr)
+                ok = False
     return ok
 
 
