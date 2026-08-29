@@ -120,6 +120,30 @@ modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_modul
 Consumers: spark_topology_switch.h, tests/test_nvme_tier.c. No model module
 consumes it yet directly.
 
+### 1.5a cache/kv_pager.c + spark_kv_pager.h - the JIT-KV pager (vertical slice, lane/jikv-slice)
+
+The adapter layer of docs/JIT_KV_DESIGN.md: the first consumer that joins the
+arena (1.2) to the nvme tier (1.5) end to end, proven by
+tests/test_jit_kv_slice.c on the host.
+
+- Eviction IS page-out: the pager installs itself as the arena's
+  evict_function; each victim is staged through the module save seam
+  (the model-neutral form of the design's KV_BLOCKS_SAVE_OUT /
+  KV_BLOCKS_RESTORE_IN frame ops), SHA-256'd, and parked via the tier's
+  ReserveWrite/CommitWrite with a backing-write callback for the payload.
+- Restore is a digest-verified demand read re-attached as residency through
+  SparkKvCacheArenaMarkParkedBlockResident; the landing is copied into the
+  pager's own staging and the tier buffer released BEFORE make-room, so a
+  restore's write-backs can never collide with a demand-held tier buffer.
+- Admission (C1): exact overflow arithmetic, queue-not-wedge; refusals are
+  named (device-full vs backing-horizon) in the pager statistics.
+- Digest discipline (B3): the tier bucket key is folded from the payload
+  digest, so identical blocks deduplicate onto one record and a 64-bit
+  collision cannot alias.
+
+Consumers: tests/test_jit_kv_slice.c. Family wiring (dsv4 first) is the W1
+seam; the pager is deliberately model-neutral.
+
 ### 1.6 cache/prefix_cache.c + spark_prefix_cache.h - content-addressed prefix cache
 
 The prompt-prefix reuse index, owned by the runtime batch engine (see 2.3).

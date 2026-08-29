@@ -1385,6 +1385,79 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
     return SPARK_STATUS_OK;
 }
 
+/*
+ * The JIT-KV restore half (docs/JIT_KV_DESIGN.md): a block the pager PARKED -
+ * ALLOCATED, non-resident, BACKING_VALID, exactly the state eviction leaves -
+ * becomes resident again after the pager has brought its bytes back from the
+ * backing tier. SparkKvCacheArenaMarkBlockResident refuses backing-valid
+ * blocks on purpose, because a plain mark would hand out a resident block
+ * nobody re-filled; THIS is the re-fill path's counterpart, for the caller
+ * that owns the backing truth (the pager restored the bytes digest-verified
+ * at the tier boundary). BACKING_VALID survives - the backing copy still
+ * matches, so re-parking the block later is a deduplicated no-write - and
+ * DIRTY stays clear. Room is made the same way as every other residency
+ * grant: the LRU resident victim is evicted through the arena's evict
+ * function, which under the pager IS a page-out. Blocks that were never
+ * parked (blank) are refused: they go through MarkBlockResident.
+ */
+SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
+    SparkKvCacheArena *arena,
+    uint32_t logical_block_index)
+{
+    SparkKvCacheBlock *block;
+    uint32_t protected_logical_block_index;
+    SparkStatus status;
+
+    status = SparkKvCacheArenaValidate(arena);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (logical_block_index >= arena->logical_block_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    block = &arena->blocks[logical_block_index];
+    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
+        (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
+        block->residency_reference_count != 0u)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u)
+    {
+        arena->epoch += 1u;
+        block->last_used_epoch = arena->epoch;
+        return SPARK_STATUS_OK;
+    }
+    protected_logical_block_index = logical_block_index;
+    status = SparkKvCacheArenaMakeRoomForResidentBlocks(
+        arena,
+        0,
+        &protected_logical_block_index,
+        1u,
+        1u);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkKvCacheArenaAssignResidentSlot(arena, block);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    arena->resident_block_count += 1u;
+    block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT;
+    arena->epoch += 1u;
+    block->last_used_epoch = arena->epoch;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkKvCacheArenaFreeBlock(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index)
