@@ -1125,8 +1125,13 @@ CEILING = 228764
 # positions/sequence overflowed every real quality fixture; 64 pages =
 # 4,096 positions at ~0.45-0.62 GiB/rank) with the pool arithmetic
 # documented at the knob. Rebased on main's 228764: 228826 exact (+62 =
-# the three k3-finish items above).
-CEILING = 228826
+# the three k3-finish items above). +4 more: the serving-adapter fix —
+# parse tp_collective for every tp_degree > 1 (the runner's init
+# unconditionally creates the host tier and refused the null config with
+# INVALID_ARGUMENT on every device-collective deployment; the fleet wave
+# died 16/16 at adapter_initialize on it, live-reproduced and
+# live-verified by the A/B smoke). 228830 exact.
+CEILING = 228830
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

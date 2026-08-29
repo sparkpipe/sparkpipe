@@ -3778,8 +3778,8 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c",
-      "sha256": "3e771c976148dee6600fd82ffaccf300f5d936c185fdc450274cf35b815a2583",
-      "size_bytes": 31715
+      "sha256": "df66ed8df56cfaef774e0688fe12ce76cd7339a7d53b82895830aab5ccc29028",
+      "size_bytes": 31990
     },
     {
       "path": "modules/kv_mooncake/Makefile",
@@ -5393,13 +5393,13 @@
     },
     {
       "path": "runs/queue.jsonl",
-      "sha256": "d69004640c91ebce845a925394513b8e462ac505ac2b5910748edb033b00f667",
-      "size_bytes": 6464
+      "sha256": "6e297cd469ddee70ce7cbb6e618faf6b558eb01d3006db71a0ace97e6f0212c1",
+      "size_bytes": 7288
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "6c9832cccd5bb9e5a0a5fa36beba74893f2495f2b34096cfc0049d2bd4f43e1e",
-      "size_bytes": 2402
+      "sha256": "7c2fc35c11863962ac978578bf001551f9e5616b35ff0527734dc0f1098fbcf1",
+      "size_bytes": 2274
     },
     {
       "path": "runs/results.jsonl",
@@ -6088,8 +6088,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "684e5147f958d71ec23b882ccd06b8e3ac12caf6ab026b1aa94438a98eff2e37",
-      "size_bytes": 76158
+      "sha256": "4f6a35c04307d5711ba29ff75048c92182e1748c2452aab77d4226f49e36f0e2",
+      "size_bytes": 76517
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8500,5 +8500,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31271494
+  "total_bytes": 31272824
 }
