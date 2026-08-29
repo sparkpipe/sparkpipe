@@ -20,11 +20,14 @@ scp -o BatchMode=yes "$SOURCE" spark0:/tmp/sparkpipe_registrar.c
 rr="$(runtime_root spark0)"
 ssh -o BatchMode=yes spark0 "cc -O2 -std=c11 -Wall -Wextra -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE /tmp/sparkpipe_registrar.c -o '$rr/bin/sparkpipe_registrar.new' && chmod +x '$rr/bin/sparkpipe_registrar.new' && mv '$rr/bin/sparkpipe_registrar.new' '$rr/bin/sparkpipe_registrar'"
 
-echo "== copy binary to fleet =="
+echo "== pull binary to this host, push to fleet =="
+rr0="$(runtime_root spark0)"
+scp -o BatchMode=yes -q "spark0:$rr0/bin/sparkpipe_registrar" /tmp/sparkpipe_registrar.linux
 for h in "${ALL_HOSTS[@]:1}"; do
     rr="$(runtime_root "$h")"
-    scp -o BatchMode=yes -q "spark0:$rr/bin/sparkpipe_registrar" "$h:/tmp/sparkpipe_registrar"
+    scp -o BatchMode=yes -q /tmp/sparkpipe_registrar.linux "$h:/tmp/sparkpipe_registrar"
     ssh -o BatchMode=yes "$h" "mv /tmp/sparkpipe_registrar '$rr/bin/sparkpipe_registrar' && chmod +x '$rr/bin/sparkpipe_registrar'"
     echo "$h: $(ssh -o BatchMode=yes "$h" "sha256sum < '$rr/bin/sparkpipe_registrar'" | cut -c1-16)"
 done
+echo "spark0: $(ssh -o BatchMode=yes spark0 "sha256sum < '$rr0/bin/sparkpipe_registrar'" | cut -c1-16)"
 echo "== staged on ${#ALL_HOSTS[@]} hosts =="

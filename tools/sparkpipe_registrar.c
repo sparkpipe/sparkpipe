@@ -127,8 +127,21 @@ static long long now_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* Acceptance evidence: every line carries [+++s.mmm] since this
+ * registrar started, so GO latency after the last registrar start is
+ * measurable per node. */
+static long long g_log_t0 = -1;
+
+static void log_prefix(void) {
+    long long now = now_ms();
+    if (g_log_t0 < 0) g_log_t0 = now;
+    printf("[+%lld.%03lld] ", (now - g_log_t0) / 1000,
+           (now - g_log_t0) % 1000);
+}
+
 static void log_line(const char *fmt, ...) {
     va_list ap;
+    log_prefix();
     printf("registrar ");
     va_start(ap, fmt);
     vprintf(fmt, ap);
@@ -512,6 +525,7 @@ static void fail_loud(long long elapsed, int go_wait) {
             st.peer_stale[r] == 0)
             stale_clear++;
 
+    log_prefix();
     printf("REGISTRAR FAIL rank=%d host=%s after_ms=%lld view=%d/%d "
            "peer_views=%d/%d stale_clear=%d/%d go_wait=%d\n",
            cfg.rank, cfg.hosts[cfg.rank], elapsed, view_count,
@@ -577,6 +591,7 @@ static void fail_loud(long long elapsed, int go_wait) {
     }
     if (!immune_listed)
         snprintf(line + used, sizeof(line) - (size_t)used, " none");
+    log_prefix();
     printf("REGISTRAR %s\n", line);
     fflush(stdout);
 }

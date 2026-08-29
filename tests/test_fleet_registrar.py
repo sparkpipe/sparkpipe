@@ -75,9 +75,11 @@ class Registrar:
 
 
 def launchfleet(ranks: range, port_base: int, workdir: Path,
-                extra: list[str] | None = None) -> list[Registrar]:
+                extra: list[str] | None = None,
+                members: int = 16) -> list[Registrar]:
     extra = extra or []
-    return [Registrar(r, HOSTS_16, port_base, workdir / f"reg{r}.log", extra)
+    hosts = ",".join(["127.0.0.1"] * members)
+    return [Registrar(r, hosts, port_base, workdir / f"reg{r}.log", extra)
             for r in ranks]
 
 
@@ -181,15 +183,25 @@ def test_subset(workdir: Path) -> None:
 
 def _spawn_helper(workdir: Path, immune: bool) -> tuple[int, subprocess.Popen, str]:
     script = workdir / ("immune_daemon.py" if immune else "stale_daemon.py")
+    ready = workdir / "daemon_ready"
+    if ready.exists():
+        ready.unlink()
     if immune:
         script.write_text(
             "import signal, time\n"
             "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "open(%r, 'w').write('ready')\n" % str(ready) +
             "while True:\n"
             "    time.sleep(0.2)\n")
     else:
         script.write_text("import time\ntime.sleep(300)\n")
     proc = subprocess.Popen([sys.executable, str(script)], cwd=str(workdir))
+    if immune:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not ready.exists():
+            time.sleep(0.05)
+        if not ready.exists():
+            raise RuntimeError("immune daemon never installed its handler")
     exe = os.path.realpath(sys.executable).rsplit("/", 1)[-1]
     return proc.pid, proc, exe
 
@@ -204,21 +216,32 @@ def test_cleanslate(workdir: Path) -> None:
     port = base + 10
     stale_dir = workdir / "stale"
     stale_dir.mkdir(parents=True, exist_ok=True)
+    (stale_dir / "fleet").mkdir(parents=True, exist_ok=True)
     pid, proc, exe = _spawn_helper(stale_dir, immune=False)
     fleet = launchfleet(range(3), port, stale_dir / "fleet", [
         "--timeout-ms", "15000", "--term-wait-ms", "10000",
-        "--deployment-cwd", str(stale_dir), "--daemon-name", exe])
+        "--deployment-cwd", str(stale_dir), "--daemon-name", exe],
+        members=3)
     try:
         codes = [r.wait(30.0) for r in fleet]
-        rank0 = fleet[0].text()
+        texts = [r.text() for r in fleet]
+        # On loopback every registrar shares one node; whichever scanned
+        # first owns the TERM. The fleet log set must show the TERM
+        # lifecycle for the right pid, and no GO may precede it.
+        termer = next((t for t in texts
+                       if f"pid={pid}" in t and "stale_term" in t), None)
         check("cleanslate: stale daemon was found and TERMed by cwd",
-              f"stale rank=0 pid={pid}" in rank0
-              and f"stale_term rank=0 pid={pid}" in rank0, rank0)
+              termer is not None, "\n".join(texts)[:900])
         check("cleanslate: stale daemon held GO until cleared",
-              "GO rank=0" not in rank0.split("stale_term")[0], rank0[:800])
+              termer is not None
+              and "GO rank=" not in termer.split("stale_term")[0],
+              "\n".join(texts)[:900])
         check("cleanslate: TERM cleared it and GO fired",
-              codes == [0] * 3 and f"stale_clear rank=0 pid={pid}" in rank0,
-              f"codes={codes} {rank0[-400:]}")
+              codes == [0] * 3
+              and termer is not None
+              and f"stale_clear rank=" in termer
+              and any("GO rank=" in t for t in texts),
+              f"codes={codes}")
         alive = proc.poll() is None
         check("cleanslate: TERMed daemon is gone", not alive)
     finally:
@@ -230,10 +253,12 @@ def test_cleanslate(workdir: Path) -> None:
     port = base + 20
     immune_dir = workdir / "immune"
     immune_dir.mkdir(parents=True, exist_ok=True)
+    (immune_dir / "fleet").mkdir(parents=True, exist_ok=True)
     pid, proc, exe = _spawn_helper(immune_dir, immune=True)
     fleet = launchfleet(range(3), port, immune_dir / "fleet", [
         "--timeout-ms", "4000", "--term-wait-ms", "800",
-        "--deployment-cwd", str(immune_dir), "--daemon-name", exe])
+        "--deployment-cwd", str(immune_dir), "--daemon-name", exe],
+        members=3)
     try:
         codes = [r.wait(20.0) for r in fleet]
         rank0 = fleet[0].text()
