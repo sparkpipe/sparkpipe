@@ -1767,3 +1767,33 @@ appendix).
   turn had ended — L2 already committed: FEAT_SHA2 bulk transform,
   identical digest ~8x — it banked and will see the rule on resume);
   probe-fix briefed on rolling renew + GPU-window notes.
+
+## 2026-08-29 ~13:4x — merge b0daf75: W1 loader integrated; be3e066 decontaminated; two stale-red gates found, one fixed, one delegated
+
+- MERGED lane/w1-loader (fe29c69) as b0daf75 and pushed. The lane's report
+  surfaced that be3e066 (12:48Z cycle commit) swept its in-progress L1 edits
+  into main without tests/Makefile/ratchet — main made no further edits to
+  those files, so the merge itself is the decontamination: full L2 FEAT_SHA2
+  transform (+401 in src/spark_sha256.c), test matrix, Makefile registration
+  applied per the request's exact diff, ratchet 221265 exact, mean-CCN ledger
+  7.84→7.85 (fail-closed branches of the loader; max unchanged 75). GPU
+  receipts (51GB cold-load pair, W1LOADER_GATE_GREEN) stay queued on spark5.
+- Running the FULL offline set (the lesson working as intended) found TWO
+  pre-existing red gates on main, both from landings that ran partial gates:
+  (1) dsv4 driver contracts stale after DRY wave 1 (61d6edc) — -lcuda and
+  require_source_digest assertions still pointed at the per-family script;
+  fixed to assert the composed form across family script + shared driver.
+  (2) test_k3_pack_layout fixture predates 2d30fec (language_model prefix —
+  prefix fixed in the merge) AND 55cd2f9 (full-rank gate reconciliation —
+  g_a/g_b pair vs full-rank g_proj). Fix DELEGATED to k3-finish via
+  docs/AGENT_LANE_BRIEFS/k3_pack_layout_fix.md (CPU-only, fixture-not-packer,
+  acceptance = full offline-gates green).
+- Cycle-commit footgun closed structurally: the 15-min automation prompt now
+  stages THE LOG FILE ONLY and treats foreign WIP in the main tree as an
+  incident to name, not sweep. be3e066 was the incident this prevents.
+- Fleet/agents: 5/5 slots productive — probe-fix (843af4d: probe-BUSY root
+  cause = rank-0 L0 ladder vs 30s op-wait; window ×8 under probe env),
+  r2-prefill (b65cfc0; NOTE: its model_api.c hunk is a stale-fork silencing
+  — at its merge, drop it: main threads stop counts for real now),
+  kernel-crew (7823325 K1-K4), k3-finish (e793289; + this delegation),
+  w1-loader (done → merged, slot frees next cycle).
