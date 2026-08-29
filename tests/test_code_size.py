@@ -1145,7 +1145,21 @@ CEILING = 228248
 # tests/test_k3_deployment_config.py in PYTHON_TESTS (+2). The audit test
 # itself and the 10 repaired specs (transport_hosts) are test/data files
 # the counter excludes by construction. 228777 exact.
-CEILING = 229763
+# debts lane (2026-08-29): four small named debts, one landing.
+# (1) Universal queue-not-wedge (the jikv-c5 named follow-up): the dispatch
+# gate consumes a new poll_budget_exhausted out-flag from the restore loop,
+# so a hintless offer that spins its whole poll budget on a saturated tier
+# answers QUEUED like the hinted path instead of a hard IO_ERROR; the
+# restore's Ex-variant wrapper and the flag are +42 net in cache/kv_pager.c,
+# the header contract comments +5 net.
+# (2) The batch knob guard rail: SPARK_WEIGHTD_EXPORT_BATCH_MAX gains the
+# _Static_assert pinning it inside the kernel's SCM_MAX_FD (253), +6 net in
+# include/sparkpipe/spark_weightd.h.
+# (3) The authored qwen38_27b_tp4_host_rdma.spec.json is a data file (.json,
+# uncounted by construction); tests/ files (c5w2 baseline update, the
+# weightd scribble-probe receipt, the stub's access-grant enforcement +
+# probe) are excluded by construction. 229816 exact.
+CEILING = 229816
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

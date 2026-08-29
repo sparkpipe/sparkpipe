@@ -757,12 +757,18 @@ SparkStatus SparkKvPagerRestoreBlock(
  * same hint, so while the gate waits, the tier's pending restore debt keeps
  * ordering itself around this block - earliest deadline first. The gate is
  * the only caller that knows which block the dispatcher is blocked on; this
- * is the wire that lets the tier's lookahead act on it. */
-SparkStatus SparkKvPagerRestoreBlockDeadline(
+ * is the wire that lets the tier's lookahead act on it.
+ * The debt-lane follow-up (jikv-c5's named one-liner): `poll_budget_exhausted`
+ * lets the DISPATCH GATE tell "the tier stayed not-ready for the whole poll
+ * budget" (backpressure) apart from a hard IO error surfaced mid-loop. Public
+ * callers keep every historical answer byte for byte; only the gate consumes
+ * the flag. */
+static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
     SparkKvPager *pager,
     uint32_t logical_block_index,
     const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES],
-    uint32_t deadline_step)
+    uint32_t deadline_step,
+    uint32_t *poll_budget_exhausted)
 {
     SparkKvCacheArena *arena;
     SparkKvCacheBlockView block_view;
@@ -777,6 +783,7 @@ SparkStatus SparkKvPagerRestoreBlockDeadline(
     {
         return(SPARK_STATUS_INVALID_ARGUMENT);
     }
+    *poll_budget_exhausted = 0u;
 	/* publish first: the block this restore is asking about may have
 	 * finished its park write a moment ago - its commit is the state the
 	 * flag checks and the tier request below read. */
@@ -812,7 +819,9 @@ SparkStatus SparkKvPagerRestoreBlockDeadline(
 	 * answered after ONE pump: the caller's re-offer is the queue, and
 	 * burning the poll budget spinning on a saturated tier is the wedge the
 	 * contract forbids. Without the hint the loop keeps the historical
-	 * spin-to-the-limit behavior byte for byte. */
+	 * spin-to-the-limit behavior byte for byte - the exhaustion is REPORTED
+	 * (`poll_budget_exhausted`) so the dispatch gate can answer it QUEUED
+	 * while every other caller keeps the historical IO_ERROR. */
 	{
 		uint64_t read_started = 0u;
 		uint32_t read_issued = 0u;
@@ -854,7 +863,14 @@ SparkStatus SparkKvPagerRestoreBlockDeadline(
 				return(status);
 		}
 		if ( attempt == SPARK_KV_PAGER_RESTORE_POLL_LIMIT )
+		{
+			/* Every poll answered not-ready (BUSY or an in-flight join):
+			 * backpressure, not breakage - no error was surfaced mid-loop.
+			 * The status stays the historical IO_ERROR; the flag is the
+			 * gate's queue answer waiting to happen. */
+			*poll_budget_exhausted = 1u;
 			return(SPARK_STATUS_IO_ERROR);
+		}
 		if ( read_issued != 0u )
 		{
 			SparkKvPagerFoldBandwidthSample(pager,
@@ -924,6 +940,18 @@ SparkStatus SparkKvPagerRestoreBlockDeadline(
 	return(status);
 }
 
+SparkStatus SparkKvPagerRestoreBlockDeadline(
+    SparkKvPager *pager,
+    uint32_t logical_block_index,
+    const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES],
+    uint32_t deadline_step)
+{
+	uint32_t poll_budget_exhausted;
+
+	return(SparkKvPagerRestoreBlockDeadlineEx(pager,logical_block_index,
+		content_digest,deadline_step,&poll_budget_exhausted));
+}
+
 /* C2 (docs/JIT_KV_RESPONSE.md): the dispatch gate. ONE restore path feeds
  * it - SparkKvPagerRestoreBlock, the same digest-verified page-in every
  * rewind takes - and READY is answered only AFTER the residency flag is
@@ -935,7 +963,12 @@ SparkStatus SparkKvPagerRestoreBlockDeadline(
  * former reserved0) rides into the restore, so the tier's pending restore
  * debt orders earliest-deadline-first around the block this gate is
  * actually waiting on - under saturation the gated block completes before
- * the FIFO backlog, not after it. */
+ * the FIFO backlog, not after it. The queue-not-wedge answer is UNIVERSAL
+ * now: a hintless offer that spins its whole poll budget on a not-ready
+ * tier is the same backpressure - the gate answers it QUEUED too (the
+ * tier's legacy yank-before-acquire and the spin itself are hintless
+ * semantics and stay byte for byte; only the terminal answer changed).
+ * Only an error the restore surfaced mid-loop stays loud. */
 SparkStatus SparkKvPagerDispatchBlock(
 	SparkKvPager *pager,
 	const SparkKvPagerDispatch *dispatch,
@@ -943,6 +976,7 @@ SparkStatus SparkKvPagerDispatchBlock(
 {
 	SparkKvPagerDispatchDecision decision;
 	SparkKvCacheBlockView block_view;
+	uint32_t poll_budget_exhausted;
 	SparkStatus status;
 
 	if ( SparkKvPagerIsValid(pager) == 0u || dispatch == 0 ||
@@ -961,9 +995,17 @@ SparkStatus SparkKvPagerDispatchBlock(
 		SPARK_KV_PAGER_DISPATCH_DECISION_DESCRIPTOR_BYTES;
 	decision.logical_block_index = dispatch->logical_block_index;
 	pager->statistics.dispatch_requests += 1u;
-	status = SparkKvPagerRestoreBlockDeadline(pager,
+	status = SparkKvPagerRestoreBlockDeadlineEx(pager,
 		dispatch->logical_block_index,dispatch->content_digest,
-		dispatch->deadline_step);
+		dispatch->deadline_step,&poll_budget_exhausted);
+	if ( status == SPARK_STATUS_IO_ERROR && poll_budget_exhausted != 0u )
+	{
+		/* the whole poll budget burned on a tier that never said ready and
+		 * never errored: backpressure. The same QUEUED discipline the
+		 * hinted path answers after one ordered pump - the re-offer is the
+		 * queue, and the hard error the old gate surfaced here is gone. */
+		status = SPARK_STATUS_BUSY;
+	}
 	if ( status == SPARK_STATUS_OK )
 	{
 		status = SparkKvCacheArenaResolveBlock(pager->configuration.arena,

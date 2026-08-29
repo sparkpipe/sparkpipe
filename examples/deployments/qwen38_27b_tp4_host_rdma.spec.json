@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "coordinator_rank_index": 0,
+  "adapter": {
+    "shared_object_path": "lib/model_serving_adapter.so"
+  },
+  "driver": {
+    "shared_object_path": "lib/model_driver.so",
+    "program_name": "resident_decode"
+  },
+  "transport": {
+    "shared_object_path": "lib/hidden_transport.so",
+    "mode": "host-rdma",
+    "control_port_base": 58700
+  },
+  "runtime_limits": {
+    "max_inflight_submissions": 2,
+    "max_active_sequences": 64,
+    "max_input_rows": 128,
+    "resident_sequence_capacity": 64,
+    "kv_logical_page_capacity": 0,
+    "kv_physical_page_capacity": 0
+  },
+  "topology": {
+    "rank_hosts": ["spark0", "spark1", "spark2", "spark3"],
+    "transport_hosts": ["spark0", "spark1", "spark2", "spark3"],
+    "stage_indices": [0, 1, 2, 3],
+    "runtime_dataset": "qwen38.bf16.tp4",
+    "node_target": "cuda.sm121.qwen38_27b.resident_decode_stage.bf16",
+    "adapter_configuration_path_template": "config/qwen38_27b_tp4_rank{rank}.json",
+    "kv_backing_dataset": null,
+    "kv_backing_maximum_bytes": 0,
+    "control_endpoint": {
+      "kind": "tcp",
+      "host_template": "{host}",
+      "port": 17480
+    }
+  }
+}

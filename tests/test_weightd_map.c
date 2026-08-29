@@ -23,7 +23,16 @@
  *    the map equals the pack digest).
  * 6. CROSS-PROCESS: a real forked consumer process attaches warm, imports,
  *    maps at ITS OWN VA, and reads the pack bytes through the imported
- *    mapping — fds genuinely cross the process boundary. */
+ *    mapping — fds genuinely cross the process boundary.
+ * 7. SCRIBBLE-PROBE RECEIPT: the enforcement half of the staged consumer-map
+ *    PROT_READ flip (the W3 report's honest limit). The stub's
+ *    cuda_stub_vmm_probe_write models the driver's write fault: a write
+ *    through a read-only or ungranted mapping is refused and touches
+ *    nothing, through a read-write mapping it lands. The production
+ *    consumer leg grants RW today, so the probe through a real ImportMap
+ *    mapping LANDS — recorded as the pathology the one-constant flip
+ *    removes; when the flip lands (GPU receipt), that same probe must be
+ *    refused and the assertion flips with it. */
 
 #include <assert.h>
 #include <errno.h>
@@ -45,6 +54,7 @@
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_weightd.h"
+#include "cuda.h"
 
 #define SPARK_TEST_CHUNK_BYTES (2ull * 1024ull * 1024ull) /* the stub's law */
 #define SPARK_TEST_SMALL_BYTES (256ull * 1024ull)
@@ -618,6 +628,105 @@ static void SparkTestCrossProcess(void)
     printf("w3 weightd: cross-process import map + warm re-attach green\n");
 }
 
+/* ------------------------------ 7. scribble-probe receipt ------------------------------ */
+
+/* The W3 report's honest limit made enforceable-in-test: the consumer map is
+   RW today and the PROT_READ flip is staged on the GPU receipt. This test
+   lands NOW so the flip is justified and mechanical when it lands:
+   - the stub probe IS the driver's write fault in host form (refusal on a
+     read-only or ungranted mapping, landing on a read-write one) - the
+     proof that flipping the constant will actually bite;
+   - the production ImportMap grants RW today, so the probe through a real
+     consumer mapping LANDS - the honest record of the state being flipped.
+   FLIP CONTRACT: when runtime/spark_weightd_attach.c's
+   CU_MEM_ACCESS_FLAGS_PROT_READWRITE becomes CU_MEM_ACCESS_FLAGS_PROT_READ,
+   the production probe assert below flips from CUDA_SUCCESS to
+   CUDA_ERROR_INVALID_VALUE in the same commit. */
+static void SparkTestScribbleProbeReceipt(void)
+{
+    SparkTestServerThread thread_context;
+    pthread_t thread_handle;
+    SparkWeightdAttachOutcome outcome;
+    static uint8_t pack_image[SPARK_TEST_TWO_CHUNK_BYTES];
+    static uint8_t scribble[64];
+    char digest[SPARK_SHA256_HEX_BYTES];
+    CUmemAllocationProp prop;
+    CUmemGenericAllocationHandle chunk;
+    CUmemAccessDesc access;
+    CUdeviceptr span;
+    uint32_t index;
+
+    /* the enforcement half on a raw stub mapping */
+    memset(&prop, 0, sizeof(prop));
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = 0;
+    for (index = 0u; index < sizeof(scribble); index++)
+    {
+        scribble[index] = (uint8_t)(index * 7u + 1u);
+    }
+    assert(cuMemCreate(&chunk, 4096u, &prop, 0ull) == CUDA_SUCCESS);
+    assert(cuMemAddressReserve(&span, 4096u, 0u, 0ull, 0ull) == CUDA_SUCCESS);
+    assert(cuMemMap(span, 4096u, 0u, chunk, 0ull) == CUDA_SUCCESS);
+
+    /* ungranted: the write is refused and nothing is touched */
+    assert(cuda_stub_vmm_probe_write(span, scribble, 8u) ==
+        CUDA_ERROR_INVALID_VALUE);
+    /* read-only grant: STILL refused - this is what the staged flip buys */
+    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id = 0;
+    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READ;
+    assert(cuMemSetAccess(span, 4096u, &access, 1u) == CUDA_SUCCESS);
+    assert(cuda_stub_vmm_probe_write(span, scribble, sizeof(scribble)) ==
+        CUDA_ERROR_INVALID_VALUE);
+    /* read-write grant: the scribble lands */
+    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    assert(cuMemSetAccess(span, 4096u, &access, 1u) == CUDA_SUCCESS);
+    assert(cuda_stub_vmm_probe_write(span, scribble, sizeof(scribble)) ==
+        CUDA_SUCCESS);
+    assert(memcmp((const void *)(uintptr_t)span, scribble,
+        sizeof(scribble)) == 0);
+    assert(cuMemUnmap(span, 4096u) == CUDA_SUCCESS);
+    assert(cuMemRelease(chunk) == CUDA_SUCCESS);
+    assert(cuMemAddressFree(span, 4096u) == CUDA_SUCCESS);
+
+    /* the production-path half: today's consumer map is RW - the scribble
+       LANDS through the real ImportMap mapping. Chunk-multiple arena (the
+       shape every consumer and the whole fd tier standardizes on). */
+    spark_stub_cuda_reset_faults();
+    SparkTestWritePack(SPARK_TEST_PACK, 703u, sizeof(pack_image), digest);
+    {
+        FILE *pack_file = fopen(SPARK_TEST_PACK, "rb");
+        assert(pack_file != 0);
+        assert(fread(pack_image, 1u, sizeof(pack_image), pack_file) ==
+            sizeof(pack_image));
+        assert(fclose(pack_file) == 0);
+    }
+    SparkTestStartServer(&thread_context, &thread_handle, SPARK_TEST_SOCKET,
+        4ull * SPARK_TEST_CHUNK_BYTES);
+    SparkTestAttachAndMap(&outcome, SPARK_TEST_SOCKET, SPARK_TEST_PACK,
+        digest, sizeof(pack_image));
+    assert(outcome.loaded_from_pack == 1u);
+    assert(outcome.map_span_bytes == sizeof(pack_image));
+    assert(memcmp(outcome.map_base, pack_image, sizeof(pack_image)) == 0);
+    assert(cuda_stub_vmm_probe_write(
+        (CUdeviceptr)(uintptr_t)outcome.map_base, scribble,
+        sizeof(scribble)) == CUDA_SUCCESS);
+    assert(memcmp(outcome.map_base, pack_image, sizeof(pack_image)) != 0);
+    SparkWeightdAttachRelease(&outcome);
+    /* the released mapping is no longer a capability: refused */
+    assert(cuda_stub_vmm_probe_write(
+        (CUdeviceptr)(uintptr_t)outcome.map_base, scribble, 8u) ==
+        CUDA_ERROR_INVALID_VALUE);
+    SparkTestStopServer(&thread_context, thread_handle); /* ledger green */
+    SparkTestClearAttachEnv();
+    (void)remove(SPARK_TEST_PACK);
+    (void)remove(SPARK_TEST_SOCKET);
+    printf("w3 weightd: scribble-probe receipt green (the consumer map is"
+        " RW today; the staged PROT_READ flip turns this probe into a"
+        " refusal)\n");
+}
+
 int main(void)
 {
     (void)signal(SIGPIPE, SIG_IGN);
@@ -625,6 +734,7 @@ int main(void)
     SparkTestImportMapWarmAndCoverageGate();
     SparkTestMultiBatch();
     SparkTestCrossProcess();
+    SparkTestScribbleProbeReceipt();
     printf("w3 weightd lane: fd export + consumer import/map green\n");
     return 0;
 }
