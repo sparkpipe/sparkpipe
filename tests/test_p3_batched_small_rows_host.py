@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """Bit-exactness oracle for the small-batch batched linear kernel.
 
-PERF_PROGRAM P3: the knee-sweep's small-B "r-law" is a dispatch issue. The
-shared gate SparkLmHostLaunchBatchedLinear routed every row_count below the
-M16 tile to the scalar GEMV whose grid gives each row its own weight-strip
-pass, so B2/B4 decode inherited the B1 rate class exactly (the measured
-27B FP8 B1==B2==8.31 flat spot). The fix lands SparkLmBatchedLinearKernel -
-rows 2..15 stream the weights ONCE - and this oracle proves the new kernel:
+PERF_PROGRAM P3 lane. The knee-sweep's "B1==B2==8.31" premise turned out to
+be a misread of the sweep CSV (8.31 is the B1 aggregate row; B2 measured
+16.63 = 2.00x): the per-row scalar route's concurrent streams overlap in
+GB10's memory system, so small-B already scaled. The device bench
+(tools/p3_batched_small_rows_bench.cu) confirmed it kernel-level - scalar
+B2/B4 aggregate 2.03x/3.36x vs the one-pass batched kernel's 1.53x/2.58x -
+so the measured verdict is: keep the scalar route, record the negative, and
+this oracle proves the batched kernel is still exactly right:
 
   1. bit-exact vs SparkLmLinearKernel (the B1 kernel) per row, on the same
      weights, for all five weight formats the gate dispatches, at B=1..15,
      including odd-K tails, multi-chunk K, partial CTAs, and the head
      shadow's 32-warp geometry;
-  2. the dispatch contract: row 1 keeps the scalar GEMV, rows 2..15 route to
-     the batched kernel, in the shared gate AND in the head shadow branch
-     (source assertions - the launcher bodies are device-only syntax);
+  2. the dispatch contract: the per-row scalar GEMV stays the routed
+     small-B path (the device bench measured its overlapped streams AHEAD
+     of the one-pass batched kernel at B2..B4 on the 27B FP8 class), the
+     measured-negative verdict is recorded at the gate, and the batched
+     kernel stays compiled as the bit-exact one-pass alternative (source
+     assertions - the launcher bodies are device-only syntax);
   3. host-compilability of the shared kernel header itself: this test cannot
      build unless spark_lm_kernels.cuh compiles under g++.
 """
@@ -46,8 +51,11 @@ def build():
 
 
 def assert_dispatch_contract():
-    """The gate must route rows 2..15 to the batched kernel and keep B1 on
-    the scalar GEMV; the head shadow branch must do the same."""
+    """Pin the measured dispatch: rows below the tile stay on the per-row
+    scalar GEMV (the 27B-FP8 bench showed its concurrent row streams overlap
+    in the memory system and beat the one-pass batched kernel at B2..B4),
+    and the batched kernel remains compiled as the proven one-pass
+    alternative. The head shadow branch keeps its scalar geometry."""
     source = KERNELS.read_text()
 
     def flat(text):
@@ -55,22 +63,24 @@ def assert_dispatch_contract():
 
     gate_position = source.index("SparkLmHostLaunchBatchedLinear(cudaStream_t")
     gate = source[gate_position:]
-    gate = flat(gate[:gate.index("\ntemplate ")])
+    gate = flat(gate[:gate.index("static inline uint32_t SparkLmSm121B1Bf16LinearPairPolicy")])
 
     checks = [
-        ("batched branch guards rows>1",
-         "row_count > 1u" in gate),
-        ("batched branch launches the batched kernel",
-         "SparkLmBatchedLinearKernel<GROUP_SIZE, ACTIVATION_CODEC,SPARK_LM_TILE, SPARK_LM_CTA_WARPS><<<batched_grid," in gate),
-        ("B=1 keeps the scalar GEMV",
+        ("scalar GEMV grid is row-indexed (per-row streams, B1..B15)",
+         "dim3 scalar_grid(row_count," in gate),
+        ("scalar route launches SparkLmLinearKernel",
          "SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC, SPARK_LM_CTA_WARPS><<<scalar_grid," in gate),
-        ("B=1 scalar grid is still row-indexed",
+        ("the measured-negative verdict is recorded at the gate",
+         "MEASURED" in gate and "1.53x" in gate),
+        ("batched kernel stays defined for the overlap-hostile case",
+         "SparkLmBatchedLinearKernel" in source),
+        ("B=1 keeps the scalar GEMV",
          "dim3 scalar_grid(row_count," in gate),
     ]
     head_position = source.index("static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmaxWithScore(")
     head = flat(source[head_position:gate_position])
-    checks.append(("head shadow branch launches the batched kernel",
-                   "SparkLmBatchedLinearKernel<SPARK_LM_HEAD_SHADOW_GROUP, SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_TILE, SPARK_LM_SCALAR_CTA_WARPS><<<" in head))
+    checks.append(("head shadow keeps the scalar geometry",
+                   "SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_SCALAR_CTA_WARPS><<<" in head))
     checks.append(("head shadow rows stay under the tile gate",
                    "row_count < SPARK_LM_TILE" in head))
 

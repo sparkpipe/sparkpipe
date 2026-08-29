@@ -900,6 +900,16 @@ static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *w
  * 15*512*4 = 30 KB, inside the 48 KB default) and the K walk is chunked so
  * no input dimension is excluded.
  *
+ * ROUTING STATUS (measured 2026-08-29, spark5, GB10, 27B FP8 89 MB verify
+ * shape at 29.9 GB arena scale): NOT routed by default. The per-row scalar
+ * route's concurrent row streams overlap in the memory system and BEAT this
+ * kernel through B8 (scalar 2.03x/3.36x aggregate at B2/B4 vs this kernel's
+ * 1.53x/2.58x - the shared-staging round trip is the difference, the same
+ * scalar-beats-tile result the tile path measured at M=9). Equal at B8.
+ * This kernel stays compiled, host-oracle-proven, and available: on a
+ * bandwidth profile where per-row overlap does NOT absorb the rows, routing
+ * rows 2..15 here is the one-launch change in SparkLmHostLaunchBatchedLinear.
+ *
  * Bit-exactness with the scalar kernel is by construction, not by tolerance:
  * each row keeps the scalar kernel's own accumulation chain - the same
  * lane-strided run order (the chunk is a whole number of every format's run
@@ -5175,17 +5185,13 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmaxWithScore(cudaStrea
 	}
 	else if ( row_count < SPARK_LM_TILE )
 	{
-		/* Rows 2..15 stream the shadow ONCE (the scalar GEMV re-read it per
-		 * row; at vocab-scale candidate counts that is the dominant small-B
-		 * per-step cost). Bit-exact per row against the scalar kernel. */
 		dim3 shadow_grid(
+			row_count,
 			(candidate_count + SPARK_LM_SCALAR_CTA_WARPS - 1u) /
 			SPARK_LM_SCALAR_CTA_WARPS);
-		uint32_t shadow_shared_bytes = row_count *
-			(SPARK_LM_BATCHED_LINEAR_CHUNK * (uint32_t)sizeof(float));
-		SPARK_LM_LAUNCH((SparkLmBatchedLinearKernel<SPARK_LM_HEAD_SHADOW_GROUP,
-			SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_TILE,
-			SPARK_LM_SCALAR_CTA_WARPS><<<
+		uint32_t shadow_shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
+		SPARK_LM_LAUNCH((SparkLmLinearKernel<SPARK_LM_HEAD_SHADOW_GROUP,
+			SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_SCALAR_CTA_WARPS><<<
 			shadow_grid,
 			SPARK_LM_SCALAR_CTA_THREADS,
 			shadow_shared_bytes,
@@ -5385,25 +5391,18 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		return(cudaErrorInvalidValue);
 	if ( row_count < SPARK_LM_TILE )
 	{
-		if ( row_count > 1u )
-		{
-			// B2..B15: ONE weight stream for the whole row group - the
-			// per-row GEMV below re-reads the matrix once per row, which is
-			// why small-B decode sat in the B1 rate class. The batched
-			// kernel is bit-exact against this scalar path per row (same
-			// FMA chain), so the oracles diff the two directly.
-			dim3 batched_grid((output_dimension +
-				SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
-			SPARK_LM_LAUNCH((SparkLmBatchedLinearKernel<GROUP_SIZE,
-				ACTIVATION_CODEC,SPARK_LM_TILE,
-				SPARK_LM_CTA_WARPS><<<batched_grid,
-				SPARK_LM_CTA_THREADS,row_count *
-				(SPARK_LM_BATCHED_LINEAR_CHUNK *
-					(uint32_t)sizeof(float)),stream>>>(weight_format,
-				weight_payload,weight_scale,input_bf16,output_bf16,
-				row_count,input_dimension,output_dimension)));
-			return(cudaGetLastError());
-		}
+		/* B1..B15 stay on the per-row scalar GEMV. MEASURED (GB10, 27B FP8
+		 * 89 MB verify shape, 29.9 GB arena - tools/p3_batched_small_rows_
+		 * bench.cu ledger): the memory system OVERLAPS the per-row streams,
+		 * so scalar aggregate is 2.03x at B2 and 3.36x at B4, while the
+		 * one-weight-stream batched kernel below pays the shared-staging
+		 * tax and reaches only 1.53x / 2.58x (equal at B8). The per-row
+		 * route wins through B8; the batched kernel stays as the
+		 * bit-exact-proven one-pass alternative for a bandwidth profile
+		 * where overlap does not absorb the rows - switching the route is
+		 * the single launch below. (The knee-sweep "B1==B2==8.31" premise
+		 * was a misread of the CSV: 8.31 is the B1 aggregate; B2 measured
+		 * 16.63 = 2.00x, matching this bench's scalar 2.03x.) */
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
 		dim3 scalar_grid(row_count,(output_dimension +
 			SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);

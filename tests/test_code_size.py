@@ -887,14 +887,18 @@ from pathlib import Path
 # families hit it at merge by construction. 215868 exact.
 # The P3 batched-small-rows lane (2026-08-28) lands, in the shared family
 # kernel header: the one-weight-stream batched linear kernel for rows 2..15
-# (SparkLmBatchedLinearKernel + apply helpers, ~250 lines), the
-# SPARK_LM_LAUNCH host/device syntax guard wrapped around every launch
-# statement (~80 lines, the shared header's host-compilability proof - the
-# THREADS==1 oracle compiles the whole header with a plain C++ compiler),
-# and the B2..B15 dispatch wiring in the shared gate and the head shadow
-# branch. The oracle harness (tests/host_cuda/spark_lm_batched_host.cu)
-# sits under tests/ and is excluded. 216193 is the exact count.
-CEILING = 216193
+# (SparkLmBatchedLinearKernel + apply helpers), the SPARK_LM_LAUNCH
+# host/device syntax guard wrapped around every launch statement (the
+# shared header's host-compilability proof - the THREADS==1 oracle compiles
+# the whole header with a plain C++ compiler), the measured dispatch
+# verdict recorded at the gate, and in tools/ the device bench
+# (p3_batched_small_rows_bench.cu) that measured the verdict: the per-row
+# scalar route's overlapped streams BEAT the one-pass kernel at B2..B4 on
+# the 27B FP8 class, so the route stays scalar. The oracle harness
+# (tests/) is excluded. The first ceiling number set for this lane
+# (216193) was taken before the bench landed and was stale; 216414 is the
+# exact count at landing.
+CEILING = 216414
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

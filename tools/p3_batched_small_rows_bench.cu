@@ -18,6 +18,29 @@
  * Win condition: batched aggregate B2/B1 > 1.5x (a per-row route cannot
  * exceed 1.0x by construction: B rows cost B streams).
  *
+ * MEASURED LEDGER (2026-08-29, spark5, GB10, CUDA 13.0, GPU idle,
+ * fleet_status: spark5 free):
+ *   route           B  ms/step   GB/s   agg tok/s  vs B1
+ *   scalar-per-row  1   130.7   228.4      7.65    1.00x
+ *   scalar-per-row  2   128.6   232.1     15.55    2.03x
+ *   scalar-per-row  4   155.6   191.8     25.70    3.36x
+ *   scalar-per-row  8   271.0   110.2     29.52    3.86x
+ *   batched-once    1   130.3   229.2      7.68    1.00x
+ *   batched-once    2   169.8   175.8     11.78    1.53x
+ *   batched-once    4   202.3   147.6     19.77    2.58x
+ *   batched-once    8   271.5   110.0     29.47    3.84x
+ *   exactness: batched == per-row scalar, B=4, 69632 neurons bit-exact.
+ * CONCLUSION (negative as a route change): the per-row scalar route's
+ * concurrent row streams OVERLAP in GB10's memory system (B2 costs ~0ms
+ * over B1), so the one-pass batched kernel - paying the shared-staging
+ * round trip, the same scalar-beats-tile gap the tile path measured at
+ * M=9 - is BEHIND through B4 and equal at B8. The knee-sweep premise
+ * "B1==B2==8.31" was a misread of its CSV (8.31 is the B1 row; B2 measured
+ * 16.63 = 2.00x, matching the scalar 2.03x here). Verdict: keep the
+ * scalar route for rows < 16; SparkLmBatchedLinearKernel stays compiled,
+ * oracle-proven, and available for a bandwidth profile where per-row
+ * overlap does not absorb the rows.
+ *
  * Also spot-checks exactness on the first matrix: batched vs per-row scalar
  * (bit-compare), because the host oracle proves it and this confirms the
  * device build agrees.

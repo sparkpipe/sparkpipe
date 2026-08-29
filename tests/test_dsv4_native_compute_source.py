@@ -360,8 +360,8 @@ def main() -> int:
            "unmeasured 1024-thread B1 projection launch")
     head_screen = body(common, "SparkLmHostLaunchHeadScreenedArgmaxWithScore")
     require(head_screen,
-            "SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_TILE,",
-            "screened-head batched-rows kernel geometry (rows 2..15)")
+            "SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_SCALAR_CTA_WARPS",
+            "screened-head scalar kernel geometry")
     require(head_screen, "SPARK_LM_SCALAR_CTA_WARPS",
             "screened-head scalar grid geometry")
     require(head_screen, "SPARK_LM_SCALAR_CTA_THREADS",
