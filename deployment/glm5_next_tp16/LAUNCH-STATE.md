@@ -1,34 +1,42 @@
-# glm5_next TP16 LAUNCH-STATE (probe-fix lane, 2026-08-29/30)
+# glm5_next TP16 LAUNCH-STATE (glm5-attractor lane, 2026-08-29/30)
 
 Runtime roots: /home/<host>/sparkdata/glm5_next.tp16 (host = rank index
 in hex: spark0..sparkf = ranks 0..15). Current deployed driver set 16/16:
-lib/model_driver.so sha256-prefix 43a5fda4df5b889b (the DIAG build: probe
-ladder + cross-rank checksum, SPARK_GLM5_NEXT_PROBE-gated; non-probe twin
-of the same source is 980fd0fcb42b39cb). Module artifact 01b22fb6…,
-`glm5_next validator: PASS (0 failures)` against the CURRENT rank-0 pack.
-Branch lane/probe-fix tip d1235a9.
+lib/model_driver.so sha256-prefix 88b992791ba74661 (branch
+lane/glm5-attractor tip bec1bae — the routed-MoE-tail fix: the MoE sum
+never reached the residual and REDUCE_MLP placed 16x the attention
+output; see docs/AGENT_LANE_BRIEFS/reports/glm5-attractor-2026-08-29.md).
+Module artifact b12ff541…, `glm5_next validator: PASS (0 failures)`.
+The probe ladder (SPARK_GLM5_NEXT_PROBE=1) and the G5N-VEC full-vector
+dumps (SPARK_GLM5_NEXT_PROBE_VEC=1, wave --probe-vec) are ENV-gated on
+this same binary; it serves clean without them.
 
-PACKS (the COLS-SHARD o_proj repack, LANDED 2026-08-30):
+PACKS (the COLS-SHARD o_proj repack, LANDED 2026-08-30, unchanged here):
 packs/<name>.g5nsp is a SYMLINK ->
 ~/glm53_packs_fixed2/glm5_next_stage.tp16.rank<r>.g5nsp (the previous
 row-sharded packs remain at ~/glm53_packs_fixed/, rollback = rename the
 .pre-probefix2-bak symlinks back; the ORIGINAL packs remain at
 ~/glm53_packs/). Every pack: 1160 tensors, 21,706,046,976 bytes,
 directory sha256 54e2474be88a2544 uniform on all ranks; verifier PASS
-16/16; deep spot round-trips PASS on ranks 0/1/8/15. Rank 8 and rank 11
-builders hit the slow-ceph path and were requeued solo on spark0/spark9,
-shipped, sha-verified.
+16/16.
 
 WHY THE REPACK: the attention OUT projections (ATTN_OUTPUT/KDA_OUT,
 checkpoint [hidden, heads*dim]) were row-sharded (pack [hidden/tp, width])
 while the out-GEMM consumes the col-shard TP partial [hidden, width/tp] —
-a silently transposed o_proj on every rank, the cold-first-request
-degeneration. Fixed on lane/probe-fix (2cc9de3): module policy col-shards
-them, packer `shard="cols"`, all packs rebuilt. Generation changed but
-STILL degenerates (see
-docs/AGENT_LANE_BRIEFS/reports/probe-fix-2026-08-29.md) — remaining
-defect is rank-invariant (post-reduce checksums bit-identical 16/16);
-next instrument = reference semantic diff, per the report.
+a silently transposed o_proj on every rank. Fixed on lane/probe-fix
+(2cc9de3).
+
+WHY THE ATTRACTOR LANE FIX (bec1bae): the routed-MoE finalize wrote its
+sum into hidden_bf16 (the HC streams surface) and the shared-expert add
+overwrote it with attention_out + shared_out — the routed experts never
+reached the residual and REDUCE_MLP allreduced sixteen identical copies
+of the reduced attention output (receipt: second r0 post == 16.000000x
+first r0 post at L42/L44). The tail now lands routed+shared in
+attention_out. KDA suspect (a) proven CLEAN by the checkpoint-semantics
+host oracle (tools/glm5_next_kda_host_oracle.py + G5N-VEC dumps).
+Generation after the fix (cold, fixture case 1): "way,ive      database:"
+— word fragments, no attractor; NOT coherent. Next: DSA-site donor diff
++ oracle, mHC reference, swiglu_limit wiring, state reset.
 
 REQUIRED AFTER ANY REPACK: header provenance patch — the packer emits
 zeros for contract/config/recipe and the module rejects the pack
@@ -44,12 +52,12 @@ tool patches a mid-build file happily; verify size = 21706046976 first).
 Then verify: tools/glm5_next_pack_verify.py --pack <p> --source
 /mnt/model-warm/glm-5.3-flash --tp-rank <r> --tp-degree 16 [--skip-spot].
 
-STATUS: 16/16 residentd ready on the fixed2 packs + DIAG driver, api
-healthy on spark0:8433. Generation still degenerate (repeat attractors).
-COMPSEC-17 and the M5 exact-32K cell remain BLOCKED on coherence. For
-gate runs, relaunch the wave WITHOUT --probe (the diag ladder stalls the
-chain by design; the same source builds the non-probe driver
-980fd0fcb42b39cb).
+STATUS: 16/16 residentd ready on the fixed2 packs + the attractor-lane
+fixed driver (88b992791ba74661), api healthy on spark0:8433. Generation
+post-fix: no repeat attractor; word-fragment level ("way,ive
+database:" on the cold fixture request). Still degenerate — COMPSEC-17
+and the M5 exact-32K cell remain BLOCKED on coherence. The diag env
+stalls the chain by design: for gate runs relaunch WITHOUT --probe.
 
 STOP (cwd-scoped TERM — never -f, never other cwds; spark5 runs the
 dry-template2 lane's processes, sparke the K3 build):
