@@ -179,14 +179,13 @@ static void SparkSha256TransformBlocksSha2(
         state_save_efgh = vld1q_u32(state + 4u);
         abcd = state_save_abcd;
         efgh = state_save_efgh;
-        m[0] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(
-            vld1q_u8(data))));
-        m[1] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(
-            vld1q_u8(data + 16u))));
-        m[2] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(
-            vld1q_u8(data + 32u))));
-        m[3] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(
-            vld1q_u8(data + 48u))));
+        /* vld1q_u8 already yields uint8x16_t; the inner
+         * vreinterpretq_u8_u32 wrapper is a no-op bitcast that clang
+         * accepts laxly but gcc -Werror rejects (R2a Linux receipt). */
+        m[0] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data)));
+        m[1] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 16u)));
+        m[2] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 32u)));
+        m[3] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 48u)));
 #define SPARK_SHA256_SHA2_ROUND(message_quad)                                  \
         do                                                                     \
         {                                                                      \
