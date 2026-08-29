@@ -1381,3 +1381,15 @@ appendix).
   package-manifest, exit 0 at head. 'Gate pass' now means a list.
 - Mac fresh-build + manifest (464 fails) fixed. Orphan registered
   spark-gated. IRs in the report.
+
+## 2026-08-30 ~10:0x — cycle: TEMPLATE-ADOPTION GATE LIVE (mine)
+
+- The audits' loop-closer built + registered: adapters must consume
+  the template (parse-loop fork signatures, not key-table mentions —
+  first draft false-positived on dsv4/glm52's member tables, tightened
+  same window); pack-synthesize must import the shared core when it
+  lands; KNOWN_OFFENDERS ratchets (3 wave-2 entries, k3 exempt with
+  receipt). New families hit the gate at merge by construction.
+- Closeout agent actively cycling (emit sub 492 status 0; packs dir
+  populated; API mid-restart between waves). dry-wave1 + ccn lanes
+  grinding (worktrees fresh, no pushes yet). 3res tip 15m old.
