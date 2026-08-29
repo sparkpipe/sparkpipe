@@ -120,16 +120,22 @@ one wave owner).
 
 ## Current blockers to the first K3 fleet number
 
-1. Stage packs (lane/k3-finish, 2026-08-30): stage-0 (spark0-3) and
-   stage-1 (spark4-7) DEPLOYED with sha receipts (k3_stage_0_24.deploys/
-   00:41, k3_stage_24_23.deploys/ 22:11); stage-3 (sparkc-f) deployed
-   earlier. Stage-2 rebuilt as 47_23 (see the stage table warning below)
-   and its slice/verify/deploy chain completing on sparke
-   (finish_stage2b.log; receipts land in k3_stage_47_23.deploys/). The
-   build can no longer die silently: /home/sparke/k3build/keepalive.sh
-   (committed as tools/k3_keepalive.sh) restarts the journal-resuming
-   packer if it dies and logs every restart to keepalive.log; it exits
-   DONE when the pack completes. If sparke rebooted: re-run
+1. Stage packs (lane/k3-finish, 2026-08-30): ALL FOUR STAGES DEPLOYED.
+   stage-0 (spark0-3, k3_stage_0_24.deploys/ 00:41), stage-1 (spark4-7,
+   k3_stage_24_23.deploys/ 22:11), stage-2 (spark8-b,
+   k3_stage_47_23.deploys/ 03:4x — receipts:
+   rank00 c2ee5a33d89f72f9bd75e3b1845d4b238dc7a4e1b7bac9effb8e5027ffb4a514,
+   rank01 8ce3ba3b758c83a25c0b22bd65d4a029a587905aab650326a84a7c231d70ad4f,
+   rank02 25e376c06d37b8611b41908fb078f4f5fc39baf6df1e64ed8448ed9111e85007,
+   rank03 fe455ac7db5dbd1140efa6752de6241055a9da2a882c2b5a6d1f8f8738b1f157),
+   stage-3 (sparkc-f, from the P2 verifier receipts). Cross-verified
+   before deploy: all four 47_23 rank packs PASS vs the stage pack
+   (534 tensors, 23 layers, verify_stage2_ranks.log, CHAIN complete
+   03:33+). The build can no longer die silently:
+   /home/sparke/k3build/keepalive.sh (committed as tools/k3_keepalive.sh)
+   restarts the journal-resuming packer if it dies and logs every restart
+   to keepalive.log; it exits DONE when the pack completes. If sparke
+   rebooted: re-run
    `cd /home/sparke/k3build && nohup bash keepalive.sh 47 23 /home/sparke/k3build/k3_stage_47_23.pack >> keepalive.log 2>&1 &`.
    STAGE TABLE WARNING (the 48_23 defect, caught 2026-08-30): the runner's
    PP4 stage table is {first: 0,24,47,70} x {count: 24,23,23,23}
@@ -156,4 +162,26 @@ one wave owner).
 3. First number once ready: B1 decode through the fleet, then COMPSEC-17
    through the live /v1 endpoint (quality gate; fixtures for glm5.3-flash
    are pre-tokenized at 93a3a0b — the K3 tokenizer one-shot needs running
-   on spark1 per the same pattern before COMPSEC can fire).
+   on spark1 per the same pattern before COMPSEC can fire). The /v1 front
+   is STAGED: bin/sparkpipe_model_api on spark0 (built from lane tip,
+   774,216 B, 2026-08-30 03:40); start after FLEET READY:
+   `cd /home/spark0/sparkdata/k3.mxfp4.tp4pp4 && nohup
+   ./bin/sparkpipe_model_api --deployment config/model_resident.json
+   --runtime-root $PWD --port 8433 > api.log 2>&1 < /dev/null &`.
+   K3 quality fixtures are pre-tokenized in-tree:
+   qualification/ds4_eval/quality-fixtures-kimi-k3.json (92 cases, 17
+   COMPSEC, max 769 tokens — all fit kv_pages=64 with 4.5x room).
+
+## TP4 equivalence across a real stage (staged, runs in the window)
+
+The full 93-layer stage-0 pack cannot register on any 119 GiB node
+(cudaHostRegister OOM at 103 GB — session-2 receipt), so the equivalence
+runs on the k3_stage_0_4.slice (first=0 count=4, 55,337,455,488 B full +
+four 13,890,672,768 B rank packs, staged on sparke 02:40-02:52): five
+single-spark tp1 steps of one token, full[k] vs Σ rank[k] via
+tests/test_k3_runner_step.cu --dump, checked by
+tools/k3_tp4_equivalence_check.py. GOTCHA (live-verified): the slice pack
+must run with --pp1 — the PP4 stage tables VALIDATION_FAIL a 0_4 pack
+(INIT FAIL 9); --pp1 takes the slice bounds from the pack manifest.
+Run INSIDE the exclusive window while the K3 fleet is down (the full
+slice registers ~52 GiB on sparke).
