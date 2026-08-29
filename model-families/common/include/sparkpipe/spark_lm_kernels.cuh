@@ -955,7 +955,7 @@ static __global__ void SparkLmBatchedLinearKernel(uint32_t weight_format, const 
 	float accum[MAX_ROWS];
 	float2 pair_value;
 	float2 values;
-	float weight_first,weight_second,weight_run[8],scale_value;
+	float weight_first,weight_run[8],scale_value;
 	uint32_t run_local,run_global,pair_local,pair_global,packed,decoded[4];
 	SparkLmHalf2Bits half2_bits;
 	#pragma unroll
