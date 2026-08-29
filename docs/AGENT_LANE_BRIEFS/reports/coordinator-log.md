@@ -1325,3 +1325,19 @@ appendix).
   third leg — audit's last memory-safety item).
 - test_qwen38_pack_load.c orphan: registering or removing in the fix
   lane.
+
+## 2026-08-30 ~8:2x — THREE-AUDIT RESPONSE: cleanup as priority (2434431)
+
+- OWNED: the audits' cross-cutting diagnosis (abstractions exist,
+  enforcement doesn't) is the true headline — the template landed and
+  3 families forked anyway; the packer core has zero importers; the
+  CCN max grew while the plan sat. CLEANUP_PROGRAM.md consolidates
+  with the audit's own risk ranking.
+- SPAWNED: wave-1 DRY (~3.9k low-risk lines) + the complexity lane
+  (honest validation scoping, stage-zero on the 158-CCN function,
+  conjunction tables, and the CCN ceiling that BINDS). The template-
+  adoption gate is MINE (mechanical, closes the loop) — next window.
+- WAVE-2 (3 adapters onto template) queues behind closeout; device-
+  typedef lane (the audit's highest-leverage HW move) next wave.
+- glm52's 14k deletion stays GATED on glm5_next qualification (the
+  audit's own call — a deletion, not a refactor; take it in one shot).
