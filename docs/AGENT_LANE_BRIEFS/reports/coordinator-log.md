@@ -2095,3 +2095,23 @@ appendix).
 - Respawned k3 taker deferred: the DISPATCHER is the taker now; the
   k3 launch task gets submitted by cell-runner or the next k3 session
   with the check-gate in its cmd.
+
+## 2026-08-29 ~19:3x — UTILIZATION PUSH (operator: seconds of gap max)
+
+- Wave WAVE-FAILed (0/16 daemon start since 19:03, all three attempts,
+  INCLUDING the lane's own first manual one — predates queue work).
+  Registrar GO healthy (3.7s/rank); daemon-start line broken post
+  driver-swap. ESCALATED to glm5-dsa with evidence; hung wave TERMed;
+  task cancelled; 16 nodes freed.
+- Dispatcher: cadence 60s -> 5s; comparator + fall-through fixes
+  verified live; canary task completed the FULL cycle (dispatch -> pid
+  captured -> exit file -> reap -> release) — mechanics PROVEN.
+- Fleet fill attempted: R3 cell reaped FATAL (glm52 packs not on
+  spark8-f band), weightd reaped (staging dir missing), r2c-t2 running
+  but silent on spark4-7. All three routed to cell-runner for
+  prerequisite reconciliation (operator pattern: tasks self-sufficient
+  or fail loud naming the missing piece).
+- Nurse charter hardened (operator directive): dispatcher health is
+  RESTORE-not-report (documented nohup re-arm), failed-task
+  reconciliation to owners each sweep, idle-node alarm (all-free +
+  queued executable = pipeline bug, minute-for-minute loss class).
