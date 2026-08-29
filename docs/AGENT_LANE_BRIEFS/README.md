@@ -97,6 +97,14 @@ read it before writing allocation code):
    REQUEST with call sites — the family pack loader's mapping is the
    sanctioned file-backed path; do not invent a second one.
 
+## CAPACITY SIZING RULE (perf audit: measured 1.6-1.8x tax)
+
+Deployments size max_active_sequences / lane pools to the SERVED
+batch, not the maximum imaginable: GDN state is ~150 MB/lane on
+unified memory and oversized configs cost measured 1.6-1.8x at mid-B
+(TLB/page pressure). The spec defaults (1024 lanes / 4096 positions)
+are footguns — a B8-serving deployment carries no 1024-lane pool.
+
 ## MERGE GATES (operator directive: no slop)
 
 Every merge into main passes: (a) the code-size ratchet RE-RUN AFTER
