@@ -872,8 +872,11 @@ from pathlib import Path
 # both sublayer sites + the KDA full-width partial copy into the shared
 # reduce buffer), which deletes the x-tp_degree-per-layer residual
 # multiplication that killed layer 17's attention. Diag ladder stays until
-# the zero-token bug closes, then trims. 216861 exact.
-CEILING = 216861
+# the zero-token bug closes, then trims. 216861 exact. The follow-up moves
+# the KDA o_proj into attention_out_bf16 (staging the gated y in the dead
+# kv_slot scratch) so the validator's readback contract survives the
+# rewire; net +7. 216868 exact.
+CEILING = 216868
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
