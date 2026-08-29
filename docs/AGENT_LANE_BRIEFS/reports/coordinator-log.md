@@ -2194,3 +2194,18 @@ appendix).
   convict the binding. This is the remaining coherence-blocker
   candidate; the gate chain (curl -> COMPSEC-17 -> 92x -> M5) queues
   behind its verdict.
+
+## 2026-08-29 ~23:1x — q27b probe running; wave7 dependency-ordered behind it
+
+- q27b-serve milestone: daemon UP on a fresh build (module GPU-validated
+  bit-exact against the real 29GB pack, first REAL token 198 out);
+  one decode-frame refusal left (daemon-fed TP1 slot/seq/pos
+  continuity — instrumented adapter names it). Lane also fixed a
+  main-tip compile break (qwen38_27b module -Werror, 7871ad5) —
+  integration owed with its landing.
+- COORDINATOR SEQUENCING (one intervention): waves 4/5/6 each burned a
+  full fleet cycle exiting 1; the q27b probe is 3 GPU-minutes from
+  closing an entire model's mission. Wave7 cancelled + resubmitted as
+  g5dsa-wave7b with after=[q27b probes] — pure dependency ordering, no
+  priority games; probe RUNNING on spark5; wave7b (L4-conviction
+  driver a937ed5f) fires on probe reap. Both lanes briefed.
