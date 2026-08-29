@@ -896,9 +896,9 @@ from pathlib import Path
 # scalar route's overlapped streams BEAT the one-pass kernel at B2..B4 on
 # the 27B FP8 class, so the route stays scalar. The oracle harness
 # (tests/) is excluded. The first ceiling number set for this lane
-# (216193) was taken before the bench landed and was stale; 216414 is the
-# exact count at landing.
-CEILING = 216414
+# (216193) was taken before the bench landed and was stale; 216437 is the
+# exact count at landing (including the bench's measured-results ledger).
+CEILING = 216437
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
