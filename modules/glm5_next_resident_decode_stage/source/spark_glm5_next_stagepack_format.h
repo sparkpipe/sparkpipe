@@ -248,7 +248,15 @@ static inline void SparkGlm5NextStagePackShapeF32(SparkGlm5NextStagePackTensorSh
  *   column-sharded - the INPUT dimension splits (down projections read a
  *     rank slice of the intermediate and all-reduce)
  *   replicated - every rank carries the whole tensor (norms, q_a, kv_a,
- *     kv_b, indexer, router, HC, compressor, decay/gate bottleneck). */
+ *     kv_b, indexer, router, HC, compressor, decay/gate bottleneck).
+ * The attention OUT projections (ATTN_OUTPUT, KDA_OUT) are checkpoint
+ * [hidden, heads*dim] = OUTPUT-hidden x INPUT-width, the down-projection
+ * shape family: the rank slice is of the INPUT columns (this rank's
+ * heads) and the out-GEMM lands the full-width rank partial the chain
+ * reduces. Row-sharding them silently transposed the block (pack
+ * [hidden/tp, width] consumed as [hidden, width/tp]): bounded garbage in
+ * every attention partial from layer 0 - the cold-first-request
+ * degeneration; TP1-invariant, which is why the M3 gates passed. */
 static inline uint32_t SparkGlm5NextStagePackTpShardsRows(uint32_t tensor_kind)
 {
     switch ( tensor_kind )
@@ -256,7 +264,6 @@ static inline uint32_t SparkGlm5NextStagePackTpShardsRows(uint32_t tensor_kind)
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EMBEDDING:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_LM_HEAD:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_Q_B:
-    case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_ATTN_OUTPUT:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_DENSE_GATE_UP:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_GATE_UP:
@@ -266,7 +273,6 @@ static inline uint32_t SparkGlm5NextStagePackTpShardsRows(uint32_t tensor_kind)
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_Q_CONV:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_K_CONV:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_V_CONV:
-    case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT:
         return(1u);
     default:
         return(0u);
@@ -277,6 +283,8 @@ static inline uint32_t SparkGlm5NextStagePackTpShardsCols(uint32_t tensor_kind)
 {
     switch ( tensor_kind )
     {
+    case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_ATTN_OUTPUT:
+    case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_DENSE_DOWN:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_DOWN:

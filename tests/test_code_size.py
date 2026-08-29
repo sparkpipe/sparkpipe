@@ -953,7 +953,15 @@ from pathlib import Path
 # (vreinterpretq_u8_u32(u8 vector) does not compile on aarch64 gcc;
 # net -4 lines there). Every scale is diag-only: the serving default is
 # untouched. 222218 exact.
-CEILING = 222218
+# probe-fix II: the cold-first-request fix - ATTN_OUTPUT + KDA_OUT (the
+# attention o_proj family, checkpoint [hidden, heads*dim]) move from
+# row-sharded to col-sharded in the module's stagepack TP policy, with
+# the matching packer flip and comment block. The policy/gemm dispute
+# (policy read [hidden/tp, width], the out-GEMM consumes
+# [hidden, width/tp]) is the degeneration root cause; the justification
+# evidence lives in the commit + docs/AGENT_LANE_BRIEFS/reports/.
+# 222236 exact.
+CEILING = 222236
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
