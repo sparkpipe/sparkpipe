@@ -1359,3 +1359,25 @@ appendix).
   (z-lab incumbent copy to spark9/a) rides the closeout's aftermath.
 - The BAKE-OFF can start the moment the fleet frees: DFlash2-vs-
   incumbent (one env var), K3 DSpark when its forward kernels land.
+
+## 2026-08-30 ~9:3x — RED-GATE TRUTH merged (e353fee): the overclaim is now FALSE no more
+
+- THE AUDIT'S FIVE C GATES WERE **ONE REAL REGRESSION**: f0bd7c8's
+  template ReservePending wrote the common view at offset 0 while
+  every family embeds it after an 8-byte owner pointer — misaligned
+  pending reads (req 9 vs 100), slot leaks → BUSY. Fixed via
+  common_offset (layout as data). All five gates + stage_runner exit
+  0. THE TEMPLATE'S FIRST BUG — caught by the audit's gates, exactly
+  what they're for.
+- memory_contracts: the 285-delta was qwen4_flash's lane (+31), not
+  glm5_next; structural split fails hard, the 75-entry inventory
+  PARKED with a two-way ratchet (new fail by name; shrunk demand
+  prune).
+- ARCHITECTURE: a REAL breach found — getenv in the DSV4 compute
+  module (8d1856c) — now a typed node-context flag; make-test was
+  DYING at a stale pin so later gates never ran in plain sweeps
+  (re-pinned).
+- OFFLINE_GATES DEFINED (make offline-gates): build-all + run-tests +
+  package-manifest, exit 0 at head. 'Gate pass' now means a list.
+- Mac fresh-build + manifest (464 fails) fixed. Orphan registered
+  spark-gated. IRs in the report.
