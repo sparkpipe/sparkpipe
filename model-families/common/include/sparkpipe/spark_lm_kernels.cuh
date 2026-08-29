@@ -3597,8 +3597,8 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedExpertW13(
 	 * build, 128 for the batched build - see SparkLmSm121ExpertW13TileN). */
 	block_count = multiprocessor_count *
 		SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM;
-	SPARK_LM_LAUNCH((
 	if ( rows == 1u )
+		SPARK_LM_LAUNCH((
 			SparkLmSm121B1ExpertW13Kernel<SPARK_LM_SM121_B1_EXPERT_W13_TILE_N>
 				<<<block_count,SPARK_LM_CTA_THREADS,
 					input_dimension * sizeof(float),stream>>>(
@@ -3607,9 +3607,9 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedExpertW13(
 					source_row_map,group_row_offset,group_tile_prefix,
 					activated_bf16,rows,group_count,input_dimension,
 					output_dimension,limit)
-	));
-	SPARK_LM_LAUNCH((
+		));
 	else
+		SPARK_LM_LAUNCH((
 			SparkLmSm121B1ExpertW13Kernel<SPARK_LM_SM121_NATIVE_TILE_N>
 				<<<block_count,SPARK_LM_CTA_THREADS,
 					input_dimension * sizeof(float),stream>>>(
@@ -5600,17 +5600,17 @@ static inline cudaError_t SparkLmHostLaunchSm121DecodeLinearPair(
 				(uint64_t)row * second_row_bytes;
 			policy = SparkLmSm121B1Fp8LinearPairPolicy(1u,
 				input_dimension,combined_output_dimension);
-			SPARK_LM_LAUNCH((
-	if ( policy == SPARK_LM_PAIR_POLICY_FLAT_16 )
+			if ( policy == SPARK_LM_PAIR_POLICY_FLAT_16 )
+				SPARK_LM_LAUNCH((
 					SparkLmFp8LinearPairKernel<GROUP_SIZE,ACTIVATION_CODEC,
 						16u><<<(combined_output_dimension + 15u) / 16u,512u,
 						input_dimension * sizeof(float),stream>>>(
 						first_payload,first_scale,second_payload,second_scale,
 						row_input,row_first,row_second,input_dimension,
 						first_output_dimension,second_output_dimension)
-			));
-			SPARK_LM_LAUNCH((
-	else
+				));
+			else
+				SPARK_LM_LAUNCH((
 					SparkLmFp8LinearPairKernel<GROUP_SIZE,ACTIVATION_CODEC,
 						SPARK_LM_CTA_WARPS><<<
 						(combined_output_dimension + SPARK_LM_CTA_WARPS - 1u) /
@@ -5619,22 +5619,22 @@ static inline cudaError_t SparkLmHostLaunchSm121DecodeLinearPair(
 						first_payload,first_scale,second_payload,second_scale,
 						row_input,row_first,row_second,input_dimension,
 						first_output_dimension,second_output_dimension)
-			));
+				));
 		}
 		return(cudaGetLastError());
 	}
-	SPARK_LM_LAUNCH((
 	if ( SparkLmSm121B1Fp8LinearPairPolicy(row_count,input_dimension,
 			combined_output_dimension) == SPARK_LM_PAIR_POLICY_FLAT_16 )
+		SPARK_LM_LAUNCH((
 			SparkLmFp8LinearPairKernel<GROUP_SIZE,ACTIVATION_CODEC,16u><<<
 				(combined_output_dimension + 15u) / 16u,512u,
 				input_dimension * sizeof(float),stream>>>(first_payload,first_scale,
 				second_payload,second_scale,input_bf16,first_output_bf16,
 				second_output_bf16,input_dimension,first_output_dimension,
 				second_output_dimension)
-	));
-	SPARK_LM_LAUNCH((
+		));
 	else
+		SPARK_LM_LAUNCH((
 			SparkLmFp8LinearPairKernel<GROUP_SIZE,ACTIVATION_CODEC,
 				SPARK_LM_CTA_WARPS><<<
 				(combined_output_dimension + SPARK_LM_CTA_WARPS - 1u) /
@@ -5643,7 +5643,7 @@ static inline cudaError_t SparkLmHostLaunchSm121DecodeLinearPair(
 				second_payload,second_scale,input_bf16,first_output_bf16,
 				second_output_bf16,input_dimension,first_output_dimension,
 				second_output_dimension)
-	));
+		));
 	return(cudaGetLastError());
 }
 
