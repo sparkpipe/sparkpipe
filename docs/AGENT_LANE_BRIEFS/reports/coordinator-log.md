@@ -1645,3 +1645,22 @@ appendix).
   flake's random-death signature will show over repeated waves — the
   proof is N consecutive 16/16). Continue cycling next windows; the
   registrar's GO-gated pattern is the launcher.
+
+## 2026-08-30 ~23:1x — cycle: MY TERM PATTERN BUG found+fixed; clean wave 15/16; F4 bit us
+
+- THE META-BUG: pgrep -x sparkpipe_model_residentd matches NOTHING
+  (comm truncates at 15 chars); my TERM loops were silent no-ops and
+  'exit verified 16/16' was vacuously true. The EADDRINUSE cascade
+  was waves firing into UNDEAD daemons. Fixed: pgrep -f
+  "bin/sparkpipe_model_residentd" + cwd filter — TERM now works,
+  exit-poll honest. THE REGISTRAR never had this bug (its own pattern
+  is correct) — use it; my hand-rolled loops were the regression.
+- CLEAN WAVE: 15/16 ready + API. sparkf (the one rc=14) had a
+  DUPLICATE daemon holding its listen port — cleared, solo-refired —
+  then hit F4 (no late joiners: partners already past session-open).
+  Fleet now 14/16 with ranks possibly degrading as sparkf's partners
+  time out. NEXT: one more full clean wave (registrar-gated, the
+  tool exists) — expect 16/16; then the serving curl.
+- 3res banked+merged (27312cb): NVFP4 placed 16/16 verified; BF16
+  arm ready; FP8 fetch-fleet autonomous; both staging deaths
+  root-caused (dead downloader, not slow ceph).
