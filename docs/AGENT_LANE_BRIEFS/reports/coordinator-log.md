@@ -1198,3 +1198,19 @@ failure is ever diagnosable through the wire.
   checkpoint, same module, same topology — only expert precision
   varies. Deprecation of 5.2 rides the lane (policy marks, manifest
   flags).
+
+## 2026-08-30 ~4:5x — KDA merged (913b648); COMPSEC-17 gate fired correctly
+
+- The KDA lane's two root causes both landed: the HC-post placement
+  double-reduce (streams 0.0055→1e18 by L17 = the INF zero) and the
+  PACKER's contiguous fused-row slicing (rank 0's "v" was q rows —
+  context-free degeneration = the repetition I'd hedged as "refresh
+  nuance"; it was a pack bug).
+- COORDINATOR RAN COMPSEC-17 on the live pre-fix pack (17 curls): ALL
+  DEGENERATE. The quality gate did its job — refusing to bless a
+  model emitting garbage. Receipts: /tmp/compsec17_results.json.
+- Fixed pack building (rank 0 live on spark0, ceph-bound hours); the
+  16-rank rebuild + COMPSEC rerun + M5 = the precise handoff.
+- FLEET STATUS: realtokens done; 3res lane ACTIVE (nvfp4 branch
+  landed 5m ago); K3 build DEAD AGAIN on sparke (0 procs — 3rd
+  death); kda agent completed. Respawn K3-build keepalive next.
