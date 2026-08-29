@@ -1489,3 +1489,17 @@ appendix).
 - Agent states: 3res download-blocked; P3 + closeout worktrees stale
   (silent deaths — respawn queue forms behind the fleet stabilization;
   one window at a time).
+
+## 2026-08-30 ~14:3x — OPERATOR'S TWO-PHASE STARTUP: spec'd + lane spawned
+
+- The design as specified: Phase 1 = featherweight registrar per node
+  (no CUDA, ms-start): announce/merge with the TWO-LEVEL view
+  agreement (I see everyone AND everyone's latest view shows everyone)
+  — deterministic GO with known N, no consensus machinery. Phase 2 =
+  the existing heavy wave, gated on GO. Fail-loud diffs name missing/
+  partial-view ranks. Subsets for maintenance restarts.
+- REGISTRAR LANE spawned: implementation + unit tests on loopback +
+  live acceptance A (cold 16-node: GO<10s, zero open-timeouts — the
+  flap's signature killed) + B (the flap reproducer: kill-8-restart-
+  subset) + fail-loud. Acceptance A doubles as the fleet's
+  restoration; the state-bleed curl pair rides it as the bonus.
