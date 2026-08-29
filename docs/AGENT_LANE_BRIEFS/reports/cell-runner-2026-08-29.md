@@ -15,7 +15,7 @@ nothing self-merged. `make offline-gates` PASS on the final tree
 |---|---|---|---|---|
 | weightd VMM verify: granularity + cold cuMemMap arena readback + warm attach refcount=2 | spark0 (1) | 8 MiB arena, 4×2 MiB chunks, real driver 580.159.03 / CUDA 13.0 / GB10 | exit 0 + `VMM VERIFY PASS` overall | **GREEN** (first hardware contact; these legs ran on the UNFIXED binary) |
 | weightd W3 import leg, in-process | spark0 | same arena, production `SparkWeightdAttachImportMap` | byte-exact D2H through the consumer-local VA | **GREEN after fix** (`in-process import map verified chunks=4 chunk_bytes=2097152`) |
-| weightd W3 import leg, cross-process | spark0 | real second PROCESS, SCM_RIGHTS, exec'd child | byte-exact readback in the child | **RED → diagnosed → fix landed; diag re-run queued** (`weightd-vmm-verify-gpu-t4`) |
+| weightd W3 import leg, cross-process | spark0 | real second PROCESS, SCM_RIGHTS, exec'd child | byte-exact readback in the child | **GREEN after two fixes** — `weightd-vmm-verify-gpu-t5` exit 0, `VMM VERIFY PASS` (all 7 legs) |
 | R3 flash-decode O128 threshold-0 control | spark8..sparkf (8) | O128 decode batch (md5 2f8f2a57…), glm52.tp8.fp8 TP8, fp8 packs b4734de4 | — (control) | QUEUED `r3flash-glm52-exact-cell-t5` |
 | R3 O128 threshold-2048 split | spark8..sparkf | same batch; one key: `decode_split_context_threshold=2048` in config/glm52_stage.json | bit-exact vs control required | QUEUED (same task, phase B) |
 | R3 32K decode split vs control | spark8..sparkf | synthesized 32,768-token prompt (deterministic tile of the O128 prompt ids), 256-token budget, `max_context_tokens` 33024 | only after kill-switch PASS | QUEUED (same task, phase C) |
@@ -48,13 +48,22 @@ PASS, warm attach refcount=2 PASS — then every W3 import failed
    the stub now reads `fd = (int)(uintptr_t)shareable_handle` and the
    65-chunk two-batch + cross-process legs run green under the REAL
    contract on both sides. This also cleared a full offline-gates hang.
-3. **Cross-process leg still RED** — but a standalone platform probe
+3. **Cross-process leg: the diag caught the real defect** —
+   `curesult=3 = CUDA_ERROR_NOT_INITIALIZED` at the child's first import:
+   the only lazy-context bootstrap (`SparkWeightdAttachDeviceId`, the
+   `cudaFree(0)`) sat at the SetAccess TAIL of
+   `SparkWeightdAttachImportMap`, after the entire import loop. A
+   fresh-exec consumer with no prior CUDA calls imported with no driver
+   state. The in-process leg never saw it (its caller had already made
+   CUDA calls); no stub can model a context-less process. Fix `4533e5e`
+   hoists the bootstrap to function entry. The independent platform probe
    (create → export → same-process import → re-export → SCM_RIGHTS →
-   fresh-exec child with the production `cudaFree(0)` bootstrap → import)
-   passes `rc=0 SUCCESS` on this exact driver/GPU, so the remaining failure
-   is consumer-path, not platform. `e379da0` added
-   `SPARK_WEIGHTD_IMPORT_DIAG` (prints the exact CUresult + fd at the
-   failing import); the diag re-run is queued (`weightd-vmm-verify-gpu-t4`).
+   fresh-exec child → import) had already proven the driver/platform fully
+   capable. Re-run: `weightd-vmm-verify-gpu-t5` — **exit 0 +
+   `VMM VERIFY PASS`, all seven legs green on real hardware**. This is the
+   receipt the dsv4 attached-binding path is gated on, and it took three
+   W3-layer defect fixes (consumer fd-by-value, stub fidelity, bootstrap
+   ordering) to get it — every one invisible to the host stubs.
 
 ## The r3 cell could not have run as committed — repaired on this lane
 
