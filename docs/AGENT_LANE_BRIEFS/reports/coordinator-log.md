@@ -1572,3 +1572,19 @@ appendix).
   then; local main is the source of truth meanwhile).
 - Fleet: registrar lane still owns the wave (10/16 mid-acceptance at
   last census — its harness cycling).
+
+## 2026-08-30 ~19:4x — THE STATE-BLEED TEST RAN: persistence RULED OUT
+
+- Two DIFFERENT prompts back-to-back on the same lane: [154819,11,
+  1875,525]→[66188 x4] vs [525,154819,11,13]→[8489 x4]. DIFFERENT
+  first tokens per prompt = the KDA state is NOT bleeding across
+  requests (candidate 1 eliminated). The degeneration is
+  prompt-dependent repetition WITHIN a request → candidates 2/3
+  (conv-window edge at decode positions; a rank>0 fused-shape/kernel
+  mismatch making the recurrence context-free per-token).
+- The registrar lane's waves are cycling the fleet during acceptance
+  (ranks flap 13-15/16 between its TERM/fire cycles — the harness,
+  not incidents; my API restarts chased its cycles).
+- NEXT for the hunt: the G5N probe's per-ordinal KDA dump on TWO
+  decode steps of the SAME request (does the retention state advance
+  between positions?) — that discriminates 2 vs 3 directly.
