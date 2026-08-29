@@ -43,6 +43,11 @@ typedef struct SparkModelResidentDeployment
 	char *transport_shared_object_path;
 	char *transport_mode;
 	uint32_t transport_control_port_base;
+	/* Optional tokenizer sidecar asset, relative to the serving host's
+	 * runtime root (a tokenizer directory shipped beside the pack). NULL =
+	 * the deployment has no tokenizer: text prompts are rejected loudly at
+	 * the API edge and token-id requests are unaffected. */
+	char *tokenizer_asset_path;
 	uint32_t reserved[4];
 	SparkModelResidentDeploymentNode nodes[
 		SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];

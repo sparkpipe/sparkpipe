@@ -10,7 +10,16 @@
 static const char *const SparkModelResidentDeploymentRootMembers[] =
 {
 	"schema_version","coordinator_rank_index","adapter","driver","transport",
-	"runtime_limits","nodes"
+	"runtime_limits","nodes","tokenizer"
+};
+/* The root's required members. "tokenizer" is the one OPTIONAL member: the
+ * sidecar asset reference. Deployment files without it stay valid (schema
+ * version 2, additive), and consumers that never touch the sidecar see no
+ * change. */
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT 7u
+static const char *const SparkModelResidentDeploymentTokenizerMembers[] =
+{
+	"path"
 };
 static const char *const SparkModelResidentDeploymentAdapterMembers[] =
 {
@@ -267,6 +276,100 @@ static SparkStatus SparkModelResidentDeploymentParseTransport(
 	return(status == SPARK_STATUS_OK ? SparkModelResidentDeploymentUnsigned(document,object,"control_port_base",&deployment->transport_control_port_base) : status);
 }
 
+/* Root members are the required seven plus the optional "tokenizer". The
+ * shared exact-members validator pins the count, so the optional member gets
+ * its own check: every key must be a known root member (no unknowns, no
+ * duplicates) and every required member must be present exactly once. */
+static int32_t SparkModelResidentDeploymentNextDirectChild(
+	const SparkJsonDocument *document,
+	int32_t parent,
+	int32_t previous)
+{
+	int32_t token_index;
+	token_index = previous + 1;
+	while ( token_index >= 0 && (uint32_t)token_index < document->token_count )
+	{
+		if ( document->tokens[token_index].parent == parent )
+			return(token_index);
+		token_index++;
+	}
+	return(-1);
+}
+
+static SparkStatus SparkModelResidentDeploymentValidateRootMembers(
+	const SparkJsonDocument *document,
+	int32_t root)
+{
+	uint8_t seen[SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT];
+	uint32_t required_seen_count;
+	int32_t key_token_index;
+	uint32_t child_index;
+	required_seen_count = 0u;
+	memset(seen,0,sizeof(seen));
+	/* Direct children alternate key,value: keys sit at even offsets. */
+	child_index = 0u;
+	for ( key_token_index = SparkModelResidentDeploymentNextDirectChild(document,root,root);
+		key_token_index >= 0;
+		key_token_index = SparkModelResidentDeploymentNextDirectChild(document,root,key_token_index) )
+	{
+		uint32_t member_index;
+		uint32_t match_count;
+		if ( (child_index & 1u) != 0u )
+		{
+			/* Odd offset: this child is the previous key's value. */
+			child_index++;
+			continue;
+		}
+		if ( !SparkJsonTokenIsType(document,key_token_index,SPARK_JSON_TOKEN_STRING) )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		match_count = 0u;
+		for ( member_index = 0u;
+			member_index < sizeof(SparkModelResidentDeploymentRootMembers) /
+				sizeof(SparkModelResidentDeploymentRootMembers[0]);
+			member_index++ )
+		{
+			if ( SparkJsonStringEquals(document,key_token_index,SparkModelResidentDeploymentRootMembers[member_index]) )
+			{
+				match_count++;
+				if ( member_index < SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT )
+				{
+					if ( seen[member_index] != 0u )
+						return(SPARK_STATUS_SCHEMA_ERROR);
+					seen[member_index] = 1u;
+					required_seen_count++;
+				}
+				else if ( match_count > 1u )
+					return(SPARK_STATUS_SCHEMA_ERROR);
+			}
+		}
+		if ( match_count != 1u )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		child_index++;
+	}
+	return(required_seen_count == SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT ?
+		SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
+}
+
+static SparkStatus SparkModelResidentDeploymentParseTokenizer(
+	const SparkJsonDocument *document,
+	int32_t root,
+	SparkModelResidentDeployment *deployment)
+{
+	int32_t object;
+	SparkStatus status;
+	object = SparkModelResidentDeploymentMember(document,root,"tokenizer");
+	if ( object < 0 )
+	{
+		/* Absent: the deployment has no sidecar; token-id serving only. */
+		deployment->tokenizer_asset_path = 0;
+		return(SPARK_STATUS_OK);
+	}
+	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentTokenizerMembers,1u);
+	return(status == SPARK_STATUS_OK ? SparkModelResidentDeploymentString(document,object,"path",&deployment->tokenizer_asset_path) : status);
+}
+
 static SparkStatus SparkModelResidentDeploymentParseNodes(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -319,6 +422,8 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 	if ( deployment->schema_version != SPARK_MODEL_RESIDENT_DEPLOYMENT_SCHEMA_VERSION || deployment->node_count == 0u || deployment->node_count > SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT || deployment->coordinator_rank_index >= deployment->node_count )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( !SparkPathIsNormalized(deployment->adapter_shared_object_path,false) || !SparkPathIsNormalized(deployment->driver_shared_object_path,false) || SparkModelResidentDeploymentHasText(deployment->driver_program_name) == 0u || !SparkPathIsNormalized(deployment->transport_shared_object_path,false) || SparkModelResidentDeploymentHasText(deployment->transport_mode) == 0u )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( deployment->tokenizer_asset_path != 0 && !SparkPathIsNormalized(deployment->tokenizer_asset_path,false) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	memset(ranks,0,sizeof(ranks));
 	memset(stages,0,sizeof(stages));
@@ -380,6 +485,7 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->driver_program_name);
 	free(deployment->transport_shared_object_path);
 	free(deployment->transport_mode);
+	free(deployment->tokenizer_asset_path);
 	for (index=0u; index<deployment->node_count; index++)
 	{
 		free(deployment->nodes[index].runtime_root);
@@ -409,7 +515,7 @@ SparkStatus SparkModelResidentDeploymentLoad(
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,SparkModelResidentDeploymentRootMembers,7u);
+		status = SparkModelResidentDeploymentValidateRootMembers(&document,root);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(&document,root,"schema_version",&deployment->schema_version);
 	if ( status == SPARK_STATUS_OK && deployment->schema_version != SPARK_MODEL_RESIDENT_DEPLOYMENT_SCHEMA_VERSION )
@@ -422,6 +528,8 @@ SparkStatus SparkModelResidentDeploymentLoad(
 		status = SparkModelResidentDeploymentParseDriver(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseTransport(&document,root,deployment);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentParseTokenizer(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentObject(&document,root,"runtime_limits",&runtime_object);
 	if ( status == SPARK_STATUS_OK )

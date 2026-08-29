@@ -212,6 +212,8 @@ TEST_NAMES := \
     test_model_resident_ipc \
 	test_model_resident_deadline \
     test_model_pipeline_client \
+    test_model_api_text \
+    test_tokenizer_sidecar \
     test_pipeline_runtime \
     test_dsv4_serving_adapter \
     test_dsv4_tp16_serving_adapter \
@@ -463,6 +465,7 @@ MODEL_COMMON_LINK_TARGETS := \
     build/test_kv_mooncake \
     build/test_tp_collective \
     build/test_tokenizer \
+    build/test_tokenizer_sidecar \
     $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) \
     $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
 GLM52_LINK_TARGETS := \
@@ -966,6 +969,15 @@ build/test_speculation_policy_pin: tests/test_speculation_policy_pin.c $(CORE_LI
 
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_tokenizer_sidecar: tests/test_tokenizer_sidecar.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# The sidecar lane's API-edge proof: the REAL model_api serving text over
+# HTTP against the host resident stack (test adapter's deterministic token
+# ids), plus the 400-when-no-tokenizer contract.
+build/test_model_api_text: tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

@@ -125,7 +125,20 @@ static int32_t TestModelResidentWriteBody(
 		status = -6;
 	for (rank=0u; status==0 && rank<fixture->node_count; rank++)
 		status = TestModelResidentWriteNode(stream,fixture,rank);
-	if ( status == 0 && fputs("]}\n",stream) == EOF )
+	if ( status == 0 && fputs("]",stream) == EOF )
+		status = -7;
+	/* The optional tokenizer sidecar reference: emitted only when the
+	 * fixture carries one, so existing deployments are byte-identical. */
+	if ( status == 0 && fixture->tokenizer_asset_path != 0 )
+	{
+		if ( fputs(",\"tokenizer\":{\"path\":",stream) == EOF )
+			status = -8;
+		else
+			status = TestModelResidentWriteText(stream,fixture->tokenizer_asset_path);
+		if ( status == 0 && fputc('}',stream) == EOF )
+			status = -9;
+	}
+	if ( status == 0 && fputs("}",stream) == EOF )
 		status = -7;
 	return(status);
 }

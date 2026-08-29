@@ -53,6 +53,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     ring/transport/tp_device_collective.c \
     ring/transport/tp_device_collective_nccl.c \
     text/tokenizer.c \
+    text/tokenizer_sidecar.c \
     cache/kv_cache.c \
 	cache/kv_page_cache.c \
 	cache/kv_page_store.c \

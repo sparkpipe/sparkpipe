@@ -14,9 +14,18 @@
  *           Progress + poll → events fire → signal waiting threads
  *
  * Endpoints:
- *   GET  /health           → {"status":"ok","served":N}
+ *   GET  /health           → {"status":"ok","served":N,"tokenizer":BOOL}
  *   POST /v1/completions   → {"prompt_token_ids":[...],"max_tokens":N}
- *        → {"object":"text_completion","tokens":[...],"status":0}
+ *                          | {"prompt":"text","max_tokens":N}   (see below)
+ *        → {"object":"text_completion","tokens":[...],"text":"...","status":0}
+ *
+ * Text prompts need the tokenizer sidecar: a deployment whose config carries
+ * a "tokenizer":{"path":...} reference (the asset ships beside the pack and
+ * resolves against the runtime root). Without it, a text prompt gets a loud
+ * 400 naming the missing sidecar — never silent tokenization. The token-id
+ * form stays the internal wire format and is always accepted. "text" rides
+ * the response only when the sidecar is loaded, so the stream shape stays
+ * backward compatible for token-id clients.
  *
  * Build: make build/sparkpipe_model_api
  */
@@ -33,9 +42,11 @@
 #include <netinet/tcp.h>
 #include <poll.h>
 
+#include "spark_filesystem.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_tokenizer_sidecar.h"
 
 #define API_MAX_BODY		(8u * 1024u * 1024u)
 #define API_MAX_PROMPT_TOKENS	(260000u)
@@ -53,6 +64,8 @@ typedef struct ApiRequest
 	uint32_t max_tokens;
 	char tokens_json[API_TOKEN_BUF_BYTES];
 	volatile uint32_t tokens_json_len;
+	uint32_t *output_token_ids;  /* same stream as tokens_json, as numbers, for the text edge */
+	volatile uint32_t output_token_count;
 	volatile int done;
 	volatile int submitted;
 	volatile int inflight;   /* worker snapshot in hand: defer unlink+free */
@@ -78,6 +91,16 @@ typedef struct ApiState
 } ApiState;
 
 static ApiState S;
+
+/* The tokenizer sidecar: loaded once at startup when the deployment names a
+ * tokenizer asset, read-only afterwards (encode/decode take per-call
+ * workspaces, so concurrent connection threads never share scratch state). */
+static SparkTokenizerSidecar Sidecar;
+static int HaveSidecar;
+/* The deployment's engine-level EOS set; the text edge cuts decoded output
+ * at the first of these or per-request stop, mirroring the token stream. */
+static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
+static uint32_t EngineStopTokenCount;
 
 /* ===================== worker: engine driving ===================== */
 
@@ -112,20 +135,45 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 				 * per-request stops, so the API completes the request:
 				 * mark done (the worker's orphan/inflight reaping
 				 * handles an in-flight submission's natural end) and
-				 * cancel to stop paying GPU for further tokens. */
+				 * cancel to stop paying GPU for further tokens.
+				 * THE CANCEL RUNS OUTSIDE BOTH LOCKS: the engine can
+				 * invoke this callback synchronously from Cancel
+				 * (completion of the cancelled request), and api_event
+				 * takes the queue mutex while the COMPLETED branch takes
+				 * the request mutex - cancelling under either lock
+				 * self-deadlocks the worker (sample receipt: worker in
+				 * api_event holding queue_mutex, waiting r->mutex, while
+				 * the disconnecting connection held r->mutex through
+				 * Cancel and waited queue_mutex). inflight defers the
+				 * connection thread's unlink+free until the worker's
+				 * last touch, the same contract as the submit path. */
 				pthread_mutex_lock(&r->mutex);
 				r->done = 1;
 				pthread_cond_signal(&r->cond);
-				pthread_mutex_unlock(&r->mutex);
-				if ( r->submitted && r->handle != 0 )
-					(void)SparkModelBatchEngineCancel(S.engine, r->handle);
+				{
+					SparkModelBatchRequestHandle cancel_handle =
+						(r->submitted && r->handle != 0) ? r->handle : 0;
+					pthread_mutex_unlock(&r->mutex);
+					if ( cancel_handle != 0 )
+					{
+						r->inflight = 1;
+						pthread_mutex_unlock(&S.queue_mutex);
+						(void)SparkModelBatchEngineCancel(S.engine, cancel_handle);
+						pthread_mutex_lock(&S.queue_mutex);
+						r->inflight = 0;
+					}
+				}
 			}
-			else if (r->tokens_json_len + 12u < sizeof(r->tokens_json))
+			else if (r->tokens_json_len + 12u < sizeof(r->tokens_json) &&
+				r->output_token_count < r->max_tokens)
+			{
 				r->tokens_json_len += (uint32_t)snprintf(
 					r->tokens_json + r->tokens_json_len,
 					sizeof(r->tokens_json) - r->tokens_json_len,
 					"%s%u", r->tokens_json_len ? "," : "",
 					(unsigned)ev->token_id);
+				r->output_token_ids[r->output_token_count++] = ev->token_id;
+			}
 		}
 		if (ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ||
 			ev->kind == SPARK_MODEL_BATCH_EVENT_ERROR)
@@ -425,6 +473,68 @@ static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
 	return count;
 }
 
+/* JSON string escaping for the decoded text: control characters escape,
+ * well-formed UTF-8 passes through byte for byte. Returns 0 when the buffer
+ * is too small (the caller answers 500 rather than truncate text). */
+static int append_json_escaped(char *buf, size_t cap, size_t *len,
+	const char *text, uint32_t text_bytes)
+{
+	uint32_t i;
+	for (i = 0; i < text_bytes; i++)
+	{
+		unsigned char c = (unsigned char)text[i];
+		char escape_buf[8];
+		const char *escape = 0;
+		switch (c)
+		{
+			case '"': escape = "\\\""; break;
+			case '\\': escape = "\\\\"; break;
+			case '\n': escape = "\\n"; break;
+			case '\r': escape = "\\r"; break;
+			case '\t': escape = "\\t"; break;
+			case '\b': escape = "\\b"; break;
+			case '\f': escape = "\\f"; break;
+			default:
+				if (c < 0x20)
+				{
+					(void)snprintf(escape_buf, sizeof(escape_buf),
+						"\\u%04x", (unsigned)c);
+					escape = escape_buf;
+				}
+				break;
+		}
+		if (escape != 0)
+		{
+			size_t escape_len = strlen(escape);
+			if (*len + escape_len + 1u > cap)
+				return 0;
+			memcpy(buf + *len, escape, escape_len);
+			*len += escape_len;
+		}
+		else
+		{
+			if (*len + 2u > cap)
+				return 0;
+			buf[(*len)++] = (char)c;
+		}
+	}
+	buf[*len] = '\0';
+	return 1;
+}
+
+/* The loud 400 for a text prompt on a deployment without a sidecar. Names
+ * the missing piece so the fix is config, not code archaeology. */
+static void send_tokenizer_unavailable(int fd)
+{
+	send_response(fd, 400,
+		"{\"error\":{\"message\":\"deployment has no tokenizer sidecar: "
+		"text prompts require a \\\"tokenizer\\\":{\\\"path\\\":...} entry in "
+		"the deployment config (asset shipped beside the pack); use "
+		"prompt_token_ids or deploy a tokenizer\","
+		"\"type\":\"invalid_request_error\","
+		"\"code\":\"tokenizer_unavailable\"}}");
+}
+
 static void handle_completion(int fd, char *body, uint32_t body_len)
 {
 	SparkJsonDocument doc;
@@ -436,8 +546,9 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	 * from SparkJsonDocumentDestroy json.c:446) */
 	memset(&doc,0,sizeof(doc));
 	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
+	char *prompt_text = 0;
+	uint32_t prompt_text_bytes = 0;
 	ApiRequest *req;
-	char *resp;
 	if (SparkJsonParseText(body, body_len, &doc) != SPARK_STATUS_OK)
 	{
 		send_response(fd, 400, "{\"error\":\"invalid json\"}");
@@ -446,6 +557,26 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	root = SparkJsonGetRootToken(&doc);
 	if (root >= 0)
 		prompt_len = parse_token_array(&doc, root, "prompt_token_ids", &prompt);
+	if (root >= 0)
+	{
+		/* Text prompt (the sidecar form). Copied out unescaped; the ids
+		 * come from the sidecar encode below, never inside the engine. */
+		int32_t pm = SparkJsonFindObjectMember(&doc, root, "prompt");
+		if (pm >= 0)
+		{
+			if (!SparkJsonTokenIsType(&doc, pm, SPARK_JSON_TOKEN_STRING) ||
+				SparkJsonCopyString(&doc, pm, &prompt_text) != SPARK_STATUS_OK)
+			{
+				SparkJsonDocumentDestroy(&doc);
+				free(prompt);
+				send_response(fd, 400,
+					"{\"error\":{\"message\":\"prompt must be a string\","
+					"\"type\":\"invalid_request_error\",\"code\":\"invalid_prompt\"}}");
+				return;
+			}
+			prompt_text_bytes = (uint32_t)strlen(prompt_text);
+		}
+	}
 	if (root >= 0)
 	{
 		/* Per-request stops (OpenAI-compatible): stored on the request,
@@ -465,13 +596,82 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
 	}
 	SparkJsonDocumentDestroy(&doc);
+	if (prompt_text != 0 && prompt != 0)
+	{
+		free(prompt_text);
+		free(prompt);
+		send_response(fd, 400,
+			"{\"error\":{\"message\":\"prompt and prompt_token_ids are "
+			"mutually exclusive\",\"type\":\"invalid_request_error\","
+			"\"code\":\"ambiguous_prompt\"}}");
+		return;
+	}
+	if (prompt_text != 0 && !HaveSidecar)
+	{
+		/* The loud contract: text is ONLY accepted when the deployment
+		 * loaded a sidecar. Never fall back to silent tokenization. */
+		free(prompt_text);
+		send_tokenizer_unavailable(fd);
+		return;
+	}
+	if (prompt_text != 0)
+	{
+		/* The bounded encode edge: text -> ids here, then the request joins
+		 * the token-id path exactly as if the client had sent ids. */
+		SparkTokenizerWorkspace workspace;
+		SparkTokenizerEncoding encoding;
+		SparkStatus encode_status;
+		if (prompt_text_bytes == 0u)
+		{
+			free(prompt_text);
+			send_response(fd, 400,
+				"{\"error\":{\"message\":\"prompt is empty\","
+				"\"type\":\"invalid_request_error\",\"code\":\"invalid_prompt\"}}");
+			return;
+		}
+		SparkTokenizerWorkspaceReset(&workspace);
+		/* Byte-level worst case: one token per byte. */
+		prompt = malloc((size_t)prompt_text_bytes * sizeof(uint32_t) + sizeof(uint32_t));
+		if (prompt == 0 ||
+			SparkTokenizerWorkspaceInitialize(&workspace, prompt_text_bytes + 1u) != SPARK_STATUS_OK)
+		{
+			free(prompt_text);
+			free(prompt);
+			send_response(fd, 500, "{\"error\":\"oom\"}");
+			return;
+		}
+		SparkTokenizerEncodingReset(&encoding);
+		encoding.token_capacity = prompt_text_bytes + 1u;
+		encoding.token_ids = prompt;
+		encode_status = SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text,
+			prompt_text_bytes, 0u, &workspace, &encoding);
+		SparkTokenizerWorkspaceDestroy(&workspace);
+		free(prompt_text);
+		if (encode_status != SPARK_STATUS_OK)
+		{
+			free(prompt);
+			{
+				char err[160];
+				(void)snprintf(err, sizeof(err),
+					"{\"error\":{\"message\":\"tokenizer sidecar failed to "
+					"encode the prompt (status %u)\","
+					"\"type\":\"invalid_request_error\",\"code\":\"encode_failed\"}}",
+					(unsigned)encode_status);
+				send_response(fd, 400, err);
+			}
+			return;
+		}
+		prompt_len = encoding.token_count;
+	}
 	if (prompt_len == 0)
 	{
+		free(prompt);
 		send_response(fd, 400, "{\"error\":\"prompt_token_ids required\"}");
 		return;
 	}
 	if ((uint64_t)prompt_len + max_tokens > API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS)
 	{
+		free(prompt);
 		send_response(fd, 400, "{\"error\":\"prompt + max_tokens exceeds context limit\"}");
 		return;
 	}
@@ -479,6 +679,14 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	if (req == 0)
 	{
 		free(prompt);
+		send_response(fd, 500, "{\"error\":\"oom\"}");
+		return;
+	}
+	req->output_token_ids = malloc((size_t)max_tokens * sizeof(uint32_t));
+	if (req->output_token_ids == 0)
+	{
+		free(prompt);
+		free(req);
 		send_response(fd, 500, "{\"error\":\"oom\"}");
 		return;
 	}
@@ -497,13 +705,20 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		S.queue_head = req;
 	S.queue_tail = req;
 	pthread_mutex_unlock(&S.queue_mutex);
-	pthread_mutex_lock(&req->mutex);
 	/* Disconnect-aware wait (the unwired-cancel correctness bug): a
 	 * departed client must stop burning GPU. Poll the socket for EOF
 	 * alongside the condition; recv(MSG_PEEK|DONTWAIT)==0 = peer gone
 	 * -> cancel the engine request, mark orphaned, stop waiting. The
 	 * worker's completion path already honors `orphaned` (deferred
-	 * free), so this only ADDS the disconnect branch. */
+	 * free), so this only ADDS the disconnect branch.
+	 * NO LOCK IS HELD ACROSS THE LOOP BODY: the mutex is taken per
+	 * iteration around the predicate + timedwait only. Holding it
+	 * across the loop (a earlier draft) self-deadlocked every slow
+	 * request: the connection thread relocked its own mutex at the
+	 * iteration lock and froze holding it, which then stopped the
+	 * worker's COMPLETED branch at the same mutex (sample receipt:
+	 * worker in api_event waiting r->mutex under queue_mutex, three
+	 * connection threads frozen at the iteration lock). */
 	while (!req->done && S.running)
 	{
 		struct pollfd disconnect_probe;
@@ -540,31 +755,125 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	if (!req->done && S.running)
 	{
-		/* the disconnect branch: cancel if submitted, mark orphaned */
-		if (req->submitted && req->handle != 0)
-			(void)SparkModelBatchEngineCancel(S.engine, req->handle);
+		/* the disconnect branch: cancel if submitted, mark orphaned.
+		 * The cancel runs OUTSIDE req->mutex: the engine can invoke
+		 * api_event synchronously from Cancel, and api_event's COMPLETED
+		 * branch takes this same request mutex while holding the queue
+		 * mutex - cancelling under req->mutex would reintroduce the
+		 * lock-order inversion against the worker. */
+		uint32_t cancel_submitted;
+		SparkModelBatchRequestHandle cancel_handle;
+		pthread_mutex_lock(&req->mutex);
+		cancel_submitted = req->submitted;
+		cancel_handle = cancel_submitted ? req->handle : 0;
+		pthread_mutex_unlock(&req->mutex);
+		if (cancel_submitted && cancel_handle != 0)
+			(void)SparkModelBatchEngineCancel(S.engine, cancel_handle);
 		req->orphaned = 1;
 	}
-	pthread_mutex_unlock(&req->mutex);
-	resp = malloc(req->tokens_json_len + 128);
-	if (resp != 0)
+	if (req->status == 0 && HaveSidecar)
 	{
-		if (req->status == 0)
+		/* The decode edge: generated ids -> response text, cut at the first
+		 * engine EOS or per-request stop so stop_token_ids survive the text
+		 * round trip. Additive to the token stream; the shape stays
+		 * backward compatible. */
+		uint32_t decode_stops[API_MAX_STOP_TOKENS +
+			SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
+		uint32_t decode_stop_count = 0;
+		uint32_t text_capacity;
+		char *text_buffer = 0;
+		char *escaped = 0;
+		size_t escaped_cap;
+		size_t escaped_len = 0;
+		size_t response_len = 0;
+		size_t response_cap;
+		char *resp_text = 0;
+		uint32_t text_bytes = 0;
+		SparkStatus decode_status;
+		memcpy(decode_stops, EngineStopTokens,
+			(size_t)EngineStopTokenCount * sizeof(uint32_t));
+		decode_stop_count = EngineStopTokenCount;
+		if (req->stop_token_count <= API_MAX_STOP_TOKENS)
+		{
+			memcpy(decode_stops + decode_stop_count, req->stop_tokens,
+				(size_t)req->stop_token_count * sizeof(uint32_t));
+			decode_stop_count += req->stop_token_count;
+		}
+		text_capacity = req->output_token_count * Sidecar.maximum_token_text_bytes + 1u;
+		text_buffer = malloc((size_t)text_capacity);
+		escaped_cap = (size_t)text_capacity * 6u + 8u;
+		escaped = malloc(escaped_cap);
+		response_cap = (size_t)req->tokens_json_len + escaped_cap + 96u;
+		resp_text = malloc(response_cap);
+		if (text_buffer != 0 && escaped != 0 && resp_text != 0)
+			decode_status = SparkTokenizerSidecarDecodeText(&Sidecar,
+				req->output_token_ids, req->output_token_count,
+				decode_stops, decode_stop_count, 0u,
+				text_buffer, text_capacity, &text_bytes);
+		else
+			decode_status = SPARK_STATUS_INTERNAL_ERROR;
+		if (decode_status == SPARK_STATUS_OK)
+		{
+			if (!append_json_escaped(escaped, escaped_cap, &escaped_len,
+					text_buffer, text_bytes))
+				decode_status = SPARK_STATUS_INTERNAL_ERROR;
+		}
+		if (decode_status == SPARK_STATUS_OK)
+		{
+			memcpy(resp_text, "{\"object\":\"text_completion\",\"tokens\":[", 38u);
+			response_len = 38u;
+			memcpy(resp_text + response_len, req->tokens_json, req->tokens_json_len);
+			response_len += req->tokens_json_len;
+			memcpy(resp_text + response_len, "],\"text\":\"", 10u);
+			response_len += 10u;
+			memcpy(resp_text + response_len, escaped, escaped_len);
+			response_len += escaped_len;
+			memcpy(resp_text + response_len, "\",\"status\":0}", 13u);
+			response_len += 13u;
+			resp_text[response_len] = '\0';
+			send_response(fd, 200, resp_text);
+		}
+		else
+		{
+			/* A decode failure is loud: the ids came from the model, so a
+			 * text projection that cannot be produced is a model_error,
+			 * not a silent empty text. */
+			char err[160];
+			(void)snprintf(err, sizeof(err),
+				"{\"error\":{\"message\":\"tokenizer sidecar failed to decode "
+				"the completion (status %u)\",\"type\":\"model_error\","
+				"\"code\":%u}}", (unsigned)decode_status, (unsigned)decode_status);
+			send_response(fd, 500, err);
+		}
+		free(text_buffer);
+		free(escaped);
+		free(resp_text);
+	}
+	else if (req->status == 0)
+	{
+		char *resp = malloc(req->tokens_json_len + 128);
+		if (resp != 0)
+		{
 			(void)snprintf(resp, req->tokens_json_len + 128,
 				"{\"object\":\"text_completion\",\"tokens\":[%s],\"status\":0}",
 				req->tokens_json);
+			send_response(fd, 200, resp);
+			free(resp);
+		}
 		else
-			/* OpenAI error shape: front doors (liteLLM) and clients read
-			 * {"error":{...}}, not a completion object under a 500. */
-			(void)snprintf(resp, 128,
-				"{\"error\":{\"message\":\"model status %u\","
-				"\"type\":\"model_error\",\"code\":%u}}",
-				req->status, req->status);
-		send_response(fd, req->status == 0 ? 200 : 500, resp);
-		free(resp);
+			send_response(fd, 500, "{\"error\":\"oom\"}");
 	}
 	else
-		send_response(fd, 500, "{\"error\":\"oom\"}");
+		/* OpenAI error shape: front doors (liteLLM) and clients read
+		 * {"error":{...}}, not a completion object under a 500. */
+	{
+		char err[128];
+		(void)snprintf(err, sizeof(err),
+			"{\"error\":{\"message\":\"model status %u\","
+			"\"type\":\"model_error\",\"code\":%u}}",
+			req->status, req->status);
+		send_response(fd, 500, err);
+	}
 	/* dequeue - DEFERRED while the worker holds a submit snapshot
 	 * (inflight): the worker touches the request after Submit outside
 	 * the lock, so freeing here would race; the worker reaps the
@@ -622,9 +931,10 @@ static void *api_connection(void *arg)
 	}
 	if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
-		char b[96];
-		(void)snprintf(b, sizeof(b), "{\"status\":\"ok\",\"served\":%llu}",
-			(unsigned long long)S.served);
+		char b[128];
+		(void)snprintf(b, sizeof(b),
+			"{\"status\":\"ok\",\"served\":%llu,\"tokenizer\":%s}",
+			(unsigned long long)S.served, HaveSidecar ? "true" : "false");
 		send_response(fd, 200, b);
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
@@ -722,6 +1032,46 @@ int main(int argc, char **argv)
 			fprintf(stderr,"model_api: %u EOS token(s) from env\n",cfg.stop_token_count);
 		}
 	}
+	/* The tokenizer sidecar: a deployment that names a tokenizer asset gets
+	 * text-in/text-out at this edge. A named-but-unloadable asset is FATAL
+	 * here - the deployment promised text serving and cannot honor it; a
+	 * silent token-id-only start would be the failure mode this lane exists
+	 * to remove. The engine's stop set is snapshotted for the decode cut. */
+	EngineStopTokenCount = cfg.stop_token_count;
+	memcpy(EngineStopTokens, cfg.stop_token_ids,
+		sizeof(uint32_t) * (size_t)cfg.stop_token_count);
+	if (dep.tokenizer_asset_path != 0)
+	{
+		char asset_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+		SparkTokenizerSidecarConfiguration sidecar_configuration;
+		if (SparkResolveRuntimePath(root, dep.tokenizer_asset_path,
+				asset_path, (uint32_t)sizeof(asset_path)) != SPARK_STATUS_OK)
+		{
+			fprintf(stderr, "model_api: tokenizer asset path %s is not a "
+				"valid runtime-root-relative path\n", dep.tokenizer_asset_path);
+			return 1;
+		}
+		memset(&sidecar_configuration, 0, sizeof(sidecar_configuration));
+		sidecar_configuration.abi_version = SPARK_TOKENIZER_SIDECAR_ABI_VERSION;
+		sidecar_configuration.descriptor_bytes =
+			SPARK_TOKENIZER_SIDECAR_CONFIGURATION_DESCRIPTOR_BYTES;
+		sidecar_configuration.asset_path = asset_path;
+		sidecar_configuration.format = SPARK_TOKENIZER_SIDECAR_FORMAT_AUTO;
+		if (SparkTokenizerSidecarLoad(&Sidecar, &sidecar_configuration) != SPARK_STATUS_OK)
+		{
+			fprintf(stderr, "model_api: tokenizer sidecar load FAILED for %s "
+				"(deployment promised text serving); refusing to start\n",
+				asset_path);
+			return 1;
+		}
+		HaveSidecar = 1;
+		fprintf(stderr, "model_api: tokenizer sidecar ready format=%u "
+			"vocab=%u asset=%s\n", Sidecar.format,
+			Sidecar.tokenizer.vocabulary_count, asset_path);
+	}
+	else
+		fprintf(stderr, "model_api: no tokenizer in deployment; text prompts "
+			"will be rejected (prompt_token_ids accepted)\n");
 	if (SparkModelBatchEngineConnect(&cfg, &S.engine) != SPARK_STATUS_OK)
 	{
 		fprintf(stderr, "model_api: engine connect failed (daemon up?)\n");
