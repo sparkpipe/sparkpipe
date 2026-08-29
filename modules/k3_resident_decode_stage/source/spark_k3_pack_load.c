@@ -457,10 +457,11 @@ SparkStatus SparkK3DsparkPackBind(const char *path, SparkK3DsparkPack *pack,
 	SPARK_K3_DSPARK_BIND_CHECK(pack->target_tap_layers[3], SPARK_K3_DSPARK_TARGET_TAP_LAYER_3, "tap_layer_3");
 	SPARK_K3_DSPARK_BIND_CHECK(pack->target_tap_layers[4], SPARK_K3_DSPARK_TARGET_TAP_LAYER_4, "tap_layer_4");
 	#undef SPARK_K3_DSPARK_BIND_CHECK
-	if ( pack->flags != SPARK_K3_DSPARK_FLAGS_REQUIRED )
+	if ( (pack->flags & SPARK_K3_DSPARK_FLAGS_REQUIRED) !=
+		SPARK_K3_DSPARK_FLAGS_REQUIRED )
 	{
-		(void)snprintf(text,sizeof(text),"drafter pack: flags %#x != required "
-			"embed|lm_head|confidence+markov set %#x",pack->flags,
+		(void)snprintf(text,sizeof(text),"drafter pack: flags %#x missing one of "
+			"embed|lm_head|confidence+markov (%#x)",pack->flags,
 			SPARK_K3_DSPARK_FLAGS_REQUIRED);
 		SparkK3DsparkRefuse(refusal,refusal_bytes,text);
 		SparkK3DsparkPackRelease(pack);
