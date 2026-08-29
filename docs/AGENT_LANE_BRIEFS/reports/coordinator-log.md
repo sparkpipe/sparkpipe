@@ -2014,3 +2014,22 @@ appendix).
   unowned BUG_LEDGER structural item; barred from model_api.c —
   tokenizer-sidecar owns it). The 7th (continuous batching) is NAMED
   but held one cycle to measure merge load at 6.
+
+## 2026-08-29 ~18:5x — 0d2d64e: W3 merged; BF16 re-armed (5th death); slot 6 filled
+
+- MERGED lane/w3-weightd: the fd export/import tier (SCM_RIGHTS
+  batches of 64 under the kernel cap, identity-check-BEFORE-map,
+  consumer-owned spans, non-detaching Release keeping arenas warm) +
+  the dsv4 consumer map + a staged real-second-process GPU receipt.
+  TSan clean; three latent W2b stub-fidelity bugs fixed by being the
+  first concurrent daemon+consumer. Ratchet 229750; gates 151 clean.
+  The weightd program is now W1-W3 host-complete; remaining = GPU
+  receipts (queue with glm5-dsa's windows).
+- BF16 INCIDENT (5th turn-scoped-shell death): the verify process
+  silently died after bytes completed — the phase label 'downloading'
+  was a stale ghost for hours. All bytes staged, 0 partials. Re-armed
+  DETACHED (spark5 pid in glm53full_bf16_fetch3.log; setsid+nohup,
+  committed checkout). Expected ~70-80min verify+promote.
+- Slot 6 filled: contbatch2 (step-boundary continuous admission,
+  C1-mirrored refusals, starvation bound; barred from model_api.c).
+  Fleet 6/6 at cap.
