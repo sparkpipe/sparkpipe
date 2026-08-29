@@ -915,7 +915,9 @@ from pathlib import Path
 # max_input_rows, and the regression case pins one-frame-per-4-row-prefill
 # (revert-checked). model_api.c: the hardcoded 16-row engine budget tracks
 # the deployment limit. Net +66; 219739 exact.
-CEILING = 219739
+# k3-finish: the fleet-wave 110GiB envelope check (refuse <100G,
+# report the reading) + the build keepalive. 220456 exact.
+CEILING = 220456
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
