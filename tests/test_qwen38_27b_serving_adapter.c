@@ -275,6 +275,83 @@ int main(void)
 	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_BUSY);
 	library.adapter_interface.destroy(adapter_state);
 
+	/* R2b regression: the prefill chunk width tracks max_input_row_count,
+	 * not max_active_sequence_count. With active=2 lanes but input_rows=4
+	 * rows, one lane's 4-row prefill is a single frame (pre-R2b split it
+	 * into two 2-row frames). The module env mirrors the limit. */
+	TestQwen38_27bServingConfiguration(&configuration,0u,TEST_QWEN38_27B_SERVING_CONFIG_PATH,runtime_root,TEST_QWEN38_27B_SERVING_DRIVER_PATH,&test_state);
+	configuration.runtime_limits.max_active_sequence_count = 2u;
+	configuration.runtime_limits.max_input_row_count = 4u;
+	configuration.runtime_limits.resident_sequence_capacity = 2u;
+	adapter_state = 0;
+	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
+	assert(adapter_state != 0);
+	{
+		const char *input_rows_env = getenv("SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS");
+		assert(input_rows_env != 0 && strcmp(input_rows_env,"4") == 0);
+	}
+	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
+	{
+		uint32_t frames_before = (uint32_t)snapshot.submitted_count;
+		memset(lanes,0,sizeof(SparkModelServingLane) * 2u);
+		lanes[0].request_id = 950u;
+		lanes[0].request_generation = 1u;
+		lanes[0].step_generation = 1u;
+		lanes[0].sequence_id = 200u;
+		lanes[0].resident_sequence_slot = 0u;
+		lanes[0].context_token_count = 0u;
+		lanes[0].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+		token_ids[0] = 31u;
+		token_ids[1] = 32u;
+		token_ids[2] = 33u;
+		token_ids[3] = 34u;
+		row_lane_indices[0] = 0u;
+		row_lane_indices[1] = 0u;
+		row_lane_indices[2] = 0u;
+		row_lane_indices[3] = 0u;
+		row_positions[0] = 0u;
+		row_positions[1] = 1u;
+		row_positions[2] = 2u;
+		row_positions[3] = 3u;
+		row_sequence_ids[0] = 200u;
+		row_sequence_ids[1] = 200u;
+		row_sequence_ids[2] = 200u;
+		row_sequence_ids[3] = 200u;
+		memset(&submission,0,sizeof(submission));
+		submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+		submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+		submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+		submission.tokens_per_sequence = 1u;
+		submission.submission_id = 80u;
+		submission.request_id = 95u;
+		submission.sequence_id = 200u;
+		submission.control_generation = 1u;
+		submission.transaction_id = 1080u;
+		submission.dispatch_generation = 2080u;
+		submission.request_generation = 1u;
+		submission.step_generation = 3080u;
+		submission.residency.word0 = 80u;
+		submission.residency.word1 = 180u;
+		submission.residency.generation = 280u;
+		submission.residency.owner = 13u;
+		submission.active_sequence_count = 1u;
+		submission.new_token_count = 4u;
+		submission.lane_count = 1u;
+		submission.row_count = 4u;
+		submission.token_count = 4u;
+		submission.lanes = lanes;
+		submission.token_ids = token_ids;
+		submission.row_lane_indices = row_lane_indices;
+		submission.row_positions = row_positions;
+		submission.row_sequence_ids = row_sequence_ids;
+		assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
+		assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
+		/* 4 rows at chunk width 4 = exactly ONE prefill frame. */
+		assert(snapshot.submitted_count == frames_before + 1u);
+		assert(test_state.completion.token_ids[0] == 4242u);
+	}
+	library.adapter_interface.destroy(adapter_state);
+
 	/* Configuration refusals: stale schema, absolute pack path, positions
 	 * beyond the 8192 serving cap. */
 	TestQwen38_27bServingConfiguration(&configuration,3u,TEST_QWEN38_27B_SERVING_STALE_CONFIG_PATH,runtime_root,TEST_QWEN38_27B_SERVING_DRIVER_PATH,&test_state);
