@@ -390,7 +390,12 @@ class Packer:
         def produce() -> Iterator[bytes]:
             matrices = [source.spine_bf16(n) for n in names]
             if self.tp_degree > 1 and shard == "rows":
-                parts = [m[a:b, :] for m, (a, b) in zip(matrices, section_slices)]
+                # section_slices carry (start, count) — the spine path's
+                # convention. m[a:b] treated them as (start, end): rank 0
+                # (start=0) was accidentally correct, every rank > 0 sliced
+                # m[start:count] with count < start — EMPTY, the 0-byte
+                # fused failure that killed the r1-r15 repack.
+                parts = [m[a:a + b, :] for m, (a, b) in zip(matrices, section_slices)]
             else:
                 parts = matrices
             fused = np.concatenate(parts, axis=0)
