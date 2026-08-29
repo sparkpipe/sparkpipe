@@ -21,12 +21,16 @@ doc'd fix (device-side program replacing host submit/callback per
 collective) is right — and graphs must WRAP device programs, not the
 host protocol (the dsv4 full-graph regression wrapped 130 host
 rendezvous).
-P3 BATCHED-PATH KERNELS FROM B=2: the "r-law" is a DISPATCH issue —
-FP8 rows<=4 hit the scalar GEMV whose grid re-streams weights per row
-(spark_lm_kernels.cuh:5112-5125); B1==B2==8.31 because each row
-re-reads 29.9GB. Batched GEMMs amortize one weight stream from B=2;
-our curve climbs only at B8 and saturates ~41. HOST-ORACLE-FIRST
-(independent of the fleet).
+P3 BATCHED-PATH KERNELS: MEASURED-NEGATIVE AS A ROUTE CHANGE (PR743)
+— the premise misread the knee CSV (8.31 was B1; B2 measured 2.00x):
+GB10's memory system OVERLAPS concurrent per-row weight streams, and
+the one-pass kernel pays shared-staging tax (B2: 2.03x per-row vs
+1.53x batched). DELIVERED: the one-stream kernel stays compiled for
+overlap-hostile profiles, the family header is now FULLY host-
+compilable (SPARK_LM_LAUNCH guard), the 68-check oracle, and a
+documented odd-K scalar misread (defect class: pair loads misaligned
+by odd row stride). The B<=4 aggregate question moves to P1's async
+loop (the real serialized-host bubble), not kernels.
 P4 SPLIT-K ATTENTION (long context): shared decode attn does a full
 block reduction per position, 2-byte scalar loads, reads KV TWICE
 (attn.cuh:198-214) = the 32K penalty.
