@@ -2050,18 +2050,12 @@ SparkStatus SparkModelBatchEngineProgress(
 		step++;
 		misses = 0u;
 	}
-	/* Flush the just-queued submission(s) immediately: the residentd receives
-	 * them in THIS Progress instead of the next loop iteration, removing a
-	 * one-iteration bubble from the single-stream critical path (the GPU idles
-	 * while the next decode's PREPARE sits queued in the client). The extra
-	 * read is a no-op on the non-blocking socket when nothing arrived. */
-	status = SparkModelPipelineClientProgress(engine->pipeline,engine->maximum_messages_per_rank);
-	if ( status != SPARK_STATUS_OK )
-	{
-		SparkModelBatchSetFailed(engine,status);
-		SparkModelBatchFailIdleRequests(engine,status);
-		return(status);
-	}
+	/* Write-through contract (p1d2 step-loop): the pipeline client flushes
+	 * every submission and decision to the wire when it is queued, so the
+	 * dispatch loop above already put this step's work on the wire — no
+	 * compensating flush Progress here (the old trailing call existed to
+	 * drain a queue that only Progress could send; that bubble class is
+	 * designed out at the client). This Progress is a pure drain. */
 	return(SPARK_STATUS_OK);
 }
 

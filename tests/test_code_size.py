@@ -1156,7 +1156,20 @@ CEILING = 228248
 # 4,096 positions at ~0.45-0.62 GiB/rank) with the pool arithmetic
 # documented at the knob. Rebased on main's 228764: 228826 exact (+62 =
 # the three k3-finish items above).
-CEILING = 229825
+# The p1d2 step-loop lane (BUG_LEDGER D2), rebased on main's 229825:
+# the serving loop's adapter admission follows the adapter contract.
+# node/model_residentd.c replaces the one-adapter-op-per-Progress bound
+# with adapter-contract admission (async adapters drain the committed
+# FIFO until BUSY; sync adapters keep the one-op interleave) plus the
+# ops-per-pass exit receipt (+75 net); runtime/model_resident_client.c
+# gains the write-through flush contract (submissions and decisions hit
+# the wire when queued; +8 net); runtime/model_batch_engine.c deletes
+# the trailing flush-Progress bubble patch the write-through designs
+# out (-7 net); Makefile registers test_steploop_admission (+4). The
+# red-gate reactor pin in test_model_serving_architecture.py moves to
+# the new invariant (tests/ excluded by construction), as are the new
+# oracle test and the fixture's hold-completion mode. 230029 exact.
+CEILING = 230029
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

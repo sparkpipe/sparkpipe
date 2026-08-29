@@ -1,5 +1,5 @@
 {
-  "file_count": 1703,
+  "file_count": 1707,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -53,8 +53,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "369c7b67ba7c188481c163819493df5ea945a01978cb547574c800910fbf39d3",
-      "size_bytes": 85760
+      "sha256": "5f612bf4eeec2155e0e8349b84b81d748c2830a22c52cba00904986abb667ced",
+      "size_bytes": 86594
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -287,6 +287,11 @@
       "size_bytes": 3512
     },
     {
+      "path": "docs/AGENT_LANE_BRIEFS/nurse.md",
+      "sha256": "8d73bebe16e555118962c3f148ffe5c19aa431678de1028f13b83329ea979d20",
+      "size_bytes": 4786
+    },
+    {
       "path": "docs/AGENT_LANE_BRIEFS/pack_agent_rules.md",
       "sha256": "a300471253d05996f8baf5b4f3008f4c9d02cf934b56c04efa588b7d5afa6d7b",
       "size_bytes": 2090
@@ -323,8 +328,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "b40870119845d2ddd025baf6e9b194844da056817b5b0835e3c9051373a4bfde",
-      "size_bytes": 119998
+      "sha256": "8c3c5c0d3fa39915d8201ea58f4b4f8fc95c8b3a52c17138ed8bc3206e29e9ec",
+      "size_bytes": 121159
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -465,6 +470,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/litellm-2026-08-28.md",
       "sha256": "1929609f93a4cac2b9e5aa4fad3a4ee4c328b06c87db8110d7a69ea1bbe3f366",
       "size_bytes": 8935
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/p1d2-steploop-2026-08-29.md",
+      "sha256": "6ae78aa51e6f4906dc345c5ab7b2d8a2220f48646de02b6930bb49c7f99a092e",
+      "size_bytes": 12551
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/p3-batched-2026-08-29.md",
@@ -4028,8 +4038,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "f03abfd514be40811eafb7bc1baa370e733842b33aa6172b04786f0cddfade06",
-      "size_bytes": 117603
+      "sha256": "046ea81841a224988b26b359a0ccb2ee9345ec7a9b48138807f35ced4a3bf60a",
+      "size_bytes": 120283
     },
     {
       "path": "node/weightd.c",
@@ -5403,18 +5413,18 @@
     },
     {
       "path": "runs/queue.jsonl",
-      "sha256": "b80726cfc061745f5a09c13f6b7c952e15e5e48229cd3be364afa877e9ff04e6",
-      "size_bytes": 5500
+      "sha256": "d69004640c91ebce845a925394513b8e462ac505ac2b5910748edb033b00f667",
+      "size_bytes": 6464
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "46ddfd22ce1ac32c265784162376a7bce04399011e9f5be455656a9a5acc8f74",
-      "size_bytes": 2386
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "size_bytes": 2
     },
     {
       "path": "runs/results.jsonl",
-      "sha256": "007a384fe10dffd0ce1a6f5b32208f1e01193f4075c59e1fe6fc55b418022d1c",
-      "size_bytes": 14746
+      "sha256": "84d2af12cea25765dbdca36e4c80b2adc63ff10e46f3860b0d8e2ab0ec11a499",
+      "size_bytes": 9007
     },
     {
       "path": "runtime/README",
@@ -5458,8 +5468,8 @@
     },
     {
       "path": "runtime/model_batch_engine.c",
-      "sha256": "84e400172185e8ab82087f81a3594eed03b8431d2fbf8ca9fe710a19c3ee7f54",
-      "size_bytes": 87378
+      "sha256": "a208a781458846075105a74baae935294c4322de3f26e7b2cbe4b1f2b802693b",
+      "size_bytes": 87184
     },
     {
       "path": "runtime/model_batch_scheduler.h",
@@ -5483,8 +5493,8 @@
     },
     {
       "path": "runtime/model_resident_client.c",
-      "sha256": "1069efd315d79bc8c1fcdab54188cba5ea7a3006a8a6c9dd7158033430ffbf9d",
-      "size_bytes": 37660
+      "sha256": "dbab9ab980a5405266ba19f14271320b90c7603924f623dc9a045c4f367dcac4",
+      "size_bytes": 38379
     },
     {
       "path": "runtime/model_resident_deployment.c",
@@ -5787,9 +5797,14 @@
       "size_bytes": 26
     },
     {
+      "path": "tests/fixtures/model_serving_adapter_config_hold.json",
+      "sha256": "fbcc7b68ed0ccd4c99b9336cf8e8e0c499ef22c003e4bacf616004dd0f6a4210",
+      "size_bytes": 56
+    },
+    {
       "path": "tests/fixtures/model_serving_adapter_module.c",
-      "sha256": "d22079444a5deaa34f92a7afc092236bf3b39a3e1e030217130d4c83eed3a174",
-      "size_bytes": 17869
+      "sha256": "cdae56e6aa7cb368a80731d302051ba00689c6b45500bce228815b4b1ba56428",
+      "size_bytes": 21298
     },
     {
       "path": "tests/fixtures/module_add_one.c",
@@ -6098,8 +6113,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "e4b08d83cfcd984cc976f98bf4757b74b575cf9a6cf058adcc22de89296ad98f",
-      "size_bytes": 78290
+      "sha256": "a3f6bf18130eb62ed103a7237d8a014d1be756b8d4f74197c9a8ebf3a1df733c",
+      "size_bytes": 79199
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6828,8 +6843,8 @@
     },
     {
       "path": "tests/test_model_serving_architecture.py",
-      "sha256": "8727d3825af83c342a1d556248d7c27c3e0334b247505b4987d8c30ccd800da6",
-      "size_bytes": 36043
+      "sha256": "9e05bec0a35eb0cc5055cfb94d0f9a265bcb3bb4cd9952a6884a1c3988e71f74",
+      "size_bytes": 36770
     },
     {
       "path": "tests/test_module_library.c",
@@ -7095,6 +7110,11 @@
       "path": "tests/test_status_truth.py",
       "sha256": "042b47258b60c29d2a72bab4e3979503741a0079a940c5048dfe888152a2137a",
       "size_bytes": 2099
+    },
+    {
+      "path": "tests/test_steploop_admission.c",
+      "sha256": "f7515710df464c751591066a04879fab9e6e1d9f7f9cdde15e9b2cfcdd76ad45",
+      "size_bytes": 14739
     },
     {
       "path": "tests/test_support.c",
@@ -8520,5 +8540,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31404882
+  "total_bytes": 31440120
 }

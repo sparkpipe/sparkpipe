@@ -203,6 +203,13 @@ typedef struct SparkModelResidentdRuntime
 	uint32_t next_adapter_route;
 	uint32_t committed_fifo_head;
 	uint32_t committed_fifo_tail;
+	/* p1d2 step-loop receipt (BUG_LEDGER PATTERN B): adapter ops per
+	 * Progress pass. The old one-op-per-pass bound shows up as max 1;
+	 * adapter-contract admission drains the committed FIFO and the max
+	 * follows the ready depth. Printed at exit for the host oracle. */
+	uint64_t progress_pass_count;
+	uint64_t adapter_op_count;
+	uint32_t adapter_op_max_per_pass;
 	SparkModelResidentdMemoryMode memory_mode;
 	cudaStream_t execution_stream;
 	cudaStream_t transport_stream;
@@ -2472,10 +2479,32 @@ static SparkStatus SparkModelResidentdPostTransport(
 	return(status);
 }
 
+/*
+ * P1/D2 step-loop admission budget (BUG_LEDGER PATTERN B, PERF_PROGRAM
+ * P1): the adapter's own contract decides how many adapter operations a
+ * Progress pass may issue. An ASYNC_COMPLETION submit returns without
+ * holding the CPU, so the pass drains the committed FIFO and stops only
+ * on the adapter's own backpressure (refused = submit returned BUSY —
+ * the max_inflight_submission_count the descriptor already declares).
+ * A sync submit blocks until the frame completes; the serial bound
+ * keeps the historical one-op-per-pass interleave so transport service
+ * is never starved behind a blocked submit (the pre-port families).
+ * Either way the NON-adapter route work (transport posting, completion
+ * finishing) keeps advancing for the whole ring — the old loop aborted
+ * the entire scan after the first adapter op.
+ */
+typedef struct SparkModelResidentdAdapterBudget
+{
+	uint32_t allowed;
+	uint32_t serial;
+	uint32_t refused;
+	uint32_t ops;
+} SparkModelResidentdAdapterBudget;
+
 static SparkStatus SparkModelResidentdProgressRoute(
 	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route,
-	uint32_t *adapter_submitted)
+	SparkModelResidentdAdapterBudget *budget)
 {
 	SparkStatus status;
 	uint32_t state,step;
@@ -2492,14 +2521,20 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			return(SPARK_STATUS_OK);
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_CONTINUATION_PREPARING )
 		{
-			if ( adapter_submitted == 0 || *adapter_submitted != 0u )
+			if ( budget == 0 || budget->allowed == 0u ||
+				budget->refused != 0u ||
+				(budget->serial != 0u && budget->ops != 0u) )
 				return(SPARK_STATUS_OK);
 			status = SparkModelResidentdPrepareContinuation(runtime,route);
 			if ( status == SPARK_STATUS_BUSY )
+			{
+				budget->refused = 1u;
 				return(SPARK_STATUS_OK);
+			}
 			if ( status != SPARK_STATUS_OK )
 				return(status);
-			*adapter_submitted = 1u;
+			budget->ops++;
+			runtime->adapter_op_count++;
 			SparkModelResidentdWake(runtime);
 			continue;
 		}
@@ -2523,11 +2558,16 @@ static SparkStatus SparkModelResidentdProgressRoute(
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER )
 		{
-			if ( adapter_submitted == 0 || *adapter_submitted != 0u )
+			if ( budget == 0 || budget->allowed == 0u ||
+				budget->refused != 0u ||
+				(budget->serial != 0u && budget->ops != 0u) )
 				return(SPARK_STATUS_OK);
 			status = SparkModelResidentdSubmitAdapter(runtime,route);
 			if ( status == SPARK_STATUS_BUSY )
+			{
+				budget->refused = 1u;
 				return(SPARK_STATUS_OK);
+			}
 			if ( status != SPARK_STATUS_OK )
 			{
 				/* A refused route is a per-route outcome, not a daemon
@@ -2571,7 +2611,8 @@ static SparkStatus SparkModelResidentdProgressRoute(
 				pthread_mutex_unlock(&runtime->mutex);
 				return(SPARK_STATUS_OK);
 			}
-			*adapter_submitted = 1u;
+			budget->ops++;
+			runtime->adapter_op_count++;
 			SparkModelResidentdWake(runtime);
 			continue;
 		}
@@ -2591,17 +2632,27 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 	SparkModelResidentdRuntime *runtime,
 	uint32_t allow_adapter)
 {
+	SparkModelResidentdAdapterBudget budget;
 	SparkStatus status;
-	uint32_t adapter_submitted,index,offset,start;
+	uint32_t index,offset,start;
 	status = SPARK_STATUS_OK;
-	adapter_submitted = 0u;
+	memset(&budget,0,sizeof(budget));
+	budget.allowed = allow_adapter;
+	/* Serial bound only for adapters whose submit BLOCKS (no async
+	 * completion); async adapters run until they refuse (BUSY). */
+	budget.serial = (runtime->adapter_library.adapter_interface.descriptor->
+		capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION) != 0u ?
+		0u : 1u;
 	start = allow_adapter != 0u ? runtime->next_adapter_route : 0u;
-	for (offset=0u; status == SPARK_STATUS_OK && offset<runtime->route_capacity && adapter_submitted == 0u; offset++)
+	for (offset=0u; status == SPARK_STATUS_OK && offset<runtime->route_capacity &&
+		budget.refused == 0u; offset++)
 	{
 		index = (start + offset) % runtime->route_capacity;
-		status = SparkModelResidentdProgressRoute(runtime,&runtime->routes[index],allow_adapter != 0u ? &adapter_submitted : 0);
+		status = SparkModelResidentdProgressRoute(runtime,&runtime->routes[index],
+			allow_adapter != 0u ? &budget : 0);
 
-		if ( adapter_submitted != 0u )
+		if ( budget.ops != 0u )
 			runtime->next_adapter_route = (index + 1u) % runtime->route_capacity;
 	}
 	return(status);
@@ -2634,7 +2685,19 @@ static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runti
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd progress stage=routes-mid status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
+	{
+		uint64_t ops_before;
+		ops_before = runtime->adapter_op_count;
 		status = SparkModelResidentdProgressRoutes(runtime,1u);
+		if ( runtime->adapter_op_count > ops_before )
+		{
+			uint64_t ops;
+			ops = runtime->adapter_op_count - ops_before;
+			if ( ops > (uint64_t)runtime->adapter_op_max_per_pass )
+				runtime->adapter_op_max_per_pass = (uint32_t)ops;
+		}
+		runtime->progress_pass_count++;
+	}
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd progress stage=routes-adapter status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
 	if ( status == SPARK_STATUS_OK )
@@ -2824,6 +2887,8 @@ int main(int argument_count,char **arguments)
 		status = SparkModelResidentdRun(&runtime);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr,"model_residentd run=%s status=%u rank=%u stage=%u reason=%u submission=%llu kind=%u route_state=%u\n",SparkStatusToString(status),(uint32_t)status,runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,runtime.failed_reason,(unsigned long long)runtime.failed_submission_id,runtime.failed_work_kind,runtime.failed_route_state);
+		/* p1d2 step-loop receipt: adapter ops per Progress pass. */
+		fprintf(stderr,"model_residentd_exit rank=%u stage=%u passes=%llu adapter_ops=%llu max_ops_per_pass=%u\n",runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,(unsigned long long)runtime.progress_pass_count,(unsigned long long)runtime.adapter_op_count,runtime.adapter_op_max_per_pass);
 	}
 	else
 		fprintf(stderr,"model_residentd initialize=%s status=%u phase=%s rank=%u stage=%u\n",SparkStatusToString(status),(uint32_t)status,runtime.initialize_phase != 0 ? runtime.initialize_phase : "reset",configuration.rank_index,configuration.stage_index);

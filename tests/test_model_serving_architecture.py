@@ -516,15 +516,26 @@ def main() -> int:
         and "uint32_t next_adapter_route;" in resident
         and "start = allow_adapter != 0u ? runtime->next_adapter_route : 0u;"
         in resident
-        and "adapter_submitted == 0u" in resident
-        and "adapter_submitted = 0u;" in resident
-        and "allow_adapter != 0u ? &adapter_submitted : 0"
+        # p1d2 step-loop: adapter-contract admission. The budget is the
+        # only gate for adapter ops; its serial bound applies ONLY to
+        # adapters whose submit blocks (no ASYNC_COMPLETION capability);
+        # an async adapter's pass drains the committed FIFO until the
+        # adapter refuses (BUSY), so the serving loop no longer admits
+        # at most one frame per pass regardless of device depth.
+        and "typedef struct SparkModelResidentdAdapterBudget" in resident
+        and "uint32_t allowed;" in resident
+        and "uint32_t serial;" in resident
+        and "uint32_t refused;" in resident
+        and "SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION) != 0u ?"
         in resident
-        and "if ( adapter_submitted == 0 || *adapter_submitted != 0u )\n\t\t\t\treturn(SPARK_STATUS_OK);"
+        and "allow_adapter != 0u ? &budget : 0" in resident
+        and "budget.refused == 0u; offset++)" in resident
+        and "if ( budget == 0 || budget->allowed == 0u ||\n\t\t\t\tbudget->refused != 0u ||\n\t\t\t\t(budget->serial != 0u && budget->ops != 0u) )\n\t\t\t\treturn(SPARK_STATUS_OK);"
         in resident
-        and "if ( status == SPARK_STATUS_BUSY )\n\t\t\t\treturn(SPARK_STATUS_OK);\n\t\t\tif ( status != SPARK_STATUS_OK )\n\t\t\t\treturn(status);\n\t\t\t*adapter_submitted = 1u;\n\t\t\tSparkModelResidentdWake(runtime);"
-        in resident,
-        "resident reactor does not bound adapter work between transport polls",
+        and "if ( status == SPARK_STATUS_BUSY )\n\t\t\t{\n\t\t\t\tbudget->refused = 1u;\n\t\t\t\treturn(SPARK_STATUS_OK);\n\t\t\t}"
+        in resident
+        and "budget->ops++;\n\t\t\truntime->adapter_op_count++" in resident,
+        "resident reactor does not bound adapter work by the adapter contract",
     )
     require(
         "SparkModelResidentdClaimResidentSlotsLocked" in resident
