@@ -535,7 +535,9 @@ static SparkStatus SparkDsv4ServingReservePending(
 	 * cache lanes and emit rows below are this family's frame shape, and a
 	 * failed fill leaves the slot free (the template never marks active). */
 	pending = (SparkDsv4ServingPending *)SparkServingAdapterTemplateReservePending(
-		state->pending,sizeof(*pending),state->pipeline_slot_count,
+		state->pending,sizeof(*pending),
+		(uint32_t)offsetof(SparkDsv4ServingPending,common),
+		state->pipeline_slot_count,
 		(uint32_t)offsetof(SparkDsv4ServingPending,last_row_by_lane),submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);

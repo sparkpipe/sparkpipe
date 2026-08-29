@@ -140,7 +140,10 @@ SparkStatus SparkServingAdapterTemplateLoadTpCollective(
  * Pending-submission reservation: the common spine of every adapter's
  * ReservePending. The family pending struct embeds
  * SparkServingAdapterPendingCommon (after any owner pointer the family
- * fills itself); the template finds the free slot, zeroes the WHOLE
+ * fills itself) and passes that embedding site as common_offset — the
+ * template cannot know the family layout, so the offset is family data
+ * exactly like last_row_by_lane_offset; the template finds the free
+ * slot via the common's active flag at common_offset, zeroes the WHOLE
  * element (element_bytes covers the family's own fields), fills the
  * common submission view, walks last_row_by_lane at the family layout's
  * offsetof, and returns the element. It deliberately does NOT set the
@@ -170,6 +173,7 @@ typedef struct SparkServingAdapterPendingCommon
 void *SparkServingAdapterTemplateReservePending(
 	void *pending_array,
 	uint32_t element_bytes,
+	uint32_t common_offset,
 	uint32_t pipeline_slot_count,
 	uint32_t last_row_by_lane_offset,
 	const SparkModelServingSubmission *submission);

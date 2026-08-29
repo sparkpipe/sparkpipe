@@ -482,6 +482,7 @@ SparkStatus SparkServingAdapterTemplateLoadDriver(
 void *SparkServingAdapterTemplateReservePending(
 	void *pending_array,
 	uint32_t element_bytes,
+	uint32_t common_offset,
 	uint32_t pipeline_slot_count,
 	uint32_t last_row_by_lane_offset,
 	const SparkModelServingSubmission *submission)
@@ -491,6 +492,7 @@ void *SparkServingAdapterTemplateReservePending(
 	uint32_t *last_row_by_lane;
 	uint32_t index,row;
 	if ( pending_array == 0 || element_bytes < sizeof(*common) ||
+		common_offset > element_bytes - sizeof(*common) ||
 		submission == 0 )
 		return(0);
 	elements = (uint8_t *)pending_array;
@@ -498,7 +500,12 @@ void *SparkServingAdapterTemplateReservePending(
 	{
 		void *element;
 		element = elements + ((size_t)index * element_bytes);
-		common = (SparkServingAdapterPendingCommon *)element;
+		/* The family struct embeds the common view after its own owner
+		 * pointer, so the view lives at the family-supplied common_offset,
+		 * not at the element base (same family-layout-as-data rule as
+		 * last_row_by_lane_offset below). */
+		common = (SparkServingAdapterPendingCommon *)(void *)
+			((uint8_t *)element + common_offset);
 		if ( common->active != 0u )
 			continue;
 		memset(element,0,element_bytes);

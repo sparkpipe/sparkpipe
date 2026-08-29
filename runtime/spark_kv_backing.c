@@ -56,7 +56,11 @@ SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
 	descriptor = open(configuration->path,O_RDWR | O_CREAT,0644);
 	if ( descriptor < 0 )
 		return(SPARK_STATUS_IO_ERROR);
+	/* Advisory read-ahead hint only; POSIX_FADV_RANDOM does not exist on
+	 * Darwin, so the hint is skipped there (no behavior change on Linux). */
+#ifdef POSIX_FADV_RANDOM
 	(void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
+#endif
 	if ( ftruncate(descriptor,SPARK_KV_BACKING_HEADER_BYTES +
 		(uint64_t)backing->slot_count * backing->slot_bytes) != 0 )
 	{
