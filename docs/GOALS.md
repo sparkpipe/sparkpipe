@@ -107,6 +107,19 @@ VETTING REQUIRED per policy); Qwen Max 4-bit found. Implication:
 multiple expert precisions per model, FULL-SIZED spines — the island
 catalog gains a precision-variant axis; the quant policy's
 official/vetted rule applies per variant.
+Status 2026-08-29: NVFP4 radixark COMPLETE and admitted warm
+(433G, DOWNLOAD-RECEIPT pinned, Z.AI commercial grant); official BF16
+and FP8 staging on warm (glm-5.3-bf16-304b8051, glm-5.3-935644c0).
+
+## GLM 5.2 FULLY DEPRECATED (operator directive, 2026-08-29)
+
+GLM 5.2's kernel-donor role is superseded by GLM 5.3 Full, which runs
+the SAME glm52 module (GlmMoeDsaForCausalLM geometry identical) with
+new weights — the module is the 5.3-full module; 5.2 is a pure
+repack away from obsolete. The 5.2 TP8 donor packs stay on disk
+DEPRECATED-NOT-DELETED pending 5.3-full validation; they are removed
+from the support catalog (MODEL_SUPPORT.md) and are not a serving
+target. No new work builds against 5.2 sources.
 
 ## SPECULATOR PORTFOLIO (operator)
 

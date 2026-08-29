@@ -29,7 +29,10 @@ Fleet table sources (each entry cites its receipt):
   dsv4_pro   16/16  dsv4pro lane report 2026-08-27 + this lane's spark1/2
                    verification + warm stash receipts
   glm52      8/8    glm52 packs report 2026-08-27 (band by design; the
-                   README marks GLM 5.2 a kernel donor, NOT a fleet model)
+                   README marks GLM 5.2 a kernel donor, NOT a fleet model);
+                   2026-08-29 DEPRECATED-NOT-DELETED — superseded by the
+                   glm53full lane (same module, new weights), pending 5.3
+                   validation before any deletion
   k3 stage3  4/4    k3 lane report + warm stage3_warm_sha256.txt (stages
                    0-2 are PENDING, owned by the K3 lane)
   qwen4_flash v3 4/4  qwen-flash S4 receipts (packs_v3; v1/v2 retired)
@@ -119,7 +122,10 @@ FLEET_TABLE = {
         "path": "~/sparkdata/glm52.tp8.fp8/packs/glm52_tp8_rank{rank:02d}.fp8.glms52sp",
         "sizes": {r: 102835957760 for r in range(8)},
         "shas": {},
-        "note": "donor band spark8-f BY DESIGN (GLM 5.2 is not a fleet model)",
+        "note": ("donor band spark8-f BY DESIGN (GLM 5.2 is not a fleet "
+                 "model); DEPRECATED-NOT-DELETED 2026-08-29 — superseded by "
+                 "glm53full packs (same module, new weights); stays on disk "
+                 "pending glm53full validation, not a serving target"),
     },
     "k3.mxfp4.tp4pp4.stage3": {
         "required": True,

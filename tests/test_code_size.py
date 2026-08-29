@@ -902,7 +902,10 @@ from pathlib import Path
 # screened head (bit-exact receipts, 1.44-1.45x head-time); immutable
 # validation hoisted to connect-time (identical semantics, receipts).
 # 217489 exact.
-CEILING = 217489
+# 3res respawn (2a6342a lineage): the fetch-resume tool, bf16 native
+# packer arm (codec 1 + tests), indexer-split freeze assert, the two
+# placement-bug fixes, fp8 pilot receipts. 218621 exact.
+CEILING = 218621
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

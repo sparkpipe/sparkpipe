@@ -5,14 +5,23 @@ Mirrors modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.
 SparkGlm52StagePackExpectedShape + ExpectedPayloadBytes/ExpectedScaleBytes and
 the geometry checks in SparkGlm52PackValidateEntryGeometry, plus the inventory
 masks (SparkGlm52ExpectedLayerMask / ExpectedGlobalMask).
+
+The expert codec is taken from the pack header (bf16=1, fp8=5 or nvfp4=6)
+— the module accepts any compiled expert codec; entry shapes are codec-
+independent, scale planes are not (bf16: NONE — native-precision experts;
+fp8: F32 per 128-block; nvfp4: UE4M3 per 16-block plus one F32 global per
+expert). Note: the glm52 module currently compiles only fp8/nvfp4 expert
+arms (unity.cu static_assert refuses BF16 experts); codec-1 packs
+validate here so the native-precision resolution is pack-verified while
+that serving arm is a pending coordinator decision.
 """
 import struct
 import sys
 
 GLOBAL_LAYER = 0xFFFFFFFF
-BF16, FP8, NONE = 1, 5, 0
+BF16, FP8, NVFP4, NONE = 1, 5, 6, 0
 PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_U32, PAYLOAD_PACKED = 1, 2, 3, 4
-SCALE_NONE, SCALE_F32 = 0, 1
+SCALE_NONE, SCALE_F32, SCALE_UE4M3_F32_GLOBAL = 0, 1, 4
 
 HIDDEN = 6144
 VOCAB = 154880
@@ -80,7 +89,7 @@ def shape_bf16(rows, cols, groups=1):
     return (PAYLOAD_BF16, BF16, SCALE_NONE, groups, rows, cols)
 
 
-def expected_shape(kind, layer, tp):
+def expected_shape(kind, layer, tp, expert_codec=FP8):
     if kind >= KIND_COUNT or tp == 0:
         return None, "kind range"
     g = kind_is_global(kind)
@@ -91,6 +100,10 @@ def expected_shape(kind, layer, tp):
     if kind_is_dense(kind) != layer_is_dense(layer) and (kind_is_dense(kind) or kind_is_routed(kind)):
         return None, "dense/routed layer kind mismatch"
     qk_head = QK_NOPE + ROPE
+    expert_entry = ((PAYLOAD_BF16, BF16, SCALE_NONE) if expert_codec == BF16
+                    else (PAYLOAD_PACKED, expert_codec,
+                          SCALE_F32 if expert_codec == FP8
+                          else SCALE_UE4M3_F32_GLOBAL))
     table = {
         K_EMBEDDING: shape_bf16(VOCAB, HIDDEN),
         K_LM_HEAD: shape_bf16(VOCAB, HIDDEN),
@@ -114,8 +127,8 @@ def expected_shape(kind, layer, tp):
         K_DENSE_DOWN: shape_bf16(HIDDEN, DENSE_INT),
         K_ROUTER: shape_bf16(MOE_EXPERTS, HIDDEN),
         K_ROUTER_CORR: (PAYLOAD_F32, NONE, SCALE_NONE, 1, 1, MOE_EXPERTS),
-        K_EXPERT_UP_GATE: (PAYLOAD_PACKED, FP8, SCALE_F32, MOE_EXPERTS, 2 * MOE_INT, HIDDEN),
-        K_EXPERT_DOWN: (PAYLOAD_PACKED, FP8, SCALE_F32, MOE_EXPERTS, HIDDEN, MOE_INT),
+        K_EXPERT_UP_GATE: (*expert_entry, MOE_EXPERTS, 2 * MOE_INT, HIDDEN),
+        K_EXPERT_DOWN: (*expert_entry, MOE_EXPERTS, HIDDEN, MOE_INT),
         K_SHARED_GATE_UP: shape_bf16(2 * MOE_INT, HIDDEN),
         K_SHARED_DOWN: shape_bf16(HIDDEN, MOE_INT),
     }
@@ -138,8 +151,8 @@ def expected_payload_bytes(s):
     if pt in (PAYLOAD_F32, PAYLOAD_U32):
         return g * rows * cols * 4
     if pt == PAYLOAD_PACKED:
-        bits = 8 if wc == FP8 else 0
-        if bits == 0:
+        bits = {FP8: 8, NVFP4: 4}.get(wc)
+        if bits is None:
             return None
         return (bits * g * rows * cols + 7) // 8
     return None
@@ -149,6 +162,10 @@ def expected_scale_bytes(s):
     pt, wc, se, g, rows, cols = s
     if pt != PAYLOAD_PACKED:
         return 0
+    if wc == NVFP4:
+        # UE4M3 per 16-column block + one F32 global per expert group
+        # (SparkWeightCodecScaleBytes, SPARK_WEIGHT_CODEC_NVFP4_E2M1).
+        return g * rows * ((cols + 15) // 16) + g * 4
     blocks = (cols + 127) // 128
     return g * rows * blocks * 4
 
@@ -165,6 +182,9 @@ def main():
         dir_off, file_bytes = struct.unpack_from("<2Q", h, 80)
     assert magic == 0x32534C47 and ver == 3
     print("header: tensors=%d linear_codec=%d expert_codec=%d kv_codec=%d tp=%d rank=%d" % (count, lin, expc, kv, tp_degree, tp_rank))
+    if expc not in (BF16, FP8, NVFP4):
+        print("UNSUPPORTED expert codec %d (expected bf16=1, fp8=5 or nvfp4=6)" % expc)
+        return 1
     if tp_degree != tp:
         print("WARNING: header tp_degree %d != requested %d" % (tp_degree, tp))
     errors = 0
@@ -178,7 +198,7 @@ def main():
         e = struct.unpack_from("<8I4Q", raw, i * 64)
         kind, layer, pt, wc, se, g, rows, cols = e[0:8]
         poff, pbytes, soff, sbytes = e[8:12]
-        es, err = expected_shape(kind, layer, tp_degree)
+        es, err = expected_shape(kind, layer, tp_degree, expc)
         if es is None:
             print("entry %d kind %s layer %s: EXPECTED SHAPE ERROR: %s" % (i, KIND_NAME.get(kind, kind), layer, err))
             errors += 1
@@ -218,7 +238,7 @@ def main():
     for layer in range(78):
         exp = 0
         for kind in range(3, KIND_COUNT):
-            es, _err = expected_shape(kind, layer, tp_degree)
+            es, _err = expected_shape(kind, layer, tp_degree, expc)
             if es is not None:
                 exp |= 1 << kind
         got = seen_layer.get(layer, 0)
