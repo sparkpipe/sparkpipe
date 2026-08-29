@@ -68,6 +68,19 @@ Ledger (exact counts, newest last):
   and the bounds fixes add one guard each at exactly the three call
   sites they own. Every added branch returns a status or publishes a
   fail-frame record; none nests. Mean ceiling commits to 7.86.
+- 2026-08-29 r2-prefill R2c (dsv4 bulk causal prefill): production mean
+  7.86 -> 7.87; max unchanged at 75. The movement is the bulk path
+  replacing the wavefront: SparkDsv4ModuleRunCausalAttention gains the
+  shadow/scatter/bulk-launch sequence with per-stage validation guards
+  (each a fail-closed cudaError), the attention kernel gains the
+  staged-row/shadow window resolution (one uniform branch pair
+  selecting the value source - a decision the wavefront used to make
+  by launch order), the window-source table fill (one serial pass,
+  one comparison per frame row), and the snapshot kernel plus the two
+  launchers carry their argument-validation guards. Every added branch
+  returns a status or selects a value source; none nests. Receipts in
+  docs/AGENT_LANE_BRIEFS/reports/r2-prefill-2026-08-29.md. Mean
+  ceiling commits to 7.87.
 """
 import pathlib
 import sys
@@ -81,7 +94,7 @@ CEILING = 75
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
-MEAN_CEILING_X100 = 786
+MEAN_CEILING_X100 = 787
 
 # The validation harnesses (control-vs-candidate CUDA units, never merged
 # into production) carry their OWN budget. It does not gate the production
