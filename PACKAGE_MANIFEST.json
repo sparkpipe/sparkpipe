@@ -1,5 +1,5 @@
 {
-  "file_count": 1676,
+  "file_count": 1677,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -500,6 +500,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/w2-weightd-2026-08-29.md",
       "sha256": "e74f00642f64be2986f25d7cf54ec0536d34775d1af1268bb143d7c7a311f148",
       "size_bytes": 13318
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/w2b-weightd-2026-08-29.md",
+      "sha256": "4eede28b2a48923d9f6a0541be6d3023067d8e9cd9b0588950f94f6c2fc938ff",
+      "size_bytes": 15311
     },
     {
       "path": "docs/ARCHIVE_INDEX.md",
@@ -8385,5 +8390,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30804938
+  "total_bytes": 30820249
 }
