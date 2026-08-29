@@ -1860,3 +1860,22 @@ appendix).
 - This cycle's one thing IS the restoration: 5/5 slots productive again
   after two coordinator-executed cycles. Fleet untouched (residentd up
   on spark0).
+
+## 2026-08-29 ~15:3x — W2a weightd merged; FP8 fetch re-armed detached
+
+- MERGED lane/w2-weightd (f5c6904) — the W2a residency daemon skeleton:
+  identity-keyed arenas, wire protocol, NO-2x gate, TERM-safe loop,
+  110GiB-law ceiling, cuda-stub proofs 8/8. Ratchet 224177 exact;
+  offline-gates fully green post-merge. Respawned as w2b (VMM arenas +
+  serving-side attach integration per the lane's W2b proposal).
+- FETCH INCIDENT (operator question trail): both official 3res fetches
+  had died silently AGAIN (turn-scoped shells SIGHUP'd; 4th FP8 death,
+  log ends mid-scan no error). FP8: all 755.66GB present, never
+  verified/promoted — re-armed DETACHED (setsid+nohup, spark5 pid
+  421686, log ~/glm53full_fp8_fetch5.log, committed checkout
+  3b42770c); scan completed 153/153 already-complete, now in sha256
+  verify -> promote. BF16 healthy: 13-node fleet ~650 MB/s aggregate,
+  544GB/1507GB and climbing. Space verified ample (warm 41T free;
+  spark5 local 1.4T with nvfp4 pack retirement planned for bf16 packs).
+- RULE BAKED NEXT CYCLE: fetches longer than a turn must be
+  setsid-detached with pid in the report, or they are not running.
