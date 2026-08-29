@@ -46,16 +46,21 @@ sparke the K3 build):
       [ \"\$c\" = \"\$rr\" ] && kill -TERM \$p; done; exit 0"; done
     # wait for zero glm5 procs (collective teardown can take ~60 s), then 45 s settle
 
-START (STAGGER 2 s per rank — two 16-parallel fan-outs tripped the
-controller ssh proxy with "No route to host"; the 32 s spread is well
-inside the 180 s transport window; DECIMAL rank indices; setsid REQUIRED):
+START (RELIABLE FORM — run the launch fan-out FROM spark0, node-to-node:
+true same-second launch, 16/16 first try. Controller-side 16-parallel
+fan-outs trip the controller ssh proxy; controller-side 1-2s staggers work
+but randomly lose 1-2 ranks per wave to route_not_found/BUSY, and a late
+SOLO relaunch of the missing rank is REFUSED after the window):
 
-    for i in $(seq 0 15); do h=$(printf "spark%x" $i); rr="/home/$h/sparkdata/glm5_next.tp16"
-      ssh "$h" "cd $rr && rm -f residentd.log && setsid nohup env \
-        LD_LIBRARY_PATH=$rr/lib ./bin/sparkpipe_model_residentd --deployment model_resident.json \
-        --rank-index $i > residentd.log 2>&1 < /dev/null & sleep 1"
-      sleep 2
-    done
+    ssh spark0 "
+      for i in \$(seq 0 15); do h=\$(printf \"spark%x\" \$i); rr=/home/\$h/sparkdata/glm5_next.tp16
+        if [ \$h = spark0 ]; then
+          cd \$rr && rm -f residentd.log && setsid nohup env LD_LIBRARY_PATH=\$rr/lib ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index 0 > residentd.log 2>&1 < /dev/null &
+        else
+          ssh -o BatchMode=yes \$h \"cd \$rr && rm -f residentd.log && setsid nohup env LD_LIBRARY_PATH=\$rr/lib ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index \$i > residentd.log 2>&1 < /dev/null &\"
+        fi
+      done"
+    # poll from the controller: grep -q "model_residentd ready" on all 16
 
 READY: `grep -c "model_residentd ready" residentd.log` = 1 on all 16
 (verify readiness in a fresh loop).

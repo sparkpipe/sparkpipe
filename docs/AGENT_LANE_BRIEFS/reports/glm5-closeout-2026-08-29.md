@@ -118,11 +118,19 @@ the fleet came up 16/16 on the fixed packs (~16:11 local) with the api
 serving — verified `grep -c "model_residentd ready"` == 1 on 16/16 hosts.
 Wave attempt 3 (clean, for the canonical curl): my
 tools/glm5_next_closeout_wave.sh stop (cwd-scoped TERM, zero procs, 45s
-settle) + staggered launch (2s; the 16-parallel ssh fan-out twice tripped
-the controller's ssh proxy — "No route to host"/banner timeouts — the
-stagger is the reliable form) + api + health gate. 16/16 ready,
-api healthy. NOTE for future waves: the stagger (32s spread) is well
-inside the 180s hidden-transport window.
+settle) + staggered launch + api + health gate. 16/16 ready, api healthy.
+
+WAVE MECHANICS LEARNED (bound for the next operator, also in
+LAUNCH-STATE.md): controller-side 16-parallel ssh fan-outs trip the
+controller's ssh proxy ("No route to host"/banner timeouts); controller-
+side staggers (1-2s/rank) work but produced 1-2 random per-wave
+route_not_found/BUSY ranks (a different rank each wave; BUSY with NO probe
+env, route_not_found with all peers green) — a late SOLO relaunch of the
+missing rank is REFUSED after the window (spark9, sparkf both tried). The
+reliable form: run the launch fan-out FROM spark0 (node-to-node ssh to the
+15 peers, spark0 local) — true same-second launch, 16/16 first try. That
+is the form the fleet was finally restored with (16/16 ready, api healthy,
+`{"status":"ok","served":...}`).
 
 ## C4 — coherence: STILL DEGENERATE, on a served=0 first request
 
