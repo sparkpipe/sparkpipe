@@ -39,6 +39,7 @@
 
 #define API_MAX_BODY		(8u * 1024u * 1024u)
 #define API_MAX_PROMPT_TOKENS	(260000u)
+#define API_MAX_STOP_TOKENS 16
 #define API_MAX_OUTPUT_TOKENS	(8192u)
 #define API_TOKEN_BUF_BYTES	(64u * 1024u)
 
@@ -394,6 +395,8 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 {
 	SparkJsonDocument doc;
 	int32_t root, mt;
+	uint32_t *request_stops = 0;
+	uint32_t request_stop_count = 0;
 	/* zero-init: the JSON parser's internal Destroy can free uninitialized
 	 * pointers if the document is stack garbage (valgrind: invalid free
 	 * from SparkJsonDocumentDestroy json.c:446) */
@@ -409,6 +412,17 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	root = SparkJsonGetRootToken(&doc);
 	if (root >= 0)
 		prompt_len = parse_token_array(&doc, root, "prompt_token_ids", &prompt);
+	if (root >= 0)
+	{
+		/* Per-request stops (OpenAI-compatible): stored on the request,
+		 * checked at TOKEN events — complements the engine-level EOS set. */
+		uint32_t *stops = 0;
+		uint32_t stop_len = parse_token_array(&doc, root, "stop_token_ids", &stops);
+		if (stop_len > 0 && stop_len <= API_MAX_STOP_TOKENS)
+			request_stops = stops, request_stop_count = stop_len;
+		else
+			free(stops);
+	}
 	mt = SparkJsonFindObjectMember(&doc, root, "max_tokens");
 	if (mt >= 0)
 	{
@@ -417,6 +431,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
 	}
 	SparkJsonDocumentDestroy(&doc);
+	(void)request_stops; /* TODO(next commit): thread to req + TOKEN-event check */
 	if (prompt_len == 0)
 	{
 		send_response(fd, 400, "{\"error\":\"prompt_token_ids required\"}");
@@ -600,6 +615,29 @@ int main(int argc, char **argv)
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.event_function = api_event;
 	cfg.event_context = 0;
+	/* EOS wiring (the perf-walk correctness bug: stop_token_count=0
+	 * meant every request generated to FULL budget). Two sources,
+	 * both honored: the deployment env (comma-separated token ids —
+	 * the model's EOS set) and the per-request JSON body. */
+	{
+		const char *eos_env = getenv("SPARK_EOS_TOKEN_IDS");
+		if ( eos_env != 0 && eos_env[0] != '\0' )
+		{
+			unsigned long value;
+			char *cursor = (char *)eos_env, *next;
+			while ( *cursor != '\0' &&
+				cfg.stop_token_count < SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
+			{
+				value = strtoul(cursor,&next,10);
+				if ( next == cursor )
+					break;
+				cfg.stop_token_ids[cfg.stop_token_count++] = (uint32_t)value;
+				cursor = ( *next == ',' ) ? next + 1 : next;
+				if ( *cursor == '\0' ) break;
+			}
+			fprintf(stderr,"model_api: %u EOS token(s) from env\n",cfg.stop_token_count);
+		}
+	}
 	if (SparkModelBatchEngineConnect(&cfg, &S.engine) != SPARK_STATUS_OK)
 	{
 		fprintf(stderr, "model_api: engine connect failed (daemon up?)\n");
