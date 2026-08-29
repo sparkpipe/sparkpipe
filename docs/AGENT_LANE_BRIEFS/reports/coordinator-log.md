@@ -1967,3 +1967,16 @@ appendix).
   COMPSEC-17 -> 92x -> M5.
 - Fleet: UP 16/16 on fixed2 packs + diag driver; lane holds rolling
   reservations.
+
+## 2026-08-29 ~18:3x — d07be2b: JIT-KV C3+C4 merged; fleet spawned to cap 5
+
+- MERGED lane/jikv-c3c4: measured-bandwidth admission (EMA drive
+  throughput, ABI 2, slack-0 = byte-for-byte legacy) + the async park
+  worker (owner-thread completion publish, TERM-safe drain, mid-write
+  visible so dispatch queues-not-recomputes). Ratchet 227318 exact
+  (TWO conflict blocks this time — the resolver now dedupes ceilings);
+  offline-gates 151 PASS clean.
+- Fleet 5/5: glm5-attractor (critical path), k3-finish (wave), w3-weightd
+  (fd tier), jikv-c5 (NEW: reuse-value policy + EDF restore ordering),
+  r3-flashdecode (NEW: PERF_PROGRAM2 rock R3, split-K decode attention,
+  exact-equivalence discipline, GPU cell staged not run).
