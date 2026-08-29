@@ -1601,3 +1601,19 @@ appendix).
   bleed was ruled out last cycle; the hunt's probe (retention-advance
   across two decode steps) is the remaining discriminator.
 - perf-r1 active (tip 2m old). 3res download-blocked.
+
+## 2026-08-30 ~20:5x — PERF-R1 MERGED (2bcd638): rock #1 landed with receipts
+
+- B1/DRAFT/MTP one-row head sites now route to the CERTIFIED screened
+  head: 10.40→7.19 ms/token full-vocab (1.45x), 2.53→1.76 TP4 shard
+  (1.44x) — the ~8-10ms claim CONFIRMED then banked. Bit-exact token
+  AND score over 64 trials incl. adversarial flat ties; certification
+  gates untouched + re-PASS; module validator bit-exact.
+- R5: immutable validation hoisted (identical semantics asserted;
+  309→255ns/call); block-table upload was ALREADY fixed in qwen38_max;
+  the SHA probes an honest NEGATIVE (incremental digest); the O(request)
+  scans need a dirty-list redesign (deferred, correctly).
+- HONEST SCOPING held: dflash2 drafter NOT changed (needs certified
+  top-K the screen can't prove — the design is in the report as
+  follow-up). MTP row got the route.
+- Un-reds two main gates (memory-contract re-pin, manifest chain).
