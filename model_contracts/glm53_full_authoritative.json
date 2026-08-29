@@ -58,7 +58,8 @@
    74,
    78
   ],
-  "question": "5.2 config splits full/shared indexer 21/57; the 5.3 NVFP4 config carries no indexer_types key \u2014 dropped or omitted?"
+  "question": "5.2 config splits full/shared indexer 21/57; the 5.3 NVFP4 config carries no indexer_types key \u2014 dropped or omitted?",
+  "sibling_confirmation": "the official FP8 and BF16 configs of the same checkpoint both carry indexer_types explicitly with the identical 21 full / 57 shared split (full layers == this checkpoint's tensor census) \u2014 the NVFP4 config's omission is metadata-only"
  },
  "license_class": "zai-commercial-use-granted",
  "model_id": "RadixArk/GLM-5.3-NVFP4",
@@ -201,5 +202,110 @@
   "routed_layers": "3-77 (76 layers)",
   "shard_count": 47,
   "tensor_count": 232385
+ },
+ "three_resolution_sources": {
+  "bf16": {
+   "config_sha256": "ca8f2f47b07919a514c0ca223dc2ea2bc7445afaa5ac76c013a3784e096426ca",
+   "indexer_types": {
+    "full_count": 21,
+    "full_layers": [
+     0,
+     1,
+     2,
+     6,
+     10,
+     14,
+     18,
+     22,
+     26,
+     30,
+     34,
+     38,
+     42,
+     46,
+     50,
+     54,
+     58,
+     62,
+     66,
+     70,
+     74
+    ],
+    "layer_count": 78,
+    "shared_count": 57
+   },
+   "note": "official native-precision release (quant policy: serve native)",
+   "path": "/mnt/model-warm/.staging/glm-5.3-bf16-304b8051",
+   "published": false,
+   "quantization_config": null,
+   "receipt": null,
+   "receipt_sha256": null,
+   "repo": "zai-org/GLM-5.3-BF16",
+   "revision": "304b8051cfb2b260b61ce0cbe330e02a98e73639"
+  },
+  "fp8": {
+   "config_sha256": "3ac72612095574542f7fff847ada8e59d9199dd8af44bdf625d7e02615572e69",
+   "indexer_types": {
+    "full_count": 21,
+    "full_layers": [
+     0,
+     1,
+     2,
+     6,
+     10,
+     14,
+     18,
+     22,
+     26,
+     30,
+     34,
+     38,
+     42,
+     46,
+     50,
+     54,
+     58,
+     62,
+     66,
+     70,
+     74
+    ],
+    "layer_count": 78,
+    "shared_count": 57
+   },
+   "note": "official FP8 release (e4m3 dynamic act, weight_block_size [128,128])",
+   "path": "/mnt/model-warm/.staging/glm-5.3-935644c0",
+   "published": false,
+   "quantization_config": {
+    "activation_scheme": "dynamic",
+    "excluded_module_count": 541,
+    "fmt": "e4m3",
+    "quant_method": "fp8",
+    "weight_block_size": [
+     128,
+     128
+    ]
+   },
+   "receipt": null,
+   "receipt_sha256": null,
+   "repo": "zai-org/GLM-5.3",
+   "revision": "935644c05e76fc198714f4cca449fd8b970ff6d7"
+  },
+  "nvfp4": {
+   "path": "/mnt/model-warm/glm-5.3-nvfp4-radixark",
+   "receipt": {
+    "bytes": 464874334135,
+    "files": 58,
+    "format": "ds4-hf-warm-download-receipt-v1",
+    "license_class": "zai-commercial-use-granted",
+    "repo": "RadixArk/GLM-5.3-NVFP4",
+    "revision": "363e8f086905afd83db356a620f9aa401c23800a",
+    "verified_at": "2026-08-28T19:28:57.754570+00:00"
+   },
+   "receipt_sha256": "904cf82359bc853b51bc9b2ac89288531aea29ac2858e4641696b0cbec88e0ba",
+   "repo": "RadixArk/GLM-5.3-NVFP4",
+   "revision": "363e8f086905afd83db356a620f9aa401c23800a"
+  },
+  "pack_resolutions": "nvfp4=codec 6, fp8=codec 5, bf16=codec 1 (packer --expert-codec); all three REPACKAGE only"
  }
 }
