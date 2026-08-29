@@ -1,5 +1,5 @@
 {
-  "file_count": 1699,
+  "file_count": 1700,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -440,6 +440,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-finish-2026-08-30b.md",
       "sha256": "b79887f0ed63718f20cdf4bb9c26e1c985763a5ab6daca65e371e1200d07aeaf",
       "size_bytes": 10899
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/k3-finish-2026-08-30c.md",
+      "sha256": "f69e264ab736b3ed8f0c0d40b685ceef0faf059665b0ebe308214ece740a6aaf",
+      "size_bytes": 10028
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/k3-fleet-2026-08-28.md",
@@ -5398,7 +5403,7 @@
     },
     {
       "path": "runs/reservations.json",
-      "sha256": "7c2fc35c11863962ac978578bf001551f9e5616b35ff0527734dc0f1098fbcf1",
+      "sha256": "4c9d63dc882ff372512bdd85213424b0baeeccc8abd40aa683c468de2feadda1",
       "size_bytes": 2274
     },
     {
@@ -8500,5 +8505,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31272824
+  "total_bytes": 31282852
 }
