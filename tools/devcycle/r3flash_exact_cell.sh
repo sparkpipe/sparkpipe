@@ -154,28 +154,46 @@ write_config() { # write_config THRESHOLD - render every rank's two configs
 }
 
 # --- phase 0: distribute binaries, libs, config template -------------------
+# the fleet proxy flakes under load (banner timeouts, broken pipes): every
+# remote step here retries, and a still-failing host is FATAL - silent
+# distribute failures surface later as pack/config fatals (the t5 lesson)
+retry_ssh() { # retry_ssh HOST CMD - up to 4 tries, 5s apart
+	local h="$1" cmd="$2" attempt
+	for attempt in 1 2 3 4; do
+		ssh -o BatchMode=yes -o ConnectTimeout=10 "$h" "$cmd" && return 0
+		log "retry $attempt failed on $h"
+		sleep 5
+	done
+	return 1
+}
 log "phase 0: distribute"
 [[ -f "$LANE/build/sparkpipe_model_residentd" && -f "$LANE/build/sparkpipe_model_batch" ]] \
 	|| { log "FATAL lane binaries missing in $LANE/build (run the publish first)"; exit 9; }
 for h in $HOSTS; do
-	ssh -o BatchMode=yes "$h" "mkdir -p $ROOT/bin $ROOT/lib $ROOT/config $ROOT/kv" &
+	retry_ssh "$h" "mkdir -p $ROOT/bin $ROOT/lib $ROOT/config $ROOT/kv" \
+		|| { log "FATAL mkdir failed on $h"; exit 8; } &
 done
 wait
 for h in $HOSTS; do
 	r=${RANKOF[$h]}
 	fleet_root="$(printf "$FLEET_ROOT_TEMPLATE" "$r")"
-	rsync -aq "$LANE/build/sparkpipe_model_residentd" "$LANE/build/sparkpipe_model_batch" "$h:$ROOT/bin/"
-	rsync -aq "$LANE/build/model_driver.so" "$LANE/build/model_serving_adapter.so" \
-		"$LANE/build/hidden_transport.so" "$h:$ROOT/lib/"
+	rsync -aq -e "ssh -o BatchMode=yes -o ConnectTimeout=10" \
+		"$LANE/build/sparkpipe_model_residentd" "$LANE/build/sparkpipe_model_batch" "$h:$ROOT/bin/" \
+		|| { log "FATAL bin rsync failed on $h"; exit 8; }
+	rsync -aq -e "ssh -o BatchMode=yes -o ConnectTimeout=10" \
+		"$LANE/build/model_driver.so" "$LANE/build/model_serving_adapter.so" \
+		"$LANE/build/hidden_transport.so" "$h:$ROOT/lib/" \
+		|| { log "FATAL lib rsync failed on $h"; exit 8; }
 	# packs stay at the rank's own fleet root - symlink them into the cell
 	# runtime root (NOTE: expand fleet_root here, not $HOME - the script
 	# runs on one host and ssh targets the rest)
-	ssh -o BatchMode=yes "$h" "ln -sfn $fleet_root/packs $ROOT/packs"
+	retry_ssh "$h" "ln -sfn $fleet_root/packs $ROOT/packs" \
+		|| { log "FATAL packs symlink failed on $h"; exit 8; }
 done
 for h in $HOSTS; do
 	r=${RANKOF[$h]}
 	pack="$(printf "$PACK_TEMPLATE" "$r")"
-	ssh -o BatchMode=yes "$h" "test -s $ROOT/packs/$pack" \
+	retry_ssh "$h" "test -s $ROOT/packs/$pack" \
 		|| { log "FATAL pack missing on $h ($pack)"; exit 9; }
 done
 # the batch payloads: prefer retained files, else synthesize the O128 decode
