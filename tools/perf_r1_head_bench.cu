@@ -74,6 +74,21 @@ __global__ void FillSmallBf16Kernel(uint16_t *values, float scale,
 	values[index] = __bfloat16_as_ushort(__float2bfloat16(unit));
 }
 
+/* Give `hot_rows` vocabulary rows a large magnitude (a dominant-argmax
+ * distribution, the realistic decode regime: the true next token's dot
+ * dominates the score spread and the certified bound admits only the
+ * neighborhood of the winner). */
+__global__ void ScaleRowsKernel(uint16_t *values, uint32_t hot_rows,
+                                uint32_t hidden_dimension, float factor)
+{
+	uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	uint64_t total = (uint64_t)hot_rows * hidden_dimension;
+	if (index >= total)
+		return;
+	float value = __bfloat162float(__ushort_as_bfloat16(values[index]));
+	values[index] = __bfloat16_as_ushort(__float2bfloat16(value * factor));
+}
+
 float ElapsedMs(const cudaEvent_t *start, const cudaEvent_t *stop)
 {
 	float ms = 0.0f;
@@ -205,6 +220,15 @@ int RunGeometry(uint32_t candidate_count)
 			cudaDeviceSynchronize();
 		}
 	}
+
+	/* TIMING on the dominant-argmax regime: scale 32 rows by 64 so the
+ * winner's coarse score dominates the spread (the realistic decode case;
+ * the flat random regime above is the degenerate all-admitted case). */
+	ScaleRowsKernel<<<(uint32_t)((32ull * kHidden + 255u) / 256u), 256u>>>(
+		head_bf16, 32u, kHidden, 64.0f);
+	SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16, fp8_payload,
+		fp8_scale, fp8_norm, candidate_count, kHidden);
+	cudaDeviceSynchronize();
 
 	/* TIMING */
 	float direct_ms[kIters];
