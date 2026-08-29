@@ -448,6 +448,9 @@ def main():
     a.add_argument("--klass", default="long", choices=["short", "long"])
     a.add_argument("--by", default="coordinator")
     a.add_argument("--notes", default="")
+    a.add_argument("--ttl-min", type=float, default=None,
+        help="expected duration minutes; the dispatch lease holds exactly "
+             "this long (default 15 if undeclared)")
     a.set_defaults(fn=cmd_add)
     a = sub.add_parser("list")
     a.add_argument("--all", action="store_true")
