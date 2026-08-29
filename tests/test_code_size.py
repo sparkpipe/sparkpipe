@@ -875,8 +875,10 @@ from pathlib import Path
 # the zero-token bug closes, then trims. 216861 exact. The follow-up moves
 # the KDA o_proj into attention_out_bf16 (staging the gated y in the dead
 # kv_slot scratch) so the validator's readback contract survives the
-# rewire; net +7. 216868 exact.
-CEILING = 216868
+# rewire; net +7. 216868 exact. The validator tier walks then mirror the
+# reduce-then-place chain (post entries after each sublayer in tier1 and
+# tier2a; isolation/probe0 stay pre-post by design); net +12. 216880 exact.
+CEILING = 216880
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

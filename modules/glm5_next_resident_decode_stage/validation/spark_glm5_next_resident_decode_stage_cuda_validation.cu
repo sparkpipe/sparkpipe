@@ -77,6 +77,8 @@ extern "C" int32_t SparkGlm5NextConfigureCudaModule(uint32_t *multiprocessor_cou
 extern "C" int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave *wave);
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 
 /* Host-mirrored geometry (config.h at tp_degree 1). */
 #define SPARK_GLM5_NEXT_VHIDDEN SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION
@@ -1673,12 +1675,19 @@ static int SparkGlm5NextValRunTier1(SparkGlm5NextValFixture *fixture,uint32_t pa
 				status,step,pass,cudaGetErrorString(cudaGetLastError()));
 			return(SparkGlm5NextValFail("tier1_attention","status"));
 		}
+		/* mirror the serving chain: reduce (no-op at TP1) then place once */
+		status = SparkGlm5NextLaunchCudaLayerAttentionPost(&fixture->wave,0u);
+		if (status != 0)
+			return(SparkGlm5NextValFail("tier1_attention_post","status"));
 		status = SparkGlm5NextLaunchCudaLayerMlp(&fixture->wave,0u);
 		if (status != 0)
 		{
 			fprintf(stderr,"glm5_next_validation tier1 mlp status=%d step=%u pass=%u\n",status,step,pass);
 			return(SparkGlm5NextValFail("tier1_mlp","status"));
 		}
+		status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,0u);
+		if (status != 0)
+			return(SparkGlm5NextValFail("tier1_mlp_post","status"));
 		if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
 			return(SparkGlm5NextValFail("tier1","sync"));
 	}
@@ -1783,6 +1792,9 @@ static int SparkGlm5NextValRunTier2aAttention(SparkGlm5NextValFixture *fixture,u
 			fprintf(stderr,"glm5_next_validation tier2a attention status=%d step=%u pass=%u\n",status,step,pass);
 			return(SparkGlm5NextValFail("tier2a_attention","status"));
 		}
+		status = SparkGlm5NextLaunchCudaLayerAttentionPost(&fixture->wave,0u);
+		if (status != 0)
+			return(SparkGlm5NextValFail("tier2a_attention_post","status"));
 		if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
 			return(SparkGlm5NextValFail("tier2a","sync"));
 	}
