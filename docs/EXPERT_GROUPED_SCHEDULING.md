@@ -139,3 +139,25 @@ batching with compute-bound admission. The router + counting sort +
 grouped GEMM infrastructure already exists (inference/kernels/route.cuh);
 the innovation is the scheduling policy that feeds it the full ready set
 instead of fixed-size microbatches.
+
+## Addendum: B<∞ × PP bubbles; speculation interleave (2026-08-30)
+
+PP BUBBLES: continuous batching AMORTIZES them at high B (bubble is
+constant per step, compute grows with rows) but does NOT remove the
+per-step fill/drain serialization. B=1 single-stream pays the full
+chain (TP16 stays the latency topology; PP wins on capacity at load).
+The remaining lever = STEP-LEVEL PIPELINING (double-buffered
+activations, stage N+1 starts while stage N drains) — P1's async
+completion is its prerequisite. Honest state: not built.
+
+SPEC INTERLEAVE: a speculating row is a row with more positions per
+step — heterogeneous steps (verify rows k+1 positions, plain rows 1,
+prefill chunks their slices) all share one weight stream. Pattern per
+tick: draft mini-step (tournament: N drafters race, tree built) →
+verify step → accept/reject (KV only for accepted; re-draft from the
+new prefix). Admission unchanged (new requests enter at step
+boundaries regardless). Fairness: spec rows lengthen steps slightly;
+low-acceptance rows get disarmed (the bandit's job). OPEN CORNER:
+spec-under-PP — draft verify crosses the same serial stages; drafter
+placement (first-stage vs head-owner node) unmeasured. Flag for the
+TP4xPP4 spec cells.
