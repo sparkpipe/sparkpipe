@@ -961,7 +961,12 @@ from pathlib import Path
 # [hidden, width/tp]) is the degeneration root cause; the justification
 # evidence lives in the commit + docs/AGENT_LANE_BRIEFS/reports/.
 # 222236 exact.
-CEILING = 222236
+# probe-fix III: the G5N-PROBE cross-rank reduce checksum (post-reduce
+# attention_out printed on EVERY rank under the diag env; the reduced
+# partial must be bit-identical across ranks) - the instrument that
+# separates a collective-path defect from a per-rank partial-math one.
+# 222250 exact.
+CEILING = 222250
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
