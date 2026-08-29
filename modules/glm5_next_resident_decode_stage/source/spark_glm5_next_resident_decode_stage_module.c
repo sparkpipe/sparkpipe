@@ -1851,7 +1851,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION:
-		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
+		if ( SparkGlm5NextProbeEnabled() && (chain->next_layer <= 4u || (chain->next_layer >= 33u && chain->next_layer <= 35u)) )
 		{
 			uint16_t probe_attn[256];
 			uint32_t probe_i,probe_block;
@@ -1871,6 +1871,22 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_MLP:
+		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
+		{
+			uint16_t probe_mlp0[256];
+			uint32_t probe_mi,probe_mb;
+			uint64_t probe_ms;
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			probe_ms = 0u;
+			for ( probe_mb = 0u; probe_mb < 4u; probe_mb++ )
+			{
+				error = cudaMemcpy(probe_mlp0,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_mb * sizeof(probe_mlp0),sizeof(probe_mlp0),cudaMemcpyDeviceToHost);
+				for ( probe_mi = 0u; probe_mi < 256u; probe_mi++ )
+					probe_ms += probe_mlp0[probe_mi];
+			}
+			(void)error;
+			fprintf(stderr,"G5N-PROBE layer %u mlp-entry hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ms);
+		}
 		if ( SparkGlm5NextLaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
