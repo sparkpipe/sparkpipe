@@ -795,6 +795,77 @@ static uint32_t SparkDsv4ModuleDsparkEnvEnabled(void)
 	return(value != 0 && value[0] == '1' && value[1] == '\0') ? 1u : 0u;
 }
 
+/* Node-context field rules (the complexity lane's conjunction-soup
+ * conversion, 2026-08-28: the ~30-term || chain in Configure became four
+ * named predicates; same order, same short-circuit verdicts). */
+
+static uint32_t SparkDsv4ModuleContextSliceIsValid(
+	const SparkDsv4ResidentDecodeStageNodeContext *context)
+{
+	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index )
+		return(0u);
+	return(1u);
+}
+
+static uint32_t SparkDsv4ModuleContextCapacitiesAreValid(
+	const SparkDsv4ResidentDecodeStageNodeContext *context)
+{
+	if ( context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_ISLAND_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS )
+		return(0u);
+	return(1u);
+}
+
+static uint32_t SparkDsv4ModuleContextCodecsAreValid(
+	const SparkDsv4ResidentDecodeStageNodeContext *context)
+{
+	if ( context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' )
+		return(0u);
+	return(1u);
+}
+
+static uint32_t SparkDsv4ModuleContextTopologyIsValid(
+	const SparkDsv4ResidentDecodeStageNodeContext *context,
+	uint32_t parallel,
+	uint32_t hybrid)
+{
+	if ( parallel == 0u && (context->tp_degree != 1u || context->tp_rank != 0u || context->tp_configuration_hash != 0u || hybrid != 0u) )
+		return(0u);
+	if ( parallel != 0u && (context->tp_degree <= 1u || (hybrid == 0u && (context->stage_count != context->tp_degree || context->stage_index != context->tp_rank)) || (hybrid != 0u && (context->pp_stage_count != context->stage_count || context->pp_stage_index != context->stage_index || context->world_size != context->tp_degree * context->pp_stage_count || context->world_rank != context->pp_stage_index * context->tp_degree + context->tp_rank))) )
+		return(0u);
+	return(1u);
+}
+
+static uint32_t SparkDsv4ModuleTpCollectiveContextIsValid(
+	const SparkDsv4ResidentDecodeStageNodeContext *context)
+{
+	if ( context->tp_collective_backend_module_path == 0 ||
+		context->tp_collective_backend_module_path[0] == '\0' ||
+		context->tp_collective_control_port_base == 0u ||
+		context->tp_collective_topology.abi_version !=
+			SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION ||
+		context->tp_collective_topology.descriptor_bytes !=
+			SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES ||
+		context->tp_collective_topology.rank_count != context->tp_degree )
+		return(0u);
+	return(1u);
+}
+
+static uint32_t SparkDsv4ModulePageCapacitiesAreValid(
+	const SparkFirmwareModuleHostServices *host_services,
+	uint32_t lane_page_capacity)
+{
+	if ( host_services->kv_logical_page_capacity < lane_page_capacity ||
+		host_services->kv_logical_page_capacity >
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LOGICAL_PAGE_COUNT ||
+		host_services->kv_physical_page_capacity == 0u ||
+		host_services->kv_physical_page_capacity >
+		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PHYSICAL_PAGE_COUNT ||
+		host_services->kv_physical_page_capacity >
+		host_services->kv_logical_page_capacity )
+		return(0u);
+	return(1u);
+}
+
 static SparkStatus SparkDsv4ModuleConfigure(
 	SparkDsv4ModuleState *state,
 	const SparkFirmwareModuleHostServices *host_services,
@@ -816,7 +887,10 @@ static SparkStatus SparkDsv4ModuleConfigure(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	parallel = (context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL) != 0u ? 1u : 0u;
 	hybrid = (context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIPELINE_PARALLEL) != 0u ? 1u : 0u;
-	if ( context->stage_count == 0u || context->stage_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index >= SPARK_DSV4_MODEL_LAYER_COUNT || context->layer_count == 0u || context->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT - context->first_layer_index || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_ISLAND_COUNT || context->max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || context->max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS || context->linear_weight_codec != SPARK_DSV4_MODEL_NON_EXPERT_WEIGHT_CODEC || context->expert_weight_codec != SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC || context->kv_cache_codec != SPARK_DSV4_MODEL_KV_CACHE_CODEC || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || (parallel == 0u && (context->tp_degree != 1u || context->tp_rank != 0u || context->tp_configuration_hash != 0u || hybrid != 0u)) || (parallel != 0u && (context->tp_degree <= 1u || (hybrid == 0u && (context->stage_count != context->tp_degree || context->stage_index != context->tp_rank)) || (hybrid != 0u && (context->pp_stage_count != context->stage_count || context->pp_stage_index != context->stage_index || context->world_size != context->tp_degree * context->pp_stage_count || context->world_rank != context->pp_stage_index * context->tp_degree + context->tp_rank)))) )
+	if ( SparkDsv4ModuleContextSliceIsValid(context) == 0u ||
+		SparkDsv4ModuleContextCapacitiesAreValid(context) == 0u ||
+		SparkDsv4ModuleContextCodecsAreValid(context) == 0u ||
+		SparkDsv4ModuleContextTopologyIsValid(context,parallel,hybrid) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( parallel == 0u &&
 		context->cuda_graph_count > SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT )
@@ -826,15 +900,7 @@ static SparkStatus SparkDsv4ModuleConfigure(
 		 context->cuda_graph_count !=
 		 SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(context->layer_count)) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( parallel != 0u && (
-		context->tp_collective_backend_module_path == 0 ||
-		context->tp_collective_backend_module_path[0] == '\0' ||
-		context->tp_collective_control_port_base == 0u ||
-		context->tp_collective_topology.abi_version !=
-			SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION ||
-		context->tp_collective_topology.descriptor_bytes !=
-			SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES ||
-		context->tp_collective_topology.rank_count != context->tp_degree) )
+	if ( parallel != 0u && SparkDsv4ModuleTpCollectiveContextIsValid(context) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&shape,0,sizeof(shape));
 	shape.abi_version = SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION;
@@ -847,14 +913,7 @@ static SparkStatus SparkDsv4ModuleConfigure(
 	lane_page_capacity = (context->max_sequence_positions +
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS - 1u) /
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS;
-	if ( host_services->kv_logical_page_capacity < lane_page_capacity ||
-		host_services->kv_logical_page_capacity >
-		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LOGICAL_PAGE_COUNT ||
-		host_services->kv_physical_page_capacity == 0u ||
-		host_services->kv_physical_page_capacity >
-		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PHYSICAL_PAGE_COUNT ||
-		host_services->kv_physical_page_capacity >
-		host_services->kv_logical_page_capacity )
+	if ( SparkDsv4ModulePageCapacitiesAreValid(host_services,lane_page_capacity) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	state->stage_count = context->stage_count;
 	state->stage_index = context->stage_index;

@@ -24,42 +24,92 @@ static uint32_t SparkModelServingAdapterSha256IsValid(const char *sha256)
 	return(sha256[SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH] == '\0');
 }
 
-SparkStatus SparkModelServingAdapterValidateDescriptor(
+/* Descriptor validity rules as a predicate table (the complexity lane's
+ * conjunction-soup conversion, 2026-08-28). One row per rule, evaluated in
+ * the ORIGINAL if-chain order; every row returns SPARK_STATUS_OK to keep
+ * walking or the failure status the original chain returned at that point.
+ * The accept/reject set is proven identical by the before/after fuzz pair
+ * (docs/AGENT_LANE_BRIEFS/reports/ccn-2026-08-28.md). */
+typedef SparkStatus (*SparkModelServingAdapterDescriptorCheck)(
+	const SparkModelServingAdapterDescriptor *descriptor);
+
+static SparkStatus SparkDescriptorCheckAbi(
 	const SparkModelServingAdapterDescriptor *descriptor)
 {
-	uint32_t group,group_count,hybrid,index,parallel,total;
-	if ( descriptor == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || descriptor->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckCapabilityAndCountFields(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
 	if ( (descriptor->capability_flags & ~SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES) != 0u || descriptor->stage_count == 0u || descriptor->stage_count > SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT || descriptor->layer_count == 0u || descriptor->layer_count > SPARK_MODEL_SERVING_ADAPTER_MAX_LAYER_COUNT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (descriptor->capability_flags &
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckParallelTransportHybridPairing(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	uint32_t transport_set;
+	transport_set = descriptor->capability_flags &
 		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)) ==
-		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) &&
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT);
+	if ( transport_set ==
+			(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+			 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) &&
 		(descriptor->capability_flags &
 		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (descriptor->capability_flags &
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u &&
-		(descriptor->capability_flags &
-		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)) !=
-		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) )
+			SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u &&
+		transport_set !=
+			(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+			 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 || descriptor->boundary_element_count == 0u || descriptor->boundary_element_bytes != sizeof(uint16_t) || SparkWeightCodecIsKnown(descriptor->linear_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->expert_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->kv_cache_codec) == 0u || descriptor->max_inflight_submission_count == 0u || descriptor->max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || descriptor->max_active_sequence_count == 0u || descriptor->max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || descriptor->max_input_row_count < descriptor->max_active_sequence_count || descriptor->max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || descriptor->max_resident_sequence_count < descriptor->max_active_sequence_count || descriptor->max_resident_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT || descriptor->max_output_token_count == 0u || descriptor->max_output_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckBoundaryAndCodecFields(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	if ( descriptor->boundary_format != SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 || descriptor->boundary_element_count == 0u || descriptor->boundary_element_bytes != sizeof(uint16_t) || SparkWeightCodecIsKnown(descriptor->linear_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->expert_weight_codec) == 0u || SparkWeightCodecIsKnown(descriptor->kv_cache_codec) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckCapacityFields(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	if ( descriptor->max_inflight_submission_count == 0u || descriptor->max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || descriptor->max_active_sequence_count == 0u || descriptor->max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || descriptor->max_input_row_count < descriptor->max_active_sequence_count || descriptor->max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || descriptor->max_resident_sequence_count < descriptor->max_active_sequence_count || descriptor->max_resident_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT || descriptor->max_output_token_count == 0u || descriptor->max_output_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckSpeculationPairing(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
 	if ( ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION) != 0u) != (descriptor->max_speculative_token_count != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckSlotReusePairing(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
 	if ( descriptor->resident_sequence_slot_reuse > SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV) != 0u) != (descriptor->resident_sequence_slot_reuse != SPARK_MODEL_SERVING_SLOT_REUSE_NONE) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckLeasePairing(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
 	if ( (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u &&
 		(descriptor->capability_flags &
@@ -70,6 +120,12 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		descriptor->resident_sequence_slot_reuse ==
 		SPARK_MODEL_SERVING_SLOT_REUSE_NONE )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckDecodeChainRequirements(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
 	if ( (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) != 0u &&
 		(descriptor->capability_flags &
@@ -86,6 +142,13 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->minimum_efficient_submission_row_count > descriptor->max_input_row_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckCacheBlockFields(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	uint32_t hybrid;
 	hybrid = (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
 	if ( descriptor->cache_block_token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_TOKEN_COUNT ||
@@ -98,8 +161,23 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( descriptor->cache_block_token_count != 0u && (descriptor->capability_flags & (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV)) != (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckIdentityFields(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
 	if ( SparkModelServingAdapterTextIsPresent(descriptor->adapter_id) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->model_id) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->model_revision) == 0u || SparkModelServingAdapterTextIsPresent(descriptor->driver_program_name) == 0u || SparkModelServingAdapterSha256IsValid(descriptor->artifact_sha256) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDescriptorCheckStageLayerTotals(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	uint32_t group,group_count,hybrid,index,parallel,total;
+	hybrid = (descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
 	parallel = (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u ? 1u : 0u;
 	total = 0u;
@@ -145,6 +223,36 @@ SparkStatus SparkModelServingAdapterValidateDescriptor(
 		return(SPARK_STATUS_OK);
 	}
 	return(SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static const SparkModelServingAdapterDescriptorCheck SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_CHECKS[] = {
+	SparkDescriptorCheckAbi,
+	SparkDescriptorCheckCapabilityAndCountFields,
+	SparkDescriptorCheckParallelTransportHybridPairing,
+	SparkDescriptorCheckBoundaryAndCodecFields,
+	SparkDescriptorCheckCapacityFields,
+	SparkDescriptorCheckSpeculationPairing,
+	SparkDescriptorCheckSlotReusePairing,
+	SparkDescriptorCheckLeasePairing,
+	SparkDescriptorCheckDecodeChainRequirements,
+	SparkDescriptorCheckCacheBlockFields,
+	SparkDescriptorCheckIdentityFields,
+	SparkDescriptorCheckStageLayerTotals,
+};
+
+SparkStatus SparkModelServingAdapterValidateDescriptor(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	uint32_t index;
+	if ( descriptor == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (index=0u; index<sizeof(SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_CHECKS)/sizeof(SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_CHECKS[0]); index++)
+	{
+		SparkStatus status = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_CHECKS[index](descriptor);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
