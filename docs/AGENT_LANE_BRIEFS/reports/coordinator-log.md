@@ -1503,3 +1503,14 @@ appendix).
   flap's signature killed) + B (the flap reproducer: kill-8-restart-
   subset) + fail-loud. Acceptance A doubles as the fleet's
   restoration; the state-bleed curl pair rides it as the bonus.
+
+## 2026-08-30 ~15:1x — SPEC UPDATE: phase 1b cleanslate (operator)
+
+- GO now requires the previous residentd GONE on every node: the
+  announce carries stale_daemon (self-checked first), ready becomes
+  three-level, TERM-by-cwd is the only remediation, TERM-immune
+  reports as STALE-IMMUNE in the fail-loud diff. Root-cause add: part
+  of the flap's cascade was new sessions opening against old daemons'
+  ports mid-teardown.
+- Registrar lane briefed mid-build. Fleet currently 2/16 ready + a
+  mixed stale state — exactly the test bed acceptance A needs.
