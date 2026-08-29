@@ -459,12 +459,29 @@ static SparkStatus SparkModelResidentdOpenTcpListenSocket(
 	char service[16];
 	int32_t enabled,fd;
 	SparkStatus status;
+	if ( snprintf(service,sizeof(service),"%u",listen_port) < 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&hints,0,sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
 	hints.ai_flags = AI_NUMERICSERV;
-	if ( snprintf(service,sizeof(service),"%u",listen_port) < 0 || getaddrinfo(listen_address,service,&hints,&addresses) != 0 )
+	/* Same F1 transient as the client side: one resolver miss under
+	 * simultaneous wave load took a random rank down as
+	 * ROUTE_NOT_FOUND. Bounded retry absorbs it; real failures stay
+	 * loud. */
+	addresses = 0;
+	{
+		uint32_t resolve_attempt;
+		for ( resolve_attempt = 0u; resolve_attempt < 4u; ++resolve_attempt )
+		{
+			if ( getaddrinfo(listen_address,service,&hints,&addresses) == 0 && addresses != 0 )
+				break;
+			addresses = 0;
+			usleep(25000u);
+		}
+	}
+	if ( addresses == 0 )
 		return(SPARK_STATUS_ROUTE_NOT_FOUND);
 	status = SPARK_STATUS_IO_ERROR;
 	for (address=addresses; address!=0 && status!=SPARK_STATUS_OK; address=address->ai_next)
