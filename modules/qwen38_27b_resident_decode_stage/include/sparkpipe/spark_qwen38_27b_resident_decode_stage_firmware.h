@@ -71,6 +71,12 @@ extern "C" {
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP 4096u
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT 512u
+/* Frame-row ceiling for one prefill frame (one lane's prompt chunk). The
+ * prefill budget tracks the deployment's max_input_row_count runtime limit,
+ * NOT max_active_sequence_count: a B1 deployment (max_active_sequences=1)
+ * still prefills multi-row frames, one weight pass per chunk instead of one
+ * per prompt token. */
+#define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 512u
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS 64u
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID UINT32_MAX
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_NO_BLOCK 0xffffffffu

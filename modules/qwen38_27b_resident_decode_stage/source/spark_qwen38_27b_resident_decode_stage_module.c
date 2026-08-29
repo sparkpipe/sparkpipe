@@ -205,6 +205,9 @@ typedef struct SparkQwen38_27bModuleState
 	uint32_t tp_degree;
 	uint32_t tp_rank;
 	uint32_t max_active_sequence_count;
+	/* frame-row ceiling for one prefill frame (R2b: the prefill budget
+	 * tracks max_input_row_count, not max_active_sequence_count) */
+	uint32_t max_input_row_count;
 	uint32_t pipeline_slot_count;
 	uint32_t kv_block_count;
 	uint32_t gdn_layer_count;
@@ -452,6 +455,26 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_27B_MODULE_TAG,"SPARK_QWEN38_27B_TP_RANK",0u,15u,&state->tp_rank);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_27B_MODULE_TAG,"SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES",1u,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&state->max_active_sequence_count);
+	/* R2b: optional prefill frame-row budget. Unset means "same as the
+	 * active-lane count" - the exact pre-R2b behavior - so direct module
+	 * users (validator harness, tests) keep their existing configs. The
+	 * serving adapter always sets it from the deployment's max_input_rows. */
+	state->max_input_row_count = state->max_active_sequence_count;
+	if ( status == SPARK_STATUS_OK )
+	{
+		const char *rows_text = getenv("SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS");
+		if ( rows_text != 0 && rows_text[0] != '\0' )
+		{
+			unsigned long parsed_rows = strtoul(rows_text,0,0);
+			if ( parsed_rows < 1u || parsed_rows > SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT )
+			{
+				fprintf(stderr,"%s config_invalid name=SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS value=%s\n",SPARK_QWEN38_27B_MODULE_TAG,rows_text);
+				status = SPARK_STATUS_INVALID_ARGUMENT;
+			}
+			else
+				state->max_input_row_count = (uint32_t)parsed_rows;
+		}
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_27B_MODULE_TAG,"SPARK_QWEN38_27B_STAGE_PIPELINE_SLOTS",1u,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&state->pipeline_slot_count);
 	if ( status == SPARK_STATUS_OK )
@@ -941,6 +964,8 @@ static SparkStatus SparkQwen38_27bModuleBuildHeadShadow(SparkQwen38_27bModuleSta
  * collective submissions, the collective itself, and the per-rank device
  * geometry table. Must precede every allocation that derives per-rank
  * dimensions. */
+static uint64_t SparkQwen38_27bModuleFrameRowCount(const SparkQwen38_27bModuleState *state);
+
 static SparkStatus SparkQwen38_27bModuleInitializeTp(SparkQwen38_27bModuleState *state)
 {
 	cudaStream_t stream = 0;
@@ -948,7 +973,10 @@ static SparkStatus SparkQwen38_27bModuleInitializeTp(SparkQwen38_27bModuleState 
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	state->tp_stream = stream;
-	status = SparkQwen38_27bTpInitialize(&state->tp,state->tp_degree,state->tp_rank,state->max_active_sequence_count,state->pipeline_slot_count,stream);
+	/* The TP collective's row width must cover the widest frame the slot
+	 * can carry (decode rows and prefill chunk rows alike); TP1/standalone
+	 * degrees ignore it. */
+	status = SparkQwen38_27bTpInitialize(&state->tp,state->tp_degree,state->tp_rank,(uint32_t)SparkQwen38_27bModuleFrameRowCount(state),state->pipeline_slot_count,stream);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,
@@ -1034,9 +1062,23 @@ static SparkStatus SparkQwen38_27bModuleAllocatePools(SparkQwen38_27bModuleState
 	return(status);
 }
 
+/* Frame-row capacity of one slot: a frame is either a decode batch over the
+ * active lanes or a single-lane prefill chunk of up to max_input_row_count
+ * prompt rows (R2b: the prefill budget tracks max_input_row_count, not the
+ * active-lane count - a B1 deployment still prefills multi-row frames). */
+static uint64_t SparkQwen38_27bModuleFrameRowCount(const SparkQwen38_27bModuleState *state)
+{
+	return (uint64_t)(state->max_active_sequence_count > state->max_input_row_count ?
+		state->max_active_sequence_count : state->max_input_row_count);
+}
+
 static SparkStatus SparkQwen38_27bModuleAllocateSlotControl(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot)
 {
-	uint64_t rows = state->max_active_sequence_count,staged = rows + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS;
+	uint64_t rows = SparkQwen38_27bModuleFrameRowCount(state),staged = rows + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS;
+	/* Head-side buffers index head rows: decode emits one row per active
+	 * lane and prefill samples only the frame's final position, so the
+	 * active-lane count bounds them regardless of the prefill chunk width. */
+	uint64_t head_rows = (uint64_t)state->max_active_sequence_count;
 	SparkStatus status;
 	cudaStream_t stream = 0;
 	status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaStreamCreate(&stream),"cudaStreamCreate");
@@ -1047,25 +1089,25 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlotControl(SparkQwen38_27bModul
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->output_token_ids);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->head_logits_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,head_rows * SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->head_logits_bf16);
 	/* Certified B1 head: the screen can admit every rank-local candidate,
 	 * so the id buffer is sized for the full shard (the screened path's
 	 * 4096 cap would overflow it); scratch follows the model-neutral
 	 * spark_head_screen.h layout. */
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 	{
-		uint64_t head_candidate_bytes = (uint64_t)rows * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP * sizeof(uint32_t);
+		uint64_t head_candidate_bytes = head_rows * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP * sizeof(uint32_t);
 		uint64_t full_candidate_bytes = SparkHeadCertifiedFp8CandidateBytes(state->tp.head_rows);
 		status = SparkStageModuleDeviceAllocate(&state->ledger,head_candidate_bytes > full_candidate_bytes ? head_candidate_bytes : full_candidate_bytes,(void **)&slot->head_candidate_ids_u32);
 	}
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->head_candidate_counts_u32);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,head_rows * sizeof(uint32_t),(void **)&slot->head_candidate_counts_u32);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SparkHeadCertifiedFp8ScratchBytes(state->tp.head_rows,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION),(void **)&slot->head_certified_scratch);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(float),(void **)&slot->head_scores_f32);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,head_rows * sizeof(float),(void **)&slot->head_scores_f32);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint64_t),(void **)&slot->head_maxloc_u64);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,head_rows * sizeof(uint64_t),(void **)&slot->head_maxloc_u64);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,staged * sizeof(uint32_t),(void **)&slot->row_lane_indices);
 	if ( status == SPARK_STATUS_OK )
@@ -1133,7 +1175,9 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlotChunkWorkspace(SparkQwen38_2
 
 static SparkStatus SparkQwen38_27bModuleAllocateSlot(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot)
 {
-	uint64_t rows = state->max_active_sequence_count;
+	/* Activation buffers are frame-row buffers: decode rows and prefill
+	 * chunk rows both live here, so the width is max(active, input_rows). */
+	uint64_t rows = SparkQwen38_27bModuleFrameRowCount(state);
 	uint64_t attn_query_dim = (uint64_t)state->tp.attn_query_heads * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION;
 	uint64_t attn_kv_dim = (uint64_t)state->tp.attn_kv_heads * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION;
 	SparkStatus status = SparkQwen38_27bModuleAllocateSlotControl(state,slot);
@@ -1530,7 +1574,7 @@ static SparkStatus SparkQwen38_27bModuleValidatePrefillView(
         view->lane_index >= state->max_active_sequence_count ||
         view->sequence_id == 0u ||
         view->token_count == 0u ||
-        view->token_count > state->max_active_sequence_count ||
+        view->token_count > state->max_input_row_count ||
         view->token_count != frame->new_token_count ||
         frame->active_slot_count != 1u ||
         view->base_position != frame->sequence_position ||
@@ -3584,7 +3628,7 @@ static SparkStatus SparkQwen38_27bModuleAdmit(
     table.abi_version = SPARK_ADMISSION_ABI_VERSION;
     table.descriptor_bytes = (uint32_t)sizeof(table);
     table.max_active_sequence_count = state->max_active_sequence_count;
-    table.max_input_row_count = state->max_active_sequence_count;
+    table.max_input_row_count = state->max_input_row_count;
     table.max_sequence_positions = SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS;
     table.flags = SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT |
         SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS;

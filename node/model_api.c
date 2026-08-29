@@ -610,7 +610,10 @@ int main(int argc, char **argv)
 	cfg.runtime_root = root;
 	cfg.request_capacity = 64;
 	cfg.max_context_tokens = API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS;
-	cfg.max_prefill_rows_per_submission = 16;
+	/* R2a: the prefill budget tracks the deployment's max_input_row_count
+	 * (the engine refuses a budget above it), not a hardcoded 16 - a
+	 * wide-rows deployment was silently prefilled 16 rows per submission. */
+	cfg.max_prefill_rows_per_submission = dep.runtime_limits.max_input_row_count;
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.event_function = api_event;

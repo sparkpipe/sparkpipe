@@ -25,10 +25,13 @@
  *   allocator over the module's KV pool with the host mirror the module
  *   proves coverage against before every launch.
  *
- * Prefill frames are one lane per frame capped at max_active_sequence_count
- * positions, so a multi-lane or over-cap prefill submission is split into a
- * sequence of frames inside submit; execution is submit_return synchronous,
- * and the single serving completion fires after the final frame lands.
+ * Prefill frames are one lane per frame capped at max_input_row_count
+ * positions (R2b: the chunk width tracks the deployment's max_input_rows
+ * runtime limit, NOT max_active_sequence_count - a B1 deployment would
+ * otherwise re-stream every weight once per prompt token), so a multi-lane
+ * or over-cap prefill submission is split into a sequence of frames inside
+ * submit; execution is submit_return synchronous, and the single serving
+ * completion fires after the final frame lands.
  */
 
 #include <stddef.h>
@@ -505,6 +508,7 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_LAYER_COUNT",state->stage_layer_count);
 #endif
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES",state->max_active_sequence_count);
+	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS",state->max_input_row_count);
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_PIPELINE_SLOTS",state->pipeline_slot_count);
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_KV_BLOCKS",state->kv_block_count);
 	if ( SparkQwen38_27bServingSpeculationEnabled() != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u )
@@ -2060,9 +2064,12 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 				lane_rows += submission->row_lane_indices[wave] == lane ? 1u : 0u;
 			for (wave=0u; status == SPARK_STATUS_OK && wave<lane_rows; wave+=chunk_rows)
 			{
+				/* R2b: chunk to max_input_row_count, not the active-lane
+				 * count - one weight pass per chunk instead of one per
+				 * prompt token (the 21.7 tok/s prefill mechanism). */
 				chunk_rows = lane_rows - wave;
-				if ( chunk_rows > state->max_active_sequence_count )
-					chunk_rows = state->max_active_sequence_count;
+				if ( chunk_rows > state->max_input_row_count )
+					chunk_rows = state->max_input_row_count;
 				status = SparkQwen38_27bServingRunFrame(state,submission,pending,1u,lane,wave,chunk_rows);
 			}
 		}
@@ -2250,9 +2257,15 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 	for (block=0u; block<state->kv_block_count; block++)
 		((uint32_t *)state->free_blocks.pointer)[block] = state->kv_block_count - 1u - block;
 	state->free_block_count = state->kv_block_count;
-	if ( SparkMemoryBufferAllocate(&state->gather_scratch,
-		SPARK_MEMORY_SPACE_DEVICE_PRIVATE,(uint64_t)state->max_active_sequence_count * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES) != SPARK_STATUS_OK )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	/* Gather scratch spans one frame's rows: decode rows or a prefill
+	 * chunk's rows, so the width is max(active, input_rows). */
+	{
+		uint32_t frame_rows = state->max_active_sequence_count > state->max_input_row_count ?
+			state->max_active_sequence_count : state->max_input_row_count;
+		if ( SparkMemoryBufferAllocate(&state->gather_scratch,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,(uint64_t)frame_rows * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES) != SPARK_STATUS_OK )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	if ( state->stage_attn_layer_count != 0u )
 	{
 		if ( SparkMemoryBufferAllocate(&state->device_block_indices,
