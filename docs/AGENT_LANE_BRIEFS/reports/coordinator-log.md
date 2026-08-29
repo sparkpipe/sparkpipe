@@ -1980,3 +1980,16 @@ appendix).
   (fd tier), jikv-c5 (NEW: reuse-value policy + EDF restore ordering),
   r3-flashdecode (NEW: PERF_PROGRAM2 rock R3, split-K decode attention,
   exact-equivalence discipline, GPU cell staged not run).
+
+## 2026-08-29 ~19:0x — jikv-c5 merged; JIT-KV host stack COMPLETE (C1-C5+W2)
+
+- MERGED lane/jikv-c5 (clean, one commit on tip): reuse-value park
+  policy (LRU default preserved) + EDF deadline lookahead in the tier
+  (hinted saturation orders; hintless byte-for-byte). The JIT-KV
+  program's host-side contract stack is now complete: C1 backpressure,
+  C2 restore-gated dispatch, C3 measured-bandwidth admission, C4 async
+  park worker, C5 reuse-value, W2 EDF engine — all cuda-stub-proven,
+  all suites green untouched. Remaining JIT-KV work is family rollout
+  + spark-gated receipts (fleet-gated). Respawned the slot as
+  tokenizer-sidecar (Phase 4: text-in/text-out — the serve-ourselves
+  pivot's front door; node/model_api.c is unowned).
