@@ -565,7 +565,7 @@ static int32_t SparkGlm5NextRunLayerHcPost(const SparkGlm5NextCudaWave *wave,uin
 	if ( getenv("SPARK_GLM5_NEXT_PROBE") != 0 )
 	{
 		float probe_p[4];
-		Glm5NextProbeFloats(stream,buffers.attention_out_bf16,4u,probe_p);
+		Glm5NextProbeFloats(stream,(const float *)buffers.attention_out_bf16,4u,probe_p);
 		fprintf(stderr,"G5N-PROBE r%u post L%u bf16sum %llu f %.6g %.6g %.6g %.6g\n",
 			(unsigned)wave->tp_rank,(unsigned)(wave->first_layer_index + local_layer),
 			(unsigned long long)Glm5NextProbeBf16Sum(stream,(const uint16_t *)buffers.attention_out_bf16,64u),
