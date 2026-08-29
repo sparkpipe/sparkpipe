@@ -1698,6 +1698,21 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		if ( state->tp_device_collective_hc_initialized == 0u )
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		collective = &state->tp_device_collective_hc;
+		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
+		{
+			uint16_t probe_pre[256];
+			uint32_t probe_qi,probe_qb;
+			uint64_t probe_qs;
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			probe_qs = 0u;
+			for ( probe_qb = 0u; probe_qb < 4u; probe_qb++ )
+			{
+				(void)cudaMemcpy(probe_pre,(uint8_t *)device_bf16 + (uint64_t)probe_qb * sizeof(probe_pre),sizeof(probe_pre),cudaMemcpyDeviceToHost);
+				for ( probe_qi = 0u; probe_qi < 256u; probe_qi++ )
+					probe_qs += probe_pre[probe_qi];
+			}
+			fprintf(stderr,"G5N-PROBE layer %u pre-wide-submit hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_qs);
+		}
 	}
 	else
 		collective = &state->tp_device_collective;
