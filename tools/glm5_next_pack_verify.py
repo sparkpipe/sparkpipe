@@ -92,6 +92,8 @@ def main() -> int:
     ap.add_argument("--tp-rank", type=int, required=True)
     ap.add_argument("--tp-degree", type=int, default=16)
     ap.add_argument("--deep", action="store_true")
+    ap.add_argument("--skip-spot", action="store_true",
+                    help="header/layout/plan-diff only (no checkpoint payload reads)")
     args = ap.parse_args()
 
     path = Path(args.pack)
@@ -203,6 +205,13 @@ def main() -> int:
         spot += [(K_LM_HEAD, GLOBAL_LAYER), (K_SHARED_GATE_UP, 3),
                  (K_Q_B, 3), (K_EXPERT_UP_GATE, 3)]
     by_key = {(it.entry.kind, it.entry.layer): it for it in packer.plan}
+    if args.skip_spot:
+        source.close()
+        mm.close()
+        f.close()
+        print(f"VERIFY-PASS (skip-spot) rank {args.tp_rank}: {path.name} "
+              f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}")
+        return 0
     for kind, layer in spot:
         item = by_key.get((kind, layer))
         if item is None:
