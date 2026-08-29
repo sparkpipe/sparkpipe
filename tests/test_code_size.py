@@ -889,8 +889,14 @@ EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # .agents holds per-model agent worktrees (full clones of this tree);
 # their copies are tooling infrastructure, not authored source, and must
 # never move the counter.
+# 'experiments' is the tournament/R&D carve-out (operator directive
+# 2026-08-30): speculation-tournament harnesses, agreement-matrix
+# replays, bandit prototypes — the hill-climb code that finds WHAT to
+# build. The PRODUCTION version, once results say what we want, moves
+# out of experiments/ into the real tree and counts normally.
 EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
-                      '__pycache__', '.agents', 'devcycle', '.lane_cache'}
+                      '__pycache__', '.agents', 'devcycle', '.lane_cache',
+                      'experiments', 'references'}
 # tools/devcycle holds host-recovery / fleet-ops scripts (GRUB staging,
 # fstab fastboot fix): operational infrastructure, not serving-engine
 # source, and must never consume the authored-code budget.
