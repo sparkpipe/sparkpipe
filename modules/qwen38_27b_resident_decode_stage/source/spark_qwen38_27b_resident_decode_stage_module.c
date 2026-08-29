@@ -18,6 +18,7 @@
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
+#include "sparkpipe/spark_head_screen.h"
 #include "spark_qwen38_27b_stagepack_format.h"
 #include "spark_qwen38_27b_dspark_format.h"
 #include "spark_qwen38_27b_tp.h"
@@ -74,6 +75,9 @@ typedef struct SparkQwen38_27bModuleSlot
 	void *head_logits_bf16;
 	uint32_t *head_candidate_ids_u32;
 	uint32_t *head_candidate_counts_u32;
+	/* device-private: certified B1 head scratch (coarse scores, bounds,
+	 * hidden norms, partial reduce) — stream-ordered, capture-safe */
+	void *head_certified_scratch;
 	uint32_t *row_lane_indices;
 	uint32_t *slot_mapping;
 	uint32_t *context_lengths;
@@ -225,6 +229,12 @@ typedef struct SparkQwen38_27bModuleState
 	uint8_t *head_shadow_payload;
 	uint8_t *head_shadow_scale;
 	float *head_error_norm_f32;
+	/* device-private: certified FP8 head shadow (B1 exact screened head);
+	 * payload is one E4M3 byte per weight, scale/norm carry one float per
+	 * 32-wide group (spark_head_screen.h sizing helpers) */
+	uint8_t *head_certified_fp8_payload;
+	float *head_certified_fp8_scale_f32;
+	float *head_certified_fp8_norm_f32;
 	const void *attention_norm_by_layer[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	const void *mlp_norm_by_layer[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	SparkQwen38_27bGdnLayerWeights gdn_by_layer[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT];
@@ -373,6 +383,8 @@ extern cudaError_t SparkQwen38_27bLaunchHeadArgmax(cudaStream_t stream, const vo
 extern cudaError_t SparkQwen38_27bLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38_27bLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen38_27bLaunchHeadScreenedArgmaxScore(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *scratch_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count);
+extern cudaError_t SparkQwen38_27bLaunchHeadCertifiedFp8Quantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, float *shadow_scale_f32, float *cert_norm_f32, uint32_t candidate_count, uint32_t hidden_dimension);
+extern cudaError_t SparkQwen38_27bLaunchHeadCertifiedFp8B1Sharded(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const float *shadow_scale_f32, const float *cert_norm_f32, void *scratch, uint32_t *candidate_ids, uint32_t *candidate_count, uint32_t *output_token_id, float *output_score, uint32_t candidate_offset, uint32_t row_count, uint32_t vocabulary_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38_27bLaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count);
 extern cudaError_t SparkQwen38_27bLaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count);
 extern cudaError_t SparkQwen38_27bTpSetGeometry(uint32_t gdn_qk_channels,uint32_t gdn_value_channels,uint32_t gdn_conv_channels,uint32_t gdn_key_heads,uint32_t gdn_value_heads,uint32_t attn_query_heads,uint32_t attn_kv_heads,uint32_t gdn_qk_channel_base,uint32_t gdn_value_channel_base,uint32_t gdn_key_head_base,uint32_t gdn_value_head_base);
@@ -894,7 +906,11 @@ static SparkStatus SparkQwen38_27bModuleLoadPack(SparkQwen38_27bModuleState *sta
 
 // One-time MXFP4 shadow of the lm_head plus per-neuron certified error
 // norms, the mimo25 screened-head pattern; head stage only, built
-// synchronously at initialize.
+// synchronously at initialize. The certified FP8 shadow (same construction
+// the DSV4 head certifies: per-32-group E4M3 with round-up error bounds)
+// is built alongside for the B1 dispatch — the B1 decode head reads it
+// (~half the bytes of the BF16 rescore) and its exact BF16 rescore of the
+// certified candidate set keeps the emitted token bit-exact.
 static SparkStatus SparkQwen38_27bModuleBuildHeadShadow(SparkQwen38_27bModuleState *state)
 {
 	uint64_t vocab = state->tp.head_rows,dim = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
@@ -908,6 +924,14 @@ static SparkStatus SparkQwen38_27bModuleBuildHeadShadow(SparkQwen38_27bModuleSta
 		status = SparkStageModuleDeviceAllocate(&state->ledger,vocab * sizeof(float),(void **)&state->head_error_norm_f32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,SparkQwen38_27bLaunchHeadShadowQuantize(0,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,(uint32_t)vocab,(uint32_t)dim),"head_shadow_quantize");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SparkHeadCertifiedFp8PayloadBytes(vocab,dim),(void **)&state->head_certified_fp8_payload);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SparkHeadCertifiedFp8NormBytes(vocab,dim),(void **)&state->head_certified_fp8_scale_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SparkHeadCertifiedFp8NormBytes(vocab,dim),(void **)&state->head_certified_fp8_norm_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,SparkQwen38_27bLaunchHeadCertifiedFp8Quantize(0,state->lm_head_weight_bf16,state->head_certified_fp8_payload,state->head_certified_fp8_scale_f32,state->head_certified_fp8_norm_f32,(uint32_t)vocab,(uint32_t)dim),"head_certified_fp8_quantize");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaDeviceSynchronize(),"head_shadow_sync");
 	return(status);
@@ -1024,10 +1048,20 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlotControl(SparkQwen38_27bModul
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->output_token_ids);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->head_logits_bf16);
+	/* Certified B1 head: the screen can admit every rank-local candidate,
+	 * so the id buffer is sized for the full shard (the screened path's
+	 * 4096 cap would overflow it); scratch follows the model-neutral
+	 * spark_head_screen.h layout. */
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP * sizeof(uint32_t),(void **)&slot->head_candidate_ids_u32);
+	{
+		uint64_t head_candidate_bytes = (uint64_t)rows * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP * sizeof(uint32_t);
+		uint64_t full_candidate_bytes = SparkHeadCertifiedFp8CandidateBytes(state->tp.head_rows);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,head_candidate_bytes > full_candidate_bytes ? head_candidate_bytes : full_candidate_bytes,(void **)&slot->head_candidate_ids_u32);
+	}
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->head_candidate_counts_u32);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SparkHeadCertifiedFp8ScratchBytes(state->tp.head_rows,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION),(void **)&slot->head_certified_scratch);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(float),(void **)&slot->head_scores_f32);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
@@ -2044,7 +2078,16 @@ static cudaError_t SparkQwen38_27bModuleEmitHead(SparkQwen38_27bModuleState *sta
 	const void *head_hidden = head_rows == 1u && rows != 1u ? (const void *)((const uint8_t *)slot->hidden_bf16 + ((uint64_t)(rows - 1u) * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES)) : slot->hidden_bf16;
 	cudaError_t error;
 	error = SparkQwen38_27bLaunchRmsNorm(stream,head_hidden,state->final_norm_weight_bf16,slot->normalized_bf16,head_rows,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_27B_MODEL_RMS_NORM_EPSILON);
-	if ( error == cudaSuccess )
+	if ( error == cudaSuccess && head_rows == 1u )
+	{
+		/* B1 (and prefill's final-position row) dispatches to the certified
+		 * screened head instead of the full-vocabulary BF16 rescore: the
+		 * FP8 shadow scan + exact BF16 rescore of the certified candidate
+		 * set emits the identical token id and f32 score at a fraction of
+		 * the head bytes (same construction DSV4's certified head uses). */
+		error = SparkQwen38_27bLaunchHeadCertifiedFp8B1Sharded(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_certified_fp8_payload,state->head_certified_fp8_scale_f32,state->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,slot->head_scores_f32,state->tp_rank * state->tp.head_rows,1u,state->tp.head_rows,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION);
+	}
+	else if ( error == cudaSuccess )
 		error = SparkQwen38_27bLaunchHeadScreenedArgmaxScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,slot->head_scores_f32,state->tp_rank * state->tp.head_rows,head_rows,state->tp.head_rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen38_27bLaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->output_token_ids,slot->head_maxloc_u64,head_rows);
@@ -2115,20 +2158,22 @@ static SparkStatus SparkQwen38_27bModuleRunMtpArgmaxRow(SparkQwen38_27bModuleSta
 	const void *row_hidden = (const uint8_t *)slot->hidden_bf16 + ((uint64_t)row * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES);
 	cudaError_t error;
 	error = SparkQwen38_27bLaunchRmsNorm(stream,row_hidden,state->mtp.final_norm_weight_bf16,slot->normalized_bf16,1u,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_27B_MODEL_RMS_NORM_EPSILON);
+	/* The MTP argmax row is always one row: it takes the certified B1
+	 * screened head (exact rescore of the certified candidate set), not
+	 * the full-vocabulary BF16 rescore the screened launcher falls back
+	 * to at row_count==1. */
+	if ( error == cudaSuccess )
+		error = SparkQwen38_27bLaunchHeadCertifiedFp8B1Sharded(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_certified_fp8_payload,state->head_certified_fp8_scale_f32,state->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->mtp_draft_ids + draft_index,slot->head_scores_f32,state->tp_rank * state->tp.head_rows,1u,state->tp.head_rows,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess && state->tp_degree > 1u )
 	{
 		/* TP4: argmax over the rank's head shard, then the u64 maxloc
 		 * collective picks the global winner across ranks. */
-		error = SparkQwen38_27bLaunchHeadScreenedArgmaxScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->mtp_draft_ids + draft_index,slot->head_scores_f32,state->tp_rank * state->tp.head_rows,1u,state->tp.head_rows);
-		if ( error == cudaSuccess )
-			error = SparkQwen38_27bLaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->mtp_draft_ids + draft_index,slot->head_maxloc_u64,1u);
+		error = SparkQwen38_27bLaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->mtp_draft_ids + draft_index,slot->head_maxloc_u64,1u);
 		if ( error == cudaSuccess && SparkQwen38_27bTpReduceU64Max(&state->tp,slot->head_maxloc_u64,1u,stream) != SPARK_STATUS_OK )
 			error = cudaErrorUnknown;
 		if ( error == cudaSuccess )
 			error = SparkQwen38_27bLaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->mtp_draft_ids + draft_index,1u);
 	}
-	else if ( error == cudaSuccess )
-		error = SparkQwen38_27bLaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->mtp_draft_ids + draft_index,1u,SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,error,"mtp_argmax"));
 }
 

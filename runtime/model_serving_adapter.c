@@ -529,6 +529,37 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	return(SparkModelServingAdapterValidateRows(submission,submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE,runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
 }
 
+/*
+ * Perf program 2 R5: identical checks to
+ * SparkModelServingAdapterValidateRuntimeSubmission MINUS the re-validation
+ * of the (descriptor, limits) pair. That pair is immutable for a component's
+ * lifetime and is validated once at configure/connect time (pipeline client,
+ * resident client, residentd, serving adapters); the per-submission field,
+ * capacity, and row checks — the parts that can actually reject — are
+ * unchanged, so every rejection keeps its exact status. The null-argument
+ * results match ValidateRuntimeLimits's, keeping the failure surface
+ * identical for miswired callers.
+ */
+SparkStatus SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	const SparkModelServingSubmission *submission)
+{
+	SparkStatus status;
+	uint32_t lane;
+	if ( descriptor == 0 || runtime_limits == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelServingAdapterValidateSubmission(descriptor,submission);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( submission->lane_count > runtime_limits->max_active_sequence_count || submission->row_count > runtime_limits->max_input_row_count )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		if ( submission->lanes[lane].resident_sequence_slot >= runtime_limits->resident_sequence_capacity )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(SparkModelServingAdapterValidateRows(submission,submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE,runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
+}
+
 SparkStatus SparkModelServingAdapterPrepareSubmission(
 	const SparkModelServingAdapterInterface *adapter_interface,
 	void *adapter_state,

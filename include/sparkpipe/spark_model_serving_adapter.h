@@ -396,6 +396,10 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingRuntimeLimits *runtime_limits,
 	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	const SparkModelServingSubmission *submission);
 SparkStatus SparkModelServingAdapterPrepareSubmission(
 	const SparkModelServingAdapterInterface *adapter_interface,
 	void *adapter_state,

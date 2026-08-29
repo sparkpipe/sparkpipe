@@ -659,7 +659,8 @@ static SparkStatus SparkQwen38_27bServingValidateSubmissionBase(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
-	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkQwen38_27bServingDescriptor,&state->runtime_limits,submission);
+	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(&SparkQwen38_27bServingDescriptor,&state->runtime_limits,submission);
+	/* R5 hoist: the adapter validated (descriptor, limits) at configure; per-submission checks unchanged. */
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"qwen38_27b_debug validate_runtime status=%d kind=%u rows=%u lanes=%u act=%u tps=%u new_tokens=%u pos=%llu ctx=%llu\\n",(int)status,submission->work_kind,submission->row_count,submission->lane_count,submission->active_sequence_count,submission->tokens_per_sequence,submission->new_token_count,(unsigned long long)submission->sequence_position,(unsigned long long)(submission->active_sequence_count > 0u ? submission->lanes[0].context_token_count : 0u));

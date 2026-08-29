@@ -2215,6 +2215,24 @@ extern "C" cudaError_t SparkQwen38_27bLaunchHeadScreenedArgmaxScore(cudaStream_t
 	return(SparkLmHostLaunchHeadScreenedArgmaxWithScore(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale,error_norm,scratch_bf16,candidate_ids,candidate_counts,output_token_ids,output_scores,candidate_offset,row_count,candidate_count,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION));
 }
 
+extern "C" cudaError_t SparkQwen38_27bLaunchHeadCertifiedFp8Quantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, float *shadow_scale_f32, float *cert_norm_f32, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	return(SparkLmHostLaunchHeadCertifiedFp8Quantize(stream,head_bf16,shadow_payload,shadow_scale_f32,cert_norm_f32,candidate_count,hidden_dimension));
+}
+
+/*
+ * B1 (one row) certified screened head: FP8 shadow scan with round-up
+ * certified bounds, then the exact BF16 rescore of the surviving candidate
+ * set. Emits the identical token id and exact f32 score the full-vocabulary
+ * BF16 fallback produces — the certified bounds guarantee the true argmax
+ * survives the screen, and the rescore's per-candidate accumulation order
+ * matches the fallback's dot-for-dot.
+ */
+extern "C" cudaError_t SparkQwen38_27bLaunchHeadCertifiedFp8B1Sharded(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const float *shadow_scale_f32, const float *cert_norm_f32, void *scratch, uint32_t *candidate_ids, uint32_t *candidate_count, uint32_t *output_token_id, float *output_score, uint32_t candidate_offset, uint32_t row_count, uint32_t vocabulary_count, uint32_t hidden_dimension)
+{
+	return(SparkLmHostLaunchHeadCertifiedFp8B1WithScore(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale_f32,cert_norm_f32,scratch,candidate_ids,candidate_count,output_token_id,output_score,candidate_offset,row_count,vocabulary_count,hidden_dimension));
+}
+
 extern "C" cudaError_t SparkQwen38_27bLaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count)
 {
 	SparkQwen38_27bHeadMaxLocPackKernel<<<row_count,1u,0,stream>>>(scores_f32,token_ids_u32,keys_u64,row_count);
