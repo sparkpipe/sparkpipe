@@ -1020,7 +1020,29 @@ from pathlib import Path
 # stages the spark-gated GPU receipt for the real VMM path (+230, never run
 # offline). tests/cuda_stub/* (the cuMem* stand-in) is excluded by
 # construction; tests are excluded. 224943 exact.
-CEILING = 226607
+# probe-fix: the probe-armed build's TP window scaling under
+# SPARK_GLM5_NEXT_PROBE (connect x4, operation x8 for the probe-BUSY
+# fix: rank 0's L0 deep KDA diag ladder runs between TP ordinals and
+# peers' serving-length waits expired first) + the glm5_next_wave
+# --probe arming, 780s ready poll and cwd-scoped TERM stop, and the
+# src/spark_sha256.c aarch64 FEAT_SHA2 direction-of-reinterpret repair
+# (vreinterpretq_u8_u32(u8 vector) does not compile on aarch64 gcc;
+# net -4 lines there). Every scale is diag-only: the serving default is
+# untouched. 222218 exact.
+# probe-fix II: the cold-first-request fix - ATTN_OUTPUT + KDA_OUT (the
+# attention o_proj family, checkpoint [hidden, heads*dim]) move from
+# row-sharded to col-sharded in the module's stagepack TP policy, with
+# the matching packer flip and comment block. The policy/gemm dispute
+# (policy read [hidden/tp, width], the out-GEMM consumes
+# [hidden, width/tp]) is the degeneration root cause; the justification
+# evidence lives in the commit + docs/AGENT_LANE_BRIEFS/reports/.
+# 222236 exact.
+# probe-fix III: the G5N-PROBE cross-rank reduce checksum (post-reduce
+# attention_out printed on EVERY rank under the diag env; the reduced
+# partial must be bit-identical across ranks) - the instrument that
+# separates a collective-path defect from a per-rank partial-math one.
+# 222250 exact.
+CEILING = 226696
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

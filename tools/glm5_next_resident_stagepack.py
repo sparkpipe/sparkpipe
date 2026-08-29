@@ -626,7 +626,17 @@ class Packer:
                 self.add_f32_slice(K_KDA_DECAY_BIAS, layer, f"{a}dt_bias", axis="cols")
                 self.add_f32_slice(K_KDA_HEAD_LOG_SCALE, layer, f"{a}A_log", axis="cols")
                 self.add_spine_f32(K_KDA_OUT_NORM, layer, f"{a}o_norm.weight")
-                self.add_spine_bf16(K_KDA_OUT, layer, f"{a}o_proj.weight", shard="rows")
+                # o_proj is checkpoint [hidden, heads*dim] = out-hidden x
+                # in-width, the down-projection family: the rank slice is
+                # the INPUT columns (this rank's heads) and the module's
+                # out-GEMM lands the full-width rank partial the chain
+                # reduces. Row-sharding transposed the block - the pack
+                # held [hidden/tp, width] where the consumer reads
+                # [hidden, width/tp]: garbage attention partials on every
+                # rank from layer 0 (the cold-first-request degeneration;
+                # TP1-invariant, so the M3 gates passed). Same for the DSA
+                # K_ATTN_OUTPUT below.
+                self.add_spine_bf16(K_KDA_OUT, layer, f"{a}o_proj.weight", shard="cols")
             elif layer < LAYERS or layer == MTP_LAYER:
                 # DSA (or the MTP layer - same tensor set minus HC)
                 self.add_spine_bf16(K_Q_A, layer, f"{a}q_a_proj.weight")
@@ -635,7 +645,7 @@ class Packer:
                 self.add_spine_bf16(K_KV_A, layer, f"{a}kv_a_proj_with_mqa.weight")
                 self.add_spine_bf16(K_KV_A_NORM, layer, f"{a}kv_a_layernorm.weight")
                 self.add_kv_b(layer)
-                self.add_spine_bf16(K_ATTN_OUTPUT, layer, f"{a}o_proj.weight", shard="rows")
+                self.add_spine_bf16(K_ATTN_OUTPUT, layer, f"{a}o_proj.weight", shard="cols")
                 i = f"{a}indexer."
                 self.add_spine_bf16(K_INDEX_Q, layer, f"{i}wq_b.weight")  # replicated (glm52 pattern)
                 self.add_spine_bf16(K_INDEX_K, layer, f"{i}wk.weight")
