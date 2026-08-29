@@ -1617,3 +1617,19 @@ appendix).
   top-K the screen can't prove — the design is in the report as
   follow-up). MTP row got the route.
 - Un-reds two main gates (memory-contract re-pin, manifest chain).
+
+## 2026-08-30 ~21:2x — REGISTRAR FINAL MERGED: the flap is EXTINCT; F-findings owned
+
+- Six gated waves, ZERO open-timeout lines fleet-wide, every time. GO
+  at +0.63-0.81s/node (10s bound); stale-clears ~0.5s; 22/22 unit.
+  The startup protocol is fleet law.
+- F1 ROVING ADAPTER-INIT FLAKE (rc=14/15, one random rank/wave): the
+  new #1 fleet bug — 15/16 serves nothing, so the state-bleed pair +
+  all serving waits on it. HUNT QUEUED (probe the rank that flaked:
+  its log line + the adapter's rc=14 path).
+- F4 NO-LATE-JOINERS: the transport admits none; RESTART UNIT = FULL
+  FLEET (via registrar). Subset acceptance-B re-spec noted — restart
+  docs gain this as law.
+- F2 wave-owner race (a second actor fired over the serving fleet):
+  the rule is load-bearing; enforcement idea = the registrar's GO
+  epoch as a lease. F5 TERM-immune: real, handled, zero KILLs.
