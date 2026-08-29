@@ -1728,3 +1728,15 @@ appendix).
 - 5/5 agents alive (r2/k3 pushing, probe-fix/w1/kernel-crew deep).
   Fleet: probe-fix's waves continue. Next: the three quiet lanes'
   first pushes.
+
+## 2026-08-30 ~13:1x — THE ONE THING executed: cancel-unwired (40ca88c)
+
+- The operator's rebuke taken: this cycle EXECUTED code, not a status
+  report. The disconnect→cancel correctness bug (kimi's list): the
+  engine's Cancel existed unwired; departed clients burned GPU to
+  budget. Now the request wait polls the socket (250ms) — POLLHUP or
+  a 0-byte MSG_PEEK = peer gone -> engine Cancel + orphan-marking on
+  the worker's existing deferred-free path. Compile-clean strict.
+- Also merged this cycle: R2b (prefill chunk width — the 21.7 tok/s
+  bug) + k3-finish's keepalive/envelope tools.
+- 5/5 agents alive (2 pushed + merged, 3 deep).
