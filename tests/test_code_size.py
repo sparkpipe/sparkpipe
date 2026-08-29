@@ -1134,8 +1134,10 @@ CEILING = 228248
 # --probe-vec env knobs for the DSA dumps (G5N_VEC_DSA/G5N_VEC_LAYER); the
 # oracle gained the DsaSafetensors fp8-reader subclass; the wave task script
 # (tools/g5dsa_wave_task.sh) stages the queue-dispatched probe-vec wave +
-# canonical cold curl. To be trimmed with the ratchet at coherence.
-CEILING = 229241
+# canonical cold curl; start_api now setsid-detaches the api launch (the
+# plain nohup form held the launch ssh 31 min and failed the wave). To be
+# trimmed with the ratchet at coherence.
+CEILING = 229245
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

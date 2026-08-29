@@ -204,7 +204,11 @@ ready_wave() {
 start_api() {
     rr="$(runtime_root "$API_HOST")"
     echo "== api on $API_HOST:$API_PORT =="
-    ssh_run "$API_HOST" "cd '$rr' && nohup ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root '$rr' --port $API_PORT > api.log 2>&1 < /dev/null &"
+    # setsid + full fd detach: the plain `nohup ... &` form left the launch
+    # ssh holding the session open for 31 minutes (the api inherits the
+    # sshd-side pipe unless every fd is redirected BEFORE backgrounding),
+    # which set -e then turned into WAVE-FAIL (glm5-dsa lane, wave3).
+    ssh_run "$API_HOST" "cd '$rr' && setsid nohup ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root '$rr' --port $API_PORT > api.log 2>&1 < /dev/null &" </dev/null
     sleep 3
     ssh_run "$API_HOST" "tail -3 '$rr/api.log'"
 }
