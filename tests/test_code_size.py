@@ -1120,8 +1120,11 @@ CEILING = 228764
 # tools/k3_fleet_wave.sh (+18: the exclusive-window daemon census and the
 # launch pid capture move off deployment-blind pgrep -x onto anchored
 # cmdline match + cwd filter + self-exclusion - the same comm is shared by
-# every family's residentd, and -f self-matches the ssh wrapper). Exact
-# value recomputed post-rebase.
+# every family's residentd, and -f self-matches the ssh wrapper). +7 more:
+# tools/k3_gen_adapter_configs.sh kv_pages 2 -> 64 (smoke scale 128
+# positions/sequence overflowed every real quality fixture; 64 pages =
+# 4,096 positions at ~0.45-0.62 GiB/rank) with the pool arithmetic
+# documented at the knob. 222230 exact.
 CEILING = 228764
 
 ROOT = Path(__file__).resolve().parent.parent

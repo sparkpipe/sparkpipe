@@ -65,14 +65,24 @@ Staging recipe: `bash tools/k3_stage_runtime.sh sparke
 ## Memory envelope (110 GiB operator ceiling)
 
 Per node: weights 98,119,908,864 B = 91.4 GiB (pack mmap, registered)
-+ KDA state pools 17 layers x 16 seq x 6,291,456 B = 1.59 GiB
-+ KDA conv windows ~77 MB + MLA KV pool (kv_pages=2) < 1 MB + scratch ~3 MB
-+ NCCL/transport buffers + CUDA context ≈ 95-97 GiB TOTAL.
++ KDA state pools 17 layers x 16 seq x 6,586,368 B = 1.79 GiB
++ KDA conv windows ~77 MB + MLA KV pool (kv_pages=64) 0.45-0.62 GiB
++ scratch ~3 MB + NCCL/transport buffers + CUDA context ≈ 95-97 GiB TOTAL.
 Fits alone with ~13 GiB margin. Does NOT fit with any other model's rank
 co-resident (glm5_next rank = 21.7 GiB → ~117 GiB = over the ceiling and
 the ~114 GiB NVRM kill line): the K3 window is EXCLUSIVE fleet-wide —
 the glm5_next TP16 fleet must be paused (fleet_swap semantics) for the
 window and restored after.
+
+MLA KV pool arithmetic (kv_pages=64, generator k3_gen_adapter_configs.sh):
+page = 64 slots x 1152 B (MLA latent row, kv_lora_rank 512 + unrotated 64,
+BF16) = 73,728 B = 64 positions; 64 pages = 4,096 positions/sequence.
+Device cost = mla_count x kv_pages x 73,728 B x 16 sequences, with stage
+MLA counts 6/5/6/7 → 0.45 GiB (stage-1) to 0.62 GiB (stage-3) per rank.
+Covers the quality fixtures 5x (max 769 tokens). The smoke value
+kv_pages=2 held only 128 positions and overflowed on every real prompt.
+The 224K-token fixtures need kv_pages=3500 ≈ 25 GiB/rank at 16 sequences
+— re-plan memory (or drop sequence occupancy) before that step.
 
 kv note: the descriptor carries no JIT_KV, so the deployment's
 runtime_limits MUST be kv_logical/physical_page_capacity = 0/0
