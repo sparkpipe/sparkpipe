@@ -296,6 +296,14 @@ def render_model_description(contract: Dict[str, Any], codec: str) -> str:
         "spark.glm52.resident_decode_stage.bf16."
         f"expert_{codec}.h6144.l78.e256.k8.v2"
     )
+    # Source-model provenance per codec: the fp8 packs derive from the
+    # publisher's FP8 snapshot, not the BF16 master (the BF16 master at
+    # this revision no longer exists locally). 771c638 pinned the on-disk
+    # firmware description; the generator now states the same rule so the
+    # rendered output matches the artifact.
+    source_model_id = (
+        "zai-org/GLM-5.2-FP8" if codec == "fp8" else contract["model_id"]
+    )
     description = {
         "schema_version": 1,
         "model": {
@@ -305,7 +313,7 @@ def render_model_description(contract: Dict[str, Any], codec: str) -> str:
         "metadata": {
             "architecture": "glm52_resident_decode_stage",
             "source_model": {
-                "id": contract["model_id"],
+                "id": source_model_id,
                 "revision": model_revision,
             },
             "purpose": (

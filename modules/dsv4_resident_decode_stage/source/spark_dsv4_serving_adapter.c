@@ -535,7 +535,9 @@ static SparkStatus SparkDsv4ServingReservePending(
 	 * cache lanes and emit rows below are this family's frame shape, and a
 	 * failed fill leaves the slot free (the template never marks active). */
 	pending = (SparkDsv4ServingPending *)SparkServingAdapterTemplateReservePending(
-		state->pending,sizeof(*pending),state->pipeline_slot_count,
+		state->pending,sizeof(*pending),
+		(uint32_t)offsetof(SparkDsv4ServingPending,common),
+		state->pipeline_slot_count,
 		(uint32_t)offsetof(SparkDsv4ServingPending,last_row_by_lane),submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
@@ -784,6 +786,14 @@ static void SparkDsv4ServingInitializeState(
 	state->wake_context = configuration->wake_context;
 }
 
+/* Same contract the module's former env read implemented: exactly "1"
+ * arms the path; unset or any other value leaves it off. */
+static uint32_t SparkDsv4ServingDsparkEnvEnabled(void)
+{
+	const char *value = getenv("SPARK_DSV4_DSPARK");
+	return(value != 0 && value[0] == '1' && value[1] == '\0') ? 1u : 0u;
+}
+
 static SparkStatus SparkDsv4ServingInitializeNodeContext(
 	SparkDsv4ServingAdapterState *state,
 	uint32_t max_sequence_positions,
@@ -796,6 +806,14 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 	state->node_context.flags = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL : 0u;
 	if ( SPARK_DSV4_SERVING_HYBRID != 0u )
 		state->node_context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIPELINE_PARALLEL;
+	/* DSpark is deployment-opt-in: SPARK_DSV4_DSPARK=1 arms the speculative
+	 * path (draft drive, verify expansion, taps, acceptance). The adapter
+	 * translates the launch environment into the typed node-context flag —
+	 * the compute module is environment-free by architecture. Anything
+	 * else, including an unset environment, leaves the no-spec path free
+	 * of the draft machinery's host work. */
+	if ( SparkDsv4ServingDsparkEnvEnabled() != 0u )
+		state->node_context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_DSPARK;
 	state->node_context.stage_count = SPARK_DSV4_SERVING_HYBRID != 0u ? SPARK_DSV4_SERVING_PP_STAGE_COUNT : SPARK_DSV4_SERVING_STAGE_COUNT;
 	state->node_context.stage_index = SPARK_DSV4_SERVING_HYBRID != 0u ? SparkDsv4ServingPpStageIndex(state->stage_index) : state->stage_index;
 	state->node_context.first_layer_index = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? 0u : SparkDsv4ServingFirstLayer(state->stage_index);

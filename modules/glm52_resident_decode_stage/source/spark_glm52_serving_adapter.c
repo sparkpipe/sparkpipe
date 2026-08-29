@@ -284,7 +284,9 @@ static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 	uint32_t row;
 	pending = (SparkGlm52ServingPending *)
 		SparkServingAdapterTemplateReservePending(state->pending,
-			sizeof(*pending),state->pipeline_slot_count,
+			sizeof(*pending),
+			(uint32_t)offsetof(SparkGlm52ServingPending,common),
+			state->pipeline_slot_count,
 			(uint32_t)offsetof(SparkGlm52ServingPending,last_row_by_lane),
 			submission);
 	if ( pending == 0 )

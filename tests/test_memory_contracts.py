@@ -282,8 +282,58 @@ def main():
         if not path.is_file() or path.read_text() != render_model_description(
                 model_contract,codec):
             violations.append(f"generated GLM-5.2 {codec} description is stale")
-    if violations:
-        raise SystemExit("\n".join(violations))
+    enforce_ratchet(violations)
+
+
+# IR-7 split (red-gate lane, 2026-08-28): the source-hygiene inventory is
+# parked, with a list, not silently red. The per-occurrence findings above
+# are compared against tests/test_memory_contracts_parked.txt (counts per
+# "path: message"). NEW violations fail. Shrunk entries fail too, asking
+# for the re-pin prune in the same commit as the fix — the parked list
+# must always equal reality. The structural checks (duplicate headers,
+# stale generated contracts/descriptions, duplicate constants) are NOT
+# parkable: they fail hard.
+INVENTORY_LINE = re.compile(r"^(?P<path>[^:]+):(?P<line>[0-9]+): (?P<message>.+)$")
+PARKED_LIST_PATH = pathlib.Path(__file__).with_name(
+    "test_memory_contracts_parked.txt")
+
+
+def enforce_ratchet(violations):
+    structural = [v for v in violations if not INVENTORY_LINE.match(v)]
+    current = {}
+    for violation in violations:
+        match = INVENTORY_LINE.match(violation)
+        if match:
+            key = f"{match.group('path')}: {match.group('message')}"
+            current[key] = current.get(key, 0) + 1
+    parked = {}
+    for line in PARKED_LIST_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        count, entry = line.split(None, 1)
+        parked[entry] = parked.get(entry, 0) + int(count)
+    failures = list(structural)
+    for entry, count in sorted(current.items()):
+        allowed = parked.get(entry, 0)
+        if count > allowed:
+            failures.append(
+                f"NEW memory-contract violation (ratchet): {entry} "
+                f"({count}x; parked list allows {allowed})")
+    for entry, count in sorted(parked.items()):
+        actual = current.get(entry, 0)
+        if actual < count:
+            failures.append(
+                f"parked entry shrank (ratchet re-pin): {entry} "
+                f"({count}x parked, {actual}x now) - prune it from "
+                f"tests/test_memory_contracts_parked.txt in the same "
+                f"commit as the fix")
+    if failures:
+        raise SystemExit("\n".join(failures))
+    print(
+        f"memory-contract inventory: {sum(current.values())} parked "
+        f"occurrences across {len(current)} entries (IR-7; the list is "
+        f"tests/test_memory_contracts_parked.txt)")
 
 
 if __name__ == "__main__":

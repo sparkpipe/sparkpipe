@@ -882,7 +882,7 @@ from pathlib import Path
 # that exploded streams to 1e18 by L17), packer per-section fused-row
 # slicing (1dac68b — the context-free degeneration), probe ladder
 # extensions. 216956 exact.
-CEILING = 216956
+CEILING = 215867
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

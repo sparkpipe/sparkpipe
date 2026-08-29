@@ -781,8 +781,11 @@ build/test_qwen38_27b_serving_adapter: tests/test_qwen38_27b_serving_adapter.c t
 
 # The K3 adapter links the CUDA serving TUs (runner, dispatch, driver) with
 # nvcc, so the rule is the single-spark gate's link line plus the shared libs.
+# nvcc/spark-gated: no nvcc on the build host (offline mac gate) leaves the
+# artifact unbuilt instead of failing `make all` — same contract as
+# test_qwen38_math_kernels below; a spark node builds and validates it for real.
 $(K3_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c runtime/speculation_provider.c src/spark_status.c ring/transport/tp_collective.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c runtime/speculation_provider.c src/spark_status.c ring/transport/tp_collective.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 build/test_model_resident_end_to_end: tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c build/sparkpipe_model_residentd $(DSV4_SERVING_ADAPTER) $(TEST_DSV4_SERVING_DRIVER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_DSV4_SERVING_ADAPTER_PATH=\"$(DSV4_SERVING_ADAPTER)\" -DTEST_DSV4_SERVING_DRIVER_PATH=\"$(TEST_DSV4_SERVING_DRIVER_MODULE)\" -DTEST_DSV4_SERVING_CONFIG_PATH=\"tests/fixtures/dsv4_serving_adapter_config.json\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -862,6 +865,14 @@ build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38
 # gate; this smoke is the quick path on a spark node with a synthesized pack.
 build/test_qwen38_execute: tests/test_qwen38_execute.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 	@if command -v $(NVCC) >/dev/null 2>&1 && [ -n "$${TEST_QWEN38_MAX_EXECUTE_PACK:-}" ] && [ -s "$$TEST_QWEN38_MAX_EXECUTE_PACK" ]; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c -L$(CUDA_HOME)/lib64 -lcudart -o $@ && ./$@ "$$TEST_QWEN38_MAX_EXECUTE_PACK"; else echo "SKIP test_qwen38_execute (set TEST_QWEN38_MAX_EXECUTE_PACK and provide nvcc to run the pack smoke)"; fi
+
+# The pack-LOAD half of the execute smoke (was an orphan: d19d159 noted it
+# needed Makefile wiring). Same nvcc + pack-on-host contract as
+# test_qwen38_execute above, and deliberately NOT in TEST_NAMES: the
+# offline mac gate never depends on node-local packs. On a spark node:
+#   make build/test_qwen38_pack_load && ./build/test_qwen38_pack_load <pack>
+build/test_qwen38_pack_load: tests/test_qwen38_pack_load.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP build/test_qwen38_pack_load (nvcc unavailable; spark-gated pack-load smoke)"; fi
 
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
@@ -956,6 +967,42 @@ test: $(TEST_BINARIES)
 		echo "RUN $$python_test"; \
 		python3 $$python_test; \
 	done
+
+# ============================================================
+# THE OFFLINE GATE SET (red-gate lane, 2026-08-28). The kimi audit found
+# the previous "zero red gates" claim ran a selection of gates, not a
+# set. This variable IS the set: a claim of an "offline gate pass" means
+# exactly `make offline-gates` succeeded, and nothing else.
+#
+#   build-all          make -j1 all          (fresh build, the README path)
+#   run-tests          make -j1 test         (every registered C test
+#                      binary that builds on this host + every registered
+#                      python gate: code-size ratchet, dry-law, staging
+#                      manifest, the memory-contract ratchet, ...)
+#   package-manifest   python3 tools/verify_package_manifest.py
+#
+# Hardware-gated work is NOT part of an offline pass and must never be
+# claimed by one: nvcc/CUDA artifacts (the K3 serving adapter, the
+# qwen38_max execute/pack-load smokes, cuda13_sm121a_compile_gate.sh,
+# hardware_* tools) SKIP with a notice when nvcc is absent and are
+# validated on spark nodes. C test binaries that a host cannot build are
+# skipped by `make test` with the same notice contract.
+# ============================================================
+OFFLINE_GATES := build-all run-tests package-manifest
+
+.PHONY: offline-gates
+offline-gates:
+	@set -e; \
+	for gate in $(OFFLINE_GATES); do \
+		echo "OFFLINE GATE: $$gate"; \
+		case $$gate in \
+			build-all) $(MAKE) -j1 all;; \
+			run-tests) $(MAKE) -j1 test;; \
+			package-manifest) python3 tools/verify_package_manifest.py;; \
+			*) echo "unknown offline gate: $$gate" >&2; exit 2;; \
+		esac; \
+	done; \
+	echo "OFFLINE GATE PASS: $(OFFLINE_GATES)"
 
 demo: all $(TEST_MODULE_OBJECTS) $(TEST_VALIDATOR)
 	rm -rf build/demo

@@ -702,7 +702,9 @@ static SparkQwen38_27bServingPending *SparkQwen38_27bServingReservePending(
 	uint32_t lane;
 	pending = (SparkQwen38_27bServingPending *)
 		SparkServingAdapterTemplateReservePending(state->pending,
-			sizeof(*pending),state->pipeline_slot_count,
+			sizeof(*pending),
+			(uint32_t)offsetof(SparkQwen38_27bServingPending,common),
+			state->pipeline_slot_count,
 			(uint32_t)offsetof(SparkQwen38_27bServingPending,last_row_by_lane),
 			submission);
 	if ( pending == 0 )

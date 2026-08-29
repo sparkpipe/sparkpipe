@@ -778,10 +778,11 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 		 * it the same way. The batch side (c8f76e5) advances by
 		 * completion.tokens_per_sequence (falling back to the admitted
 		 * chain width), and the module reports tokens_per_sequence = the
-		 * emitted count on both paths: the DSpark verify override sets it
-		 * to 1 + accepted, and the no-spec resident chain keeps it at the
-		 * chain width. Reading accepted_token_count here advanced the
-		 * daemon lease by 1 (the continuation's new_token_count) while
+		 * emitted count on both paths: a speculative verify override
+		 * sets it to 1 + accepted, and the no-spec resident chain keeps
+		 * it at the chain width. Reading accepted_token_count here
+		 * advanced the daemon lease by 1 (the continuation's
+		 * new_token_count) while
 		 * the client advanced by 8 - every no-spec continuation then
 		 * failed the lease schema gate and the request terminated after
 		 * one chain. Mirror the client: tokens_per_sequence first,

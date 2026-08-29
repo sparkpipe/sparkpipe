@@ -247,8 +247,12 @@ def main() -> None:
 	require(terminal_cache_release,
 		"SparkDsv4ModuleClearCacheAdmission(state,prepared,1u)",
 		"pre-adoption cleanup capacity release")
+	# Re-pinned for the 1e38389 stage-module lifecycle cutover: the public
+	# SparkDsv4ResidentDecodeStageExecute entry became the static
+	# SparkDsv4ModuleExecute, table-registered in the module's ops (the
+	# committed-cache-admission guards are unchanged in its body).
 	execute_entry = function_body(module,
-		"SparkStatus SparkDsv4ResidentDecodeStageExecute(")
+		"static SparkStatus SparkDsv4ModuleExecute(")
 	require(execute_entry, "status != SPARK_STATUS_BUSY",
 		"BUSY retains committed cache admission for FIFO retry")
 	require(execute_entry, "status != SPARK_STATUS_PENDING",
@@ -268,8 +272,15 @@ def main() -> None:
 	reject(adapter, "logical_page_capacity = (uint64_t)state->resident_sequence_capacity", "model-specific logical-page sizing policy")
 	reject(adapter, "node_context.logical_page_capacity", "cache policy in DSV4 node context")
 	reject(adapter, "node_context.physical_page_capacity", "cache policy in DSV4 node context")
-	require(adapter, "request.kv_logical_page_capacity =", "generic logical-page budget forwarding")
-	require(adapter, "request.kv_physical_page_capacity =", "generic physical-page budget forwarding")
+	# Re-pinned for the f0bd7c8 serving-adapter cutover: the family
+	# adapter no longer hand-fills the driver create request; the shared
+	# template spine (runtime/serving_adapter_template.c) forwards the
+	# KV page budgets from configuration->runtime_limits.
+	template_spine = (ROOT / "runtime/serving_adapter_template.c").read_text()
+	require(template_spine, "create_request.kv_logical_page_capacity =",
+			"generic logical-page budget forwarding (template spine)")
+	require(template_spine, "create_request.kv_physical_page_capacity =",
+			"generic physical-page budget forwarding (template spine)")
 	require(generic_cache, "SparkModelBatchSchedulerPlanCacheBoundLaneCount", "generic cache-aware batch planner")
 	require(generic_cache, "runtime_limits->kv_physical_page_capacity", "generic runtime physical-page validation")
 	for model_name in ("dsv4", "deepseek", "glm52", "spark_glm", "qwen38_27b", "spark_qwen"):
