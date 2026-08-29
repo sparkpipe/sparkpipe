@@ -488,6 +488,11 @@ typedef struct cuda_stub_vmm_reservation
     uint32_t mapped_count;
     uint64_t bytes;
     uint64_t mapped_bytes;
+    /* the access grant cuMemSetAccess last applied over the whole span
+       (CU_MEM_ACCESS_FLAGS_PROT_NONE while ungranted). The real driver
+       enforces this in its page tables; the stub enforces it in the
+       cuda_stub_vmm_probe_write receipt probe below. */
+    unsigned int granted_access;
     struct
     {
         CUdeviceptr pointer;
@@ -915,9 +920,48 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     reservation = cuda_stub_vmm_reservation_for_va(pointer);
     if (reservation != 0 && reservation->bytes == (uint64_t)bytes)
     {
+        /* record the grant: the probe (below) enforces it the way the real
+           driver's page tables do */
+        reservation->granted_access = (unsigned int)descriptors[0].flags;
         return CUDA_SUCCESS;
     }
     return CUDA_ERROR_INVALID_VALUE;
+}
+
+/* Test-only receipt probe (NOT CUDA API): model a DEVICE WRITE through a
+ * mapped VA the way the real driver enforces it in hardware - a store
+ * against a span whose granted access lacks WRITE is refused and touches
+ * nothing. This is the enforcement half of the W3 scribble-probe receipt:
+ * the production consumer leg grants CU_MEM_ACCESS_FLAGS_PROT_READWRITE
+ * today, so a probe through a real ImportMap mapping LANDS; the staged
+ * one-constant flip to CU_MEM_ACCESS_FLAGS_PROT_READ (runtime/spark_
+ * weightd_attach.c) is what turns the same probe into a refusal, and this
+ * stub path is the host proof that the flip will actually bite. */
+CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
+    const void *bytes,
+    size_t count)
+{
+    cuda_stub_vmm_reservation *reservation =
+        cuda_stub_vmm_reservation_for_va(pointer);
+    CUdeviceptr span_start;
+    uint64_t offset;
+    if (reservation == 0 || bytes == 0 || count == 0u)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    span_start = (CUdeviceptr)(reservation + 1);
+    offset = pointer - span_start;
+    if (offset > reservation->bytes ||
+        (uint64_t)count > reservation->bytes - offset)
+    {
+        return CUDA_ERROR_INVALID_VALUE; /* outside the reserved span */
+    }
+    if (reservation->granted_access != CU_MEM_ACCESS_FLAGS_PROT_READWRITE)
+    {
+        return CUDA_ERROR_INVALID_VALUE; /* write refused: RO or ungranted */
+    }
+    memcpy((void *)(uintptr_t)pointer, bytes, count);
+    return CUDA_SUCCESS;
 }
 
 CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)

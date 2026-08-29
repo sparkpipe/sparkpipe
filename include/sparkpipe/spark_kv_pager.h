@@ -429,7 +429,9 @@ SparkStatus SparkKvPagerRestoreBlock(
  * opaque to the pager - it forwards `deadline_step` to the tier's read path
  * on every poll, so the pending restore debt (the tier's deadline-ordered
  * queue) orders itself around the block the caller is actually waiting on.
- * 0 is SparkKvPagerRestoreBlock's exact behavior. */
+ * 0 is SparkKvPagerRestoreBlock's exact behavior - including the historical
+ * spin to the poll limit and its IO_ERROR answer; only the dispatch gate
+ * translates that exhaustion into its QUEUED answer. */
 SparkStatus SparkKvPagerRestoreBlockDeadline(
     SparkKvPager *pager,
     uint32_t logical_block_index,
@@ -438,8 +440,11 @@ SparkStatus SparkKvPagerRestoreBlockDeadline(
 
 /* C2: the dispatch gate. Returns OK with the decision filled (READY,
  * QUEUED, or RECOMPUTE - see the outcome above). Only a hard failure
- * (bad arguments, a dead tier) surfaces as an error status: backpressure
- * is an answer, not an exception. */
+ * (bad arguments, a dead tier, an error the restore surfaced mid-loop)
+ * surfaces as an error status: backpressure is an answer, not an
+ * exception - INCLUDING the hintless offer's poll-budget exhaustion under
+ * a saturated tier, which answers QUEUED exactly like the hinted path's
+ * ordered busy instead of the historical hard IO_ERROR. */
 SparkStatus SparkKvPagerDispatchBlock(
     SparkKvPager *pager,
     const SparkKvPagerDispatch *dispatch,

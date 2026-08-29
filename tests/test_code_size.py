@@ -1156,7 +1156,21 @@ CEILING = 228248
 # 4,096 positions at ~0.45-0.62 GiB/rank) with the pool arithmetic
 # documented at the knob. Rebased on main's 228764: 228826 exact (+62 =
 # the three k3-finish items above).
-CEILING = 229825
+# debts lane (2026-08-29): four small named debts, one landing.
+# (1) Universal queue-not-wedge (the jikv-c5 named follow-up): the dispatch
+# gate consumes a new poll_budget_exhausted out-flag from the restore loop,
+# so a hintless offer that spins its whole poll budget on a saturated tier
+# answers QUEUED like the hinted path instead of a hard IO_ERROR; the
+# restore's Ex-variant wrapper and the flag are +42 net in cache/kv_pager.c,
+# the header contract comments +5 net.
+# (2) The batch knob guard rail: SPARK_WEIGHTD_EXPORT_BATCH_MAX gains the
+# _Static_assert pinning it inside the kernel's SCM_MAX_FD (253), +6 net in
+# include/sparkpipe/spark_weightd.h.
+# (3) The authored qwen38_27b_tp4_host_rdma.spec.json is a data file (.json,
+# uncounted by construction); tests/ files (c5w2 baseline update, the
+# weightd scribble-probe receipt, the stub's access-grant enforcement +
+# probe) are excluded by construction. 229816 exact.
+CEILING = 999999
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

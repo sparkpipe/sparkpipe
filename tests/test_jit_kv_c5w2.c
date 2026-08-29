@@ -25,10 +25,13 @@
 // yanking it out of the queue to spin. The proofs, one fixture, two runs:
 // with the hint the gate answers QUEUED (healthy backpressure) and the
 // tier's very next freed staging buffer carries the GATED block's read,
-// which completes before its FIFO-older peer; without the hint the gate
-// burns its poll budget to a hard IO_ERROR while the backlog churns, and
-// the gated block completes after the peer. Same state, same device, only
-// the hint differs.
+// which completes before its FIFO-older peer. The debt-lane follow-up made
+// the queue-not-wedge answer UNIVERSAL: the hintless gate used to burn its
+// poll budget to a hard IO_ERROR while the backlog churned; it now answers
+// the same QUEUED (the spin itself, the tier's yank and stall accounting,
+// stay byte for byte - only the terminal answer changed), and the gated
+// block still completes after the peer. Same state, same device, only the
+// hint differs, and the hint's residue is the ORDER, never an error.
 #include "sparkpipe/spark_kv_pager.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -437,8 +440,9 @@ static int32_t CW2Restore(CW2Fixture *fixture,uint32_t block_index)
 		SPARK_STATUS_OK);
 }
 
-/* A dispatch offer. Returns the RAW status: under W2 the interesting
-   answers include the hard error a hintless offer burns into. */
+/* A dispatch offer. Returns the RAW status: under the universal
+   queue-not-wedge discipline saturation answers OK/QUEUED; only a hard
+   failure surfaces as an error status. */
 static SparkStatus CW2Dispatch(CW2Fixture *fixture,uint32_t block_index,
 	uint32_t deadline_step,SparkKvPagerDispatchDecision *decision_out)
 {
@@ -843,13 +847,16 @@ int main(void)
 			" its FIFO-older peer's");
 
 		/* BASELINE: no hint - the gate yanks the block out of the debt
-		   queue, spins its poll budget on the saturated tier, and answers
-		   a hard IO_ERROR; the block lost its place and completes after
-		   the FIFO peer. */
+		   queue and spins its poll budget on the saturated tier; the
+		   terminal answer is the SAME QUEUED the hinted gate gives (the
+		   universal queue-not-wedge follow-up), not the hard IO_ERROR it
+		   used to surface. The block lost its place and completes after
+		   the FIFO peer - the order, not an error, is what the hint buys. */
 		expect(CW2Dispatch(&baseline,3u,0u,&decision) ==
-			SPARK_STATUS_IO_ERROR,
+				SPARK_STATUS_OK &&
+			decision.outcome == SPARK_KV_PAGER_DISPATCH_QUEUED,
 			"BASELINE: the hintless gate spins to its poll limit and"
-			" answers a hard IO_ERROR under the same saturation");
+			" answers the SAME QUEUED - never a hard error");
 		expect(baseline.tier.statistics.demand_deadline_orders == 0u,
 			"no deadline order was ever stated");
 		expect(baseline.tier.statistics.demand_stalls >= 1u,
@@ -866,8 +873,13 @@ int main(void)
 			"...FIFO: the gated block's read completed AFTER its"
 			" peer's");
 		expect(hinted.pager.statistics.dispatch_queued >= 1u &&
-			baseline.pager.statistics.dispatch_queued == 0u,
-			"the queue-not-wedge answer exists ONLY with the hint");
+			baseline.pager.statistics.dispatch_queued >= 1u,
+			"the queue-not-wedge answer is UNIVERSAL now (both gates"
+			" queue under the same saturation)");
+		expect(hinted.tier.statistics.demand_deadline_orders ==
+				baseline.tier.statistics.demand_deadline_orders + 1u,
+			"...and what the hint alone buys is the ORDER (one deadline"
+			" order, gated block first), not a different answer class");
 	}
 
 	printf("\n");

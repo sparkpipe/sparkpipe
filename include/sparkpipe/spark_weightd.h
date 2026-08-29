@@ -93,8 +93,14 @@ extern "C" {
  * frame. The kernel caps one message's fd payload (SCM_MAX_FD = 253), and a
  * full arena is thousands of 2 MiB chunks, so the set is delivered in
  * position-addressed batches no larger than this (comfortably inside the
- * kernel cap); the consumer maps only after every batch verified. */
+ * kernel cap); the consumer maps only after every batch verified. The cap
+ * assertion is the knob's guard rail (the debts-lane mechanical): a batch
+ * crosses in ONE sendmsg/recvmsg ancillary, so a value past the kernel's
+ * SCM_MAX_FD would truncate fd delivery — asserted, not folkloric. */
 #define SPARK_WEIGHTD_EXPORT_BATCH_MAX 64u
+_Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
+    "SPARK_WEIGHTD_EXPORT_BATCH_MAX must stay inside the kernel's "
+    "SCM_MAX_FD (253): one EXPORT batch is one message's fd payload");
 
 /* The consumer-side map refuses a chunk-set shape beyond this before any
  * allocation: the 110 GiB device law at 2 MiB chunks tops out well under it,

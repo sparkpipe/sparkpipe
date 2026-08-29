@@ -118,6 +118,18 @@ CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes);
 CUresult cuMemRelease(CUmemGenericAllocationHandle handle);
 CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes);
 
+/* Test-only receipt probe (stub implementation; no real-CUDA counterpart -
+ * the GPU receipt scribbles through its own mapping instead). Models a
+ * DEVICE WRITE through a mapped VA under the access cuMemSetAccess last
+ * granted over that span: CUDA_SUCCESS and the bytes land when the grant
+ * is CU_MEM_ACCESS_FLAGS_PROT_READWRITE; CUDA_ERROR_INVALID_VALUE and
+ * NOTHING is touched when the grant is read-only or was never made. This
+ * is the enforcement half of the W3 scribble-probe receipt for the staged
+ * consumer-map PROT_READ flip. */
+CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
+    const void *bytes,
+    size_t count);
+
 #ifdef __cplusplus
 }
 #endif
