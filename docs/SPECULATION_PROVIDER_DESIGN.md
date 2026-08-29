@@ -124,3 +124,43 @@ abstraction makes the idea a module, not an architecture change.
 Caveat to verify by measurement: GPU time-slicing N live drafters may
 eat the win below N=2-3; the wrapper must measure and expose its own
 acceptance telemetry per drafter so the portfolio tests have data.
+
+## Addendum 2: the tournament math + research plan (2026-08-30)
+
+THE ONE HARD CONSTRAINT that shapes everything: verification needs the
+target's logits at the state after the accepted prefix — naive
+best-of-N costs N verifies. THE ESCAPE: tree verification (Medusa/
+EAGLE-style) — build a candidate TREE from the drafters' divergences,
+verify the whole tree in ONE target forward pass (tree-attention
+mask). Union acceptance at ~1x verify cost. This is the "direct
+mathematical calculation"; the adaptive layer beyond it is a bandit.
+
+CORRELATION IS THE ENEMY: drafters approximate the same target, so
+errors correlate and P(any correct) << independence math. Diversity
+beats count — the cross-drafter AGREEMENT MATRIX on real inputs (free
+to measure during serving) selects the optimal DIVERSE pair, which is
+often not the two individually-best drafters. MTP is the anchor
+branch: near-free (own-checkpoint head), differently correlated than
+external small models — the natural tree trunk with drafter branches
+for depth. DFlash/DSpark variants slot as additional providers.
+
+HONEST GAIN MODEL: N=2-3 diverse drafters + tree verify moves
+per-position acceptance ~0.7 -> 0.8-0.85 => +0.6..+1.5 accepted
+tokens/step at k=4-6 (the operator's +1..2 is the optimistic edge,
+reachable iff drafters decorrelate). Beyond N=3 draft compute eats the
+win; the router should learn to RETIRE drafters, not add them.
+
+PHASES (the bake-off is phase 1, already staged):
+P1 measure: single-drafter acceptance + the agreement matrix on real
+   inputs (the bake-off, unchanged).
+P2 offline replay: optimal diverse pair/triple from the matrix — no
+   serving changes.
+P3 tree verification in the provider framework (the real kernel work).
+P4 the contextual bandit router: per-position allocation from recent
+   agreement + token entropy; supervision is free (accept/reject per
+   drafter per position is labeled by serving itself).
+
+CODE-SIZE (operator directive): P1-P4 experimentation lives in
+experiments/ — ratchet-excluded (test-class) until results pick the
+production shape; promotion out of experiments/ counts normally and
+passes the full merge gates.
