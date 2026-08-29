@@ -6,10 +6,14 @@ SparkGlm52StagePackExpectedShape + ExpectedPayloadBytes/ExpectedScaleBytes and
 the geometry checks in SparkGlm52PackValidateEntryGeometry, plus the inventory
 masks (SparkGlm52ExpectedLayerMask / ExpectedGlobalMask).
 
-The expert codec is taken from the pack header (fp8=5 or nvfp4=6) — the
-module accepts any compiled expert codec; entry shapes are codec-independent,
-scale planes are not (fp8: F32 per 128-block; nvfp4: UE4M3 per 16-block plus
-one F32 global per expert).
+The expert codec is taken from the pack header (bf16=1, fp8=5 or nvfp4=6)
+— the module accepts any compiled expert codec; entry shapes are codec-
+independent, scale planes are not (bf16: NONE — native-precision experts;
+fp8: F32 per 128-block; nvfp4: UE4M3 per 16-block plus one F32 global per
+expert). Note: the glm52 module currently compiles only fp8/nvfp4 expert
+arms (unity.cu static_assert refuses BF16 experts); codec-1 packs
+validate here so the native-precision resolution is pack-verified while
+that serving arm is a pending coordinator decision.
 """
 import struct
 import sys
@@ -96,8 +100,10 @@ def expected_shape(kind, layer, tp, expert_codec=FP8):
     if kind_is_dense(kind) != layer_is_dense(layer) and (kind_is_dense(kind) or kind_is_routed(kind)):
         return None, "dense/routed layer kind mismatch"
     qk_head = QK_NOPE + ROPE
-    expert_entry = (PAYLOAD_PACKED, expert_codec,
-                    SCALE_F32 if expert_codec == FP8 else SCALE_UE4M3_F32_GLOBAL)
+    expert_entry = ((PAYLOAD_BF16, BF16, SCALE_NONE) if expert_codec == BF16
+                    else (PAYLOAD_PACKED, expert_codec,
+                          SCALE_F32 if expert_codec == FP8
+                          else SCALE_UE4M3_F32_GLOBAL))
     table = {
         K_EMBEDDING: shape_bf16(VOCAB, HIDDEN),
         K_LM_HEAD: shape_bf16(VOCAB, HIDDEN),
@@ -176,8 +182,8 @@ def main():
         dir_off, file_bytes = struct.unpack_from("<2Q", h, 80)
     assert magic == 0x32534C47 and ver == 3
     print("header: tensors=%d linear_codec=%d expert_codec=%d kv_codec=%d tp=%d rank=%d" % (count, lin, expc, kv, tp_degree, tp_rank))
-    if expc not in (FP8, NVFP4):
-        print("UNSUPPORTED expert codec %d (expected fp8=5 or nvfp4=6)" % expc)
+    if expc not in (BF16, FP8, NVFP4):
+        print("UNSUPPORTED expert codec %d (expected bf16=1, fp8=5 or nvfp4=6)" % expc)
         return 1
     if tp_degree != tp:
         print("WARNING: header tp_degree %d != requested %d" % (tp_degree, tp))

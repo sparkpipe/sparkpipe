@@ -316,6 +316,18 @@ class Fp8SourceReader:
         return np.ascontiguousarray(
             expanded[r0:r1, c0 // 128:c1 // 128]).tobytes()
 
+    def bf16_expert_payload(self, name: str, r0: int, r1: int, c0: int, c1: int) -> bytes:
+        """BF16 payload bytes for [r0:r1, c0:c1], byte-verbatim.
+
+        Native-precision sources (the official GLM-5.3-BF16 release) need
+        no decode: the publisher's BF16 expert matrix IS the payload (the
+        quant policy's 'serve the native precision' arm)."""
+        dtype, shape, _shard = self.meta(name)
+        if dtype != "BF16" or len(shape) != 2:
+            raise PackFailure(f"{name}: expected 2-D BF16, got {dtype} {shape}")
+        matrix = self.raw(name).view(np.uint16).reshape(shape[0], shape[1])
+        return np.ascontiguousarray(matrix[r0:r1, c0:c1]).tobytes()
+
     # -- nvfp4 (community radixark/modelopt sources; VERBATIM passthrough) --
 
     def nvfp4_payload(self, name: str, r0: int, r1: int, c0: int, c1: int) -> bytes:
@@ -512,6 +524,28 @@ class Packer:
             c1 = c0 + count
         shard_rows = r1 - r0
         shard_cols = c1 - c0
+        names = [f"model.layers.{layer}.mlp.experts.{expert}.{proj}.weight"
+                 for expert in range(EXPERT_COUNT) for proj in projections]
+        source = self.source
+        if self.expert_codec == CODEC_BF16:
+            # Native-precision source: BF16 expert bytes verbatim, NO scale
+            # plane (the module's BF16-expert serving arm is a pending
+            # coordinator decision; the pack is self-describing codec 1).
+            per_expert_payload = len(projections) * shard_rows * shard_cols * 2
+            payload_bytes = EXPERT_COUNT * per_expert_payload
+            entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE,
+                          EXPERT_COUNT, len(projections) * shard_rows, shard_cols)
+
+            def produce_payload() -> Iterator[bytes]:
+                for name in names:
+                    _dtype, shape, _s = source.meta(name)
+                    if tuple(shape) != (rows, columns):
+                        raise PackFailure(f"{name} shape {tuple(shape)} != ({rows}, {columns})")
+                    yield source.bf16_expert_payload(name, r0, r1, c0, c1)
+
+            self.plan.append(PlanItem(entry, produce_payload, None,
+                                      payload_bytes, 0, names))
+            return
         if self.expert_codec == CODEC_NVFP4:
             per_expert_payload = len(projections) * shard_rows * (shard_cols // 2)
             per_expert_scales = len(projections) * shard_rows * (shard_cols // 16)
@@ -520,10 +554,6 @@ class Packer:
             entry = Entry(kind, layer, PAYLOAD_PACKED_WEIGHT, CODEC_NVFP4,
                           SCALE_UE4M3_F32_GLOBAL, EXPERT_COUNT,
                           len(projections) * shard_rows, shard_cols)
-            source = self.source
-
-            names = [f"model.layers.{layer}.mlp.experts.{expert}.{proj}.weight"
-                     for expert in range(EXPERT_COUNT) for proj in projections]
 
             def produce_payload() -> Iterator[bytes]:
                 for name in names:
@@ -547,10 +577,6 @@ class Packer:
         scale_bytes = EXPERT_COUNT * per_expert_scale
         entry = Entry(kind, layer, PAYLOAD_PACKED_WEIGHT, CODEC_FP8, SCALE_F32,
                       EXPERT_COUNT, len(projections) * shard_rows, shard_cols)
-        source = self.source
-
-        names = [f"model.layers.{layer}.mlp.experts.{expert}.{proj}.weight"
-                 for expert in range(EXPERT_COUNT) for proj in projections]
 
         def produce_payload() -> Iterator[bytes]:
             for name in names:
@@ -779,25 +805,28 @@ def build_receipt(packer: "Packer", output: Path, file_bytes: int,
                         "header_bytes": HEADER_BYTES, "entry_bytes": ENTRY_BYTES},
         "model_revision": model_revision,
         "recipe": recipe,
-        "expert_codec": {CODEC_FP8: "fp8", CODEC_NVFP4: "nvfp4"}[packer.expert_codec],
+        "expert_codec": {CODEC_FP8: "fp8", CODEC_NVFP4: "nvfp4",
+                         CODEC_BF16: "bf16"}[packer.expert_codec],
         "expert_policy": {
             CODEC_FP8: "fp8 payload bytes verbatim + F32 dequant scales",
             CODEC_NVFP4: ("nvfp4 VERBATIM passthrough (packed e2m1 bytes, "
                           "UE4M3 per-16 block scales, one F32 global per "
                           "expert) — the packer never quantizes; source is "
                           "an already-NVFP4 publisher/community release"),
+            CODEC_BF16: ("bf16 VERBATIM passthrough (native publisher "
+                         "precision, no scale plane) — the quant policy's "
+                         "serve-the-native-precision arm; expert bytes "
+                         "copied exactly as released"),
         }[packer.expert_codec],
         "source": {
             "directory": str(source.model_dir),
             "config_sha256": source.config_sha256,
             "index_sha256": source.index_sha256,
             "architecture": source.config.get("architectures", [None])[0],
-            "digest_contract": "model_contracts/glm53_full_authoritative.json"
-            if packer.expert_codec == CODEC_NVFP4
-            else "model_contracts/glm52_authoritative.json",
+            "digest_contract": recipe["expert_source_contract"],
             "spine_policy": ("bf16 tensors byte-exact; F8_E4M3 spine tensors "
                              "dequantized bf16(f32(code)*scale_inv) on 128x128 "
-                             "blocks (nvfp4 sources carry an all-BF16 spine: "
+                             "blocks (nvfp4/bf16 sources carry an all-BF16 spine: "
                              "pure passthrough)"),
         },
         "tp_degree": packer.tp_degree,
@@ -876,17 +905,27 @@ def main() -> int:
                         help="emit one pack per TP rank in a single lockstep "
                              "pass over the shared source; --output is a "
                              "template containing '{rank}'")
-    parser.add_argument("--expert-codec", choices=("fp8", "nvfp4"),
+    parser.add_argument("--expert-codec", choices=("fp8", "nvfp4", "bf16"),
                         default="fp8",
-                        help="fp8: blockwise-FP8 checkpoint (5.2 official), "
-                             "fp8 expert bytes verbatim; nvfp4: NVFP4 "
-                             "checkpoint (5.3-full radixark), e2m1+scale "
-                             "bytes verbatim — never a requant")
+                        help="fp8: blockwise-FP8 checkpoint (5.2 official / "
+                             "5.3-full official FP8), fp8 expert bytes "
+                             "verbatim; nvfp4: NVFP4 checkpoint (5.3-full "
+                             "radixark), e2m1+scale bytes verbatim; bf16: "
+                             "native BF16 checkpoint (5.3-full official "
+                             "BF16), expert bytes verbatim, no scale plane "
+                             "— never a requant")
+    parser.add_argument("--source-contract", default=None,
+                        help="digest_contract recorded in the receipt "
+                             "(default: glm53_full_authoritative.json for "
+                             "nvfp4, glm52_authoritative.json otherwise); "
+                             "5.3-full fp8/bf16 builds pass "
+                             "model_contracts/glm53_full_authoritative.json")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
     contract = load_contract(repo_root)
-    expert_codec = CODEC_FP8 if args.expert_codec == "fp8" else CODEC_NVFP4
+    expert_codec = {"fp8": CODEC_FP8, "nvfp4": CODEC_NVFP4,
+                    "bf16": CODEC_BF16}[args.expert_codec]
     if args.tp_degree < 1 or args.tp_rank < 0 or args.tp_rank >= args.tp_degree:
         raise PackFailure(f"invalid tp rank {args.tp_rank}/{args.tp_degree}")
     stage_count = args.stage_count
@@ -908,20 +947,23 @@ def main() -> int:
             raise PackFailure(f"bad layer range {args.layer_range}")
 
     source = Fp8SourceReader(Path(args.source))
-    firmware_name = ("glm52_resident_decode_stage_fp8_firmware.json"
-                     if expert_codec == CODEC_FP8
-                     else "glm52_resident_decode_stage_nvfp4_firmware.json")
+    firmware_name = {
+        CODEC_FP8: "glm52_resident_decode_stage_fp8_firmware.json",
+        CODEC_NVFP4: "glm52_resident_decode_stage_nvfp4_firmware.json",
+        CODEC_BF16: "glm52_resident_decode_stage_bf16_firmware.json",
+    }[expert_codec]
     contract_bytes = (repo_root / "examples" / "model_descriptions" /
                       firmware_name).read_bytes()
     spine_label = ("fp8-dequant-128x128-blockwise" if expert_codec == CODEC_FP8
                    else "bf16-passthrough")
+    source_contract = args.source_contract or (
+        "model_contracts/glm53_full_authoritative.json"
+        if expert_codec == CODEC_NVFP4
+        else "model_contracts/glm52_authoritative.json")
     recipe = json.dumps({"tool": "glm52_resident_stagepack.py",
                          "codec": args.expert_codec,
                          "spine": spine_label,
-                         "expert_source_contract":
-                             "model_contracts/glm53_full_authoritative.json"
-                             if expert_codec == CODEC_NVFP4
-                             else "model_contracts/glm52_authoritative.json"},
+                         "expert_source_contract": source_contract},
                         sort_keys=True)
     single_source_config = json.dumps(
         {"layer_range": f"{first}-{last}", "stage": args.stage,
