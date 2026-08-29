@@ -1265,6 +1265,13 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE(stream,"decay_latent",buffers->kda_decay_latent_bf16,64u);
         GLM5_NEXT_KDA_PROBE(stream,"gate_latent",buffers->kda_gate_latent_bf16,64u);
     }
+    if ( Glm5NextKdaProbeDeep(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"fused_qkvb",buffers->fused_qkvb_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"decay_latent",buffers->kda_decay_latent_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"gate_latent",buffers->kda_gate_latent_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"beta_logit",buffers->kda_beta_logit);
+    }
     /* THREE CONVOLUTIONS, each with its own window; the weights are the
      * checkpoint's BF16 tensors unconverted. */
     LM_LAUNCH(
@@ -1343,6 +1350,12 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE(stream,"k_postconv",buffers->kv_slot_bf16,256u);
         GLM5_NEXT_KDA_PROBE(stream,"v_postconv",buffers->gate_up_bf16,256u);
         GLM5_NEXT_KDA_PROBE(stream,"beta_logit",buffers->kda_beta_logit,64u);
+    }
+    if ( Glm5NextKdaProbeDeep(buffers) )
+    {
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"q_postconv",buffers->q_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"k_postconv",buffers->kv_slot_bf16);
+        GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"v_postconv",buffers->gate_up_bf16);
     }
     /* The two up-projections: decay logits (bounded-decay input) and the
      * gate (waits for the delta rule to finish). */
