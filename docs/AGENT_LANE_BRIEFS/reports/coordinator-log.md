@@ -1879,3 +1879,19 @@ appendix).
   spark5 local 1.4T with nvfp4 pack retirement planned for bf16 packs).
 - RULE BAKED NEXT CYCLE: fetches longer than a turn must be
   setsid-detached with pid in the report, or they are not running.
+
+## 2026-08-29 ~15:5x — 7249b9c: JIT-KV vertical slice merged
+
+- MERGED lane/jikv-slice (960e2ee): the KV pager (module save/restore
+  seam, digest-dedup page-out through the B3 tier, the double-buffer
+  staging that designs out the self-clock deadlock it found),
+  MarkParkedBlockResident, C1 admission backpressure. Five proofs green.
+  Ratchet conflict vs W2a resolved by re-measure: 225017 exact;
+  offline-gates fully green. Respawned the slot as jikv-wire (dsv4
+  frame ops + adapter predicate + C2 restore-gated dispatch).
+- Process near-miss, named per the rule: dirty manifests blocked the
+  merge — turned out to be MY OWN uncommitted W2a-window regen (the
+  --no-ff auto-commit preceded the regen; log-only staging then skipped
+  it). Committed as its own commit before merging. Lesson: after any
+  merge whose resolution includes a regen, commit the regen in the same
+  window, not implicitly later.
