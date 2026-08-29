@@ -15,10 +15,8 @@
  *                     - FP8 shadow scan (half the bytes) + exact rescore
  *                       of the certified candidate set
  *
- * Correctness gate (run every timing trial): token id AND f32 score must
- * match route A bit-exact. Two head geometries: the TP4 rank shard
- * (62080x5120, the fleet deployment) and the full vocabulary
- * (248320x5120, the TP1 dev instance / the ~8ms claim).
+ * Correctness gate (every timing trial): token id AND f32 score must match
+ * route A bit-exact. Geometries: TP4 rank shard (62080x5120), full vocab.
  *
  * Build (spark5):
  *   nvcc -O3 -std=c++17 -gencode arch=compute_121a,code=sm_121a \
@@ -74,10 +72,9 @@ __global__ void FillSmallBf16Kernel(uint16_t *values, float scale,
 	values[index] = __bfloat16_as_ushort(__float2bfloat16(unit));
 }
 
-/* Give `hot_rows` vocabulary rows a large magnitude (a dominant-argmax
- * distribution, the realistic decode regime: the true next token's dot
- * dominates the score spread and the certified bound admits only the
- * neighborhood of the winner). */
+/* Dominant-argmax regime: hot rows make the winner's coarse score
+ * dominate the spread, so the certified bound admits only its
+ * neighborhood — the realistic decode distribution. */
 __global__ void ScaleRowsKernel(uint16_t *values, uint32_t hot_rows,
                                 uint32_t hidden_dimension, float factor)
 {
@@ -134,7 +131,7 @@ int RunGeometry(uint32_t candidate_count)
 	error = cudaMalloc(&candidate_ids,
 		(uint64_t)candidate_count * sizeof(uint32_t));
 	error = cudaMalloc(&candidate_count_dev, sizeof(uint32_t));
-	error = cudaMalloc(&direct_ids, 2u * sizeof(uint32_t)); /* [0]=direct out, [1]=certified out */
+	error = cudaMalloc(&direct_ids, 2u * sizeof(uint32_t)); /* [0]=direct, [1]=certified */
 	error = cudaMalloc(&direct_scores, sizeof(float));
 	error = cudaMalloc(&certified_scores, sizeof(float));
 	error = cudaMalloc(&rng_state, 1024u * sizeof(uint64_t));
@@ -221,9 +218,8 @@ int RunGeometry(uint32_t candidate_count)
 		}
 	}
 
-	/* TIMING on the dominant-argmax regime: scale 32 rows by 64 so the
- * winner's coarse score dominates the spread (the realistic decode case;
- * the flat random regime above is the degenerate all-admitted case). */
+	/* TIMING regime: 32 hot rows (see ScaleRowsKernel); the flat random
+ * parity regime above is the degenerate all-admitted case. */
 	ScaleRowsKernel<<<(uint32_t)((32ull * kHidden + 255u) / 256u), 256u>>>(
 		head_bf16, 32u, kHidden, 64.0f);
 	SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16, fp8_payload,
