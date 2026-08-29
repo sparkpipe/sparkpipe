@@ -865,7 +865,14 @@ from pathlib import Path
 # was broken: no memory_mode member, unpopulated twin config, no HC
 # scaling), the host syntax gate that would have caught it, the probe
 # ladder, and the layer-34 zero-output localization. 216620 exact.
-CEILING = 216620
+# glm53full three-res lane respawn: the resumable HF staging fetch tool
+# (stalled-source recovery with house receipt promotion), the bf16
+# VERBATIM expert passthrough branch (packer codec-1 + validator
+# acceptance + bf16 firmware pin + hermetic unit test) for the
+# native-precision quality arm, and the contract-freeze sibling-config
+# probe (indexer_types R3 evidence + three-source pinning). Placement
+# script args add zero net budget. 217683 exact.
+CEILING = 217683
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
