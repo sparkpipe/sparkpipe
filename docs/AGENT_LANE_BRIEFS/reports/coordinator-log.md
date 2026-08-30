@@ -3520,3 +3520,25 @@ the conflict resolution keeps both.)
   (they match your "TP16 first" plan but lose the old-topology test
   capability); the rest (old qwen-flash TP4, qwen-max FP8 TP4,
   glm52) are unambiguous. Execute on your word.
+
+## 2026-08-30 ~14:1x — dsv4-pro rung: the situation clarified
+
+- tools/dsv4_pro_tp16_stagepack.py does NOT exist (the comment in
+  dsv4_tp16_stagepack.py line 40 says it's "duplicated 426 of 444
+  lines" — meaning it SHOULD exist as a near-copy with pro geometry,
+  but was never written). The pro packer (dsv4_pro_stagepack.py)
+  builds full-stage packs only — no --rank/--tp-degree args.
+- HOWEVER: dsv4_pro_tp4_pp4_stagepacks.py has MODEL_PLANS with
+  "pro" (61 layers, hidden 7168, experts 384, width 3072, layer
+  slices [[0,16],[16,15],[31,15],[46,15]]) — the pro geometry is
+  already codified.
+- THE REAL QUESTION: dsv4-pro GA is TP4xPP4 (61 layers / 4 PP
+  stages, not TP16-flat). The existing 10/10 placed packs ARE the
+  correct TP4PP4 deployment. The "TP16" in my roadmap was wrong —
+  pro's natural topology is TP4xPP4=16 ranks, which is ALREADY
+  BUILT AND PLACED. The model descriptor needs the TP4PP4
+  deployment recipe, not a new packer.
+- ACTION: dsv4-pro is effectively DONE (packs exist 10/10 placed
+  with receipts; the remaining 6 nodes get their copies per the
+  replication law). The rank-path extension is NOT needed — the
+  existing packs are the right thing.
