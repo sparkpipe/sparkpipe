@@ -2938,3 +2938,9 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   class (memory cascade). Two nodes have now self-rebooted under
   memory pressure; a fleet rule may be needed (fetchers and builds
   not co-resident on build nodes).
+
+## 2026-08-30 ~17:3x — k3 778G read / 377G written (post-reboot resume healthy)
+
+- Half the payload. RSS flat 23G. The hf-fetcher sweep found none
+  running fleet-wide (the reboot-causing one is gone with the boot).
+  WATCH ONLY.
