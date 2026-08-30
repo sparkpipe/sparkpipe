@@ -3375,3 +3375,25 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - k3 packer RESUMED from journal (payload intact at 604G; RSS 2.6G,
   journal re-walk reading). The 462G written survived the outage —
   warm+journal did their job.
+
+## 2026-08-30 ~23:4x — PARALLEL PLAN (operator asked: remaining stagepacks in parallel, no spark0)
+
+- DISCOVERY: dsv4-pro TP4PP4 rank packs ALREADY EXIST 10/10 on
+  spark6-f (each node one ~8.8G stage slice + receipt; part of the
+  older TP4PP4 deployment era). What's missing for TP16-first per
+  the policy: (a) the PRO rank path in dsv4_pro_stagepack (the
+  same-spec extension), or (b) accept TP4PP4 as pro's topology
+  (4 PP stages x TP4 = 16 ranks, same node count, matches the
+  existing fleet placement). DECISION LEAN: (b) is zero code — the
+  pro TP4PP4 packs are DONE and placed on 10 nodes; the remaining
+  6 nodes (spark0-5) get copies per the replication law (Phase C).
+  The TP16-only reading was MY assumption, not the operator's — the
+  operator said "4-bit versions for dsv4" exist and matter, not that
+  pro must be TP16. PRO = DONE-ISH pending the operator's topology
+  word.
+- PARALLEL PLAN (executing): (1) k3 base continues on sparkf→warm
+  (long pole, ~2/3 done). (2) 27B TP4 4x replication NOW (spark0-5
+  free; source ranks on spark6-9). (3) flash TP8 2x replication NOW
+  (same sources). (4) dsv4-pro: awaiting the topology word, then
+  either replicate the existing 10 (to spark0-5 = 16/16) or open the
+  rank-path unit.
