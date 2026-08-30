@@ -1305,7 +1305,13 @@ CEILING = 228248
 # conviction dumps); the swiglu swap itself was REVERTED (it NaN'd the MoE
 # partial from the first wave - verdict by bisect wave10; the record comment
 # stays, the kernel is gone). To be trimmed with the ratchet at coherence.
-CEILING = 233120
+CEILING = 233587
+# (dsv4pro TP16 lane) +467 over the 233120 ceiling: the standalone
+# contract-derived rank-pack verifier tools/dsv4_pro_rank_pack_verify.py
+# (the roadmap's "fix verifier pins" gap: no full pack on disk needed;
+# directory + bounds + sha + sampled payload/scale bytes vs the GA
+# checkpoint) plus its receipt-pinned unit test. Main's pre-existing
+# +135 drift (qwen38 stagepack fixes) rides along unchanged.
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
