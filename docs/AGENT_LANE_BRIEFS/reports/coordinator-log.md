@@ -2431,3 +2431,15 @@ appendix).
   shape, priorities, ttl, staged scripts), PR workflow (model-local
   vs common-code review), telemetry acceptance pairs, and the hard
   rules with their receipts. The per-model session era begins.
+
+## 2026-08-30 ~10:3x — stage 15 unblocked: the fused-MTP mapping (4 fixes)
+
+- The radixark MTP layer needed kind-aware fused handling, landed as
+  four precise fixes: fused names drop .weight (dual-form resolve);
+  W1/W3 ride the gate_up AGGREGATE (per-expert block slicing, the
+  offsets the refs already carry); down streams verbatim; both fused
+  forms ship 3-D [E,·,·] as well as flattened (byte-identical).
+- Stage 15 (last 2 layers + MTP + head) BUILDING clean at 33G. Stage
+  tally: 14 done, s15 in flight, s1 building (slow layer mix).
+  NEXT: all 16 receipts -> qwen38_pack_verify per stage -> placement
+  -> the module-side nvfp4 acceptance (loader + packed-4bit GEMM).
