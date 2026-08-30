@@ -2260,3 +2260,25 @@ appendix).
   The 27B mission (one instrumented run from naming the refusing
   ValidateFrame check) parks until it's back. Spawns still down
   (builtin:zai-start-plan) — single-agent mode continues.
+
+## 2026-08-30 ~03:4x — q27b: daemon READY, decode-refusal GONE; control-endpoint bind defect isolated
+
+- spark5 was POWER-CYCLED by the operator (rebooted mid-mission; /tmp
+  state lost). serve-8 on the fresh node: cache-drop in-cmd worked,
+  daemon reached FULL READY (64 lanes, pack loaded, 72.5GiB device) —
+  and the instrumented module shows NO VF_CHECK_FAIL: the earlier
+  decode-frame refusal is GONE (the instrumented build or the fresh
+  deploy resolved it).
+- REMAINING DEFECT ISOLATED: the batch client fails IO_ERROR
+  (status=4, requests=1 accepted then connect fails) because the
+  daemon's control endpoint tcp=spark5:17580 NEVER BINDS (ss shows no
+  listener) despite the ready line naming it. Worked in serve-3's
+  session — regression or env delta in the fresh deploy. Batch schema
+  also corrected along the way (exact-member contract; my earlier
+  ad-hoc JSON was missing engine members).
+- HANDOFF to the q27b lane (its context): diagnose the control-plane
+  bind (runtime/model_resident_client.c connect path vs the daemon's
+  endpoint announce; check the daemon's control-listen code path under
+  the fresh tree). Everything else is proven: module validated, pack
+  loads, daemon serves, frames accepted.
+- Spawns still down (operator); single-agent mode.
