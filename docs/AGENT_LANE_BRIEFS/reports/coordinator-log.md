@@ -3274,3 +3274,8 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 ## 2026-08-30 ~11:2x — k3 371G read / 169G written (462G payload, RSS back to 23G)
 
 - The 33G RSS was transient (numpy peak passed); flat again. WATCH.
+
+## 2026-08-30 ~11:5x — k3 535G read / 237G written (526G payload, ~1/3)
+
+- RSS 33G oscillation is the per-layer numpy rhythm (peaks/falls;
+  never climbs — safe). WATCH.
