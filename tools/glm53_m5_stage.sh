@@ -52,17 +52,20 @@ echo "== adapter + binaries into runtime root =="
 make -C modules/glm5_next_resident_decode_stage adapter EXPERT_CODEC=fp8 \
   MODEL_REVISION=$REV CONTRACT_SHA256=$SHA \
   || { echo ADAPTER-FAIL; exit 1; }
-cp build/libglm5_next_serving_adapter_fp8.so "$RR/lib/model_serving_adapter.so.new"
+AD="$SRC/build/modules/glm5_next_resident_decode_stage/fp8/libglm5_next_serving_adapter_fp8.so"
+cp "$AD" "$RR/lib/model_serving_adapter.so.new"
 cp build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_model_batch "$RR/bin/"
 cp build/libhidden_transport_spark_host_rdma_verbs.so "$RR/lib/hidden_transport.so.new" 2>/dev/null \
   || echo "note: no freshly built hidden transport, keeping incumbent"
 
 echo "== deploy lib/*.so + registrar fleet-wide (backup, install, sha) =="
+# model_driver.so was installed in place by sparkpipe_model_compile; the
+# adapter staged as .new; hidden transport keeps the incumbent unless rebuilt.
 SUF="pre-m5-$(date +%s)"
-for f in model_driver.so model_serving_adapter.so hidden_transport.so; do
-  [ -f "$RR/lib/$f.new" ] || { echo "MISSING $RR/lib/$f.new"; exit 1; }
-  cp "$RR/lib/$f.new" /tmp/g5m5_$f
-  rm -f "$RR/lib/$f.new"
+for f in model_driver.so model_serving_adapter.so; do
+  if [ -f "$RR/lib/$f.new" ]; then cp "$RR/lib/$f.new" /tmp/g5m5_$f; rm -f "$RR/lib/$f.new"
+  elif [ -f "$RR/lib/$f" ]; then cp "$RR/lib/$f" /tmp/g5m5_$f
+  else echo "MISSING $RR/lib/$f"; exit 1; fi
 done
 bash tools/registrar_stage.sh || { echo REGISTRAR-FAIL; exit 1; }
 for h in $ALL; do
