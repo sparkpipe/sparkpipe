@@ -28,9 +28,13 @@ EXCLUDED_DIRECTORY_NAMES = {
     "__pycache__",
     "build",
 }
+# runs/ is LIVE queue state (queue.jsonl, reservations.json, results.jsonl
+# — the dispatcher mutates them every pass); digest-tracking live state
+# reds the gate on every dispatch. Operational truth, not source.
 EXCLUDED_DIRECTORY_PREFIXES = (
     "docs/archive/validation-logs/",
     "qualification/raw/",
+    "runs/",
     "qualification/receipts/",
     "qualification/runs/",
     "qualification/evidence/",

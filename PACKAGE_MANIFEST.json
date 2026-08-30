@@ -1,5 +1,5 @@
 {
-  "file_count": 1723,
+  "file_count": 1719,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -338,8 +338,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "ba04ffa7e335c874e577f170e05969a4d5d99d469bfe481a7c244da2a7e1b07c",
-      "size_bytes": 127592
+      "sha256": "817914a34d0a2221e295f99213f618fd46857db1cdbca06667c9c027d03c87a8",
+      "size_bytes": 128612
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -5452,26 +5452,6 @@
       "size_bytes": 1026
     },
     {
-      "path": "runs/.lock",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "size_bytes": 0
-    },
-    {
-      "path": "runs/queue.jsonl",
-      "sha256": "65d68e198bc48883a33971001a08452feebf1c3f208ee2f23622b6b9ec169fc4",
-      "size_bytes": 3665
-    },
-    {
-      "path": "runs/reservations.json",
-      "sha256": "db54359cc95901b848d8b8ba0e332a2278c95e6fa28cbce161306e227917622f",
-      "size_bytes": 2418
-    },
-    {
-      "path": "runs/results.jsonl",
-      "sha256": "560b50a458fe87e267cee9d7e49b9ce1d804497a5c452843e6d27d4770dd75aa",
-      "size_bytes": 59496
-    },
-    {
       "path": "runtime/README",
       "sha256": "2c40000c8c3adf35c677aabdee97a5b6c2836379dc6de58d888392f8ccbcd2ed",
       "size_bytes": 806
@@ -6163,7 +6143,7 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "86c38141016c645bd6f33bdb036d5630776bea38df2ffa3b60564fcc95cb44f9",
+      "sha256": "20099655f110321d1e895449ac57c33e394900f85e9cd654201f80149fd33506",
       "size_bytes": 88718
     },
     {
@@ -8243,8 +8223,8 @@
     },
     {
       "path": "tools/package_inventory.py",
-      "sha256": "30cf8e2b6cb8ca7c7a5b060420d2b7662b7d30caf835b6cd0e26ee3cd812a2cb",
-      "size_bytes": 6824
+      "sha256": "149888c52f38419df4a23ecb518926f2ecf6a516b28752120e3fc4b656619884",
+      "size_bytes": 7052
     },
     {
       "path": "tools/package_source.py",
@@ -8620,5 +8600,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31791522
+  "total_bytes": 31727191
 }
