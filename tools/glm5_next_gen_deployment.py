@@ -108,7 +108,12 @@ def resident_deployment() -> dict:
         "runtime_limits": {
             "max_inflight_submissions": 4,
             "max_active_sequences": 16,
-            "max_input_rows": 16,
+            # Prefill width: the engine prefills up to this many prompt
+            # rows per pass (the api/batch clients' long prompts walk in
+            # spans of this width); 16 = one row per active sequence per
+            # pass — a 32K single prompt took an hour. 128 rows/pass is
+            # the R2a-proven wide-rows shape (module frames support it).
+            "max_input_rows": 128,
             "resident_sequence_capacity": 16,
             # The schema requires BOTH kv capacity members (exact-member
             # validation) and the adapter (no JIT_KV) requires both ZERO;

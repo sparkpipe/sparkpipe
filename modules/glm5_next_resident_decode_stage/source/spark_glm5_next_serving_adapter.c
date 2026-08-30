@@ -149,6 +149,10 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.max_active_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+	.cache_block_token_count = 64u, /* the module's KV block geometry
+	 * (SparkCeilDivU32(max_sequence_positions, 64) pages; the arena's
+	 * block_token_count) — 0 left the engine's prefill spans uncapped and
+	 * the row budget alone shaped every pass (the prefill-slowness lever) */
 	.max_output_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
