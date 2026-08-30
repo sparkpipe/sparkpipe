@@ -2352,3 +2352,22 @@ appendix).
   queue's dispatcher becomes its client.
 - Central weightd design recorded per operator: message-driven fleet
   memory management across all 16 nodes.
+
+## 2026-08-30 ~07:4x — qwen-max-4bit build: PARALLEL LAUNCH PROVEN, packer codec gap found
+
+- The 16-way parallel build FIRED correctly (16 builders, one stage
+  each, layer-sliced reads — zero amplification; PP16 topology per the
+  packer's own contract: qwen_max is full-width-per-stage with runtime
+  TP slicing, so 16 stages × ~87.5G is the right shape).
+- FAST-FAIL on a real gap: the radixark NVFP4 source stores experts
+  as U8-packed + scales; tools/qwen38_stagepack.py hard-asserts
+  F8_E4M3 (written for the 2.3T fp8 source). The NVFP4 machinery
+  EXISTS in tools/glm52_stagepack.py (codec 6: packed payload +
+  UE4M3_F32_GLOBAL scales, group 16 — the path that built
+  glm53full.nvfp4.tp16).
+- NEXT UNIT (hours-scale): port the nvfp4 expert path into
+  qwen38_stagepack (glm packer as reference) + verify the qwen38_max
+  MODULE accepts expert codec 6 at load and its grouped-GEMM kernels
+  consume the packed layout (glm kernels are the reference) + the
+  16-way build re-fire + validate + placement. This is the first work
+  item for a restored lane or next coordinator slices.
