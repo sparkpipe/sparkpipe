@@ -3042,3 +3042,9 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   If it dies again at the same point, the numpy interleave path
   holds a layer-pattern memory trap — next incident gets the core
   dump treatment.
+
+## 2026-08-30 ~22:1x — sweep: 27B 3/4, flash 6/8, k3 resumed-running
+
+- 27B TP4: RANK2-OK (3 of 4 files). flash TP8: 6/8 (273G). k3:
+  resumed process alive, 553G (watch: growth confirms the resume
+  took; a stall means the journal walk again).
