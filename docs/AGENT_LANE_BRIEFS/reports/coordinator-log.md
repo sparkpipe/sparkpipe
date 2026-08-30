@@ -3215,3 +3215,11 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 ## 2026-08-30 ~07:3x — k3 warm-build 670G read / 310G written (291G payload)
 
 - Steady. WATCH ONLY. (Board: 7/8 models done; k3 + dsv4-pro remain.)
+
+## 2026-08-30 ~08:0x — OPERATOR: packers capped at 16 threads (affinity)
+
+- The live k3 packer is single-threaded Python but affinity 0-19;
+  pinned to 0-15. The 16-thread cap applies to ALL pack/stagepack
+  processes (the rule: taskset -pc 0-15 <pid> at spawn; future
+  spawn scripts embed it — numpy's BLAS pools also honor
+  OMP_NUM_THREADS=16 exported in the build env).
