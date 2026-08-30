@@ -2552,3 +2552,13 @@ LADDER UPDATED: (1) glm gaps (nvfp4 leg finishing) → verify 16/16;
 (2) dsv4-flash base from official-fp8-mixed; (3) 27B from
 nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 (6) pro ga rank-path.
+
+## 2026-08-30 ~20:4x — GLM5.3 COMPLETE (the operator's first model, fully prepped)
+
+- VERIFIED 16/16 × ALL FOUR SETS: nvfp4 16/16 (rank5 gap closed,
+  shipped), fp8 16/16, bf16 31 files (16 ranks + spark5's full local
+  set — the 16 placed all present), flash 16/16. The gap chain ended
+  rc=0 on both legs, SHIPPED-BOTH confirmed, spark5 files on disk.
+- RUNG 2 FIRED: dsv4-flash base pack building on spark3 from the
+  CORRECTED source (official-fp8-mixed 295G per the selection table).
+  Then the 16 rank-splices fan out.
