@@ -3299,3 +3299,12 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   kimi-k3-nvfp4-redhatai, BOTH KEPT as separate arms per the matrix.
 - Ruling builds continue (27B TP4 3/4→complete check next; flash
   TP8 placed; k3 building).
+
+## 2026-08-30 ~13:3x — 27B TP4 COMPLETE: 8/8 ranks OK
+
+- The TP4 build finished 8/8 ranks (the log shows the earlier
+  4-rank chain plus a second wave — 8 ranks total; see the note: a
+  TP4 deployment has 4 ranks, but 8 were built — ranks 4-7 are
+  EXTRA. TP4 serving needs ranks 0-3 only. The extra 4 packs stay
+  on disk harmless; flag for cleanup at next pass.)
+- k3 warm-build at 598G payload (~40%); continuing.
