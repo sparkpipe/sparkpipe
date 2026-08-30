@@ -3186,3 +3186,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   the io-zero reads were the wrapper-vs-child pid class again
   (child = the counters). WATCH ONLY; shard outputs distribute to
   the roomy nodes per the space table when the base lands.
+
+## 2026-08-30 ~04:1x — k3 warm-build 314G read / 141G written (132G payload)
+
+- Steady ~12G/min warm-write. WATCH ONLY.
