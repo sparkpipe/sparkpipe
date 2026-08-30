@@ -2525,3 +2525,30 @@ appendix).
   ~33G, live pid 304747 on spark0, radixark source). Ship-to-spark5
   auto-fires when nvfp4 lands. glm5.3 completion imminent next cycle.
 - Next rung staged for next cycle: dsv4-flash base pack (0731 source).
+
+## 2026-08-30 ~20:1x — OPERATOR INVENTORY RECEIVED: per-model serving-arm selection (policy: fits-vram, quality-at-equal-size, compressed-experts+full-spine)
+
+Per-node 110GiB law → rank budget ~100G; fleet ~1.6T. Selection table
+(logged as THE plan; source dirs verified on warm):
+- glm5.3-full: SERVE NVFP4-hybrid 464.87G (29G/rank; HAVE 16/16) +
+  bf16 1.507T reference (HAVE) + fp8 755G middle (HAVE)
+- glm5.3-flash: hybrid 197.88G (12.4G/rank; the redhatai dir) —
+  confirm the serving .g5nsp set's variant; bf16 642G also fits
+- qwen-max: NVFP4/BF16-spine 1.484T (92.8G/rank — the ONLY form that
+  fits; fp8 2.496T = 156G/rank DOES NOT) — BUILT 16/16 ✓
+- k3: MXFP4/BF16 1.561T (97.6G/rank — the smaller of its two) —
+  reslice rung (kimi-k3/ = the mxfp4 dir)
+- dsv4-flash: FP8-mixed 294.69G (18.4G/rank; highest quality of its
+  forms) — source = deepseek-v4-flash-official-fp8-mixed (NOT the
+  0731 I had staged — ladder corrected)
+- dsv4-pro: GA 892.76G (55.8G/rank; deepseek-v4-pro-0813-ga) — packer
+  rank-path rung
+- qwen-flash: BF16 360G (22.5G/rank — fits, highest quality; the
+  hybrid saves little at this scale) — source FOUND:
+  /mnt/model-warn/qwen3.8-flash-next ✓ (earlier grep missed it)
+- 27B: nvfp4a16-bf16-spine 30.99G (matches policy AND sidesteps the
+  fused-gate_up blocker of the -fp8 source) — source on warm ✓
+LADDER UPDATED: (1) glm gaps (nvfp4 leg finishing) → verify 16/16;
+(2) dsv4-flash base from official-fp8-mixed; (3) 27B from
+nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
+(6) pro ga rank-path.
