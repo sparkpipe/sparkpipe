@@ -2209,3 +2209,18 @@ appendix).
   g5dsa-wave7b with after=[q27b probes] — pure dependency ordering, no
   priority games; probe RUNNING on spark5; wave7b (L4-conviction
   driver a937ed5f) fires on probe reap. Both lanes briefed.
+
+## 2026-08-30 ~00:5x — dispatcher deadlock fixed; serve-4 running
+
+- The residual pre-launch barrier (first-implementation leftover,
+  no carve-out) self-deadlocked dependencies: wave7c held serve-4
+  which wave7c itself waited on. Removed — the pick loop is the
+  single barrier authority (carve-out aware). serve-4 (the deeper
+  TP1 frame probe; serve-3 PROVED daemon data coherent — the refusal
+  is module-side TP1 frame contract) dispatched on spark5; wave7c
+  (L4 conviction) queues behind it. ALSO: cell-runner + the glm52
+  observable-gate landed; the false-green Makefile cascade fixed
+  (5d77141) with GATE LAW = exit-code truth.
+- Owed: pid-capture via remote pid file (pid=None launches rely on
+  exit-file + 15min TTL self-heal); q27b integration; k3finish s4;
+  cell-runner respawn (R3 one-command retry + R2c re-pin); nurse3.
