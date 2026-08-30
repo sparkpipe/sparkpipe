@@ -66,7 +66,15 @@ def stage_config(rank: int) -> dict:
         "expert_weight_codec": "fp8",
         "stage_pack_path": "packs/glm5_next_stage.tp16.rank%d.g5nsp" % rank,
         "max_sequence_positions": 32768,
-        "execution_row_capacity": 16,
+        # 1024-row prefill chunks (the module's SPARK_BATCH_BUCKET width):
+        # the engine chunks prompts to runtime_limits.max_input_rows, and
+        # the shipped 16 made a 32K prompt 2048 sequential submissions -
+        # one full weight re-stream + collective latency per 16 tokens,
+        # the measured 10 tok/s prefill. Rows are NOT sequence slots:
+        # execution_row_capacity is validated against the module's row
+        # firmware limit, not resident_sequence_capacity (the GDN-state
+        # memory budget stays sized by max_active_sequences=16).
+        "execution_row_capacity": 1024,
         "decode_split_context_threshold": 0,
         "tp_degree": TP,
         "tp_rank": rank,
@@ -108,12 +116,7 @@ def resident_deployment() -> dict:
         "runtime_limits": {
             "max_inflight_submissions": 4,
             "max_active_sequences": 16,
-            # Prefill width: the engine prefills up to this many prompt
-            # rows per pass (the api/batch clients' long prompts walk in
-            # spans of this width); 16 = one row per active sequence per
-            # pass — a 32K single prompt took an hour. 128 rows/pass is
-            # the R2a-proven wide-rows shape (module frames support it).
-            "max_input_rows": 128,
+            "max_input_rows": 1024,
             "resident_sequence_capacity": 16,
             # The schema requires BOTH kv capacity members (exact-member
             # validation) and the adapter (no JIT_KV) requires both ZERO;

@@ -16,7 +16,7 @@
  "runtime_limits": {
   "max_inflight_submissions": 4,
   "max_active_sequences": 16,
-  "max_input_rows": 128,
+  "max_input_rows": 1024,
   "resident_sequence_capacity": 16,
   "kv_logical_page_capacity": 0,
   "kv_physical_page_capacity": 0

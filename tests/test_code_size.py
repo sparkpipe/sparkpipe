@@ -1349,10 +1349,13 @@ CEILING = 234369
 # fusion, f32 vectors, kv_b transpose, head shards; rank0+rank15 exact),
 # the o_proj unit verifier, and the M5 cell staging scripts. Measured at
 # merge: 235286 exact.
+# glm5_next prefill width (R2 wiring): execution_row_capacity decoupled from
+# resident_sequence_capacity (rows are not sequence slots) + 1024-row chunk
+# configs (+5 net). Prefill was 16 rows/submission = 10 tok/s measured.
 # coordinator merge #761 (kimi-k3 cancel gap + memory-contract repair):
 # the orphan handshake in node/model_api.c (+35) and the P1 port design
 # docs. Measured at merge: 235609 exact.
-CEILING = 235609
+CEILING = 235614
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

@@ -4,7 +4,7 @@
  "expert_weight_codec": "fp8",
  "stage_pack_path": "packs/glm5_next_stage.tp16.rank10.g5nsp",
  "max_sequence_positions": 32768,
- "execution_row_capacity": 16,
+ "execution_row_capacity": 1024,
  "decode_split_context_threshold": 0,
  "tp_degree": 16,
  "tp_rank": 10,

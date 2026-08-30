@@ -149,10 +149,6 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.max_active_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	.cache_block_token_count = 64u, /* the module's KV block geometry
-	 * (SparkCeilDivU32(max_sequence_positions, 64) pages; the arena's
-	 * block_token_count) — 0 left the engine's prefill spans uncapped and
-	 * the row budget alone shaped every pass (the prefill-slowness lever) */
 	.max_output_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
@@ -797,7 +793,13 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
 	status = SparkGlm5NextServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
-	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM5_NEXT_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > state->resident_sequence_capacity || decode_split_context_threshold > max_sequence_positions) )
+	/* execution_row_capacity bounds the per-submission ROW width (prefill
+	 * chunks carry many rows of ONE sequence), not the resident sequence
+	 * slots: bounding it by resident_sequence_capacity tied prefill width
+	 * to the GDN-state memory budget (150MB/lane class) and capped every
+	 * prompt at 16-token submissions - the measured 10 tok/s prefill. The
+	 * honest bound is the module's row firmware limit. */
+	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM5_NEXT_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SPARK_GLM5_NEXT_SERVING_TP_DEGREE) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
