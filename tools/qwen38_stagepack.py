@@ -316,13 +316,17 @@ class SafetensorsSource(_BaseSafetensorsSource):
                 fused = base + ".down_proj" if not base.endswith("down_proj") else base
                 shard, meta, offset = self.resolve(fused)
                 expect = [ref.rows, ref.columns]
+                expect3 = [EXPERT_COUNT, ref.rows // EXPERT_COUNT, ref.columns]
             else:  # W1|W3 ride the fused gate_up aggregate [2*rows, cols]
-                fused = base[:-len("gate_proj" if ref.kind == KIND_MOE_W1 else "up_proj")] + "gate_up_proj"
+                fused = base[:-(len("gate_proj") if ref.kind == KIND_MOE_W1 else len("up_proj"))] + "gate_up_proj"
                 shard, meta, offset = self.resolve(fused)
+                # the fused aggregate ships either flattened [2*rows, cols]
+                # or 3-D [E, 2*I, H]; both are byte-contiguous expert-major.
                 expect = [2 * ref.rows, ref.columns]
+                expect3 = [EXPERT_COUNT, 2 * EXPERT_INTERMEDIATE, ref.columns]
             if meta["dtype"] != "BF16":
                 raise PackFailure(f"{fused}: dtype {meta['dtype']}, expected BF16 (fused MTP)")
-            if meta["shape"] != expect:
+            if meta["shape"] not in (expect, expect3):
                 raise PackFailure(
                     f"{fused}: checkpoint shape {meta['shape']}, pack expects "
                     f"{expect} (fused expert-major)")
