@@ -3245,3 +3245,13 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   process's cwd changes. NEXT CYCLE: confirm spark0's state (reboot?
   power-cycle owed to operator), relaunch the builder on sparkf with
   the 16-cpu pin, continue.
+
+## 2026-08-30 ~09:5x — k3 warm-build RESUMED ON sparkf (the rule held)
+
+- spark0: still banner-dead (operator power-cycle owed). Payload
+  INTACT on warm (314G + journal — the plan's whole point: any node
+  resumes).
+- Builder relaunched on sparkf (2.7T free, no control role, 16-cpu
+  pin + OMP cap per the operator's thread rule): pid 2492531
+  healthy at first check (RSS 2.5G, journal re-walk reading).
+  The no-long-builds-on-spark0 rule is now practice, not just log.
