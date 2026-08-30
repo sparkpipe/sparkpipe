@@ -100,12 +100,22 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 	}
 	else
 	{
-		/* The collective implements split-ring and direct-all-to-all only
-		 * at tp_degree 4, so the single-algorithm builds run recursive
-		 * doubling alone. */
+		/* Single-algorithm builds run recursive doubling alone; builds
+		 * may add direct_all_to_all (any supported tp_degree; the
+		 * transport routes tp_degree-1 peers on step rows). Split-ring
+		 * remains tp4-only via the FULL_KNOWN_SET policy. */
 		if ( count != 1u ||
 			mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+		{
+			if ( count != 1u ||
+				mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL )
+			{
+				if ( count != 2u ||
+					mask != (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
+						SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) )
+					return(SPARK_STATUS_SCHEMA_ERROR);
+			}
+		}
 	}
 	topology->algorithm_mask = mask;
 	return(SPARK_STATUS_OK);

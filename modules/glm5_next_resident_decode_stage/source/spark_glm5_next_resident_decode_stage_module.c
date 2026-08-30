@@ -1466,6 +1466,39 @@ static SparkStatus SparkGlm5NextModuleCombineBf16(
 	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_all_reduce_sum"));
 }
 
+/* Direct-all-to-all fold: destination already holds this rank's
+ * partial; accumulate every peer slot in GLOBAL rank order (0..15, NULL
+ * terminated) so every rank folds in the identical order and the sums
+ * stay bitwise identical across the collective. */
+static SparkStatus SparkGlm5NextModuleCombineDirectBf16(
+	void *combine_context,
+	void *destination_device,
+	const void *const rank_devices[
+		SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT],
+	uint32_t tp_rank,
+	uint32_t active_sequence_count,
+	uint32_t hidden_dimension,
+	void *cuda_stream)
+{
+	uint32_t index;
+	cudaError_t error;
+	(void)combine_context;
+	for (index=0u;
+		index<SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT;
+		index++)
+	{
+		if (rank_devices[index] == 0 || index == tp_rank)
+			continue;
+		error = SparkGlm5NextLaunchAccumAdd((cudaStream_t)cuda_stream,
+			destination_device,rank_devices[index],
+			active_sequence_count,hidden_dimension);
+		if (error != cudaSuccess)
+			return(SparkStageModuleCudaStatus(
+				SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_d2d_all_reduce_sum"));
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextModuleCombineU64Max(
 	void *combine_context,
 	uint64_t *destination_device,
@@ -1571,8 +1604,10 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	{
 		configuration.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
 		configuration.combine_u64_max_function = SparkGlm5NextModuleCombineU64Max;
+		configuration.combine_tp4_bf16_function = SparkGlm5NextModuleCombineDirectBf16;
 		configuration.combine_context = state;
 		configuration_hc.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
+		configuration_hc.combine_tp4_bf16_function = SparkGlm5NextModuleCombineDirectBf16;
 		configuration_hc.combine_context = state;
 	}
 	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.control_port_base == 0u || configuration.collective_identifier == 0u || configuration.backend_module_path == 0 || configuration.local_host == 0 || configuration.backend_module_path[0] == '\0' || configuration.local_host[0] == '\0' )
