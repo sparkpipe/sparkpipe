@@ -2944,3 +2944,30 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - Half the payload. RSS flat 23G. The hf-fetcher sweep found none
   running fleet-wide (the reboot-causing one is gone with the boot).
   WATCH ONLY.
+
+## 2026-08-30 ~18:0x — glm flash DEV HELP: prefill slowness root-caused to the SHARED api/engine path (coordinator scope, as the dev flagged)
+
+- The dev's report (lane-glm53 wake 5) already isolated it: the API
+  splits a long prompt into INDEPENDENT 64-token sequences (each its
+  own seq_id from pos 0) — the model never sees a coherent context;
+  AND the daemon crashes after ~25 such sequences (slot/leak at
+  capacity). My code walk confirms the mechanism chain: the engine's
+  SparkModelBatchPrefillSpan caps each pass at
+  cache_block_token_count; the glm5_next adapter descriptor OMITS
+  cache_block_token_count entirely (0 = one block per pass = the
+  64-token chunking the dev measured; glm52 sets 64u, dsv4 128u) AND
+  its slot_reuse = AT_POSITION_ZERO with max_output = MAX_ACTIVE_
+  SEQUENCES — every chunk starting at pos 0 burns a NEW slot → the
+  ~25-sequence crash. The api is also THREE times slower than the
+  batch client on the same true-single-sequence prefill (3.2 vs 10
+  tok/s — per-request overhead).
+- FIX SHAPE (shared code — this session's write set): (1) the api
+  must submit ONE sequence and let the engine chunk-prefill IT
+  (prompt_len up to API_MAX_PROMPT_TOKENS already parses); the
+  engine's span logic already handles multi-pass prefill of a single
+  request correctly — the api just never uses it that way. (2)
+  glm5_next's descriptor gains an honest cache_block_token_count
+  (its KV geometry's real block size — the module's kv pool pages).
+  (3) the slot exhaustion disappears with (1). This is the ONE THING
+  next window; the dev gets a note on #755.
+- k3 meanwhile: 979G read / 462G written, RSS flat, pace holding.
