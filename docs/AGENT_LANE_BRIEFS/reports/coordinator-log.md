@@ -2771,3 +2771,12 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   wakes verify shard output + fire placement to the 16 nodes.
 - Rulings pending (operator): qwen-flash TP8/TP12; 27B TP4-now vs
   variable-width port.
+
+## 2026-08-30 ~06:3x — k3 chain healthy at scale (70G read / 22.5G written)
+
+- False alarm on CHAIN-EXITED: the packer child (980284) is alive,
+  rchar 70G / wchar 22.5G and climbing — the log stays quiet by
+  design until completion (the packer prints its receipt at end).
+  On pace for the ~1.5T pass over subsequent cycles; shard step
+  auto-follows.
+- Rulings pending (operator): qwen-flash TP8/TP12; 27B TP4 vs port.
