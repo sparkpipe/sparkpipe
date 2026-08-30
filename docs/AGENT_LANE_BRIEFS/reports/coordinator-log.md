@@ -2867,3 +2867,18 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   single-stream ceph pace, the D-state path). Journal replay
   completed; now re-reading source tensors past the resume point.
   WATCH ONLY; shard auto-follows.
+
+## 2026-08-30 ~13:5x — k3 fixed build: healthy but SLOW single-stream ceph
+
+- RSS stable ~2.0G (the fix), reads advancing 3.1->3.9G / 5min =
+  ~2.5MB/s single-stream ceph — at this pace the remaining source
+  pass is HOURS-class. The build is CORRECT but ceph-bandwidth-bound
+  (spark4 single stream; the 0731 base on spark0 sustained 1.2GB/s —
+  spark4's path is the limiter, same class as spark1/spark3).
+- DECISION (fail-fast vs correctness): the build is healthy; killing
+  and relocating to spark0 loses the 462G journal-resume state (the
+  journal+payload live on spark4's local disk — a relocation means
+  STARTING OVER on spark0, ~1h at its pace). Math: spark4 finish ~
+  many hours vs spark0 restart ~1h + shard. RELOCATE is correct per
+  fail-fast. Executing next cycle window (copy journal approach
+  infeasible; clean restart on spark0 with the FIX already on main).
