@@ -1355,7 +1355,11 @@ CEILING = 234369
 # coordinator merge #761 (kimi-k3 cancel gap + memory-contract repair):
 # the orphan handshake in node/model_api.c (+35) and the P1 port design
 # docs. Measured at merge: 235609 exact.
-CEILING = 235614
+# coordinator merge #760 (d2d direct-all-to-all transport): the TP16
+# peer-routing collective at any degree (ABI 12->13; step rows double as
+# d2a peer routes, MAX_STEPS 4->16) + the glm5_next module's d2a tier +
+# regenerated flash configs. Measured at merge: 235700 exact (+3: the generator carries the d2a algorithm set).
+CEILING = 235700
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

@@ -39,8 +39,11 @@ TP_COLLECTIVE = {
     "operation_timeout_milli": 30000,
     "peer_hosts": list(HOSTS),
     "peer_ports": [COLLECTIVE_BASE + r for r in range(TP)],
-    "algorithms": ["recursive_doubling"],
-    "direct_all_to_all_max_payload_bytes": 0,
+    # d2a rides beside recursive doubling at TP16 (the ABI-13 transport
+    # routes tp_degree-1 peers on step rows; 80KB is the lane's payload
+    # bound from the d2d measurements) - #760's committed configs.
+    "algorithms": ["recursive_doubling", "direct_all_to_all"],
+    "direct_all_to_all_max_payload_bytes": 81920,
     "split_ring_min_payload_bytes": 0,
     # The schema REQUIRES exactly 2 rails (MAX_RAIL_COUNT=2) and 3
     # step_rail_indices (SPLIT_RING_ROUTE_COUNT=3) - glm52's template.
