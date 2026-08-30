@@ -1533,7 +1533,7 @@ static SparkStatus SparkQwen38_27bModuleValidateDecodeView(
         batch->row_positions == 0 ||
         batch->row_sequence_ids == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 1, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     for (row = 0u; row < batch->row_count; row++)
@@ -1545,14 +1545,14 @@ static SparkStatus SparkQwen38_27bModuleValidateDecodeView(
             batch->row_positions[row] >=
                 SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 2, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
         }
         for (previous_row = 0u; previous_row < row; previous_row++)
         {
             if (batch->row_lane_indices[previous_row] == batch->row_lane_indices[row] ||
                 batch->row_sequence_ids[previous_row] == batch->row_sequence_ids[row])
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 3, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
             }
         }
     }
@@ -1587,7 +1587,7 @@ static SparkStatus SparkQwen38_27bModuleValidatePrefillView(
             view->token_count,
             SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 4, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
     return SPARK_STATUS_OK;
 }
@@ -1643,12 +1643,12 @@ static SparkStatus SparkQwen38_27bModuleValidateSpeculation(
                      snapshot->snapshot_index >=
                          state->gdn_snapshot_slot_count))))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 5, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 }
     else if (snapshot != 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 6, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     if (drafted == 0u)
@@ -1666,7 +1666,7 @@ static SparkStatus SparkQwen38_27bModuleValidateSpeculation(
         draft->lane_index >= state->max_active_sequence_count ||
         (state->owns_embedding == 0u && draft->row_token_ids == 0))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 7, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     if (prefill != 0)
@@ -1676,7 +1676,7 @@ static SparkStatus SparkQwen38_27bModuleValidateSpeculation(
             draft->base_position !=
                 prefill->base_position + prefill->token_count)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 8, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
         }
         return SPARK_STATUS_OK;
     }
@@ -1689,7 +1689,7 @@ static SparkStatus SparkQwen38_27bModuleValidateSpeculation(
             if (draft->sequence_id != decode_batch->row_sequence_ids[row] ||
                 draft->base_position != decode_batch->row_positions[row] + 1u)
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 9, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
             }
             matching_row_found = 1u;
             break;
@@ -1738,7 +1738,7 @@ static SparkStatus SparkQwen38_27bModuleValidateFrame(
         (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u ||
         frame->new_token_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 10, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     expected_buffer_count = state->owns_embedding + state->owns_final_head;
@@ -1746,7 +1746,7 @@ static SparkStatus SparkQwen38_27bModuleValidateFrame(
         (expected_buffer_count != 0u && frame->buffers == 0) ||
         frame->user_context == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 11, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     context = (const SparkQwen38_27bResidentDecodeStageFrameContext *)frame->user_context;
@@ -1756,7 +1756,7 @@ static SparkStatus SparkQwen38_27bModuleValidateFrame(
         context->reserved0 != 0u ||
         (context->flags & ~known_context_flags) != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 12, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     mode = context->flags &
@@ -1770,7 +1770,7 @@ static SparkStatus SparkQwen38_27bModuleValidateFrame(
         (is_prefill == 0u &&
          mode != SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 13, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     needs_hidden_input = state->stage_index > 0u ? 1u : 0u;
@@ -1782,7 +1782,7 @@ static SparkStatus SparkQwen38_27bModuleValidateFrame(
           SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u) !=
             (needs_hidden_output != 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 14, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
     if ((needs_hidden_input != 0u &&
          (context->hidden_input_transport_session == 0 ||
@@ -1797,7 +1797,7 @@ static SparkStatus SparkQwen38_27bModuleValidateFrame(
          (context->hidden_output_transport_session != 0 ||
           context->hidden_output_send_function != 0)))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 15, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     block_table = context->kv_block_table;
@@ -1819,14 +1819,14 @@ static SparkStatus SparkQwen38_27bModuleValidateFrame(
             block_table->host_physical_block_indices == 0 ||
             block_table->host_lane_physical_block_counts == 0)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 16, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
         }
     }
     else if ((context->flags &
               SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE) != 0u ||
              block_table != 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 17, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
 
     status = is_prefill != 0u
@@ -2032,6 +2032,10 @@ static SparkStatus SparkQwen38_27bModuleUploadRows(SparkQwen38_27bModuleState *s
 // A base-zero prefill claims the lane fresh: the chunk kernels read the
 // resident state unconditionally, so a reused lane's stale delta state and
 // conv tails are zeroed on the slot stream before the walk.
+// Forward declaration: SparkQwen38_27bModuleFinish (line ~2300) consumes the
+// frame-error check defined later in this file; without this the -Werror
+// host build dies on implicit-declaration (main-tip breakage, 2026-08-29).
+static SparkStatus SparkQwen38_27bModuleCheckFrameError(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, SparkStatus status);
 static SparkStatus SparkQwen38_27bModuleResetLaneState(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, uint32_t lane)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -2355,7 +2359,7 @@ static SparkStatus SparkQwen38_27bModuleValidateLaneSequenceContinuity(
 
     if (state == 0 || context == 0 || lane_requires_reset == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 18, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
     }
     row_count = prefill != 0 ? 1u : context->decode_batch->row_count;
     memset(lane_requires_reset, 0, row_count * sizeof(*lane_requires_reset));
@@ -2400,14 +2404,14 @@ static SparkStatus SparkQwen38_27bModuleValidateLaneSequenceContinuity(
             else if ((restore_first == 0u && prefill->base_position != expected_position) ||
                 (restore_first != 0u && prefill->base_position > expected_position))
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 19, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
             }
         }
         else
         {
             if (prefill->base_position != 0u && prefix_restore_in == 0u)
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 20, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
             }
             lane_requires_reset[0] = 1u;
         }
@@ -2429,14 +2433,14 @@ static SparkStatus SparkQwen38_27bModuleValidateLaneSequenceContinuity(
         {
             if (position != state->lane_next_positions[lane])
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 21, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
             }
         }
         else
         {
             if (position != 0u)
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                do { fprintf(stderr, "qwen38_27b_debug VF_CHECK_FAIL id=%d line=%d\n", 22, (int)__LINE__); return SPARK_STATUS_INVALID_ARGUMENT; } while (0);
             }
             lane_requires_reset[row] = 1u;
         }
