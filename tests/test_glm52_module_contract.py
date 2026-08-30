@@ -3,9 +3,10 @@
 from pathlib import Path
 import subprocess
 
-CODECS = ("int6", "int7", "int8", "fp8", "nvfp4", "mxfp4")
+CODECS = ("bf16", "int6", "int7", "int8", "fp8", "nvfp4", "mxfp4")
 REVISION = "test-model-revision"
 CONTRACT_SHA256 = "0" * 64
+REJECTED = ("none", "fp4")
 
 
 def run_make(root: Path, codec: str | None) -> subprocess.CompletedProcess[str]:
@@ -32,9 +33,10 @@ def main() -> int:
     assert missing.returncode != 0
     assert "EXPERT_CODEC is required" in missing.stderr
 
-    unsupported = run_make(root, "bf16")
-    assert unsupported.returncode != 0
-    assert "unsupported EXPERT_CODEC 'bf16'" in unsupported.stderr
+    for bad in REJECTED:
+        unsupported = run_make(root, bad)
+        assert unsupported.returncode != 0
+        assert f"unsupported EXPERT_CODEC '{bad}'" in unsupported.stderr
 
     for codec in CODECS:
         result = run_make(root, codec)

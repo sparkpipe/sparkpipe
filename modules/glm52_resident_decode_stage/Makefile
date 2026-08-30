@@ -8,11 +8,14 @@ ifndef CONTRACT_SHA256
 $(error CONTRACT_SHA256 is required and must identify the exact model package contract)
 endif
 
-GLM52_EXPERT_CODECS := int6 int7 int8 fp8 nvfp4 mxfp4
+GLM52_EXPERT_CODECS := bf16 int6 int7 int8 fp8 nvfp4 mxfp4
 ifeq ($(filter $(EXPERT_CODEC),$(GLM52_EXPERT_CODECS)),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': choose $(GLM52_EXPERT_CODECS))
 endif
 
+ifeq ($(EXPERT_CODEC),bf16)
+GLM52_EXPERT_CODEC_ID := 1
+endif
 ifeq ($(EXPERT_CODEC),int6)
 GLM52_EXPERT_CODEC_ID := 2
 endif

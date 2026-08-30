@@ -44,8 +44,6 @@ static_assert(
 static_assert(
     GLM52_UNITY_TILE_K % LmBf16Format::kMmaK == 0u,
     "GLM 5.2 BF16 tile depth must contain complete MMA steps");
-static_assert(GLM52_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_BF16,
-    "GLM 5.2 routed experts require a compressed package codec");
 static_assert(GLM52_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_NONE,
     "GLM 5.2 routed experts require a package codec");
 static_assert(

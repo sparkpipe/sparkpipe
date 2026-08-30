@@ -65,6 +65,25 @@ static void SparkTestShapeContract(void)
 		3u,
 		SPARK_WEIGHT_CODEC_BF16,
 		1u,
+		&shape) == 0);
+	/* The bf16 expert arm: native-precision experts carry the BF16
+	 * payload and NO scale plane (the glm53full bf16 pack contract). */
+	assert(shape.payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_BF16);
+	assert(shape.weight_codec == SPARK_WEIGHT_CODEC_BF16);
+	assert(shape.scale_encoding == SPARK_WEIGHT_SCALE_ENCODING_NONE);
+	assert(shape.group_count == SPARK_GLM52_MODEL_MOE_EXPERT_COUNT);
+	assert(shape.rows == SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
+	assert(shape.columns == SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION);
+	assert(SparkGlm52StagePackExpectedPayloadBytes(&shape) ==
+		(uint64_t)SPARK_GLM52_MODEL_MOE_EXPERT_COUNT *
+		SPARK_GLM52_MODEL_HIDDEN_DIMENSION *
+		SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION * 2u);
+	assert(SparkGlm52StagePackExpectedScaleBytes(&shape) == 0u);
+	assert(SparkGlm52StagePackExpectedShape(
+		SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN,
+		3u,
+		SPARK_WEIGHT_CODEC_NONE,
+		1u,
 		&shape) == -5);
 	assert(SparkGlm52StagePackExpectedShape(
 		SPARK_GLM52_STAGEPACK_TENSOR_INDEX_Q,
