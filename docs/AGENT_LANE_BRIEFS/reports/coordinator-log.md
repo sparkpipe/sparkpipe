@@ -3032,3 +3032,13 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - k3: 1.19T read / 564G written, healthy.
 - THREE builds converging simultaneously; next windows verify +
   place each. dsv4-pro extension is then the last rung.
+
+## 2026-08-30 ~21:4x — three-build sweep: 27B 2/4, flash 4/8, k3 died+resumed
+
+- 27B TP4: rank1 OK (2 OK, 0 fail, 30G) — completing this hour.
+- qwen-flash TP8: 4/8 ranks done (187G) — on pace.
+- k3: builder DIED silently at 553G (no log line — same quiet-exit
+  class; journal intact). RESUMED from journal (the proven path).
+  If it dies again at the same point, the numpy interleave path
+  holds a layer-pattern memory trap — next incident gets the core
+  dump treatment.
