@@ -41,12 +41,14 @@ _TOOLS_DIR = str(Path(__file__).resolve().parent)
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
-# The 27B verifier: expected shapes come from the 27B packer's own
-# tables (HIDDEN 5120, GDN 48 value heads — the release geometry). The
-# max-family tables (qwen38_stagepack.py, HIDDEN 8192) describe a
-# DIFFERENT model; using them here failed every valid 27B entry.
-_spec = importlib.util.spec_from_file_location(
-    "qwen38_stagepack_tables", str(Path(_TOOLS_DIR) / "qwen38_27b_stagepack.py"))
+# Both tables load: the 27B packer's own geometry (HIDDEN 5120, GDN 48
+# value heads — the release constants the entries must match) and the
+# shared inventory/layer helpers. The max-family tables alone (HIDDEN
+# 8192) describe a DIFFERENT model and failed every valid 27B entry.
+_tables_27b_spec = importlib.util.spec_from_file_location(
+    "qwen38_27b_tables", str(Path(_TOOLS_DIR) / "qwen38_27b_stagepack.py"))
+_tables = importlib.util.module_from_spec(_tables_27b_spec)
+_tables_27b_spec.loader.exec_module(_tables)
 _tables = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_tables)
 
