@@ -208,8 +208,7 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
         want("attn_kv_head_count", kvh, _tables.ATTN_KV_HEADS)
         want("attn_head_dimension", hd, _tables.ATTN_HEAD_DIM)
         want("attn_rope_dimension", rope_d, _tables.ATTN_ROPE_DIM)
-        if hasattr(_tables, "EXPERT_COUNT"):
-                if hasattr(_tables, "EXPERT_COUNT"):  # max-family only; the 27B is dense-FFN
+        if hasattr(_tables, "EXPERT_COUNT"):  # max-family only; the 27B is dense-FFN
             want("routed_expert_count", experts, _tables.EXPERT_COUNT)
             want("experts_per_token", topk, _tables.EXPERTS_PER_TOKEN)
             want("expert_intermediate_dimension", moe_int, _tables.EXPERT_INTERMEDIATE)
