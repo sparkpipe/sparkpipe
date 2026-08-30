@@ -227,6 +227,7 @@ class TensorRef:
         self.name = name
         self.rows, self.columns, self.weight_format = kind_shape(kind)
         self.scale_name = None
+        self.fused_up_offset = 0  # >0 under the fused gate|up source
 
 
 def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
@@ -304,6 +305,19 @@ class SafetensorsSource(_BaseSafetensorsSource):
         # this verifies the checkpoint rather than forcing an expectation.
         _, meta, _ = self.resolve(ref.name)
         actual_dtype = meta["dtype"]
+        # THE FUSED gate|up SOURCE (the official -fp8 release): one tensor
+        # mlp.gate_proj.weight [2*I, H] carrying gate rows [0:I) then up
+        # rows [I:2I); up_proj is absent. Probe once per ref and remap UP
+        # onto the same tensor at the +I row offset (spec: coordinator-log
+        # 2026-08-30 ~03:5x).
+        if ref.kind in (KIND_FFN_GATE, KIND_FFN_UP):
+            _, g_meta, _ = self.resolve(
+                ref.name.rsplit(".up_proj.", 1)[0] + ".gate_proj.weight"
+                if ref.kind == KIND_FFN_UP else ref.name)
+            if g_meta["shape"][0] == 2 * FFN_INTERMEDIATE:
+                ref.fused_up_offset = FFN_INTERMEDIATE if ref.kind == KIND_FFN_UP else 0
+                ref.name = (ref.name.rsplit(".up_proj.", 1)[0] + ".gate_proj.weight"
+                            if ref.kind == KIND_FFN_UP else ref.name)
         if ref.kind in FP8_KINDS and actual_dtype == "F8_E4M3":
             ref.weight_format = WEIGHT_FP8_E4M3_F32B128
             ref.scale_name = ref.name + "_scale_inv"
@@ -460,13 +474,14 @@ def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, plan, ou
                 base = offset + (row * ref.columns) * elem
                 write_batch(out, path, base, ref.columns * elem, mode)
         return
+    ro = getattr(ref, "fused_up_offset", 0)
     if plan.col_count == ref.columns:
         for row in range(plan.row_off, plan.row_off + plan.row_count):
-            base = offset + (row * ref.columns) * elem
+            base = offset + ((row + ro) * ref.columns) * elem
             write_batch(out, path, base, ref.columns * elem, mode)
         return
     for row in range(plan.row_off, plan.row_off + plan.row_count):
-        base = offset + ((row * ref.columns) + plan.col_off) * elem
+        base = offset + (((row + ro) * ref.columns) + plan.col_off) * elem
         write_batch(out, path, base, plan.col_count * elem, mode)
 
 
@@ -482,8 +497,9 @@ def copy_scale(source: SafetensorsSource, ref: TensorRef, plan, out) -> None:
         return
     if isinstance(plan, TpFusedSlice):
         raise PackFailure(f"FP8 fused-slice scale not yet supported: {ref.name}")
-    r0 = plan.row_off // FP8_SCALE_GROUP
-    r1 = (plan.row_off + plan.row_count) // FP8_SCALE_GROUP
+    ro = getattr(ref, "fused_up_offset", 0)
+    r0 = (plan.row_off + ro) // FP8_SCALE_GROUP
+    r1 = (plan.row_off + plan.row_count + ro) // FP8_SCALE_GROUP
     c0 = plan.col_off // FP8_SCALE_GROUP
     c1 = (plan.col_off + plan.col_count) // FP8_SCALE_GROUP
     for row in range(r0, r1):
