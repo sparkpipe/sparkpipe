@@ -229,7 +229,11 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
                 if tp_degree > 1:
                     plan = _packer.build_tp_plan(ref, tp_degree, 0)
                     if plan is not None:
-                        ref.rows, ref.columns = _packer.packed_shape(ref, plan)
+                        srows, scols = _packer.packed_shape(ref, plan)
+                        if (srows, scols) != (ref.rows, ref.columns):
+                            # remember both; the entry may carry either the
+                            # shard or the replicated source shape
+                            ref.alt_shape = (srows, scols)
                 expected_refs[(ref.kind, ref.layer)] = ref
         except _tables.PackFailure as error:
             fail(f"inventory build failed: {error}")
@@ -255,7 +259,9 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
             if ref is None:
                 fail(f"{tag}: not in the format inventory of slice {first_layer}+{layer_count}")
                 continue
-            if rows != ref.rows or cols != ref.columns:
+            alt = getattr(ref, "alt_shape", None)
+            shape_ok = (rows == ref.rows and cols == ref.columns) or                        (alt is not None and (rows, cols) == alt)
+            if not shape_ok:
                 fail(f"{tag}: shape {rows}x{cols}, expected {ref.rows}x{ref.columns}")
             natural = natural_format(kind)
             if fmt != natural:
