@@ -2330,3 +2330,25 @@ appendix).
 - Driving queue while spawns down: next = chain watch + the glm5-moe
   oracle built in coordinator slices (the last unverified compute
   family).
+
+## 2026-08-30 ~06:5x — BOTTOM-UP RESET (operator): the 16x failure root-caused to a STALE PACK
+
+- The dsv4 tp16.b1 on-node packs are AUG 11 — three weeks older than
+  the adapter (.so from last week): tensor_count contract drift = the
+  pack_geometry_mismatch on all 16 ranks. NOT a parallel-load problem:
+  the parallel launch WORKS (all 16 daemons started simultaneously with
+  correct ranks). The layers now honestly separated: launch=WORKS,
+  configs=WORKS (generator + sane limits), packs=STALE.
+- CANONICAL PACK FOUND: dsv4_flash_v3_full.spstage (156GB, Aug 28,
+  current era) on spark5's durable home. Splice pipeline FIRED
+  (spark5 pid 144209, fresh main clone): rank 0 first (isolation
+  test), then 1-15 in batches of 4. Output:
+  ~/sparkdata/dsv4_flash.tp16v3/packs/.
+- NEXT BOTTOM-UP STEPS: rank0 lands -> isolation load test on one node
+  -> place 16 -> the 16x parallel test -> THEN the weightd layer:
+  per-node daemons (already hardware-verified) running persistently,
+  then the CENTRAL coordinator (operator design: one process, fleet
+  memory table, LOAD/UNLOAD messages, fleet-wide LRU eviction) — the
+  queue's dispatcher becomes its client.
+- Central weightd design recorded per operator: message-driven fleet
+  memory management across all 16 nodes.
