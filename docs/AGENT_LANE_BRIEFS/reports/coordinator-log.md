@@ -2562,3 +2562,21 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - RUNG 2 FIRED: dsv4-flash base pack building on spark3 from the
   CORRECTED source (official-fp8-mixed 295G per the selection table).
   Then the 16 rank-splices fan out.
+
+## 2026-08-30 ~21:1x — glm COMPLETE verified; dsv4 rung: precise blocker named
+
+- GLM5.3: 16/16 × ALL FOUR sets VERIFIED on-disk. The first model is
+  fully prepped.
+- dsv4-flash base (official-fp8-mixed): FAILS the packer's reduced-
+  source index check — the mixed source's tensor names are BARE
+  ('layers.0.attn...', 'embed.weight', 'hc_head_*') with NO 'model.'
+  prefix and carry hc_head_* extras (69,189 tensors). The packer's
+  records (dsv4_flash_authoritative contract) expect the 'model.'
+  prefixed scheme. NEXT: print the set-difference (expected vs
+  actual); ruling = either the contract gains the mixed-source name
+  map or the OTHER flash source (0731, which the packer was written
+  against) becomes the base — NOTE the selection table says fp8-mixed
+  is the QUALITY pick (295G vs 0731's 156G fp4) — so prefer the
+  name-map fix; the 0731 fallback is the fp4 arm.
+- Process cleaned (TERM). Driver next wake: the set-diff, then the
+  name-map or fallback decision.
