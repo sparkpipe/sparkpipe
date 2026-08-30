@@ -2691,3 +2691,16 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   packer qwen4_flash_stagepack has --tp-degree/--tp-rank; BF16 needs
   no codec handling — likely the EASIEST remaining build) or the 27B
   port; next cycle takes qwen-flash first (bounded, high certainty).
+
+## 2026-08-30 ~03:2x — qwen-flash rung: TP16 GEOMETRICALLY IMPOSSIBLE (operator ruling needed)
+
+- Dry-run fails closed at the divisibility gate: qwen-flash has 24
+  attention heads — 24 % 16 != 0, no even head split over 16 ranks
+  exists (fail-closed by design; scale-block alignment would break).
+- Valid TP degrees for this geometry: 1, 2, 3, 4, 6, 8, 12, 24.
+  RECOMMENDATION: TP8 — 3 heads/rank, 360G/8 = 45G/rank (fits the
+  110GiB law with KV headroom), power-of-2 pipeline. TP12 = 30G/rank
+  if max node spread matters. TP16 CANNOT be honored for this model.
+- OPERATOR: one line — TP8 (recommended) or TP12 for qwen-flash?
+  Until ruled: ladder moves to the 27B fp8-fused port (the named
+  smaller unit).
