@@ -2404,3 +2404,18 @@ appendix).
   the next fan-out.
 - Fan-out machinery itself: 1-second dispatch to 16 builders, correct
   stage splits, per-node outputs — proven twice now.
+
+## 2026-08-30 ~09:2x — NVFP4 PACKS BUILDING: plan sizing fixed, probe pack REAL
+
+- Root of the 'span mismatch': convert()'s PLAN still sized MoE refs
+  fp8-style (rows*cols, b128 F32 scales) while the copier wrote
+  rows*cols/2 + g16 F8 scales — the write path's own mismatch check
+  caught it (the dry-run gates shapes only, a noted gap). Fixed
+  (ce5b003).
+- PROOF: a REAL 2-layer probe pack built from the radixark source —
+  32.63GiB, sha256 1b4ab084..., receipt written, plan==write.
+- The 16-stage full build DISPATCHED (fan-out 1s; spark0 already at
+  54G in packs/ incl. the probe). Watch per-stage receipts next
+  cycles; then qwen38_pack_verify + placement + the module-side nvfp4
+  acceptance (loader + packed-4bit grouped GEMM — glm kernels the
+  reference) which is the gate between packs-on-disk and serving.
