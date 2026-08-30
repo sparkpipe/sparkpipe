@@ -2580,3 +2580,18 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   name-map fix; the 0731 fallback is the fp4 arm.
 - Process cleaned (TERM). Driver next wake: the set-diff, then the
   name-map or fallback decision.
+
+## 2026-08-30 ~21:4x — dsv4 rung: 0731 base BUILDING (source ruling logged)
+
+- Set-diff ruling: mixed vs 0731 schemes share 69,177/69,189 names —
+  the divergence is the MTP block + 3,140 tensors (scale-plane
+  inventory) the mixed source lacks. The packer/contract are pinned
+  to 0731's inventory. FAIL-FAST DECISION: build the working TP16
+  set from 0731 NOW (the packer-native path, ~10G/rank = the FP4
+  arm); the fp8-mixed QUALITY UPGRADE (295G, the selection table's
+  pick) = contract name-map + inventory work, logged as follow-up —
+  additive rebuild-and-replace when it lands.
+- BASE BUILDING on spark3: child 3641970 actively reading shard 1/48
+  (rchar 405M and climbing), log quiet by design (packer prints on
+  completion). Next wake: watch for the ~156G base + receipt, then
+  fan the 16 rank-splices across free sparks.
