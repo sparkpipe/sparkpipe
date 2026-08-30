@@ -305,6 +305,20 @@ class SafetensorsSource(_BaseSafetensorsSource):
         super().check_config(expectations)
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
+        if (ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN)
+                and EXPERT_CODEC == "nvfp4" and ref.layer == MTP_LAYER):
+            # radixark ships the MTP layer as FUSED BF16 spine tensors
+            # (mtp.layers.0.mlp.experts.<proj>, expert-major aggregate),
+            # not the per-expert nvfp4 split. Validate the fused form.
+            fused = ref.name.replace("{e}.", "")
+            shard, meta, offset = self.resolve(fused)
+            if meta["dtype"] != "BF16":
+                raise PackFailure(f"{fused}: dtype {meta['dtype']}, expected BF16 (fused MTP)")
+            if meta["shape"] != [ref.rows, ref.columns]:
+                raise PackFailure(
+                    f"{fused}: checkpoint shape {meta['shape']}, pack expects "
+                    f"[{ref.rows}, {ref.columns}] (fused expert-major)")
+            return shard, meta, offset
         if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN) and EXPERT_CODEC == "nvfp4":
             # radixark NVFP4: U8 payload [R, C/2] (2 values/byte), F8_E4M3
             # per-16 scales [R, C/16], F32 global + input scales (scalars).
@@ -485,7 +499,11 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     cursor = 0
     for ref in refs:
         shard, meta, offset = source.check_shape(ref)
-        if ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4":
+        if (ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4"
+                and ref.layer == MTP_LAYER):
+            payload_bytes = ref.rows * ref.columns * BF16_BYTES
+            scale_bytes = 0
+        elif ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4":
             # codec-6 sizing: U8-packed payload (2 values/byte) + one F8_E4M3
             # scale byte per 16 values; F32 global/input scales ride the
             # manifest entry, not the payload stream.
@@ -547,7 +565,21 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         hashing.write(b"\0" * padding)
         for ref, source_offset, payload_offset, payload_bytes, scale_bytes in plans:
             before = hashing.tell()
-            if ref.weight_format == WEIGHT_FP8_F32B128:
+            if (ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4"
+                    and ref.layer == MTP_LAYER):
+                fused = ref.name.replace("{e}.", "")
+                shard, meta, off = source.resolve(fused)
+                with (source.root / shard).open("rb") as f:
+                    f.seek(off)
+                    remaining = ref.rows * ref.columns * BF16_BYTES
+                    while remaining > 0:
+                        step = min(remaining, CHUNK_BYTES)
+                        raw = f.read(step)
+                        if len(raw) != step:
+                            raise PackFailure(f"short read on {fused}")
+                        remaining -= step
+                        hashing.write(raw)
+            elif ref.weight_format == WEIGHT_FP8_F32B128:
                 copy_nvfp4_experts(source, ref, hashing) if EXPERT_CODEC == "nvfp4" else copy_fp8_experts(source, ref, hashing)
             else:
                 copy_bf16_tensor(source, ref, source_offset, hashing)
