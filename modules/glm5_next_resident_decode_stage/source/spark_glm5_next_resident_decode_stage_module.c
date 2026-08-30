@@ -2627,7 +2627,7 @@ static SparkStatus SparkGlm5NextBuildHeadShadow(SparkGlm5NextModuleState *state)
 {
 	uint64_t head_rows,dim;
 	SparkStatus status;
-	if ( state->owns_final_head == 0u || state->lm_head_bf16 == 0u )
+	if ( state->owns_final_head == 0u || state->lm_head_bf16 == 0 )
 		return(SPARK_STATUS_OK);
 	head_rows = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
 	dim = SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
