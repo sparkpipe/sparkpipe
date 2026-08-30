@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# k3_gen_deployment.sh OUT_PATH — emit the K3 model_resident.json deployment
-# (schema 2) for the 16 TP4xPP4 ranks. rank_index = world rank; stage_index =
-# world_rank / 4 (PP stage); the adapter embeds the driver so the driver
-# path is never loaded, but the residentd's schema requires the fields and
-# the program-name match ("k3"). Transport = the host-RDMA hidden stream at
-# the registry's transport control base 62700.
+# k3_gen_deployment.sh OUT_PATH [TP_DEGREE] — emit the K3 model_resident.json
+# deployment (schema 2) for the 16 ranks. TP_DEGREE 4 (default) = TP4xPP4;
+# 16 = TP16 PP1 (runtime root k3.mxfp4.tp16). rank_index = world rank;
+# stage_index = the LINEAR pipe position (unique per node: the deployment
+# schema treats every rank as a stage; the K3 adapter derives its PP stage
+# as stage_index / tp_degree itself). The adapter embeds the driver so the
+# driver path is never loaded, but the residentd's schema requires the
+# fields and the program-name match ("k3"). Transport = the host-RDMA
+# hidden stream at the registry's transport control base 62700.
 set -euo pipefail
-OUT="${1:?usage: k3_gen_deployment.sh OUT_PATH}"
+OUT="${1:?usage: k3_gen_deployment.sh OUT_PATH [TP_DEGREE(4|16)]}"
+TP="${2:-4}"
+case "$TP" in
+  4) RT="tp4pp4" ;;
+  16) RT="tp16" ;;
+  *) echo "unsupported tp degree $TP (4 or 16)" >&2; exit 1 ;;
+esac
 {
   echo '{'
   echo '  "schema_version": 2,'
@@ -44,11 +53,11 @@ OUT="${1:?usage: k3_gen_deployment.sh OUT_PATH}"
     echo '    {'
     echo '      "rank_index": '$i','
     echo '      "stage_index": '$stage','
-    echo '      "runtime_root": "/home/'$host'/sparkdata/k3.mxfp4.tp4pp4",'
+    echo '      "runtime_root": "/home/'$host'/sparkdata/k3.mxfp4.'$RT'",'
     echo '      "node_target": "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",'
     echo '      "transport_host": "'$host'",'
     echo '      "adapter_configuration_path": "config/adapter.json",'
-    echo '      "kv_backing_directory": "/home/'$host'/sparkdata/k3.mxfp4.tp4pp4/kvcache",'
+    echo '      "kv_backing_directory": "/home/'$host'/sparkdata/k3.mxfp4.'$RT'/kvcache",'
     echo '      "kv_backing_maximum_bytes": 137438953472,'
     echo '      "control_endpoint": {'
     echo '        "kind": "tcp",'
