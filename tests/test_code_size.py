@@ -1305,7 +1305,11 @@ CEILING = 228248
 # conviction dumps); the swiglu swap itself was REVERTED (it NaN'd the MoE
 # partial from the first wave - verdict by bisect wave10; the record comment
 # stays, the kernel is gone). To be trimmed with the ratchet at coherence.
-CEILING = 233120
+# +326 (2026-08-30, qwen38max lane): the CPU stagepack wire-contract audit
+# (tools/qwen38_stagepack_layout_probe.c + tools/qwen38_stagepack_layout_
+# audit.py + its report) - the harness that caught the v2 header field-order
+# and MXFP4 codec-code divergences before the 16-rank pack build.
+CEILING = 233446
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
