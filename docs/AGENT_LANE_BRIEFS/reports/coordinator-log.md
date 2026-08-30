@@ -2815,3 +2815,20 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 
 - Two-thirds through writes; pace steady. Shard ETA ~30 min.
   WATCH ONLY.
+
+## 2026-08-30 ~11:1x — k3 BLOCKED: packer OOM at whole-model scale (named defect)
+
+- The tile_k=32 WHOLE-model pack OOM-killed at 47.9G anon-RSS
+  (dmesg receipt; spark4's 119G — the packer accumulates, not the
+  payload: wchar was 447G on disk). Journal-resume confirmed working
+  (fast re-walk) but the SAME accumulation recurs — RSS climbed
+  2.5G->46.5G during replay alone. TERMed before an OOM churn loop.
+- ROOT: k3_pack's in-memory bookkeeping doesn't scale to 93-layer
+  whole-model at tile_k=32 (the historical TP4PP4 packs were built
+  STAGE-WISE, each a fraction). TWO FIX PATHS: (a) streaming/chunked
+  manifest in k3_pack (the manifest dict or interleave tables held
+  per-tensor); (b) stage-pack each PP stage (fits memory, the proven
+  mode) then a stage-merge or per-stage shard. Dev-session unit —
+  the k3 rung hands off with this spec.
+- Board: 4 complete; k3 blocked-on-defect (spec above); rulings
+  pending (qwen-flash degree; 27B TP4/port); dsv4-pro last.
