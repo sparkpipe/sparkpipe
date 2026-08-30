@@ -32,6 +32,9 @@ def main() -> int:
     ap.add_argument("--context", type=int, default=32768,
                     help="max_sequence_positions of the deployment")
     ap.add_argument("--budget", type=int, default=256)
+    ap.add_argument("--rows", type=int, default=16,
+                    help="max_prefill_rows_per_submission; must be <= the "
+                         "deployment runtime_limits.max_input_rows")
     args = ap.parse_args()
 
     fixture = json.loads(Path(args.fixture).read_text())
@@ -53,7 +56,7 @@ def main() -> int:
         "connect_timeout_ms": 120000,
         "request_capacity": 1,
         "max_context_tokens": args.context,
-        "max_prefill_rows_per_submission": 64,
+        "max_prefill_rows_per_submission": args.rows,
         "maximum_messages_per_rank_per_progress": 8,
         "maximum_new_submissions_per_progress": 1,
         "stop_token_ids": [],
