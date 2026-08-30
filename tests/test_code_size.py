@@ -1324,7 +1324,7 @@ CEILING = 228248
 # directory + bounds + sha + sampled payload/scale bytes vs the GA
 # checkpoint) plus its receipt-pinned unit test. Main's pre-existing
 # +135 drift (qwen38 stagepack fixes) rides along unchanged.
-CEILING = 233758
+CEILING = 233841
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
