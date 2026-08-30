@@ -1161,6 +1161,18 @@ static uint32_t SparkGlm5NextRoundMajorWaveRows(
 		current = next;
 		count++;
 	}
+	/* count > 1 means rows first_row..first_row+count-1 are CHUNKS OF ONE
+	 * SEQUENCE (same resident slot, later lanes). This module's KDA path is
+	 * decode-shaped: BindLayer pins sequence_row_begin to 0 ("row i is
+	 * sequence i"), so a multi-row same-sequence wave hands each chunk row
+	 * its OWN conv window and state slot - the recurrence of positions
+	 * 1..n never chains (found on glm5-dsa wave4: the engine's 16-row
+	 * prompt frames zeroed the residual streams by layer 5 and the head
+	 * mean went all-zero). Execute the chunk as one wave PER ROW; rows of
+	 * DIFFERENT sequences (count == 1 for every slot here) keep grouping
+	 * exactly as before. */
+	if ( count > 1u )
+		count = 1u;
 	return(count);
 }
 
@@ -1431,6 +1443,7 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->kda_v_window_pool = state->kda_v_window_pool;
 	wave->kda_window_layer_stride_bytes = state->kda_window_layer_stride_bytes;
 	wave->kda_state_index = state->kda_state_index_device;
+	wave->kda_layer_count = state->kda_layer_count;
 	wave->page_table = state->page_table;
 	wave->multiprocessor_count = state->multiprocessor_count;
 	wave->decode_split_context_threshold = state->decode_split_context_threshold;

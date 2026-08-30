@@ -28,7 +28,7 @@ import sys
 import numpy as np
 
 CKPT = os.environ.get("G5N_CKPT", "/mnt/model-warm/glm-5.3-flash")
-LAYER = 0
+LAYER = int(os.environ.get("G5N_KDA_ORACLE_LAYER", "0"))
 TP = 16
 RANK = 0
 HIDDEN = 4096
@@ -223,7 +223,11 @@ def main():
     print(f"loaded checkpoint shards for layer {LAYER} rank {RANK}/{TP}")
 
     passes, head_rows = parse_log(log)
-    got = sorted(p for p in passes if passes[p].get("normed"))
+    # the engine session's warmup passes precede the fixture request; the
+    # oracle replays the recurrence from zero, so skip them (the module's
+    # own state reset fired at the fixture's position-0 wave).
+    pass_offset = int(os.environ.get("G5N_KDA_ORACLE_PASS_OFFSET", "0"))
+    got = sorted(p for p in passes if passes[p].get("normed") and p > pass_offset)
     if not got:
         sys.exit("no G5N-VEC normed dumps found in the log")
     print(f"log has passes {got[0]}..{got[-1]}, prompt_len={prompt_len}, head rows={len(head_rows)}")

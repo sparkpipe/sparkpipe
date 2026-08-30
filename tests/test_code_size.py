@@ -1278,7 +1278,34 @@ CEILING = 228248
 # return split into named per-conjunct returns with stderr details
 # (revision/contract-hash-hex/zero-sha) — the R3 cell died on
 # hash_mismatch with the failing sub-condition unobservable.
-CEILING = 232565
+# glm5-dsa: the DSA-site localization instrument + two recorded deviations
+# wired. (1) G5N-VEC extended to the DSA site at layer 3 (env-gated
+# SPARK_GLM5_NEXT_PROBE_VEC_DSA / _VEC_LAYER, rank 0, pass-capped: the HC
+# site stages + every MLA stage from attn_normed through the o_proj rank
+# partial, plus the hc_streams dump the mix-dot recompute needs; the U16
+# dump cap widens 8192->16384 for the streams surface - the KDA path never
+# exceeds 8192) + tools/glm5_next_dsa_host_oracle.py, the independent
+# checkpoint-semantics reimplementation (fp8 block-dequant MLA + mHC
+# mix/sinkhorn/collapse) that consumes the dumps stage by stage. (2)
+# Glm5NextSwigluLimitKernel - the reference's swiglu_limit 10.0 clamp
+# (gate max-only, up two-sided; dsv4 donor precedent, module-local so the
+# shared LmSiluMulKernel stays unclamped for the other families) at the
+# dense/expert/shared sites. (3) the KDA state reset on slot re-acquire
+# (closeout item 2): rows at position 0 zero their fp32 KDA state + conv
+# windows across all 34 ordinals before the wave runs, so a second request
+# on a resident slot no longer inherits the previous sequence's recurrence.
+# All instrument/diag/semantics-fix lines; wave wiring unchanged except the
+# --probe-vec env knobs for the DSA dumps (G5N_VEC_DSA/G5N_VEC_LAYER); the
+# oracle gained the DsaSafetensors fp8-reader subclass; the wave task script
+# (tools/g5dsa_wave_task.sh) stages the queue-dispatched probe-vec wave +
+# canonical cold curl; start_api now setsid-detaches the api launch (the
+# plain nohup form held the launch ssh 31 min and failed the wave); the
+# KDA vec probe gained the L4 instrument (SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER
+# + per-layer labels + the w_attn_norm/w_qkvb_row0/w_kda_out_row0 binding
+# conviction dumps); the swiglu swap itself was REVERTED (it NaN'd the MoE
+# partial from the first wave - verdict by bisect wave10; the record comment
+# stays, the kernel is gone). To be trimmed with the ratchet at coherence.
+CEILING = 233076
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -160,7 +160,10 @@ start_wave() {
         # (glm5-attractor lane, layer-0 KDA stages + head, diag only); the
         # pass cap is overridable (G5N_VEC_PASSES) - a 176-token prompt needs
         # >= prompt_len+decode passes for the oracle's zero-state tracking.
-        [[ $PROBE_VEC -eq 1 ]] && env_prefix="${env_prefix}SPARK_GLM5_NEXT_PROBE_VEC=1 SPARK_GLM5_NEXT_PROBE_VEC_PASSES=${G5N_VEC_PASSES:-30} "
+        # G5N_VEC_DSA=1 additionally arms the glm5-dsa lane's DSA-site dumps
+        # (layer G5N_VEC_LAYER, default 3: HC site stages + the whole MLA
+        # chain) alongside the L0 KDA dumps.
+        [[ $PROBE_VEC -eq 1 ]] && env_prefix="${env_prefix}SPARK_GLM5_NEXT_PROBE_VEC=1 SPARK_GLM5_NEXT_PROBE_VEC_PASSES=${G5N_VEC_PASSES:-30} SPARK_GLM5_NEXT_PROBE_VEC_DSA=${G5N_VEC_DSA:-0} SPARK_GLM5_NEXT_PROBE_VEC_LAYER=${G5N_VEC_LAYER:-3} SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER=${G5N_VEC_KDA_LAYER:-0} "
         ssh -o BatchMode=yes -o ConnectTimeout=10 "$h" \
             "cd '$rr' && mv residentd.log residentd.log.prev-\$(date +%s) 2>/dev/null || true; env $env_prefix LD_LIBRARY_PATH='$rr/lib' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $idx > residentd.log 2>&1 < /dev/null &" </dev/null &
         pids+=($!)
@@ -201,7 +204,11 @@ ready_wave() {
 start_api() {
     rr="$(runtime_root "$API_HOST")"
     echo "== api on $API_HOST:$API_PORT =="
-    ssh_run "$API_HOST" "cd '$rr' && nohup ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root '$rr' --port $API_PORT > api.log 2>&1 < /dev/null &"
+    # setsid + full fd detach: the plain `nohup ... &` form left the launch
+    # ssh holding the session open for 31 minutes (the api inherits the
+    # sshd-side pipe unless every fd is redirected BEFORE backgrounding),
+    # which set -e then turned into WAVE-FAIL (glm5-dsa lane, wave3).
+    ssh_run "$API_HOST" "cd '$rr' && setsid nohup ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root '$rr' --port $API_PORT > api.log 2>&1 < /dev/null &" </dev/null
     sleep 3
     ssh_run "$API_HOST" "tail -3 '$rr/api.log'"
 }

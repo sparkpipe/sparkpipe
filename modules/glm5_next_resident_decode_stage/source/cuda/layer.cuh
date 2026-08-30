@@ -706,6 +706,79 @@ static int32_t Glm5NextLayerIndexer(
         : LM_LAUNCH_ERR_LAUNCH;
 }
 
+/* DSA-site full-vector probe (glm5-dsa lane): same discipline as the KDA
+ * pass counter, but counting Glm5NextLayerAttention calls on the DSA layer
+ * named by SPARK_GLM5_NEXT_PROBE_VEC_LAYER (default 3 - the first DSA
+ * layer). Armed by the same SPARK_GLM5_NEXT_PROBE_VEC env as the KDA probe
+ * plus SPARK_GLM5_NEXT_PROBE_VEC_DSA=1, so the L0 KDA dump behaviour is
+ * byte-identical when the new env is unset. Waves are single-row, so pass
+ * p of the first request IS position p and the host oracle can rebuild the
+ * latent cache from the per-pass kv_slot dumps. */
+
+static int Glm5NextDsaProbeVecLayer(void)
+{
+    static int vec_layer = -1;
+    if ( vec_layer < 0 )
+    {
+        const char *layer_env = getenv("SPARK_GLM5_NEXT_PROBE_VEC_LAYER");
+        vec_layer = (layer_env != 0 && *layer_env != 0)
+            ? (int)atoi(layer_env) : 3;
+    }
+    return(vec_layer);
+}
+
+static int Glm5NextDsaProbeVecPass(const Glm5NextLayerBuffers *buffers)
+{
+    static int vec_enabled = -1;
+    static uint32_t vec_pass = 0u;
+    uint32_t cap;
+    if ( vec_enabled < 0 )
+        vec_enabled = (getenv("SPARK_GLM5_NEXT_PROBE_VEC") != 0 &&
+            getenv("SPARK_GLM5_NEXT_PROBE_VEC_DSA") != 0) ? 1 : 0;
+    if ( vec_enabled == 0 || buffers == 0 || buffers->tp_rank != 0u ||
+        (int)buffers->layer_index != Glm5NextDsaProbeVecLayer() )
+        return(0);
+    cap = 30u;
+    {
+        const char *cap_env = getenv("SPARK_GLM5_NEXT_PROBE_VEC_PASSES");
+        if ( cap_env != 0 && *cap_env != 0 )
+            cap = (uint32_t)atoi(cap_env);
+    }
+    if ( vec_pass >= cap )
+        return(0);
+    vec_pass += 1u;
+    return((int)vec_pass);
+}
+
+static void Glm5NextProbeVecU16(cudaStream_t stream,const uint16_t *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
+{
+    /* 16384: the HC streams surface (4 x 4096) must fit in one dump for the
+     * DSA-site oracle's mix-dot recompute (glm5-dsa lane). The KDA path
+     * never exceeds 8192, so widening the cap changes nothing there. */
+    static uint16_t vec_buf[16384];
+    uint32_t i;
+    if ( count > 16384u || cudaStreamSynchronize(stream) != cudaSuccess ||
+        cudaMemcpy(vec_buf,device,count * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+        return;
+    fprintf(stderr,"G5N-VEC L%u P%u %s %u",layer,pass,label,count);
+    for ( i = 0u; i < count; i++ )
+        fprintf(stderr," %04x",vec_buf[i]);
+    fputc('\n',stderr);
+}
+
+static void Glm5NextProbeVecF32(cudaStream_t stream,const float *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
+{
+    static uint32_t vec_buf[16384];
+    uint32_t i;
+    if ( count > 16384u || cudaStreamSynchronize(stream) != cudaSuccess ||
+        cudaMemcpy(vec_buf,device,count * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+        return;
+    fprintf(stderr,"G5N-VEC L%u P%u %s %u",layer,pass,label,count);
+    for ( i = 0u; i < count; i++ )
+        fprintf(stderr," %08x",vec_buf[i]);
+    fputc('\n',stderr);
+}
+
 static int32_t Glm5NextLayerAttention(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -717,6 +790,8 @@ static int32_t Glm5NextLayerAttention(
     const uint32_t *selected_positions;
     uint32_t selected_position_count;
     int32_t status;
+    const int32_t vec_pass = (int32_t)Glm5NextDsaProbeVecPass(buffers);
+    uint32_t vec_rank_heads = 0u;
 
     if (buffers == 0 || rows == 0u || context == 0u ||
         buffers->qk_scale <= 0.0f || buffers->hidden_bf16 == 0 ||
@@ -747,6 +822,27 @@ static int32_t Glm5NextLayerAttention(
     selected_position_count = context > GLM5_NEXT_DSA_SELECTED
         ? buffers->selected_position_count : 0u;
 
+    if ( vec_pass != 0 )
+    {
+        /* HC-site stages of THIS attention site: the scratch still holds
+         * this site's values (the MLP HC site runs later). The streams
+         * surface (hidden_bf16) is the mix input; collapsed is the
+         * sublayer input the norm below consumes. */
+        vec_rank_heads = buffers->attn_heads;
+        Glm5NextProbeVecU16(stream,buffers->hidden_bf16,
+            GLM5_NEXT_HC * GLM5_NEXT_HIDDEN,layer_index,(uint32_t)vec_pass,"hc_streams");
+        Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,
+            GLM5_NEXT_HIDDEN,layer_index,(uint32_t)vec_pass,"hc_collapsed");
+        Glm5NextProbeVecF32(stream,buffers->hc_mixes_f32,
+            (2u + GLM5_NEXT_HC) * GLM5_NEXT_HC,layer_index,(uint32_t)vec_pass,"hc_mixes");
+        Glm5NextProbeVecF32(stream,buffers->hc_pre_f32,
+            GLM5_NEXT_HC,layer_index,(uint32_t)vec_pass,"hc_pre");
+        Glm5NextProbeVecF32(stream,buffers->hc_post_f32,
+            GLM5_NEXT_HC,layer_index,(uint32_t)vec_pass,"hc_post");
+        Glm5NextProbeVecF32(stream,buffers->hc_comb_f32,
+            GLM5_NEXT_HC * GLM5_NEXT_HC,layer_index,(uint32_t)vec_pass,"hc_comb");
+    }
+
     /* PLAIN norm of the HC-collapsed input: the residual bookkeeping
      * belongs to the HC post step, so the sublayer never adds one. */
     LM_LAUNCH(
@@ -763,6 +859,9 @@ static int32_t Glm5NextLayerAttention(
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
+    if ( vec_pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,
+            layer_index,(uint32_t)vec_pass,"attn_normed");
 
     // The two low-rank norms are nonlinear and cannot be folded into a static
     // hidden-to-latent matrix. Run the checkpoint sequence exactly.
@@ -797,6 +896,9 @@ static int32_t Glm5NextLayerAttention(
         GLM5_NEXT_QUERY_A_DIM,
         GLM5_NEXT_QUERY_A_DIM,
         GLM5_NEXT_RMS_EPSILON);
+    if ( vec_pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->q_compressed_bf16,
+            GLM5_NEXT_QUERY_A_DIM,layer_index,(uint32_t)vec_pass,"q_compressed");
     status = Glm5NextLayerIndexer(
         buffers,
         rows,
@@ -825,6 +927,9 @@ static int32_t Glm5NextLayerAttention(
     {
         return status;
     }
+    if ( vec_pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->q_bf16,
+            vec_rank_heads * GLM5_NEXT_QK_NOPE_DIM,layer_index,(uint32_t)vec_pass,"q");
     status = Glm5NextLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->kv_a_weight,
@@ -856,6 +961,9 @@ static int32_t Glm5NextLayerAttention(
         GLM5_NEXT_LATENT,
         GLM5_NEXT_LATENT_ROW,
         GLM5_NEXT_RMS_EPSILON);
+    if ( vec_pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->kv_slot_bf16,GLM5_NEXT_LATENT_ROW,
+            layer_index,(uint32_t)vec_pass,"kv_slot");
 
     /* ROPE-0 MLA: the query carries nope only and the latent row is the
      * pure 512 lora, so both rope launches are GONE - not skipped at
@@ -878,6 +986,9 @@ static int32_t Glm5NextLayerAttention(
         buffers->query_latent_bf16,
         buffers->attn_heads,
         rows);
+    if ( vec_pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->query_latent_bf16,
+            vec_rank_heads * GLM5_NEXT_LATENT,layer_index,(uint32_t)vec_pass,"query_latent");
     LM_LAUNCH(
         (LmKvStoreKernel<Glm5NextKv, GLM5_NEXT_LAYER_THREADS>),
         rows,
@@ -922,6 +1033,9 @@ static int32_t Glm5NextLayerAttention(
     {
         return LM_LAUNCH_ERR_LAUNCH;
     }
+    if ( vec_pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->attention_latent_bf16,
+            vec_rank_heads * GLM5_NEXT_LATENT,layer_index,(uint32_t)vec_pass,"attn_latent");
 
     LM_LAUNCH(
         (LmPerHeadProjectKernel<
@@ -935,8 +1049,11 @@ static int32_t Glm5NextLayerAttention(
         buffers->attention_value_bf16,
         buffers->attn_heads,
         rows);
+    if ( vec_pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->attention_value_bf16,
+            vec_rank_heads * GLM5_NEXT_VALUE_DIM,layer_index,(uint32_t)vec_pass,"attn_value");
 
-    return Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16Linear(
         buffers->attention_value_bf16,
         buffers->output_weight,
         buffers->attention_out_bf16,
@@ -949,6 +1066,10 @@ static int32_t Glm5NextLayerAttention(
         0u,
         multiprocessors,
         stream);
+    if ( status == LM_LAUNCH_OK && vec_pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,
+            layer_index,(uint32_t)vec_pass,"attn_out_partial");
+    return status;
 }
 
 /* Split the fused q|k|v|beta GEMM output into the four per-row buffers
@@ -1143,6 +1264,23 @@ static void Glm5NextProbeBf16Floats(cudaStream_t stream,const uint16_t *device,u
  * serving binary. The pass id counts Glm5NextLayerKda calls on layer 0
  * (waves are single-row, so pass p of the first request IS position p). */
 
+static int Glm5NextKdaProbeVecLayer(const Glm5NextLayerBuffers *buffers)
+{
+    /* SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER: which KDA layer dumps (default
+     * 0, the attractor lane's cell). glm5-dsa: 4 - the first MoE-layer KDA,
+     * whose attention partial is zero from the first wave while L0-2 are
+     * alive; the per-stage dumps + weight-row checksums convict the
+     * binding. */
+    static int vec_layer = -1;
+    if ( vec_layer < 0 )
+    {
+        const char *layer_env = getenv("SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER");
+        vec_layer = (layer_env != 0 && *layer_env != 0)
+            ? (int)atoi(layer_env) : 0;
+    }
+    return(vec_layer);
+}
+
 static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
 {
     static int vec_enabled = -1;
@@ -1151,7 +1289,7 @@ static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
     if ( vec_enabled < 0 )
         vec_enabled = getenv("SPARK_GLM5_NEXT_PROBE_VEC") != 0 ? 1 : 0;
     if ( vec_enabled == 0 || buffers == 0 || buffers->tp_rank != 0u ||
-        buffers->layer_index != 0u )
+        (int)buffers->layer_index != Glm5NextKdaProbeVecLayer(buffers) )
         return(0);
     cap = 30u;
     {
@@ -1163,32 +1301,6 @@ static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
         return(0);
     vec_pass += 1u;
     return((int)vec_pass);
-}
-
-static void Glm5NextProbeVecU16(cudaStream_t stream,const uint16_t *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
-{
-    static uint16_t vec_buf[8192];
-    uint32_t i;
-    if ( count > 8192u || cudaStreamSynchronize(stream) != cudaSuccess ||
-        cudaMemcpy(vec_buf,device,count * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
-        return;
-    fprintf(stderr,"G5N-VEC L%u P%u %s %u",layer,pass,label,count);
-    for ( i = 0u; i < count; i++ )
-        fprintf(stderr," %04x",vec_buf[i]);
-    fputc('\n',stderr);
-}
-
-static void Glm5NextProbeVecF32(cudaStream_t stream,const float *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
-{
-    static uint32_t vec_buf[16384];
-    uint32_t i;
-    if ( count > 16384u || cudaStreamSynchronize(stream) != cudaSuccess ||
-        cudaMemcpy(vec_buf,device,count * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess )
-        return;
-    fprintf(stderr,"G5N-VEC L%u P%u %s %u",layer,pass,label,count);
-    for ( i = 0u; i < count; i++ )
-        fprintf(stderr," %08x",vec_buf[i]);
-    fputc('\n',stderr);
 }
 
 /* KDA linear attention, 34 of 45 layers - k3's launch chain with the
@@ -1267,8 +1379,28 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"collapsed");
-        Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"normed");
+        Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"collapsed");
+        Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"normed");
+        /* THE BINDING CONVICTION DUMPS (glm5-dsa): the layer's own weight
+         * rows as bound - if L4's KDA weights are zeros/garbage the fused
+         * GEMM emits zeros and every downstream stage reads zero, exactly
+         * the observed signature (attention partial zero from the first
+         * wave, L0-3 alive). */
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->attn_norm_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_attn_norm");
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->kda_qkv_beta_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_qkvb_row0");
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->kda_out_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_kda_out_row0");
+        /* THE HC-SITE STATE AT THE SAME MOMENT (glm5-dsa): the collapse
+         * came back all -0.0 (0x8000) at this layer - a value
+         * Glm5NextHcPreReduceKernel cannot produce from ANY inputs (its
+         * accumulator starts +0 and pre > 0), so either the kernel never
+         * ran or it read a different surface. pre/mixes say whether the
+         * sinkhorn ran; snapshot + the raw streams read say whether the
+         * kernel and the probe see the same memory. */
+        Glm5NextProbeVecF32(stream,buffers->hc_pre_f32,GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_pre");
+        Glm5NextProbeVecF32(stream,buffers->hc_post_f32,GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_post");
+        Glm5NextProbeVecF32(stream,buffers->hc_mixes_f32,(2u + GLM5_NEXT_HC) * GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_mixes");
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->hidden_bf16,256u,buffers->layer_index,(uint32_t)vec_pass,"k_streams_head");
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->hc_snapshot_bf16,256u,buffers->layer_index,(uint32_t)vec_pass,"k_snapshot_head");
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
@@ -1354,9 +1486,9 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->fused_qkvb_bf16,rank_qk * 2u + rank_v + rank_heads,0u,(uint32_t)vec_pass,"fused_qkvb");
-        Glm5NextProbeVecU16(stream,buffers->kda_decay_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,0u,(uint32_t)vec_pass,"decay_latent");
-        Glm5NextProbeVecU16(stream,buffers->kda_gate_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,0u,(uint32_t)vec_pass,"gate_latent");
+        Glm5NextProbeVecU16(stream,buffers->fused_qkvb_bf16,rank_qk * 2u + rank_v + rank_heads,buffers->layer_index,(uint32_t)vec_pass,"fused_qkvb");
+        Glm5NextProbeVecU16(stream,buffers->kda_decay_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,buffers->layer_index,(uint32_t)vec_pass,"decay_latent");
+        Glm5NextProbeVecU16(stream,buffers->kda_gate_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,buffers->layer_index,(uint32_t)vec_pass,"gate_latent");
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
@@ -1446,9 +1578,9 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->q_bf16,rank_qk,0u,(uint32_t)vec_pass,"q_postconv");
-        Glm5NextProbeVecU16(stream,buffers->kv_slot_bf16,rank_qk,0u,(uint32_t)vec_pass,"k_postconv");
-        Glm5NextProbeVecU16(stream,buffers->gate_up_bf16,rank_v,0u,(uint32_t)vec_pass,"v_postconv");
+        Glm5NextProbeVecU16(stream,buffers->q_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"q_postconv");
+        Glm5NextProbeVecU16(stream,buffers->kv_slot_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"k_postconv");
+        Glm5NextProbeVecU16(stream,buffers->gate_up_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"v_postconv");
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
@@ -1494,7 +1626,7 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->kda_decay_logit_bf16,rank_qk,0u,(uint32_t)vec_pass,"decay_logit");
+        Glm5NextProbeVecU16(stream,buffers->kda_decay_logit_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"decay_logit");
     }
     LM_LAUNCH(
         (LmBoundedDecayKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
@@ -1530,8 +1662,8 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecF32(stream,buffers->kda_retention,rank_qk,0u,(uint32_t)vec_pass,"retention");
-        Glm5NextProbeVecF32(stream,buffers->kda_write_gate,rank_heads,0u,(uint32_t)vec_pass,"write_gate");
+        Glm5NextProbeVecF32(stream,buffers->kda_retention,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"retention");
+        Glm5NextProbeVecF32(stream,buffers->kda_write_gate,rank_heads,buffers->layer_index,(uint32_t)vec_pass,"write_gate");
     }
     /* THE DELTA RULE'S 64 KiB OF DYNAMIC SHARED IS PAST THE 48 KiB DEFAULT
      * (k3's identical lesson): the launch fails with invalid argument on
@@ -1575,7 +1707,7 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,0u,(uint32_t)vec_pass,"delta_out");
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"delta_out");
     }
     /* RMSNorm before the gate (head-wise, fp32 strict), then the sigmoid
      * gate that has been waiting in kda_gate_bf16. */
@@ -1615,8 +1747,8 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,0u,(uint32_t)vec_pass,"delta_gated");
-        Glm5NextProbeVecU16(stream,buffers->kda_gate_bf16,rank_v,0u,(uint32_t)vec_pass,"kda_gate");
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"delta_gated");
+        Glm5NextProbeVecU16(stream,buffers->kda_gate_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"kda_gate");
     }
     /* Stage the gated y in kv_slot (the k scratch is dead once the delta
      * rule has consumed it) so the out-GEMM writes the FULL-WIDTH rank
@@ -1657,11 +1789,11 @@ static int32_t Glm5NextLayerKda(
     if ( status == LM_LAUNCH_OK && vec_pass != 0 )
     {
         uint32_t vec_head;
-        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"out_partial");
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"out_partial");
         for ( vec_head = 0u; vec_head < rank_heads; vec_head++ )
             Glm5NextProbeVecF32(stream,(const float *)buffers->kda_state_pool +
                 ((uint64_t)vec_head * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM),
-                GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM,0u,(uint32_t)vec_pass,
+                GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM,buffers->layer_index,(uint32_t)vec_pass,
                 vec_head == 0u ? "state_h0" : (vec_head == 1u ? "state_h1" :
                 (vec_head == 2u ? "state_h2" : "state_h3")));
     }
@@ -2012,6 +2144,19 @@ static int32_t Glm5NextHcPost(
         GLM5_NEXT_HIDDEN);
     return LM_LAUNCH_OK;
 }
+
+/* THE swiglu_limit 10.0 CLAMP IS NOT WIRED - recorded TWICE now. The
+ * first attempt (Glm5NextSwigluLimitKernel, this lane) swapped it in for
+ * LmSiluMulKernel at the dense/expert/shared sites and the MoE partial
+ * went NaN from the first wave (conviction: the L3 mlp-post probe flipped
+ * to nan while the attention post stayed healthy; reverting ONLY the swap
+ * cleaned the run and restored the attractor-baseline generation). The
+ * kernel is mathematically identical on finite inputs, so the mechanism is
+ * latent in the MoE chain's codegen/registers, not in the clamp arithmetic
+ * - unwired until that is understood. Reference form when it is retried:
+ * gate.clamp(max=limit), up.clamp(-limit, limit), silu(gate)*up
+ * (transformers glm5_next modeling source; dsv4 SparkDsv4SwigluClampKernel
+ * precedent). */
 
 static int32_t Glm5NextLayerDenseMlp(
     const Glm5NextLayerBuffers *buffers,

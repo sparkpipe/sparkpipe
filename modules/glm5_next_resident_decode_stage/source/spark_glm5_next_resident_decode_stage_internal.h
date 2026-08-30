@@ -179,6 +179,7 @@ typedef struct SparkGlm5NextCudaWave
 	uint64_t kda_window_layer_stride_bytes;
 	const uint32_t *kda_ordinal_by_local_layer;
 	const uint32_t *kda_state_index;
+	uint32_t kda_layer_count;
 	const uint32_t *page_table;
 	uint32_t multiprocessor_count;
 	/* R3 flash-decode: 0 keeps the single-pass decode attention byte-for-
