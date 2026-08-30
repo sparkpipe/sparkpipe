@@ -2667,3 +2667,11 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   retirement (~33G) should run when glm5.3's serving arm is confirmed
   (fp8/hybrid); dsv4's 10G rank fits regardless.
 - 27B fp8-fused port recommendation stands for the next free window.
+
+## 2026-08-30 ~01:4x — dsv4: 9-10/16 spliced; distributor path-bug fixed
+
+- Splices ~10/16, validated per rank. The distributor's ships all
+  bounced to spark0's home: `dst=~/sparkdata/...` tilde-expanded on
+  the SCRIPT HOST. Fixed to /home/<host>/ absolute paths; v2 log
+  confirms real ships (SHIPPED-r1-to-spark2). Pipeline converges:
+  ~6 ranks left + their ships.
