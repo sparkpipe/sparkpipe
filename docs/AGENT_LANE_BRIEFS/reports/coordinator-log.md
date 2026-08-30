@@ -2704,3 +2704,24 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - OPERATOR: one line — TP8 (recommended) or TP12 for qwen-flash?
   Until ruled: ladder moves to the 27B fp8-fused port (the named
   smaller unit).
+
+## 2026-08-30 ~03:5x — 27B fp8-fused port: FULL SPEC written (the next unit's brief)
+
+- The packer already has the machinery: TpFusedSlice (row-window
+  stitching, used for GDN_QKV), tp_window on FFN_INTERMEDIATE, and
+  separate KIND_FFN_GATE/KIND_FFN_UP plans. The ONLY gap: the -fp8
+  source ships ONE tensor mlp.gate_proj.weight [2*I, H] = fused
+  gate|up (I=8704, verified in header), which the packer reads as
+  gate alone → the scale-size assertion fires.
+- THE PORT (~40 lines, all sites known): (1) resolve-time probe: if
+  gate_proj's rows == 2*FFN_INTERMEDIATE, mark the layer's FFN as
+  FUSED (up_proj will be absent); (2) build_tp_plan: under FUSED,
+  KIND_FFN_GATE takes rows [rank*w, rank*w+w) of [0,I), KIND_FFN_UP
+  the same window of [I,2I) — expressible as TpFusedSlice-style row
+  windows or a row-offset variant; (3) copy_scale: the fused gate
+  scale slice = same row window over scale rows (I%128==0 so blocks
+  align; the line-484 refusal gets its fused implementation); (4) the
+  existing TpFusedSlice copy_tensor path already streams row windows.
+  Receipt: note fused_source: true.
+- This is a clean dev-session unit OR next driver cycle; after the
+  port: 16 rank builds at ~2G each (minutes), verify, place.
