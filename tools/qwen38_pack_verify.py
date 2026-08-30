@@ -92,7 +92,10 @@ def scale_bytes_for(weight_format: int, rows: int, columns: int) -> int:
 
 
 def natural_format(kind: int) -> int:
-    if kind in (_tables.KIND_MOE_W1, _tables.KIND_MOE_W3, _tables.KIND_MOE_DOWN):
+    moe = tuple(getattr(_tables, n) for n in
+                ("KIND_MOE_W1", "KIND_MOE_W3", "KIND_MOE_DOWN")
+                if hasattr(_tables, n))
+    if moe and kind in moe:
         return WEIGHT_FP8_F32B128
     if kind in (_tables.KIND_GDN_A_LOG, _tables.KIND_GDN_DT_BIAS):
         return WEIGHT_F32
