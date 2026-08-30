@@ -1,5 +1,5 @@
 {
-  "file_count": 1723,
+  "file_count": 1729,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -338,8 +338,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "14ebf1d090c5f4445d4cbe1bffcdba87cab86cd3338211015f2da7c9851ad93f",
-      "size_bytes": 132254
+      "sha256": "a966d0cb09dad86db2773247b77c225f46bf9b757de4623f46bb87411c74f9ec",
+      "size_bytes": 140131
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -522,6 +522,11 @@
       "size_bytes": 15684
     },
     {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-hillclimb-inventory-2026-08-30.md",
+      "sha256": "8818a0fedcf7203a39cffa676eb8a1005611959b6cc557ff8d6ee1c4e6477177",
+      "size_bytes": 2246
+    },
+    {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-m5-2026-08-28.md",
       "sha256": "c0ef8c64b4d968595727dd5ec49298bf3ad1b9e1aad8c6bd87ab1d778448e3d0",
       "size_bytes": 15821
@@ -540,6 +545,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-s6-2026-08-29.md",
       "sha256": "c88609e9162e051e5a38804de5af42a5ad6eddcf16f04ee7b2f95b6c0681c121",
       "size_bytes": 9212
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-wave-ready-2026-08-30.md",
+      "sha256": "cebf0072a3149640302c1a785c592a1cd4c4851b63e6a8822e279b3573c5cf59",
+      "size_bytes": 3136
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen27b-serve-2026-08-30.md",
@@ -712,6 +722,11 @@
       "size_bytes": 11110
     },
     {
+      "path": "docs/MODEL_DEV_GUIDE.md",
+      "sha256": "d82c77ddae43bfacaa3c029095fa5d7b1a33151ad537663c818f9f89a3db0c75",
+      "size_bytes": 4705
+    },
+    {
       "path": "docs/MODEL_SUPPORT.md",
       "sha256": "6512e98fe01f6023a06f78638943ecdc5417dbb54ced10864390f7a3b69812bc",
       "size_bytes": 3251
@@ -742,6 +757,11 @@
       "size_bytes": 1969
     },
     {
+      "path": "docs/ROADMAP_TP16_FLEET.md",
+      "sha256": "bcd9f0d584bb473757aa5167ab10faf5cce49534eca3fbe0a8978211f7115d65",
+      "size_bytes": 6482
+    },
+    {
       "path": "docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md",
       "sha256": "279a3720de27b99344ef6d454e79f96a944ad6274dae588b4b06d420cedc9638",
       "size_bytes": 25421
@@ -770,6 +790,11 @@
       "path": "docs/TOPOLOGY_GUIDE.md",
       "sha256": "060acdf6a5648ad1ba88aa8f3c09d380fdb72a2fe57ef9e5d9a43013bc882491",
       "size_bytes": 11088
+    },
+    {
+      "path": "docs/UNIVERSAL_PACKER.md",
+      "sha256": "72dc9baf9314d3632e21b8351f1a862bbc3fb6480ca9e183f37a8211eb21429b",
+      "size_bytes": 2838
     },
     {
       "path": "docs/WEIGHTD_DESIGN.md",
@@ -6163,8 +6188,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "b7bbcb0564cc49221e184690df91cb9d1f056e6c8921cdff84361f06e585d863",
-      "size_bytes": 88718
+      "sha256": "89372526fd828b68f8a5d973637c45c28c3e3b0c2836deaf10fa8bd1127ba611",
+      "size_bytes": 89232
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8398,8 +8423,8 @@
     },
     {
       "path": "tools/qwen38_stagepack.py",
-      "sha256": "88b1c6c9f1f4fd639bd8c67b703404c8a6f3825776205715db46b4087a100610",
-      "size_bytes": 24549
+      "sha256": "967ac8030526a55dd1554cc5fd01477614fc311b2b4a6a5c6139b3e42d2b009f",
+      "size_bytes": 32757
     },
     {
       "path": "tools/qwen38_storm.sh",
@@ -8458,8 +8483,8 @@
     },
     {
       "path": "tools/qwen4_flash_fleet16_launch.sh",
-      "sha256": "fe49cf7e1dc685190feb4315288d2ba38c8314d703509510e131a6180d2478b0",
-      "size_bytes": 8422
+      "sha256": "2e132f0f514b6129ad01ba7066aea12c95d78174b0bc6086367d6516afd26820",
+      "size_bytes": 8740
     },
     {
       "path": "tools/qwen4_flash_live_launch.sh",
@@ -8485,6 +8510,11 @@
       "path": "tools/qwen4_flash_verify_source.py",
       "sha256": "ab5b155d166d21e8495aef4e5e0250f433118fd87268c31f4c84f476dcf4cd87",
       "size_bytes": 8538
+    },
+    {
+      "path": "tools/qwen4_flash_wave_cells.sh",
+      "sha256": "cd40a3b9f3ac7b959aa84f84a02dbe837fe7eb9f506079b9c0403e14a35ff5ea",
+      "size_bytes": 2970
     },
     {
       "path": "tools/registrar_stage.sh",
@@ -8620,5 +8650,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31747043
+  "total_bytes": 31786337
 }

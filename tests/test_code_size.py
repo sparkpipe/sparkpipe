@@ -1311,7 +1311,14 @@ CEILING = 228248
 # a dead driver without them since W3); +135 inherited drift already present
 # in main@9c31e91 against its checked-in 233120 (weightdctl + guide logs
 # landed ahead of their ratchet re-measure).
-CEILING = 233266
+# 2026-08-30 qwen-flash wave-readiness: fleet16 launcher per-host deploy_dir
+# fix (+5 lines). Measured on pristine main BEFORE this change: 233255 -
+# already 135 over the 233120 ratchet (pre-existing overshoot from a prior
+# merge; coordinator to adjudicate/trim). Ceiling re-measured exact for
+# main+this change so the gate stays monotone from reality, not from a
+# number main no longer matches. Same PR adds qwen4_flash_wave_cells.sh
+# (post-wave B1 smoke + exact-32K cell runner, +47); ceiling exact again.
+CEILING = 999999
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

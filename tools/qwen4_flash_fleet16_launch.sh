@@ -50,6 +50,11 @@ coordinator_rank=$(python3 -c "import json;print(json.load(open('$table_path'))[
 [[ -n "$deploy_dir" ]] || deploy_dir="/home/$coordinator_host/sparkdata/qwen4_flash.tp4/deploy_v4"
 pid_file="$deploy_dir/launch_pids.txt"
 
+# Each rank's runtime tree lives under ITS OWN host's home (per
+# qwen4_flash_deploy_v4.py runtime_root); only pid bookkeeping and the
+# api stay on the coordinator's copy.
+deploy_dir_for() { echo "/home/$1/sparkdata/qwen4_flash.tp4/deploy_v4"; }
+
 rows() { python3 -c "
 import json
 for e in json.load(open('$table_path')):
@@ -110,7 +115,7 @@ fi
 if [[ "$mode" == "status" ]]; then
   while read -r host rank pid kind; do
     state=$(ssh -o BatchMode=yes "$host" "kill -0 $pid 2>/dev/null && echo alive || echo dead")
-    ready=$(ssh -o BatchMode=yes "$host" "grep -ac 'model_residentd ready' '$deploy_dir/residentd-r$rank.log' 2>/dev/null" || echo 0)
+    ready=$(ssh -o BatchMode=yes "$host" "grep -ac 'model_residentd ready' '$(deploy_dir_for "$host")/residentd-r$rank.log' 2>/dev/null" || echo 0)
     echo "$host rank $rank $kind pid $pid $state ready_lines=$ready"
   done < <(ssh -o BatchMode=yes "$coordinator_host" "cat '$pid_file' 2>/dev/null" || true)
   exit 0
@@ -125,7 +130,7 @@ ssh -o BatchMode=yes "$coordinator_host" "rm -f '$pid_file'"
 # that dies mid-flight on a missing pack wastes the whole 180s window).
 while read -r rank host pos pp tp rail tp_hosts; do
   pack=$(python3 -c "import json;print(json.load(open('$table_path'))[$(python3 -c "import json;t=json.load(open('$table_path'));print([i for i,e in enumerate(t) if e['rank']==$rank][0])")]['pack'])")
-  ssh -o BatchMode=yes "$host" "[[ -s '$deploy_dir/$pack' ]]" || { echo "PACK MISSING on $host: $pack" >&2; exit 5; }
+  ssh -o BatchMode=yes "$host" "[[ -s '$(deploy_dir_for "$host")/$pack' ]]" || { echo "PACK MISSING on $host: $pack" >&2; exit 5; }
 done < <(rows)
 echo "all 16 packs present"
 
@@ -140,7 +145,7 @@ launch_one() {  # rank host pos pp tp rail tp_hosts
   local pid
   pid=$(ssh -o BatchMode=yes "$host" bash -s <<REMOTE
 set -euo pipefail
-dir="$deploy_dir"
+dir="$(deploy_dir_for "$host")"
 mkdir -p "\$dir/runtime-$rank"
 cd "\$dir"
 export SPARK_QWEN4_FLASH_TP_DEGREE=4
@@ -174,7 +179,7 @@ watchdog_trip=0
 while :; do
   (( $(date +%s) >= deadline )) && break
   while read -r rank host pos pp tp rail tp_hosts; do
-    line=$(ssh -o BatchMode=yes "$host" "grep -a 'model_residentd ready' '$deploy_dir/residentd-r$rank.log' 2>/dev/null | tail -1" || true)
+    line=$(ssh -o BatchMode=yes "$host" "grep -a 'model_residentd ready' '$(deploy_dir_for "$host")/residentd-r$rank.log' 2>/dev/null | tail -1" || true)
     if [[ -n "$line" ]]; then
       if [[ -z "${ready_seen[$rank]:-}" ]]; then ready_seen[$rank]=1; ready_count=$((ready_count+1)); echo "$host rank $rank READY: $line"; fi
     fi
@@ -200,7 +205,7 @@ if (( ready_count < 16 )); then
   echo "NOT all ranks ready after ${ready_timeout}s ($ready_count/16); tails:" >&2
   while read -r rank host pos pp tp rail tp_hosts; do
     echo "--- $host rank $rank ---" >&2
-    ssh -o BatchMode=yes "$host" "tail -4 '$deploy_dir/residentd-r$rank.log'" >&2 || true
+    ssh -o BatchMode=yes "$host" "tail -4 '$(deploy_dir_for "$host")/residentd-r$rank.log'" >&2 || true
   done < <(rows)
   exit 4
 fi
