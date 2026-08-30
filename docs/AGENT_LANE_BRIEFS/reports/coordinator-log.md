@@ -2518,3 +2518,10 @@ appendix).
 - dsv4-pro + k3 TP16: packers lack rank-slicing paths (pro: full-stage
   tool only; k3: the expert_tile_k=32 reslice documented but unwired)
   — per-model dev tasks per the one-at-a-time reset.
+
+## 2026-08-30 ~19:4x — stagepack driver cycle 1: glm gap chain healthy
+
+- fp8 rank5: rc=0, 51G + receipt BUILT. nvfp4 rank5: BUILDING (29G of
+  ~33G, live pid 304747 on spark0, radixark source). Ship-to-spark5
+  auto-fires when nvfp4 lands. glm5.3 completion imminent next cycle.
+- Next rung staged for next cycle: dsv4-flash base pack (0731 source).
