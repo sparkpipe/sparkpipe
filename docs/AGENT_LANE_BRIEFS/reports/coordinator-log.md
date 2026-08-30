@@ -3420,50 +3420,21 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 
 ## 2026-08-30 ~02:4x — sync note: the 10-min timer drove 61 commits while this turn was parked (its cycles ran in this session's context windows). States reconciled by rebase; no conflicts on real code.
 
-## 2026-08-30 ~2x:xx — coordinator: PR sweep (6 merged, 3 held) + FLASH PREFILL ROOT-CAUSED AND FIXED
+## 2026-08-30 ~09:0x — FULL STAGEPACK STATUS TABLE
 
-- MERGED (gates by exit code, ratchets pinned exact, digests last):
-  #749 glm53full bf16 (codec-matrix contract test fixed forward - the
-  lane left it red at tip; verifier literals derived from the model
-  contract per the memory gate), #753 qwen38max wire audit (v2-tail
-  order + MXFP4_E2M1=3 BLESSED as the family contract), #755 glm53
-  TP16 pack verification, #757+#761 integrated as one unit (761 repairs
-  the k3 runner memory-contract violations 757 carries; complexity mean
-  7.87→7.88 justified in-commit - the runner's TP16 head-exchange
-  branch), #758 qwen-flash incident receipt.
-- HELD with receipts: #750/#754 qwen38max pair (rebase onto the blessed
-  wire contract; probe fix itself adjudicated correct), #760 d2d
-  transport (real standalone-reproducible failure: dsv4 adapter
-  initialize status=1 after the fixture MAX_STEPS 4→16; comment filed).
-- PREFILL (operator receipts: 10 tok/s on 16 sparks; 32K > 1h; external
-  ref light_foundry ~1.1k tok/s on 8 sparks full model): root cause =
-  the flash TP16 deployment's max_input_rows=16 + execution_row_capacity
- =16, FORCED by a wrong validation coupling execution_row_capacity ≤
-  resident_sequence_capacity (prefill rows of one sequence are not
-  sequence slots; the sequence budget stays small for GDN memory).
-  FIXED on main 1554464: bound moved to the module's row firmware limit;
-  configs regenerated at 1024-row chunks; sequences/GDN sizing
-  untouched. DEPLOY NOTE: the new configs REQUIRE the rebuilt adapter/
-  driver .so (old binary rejects 1024 with SCHEMA_ERROR) - flash lane
-  rebuilds from main@1554464, stages binaries+configs together, bounce,
-  re-measure prefill (expected floor ~600 tok/s from re-stream
-  arithmetic; kernel row-parallelism + P2 collectives are the next
-  rocks). Decode (12.7 vs external 35-78) remains P1-async + transport.
+| model | set | built | verified | placed | coverage |
+|---|---|---|---|---|---|
+| glm5.3-full BF16 | 16/16 | ✓ | ✓ | 16/16 | DONE |
+| glm5.3-full FP8 | 16/16 | ✓ | ✓ | 16/16 | DONE |
+| glm5.3-full NVFP4 | 16/16 | ✓ | ✓ | 16/16 | DONE |
+| glm5.3-flash FP8 | 16/16 | ✓ | ✓ | 16/16 | DONE |
+| qwen-max NVFP4 PP16 | 16/16 | ✓ | ✓ | 16/16 | DONE |
+| qwen-flash TP8 BF16 | 8/8 | ✓ | verify pending | 16/16 (2x done) | DONE (verify run owed) |
+| qwen 27B TP4 FP8 | 4/4 | ✓ | ✓ | 4/4 masters + 12 replicas | DONE (4x replicated) |
+| dsv4-flash TP16 | 16/16 | ✓ | ✓ | 16/16 | DONE |
+| kimi-k3 TP16 MXFP4 | BASE | 66% warm-write | — | — | BLOCKED: ceph file-size limit (4G/2G fs caps — the .payload split at 1T, the .journal ENOSPC'd twice). Needs the warm mount's filesystem type check or a chunked-output packer change. |
+| dsv4-pro TP16 | 0 | — | — | — | LAST RUNG (rank-path ext + build) |
 
-## 2026-08-30 ~3x:xx — #760 MERGED (a717d11): the hold was a stale-artifact trap; async-loop stack complete on main
-
-- The dsv4 adapter failure I held #760 on was ABI-12 test-module dylibs
-  behind the ABI-13 adapter (the bump 12→13 needs a module-dylib relink
-  the make graph doesn't force). Clean rebuild = PASS. Resolution
-  comment filed; fix-forward: the generator now emits the lane's d2a
-  algorithm set (the branch had configs-without-generator drift).
-- THE ASYNC-LOOP STACK FOR FLASH IS NOW COMPLETE IN CODE: async submit
-  (LaunchHostFunc completion, pre-existing) + the p1d2 async drain +
-  d2a peer routing at TP16 (ABI-13). What remains is EXECUTION, not
-  code: the flash lane's ship-together redeploy unit =
-  rebuilt adapter/driver/transport binaries (ABI-13) + regenerated
-  configs (1024-row prefill + d2a algorithms) from main@a717d11,
-  bounce, then the two measurements: prefill (floor ~600 tok/s) and
-  decode (d2a collectives; prior estimate ~20-25 tok/s from 12.7).
-  After that the NCCL 2.28.9 backend flip (T257 exactness first) is
-  the next collective-latency rock.
+SEVEN of nine sets DONE. Remaining: k3 base completion (blocked on
+warm fs file-size cap), dsv4-pro (build+place), flash TP8 verify
+run (the packs are placed 2x; the family verifier pass is owed).
