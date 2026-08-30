@@ -2646,3 +2646,13 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   packer handling (module already speaks FP8) — SMALLER: the fp8
   fused-gate port is the recommended first 27B unit; spine comes after.
 - dsv4 splices: 3/16 done, chain healthy, ETA on cadence.
+
+## 2026-08-30 ~00:1x — dsv4: splice+distribute pipeline self-driving
+
+- Splices 4/16 done (rank4 building; steady cadence). DISTRIBUTOR
+  fired: an idempotent watcher ships each completed rank to its node
+  the minute it lands (16 hosts mapped rank-by-rank; spark1 LAST in
+  the map — its degraded ceph only RECEIVES a 10G scp, no read load)
+  and exits at 16/16 placed. The dsv4 rung is now fully autonomous to
+  completion; next cycles verify + re-listing proof.
+- 27B: fp8-fused-port recommendation stands (dev-session unit).
