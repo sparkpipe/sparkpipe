@@ -10,10 +10,9 @@ The expert codec is taken from the pack header (bf16=1, fp8=5 or nvfp4=6)
 — the module accepts any compiled expert codec; entry shapes are codec-
 independent, scale planes are not (bf16: NONE — native-precision experts;
 fp8: F32 per 128-block; nvfp4: UE4M3 per 16-block plus one F32 global per
-expert). Note: the glm52 module currently compiles only fp8/nvfp4 expert
-arms (unity.cu static_assert refuses BF16 experts); codec-1 packs
-validate here so the native-precision resolution is pack-verified while
-that serving arm is a pending coordinator decision.
+expert). The module accepts codec 1 (the glm53full bf16 arm landed with
+the per-source firmware pins); byte-exactness of codec-1 packs against
+the promoted source is proven by tools/glm53full_bf16_tp16_source_verify.py.
 """
 import struct
 import sys
