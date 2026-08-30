@@ -61,6 +61,13 @@ the dashboard line is the standard proof pair.
 
 ## Hard rules (the graveyard that wrote them)
 
+- **NEVER QUANTIZE WEIGHTS YOURSELF (operator policy, zero exceptions).**
+  Packagers repackage (slice/codec-preserve/shard); they never change
+  precision. If you want an FP8/4-bit arm of your model, the source
+  must be an OFFICIAL or VETTED COMMUNITY release — hunt it, verify it,
+  fetch it (the qwen-max-4bit/radixark pattern). Self-quantizing BF16
+  →FP8/MXFP4 in a packer, script, or notebook = the PR is rejected.
+
 - 110GiB device ceiling per node is law; GB10 page cache eats it —
   `sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'` before
   big loads.

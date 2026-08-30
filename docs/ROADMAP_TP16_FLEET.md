@@ -33,7 +33,7 @@ warm ceph concurrently):
 |---|---|---|---|
 | dsv4-flash | deepseek-v4-flash-0731 (156G) | base packer → tp16 splice (NOT the merge-format v3_full) | spark0 |
 | 27B | incoai fp8 (30G) | qwen38 packer TP16 | spark1 |
-| qwen-flash | 336G bf16 source | pack to MX-FP8 → TP16 | spark2 |
+| qwen-flash | 336G bf16 source (the ONLY official form held) | SERVE BF16 at TP16 (~21G/rank) — quantizing it ourselves VIOLATES the standing policy (operator, re-confirmed 2026-08-30: no self-quantization, ever; official/vetted sources only). IF an FP8/NVFP4 serving arm is wanted: hunt an official or vetted community release first (same as qwen-max-4bit); none exists on warm today | spark2 |
 | dsv4-pro | dsv4-pro-0813-ga (832G) | pro packer TP16 (fix verifier pins first) | spark3 |
 | k3 | kimi-k3-nvfp4 (1.5T) | reslice TP4PP4→TP16 (expert_tile_k=32 path, lane-documented) | spark4 |
 | qwen-max (4-BIT per operator) | PENDING SOURCE: no official/vetted
