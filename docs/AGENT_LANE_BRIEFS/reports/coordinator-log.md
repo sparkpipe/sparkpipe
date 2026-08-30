@@ -2241,3 +2241,22 @@ appendix).
   unverified compute family — report §5), nurse3. Live ~5/8.
 - Queue: healthy (build-5 running; dependency chains first-class since
   the residual-barrier fix).
+
+## 2026-08-30 ~03:2x — 6d0905e green; spark5 wedged mid-load (operator ask)
+
+- MAIN GREEN AGAIN (6d0905e, GATES EXIT 0): the persistent red was NOT
+  a lane interaction — runs/ live queue state (mutated every dispatch)
+  was digest-tracked; excluded from the inventory (operational truth,
+  not source). The 'pipeline-client abort' was the stray-orphan class.
+  Misdiagnosis corrected in the commit.
+- q27b chain: build-5 PASSED (validator PASS, instrumented module
+  built+deployed) but its exit FILE carried text not an integer — the
+  reaper ignored it; manually reaped. serve-6/7 hit the GB10 page-cache
+  trap AGAIN (11GB free, 78 cached); serve-7 carries the drop-caches in
+  its own cmd now. It was mid-load (telemetry 2% on spark5) when spark5
+  went ssh banner-dark ALONE — the spark8-class sshd/driver wedge under
+  memory pressure. Fleet otherwise reachable.
+- OPERATOR: spark5 needs the same power-cycle treatment as spark8.
+  The 27B mission (one instrumented run from naming the refusing
+  ValidateFrame check) parks until it's back. Spawns still down
+  (builtin:zai-start-plan) — single-agent mode continues.
