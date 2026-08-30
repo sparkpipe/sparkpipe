@@ -3119,3 +3119,22 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   it). NEXT CYCLE.
 - k3 building; flash placed 8/8; 27B packs' flag stands (walk
   incomplete).
+
+## 2026-08-30 ~01:1x — 27B verify: the beta/decay finding pinned to the CONSTANT TABLE
+
+- Source truth (header read): in_proj_b (GDN_BETA) is BF16 [48, 5120]
+  in the -fp8 release. The PACK entry records exactly 48x5120 — the
+  pack is byte-honest to the source. The verifier's 'expected
+  8192x2048' comes from kind_shape's CONSTANT for GDN beta/decay —
+  a geometry written for a different head layout than this source
+  ships (and the format=5 on the entry suggests the packer's
+  FP8-kind probe touched it, worth one look — but the SHAPE is the
+  primary mismatch).
+- NEXT (line-precise): qwen38_27b_stagepack kind_shape for
+  KIND_GDN_BETA/KIND_GDN_DECAY must match the source's true [48,
+  HIDDEN] (likely value_heads=48 in this release, not the constant's
+  assumption); same check for the fmt assignment. Then the verify
+  walk continues to completion. The packs remain 'shape-honest,
+  table-mismatched' — the fix is table-side unless the module's
+  loader ALSO assumes the old geometry (check the module constant
+  before ruling).
