@@ -45,19 +45,13 @@ if _TOOLS_DIR not in sys.path:
 # value heads — the release constants the entries must match) and the
 # shared inventory/layer helpers. The max-family tables alone (HIDDEN
 # 8192) describe a DIFFERENT model and failed every valid 27B entry.
-_tables_27b_spec = importlib.util.spec_from_file_location(
-    "qwen38_27b_tables", str(Path(_TOOLS_DIR) / "qwen38_27b_stagepack.py"))
-_tables = importlib.util.module_from_spec(_tables_27b_spec)
-_tables_27b_spec.loader.exec_module(_tables)
+_spec = importlib.util.spec_from_file_location(
+    "qwen38_stagepack_tables", str(Path(_TOOLS_DIR) / "qwen38_27b_stagepack.py"))
+_tables = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_tables)
 _tables = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_tables)
 
-# The 27B packer owns build_tp_plan/packed_shape (the TP shard shapes);
-# the tables module is the shared inventory only.
-_packer_spec = importlib.util.spec_from_file_location(
-    "qwen38_27b_stagepack_mod", str(Path(_TOOLS_DIR) / "qwen38_27b_stagepack.py"))
-_packer = importlib.util.module_from_spec(_packer_spec)
-_packer_spec.loader.exec_module(_packer)
 
 from spark_pack_common import sha256_file  # noqa: E402
 
@@ -233,9 +227,9 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
         try:
             for ref in _tables.build_inventory(first_layer, layer_count):
                 if tp_degree > 1:
-                    plan = _packer.build_tp_plan(ref, tp_degree, 0)
+                    plan = _tables.build_tp_plan(ref, tp_degree, 0)
                     if plan is not None:
-                        srows, scols = _packer.packed_shape(ref, plan)
+                        srows, scols = _tables.packed_shape(ref, plan)
                         if (srows, scols) != (ref.rows, ref.columns):
                             # remember both; the entry may carry either the
                             # shard or the replicated source shape
