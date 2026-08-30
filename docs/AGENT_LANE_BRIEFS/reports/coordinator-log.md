@@ -3455,3 +3455,10 @@ the conflict resolution keeps both.)
   cleanup; it is a serving arm of a supported model (185G, the
   hybrid form of flash). The true archived item remains kimi-k3-
   nvfp4-redhatai (superseded by the official MXFP4 native).
+
+## 2026-08-30 ~13:0x — sparke FULL (3.4T/3.6T, 20G free); disk sweep across all 16
+
+- sparke is 100% — needs cleanup. Looking at what's on it.
+- Other nodes: 3 (382G), 5 (149G), 6 (647G), e (20G) are tight but
+  not critical. The rest have 1-2.5T free. No build should target
+  sparke or spark3 or spark5 until cleanup.
