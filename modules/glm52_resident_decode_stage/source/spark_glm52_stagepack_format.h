@@ -235,8 +235,15 @@ static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint
 	case SPARK_GLM52_STAGEPACK_TENSOR_ROUTER_CORRECTION: shape->payload_type = SPARK_GLM52_STAGEPACK_PAYLOAD_F32; shape->group_count = 1u; shape->rows = 1u; shape->columns = SPARK_GLM52_MODEL_MOE_EXPERT_COUNT; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE:
 	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN:
-		if ( expert_codec < SPARK_WEIGHT_CODEC_INT6 || expert_codec > SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
+		if ( expert_codec != SPARK_WEIGHT_CODEC_BF16 && (expert_codec < SPARK_WEIGHT_CODEC_INT6 || expert_codec > SPARK_WEIGHT_CODEC_MXFP4_E2M1) )
 			return(-5);
+		if ( expert_codec == SPARK_WEIGHT_CODEC_BF16 )
+		{
+			SparkGlm52StagePackShapeBf16(shape,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT,
+				tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE ? 2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION : SPARK_GLM52_MODEL_HIDDEN_DIMENSION,
+				tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE ? SPARK_GLM52_MODEL_HIDDEN_DIMENSION : SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION);
+			break;
+		}
 		shape->payload_type = SPARK_GLM52_STAGEPACK_PAYLOAD_PACKED_WEIGHT;
 		shape->weight_codec = expert_codec;
 		shape->scale_encoding = SparkWeightCodecScaleEncoding(expert_codec);

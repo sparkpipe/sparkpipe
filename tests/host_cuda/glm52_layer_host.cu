@@ -297,9 +297,21 @@ int main(void)
     buffers.router_weight = w_router;
     buffers.router_correction_bias = router_correction_bias;
     buffers.expert_w1_weight = w_e1;
-    buffers.expert_w1_scale = s_e1;
     buffers.expert_w2_weight = w_e2;
-    buffers.expert_w2_scale = s_e2;
+    /* The bf16 expert pack carries no scale plane; a non-null pointer
+     * would build an invalid scale tensor and fail the launch. The codec
+     * ids are enum constants, so this is a folded runtime check - a
+     * preprocessor #if would see both names as 0. */
+    if (EXPERT_CODEC == SPARK_WEIGHT_CODEC_BF16)
+    {
+        buffers.expert_w1_scale = 0;
+        buffers.expert_w2_scale = 0;
+    }
+    else
+    {
+        buffers.expert_w1_scale = s_e1;
+        buffers.expert_w2_scale = s_e2;
+    }
     buffers.shared_gate_up_weight = w_shared_gate_up;
     buffers.shared_down_weight = w_shared_down;
     buffers.hidden_bf16 = hidden;

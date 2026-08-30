@@ -821,10 +821,11 @@ static int32_t Glm52LayerMoe(
     LmGemmArguments gemm;
     int32_t status;
 
-    static_assert(ExpertCodec != SPARK_WEIGHT_CODEC_BF16,
-        "GLM 5.2 routed experts require an explicit compressed codec");
-    static_assert(GLM52_HIDDEN % ExpertFormat::kScaleGroup == 0u &&
-        GLM52_EXPERT_INTERMEDIATE % ExpertFormat::kScaleGroup == 0u,
+    /* LmBf16Format carries kScaleGroup 0 (no scale plane); the divisibility
+     * law only applies to codecs that actually tile scale groups. */
+    static_assert(ExpertFormat::kScaleGroup == 0u ||
+        (GLM52_HIDDEN % ExpertFormat::kScaleGroup == 0u &&
+        GLM52_EXPERT_INTERMEDIATE % ExpertFormat::kScaleGroup == 0u),
         "GLM 5.2 expert dimensions must contain complete codec scale groups");
 
     if (buffers == 0 || rows == 0u ||
@@ -838,8 +839,10 @@ static int32_t Glm52LayerMoe(
         buffers->group_row_offset == 0 ||
         buffers->group_tile_prefix_w1 == 0 ||
         buffers->group_tile_prefix_w2 == 0 ||
-        buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
-        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 ||
+        buffers->expert_w1_weight == 0 ||
+        (ExpertCodec != SPARK_WEIGHT_CODEC_BF16 && buffers->expert_w1_scale == 0) ||
+        buffers->expert_w2_weight == 0 ||
+        (ExpertCodec != SPARK_WEIGHT_CODEC_BF16 && buffers->expert_w2_scale == 0) ||
         buffers->expert_out_bf16 == 0 || buffers->gate_up_bf16 == 0 ||
         buffers->intermediate_bf16 == 0 || buffers->hidden_bf16 == 0 ||
         buffers->shared_gate_up_weight == 0 ||

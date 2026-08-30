@@ -15,6 +15,12 @@ HEADER_RELATIVE_PATH = Path("model-families/glm52/include/sparkpipe/spark_glm52_
 DESCRIPTION_DIRECTORY = Path("examples/model_descriptions")
 DESCRIPTION_NAME = "glm52_resident_decode_stage_{codec}_firmware.json"
 CODECS = {
+    "bf16": {
+        "id": 1,
+        "stored_bits": 16,
+        "scale_encoding": "none",
+        "scale_group_size": 1,
+    },
     "int6": {
         "id": 2,
         "stored_bits": 6,
@@ -178,6 +184,17 @@ def load_model_contract(root: Path | None = None) -> Dict[str, Any]:
             raise ValueError(f"invalid GLM-5.2 EOS token id: {key}")
     if len(set(eos_token_ids.values())) != len(EOS_TOKEN_MACROS):
         raise ValueError("GLM-5.2 EOS token ids must be unique")
+    # The glm53full three-resolution study pins one source per expert
+    # codec (same checkpoint, three expert precisions). The pins live in
+    # the frozen 5.3-full contract; codecs without a pin keep this
+    # contract's top-level identity. Absent that file, the module is a
+    # plain 5.2 build and every codec uses the top-level identity.
+    full_sources_path = base / "model_contracts/glm53_full_authoritative.json"
+    if full_sources_path.is_file():
+        full_contract = json.loads(full_sources_path.read_text())
+        sources = full_contract.get("three_resolution_sources")
+        if sources:
+            contract.setdefault("three_resolution_sources", sources)
     return contract
 
 
@@ -290,24 +307,33 @@ def description_path(root: Path, codec: str) -> Path:
 
 def render_model_description(contract: Dict[str, Any], codec: str) -> str:
     codec_contract = CODECS[codec]
-    model_revision = contract["model_revision"]
+    # Per-resolution source pins: the glm53full three-resolution contract
+    # carries one revision per expert codec. Selection order: the legacy
+    # fp8 pin stays byte-identical (a published arm's identity must not
+    # churn when a sibling source is added to the contract); a codec with
+    # a pinned source takes that source's repo+revision; everything else
+    # keeps the contract's top-level identity.
+    resolution_source = contract.get("three_resolution_sources", {}).get(codec)
+    if codec == "fp8":
+        model_revision = contract["model_revision"]
+        source_model_id = "zai-org/GLM-5.2-FP8"
+    elif resolution_source is not None:
+        model_revision = resolution_source["revision"]
+        source_model_id = resolution_source["repo"]
+    else:
+        model_revision = contract["model_revision"]
+        source_model_id = contract["model_id"]
     target = f"cuda.sm121.glm52.resident_decode_stage.bf16.expert_{codec}"
     module = (
         "spark.glm52.resident_decode_stage.bf16."
         f"expert_{codec}.h6144.l78.e256.k8.v2"
     )
-    # Source-model provenance per codec: the fp8 packs derive from the
-    # publisher's FP8 snapshot, not the BF16 master (the BF16 master at
-    # this revision no longer exists locally). 771c638 pinned the on-disk
-    # firmware description; the generator now states the same rule so the
-    # rendered output matches the artifact.
-    source_model_id = (
-        "zai-org/GLM-5.2-FP8" if codec == "fp8" else contract["model_id"]
-    )
     description = {
         "schema_version": 1,
         "model": {
-            "id": "zai.glm-5.2.resident-decode-stage-firmware",
+            "id": ("zai.glm-5.3-full.resident-decode-stage-firmware"
+                   if codec == "bf16" else
+                   "zai.glm-5.2.resident-decode-stage-firmware"),
             "revision": model_revision,
         },
         "metadata": {
@@ -317,6 +343,10 @@ def render_model_description(contract: Dict[str, Any], codec: str) -> str:
                 "revision": model_revision,
             },
             "purpose": (
+                "GLM 5.3-full resident firmware with all-BF16 weights "
+                "(native publisher precision quality arm), BF16 KV cache "
+                "and FP32 accumulation"
+                if codec == "bf16" else
                 "GLM 5.2 resident firmware with BF16 non-expert weights, "
                 f"{codec} routed-expert weights, BF16 KV cache and FP32 accumulation"
             ),

@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "glm52_layer_host.cu"
 BINARY = Path("/tmp") / "lm_glm52_layer_host"
 CODECS = (
+    "SPARK_WEIGHT_CODEC_BF16",
     "SPARK_WEIGHT_CODEC_INT6",
     "SPARK_WEIGHT_CODEC_INT7",
     "SPARK_WEIGHT_CODEC_INT8",
@@ -134,6 +135,9 @@ def main():
         if run.returncode != 0 or "done" not in run.stdout:
             print(f"FAIL {codec} layer faulted (returncode {run.returncode})")
             print(run.stdout[-400:])
+            return 1
+        if "status moe 0\n" not in run.stdout:
+            print(f"FAIL {codec}: the MoE launch must complete (status moe 0)")
             return 1
         outputs.append(run.stdout)
     if any(output != outputs[0] for output in outputs[1:]):

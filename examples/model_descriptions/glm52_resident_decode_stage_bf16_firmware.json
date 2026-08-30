@@ -27,7 +27,7 @@
       "linear_weight_codec": "bf16",
       "runtime_precision_selection": "forbidden"
     },
-    "purpose": "GLM 5.3-full resident firmware with all-BF16 weights (native publisher precision quality arm), BF16 KV cache and FP32 accumulation. NOTE: the module currently refuses expert codec 1 (unity.cu static_assert); this firmware pins the pack format until the BF16-expert serving arm is decided (glm53full INTEGRATION REQUEST)",
+    "purpose": "GLM 5.3-full resident firmware with all-BF16 weights (native publisher precision quality arm), BF16 KV cache and FP32 accumulation",
     "qualification": {
       "gpu_latency": "NOT_MEASURED",
       "gpu_numerical_correctness": "NOT_MEASURED",
