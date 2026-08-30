@@ -101,3 +101,31 @@ QUALITY UPGRADE (pending operator interest, not a gap).
 FROZEN LISTS from the audit stand (glm5.2-fp8 704G, qwen-max-fp8
 2.3T, and the five redundant 27B community variants = the removal
 list, ~4.3T; execution next cycle per operator's go-ahead).
+
+## NVIDIA K3 vs OFFICIAL MXFP4 — the community verdict (researched 2026-08-30)
+
+- NVIDIA's own model card table (nvidia/Kimi-K3-NVFP4, no-calibration
+  conversion): GPQA 0.9321->0.9277 (-0.44pt), SciCode +0.2pt,
+  MMMU-Pro -0.8pt, AA-LCR +0.06pt, IFBench +0.5pt, Terminal-Bench
+  -0.14pt. ALL deltas within ±0.008 — 'nearly identical'.
+- RedHatAI's independent NVFP4: GPQA 93.5 -> 91.0 (-2.5pt) — a
+  noticeably larger drop than NVIDIA's own conversion.
+- PatronusAI's technical note: NVFP4's accuracy edge over native
+  MXFP4 is 'only reachable by re-quantizing' from BF16 sources —
+  and claims re-quantized weights can be at-least-MXFP4 since the
+  official release's experts are ALREADY MXFP4 (bit-identical
+  argument). The official K3 is QAT-trained MXFP4 — i.e. the
+  native form is already accuracy-aware.
+- VERDICT for OUR fleet: the official moonshot MXFP4 (1.5T, what
+  we hold and are packing) is the RIGHT primary arm — QAT-native,
+  no conversion loss, and our GB10 kernels already speak MXFP4.
+  NVIDIA's NVFP4 (~1.6T download, +0.1T vs ours) is NOT a clear
+  accuracy upgrade (±0.008 on NVIDIA's own table) and B300-optimized
+  FP4 paths are not our bottleneck. NO FETCH NEEDED. RedHatAI's
+  (already on warm as the kimi-k3-nvfp4-redhatai arm) is the
+  LARGER-loss variant (-2.5pt GPQA) — keep as the alternate 4-bit
+  arm only.
+- MISSING-FROM-INTERNET check final: no model variant we want lacks a
+  warm source. The only fetch candidates ever surfaced were quality
+  upgrades (nvidia/K3-NVFP4 — now ruled out by evidence; dsv4-pro
+  NVFP4 already held).
