@@ -52,9 +52,10 @@
    63655
   ],
   "algorithms": [
-   "recursive_doubling"
+   "recursive_doubling",
+   "direct_all_to_all"
   ],
-  "direct_all_to_all_max_payload_bytes": 0,
+  "direct_all_to_all_max_payload_bytes": 81920,
   "split_ring_min_payload_bytes": 0,
   "rail_peer_hosts": [
    [
