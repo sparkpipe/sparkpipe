@@ -70,3 +70,34 @@ Model descriptors: model_contracts/*_authoritative.json exist for
 glm5.3 (full+flash), dsv4 (flash+pro), k3, qwen38 families; qwen-
 flash/27B/max descriptors verified through their packers' contract
 flags. GAP: none blocking; each kept variant maps to a contract.
+
+## OPERATOR ADDENDUM (2026-08-30 ~12:4x): the support matrix is per-MODEL-ARM, not per-model
+
+"Qwen-flash has 8-bit and 4-bit; 27B has 16-bit and 4-bit; dsv4
+flash/pro have 4-bit" — CONFIRMED against warm + the searches. The
+policy revision: each model carries MULTIPLE serving arms, and warm
+holds every arm we support. The full wanted matrix (warm dirs in
+[brackets], missing = FETCH):
+
+| model | arm | warm? | stagepack |
+|---|---|---|---|
+| qwen-flash | BF16 [qwen3.8-flash-next 336G] | YES | TP8 placed ✓ |
+| qwen-flash | FP8 [qwen3.8-flash-next-fp8 173G] | YES | pack needed (TP8) |
+| qwen-flash | NVFP4 [qwen3.8-flash-next-nvfp4-radixark 126G] | YES | pack needed (TP8) |
+| qwen 27B | BF16-src FP8 serving [qwen3.8-27b-fp8 29G] | YES | TP4 placed ✓ |
+| qwen 27B | NVFP4/BF16-spine [nvfp4a16-bf16-spine 29G] | YES | needs module vertical (kept) |
+| glm5.3-full | BF16 1.4T / FP8 704G / NVFP4-hybrid 433G | ALL YES | all placed ✓ |
+| glm5.3-flash | FP8 306G / BF16-official 599G / NVFP4-redhatai 185G | ALL YES | FP8 placed ✓; other arms packs TODO |
+| dsv4-flash | FP8-mixed 275G / 0731 156G / nvfp4-mjpansa 164G / official-fp4-fp8 149G | ALL YES (superseded pairs in the removal list stay removed) | TP16 placed ✓ (0731 build) |
+| dsv4-pro | GA FP8/MXFP4 832G | YES | TP16 pending (Phase A) |
+| dsv4-pro | NVFP4-spine 877G [jarrelscy] | KEEP (was remove-candidate — it IS the 4-bit arm) | pack needed |
+| kimi-k3 | MXFP4/BF16 native [kimi-k3 1.5T] | YES | warm-build in flight |
+| kimi-k3 | NVFP4 [kimi-k3-nvfp4-redhatai 1.5T] | KEEP (was remove-candidate — the 4-bit arm; NVIDIA's official nvidia/Kimi-K3-NVFP4 = the accuracy upgrade if the RedHatAI build disappoints) | pack needed |
+| qwen-max | NVFP4/BF16-spine 1.4T | YES | PP16 placed ✓ |
+
+MISSING FROM WARM (fetch list): NONE for the arms above — every arm
+has a verified source on warm. The nvidia/Kimi-K3-NVFP4 fetch is a
+QUALITY UPGRADE (pending operator interest, not a gap).
+FROZEN LISTS from the audit stand (glm5.2-fp8 704G, qwen-max-fp8
+2.3T, and the five redundant 27B community variants = the removal
+list, ~4.3T; execution next cycle per operator's go-ahead).
