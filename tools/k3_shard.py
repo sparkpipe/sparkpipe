@@ -380,12 +380,20 @@ class Slicer:
 
 
 def main():
-    if len(sys.argv) != 4:
-        print("usage: k3_shard.py <in.pack> <out_prefix> <tp_degree>")
+    if len(sys.argv) not in (4, 5):
+        print("usage: k3_shard.py <in.pack> <out_prefix> <tp_degree> [rank]")
         return 2
     degree = int(sys.argv[3])
+    # Optional single-rank emission: a full 16-rank run of a TP16 stage pack
+    # writes ~1.6 TB of rank packs BESIDE the stage pack - more than any one
+    # node's disk. The TP16 deploy loop slices one rank at a time and ships
+    # it before slicing the next (docs/AGENT_LANE_BRIEFS/kimi_k3.md).
+    only_rank = int(sys.argv[4]) if len(sys.argv) == 5 else None
     if degree & (degree - 1) or degree == 0:
         print("SHARD FAILURE: tp_degree must be a power of two")
+        return 1
+    if only_rank is not None and not 0 <= only_rank < degree:
+        print(f"SHARD FAILURE: rank {only_rank} outside 0..{degree - 1}")
         return 1
     try:
         probe = Slicer(sys.argv[1], {}, degree, 0)
@@ -401,10 +409,13 @@ def main():
         return 1
     geo = {k: cfg[k] for k in needed}
     try:
-        for rank in range(degree):
+        ranks = [only_rank] if only_rank is not None else range(degree)
+        for rank in ranks:
             slicer = Slicer(sys.argv[1], geo, degree, rank)
             tensors = slicer.emit(f"{sys.argv[2]}.rank{rank:02d}.pack")
-        print(f"sharded {len(tensors)} tensors x {degree} ranks")
+        label = (f"rank {only_rank:02d} of {degree}"
+                 if only_rank is not None else f"{degree} ranks")
+        print(f"sharded {len(tensors)} tensors x {label}")
     except ShardFailure as failure:
         print(f"SHARD FAILURE: {failure}")
         return 1

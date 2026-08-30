@@ -81,6 +81,12 @@ Ledger (exact counts, newest last):
   returns a status or selects a value source; none nests. Receipts in
   docs/AGENT_LANE_BRIEFS/reports/r2-prefill-2026-08-29.md. Mean
   ceiling commits to 7.87.
+  Coordinator merge #757 (kimi-k3 TP16 wave): the runner's submit
+  gained the device-tier head-exchange branch and its host-tier
+  fallback else (the U64Max winner path with output copies, guarded
+  by the collective tier) - flat, status-returning branches in an
+  nvcc-gated file. Mean 7.87 -> 7.88 (+~3 decision points over 3088
+  functions); max CCN unchanged at 75.
 """
 import pathlib
 import sys
@@ -94,7 +100,7 @@ CEILING = 75
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
-MEAN_CEILING_X100 = 787
+MEAN_CEILING_X100 = 788
 
 # The validation harnesses (control-vs-candidate CUDA units, never merged
 # into production) carry their OWN budget. It does not gate the production

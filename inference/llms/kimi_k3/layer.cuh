@@ -1049,6 +1049,77 @@ static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, con
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
+// The head's cross-rank winner pack: (score, token) -> one u64 per row whose
+// unsigned MAX over the TP group IS the global argmax, so the head exchange
+// rides the stream-ordered device collective (the host TCP slot-sum it
+// replaces blocks every step and its f32 frame tops out at 4 ranks). The
+// score takes the monotone total-order transform - non-negative floats
+// already order as their IEEE bits, negatives bit-invert under them, NaN
+// (score != score) folds to the bottom - and the token rides the low word
+// inverted, so an exact score tie resolves to the LOWEST token id:
+// deterministic under any rank permutation, which a rank-indexed tie-break
+// is not. Inverse of the transform: the high word's sign bit says which
+// branch produced it, and each branch's xor undoes it.
+static __device__ __forceinline__ uint32_t K3HeadOrderedScore(float score)
+{
+	uint32_t bits;
+	if ( score != score )
+		return 0u;
+	bits = __float_as_uint(score == 0.0f ? 0.0f : score);
+	return bits ^ ((bits & 0x80000000u) != 0u ? 0xFFFFFFFFu : 0x80000000u);
+}
+
+static __device__ __forceinline__ float K3HeadOrderedScoreInverse(uint32_t ordered)
+{
+	return __uint_as_float(ordered ^ ((ordered & 0x80000000u) != 0u ?
+		0x80000000u : 0xFFFFFFFFu));
+}
+
+// One row per blockIdx.y, all work on thread 0: valid on device and under
+// the host harness's single-thread-per-block schedule alike.
+__global__ static void K3HeadMaxlocPackKernel(const float *scores,
+	const uint32_t *tokens, uint64_t *maxloc, uint32_t rows)
+{
+	const uint32_t row = blockIdx.y;
+	if ( row < rows && threadIdx.x == 0u )
+		maxloc[row] = ((uint64_t)K3HeadOrderedScore(scores[row]) << 32u) |
+			(uint64_t)(0xFFFFFFFFu - tokens[row]);
+}
+
+__global__ static void K3HeadMaxlocUnpackKernel(const uint64_t *maxloc,
+	uint32_t *tokens, float *scores, uint32_t rows)
+{
+	const uint32_t row = blockIdx.y;
+	if ( row < rows && threadIdx.x == 0u )
+	{
+		tokens[row] = 0xFFFFFFFFu - (uint32_t)maxloc[row];
+		scores[row] = K3HeadOrderedScoreInverse((uint32_t)(maxloc[row] >> 32u));
+	}
+}
+
+// Pack the rank-local winners, then (after the collective's u64 max)
+// unpack the global winners back into the head's own output pair.
+static int32_t K3HeadMaxlocPack(const float *scores,
+	const uint32_t *tokens, uint64_t *maxloc, uint32_t rows,
+	cudaStream_t stream)
+{
+	if ( rows == 0u )
+		return LM_LAUNCH_OK;
+	LM_LAUNCH((K3HeadMaxlocPackKernel), dim3(1u,rows), K3_LAYER_THREADS, 0,
+		stream, scores,tokens,maxloc,rows);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static int32_t K3HeadMaxlocUnpack(const uint64_t *maxloc,
+	uint32_t *tokens, float *scores, uint32_t rows, cudaStream_t stream)
+{
+	if ( rows == 0u )
+		return LM_LAUNCH_OK;
+	LM_LAUNCH((K3HeadMaxlocUnpackKernel), dim3(1u,rows), K3_LAYER_THREADS, 0,
+		stream, maxloc,tokens,scores,rows);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
 // STAGE 0's ENTRY - the TP-sliced embedding. The rank pack's embed_tokens is
 // the rank's vocab slice (tools/k3_shard.py row-splits [vocab, hidden] by
 // degree), so a token inside the slice gathers its row and a token outside

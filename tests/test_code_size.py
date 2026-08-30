@@ -1306,6 +1306,7 @@ CEILING = 228248
 # partial from the first wave - verdict by bisect wave10; the record comment
 # stays, the kernel is gone). To be trimmed with the ratchet at coherence.
 
+
 # 233266 exact (2026-08-30, dsv4flash lane): +11 for the dsv4 module's
 # self-contained link tail (weightd attach/status/sha256/admission sources
 # added to MODULE_ADDITIONAL_HOST_SOURCES — sparkpipe_model_compile linked
@@ -1348,7 +1349,27 @@ CEILING = 234369
 # fusion, f32 vectors, kv_b transpose, head shards; rank0+rank15 exact),
 # the o_proj unit verifier, and the M5 cell staging scripts. Measured at
 # merge: 235286 exact.
-CEILING = 235286
+# coordinator merge #761 (kimi-k3 cancel gap + memory-contract repair):
+# the orphan handshake in node/model_api.c (+35) and the P1 port design
+# docs. Measured at merge: 235609 exact.
+CEILING = 235609
+# coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
+# #755's tree. Prior lane note:
+# kimi-k3: the head exchange moves to the device tier (inference/llms/
+# kimi_k3/layer.cuh +71: the monotone (score,token) u64 winner pack and its
+# pack/unpack kernels; modules/k3_resident_decode_stage runner +82 net: the
+# stream-ordered U64Max head branch, the head_maxloc buffer, and the TP16
+# constructibility fix - a TP16 config carries no host TCP collective and
+# the old hard require made runner creation impossible). Measured exact on
+# the lane: 233520 = main tip 233386 (in-flight +266 not re-pinned yet,
+# theirs to account at their landing) + this change's +134.
+# kimi-k3 TP16 wave: the serving adapter skips the host TCP tier parse above
+# SPARK_TP_COLLECTIVE_MAX_STEPS when a device collective exists (TP16 configs
+# carry no tp_collective - the old hard parse was a guaranteed SCHEMA_ERROR
+# at degree 16), keepalive gains the optional tile_k pass-through for the
+# expert_tile_k=32 TP16 pack builds (+31/-18 with concurrent-lane in-flight
+# growth in the shared checkout). Measured exact: 233574.
+
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
