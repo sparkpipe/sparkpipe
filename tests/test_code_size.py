@@ -1312,7 +1312,10 @@ CEILING = 228248
 # +43 (2026-08-30, qwen38max lane): the stagepack audit tool gained the
 # mechanical cross-language codec-code check (--codec-check) that catches
 # the MXFP4_E2M1 3-vs-7 class on any branch before packs are built.
-CEILING = 233489
+# +108 (2026-08-30, qwen38max lane): the stagepack audit gained --git-ref
+# (one command audits any branch: extract ref, build probe, infer layout,
+# run layout+codec checks) - the pre-build gate for qwen38max pack builds.
+CEILING = 233597
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

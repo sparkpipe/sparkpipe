@@ -148,3 +148,30 @@ With the one-line fix (`WEIGHT_MXFP4_E2M1 = 3`): accurate, 5 codes agree.
 Note for merge ordering: F1 does not affect #750/#754 (their unrebased C
 and python agree on the old mid-struct order); F2 does, today, and fails
 their open "tp16 rank-local validator check" item before any pack build.
+
+## Addendum 2 (same day) — one command, whole branch: --git-ref
+
+`--git-ref REF` extracts the module/family includes and the packer from
+any ref (git archive, paths that exist at that ref — unrebased lineages
+carry no shared-format header), builds the probe from that tree, infers
+the python layout from the packer's own `HEADER_STRUCT` format string,
+and runs BOTH checks. This is the pre-build gate for any qwen38max
+branch about to build packs:
+
+```
+$ python3 tools/qwen38_stagepack_layout_audit.py --git-ref origin/main
+== origin/main: packer HEADER_STRUCT <26I2Q -> layout v1
+   VERDICT: accurate -- every field offset and size agrees.
+   VERDICT: accurate -- 5 C codes checked, every python counterpart agrees.   (rc 0)
+
+$ python3 tools/qwen38_stagepack_layout_audit.py --git-ref origin/lane/qwen38max-tp16
+== origin/lane/qwen38max-tp16: packer HEADER_STRUCT <28I2Q -> layout v2-as-built
+   VERDICT: accurate -- every field offset and size agrees.      (F1: internal)
+   VERDICT: INACCURATE -- MXFP4_E2M1: C 3 vs python 7            (F2: live)   (rc 1)
+
+$ python3 tools/qwen38_stagepack_layout_audit.py --git-ref origin/verify/qwen38max-pack
+   (same as tp16: layout accurate, codec INACCURATE 3 vs 7)
+```
+
+A ref whose C header does not compile against the probe is itself a red
+result (the gate prints the first compiler errors).

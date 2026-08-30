@@ -558,8 +558,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen38max-v2-cpu-audit-2026-08-30.md",
-      "sha256": "11563d553b99409d4c227da730539c370b8d60a2de90d21b1a4a2c5dd7826cef",
-      "size_bytes": 6993
+      "sha256": "292e11c0fe9e17430ab32dd9ff022d6f8c318b175e16a0123e07afe2e25d19a1",
+      "size_bytes": 8335
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/r2-prefill-2026-08-29.md",
@@ -6183,8 +6183,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "560d52eb3ae399ce8ea9eccbeeb0283ecd6b9e7186199be18d54f4fbb25c5020",
-      "size_bytes": 89224
+      "sha256": "6b15b54e7fa48cfaf7861473105ec2c18444b5f764b6f14b57464fa2a8601322",
+      "size_bytes": 89447
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8423,8 +8423,8 @@
     },
     {
       "path": "tools/qwen38_stagepack_layout_audit.py",
-      "sha256": "74361882ce055bcf8abb07f6ea357c5d62122f9d76d3eb0c06133087de09d25b",
-      "size_bytes": 7157
+      "sha256": "2111f5050bb481279d9e3bfe52a2d8d22ce43e8cd456106d223db5f1d92571dc",
+      "size_bytes": 11920
     },
     {
       "path": "tools/qwen38_stagepack_layout_probe.c",
@@ -8650,5 +8650,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31797587
+  "total_bytes": 31803915
 }

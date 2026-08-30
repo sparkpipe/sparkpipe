@@ -27,6 +27,14 @@ Usage:
   across the language line -- e.g. MXFP4_E2M1 = 3 in C vs 7 in python,
   where 7 is the shared table's WEIGHT_I64.
 
+  qwen38_stagepack_layout_audit.py --git-ref REF [--repo ROOT]
+  One command, whole branch: extracts the module + family includes and
+  the packer from REF (git archive), builds the probe from the tree at
+  that ref, infers the python layout from the packer's own
+  HEADER_STRUCT format string, and runs BOTH checks (layout + codec).
+  Exit 1 if either is inaccurate. This is the pre-build gate for any
+  qwen38max branch about to build packs.
+
 The probe binary is built once (see the report or the Makefile snippet
 in docs/AGENT_LANE_BRIEFS/reports/qwen38max-v2-cpu-audit-2026-08-30.md):
   cc -std=c11 -o /tmp/probe tools/qwen38_stagepack_layout_probe.c \\
@@ -38,6 +46,25 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
+
+# Layout inference: packer HEADER_STRUCT format string -> known layout.
+FORMAT_STRING_TO_LAYOUT = {
+    "<26I2Q": "v1",
+    "<28I2Q": "v2-as-built",
+    "<26I2Q2I": "v2-tail",
+}
+
+GIT_REF_PATHS = (
+    "modules/qwen38_max_resident_decode_stage/source",
+    "modules/qwen38_max_resident_decode_stage/include",
+    "model-families/qwen38_max/include",
+    "model-families/common/include",
+    "include",
+    "runtime/stagepack_format.c",
+    "tools/qwen38_stagepack.py",
+)
 
 # The three layouts that have existed on the branch graph, expressed as
 # (field, struct-format) lists exactly as the Python packers define them.
@@ -125,27 +152,108 @@ def codec_check(firmware_header, py_packer, label):
     return 0
 
 
+def infer_python_layout(py_packer_path):
+    """Map the packer's own HEADER_STRUCT format string to a layout name."""
+    text = open(py_packer_path).read()
+    match = re.search(r'HEADER_STRUCT\s*=\s*struct\.Struct\("(<[^"]+)"\)', text)
+    if not match:
+        return None
+    return FORMAT_STRING_TO_LAYOUT.get(match.group(1), None), match.group(1)
+
+
+def git_ref_audit(git_ref, repo):
+    """Extract the contract files from a git ref, build the probe from that
+    tree, and run the layout + codec checks against the ref's own packer."""
+    root = Path(repo).resolve()
+    work = Path(tempfile.mkdtemp(prefix=f"q38audit-{git_ref.replace('/','-')}-"))
+    listing = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "--name-only",
+                              git_ref], capture_output=True, text=True, check=True)
+    present = set(listing.stdout.splitlines())
+
+    def path_exists(spec):
+        if spec in present:
+            return True
+        return any(p.startswith(spec + "/") for p in present)
+
+    existing = [p for p in GIT_REF_PATHS if path_exists(p)]
+    if not any(p.startswith("modules/qwen38_max_resident_decode_stage/source")
+               for p in existing):
+        print(f"== {git_ref}: no qwen38_max module source at this ref")
+        return 1
+    archive = subprocess.run(["git", "-C", str(root), "archive", git_ref, *existing],
+                             capture_output=True)
+    if archive.returncode != 0:
+        print(f"== {git_ref}: git archive failed: {archive.stderr.decode()[:200]}")
+        return 1
+    subprocess.run(["tar", "-x", "-C", str(work)], input=archive.stdout, check=True)
+
+    packer = work / "tools/qwen38_stagepack.py"
+    firmware = (work / "modules/qwen38_max_resident_decode_stage/include/sparkpipe/"
+                "spark_qwen38_max_resident_decode_stage_firmware.h")
+    probe_src = root / "tools/qwen38_stagepack_layout_probe.c"
+    if not all(p.is_file() for p in (packer, firmware, probe_src)):
+        print(f"== {git_ref}: expected contract files missing after extract")
+        return 1
+
+    includes = ["-I" + str(work / p) for p in (
+        "modules/qwen38_max_resident_decode_stage/source",
+        "modules/qwen38_max_resident_decode_stage/include",
+        "model-families/qwen38_max/include",
+        "include")]
+    probe_bin = work / "probe"
+    build = subprocess.run(["cc", "-std=c11", *includes, "-o", str(probe_bin),
+                            str(probe_src)], capture_output=True, text=True)
+    if build.returncode != 0:
+        print(f"== {git_ref}: probe build failed (C header does not compile):")
+        error_lines = [l for l in build.stderr.splitlines() if "error:" in l] \
+            or build.stderr.strip().splitlines()
+        for line in error_lines[:3]:
+            print("   " + line[:200])
+        return 1
+
+    inferred, fmt_string = infer_python_layout(packer)
+    print(f"== {git_ref}: packer HEADER_STRUCT {fmt_string}"
+          f" -> layout {inferred or 'UNKNOWN'}")
+    if inferred is None:
+        print("   VERDICT: INACCURATE -- packer layout not in the known set "
+              f"({', '.join(sorted(FORMAT_STRING_TO_LAYOUT))})")
+        return 1
+    rc_layout = run_probe_check(str(probe_bin), inferred,
+                                f"{git_ref}: C header vs python {inferred}")
+    rc_codec = codec_check(str(firmware), str(packer),
+                           f"{git_ref}: C firmware vs python packer")
+    return rc_layout or rc_codec
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe-bin")
     ap.add_argument("--python-layout", choices=sorted(PY_LAYOUTS))
     ap.add_argument("--codec-check", nargs=2, metavar=("FIRMWARE_HEADER", "PY_PACKER"))
+    ap.add_argument("--git-ref")
+    ap.add_argument("--repo", default=".")
     ap.add_argument("--label", default="")
     args = ap.parse_args()
 
+    if args.git_ref:
+        return git_ref_audit(args.git_ref, args.repo)
     if args.codec_check:
         return codec_check(args.codec_check[0], args.codec_check[1], args.label)
     if not args.probe_bin or not args.python_layout:
-        ap.error("--probe-bin + --python-layout, or --codec-check, is required")
+        ap.error("--probe-bin + --python-layout, or --codec-check, or --git-ref, is required")
+    return run_probe_check(args.probe_bin, args.python_layout, args.label)
 
-    meta, c_offsets = probe_offsets(args.probe_bin)
-    p_offsets, py_total = python_offsets(PY_LAYOUTS[args.python_layout])
+
+def run_probe_check(probe_bin, python_layout, label):
+    """Compare a compiled probe's offsetof table against a python layout."""
+    meta, c_offsets = probe_offsets(probe_bin)
+    p_offsets, py_total = python_offsets(PY_LAYOUTS[python_layout])
 
     c_version = meta.get("format_version")
-    label = args.label or f"C header vs python {args.python_layout}"
+    label = label or f"C header vs python {python_layout}"
     print(f"== {label}")
     print(f"   C format_version={c_version} fields={len(c_offsets)}; "
-          f"python layout={args.python_layout} fields={len(p_offsets)}")
+          f"python layout={python_layout} fields={len(p_offsets)}")
 
     bad = []
     for name, (off, size) in sorted(p_offsets.items(), key=lambda kv: kv[1]):
