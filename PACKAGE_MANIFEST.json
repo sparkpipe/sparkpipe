@@ -1,5 +1,5 @@
 {
-  "file_count": 1726,
+  "file_count": 1728,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -540,6 +540,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-s6-2026-08-29.md",
       "sha256": "c88609e9162e051e5a38804de5af42a5ad6eddcf16f04ee7b2f95b6c0681c121",
       "size_bytes": 9212
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-wave-ready-2026-08-30.md",
+      "sha256": "cebf0072a3149640302c1a785c592a1cd4c4851b63e6a8822e279b3573c5cf59",
+      "size_bytes": 3136
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen27b-serve-2026-08-30.md",
@@ -6178,8 +6183,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "2d3f5d2aaa5d5993c7e38dfadbc2196e7cf7e7c7a3c61345b70ecddee7e85afb",
-      "size_bytes": 89119
+      "sha256": "89372526fd828b68f8a5d973637c45c28c3e3b0c2836deaf10fa8bd1127ba611",
+      "size_bytes": 89232
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8502,6 +8507,11 @@
       "size_bytes": 8538
     },
     {
+      "path": "tools/qwen4_flash_wave_cells.sh",
+      "sha256": "cd40a3b9f3ac7b959aa84f84a02dbe837fe7eb9f506079b9c0403e14a35ff5ea",
+      "size_bytes": 2970
+    },
+    {
       "path": "tools/registrar_stage.sh",
       "sha256": "2fc58f6fedfe241fa85cbc79a17b2c99559e0e049172869ee133a64399853495",
       "size_bytes": 1868
@@ -8635,5 +8645,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31777872
+  "total_bytes": 31784091
 }
