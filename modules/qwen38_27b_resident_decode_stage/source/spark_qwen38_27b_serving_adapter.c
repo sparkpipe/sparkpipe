@@ -1350,6 +1350,14 @@ static SparkStatus SparkQwen38_27bServingRunFrame(
 	SparkModelDriverFrame frame;
 	SparkStatus status;
 	SparkQwen38_27bServingBuildFrame(state,submission,pending,prefill,lane,wave_base,frame_rows,&decode_batch,&prefill_view,&context,buffers,&frame);
+	fprintf(stderr, "qwen38_27b_debug frame_ctx prefill=%u rows=%u ctx_flags=0x%x kv_table=%p row_pos0=%llu row_seq0=%llu row_slot0=%u buf0=%p/%llu/0x%x buf1=%p/%llu/0x%x slot1=%u\n",
+		prefill, frame_rows, context.flags, (const void *)context.kv_block_table,
+		(unsigned long long)(prefill == 0u ? decode_batch.row_positions[0] : 0ull),
+		(unsigned long long)(prefill == 0u ? decode_batch.row_sequence_ids[0] : 0ull),
+		(unsigned)(prefill == 0u ? decode_batch.row_lane_indices[0] : 0u),
+		(const void *)buffers[0].address, (unsigned long long)buffers[0].bytes, buffers[0].flags,
+		(const void *)buffers[1].address, (unsigned long long)buffers[1].bytes, buffers[1].flags,
+		buffers[1].slot);
 	status = SparkQwen38_27bServingAdmit(state,submission,&frame);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "qwen38_27b_admit_reject status=%d prefill=%u frame_rows=%u lanes=%u\n", (int)status, prefill, frame_rows, submission->active_sequence_count);
@@ -2057,6 +2065,16 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 		status = SparkQwen38_27bServingSubmitSpeculativeDecode(state,submission,pending);
 	else if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
+		fprintf(stderr, "qwen38_27b_debug table abi=%u bytes=%u blk_tok=%u lane_count=%u lane_cap=%u stride=%u dev_idx=%p dev_cnt=%p host_idx=%p host_cnt=%p adapter_max_active=%u blocks_per_lane=%u attn_layers=%u\n",
+			state->block_table.abi_version, state->block_table.descriptor_bytes,
+			state->block_table.block_token_count, state->block_table.lane_count,
+			state->block_table.lane_capacity, state->block_table.lane_stride,
+			(const void *)state->block_table.physical_block_indices,
+			(const void *)state->block_table.lane_physical_block_counts,
+			(const void *)state->block_table.host_physical_block_indices,
+			(const void *)state->block_table.host_lane_physical_block_counts,
+			state->max_active_sequence_count, state->blocks_per_lane,
+			state->stage_attn_layer_count);
 		/* A plain decode walk invalidates the fold chain's position
 		 * assumption; the next speculative round re-bootstraps. */
 		state->dflash2_fold_armed = 0u;
