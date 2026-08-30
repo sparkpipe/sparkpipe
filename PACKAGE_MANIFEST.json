@@ -1,5 +1,5 @@
 {
-  "file_count": 1728,
+  "file_count": 1729,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -520,6 +520,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-2026-08-27.md",
       "sha256": "5f5edfd21a63021a903625438fdc5f5cea640c131dd55863a9dca4d0c1ba6d03",
       "size_bytes": 15684
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-hillclimb-inventory-2026-08-30.md",
+      "sha256": "8818a0fedcf7203a39cffa676eb8a1005611959b6cc557ff8d6ee1c4e6477177",
+      "size_bytes": 2246
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-m5-2026-08-28.md",
@@ -8645,5 +8650,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31784091
+  "total_bytes": 31786337
 }
