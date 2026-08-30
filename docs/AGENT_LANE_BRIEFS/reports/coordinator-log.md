@@ -2981,3 +2981,22 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   (1) api submits ONE sequence per request (the engine chunk-prefills
   it multi-pass — the machinery exists and is correct);
   (2) glm5_next descriptor gains its real cache_block_token_count.
+
+## 2026-08-30 ~19:1x — prefill fix: code walk CORRECTS my earlier diagnosis
+
+- VERIFIED in code: the api submits ONE request carrying the FULL
+  prompt (no split site exists — parse->queue->submit is whole);
+  the engine chunk-prefills a single request multi-pass BY DESIGN
+  (BuildSubmission + PrefillSpan). The glm5_next descriptor's
+  cache_block_token_count=0 means PrefillSpan returns the WHOLE
+  remaining prompt each pass — capped only by the deployment's
+  max_input_rows. The 'new seq_id per 64-token chunk' the dev
+  observed is NOT reproducible from the api/engine path — most
+  likely the dev's TEST CLIENT chunked the POST (or a proxy did).
+  ACTION: verification note to the dev on #755 — capture the exact
+  curl/client used; if the api really emitted per-chunk requests the
+  wire log would show N POSTs, and we have no such site. The REAL
+  prefill slowness lever confirmed: glm5_next's 0 block count +
+  deployment max_input_rows width (fix = descriptor gets the module's
+  true KV block size + the deployment raises prefill rows; both
+  model-dev-side, noted to #755).
