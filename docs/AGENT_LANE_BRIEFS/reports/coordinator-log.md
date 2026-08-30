@@ -2743,3 +2743,19 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - OPERATOR: TP4 now vs the variable-width port for TP16? Ladder
   holds at this rung pending the ruling (k3/pro extensions are the
   parallel unblocked units).
+
+## 2026-08-30 ~05:2x — k3 rung survey: the full toolchain EXISTS; TP16 = pack(tile_k=32) -> shard(16)
+
+- tools/k3_pack.py takes expert_tile_k POSITIONALLY (tile_k 32 = the
+  documented TP16 enabler; default 128 = TP4-era); tools/k3_shard.py
+  slices a V2 pack into per-rank TP packs (power-of-2 degrees, rank
+  sections + replicated low-rank bottlenecks per its header). The
+  "missing packer path" is actually a two-step RECIPE, not new code:
+  k3_pack (tile_k=32, whole model from /mnt/model-warm/kimi-k3, ~1.5T
+  source) -> k3_shard (tp_degree 16) -> 16 rank packs + the
+  cross-verify (534-tensor-style receipts per stage family).
+- Spark4 staged (2.2T free, k3.mxfp4.tp16 dir exists empty). The
+  chain is LONG (1.5T read + 1.5T pack + slice pass) — fire it
+  next cycle as the rung's build (est. hours; detached, receipted).
+- Rulings still pending with the operator: qwen-flash TP8/TP12; 27B
+  TP4-now vs variable-width port.
