@@ -2801,3 +2801,8 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - Pace unchanged (~50G io / 5 min); 273G payload on disk. Projection:
   payload completes ~1.5T in roughly another hour at this rate, then
   shard. WATCH ONLY — chain self-drives.
+
+## 2026-08-30 ~09:2x — k3 pack 745G read / 361G written (halfway)
+
+- Halfway through the payload. Pace steady. ETA shard ~50 min.
+  WATCH ONLY.
