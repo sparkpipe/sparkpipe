@@ -3417,3 +3417,5 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   verify pass (now TP-aware) then proves them. Firing the rebuild
   next window. The 4x/2x replication state: 27B ranks hold 5 nodes
   each (over-covered, good); flash rebuild then 2x replication.
+
+## 2026-08-30 ~02:4x — sync note: the 10-min timer drove 61 commits while this turn was parked (its cycles ran in this session's context windows). States reconciled by rebase; no conflicts on real code.
