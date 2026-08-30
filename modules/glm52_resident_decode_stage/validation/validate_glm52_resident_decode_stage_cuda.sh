@@ -38,8 +38,8 @@ validation_nvcc_extra_args() {
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_directory}/../../spark_resident_decode_stage_cuda_validation_common.sh"
 
-glm52_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)
-glm52_codec_ids=(2 3 4 5 6 7)
+glm52_codecs=(bf16 int6 int7 int8 fp8 nvfp4 mxfp4)
+glm52_codec_ids=(1 2 3 4 5 6 7)
 
 spark_cuda_validation_begin "$@"
 spark_cuda_validation_check_hash_format

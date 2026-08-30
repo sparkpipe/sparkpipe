@@ -42,13 +42,13 @@
       "runtime_backend_selection": "forbidden"
     },
     "source_model": {
-      "id": "zai-org/GLM-5.2",
-      "revision": "b4734de4facf877f85769a911abafc5283eab3d9"
+      "id": "RadixArk/GLM-5.3-NVFP4",
+      "revision": "363e8f086905afd83db356a620f9aa401c23800a"
     }
   },
   "model": {
     "id": "zai.glm-5.2.resident-decode-stage-firmware",
-    "revision": "b4734de4facf877f85769a911abafc5283eab3d9"
+    "revision": "363e8f086905afd83db356a620f9aa401c23800a"
   },
   "schema_version": 1,
   "stages": [
