@@ -3138,3 +3138,21 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   table-mismatched' — the fix is table-side unless the module's
   loader ALSO assumes the old geometry (check the module constant
   before ruling).
+
+## 2026-08-30 ~01:5x — spark0 DISK FULL (the k3 ENOSPC); dsv4 base retired to fund it
+
+- k3 v4 died: No space left on device (spark0 3.7T at 100%). The
+  inventory: qwenmax 132G + k3-tp4pp4 93G + dsv4_pro-tp4pp4 93G +
+  glm53 sets + k3build 598G (partial payload) + dsv4ranks 330G +
+  dsv4 base 167G.
+- ACTION: the dsv4 BASE retired (167G freed — the 16 rank packs are
+  placed on their nodes; the base is a rebuildable intermediate).
+  k3 needs ~900G more than freed — INSUFFICIENT on spark0 alone.
+- RULING NEEDED (operator or next-cycle math): k3's 1.5T payload +
+  16 shards do NOT fit any single node's remaining space alongside
+  existing sets. Options: (a) retire spark0's k3.mxfp4.tp4pp4 93G +
+  dsv4_pro.tp4pp4 93G (both superseded topology sets; ~350G total
+  with the base) — still short; (b) build k3's base ON WARM (ceph
+  has 41T; ceph-write ~1GB/s = ~25min/T — acceptable) then shard
+  per-rank on separate nodes; (c) stage-wise pack+shard per stage
+  (fits memory AND disk per stage). (b) is the recommended path.
