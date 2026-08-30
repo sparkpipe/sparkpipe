@@ -3344,3 +3344,23 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - sparkf recovery: watchdog/reboot like the others; watch cycle.
   THE BUILDS THEMSELVES never touched sparkf's local disk beyond
   RSS — the node wedge is ceph+mv, consistent with its symptoms.
+
+## 2026-08-30 ~13:3x — THE RENAME QUESTION (operator, answered) + the ceph finding
+
+- OPERATOR: "why didn't you just rename?" — because the two redhatai
+  dirs were nested one level deeper than the target (model-warm/
+  archive-not-a-source/), and my mv crossed the parent boundary.
+  WITHIN the same directory a rename is an instant metadata op; the
+  correct sequence was: `mkdir archive-not-a-source` FIRST, then
+  `mv kimi-k3-nvfp4-redhatai archive-not-a-source/` per-dir — still
+  a rename per dir (same ceph parent), instant. My error was running
+  it as one blind multi-target command against the parent instead of
+  per-dir renames — and not checking whether the packer was mid-read
+  on the same mount first. Both are in the hardened rule.
+- THE CEPH FINDING (worse than 'can brick a spark'): a metadata
+  storm on warm can wedge EVERY node's ceph mount at once (warm is
+  shared) — the blast radius is fleet-wide, not per-spark. That
+  makes warm-build windows EXCLUSIVE for metadata ops, full stop.
+- The executor's own probe timed out (sparkf still dark); per the
+  fail-fast rule the check ABORTS instead of hanging the cycle.
+  sparkf awaits its watchdog/power-cycle like spark0 did. WATCH.
