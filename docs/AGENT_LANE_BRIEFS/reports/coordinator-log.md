@@ -2859,3 +2859,11 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   noted for future checks (pgrep -P for the real worker).
 - Build continues to completion over subsequent cycles; shard 16
   auto-follows. WATCH ONLY.
+
+## 2026-08-30 ~13:2x — k3 fixed build: RSS 1.7->2.3G (controlled), reads advancing
+
+- The fix holds: RSS 2.3G after 10+ min (vs 46G at the same point
+  before); ceph reads advancing (1.8G->2.7G over the window — slow
+  single-stream ceph pace, the D-state path). Journal replay
+  completed; now re-reading source tensors past the resume point.
+  WATCH ONLY; shard auto-follows.
