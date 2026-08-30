@@ -496,7 +496,16 @@ def copy_scale(source: SafetensorsSource, ref: TensorRef, plan, out) -> None:
         write_batch(out, path, scale_base, scale_rows * scale_cols * BF16_BYTES, 2)
         return
     if isinstance(plan, TpFusedSlice):
-        raise PackFailure(f"FP8 fused-slice scale not yet supported: {ref.name}")
+        # The fused-tensor TP scale: each segment is a row window into the
+        # SAME fused scale plane; stream its block rows (segments carry
+        # 128-aligned widths by construction — GDN qk/v dims divide 128).
+        for (row_off, row_count) in plan.segments:
+            r0 = row_off // FP8_SCALE_GROUP
+            r1 = (row_off + row_count) // FP8_SCALE_GROUP
+            for row in range(r0, r1):
+                base = scale_base + (row * scale_cols + 0) * BF16_BYTES
+                write_batch(out, path, base, scale_cols * BF16_BYTES, 2)
+        return
     ro = getattr(ref, "fused_up_offset", 0)
     r0 = (plan.row_off + ro) // FP8_SCALE_GROUP
     r1 = (plan.row_off + plan.row_count + ro) // FP8_SCALE_GROUP
