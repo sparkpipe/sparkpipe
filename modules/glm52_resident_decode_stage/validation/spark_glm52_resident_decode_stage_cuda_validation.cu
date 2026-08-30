@@ -217,6 +217,7 @@ static int SparkGlm52ValReport(const char *check,const SparkGlm52ValMetrics *met
  * cannot drift from the kernel if the grids ever widen.
  */
 
+#define SPARK_GLM52_VAL_CODEC_BF16 1u
 #define SPARK_GLM52_VAL_CODEC_INT6 2u
 #define SPARK_GLM52_VAL_CODEC_INT7 3u
 #define SPARK_GLM52_VAL_CODEC_INT8 4u
@@ -224,7 +225,9 @@ static int SparkGlm52ValReport(const char *check,const SparkGlm52ValMetrics *met
 #define SPARK_GLM52_VAL_CODEC_NVFP4 6u
 #define SPARK_GLM52_VAL_CODEC_MXFP4 7u
 
-#if GLM52_EXPERT_WEIGHT_CODEC == 2
+#if GLM52_EXPERT_WEIGHT_CODEC == 1
+#define SPARK_GLM52_VAL_CODEC SPARK_GLM52_VAL_CODEC_BF16
+#elif GLM52_EXPERT_WEIGHT_CODEC == 2
 #define SPARK_GLM52_VAL_CODEC SPARK_GLM52_VAL_CODEC_INT6
 #elif GLM52_EXPERT_WEIGHT_CODEC == 3
 #define SPARK_GLM52_VAL_CODEC SPARK_GLM52_VAL_CODEC_INT7
@@ -242,6 +245,8 @@ static int SparkGlm52ValReport(const char *check,const SparkGlm52ValMetrics *met
 
 static uint32_t SparkGlm52ValCodecStoredBits(uint32_t codec)
 {
+	if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
+		return(16u);
 	if ( codec == SPARK_GLM52_VAL_CODEC_INT6 )
 		return(6u);
 	if ( codec == SPARK_GLM52_VAL_CODEC_INT7 )
@@ -256,6 +261,8 @@ static uint32_t SparkGlm52ValCodecStoredBits(uint32_t codec)
  * the oracle shares with LmScaleTensorBuild. */
 static uint32_t SparkGlm52ValCodecScaleGroup(uint32_t codec)
 {
+	if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
+		return(1u); /* no scale plane; keeps the group math defined */
 	if ( codec == SPARK_GLM52_VAL_CODEC_INT6 )
 		return(32u);
 	if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
@@ -349,6 +356,8 @@ static uint64_t SparkGlm52ValScaleBlocksPerExpert(uint32_t codec,uint32_t rows,u
 
 static uint64_t SparkGlm52ValScaleBytesPerExpert(uint32_t codec,uint32_t rows,uint32_t columns)
 {
+	if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
+		return(0u);
 	if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
 		return(SparkGlm52ValScaleBlocksPerExpert(codec,rows,columns));
 	if ( codec == SPARK_GLM52_VAL_CODEC_MXFP4 )
@@ -444,6 +453,14 @@ static float SparkGlm52ValDequantWeight(const uint8_t *payload,const uint8_t *sc
 	uint64_t scale_index = SparkGlm52ValScaleIndex(codec,rows,columns,expert,row,column);
 	const uint8_t *slab = payload + SparkGlm52ValPayloadExpertOffset(codec,expert,rows,columns);
 	float raw,scale;
+	if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
+	{
+		/* Native-precision experts: the bf16 code IS the weight; there is
+		 * no scale plane and no second rounding. */
+		uint16_t bits;
+		memcpy(&bits,slab + ((uint64_t)row * columns + column) * sizeof(uint16_t),sizeof(bits));
+		return(SparkGlm52ValFromBf16(bits));
+	}
 	if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
 	{
 		const uint8_t *blocks = scales + SparkGlm52ValScaleGlobalsBytes(codec,expert_count);
@@ -766,7 +783,16 @@ static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t 
 		{
 			uint32_t draw = SparkGlm52ValNext();
 			uint64_t bit = (uint64_t)column * SparkGlm52ValCodecStoredBits(codec);
-			if ( SparkGlm52ValCodecUsesSignedIntGrid(codec) )
+			if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
+			{
+				/* Sign-symmetric exact power-of-two magnitudes, zero mean
+				 * (see the int-grid note below) and exactly representable
+				 * in bf16, so the oracle's decode is lossless. */
+				static const float bf16_choices[7] = {0.0f,0.015625f,-0.015625f,0.03125f,-0.03125f,0.0625f,-0.0625f};
+				uint16_t bits = SparkGlm52ValBf16(bf16_choices[draw % 7u]);
+				memcpy(row_base + (uint64_t)column * sizeof(uint16_t),&bits,sizeof(bits));
+			}
+			else if ( SparkGlm52ValCodecUsesSignedIntGrid(codec) )
 			{
 				/* Zero-mean symmetric grids: a grid with a nonzero mean makes
 				 * the expert forward amplify the activation's ones-component
@@ -808,7 +834,10 @@ static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t 
 		}
 	}
 	/* Scales: powers of two (exact in every encoding). NVFP4's per-expert
-	 * f32 global lives ahead of all slabs and is written by the caller. */
+	 * f32 global lives ahead of all slabs and is written by the caller.
+	 * BF16 carries no scale plane - the block loop below must not run. */
+	if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
+		return;
 	if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
 		memset(scales,0x38,SparkGlm52ValScaleBytesPerExpert(codec,rows,columns)); /* 0x38 = 1.0 */
 	else if ( codec == SPARK_GLM52_VAL_CODEC_MXFP4 )
@@ -1146,9 +1175,9 @@ static void SparkGlm52ValBuildWave(SparkGlm52ValFixture *fixture,uint32_t first_
 	fixture->weights.router_bf16 = fixture->router.device;
 	fixture->weights.router_correction_f32 = fixture->correction_bias;
 	fixture->weights.expert_up_gate_payload = fixture->experts.w1_device_payload;
-	fixture->weights.expert_up_gate_scale = fixture->experts.w1_device_scale;
+	fixture->weights.expert_up_gate_scale = SPARK_GLM52_VAL_CODEC == SPARK_GLM52_VAL_CODEC_BF16 ? 0 : fixture->experts.w1_device_scale;
 	fixture->weights.expert_down_payload = fixture->experts.w2_device_payload;
-	fixture->weights.expert_down_scale = fixture->experts.w2_device_scale;
+	fixture->weights.expert_down_scale = SPARK_GLM52_VAL_CODEC == SPARK_GLM52_VAL_CODEC_BF16 ? 0 : fixture->experts.w2_device_scale;
 	fixture->weights.shared_gate_up_bf16 = fixture->shared_gate_up.device;
 	fixture->weights.shared_down_bf16 = fixture->shared_down.device;
 	memset(wave,0,sizeof(*wave));
