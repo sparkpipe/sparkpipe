@@ -2462,3 +2462,19 @@ appendix).
   warm re-attach timing (expect seconds, the whole point); (c) a
   second identity (nvfp4 rank) co-resident under the ceiling; (d)
   telemetry visibility for arenas (daemon accounting → collector).
+
+## 2026-08-30 ~15:2x — BOTH OPERATOR DIRECTIVES CLOSED
+
+- SPARK1 QMAX RESOLVED BY FAILOVER: the starved builder (~6MB/s on a
+  degraded ceph read path — nurse list item) TERMed; stage-1 rebuilt
+  on spark0's fast path in minutes (86.44GiB, sha c04b7ec4..., receipt)
+  and is SHIPPING to spark1 (detached scp + receipt). 16/16 imminent →
+  verify → place.
+- QUEUE FUNCTIONAL IN THE FULL SENSE: the queue→weightd bridge ran
+  end-to-end — glm-fp8-r0-ready dispatched through the dispatcher,
+  attached the 54GB glm pack WARM (cold=0: zero NVMe on second load,
+  the residency promise), clean release, exit 0, auto node-release.
+  'Make model X ready' is now a queue task (q_ready_task.sh shape:
+  node/pack/model/revision — the central coordinator's future fanout
+  unit). The 56s elapsed is the ctl's debug-side file SHA; real
+  deployments carry placement-receipt digests.
