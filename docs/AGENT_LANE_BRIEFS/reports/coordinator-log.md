@@ -2302,3 +2302,18 @@ appendix).
 - q27b lane integration remains owed (5+ commits incl. the main-tip
   -Werror fix); the runbook = serve-8's task shape (cache-drop in-cmd,
   exact-member batch schema, daemon-up-then-batch ordering).
+
+## 2026-08-30 ~05:1x — 6e91ff6: qwen27b-serve MERGED; main compiles again
+
+- MERGED lane/qwen27b-serve (clean, zero conflicts): the TP1 spec +
+  generated configs, the main-tip -Werror forward-declaration fix
+  (main did not compile — every lane needs this), the JIT_KV runtime-
+  limits fix, and THE decode-refusal root cause (8f16efd: BuildFrame
+  left the frame views uninitialized; validators check reserved0
+  exactly — stack garbage refused nondeterministically). Instrument-
+  ation prints stay for now (daemon-log only; strip is follow-up).
+  Ratchet 233120 exact; GATES EXIT 0. One ordering relapse (digests
+  before the ceiling edit) — fixed forward; the rule stands: digests
+  LAST, always.
+- Single-agent mode continues (spawns down since ~03:00; operator
+  restore pending).
