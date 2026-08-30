@@ -3156,3 +3156,18 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   has 41T; ceph-write ~1GB/s = ~25min/T — acceptable) then shard
   per-rank on separate nodes; (c) stage-wise pack+shard per stage
   (fits memory AND disk per stage). (b) is the recommended path.
+
+## 2026-08-30 ~02:3x — OPERATOR: warm-build plan confirmed; build artifacts cleaned; spark0-monoculture corrected
+
+- CLEANUP (verified-then-removed): spark0 k3build 598G partial,
+  dsv4ranks 330G staging, flash 346G staging (all 8 ranks verified
+  placed spark2-5+a-d BEFORE removal), 27B staging (4/4 placed
+  spark6-9), gap/failover intermediates. spark0: 3.5T full -> 1.3T
+  free.
+- WHY SPARK0: monoculture was accident, not plan — the degraded-ceph
+  nodes (1,3,4) pushed builds there, then momentum. CORRECTED: the
+  fleet-wide free-space table logged this cycle; future builds
+  distribute by space+health. THE BIG-MODEL LAW (operator): bases
+  build ON WARM — k3's base goes to /mnt/model-warm (41T), shard
+  outputs land per-rank on nodes. Firing next cycle with the
+  space-distributed plan.
