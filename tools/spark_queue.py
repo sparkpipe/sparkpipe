@@ -301,6 +301,7 @@ def cmd_dispatch(args):
                 continue
             held_by = next((o for o in candidates
                 if o["id"] != cand["id"] and eff_priority(o) < eff_priority(cand)
+                and cand["id"] not in o.get("after", [])
                 and set(cand["nodes"]).intersection(o["nodes"])), None)
             if held_by is not None:
                 print(f"held: {cand['id']} — priority barrier for "
@@ -312,20 +313,6 @@ def cmd_dispatch(args):
             rewrite_queue(entries); save_reservations(res)
             print("nothing dispatched this pass")
             return
-        # PRIORITY BARRIER: if a strictly-higher-priority task is queued and
-        # waiting for nodes this candidate would take, hold the candidate —
-        # running tasks finish naturally, but no NEW lower-priority work may
-        # extend a high-priority task's wait (the g5dsa-wave1 lesson).
-        need = set(task["nodes"])
-        for other in entries:
-            if (other.get("state") == "queued" and other.get("cmd")
-                    and other["id"] != task["id"]
-                    and other["priority"] < task["priority"]
-                    and need.intersection(other["nodes"])):
-                rewrite_queue(entries); save_reservations(res)
-                print(f"held: {task['id']} — priority barrier for "
-                      f"{other['id']} (p{other['priority']})")
-                return
         ttl = float(task.get("ttl_minutes") or args.ttl)
         for n in task["nodes"]:
             res[n] = dict(id=task["id"], holder=f"task:{task['id']}",
