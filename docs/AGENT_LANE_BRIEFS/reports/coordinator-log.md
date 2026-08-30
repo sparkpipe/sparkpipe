@@ -2608,3 +2608,14 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   the base to warm (ceph) OR run all 16 splices ON spark0 reading
   local (16 x ~10G writes at ~1GB/s ≈ 3 min total — LOCAL WINS at
   this size); fix the rank0 output path bug in the fan-out script.
+
+## 2026-08-30 ~23:1x — dsv4 splices RUNNING (2/16 done, ~4min/rank)
+
+- Splice blocker was --verify-output (stats the output before the
+  splice writes it — instant ENOENT); dropped the flag, verify moves
+  to a post-pass. spark3's ceph degradation confirmed (1.7MB/s vs
+  spark0's 1.2GB/s) — spark3 on the avoid-list with spark1.
+- Chain running on spark0 (staged script, local base): 2/16 ranks
+  done at ~22G each (replicated spine included), ~4 min/rank → ETA
+  ~1h. Post-pass next cycle: verify 16 + fan to nodes + re-listing
+  proof. Then rung 3 (27B from nvfp4a16-bf16-spine).
