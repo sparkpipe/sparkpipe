@@ -310,21 +310,21 @@ class SafetensorsSource(_BaseSafetensorsSource):
             # per-16 scales [R, C/16], F32 global + input scales (scalars).
             expert0 = ref.name.replace("{e}", "0")
             rows_per_expert = ref.rows // EXPERT_COUNT
-            shard, meta, offset = self.resolve(expert0 + ".weight")
+            shard, meta, offset = self.resolve(expert0)
             if meta["dtype"] != "U8":
                 raise PackFailure(f"{expert0}.weight: dtype {meta['dtype']}, expected U8 (4-bit packed)")
             if meta["shape"] != [rows_per_expert, ref.columns // 2]:
                 raise PackFailure(
                     f"{expert0}.weight: checkpoint shape {meta['shape']}, pack expects "
                     f"[{rows_per_expert}, {ref.columns // 2}] (packed)")
-            s_shard, s_meta, s_off = self.resolve(expert0 + ".weight_scale")
+            s_shard, s_meta, s_off = self.resolve(expert0[:-len(".weight")] + ".weight_scale")
             if s_meta["dtype"] != "F8_E4M3":
                 raise PackFailure(f"{expert0}.weight_scale: dtype {s_meta['dtype']}, expected F8_E4M3")
             if s_meta["shape"] != [rows_per_expert, ref.columns // 16]:
                 raise PackFailure(
                     f"{expert0}.weight_scale: checkpoint shape {s_meta['shape']}, pack expects "
                     f"[{rows_per_expert}, {ref.columns // 16}] (group 16)")
-            g_shard, g_meta, g_off = self.resolve(expert0 + ".weight_scale_2")
+            g_shard, g_meta, g_off = self.resolve(expert0[:-len(".weight")] + ".weight_scale_2")
             if g_meta["dtype"] != "F32" or g_meta["shape"] != []:
                 raise PackFailure(f"{expert0}.weight_scale_2: expected F32 scalar global scale")
             return shard, meta, offset
@@ -412,7 +412,7 @@ def copy_nvfp4_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
     scale_cols = ref.columns // 16
     scales = bytearray()
     for e in range(experts):
-        shard, meta, off = source.resolve(ref.name.replace("{e}", str(e)) + ".weight")
+        shard, meta, off = source.resolve(ref.name.replace("{e}", str(e)))
         with (source.root / shard).open("rb") as f:
             f.seek(off)
             remaining = rows_per_expert * (ref.columns // 2)
@@ -424,7 +424,7 @@ def copy_nvfp4_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
                 remaining -= step
                 out.write(raw)
         s_shard, s_meta, s_off = source.resolve(
-            ref.name.replace("{e}", str(e)) + ".weight_scale")
+            ref.name.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale")
         with (source.root / s_shard).open("rb") as f:
             f.seek(s_off)
             sraw = f.read(rows_per_expert * scale_cols)
