@@ -2902,3 +2902,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   no OOM risk at this profile). 100G payload on disk of ~1.5T.
 - Projection: ~80-90 min to pack completion at pace; shard follows.
   WATCH ONLY.
+
+## 2026-08-30 ~15:4x — k3: 317G read / 141G written, RSS flat 23G
+
+- Pace and memory both steady. ~20% payload. WATCH ONLY.
