@@ -2795,3 +2795,9 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   the python child (it matches `k3_pack.py` not `k3_pack|` alternation
   under some shells). 208G of the ~1.5T payload on disk; pace
   unchanged. Shard step still auto-follows. WATCH ONLY.
+
+## 2026-08-30 ~08:4x — k3 pack steady at 602G read / 293G written
+
+- Pace unchanged (~50G io / 5 min); 273G payload on disk. Projection:
+  payload completes ~1.5T in roughly another hour at this rate, then
+  shard. WATCH ONLY — chain self-drives.
