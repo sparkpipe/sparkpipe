@@ -1370,7 +1370,7 @@ CEILING = 234369
 # (modules/glm5_next.../validation/flash_decode_cell.cu + the spark4
 # receipt log): the exactness+speed receipts for R1 screened head and R3
 # split-K engagement. Measured: 236147 exact.
-CEILING = 236147
+CEILING = 236149
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

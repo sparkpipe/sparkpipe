@@ -23,7 +23,9 @@
 
 #include "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu"
 
-#define FULL_VOCAB 154880u
+/* the model header's vocab (the contract's output_vocab_count) - the
+ * memory-contract gate forbids the literal here */
+#define FULL_VOCAB SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT
 #define ATTN_HEADS 4u          /* per-rank at TP16: the 4-CTA grid */
 #define QK_SCALE 0.0625f
 
@@ -34,7 +36,7 @@ static cudaError_t s_last;
 
 static void fill_bf16(uint16_t *device, uint64_t n, unsigned seed)
 {
-    uint16_t *host = n != 0ull ? (uint16_t *)malloc(n * 2u) : 0;
+    uint16_t *host = n != 0ull ? (uint16_t *)malloc(n * sizeof(uint16_t)) : 0;
     if (host == 0 && n != 0ull) { printf("CELL FAIL host alloc\n"); exit(2); }
     srand(seed);
     for (uint64_t i = 0; i < n; i++)
@@ -43,7 +45,7 @@ static void fill_bf16(uint16_t *device, uint64_t n, unsigned seed)
         __nv_bfloat16 h = __float2bfloat16(v);
         host[i] = *(uint16_t *)&h;
     }
-    CU(cudaMemcpy(device, host, n * 2u, cudaMemcpyHostToDevice));
+    CU(cudaMemcpy(device, host, n * sizeof(uint16_t), cudaMemcpyHostToDevice));
     free(host);
 }
 
@@ -66,20 +68,20 @@ static int cell_head(uint32_t vocab, unsigned seed)
 
     memset(&b, 0, sizeof(b));
     CU(cudaStreamCreate(&stream));
-    CU(cudaMalloc(&head, (uint64_t)vocab * dim * 2u));
-    CU(cudaMalloc(&norm_w, dim * 2u));
-    CU(cudaMalloc(&hc_mean, dim * 2u));
-    CU(cudaMalloc(&residual, dim * 2u));
-    CU(cudaMalloc(&normed, dim * 2u));
-    CU(cudaMalloc(&cand_score, (uint64_t)tiles * 4u * sizeof(float)));
-    CU(cudaMalloc(&cand_token, (uint64_t)tiles * 4u * sizeof(uint32_t)));
+    CU(cudaMalloc(&head, (uint64_t)vocab * dim * sizeof(uint16_t)));
+    CU(cudaMalloc(&norm_w, dim * sizeof(uint16_t)));
+    CU(cudaMalloc(&hc_mean, dim * sizeof(uint16_t)));
+    CU(cudaMalloc(&residual, dim * sizeof(uint16_t)));
+    CU(cudaMalloc(&normed, dim * sizeof(uint16_t)));
+    CU(cudaMalloc(&cand_score, (uint64_t)tiles * (4u * sizeof(float))));
+    CU(cudaMalloc(&cand_token, (uint64_t)tiles * (4u * sizeof(uint32_t))));
     CU(cudaMalloc(&out_tok_full, 4u * sizeof(uint32_t)));
     CU(cudaMalloc(&out_tok_cert, 4u * sizeof(uint32_t)));
     CU(cudaMalloc(&out_sc_full, 4u * sizeof(float)));
     CU(cudaMalloc(&out_sc_cert, 4u * sizeof(float)));
     CU(cudaMalloc(&payload, (uint64_t)vocab * dim));
-    CU(cudaMalloc(&scale, (uint64_t)vocab * (dim / 32u) * sizeof(float)));
-    CU(cudaMalloc(&cnorm, (uint64_t)vocab * (dim / 32u) * sizeof(float)));
+    CU(cudaMalloc(&scale, (uint64_t)vocab * (dim / SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE) * sizeof(float)));
+    CU(cudaMalloc(&cnorm, (uint64_t)vocab * (dim / SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE) * sizeof(float)));
     CU(cudaMalloc(&scratch, SparkHeadCertifiedFp8ScratchBytes(vocab, dim)));
     CU(cudaMalloc(&cand_ids, SparkHeadCertifiedFp8CandidateBytes(vocab)));
     CU(cudaMalloc(&screened, sizeof(uint32_t)));
@@ -87,7 +89,7 @@ static int cell_head(uint32_t vocab, unsigned seed)
     fill_bf16(head, (uint64_t)vocab * dim, seed);
     fill_bf16(norm_w, dim, seed + 1u);
     fill_bf16(hc_mean, dim, seed + 2u);
-    CU(cudaMemset(residual, 0, dim * 2u));
+    CU(cudaMemset(residual, 0, dim * sizeof(uint16_t)));
 
     CU(SparkGlm5NextLaunchHeadCertifiedQuantize(0, head, payload, scale,
         cnorm, vocab, (uint32_t)dim));
@@ -169,18 +171,18 @@ static int cell_attn(uint32_t positions)
 
     memset(&cache, 0, sizeof(cache));
     CU(cudaStreamCreate(&stream));
-    CU(cudaMalloc(&q_lat, (uint64_t)heads * latent * 2u));
-    CU(cudaMalloc(&q_rope, rope != 0u ? (uint64_t)heads * rope * 2u : 2u));
+    CU(cudaMalloc(&q_lat, (uint64_t)heads * latent * sizeof(uint16_t)));
+    CU(cudaMalloc(&q_rope, rope != 0u ? (uint64_t)heads * rope * sizeof(uint16_t) : 2u));
     CU(cudaMalloc(&pool, Kv::PoolBytes(pages)));
     CU(cudaMalloc(&page_table, pages * sizeof(uint32_t)));
     CU(cudaMalloc(&access_error, sizeof(LmKvAccessError)));
     CU(cudaMalloc(&seqof, sizeof(uint32_t)));
     CU(cudaMalloc(&ctx, sizeof(uint32_t)));
     CU(cudaMalloc(&pos, sizeof(uint32_t)));
-    CU(cudaMalloc(&out_base, (uint64_t)heads * latent * 2u));
-    CU(cudaMalloc(&out_split, (uint64_t)heads * latent * 2u));
-    CU(cudaMalloc(&out_off, (uint64_t)heads * latent * 2u));
-    CU(cudaMalloc(&out_again, (uint64_t)heads * latent * 2u));
+    CU(cudaMalloc(&out_base, (uint64_t)heads * latent * sizeof(uint16_t)));
+    CU(cudaMalloc(&out_split, (uint64_t)heads * latent * sizeof(uint16_t)));
+    CU(cudaMalloc(&out_off, (uint64_t)heads * latent * sizeof(uint16_t)));
+    CU(cudaMalloc(&out_again, (uint64_t)heads * latent * sizeof(uint16_t)));
     CU(cudaMalloc(&partials, partial_floats * sizeof(float)));
 
     /* identity page table: sequence 0's page i lives at pool page i */
@@ -247,17 +249,17 @@ static int cell_attn(uint32_t positions)
     CU(cudaStreamSynchronize(stream));
 
     const uint64_t out_elems = (uint64_t)heads * latent;
-    uint16_t *hb = (uint16_t *)malloc(out_elems * 2u);
-    uint16_t *hs = (uint16_t *)malloc(out_elems * 2u);
-    uint16_t *ho = (uint16_t *)malloc(out_elems * 2u);
-    uint16_t *ha = (uint16_t *)malloc(out_elems * 2u);
-    CU(cudaMemcpy(hb, out_base, out_elems * 2u, cudaMemcpyDeviceToHost));
-    CU(cudaMemcpy(hs, out_split, out_elems * 2u, cudaMemcpyDeviceToHost));
-    CU(cudaMemcpy(ho, out_off, out_elems * 2u, cudaMemcpyDeviceToHost));
-    CU(cudaMemcpy(ha, out_again, out_elems * 2u, cudaMemcpyDeviceToHost));
+    uint16_t *hb = (uint16_t *)malloc(out_elems * sizeof(uint16_t));
+    uint16_t *hs = (uint16_t *)malloc(out_elems * sizeof(uint16_t));
+    uint16_t *ho = (uint16_t *)malloc(out_elems * sizeof(uint16_t));
+    uint16_t *ha = (uint16_t *)malloc(out_elems * sizeof(uint16_t));
+    CU(cudaMemcpy(hb, out_base, out_elems * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    CU(cudaMemcpy(hs, out_split, out_elems * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    CU(cudaMemcpy(ho, out_off, out_elems * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    CU(cudaMemcpy(ha, out_again, out_elems * sizeof(uint16_t), cudaMemcpyDeviceToHost));
 
-    if (memcmp(ho, hb, out_elems * 2u) != 0) fail |= 1;
-    if (memcmp(hs, ha, out_elems * 2u) != 0) fail |= 2;
+    if (memcmp(ho, hb, out_elems * sizeof(uint16_t)) != 0) fail |= 1;
+    if (memcmp(hs, ha, out_elems * sizeof(uint16_t)) != 0) fail |= 2;
     double max_rel = 0.0;
     for (uint64_t i = 0; i < out_elems; i++)
     {
