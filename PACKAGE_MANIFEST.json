@@ -1,5 +1,5 @@
 {
-  "file_count": 1740,
+  "file_count": 1745,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -420,6 +420,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/glm53-2026-08-27.md",
       "sha256": "74c3c6d261591cd2bbe4f351fe4b3b955e0fa9b7abdfa38c4761930f84886414",
       "size_bytes": 48107
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/glm53-2026-08-30.md",
+      "sha256": "e0c96578b71d7947388d574df79189667ef315735b6124452ce0e9124570a39d",
+      "size_bytes": 42236
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/glm53full-2026-08-28.md",
@@ -6208,8 +6213,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "2c32a0641f663bd9e965b8dcaea79d156d51dcaf80774b5b28a40e3a8a4fad20",
-      "size_bytes": 91262
+      "sha256": "1922b684b5650198ea08b8c58b641eddb509549b7c86c46f8b9c287c9535bdb7",
+      "size_bytes": 91574
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7942,6 +7947,21 @@
       "size_bytes": 26738
     },
     {
+      "path": "tools/glm53_m5_cell_task.sh",
+      "sha256": "4b20ec7fb0bf99c381a9d15e71a673611aa3a5c0b82bc001138e5117f78369b2",
+      "size_bytes": 4424
+    },
+    {
+      "path": "tools/glm53_m5_stage.sh",
+      "sha256": "681f32848c331809fdf09e70f24da4d012d4f6003079b42d265da92cd0f39e88",
+      "size_bytes": 4323
+    },
+    {
+      "path": "tools/glm53_m5_stage2.sh",
+      "sha256": "9453665fa989e3b0a7368b083137aa18a77030a810f42540c079fdb8361f89c4",
+      "size_bytes": 2537
+    },
+    {
       "path": "tools/glm53full_bf16_tp16_source_verify.py",
       "sha256": "f83a0320c14d3eb0189c33b52dae2104e4c0fb4c757e45cf592abc2198669994",
       "size_bytes": 13626
@@ -8003,8 +8023,13 @@
     },
     {
       "path": "tools/glm5_next_m5_batch.py",
-      "sha256": "4eabfc21e66b7c2860bb5c54a0fdaf516d04126646673c2d24c7defed6a9cf4c",
-      "size_bytes": 2750
+      "sha256": "1b20a6f4ae786cbac5b132db91bfd8abe12c4158780069727db94fd4f60eb483",
+      "size_bytes": 2954
+    },
+    {
+      "path": "tools/glm5_next_oproj_verify.py",
+      "sha256": "bbb788c33045f069b8d173aff14473f3c0685ca6ae9562007f5b59593733d154",
+      "size_bytes": 14107
     },
     {
       "path": "tools/glm5_next_pack_header_patch.py",
@@ -8705,5 +8730,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31946336
+  "total_bytes": 32014479
 }

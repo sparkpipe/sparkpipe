@@ -1343,7 +1343,12 @@ CEILING = 234369
 # +108 (2026-08-30, qwen38max lane): the stagepack audit gained --git-ref
 # (one command audits any branch: extract ref, build probe, infer layout,
 # run layout+codec checks) - the pre-build gate for qwen38max pack builds.
-CEILING = 234711
+# coordinator merge #755 (glm53 lane): the independent TP16 checkpoint-
+# semantics pack verifier (glm53_tp16_verify.py - o_proj x45, qkv_beta
+# fusion, f32 vectors, kv_b transpose, head shards; rank0+rank15 exact),
+# the o_proj unit verifier, and the M5 cell staging scripts. Measured at
+# merge: 235286 exact.
+CEILING = 235286
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
