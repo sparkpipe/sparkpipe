@@ -2787,3 +2787,11 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   half of its ~1.5T target. ETA to shard step ~1h at cadence; the
   chain self-drives (shard 16 fires on pack completion). No
   intervention needed — watches only.
+
+## 2026-08-30 ~07:5x — k3 pack ~2/3 through (447G read / 208G written)
+
+- The packer (980284, under chain 980273) writes the base payload +
+  journal steadily; the "exited" reads were the pgrep pattern missing
+  the python child (it matches `k3_pack.py` not `k3_pack|` alternation
+  under some shells). 208G of the ~1.5T payload on disk; pace
+  unchanged. Shard step still auto-follows. WATCH ONLY.
