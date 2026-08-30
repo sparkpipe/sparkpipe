@@ -1,5 +1,5 @@
 {
-  "file_count": 1723,
+  "file_count": 1731,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -287,6 +287,11 @@
       "size_bytes": 3512
     },
     {
+      "path": "docs/AGENT_LANE_BRIEFS/kimi_k3.md",
+      "sha256": "21eee0fb2da724f05bcbed8659b276085d7dfe5206211831968530e59a7dee6e",
+      "size_bytes": 4291
+    },
+    {
       "path": "docs/AGENT_LANE_BRIEFS/nurse.md",
       "sha256": "8d73bebe16e555118962c3f148ffe5c19aa431678de1028f13b83329ea979d20",
       "size_bytes": 4786
@@ -338,8 +343,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "14ebf1d090c5f4445d4cbe1bffcdba87cab86cd3338211015f2da7c9851ad93f",
-      "size_bytes": 132254
+      "sha256": "1560273a5f81f136eebeb0e7f209a323be4cadeb8b2473ebf558f8cc2106f9e5",
+      "size_bytes": 139446
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -487,6 +492,16 @@
       "size_bytes": 13081
     },
     {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/kimi-k3-p1-port-plan-2026-08-30.md",
+      "sha256": "5a5bb2b6d774870ce76e17974c61cee0c7514d7ddabd8658bac1ed47f61787a5",
+      "size_bytes": 7008
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/kimi-k3-tp16-2026-08-30.md",
+      "sha256": "0cd933fba9e20d4d4edd456fa6e3be24b260058ffb61461a51951844cb9cab87",
+      "size_bytes": 4267
+    },
+    {
       "path": "docs/AGENT_LANE_BRIEFS/reports/knee-sweep-2026-08-28.md",
       "sha256": "e4d1fbae167588480e07c884fff2851e0812116347ce2c8d75c7a6d9b36c40e0",
       "size_bytes": 17368
@@ -623,8 +638,8 @@
     },
     {
       "path": "docs/BUG_LEDGER.md",
-      "sha256": "0ffe412504730a7fb68ac6531b15812dced71ca214e607eb56673ed4d34fcbcd",
-      "size_bytes": 4515
+      "sha256": "19ece8c4b4afb4a1e2cc7653c8e01b865baac98cca0c57af0e65199458aead43",
+      "size_bytes": 5235
     },
     {
       "path": "docs/DATAFILE_NAMING.md",
@@ -712,6 +727,11 @@
       "size_bytes": 11110
     },
     {
+      "path": "docs/MODEL_DEV_GUIDE.md",
+      "sha256": "31d82c9baedf1d3ffbc38d11a6329078ffa3663cd6b2cc57aa98b2c3fc894f30",
+      "size_bytes": 4278
+    },
+    {
       "path": "docs/MODEL_SUPPORT.md",
       "sha256": "6512e98fe01f6023a06f78638943ecdc5417dbb54ced10864390f7a3b69812bc",
       "size_bytes": 3251
@@ -742,6 +762,11 @@
       "size_bytes": 1969
     },
     {
+      "path": "docs/ROADMAP_TP16_FLEET.md",
+      "sha256": "66219f0df16e1e1699e6e0bbc61c29a1449cbe51aaa49c773c124f88c9ae28e7",
+      "size_bytes": 6152
+    },
+    {
       "path": "docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md",
       "sha256": "279a3720de27b99344ef6d454e79f96a944ad6274dae588b4b06d420cedc9638",
       "size_bytes": 25421
@@ -770,6 +795,11 @@
       "path": "docs/TOPOLOGY_GUIDE.md",
       "sha256": "060acdf6a5648ad1ba88aa8f3c09d380fdb72a2fe57ef9e5d9a43013bc882491",
       "size_bytes": 11088
+    },
+    {
+      "path": "docs/UNIVERSAL_PACKER.md",
+      "sha256": "72dc9baf9314d3632e21b8351f1a862bbc3fb6480ca9e183f37a8211eb21429b",
+      "size_bytes": 2838
     },
     {
       "path": "docs/WEIGHTD_DESIGN.md",
@@ -2988,8 +3018,8 @@
     },
     {
       "path": "inference/llms/kimi_k3/layer.cuh",
-      "sha256": "2ca5db9ec548ecc582f50f70579fe030515f2955b559be3bc877701e41dfa0da",
-      "size_bytes": 62395
+      "sha256": "0b676b228c3a6870fc6c176c483a64682488cbd938f6bba2b55e95fa5c5d765c",
+      "size_bytes": 65309
     },
     {
       "path": "inference/llms/kimi_k3/pipeline_sideband.h",
@@ -3858,13 +3888,13 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu",
-      "sha256": "624266e35be03219422d0c49b086d32bd01fe554f6e1755861c54e51bee20a9a",
-      "size_bytes": 50898
+      "sha256": "e0b4e79934abfa0d16db8ed7023c2433b124ae27562ff71024dfdce311e80e38",
+      "size_bytes": 53644
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c",
-      "sha256": "df66ed8df56cfaef774e0688fe12ce76cd7339a7d53b82895830aab5ccc29028",
-      "size_bytes": 31990
+      "sha256": "1745b2c348abc8991a58df0aecb3b6673eaf8f69142a8d09f34d432e9c2882e1",
+      "size_bytes": 32245
     },
     {
       "path": "modules/kv_mooncake/Makefile",
@@ -4093,8 +4123,8 @@
     },
     {
       "path": "node/model_api.c",
-      "sha256": "58d5ec06a18e0b94c837f009ab491267d90f280c3a08c72cfc0de93f4f63735c",
-      "size_bytes": 35808
+      "sha256": "3ff5ced863fb17e213c86527edeeb56439576fce032622ddc925c539db2300cb",
+      "size_bytes": 37756
     },
     {
       "path": "node/model_batch.c",
@@ -6163,8 +6193,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "b7bbcb0564cc49221e184690df91cb9d1f056e6c8921cdff84361f06e585d863",
-      "size_bytes": 88718
+      "sha256": "d5fe0da17f2e0a2dc4f8b991fcb139a6f6c6ac5645f0ebbec95cbb03772a61ec",
+      "size_bytes": 89735
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6818,7 +6848,7 @@
     },
     {
       "path": "tests/test_memory_contracts_parked.txt",
-      "sha256": "3ae227115fe7db7b4814fb77de8c56049811481a11427fe7b0caedd74cf98af5",
+      "sha256": "8e90719eb11b342ffafb3cee2b217756fa3481c194b6b8e508d7dcc108ac0ad4",
       "size_bytes": 9131
     },
     {
@@ -8092,6 +8122,11 @@
       "size_bytes": 1587
     },
     {
+      "path": "tools/k3_deployed_audit.py",
+      "sha256": "d29a97217f90da0f78cc2ec270f269d7e604827ec88bd7a6f457268e9837740a",
+      "size_bytes": 1261
+    },
+    {
       "path": "tools/k3_dispatch_compile_gate.sh",
       "sha256": "aa292b88a5a994e2591fe4c890406c350e787bbe4bb72f56967b0e3c383f68cb",
       "size_bytes": 830
@@ -8113,13 +8148,13 @@
     },
     {
       "path": "tools/k3_gen_deployment.sh",
-      "sha256": "6553630d89f4e08cbec1c6714f7614a6a08c812763636bdbcdd4d799e8eb22ee",
-      "size_bytes": 2473
+      "sha256": "9872284bc58cc5afbb9a02b501067a7b4c869bd62be8f34ebfb6be5d67c02957",
+      "size_bytes": 2850
     },
     {
       "path": "tools/k3_keepalive.sh",
-      "sha256": "1ee2522759b0abac3a02e957fc247147ba2dbd88fd7f6875c189237190785b73",
-      "size_bytes": 4458
+      "sha256": "7d69449b0c8312747950b6424af4393f4662e369eeee7b989fc049a494f7031e",
+      "size_bytes": 4904
     },
     {
       "path": "tools/k3_pack.py",
@@ -8143,8 +8178,8 @@
     },
     {
       "path": "tools/k3_shard.py",
-      "sha256": "e6ec1f2885f5af5f0a2b662d756d2a9ba0aac13805357250c612d632d4829ee6",
-      "size_bytes": 19047
+      "sha256": "788d80717079f352a86b0732201680c6c509e55afee51a870f8b8f398afb5991",
+      "size_bytes": 19757
     },
     {
       "path": "tools/k3_single_spark_step.sh",
@@ -8163,8 +8198,13 @@
     },
     {
       "path": "tools/k3_stage_runtime.sh",
-      "sha256": "9ae3fe5f8761931c54ceae563514d105a755954d66d9ef03d682304310d68d83",
-      "size_bytes": 1402
+      "sha256": "d6f8c68b9f864f4c0999ad5347bf7c68d084b816f3141c78393dbe03ea705559",
+      "size_bytes": 2296
+    },
+    {
+      "path": "tools/k3_tp16_deploy.sh",
+      "sha256": "f3af14989bd900c3111d9c6862ea5c99a0105d097b2695fa1928fcc88434f80e",
+      "size_bytes": 2516
     },
     {
       "path": "tools/k3_tp4_equivalence_check.py",
@@ -8398,8 +8438,8 @@
     },
     {
       "path": "tools/qwen38_stagepack.py",
-      "sha256": "88b1c6c9f1f4fd639bd8c67b703404c8a6f3825776205715db46b4087a100610",
-      "size_bytes": 24549
+      "sha256": "ff3b51ff98f665eccc8a0234916e58be4dd31a32fab4c5e0cc92610de1eecf82",
+      "size_bytes": 28533
     },
     {
       "path": "tools/qwen38_storm.sh",
@@ -8620,5 +8660,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31747043
+  "total_bytes": 31802857
 }
