@@ -3542,3 +3542,10 @@ the conflict resolution keeps both.)
   with receipts; the remaining 6 nodes get their copies per the
   replication law). The rank-path extension is NOT needed — the
   existing packs are the right thing.
+
+## 2026-08-30 ~17:0x — cap boost CONFIRMED LIVE: 3.2GB test file wrote to warm without error
+
+- The captest2 (3GB) wrote clean on sparkf's warm mount post-boost.
+  The earlier 1.1TB payload was killed by the OLD cap (the boost
+  hadn't propagated when it ran). The k3 base can now exceed 1TB
+  on warm; the packer resumed on sparkf and continues.
