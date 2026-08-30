@@ -181,17 +181,27 @@ def verify(pack_path: Path, checkpoint: Path, source_format: str,
         if traced >= sample_count:
             break
 
-    # MXFP4 dequant sanity on the first traced expert payload.
+    # MXFP4 dequant sanity on the first traced expert payload. The probe
+    # samples windows spread across the payload: quantized checkpoints
+    # legitimately begin with runs of exact-zero E2M1 elements (measured:
+    # up to 2.7K leading zero bytes on layer-0 experts), so a single
+    # window at element 0 false-fails on healthy packs.
     for index in range(0, tensor_count, step):
         kind, layer, weight_format, rows, columns, scale_group, payload_offset, payload_bytes, scale_offset, scale_bytes = entries[index]
         if weight_format == sp.WEIGHT_MXFP4_E2M1:
-            payload = read_at(payload_offset, 8192)
-            scales = read_at(scale_offset, 256)
-            values = dequant_mxfp4_group(payload, scales, 0, 256)
-            finite = sum(1 for v in values if abs(v) != float("inf"))
-            nonzero = sum(1 for v in values if v != 0.0)
-            print(f"trace kind={kind} layer={layer} mxfp4 dequant finite={finite}/256 nonzero={nonzero}/256")
-            if finite != 256 or nonzero < 128:
+            windows = 8
+            per_window = 256
+            finite = nonzero = total = 0
+            for w in range(windows):
+                base_element = ((payload_bytes // 2) * w) // windows
+                payload = read_at(payload_offset + base_element, per_window // 2)
+                scales = read_at(scale_offset + base_element // sp.MXFP4_GROUP, per_window // sp.MXFP4_GROUP + 1)
+                values = dequant_mxfp4_group(payload, scales, 0, per_window)
+                finite += sum(1 for v in values if abs(v) != float("inf"))
+                nonzero += sum(1 for v in values if v != 0.0)
+                total += per_window
+            print(f"trace kind={kind} layer={layer} mxfp4 dequant finite={finite}/{total} nonzero={nonzero}/{total} (8 spread windows)")
+            if finite != total or nonzero < total // 8:
                 raise PackFailure("mxfp4 dequant sanity failed")
             break
     print(f"PASS {pack_path.name}: header geometry, {tensor_count} directory entries "
