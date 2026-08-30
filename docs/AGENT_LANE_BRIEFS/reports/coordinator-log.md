@@ -2619,3 +2619,19 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   done at ~22G each (replicated spine included), ~4 min/rank → ETA
   ~1h. Post-pass next cycle: verify 16 + fan to nodes + re-listing
   proof. Then rung 3 (27B from nvfp4a16-bf16-spine).
+
+## 2026-08-30 ~23:4x — 27B rung: source layout decoded, fused-path port named
+
+- qwen3.8-27b-nvfp4a16-bf16-spine layout (full header scan): gate/up/
+  down as weight_packed U8 [rows, cols/2] + weight_scale F8_E4M3 g16 +
+  weight_global_scale F32 (NVFP4a16), stored as FUSED dense-style
+  names (mlp.gate_proj — NOT mlp.experts.{e}.) — and gate/up are
+  SEPARATE here (the fused-gate_up blocker does NOT apply). MTP rides
+  plain BF16.
+- CONSEQUENCE: qwen38_27b_stagepack needs the FUSED-aggregate expert
+  path ported (the same class as qwen-max's MTP handling: per-kind
+  name mapping + packed/scale/global streaming; glm CODECs semantics
+  as reference). Both 27B sources need it (-fp8 fused-gate; spine
+  fused-per-tensor) — one port serves both. NAMED WORK, next window
+  or the 27B dev session.
+- dsv4 splices: rank3 in flight (~4min/rank steady); ETA on cadence.
