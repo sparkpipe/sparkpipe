@@ -2317,3 +2317,16 @@ appendix).
   LAST, always.
 - Single-agent mode continues (spawns down since ~03:00; operator
   restore pending).
+
+## 2026-08-30 ~05:4x — single-agent driving (operator directive); K3 chain dispatched
+
+- Operator set API mode — spawns STILL fail (builtin:zai-start-plan);
+  single-agent driving confirmed as the standing mode until restore.
+- THE ONE THING: k3fin-first-number-r2 DISPATCHED on all 16 (the
+  staged k3fin_chain.sh — census -> wave -> api:8434 -> B1 receipt ->
+  kv probe; ttl 240; idempotent; fleet left SERVING after). spark1's
+  first daemon up at census exit. Receipt lands at
+  /home/spark0/k3fin_b1_receipt.json — the first K3 fleet number.
+- Driving queue while spawns down: next = chain watch + the glm5-moe
+  oracle built in coordinator slices (the last unverified compute
+  family).
