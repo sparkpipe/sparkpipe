@@ -12,6 +12,11 @@ MODULE_ENTRY_PREFIX := SparkDsv4ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_dsv4_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
+	../../runtime/spark_weightd.c \
+	../../runtime/spark_weightd_attach.c \
+	../../src/spark_status.c \
+	../../src/spark_sha256.c \
+	../../src/spark_admission.c \
 	source/spark_dsv4_stage_runner.c \
 	source/spark_dsv4_paged_cache.c \
 	../../model-families/dsv4/src/spark_dsv4_parallel_shape.c \
@@ -23,7 +28,13 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c
 MODULE_CUDA_SOURCE := source/spark_dsv4_resident_decode_stage_cuda.cu
-MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u
+MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u \
+	-D_DEFAULT_SOURCE
+# src/spark_sha256.c reaches <sys/sysctl.h> on Darwin, whose SDK headers
+# need the BSD surface that strict _POSIX_C_SOURCE (module rule) hides.
+ifeq ($(shell uname),Darwin)
+MODULE_COMPILE_FLAGS += -D_DARWIN_C_SOURCE
+endif
 # DSpark spec-step override for the k-sweep (k=5/7/8/10). Set DSPARK_SPEC_STEP=k
 # on the make command line; the model header default (7) is guarded by #ifndef.
 ifneq ($(DSPARK_SPEC_STEP),)

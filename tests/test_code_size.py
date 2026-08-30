@@ -1305,7 +1305,13 @@ CEILING = 228248
 # conviction dumps); the swiglu swap itself was REVERTED (it NaN'd the MoE
 # partial from the first wave - verdict by bisect wave10; the record comment
 # stays, the kernel is gone). To be trimmed with the ratchet at coherence.
-CEILING = 233120
+# 233266 exact (2026-08-30, dsv4flash lane): +11 for the dsv4 module's
+# self-contained link tail (weightd attach/status/sha256/admission sources
+# added to MODULE_ADDITIONAL_HOST_SOURCES — sparkpipe_model_compile linked
+# a dead driver without them since W3); +135 inherited drift already present
+# in main@9c31e91 against its checked-in 233120 (weightdctl + guide logs
+# landed ahead of their ratchet re-measure).
+CEILING = 233266
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
