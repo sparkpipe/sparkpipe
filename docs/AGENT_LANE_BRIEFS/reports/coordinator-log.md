@@ -3321,3 +3321,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - EIGHT-model board nearly complete: 27B ✓ (TP4), qwen-flash ✓
   (TP8, 2x-replication pending), dsv4-flash ✓, glm5.3 ×4 ✓,
   qwen-max ✓; k3 building; dsv4-pro extension last.
+
+## 2026-08-30 ~14:3x — k3 710G read / 321G written (604G payload, ~40%)
+
+- Steady. WATCH.
