@@ -219,6 +219,10 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
         expected_refs: dict[tuple[int, int], object] = {}
         try:
             for ref in _tables.build_inventory(first_layer, layer_count):
+                if args.tp_degree > 1:
+                    plan = _tables.build_tp_plan(ref, args.tp_degree, 0)
+                    if plan is not None:
+                        ref.rows, ref.columns = _tables.packed_shape(ref, plan)
                 expected_refs[(ref.kind, ref.layer)] = ref
         except _tables.PackFailure as error:
             fail(f"inventory build failed: {error}")
@@ -358,6 +362,8 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--tp-degree", type=int, default=1,
+        help="the pack's TP degree; entry shapes are compared per-rank")
     parser.add_argument("--pack", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path,
                         help="checkpoint dir; omit for structure-only pass")
