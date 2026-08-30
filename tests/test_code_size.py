@@ -1309,7 +1309,10 @@ CEILING = 228248
 # (tools/qwen38_stagepack_layout_probe.c + tools/qwen38_stagepack_layout_
 # audit.py + its report) - the harness that caught the v2 header field-order
 # and MXFP4 codec-code divergences before the 16-rank pack build.
-CEILING = 233446
+# +43 (2026-08-30, qwen38max lane): the stagepack audit tool gained the
+# mechanical cross-language codec-code check (--codec-check) that catches
+# the MXFP4_E2M1 3-vs-7 class on any branch before packs are built.
+CEILING = 233489
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

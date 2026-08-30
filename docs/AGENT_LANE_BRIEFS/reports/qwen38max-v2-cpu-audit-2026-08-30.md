@@ -129,3 +129,22 @@ vs main's v1 python layout — VERDICT: accurate, all 28 fields agree.
    rank for this model (4 x 73.8 GiB) — infeasible on the 119 GB nodes;
    the rank-local sharded path (this lane) is the one that fits. The two
    designs need one owner and one loader.
+
+## Addendum (same day, post-#754) — the codec check is now mechanical
+
+The audit tool gained `--codec-check FIRMWARE_HEADER PY_PACKER` (cross-
+language WEIGHT_FORMAT_* name-mapped comparison). Run against the open
+TP16 branch:
+
+```
+$ python3 tools/qwen38_stagepack_layout_audit.py --codec-check \
+    <tp16>/firmware.h <tp16>/qwen38_stagepack.py
+== AUDIT: PR #754 (lane/qwen38max-tp16) C firmware vs python packer
+   VERDICT: INACCURATE -- 1 code(s) disagree:
+     MXFP4_E2M1: C 3 vs python 7
+```
+
+With the one-line fix (`WEIGHT_MXFP4_E2M1 = 3`): accurate, 5 codes agree.
+Note for merge ordering: F1 does not affect #750/#754 (their unrebased C
+and python agree on the old mid-struct order); F2 does, today, and fails
+their open "tp16 rank-local validator check" item before any pack build.
