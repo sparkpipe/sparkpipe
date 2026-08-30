@@ -305,6 +305,29 @@ class SafetensorsSource(_BaseSafetensorsSource):
         super().check_config(expectations)
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
+        if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN) and EXPERT_CODEC == "nvfp4":
+            # radixark NVFP4: U8 payload [R, C/2] (2 values/byte), F8_E4M3
+            # per-16 scales [R, C/16], F32 global + input scales (scalars).
+            expert0 = ref.name.replace("{e}", "0")
+            rows_per_expert = ref.rows // EXPERT_COUNT
+            shard, meta, offset = self.resolve(expert0 + ".weight")
+            if meta["dtype"] != "U8":
+                raise PackFailure(f"{expert0}.weight: dtype {meta['dtype']}, expected U8 (4-bit packed)")
+            if meta["shape"] != [rows_per_expert, ref.columns // 2]:
+                raise PackFailure(
+                    f"{expert0}.weight: checkpoint shape {meta['shape']}, pack expects "
+                    f"[{rows_per_expert}, {ref.columns // 2}] (packed)")
+            s_shard, s_meta, s_off = self.resolve(expert0 + ".weight_scale")
+            if s_meta["dtype"] != "F8_E4M3":
+                raise PackFailure(f"{expert0}.weight_scale: dtype {s_meta['dtype']}, expected F8_E4M3")
+            if s_meta["shape"] != [rows_per_expert, ref.columns // 16]:
+                raise PackFailure(
+                    f"{expert0}.weight_scale: checkpoint shape {s_meta['shape']}, pack expects "
+                    f"[{rows_per_expert}, {ref.columns // 16}] (group 16)")
+            g_shard, g_meta, g_off = self.resolve(expert0 + ".weight_scale_2")
+            if g_meta["dtype"] != "F32" or g_meta["shape"] != []:
+                raise PackFailure(f"{expert0}.weight_scale_2: expected F32 scalar global scale")
+            return shard, meta, offset
         if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
             # per-expert FP8 tensors: validate expert 0 and the scale companion
             # (dtype AND shape; the remaining experts are resolved again per
@@ -378,6 +401,37 @@ def copy_bf16_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, out
                 widened[2::4] = chunk[0::2]
                 widened[3::4] = chunk[1::2]
                 out.write(widened)
+
+
+def copy_nvfp4_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
+    """Stream per-expert NVFP4 payload [R, C/2] U8 expert-major, then the
+    F8_E4M3 scale plane [E*R, C/16] byte-per-scale (the codec-6 layout;
+    global + input F32 scales ride the manifest entry)."""
+    experts = EXPERT_COUNT
+    rows_per_expert = ref.rows // experts
+    scale_cols = ref.columns // 16
+    scales = bytearray()
+    for e in range(experts):
+        shard, meta, off = source.resolve(ref.name.replace("{e}", str(e)) + ".weight")
+        with (source.root / shard).open("rb") as f:
+            f.seek(off)
+            remaining = rows_per_expert * (ref.columns // 2)
+            while remaining > 0:
+                step = min(remaining, CHUNK_BYTES)
+                raw = f.read(step)
+                if len(raw) != step:
+                    raise PackFailure("short read on nvfp4 payload")
+                remaining -= step
+                out.write(raw)
+        s_shard, s_meta, s_off = source.resolve(
+            ref.name.replace("{e}", str(e)) + ".weight_scale")
+        with (source.root / s_shard).open("rb") as f:
+            f.seek(s_off)
+            sraw = f.read(rows_per_expert * scale_cols)
+        if len(sraw) != rows_per_expert * scale_cols:
+            raise PackFailure("short read on nvfp4 scale plane")
+        scales += sraw
+    out.write(bytes(scales))
 
 
 def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
@@ -488,7 +542,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         for ref, source_offset, payload_offset, payload_bytes, scale_bytes in plans:
             before = hashing.tell()
             if ref.weight_format == WEIGHT_FP8_F32B128:
-                copy_fp8_experts(source, ref, hashing)
+                copy_nvfp4_experts(source, ref, hashing) if EXPERT_CODEC == "nvfp4" else copy_fp8_experts(source, ref, hashing)
             else:
                 copy_bf16_tensor(source, ref, source_offset, hashing)
             wrote = hashing.tell() - before
@@ -509,6 +563,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
 
 
 def main() -> int:
+    global EXPERT_CODEC
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--checkpoint", type=Path, help="safetensors checkpoint directory")
     parser.add_argument("--output", type=Path, help="pack output path")
@@ -517,7 +572,14 @@ def main() -> int:
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
     parser.add_argument("--receipt", type=Path, help="receipt output (default: <output>.receipt.json)")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--expert-codec", choices=("fp8", "nvfp4"), default="fp8",
+        help="expert weight codec: fp8 (F8_E4M3 + BF16 scale_inv b128, the "
+             "2.3T source) or nvfp4 (U8-packed 4-bit + F8_E4M3 g16 scales + "
+             "F32 global, the radixark bf16-spine source; payload streams "
+             "rows*cols/2, scales rows*cols/16, global + input_scale in the "
+             "manifest entry)")
     args = parser.parse_args()
+    EXPERT_CODEC = args.expert_codec
 
     if args.first_layer is None or args.layer_count is None:
         parser.error("--first-layer and --layer-count are required")
