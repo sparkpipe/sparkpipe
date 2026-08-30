@@ -36,15 +36,22 @@ warm ceph concurrently):
 | qwen-flash | 336G bf16 source | pack to MX-FP8 → TP16 | spark2 |
 | dsv4-pro | dsv4-pro-0813-ga (832G) | pro packer TP16 (fix verifier pins first) | spark3 |
 | k3 | kimi-k3-nvfp4 (1.5T) | reslice TP4PP4→TP16 (expert_tile_k=32 path, lane-documented) | spark4 |
-| qwen-max | 2.3T fp8 (hash-verified) | first-ever pack — TP16 | spark5 |
+| qwen-max (4-BIT per operator) | PENDING SOURCE: no official/vetted
+  4-bit checkpoint on warm yet (only the 2.3T fp8). Phase 1
+  prerequisite: hunt official/community NVFP4/MXFP4 qwen-max (the
+  bulk-packs2 NVFP4 portfolio gap list first), fetch + verify per the
+  standing quantization policy (NEVER self-quantize). IF none exists
+  anywhere: operator decision (exception vs fp8 fallback). ~72-75G/rank
+  at 4-bit | spark5 |
 | glm5.3-flash | DONE (serving packs current) | — | — |
 | glm5.3-full | DONE (fp8 = serving arm) | — | — |
 
-HOUSEKEEPING (frees ~131GB/node): retire on-node nvfp4 (33G) + bf16
-(98G) glm53full resolution copies (fp8 stays — the serving arm; all
-are rebuildable from pinned sources, receipts on warm); retire the
-stale Aug-11 tp16.b1 and tp4_pp4 dsv4 copies; retire k3's TP4PP4
-node copies after the TP16 set lands and loads.
+HOUSEKEEPING (AMENDED per operator: 16-bit glm 5.3 is a test target):
+retire on-node nvfp4 glm53full copies (33G/node — the non-serving
+arm); KEEP the bf16 (98G/node) on-node through its Phase 2 test
+(operator wants 16-bit glm 5.3 verified), retire after that gate
+passes; retire the stale Aug-11 tp16.b1 and tp4_pp4 dsv4 copies;
+retire k3's TP4PP4 node copies after the TP16 set lands and loads.
 
 GATE: every pack passes glm52_validate_pack-equivalent per family +
 placement two-pass proof ("already placed" 16/16).
@@ -56,6 +63,9 @@ inference check (8 tokens; accuracy NOT required — weights-loaded-
 properly is the bar) → then the 16× parallel load (the proven launch
 path) → same inference through the fleet. Record load time per model.
 GATE: all 8 models: 16/16 ready + tokens out + load_seconds logged.
+ADDED (operator): the glm5.3-full BF16 arm is a Phase 2 test target —
+16-bit glm 5.3, packs already on-node, DEPENDENCY: the codec-1 module
+acceptance (ruled, queued behind the coherence chain).
 
 ## Phase 3 — weightd becomes the serving path
 
@@ -86,7 +96,7 @@ resident — weightd's stop-attach-start (the design's core promise).
 GATE: a code-only update cycles in seconds with weights untouched
 (memory telemetry flat through the update).
 Then co-residency: 27B + both flash models resident SIMULTANEOUSLY
-(~2+8.4+10.5+25G/rank ≈ 46G — well under the 110GiB law; the
+(~2+8.4+10.5+25G/rank ≈ 46G — well under the 110GiB law (and the 4-bit qwen-max at ~72G/rank leaves headroom for larger pairs); the
 operator's 1.8TB fleet-wide budget also admits larger pairs).
 GATE: interleaved inference on all three, zero weight swaps,
 telemetry shows all three serving.
