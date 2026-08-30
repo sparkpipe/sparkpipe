@@ -2914,3 +2914,27 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 ## 2026-08-30 ~16:4x — k3: 627G read / 293G written, RSS flat
 
 - Steady. WATCH ONLY.
+
+## 2026-08-30 ~17:0x — spark0 UNEXPLAINED REBOOT investigated (operator: not theirs)
+
+- spark0 rebooted 23:42 (1h ago, second boot today; prior 15:24 —
+  also unexplained, the one I misread as the operator's earlier).
+  PRIOR BOOT's final journal lines: a cascade of OOM kills at 23:34
+  — including 'hf' (a HuggingFace fetcher, 29.7G RSS, pgrep'd as
+  killed) and user-session processes — then sshd MaxStartups
+  throttling, then silence at 23:36, boot at 23:42. NO kernel panic/
+  oops/XID/nvme-error lines. Conclusion: memory-exhaustion cascade
+  (an 'hf' fetcher consuming ~30G on a node also running the k3
+  build + page cache) most likely triggered a watchdog/firmware
+  restart; not a clean shutdown. WHO ran the hf fetcher on spark0
+  is unidentified — possibly a model-dev session downloading a
+  source (qwen-flash hunt?) onto spark0 without coordinating.
+- K3 BUILD SURVIVED: the journal-resume machinery earned its keep —
+  the packer RESUMED post-reboot (etime 45 min current run; payload
+  305G on disk preserved across the boot; journal 93KB). RSS 23G
+  flat, pace holding. No action needed.
+- OPERATOR NOTE: the earlier 'spark5 was power-cycled by operator'
+  assumption in this log was LIKELY WRONG — same unexplained-reboot
+  class (memory cascade). Two nodes have now self-rebooted under
+  memory pressure; a fleet rule may be needed (fetchers and builds
+  not co-resident on build nodes).
