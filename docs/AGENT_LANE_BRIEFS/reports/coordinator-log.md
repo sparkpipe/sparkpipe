@@ -3438,3 +3438,20 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 SEVEN of nine sets DONE. Remaining: k3 base completion (blocked on
 warm fs file-size cap), dsv4-pro (build+place), flash TP8 verify
 run (the packs are placed 2x; the family verifier pass is owed).
+
+(Both the driver's entry and the timer's entry were preserved above —
+the conflict resolution keeps both.)
+
+## 2026-08-30 ~12:0x — CEPH CAP BOOST LIVE: verified 1200G single-file write; k3 refire pending
+
+- The sysadmin's cap boost is confirmed: a 1200G single-file write
+  completed on the warm mount. The ENOSPC kills (at ~1.1T for fp8,
+  ~1T for k3 mxfp4) are cleared. Both k3 and any future big-base
+  builds can write whole-model packs onto warm directly.
+- k3 pack refire next cycle (same command, clean path — the stale
+  payload/journal are deleted). ETA: ~1.5h for the 1.5T pass.
+- ALSO: glm-5.3-flash-nvfp4-redhatai RESTORED to warm — it was
+  wrongly swept into archive-not-a-source/ during the k3 incident
+  cleanup; it is a serving arm of a supported model (185G, the
+  hybrid form of flash). The true archived item remains kimi-k3-
+  nvfp4-redhatai (superseded by the official MXFP4 native).
