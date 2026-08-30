@@ -3009,3 +3009,13 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   986G/473G). Suspect: an earlier Ctrl-Z-class artifact or a dev
   session's process tool. WATCH for recurrence; if it re-stops, trace
   the sender.
+
+## 2026-08-30 ~20:3x — RULING BUILD FIRED: qwen-flash TP8 (rank0 writing); k3 resumed healthy
+
+- qwen-flash TP8 chain running on spark2 (staged script, 8 ranks,
+  bf16 experts, whole-stack 0+48): rank0 at 44G and writing — no
+  errors at first check. ~45G/rank × 8. ETA hours-class; watch only.
+- k3: post-CONT healthy (1.02T read / 479G written, D-state reads).
+  SIGSTOP recurrence watch active.
+- 27B TP4 fires next window (spark6; the landed fused-gate port
+  serves it directly at degree 4).
