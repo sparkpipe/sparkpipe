@@ -2832,3 +2832,20 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   the k3 rung hands off with this spec.
 - Board: 4 complete; k3 blocked-on-defect (spec above); rulings
   pending (qwen-flash degree; 27B TP4/port); dsv4-pro last.
+
+## 2026-08-30 ~11:5x — k3 OOM ROOT CAUSE FOUND (exact lines)
+
+- The accumulation is the EXPERT BYTE LISTS: k3_pack.py 751-754
+  buffers every expert's payload+scales per layer (w1_pay/w1_sc/
+  w2_pay/w2_sc .append of full tensor bytes), then 761/766 joins +
+  interleaves the WHOLE layer at once. Per-layer lists are freed
+  after use, but glibc does not return the arenas — RSS walks
+  monotonically across 93 layers to the 48G OOM (matches the
+  observed 47.9G kill + replay regrowth).
+- THE FIX (dev-session unit, now line-precise): stream per-expert
+  through the interleave geometry directly into the payload writer
+  (interleave() already works tile-wise — refeed it per expert chunk
+  instead of b"".join of the layer), OR interleave per-expert and
+  append interleaved tiles. Either keeps peak memory at one expert
+  (~40MB class) instead of one layer (GB class). Journal-resume then
+  makes the whole build a single clean pass.
