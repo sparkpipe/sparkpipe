@@ -203,6 +203,8 @@ typedef struct SparkK3RunnerState
 	/* head candidate slot exchange: rows x (2 * tp_degree) floats */
 	float *head_slots_host;
 	float *head_slots_device;
+	/* the device-tier head exchange: rows x u64 winner packs (layer.cuh) */
+	uint64_t *head_maxloc;
 	uint32_t head_slots_capacity;
 	/* per-step device arrays the dispatch step consumes */
 	uint32_t *route_expert;
@@ -755,16 +757,24 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->dispatch.slice_state->collective_context = state;
 	if ( configuration->tp_degree > 1u )
 	{
-		if ( configuration->tp_collective == 0 )
+		/* The host TCP tier is the TP4 fallback; a TP16 deployment has no
+		 * host tier (its f32 frame tops out at 4 ranks) and exchanges on
+		 * the device tier alone - refusing tp_collective == 0 there made
+		 * TP16 runner construction impossible. */
+		if ( configuration->tp_collective == 0 &&
+			configuration->device_collective == 0 )
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
-		fprintf(stderr, "sparkpipe_k3: creating host collective tp=%u rank=%u port=%u\n",
-			configuration->tp_degree, configuration->tp_rank,
-			configuration->tp_collective->listen_port);
-		status = SparkTpCollectiveCreate(configuration->tp_collective,&state->collective);
-		fprintf(stderr, "sparkpipe_k3: host collective create -> %d\n", (int)status);
-		if ( status != SPARK_STATUS_OK )
-			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
-		state->collective_created = 1;
+		if ( configuration->tp_collective != 0 )
+		{
+			fprintf(stderr, "sparkpipe_k3: creating host collective tp=%u rank=%u port=%u\n",
+				configuration->tp_degree, configuration->tp_rank,
+				configuration->tp_collective->listen_port);
+			status = SparkTpCollectiveCreate(configuration->tp_collective,&state->collective);
+			fprintf(stderr, "sparkpipe_k3: host collective create -> %d\n", (int)status);
+			if ( status != SPARK_STATUS_OK )
+				{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
+			state->collective_created = 1;
+		}
 	}
 	/* The diagnostic override wins over the TP hook (tests use it at
 	 * tp_degree 1 to observe the serving path layer by layer). */
@@ -826,6 +836,8 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->head_slots_capacity = configuration->max_input_row_count * 2u * configuration->tp_degree;
 	state->head_slots_host = new float[state->head_slots_capacity];
 	cudaMalloc(&state->head_slots_device,(uint64_t)state->head_slots_capacity * 4u);
+	cudaMalloc(&state->head_maxloc,
+		(uint64_t)configuration->max_input_row_count * 8u);
 	routes = configuration->max_input_row_count * K3_TOP_K;
 	cudaMalloc(&state->route_expert,(uint64_t)routes * 4u);
 	cudaMalloc(&state->route_packed_row,(uint64_t)routes * 4u);
@@ -990,21 +1002,66 @@ SparkStatus SparkK3StageRunnerSubmit(
 			state->vocab_slice_rows, rows, stream);
 		if ( status != LM_LAUNCH_OK )
 			return SPARK_STATUS_INTERNAL_ERROR;
-		cudaStreamSynchronize(stream);
-		cudaMemcpy(state->output_token_host, state->output_token,
-			(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
-		cudaMemcpy(state->output_score_host, state->output_score,
-			(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
-		exchange_status = K3RunnerHeadExchange(state, rows, runner->tp_degree,
-			runner->tp_rank, state->output_token_host, state->output_score_host);
-		if ( exchange_status != SPARK_STATUS_OK )
-			return exchange_status;
-		if ( dispatch->output_token_ids != 0 )
-			cudaMemcpy(dispatch->output_token_ids, state->output_token_host,
-				(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
-		if ( dispatch->output_scores != 0 )
-			cudaMemcpy(dispatch->output_scores, state->output_score_host,
-				(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
+		if ( state->device_collective_created != 0 )
+		{
+			/* THE DEVICE TIER: the winner pack (layer.cuh) carries the
+			 * argmax as one u64 per row, so the exchange is a single
+			 * stream-ordered max - no host round-trip, no staging, and
+			 * no 4-rank cap (the host TCP tier below is the TP4
+			 * fallback only). */
+			SparkTpDeviceCollectiveSubmission submission;
+			if ( K3HeadMaxlocPack(state->output_score, state->output_token,
+				state->head_maxloc, rows, stream) != LM_LAUNCH_OK )
+				return SPARK_STATUS_INTERNAL_ERROR;
+			memset(&submission, 0, sizeof(submission));
+			submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+			submission.descriptor_bytes = sizeof(submission);
+			submission.slot_index = 0u;
+			submission.active_sequence_count = rows;
+			submission.flags =
+				SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+			submission.ordinal = state->tp_next_ordinal++;
+			submission.local_device = state->head_maxloc;
+			submission.full_device = state->head_maxloc;
+			submission.cuda_stream = stream;
+			submission.completion_function = K3RunnerEmbedCompletion;
+			submission.completion_context = 0;
+			if ( SparkTpDeviceCollectiveSubmitU64Max(&state->device_collective,
+				&submission) != SPARK_STATUS_OK )
+				return SPARK_STATUS_INTERNAL_ERROR;
+			if ( K3HeadMaxlocUnpack(state->head_maxloc, state->output_token,
+				state->output_score, rows, stream) != LM_LAUNCH_OK )
+				return SPARK_STATUS_INTERNAL_ERROR;
+			cudaStreamSynchronize(stream);
+			cudaMemcpy(state->output_token_host, state->output_token,
+				(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
+			cudaMemcpy(state->output_score_host, state->output_score,
+				(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
+			if ( dispatch->output_token_ids != 0 )
+				cudaMemcpy(dispatch->output_token_ids, state->output_token,
+					(uint64_t)rows * 4u, cudaMemcpyDeviceToDevice);
+			if ( dispatch->output_scores != 0 )
+				cudaMemcpy(dispatch->output_scores, state->output_score,
+					(uint64_t)rows * 4u, cudaMemcpyDeviceToDevice);
+		}
+		else
+		{
+			cudaStreamSynchronize(stream);
+			cudaMemcpy(state->output_token_host, state->output_token,
+				(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
+			cudaMemcpy(state->output_score_host, state->output_score,
+				(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
+			exchange_status = K3RunnerHeadExchange(state, rows, runner->tp_degree,
+				runner->tp_rank, state->output_token_host, state->output_score_host);
+			if ( exchange_status != SPARK_STATUS_OK )
+				return exchange_status;
+			if ( dispatch->output_token_ids != 0 )
+				cudaMemcpy(dispatch->output_token_ids, state->output_token_host,
+					(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
+			if ( dispatch->output_scores != 0 )
+				cudaMemcpy(dispatch->output_scores, state->output_score_host,
+					(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
+		}
 	}
 	else if ( dispatch->hidden_output_bf16 != 0 )
 	{
@@ -1079,6 +1136,7 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	delete[] state->output_token_host;
 	delete[] state->output_score_host;
 	cudaFree(state->head_slots_device);
+	cudaFree(state->head_maxloc);
 	cudaFree(state->route_expert);
 	cudaFree(state->route_packed_row);
 	cudaFree(state->route_source_token);

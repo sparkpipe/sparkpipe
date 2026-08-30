@@ -1305,7 +1305,15 @@ CEILING = 228248
 # conviction dumps); the swiglu swap itself was REVERTED (it NaN'd the MoE
 # partial from the first wave - verdict by bisect wave10; the record comment
 # stays, the kernel is gone). To be trimmed with the ratchet at coherence.
-CEILING = 233120
+# kimi-k3: the head exchange moves to the device tier (inference/llms/
+# kimi_k3/layer.cuh +71: the monotone (score,token) u64 winner pack and its
+# pack/unpack kernels; modules/k3_resident_decode_stage runner +82 net: the
+# stream-ordered U64Max head branch, the head_maxloc buffer, and the TP16
+# constructibility fix - a TP16 config carries no host TCP collective and
+# the old hard require made runner creation impossible). Measured exact on
+# the lane: 233520 = main tip 233386 (in-flight +266 not re-pinned yet,
+# theirs to account at their landing) + this change's +134.
+CEILING = 233520
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
