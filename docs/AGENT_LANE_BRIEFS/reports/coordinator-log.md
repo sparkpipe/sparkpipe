@@ -2725,3 +2725,21 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   Receipt: note fused_source: true.
 - This is a clean dev-session unit OR next driver cycle; after the
   port: 16 rank builds at ~2G each (minutes), verify, place.
+
+## 2026-08-30 ~04:4x — 27B port: probe/remap LANDED (dry-run green); the real blocker is the 8704-row block grid
+
+- The fused port works through the resolve layer (dry-run green,
+  866 tensors, 5.42G/rank) — the gate|up probe, UP remap, and the
+  copy offsets all parse. The REAL build's scale assertion fires on
+  a DEEPER constraint: FFN_INTERMEDIATE = 8704 = 68 x 128-blocks;
+  68 blocks / 16 ranks = 4.25 — NO equal TP16 split aligns on the
+  scale grid. This hits ANY tp>4 (aligned divisors of 68 <= 16:
+  1, 2, 4).
+- TWO PATHS: (a) TP4 TODAY — 2176 rows/rank = 17 blocks exactly,
+  zero further porting, packs ~21.7G/rank; (b) variable-width TP16
+  (ranks 0-3 carry 5 blocks, ranks 4-15 carry 4; the pack header
+  already records per-entry rows, and the module indexes by its own
+  rows — MAY just work; needs one slicing rewrite + module check).
+- OPERATOR: TP4 now vs the variable-width port for TP16? Ladder
+  holds at this rung pending the ruling (k3/pro extensions are the
+  parallel unblocked units).
