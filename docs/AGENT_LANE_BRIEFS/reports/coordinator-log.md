@@ -3198,3 +3198,16 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 ## 2026-08-30 ~05:1x — k3 warm-build 426G read / 208G written (195G payload)
 
 - Writes resumed after a brief stall; steady overall. WATCH ONLY.
+
+## 2026-08-30 ~07:0x — 27B TP4 VERIFIED: ALL 4 RANKS PASS (the rung closes)
+
+- THE VERIFY SAGA'S TRUE ROOT: qwen38_pack_verify was a MAX-family
+  tool end to end — wrong tables (HIDDEN 8192/128 heads vs the 27B's
+  5120/48), wrong header layout (expert fields where the 27B packs
+  tp_degree/rank), wrong MAGIC, its own FP8 constant (4 vs the
+  packer's 5), max-only natural_format. Seven small fixes, each
+  caught by the walk going one entry deeper; the final form: the
+  verifier IS the 27B packer's own tables/structs (single source).
+- ALL 4 TP4 RANKS PASS (errors=0). The 27B rung: BUILT, VERIFIED,
+  PLACED (spark6-9). SEVEN of eight models done.
+- k3 warm-build continues; dsv4-pro the last rung.
