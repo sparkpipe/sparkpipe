@@ -2806,3 +2806,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 
 - Halfway through the payload. Pace steady. ETA shard ~50 min.
   WATCH ONLY.
+
+## 2026-08-30 ~09:5x — k3 891G read / 428G written; pace holding
+
+- Past halfway on writes; shard ETA ~40 min. WATCH ONLY.
