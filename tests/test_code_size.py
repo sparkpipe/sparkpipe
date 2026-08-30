@@ -1313,7 +1313,13 @@ CEILING = 228248
 # the old hard require made runner creation impossible). Measured exact on
 # the lane: 233520 = main tip 233386 (in-flight +266 not re-pinned yet,
 # theirs to account at their landing) + this change's +134.
-CEILING = 233520
+# kimi-k3 TP16 wave: the serving adapter skips the host TCP tier parse above
+# SPARK_TP_COLLECTIVE_MAX_STEPS when a device collective exists (TP16 configs
+# carry no tp_collective - the old hard parse was a guaranteed SCHEMA_ERROR
+# at degree 16), keepalive gains the optional tile_k pass-through for the
+# expert_tile_k=32 TP16 pack builds (+31/-18 with concurrent-lane in-flight
+# growth in the shared checkout). Measured exact: 233574.
+CEILING = 233574
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

@@ -19,11 +19,14 @@
 #   - SIGTERM to this supervisor is relayed as TERM to the captured child;
 #     the supervisor never escalates.
 #
-# usage: nohup bash keepalive.sh <first> <count> <pack_path> >> keepalive.log 2>&1 &
+# usage: nohup bash keepalive.sh <first> <count> <pack_path> [tile_k] >> keepalive.log 2>&1 &
+#   tile_k (optional): the packer's expert_tile_k (CLI arg 6) - 32 for the
+#   TP16 packs; omitted keeps the 128 default of the TP1-8 packs.
 set -u
-FIRST="${1:?usage: keepalive.sh FIRST COUNT PACK_PATH}"
-COUNT="${2:?usage: keepalive.sh FIRST COUNT PACK_PATH}"
-PACK="${3:?usage: keepalive.sh FIRST COUNT PACK_PATH}"
+FIRST="${1:?usage: keepalive.sh FIRST COUNT PACK_PATH [TILE_K]}"
+COUNT="${2:?usage: keepalive.sh FIRST COUNT PACK_PATH [TILE_K]}"
+PACK="${3:?usage: keepalive.sh FIRST COUNT PACK_PATH [TILE_K]}"
+TILE_ARG="${4:-}"
 SRC=/mnt/model-warm/kimi-k3
 BASE="$(cd "$(dirname "$0")" && pwd)"
 SRCDIR="${K3_SRC_DIR:-/home/sparke/k3finish-src}"   # committed-branch checkout
@@ -79,10 +82,15 @@ restarts=0
 child=""
 spawn() {
     cd "$SRCDIR" || { log "FATAL: source checkout missing at $SRCDIR"; exit 1; }
-    env PYTHONDONTWRITEBYTECODE=1 python3 tools/k3_pack.py \
-        "$SRC" "$PACK" "$FIRST" "$COUNT" >> "$BASE/pack_${FIRST}_${COUNT}.log" 2>&1 &
+    if [ -n "$TILE_ARG" ]; then
+        env PYTHONDONTWRITEBYTECODE=1 python3 tools/k3_pack.py \
+            "$SRC" "$PACK" "$FIRST" "$COUNT" "$TILE_ARG" >> "$BASE/pack_${FIRST}_${COUNT}.log" 2>&1 &
+    else
+        env PYTHONDONTWRITEBYTECODE=1 python3 tools/k3_pack.py \
+            "$SRC" "$PACK" "$FIRST" "$COUNT" >> "$BASE/pack_${FIRST}_${COUNT}.log" 2>&1 &
+    fi
     child=$!
-    log "SPAWN pid=$child restarts=$restarts $(journal_state)"
+    log "SPAWN pid=$child restarts=$restarts tile_k=${TILE_ARG:-default} $(journal_state)"
 }
 
 while true; do

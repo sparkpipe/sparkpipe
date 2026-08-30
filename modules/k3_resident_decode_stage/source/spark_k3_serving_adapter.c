@@ -193,17 +193,22 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	state->runner_config.execution_stream = configuration->execution_stream;
 	state->runner_config.multiprocessors = 48u;
 	/* The host TCP tier caps at SPARK_TP_COLLECTIVE_MAX_STEPS ranks; wider
-	 * placements (TP16) must carry a device_collective. The host tier is
-	 * parsed for EVERY tp_degree > 1 (device tier or not): the runner's
-	 * init unconditionally creates the host collective at tp_degree > 1
-	 * and refuses a null tp_collective with INVALID_ARGUMENT - skipping
-	 * the parse here handed the runner a null config on every
-	 * device-collective deployment (the 2026-08-30 fleet wave died
-	 * 16/16 at adapter_initialize on exactly this). */
-	if ( state->runner_config.tp_degree > SPARK_TP_COLLECTIVE_MAX_STEPS &&
-		state->device_collective_present == 0 )
-		{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
-	if ( state->runner_config.tp_degree > 1u )
+	 * placements (TP16) must carry a device_collective. Within the cap the
+	 * host tier is parsed for EVERY tp_degree > 1 (device tier or not):
+	 * the runner builds it as the fallback path when both tiers exist, and
+	 * refusing a null tp_collective there handed the runner a null config
+	 * on every device-collective deployment (the 2026-08-30 fleet wave
+	 * died 16/16 at adapter_initialize on exactly this). ABOVE the cap
+	 * there is no host tier to parse (the generator omits tp_collective
+	 * from TP16 configs): the runner takes the device tier alone and
+	 * accepts a null tp_collective only because the device collective
+	 * exists - the guard below already refused the tierless case. */
+	if ( state->runner_config.tp_degree > SPARK_TP_COLLECTIVE_MAX_STEPS )
+	{
+		if ( state->device_collective_present == 0 )
+			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+	}
+	else if ( state->runner_config.tp_degree > 1u )
 	{
 		int32_t coll = SparkJsonFindObjectMember(&doc, root, "tp_collective");
 		if ( coll < 0 )
