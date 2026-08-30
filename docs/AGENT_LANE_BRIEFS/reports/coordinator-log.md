@@ -3171,3 +3171,10 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   build ON WARM — k3's base goes to /mnt/model-warm (41T), shard
   outputs land per-rank on nodes. Firing next cycle with the
   space-distributed plan.
+
+## 2026-08-30 ~02:5x — k3 WARM-BUILD running (53G payload on ceph in first minutes)
+
+- The big-model law in action: base builds on /mnt/model-warm
+  (packbuild/), node disks keep only their placed ranks. Builder
+  healthy, journal alongside on warm. Shard outputs will land
+  per-rank on the space-distributed nodes (f table above).
