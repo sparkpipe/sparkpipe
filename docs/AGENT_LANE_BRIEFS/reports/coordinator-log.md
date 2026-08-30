@@ -3572,3 +3572,14 @@ the conflict resolution keeps both.)
 - ALSO: the duplicate-payload artifacts (duplicate-sparkf-*,
   multiwriter-corrupt-*) were from the earlier concurrent-writer
   mess — cleaned now.
+
+## 2026-08-30 ~18:0x — k3 root: sparke's packer is alive but the source reads are stalled at 1.2M rchar
+
+- On sparke the packer process is alive with 1.2M rchar (the journal
+  replay is re-reading; slow start is normal). The 447G payload +
+  journal survived from the prior run. Pace will be checked next
+  window. The 5440-byte scale entries visible in the earlier verify
+  failures are the mtp packed rows — the remap path.
+- The fleet-27B verify walk now passes rank0 (the '27B verify RED'
+  was the max-table confusion, fully fixed). Waiting for the ranks
+  1-3 output.
