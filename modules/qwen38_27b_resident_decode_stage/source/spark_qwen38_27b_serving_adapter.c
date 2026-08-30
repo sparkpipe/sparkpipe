@@ -1180,6 +1180,14 @@ static void SparkQwen38_27bServingBuildFrame(
 	uint32_t row;
 	slot = prefill != 0u ? pending->resident_slots[lane] : 0u;
 	base_position = 0u;
+	/* The module's view validators check reserved0 (and any future member)
+	 * EXACTLY: an uninitialized view carried stack garbage into
+	 * SparkQwen38_27bModuleValidateDecodeView/ValidatePrefillView and was
+	 * refused invalid_argument nondeterministically (the prefill frame got
+	 * lucky zeros, the decode frame did not). Zero both views before the
+	 * branch fills them, exactly like the frame context below. */
+	memset(decode_batch,0,sizeof(*decode_batch));
+	memset(prefill_view,0,sizeof(*prefill_view));
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
