@@ -29,11 +29,17 @@ reports/k3-finish-*).
    Chain CPU-proven on a 1-layer probe (all 16 rank packs cross-verify
    PASS, receipts in reports/kimi-k3-tp16-2026-08-30.md). PR #757 carries
    the code: device-tier head exchange (u64 winner pack), TP16 adapter
-   config load, keepalive tile_k. NEXT: verify full pack → slice 16 on
-   spark8 with SLICE-DEPLOY-DELETE (16 rank packs don't fit beside the
-   stage pack) into sparkdata/k3.mxfp4.tp16/packs/ → stage TP16 runtime
-   (needs the PR's adapter fix built) → exclusive window wave → first
-   TP16 number vs the 18 tok/s TP4xPP4 baseline (roofline 20.2 @ 49.5 ms).
+   config load, keepalive tile_k. Binaries BUILT on sparke (k3tp16-src,
+   PATH=/usr/local/cuda/bin; adapter carries the maxloc symbols); TP16
+   adapter configs generated (/home/sparke/k3tp16-configs). Deploy
+   preflight 2026-08-30 ~15:2x: pack dirs made on 15/16 nodes — spark0
+   ssh banner-timeout (transient? retry), sparke has 92G free < the 98G
+   rank-14 pack (queue note k3tp16-sparke-space-note filed; deploy will
+   run ranks 0-13,15 first). NEXT: verify full pack → k3_tp16_deploy.sh
+   (slice-verify-ship-delete) → k3_stage_runtime.sh sparke
+   /home/sparke/k3tp16-src/build 16 /home/sparke/k3tp16-configs →
+   exclusive window wave → first TP16 number vs the 18 tok/s TP4xPP4
+   baseline (roofline 20.2 @ 49.5 ms).
 1. **Merge parity.** lane/k3-finish runtime delta → main (pre-existing M1).
 2. **TP4 fleet first number + COMPSEC-17** (window-gated, as before).
 3. **Deployed-pack CPU audit** (QUEUED): tools/k3_deployed_audit.py staged;
