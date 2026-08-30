@@ -2496,3 +2496,25 @@ appendix).
   resolution); #755 glm53 CPU verifier + staged M5 cell; #757
   kimi-k3 TP16 readiness (the dev doing their own TP16 per the
   devolution — exactly right).
+
+## 2026-08-30 ~18:4x — ALL-MODEL TP16 SURVEY + generation status (manual mode)
+
+- RUNNING: glm5.3 spark5 gap chain (fp8 rank5 at 26G+ building, then
+  nvfp4 rank5, auto-ship — pid 257990 spark0).
+- qwen-max PP16: 16/16 stages on nodes (stage1 failover shipped).
+- 27B TP16: BLOCKED, defect named — the official qwen3.8-27b-fp8
+  release ships FUSED gate_up [17408,5120] and qwen38_27b_stagepack's
+  scale assertion expects the split layout ('scale size mismatch,
+  gate_proj'). The packer's --recipe flag likely carries the fused
+  recipe; the proven TP1 pack was built by the q27b lane — its exact
+  invocation needs recovering (or the fused recipe adding). Precise
+  task for the 27B dev session / next window. Wrong-source churn
+  (dflash2 = drafter) stopped and cleaned.
+- qwen-flash: SOURCE NOT ON WARM (no 336G bf16 dir; only glm/dsv4
+  flashes + 27b/max variants). Needs the official source located and
+  fetched before any TP16 build.
+- dsv4-flash TP16: two-step (base pack from 0731 → 16 splices via
+  dsv4_tp16_stagepack) — next in line after glm gaps.
+- dsv4-pro + k3 TP16: packers lack rank-slicing paths (pro: full-stage
+  tool only; k3: the expert_tile_k=32 reslice documented but unwired)
+  — per-model dev tasks per the one-at-a-time reset.
