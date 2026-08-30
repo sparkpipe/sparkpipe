@@ -2906,3 +2906,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 ## 2026-08-30 ~15:4x — k3: 317G read / 141G written, RSS flat 23G
 
 - Pace and memory both steady. ~20% payload. WATCH ONLY.
+
+## 2026-08-30 ~16:1x — k3: 471G read / 225G written, RSS flat 23G (~1/3 payload)
+
+- Pace holding. WATCH ONLY.
