@@ -268,7 +268,7 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
             if not shape_ok:
                 fail(f"{tag}: shape {rows}x{cols}, expected {ref.rows}x{ref.columns}")
             natural = natural_format(kind)
-            allowed = {natural, WEIGHT_FP8_E4M3_F32B128}  # the -fp8 source
+            allowed = {natural, WEIGHT_FP8_F32B128}  # the -fp8 source
             # quantizes FFN/GDN tensors (dtype-driven at pack time); the
             # payload/scale math below proves internal consistency.
             if fmt not in allowed:
