@@ -2656,3 +2656,14 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   and exits at 16/16 placed. The dsv4 rung is now fully autonomous to
   completion; next cycles verify + re-listing proof.
 - 27B: fp8-fused-port recommendation stands (dev-session unit).
+
+## 2026-08-30 ~00:5x — dsv4: 7/16 spliced; distributor dirs fixed fleet-wide
+
+- Splices 7/16 (RANK6-OK at cycle check), cadence holding. The
+  distributor's ship failures were missing dest dirs — ALL 16
+  premade now; it self-heals on its next 60s pass.
+- SPACE FLAG: spark5 at 94% (224G free) — the three glm53full
+  resolution copies + qmax crowd it. The roadmap's nvfp4-copy
+  retirement (~33G) should run when glm5.3's serving arm is confirmed
+  (fp8/hybrid); dsv4's 10G rank fits regardless.
+- 27B fp8-fused port recommendation stands for the next free window.
