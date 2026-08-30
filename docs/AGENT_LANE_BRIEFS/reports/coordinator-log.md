@@ -2371,3 +2371,16 @@ appendix).
   consume the packed layout (glm kernels are the reference) + the
   16-way build re-fire + validate + placement. This is the first work
   item for a restored lane or next coordinator slices.
+
+## 2026-08-30 ~08:0x — UNIVERSAL PACKER designed (operator directive)
+
+- docs/UNIVERSAL_PACKER.md committed: universal core (codec table,
+  source reading incl. the U8+scales nvfp4 layout, topology slicing
+  for BOTH rank-shard and full-width families, receipts) + family
+  descriptors from the existing authoritative contracts + thin
+  byte-compatible emitters per family. 8 packers / ~8.7K lines
+  consolidate; formats and loaders unchanged.
+- Build order: core extraction from glm52_stagepack (most complete) →
+  qwen38 emitter byte-identity proof → the nvfp4 path lands THERE →
+  qwen-max-4bit becomes its first new capability → families port one
+  per gate → --fleet-build flag wraps tonight's 16-way pattern.
