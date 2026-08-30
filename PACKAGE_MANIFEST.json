@@ -53,8 +53,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "7d409800d9edc30be6b18ab209e028126b7fb0352c6961b9e4337d3e62bbf2d0",
-      "size_bytes": 88474
+      "sha256": "6275d208b930bc47b31c1a009f5dffd6db6e0bd89e55f39a2aca3a7873eeb17b",
+      "size_bytes": 88415
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -8605,5 +8605,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31746272
+  "total_bytes": 31746213
 }

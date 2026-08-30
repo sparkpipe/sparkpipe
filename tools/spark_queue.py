@@ -156,26 +156,27 @@ def expire_stale(res):
 
 
 def cmd_add(args):
-    check_denied(args.cmd or "")
-    entries = load_queue()
-    ids = {e["id"] for e in entries} | {
-        json.loads(l)["id"] for l in open(RESULTS) if l.strip()} \
-        if os.path.exists(RESULTS) else {e["id"] for e in entries}
-    if args.id in ids:
-        sys.exit(f"id '{args.id}' already exists")
-    entry = dict(id=args.id, nodes=args.nodes.split(","),
-        ttl_minutes=args.ttl_min,
-        cmd=args.cmd or "", cwd=args.cwd or "$HOME",
-        priority=args.priority, kind=args.kind, class_=args.klass,
-        after=[a for a in (args.after or "").split(",") if a],
-        submitted_by=args.by, notes=args.notes or "",
-        state="queued", submitted_at=now())
-    del entry["class_"]
-    entry["class"] = args.klass
-    entries.append(entry)
-    rewrite_queue(entries)
-    print(f"queued {args.id} nodes={args.nodes} kind={args.kind} "
-          f"after={entry['after']}")
+    with acquire_lock():
+        check_denied(args.cmd or "")
+        entries = load_queue()
+        ids = {e["id"] for e in entries} | {
+            json.loads(l)["id"] for l in open(RESULTS) if l.strip()} \
+            if os.path.exists(RESULTS) else {e["id"] for e in entries}
+        if args.id in ids:
+            sys.exit(f"id '{args.id}' already exists")
+        entry = dict(id=args.id, nodes=args.nodes.split(","),
+            ttl_minutes=args.ttl_min,
+            cmd=args.cmd or "", cwd=args.cwd or "$HOME",
+            priority=args.priority, kind=args.kind, class_=args.klass,
+            after=[a for a in (args.after or "").split(",") if a],
+            submitted_by=args.by, notes=args.notes or "",
+            state="queued", submitted_at=now())
+        del entry["class_"]
+        entry["class"] = args.klass
+        entries.append(entry)
+        rewrite_queue(entries)
+        print(f"queued {args.id} nodes={args.nodes} kind={args.kind} "
+              f"after={entry['after']}")
 
 
 def cmd_list(args):
@@ -206,22 +207,23 @@ def cmd_status(args):
 
 
 def cmd_done(args):
-    entries = load_queue()
-    res = load_reservations()
-    hit = False
-    for e in entries:
-        if e["id"] == args.id:
-            e["state"] = "done"
-            append_result(e, args.exit, "marked done")
-            for n in e["nodes"]:
-                if res.get(n, {}).get("id") == e["id"]:
-                    del res[n]
-            hit = True
-    if not hit:
-        sys.exit(f"no entry '{args.id}'")
-    rewrite_queue([e for e in entries if e["state"] not in ("done",)])
-    save_reservations(res)
-    print(f"done {args.id} (exit {args.exit})")
+    with acquire_lock():
+        entries = load_queue()
+        res = load_reservations()
+        hit = False
+        for e in entries:
+            if e["id"] == args.id:
+                e["state"] = "done"
+                append_result(e, args.exit, "marked done")
+                for n in e["nodes"]:
+                    if res.get(n, {}).get("id") == e["id"]:
+                        del res[n]
+                hit = True
+        if not hit:
+            sys.exit(f"no entry '{args.id}'")
+        rewrite_queue([e for e in entries if e["state"] not in ("done",)])
+        save_reservations(res)
+        print(f"done {args.id} (exit {args.exit})")
 
 
 
@@ -343,121 +345,125 @@ def cmd_dispatch(args):
         print(f"dispatched {task['id']} nodes={','.join(task['nodes'])} pid={pid}")
 
 def cmd_cancel(args):
-    entries = load_queue()
-    res = load_reservations()
-    kept = []
-    for e in entries:
-        if e["id"] == args.id:
-            append_result(e, -1, "cancelled")
-            for n in e["nodes"]:
-                if res.get(n, {}).get("id") == e["id"]:
-                    del res[n]
-        else:
-            kept.append(e)
-    rewrite_queue(kept)
-    save_reservations(res)
-    print(f"cancelled {args.id}")
-
-
-def cmd_reserve(args):
-    res = load_reservations()
-    if args.node in res:
-        sys.exit(f"{args.node} already reserved: {res[args.node]}")
-    res[args.node] = dict(id=f"manual:{args.holder}", holder=args.holder,
-        acquired_at=now(), ttl_minutes=args.ttl_min)
-    save_reservations(res)
-    print(f"reserved {args.node} for {args.holder} ttl={args.ttl_min}m")
-
-
-def cmd_release(args):
-    res = load_reservations()
-    if args.node:
-        if args.node in res:
-            del res[args.node]
-            save_reservations(res)
-            print(f"released {args.node}")
-        else:
-            print(f"{args.node} was not reserved")
-    elif args.id:
-        for n in list(res):
-            if res[n].get("id") == args.id:
-                del res[n]
-        save_reservations(res)
-        print(f"released nodes held by {args.id}")
-
-
-def cmd_schedule(args):
-    """One dispatch pass: poll running entries, then launch runnable ones."""
-    lock = acquire_lock()
-    try:
+    with acquire_lock():
         entries = load_queue()
         res = load_reservations()
-        done_ids = set()
-        if os.path.exists(RESULTS):
-            done_ids = {json.loads(l)["id"] for l in open(RESULTS) if l.strip()}
-        if expire_stale(res):
-            save_reservations(res)
-
-        # 1) poll running entries: pid dead -> finished (log exit note)
+        kept = []
         for e in entries:
-            if e.get("state") != "running":
-                continue
-            node, pid = e["nodes"][0], e.get("pid")
-            if not pid or not pid_alive(node, pid):
-                rc, tail = ssh(node, f"tail -1 {e['remote_log']} 2>/dev/null")
-                e["state"] = "done"
-                append_result(e, 0 if rc == 0 else 1,
-                    "process exited; " + tail[:120])
+            if e["id"] == args.id:
+                append_result(e, -1, "cancelled")
                 for n in e["nodes"]:
                     if res.get(n, {}).get("id") == e["id"]:
                         del res[n]
-                print(f"finished {e['id']} (log: {e['remote_log']})")
-
-        # 2) blocked -> queued when dependencies are done
-        for e in entries:
-            if e.get("state") == "blocked" and \
-               all(a in done_ids for a in e.get("after", [])):
-                e["state"] = "queued"
-
-        # 3) launch: priority order, nodes must be entirely free
-        for e in sorted(entries, key=lambda x: x.get("priority", 5)):
-            if e.get("state") != "queued":
-                continue
-            if e.get("after") and not all(a in done_ids for a in e["after"]):
-                e["state"] = "blocked"
-                continue
-            if any(n in res for n in e["nodes"]):
-                continue
-            if e.get("kind") == "gate":
-                e["state"] = "blocked"   # holds nothing; waits for done-mark
-                print(f"gate {e['id']} waiting for {e.get('after')}")
-                continue
-            if e.get("kind") == "note":
-                e["state"] = "done"
-                append_result(e, 0, "note")
-                continue
-            log = f"/tmp/sparkq/{e['id']}.log"
-            quoted = shlex.quote(e["cmd"])
-            launch = (f"mkdir -p /tmp/sparkq && cd {e['cwd']} && "
-                      f"nohup bash -c {quoted} > {log} 2>&1 & echo $!")
-            rc, out = ssh(e["nodes"][0], launch)
-            if rc != 0 or not out.isdigit():
-                print(f"LAUNCH FAILED {e['id']}: rc={rc} out={out!r}")
-                continue
-            e.update(state="running", pid=int(out), remote_log=log,
-                     started_at=now())
-            for n in e["nodes"]:
-                res[n] = dict(id=e["id"], holder=e.get("submitted_by", "?"),
-                              acquired_at=now(), pid=int(out),
-                              ttl_minutes=0)
-            print(f"launched {e['id']} on {e['nodes'][0]} pid={out} log={log}")
-
-        rewrite_queue([e for e in entries if e["state"] != "done"])
+            else:
+                kept.append(e)
+        rewrite_queue(kept)
         save_reservations(res)
-        held = ", ".join(f"{n}:{r['id']}" for n, r in sorted(res.items())) or "-"
-        print(f"reservations: {held}")
-    finally:
-        lock.close()
+        print(f"cancelled {args.id}")
+
+
+def cmd_reserve(args):
+    with acquire_lock():
+        res = load_reservations()
+        if args.node in res:
+            sys.exit(f"{args.node} already reserved: {res[args.node]}")
+        res[args.node] = dict(id=f"manual:{args.holder}", holder=args.holder,
+            acquired_at=now(), ttl_minutes=args.ttl_min)
+        save_reservations(res)
+        print(f"reserved {args.node} for {args.holder} ttl={args.ttl_min}m")
+
+
+def cmd_release(args):
+    with acquire_lock():
+        res = load_reservations()
+        if args.node:
+            if args.node in res:
+                del res[args.node]
+                save_reservations(res)
+                print(f"released {args.node}")
+            else:
+                print(f"{args.node} was not reserved")
+        elif args.id:
+            for n in list(res):
+                if res[n].get("id") == args.id:
+                    del res[n]
+            save_reservations(res)
+            print(f"released nodes held by {args.id}")
+
+
+def cmd_schedule(args):
+    with acquire_lock():
+        """One dispatch pass: poll running entries, then launch runnable ones."""
+        lock = acquire_lock()
+        try:
+            entries = load_queue()
+            res = load_reservations()
+            done_ids = set()
+            if os.path.exists(RESULTS):
+                done_ids = {json.loads(l)["id"] for l in open(RESULTS) if l.strip()}
+            if expire_stale(res):
+                save_reservations(res)
+
+            # 1) poll running entries: pid dead -> finished (log exit note)
+            for e in entries:
+                if e.get("state") != "running":
+                    continue
+                node, pid = e["nodes"][0], e.get("pid")
+                if not pid or not pid_alive(node, pid):
+                    rc, tail = ssh(node, f"tail -1 {e['remote_log']} 2>/dev/null")
+                    e["state"] = "done"
+                    append_result(e, 0 if rc == 0 else 1,
+                        "process exited; " + tail[:120])
+                    for n in e["nodes"]:
+                        if res.get(n, {}).get("id") == e["id"]:
+                            del res[n]
+                    print(f"finished {e['id']} (log: {e['remote_log']})")
+
+            # 2) blocked -> queued when dependencies are done
+            for e in entries:
+                if e.get("state") == "blocked" and \
+                   all(a in done_ids for a in e.get("after", [])):
+                    e["state"] = "queued"
+
+            # 3) launch: priority order, nodes must be entirely free
+            for e in sorted(entries, key=lambda x: x.get("priority", 5)):
+                if e.get("state") != "queued":
+                    continue
+                if e.get("after") and not all(a in done_ids for a in e["after"]):
+                    e["state"] = "blocked"
+                    continue
+                if any(n in res for n in e["nodes"]):
+                    continue
+                if e.get("kind") == "gate":
+                    e["state"] = "blocked"   # holds nothing; waits for done-mark
+                    print(f"gate {e['id']} waiting for {e.get('after')}")
+                    continue
+                if e.get("kind") == "note":
+                    e["state"] = "done"
+                    append_result(e, 0, "note")
+                    continue
+                log = f"/tmp/sparkq/{e['id']}.log"
+                quoted = shlex.quote(e["cmd"])
+                launch = (f"mkdir -p /tmp/sparkq && cd {e['cwd']} && "
+                          f"nohup bash -c {quoted} > {log} 2>&1 & echo $!")
+                rc, out = ssh(e["nodes"][0], launch)
+                if rc != 0 or not out.isdigit():
+                    print(f"LAUNCH FAILED {e['id']}: rc={rc} out={out!r}")
+                    continue
+                e.update(state="running", pid=int(out), remote_log=log,
+                         started_at=now())
+                for n in e["nodes"]:
+                    res[n] = dict(id=e["id"], holder=e.get("submitted_by", "?"),
+                                  acquired_at=now(), pid=int(out),
+                                  ttl_minutes=0)
+                print(f"launched {e['id']} on {e['nodes'][0]} pid={out} log={log}")
+
+            rewrite_queue([e for e in entries if e["state"] != "done"])
+            save_reservations(res)
+            held = ", ".join(f"{n}:{r['id']}" for n, r in sorted(res.items())) or "-"
+            print(f"reservations: {held}")
+        finally:
+            lock.close()
 
 
 def main():

@@ -212,12 +212,9 @@ TEST_NAMES := \
     test_model_resident_ipc \
 	test_model_resident_deadline \
     test_model_pipeline_client \
-<<<<<<< HEAD
     test_steploop_admission \
-=======
     test_model_api_text \
     test_tokenizer_sidecar \
->>>>>>> origin/lane/tokenizer-sidecar
     test_pipeline_runtime \
     test_dsv4_serving_adapter \
     test_dsv4_tp16_serving_adapter \
