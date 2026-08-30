@@ -112,6 +112,9 @@ def main():
     if isinstance(prompt_ids, dict):
         prompt_ids = prompt_ids["prompt_token_ids"]
     prompt_len = len(prompt_ids)
+    # passes P1.. may include the engine's warmup traffic before the fixture
+    # request; the fixture's first wave = pass_offset + 1 (position 0).
+    pass_offset = int(sys.argv[4]) if len(sys.argv) > 4 else 0
     st = DsaSafetensors(CKPT)
     P = PREFIX + f"{LAYER}.self_attn."
 
@@ -139,11 +142,13 @@ def main():
           f"(kv_b bf16; q_a/q_b/kv_a/o_proj fp8->bf16)")
 
     passes, _head_rows = parse_log(log)
-    got = sorted(p for p in passes if passes[p].get("attn_normed"))
+    got = sorted(p for p in passes if passes[p].get("attn_normed")
+                 and p > pass_offset)
     if not got:
         sys.exit("no G5N-VEC attn_normed dumps found in the log "
                  "(arm SPARK_GLM5_NEXT_PROBE_VEC=1 SPARK_GLM5_NEXT_PROBE_VEC_DSA=1)")
-    print(f"log has passes {got[0]}..{got[-1]}, prompt_len={prompt_len}")
+    print(f"log has passes {got[0]}..{got[-1]} (offset {pass_offset}), "
+          f"prompt_len={prompt_len}")
 
     rep = Report()
     cache = {}  # position -> bf16 kv_slot (u16[512]), the oracle's latent cache

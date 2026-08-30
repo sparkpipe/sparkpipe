@@ -1,5 +1,5 @@
 {
-  "file_count": 1698,
+  "file_count": 1699,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -360,6 +360,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/glm5-closeout-2026-08-29.md",
       "sha256": "beed54df94bce60b4fa034fedf2c903efb314d625be825c92957baa4843d48e9",
       "size_bytes": 12461
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/glm5-dsa-2026-08-29.md",
+      "sha256": "dffe608d08880fe709a2330311700bf520dde0bbc68e2b6332b51aa160555fbf",
+      "size_bytes": 8195
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/glm5-kda-2026-08-29.md",
@@ -3553,8 +3558,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "74ac2dd51af1615747f9f19a9e07c860edd7fef631bf18fa30940ea90444c80c",
-      "size_bytes": 98016
+      "sha256": "9c96b7638d3198b5fc93e69b829a7ba90462835b3a0032983783cd95ec108111",
+      "size_bytes": 100247
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -3573,8 +3578,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "b035c1d3a4fe027fb79eb0dd2cddbf471b880fda9fc741cba013a04fc6d180a1",
-      "size_bytes": 133821
+      "sha256": "d7580b5607eb1e5c78ec98457ab5695879fb3f0d7bd3c0a989e7ec802f165f20",
+      "size_bytes": 134518
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -6078,8 +6083,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "e78e9a6a5d8e95ee86f42c97b22dd8b3e10c3e34eaabdcb5abc91aff9ea88f2f",
-      "size_bytes": 77035
+      "sha256": "b2ff2bee483487d3c015786f9a50541f895f8158312abc02e9af886837b5e5b5",
+      "size_bytes": 77371
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7623,8 +7628,8 @@
     },
     {
       "path": "tools/g5dsa_wave_task.sh",
-      "sha256": "7e08bdb1b7463fbf8bd09ae183ed2fe7f0b3da3d0103db05b360b3a5e6877240",
-      "size_bytes": 1766
+      "sha256": "47b4f62ea00cffd282b4811483437b890f141eaf41d87394e3c3ee714644a0eb",
+      "size_bytes": 1817
     },
     {
       "path": "tools/gates.sh",
@@ -7798,8 +7803,8 @@
     },
     {
       "path": "tools/glm5_next_dsa_host_oracle.py",
-      "sha256": "1b1fd0296139f1973c391f1ee0416f74fa336d9f732ae1d84957867146066442",
-      "size_bytes": 11332
+      "sha256": "10ab6a45f20ba5a98eef93cea66c7a7dfc69f27c872c93dab063548eb5bc00ab",
+      "size_bytes": 11618
     },
     {
       "path": "tools/glm5_next_gen_deployment.py",
@@ -7813,8 +7818,8 @@
     },
     {
       "path": "tools/glm5_next_kda_host_oracle.py",
-      "sha256": "dfd82aeeff5f841847f1eca65edcbb91a64ecb51bb08c1b892a873834b155d11",
-      "size_bytes": 16839
+      "sha256": "83509eda53501d914b107158f47f5f8ee38e005ea5cbe5c1f27a6c57fc5513e0",
+      "size_bytes": 17190
     },
     {
       "path": "tools/glm5_next_m5_batch.py",
@@ -7853,8 +7858,8 @@
     },
     {
       "path": "tools/glm5_next_wave.sh",
-      "sha256": "14739ea65585114372c246e4bbf51d17eb6e0e716a3394137c56fb8d5ea6e45d",
-      "size_bytes": 11011
+      "sha256": "1edc23250dad4132c6f93df316d49fc8e805bd5344e3e58cf2862527b98b91a3",
+      "size_bytes": 11071
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -8495,5 +8500,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31260270
+  "total_bytes": 31272477
 }

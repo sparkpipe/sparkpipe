@@ -1264,6 +1264,23 @@ static void Glm5NextProbeBf16Floats(cudaStream_t stream,const uint16_t *device,u
  * serving binary. The pass id counts Glm5NextLayerKda calls on layer 0
  * (waves are single-row, so pass p of the first request IS position p). */
 
+static int Glm5NextKdaProbeVecLayer(const Glm5NextLayerBuffers *buffers)
+{
+    /* SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER: which KDA layer dumps (default
+     * 0, the attractor lane's cell). glm5-dsa: 4 - the first MoE-layer KDA,
+     * whose attention partial is zero from the first wave while L0-2 are
+     * alive; the per-stage dumps + weight-row checksums convict the
+     * binding. */
+    static int vec_layer = -1;
+    if ( vec_layer < 0 )
+    {
+        const char *layer_env = getenv("SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER");
+        vec_layer = (layer_env != 0 && *layer_env != 0)
+            ? (int)atoi(layer_env) : 0;
+    }
+    return(vec_layer);
+}
+
 static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
 {
     static int vec_enabled = -1;
@@ -1272,7 +1289,7 @@ static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
     if ( vec_enabled < 0 )
         vec_enabled = getenv("SPARK_GLM5_NEXT_PROBE_VEC") != 0 ? 1 : 0;
     if ( vec_enabled == 0 || buffers == 0 || buffers->tp_rank != 0u ||
-        buffers->layer_index != 0u )
+        (int)buffers->layer_index != Glm5NextKdaProbeVecLayer(buffers) )
         return(0);
     cap = 30u;
     {
@@ -1362,8 +1379,28 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"collapsed");
-        Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"normed");
+        Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"collapsed");
+        Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"normed");
+        /* THE BINDING CONVICTION DUMPS (glm5-dsa): the layer's own weight
+         * rows as bound - if L4's KDA weights are zeros/garbage the fused
+         * GEMM emits zeros and every downstream stage reads zero, exactly
+         * the observed signature (attention partial zero from the first
+         * wave, L0-3 alive). */
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->attn_norm_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_attn_norm");
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->kda_qkv_beta_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_qkvb_row0");
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->kda_out_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_kda_out_row0");
+        /* THE HC-SITE STATE AT THE SAME MOMENT (glm5-dsa): the collapse
+         * came back all -0.0 (0x8000) at this layer - a value
+         * Glm5NextHcPreReduceKernel cannot produce from ANY inputs (its
+         * accumulator starts +0 and pre > 0), so either the kernel never
+         * ran or it read a different surface. pre/mixes say whether the
+         * sinkhorn ran; snapshot + the raw streams read say whether the
+         * kernel and the probe see the same memory. */
+        Glm5NextProbeVecF32(stream,buffers->hc_pre_f32,GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_pre");
+        Glm5NextProbeVecF32(stream,buffers->hc_post_f32,GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_post");
+        Glm5NextProbeVecF32(stream,buffers->hc_mixes_f32,(2u + GLM5_NEXT_HC) * GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_mixes");
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->hidden_bf16,256u,buffers->layer_index,(uint32_t)vec_pass,"k_streams_head");
+        Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->hc_snapshot_bf16,256u,buffers->layer_index,(uint32_t)vec_pass,"k_snapshot_head");
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
@@ -1449,9 +1486,9 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->fused_qkvb_bf16,rank_qk * 2u + rank_v + rank_heads,0u,(uint32_t)vec_pass,"fused_qkvb");
-        Glm5NextProbeVecU16(stream,buffers->kda_decay_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,0u,(uint32_t)vec_pass,"decay_latent");
-        Glm5NextProbeVecU16(stream,buffers->kda_gate_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,0u,(uint32_t)vec_pass,"gate_latent");
+        Glm5NextProbeVecU16(stream,buffers->fused_qkvb_bf16,rank_qk * 2u + rank_v + rank_heads,buffers->layer_index,(uint32_t)vec_pass,"fused_qkvb");
+        Glm5NextProbeVecU16(stream,buffers->kda_decay_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,buffers->layer_index,(uint32_t)vec_pass,"decay_latent");
+        Glm5NextProbeVecU16(stream,buffers->kda_gate_latent_bf16,GLM5_NEXT_KDA_LOW_RANK,buffers->layer_index,(uint32_t)vec_pass,"gate_latent");
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
@@ -1541,9 +1578,9 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->q_bf16,rank_qk,0u,(uint32_t)vec_pass,"q_postconv");
-        Glm5NextProbeVecU16(stream,buffers->kv_slot_bf16,rank_qk,0u,(uint32_t)vec_pass,"k_postconv");
-        Glm5NextProbeVecU16(stream,buffers->gate_up_bf16,rank_v,0u,(uint32_t)vec_pass,"v_postconv");
+        Glm5NextProbeVecU16(stream,buffers->q_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"q_postconv");
+        Glm5NextProbeVecU16(stream,buffers->kv_slot_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"k_postconv");
+        Glm5NextProbeVecU16(stream,buffers->gate_up_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"v_postconv");
     }
     if ( Glm5NextKdaProbeDeep(buffers) )
     {
@@ -1589,7 +1626,7 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->kda_decay_logit_bf16,rank_qk,0u,(uint32_t)vec_pass,"decay_logit");
+        Glm5NextProbeVecU16(stream,buffers->kda_decay_logit_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"decay_logit");
     }
     LM_LAUNCH(
         (LmBoundedDecayKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
@@ -1625,8 +1662,8 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecF32(stream,buffers->kda_retention,rank_qk,0u,(uint32_t)vec_pass,"retention");
-        Glm5NextProbeVecF32(stream,buffers->kda_write_gate,rank_heads,0u,(uint32_t)vec_pass,"write_gate");
+        Glm5NextProbeVecF32(stream,buffers->kda_retention,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"retention");
+        Glm5NextProbeVecF32(stream,buffers->kda_write_gate,rank_heads,buffers->layer_index,(uint32_t)vec_pass,"write_gate");
     }
     /* THE DELTA RULE'S 64 KiB OF DYNAMIC SHARED IS PAST THE 48 KiB DEFAULT
      * (k3's identical lesson): the launch fails with invalid argument on
@@ -1670,7 +1707,7 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,0u,(uint32_t)vec_pass,"delta_out");
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"delta_out");
     }
     /* RMSNorm before the gate (head-wise, fp32 strict), then the sigmoid
      * gate that has been waiting in kda_gate_bf16. */
@@ -1710,8 +1747,8 @@ static int32_t Glm5NextLayerKda(
     }
     if ( vec_pass != 0 )
     {
-        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,0u,(uint32_t)vec_pass,"delta_gated");
-        Glm5NextProbeVecU16(stream,buffers->kda_gate_bf16,rank_v,0u,(uint32_t)vec_pass,"kda_gate");
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"delta_gated");
+        Glm5NextProbeVecU16(stream,buffers->kda_gate_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"kda_gate");
     }
     /* Stage the gated y in kv_slot (the k scratch is dead once the delta
      * rule has consumed it) so the out-GEMM writes the FULL-WIDTH rank
@@ -1752,11 +1789,11 @@ static int32_t Glm5NextLayerKda(
     if ( status == LM_LAUNCH_OK && vec_pass != 0 )
     {
         uint32_t vec_head;
-        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,0u,(uint32_t)vec_pass,"out_partial");
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"out_partial");
         for ( vec_head = 0u; vec_head < rank_heads; vec_head++ )
             Glm5NextProbeVecF32(stream,(const float *)buffers->kda_state_pool +
                 ((uint64_t)vec_head * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM),
-                GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM,0u,(uint32_t)vec_pass,
+                GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM,buffers->layer_index,(uint32_t)vec_pass,
                 vec_head == 0u ? "state_h0" : (vec_head == 1u ? "state_h1" :
                 (vec_head == 2u ? "state_h2" : "state_h3")));
     }
@@ -2108,31 +2145,18 @@ static int32_t Glm5NextHcPost(
     return LM_LAUNCH_OK;
 }
 
-/* SiLU-mul with the reference's swiglu_limit clamp (glm5-dsa lane; the
- * shared LmSiluMulKernel clamps nothing and every other family runs it
- * unclamped, so this stays module-local - the dsv4 donor precedent,
- * SparkDsv4SwigluClampKernel, is module-local the same way). The
- * checkpoint reference: gate.clamp(max=limit), up.clamp(-limit, limit),
- * then silu(gate)*up. Inert whenever |gate|,|up| < 10 (fixture traffic
- * measured max gate 2.59, max |up| 2.27 at L0); live at depth. */
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void Glm5NextSwigluLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, bool gate_first)
-{
-    uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
-    uint64_t out_base = (uint64_t)blockIdx.x * dimension;
-    uint32_t index;
-    for (index = threadIdx.x; index < dimension; index += THREADS)
-    {
-        float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
-        float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
-        gate = gate > GLM5_NEXT_SWIGLU_LIMIT ? GLM5_NEXT_SWIGLU_LIMIT : gate;
-        up = up > GLM5_NEXT_SWIGLU_LIMIT ? GLM5_NEXT_SWIGLU_LIMIT
-            : (up < -GLM5_NEXT_SWIGLU_LIMIT ? -GLM5_NEXT_SWIGLU_LIMIT : up);
-        output_bf16[out_base + index] =
-            LmFloatToBf16((gate / (1.0f + __expf(-gate))) * up);
-    }
-}
+/* THE swiglu_limit 10.0 CLAMP IS NOT WIRED - recorded TWICE now. The
+ * first attempt (Glm5NextSwigluLimitKernel, this lane) swapped it in for
+ * LmSiluMulKernel at the dense/expert/shared sites and the MoE partial
+ * went NaN from the first wave (conviction: the L3 mlp-post probe flipped
+ * to nan while the attention post stayed healthy; reverting ONLY the swap
+ * cleaned the run and restored the attractor-baseline generation). The
+ * kernel is mathematically identical on finite inputs, so the mechanism is
+ * latent in the MoE chain's codegen/registers, not in the clamp arithmetic
+ * - unwired until that is understood. Reference form when it is retried:
+ * gate.clamp(max=limit), up.clamp(-limit, limit), silu(gate)*up
+ * (transformers glm5_next modeling source; dsv4 SparkDsv4SwigluClampKernel
+ * precedent). */
 
 static int32_t Glm5NextLayerDenseMlp(
     const Glm5NextLayerBuffers *buffers,
@@ -2233,7 +2257,7 @@ static int32_t Glm5NextLayerDenseMlp(
     }
 
     LM_LAUNCH(
-        (Glm5NextSwigluLimitKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -2414,7 +2438,7 @@ static int32_t Glm5NextLayerMoe(
     }
 
     LM_LAUNCH(
-        (Glm5NextSwigluLimitKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
         packed_rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -2491,7 +2515,7 @@ static int32_t Glm5NextLayerMoe(
         return status;
     }
     LM_LAUNCH(
-        (Glm5NextSwigluLimitKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,

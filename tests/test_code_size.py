@@ -1135,9 +1135,13 @@ CEILING = 228248
 # oracle gained the DsaSafetensors fp8-reader subclass; the wave task script
 # (tools/g5dsa_wave_task.sh) stages the queue-dispatched probe-vec wave +
 # canonical cold curl; start_api now setsid-detaches the api launch (the
-# plain nohup form held the launch ssh 31 min and failed the wave). To be
-# trimmed with the ratchet at coherence.
-CEILING = 229245
+# plain nohup form held the launch ssh 31 min and failed the wave); the
+# KDA vec probe gained the L4 instrument (SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER
+# + per-layer labels + the w_attn_norm/w_qkvb_row0/w_kda_out_row0 binding
+# conviction dumps); the swiglu swap itself was REVERTED (it NaN'd the MoE
+# partial from the first wave - verdict by bisect wave10; the record comment
+# stays, the kernel is gone). To be trimmed with the ratchet at coherence.
+CEILING = 229291
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

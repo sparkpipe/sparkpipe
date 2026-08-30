@@ -13,6 +13,7 @@ cd /home/spark0/g5rt2-src
 export G5N_VEC_PASSES="${G5N_VEC_PASSES:-200}"
 export G5N_VEC_DSA="${G5N_VEC_DSA:-1}"
 export G5N_VEC_LAYER="${G5N_VEC_LAYER:-3}"
+export G5N_VEC_KDA_LAYER="${G5N_VEC_KDA_LAYER:-4}"
 
 echo "== wave: probe-vec full (PASSES=$G5N_VEC_PASSES DSA=$G5N_VEC_DSA LAYER=$G5N_VEC_LAYER) =="
 bash tools/glm5_next_wave.sh --probe-vec full || { echo "WAVE-FAIL"; exit 1; }
