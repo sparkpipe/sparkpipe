@@ -1324,7 +1324,11 @@ CEILING = 228248
 # directory + bounds + sha + sampled payload/scale bytes vs the GA
 # checkpoint) plus its receipt-pinned unit test. Main's pre-existing
 # +135 drift (qwen38 stagepack fixes) rides along unchanged.
-CEILING = 233841
+# coordinator merge #749 (glm53full bf16 arm): expert codec 1 acceptance
+# in the glm52 module, the independent bf16 source verifier, the TP16
+# deployment generator, and the M5 cell task staging. Measured at
+# merge: 234364 exact.
+CEILING = 234364
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
