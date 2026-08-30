@@ -2675,3 +2675,19 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   the SCRIPT HOST. Fixed to /home/<host>/ absolute paths; v2 log
   confirms real ships (SHIPPED-r1-to-spark2). Pipeline converges:
   ~6 ranks left + their ships.
+
+## 2026-08-30 ~02:4x — DSV4-FLASH TP16 COMPLETE (the third model)
+
+- ALL 16 rank packs spliced (each receipted "validated": true from
+  the 166.9G base) AND placed — the re-listing proof: 16 nodes × 1
+  rank each (verified per-node in this cycle's sweep). The
+  splice+distribute pipeline ran end-to-end unattended to
+  DISTRIBUTION-COMPLETE.
+- FOUR MODELS NOW PACKED: glm5.3 (4 sets), qwen-max nvfp4 PP16,
+  dsv4-flash TP16, + glm5.3-flash serving set. Board: 4 ✅ / 27B
+  (fp8-fused port named) / qwen-flash (source staged) / k3 + pro
+  (extensions named).
+- NEXT RUNG: qwen-flash BF16 TP16 (source qwen3.8-flash-next 336G;
+  packer qwen4_flash_stagepack has --tp-degree/--tp-rank; BF16 needs
+  no codec handling — likely the EASIEST remaining build) or the 27B
+  port; next cycle takes qwen-flash first (bounded, high certainty).
