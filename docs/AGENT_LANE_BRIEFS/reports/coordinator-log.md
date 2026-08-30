@@ -3178,3 +3178,11 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   (packbuild/), node disks keep only their placed ranks. Builder
   healthy, journal alongside on warm. Shard outputs will land
   per-rank on the space-distributed nodes (f table above).
+
+## 2026-08-30 ~03:3x — k3 warm-build healthy: 216G read / 106G written on ceph
+
+- ~15G/min warm-write sustained (100G payload down of ~1.5T); RSS
+  23G flat (the streaming fix holds). ETA hours-class on this pace;
+  the io-zero reads were the wrapper-vs-child pid class again
+  (child = the counters). WATCH ONLY; shard outputs distribute to
+  the roomy nodes per the space table when the base lands.
