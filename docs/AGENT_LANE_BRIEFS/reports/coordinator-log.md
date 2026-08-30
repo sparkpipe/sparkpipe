@@ -3080,3 +3080,23 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   since the cwd bug. Refired from the repo with the fixed pattern;
   resume from 592G journal.
 - 27B rebuild owed after the GDN_QKV plan fix (last cycle's RED).
+
+## 2026-08-30 ~23:5x — 27B "verify RED" ROOT-CAUSED: THE VERIFIER IS THE WRONG SIDE
+
+- Arithmetic reconciliation: the pack is CORRECT. GDN dims qk=4096,
+  v=4096 → full 12288 rows; TP4 segments 2*1024+1024=3072 rows/rank
+  = exactly the payload the packer wrote (31,457,280 B bf16). The
+  ENTRY's rows are the packed per-rank rows (the entry uses
+  packed_shape()). The VERIFIER's expected_refs carry UNSHARDED
+  ref.rows and its math has NO tp-degree awareness at all — it would
+  fail ANY valid TP pack on every shardable tensor. The 'expected
+  shape' check (line ~250) apparently passed because... it compares
+  against the same unsharded table — meaning this verifier predates
+  TP packing entirely (built for the TP1 whole-pack era).
+- FIX (the real unit): qwen38_pack_verify gains tp awareness — read
+  the pack HEADER's tp_degree/rank (the header packs them) and
+  compare ENTRY rows against the per-rank EXPECTED shard shapes
+  (packed_shape semantics), not the unsharded table. The 4 placed
+  27B packs are LIKELY VALID (bytes reconcile exactly); the invalid
+  flag stands until the verifier proves it. Next cycle implements
+  the TP-aware verifier then re-runs.
