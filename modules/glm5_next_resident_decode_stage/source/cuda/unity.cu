@@ -191,35 +191,6 @@ extern "C" int32_t Glm5NextHeadFullVocab(
         stream);
 }
 
-extern "C" int32_t Glm5NextHeadCertifiedB1(
-    const Glm5NextLayerBuffers *buffers,
-    const void *norm_weight_bf16,
-    const void *head_weight_bf16,
-    const uint8_t *certified_payload,
-    const float *certified_scale_f32,
-    const float *certified_norm_f32,
-    void *certified_scratch,
-    uint32_t *candidate_ids,
-    uint32_t *screened_count,
-    uint32_t rank_offset,
-    uint32_t vocabulary,
-    cudaStream_t stream)
-{
-    return Glm5NextHeadCertifiedB1(
-        buffers,
-        norm_weight_bf16,
-        head_weight_bf16,
-        certified_payload,
-        certified_scale_f32,
-        certified_norm_f32,
-        certified_scratch,
-        candidate_ids,
-        screened_count,
-        rank_offset,
-        vocabulary,
-        stream);
-}
-
 extern "C" cudaError_t SparkGlm5NextLaunchHeadCertifiedQuantize(
     cudaStream_t stream,
     const void *head_bf16,

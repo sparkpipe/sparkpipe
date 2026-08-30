@@ -1366,7 +1366,11 @@ CEILING = 234369
 # ENGAGED at decode_split_context_threshold=2048 (below it byte-identical
 # to the qualified single-pass; the shared kernel's host oracle carried the
 # extremes/determinism receipts). Measured: 235872 exact.
-CEILING = 235872
+# flash decode qualification cells landed as durable validation assets
+# (modules/glm5_next.../validation/flash_decode_cell.cu + the spark4
+# receipt log): the exactness+speed receipts for R1 screened head and R3
+# split-K engagement. Measured: 236147 exact.
+CEILING = 236147
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

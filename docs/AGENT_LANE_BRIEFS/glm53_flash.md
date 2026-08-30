@@ -101,3 +101,19 @@ build/test_modules/*.dylib after pulling (ABI trap).
   exactness at B1 (the certified path must equal the full-vocab argmax),
   (3) split-on vs split-off equivalence at 8K+ context, (4) then the
   decode timing claim with all three engaged (transport + head + split).
+
+## GPU cells PASS on spark4 (2026-08-30 night, coordinator)
+
+flash_decode_cell (validation/flash_decode_cell.cu, built from main@e83851f
+tree, sm_121a) — ALL PASS, receipts in validation/flash_decode_cell_receipts.log:
+- Cell A (R1 screened head): certified-FP8 B1 == full-vocab argmax on ALL
+  runs (tokens exact, scores to bf16 rounding), shard 9680: 1.73→0.33 ms
+  (5.1-5.3x); full 154880: 12.3→4.3 ms (2.7-3.0x).
+- Cell B (R3 split-K, Glm5NextKv geometry, 4 heads/rank): below-threshold
+  byte-identical, deterministic, split==base (max_rel 0.0); 12.3x @8K,
+  14.6x @32K positions per layer-class.
+- Decode arithmetic at 32K context: head saves ~1.4 ms/token; attention
+  saves ~18.7 ms/token (11 DSA layers × 1.83→0.125 ms) ≈ ~25% of the
+  78.7 ms step — ON TOP OF the d2a transport (the ~19.5 ms serialized
+  collectives), which lands with the redeploy. The fleet number comes
+  from the redeploy window; the kernel receipts are in hand.

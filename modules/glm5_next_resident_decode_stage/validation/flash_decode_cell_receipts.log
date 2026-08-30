@@ -1,0 +1,10 @@
+CELL device=NVIDIA GB10 sms=48
+CELL A PASS vocab=9680 seed=1 token full=4864 cert=4864 score full=916.3671 cert=916.3667 screened=0 | full 1.726 ms cert 0.326 ms (5.29x)
+CELL A PASS vocab=154880 seed=1 token full=150573 cert=150573 score full=1003.4498 cert=1003.4500 screened=0 | full 12.316 ms cert 4.548 ms (2.71x)
+CELL A PASS vocab=9680 seed=2 token full=4830 cert=4830 score full=869.9915 cert=869.9916 screened=0 | full 1.737 ms cert 0.361 ms (4.81x)
+CELL A PASS vocab=154880 seed=2 token full=47269 cert=47269 score full=1050.7850 cert=1050.7850 screened=0 | full 12.322 ms cert 4.227 ms (2.92x)
+CELL A PASS vocab=9680 seed=3 token full=2743 cert=2743 score full=889.8835 cert=889.8837 screened=0 | full 1.738 ms cert 0.339 ms (5.13x)
+CELL A PASS vocab=154880 seed=3 token full=55221 cert=55221 score full=1135.3717 cert=1135.3716 screened=0 | full 12.800 ms cert 4.296 ms (2.98x)
+CELL B PASS positions=8192 pages=128 below-threshold-byte-identical=yes deterministic=yes max_rel=0.00000 | base 0.460 ms split 0.037 ms (12.32x)
+CELL B PASS positions=32768 pages=512 below-threshold-byte-identical=yes deterministic=yes max_rel=0.00000 | base 1.826 ms split 0.125 ms (14.57x)
+CELL SUMMARY ALL PASS (0 failing properties)

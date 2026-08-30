@@ -8,6 +8,7 @@
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/head.cuh"
+#include "sparkpipe/spark_lm_kernels.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/weight_codec.cuh"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"

@@ -1,5 +1,5 @@
 {
-  "file_count": 1750,
+  "file_count": 1752,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -278,8 +278,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/glm53_flash.md",
-      "sha256": "57a883b3935783e7554f3bfc2423083039aee4f8ff920be9e2fc24cc6db17862",
-      "size_bytes": 5554
+      "sha256": "c2ca09ee3130ee81a77d46a19084b15c42c8bd54a801e6c83cc34cf70a51ee2b",
+      "size_bytes": 6512
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/k3_pack_layout_fix.md",
@@ -668,8 +668,8 @@
     },
     {
       "path": "docs/BUG_LEDGER.md",
-      "sha256": "36318aac758706ce6e8b0338787552996eea9f2a178d8fc2f369f5f5fc3184a9",
-      "size_bytes": 9169
+      "sha256": "3c1e082d8dc10315100c21fa0bac3a8527e23accc6750e762ecf5cadccd744d4",
+      "size_bytes": 9056
     },
     {
       "path": "docs/DATAFILE_NAMING.md",
@@ -3713,13 +3713,13 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "0d13e3fa7c8ca1ee0ae657306ecdea014ca1e4c78d3a4f87d0365a90497ff700",
-      "size_bytes": 102548
+      "sha256": "5f07284007d4d0e44e2a061943ecc26d77aac6342baf364d6e0a3f73964aed44",
+      "size_bytes": 102590
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
-      "sha256": "a695cd10eb02bd4c6ca425987def51c2bcc49733f9fc9c541e228e776a1f07b7",
-      "size_bytes": 9835
+      "sha256": "67b9cc3c1c97752557ff5ce7ed59d043d9296ab347e26825b09df92c8fa0fe8d",
+      "size_bytes": 9079
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
@@ -3750,6 +3750,16 @@
       "path": "modules/glm5_next_resident_decode_stage/tools/glm5_next_pack_synthesize.c",
       "sha256": "a7bf10173e5eaf2e3ba10642aeca1f2dd12aa344f8fa26661e25c2047d9ebe7c",
       "size_bytes": 13288
+    },
+    {
+      "path": "modules/glm5_next_resident_decode_stage/validation/flash_decode_cell.cu",
+      "sha256": "e01d4363c3456da152e12531f7fac2a0d812d73661df9d86ad47c4f6094e3b13",
+      "size_bytes": 14565
+    },
+    {
+      "path": "modules/glm5_next_resident_decode_stage/validation/flash_decode_cell_receipts.log",
+      "sha256": "ca0a31b95ab9badca4cce793fbdd53235fc11d991f32df13e07d5af478a4df8e",
+      "size_bytes": 1226
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu",
@@ -6228,8 +6238,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "1ec5b3fbb9f0b00996a727cfa35c669d0328960b83bcb3b84a91959190ba1188",
-      "size_bytes": 93927
+      "sha256": "d079ffcb6aa3a2e965ac36f35ac12005c43aee40afcb111d7e5233d43e2600f7",
+      "size_bytes": 94186
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8755,5 +8765,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32078697
+  "total_bytes": 32094878
 }
