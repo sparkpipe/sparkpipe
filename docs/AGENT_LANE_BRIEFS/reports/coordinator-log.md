@@ -2224,3 +2224,20 @@ appendix).
 - Owed: pid-capture via remote pid file (pid=None launches rely on
   exit-file + 15min TTL self-heal); q27b integration; k3finish s4;
   cell-runner respawn (R3 one-command retry + R2c re-pin); nurse3.
+
+## 2026-08-30 ~02:5x — cycle: glm5-dsa merged (e5c64fd); MAIN RED (interaction bug); 4 lanes spawned
+
+- MERGED glm5-dsa session: DSA clean at last-ulp (all 3 original suspects
+  closed), swiglu clamp convicted as NaN source + reverted w/ evidence,
+  acceptance pair honest (attractor-baseline tokens + 0-NaN telemetry;
+  gates stay blocked). Coherence now isolates to the MoE body.
+- GATES EXIT 2 on the merged tree (exit-code law working): 
+  test_model_pipeline_client abort ~1682 — a lane INTERACTION (p1d2's
+  async admission × k3's adapter loader fix changed the failure-injection
+  surfacing). pipeline-fix lane spawned with the A/B bisection method;
+  main's red state noted here honestly until it lands.
+- SPAWNED: pipeline-fix, q27b-serve continuation (its decisive pair is
+  EXECUTING: build-5 running, serve-6 chained), glm5-moe (the last
+  unverified compute family — report §5), nurse3. Live ~5/8.
+- Queue: healthy (build-5 running; dependency chains first-class since
+  the residual-barrier fix).
