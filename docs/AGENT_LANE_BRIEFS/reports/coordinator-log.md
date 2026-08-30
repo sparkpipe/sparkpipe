@@ -3263,3 +3263,10 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   it that way.
 - k3 on sparkf: RSS 23G flat, 46G read / 17G written past the
   journal re-walk, payload 321G. Pace establishing. WATCH ONLY.
+
+## 2026-08-30 ~10:5x — FINAL-PHASE cycle 1: k3 healthy (219G read / 93G written past resume, 392G payload)
+
+- The final-phase mission active (finish → cleanup → audit+replicate →
+  stop). k3 on sparkf: RSS 33G (numpy buffers at speed — WATCH but
+  no OOM cliff yet; the journal protects), payload 392G of ~1.5T.
+  dsv4-pro extension is Phase A's second unit after k3.
