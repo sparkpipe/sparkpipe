@@ -3071,3 +3071,12 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   copy already streams segments correctly; the PLAN's packed_rows is
   what's wrong) + the verifier's group expectation for kind 9. The
   4 placed q27 packs are INVALID until rebuilt — flagged.
+
+## 2026-08-30 ~23:3x — cycle close: flash placed 8/8 (a-d legs), k3 refired clean
+
+- Flash TP8 placement completing (q27 legs done; a-d shipping).
+- k3: the pgrep hits were my own query shells (bracket-rule again —
+  bare 'k3_pack.py' matches the probe); the real builder was dead
+  since the cwd bug. Refired from the repo with the fixed pattern;
+  resume from 592G journal.
+- 27B rebuild owed after the GDN_QKV plan fix (last cycle's RED).
