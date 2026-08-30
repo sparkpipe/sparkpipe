@@ -9,7 +9,9 @@ at every stage" is a structural fix, not twelve local ones.
 ## The three systemic patterns → three structural programs
 
 PATTERN A "staged path exists but isn't wired" (R1 screened head,
-JIT-KV's 85%, prefill width, the collapse of 3 spill mechanisms):
+JIT-KV's 85%, prefill width [FLASH WIRED 2026-08-30: the 16-row cap
+decoupled + 1024-row chunks, main 1554464; qwen template + dsv4
+bulk-prefill kernel remain], the collapse of 3 spill mechanisms):
 the fix class is WIRING + an ADOPTION GATE (already live: new
 families must consume). No new abstractions — wire the certified
 ones. OWNER: the perf programs' lanes, in kimi's ranked order.

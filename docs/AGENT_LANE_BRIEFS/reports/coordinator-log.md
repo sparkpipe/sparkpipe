@@ -3419,3 +3419,33 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   each (over-covered, good); flash rebuild then 2x replication.
 
 ## 2026-08-30 ~02:4x — sync note: the 10-min timer drove 61 commits while this turn was parked (its cycles ran in this session's context windows). States reconciled by rebase; no conflicts on real code.
+
+## 2026-08-30 ~2x:xx — coordinator: PR sweep (6 merged, 3 held) + FLASH PREFILL ROOT-CAUSED AND FIXED
+
+- MERGED (gates by exit code, ratchets pinned exact, digests last):
+  #749 glm53full bf16 (codec-matrix contract test fixed forward - the
+  lane left it red at tip; verifier literals derived from the model
+  contract per the memory gate), #753 qwen38max wire audit (v2-tail
+  order + MXFP4_E2M1=3 BLESSED as the family contract), #755 glm53
+  TP16 pack verification, #757+#761 integrated as one unit (761 repairs
+  the k3 runner memory-contract violations 757 carries; complexity mean
+  7.87→7.88 justified in-commit - the runner's TP16 head-exchange
+  branch), #758 qwen-flash incident receipt.
+- HELD with receipts: #750/#754 qwen38max pair (rebase onto the blessed
+  wire contract; probe fix itself adjudicated correct), #760 d2d
+  transport (real standalone-reproducible failure: dsv4 adapter
+  initialize status=1 after the fixture MAX_STEPS 4→16; comment filed).
+- PREFILL (operator receipts: 10 tok/s on 16 sparks; 32K > 1h; external
+  ref light_foundry ~1.1k tok/s on 8 sparks full model): root cause =
+  the flash TP16 deployment's max_input_rows=16 + execution_row_capacity
+ =16, FORCED by a wrong validation coupling execution_row_capacity ≤
+  resident_sequence_capacity (prefill rows of one sequence are not
+  sequence slots; the sequence budget stays small for GDN memory).
+  FIXED on main 1554464: bound moved to the module's row firmware limit;
+  configs regenerated at 1024-row chunks; sequences/GDN sizing
+  untouched. DEPLOY NOTE: the new configs REQUIRE the rebuilt adapter/
+  driver .so (old binary rejects 1024 with SCHEMA_ERROR) - flash lane
+  rebuilds from main@1554464, stages binaries+configs together, bounce,
+  re-measure prefill (expected floor ~600 tok/s from re-stream
+  arithmetic; kernel row-parallelism + P2 collectives are the next
+  rocks). Decode (12.7 vs external 35-78) remains P1-async + transport.

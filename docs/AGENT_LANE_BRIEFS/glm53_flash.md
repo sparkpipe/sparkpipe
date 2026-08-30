@@ -68,3 +68,15 @@ rules (every claim = command + raw output), script parameterization,
 escalation. The glm52 lane owns spark8-f until it exits; coordinate in
 your report, never touch another lane's daemons. Report to
 docs/AGENT_LANE_BRIEFS/reports/glm53-<date>.md at every milestone.
+
+## Coordinator update (2026-08-30): prefill width fixed on main — redeploy unit
+
+Main 1554464 decouples execution_row_capacity from
+resident_sequence_capacity and ships 1024-row chunk configs (was 16 —
+the 10 tok/s prefill root cause; 32K prompt was 2048 sequential
+submissions). NEXT REDEPLOY MUST SHIP TOGETHER: the rebuilt adapter/
+driver .so from main@1554464 (the old binary SCHEMA_ERRORs the new
+1024 configs) + the regenerated deployment/glm5_next_tp16/* configs.
+Then re-measure prefill (expected floor ~600 tok/s from re-stream
+arithmetic alone). Decode path unchanged (12.7 tok/s — P1 async port
++ #760-class transport remain the rocks).
