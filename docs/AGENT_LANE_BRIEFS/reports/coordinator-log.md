@@ -2419,3 +2419,15 @@ appendix).
   cycles; then qwen38_pack_verify + placement + the module-side nvfp4
   acceptance (loader + packed-4bit grouped GEMM — glm kernels the
   reference) which is the gate between packs-on-disk and serving.
+
+## 2026-08-30 ~09:4x — PR-based mode + the Model Dev's Guide
+
+- The 5-min cycle is now PR-BASED (no agents): each wake integrates
+  open PRs (gates by exit code, ratchet exact, digests last, precise
+  review comments on failure), drives the roadmap unit between PRs,
+  and closes on queue+telemetry.
+- docs/MODEL_DEV_GUIDE.md committed — every model-dev session starts
+  there: stagepacks assumed present, queue-only GPU access (task
+  shape, priorities, ttl, staged scripts), PR workflow (model-local
+  vs common-code review), telemetry acceptance pairs, and the hard
+  rules with their receipts. The per-model session era begins.
