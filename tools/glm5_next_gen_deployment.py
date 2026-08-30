@@ -78,7 +78,18 @@ def stage_config(rank: int) -> dict:
         # firmware limit, not resident_sequence_capacity (the GDN-state
         # memory budget stays sized by max_active_sequences=16).
         "execution_row_capacity": 1024,
-        "decode_split_context_threshold": 0,
+        # R3 engagement: above 2048 positions the decode attention takes
+        # the split-K (flash-decode) form - 4 heads/rank at TP16 means a
+        # B1 grid of 4 CTAs on 48 SMs without it. Below the threshold the
+        # launcher is byte-identical to the qualified single-pass kernel
+        # (attn.cuh: the extremes are exact, the combine deterministic),
+        # so short-context outputs do not move. Qualification: the shared
+        # kernel's host oracle (tests/host_cuda/glm52_layer_host.cu
+        # splitreceipt: extremes bit-exact, launcher-below-threshold
+        # bit-for-bit, multi-partition deterministic) + the window cell:
+        # split-on vs split-off equivalence at 8K+ context on the resident
+        # serving before the decode timing claim.
+        "decode_split_context_threshold": 2048,
         "tp_degree": TP,
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),

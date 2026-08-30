@@ -85,3 +85,19 @@ Decode rides the same redeploy: async submit + async drain + d2a
 collectives are all in code now — measure, then the NCCL flip
 (T257 exactness first) is the next rock. Local checkouts: wipe
 build/test_modules/*.dylib after pulling (ABI trap).
+
+## Decode engagement landed on main (2026-08-30 evening, coordinator)
+
+- **R1 screened head WIRED for glm5_next**: the certified-FP8 shadow is
+  built ON-DEVICE at load (no pack change, no repack); B1 decode takes
+  Glm5NextHeadCertifiedB1 (same fused norm kernel; exact-BF16 rescore of
+  the certified candidate set = full-vocab-argmax-equal by construction).
+  Verified: unity/layer/cuda type-check on the CPU shim, module.c
+  -Werror clean, full offline-gates exit 0.
+- **R3 split-K flash-decode ENGAGED**: decode_split_context_threshold
+  0→2048 (below: byte-identical; above: split+combine).
+- WINDOW CELL ORDER at the redeploy: (1) node-build the .so from this
+  main (nvcc; wipe stale dylibs first — ABI-13), (2) screened-vs-full
+  exactness at B1 (the certified path must equal the full-vocab argmax),
+  (3) split-on vs split-off equivalence at 8K+ context, (4) then the
+  decode timing claim with all three engaged (transport + head + split).

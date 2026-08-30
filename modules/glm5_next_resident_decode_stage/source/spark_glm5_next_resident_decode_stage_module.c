@@ -33,6 +33,7 @@ static int SparkGlm5NextProbeEnabled(void)
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_glm5_next_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_head_screen.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
 #include "spark_glm5_next_stagepack_format.h"
 
@@ -130,6 +131,11 @@ struct SparkGlm5NextModuleState
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
+	/* R1: the certified-FP8 shadow of the lm_head shard (head-owning
+	 * ranks only; built on-device at load, one head sweep). */
+	uint8_t *head_certified_fp8_payload;
+	float *head_certified_fp8_scale_f32;
+	float *head_certified_fp8_norm_f32;
 	uint8_t *kv_cache;
 	uint64_t kv_layer_stride_bytes;
 	uint8_t *index_cache;
@@ -734,6 +740,15 @@ static SparkStatus SparkGlm5NextAllocateSlotHead(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,1u,sizeof(uint32_t),(void **)&slot->output_token);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,1u,sizeof(float),(void **)&slot->output_score);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,1u,sizeof(uint64_t),(void **)&slot->head_maxloc_u64);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+	{
+		uint64_t shard_rows = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
+		status = SparkGlm5NextAllocateBytes(state,1u,SparkHeadCertifiedFp8ScratchBytes(shard_rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION),1u,(void **)&slot->head_certified_scratch);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextAllocateBytes(state,1u,SparkHeadCertifiedFp8CandidateBytes(shard_rows),1u,(void **)&slot->head_certified_candidates);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextAllocateBytes(state,1u,1u,sizeof(uint32_t),(void **)&slot->head_screened_count);
+	}
 	return(status);
 }
 
@@ -1428,6 +1443,9 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->embedding_bf16 = state->embedding_bf16;
 	wave->final_norm_bf16 = state->final_norm_bf16;
 	wave->lm_head_bf16 = state->lm_head_bf16;
+	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
+	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
+	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
 	wave->layers = state->layers;
 	wave->slot = slot;
 	wave->kv_cache = state->kv_cache;
@@ -2599,6 +2617,32 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 	free(state);
 }
 
+/* R1: build the certified-FP8 shadow of the lm_head shard on the
+ * device (one sweep of the head, qwen38's recipe): the payload is the
+ * FP8 rows, the scale/norm pairs carry the certified bound the screen
+ * uses to guarantee the true argmax is inside the candidate set. Built
+ * once at load; the B1 decode head then screens + exact-rescores
+ * instead of the full-vocab BF16 rescore (kimi's ~8 ms/token rock). */
+static SparkStatus SparkGlm5NextBuildHeadShadow(SparkGlm5NextModuleState *state)
+{
+	uint64_t head_rows,dim;
+	SparkStatus status;
+	if ( state->owns_final_head == 0u || state->lm_head_bf16 == 0u )
+		return(SPARK_STATUS_OK);
+	head_rows = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
+	dim = SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
+	status = SparkGlm5NextAllocateBytes(state,head_rows,dim,1u,(void **)&state->head_certified_fp8_payload);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextAllocateBytes(state,head_rows,dim / 32u,sizeof(float),(void **)&state->head_certified_fp8_scale_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextAllocateBytes(state,head_rows,dim / 32u,sizeof(float),(void **)&state->head_certified_fp8_norm_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,SparkGlm5NextLaunchHeadCertifiedQuantize(0,state->lm_head_bf16,state->head_certified_fp8_payload,state->head_certified_fp8_scale_f32,state->head_certified_fp8_norm_f32,(uint32_t)head_rows,(uint32_t)dim),"head_certified_quantize");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,cudaDeviceSynchronize(),"head_certified_sync");
+	return(status);
+}
+
 static SparkStatus SparkGlm5NextInitializeState(
 	const SparkFirmwareModuleConfiguration *configuration,
 	const SparkFirmwareModuleHostServices *host_services,
@@ -2623,6 +2667,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 		status = SparkGlm5NextAllocateSlots(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextModuleInitializeTpCollective(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextBuildHeadShadow(state);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm5NextReleaseSlotHost(state);

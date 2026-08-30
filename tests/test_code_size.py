@@ -1359,7 +1359,14 @@ CEILING = 234369
 # peer-routing collective at any degree (ABI 12->13; step rows double as
 # d2a peer routes, MAX_STEPS 4->16) + the glm5_next module's d2a tier +
 # regenerated flash configs. Measured at merge: 235700 exact (+3: the generator carries the d2a algorithm set).
-CEILING = 235700
+# glm5_next R1+R3 decode engagement (kimi's #1 and #3 rocks, operator
+# "proceed"): the certified-FP8 screened head at B1 (shadow built on-
+# device at load, qwen38's recipe - layer.cuh Glm5NextHeadCertifiedB1 +
+# unity/cuda dispatch + module build/allocs/wave) and split-K flash-decode
+# ENGAGED at decode_split_context_threshold=2048 (below it byte-identical
+# to the qualified single-pass; the shared kernel's host oracle carried the
+# extremes/determinism receipts). Measured: 235872 exact.
+CEILING = 235872
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

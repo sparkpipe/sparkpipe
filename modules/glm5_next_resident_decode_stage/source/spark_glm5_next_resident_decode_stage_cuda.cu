@@ -707,10 +707,17 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 				Glm5NextProbeVecU16(stream,slot->hidden_bf16,GLM5_NEXT_HIDDEN,45u,head_vec_wave,"head_stream0");
 			}
 		}
-		status = Glm5NextHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
+		rank_offset = wave->tp_rank * buffers.head_vocabulary;
+		/* R1: B1 decode takes the certified-FP8 screened head (shadow
+		 * built at load; the norm inside is the same fused kernel, the
+		 * rescore is exact BF16 over the certified candidate set). The
+		 * full-vocab rescore stays for multi-row waves. */
+		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 )
+			status = Glm5NextHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
+		else
+			status = Glm5NextHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
-		rank_offset = wave->tp_rank * buffers.head_vocabulary;
 		error = SparkGlm5NextLaunchHeadMaxlocPack(stream,slot->output_score,slot->output_token,slot->head_maxloc_u64,wave->row_count,rank_offset);
 	}
 	else

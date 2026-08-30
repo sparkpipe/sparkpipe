@@ -2642,3 +2642,58 @@ static int32_t Glm5NextHead(
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;
 }
+
+/* R1 screened head at B1: the certified-FP8 path (kimi's #1 rock). The
+ * norm kernel is the SAME fused residual RMS norm the full-vocab head
+ * runs (verbatim - the normed hidden is identical by construction); the
+ * certified screen then bounds-screens the shard's rows in FP8 and
+ * rescores the candidates EXACTLY in BF16, so the emitted (token,score)
+ * equals the full-vocab argmax the commit kernel would produce - at a
+ * fraction of the byte traffic (payload is 1B/element vs BF16 2B, and
+ * only the screened rows are rescored). rows==1 only; multi-row keeps
+ * the full-vocab candidate path (batch amortizes it). */
+static int32_t Glm5NextHeadCertifiedB1(
+    const Glm5NextLayerBuffers *buffers,
+    const void *head_norm_weight,
+    const void *head_weight,
+    const uint8_t *certified_payload,
+    const float *certified_scale,
+    const float *certified_norm,
+    void *certified_scratch,
+    uint32_t *candidate_ids,
+    uint32_t *screened_count,
+    uint32_t rank_offset,
+    uint32_t vocabulary,
+    cudaStream_t stream)
+{
+    cudaError_t status;
+    if (buffers == 0 || head_norm_weight == 0 || head_weight == 0 ||
+        certified_payload == 0 || certified_scale == 0 ||
+        certified_norm == 0 || certified_scratch == 0 ||
+        candidate_ids == 0 || screened_count == 0 ||
+        buffers->hc_mean_bf16 == 0 || buffers->normed_bf16 == 0 ||
+        buffers->output_token == 0 || buffers->output_score == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        1u,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->hc_mean_bf16,
+        0,
+        (const uint16_t *)head_norm_weight,
+        0,
+        buffers->normed_bf16,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_RMS_EPSILON);
+    status = SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
+        stream, buffers->normed_bf16, head_weight, certified_payload,
+        certified_scale, certified_norm, certified_scratch, candidate_ids,
+        screened_count, buffers->output_token, buffers->output_score,
+        rank_offset, 1u, vocabulary, GLM5_NEXT_HIDDEN);
+    return status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}

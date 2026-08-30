@@ -5,7 +5,7 @@
  "stage_pack_path": "packs/glm5_next_stage.tp16.rank2.g5nsp",
  "max_sequence_positions": 32768,
  "execution_row_capacity": 1024,
- "decode_split_context_threshold": 0,
+ "decode_split_context_threshold": 2048,
  "tp_degree": 16,
  "tp_rank": 2,
  "tp_collective": {

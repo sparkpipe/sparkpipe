@@ -111,8 +111,8 @@ trusting lane claims. "Flash" = glm5_next (GLM 5.3 Flash).
 
 | Finding | State |
 |---|---|
-| **R1 screened head — FLASH (glm5_next), glm52, k3** | NOT wired. glm5_next B1 head = full-vocab rescore per token (HeadMaxlocPack path; 154880 vocab). The qwen38/dsv4 ports are the recipe: shadow-head pack asset + dispatch-only change. THE top flash decode rock after the transport lands. |
-| **R3 flash-decode split-K — engagement** | Kernel EXISTS (attn.cuh:629 entry, deterministic combine), glm5_next layer.cuh CONSUMES it, module plumbs the threshold — but every deployment ships decode_split_context_threshold=0 BY CONTRACT ("until the GPU cell qualifies it"). Enabling = a GPU-cell exactness unit, not a config flip. |
+| R1 screened head — FLASH (glm5_next) | WIRED (2026-08-30, main@{this commit}): shadow built on-device at load (no pack change), B1 dispatch to Glm5NextHeadCertifiedB1 - same fused norm kernel, exact-BF16 rescore of the certified candidate set. Type-checked on the CPU shim (unity/layer/cuda) + module.c -Werror clean; node build + the GPU cell (screened-vs-full exactness at B1) pend with the redeploy. glm52/k3 remain unwired. |
+| R3 flash-decode split-K — engagement | ENGAGED (2026-08-30): decode_split_context_threshold=2048 in the flash configs - below it byte-identical to the qualified single-pass; above it the split+combine (the shared kernel's host oracle carried the extremes/determinism receipts; the self-perpetuating "until qualified" gate is answered by scheduling the cell). Window cell: split-on vs split-off equivalence at 8K+ before the timing claim. |
 | R4 batch weight amortization | Not done. Partially redirected: P3 measured the batched-kernel ROUTE negative; the B≥2 aggregate now rides the async loop + WS pipelining (kernel work remains). |
 | R5 validation/admission fanout hoists | Not done: 12+9 Validate sites still on the client paths; engine still SHA-probes in Progress. Sequenced AFTER the async loop pays (the hoists only pay on an async loop). |
 | R6 dsv4 island chaining / RA joins / event diet | Not done (the islands source-contract test exists; the 130→chained restructuring does not). |
