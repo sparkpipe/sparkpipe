@@ -1305,6 +1305,7 @@ CEILING = 228248
 # conviction dumps); the swiglu swap itself was REVERTED (it NaN'd the MoE
 # partial from the first wave - verdict by bisect wave10; the record comment
 # stays, the kernel is gone). To be trimmed with the ratchet at coherence.
+<<<<<<< HEAD
 # 233266 exact (2026-08-30, dsv4flash lane): +11 for the dsv4 module's
 # self-contained link tail (weightd attach/status/sha256/admission sources
 # added to MODULE_ADDITIONAL_HOST_SOURCES — sparkpipe_model_compile linked
@@ -1330,6 +1331,19 @@ CEILING = 228248
 # model literals derived from the contract per the memory-contract gate).
 # Measured at merge: 234369 exact.
 CEILING = 234369
+=======
+# +326 (2026-08-30, qwen38max lane): the CPU stagepack wire-contract audit
+# (tools/qwen38_stagepack_layout_probe.c + tools/qwen38_stagepack_layout_
+# audit.py + its report) - the harness that caught the v2 header field-order
+# and MXFP4 codec-code divergences before the 16-rank pack build.
+# +43 (2026-08-30, qwen38max lane): the stagepack audit tool gained the
+# mechanical cross-language codec-code check (--codec-check) that catches
+# the MXFP4_E2M1 3-vs-7 class on any branch before packs are built.
+# +108 (2026-08-30, qwen38max lane): the stagepack audit gained --git-ref
+# (one command audits any branch: extract ref, build probe, infer layout,
+# run layout+codec checks) - the pre-build gate for qwen38max pack builds.
+CEILING = 233597
+>>>>>>> origin/lane/qwen38max-v2-audit
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
