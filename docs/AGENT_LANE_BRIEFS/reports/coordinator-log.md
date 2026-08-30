@@ -2282,3 +2282,23 @@ appendix).
   the fresh tree). Everything else is proven: module validated, pack
   loads, daemon serves, frames accepted.
 - Spawns still down (operator); single-agent mode.
+
+## 2026-08-30 ~04:3x — Q27B MISSION CLOSED: serving proven + telemetry-confirmed
+
+- THE RECEIPT: 12+ complete generations (8/96/2048-token requests,
+  all status=0 terminal=1), token streams logged (198,760,1118,314,
+  1439,369,279,2029...), 72.65GiB resident, and THE ACCEPTANCE PAIR:
+  node-local nvidia-smi 96% AND dashboard spark5 gpu_pct=96.0
+  busy_nodes=1 during live 2048-token decode. The full chain works:
+  fresh build -> validated module -> pack load -> daemon ready ->
+  control endpoint -> prefill -> decode -> completed.
+- TWO MISDIAGNOSES CORRECTED IN THE RECORD: (1) the 'control-endpoint
+  bind defect' was my own task-cleanup ordering (the task TERMed the
+  daemon before my manual batch ran — the listener binds fine while
+  alive); (2) the sustained telemetry zeros were poll-timing (bursty
+  short generations < the 5s poll) + the monitor restarting post-
+  reboot — NOT missing compute. Bursty single-stream work needs a
+  sustained run to intersect the dashboard; noted for the gate's use.
+- q27b lane integration remains owed (5+ commits incl. the main-tip
+  -Werror fix); the runbook = serve-8's task shape (cache-drop in-cmd,
+  exact-member batch schema, daemon-up-then-batch ordering).
