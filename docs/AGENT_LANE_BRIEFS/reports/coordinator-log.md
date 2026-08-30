@@ -3480,3 +3480,10 @@ the conflict resolution keeps both.)
 - ACTION: cleaning now per verified-then-removed (the k3 whole-model
   build on warm makes these stage packs obsolete; the TP4PP4 ranks
   are on all 16 nodes already).
+
+- RESULT: sparke 20G -> 2.7T free. The k3 stage packs (TP4PP4 era)
+  were superseded by the tile_k=32 warm build. glm53_packs_fixed
+  dirs also retired (old manual fix copies).
+- FLEET SPACE: 0:1.2T 1:1.1T 2:1.5T 3:382G 4:2.1T 5:149G 6:647G
+  7:1.2T 8:1.8T 9:2.2T a:2.5T b:1.9T c:2.5T d:2.4T e:2.7T f:2.7T.
+  spark3/5/6 remain the tightest; no builds target them.
