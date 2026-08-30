@@ -3211,3 +3211,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - ALL 4 TP4 RANKS PASS (errors=0). The 27B rung: BUILT, VERIFIED,
   PLACED (spark6-9). SEVEN of eight models done.
 - k3 warm-build continues; dsv4-pro the last rung.
+
+## 2026-08-30 ~07:3x — k3 warm-build 670G read / 310G written (291G payload)
+
+- Steady. WATCH ONLY. (Board: 7/8 models done; k3 + dsv4-pro remain.)
