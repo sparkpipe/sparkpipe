@@ -3487,3 +3487,36 @@ the conflict resolution keeps both.)
 - FLEET SPACE: 0:1.2T 1:1.1T 2:1.5T 3:382G 4:2.1T 5:149G 6:647G
   7:1.2T 8:1.8T 9:2.2T a:2.5T b:1.9T c:2.5T d:2.4T e:2.7T f:2.7T.
   spark3/5/6 remain the tightest; no builds target them.
+
+## 2026-08-30 ~13:5x — FLEET CLEANUP: the old-topology stagepacks across all 16 nodes
+
+- IDENTIFIED FOR REMOVAL (old-topology or stale build artifacts,
+  NOT serving sets):
+  - k3.mxfp4.tp4pp4 on ALL 16 nodes (~91G each ≈ 1.5T total) —
+    superseded by the tile_k=32 whole-model build on warm
+  - dsv4_pro.tp4pp4 on ALL 16 nodes (~88G each ≈ 1.4T total) —
+    the TP4PP4 topology set; the TP16 rung will rebuild
+    WAIT: the operator may want TP4PP4 packs retained for testing
+    non-TP16 topologies. ASKING before deleting these two.
+  - qwen38_2.4t_a95b on spark1/2/3 (~136G each = 408G) — the
+    qwen-max FP8 source copy (2.3T warm original retained; the
+    node copies were for the never-built TP16 of the FP8 arm)
+  - qwen38max.tp4 on spark7 (1.3T) — the qwen-max FP8 TP4 arm
+    (BREAKS the 110GiB law; superseded by nvfp4 PP16)
+  - qwen4_flash.tp4 on spark4-7 (~250G each = 1T total) — the OLD
+    qwen-flash TP4 packs (superseded by TP8 BF16 placed 8/8)
+  - glm52.tp8.fp8 on spark8/9/a (~96G each) — the glm52 TP8
+    (DEPRECATED model; kernel donor only)
+  - glm53full.nvfp4.tp16 on spark0/8/9 etc (~31G each = ~500G) —
+    the nvfp4 resolution (kept on warm 433G; node copies removable
+    if the FP8 arm is the serving pick — operator's call)
+  - Qwen3.8-27B-local on spark3 (52G) — a stale local copy
+  - sparke glm53_packs_fixed/fixed2 (42G) — already cleaned
+
+- TOTAL IDENTIFIED: ~4.5T+ across the fleet. NOT removing: any
+  glm5_next serving set, any glm53full FP8 set (the serving arm),
+  the k3.mxfp4.tp16 (will hold the new build), the qwenmax PP16.
+- OPERATOR: confirm the removal of k3.mxfp4.tp4pp4 + dsv4_pro.tp4pp4
+  (they match your "TP16 first" plan but lose the old-topology test
+  capability); the rest (old qwen-flash TP4, qwen-max FP8 TP4,
+  glm52) are unambiguous. Execute on your word.
