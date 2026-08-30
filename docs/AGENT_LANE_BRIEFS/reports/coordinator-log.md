@@ -3270,3 +3270,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   stop). k3 on sparkf: RSS 33G (numpy buffers at speed — WATCH but
   no OOM cliff yet; the journal protects), payload 392G of ~1.5T.
   dsv4-pro extension is Phase A's second unit after k3.
+
+## 2026-08-30 ~11:2x — k3 371G read / 169G written (462G payload, RSS back to 23G)
+
+- The 33G RSS was transient (numpy peak passed); flat again. WATCH.
