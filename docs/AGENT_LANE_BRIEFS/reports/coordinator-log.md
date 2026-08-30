@@ -3308,3 +3308,16 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   EXTRA. TP4 serving needs ranks 0-3 only. The extra 4 packs stay
   on disk harmless; flag for cleanup at next pass.)
 - k3 warm-build at 598G payload (~40%); continuing.
+
+## 2026-08-30 ~14:0x — 27B TP4 VERIFIED IN PLACE: all 4 ranks PASS on their nodes
+
+- rank0 PASS (spark6), rank1 PASS (spark7), rank2 PASS (spark8),
+  rank3 PASS (spark9) — all errors=0, 9.91GiB each, verified with
+  the TP-aware verifier (the fixed + repointed one). The 27B TP4
+  rung: BUILT, VERIFIED, PLACED. (The duplicate RANK0-OK entries
+  were the two chain waves; ranks 1-3's verify earlier ran on
+  spark6 against files that live on their own nodes — the per-node
+  verify above is the proof that counts.)
+- EIGHT-model board nearly complete: 27B ✓ (TP4), qwen-flash ✓
+  (TP8, 2x-replication pending), dsv4-flash ✓, glm5.3 ×4 ✓,
+  qwen-max ✓; k3 building; dsv4-pro extension last.
