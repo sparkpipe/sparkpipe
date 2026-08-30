@@ -15,6 +15,18 @@ contract for getting your work done without stepping on anyone.
   launcher of anything on the sparks. Never start a fleet/daemon by
   hand; never hold nodes while you think.
 
+## GETTING GPU WORK DONE — THE QUEUE IS GLOBAL (2026-08-30 fix)
+
+**Queue state is machine-global at /tmp/sparkqueue/ — pull main before
+your next submit.** Before this fix, `spark_queue.py add` from YOUR
+worktree wrote YOUR worktree's runs/queue.jsonl while the dispatcher
+read the coordinator's — dev submissions silently went nowhere (the
+split-brain; caught by lane/glm53). All worktrees and sessions now
+share ONE queue/reservations/results at the absolute path (env
+SPARK_QUEUE_STATE overrides). If you submitted tasks from a worktree
+before this fix: re-submit them — the old worktree-local queues are
+dead files.
+
 ## Getting GPU work done
 
 ```bash

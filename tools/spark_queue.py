@@ -51,12 +51,23 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUNS = os.path.join(ROOT, "runs")
-QUEUE = os.path.join(RUNS, "queue.jsonl")
-RESERV = os.path.join(RUNS, "reservations.json")
-RESULTS = os.path.join(RUNS, "results.jsonl")
-LOGDIR = os.path.join(RUNS, "logs")
-LOCK = os.path.join(RUNS, ".lock")
+# THE QUEUE STATE IS MACHINE-GLOBAL (the split-brain fix): every worktree
+# and every dev session on this host MUST see ONE queue. Worktree-relative
+# state meant dev `add`s wrote a queue no dispatcher ever read.
+STATE = os.environ.get("SPARK_QUEUE_STATE", "/tmp/sparkqueue")
+os.makedirs(STATE, exist_ok=True)
+QUEUE = os.path.join(STATE, "queue.jsonl")
+RESERV = os.path.join(STATE, "reservations.json")
+RESULTS = os.path.join(STATE, "results.jsonl")
+LOGDIR = os.path.join(STATE, "logs")
+LOCK = os.path.join(STATE, ".lock")
+# one-time migration: absorb the live coordinator copy if the global is new
+if not os.path.exists(QUEUE) and os.path.exists(os.path.join(ROOT, "runs", "queue.jsonl")):
+    import shutil
+    for name in ("queue.jsonl", "reservations.json", "results.jsonl"):
+        src = os.path.join(ROOT, "runs", name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(STATE, name))
 DENY = ("reboot", "shutdown", "poweroff", "init 0", "init 6",
         "kill -9", "kill -KILL", "SIGKILL", "rm -rf")
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
@@ -68,14 +79,14 @@ def now():
 
 def acquire_lock():
     import fcntl
-    os.makedirs(RUNS, exist_ok=True)
+    os.makedirs(STATE, exist_ok=True)
     fh = open(LOCK, "a+")
     fcntl.flock(fh, fcntl.LOCK_EX)
     return fh
 
 
 def load_queue():
-    os.makedirs(RUNS, exist_ok=True)
+    os.makedirs(STATE, exist_ok=True)
     if not os.path.exists(QUEUE):
         return []
     entries = []
@@ -111,7 +122,7 @@ def save_reservations(res):
 
 
 def append_result(entry, exit_code, note=""):
-    os.makedirs(RUNS, exist_ok=True)
+    os.makedirs(STATE, exist_ok=True)
     with open(RESULTS, "a") as fh:
         fh.write(json.dumps(dict(entry, state="finished",
             exit=exit_code, finished_at=now(), note=note)) + "\n")
