@@ -2478,3 +2478,21 @@ appendix).
   node/pack/model/revision — the central coordinator's future fanout
   unit). The 56s elapsed is the ctl's debug-side file SHA; real
   deployments carry placement-receipt digests.
+
+## 2026-08-30 ~15:5x — PR ERA LIVE: first three merged
+
+- MERGED #756 (dsv4 module self-contained link tail — the weightd-era
+  build wiring), #751 (qwen4_flash fleet16 launcher deploy_dir fix +
+  wave-readiness audit), #752 (dsv4pro standalone rank-pack verifier,
+  contract-derived). Stacked ratchet 233758 exact; GATES EXIT 0;
+  pushed 01a5d84.
+- ADJUDICATION QUEUE (next windows, read-then-rule): #753 audits MY
+  qwen38 packer wire contract (v2 field-order + MXFP4 codec
+  divergences — potentially real catches against tonight's nvfp4
+  work; read first); #754 proposes TP16 via attention kv-head
+  REPLICATION vs my PP16 full-width reading of the packer contract —
+  a topology direction decision; #750 CPU-accuracy verify + a
+  verifier mxfp4 dequant false-FAIL fix (likely merges with #753's
+  resolution); #755 glm53 CPU verifier + staged M5 cell; #757
+  kimi-k3 TP16 readiness (the dev doing their own TP16 per the
+  devolution — exactly right).
