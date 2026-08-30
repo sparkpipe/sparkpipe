@@ -3100,3 +3100,22 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   27B packs are LIKELY VALID (bytes reconcile exactly); the invalid
   flag stands until the verifier proves it. Next cycle implements
   the TP-aware verifier then re-runs.
+
+## 2026-08-30 ~00:4x — TP-aware verifier LANDED (3 fix commits); 27B verify now walks deeper
+
+- qwen38_pack_verify: --tp-degree shards expected shapes via the
+  PACKER's own build_tp_plan/packed_shape (single source of truth).
+  Three small fixes to get it running (args scope, the packer-module
+  import — the tables module has no plan fns).
+- The verify now walks past GDN_QKV: NEW findings at kind 11/12
+  (GDN_BETA/GDN_DECAY): shape 48x5120 vs expected 8192x2048 and a
+  weight_format=5 (FP8) where the natural format is BF16. THE -fp8
+  SOURCE quantizes the GDN beta/decay projections (and my probe
+  remapped names onto them) — the pack's entry is HONEST to the
+  source but the format table expects BF16. This is the
+  next-diagnosis item: either the format inventory gains the
+  source-quantized variant or these tensors' format follows the
+  checkpoint dtype (the packer's dtype-driven rule — verify mirrors
+  it). NEXT CYCLE.
+- k3 building; flash placed 8/8; 27B packs' flag stands (walk
+  incomplete).
