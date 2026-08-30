@@ -2443,3 +2443,22 @@ appendix).
   tally: 14 done, s15 in flight, s1 building (slow layer mix).
   NEXT: all 16 receipts -> qwen38_pack_verify per stage -> placement
   -> the module-side nvfp4 acceptance (loader + packed-4bit GEMM).
+
+## 2026-08-30 ~11:1x — WEIGHTD DEBUG BEGUN ON THE READY GLM PACKS (operator directive)
+
+- First REAL load through the daemon: tools/weightdctl.c (the manual
+  driver — attach with file-derived identity, status probe; committed
+  ef7f837) → spark0 weightd (persistent, /tmp/spark_weightd.sock,
+  ceiling 118111600640 = the law) → glm53full.fp8.tp16-rank0 (54,136,
+  549,376 B): ATTACHED cold=1 generation=1 refcount=1. The whole
+  verify+read+copy ran inside the ~15s window (W1 pipeline + FEAT_SHA2
+  earning out on real bytes).
+- Build receipt on spark0: daemon (make, clean) + ctl (cc with
+  -I/usr/local/cuda/include, -lcudart -lcuda). TELEMETRY: power
+  11.8→12.2W during load; memory query N/A on GB10 as usual — the
+  daemon's own arena accounting is the memory truth for weightd.
+- NEXT UNITS: (a) the unload/reclaim leg (daemon-side reclaim; ctl
+  release currently unmaps only — arena stays warm BY DESIGN); (b)
+  warm re-attach timing (expect seconds, the whole point); (c) a
+  second identity (nvfp4 rank) co-resident under the ceiling; (d)
+  telemetry visibility for arenas (daemon accounting → collector).
