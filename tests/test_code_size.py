@@ -1326,9 +1326,10 @@ CEILING = 228248
 # +135 drift (qwen38 stagepack fixes) rides along unchanged.
 # coordinator merge #749 (glm53full bf16 arm): expert codec 1 acceptance
 # in the glm52 module, the independent bf16 source verifier, the TP16
-# deployment generator, and the M5 cell task staging. Measured at
-# merge: 234364 exact.
-CEILING = 234364
+# deployment generator, and the M5 cell task staging (+5: the verifier's
+# model literals derived from the contract per the memory-contract gate).
+# Measured at merge: 234369 exact.
+CEILING = 234369
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

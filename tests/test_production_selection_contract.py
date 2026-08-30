@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CODECS = ("int6", "int7", "int8", "fp8", "nvfp4", "mxfp4")
+CODECS = ("bf16", "int6", "int7", "int8", "fp8", "nvfp4", "mxfp4")
 
 
 def require(condition, message):
@@ -50,7 +50,7 @@ def main():
     failures += require(declared is not None and
                         tuple(declared.group(1).split()) == CODECS,
                         "the GLM build codec matrix is incomplete or reordered")
-    for codec_index, codec in enumerate(CODECS, start=2):
+    for codec_index, codec in enumerate(CODECS, start=1):
         failures += require(
             f"ifeq ($(EXPERT_CODEC),{codec})" in makefile and
             f"GLM52_EXPERT_CODEC_ID := {codec_index}" in makefile,

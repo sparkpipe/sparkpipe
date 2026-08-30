@@ -50,7 +50,12 @@ KIND_NAME = {0: "EMBEDDING", 2: "LM_HEAD", 3: "ATTN_NORM", 4: "Q_A",
              20: "ROUTER", 21: "ROUTER_CORRECTION", 22: "EXPERT_UP_GATE",
              23: "EXPERT_DOWN", 24: "SHARED_GATE_UP", 25: "SHARED_DOWN"}
 
-HIDDEN, VOCAB, MOE_INT, EXPERTS = 6144, 154880, 2048, 256
+from glm52_model_contract import load_model_contract
+
+_CONTRACT = load_model_contract()
+HIDDEN, VOCAB = _CONTRACT["hidden_dimension"], _CONTRACT["output_vocab_count"]
+MOE_INT, EXPERTS = (_CONTRACT["moe_intermediate_dimension"],
+                    _CONTRACT["moe_expert_count"])
 FIRST_ROUTED = 3
 
 
