@@ -2882,3 +2882,15 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   many hours vs spark0 restart ~1h + shard. RELOCATE is correct per
   fail-fast. Executing next cycle window (copy journal approach
   infeasible; clean restart on spark0 with the FIX already on main).
+
+## 2026-08-30 ~14:3x — k3 RELOCATED to spark0: the pace difference is 200x
+
+- spark4's build TERMed + cleaned; clean restart on spark0 (598G
+  free, fixed packer). FIRST-MINUTE RECEIPT: rchar 20.6G read /
+  5.6G written in ~60s (~340MB/s) vs spark4's 2.5MB/s — the
+  relocation ruling vindicated by an order of magnitude+. RSS 11G
+  early (numpy interleave buffers per layer at the faster rate —
+  WATCH: if it climbs past ~40G the streaming fix needs a second
+  look at the numpy path's per-expert copies; the journal protects
+  either way).
+- ETA at this pace: base pack ~1-1.5h, shard follows.
