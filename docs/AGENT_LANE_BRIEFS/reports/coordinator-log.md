@@ -3019,3 +3019,16 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   SIGSTOP recurrence watch active.
 - 27B TP4 fires next window (spark6; the landed fused-gate port
   serves it directly at degree 4).
+
+## 2026-08-30 ~21:1x — BOTH ruling builds live; the 27B refusal IMPLEMENTED
+
+- 27B TP4: the named refusal ('FP8 fused-slice scale not yet
+  supported' — the GDN qkv fused tensor under TP) is IMPLEMENTED
+  (5f85fa6: per-segment block-row windows into the shared fused
+  scale plane). v3 run: RANK0-OK, zero failures, 31G written — the
+  fused port family is now complete (gate|up offset + fused qkv
+  scales). 4 ranks × ~21.7G, completing this window.
+- qwen-flash TP8 on spark2: RANK1-OK (2 done, 87G), zero failures.
+- k3: 1.19T read / 564G written, healthy.
+- THREE builds converging simultaneously; next windows verify +
+  place each. dsv4-pro extension is then the last rung.
