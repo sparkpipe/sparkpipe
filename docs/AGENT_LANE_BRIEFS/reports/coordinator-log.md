@@ -2780,3 +2780,10 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   On pace for the ~1.5T pass over subsequent cycles; shard step
   auto-follows.
 - Rulings pending (operator): qwen-flash TP8/TP12; 27B TP4 vs port.
+
+## 2026-08-30 ~07:1x — k3 pack steady (291G read / 141G written, 132G on disk)
+
+- Packer on pace (~100G written / 5 min): the base pack approaches
+  half of its ~1.5T target. ETA to shard step ~1h at cadence; the
+  chain self-drives (shard 16 fires on pack completion). No
+  intervention needed — watches only.
