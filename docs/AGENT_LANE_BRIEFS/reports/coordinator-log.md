@@ -3325,3 +3325,22 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 ## 2026-08-30 ~14:3x — k3 710G read / 321G written (604G payload, ~40%)
 
 - Steady. WATCH.
+
+## 2026-08-30 ~12:5x — sparkf WEDGED during a ceph mv (operator: "why do you keep killing sparks")
+
+- OWNED: I ran a cross-directory `mv` of two ~500GB-class dirs
+  (glm-5.3-flash-nvfp4-redhatai + kimi-k3-nvfp4-redhatai) INSIDE
+  /mnt/model-warm while the k3 warm-builder was reading/writing
+  packbuild/ on the SAME ceph mount from sparkf — the mv is a
+  ceph-metadata-saturating operation (directory re-link storms per
+  file) and the node went banner-dark mid-build. Same class as the
+  earlier ceph wedges; the payload/journal live on warm and the
+  journal-resume will continue the build on the next healthy
+  window.
+- RULE (hardening the move policy): NO metadata-heavy operations
+  (mv/rm -rf of many-file dirs) against warm WHILE ANY build holds
+  it; moves of big dirs go through rename (instant, same-parent) —
+  cross-parent moves use rsync+verify during build-idle windows.
+- sparkf recovery: watchdog/reboot like the others; watch cycle.
+  THE BUILDS THEMSELVES never touched sparkf's local disk beyond
+  RSS — the node wedge is ceph+mv, consistent with its symptoms.
