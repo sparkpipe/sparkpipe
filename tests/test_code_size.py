@@ -1370,7 +1370,11 @@ CEILING = 234369
 # (modules/glm5_next.../validation/flash_decode_cell.cu + the spark4
 # receipt log): the exactness+speed receipts for R1 screened head and R3
 # split-K engagement. Measured: 236147 exact.
-CEILING = 236149
+# glm5_next adapter: the private tp-collective algorithm loader moved
+# to #760 semantics (d2a alone or with recursive doubling at TP16; the
+# payload thresholds gated on the mask) - the pre-d2a bound rejected the
+# generator's own configs at load. Measured: 236171 exact.
+CEILING = 236171
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
