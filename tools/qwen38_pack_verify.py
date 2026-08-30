@@ -59,7 +59,7 @@ HASH_CHUNK = 16 * 1024 * 1024
 
 # Wire constants, mirroring spark_qwen38_max_stagepack_format.h (and the
 # packer). Any drift here is exactly what this verifier exists to catch.
-MAGIC = 0x50533851
+MAGIC = _tables.MAGIC  # each family's packer defines its own
 FORMAT_VERSION = _tables.FORMAT_VERSION
 HEADER_BYTES = 120
 ENTRY_BYTES = 56
