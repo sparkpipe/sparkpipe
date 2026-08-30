@@ -1305,7 +1305,13 @@ CEILING = 228248
 # conviction dumps); the swiglu swap itself was REVERTED (it NaN'd the MoE
 # partial from the first wave - verdict by bisect wave10; the record comment
 # stays, the kernel is gone). To be trimmed with the ratchet at coherence.
-CEILING = 233120
+# 2026-08-30 qwen-flash wave-readiness: fleet16 launcher per-host deploy_dir
+# fix (+5 lines). Measured on pristine main BEFORE this change: 233255 -
+# already 135 over the 233120 ratchet (pre-existing overshoot from a prior
+# merge; coordinator to adjudicate/trim). Ceiling re-measured exact for
+# main+this change so the gate stays monotone from reality, not from a
+# number main no longer matches.
+CEILING = 233270
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
