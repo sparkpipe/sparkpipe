@@ -338,8 +338,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "77bcd7e1fe762708f8f7c534298ae199f6ec23f4f3edeee54c53c4cb35df92ea",
-      "size_bytes": 142155
+      "sha256": "bc480849818e6d5511acf1f588f9150474de48fdfd813cbe6cf302306b48e684",
+      "size_bytes": 143123
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -528,8 +528,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-hillclimb-inventory-2026-08-30.md",
-      "sha256": "8818a0fedcf7203a39cffa676eb8a1005611959b6cc557ff8d6ee1c4e6477177",
-      "size_bytes": 2246
+      "sha256": "1cdcf2581427d0fdec8e2a685341c483b2f529a00eab6b3eabebc033777a6db0",
+      "size_bytes": 3140
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-m5-2026-08-28.md",
@@ -553,8 +553,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-wave-ready-2026-08-30.md",
-      "sha256": "cebf0072a3149640302c1a785c592a1cd4c4851b63e6a8822e279b3573c5cf59",
-      "size_bytes": 3136
+      "sha256": "ce2c8bbc11a522741fa2b38ce14feb87466af33f2ea5d7f1974a27e44fd70728",
+      "size_bytes": 4416
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen27b-serve-2026-08-30.md",
@@ -8670,5 +8670,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31821596
+  "total_bytes": 31824738
 }

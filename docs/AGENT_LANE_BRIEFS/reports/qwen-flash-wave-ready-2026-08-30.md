@@ -61,3 +61,25 @@ coordinator's exclusive 16-node window (k3/dsv4 notes hold the queue head),
 spark6/7 ceph wedge awareness for any non-local reads (none needed — packs
 are node-local), and the standard receipts after launch (B1 smoke, stream
 hash, exact-32K cell).
+
+## Addendum: CPU pack verification ATTEMPTED — BLOCKED by the ceph wedge (2026-08-30 ~06:0x)
+
+Operator asked whether the 16 v4 packs are CPU-verified. HONEST ANSWER: NO.
+Verified to date: presence + byte-size at all 16 destinations (census above).
+NOT verified: header/directory/byte-trace content (the M4 gate,
+tools/qwen4_flash_pack_verify.py).
+
+Attempt (queued qwen38flash-v4verify..4, sequential, node-local): the FIRST
+pack's byte-trace (spark4 s0r0) WEDGED — python D-state, read counters
+frozen at 327 MB over 5s, on /mnt/model-warm/qwen3.8-flash-next. This is
+the S6 wedge class (spark5/6/7 then) now on spark4, previously the healthy
+node. All verifier pids TERMed, task cancelled, spark4+spark5 confirmed
+clear of our processes. Two earlier fast-fail passes were my staging errors
+(remote $HOME expansion; verifier's transitive imports qwen4_flash_stagepack
++ spark_pack_common) — fixed, the third pass was the real run that wedged.
+
+TO COORDINATOR/SYSADMIN: the model-warm bulk-read wedge has now hit spark4
+(4th instance of the class; MDS-pressure theory strengthens). Content
+verification of the v4 packs needs either the mount healthy or source shards
+staged node-local. The wave SHOULD NOT launch on packs that are only
+size-verified — the M4 gate stands.
