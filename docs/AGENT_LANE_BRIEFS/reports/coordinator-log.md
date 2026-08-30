@@ -3000,3 +3000,12 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   deployment max_input_rows width (fix = descriptor gets the module's
   true KV block size + the deployment raises prefill rows; both
   model-dev-side, noted to #755).
+
+## 2026-08-30 ~19:5x — k3 was SIGSTOP'd (resumed); reads moving again
+
+- Found the builder in T (stopped) state — someone/something sent
+  SIGSTOP (not TERM: the process was intact, 431G payload + journal
+  preserved). CONT sent; resumed instantly (io advancing again,
+  986G/473G). Suspect: an earlier Ctrl-Z-class artifact or a dev
+  session's process tool. WATCH for recurrence; if it re-stops, trace
+  the sender.
