@@ -241,8 +241,10 @@ typedef struct SparkQwen38MaxStagePackTensorShape
  *     expert_count/degree experts per rank, expert-major slices);
  *   - rows over the head axis (GDN gate [V,H], beta/decay [Vh,H] and the
  *     composed GDN QKV/conv channels q|k|v, all cut so a rank owns whole
- *     heads; ATTN query rows 2*Q — query|gate fused per head — and the
- *     GQA key/value rows over the KV heads);
+ *     heads; ATTN query rows 2*Q — query|gate fused per head);
+ *   - rows over the kv-head axis for the GQA key/value projections, cut
+ *     by min(degree, kv_heads) whole heads - a degree above the kv head
+ *     count replicates each kv head across the rank group that shares it;
  *   - columns over the input axis (GDN_OUTPUT [H,V] and ATTN_OUTPUT [H,Q]:
  *     the output projection consumes the rank-local head slice, so its
  *     INPUT narrows and its partial sums need the TP all-reduce);
@@ -257,7 +259,11 @@ typedef enum SparkQwen38MaxStagePackShardAxis
 	SPARK_QWEN38_MAX_STAGEPACK_SHARD_EXPERT_ROWS = 1,
 	SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_ROWS = 2,
 	SPARK_QWEN38_MAX_STAGEPACK_SHARD_INPUT_COLUMNS = 3,
-	SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_COLUMNS = 4
+	SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_COLUMNS = 4,
+	/* Attention K/V projections: whole-kv-head rows, but the divisor is
+	 * min(degree, kv heads) - past that the kv heads replicate across
+	 * consecutive rank groups (see the model header macros). */
+	SPARK_QWEN38_MAX_STAGEPACK_SHARD_KV_HEAD_ROWS = 5
 } SparkQwen38MaxStagePackShardAxis;
 
 static inline SparkQwen38MaxStagePackShardAxis SparkQwen38MaxStagePackShardAxisOf(uint32_t tensor_kind)
@@ -274,9 +280,10 @@ static inline SparkQwen38MaxStagePackShardAxis SparkQwen38MaxStagePackShardAxisO
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA:
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY:
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY:
+		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_ROWS);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY:
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_VALUE:
-		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_ROWS);
+		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_KV_HEAD_ROWS);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_OUTPUT:
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_OUTPUT:
 		return(SPARK_QWEN38_MAX_STAGEPACK_SHARD_INPUT_COLUMNS);
@@ -293,9 +300,12 @@ static inline SparkQwen38MaxStagePackShardAxis SparkQwen38MaxStagePackShardAxisO
  * heads/experts/groups: the routed experts, the GDN key and value heads
  * (QK and value dimensions are heads x fixed head dims, so cutting the
  * heads cuts both cleanly and preserves the 8:1 grouped-value ratio), the
- * attention query and KV head groups (GQA stays intact: Q/KV = 16), and
- * the MXFP4 group tiling of the narrowed expert rows. Degrees 1, 2 and 4
- * qualify on this geometry.
+ * attention query heads, and the MXFP4 group tiling of the narrowed
+ * expert rows. Attention KV heads cut by min(degree, kv_heads): either
+ * the degree divides the kv head count, or the degree is a multiple of
+ * it AND the rank's query-head block (query_heads/degree) fits inside
+ * one GQA group (group % block == 0), so the shared kv head serves every
+ * rank of the group. Degrees 1, 2, 4 and 16 qualify on this geometry.
  */
 static inline int32_t SparkQwen38MaxStagePackShardingFeasible(uint32_t tp_degree)
 {
@@ -305,8 +315,15 @@ static inline int32_t SparkQwen38MaxStagePackShardingFeasible(uint32_t tp_degree
 		return(-2);
 	if ( (SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT % tp_degree) != 0u )
 		return(-3);
-	if ( (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u )
+	if ( (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u )
 		return(-4);
+	if ( (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u )
+	{
+		uint32_t query_block = SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree;
+		uint32_t group = SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT;
+		if ( (tp_degree % SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT) != 0u || (group % query_block) != 0u )
+			return(-4);
+	}
 	if ( ((SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION % tp_degree) != 0u) || ((SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION % tp_degree) != 0u) )
 		return(-5);
 	return(0);
@@ -330,6 +347,9 @@ static inline void SparkQwen38MaxStagePackShardShape(SparkQwen38MaxStagePackTens
 		break;
 	case SPARK_QWEN38_MAX_STAGEPACK_SHARD_HEAD_ROWS:
 		shape->rows /= tp_degree;
+		break;
+	case SPARK_QWEN38_MAX_STAGEPACK_SHARD_KV_HEAD_ROWS:
+		shape->rows /= SPARK_QWEN38_MAX_MODEL_ATTN_KV_SHARD_COUNT(tp_degree);
 		break;
 	case SPARK_QWEN38_MAX_STAGEPACK_SHARD_INPUT_COLUMNS:
 		shape->columns /= tp_degree;

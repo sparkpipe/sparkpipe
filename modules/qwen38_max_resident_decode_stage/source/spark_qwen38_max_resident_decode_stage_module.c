@@ -648,7 +648,7 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 	model_fp = SparkQwen38MaxModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	/* The KV block record is the rank-local cache row: 2 x local kv heads x
 	 * head dim bf16 elements per token, matching AllocatePools. */
-	block_record_elements = (uint64_t)SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * 2ull * (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT / state->tp_degree) * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION * state->attn_layer_count;
+	block_record_elements = (uint64_t)SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * 2ull * SPARK_QWEN38_MAX_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(state->tp_degree) * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION * state->attn_layer_count;
 	layout_bits[0] = block_record_elements;
 	layout_bits[1] = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	layout_bits[2] = state->kv_block_count;
@@ -1424,7 +1424,7 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 	uint64_t local_gdn_value_heads = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / state->tp_degree;
 	uint64_t local_gdn_value_dimension = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION / state->tp_degree;
 	uint64_t local_attn_query_dimension = SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_DIMENSION / state->tp_degree;
-	uint64_t local_attn_kv_dimension = SPARK_QWEN38_MAX_MODEL_ATTN_KV_DIMENSION / state->tp_degree;
+	uint64_t local_attn_kv_dimension = SPARK_QWEN38_MAX_MODEL_ATTN_LOCAL_KV_DIMENSION(state->tp_degree);
 	SparkStatus status;
 	cudaStream_t stream = 0;
 	status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,cudaStreamCreate(&stream),"cudaStreamCreate");
@@ -1722,7 +1722,7 @@ static SparkStatus SparkQwen38MaxModuleAllocatePools(SparkQwen38MaxModuleState *
 	 * local widths from tp_degree, so the strides must agree here. */
 	uint64_t local_gdn_state_layer_elements = (uint64_t)(SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / state->tp_degree) * SPARK_QWEN38_MAX_MODEL_GDN_HEAD_KEY_DIMENSION * SPARK_QWEN38_MAX_MODEL_GDN_HEAD_VALUE_DIMENSION;
 	uint64_t local_conv_tail_layer_elements = (uint64_t)(SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS / state->tp_degree) * (SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL - 1u);
-	uint64_t local_cache_token_elements = 2ull * (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT / state->tp_degree) * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION;
+	uint64_t local_cache_token_elements = 2ull * SPARK_QWEN38_MAX_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(state->tp_degree) * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION;
 	state->gdn_pool.abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
 	state->gdn_pool.lane_capacity = state->max_active_sequence_count;
 	state->gdn_pool.gdn_layer_count = state->gdn_layer_count;

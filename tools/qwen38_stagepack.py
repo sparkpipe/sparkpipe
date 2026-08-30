@@ -94,6 +94,15 @@ GDN_CONV_CHANNELS = 2 * GDN_QK_DIM + GDN_VALUE_DIM       # 20480
 ATTN_Q_DIM = ATTN_QUERY_HEADS * ATTN_HEAD_DIM            # 16384
 ATTN_KV_DIM = ATTN_KV_HEADS * ATTN_HEAD_DIM              # 1024
 
+# Attention KV shards at a TP degree: whole-kv-head cuts; past the kv head
+# count each kv head replicates across consecutive rank groups (see the
+# model header macros - ranks sharing a head also share a cache shard).
+def attn_kv_shards(tp_degree: int) -> int:
+    return min(tp_degree, ATTN_KV_HEADS)
+
+def attn_rank_kv_head_base(tp_degree: int, tp_rank: int) -> int:
+    return (tp_rank * ATTN_KV_HEADS) // tp_degree
+
 HEADER_STRUCT = struct.Struct("<28I2Q")
 ENTRY_STRUCT = struct.Struct("<6I4Q")
 assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
@@ -175,7 +184,7 @@ def kind_shape(kind: int, tp_degree: int = 1) -> tuple[int, int, int]:
     if kind == KIND_ATTN_QUERY:
         return (rows_sharded(2 * ATTN_Q_DIM), HIDDEN, WEIGHT_BF16)
     if kind in (KIND_ATTN_KEY, KIND_ATTN_VALUE):
-        return (rows_sharded(ATTN_KV_DIM), HIDDEN, WEIGHT_BF16)
+        return (ATTN_KV_DIM // attn_kv_shards(tp_degree), HIDDEN, WEIGHT_BF16)
     if kind == KIND_ATTN_OUTPUT:
         return (HIDDEN, cols_sharded(ATTN_Q_DIM), WEIGHT_BF16)
     if kind in (KIND_ATTN_QUERY_NORM, KIND_ATTN_KEY_NORM):
@@ -355,9 +364,10 @@ class SafetensorsSource(_BaseSafetensorsSource):
             return ref.rows, ref.columns
         if ref.kind in (KIND_GDN_OUTPUT, KIND_ATTN_OUTPUT, KIND_GDN_A_LOG, KIND_GDN_DT_BIAS):
             return ref.rows, ref.columns * ref.tp_degree
+        if ref.kind in (KIND_ATTN_KEY, KIND_ATTN_VALUE):
+            return ref.rows * attn_kv_shards(ref.tp_degree), ref.columns
         if ref.kind in (KIND_GDN_QKV, KIND_GDN_CONV_WEIGHT, KIND_GDN_GATE,
-                        KIND_GDN_BETA, KIND_GDN_DECAY, KIND_ATTN_QUERY,
-                        KIND_ATTN_KEY, KIND_ATTN_VALUE):
+                        KIND_GDN_BETA, KIND_GDN_DECAY, KIND_ATTN_QUERY):
             return ref.rows * ref.tp_degree, ref.columns
         return ref.rows, ref.columns
 
@@ -412,8 +422,13 @@ def sharded_bf16_plan(ref: TensorRef) -> tuple:
                     (GDN_QK_DIM + rank * local_qk, local_qk),
                     (2 * GDN_QK_DIM + rank * local_v, local_v)]
         return ("segments", segments, ref.columns)
+    if ref.kind in (KIND_ATTN_KEY, KIND_ATTN_VALUE):
+        # kv-head rows: the divisor is min(tp, kv_heads); the rank's slice
+        # starts at its (possibly shared) kv head.
+        head_base = attn_rank_kv_head_base(tp, rank)
+        return ("plain", head_base * ref.rows, ref.rows, 0, ref.columns, ref.columns)
     if ref.kind in (KIND_GDN_GATE, KIND_GDN_BETA, KIND_GDN_DECAY,
-                    KIND_ATTN_QUERY, KIND_ATTN_KEY, KIND_ATTN_VALUE):
+                    KIND_ATTN_QUERY):
         # head-row cut: the full height is ref.rows * tp.
         return ("plain", rank * ref.rows, ref.rows, 0, ref.columns, ref.columns)
     # Replicated (router, shared expert, norms, embedding, lm_head, MTP):
@@ -647,11 +662,17 @@ def main() -> int:
         parser.error("--output is required unless --dry-run")
     EXPERT_FORMAT[0] = WEIGHT_MXFP4_E2M1 if args.source_format == "quark-mxfp4" else WEIGHT_FP8_F32B128
     TP_RANK[0] = args.tp_rank
-    if args.tp_degree not in (1, 2, 4) or args.tp_rank >= args.tp_degree:
-        parser.error(f"invalid tp {args.tp_rank}/{args.tp_degree}: degree in {{1,2,4}}, rank < degree")
-    for axis in (EXPERT_COUNT, GDN_VALUE_HEADS, GDN_KEY_HEADS, ATTN_QUERY_HEADS, ATTN_KV_HEADS):
+    if args.tp_degree not in (1, 2, 4, 16) or args.tp_rank >= args.tp_degree:
+        parser.error(f"invalid tp {args.tp_rank}/{args.tp_degree}: degree in {{1,2,4,16}}, rank < degree")
+    for axis in (EXPERT_COUNT, GDN_VALUE_HEADS, GDN_KEY_HEADS, ATTN_QUERY_HEADS):
         if axis % args.tp_degree != 0:
             parser.error(f"tp degree {args.tp_degree} does not shard {axis} evenly")
+    if ATTN_KV_HEADS % args.tp_degree != 0:
+        # replicating degree: each rank's query block must fit one GQA group
+        group = ATTN_QUERY_HEADS // ATTN_KV_HEADS
+        block = ATTN_QUERY_HEADS // args.tp_degree
+        if args.tp_degree % ATTN_KV_HEADS != 0 or group % block != 0:
+            parser.error(f"tp degree {args.tp_degree} cannot shard {ATTN_KV_HEADS} kv heads")
 
     receipt = {
         "kind": "sparkpipe.qwen38.stagepack-receipt.v2",
