@@ -1,5 +1,5 @@
 {
-  "file_count": 1737,
+  "file_count": 1740,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -575,6 +575,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen38max-shard-2026-08-28.md",
       "sha256": "1b6cb0279aef796ae0fd20445032db60287e81d18b9988931ef0e9664578343b",
       "size_bytes": 12193
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/qwen38max-v2-cpu-audit-2026-08-30.md",
+      "sha256": "292e11c0fe9e17430ab32dd9ff022d6f8c318b175e16a0123e07afe2e25d19a1",
+      "size_bytes": 8335
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/r2-prefill-2026-08-29.md",
@@ -6203,8 +6208,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "b405bd3eb5199bbb9f162562f9ec79f6e1b678a4f8c53c6d545e41d63cbba636",
-      "size_bytes": 90383
+      "sha256": "2c32a0641f663bd9e965b8dcaea79d156d51dcaf80774b5b28a40e3a8a4fad20",
+      "size_bytes": 91262
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8462,6 +8467,16 @@
       "size_bytes": 32757
     },
     {
+      "path": "tools/qwen38_stagepack_layout_audit.py",
+      "sha256": "2111f5050bb481279d9e3bfe52a2d8d22ce43e8cd456106d223db5f1d92571dc",
+      "size_bytes": 11920
+    },
+    {
+      "path": "tools/qwen38_stagepack_layout_probe.c",
+      "sha256": "a890dc1636c880931fe2aaad240f39b8bc8fb4b28ea1fb6837f121f5068eaa28",
+      "size_bytes": 4168
+    },
+    {
       "path": "tools/qwen38_storm.sh",
       "sha256": "fd40631cb885d71a1513d4b071a80c7d8628fed2bbf4665dbcd978eeaf1999a1",
       "size_bytes": 3993
@@ -8690,5 +8705,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31921034
+  "total_bytes": 31946336
 }
