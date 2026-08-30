@@ -3549,3 +3549,14 @@ the conflict resolution keeps both.)
   The earlier 1.1TB payload was killed by the OLD cap (the boost
   hadn't propagated when it ran). The k3 base can now exceed 1TB
   on warm; the packer resumed on sparkf and continues.
+
+## 2026-08-30 ~17:3x — obsolete-item removals EXECUTED per operator confirmation
+
+- Removed: qwen-flash old TP4 packs (spark4-7, ~1T total, superseded
+  by TP8 placed), qwen-max FP8 TP4 arm on spark7 (1.3T, breaks the
+  110GiB law), glm52 deprecated TP8 sets (spark7/8/a, ~290G total).
+- KEPT per the operator's multi-topology direction: k3.mxfp4.tp4pp4
+  (16/16 placed), dsv4_pro.tp4pp4 (10/16 placed, completing),
+  qwen-flash TP8 (16/16 with 2x replication in progress).
+- Multi-topology serving matrix now the standing policy — every
+  model × every topology it will serve, packs kept for each.
