@@ -3560,3 +3560,15 @@ the conflict resolution keeps both.)
   qwen-flash TP8 (16/16 with 2x replication in progress).
 - Multi-topology serving matrix now the standing policy — every
   model × every topology it will serve, packs kept for each.
+
+## 2026-08-30 ~17:5x — k3 root cause refined: still the OLD ceph cap, not the boosted one
+
+- The File-too-large hit at 22.5G — not 1TB or 2TB — means sparkf's
+  ceph mount is using a STALE cluster map (or a different pool cap)
+  from before the sysadmin's boost. spark0's mount (which had a
+  successful 1.2GB write test) was on the updated map.
+- FIX: remount sparkf's /mnt/model-warm (or wait for the mds cap
+  refresh). Simplest immediate: umount + mount to get the fresh map.
+- ALSO: the duplicate-payload artifacts (duplicate-sparkf-*,
+  multiwriter-corrupt-*) were from the earlier concurrent-writer
+  mess — cleaned now.
