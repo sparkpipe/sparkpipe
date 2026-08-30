@@ -60,7 +60,7 @@ HASH_CHUNK = 16 * 1024 * 1024
 # Wire constants, mirroring spark_qwen38_max_stagepack_format.h (and the
 # packer). Any drift here is exactly what this verifier exists to catch.
 MAGIC = 0x50533851
-FORMAT_VERSION = 1
+FORMAT_VERSION = _tables.FORMAT_VERSION
 HEADER_BYTES = 120
 ENTRY_BYTES = 56
 PAYLOAD_ALIGNMENT = 256
@@ -184,10 +184,14 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
             return False, {"verdict": "FAIL", "pack": str(pack),
                            "errors": [f"header truncated: {len(raw_header)} bytes"]}
         header = HEADER_STRUCT.unpack(raw_header)
+        # The 27B header layout (the packer's HEADER_STRUCT.pack order):
+        # ... ATTN_ROPE_DIM, FFN_INTERMEDIATE, VOCAB, MXFP4_GROUP,
+        # MTP_LAYERS, tp_degree, tp_rank, directory_offset, file_bytes —
+        # no expert fields (dense-FFN), tp fields where max packs carry them.
         (magic, version, header_bytes, entry_bytes, tensor_count, hidden,
          layer_count, first_layer, total_layers, period, full_phase,
          gdn_kh, gdn_vh, gdkd, gdvd, conv_k, qh, kvh, hd, rope_d,
-         experts, topk, moe_int, vocab, mxfp4_group, mtp_count,
+         moe_int, vocab, mxfp4_group, mtp_count, pack_tp_degree, pack_tp_rank,
          directory_offset, file_bytes) = header
 
         def want(field: str, got, expected) -> None:
@@ -219,6 +223,10 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
         want("mxfp4_group_size", mxfp4_group, _tables.MXFP4_GROUP)
         want("mtp_layer_count", mtp_count, _tables.MTP_LAYERS)
         want("directory_offset", directory_offset, HEADER_BYTES)
+        if tp_degree > 1 and hasattr(locals().get("_nothing", None), "x"):
+            pass
+        if pack_tp_degree != tp_degree:
+            fail(f"header tp_degree={pack_tp_degree}, invoked with {tp_degree}")
         want("file_bytes", file_bytes, file_bytes_actual)
         if layer_count <= 0 or first_layer < 0 or first_layer + layer_count > _tables.LAYER_COUNT:
             fail(f"invalid slice {first_layer}+{layer_count} of {_tables.LAYER_COUNT}")
