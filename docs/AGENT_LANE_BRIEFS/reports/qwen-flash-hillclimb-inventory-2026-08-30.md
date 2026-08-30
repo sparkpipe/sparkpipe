@@ -39,3 +39,18 @@ Baselines first (wave cells), then per-candidate kill-switch cells with
 exactness gates; each candidate gets one queued cell, one receipt. No
 speculative rewrites of the qwen38_max-derived kernels (lane rule: STOP and
 file an INTEGRATION REQUEST if geometry fights the kernel).
+
+## Addendum (same day, boundary-path code read)
+
+- Boundary transport is CLEAN: EmitHiddenOutput sends a DEVICE pointer +
+  cuda_stream in the packet (FLAG_DEVICE_POINTER, no host staging);
+  ConsumeHiddenInput is a single cudaMemcpyAsync D2D on the receive stream.
+  No per-boundary host sync exists in runtime/pipeline_runtime.c (0
+  synchronize calls in 718 lines) or the adapter glue.
+- The measurable serialization is the FRAME PROTOCOL: every frame on every
+  rank ends with cudaStreamSynchronize + frame_error D2H copyback + host
+  check (module .c ~line 2769). At B1 that is 4 host round-trips inside
+  every token's critical path. Candidate: double-buffer the frame-error
+  record (check frame N's error while frame N+1 is enqueued). RED-stop
+  semantics preserved: an error still fails loud one frame later; exactness
+  gate = full stream-hash equality on the B1 smoke before/after.
