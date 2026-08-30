@@ -42,6 +42,27 @@ sleep-poll). Bursty short runs can hide from the 5s poll — use a
 sustained generation for your receipt. Node-local `nvidia-smi` beside
 the dashboard line is the standard proof pair.
 
+## Generating your own stagepacks (operator directive: packs not yet
+## done or in progress are YOURS to build)
+
+- **Source law**: official or vetted community releases only, from
+  warm ceph (/mnt/model-warm/...); NEVER quantize (see hard rules).
+- **Tooling**: your family packer (tools/<family>_stagepack.py; the
+  qwen38 one has --expert-codec nvfp4 for 4-bit sources). Stage-slice
+  builds parallelize across sparks with zero read amplification —
+  submit ONE queue task holding your nodes whose staged script fans
+  out per-stage builders (the qmax_build2.sh shape: scp script, one
+  ssh per node, layer-windowed --first-layer/--layer-count, outputs
+  land directly on their nodes).
+- **Deliverables = receipts**: per-stage .receipt.json, the family
+  verifier green, and the two-pass placement proof ("already placed"
+  on re-run). Drop caches before big loads; 110GiB ceiling law.
+- The universal packer (docs/UNIVERSAL_PACKER.md) consolidates the
+  per-family tools as codecs land in the core — build against the
+  current family tool until its emitter ships, then switch.
+- Coordinator-owned (do not duplicate): qwen-max nvfp4 (in flight),
+  anything marked done in docs/ROADMAP_TP16_FLEET.md.
+
 ## PRs — the only way code lands
 
 - **Your model's code** (modules/<your-model>/…): PR with your gates

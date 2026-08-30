@@ -19,7 +19,14 @@ TP4, dsv4-pro TP4PP4, qwen-max never packed); weightd is built and
 hardware-verified but NOT the serving path; code-update-without-weight-
 reload is UNTESTED (weightd's whole point).
 
-## Phase 1 — canonical TP16 stagepacks for all 8 models
+## Phase 1 — canonical TP16 stagepacks (OPERATOR: model devs build their own unless done/in-progress)
+
+Coordinator retains: qwen-max nvfp4 (in flight, 15/16) + the done sets
+(glm5.3-flash, glm5.3-full). DEVOLVED to model-dev sessions with the
+guide's stagepack section as the runbook: dsv4-flash canonical rebuild,
+27B TP16, k3 TP16, qwen-flash BF16 (per the corrected policy), dsv4-pro
+TP16. The 5-min cycle verifies/places against receipts as they land.
+
 
 Per-node NVMe is ~3.7TB; fleet-wide storage need is modest (below).
 Per-rank sizes (total/16): 27B-fp8 2G · dsv4-flash 8.4G · qwen-flash
