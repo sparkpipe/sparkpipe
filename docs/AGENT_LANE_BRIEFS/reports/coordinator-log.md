@@ -3053,3 +3053,21 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 
 - The prior resume ran from $HOME (file-not-found, instant exit);
   refired from ~/sparkpipe-main. 27B/flash completing on their own.
+
+## 2026-08-30 ~23:0x — 27B+flash BUILT (4/4, 8/8); 27B verify FAILS on kind 9; flash placing
+
+- BOTH ruling builds complete: 27B TP4 4/4 ranks (Q27-TP4-DONE),
+  flash TP8 8/8 (346G, QFLASH-TP8-DONE). Flash PLACING now (8 nodes:
+  spark2-5 + a-d; 27B staging spark6-9 — placement scripts run,
+  q27-r0..2 already placed).
+- 27B VERIFY RED (fail-loud working): entry[7] kind=9 = GDN_QKV —
+  payload_bytes 31.5M but the verifier's format math says 125.8M and
+  scale_group_size=128 where 0 expected. THE GDN_QKV under the fused
+  source: my fused-scale port wrote correct SCALE windows but the
+  PAYLOAD plan still sizes the UNFUSED rows (4x too small) — the
+  fused probe remaps names but kind_shape rows for GDN_QKV assume
+  the split layout. NEXT UNIT (line-precise): plan payload_bytes for
+  GDN_QKV under the fused source must use the fused row count (the
+  copy already streams segments correctly; the PLAN's packed_rows is
+  what's wrong) + the verifier's group expectation for kind 9. The
+  4 placed q27 packs are INVALID until rebuilt — flagged.
