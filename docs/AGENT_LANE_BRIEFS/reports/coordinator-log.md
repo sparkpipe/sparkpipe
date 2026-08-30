@@ -2384,3 +2384,23 @@ appendix).
   qwen38 emitter byte-identity proof → the nvfp4 path lands THERE →
   qwen-max-4bit becomes its first new capability → families port one
   per gate → --fleet-build flag wraps tonight's 16-way pattern.
+
+## 2026-08-30 ~08:5x — nvfp4 packer path LANDED (dry-run green); build hits the expert-span question
+
+- tools/qwen38_stagepack.py now has --expert-codec nvfp4 (codec-6:
+  U8-packed payload, F8_E4M3 g16 scales, F32 global/input validated;
+  fp8 default byte-unchanged). DRY-RUN GREEN on the real radixark
+  source (slice 0+2, tensors=39, 53.64GiB) — the full dtype/shape
+  contract validates (91661b7; the earlier double-.weight naming
+  fixed).
+- Real build fast-failed ONE precise check: expert-0 gate payload
+  span mismatch — my read computes 8.59G but the safetensors
+  data_offsets span is 4.83G (576x a single expert) — the radixark
+  header entries appear to cover CONCATENATED expert blocks (shared
+  entries), so resolve()'s offset math needs the block layout.
+  NEXT UNIT: print expert-0 gate's full header entry (shape +
+  data_offsets) + the contract's EXPERT_COUNT/ref.rows; teach
+  resolve/copy the block span. The dry-run gate then re-runs before
+  the next fan-out.
+- Fan-out machinery itself: 1-second dispatch to 16 builders, correct
+  stage splits, per-node outputs — proven twice now.
