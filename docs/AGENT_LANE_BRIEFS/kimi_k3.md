@@ -21,28 +21,27 @@ reports/k3-finish-*).
   exclusive-window protocol (reserve all 16 → check → launch) goes
   through the coordinator-owned cadence.
 
-## Plan (dependency order)
+## Plan (operator reprioritized 2026-08-30: "TP16 first")
 
-1. **M1 — merge parity.** Confirm lane/k3-finish tip == main or PR its
-   delta; the launch state doc says main b993b7d + lane commits. Until
-   the runtime trees' branch tip is merged, keep staging recipes
-   referencing lane/k3-finish.
-2. **M2 — first fleet number (window-gated).** When the coordinator
-   grants the exclusive window: `spark_queue.py reserve` all 16 for
-   lane-kimik3, `k3_fleet_wave.sh check` (must be green incl. memory +
-   ceph MDS check on spark2/3), `launch`, `status` to ready-line, then
-   B1 decode tok/s through the fleet; verify via dashboard +
-   node-local nvidia-smi.
-3. **M3 — quality gate.** Start the staged /v1 front on spark0 (port
-   8433, recipe in K3_FLEET_LAUNCH_STATE.md §blockers-3); K3 fixtures
-   are pre-tokenized (qualification/ds4_eval/quality-fixtures-kimi-k3.json,
-   92 cases) — run COMPSEC-17 subset through the live endpoint.
-4. **M4 — perf hill climb** (docs/K3_PERF.md order, remaining items):
-   (a) reduce-scatter+all-gather for the slot-encoded full-width AR
-   (halves per-rank wire bytes); (b) move the f32 head exchange off the
-   host tier; (c) TILE_K=32 INTERLEAVED_B GEMM variant to unlock TP16
-   packs; (d) per-submission payload width. Baseline: 18 tok/s B1
-   decode (55.5 ms/stage), roofline 20.6 tok/s.
+0. **TP16 wave (IN FLIGHT).** Full 93-layer PP1 expert_tile_k=32 pack
+   building on spark8 (/home/sparkf out — sparkf+sparkb have degraded ceph
+   warm reads 4.5/7.1 MB/s vs 226-345 elsewhere; keepalive supervises).
+   Chain CPU-proven on a 1-layer probe (all 16 rank packs cross-verify
+   PASS, receipts in reports/kimi-k3-tp16-2026-08-30.md). PR #757 carries
+   the code: device-tier head exchange (u64 winner pack), TP16 adapter
+   config load, keepalive tile_k. NEXT: verify full pack → slice 16 on
+   spark8 with SLICE-DEPLOY-DELETE (16 rank packs don't fit beside the
+   stage pack) into sparkdata/k3.mxfp4.tp16/packs/ → stage TP16 runtime
+   (needs the PR's adapter fix built) → exclusive window wave → first
+   TP16 number vs the 18 tok/s TP4xPP4 baseline (roofline 20.2 @ 49.5 ms).
+1. **Merge parity.** lane/k3-finish runtime delta → main (pre-existing M1).
+2. **TP4 fleet first number + COMPSEC-17** (window-gated, as before).
+3. **Deployed-pack CPU audit** (QUEUED): tools/k3_deployed_audit.py staged;
+   16 deploy digests collected (stages 0-2 from deploy logs, stage-3 from
+   reports/k3-packs-2026-08-27.md); re-hash + manifest-config check pending.
+4. **Perf hill climb** remainder (docs/K3_PERF.md): reduce-scatter+all-gather
+   for the slot AR; head exchange DONE (pending GPU exactness); per-submission
+   width DONE in common code.
 
 ## Rules I follow
 
