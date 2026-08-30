@@ -310,18 +310,22 @@ class SafetensorsSource(_BaseSafetensorsSource):
             # radixark ships the MTP layer as FUSED BF16 spine tensors
             # (mtp.layers.0.mlp.experts.<proj>, expert-major aggregate),
             # not the per-expert nvfp4 split. Validate the fused form.
-            fused = ref.name.replace("{e}.", "")
-            try:
+            base = ref.name.replace("{e}.", "")
+            base = base[:-len(".weight")] if base.endswith(".weight") else base
+            if ref.kind == KIND_MOE_DOWN:
+                fused = base + ".down_proj" if not base.endswith("down_proj") else base
                 shard, meta, offset = self.resolve(fused)
-            except PackFailure:
-                fused = fused[:-len(".weight")] if fused.endswith(".weight") else fused
+                expect = [ref.rows, ref.columns]
+            else:  # W1|W3 ride the fused gate_up aggregate [2*rows, cols]
+                fused = base[:-len("gate_proj" if ref.kind == KIND_MOE_W1 else "up_proj")] + "gate_up_proj"
                 shard, meta, offset = self.resolve(fused)
+                expect = [2 * ref.rows, ref.columns]
             if meta["dtype"] != "BF16":
                 raise PackFailure(f"{fused}: dtype {meta['dtype']}, expected BF16 (fused MTP)")
-            if meta["shape"] != [ref.rows, ref.columns]:
+            if meta["shape"] != expect:
                 raise PackFailure(
                     f"{fused}: checkpoint shape {meta['shape']}, pack expects "
-                    f"[{ref.rows}, {ref.columns}] (fused expert-major)")
+                    f"{expect} (fused expert-major)")
             return shard, meta, offset
         if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN) and EXPERT_CODEC == "nvfp4":
             # radixark NVFP4: U8 payload [R, C/2] (2 values/byte), F8_E4M3
@@ -571,22 +575,41 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             before = hashing.tell()
             if (ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4"
                     and ref.layer == MTP_LAYER):
-                fused = ref.name.replace("{e}.", "")
-                try:
+                base = ref.name.replace("{e}.", "")
+                base = base[:-len(".weight")] if base.endswith(".weight") else base
+                if ref.kind == KIND_MOE_DOWN:
+                    fused = base if base.endswith("down_proj") else base + ".down_proj"
                     shard, meta, off = source.resolve(fused)
-                except PackFailure:
-                    fused = fused[:-len(".weight")] if fused.endswith(".weight") else fused
+                    with (source.root / shard).open("rb") as f:
+                        f.seek(off)
+                        remaining = ref.rows * ref.columns * BF16_BYTES
+                        while remaining > 0:
+                            step = min(remaining, CHUNK_BYTES)
+                            raw = f.read(step)
+                            if len(raw) != step:
+                                raise PackFailure(f"short read on {fused}")
+                            remaining -= step
+                            hashing.write(raw)
+                else:
+                    # fused gate_up [2*rows, cols] expert-major: each expert's
+                    # block is 2*I rows; W1 takes rows 0:I, W3 rows I:2I.
+                    fused = base[:-(len("gate_proj") if ref.kind == KIND_MOE_W1 else len("up_proj"))] + "gate_up_proj"
                     shard, meta, off = source.resolve(fused)
-                with (source.root / shard).open("rb") as f:
-                    f.seek(off)
-                    remaining = ref.rows * ref.columns * BF16_BYTES
-                    while remaining > 0:
-                        step = min(remaining, CHUNK_BYTES)
-                        raw = f.read(step)
-                        if len(raw) != step:
-                            raise PackFailure(f"short read on {fused}")
-                        remaining -= step
-                        hashing.write(raw)
+                    rows_per_expert = ref.rows // EXPERT_COUNT
+                    row_bytes = ref.columns * BF16_BYTES
+                    slice_rows = EXPERT_INTERMEDIATE
+                    with (source.root / shard).open("rb") as f:
+                        for e in range(EXPERT_COUNT):
+                            block = e * 2 * EXPERT_INTERMEDIATE + ref.slice_start
+                            f.seek(off + block * row_bytes)
+                            remaining = slice_rows * row_bytes
+                            while remaining > 0:
+                                step = min(remaining, CHUNK_BYTES)
+                                raw = f.read(step)
+                                if len(raw) != step:
+                                    raise PackFailure(f"short read on {fused} expert {e}")
+                                remaining -= step
+                                hashing.write(raw)
             elif ref.weight_format == WEIGHT_FP8_F32B128:
                 copy_nvfp4_experts(source, ref, hashing) if EXPERT_CODEC == "nvfp4" else copy_fp8_experts(source, ref, hashing)
             else:
