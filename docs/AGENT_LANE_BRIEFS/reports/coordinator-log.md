@@ -2635,3 +2635,14 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   fused-per-tensor) — one port serves both. NAMED WORK, next window
   or the 27B dev session.
 - dsv4 splices: rank3 in flight (~4min/rank steady); ETA on cadence.
+
+## 2026-08-30 ~23:5x — 27B nvfp4a16: MODULE-side gap confirmed (dev-session unit)
+
+- Survey: NO consumer of nvfp4a16 exists in the 27B module (the only
+  weight_packed hit is an unrelated conv buffer). Porting the spine
+  source needs packer format + MODULE loader/kernels + validator — a
+  full vertical, exactly a model-dev-session unit (the guide's PR
+  path). The -fp8 source alternative needs only the FUSED-gate_up
+  packer handling (module already speaks FP8) — SMALLER: the fp8
+  fused-gate port is the recommended first 27B unit; spine comes after.
+- dsv4 splices: 3/16 done, chain healthy, ETA on cadence.
