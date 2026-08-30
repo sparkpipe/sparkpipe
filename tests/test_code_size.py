@@ -1318,7 +1318,13 @@ CEILING = 228248
 # main+this change so the gate stays monotone from reality, not from a
 # number main no longer matches. Same PR adds qwen4_flash_wave_cells.sh
 # (post-wave B1 smoke + exact-32K cell runner, +47); ceiling exact again.
-CEILING = 999999
+# (dsv4pro TP16 lane) +467 over the 233120 ceiling: the standalone
+# contract-derived rank-pack verifier tools/dsv4_pro_rank_pack_verify.py
+# (the roadmap's "fix verifier pins" gap: no full pack on disk needed;
+# directory + bounds + sha + sampled payload/scale bytes vs the GA
+# checkpoint) plus its receipt-pinned unit test. Main's pre-existing
+# +135 drift (qwen38 stagepack fixes) rides along unchanged.
+CEILING = 233758
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

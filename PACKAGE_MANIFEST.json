@@ -1,5 +1,5 @@
 {
-  "file_count": 1729,
+  "file_count": 1733,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -338,8 +338,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "a966d0cb09dad86db2773247b77c225f46bf9b757de4623f46bb87411c74f9ec",
-      "size_bytes": 140131
+      "sha256": "77bcd7e1fe762708f8f7c534298ae199f6ec23f4f3edeee54c53c4cb35df92ea",
+      "size_bytes": 142155
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -370,6 +370,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/dsv4-40-bisect-2026-08-28.md",
       "sha256": "b5740743e5595a32918ec7d526b5941d4c258140f5b946b82a6f37671bae7112",
       "size_bytes": 9990
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/dsv4pro-2026-08-30.md",
+      "sha256": "c2380ca25c59a460343077d2f7ef818f72ed6a2090dab97bd6ae23892bb1613c",
+      "size_bytes": 7711
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/dsv4pro-packs-2026-08-27.md",
@@ -723,8 +728,8 @@
     },
     {
       "path": "docs/MODEL_DEV_GUIDE.md",
-      "sha256": "d82c77ddae43bfacaa3c029095fa5d7b1a33151ad537663c818f9f89a3db0c75",
-      "size_bytes": 4705
+      "sha256": "0f2376bdc6953b25d5a4ee0937894d6928b7c835261d8b3681d1cec19720d046",
+      "size_bytes": 5914
     },
     {
       "path": "docs/MODEL_SUPPORT.md",
@@ -758,8 +763,8 @@
     },
     {
       "path": "docs/ROADMAP_TP16_FLEET.md",
-      "sha256": "bcd9f0d584bb473757aa5167ab10faf5cce49534eca3fbe0a8978211f7115d65",
-      "size_bytes": 6482
+      "sha256": "6d8c86a5f182762de8a71ddc609595bb1b07c033695ba542f21272b7d7712949",
+      "size_bytes": 6883
     },
     {
       "path": "docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md",
@@ -3403,8 +3408,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile",
-      "sha256": "51b82f6def547b10eda3b813743973f87120630bd255023c09a37e7b345192ac",
-      "size_bytes": 4038
+      "sha256": "68845f9f5eb93a45caa512ce694f6b5d866d9a9c93df9472e34c4de651c5ce64",
+      "size_bytes": 4442
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile.pro",
@@ -6188,8 +6193,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "89372526fd828b68f8a5d973637c45c28c3e3b0c2836deaf10fa8bd1127ba611",
-      "size_bytes": 89232
+      "sha256": "602a95b7c7d07d77b576d391fecc984ad8af7a066ab2e2587606caf8a5e36b12",
+      "size_bytes": 90058
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6330,6 +6335,11 @@
       "path": "tests/test_dsv4_pro_exact32k_stage.py",
       "sha256": "a465e0b14236b775fe0e39654985c7749d3b3bd0f242f6122b8ad559ece86029",
       "size_bytes": 2226
+    },
+    {
+      "path": "tests/test_dsv4_pro_rank_pack_verify.py",
+      "sha256": "472936164db1304795e1da6838c267316eec16b85eaed94053aefcf3f6d7dc28",
+      "size_bytes": 5035
     },
     {
       "path": "tests/test_dsv4_serving_adapter.c",
@@ -7702,6 +7712,11 @@
       "size_bytes": 10517
     },
     {
+      "path": "tools/dsv4_pro_rank_pack_verify.py",
+      "sha256": "e5054d5993caaa2583920efebca09b904f8a183a405fb4b3606626eea91e70d2",
+      "size_bytes": 14050
+    },
+    {
       "path": "tools/dsv4_pro_stagepack.py",
       "sha256": "b8a788c023504b344d3241f687479c2c740c02134d28baa00759276a8c82d703",
       "size_bytes": 16184
@@ -8645,10 +8660,15 @@
       "path": "tools/verify_source_archive.py",
       "sha256": "7e5e96606643f32a01d787156ed552262d367d7625c63c69f677eb69c8e238a5",
       "size_bytes": 3043
+    },
+    {
+      "path": "tools/weightdctl.c",
+      "sha256": "628c74c6cca919b0025a30ae875d9de6700107a0cd42665cca21bd5c110fbd57",
+      "size_bytes": 3599
     }
   ],
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31786337
+  "total_bytes": 31821596
 }
