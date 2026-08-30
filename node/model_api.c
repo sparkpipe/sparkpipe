@@ -191,6 +191,26 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 	pthread_mutex_unlock(&S.queue_mutex);
 }
 
+/* The orphan handshake, worker side (queued-disconnect correctness): a
+ * client may depart between the submit snapshot and Submit itself. The
+ * disconnect branch sets orphaned+done and reads submitted under r->mutex;
+ * this side sets submitted under the queue mutex, then reads orphaned under
+ * r->mutex. Whichever mutex section lands second sees the other's flag, so
+ * exactly one side cancels - here when the departure beat the submit, there
+ * when it followed it. The cancel runs outside both locks (the engine can
+ * invoke api_event synchronously, and it takes the queue mutex first); the
+ * reaper lives in the same worker thread and cannot free mid-call. */
+static void api_orphan_cancel_after_submit(ApiRequest *r)
+{
+	SparkModelBatchRequestHandle orphan_handle = 0;
+	pthread_mutex_lock(&r->mutex);
+	if (r->orphaned)
+		orphan_handle = r->handle;
+	pthread_mutex_unlock(&r->mutex);
+	if (orphan_handle != 0)
+		(void)SparkModelBatchEngineCancel(S.engine, orphan_handle);
+}
+
 static void *api_worker(void *arg)
 {
 	SparkModelResidentClientPollDescriptor fds[4];
@@ -286,6 +306,11 @@ static void *api_worker(void *arg)
 					pthread_cond_signal(&r->cond);
 					pthread_mutex_unlock(&r->mutex);
 				}
+				pthread_mutex_unlock(&S.queue_mutex);
+				/* orphan handshake: no-ops on a failed submit (handle 0);
+				 * cancels when the client departed in the window above */
+				api_orphan_cancel_after_submit(r);
+				pthread_mutex_lock(&S.queue_mutex);
 				r->inflight = 0;
 				pthread_mutex_unlock(&S.queue_mutex);
 			}
@@ -756,20 +781,32 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	if (!req->done && S.running)
 	{
 		/* the disconnect branch: cancel if submitted, mark orphaned.
-		 * The cancel runs OUTSIDE req->mutex: the engine can invoke
-		 * api_event synchronously from Cancel, and api_event's COMPLETED
-		 * branch takes this same request mutex while holding the queue
-		 * mutex - cancelling under req->mutex would reintroduce the
-		 * lock-order inversion against the worker. */
+		 * orphaned is set INSIDE the mutex section that reads submitted -
+		 * the worker's post-submit orphan handshake (in api_worker) reads
+		 * orphaned under this same mutex, so whichever side runs second
+		 * sees the other's flag and exactly one side cancels. The cancel
+		 * itself runs OUTSIDE req->mutex: the engine can invoke api_event
+		 * synchronously from Cancel, and api_event's COMPLETED branch
+		 * takes this same request mutex while holding the queue mutex -
+		 * cancelling under req->mutex would reintroduce the lock-order
+		 * inversion against the worker. */
 		uint32_t cancel_submitted;
 		SparkModelBatchRequestHandle cancel_handle;
 		pthread_mutex_lock(&req->mutex);
 		cancel_submitted = req->submitted;
 		cancel_handle = cancel_submitted ? req->handle : 0;
+		/* done + orphaned are set INSIDE the same mutex section that reads
+		 * submitted: done makes the worker's existing !done snapshot
+		 * predicate skip a still-queued orphan (never submitted, never
+		 * burning GPU), and the worker's post-submit handshake (see
+		 * api_orphan_cancel_after_submit) reads orphaned under this same
+		 * mutex - whichever side runs second sees the other's flag, so
+		 * exactly one side cancels. */
+		req->orphaned = 1;
+		req->done = 1;
 		pthread_mutex_unlock(&req->mutex);
 		if (cancel_submitted && cancel_handle != 0)
 			(void)SparkModelBatchEngineCancel(S.engine, cancel_handle);
-		req->orphaned = 1;
 	}
 	if (req->status == 0 && HaveSidecar)
 	{

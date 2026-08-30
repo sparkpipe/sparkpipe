@@ -32,8 +32,8 @@ R3 flash-decode is the flagship; R4 amortization second.
 | Bug | Strategy | Status |
 |---|---|---|
 | EOS unwired | wire engine stop set + request field | FIXED (4e2f19f) |
-| Cancel unwired | disconnect→engine Cancel (existing API) | queued, mine |
-| O(n²) token parse | dies with JSON edge / one-pass if kept | queued |
+| Cancel unwired | disconnect→engine Cancel (existing API) | FIXED (40ca88c + queued-orphan window closed, lane/kimik3-dev 2026-08-30: orphaned requests are never submitted, worker/connector mutex handshake cancels exactly once) |
+| O(n²) token parse | dies with JSON edge / one-pass if kept | FIXED (f175099: sequential array accessors; request-scale loops one-pass) |
 | trap-on-corruption (experts) | fail-frame semantics, never context death | lane: kernel-crew |
 | sparse-attn bounds | bounds check at the index consumer | lane: kernel-crew |
 | UE8M0 round-down | round-to-nearest in the shared encoder | lane: kernel-crew |
@@ -53,7 +53,14 @@ D1 COLLECTIVE WIDTH-PARAM (replaces per-family twins): the submit API
 takes element_width; RegisterCredits prices from it. Kills the
 HC-twin pattern before it multiplies across 7 families.
 D2 STEP-LOOP (P1+pipelining): one loop redesign replaces the bubble
-patches.
+   patches. HOST HALF LANDED (lane/p1d2-steploop, in fa337b7's program:
+   async adapters drain to adapter-declared backpressure, write-through
+   client, bubble patch deleted — receipts in
+   reports/p1d2-steploop-2026-08-29.md). MODULE HALF (per-family
+   chain+async ports) remains fleet-gated; the k3 port design is filed
+   (reports/kimi-k3-p1-port-plan-2026-08-30.md: adapter pending slots,
+   LaunchHostFunc stream-ordered completion, staged A/B/C with the
+   oracle + max_ops_per_pass>1 receipt).
 D3 SPILL COLLAPSE: one spill mechanism (the pager) + Mooncake
 boundary, replacing three parallel ones.
 D4 VALIDATION ONCE: immutable inputs validated at connect; the

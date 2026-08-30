@@ -49,6 +49,26 @@ reports/k3-finish-*).
    for the slot AR; head exchange DONE (pending GPU exactness); per-submission
    width DONE in common code.
 
+## Bug-ledger items landed this lane (2026-08-30, operator-assigned)
+
+- C-CANCEL residual gap FIXED: a client disconnecting while the
+  request was still QUEUED got submitted anyway (full budget burned,
+  no cancel). Orphaned now implies done (never submitted), and a
+  worker/connector mutex handshake cancels exactly once across the
+  snapshot→submit window (node/model_api.c; api_orphan_cancel_after_
+  submit). Complexity-ceiling FLAT (7.87 held: helper below mean).
+- K3 runner memory-contract ratchet repaired (the head-exchange sites
+  went to sizeof()-based sizing; parked list pruned 22→18 memcpy) —
+  this was failing at lane tip, unobserved because test_code_size's
+  venv caveat aborted the suite before it.
+- C-CANCEL main wiring (40ca88c) and the O(n²) parse one-pass
+  (f175099) were already on main — ledger rows corrected.
+- P1 module port: DESIGN FILED (reports/kimi-k3-p1-port-plan-2026-08-
+  30.md) — k3 declares no ASYNC_COMPLETION so the landed async drain
+  still serializes us; the staged port (adapter slots → LaunchHostFunc
+  completion → chain depth) executes at the window per the program's
+  closeout gate.
+
 ## Rules I follow
 
 Queue-only GPU work at priority 5; staged scripts; exactness before

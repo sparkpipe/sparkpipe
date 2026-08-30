@@ -837,7 +837,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->head_slots_host = new float[state->head_slots_capacity];
 	cudaMalloc(&state->head_slots_device,(uint64_t)state->head_slots_capacity * 4u);
 	cudaMalloc(&state->head_maxloc,
-		(uint64_t)configuration->max_input_row_count * 8u);
+		(uint64_t)configuration->max_input_row_count * sizeof(uint64_t));
 	routes = configuration->max_input_row_count * K3_TOP_K;
 	cudaMalloc(&state->route_expert,(uint64_t)routes * 4u);
 	cudaMalloc(&state->route_packed_row,(uint64_t)routes * 4u);
@@ -1034,33 +1034,33 @@ SparkStatus SparkK3StageRunnerSubmit(
 				return SPARK_STATUS_INTERNAL_ERROR;
 			cudaStreamSynchronize(stream);
 			cudaMemcpy(state->output_token_host, state->output_token,
-				(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
+				(uint64_t)rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 			cudaMemcpy(state->output_score_host, state->output_score,
-				(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
+				(uint64_t)rows * sizeof(float), cudaMemcpyDeviceToHost);
 			if ( dispatch->output_token_ids != 0 )
 				cudaMemcpy(dispatch->output_token_ids, state->output_token,
-					(uint64_t)rows * 4u, cudaMemcpyDeviceToDevice);
+					(uint64_t)rows * sizeof(uint32_t), cudaMemcpyDeviceToDevice);
 			if ( dispatch->output_scores != 0 )
 				cudaMemcpy(dispatch->output_scores, state->output_score,
-					(uint64_t)rows * 4u, cudaMemcpyDeviceToDevice);
+					(uint64_t)rows * sizeof(float), cudaMemcpyDeviceToDevice);
 		}
 		else
 		{
 			cudaStreamSynchronize(stream);
 			cudaMemcpy(state->output_token_host, state->output_token,
-				(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
+				(uint64_t)rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 			cudaMemcpy(state->output_score_host, state->output_score,
-				(uint64_t)rows * 4u, cudaMemcpyDeviceToHost);
+				(uint64_t)rows * sizeof(float), cudaMemcpyDeviceToHost);
 			exchange_status = K3RunnerHeadExchange(state, rows, runner->tp_degree,
 				runner->tp_rank, state->output_token_host, state->output_score_host);
 			if ( exchange_status != SPARK_STATUS_OK )
 				return exchange_status;
 			if ( dispatch->output_token_ids != 0 )
 				cudaMemcpy(dispatch->output_token_ids, state->output_token_host,
-					(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
+					(uint64_t)rows * sizeof(uint32_t), cudaMemcpyHostToDevice);
 			if ( dispatch->output_scores != 0 )
 				cudaMemcpy(dispatch->output_scores, state->output_score_host,
-					(uint64_t)rows * 4u, cudaMemcpyHostToDevice);
+					(uint64_t)rows * sizeof(float), cudaMemcpyHostToDevice);
 		}
 	}
 	else if ( dispatch->hidden_output_bf16 != 0 )
