@@ -86,3 +86,48 @@ S4 P1A COMPLETING POINTS (ex-#735): B48/32/16 + B24x2 behind the
    fleet window (queued).
 19 PRs triaged total: 11 superseded/rejected closed, 8 value-carrying
 re-pointed (7 closed into programs, #740's lane continues live).
+
+## The kimi re-pass scorecard (2026-08-30, coordinator-verified against code)
+
+Every row below was verified on main by reading the tree, not by
+trusting lane claims. "Flash" = glm5_next (GLM 5.3 Flash).
+
+### FIXED (code-verified)
+
+| Finding | Evidence |
+|---|---|
+| EOS unwired | 4e2f19f + engine stop set; per-request stops live |
+| Disconnect→cancel | 40ca88c + the queued-orphan window closed (#761) |
+| O(n²) parse_token_array | f175099 sequential accessors, one-pass loops |
+| K1-K4 kernel-crew quartet (trap→fail-frame, sparse-attn bounds, UE8M0 round-down oracle, rANS smem bound) | frame_error.cuh + validators; test_frame_error_host / test_kernel_frame_error_source / test_ue8m0_encoder_oracle green in-suite |
+| R2 prefill width — flash engine/config | 16→1024 rows, rows≤sequences coupling removed (1554464); redeploy pending |
+| R2 — dsv4 bulk causal prefill | module.c:3223 (R2c wavefront replacement landed) |
+| R2 — qwen38 row tracking | module tracks max_input_row_count (module.c:207-210) |
+| P1/D2 step loop (host half) | p1d2 async drain landed; glm5_next submit was already async (LaunchHostFunc) |
+| P2 collective latency (transport half) | #760 d2a TP16 peer routing (ABI-13), merged a717d11 |
+| R1 screened head — qwen38, dsv4, qwen4_flash (+drafter classes) | HeadScreenedArgmax wired in those modules |
+
+### NOT FIXED (code-verified absent)
+
+| Finding | State |
+|---|---|
+| **R1 screened head — FLASH (glm5_next), glm52, k3** | NOT wired. glm5_next B1 head = full-vocab rescore per token (HeadMaxlocPack path; 154880 vocab). The qwen38/dsv4 ports are the recipe: shadow-head pack asset + dispatch-only change. THE top flash decode rock after the transport lands. |
+| **R3 flash-decode split-K — engagement** | Kernel EXISTS (attn.cuh:629 entry, deterministic combine), glm5_next layer.cuh CONSUMES it, module plumbs the threshold — but every deployment ships decode_split_context_threshold=0 BY CONTRACT ("until the GPU cell qualifies it"). Enabling = a GPU-cell exactness unit, not a config flip. |
+| R4 batch weight amortization | Not done. Partially redirected: P3 measured the batched-kernel ROUTE negative; the B≥2 aggregate now rides the async loop + WS pipelining (kernel work remains). |
+| R5 validation/admission fanout hoists | Not done: 12+9 Validate sites still on the client paths; engine still SHA-probes in Progress. Sequenced AFTER the async loop pays (the hoists only pay on an async loop). |
+| R6 dsv4 island chaining / RA joins / event diet | Not done (the islands source-contract test exists; the 130→chained restructuring does not). |
+| R7 block-table full upload per frame | Not done: SparkQwen38_27bServingUploadBlockTable still copies the full indices buffer every submit; no dirty tracking. |
+
+### The honest decode answer
+
+Flash decode is NOT "fixed" yet — it is HALF rebuilt in code and ZERO
+re-measured. Fixed in code: the loop (async submit + drain), the
+collective latency (d2a, ~95 hops/token × ~205µs was ~25% of the
+78 ms/token), EOS/cancel (throughput + correctness), the kernel-crew
+correctness quartet. Still open ON FLASH specifically: the screened
+head (R1 — kimi's #1 rock, absent for this family) and the split-K
+engagement (R3 — one GPU-cell qualification away). The R5 hoists pay
+only after the async loop is measured. Next window's flash units, in
+order: (1) redeploy binaries+configs, measure prefill+decode; (2) the
+R1 screened-head port (shadow asset + dispatch); (3) the split-K
+qualification cell; (4) then the R5/R6/R7 hoists on the measured loop.

@@ -343,8 +343,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "871f7b9820f80d4cdc4c40cca65bc68158490f3f5dca09c9a0a0828767c9bc8e",
-      "size_bytes": 195367
+      "sha256": "661ce2a113a785e4c58260c757a4c805063333808ce56746c10772415260c629",
+      "size_bytes": 193496
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -668,8 +668,8 @@
     },
     {
       "path": "docs/BUG_LEDGER.md",
-      "sha256": "19cf9cb5f120b34da7bd5aab07896d3d48e2304644a5ccae77f3376022a6c5e1",
-      "size_bytes": 5367
+      "sha256": "1488d6d31f93aa01a6bdaf8a3cc3e4746bd3f93b8c611128c70ac217da687f49",
+      "size_bytes": 8925
     },
     {
       "path": "docs/DATAFILE_NAMING.md",
@@ -8755,5 +8755,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32066749
+  "total_bytes": 32068436
 }
