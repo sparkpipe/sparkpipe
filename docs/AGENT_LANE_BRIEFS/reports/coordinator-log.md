@@ -3194,3 +3194,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 ## 2026-08-30 ~04:4x — k3 warm-build 329G read / 158G written (148G payload)
 
 - Steady. WATCH ONLY.
+
+## 2026-08-30 ~05:1x — k3 warm-build 426G read / 208G written (195G payload)
+
+- Writes resumed after a brief stall; steady overall. WATCH ONLY.
