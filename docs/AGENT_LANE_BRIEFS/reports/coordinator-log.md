@@ -3255,3 +3255,11 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   pin + OMP cap per the operator's thread rule): pid 2492531
   healthy at first check (RSS 2.5G, journal re-walk reading).
   The no-long-builds-on-spark0 rule is now practice, not just log.
+
+## 2026-08-30 ~10:2x — spark0 RECOVERED (rebooted); k3 healthy on sparkf
+
+- spark0 back (up 5 min — rebooted, likely the operator's power-
+  cycle or another watchdog; clean load). The no-builds rule keeps
+  it that way.
+- k3 on sparkf: RSS 23G flat, 46G read / 17G written past the
+  journal re-walk, payload 321G. Pace establishing. WATCH ONLY.
