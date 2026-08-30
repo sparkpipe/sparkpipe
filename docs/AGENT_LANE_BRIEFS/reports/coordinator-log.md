@@ -3279,3 +3279,7 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 
 - RSS 33G oscillation is the per-layer numpy rhythm (peaks/falls;
   never climbs — safe). WATCH.
+
+## 2026-08-30 ~12:2x — k3 673G read / 305G written (588G payload, ~40%)
+
+- Steady. WATCH.
