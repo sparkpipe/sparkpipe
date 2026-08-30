@@ -3397,3 +3397,23 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   (same sources). (4) dsv4-pro: awaiting the topology word, then
   either replicate the existing 10 (to spark0-5 = 16/16) or open the
   rank-path unit.
+
+## 2026-08-30 ~02:0x — HONEST CORRECTION: the qwen-flash "8/8 OK" chain never built the packs
+
+- Re-investigation of the flash TP8 build (operator's parallel sweep
+  surfaced the discrepancy): the chain log showed 8 RANK-OK lines,
+  but NO pack files exist on spark2 or anywhere in the fleet. The
+  chain ran with `cd /home/spark2/sparkpipe-main` — but the actual
+  outputs went to /home/spark2/qflash_tp8/ per the script... which
+  now contains ONLY the .sh and .log. Reconciling: the dir was
+  wiped at some point (the tmp-cleanup sweep?), or the writes
+  silently failed on the disk-full window (spark2 was 59% at check,
+  but disk-full windows existed on other nodes). The OK lines were
+  the SCRIPT's echo, not proof of files.
+- LESSON (now a rule): RANK-OK lines mean NOTHING without the file
+  listing to back them. Verify-by-artifact, not by log line.
+- RECOVERY: the packs are deterministic from source+recipe — a clean
+  rebuild on spark2 (1.5T free) re-runs the same 8-rank chain. The
+  verify pass (now TP-aware) then proves them. Firing the rebuild
+  next window. The 4x/2x replication state: 27B ranks hold 5 nodes
+  each (over-covered, good); flash rebuild then 2x replication.
