@@ -3462,3 +3462,21 @@ the conflict resolution keeps both.)
 - Other nodes: 3 (382G), 5 (149G), 6 (647G), e (20G) are tight but
   not critical. The rest have 1-2.5T free. No build should target
   sparke or spark3 or spark5 until cleanup.
+
+## 2026-08-30 ~13:4x — sparke cleanup: the big items identified
+
+- sparke /home/sparke/k3build/ = 2.6T: FOUR full K3 stage packs
+  (k3_stage_0_24.pack 367G, k3_stage_48_23.pack 363G, k3_stage_47_23.pack
+  363G, k3_stage_24_23.pack 363G) + 16 rank packs — these are the
+  TP4PP4-era K3 stage packs from the earlier deployment era. They are
+  SUPERSEDED by the tile_k=32 whole-model build running on warm
+  (which will produce the entire model in one pass + shard).
+  ALSO: glm53_packs_fixed (21G) + glm53_packs_fixed2 (21G) — old
+  manual pack-fix copies, superseded by the placed sets.
+  REMOVABLE: 2.6T k3build + 42G old packs = 2.6T+ free immediately.
+- The node also hosts glm53full placed packs (92+51+31G), qwenmax
+  (91G), qwenflash (40G), dsv4flash (21G) — ALL placed and verified,
+  DO NOT TOUCH these.
+- ACTION: cleaning now per verified-then-removed (the k3 whole-model
+  build on warm makes these stage packs obsolete; the TP4PP4 ranks
+  are on all 16 nodes already).
