@@ -311,7 +311,11 @@ class SafetensorsSource(_BaseSafetensorsSource):
             # (mtp.layers.0.mlp.experts.<proj>, expert-major aggregate),
             # not the per-expert nvfp4 split. Validate the fused form.
             fused = ref.name.replace("{e}.", "")
-            shard, meta, offset = self.resolve(fused)
+            try:
+                shard, meta, offset = self.resolve(fused)
+            except PackFailure:
+                fused = fused[:-len(".weight")] if fused.endswith(".weight") else fused
+                shard, meta, offset = self.resolve(fused)
             if meta["dtype"] != "BF16":
                 raise PackFailure(f"{fused}: dtype {meta['dtype']}, expected BF16 (fused MTP)")
             if meta["shape"] != [ref.rows, ref.columns]:
@@ -568,7 +572,11 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             if (ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4"
                     and ref.layer == MTP_LAYER):
                 fused = ref.name.replace("{e}.", "")
-                shard, meta, off = source.resolve(fused)
+                try:
+                    shard, meta, off = source.resolve(fused)
+                except PackFailure:
+                    fused = fused[:-len(".weight")] if fused.endswith(".weight") else fused
+                    shard, meta, off = source.resolve(fused)
                 with (source.root / shard).open("rb") as f:
                     f.seek(off)
                     remaining = ref.rows * ref.columns * BF16_BYTES
