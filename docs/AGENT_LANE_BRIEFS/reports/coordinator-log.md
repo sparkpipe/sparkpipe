@@ -3449,3 +3449,21 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   re-measure prefill (expected floor ~600 tok/s from re-stream
   arithmetic; kernel row-parallelism + P2 collectives are the next
   rocks). Decode (12.7 vs external 35-78) remains P1-async + transport.
+
+## 2026-08-30 ~3x:xx — #760 MERGED (a717d11): the hold was a stale-artifact trap; async-loop stack complete on main
+
+- The dsv4 adapter failure I held #760 on was ABI-12 test-module dylibs
+  behind the ABI-13 adapter (the bump 12→13 needs a module-dylib relink
+  the make graph doesn't force). Clean rebuild = PASS. Resolution
+  comment filed; fix-forward: the generator now emits the lane's d2a
+  algorithm set (the branch had configs-without-generator drift).
+- THE ASYNC-LOOP STACK FOR FLASH IS NOW COMPLETE IN CODE: async submit
+  (LaunchHostFunc completion, pre-existing) + the p1d2 async drain +
+  d2a peer routing at TP16 (ABI-13). What remains is EXECUTION, not
+  code: the flash lane's ship-together redeploy unit =
+  rebuilt adapter/driver/transport binaries (ABI-13) + regenerated
+  configs (1024-row prefill + d2a algorithms) from main@a717d11,
+  bounce, then the two measurements: prefill (floor ~600 tok/s) and
+  decode (d2a collectives; prior estimate ~20-25 tok/s from 12.7).
+  After that the NCCL 2.28.9 backend flip (T257 exactness first) is
+  the next collective-latency rock.

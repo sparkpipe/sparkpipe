@@ -78,5 +78,10 @@ submissions). NEXT REDEPLOY MUST SHIP TOGETHER: the rebuilt adapter/
 driver .so from main@1554464 (the old binary SCHEMA_ERRORs the new
 1024 configs) + the regenerated deployment/glm5_next_tp16/* configs.
 Then re-measure prefill (expected floor ~600 tok/s from re-stream
-arithmetic alone). Decode path unchanged (12.7 tok/s — P1 async port
-+ #760-class transport remain the rocks).
+arithmetic alone). UPDATE ~3x: #760 MERGED (ABI-13 d2a transport) —
+the redeploy unit is now binaries+configs TOGETHER from main@a717d11
+(ABI-13 binds them; a stale dylib SCHEMA/ABI-errors the new configs).
+Decode rides the same redeploy: async submit + async drain + d2a
+collectives are all in code now — measure, then the NCCL flip
+(T257 exactness first) is the next rock. Local checkouts: wipe
+build/test_modules/*.dylib after pulling (ABI trap).
