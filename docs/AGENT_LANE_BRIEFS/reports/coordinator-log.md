@@ -2849,3 +2849,13 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   append interleaved tiles. Either keeps peak memory at one expert
   (~40MB class) instead of one layer (GB class). Journal-resume then
   makes the whole build a single clean pass.
+
+## 2026-08-30 ~12:4x — THE STREAMING FIX WORKS: k3 resumed, RSS flat at 1.5G
+
+- The fixed build (per-expert interleave) resumed from the journal
+  and is processing with RSS 1.5G FLAT (vs the 47.9G OOM climb) —
+  the fix holds. The real child (1101888) reads from ceph in D-state
+  (the slow-but-correct path); the "wrapper vs child" pid confusion
+  noted for future checks (pgrep -P for the real worker).
+- Build continues to completion over subsequent cycles; shard 16
+  auto-follows. WATCH ONLY.
