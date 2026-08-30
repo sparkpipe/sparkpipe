@@ -2894,3 +2894,11 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   look at the numpy path's per-expert copies; the journal protects
   either way).
 - ETA at this pace: base pack ~1-1.5h, shard follows.
+
+## 2026-08-30 ~15:1x — k3 on spark0: 238G read / 107G written, RSS flat 23G
+
+- Sustained ~265MB/s read + ~113MB/s write; RSS STABLE at 23G (the
+  numpy per-expert buffers plateaued — the fix holds fully at speed;
+  no OOM risk at this profile). 100G payload on disk of ~1.5T.
+- Projection: ~80-90 min to pack completion at pace; shard follows.
+  WATCH ONLY.
