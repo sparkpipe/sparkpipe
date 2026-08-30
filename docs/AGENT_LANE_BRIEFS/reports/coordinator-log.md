@@ -2971,3 +2971,13 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   (3) the slot exhaustion disappears with (1). This is the ONE THING
   next window; the dev gets a note on #755.
 - k3 meanwhile: 979G read / 462G written, RSS flat, pace holding.
+
+## 2026-08-30 ~18:4x — OPERATOR RULINGS RECEIVED: qwen-flash TP8; 27B TP4; prefill fix is the one thing
+
+- Rulings: qwen-flash builds at TP8 (3 heads/rank, 45G/rank); qwen
+  27B builds at TP4 (17 blocks/rank, ~21.7G/rank, zero further
+  porting — the fused-gate port already landed serves it).
+- THE ONE THING this window: the prefill fix (root-caused last cycle):
+  (1) api submits ONE sequence per request (the engine chunk-prefills
+  it multi-pass — the machinery exists and is correct);
+  (2) glm5_next descriptor gains its real cache_block_token_count.
