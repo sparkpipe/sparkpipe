@@ -2595,3 +2595,16 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
   (rchar 405M and climbing), log quiet by design (packer prints on
   completion). Next wake: watch for the ~156G base + receipt, then
   fan the 16 rank-splices across free sparks.
+
+## 2026-08-30 ~22:2x — dsv4 BASE COMPLETE (166.9G validated); splice fanout needs per-rank input access
+
+- BASE BUILT on spark0: dsv4full_base.spstage 166,918,150,256 bytes,
+  "validated": true in the log tail (0731 source; spark3's ceph path
+  was 1.7MB/s-degraded — relocated per fail-fast; spark0 sustained
+  ~1.2GB/s read + full write).
+- SPLICE FANOUT fired but FAILED fast, two causes named: (a) remote
+  ranks can't read /home/spark0/dsv4full_base.spstage (local path,
+  not shared); (b) an output-path error on rank0. NEXT: distribute
+  the base to warm (ceph) OR run all 16 splices ON spark0 reading
+  local (16 x ~10G writes at ~1GB/s ≈ 3 min total — LOCAL WINS at
+  this size); fix the rank0 output path bug in the fan-out script.
