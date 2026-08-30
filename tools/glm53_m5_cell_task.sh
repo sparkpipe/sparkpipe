@@ -74,3 +74,8 @@ echo "== receipts =="
 ls -la /tmp/glm53-m5-*.json /tmp/glm53-m5-*.txt 2>/dev/null
 echo "context: exact-32K (32768 positions) batch=B1 topology=TP16 host-rdma precision=fp8-experts"
 echo TASK-DONE
+# appended: leave the fleet clean for the next exclusive window
+# (TERM-only, cwd-scoped — glm5_next_wave.sh stop)
+echo "== wave stop (clean fleet handoff) =="
+bash tools/glm5_next_wave.sh stop || echo "WARN: wave stop reported failure"
+echo CELL-DONE
