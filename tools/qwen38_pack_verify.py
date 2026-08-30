@@ -155,7 +155,7 @@ def hash_source_entry(source, ref) -> str:
 
 
 def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
-           recompute_file_hash: bool) -> tuple[bool, dict]:
+           recompute_file_hash: bool, tp_degree: int = 1) -> tuple[bool, dict]:
     findings: list[str] = []
 
     def fail(message: str) -> None:
@@ -219,8 +219,8 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
         expected_refs: dict[tuple[int, int], object] = {}
         try:
             for ref in _tables.build_inventory(first_layer, layer_count):
-                if args.tp_degree > 1:
-                    plan = _tables.build_tp_plan(ref, args.tp_degree, 0)
+                if tp_degree > 1:
+                    plan = _tables.build_tp_plan(ref, tp_degree, 0)
                     if plan is not None:
                         ref.rows, ref.columns = _tables.packed_shape(ref, plan)
                 expected_refs[(ref.kind, ref.layer)] = ref
@@ -374,7 +374,7 @@ def main() -> int:
     args = parser.parse_args()
 
     ok, verdict = verify(args.pack, args.checkpoint, args.receipt,
-                         args.recompute_file_hash)
+                         args.recompute_file_hash, args.tp_degree)
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(verdict, indent=2, sort_keys=True) + "\n")
