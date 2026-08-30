@@ -123,3 +123,28 @@ its packs are DONE so Phase 1 doesn't block its debug. dsv4-pro:
 historic verifier pin drift. qwen-max: first-ever pack (geometry
 unknowns). k3: the reslice is documented but unrun. None change the
 phase order; each surfaces at its Phase 2 gate if at all.
+
+---
+
+## PHASE E (added per operator): MULTI-TOPOLOGY COMPLETENESS
+
+Every model gets stagepacks for EVERY topology it will serve:
+TP16, TP8, TP4PP4, TP4, TP8PP2 etc. — not just TP16.
+
+| model | TP16 | TP4PP4 | TP8 | TP4 | other |
+|---|---|---|---|---|---|
+| glm5.3-full | ✓ ×3 arms | — | — | — | — |
+| glm5.3-flash | ✓ | — | — | — | — |
+| dsv4-flash | ✓ | — | — | — | — |
+| dsv4-pro | — | ✓ 10/16 placed | — | — | TP4PP4 natural |
+| qwen-max | ✓ PP16 | — | — | — | — |
+| qwen-flash | — | — | ✓ 8/8 placed | — | TP8 (24 heads) |
+| qwen 27B | — | — | — | ✓ 4/4 placed | TP4 (68 blocks) |
+| kimi-k3 | base building | ✓ TP4PP4 placed | — | — | TP16 + TP4PP4 both |
+
+GAPS to fill (per model, per topology):
+- dsv4-pro TP4PP4: place the remaining 6 nodes (spark0-5) — dirs premade
+- kimi-k3: TP16 building on warm; the existing TP4PP4 packs stay kept
+- 27B: TP4 placed; TP16 blocked on the 68-block grid (variable-width port or TP4 serves)
+- glm5.3-flash: TP16 done; TP8/other topologies as demand arises
+- OLD-topology cleanup: qwen-flash TP4 packs on spark4-7, qwen-max FP8 TP4 on spark7, glm52 sets — the unambiguous stale items. TP4PP4 sets for k3/pro are KEPT (they are the pro serving topology)
