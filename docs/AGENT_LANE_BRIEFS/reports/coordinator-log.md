@@ -3364,3 +3364,14 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - The executor's own probe timed out (sparkf still dark); per the
   fail-fast rule the check ABORTS instead of hanging the cycle.
   sparkf awaits its watchdog/power-cycle like spark0 did. WATCH.
+
+## 2026-08-30 ~15:2x — sparkf RECOVERED; k3 resumed; the redhatai move verified safe
+
+- sparkf rebooted (7-min uptime) — the archive move COMPLETED despite
+  the wedge: both dirs (glm-5.3-flash-nvfp4-redhatai, kimi-k3-
+  nvfp4-redhatai) sit in archive-not-a-source/ (verified from
+  spark5); the remaining redhatai names at warm root are the DRAFTER
+  corpus (dflash/dspark — kept per policy).
+- k3 packer RESUMED from journal (payload intact at 604G; RSS 2.6G,
+  journal re-walk reading). The 462G written survived the outage —
+  warm+journal did their job.
