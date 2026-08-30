@@ -752,18 +752,22 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
             ds = reader.u8(d_scale, (latent, inter // GROUP))
             for name, sc in ((g_scale, gs), (u_scale, us), (d_scale, ds)):
                 check_scales(name, sc)
-            w1_pay.append(g + u)
-            w1_sc.append(gs + us)
-            w2_pay.append(d)
-            w2_sc.append(ds)
+            # STREAMED per-expert interleave (the OOM fix): each expert's
+            # bytes interleave immediately and the interleaved tile is
+            # appended; peak memory stays at one expert (~40MB class)
+            # instead of one layer (GB class, glibc never returns arenas).
+            e1_geom = interleave_geometry(2 * inter, latent, experts=1,
+                                          tile_k=w1_geom["tile_k"])
+            w1_pay.append(interleave(g + u, gs + us, e1_geom))
+            e2_geom = interleave_geometry(latent, inter, experts=1,
+                                          tile_k=w2_geom["tile_k"])
+            w2_pay.append(interleave(d, ds, e2_geom))
         if p + "expert_w1_weight" not in pack.manifest:
-            pack.add(p + "expert_w1_weight",
-                     interleave(b"".join(w1_pay), b"".join(w1_sc), w1_geom),
+            pack.add(p + "expert_w1_weight", b"".join(w1_pay),
                      KIND_MXFP4_INTERLEAVED, [experts, 2 * inter, latent],
                      {"interleave": w1_geom, "shard_class": "concat_output"})
         if p + "expert_w2_weight" not in pack.manifest:
-            pack.add(p + "expert_w2_weight",
-                     interleave(b"".join(w2_pay), b"".join(w2_sc), w2_geom),
+            pack.add(p + "expert_w2_weight", b"".join(w2_pay),
                      KIND_MXFP4_INTERLEAVED, [experts, latent, inter],
                      {"interleave": w2_geom, "shard_class": "input_dim"})
         s1 = reader.bf16(m + "shared_experts.gate_proj.weight", (shared, hidden))
