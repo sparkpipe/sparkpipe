@@ -3283,3 +3283,19 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 ## 2026-08-30 ~12:2x — k3 673G read / 305G written (588G payload, ~40%)
 
 - Steady. WATCH.
+
+## 2026-08-30 ~13:0x — EXECUTED: the removal list (~4.3T freed) + the per-arm matrix locked
+
+- REMOVED from warm per the audit (operator's "go ahead"): glm5.2-fp8
+  (704G, deprecated), qwen-max-fp8 (2.3T, breaks the 110GiB law),
+  and the seven community/alternate variants (five redundant 27B
+  nvfp4 sets, the dsv4 fp8-mixed quality-pick that failed the packer
+  contract, the dsv4 fp4-fp8, the dsv4 nvfp4-mjpansa). Warm now ~39T
+  free; the kept set is exactly the per-arm support matrix
+  (WARM_STORAGE_MODEL_POLICY.md).
+- NOTE: the duplicate-config question resolved — glm-5.3-nvfp4-
+  radixark vs -flash-nvfp4-redhatai are DIFFERENT MODELS (full vs
+  flash), both kept; the true duplicate found was kimi-k3 vs
+  kimi-k3-nvfp4-redhatai, BOTH KEPT as separate arms per the matrix.
+- Ruling builds continue (27B TP4 3/4→complete check next; flash
+  TP8 placed; k3 building).
