@@ -3048,3 +3048,8 @@ nvfp4a16-bf16-spine; (4) qwen-flash bf16 TP16; (5) k3 mxfp4 reslice;
 - 27B TP4: RANK2-OK (3 of 4 files). flash TP8: 6/8 (273G). k3:
   resumed process alive, 553G (watch: growth confirms the resume
   took; a stall means the journal walk again).
+
+## 2026-08-30 ~22:3x — k3 resume cwd bug fixed (ran from ~ not the repo)
+
+- The prior resume ran from $HOME (file-not-found, instant exit);
+  refired from ~/sparkpipe-main. 27B/flash completing on their own.
