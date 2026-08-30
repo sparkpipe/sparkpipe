@@ -485,7 +485,13 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     cursor = 0
     for ref in refs:
         shard, meta, offset = source.check_shape(ref)
-        if ref.weight_format == WEIGHT_FP8_F32B128:
+        if ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4":
+            # codec-6 sizing: U8-packed payload (2 values/byte) + one F8_E4M3
+            # scale byte per 16 values; F32 global/input scales ride the
+            # manifest entry, not the payload stream.
+            payload_bytes = ref.rows * (ref.columns // 2)
+            scale_bytes = ref.rows * (ref.columns // 16)
+        elif ref.weight_format == WEIGHT_FP8_F32B128:
             payload_bytes = ref.rows * ref.columns
             scale_bytes = (ref.rows // 128) * (ref.columns // 128) * F32_BYTES
         else:
