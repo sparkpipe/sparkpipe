@@ -1,0 +1,102 @@
+# Stagepack Fleet Audit — 2026-08-31
+
+Scope: every model dir in warm storage ↔ placed stagepacks on all 16
+sparks; deprecated/misleading set removal. Trigger: operator directive
+("audit all the stagepacks … a completely clean set of 16 sparks with all
+the stagepacks for all the models; audit EVERY model in warm storage").
+Companion law: **NO SYMLINKS FOR STAGEPACKS** (see coordinator-log 12:1x).
+
+## 1. The serving matrix (KEEP set — the only packs a clean fleet holds)
+
+| Set (per node dir) | Source (warm) | Rank bytes | Coverage |
+|---|---|---|---|
+| glm53full.bf16.tp16 | glm-5.3-bf16 (1.4T) | ~98G | 16/16 (spark5 rank5 REBUILD in flight — see §5) |
+| glm53full.fp8.tp16 | glm-5.3-fp8 (704G) | ~50G | 16/16 |
+| glm53full.nvfp4.tp16 | glm-5.3-nvfp4-radixark (433G) | ~30G | 16/16 |
+| glm5_next.tp16 (flash engagement set) | glm-5.3-flash era | ~21.7G | 16/16, materialized real bytes + sha receipts |
+| glm5_next.tp8.fp8 (flash serving set) | glm-5.3-flash (306G) | ~21.7G | 16/16, materialized real bytes + sha receipts |
+| dsv4flash.tp16 | deepseek-v4-flash-0731 (156G) | ~20G | 16/16 |
+| dsv4_pro.tp4pp4 | deepseek-v4-pro-0813-ga (832G) | ~88G | 10/16 — 6 ranks pending packer rank-path |
+| qwen27b.tp4 | qwen3.8-27b-fp8 (29G) | ~9G | 16/16 (TP4 ruling) |
+| qwenflash.tp8 | qwen3.8-flash-next (336G bf16) | ~43G | 16/16 (TP8 ruling) |
+| qwenmax.pp16 | qwen3.8-max-nvfp4-radixark-bf16-spine (1.4T) | ~90G | 16/16 |
+| k3.mxfp4.tp16 | kimi-k3 (1.5T) | ~97G | IN FLIGHT — per-node slice→verify→place; receipts land via 10-min automation |
+
+## 2. Warm-storage model dirs → coverage verdict
+
+| Warm dir | Size | Verdict |
+|---|---|---|
+| glm-5.3-bf16 | 1.4T | COVERED (bf16.tp16 16/16) |
+| glm-5.3-fp8 | 704G | COVERED (fp8.tp16 16/16) |
+| glm-5.3-nvfp4-radixark | 433G | COVERED (nvfp4.tp16 16/16) |
+| glm-5.3-flash | 306G | COVERED (glm5_next.tp8.fp8 + tp16 engagement) |
+| glm-5.3-flash-bf16-official | 599G | NO PLACED SET — open question: was the flash-bf16 arm ruled out? If wanted: 37G/rank × 16 to build |
+| glm-5.3-flash-nvfp4-redhatai | 185G | NO PLACED SET — same question for the flash nvfp4 arm |
+| glm-5.3-flash-dflash2 | 2.2G | drafter spec module — keep (small) |
+| kimi-k3 | 1.5T | IN FLIGHT (k3.mxfp4.tp16) |
+| kimi-k3-{dflash2-lightseek,dflash-modal,dspark-inferact,dspark-radixark,dspark-redhatai} | 4-9G | drafter/dspark spec variants — keep (small, experimental) |
+| qwen3.8-27b-fp8 | 29G | COVERED (qwen27b.tp4 16/16) |
+| qwen3.8-27b-nvfp4a16-bf16-spine | 29G | NO PLACED SET — nvfp4a16 arm previously flagged redundant; confirm ruling before building |
+| qwen3.8-27b-{dflash2-incoai,dspark-radixark} | ~7G | drafters — keep |
+| qwen3.8-flash-next | 336G | COVERED (qwenflash.tp8) |
+| qwen3.8-flash-next-fp8 | 173G | **GAP — FP8 arm packs not built** (per-arm policy says build: ~11G/rank TP16-equiv) |
+| qwen3.8-flash-next-nvfp4-radixark | 126G | **GAP — NVFP4 arm packs not built** (~8G/rank) |
+| qwen3.8-max-nvfp4-radixark-bf16-spine | 1.4T | COVERED (qwenmax.pp16) |
+| qwen3.8-max-{dflash-modal,dspark-radixark} | ~11G | drafters — keep |
+| deepseek-v4-flash-0731 | 156G | COVERED (dsv4flash.tp16) |
+| deepseek-v4-flash-dflash-redhatai | 3.4G | drafter — keep |
+| deepseek-v4-pro-0813-ga | 832G | PARTIAL (tp4pp4 10/16; last 6 ranks need packer rank-path) |
+| deepseek-v4-pro-0813-nvfp4-jarrelscy | 877G | **GAP — dsv4-pro TP16 set** (the last board rung) |
+| archive-not-a-source | 1.5T | archive — not a serving source |
+
+## 3. Deprecated removals — WAVE 1 EXECUTED 2026-08-31 (per-node logs: ~/wave1_removal.log)
+
+Exact-name removal across all 16 nodes (~2.5-3TB reclaimed):
+dsv4_compress_ingest_{control,fuse}_da7f910 (74G/node × 4);
+dsv4_flash.fp8.{pp13,pp13.b16,pp13.b8} (old PP13 era);
+dsv4_flash.fp8.tp16.b1{,.128,.gpudirect,.hostrdma} (bench variants —
+serving set is dsv4flash.tp16); dsv4_flash.fp8.tp4.b1{,.hostrdma};
+dsv4_flash.fp8.tp4_pp4.b1; dsv4_flash.v4.tp16.b1 (bench gen);
+qwen38.bf16.{pp16,pp4,tp4,tp1} (BF16 serving eras incl. 78G tp1);
+qwen38.fp8.tp1{,.official,.auditk8,.audrb,.q27b} (TP1 era — q27b lane
+mission-closed, 27B serves TP4); qwen27b.tp16 (spark2, 38G interrupted
+partials — TP16 superseded by the TP4 ruling); glm52.tp8.fp8 (95G × 3 —
+GLM-5.2 is frozen/deprecated, kernel donor only); qwen38max.tp4pp4 (573G
+orphan — superseded by qwenmax.pp16); glm53full.bf16.tp16 full-set dump on
+spark5 (1.37T of foreign ranks — pruned to rank5, which I then wrongly
+deleted and am REBUILDING, see §5).
+
+Zombie daemons TERMed: spark2/spark3 k3.mxfp4.tp4pp4 residentd ranks
+(27h+ silent, erroring) — fleet serving surface is now zero daemons until
+redeploy.
+
+## 4. HOLD — do not remove yet
+
+- `k3.mxfp4.tp4pp4` (90-91G × 16 ≈ 1.45T) — the old k3
+  topology stays ONLY until k3.mxfp4.tp16 verifies 16/16, then it is the
+  single largest reclaim.
+- ~/glm53_packs{,_fixed,_fixed2,_fixed_r4} staging (~65G/node) — reclaim
+  after 16/16 symlinkfix receipts verify.
+- qwenmax.pp16 size outliers (85-131G) — inspect for extra stages before
+  touching anything.
+
+## 5. Incidents during this audit (honesty ledger)
+
+1. spark6: qwen38.bf16.tp1 packs deleted by earlier cleanup — variant-dir
+   dangling links removed; set is LOST (rebuildable from warm if ever
+   needed).
+2. spark5: my prune of the foreign-rank dump used a wrong glob
+   (`^rank5\.` vs the real prefix `glm53full.bf16.tp16-rank5`) and removed
+   spark5's OWN rank5 with the extras. Rebuild launched from
+   /mnt/model-warm/glm-5.3-bf16 (glm52_resident_stagepack --tp-rank 5,
+   expert-codec bf16); verifies against the set contract on completion.
+   Lesson: deletion scripts must match FULL file names and print their
+   kill list for approval-shaped review before rm.
+
+## 6. Audit gates going forward
+
+- `find ~/sparkdata -type l ! -path "*/.venv/*"` EMPTY on every node.
+- Every placed pack has a sha256 receipt beside it (placement without
+  receipt is not placement).
+- Every warm ACTIVE model dir must map to ≥1 placed set or an explicit
+  ruled-out note in this file.
