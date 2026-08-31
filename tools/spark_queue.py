@@ -151,7 +151,14 @@ def pid_alive(node, pid):
 
 
 def expire_stale(res):
-    """Release reservations whose TTL passed and whose pid (if any) is dead."""
+    """Release reservations whose pid is dead OR whose TTL passed.
+
+    The old rule required BOTH (ttl expired AND pid dead) - a hung or
+    pid-recycled task held its nodes forever (the 19h-running/45min-ttl
+    incident class). Each condition is now sufficient on its own; the
+    TTL is the authority, and the release never kills anything (the
+    no-KILL rule) - the orphan process simply no longer locks the queue.
+    """
     changed = False
     for node in list(res):
         r = res[node]
@@ -159,10 +166,15 @@ def expire_stale(res):
         age = (time.time() - time.mktime(time.strptime(
             r.get("acquired_at", now()), "%Y-%m-%dT%H:%M:%S"))) / 60.0
         pid = r.get("pid")
-        if ttl and age > ttl:
-            if not pid or not pid_alive(node, pid):
-                del res[node]
-                changed = True
+        if pid and not pid_alive(node, pid):
+            del res[node]
+            changed = True
+        elif ttl and age > ttl:
+            del res[node]
+            changed = True
+            print(f"EXPIRED {node} reservation for {r.get('id', '?')} "
+                  f"(ttl {ttl:.0f}m exceeded at age {age:.0f}m; pid "
+                  f"{pid} left running but no longer holds the queue)")
     return changed
 
 
@@ -270,6 +282,25 @@ def cmd_dispatch(args):
         # reap: any running task whose remote pid is gone and exit file says done
         for e in [x for x in entries if x.get("state") == "running"]:
             n0 = e["nodes"][0]
+            # TTL FIRST: a running task past its ttl_minutes expires even
+            # with a live pid (hung or pid-recycled processes used to hold
+            # nodes forever). The process is never killed - it just stops
+            # locking the queue.
+            tttl = float(e.get("ttl_minutes", 0) or 0)
+            tacq = res.get(n0, {}).get("acquired_at")
+            if tttl and tacq:
+                tage = (time.time() - time.mktime(time.strptime(
+                    tacq, "%Y-%m-%dT%H:%M:%S"))) / 60.0
+                if tage > tttl:
+                    e["state"] = "done"
+                    append_result(e, 124, f"ttl-expired at {tage:.0f}m "
+                                   f"(limit {tttl:.0f}m; pid left running)")
+                    for n in e["nodes"]:
+                        if res.get(n, {}).get("id") == e["id"]:
+                            del res[n]
+                    print(f"expired {e['id']} ttl={tttl:.0f}m age={tage:.0f}m "
+                          f"(nodes released)")
+                    continue
             pid = res.get(n0, {}).get("pid")
             exit_path = f"/tmp/sparkqueue-{e['id']}.exit"
             _, rc_txt = ssh(n0, f"cat {exit_path} 2>/dev/null", timeout=10)
@@ -290,6 +321,22 @@ def cmd_dispatch(args):
                         del res[n]
                 print(f"reaped {e['id']} pid-gone (nodes released)")
         entries = [e for e in entries if e.get("state") != "done"]
+        # stale notes age out: they never hold nodes, but ancient notes
+        # pollute every listing (the 19h-old notes class)
+        fresh = []
+        for e in entries:
+            if e.get("kind") == "note":
+                try:
+                    age_h = (time.time() - time.mktime(time.strptime(
+                        e.get("submitted_at", now()), "%Y-%m-%dT%H:%M:%S"))) / 3600.0
+                except ValueError:
+                    age_h = 0.0
+                if age_h > 24.0:
+                    e["state"] = "done"
+                    append_result(e, 0, f"note aged out at {age_h:.0f}h")
+                    continue
+            fresh.append(e)
+        entries = fresh
         candidates = [e for e in entries if e.get("state") == "queued"
                       and e.get("cmd")
                       and not any(a not in results_ids for a in e.get("after", []))]

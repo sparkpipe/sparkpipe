@@ -232,16 +232,23 @@ static SparkStatus SparkGlm5NextServingLoadTpAlgorithms(
 static SparkStatus SparkGlm5NextServingLoadTpStepRails(
 	const SparkJsonDocument *document,
 	int32_t object,
+	uint32_t tp_degree,
 	SparkTpDeviceCollectiveTopology *topology)
 {
 	int32_t element,token;
 	uint32_t count,index,value;
 	SparkStatus status;
 	token = SparkGlm5NextServingJsonMember(document,object,"step_rail_indices");
+	/* Two legal shapes: the 3-entry split-ring routes (legacy) and the
+	 * tp_degree-entry d2a peer routes (the struct is sized MAX_STEPS).
+	 * The 3-only bound rejected the generator's d2a configs at load -
+	 * the engagement redeploy's root-cause SCHEMA_ERROR. */
 	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
-		SparkJsonGetArrayElementCount(document,token) !=
-			SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT )
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = SparkJsonGetArrayElementCount(document,token);
+	if ( count != SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT &&
+		count != tp_degree )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
 	for (index=0u; index<count; index++)
@@ -471,7 +478,7 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 				&state->tp_collective_topology,tp_degree);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm5NextServingLoadTpStepRails(document,object,
-				&state->tp_collective_topology);
+				tp_degree,&state->tp_collective_topology);
 	}
 	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadTpCollective rc=%d backend=%u\n",(int)status,state->tp_collective_backend_kind);
 	return(status);

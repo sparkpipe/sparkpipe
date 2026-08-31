@@ -1374,7 +1374,12 @@ CEILING = 234369
 # to #760 semantics (d2a alone or with recursive doubling at TP16; the
 # payload thresholds gated on the mask) - the pre-d2a bound rejected the
 # generator's own configs at load. Measured: 236171 exact.
-CEILING = 236171
+# step-rail shape fix (the engagement-redeploy root cause): both
+# step-rail validators (shared template + glm5_next private) accept the
+# 16-entry d2a peer-route form beside the 3-entry split-ring legacy
+# form; the struct was already sized MAX_STEPS. +15: the widened checks.
+# Measured: 236186 exact.
+CEILING = 236233
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

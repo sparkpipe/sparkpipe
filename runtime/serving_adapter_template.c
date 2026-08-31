@@ -124,6 +124,7 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 static SparkStatus SparkTpCollectiveLoadStepRails(
 	const SparkJsonDocument *document,
 	int32_t object,
+	uint32_t peer_count,
 	SparkTpDeviceCollectiveTopology *topology)
 {
 	int32_t element,token;
@@ -131,10 +132,17 @@ static SparkStatus SparkTpCollectiveLoadStepRails(
 	SparkStatus status;
 	token = SparkServingAdapterTemplateJsonMember(document,object,
 		"step_rail_indices");
+	/* Two legal shapes: the 3-entry split-ring routes (the legacy
+	 * form) and the tp_degree-entry direct-all-to-all peer routes
+	 * (one rail per step row - the struct is sized MAX_STEPS). The
+	 * old 3-only bound rejected the generator's d2a configs at load
+	 * (the engagement redeploy's SCHEMA_ERROR). */
 	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
-		SparkJsonGetArrayElementCount(document,token) !=
-			SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT )
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = SparkJsonGetArrayElementCount(document,token);
+	if ( count != SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT &&
+		count != peer_count )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
 	for (index=0u; index<count; index++)
@@ -247,7 +255,7 @@ static SparkStatus SparkTpCollectiveLoadAdaptiveFabric(
 		status = SparkTpCollectiveLoadRailHosts(document,object,
 			policy->peer_count,&config->topology);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkTpCollectiveLoadStepRails(document,object,
+		status = SparkTpCollectiveLoadStepRails(document,object,policy->peer_count,
 			&config->topology);
 	return(status);
 }
