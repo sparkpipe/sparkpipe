@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "f13dc2805fa120369b2a13b41d455d56d5c9a161b44e3559e01c2dfa88925f52",
-      "size_bytes": 213695
+      "sha256": "afb812287b29a2ca52fa54616d7c98edd6a92ff304605a061d6cb4ff3365071b",
+      "size_bytes": 215649
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -3648,28 +3648,28 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "670416cb83bb66cc62c819836bfe06a5ac4a1c867a9917f20a96f3052e665bc5",
-      "size_bytes": 37101
+      "sha256": "34a77836c17ffa2b866c6f06da8533b10b3c8e452244f093a2f0e539ef647fd9",
+      "size_bytes": 39308
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/cuda/unity.cu",
-      "sha256": "eb3052c7e8c522db90f50d859ee099e2e4388c4a0fdf35d08125553b85d10b1f",
-      "size_bytes": 8292
+      "sha256": "17388b930d5dd7d07311bc13fe58f0bb94b2611080fa1ac4978abdef927a5259",
+      "size_bytes": 8684
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_cuda.cu",
-      "sha256": "68315bb723fe33284f6bdaf739e47056696098c1c836f26353828fdd246bddb9",
-      "size_bytes": 22276
+      "sha256": "070ab2b455ae39e0d32b67ecc6331a01743d38d17921f3fb4f1abfc6854ffdfe",
+      "size_bytes": 22862
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h",
-      "sha256": "ad5637bcb6ae06aeb55561545b9f9ce34e919c2a6dcfd17322d21b0dce251d8a",
-      "size_bytes": 4925
+      "sha256": "864b967578fa66855043c3349a9097d23b0b9bb0a334b993559121fbd153bfd3",
+      "size_bytes": 5566
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
-      "sha256": "eee6c8c4412bec5bbec6679b54b449edd853d0ed494d9745cb1d216bc3341c70",
-      "size_bytes": 96048
+      "sha256": "38741dcd73ac32fd17593ed58346afbc161ef1fa3a3115282ef53e941e0059c9",
+      "size_bytes": 98668
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c",
@@ -6123,8 +6123,8 @@
     },
     {
       "path": "tests/host_cuda/lm_host_cuda.cuh",
-      "sha256": "e7819cde12a458774f921bb72eb67abc7e067e7bfcb5e4d9d8e9294832b0d37a",
-      "size_bytes": 10780
+      "sha256": "4f8f432d8fd948b1eec88feeac2a3ebae681cbb30447fe26cefa78a2ce21cd90",
+      "size_bytes": 12174
     },
     {
       "path": "tests/host_cuda/mimo25_layer_host.cu",
@@ -6178,8 +6178,8 @@
     },
     {
       "path": "tests/host_cuda/spark_lm_batched_host.cu",
-      "sha256": "071d79aa9b8503ffd8e046a8694d5e786ffbed2263e8c619758375e6da0cc750",
-      "size_bytes": 14967
+      "sha256": "b8e18adc1b9ea899bd0beae0101a269ea839222c593355fa2b4dfd72ceaaebe8",
+      "size_bytes": 15036
     },
     {
       "path": "tests/host_cuda_compiler.py",
@@ -6263,13 +6263,13 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "68f380e3797d2c43b41b005c4594fcca4d014850428ca208690bd5414c3f7f7f",
-      "size_bytes": 95901
+      "sha256": "6a73802844b5be585190a20eea34c1d9576f6826a37910c326af8836ab1c4c49",
+      "size_bytes": 96247
     },
     {
       "path": "tests/test_complexity_ceiling.py",
-      "sha256": "ca7707b15bece36e95c9374fb9c990dd7b1f28baea231cb314a6e2ac121c7e92",
-      "size_bytes": 8986
+      "sha256": "1d5b911a31635750691d60056798a3fd11a53c8c4a5192743738ebdacd4cba6f",
+      "size_bytes": 9122
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -6538,8 +6538,8 @@
     },
     {
       "path": "tests/test_glm52_layer_host.py",
-      "sha256": "ed26ec7fd0f6735b79a4fece9c1a9ffe7254b67c5aa38598f6ec1bb92c75af62",
-      "size_bytes": 17834
+      "sha256": "fb095cc85beeb660f7e893a704ef1284b59c8158ce80358379f3a65a63ba40ea",
+      "size_bytes": 17881
     },
     {
       "path": "tests/test_glm52_module_contract.py",
@@ -7953,8 +7953,8 @@
     },
     {
       "path": "tools/glm52_gen_deployment.py",
-      "sha256": "0e6b428b8828eaa9888bf76f5a82ebc668cc07996e13f9b6a3daea514105b590",
-      "size_bytes": 5058
+      "sha256": "ceaa8cba93a9ad35b1dd496116541971d3c9247accf238940134eac811bcb9a1",
+      "size_bytes": 5282
     },
     {
       "path": "tools/glm52_hash_diff.py",
@@ -8800,5 +8800,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32169213
+  "total_bytes": 32179829
 }

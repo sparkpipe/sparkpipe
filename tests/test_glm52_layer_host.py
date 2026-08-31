@@ -51,6 +51,7 @@ INCLUDES = [
     f"-I{ROOT}/tests/host_cuda",
     f"-I{ROOT}/include",
     f"-I{ROOT}/model-families/glm52/include",
+    f"-I{ROOT}/model-families/common/include",
     f"-I{ROOT}/modules/glm52_resident_decode_stage/include",
     f"-I{ROOT}/deployment/include",
 ]

@@ -189,6 +189,11 @@ extern "C" int32_t Glm52HeadFullVocab(
         stream);
 }
 
+extern "C" cudaError_t SparkGlm52LaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension)
+{
+    return SparkLmHostLaunchHeadCertifiedFp8Quantize(stream,head_bf16,certified_payload,certified_scale_f32,certified_norm_f32,vocabulary,hidden_dimension);
+}
+
 extern "C" int32_t Glm52HeadRestricted(
     const Glm52LayerBuffers *buffers,
     const void *norm_weight_bf16,

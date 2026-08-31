@@ -1396,7 +1396,12 @@ CEILING = 234369
 # digest), the residentd setenv publish, and the sidecar resolver in
 # weightd_spawn.c. Config-driven: every family deployment inherits the
 # one-minute debug cycle by adding the object.
-CEILING = 236631
+# +110: THE ACTIVATION PASS (operator: activate all that works; no
+# dormant fast paths): glm52 split-K ENGAGED at 2048 (was 0 - the kernel
+# + consumer + threshold plumbing were always in) and the certified-FP8
+# screened head PORTED to glm52 (the recipe hardware-qualified on
+# glm5_next/qwen38/dsv4/qwen4_flash: shadow at load + B1 dispatch).
+CEILING = 236742
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

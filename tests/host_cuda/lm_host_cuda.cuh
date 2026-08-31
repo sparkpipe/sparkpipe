@@ -35,6 +35,33 @@
 #include <string.h>
 #include <stdint.h>
 
+// The shared spark_lm_kernels.cuh tensor-tile kernels need nvcuda::wmma
+// to PARSE under the host compiler (the spark_lm_batched_host.cu
+// pattern, verbatim): declarations only, never invoked - a call would
+// fail to link, which is the loud failure the harness prefers.
+#ifndef LM_HOST_CUDA_WMMA_STUB
+#define LM_HOST_CUDA_WMMA_STUB
+namespace nvcuda
+{
+namespace wmma
+{
+struct matrix_a {};
+struct matrix_b {};
+struct accumulator {};
+struct row_major {};
+struct col_major {};
+enum { mem_row_major = 0 };
+template <typename Use, int M, int N, int K, typename Element,
+	typename Layout = void>
+struct fragment { unsigned storage[8]; };
+template <typename Fragment, typename Value> static inline void fill_fragment(Fragment &, Value) {}
+template <typename Fragment, typename Pointer, typename Stride> static inline void load_matrix_sync(Fragment &, Pointer, Stride) {}
+template <typename Pointer, typename Fragment, typename Stride, typename Layout> static inline void store_matrix_sync(Pointer, Fragment &, Stride, Layout) {}
+template <typename Accum, typename A, typename B, typename C> static inline void mma_sync(Accum &, A &, B &, C &) {}
+}
+}
+#endif
+
 #define __global__
 #define __device__
 #define __host__
@@ -192,6 +219,9 @@ typedef int cudaError_t;
 #define cudaErrorNotSupported 801
 static inline cudaError_t cudaPeekAtLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaGetLastError(void) { return cudaSuccess; }
+/* the shared head-screen host launchers memset their staging (never
+ * invoked under the one-thread harness - parse coverage only) */
+static inline cudaError_t cudaMemsetAsync(void *, int, unsigned long long, dim3) { return cudaSuccess; }
 
 // The host expansion of runtime/launch.h's LM_LAUNCH. Same name, same argument
 // order, so a layer compiles for either target without a second spelling.
