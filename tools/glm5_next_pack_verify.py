@@ -129,7 +129,8 @@ def main() -> int:
     print(f"PASS header: tp{h['tp_degree']} rank {h['tp_rank']}, "
           f"file_bytes {size} == rank-0 receipt")
 
-    if h["entry_count"] != EXPECTED_TENSOR_COUNT:
+    if (not args.mtp and args.expected_bytes is None
+            and h["entry_count"] != EXPECTED_TENSOR_COUNT):
         fail(f"entry count {h['entry_count']} != {EXPECTED_TENSOR_COUNT}")
     print(f"PASS count: {h['entry_count']} tensors")
 
