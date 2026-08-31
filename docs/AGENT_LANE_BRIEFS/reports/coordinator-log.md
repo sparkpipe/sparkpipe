@@ -3664,3 +3664,22 @@ buffering hid all diagnostics (stdbuf -oL). Receipts above; bench asset
 IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 (ncclAllReduce on the execution stream, stream-ordered completion), driver
 -lnccl, config backend=nccl, T257 exactness, then the serving number.
+
+## 2026-08-31 ~10:0x — k3 deploy pivoted serial→parallel; push recipe FIXED; 10-min timer live
+
+- Serial k3_tp16_deploy measured 13MB/s per rank (mmap-over-ceph slicing)
+  → 32h projected. TERMed; pivoted to per-destination-node slicing:
+  k3_slice_one.sh <rank> on each node slices its OWN rank from the warm
+  base (mmap), verifies vs base, places into ~/sparkdata/k3.mxfp4.tp16/packs/,
+  sha256-receipts at ~/sparkdata/k3.mxfp4.tp16/rankNN.receipt. All 16 fired
+  in parallel (~9MB/s/node, ~144MB/s aggregate → ~3-5h to full board incl
+  verify). Tools (k3_shard/k3_pack/k3_verify_pack) shipped to all 16.
+- PUSH GREEN: root cause was the osxkeychain stale experiencenow-ai entry
+  answering before appended helpers. Recipe: source ~/sparkpipe/.env
+  (GITHUB_PAT, account sparkpipe) + clear helper chain first
+  (git -c credential.helper= -c credential.helper='...'). All commits
+  pushed through 60d4e28. Recipe saved to memory.
+- 10-min automation live (automation-ca20e345): drives receipts N/16,
+  relaunches dead nodes idempotently, audits placement, then cleanup
+  (warm base+quarantines, slice work dirs, spark2 27B .tmp partials),
+  logs+pushes each cycle, stops after completion.
