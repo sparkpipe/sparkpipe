@@ -3879,3 +3879,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   rank14 with exactly those flags; byte-gate + source verify before place.
 - Lesson: rebuilds must match the original PACK HEADER, not inferred flag
   names — read the artifact's own header first.
+
+## 2026-08-31 ~18:4x — cycle 19: k3 steady 11/16; 5 slicing (0,1,4,d,f); rebuilds running
