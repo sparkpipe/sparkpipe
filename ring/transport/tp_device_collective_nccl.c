@@ -25,7 +25,11 @@
 #define SPARK_TP_NCCL_BOOTSTRAP_MAGIC 0x53504e43u
 #define SPARK_TP_NCCL_BOOTSTRAP_ABI_VERSION 1u
 #define SPARK_TP_NCCL_CONNECT_RETRY_NANO 2000000L
-#define SPARK_TP_NCCL_MINIMUM_VERSION 23000
+/* NCCL encodes versions as MMmmpp: 2.28.9 -> 22809, 2.21.0 -> 22100.
+ * The 23000 literal rejected EVERY modern NCCL (22809 < 23000) - the
+ * backend could never load any library. 2.21.0 is the oldest with
+ * the surface the backend uses. */
+#define SPARK_TP_NCCL_MINIMUM_VERSION 22100
 #define SPARK_TP_NCCL_SUCCESS 0
 #define SPARK_TP_NCCL_IN_PROGRESS 7
 #define SPARK_TP_NCCL_DATA_TYPE_U64 5
