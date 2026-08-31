@@ -3800,3 +3800,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   zero FATAL. Rebuilds: spark5 rank5 + sparke rank14 writing.
 
 ## 2026-08-31 ~15:4x — cycle 13: k3 steady at 9/16; 7 nodes still slicing
+
+## 2026-08-31 ~15:5x — cycle 14: k3 9/16; spark9 mid-verify (do-not-relaunch race noted)
+
+- spark9: slice done (99.5GB pack in slice dir), in verify/hash leg —
+  the read-out race (receipt absent + shard proc absent BETWEEN phases);
+  relaunching here would restart the slice. Signature: log tail
+  "sharded 2157 tensors x rank N of 16".
+- sparke rank14 glm rebuild continuing.
