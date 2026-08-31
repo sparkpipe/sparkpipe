@@ -3808,3 +3808,20 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   relaunching here would restart the slice. Signature: log tail
   "sharded 2157 tensors x rank N of 16".
 - sparke rank14 glm rebuild continuing.
+
+## 2026-08-31 ~16:1x — cycle 15: SYMLINK SQUATTER on sparke; rank14 rebuilt to neutral path
+
+- sparke incident v2: 11 min after the rank14 rebuild started, an external
+  actor recreated ~/glm53_packs_fixed2/ (empty) + the rank14 symlink
+  (20:51-52 local). The packer writes directly to the final path — fd 3
+  showed (deleted) — so that build's bytes were orphaned garbage. Killed
+  it; relaunched to NEUTRAL path ~/rank14stage/ (outside the squatter's
+  watch). Other nodes audited: 0 symlinks, packs intact — sparke-only.
+- No cron/script/tmux/screen/who on sparke explains it; over-ssh actor,
+  profile matches the cross-chat "fleet-health-and-storage-check" lane
+  (its RECOVERY_LOCK identified it for the k3 base). Operator: if that
+  chat is yours, its sparke state-restore step needs disarming — it
+  fights the symlink law. Escalating if re-squatting recurs; chattr +i
+  is the countermeasure of last resort.
+- Cycle numbers: k3 9/16 receipts (spark9 mid-verify — do-not-relaunch
+  signature respected); rank14 neutral rebuild running.
