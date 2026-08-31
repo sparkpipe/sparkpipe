@@ -34,6 +34,8 @@ static float shared_input[32768];
 // host compiler. These declarations are never invoked: the oracle calls only
 // the two scalar-arithmetic kernels, and any call would fail to link - which
 // is the loud failure the harness prefers.
+#ifndef LM_HOST_CUDA_WMMA_STUB
+#define LM_HOST_CUDA_WMMA_STUB
 namespace nvcuda
 {
 namespace wmma
@@ -58,6 +60,7 @@ template <typename Pointer, typename Fragment, typename Stride, typename Layout>
 template <typename Accum, typename A, typename B, typename C> static inline void mma_sync(Accum &, A &, B &, C &) {}
 }
 }
+#endif
 
 // The launcher bodies reference the runtime API directly. They are never
 // CALLED under the harness (kernels run through LM_HOST_LAUNCH), but the

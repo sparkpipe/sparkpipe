@@ -100,7 +100,9 @@ CEILING = 75
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
-MEAN_CEILING_X100 = 788
+# Activation pass: glm52 B1 head dispatch gains the certified-vs-full
+# branch (flat, status-returning, nvcc-gated); max CCN unchanged.
+MEAN_CEILING_X100 = 789
 
 # The validation harnesses (control-vs-candidate CUDA units, never merged
 # into production) carry their OWN budget. It does not gate the production

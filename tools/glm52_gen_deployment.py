@@ -55,7 +55,10 @@ def stage_config(rank: int) -> dict:
         "stage_pack_path": "packs/glm52_tp8_rank%02d.fp8.glms52sp" % rank,
         "max_sequence_positions": 4096,
         "execution_row_capacity": 16,
-        "decode_split_context_threshold": 0,
+        # engaged (the R3 activation): below it byte-identical single-pass,
+        # above it the split+combine - same policy as glm5_next (flash
+        # measured 12-14x at 8-32K; the kernel + consumer were always in)
+        "decode_split_context_threshold": 2048,
         "tp_degree": TP,
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE),

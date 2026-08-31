@@ -80,6 +80,10 @@ typedef struct SparkGlm52ExecutionSlot
 	uint32_t *output_token;
 	float *output_score;
 	uint64_t *head_maxloc_u64;
+	/* R1 screened-head scratch (per head-owning rank shard size). */
+	void *head_certified_scratch;
+	uint32_t *head_certified_candidates;
+	uint32_t *head_screened_count;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;
@@ -115,6 +119,11 @@ typedef struct SparkGlm52CudaWave
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
+	/* R1 certified-FP8 shadow of the lm_head shard (head-owning ranks;
+	 * built on-device at load; 0 elsewhere/before). */
+	const uint8_t *head_certified_fp8_payload;
+	const float *head_certified_fp8_scale_f32;
+	const float *head_certified_fp8_norm_f32;
 	const SparkGlm52LayerWeights *layers;
 	SparkGlm52ExecutionSlot *slot;
 	uint8_t *kv_cache;
@@ -142,6 +151,7 @@ int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave);
 cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
+cudaError_t SparkGlm52LaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
 cudaError_t SparkGlm52LaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
 cudaError_t SparkGlm52LaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
