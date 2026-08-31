@@ -1409,7 +1409,9 @@ CEILING = 234369
 # +22: THE NCCL ACTIVATION - the generator emits backend:nccl (the base
 # member set; libnccl.so.2 through backend_module_path for the backend's
 # dlopen) and the wave exports the fabric pins (IFNAME/IB_HCA/GID_INDEX).
-CEILING = 236890
+# +5: glm5_next's driver link tail gains the weightd/attach/status/sha
+# sources (the structural seam needs them in the .so; dsv4's pattern).
+CEILING = 236895
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
