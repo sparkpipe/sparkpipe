@@ -17,6 +17,12 @@
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/head.cuh"
+#include "sparkpipe/spark_head_screen.h"
+/* Only the certified head launchers are needed here (the full kernels
+ * header pulls PTX asm dtype paths the host harness cannot parse); the
+ * shim at tests/host_cuda/shim provides host-parseable declarations
+ * under the same name for the harness builds. */
+#include "sparkpipe/spark_lm_certified_launch.h"
 #include "inference/kernels/kv.cuh"
 #include "inference/llms/kimi_k3/config.h"
 // The pack V2 fused-row constants. config.h and this header spell every shared
@@ -1154,4 +1160,44 @@ static int32_t K3Embedding(const uint16_t *embed_weight,
 		K3_LAYER_THREADS, 0, stream,
 		embed_weight,token_ids,hidden_bf16,vocab_slice_offset,vocab_slice_rows);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+
+/* R1 screened head at B1 (the certified-FP8 path; hardware-qualified on
+ * glm5_next/qwen38/dsv4/qwen4_flash/glm52): the SAME fused residual RMS
+ * norm as K3Head (identical normed stream), certified FP8 screen +
+ * exact-BF16 rescore - argmax-equal by construction. rows==1 only;
+ * multi-row keeps the full-vocab path. */
+static int32_t K3HeadCertifiedB1(
+    const K3LayerBuffers *b,
+    const void *head_norm_weight,
+    const void *head_weight,
+    const uint8_t *certified_payload,
+    const float *certified_scale,
+    const float *certified_norm,
+    void *certified_scratch,
+    uint32_t *candidate_ids,
+    uint32_t *screened_count,
+    uint32_t rank_offset,
+    uint32_t vocabulary,
+    cudaStream_t stream)
+{
+    cudaError_t status;
+    if (b == 0 || head_norm_weight == 0 || head_weight == 0 ||
+        certified_payload == 0 || certified_scale == 0 ||
+        certified_norm == 0 || certified_scratch == 0 ||
+        candidate_ids == 0 || screened_count == 0 ||
+        b->hidden_bf16 == 0 || b->normed_bf16 == 0 ||
+        b->output_token == 0 || b->output_score == 0)
+        return LM_LAUNCH_ERR_SHAPE;
+    LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>),
+        1u, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
+        b->hidden_bf16,0,(const uint16_t *)head_norm_weight, 0,
+        b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+    status = SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
+        stream, b->normed_bf16, head_weight, certified_payload,
+        certified_scale, certified_norm, certified_scratch, candidate_ids,
+        screened_count, b->output_token, b->output_score,
+        rank_offset, 1u, vocabulary, K3_HIDDEN);
+    return status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }

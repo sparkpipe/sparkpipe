@@ -20,6 +20,7 @@
 #include <cstring>
 #include <vector>
 
+#include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
@@ -191,6 +192,14 @@ typedef struct SparkK3RunnerState
 	const uint16_t *embed_weight;
 	const uint16_t *head_norm_weight;
 	const uint16_t *head_weight;
+	/* R1: the certified-FP8 shadow of the lm_head slice (built on-device
+	 * at load, one sweep; the recipe hardware-qualified on 5 families). */
+	uint8_t *head_certified_fp8_payload;
+	float *head_certified_fp8_scale_f32;
+	float *head_certified_fp8_norm_f32;
+	void *head_certified_scratch;
+	uint32_t *head_certified_candidates;
+	uint32_t *head_screened_count;
 	uint32_t vocab;
 	uint32_t vocab_slice_rows;
 	/* host staging for the BF16 collective: values + scratch */
@@ -824,6 +833,32 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->head_norm_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
 		if ( SparkK3PackLoadEntry(&state->module.pack,"lm_head.weight",&entry) == 0 )
 			state->head_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
+	/* R1: build the certified-FP8 shadow of the head slice on device */
+	{
+		uint64_t shard_rows = (uint64_t)state->vocab_slice_rows;
+		uint64_t dim = K3_HIDDEN;
+		if (cudaMalloc(&state->head_certified_fp8_payload, shard_rows * dim) == cudaSuccess &&
+			cudaMalloc(&state->head_certified_fp8_scale_f32, shard_rows * (dim / 32u) * sizeof(float)) == cudaSuccess &&
+			cudaMalloc(&state->head_certified_fp8_norm_f32, shard_rows * (dim / 32u) * sizeof(float)) == cudaSuccess &&
+			cudaMalloc(&state->head_certified_scratch, SparkHeadCertifiedFp8ScratchBytes(shard_rows,dim)) == cudaSuccess &&
+			cudaMalloc(&state->head_certified_candidates, SparkHeadCertifiedFp8CandidateBytes(shard_rows)) == cudaSuccess &&
+			cudaMalloc(&state->head_screened_count, sizeof(uint32_t)) == cudaSuccess &&
+			SparkLmHostLaunchHeadCertifiedFp8Quantize(0,state->head_weight,
+				state->head_certified_fp8_payload,state->head_certified_fp8_scale_f32,
+				state->head_certified_fp8_norm_f32,(uint32_t)shard_rows,(uint32_t)dim) == cudaSuccess)
+			(void)cudaDeviceSynchronize();
+		else
+		{
+			/* fail loud: the shadow is a load-time contract */
+			cudaFree(state->head_certified_fp8_payload);
+			cudaFree(state->head_certified_fp8_scale_f32);
+			cudaFree(state->head_certified_fp8_norm_f32);
+			cudaFree(state->head_certified_scratch);
+			cudaFree(state->head_certified_candidates);
+			cudaFree(state->head_screened_count);
+			state->head_certified_fp8_payload = 0;
+		}
+	}
 	}
 	/* Host staging + head slots + the per-step device arrays. The stage must
 	 * hold the widest per-phase payload - the w1 gate|up (packed_rows x
@@ -998,8 +1033,14 @@ SparkStatus SparkK3StageRunnerSubmit(
 	 * equivalence legs run such packs with stage_count 1). */
 	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
 	{
-		status = K3Head(b, state->head_norm_weight, state->head_weight, 0,
-			state->vocab_slice_rows, rows, stream);
+		/* R1: B1 decode takes the certified-FP8 screened head (argmax-equal
+		 * by construction; 5-family-qualified recipe); multi-row keeps the
+		 * full-vocab rescore - batch amortizes it. */
+		if ( rows == 1u && state->head_certified_fp8_payload != 0 )
+			status = K3HeadCertifiedB1(b, state->head_norm_weight, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32, state->head_certified_fp8_norm_f32, state->head_certified_scratch, state->head_certified_candidates, state->head_screened_count, state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
+		else
+			status = K3Head(b, state->head_norm_weight, state->head_weight, 0,
+				state->vocab_slice_rows, rows, stream);
 		if ( status != LM_LAUNCH_OK )
 			return SPARK_STATUS_INTERNAL_ERROR;
 		if ( state->device_collective_created != 0 )

@@ -1401,7 +1401,12 @@ CEILING = 234369
 # + consumer + threshold plumbing were always in) and the certified-FP8
 # screened head PORTED to glm52 (the recipe hardware-qualified on
 # glm5_next/qwen38/dsv4/qwen4_flash: shadow at load + B1 dispatch).
-CEILING = 236742
+# +82: ACTIVATION PASS 2 - the k3 certified-FP8 screened head (the same
+# recipe, now on all six families: layer.cuh K3HeadCertifiedB1 + the
+# runner's on-device shadow build + B1 dispatch).
+# +38: the certified-launcher isolation header (host-harness consumers
+# get declarations without the full kernels header's PTX asm paths).
+CEILING = 236868
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

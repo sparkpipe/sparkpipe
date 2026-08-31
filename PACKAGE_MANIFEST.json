@@ -1,5 +1,5 @@
 {
-  "file_count": 1759,
+  "file_count": 1760,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "afb812287b29a2ca52fa54616d7c98edd6a92ff304605a061d6cb4ff3365071b",
-      "size_bytes": 215649
+      "sha256": "bb14c5343edf2d7b2c9a5b2aa221591e889d7932e8b6c740f7ec511f0117258a",
+      "size_bytes": 217690
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -3073,8 +3073,8 @@
     },
     {
       "path": "inference/llms/kimi_k3/layer.cuh",
-      "sha256": "0b676b228c3a6870fc6c176c483a64682488cbd938f6bba2b55e95fa5c5d765c",
-      "size_bytes": 65309
+      "sha256": "9fc4d303132de4fccfb6865d83a0453dd52977bf224dd4fe067552b30e960c64",
+      "size_bytes": 67432
     },
     {
       "path": "inference/llms/kimi_k3/pipeline_sideband.h",
@@ -3155,6 +3155,11 @@
       "path": "model-families/common/include/sparkpipe/spark_dspark_drafter.h",
       "sha256": "68c0b16a735d459be10f78b2a666263dc0507b77c0ea8a00e409084d34c03c34",
       "size_bytes": 7470
+    },
+    {
+      "path": "model-families/common/include/sparkpipe/spark_lm_certified_launch.h",
+      "sha256": "a54d4ad8eeaaf0049767875427172764e6f013cfa7a7990731245fe31ffe278f",
+      "size_bytes": 1954
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_lm_kernels.cuh",
@@ -3953,8 +3958,8 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu",
-      "sha256": "e0b4e79934abfa0d16db8ed7023c2433b124ae27562ff71024dfdce311e80e38",
-      "size_bytes": 53644
+      "sha256": "f5aef16072a7bfb0d3e407faf128d6f2feae2f5369d563d521f2acd822921969",
+      "size_bytes": 56102
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c",
@@ -6123,8 +6128,8 @@
     },
     {
       "path": "tests/host_cuda/lm_host_cuda.cuh",
-      "sha256": "4f8f432d8fd948b1eec88feeac2a3ebae681cbb30447fe26cefa78a2ce21cd90",
-      "size_bytes": 12174
+      "sha256": "9e8ba12f9fc767b26519ea60018a62eed58933416786f1f9085499a906d1bbc4",
+      "size_bytes": 12205
     },
     {
       "path": "tests/host_cuda/mimo25_layer_host.cu",
@@ -6263,8 +6268,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "6a73802844b5be585190a20eea34c1d9576f6826a37910c326af8836ab1c4c49",
-      "size_bytes": 96247
+      "sha256": "246da0a54a52e7fc63fbb226a541b7a0e04240d40fab546e98648388576a9259",
+      "size_bytes": 96578
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6758,8 +6763,8 @@
     },
     {
       "path": "tests/test_k3_layer_host.py",
-      "sha256": "c552bdd4107f98a1062530cbbb89ac259a7b78d69531bb14093f400bb7cb25f9",
-      "size_bytes": 5555
+      "sha256": "2dce6da3931aa04a89c6932c5d54cf26f31db1628a36b28aa07d02e7e1399911",
+      "size_bytes": 5628
     },
     {
       "path": "tests/test_k3_layer_probe.cu",
@@ -6823,8 +6828,8 @@
     },
     {
       "path": "tests/test_k3_slice_host.py",
-      "sha256": "b530d361d03806e4eab47ff1582486db0942ba06767024108b2f7109824cce39",
-      "size_bytes": 9054
+      "sha256": "e7a45d9e65f418bdd0b5e4d211a6f29f1654833a632bf88f5dfc5997695f73a7",
+      "size_bytes": 9127
     },
     {
       "path": "tests/test_k3_swizzle_probe.cu",
@@ -8800,5 +8805,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32179829
+  "total_bytes": 32188913
 }
