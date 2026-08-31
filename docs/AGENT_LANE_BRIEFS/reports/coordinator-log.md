@@ -3631,3 +3631,23 @@ the conflict resolution keeps both.)
   0 93 32 (pid 1419610, RSS 8G, 50G read / 22.5G written at 3 min).
 - NOTE: GitHub push is RED (invalid/expired token) — local main is
   edebd7e (merge of origin 15b412b8 + 5 local log commits); push owed.
+
+## 2026-08-31 ~09:0x — k3 base DONE (recovered+published by fleet-health lane); 16-rank deploy FIRED
+
+- Mystery actor identified: "fleet-health-and-storage-check" lane — TERM'd
+  the in-flight builders (00:11Z base2, 01:18Z base), preserved partials as
+  duplicate-<node>-<pid> renames, then published a RECOVERED base from
+  spark8:/home/spark8/k3-recovery/ to warm: 1.56TB, 2157 entries,
+  sha256 b74328a1... verified byte-identical source-vs-published, receipt +
+  RECOVERY_LOCK (do_not_start_k3_pack) on file at 02:54Z. Base stagepack
+  work is CLOSED.
+- Launched the proven resumable chain on spark9: k3_tp16_deploy.sh
+  (slice rank on host -> cross-verify vs base -> sha-verify after scp into
+  target sparkdata/k3.mxfp4.tp16/packs/ -> delete local -> receipt), all
+  16 ranks, log ~/k3_tp16_deploy.log, work /home/spark9/k3_tp16_deploy_work.
+  Rank 0 slicing at launch. Resumable by receipt.
+- Also verified: 27B frame-validation fix was ALREADY landed+merged
+  (8f16efd, mission-closed, telemetry-confirmed) — the plan's Phase 0.1
+  signatures were pre-fix snapshots. Phase 0.2 (redeploy prod) is the
+  open 27B item; spark2/3 k3-tp4pp4 daemons are 27h-silent zombies.
+- Push still RED (GitHub token expired); local main bc98354.
