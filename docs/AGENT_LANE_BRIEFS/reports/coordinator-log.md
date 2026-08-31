@@ -3832,3 +3832,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   no-relaunch signatures confirmed. 5 still slicing (0,1,4,d,f).
 - sparke: no re-squatting since 20:52; neutral-path rank14 rebuild
   progressing in ~/rank14stage/.
+
+## 2026-08-31 ~16:4x — cycle 17: k3 10/16 (spark9 placed); spark3 mid-verify; 5 slicing
