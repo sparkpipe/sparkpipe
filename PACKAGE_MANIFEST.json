@@ -1,5 +1,5 @@
 {
-  "file_count": 1752,
+  "file_count": 1753,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -343,8 +343,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "62cf571b1708c6211cc3b585c76365ff785b1c540ce9b6753e8b0bcdccf1a5d1",
-      "size_bytes": 196089
+      "sha256": "9e93064d7825eb30b4e88ae8cd3589d4c90713201bf3a890e136ae21d5af3752",
+      "size_bytes": 200092
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -793,8 +793,8 @@
     },
     {
       "path": "docs/ROADMAP_TP16_FLEET.md",
-      "sha256": "6d8c86a5f182762de8a71ddc609595bb1b07c033695ba542f21272b7d7712949",
-      "size_bytes": 6883
+      "sha256": "6795cc4228785abb4c2a876b8d29a5fa2ee558c065ef030bf978cd68836d9c12",
+      "size_bytes": 8155
     },
     {
       "path": "docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md",
@@ -3738,8 +3738,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-      "sha256": "1e941a13022c299c162cb8a4b03c657acdb4ae260f19284049ecd5df6f1e51dd",
-      "size_bytes": 51716
+      "sha256": "edf0d9a82050b16ba8ea4db1b9ac19195122d464cb54005b199e6eb57bf4d83a",
+      "size_bytes": 52088
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h",
@@ -5673,8 +5673,8 @@
     },
     {
       "path": "runtime/serving_adapter_template.c",
-      "sha256": "6c855fbee09c6a3e6860fc4d6181feab926fcf20a7c1bb48322a232fcf10779c",
-      "size_bytes": 21394
+      "sha256": "2a2d40ac1e29a9a94267a298d77b434223b21684320959402e75dc764c13d635",
+      "size_bytes": 21821
     },
     {
       "path": "runtime/spark_kv_backing.c",
@@ -6238,8 +6238,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "72d0c665769adfeb1cd3ca2697d7f339587526bd8f38e488ca8095c1cb3c9e2b",
-      "size_bytes": 94459
+      "sha256": "8a0fc8583f104bb3f96cb832d636392ff651326dd05c9230f5b91b50b9632c25",
+      "size_bytes": 94763
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -6565,6 +6565,11 @@
       "path": "tests/test_glm53_contract.py",
       "sha256": "00724e34f4fea191bb96dd940502e96ab6b6751142113c8c50b92356632b9878",
       "size_bytes": 9331
+    },
+    {
+      "path": "tests/test_glm5_next_adapter_config_load.py",
+      "sha256": "0cbf9a8409b39ccbc3dbc474e9ca2f27c8f25bdba85fc12fa53da40b3ee6e034",
+      "size_bytes": 4460
     },
     {
       "path": "tests/test_glm5_next_cuda_validator_tier2_oracle.py",
@@ -8765,5 +8770,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32099291
+  "total_bytes": 32110129
 }
