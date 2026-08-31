@@ -3762,3 +3762,19 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   bf16.tp1 loss; my spark5 rank5 prune mis-glob — rebuild in progress,
   34G/98G).
 - spark2/3 k3-tp4pp4 zombies TERMed; zero serving daemons fleet-wide.
+
+## 2026-08-31 ~14:5x — fleet sync COMPLETE: all 16 sparks on main @ c537380a28e0, clean
+
+- All nodes: branch=main, dirty=0, HEAD == origin/main. One `git pull`
+  now syncs the fleet. Pre-sync state recorded: spark0 was on a stale
+  lane branch (backup pushed: lane/backup-qwen38-tp4-phase2 — its Aug-17
+  rANS commit superseded by the merged monotonic protocol), spark2 on
+  qwen38-dflash2, spark7 on lane/dry-final, spark9 detached; tracked mods
+  stashed (recoverable), untracked colliders (stray dev files since
+  merged upstream) cleared per checkout's own abort list.
+- Operator corrections applied to the audit (c537380): k3.mxfp4.tp4pp4 is
+  a KEEP (topology variant; verified intact 91-92G x 16 — nothing was
+  deleted); glm-flash bf16-official + nvfp4 arms and 27B nvfp4a16 are
+  BUILD tasks; qwen38max.tp4pp4 (573G) removal acknowledged as error,
+  rebuild queued pending priority. Removal law: corruption, exact
+  duplicates, or verbatim operator ruling — nothing else.
