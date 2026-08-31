@@ -3834,3 +3834,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   progressing in ~/rank14stage/.
 
 ## 2026-08-31 ~16:4x — cycle 17: k3 10/16 (spark9 placed); spark3 mid-verify; 5 slicing
+
+## 2026-08-31 ~17:0x — TRUE glm5_next TP8 FP8 set BUILDING (operator DRY + topology-truth ruling)
+
+- Operator ruling: tp8.fp8 pointing at tp16 files is nonsense; the matrix
+  wants TRUE-topology sets. The legacy tp8.fp8 dirs held aliased tp16
+  packs (my symlink-fix materialized that nonsense on 15 nodes — those
+  bytes get replaced as true ranks land).
+- Launched: 8 TP8 ranks (--tp-degree 8 --mtp, dry-plan green 1184
+  tensors) building on sparka (0-3) + sparkc (4-7); each verified vs
+  source then 2x-placed (rank r -> spark$r + spark${r+8}), sha-receipted.
+- sparke tp16 rank14 MTP rebuild in flight (3.6G at last check).
