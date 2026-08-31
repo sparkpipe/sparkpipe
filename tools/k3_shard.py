@@ -156,9 +156,13 @@ class Slicer:
         # reserve so the payload base (align(16 + manifest_len)) is a
         # compile-time constant of this writer.
         # The rank manifest carries the interleave geometry per expert
-        # tensor and runs ~86 KB; the reserve must hold it AND keep
-        # header(16) + reserve 128-aligned (262144 = 2048 * 128).
-        manifest_reserve = 262128
+        # tensor; the first TP16 fleet run measured ~343 KB across ranks
+        # (the ~86 KB estimate overran the old 262128 reserve at the final
+        # manifest write). The reserve must hold it AND keep header(16) +
+        # reserve 128-aligned (16 + 1048560 = 1048576 = 1 MiB). Readers are
+        # header-driven (payload_base = 16 + manifest_bytes, aligned at
+        # read time), so the reserve is a writer-side constant only.
+        manifest_reserve = 1048560
         tensors = {}
         offset = 0
         with open(out_path, "wb") as out:
