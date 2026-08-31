@@ -12,16 +12,68 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <dirent.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "sparkpipe/spark_model_resident_endpoint.h"
+#include "sparkpipe/spark_weightd.h"
 
-void SparkModelResidentdEnsureWeightd(const void *configuration_runtime_root);
-#include <sys/wait.h>
+/* The per-node pack digest (the W2b identity key): the packs are
+ * rank-sharded so the digest CANNOT live in the shared deployment json -
+ * it travels WITH the pack as <pack>.sha256 beside it in the packs dir
+ * (written once at pack placement). One .g5nsp per runtime root today;
+ * more than one is ambiguous and declines (fallback, never wrong bytes). */
+static const char *SparkWeightdSpawnResolvePackDigest(
+	const char *runtime_root)
+{
+	static char digest[65];
+	char dir_path[512];
+	const char *candidate = 0;
+	DIR *directory;
+	struct dirent *entry;
+	FILE *sidecar;
+	size_t read_bytes;
+	(void)snprintf(dir_path,sizeof(dir_path),"%s/packs",runtime_root);
+	directory = opendir(dir_path);
+	if ( directory == 0 )
+		return 0;
+	while ( (entry = readdir(directory)) != 0 )
+	{
+		size_t name_bytes = strlen(entry->d_name);
+		if ( name_bytes > 7u && strcmp(entry->d_name + name_bytes - 7u,
+			".sha256") == 0 )
+		{
+			if ( candidate != 0 )
+			{
+				(void)closedir(directory);
+				return 0; /* ambiguous: multiple sidecars */
+			}
+			candidate = (const char *)entry->d_name;
+		}
+	}
+	(void)closedir(directory);
+	if ( candidate == 0 )
+		return 0;
+	{
+		char sidecar_path[512];
+		(void)snprintf(sidecar_path,sizeof(sidecar_path),"%s/packs/%s",
+			runtime_root,candidate);
+		sidecar = fopen(sidecar_path,"rb");
+		if ( sidecar == 0 )
+			return 0;
+		read_bytes = fread(digest,sizeof(char),SPARK_WEIGHTD_SHA256_HEX_BYTES - 1u,sidecar);
+		(void)fclose(sidecar);
+		if ( read_bytes != 64u )
+			return 0;
+		digest[64] = '\0';
+	}
+	return digest;
+}
 
 void SparkModelResidentdEnsureWeightd(
-	const void *configuration_runtime_root)
+	const char *runtime_root_argument,
+	const char *socket_path_argument)
 {
 	const char *socket_path;
 	const char *runtime_root;
@@ -33,12 +85,13 @@ void SparkModelResidentdEnsureWeightd(
 	char binary_path[512];
 	pid_t child;
 
-	socket_path = getenv("SPARK_WEIGHTD_SOCKET");
-	if ( socket_path == 0 || socket_path[0] == '\0' )
+	/* the deployment's weightd{} socket is the authority here; the env
+	 * (published below) is for the module seam's attach contract */
+	if ( socket_path_argument == 0 || socket_path_argument[0] == '\0' )
 		return;
-	if ( getenv("SPARK_WEIGHTD_ATTACH") != 0 &&
-		strcmp(getenv("SPARK_WEIGHTD_ATTACH"),"0") == 0 )
-		return;
+	socket_path = socket_path_argument;
+	runtime_root = runtime_root_argument;
+	(void)setenv("SPARK_WEIGHTD_SOCKET",socket_path,1);
 	if ( strlen(socket_path) >= sizeof(address.sun_path) )
 		return;
 	/* already up? the common case after the first launch */
@@ -55,9 +108,16 @@ void SparkModelResidentdEnsureWeightd(
 		}
 		(void)close(probe_fd);
 	}
-	if ( configuration_runtime_root == 0 )
-		return;
-	runtime_root = (const char *)configuration_runtime_root;
+	/* publish the identity BEFORE any attach can run (the module seam
+	 * loads after this helper returns) */
+	{
+		const char *digest = SparkWeightdSpawnResolvePackDigest(runtime_root);
+		if ( digest != 0 )
+			(void)setenv("SPARK_WEIGHTD_PACK_SHA256",digest,1);
+		else
+			fprintf(stderr,"model_residentd weightd-no-digest-sidecar "
+				"root=%s (seam falls back to direct load)\n",runtime_root);
+	}
 	(void)snprintf(binary_path,sizeof(binary_path),"%s/bin/sparkpipe_weightd",runtime_root);
 	if ( stat(binary_path,&binary_stat) != 0 )
 	{

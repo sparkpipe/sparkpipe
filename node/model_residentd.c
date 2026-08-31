@@ -2884,11 +2884,18 @@ int main(int argument_count,char **arguments)
 	 * root's bin/ and wait briefly for its socket. Failure to start is a
 	 * loud line, never fatal: the seam's contract falls back to the
 	 * direct pack load. */
-	/* the weightd spawn helper lives in node/weightd_spawn.c (the W2b
-	 * env contract stays out of this file - the fail-closed rule) */
+	/* The weightd residency tier (the one-minute debug cycle): when the
+	 * deployment carries the optional weightd{} object, the helper in
+	 * node/weightd_spawn.c owns the whole W2b env contract (publish,
+	 * sidecar digest, daemon spawn) - model_residentd.c itself stays
+	 * environment-free (the architecture gate's rule). All families
+	 * inherit: config in, warm arena out, no per-module anything. */
+	if ( deployment.weightd_socket_path != 0 &&
+		deployment.weightd_socket_path[0] != '\0' )
 	{
-		extern void SparkModelResidentdEnsureWeightd(const void *);
-		SparkModelResidentdEnsureWeightd((const void *)configuration.runtime_root);
+		extern void SparkModelResidentdEnsureWeightd(const char *,const char *);
+		SparkModelResidentdEnsureWeightd(configuration.runtime_root,
+			deployment.weightd_socket_path);
 	}
 	status = SparkModelResidentdInitialize(&runtime,&configuration);
 	if ( status == SPARK_STATUS_OK )

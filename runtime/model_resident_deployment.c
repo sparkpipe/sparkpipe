@@ -10,7 +10,7 @@
 static const char *const SparkModelResidentDeploymentRootMembers[] =
 {
 	"schema_version","coordinator_rank_index","adapter","driver","transport",
-	"runtime_limits","nodes","tokenizer"
+	"runtime_limits","nodes","tokenizer","weightd"
 };
 /* The root's required members. "tokenizer" is the one OPTIONAL member: the
  * sidecar asset reference. Deployment files without it stay valid (schema
@@ -370,6 +370,27 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	return(status == SPARK_STATUS_OK ? SparkModelResidentDeploymentString(document,object,"path",&deployment->tokenizer_asset_path) : status);
 }
 
+static SparkStatus SparkModelResidentDeploymentParseWeightd(
+	const SparkJsonDocument *document,
+	int32_t root,
+	SparkModelResidentDeployment *deployment)
+{
+	static const char *const members[] = { "socket_path" };
+	int32_t object;
+	SparkStatus status;
+	object = SparkModelResidentDeploymentMember(document,root,"weightd");
+	if ( object < 0 )
+	{
+		/* Absent: residency off - the seam's direct-load path. */
+		deployment->weightd_socket_path = 0;
+		return(SPARK_STATUS_OK);
+	}
+	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	status = SparkJsonValidateObjectMembersExact(document,object,members,1u);
+	return(status == SPARK_STATUS_OK ? SparkModelResidentDeploymentString(document,object,"socket_path",&deployment->weightd_socket_path) : status);
+}
+
 static SparkStatus SparkModelResidentDeploymentParseNodes(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -486,6 +507,7 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->transport_shared_object_path);
 	free(deployment->transport_mode);
 	free(deployment->tokenizer_asset_path);
+	free(deployment->weightd_socket_path);
 	for (index=0u; index<deployment->node_count; index++)
 	{
 		free(deployment->nodes[index].runtime_root);
@@ -530,6 +552,8 @@ SparkStatus SparkModelResidentDeploymentLoad(
 		status = SparkModelResidentDeploymentParseTransport(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseTokenizer(&document,root,deployment);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentParseWeightd(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentObject(&document,root,"runtime_limits",&runtime_object);
 	if ( status == SPARK_STATUS_OK )

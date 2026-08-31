@@ -13,6 +13,9 @@
   "mode": "host-rdma",
   "control_port_base": 60710
  },
+ "weightd": {
+  "socket_path": "/tmp/spark_weightd.sock"
+ },
  "runtime_limits": {
   "max_inflight_submissions": 4,
   "max_active_sequences": 16,

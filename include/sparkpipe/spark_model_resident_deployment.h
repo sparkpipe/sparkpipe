@@ -48,6 +48,11 @@ typedef struct SparkModelResidentDeployment
 	 * the deployment has no tokenizer: text prompts are rejected loudly at
 	 * the API edge and token-id requests are unaffected. */
 	char *tokenizer_asset_path;
+	/* Optional weightd residency (the one-minute debug cycle): the socket
+	 * the residentd ensures a daemon on, and the pack content digest the
+	 * W2b attach contract keys arenas by. NULL socket = residency off
+	 * (the module seam's direct-load fallback). */
+	char *weightd_socket_path;
 	uint32_t reserved[4];
 	SparkModelResidentDeploymentNode nodes[
 		SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];

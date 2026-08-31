@@ -131,6 +131,15 @@ def resident_deployment() -> dict:
             "mode": "host-rdma",
             "control_port_base": TRANSPORT_BASE,
         },
+        # One-minute debug cycle: the residentd publishes the socket to the
+        # W2b env contract, ensures the daemon, and resolves the pack
+        # digest from the .sha256 sidecar beside the rank pack (write it
+        # at pack placement: sha256sum <pack> > <pack>.sha256). The module
+        # seam then attaches the warm arena - code-only redeploys skip
+        # the 21.7GB re-read.
+        "weightd": {
+            "socket_path": "/tmp/spark_weightd.sock",
+        },
         "runtime_limits": {
             "max_inflight_submissions": 4,
             "max_active_sequences": 16,
