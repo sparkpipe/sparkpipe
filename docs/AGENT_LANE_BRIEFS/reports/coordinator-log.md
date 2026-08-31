@@ -3793,3 +3793,8 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - spark5 glm53full bf16 rank5 rebuild continues in parallel.
 - tp8 symlink receipts lag on 1,4,5,6,7 (second copies in flight) —
   watch next cycle; staging reclaim gated on 16/16.
+
+## 2026-08-31 ~15:3x — cycle 12: k3 9/16 receipts; rebuilds writing
+
+- k3: spark2 joined (9/16: 2,5,6,7,8,a,b,c,e); 7 nodes still slicing,
+  zero FATAL. Rebuilds: spark5 rank5 + sparke rank14 writing.
