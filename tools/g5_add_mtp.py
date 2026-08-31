@@ -83,7 +83,12 @@ def main() -> int:
     new_file_bytes = new_dir_off + new_count * ENTRY_BYTES
 
     with open(args.output, "wb") as out:
-        out.write(mm[:old_size])          # old header+directory+payloads
+        off = 0                           # stream: never hold the pack in RAM
+        CH = 64 * 1024 * 1024
+        while off < old_size:
+            n = min(CH, old_size - off)
+            out.write(mm[off:off + n])
+            off += n
         for e, it in new_entries:         # appended MTP payloads
             out.seek(e.payload_offset)
             for chunk in it.produce_payload():
