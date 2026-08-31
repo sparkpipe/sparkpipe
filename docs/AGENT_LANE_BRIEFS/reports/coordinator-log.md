@@ -3690,3 +3690,7 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   per node (~15-20% of each rank). No relaunches needed. Serial relaunch
   in the stale prompt text intentionally NOT executed (parallel layout
   is authoritative). Cleanup pending receipts=16.
+
+## 2026-08-31 ~10:3x — timer cycle 2: 16/16 slicing, 0/16 receipts (expected; ~2-3h slices)
+
+- All 16 shard processes alive, no FATAL, no relaunches. Cleanup pending.
