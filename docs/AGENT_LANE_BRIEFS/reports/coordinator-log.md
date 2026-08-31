@@ -3867,3 +3867,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   0 --layer-count 48 --expert-format bf16); sparkc gets a copy after.
 - glm5_next TP8 FP8 (true topology) building on sparka/c; sparke rank14
   MTP rebuild continuing.
+
+## 2026-08-31 ~17:5x — cycle 18: k3 11/16 (spark3 placed); 5 slicing; rank4+rank14 rebuilds in flight
