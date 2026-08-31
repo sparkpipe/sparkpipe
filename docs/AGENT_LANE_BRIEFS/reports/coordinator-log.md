@@ -3869,3 +3869,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   MTP rebuild continuing.
 
 ## 2026-08-31 ~17:5x — cycle 18: k3 11/16 (spark3 placed); 5 slicing; rank4+rank14 rebuilds in flight
+
+## 2026-08-31 ~18:3x — rank14 exact-flags recovery: header archaeology won
+
+- My --mtp overshoot (+458MB) disproved by rank5's own pack header:
+  FLAGS=0, TENSORS=1160, layer_count=45 — the original set = --first-layer
+  0 --layer-count 45 --owns-embedding --owns-head (embedding+head
+  replicas ride EVERY rank = the uniform 21,706,046,976). Rebuilding
+  rank14 with exactly those flags; byte-gate + source verify before place.
+- Lesson: rebuilds must match the original PACK HEADER, not inferred flag
+  names — read the artifact's own header first.
