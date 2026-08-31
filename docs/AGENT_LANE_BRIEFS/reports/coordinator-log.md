@@ -3778,3 +3778,18 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   BUILD tasks; qwen38max.tp4pp4 (573G) removal acknowledged as error,
   rebuild queued pending priority. Removal law: corruption, exact
   duplicates, or verbatim operator ruling — nothing else.
+
+## 2026-08-31 ~15:1x — cycle 11: k3 8/16 receipts; sparke rank14 (the deleted real file) REBUILDING
+
+- k3.mxfp4.tp16: 8/16 rank receipts (spark5,6,7,8,a,b,c,e — slice done,
+  verified, placed, digested); spark2 VERIFY PASS entering placement;
+  7 nodes still slicing. No relaunches needed; no FATAL.
+- Symlink fix 15/16 tp16 receipts. sparke's 0/0 root: rank14's target
+  glm53_packs_fixed2/... was DELETED (the operator's incident) — link
+  unmaterializable. Rebuild launched with the CORRECT family packer
+  (glm5_next_resident_stagepack --tp-rank 14, dry-plan green 1157
+  tensors; the glm52_resident packer rightly refuses — flash source
+  carries language_model.* names + vision tensors). Writing now.
+- spark5 glm53full bf16 rank5 rebuild continues in parallel.
+- tp8 symlink receipts lag on 1,4,5,6,7 (second copies in flight) —
+  watch next cycle; staging reclaim gated on 16/16.
