@@ -3698,3 +3698,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-08-31 ~10:4x — timer cycle 3: 16/16 slicing, 0/16 receipts; healthy
 
 ## 2026-08-31 ~10:5x — timer cycle 4: 16/16 slicing, 0/16 receipts; healthy
+
+## 2026-08-31 ~11:2x — cycle 5: shard manifest-reserve bug found+fixed; fleet relaunched
+
+- spark8 shard died at final manifest write: rank manifest ~343KB overran
+  the 262128-byte reserve (the ~86KB estimate ignored per-expert interleave
+  geometry across 2157 entries). All 16 ranks would have failed after ~3h.
+- Killed the fleet (pkill self-match exit-255 noise: targets did die),
+  fixed k3_shard reserve 262128 -> 1048560 (16+res=1MiB, 128-aligned;
+  readers are header-driven, verified C spark_k3_pack_load + verify_pack),
+  committed 2b27e64, re-shipped tools, relaunched all 16 (stale partials
+  cleared). ETA unchanged: ~2-3h slicing + verify.
