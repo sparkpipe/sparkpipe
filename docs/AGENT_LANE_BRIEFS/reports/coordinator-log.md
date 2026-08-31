@@ -3709,3 +3709,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   readers are header-driven, verified C spark_k3_pack_load + verify_pack),
   committed 2b27e64, re-shipped tools, relaunched all 16 (stale partials
   cleared). ETA unchanged: ~2-3h slicing + verify.
+
+## 2026-08-31 ~11:3x — cycle 6: 16/16 slicing on fixed sharder, 0/16 receipts; healthy
