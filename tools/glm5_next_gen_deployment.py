@@ -50,7 +50,11 @@ TP_COLLECTIVE = {
     # The async op INVALID_ARGUMENT discriminator is done differently:
     # point BOTH rails at the same (only) fabric device.
     "rail_peer_hosts": [list(HOSTS), list(HOSTS)],
-    "step_rail_indices": [0, 0, 0],
+    # d2a peer routes (the #760 form the deployed lane configs carry and
+    # the collective requires under the RD|D2A mask: entry 0 on rail 0,
+    # all peers on rail 1 - [0,0,0] is the split-ring legacy shape and
+    # the collective's multi-route check REJECTS it when d2a is on)
+    "step_rail_indices": [0] + [1] * (TP - 1),
 }
 
 

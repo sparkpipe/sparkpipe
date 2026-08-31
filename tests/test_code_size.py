@@ -1379,7 +1379,7 @@ CEILING = 234369
 # 16-entry d2a peer-route form beside the 3-entry split-ring legacy
 # form; the struct was already sized MAX_STEPS. +15: the widened checks.
 # Measured: 236186 exact.
-CEILING = 236233
+CEILING = 236237
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
