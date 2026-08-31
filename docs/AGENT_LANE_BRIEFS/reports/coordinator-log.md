@@ -3605,3 +3605,11 @@ the conflict resolution keeps both.)
   no concurrent metadata ops. The k3 rung resumes as soon as the
   healthy node's build runs to completion (~1.5h at the observed
   340MB/s read pace).
+
+## 2026-08-30 ~19:0x — k3 on spark9: 22G written in the first 3 min, healthy pace
+
+- The corrected build on spark9 is running: 22G written in 3 min
+  (~7.3GB/s), RSS flat, journal recording. At this pace the base
+  completes in ~50-70 min, then the 16-rank shard step.
+- The k3 rung is back on track; the earlier warm corruption from
+  the metadata storm is behind us (clean path this time).
