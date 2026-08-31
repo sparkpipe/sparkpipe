@@ -343,8 +343,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "9975b76b219d43c677f49a56e58d3ab6926b0af684bd839cf7ef83e7b32d8c5a",
-      "size_bytes": 194411
+      "sha256": "62cf571b1708c6211cc3b585c76365ff785b1c540ce9b6753e8b0bcdccf1a5d1",
+      "size_bytes": 196089
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -3733,13 +3733,13 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "5cc9b0c96ba67e51a91728d359fbe0c65a490691d11b9dc069e3095eb9541582",
-      "size_bytes": 138724
+      "sha256": "ae4e9b6b05e26697ee62971cc35e92cad797b845bed8423dad3b3a957869fd2b",
+      "size_bytes": 138723
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-      "sha256": "ae35a0c4fb813cf5afaa841cc968d12d7ba4128d746cfb70cd3763304c95ff20",
-      "size_bytes": 50727
+      "sha256": "1e941a13022c299c162cb8a4b03c657acdb4ae260f19284049ecd5df6f1e51dd",
+      "size_bytes": 51716
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h",
@@ -6238,8 +6238,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "9896b5a4b48eac63262feded9a6c4bf26b89b64c74122c5a8a989b5f12336462",
-      "size_bytes": 94186
+      "sha256": "72d0c665769adfeb1cd3ca2697d7f339587526bd8f38e488ca8095c1cb3c9e2b",
+      "size_bytes": 94459
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8765,5 +8765,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32096352
+  "total_bytes": 32099291
 }

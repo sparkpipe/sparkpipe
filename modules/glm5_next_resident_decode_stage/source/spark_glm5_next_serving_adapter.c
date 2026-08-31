@@ -207,10 +207,23 @@ static SparkStatus SparkGlm5NextServingLoadTpAlgorithms(
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	/* The collective implements split-ring and direct-all-to-all only at
-	 * tp_degree 4, so TP8 runs recursive_doubling alone and the two
-	 * algorithm-specific thresholds must be zero. */
-	if ( count != 1u || mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
+	/* #760 semantics (the shared template's rule; this private copy had
+	 * the pre-d2a bound, which rejected the generator's
+	 * [recursive_doubling, direct_all_to_all] set at TP16 - the exact
+	 * SCHEMA_ERROR the engagement redeploy hit at adapter load):
+	 * single-algorithm builds run recursive_doubling or direct_all_to_all
+	 * alone; the pair composes. Split-ring stays out (tp4-only policy). */
+	if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
+	{
+	}
+	else if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL )
+	{
+	}
+	else if ( count == 2u && mask == (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
+		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) )
+	{
+	}
+	else
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	topology->algorithm_mask = mask;
 	return(SPARK_STATUS_OK);
@@ -440,9 +453,18 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 			status = SparkGlm5NextServingJsonUnsigned(document,object,
 				"split_ring_min_payload_bytes",
 				&state->tp_collective_topology.split_ring_min_payload_bytes);
+		/* algorithm-specific thresholds are legal only when their
+		 * algorithm is in the mask (d2a carries an 80KB bound at TP16;
+		 * split-ring's threshold stays zero under this policy) */
 		if ( status == SPARK_STATUS_OK &&
-			(state->tp_collective_topology.direct_all_to_all_max_payload_bytes != 0u ||
-			 state->tp_collective_topology.split_ring_min_payload_bytes != 0u) )
+			(state->tp_collective_topology.algorithm_mask &
+				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) == 0u &&
+			state->tp_collective_topology.direct_all_to_all_max_payload_bytes != 0u )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		if ( status == SPARK_STATUS_OK &&
+			(state->tp_collective_topology.algorithm_mask &
+				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) == 0u &&
+			state->tp_collective_topology.split_ring_min_payload_bytes != 0u )
 			status = SPARK_STATUS_SCHEMA_ERROR;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm5NextServingLoadTpRailHosts(document,object,
