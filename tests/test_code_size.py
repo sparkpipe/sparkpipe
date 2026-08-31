@@ -1406,7 +1406,10 @@ CEILING = 234369
 # runner's on-device shadow build + B1 dispatch).
 # +38: the certified-launcher isolation header (host-harness consumers
 # get declarations without the full kernels header's PTX asm paths).
-CEILING = 236868
+# +22: THE NCCL ACTIVATION - the generator emits backend:nccl (the base
+# member set; libnccl.so.2 through backend_module_path for the backend's
+# dlopen) and the wave exports the fabric pins (IFNAME/IB_HCA/GID_INDEX).
+CEILING = 236890
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

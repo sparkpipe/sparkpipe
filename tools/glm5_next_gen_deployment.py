@@ -31,8 +31,18 @@ MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
 TP_COLLECTIVE = {
-    "backend": "hidden_transport",
-    "backend_module_path": "lib/hidden_transport.so",
+    # THE NCCL ACTIVATION: the backend (ring/transport/tp_device_collective_
+    # _nccl.c) is implemented + dispatched; in-process bootstrap (rank 0
+    # serves the unique-id over this same peer mesh - no files, no ssh).
+    # 16-rank receipts: 105.9us @8KB / 103.3us @14KB vs ~820us/hop on the
+    # host tier (NCCL_16WIDE_RECEIPTS.md). Env pins REQUIRED (the fabric
+    # has two RoCE ports; unpinned NCCL picks the wrong one):
+    # NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA=rocep1s0f1
+    # NCCL_IB_GID_INDEX=3 - the wave exports them.
+    "backend": "nccl",
+    # the nccl backend dlopens libnccl.so.2 through backend_module_path
+    # (SparkTpNcclLoadLibrary); the lib ships in the runtime root lib/
+    "backend_module_path": "lib/libnccl.so.2",
     "collective_identifier": COLLECTIVE_ID,
     "listen_port": COLLECTIVE_BASE,
     "connect_timeout_milli": 600000,
@@ -42,8 +52,8 @@ TP_COLLECTIVE = {
     # d2a rides beside recursive doubling at TP16 (the ABI-13 transport
     # routes tp_degree-1 peers on step rows; 80KB is the lane's payload
     # bound from the d2d measurements) - #760's committed configs.
-    "algorithms": ["recursive_doubling", "direct_all_to_all"],
-    "direct_all_to_all_max_payload_bytes": 81920,
+    # hidden_transport only (stripped below for nccl: that backend
+    # validates the BASE member set - no algorithms/rails/d2a).
     "split_ring_min_payload_bytes": 0,
     # The schema REQUIRES exactly 2 rails (MAX_RAIL_COUNT=2) and 3
     # step_rail_indices (SPLIT_RING_ROUTE_COUNT=3) - glm52's template.
@@ -56,6 +66,14 @@ TP_COLLECTIVE = {
     # the collective's multi-route check REJECTS it when d2a is on)
     "step_rail_indices": [0] + [1] * (TP - 1),
 }
+
+
+if TP_COLLECTIVE["backend"] == "nccl":
+    for _nccl_extra in ("algorithms", "direct_all_to_all_max_payload_bytes",
+                        "split_ring_min_payload_bytes", "rail_peer_hosts",
+                        "step_rail_indices"):
+        TP_COLLECTIVE.pop(_nccl_extra, None)
+
 
 
 def stage_config(rank: int) -> dict:
