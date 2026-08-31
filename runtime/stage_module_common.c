@@ -2,6 +2,11 @@
 #define _FILE_OFFSET_BITS 64
 
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_weightd_attach.h"
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -606,6 +611,8 @@ void SparkStageModuleLedgerRollback(
     ledger->device_allocation_count = allocation_count;
 }
 
+static void SparkStageModulePackArenaRelease(SparkStageModuleLedger *ledger);
+
 void SparkStageModuleLedgerRelease(SparkStageModuleLedger *ledger)
 {
     uint32_t allocation_index;
@@ -629,6 +636,7 @@ void SparkStageModuleLedgerRelease(SparkStageModuleLedger *ledger)
     }
     ledger->device_allocation_count = 0u;
     ledger->device_bytes_resident = 0u;
+    SparkStageModulePackArenaRelease(ledger);
 }
 
 SparkStatus SparkStageModulePackRead(
@@ -668,6 +676,139 @@ SparkStatus SparkStageModulePackRead(
         return SPARK_STATUS_IO_ERROR;
     }
     return SPARK_STATUS_OK;
+}
+
+/* ------------------- structural weightd residency -------------------
+ * One seam, every family: all module pack loaders converge on
+ * SparkStageModuleLoadDeviceRegion, so the residency decision lives HERE
+ * and each family inherits it with zero per-module wiring (replacing the one
+ * family-level MODULE_ADDITIONAL_HOST_SOURCES bolt-on - the DRY
+ * violation this removes). The attach helper's contract is unconditional fallback:
+ * env off, no daemon, no identity, daemon refusal, or an unaligned/
+ * out-of-range slice falls through to today's direct load - the arena
+ * is a performance tier, never a correctness dependency. */
+
+typedef struct SparkStageModulePackArena
+{
+	SparkWeightdAttachOutcome outcome;
+	uint64_t pack_bytes;
+	char pack_path[SPARK_WEIGHTD_PATH_BYTES];
+	int failed;             /* fallback decided; do not retry this ledger */
+} SparkStageModulePackArena;
+
+static void SparkStageModulePackArenaRelease(SparkStageModuleLedger *ledger)
+{
+	SparkStageModulePackArena *arena;
+	if (ledger == 0 || ledger->pack_arena == 0)
+		return;
+	arena = (SparkStageModulePackArena *)ledger->pack_arena;
+	if (arena->outcome.client != 0)
+		(void)SparkWeightdAttachRelease(&arena->outcome);
+	free(arena);
+	ledger->pack_arena = 0;
+}
+
+/* Lazily attach (and consumer-map) the pack file's arena. Returns 1 when
+ * ledger->pack_arena holds a mapped consumer base, 0 for the clean
+ * fallback. */
+static int SparkStageModulePackArenaEnsure(
+	SparkStageModuleLedger *ledger,
+	FILE *file)
+{
+	SparkStageModulePackArena *arena;
+	SparkWeightdPackSlice slice;
+	struct stat pack_stat;
+	char fd_path[64];
+	char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
+	ssize_t path_bytes;
+	SparkStatus status;
+
+	if (ledger == 0 || file == 0)
+		return 0;
+	if (ledger->pack_arena != 0)
+	{
+		arena = (SparkStageModulePackArena *)ledger->pack_arena;
+		return arena->outcome.client != 0 && arena->outcome.map_base != 0;
+	}
+	if (SparkWeightdAttachRequested() != SPARK_STATUS_OK)
+		return 0;
+	arena = (SparkStageModulePackArena *)calloc(1u,sizeof(*arena));
+	if (arena == 0)
+		return 0;
+	ledger->pack_arena = arena;
+	/* the pack path from the already-open handle (no caller plumbing):
+	 * /proc/self/fd on Linux, F_GETPATH on Darwin (the host gates) */
+	path_bytes = -1;
+	(void)snprintf(fd_path,sizeof(fd_path),"/proc/self/fd/%d",fileno(file));
+	path_bytes = readlink(fd_path,arena->pack_path,sizeof(arena->pack_path) - 1u);
+#ifdef __APPLE__
+#ifndef F_GETPATH
+#define F_GETPATH 50
+#endif
+	if (path_bytes <= 0)
+	{
+		char fcntl_path[1024];
+		if (fcntl(fileno(file),F_GETPATH,fcntl_path) >= 0)
+			path_bytes = (ssize_t)snprintf(arena->pack_path,
+				sizeof(arena->pack_path),"%s",fcntl_path);
+	}
+#endif
+	if (path_bytes <= 0 || fstat(fileno(file),&pack_stat) != 0 ||
+		pack_stat.st_size <= 0)
+	{
+		arena->failed = 1;
+		return 0;
+	}
+	arena->pack_path[path_bytes] = '\0';
+	arena->pack_bytes = (uint64_t)pack_stat.st_size;
+	memset(&slice,0,sizeof(slice));
+	slice.model = ledger->module_tag;
+	slice.pack_bytes = arena->pack_bytes;
+	status = SparkWeightdAttachPack(&slice,arena->pack_path,
+		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&arena->outcome,reason);
+	if (status != SPARK_STATUS_OK || arena->outcome.client == 0)
+	{
+		/* fallback: named reason, nothing to release (client == 0) */
+		fprintf(stderr,"stage-module weightd fallback: status=%s reason=%s\n",
+			SparkStatusToString(status),reason);
+		arena->failed = 1;
+		return 0;
+	}
+	status = SparkWeightdAttachImportMap(&arena->outcome,arena->pack_bytes,
+		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,reason);
+	if (status != SPARK_STATUS_OK || arena->outcome.map_base == 0)
+	{
+		/* ImportMap released the attach on its own fallback paths */
+		if (arena->outcome.client != 0)
+			(void)SparkWeightdAttachRelease(&arena->outcome);
+		memset(&arena->outcome,0,sizeof(arena->outcome));
+		arena->failed = 1;
+		return 0;
+	}
+	return 1;
+}
+
+/* A region is arena-servable when it lies inside the pack and the pack
+ * offset is 256B-aligned (the pointer contract the synchronous path's
+ * fresh cudaMalloc buffers set; the packers' payload offsets already
+ * satisfy it, and anything that does not simply falls back). */
+static int SparkStageModulePackArenaSlice(
+	SparkStageModuleLedger *ledger,
+	FILE *file,
+	uint64_t offset,
+	uint64_t bytes,
+	void **pointer)
+{
+	SparkStageModulePackArena *arena;
+	if ((offset & UINT64_C(0xff)) != 0u)
+		return 0;
+	if (SparkStageModulePackArenaEnsure(ledger,file) == 0)
+		return 0;
+	arena = (SparkStageModulePackArena *)ledger->pack_arena;
+	if (offset > arena->pack_bytes || bytes > arena->pack_bytes - offset)
+		return 0;
+	*pointer = (uint8_t *)arena->outcome.map_base + offset;
+	return 1;
 }
 
 static SparkStatus SparkStageModuleLoadRegionSynchronous(
@@ -1243,6 +1384,11 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     SparkStageModuleLoadPipeline *pipeline = 0;
     SparkStatus status;
 
+    /* Structural residency first: a mapped weightd arena serves the
+     * region as a zero-copy slice of the pack - no read, no copy, no
+     * per-family wiring (see SparkStageModulePackArenaEnsure). */
+    if (SparkStageModulePackArenaSlice(ledger,file,offset,bytes,pointer) != 0)
+        return SPARK_STATUS_OK;
     /* The pipelined path pays off (and pays its pinned-slot/thread setup)
      * only on the large regions; small tensors keep the synchronous loop. */
     if (SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK &&

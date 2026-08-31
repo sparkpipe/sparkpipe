@@ -13,7 +13,7 @@
   "backend_module_path": "lib/hidden_transport.so",
   "collective_identifier": 9911223344556679,
   "listen_port": 63647,
-  "connect_timeout_milli": 180000,
+  "connect_timeout_milli": 600000,
   "operation_timeout_milli": 30000,
   "peer_hosts": [
    "spark0",

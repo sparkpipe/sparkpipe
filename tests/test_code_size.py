@@ -1379,7 +1379,18 @@ CEILING = 234369
 # 16-entry d2a peer-route form beside the 3-entry split-ring legacy
 # form; the struct was already sized MAX_STEPS. +15: the widened checks.
 # Measured: 236186 exact.
-CEILING = 236237
+# STRUCTURAL weightd (operator directive: residency is launch-path
+# property, not per-driver wiring): the seam lives in the ONE common
+# function every family's pack loader already calls
+# (SparkStageModuleLoadDeviceRegion), so all six modules inherit with zero
+# per-family changes; the residentd owns daemon lifecycle (spawn-on-
+# demand); the weightd server+client moved to model-common so every
+# module link resolves them. +25: the residentd spawn lives in node/weightd_spawn.c (the env
+# contract stays out of model_residentd.c for the fail-closed rule).
+# New gate: test_stage_module_weightd (the
+# four contracts: no-daemon fallback byte-identical, arena slice
+# zero-copy digest-exact, release-keeps-warm, kill-switch).
+CEILING = 236513
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

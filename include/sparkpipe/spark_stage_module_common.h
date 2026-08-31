@@ -26,6 +26,14 @@ typedef struct SparkStageModuleLedger
     uint64_t device_allocation_bytes[SPARK_STAGE_MODULE_MAX_DEVICE_ALLOCATIONS];
     uint32_t device_allocation_count;
     uint64_t device_bytes_resident;
+    /* The weightd pack arena (structural residency): opaque
+     * SparkStageModulePackArena, lazily attached on the first device
+     * region load when SPARK_WEIGHTD_* names a live daemon. Regions
+     * served from the arena are slices of the consumer-side VMM map -
+     * never entered into device_allocations, released by unmap at
+     * LedgerRelease while the daemon keeps the arena warm for the next
+     * code-only attach. Null when unset or after a clean fallback. */
+    void *pack_arena;
 } SparkStageModuleLedger;
 
 typedef struct SparkStageModuleCudaFork

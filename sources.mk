@@ -46,6 +46,8 @@ SPARKPIPE_RUNTIME_SOURCES := \
 # as deleted twice with every gate green, because it was named for who shared it
 # rather than what it is.
 SPARKPIPE_MODEL_COMMON_SOURCES := \
+    runtime/spark_weightd.c \
+    runtime/spark_weightd_attach.c \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \

@@ -2876,6 +2876,20 @@ int main(int argument_count,char **arguments)
 	}
 	signal(SIGINT,SparkModelResidentdSignal);
 	signal(SIGTERM,SparkModelResidentdSignal);
+	/* Structural weightd residency (docs/WEIGHTD_DESIGN.md): the residentd
+	 * OWNS the daemon lifecycle so every family deployment inherits pack
+	 * residency with zero per-module wiring. When the load seam requests
+	 * an attach (SPARK_WEIGHTD_SOCKET names a socket) and no daemon is
+	 * listening, fork/exec the staged weightd binary from the runtime
+	 * root's bin/ and wait briefly for its socket. Failure to start is a
+	 * loud line, never fatal: the seam's contract falls back to the
+	 * direct pack load. */
+	/* the weightd spawn helper lives in node/weightd_spawn.c (the W2b
+	 * env contract stays out of this file - the fail-closed rule) */
+	{
+		extern void SparkModelResidentdEnsureWeightd(const void *);
+		SparkModelResidentdEnsureWeightd((const void *)configuration.runtime_root);
+	}
 	status = SparkModelResidentdInitialize(&runtime,&configuration);
 	if ( status == SPARK_STATUS_OK )
 	{
