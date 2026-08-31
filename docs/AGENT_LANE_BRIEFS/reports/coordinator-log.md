@@ -3713,3 +3713,24 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-08-31 ~11:3x — cycle 6: 16/16 slicing on fixed sharder, 0/16 receipts; healthy
 
 ## 2026-08-31 ~11:4x — cycle 7: 16/16 slicing, 0/16 receipts; healthy
+
+## 2026-08-31 ~12:1x — SYMLINK LAW: audit + fleet materialization (operator directive)
+
+- LAW: stagepacks are real files, never symlinks. Incident: glm5_next
+  serving packs were symlinks into per-node fix-era staging dirs
+  (~/glm53_packs{,_fixed,_fixed2}); a cleanup removed targets -> silent
+  pack loss; spark6's qwen38.bf16.tp1/packs was deleted outright
+  (variant dirs .229/.28f left dangling links). Not build artifacts —
+  LIVE serving packs.
+- AUDIT: 74 symlinks under sparkdata fleet-wide. Fixed:
+  - live glm5_next tp16 + tp8.fp8 rank packs: materialized per node
+    (rm link -> cp target -> sha256 both -> rankNN.symlinkfix.receipt);
+    ~21.7GB x 2 per node, running in parallel.
+  - stale .pre-closeout-bak / .pre-probefix2-bak links: removed.
+  - spark6 dangling bf16.tp1 variant links: removed; the bf16 TP1 set
+    is LOST on spark6 (rebuildable from warm source if ever needed).
+  - spark5 audrb packs dir alias: materialized (28G real copy).
+  - NEXT (after 16/16 receipt verify): reclaim ~/glm53_packs* staging
+    dirs (~65GB/node) — only once the materialized digests are proven.
+- Audit gate going forward: `find ~/sparkdata -type l ! -path "*/.venv/*"`
+  must be EMPTY on every node before any placement is called good.
