@@ -706,8 +706,13 @@ def assemble_header(packer: Packer, header_extra: Dict[str, Any], file_bytes: in
     tail = struct.pack("<QQ", header_extra["directory_offset"], file_bytes)
     revision_bytes = revision.encode()[:64].ljust(65, b"\0")
     contract_bytes = bytes.fromhex(contract_sha256[:64].ljust(64, "0"))
-    config_bytes = bytes(32)
-    recipe_bytes = bytes(32)
+    # provenance (module header validation rejects zeroed hashes):
+    # source_config = sha256(source config.json); recipe = sha256 of the
+    # serialized tensor directory (self-verifying from the pack itself)
+    config_hex = header_extra.get("source_config_sha256", "")
+    recipe_hex = header_extra.get("pack_recipe_sha256", "")
+    config_bytes = bytes.fromhex(config_hex[:64].ljust(64, "0"))
+    recipe_bytes = bytes.fromhex(recipe_hex[:64].ljust(64, "0"))
     header = fixed + tail + revision_bytes + contract_bytes + config_bytes + recipe_bytes
     # the C struct aligns to 8 (largest member is u64): pad the tail
     if len(header) % 8:
@@ -730,6 +735,10 @@ def serialize_entry(entry: Entry) -> bytes:
 def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
     packer.build()
     directory_offset = (HEADER_BYTES + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
+    directory_blob = b"".join(serialize_entry(entry) for entry in packer.plan)
+    header_extra["pack_recipe_sha256"] = hashlib.sha256(directory_blob).hexdigest()
+    header_extra["source_config_sha256"] = hashlib.sha256(
+        (packer.s.model_dir / "config.json").read_bytes()).hexdigest()
     cursor = directory_offset + len(packer.plan) * ENTRY_BYTES
     for item in packer.plan:
         e = item.entry
