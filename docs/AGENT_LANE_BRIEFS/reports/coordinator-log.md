@@ -3583,3 +3583,14 @@ the conflict resolution keeps both.)
 - The fleet-27B verify walk now passes rank0 (the '27B verify RED'
   was the max-table confusion, fully fixed). Waiting for the ranks
   1-3 output.
+
+## 2026-08-30 ~18:2x — k3 build on sparke: progress stalled, diagnosis needed
+
+- The packer's rchar barely moved (1.5M) across 20+ minutes — the
+  journal-replay re-read of the 447GB payload at 1.2TB/s on ceph
+  should take ~10 min. Suspect: the ceph mount went read-slow after
+  the metadata storm, or the packer hit a retry stall on a specific
+  tensor. NOT DEAD: process alive, 33G RSS (the per-layer buffers
+  are loaded), state S (sleeping on IO).
+- Next: strace the IO syscalls, or check dmesg for ceph client
+  timeouts on sparke.
