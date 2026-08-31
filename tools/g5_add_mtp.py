@@ -22,7 +22,7 @@ HEADER_BYTES = P.HEADER_BYTES
 ENTRY_BYTES = P.ENTRY_BYTES
 ALIGNMENT = P.ALIGNMENT
 MTP_LAYER = P.MTP_LAYER
-ENTRY_FMT = "<IIIIIIIQQQQ"  # serialize_entry's format, spaces removed
+ENTRY_FMT = "<IIIIIIIIQQQQ"  # serialize_entry's format: 8U32 + 4U64 = 64B
 
 
 def main() -> int:
@@ -62,7 +62,7 @@ def main() -> int:
         want = (e.kind, e.layer, e.payload_type, e.weight_codec,
                 e.scale_encoding, e.group_count, e.rows, e.columns)
         assert raw[:8] == want, f"entry {i} drift: {raw[:8]} != {want}"
-        assert raw[8] == e.payload_bytes and raw[10] == e.scale_bytes, \
+        assert raw[9] == e.payload_bytes and raw[11] == e.scale_bytes, \
             f"entry {i} byte drift kind={e.kind}"
         old_raw.append(raw)
 
@@ -92,11 +92,15 @@ def main() -> int:
                 out.seek(e.scale_offset)
                 for chunk in it.produce_scale():
                     out.write(chunk)
-        out.seek(new_dir_off)             # superseding full directory
-        for raw in old_raw:
-            out.write(struct.pack(ENTRY_FMT, *raw))
-        for e, _ in new_entries:
-            out.write(P.serialize_entry(e))
+        out.seek(new_dir_off)             # superseding full directory,
+        oi = 0                            # emitted in full mtp-plan order
+        for it in packer.plan:
+            if it.entry.layer == MTP_LAYER:
+                out.write(P.serialize_entry(it.entry))
+            else:
+                out.write(struct.pack(ENTRY_FMT, *old_raw[oi]))
+                oi += 1
+        assert oi == entry_count, f"old entries left: {entry_count - oi}"
         header = bytearray(mm[:HEADER_BYTES])
         struct.pack_into("<I", header, 20, 1)             # flags: MTP
         struct.pack_into("<I", header, 24, new_count)     # entry_count
