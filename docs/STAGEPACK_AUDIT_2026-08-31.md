@@ -21,6 +21,7 @@ Companion law: **NO SYMLINKS FOR STAGEPACKS** (see coordinator-log 12:1x).
 | qwenflash.tp8 | qwen3.8-flash-next (336G bf16) | ~43G | 16/16 (TP8 ruling) |
 | qwenmax.pp16 | qwen3.8-max-nvfp4-radixark-bf16-spine (1.4T) | ~90G | 16/16 |
 | k3.mxfp4.tp16 | kimi-k3 (1.5T) | ~97G | IN FLIGHT — per-node slice→verify→place; receipts land via 10-min automation |
+| k3.mxfp4.tp4pp4 | kimi-k3 (1.5T) | ~91G | 16/16 INTACT — **KEEP: valid topology variant, the proven serving topology. Never a removal candidate.** (CORRECTION 2026-08-31: an earlier draft of this audit listed it for post-TP16 removal — WRONG. The matrix keeps topology variants; TP16 adds, it does not replace.) |
 
 ## 2. Warm-storage model dirs → coverage verdict
 
@@ -30,13 +31,13 @@ Companion law: **NO SYMLINKS FOR STAGEPACKS** (see coordinator-log 12:1x).
 | glm-5.3-fp8 | 704G | COVERED (fp8.tp16 16/16) |
 | glm-5.3-nvfp4-radixark | 433G | COVERED (nvfp4.tp16 16/16) |
 | glm-5.3-flash | 306G | COVERED (glm5_next.tp8.fp8 + tp16 engagement) |
-| glm-5.3-flash-bf16-official | 599G | NO PLACED SET — open question: was the flash-bf16 arm ruled out? If wanted: 37G/rank × 16 to build |
-| glm-5.3-flash-nvfp4-redhatai | 185G | NO PLACED SET — same question for the flash nvfp4 arm |
+| glm-5.3-flash-bf16-official | 599G | **RULED IN (operator, 2026-08-31): build stagepacks.** The rule is every model in warm storage gets stagepacks — arms are not optional. To build: ~37G/rank × 16 |
+| glm-5.3-flash-nvfp4-redhatai | 185G | **RULED IN (operator, 2026-08-31): build stagepacks.** ~12G/rank × 16 |
 | glm-5.3-flash-dflash2 | 2.2G | drafter spec module — keep (small) |
 | kimi-k3 | 1.5T | IN FLIGHT (k3.mxfp4.tp16) |
 | kimi-k3-{dflash2-lightseek,dflash-modal,dspark-inferact,dspark-radixark,dspark-redhatai} | 4-9G | drafter/dspark spec variants — keep (small, experimental) |
 | qwen3.8-27b-fp8 | 29G | COVERED (qwen27b.tp4 16/16) |
-| qwen3.8-27b-nvfp4a16-bf16-spine | 29G | NO PLACED SET — nvfp4a16 arm previously flagged redundant; confirm ruling before building |
+| qwen3.8-27b-nvfp4a16-bf16-spine | 29G | **RULED IN (operator, 2026-08-31): build stagepacks.** 4-bit experts + 16-bit spine is exactly the compressed-experts+full-spine policy shape. To build |
 | qwen3.8-27b-{dflash2-incoai,dspark-radixark} | ~7G | drafters — keep |
 | qwen3.8-flash-next | 336G | COVERED (qwenflash.tp8) |
 | qwen3.8-flash-next-fp8 | 173G | **GAP — FP8 arm packs not built** (per-arm policy says build: ~11G/rank TP16-equiv) |
@@ -62,23 +63,28 @@ qwen38.fp8.tp1{,.official,.auditk8,.audrb,.q27b} (TP1 era — q27b lane
 mission-closed, 27B serves TP4); qwen27b.tp16 (spark2, 38G interrupted
 partials — TP16 superseded by the TP4 ruling); glm52.tp8.fp8 (95G × 3 —
 GLM-5.2 is frozen/deprecated, kernel donor only); qwen38max.tp4pp4 (573G
-orphan — superseded by qwenmax.pp16); glm53full.bf16.tp16 full-set dump on
+orphan on one node — **REMOVED IN ERROR under the same misclassification;
+under the topology-variant doctrine it should have been kept. Rebuildable
+from the warm max source; rebuild queued pending operator priority.**);
+glm53full.bf16.tp16 full-set dump on
 spark5 (1.37T of foreign ranks — pruned to rank5, which I then wrongly
 deleted and am REBUILDING, see §5).
 
-Zombie daemons TERMed: spark2/spark3 k3.mxfp4.tp4pp4 residentd ranks
-(27h+ silent, erroring) — fleet serving surface is now zero daemons until
-redeploy.
+## 4. HOLDS — no sets on removal lists; duplicates/corrupt only
 
-## 4. HOLD — do not remove yet
-
-- `k3.mxfp4.tp4pp4` (90-91G × 16 ≈ 1.45T) — the old k3
-  topology stays ONLY until k3.mxfp4.tp16 verifies 16/16, then it is the
-  single largest reclaim.
-- ~/glm53_packs{,_fixed,_fixed2,_fixed_r4} staging (~65G/node) — reclaim
-  after 16/16 symlinkfix receipts verify.
+Wave-2 cleanup targets are limited to EXACT DUPLICATES and corrupt
+artifacts, never topology variants or sources:
+- ~/glm53_packs{,_fixed,_fixed2,_fixed_r4} staging (~65G/node) —
+  byte-identical duplicates of what is now materialized (with sha
+  receipts) inside the deployment dirs; reclaim after 16/16 symlinkfix
+  receipts verify.
+- Zero-byte files, interrupted `.tmp` partials, empty work dirs.
 - qwenmax.pp16 size outliers (85-131G) — inspect for extra stages before
   touching anything.
+- History: the spark2/spark3 k3.mxfp4.tp4pp4 residentd processes were
+  TERMed (27h+ silent, NCCL-erroring). Their PACKS remain intact on every
+  node (verified 91-92G × 16). Redeploying working tp4pp4 daemons is a
+  serving-lane task, not a storage one.
 
 ## 5. Incidents during this audit (honesty ledger)
 
@@ -98,5 +104,20 @@ redeploy.
 - `find ~/sparkdata -type l ! -path "*/.venv/*"` EMPTY on every node.
 - Every placed pack has a sha256 receipt beside it (placement without
   receipt is not placement).
-- Every warm ACTIVE model dir must map to ≥1 placed set or an explicit
-  ruled-out note in this file.
+- Every warm ACTIVE model dir maps to a placed set — a missing mapping is
+  a BUILD TASK, not a question. The only exception is an explicit operator
+  ruling recorded verbatim in this file.
+- Topology variants (TP16, TP8, TP4PP4, PP16, ...) are each first-class:
+  an existing variant is never a removal/deprecation candidate. Removals
+  require either corruption, exact-duplicate status, or a verbatim
+  operator ruling.
+
+## 7. Build queue from the corrected rulings (operator, 2026-08-31)
+
+1. glm-5.3-flash-bf16-official stagepack set (~37G/rank × 16).
+2. glm-5.3-flash-nvfp4-redhatai stagepack set (~12G/rank × 16).
+3. qwen3.8-27b-nvfp4a16-bf16-spine stagepack set (TP4 and/or TP16 per the
+   topology-variant doctrine).
+4. qwen-flash FP8 + NVFP4 arm packs (already queued).
+5. dsv4-pro TP16 set (rank-path extension) and remaining tp4pp4 ranks.
+6. qwen38max.tp4pp4 rebuild (573G, one node) — priority pending operator.
