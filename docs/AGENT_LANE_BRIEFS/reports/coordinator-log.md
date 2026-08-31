@@ -3613,3 +3613,21 @@ the conflict resolution keeps both.)
   completes in ~50-70 min, then the 16-rank shard step.
 - The k3 rung is back on track; the earlier warm corruption from
   the metadata storm is behind us (clean path this time).
+
+## 2026-08-31 ~01:0x — k3 relaunch: three kill-mechanisms found and cleared; build healthy on spark9
+
+- Death certificate for the 00:05Z relaunch: the staged "payload" was a
+  FIFO (prw---) planted by the quarantine pass — Pack resume-open does
+  open(path,"r+b") on it → "stream is not seekable" (same signature as
+  the sparke crash; root is the same FIFO placeholders).
+- Ceph cap RE-VERIFIED live: 23GB sparse+real write test passed on
+  spark9 AND spark0 — the 22.58GB wall is gone cluster-wide (earlier
+  1.2GB test was below the wall and proved nothing).
+- Cleared from packbuild: base FIFO placeholders, 22.5G corrupted
+  multiwriter partial, corrupt journal, base2 56G duplicate-branded
+  partial (single-writer state unprovable → not worth resuming 4%).
+- Launched: setsid nohup taskset -c 0-15 python3 tools/k3_pack.py
+  /mnt/model-warm/kimi-k3 /mnt/model-warm/packbuild/k3_tp16base.pack
+  0 93 32 (pid 1419610, RSS 8G, 50G read / 22.5G written at 3 min).
+- NOTE: GitHub push is RED (invalid/expired token) — local main is
+  edebd7e (merge of origin 15b412b8 + 5 local log commits); push owed.
