@@ -95,6 +95,8 @@ def main() -> int:
                     help="override the tp16 rank-0 receipt byte gate "
                          "(required for non-tp16 degrees — each topology "
                          "has its own uniform rank size)")
+    ap.add_argument("--mtp", action="store_true",
+                    help="pack carries the MTP block (flags=1, +24 entries)")
     ap.add_argument("--deep", action="store_true")
     ap.add_argument("--skip-spot", action="store_true",
                     help="header/layout/plan-diff only (no checkpoint payload reads)")
@@ -179,7 +181,7 @@ def main() -> int:
     #    except three small f32 vectors the packer reads at plan time) -----
     source = SourceReader(Path(args.source))
     packer = Packer(source, args.tp_degree, args.tp_rank, 0, LAYERS,
-                    False, True, True)
+                    args.mtp, True, True)
     packer.build()
     want = [{
         "kind": it.entry.kind, "layer": it.entry.layer,
