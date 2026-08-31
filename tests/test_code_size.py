@@ -1390,7 +1390,13 @@ CEILING = 234369
 # New gate: test_stage_module_weightd (the
 # four contracts: no-daemon fallback byte-identical, arena slice
 # zero-copy digest-exact, release-keeps-warm, kill-switch).
-CEILING = 236513
+# +117: the weightd config plumbing — the optional deployment weightd{}
+# object (socket only; the pack digest resolves per-node from the sidecar
+# beside the rank pack, because rank-sharded packs cannot share one json
+# digest), the residentd setenv publish, and the sidecar resolver in
+# weightd_spawn.c. Config-driven: every family deployment inherits the
+# one-minute debug cycle by adding the object.
+CEILING = 236631
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
