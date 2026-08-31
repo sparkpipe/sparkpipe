@@ -3734,3 +3734,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
     dirs (~65GB/node) — only once the materialized digests are proven.
 - Audit gate going forward: `find ~/sparkdata -type l ! -path "*/.venv/*"`
   must be EMPTY on every node before any placement is called good.
+
+## 2026-08-31 ~12:4x — cycle 8: k3 0/16 (slicing/verifying); symlink-fix name bug fixed + redispatched
+
+- glm pack filenames are rank0..rank15 (decimal, NOT zero-padded): the
+  first fix pass matched only ranks 10-15 (a/b/d/f receipts 1/1), skipped
+  0-9 as no-link. Corrected to rank${R}, redispatched to all 16 (receipt
+  idempotence makes reruns safe).
+- k3: sparka/b finished slicing (2157 tensors each), now in pack-verify;
+  others still slicing; no FATAL; 0/16 rank receipts yet.
