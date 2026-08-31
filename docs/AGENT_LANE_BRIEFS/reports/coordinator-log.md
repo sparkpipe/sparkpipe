@@ -3560,3 +3560,17 @@ the conflict resolution keeps both.)
   qwen-flash TP8 (16/16 with 2x replication in progress).
 - Multi-topology serving matrix now the standing policy — every
   model × every topology it will serve, packs kept for each.
+
+## 2026-08-31 ~17:5x — NCCL 16-WIDE WORKING (coordinator)
+
+Six failure layers peeled: (1) my genid flow killed the bootstrap listener
+(the id's owning process must stay alive = rank0-first), (2) node /tmp AND
+$HOME swept by agent cleanup loops mid-run (inline-hex id via argv now),
+(3) sparke's partial libnccl staging (full lib set staged), (4) missing env
+pins (the flash dev's receipt had them: IFNAME/IB_HCA/GID_INDEX), (5) rank0
+stale after any failed pairing (fresh rank0 per attempt), (6) stdout
+buffering hid all diagnostics (stdbuf -oL). Receipts above; bench asset
+~/nccl_bench on all 16 (sizes 8K/14K/40K/80K + max + f32, verify + timing,
+IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
+(ncclAllReduce on the execution stream, stream-ordered completion), driver
+-lnccl, config backend=nccl, T257 exactness, then the serving number.
