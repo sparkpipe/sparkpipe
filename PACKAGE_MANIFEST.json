@@ -1,5 +1,5 @@
 {
-  "file_count": 1755,
+  "file_count": 1756,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -780,6 +780,11 @@
       "path": "docs/MODULE_MAP.md",
       "sha256": "a0a48ff5776d56b8a13da2113e953c5ec6002c0cae5cd2595b83d026f43d279e",
       "size_bytes": 3045
+    },
+    {
+      "path": "docs/NCCL_COLLECTIVE_PLANE.md",
+      "sha256": "103c8ab8c61fc00e431aa33cd0af3e4511f0c57ed957d64c4fed64330c068138",
+      "size_bytes": 5809
     },
     {
       "path": "docs/PERFORMANCE_LEDGER.md",
@@ -8780,5 +8785,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32118388
+  "total_bytes": 32124197
 }
