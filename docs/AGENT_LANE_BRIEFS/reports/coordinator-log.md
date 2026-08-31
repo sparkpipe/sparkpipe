@@ -3752,3 +3752,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - symlink fix: tp16 receipts on 14/16; tp8 receipts trailing on 4 nodes
   (second copy in flight); spark1/sparke rerun still working (0 yet).
 - Staging-dir reclaim still gated on 16/16 symlinkfix receipts.
+
+## 2026-08-31 ~14:0x — cycle 10: audit filed (c4e9dfa); wave-1 purge executed; spark5 rank5 rebuild running
+
+- docs/STAGEPACK_AUDIT_2026-08-31.md = the audit deliverable: keep-matrix,
+  warm coverage verdicts + gaps (qwen-flash fp8/nvfp4 arms, dsv4-pro TP16,
+  flash bf16/nvfp4 arms open, 27B nvfp4a16 confirm), wave-1 removals
+  (~2.5-3TB), holds (k3 tp4pp4, glm53 staging), incident ledger (spark6
+  bf16.tp1 loss; my spark5 rank5 prune mis-glob — rebuild in progress,
+  34G/98G).
+- spark2/3 k3-tp4pp4 zombies TERMed; zero serving daemons fleet-wide.
