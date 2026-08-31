@@ -3825,3 +3825,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   is the countermeasure of last resort.
 - Cycle numbers: k3 9/16 receipts (spark9 mid-verify — do-not-relaunch
   signature respected); rank14 neutral rebuild running.
+
+## 2026-08-31 ~16:3x — cycle 16: k3 9/16 + 2 mid-verify (spark3, spark9); sparke neutral rebuild writing
+
+- Both "quiet" nodes (3, 9) are inside post-slice verify/hash legs —
+  no-relaunch signatures confirmed. 5 still slicing (0,1,4,d,f).
+- sparke: no re-squatting since 20:52; neutral-path rank14 rebuild
+  progressing in ~/rank14stage/.
