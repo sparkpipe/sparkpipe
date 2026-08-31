@@ -168,6 +168,9 @@ def main() -> int:
             if e["payload_bytes"] != want:
                 fail(f"entry {i} kind={e['kind']} layer={e['layer']:#x}: "
                      f"payload {e['payload_bytes']} != group*rows*cols {want}")
+    dir_end = h["directory_offset"] + h["entry_count"] * ENTRY_BYTES
+    if end_max < dir_end:
+        end_max = dir_end
     if end_max != size:
         fail(f"last region end {end_max} != file size {size} (trailing bytes)")
     print("PASS layout: offsets aligned+bounded, payload sizes consistent, "
