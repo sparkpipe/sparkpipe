@@ -3845,3 +3845,25 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   tensors) building on sparka (0-3) + sparkc (4-7); each verified vs
   source then 2x-placed (rank r -> spark$r + spark${r+8}), sha-receipted.
 - sparke tp16 rank14 MTP rebuild in flight (3.6G at last check).
+
+## 2026-08-31 ~17:4x — TP4/TP8 canonical replication (operator maps) + RANK4 LOSS confess + rebuild
+
+- Operator maps: TP4 4x = sparkN -> rank N%4; TP8 2x = sparkN -> rank N%8.
+- TP4 (qwen27b): canonical ranks were ALREADY in place fleet-wide with a
+  single consistent digest per rank — only 5 stray extras removed
+  (spark6/7/8/9/e). 4x replication COMPLETE.
+- TP8 (qwenflash): normalized to N%8. 8/13 placements landed; MY BUG: the
+  stray-removal ran per-rank against non-canonical holders BEFORE their
+  canonical-target copies were confirmed — rank4's two targets had both
+  FATALed (gateway throttling under 13 parallel 43G streams), so its only
+  two holders (spark8, sparka — already re-populated with their new
+  canonical ranks 0/2) were deleted with rank4 placed NOWHERE. RANK4 WAS
+  LOST. Root cause: removal not gated on target-confirmed receipt. LAW:
+  never remove a copy until its replacement is digest-verified in place.
+- Recovery: ranks 3/5/6 re-2x'd from surviving copies (digest-verified;
+  sparke's rank6 proven good-gen f84ad41b before propagation). rank4
+  REBUILDING on spark4 from warm qwen3.8-flash-next with the flash lane's
+  own recipe (qwen4_flash_stagepack --tp-degree 8 --tp-rank 4 --first-layer
+  0 --layer-count 48 --expert-format bf16); sparkc gets a copy after.
+- glm5_next TP8 FP8 (true topology) building on sparka/c; sparke rank14
+  MTP rebuild continuing.
