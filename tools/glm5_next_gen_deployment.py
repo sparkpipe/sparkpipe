@@ -35,7 +35,7 @@ TP_COLLECTIVE = {
     "backend_module_path": "lib/hidden_transport.so",
     "collective_identifier": COLLECTIVE_ID,
     "listen_port": COLLECTIVE_BASE,
-    "connect_timeout_milli": 180000,
+    "connect_timeout_milli": 600000,
     "operation_timeout_milli": 30000,
     "peer_hosts": list(HOSTS),
     "peer_ports": [COLLECTIVE_BASE + r for r in range(TP)],
