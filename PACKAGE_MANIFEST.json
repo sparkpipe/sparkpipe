@@ -1,5 +1,5 @@
 {
-  "file_count": 1753,
+  "file_count": 1754,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -50,6 +50,11 @@
       "path": "DSV4_TP4_B1_HANDOFF.md",
       "sha256": "6d79dfc3115141d43ab88e81b9a73db22d74e67c65683a877f69e292c9572474",
       "size_bytes": 21370
+    },
+    {
+      "path": "ENGAGEMENT_HANDOFF.md",
+      "sha256": "18642dcabbe055b47f31b8aa22ac7a3c2262f203ec831d3c1e1106708950325c",
+      "size_bytes": 3174
     },
     {
       "path": "Makefile",
@@ -6238,7 +6243,7 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "8a0fc8583f104bb3f96cb832d636392ff651326dd05c9230f5b91b50b9632c25",
+      "sha256": "69f85ed59fdac2ecaab40084eb4b5cd388d1050587b00b7e53205f6c4967f240",
       "size_bytes": 94763
     },
     {
@@ -8668,8 +8673,8 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "1ae13069c159016982de76e5b690c566a28ed906d893278dffc7d8f1adc7a7fd",
-      "size_bytes": 20641
+      "sha256": "38ab1b248478a177b39fd32db0efd4ccde5be0b4d18a08881429637874096c85",
+      "size_bytes": 22969
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -8770,5 +8775,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32110129
+  "total_bytes": 32115631
 }
