@@ -3798,3 +3798,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 
 - k3: spark2 joined (9/16: 2,5,6,7,8,a,b,c,e); 7 nodes still slicing,
   zero FATAL. Rebuilds: spark5 rank5 + sparke rank14 writing.
+
+## 2026-08-31 ~15:4x — cycle 13: k3 steady at 9/16; 7 nodes still slicing
