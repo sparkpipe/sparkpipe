@@ -3651,3 +3651,16 @@ the conflict resolution keeps both.)
   signatures were pre-fix snapshots. Phase 0.2 (redeploy prod) is the
   open 27B item; spark2/3 k3-tp4pp4 daemons are 27h-silent zombies.
 - Push still RED (GitHub token expired); local main bc98354.
+## 2026-08-31 ~17:5x — NCCL 16-WIDE WORKING (coordinator)
+
+Six failure layers peeled: (1) my genid flow killed the bootstrap listener
+(the id's owning process must stay alive = rank0-first), (2) node /tmp AND
+$HOME swept by agent cleanup loops mid-run (inline-hex id via argv now),
+(3) sparke's partial libnccl staging (full lib set staged), (4) missing env
+pins (the flash dev's receipt had them: IFNAME/IB_HCA/GID_INDEX), (5) rank0
+stale after any failed pairing (fresh rank0 per attempt), (6) stdout
+buffering hid all diagnostics (stdbuf -oL). Receipts above; bench asset
+~/nccl_bench on all 16 (sizes 8K/14K/40K/80K + max + f32, verify + timing,
+IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
+(ncclAllReduce on the execution stream, stream-ordered completion), driver
+-lnccl, config backend=nccl, T257 exactness, then the serving number.

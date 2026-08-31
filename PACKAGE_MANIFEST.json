@@ -1,5 +1,5 @@
 {
-  "file_count": 1754,
+  "file_count": 1756,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -60,6 +60,11 @@
       "path": "Makefile",
       "sha256": "6275d208b930bc47b31c1a009f5dffd6db6e0bd89e55f39a2aca3a7873eeb17b",
       "size_bytes": 88415
+    },
+    {
+      "path": "NCCL_16WIDE_RECEIPTS.md",
+      "sha256": "e068b3179f407089951574e3d30f920a94cca88545638f5c990dde18266221ba",
+      "size_bytes": 1888
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -348,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "9e93064d7825eb30b4e88ae8cd3589d4c90713201bf3a890e136ae21d5af3752",
-      "size_bytes": 200092
+      "sha256": "66dd5aba16fa0940c9564f1544cb24c81041fc1ff7e0ffba670eb80199d68874",
+      "size_bytes": 200961
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -775,6 +780,11 @@
       "path": "docs/MODULE_MAP.md",
       "sha256": "a0a48ff5776d56b8a13da2113e953c5ec6002c0cae5cd2595b83d026f43d279e",
       "size_bytes": 3045
+    },
+    {
+      "path": "docs/NCCL_COLLECTIVE_PLANE.md",
+      "sha256": "103c8ab8c61fc00e431aa33cd0af3e4511f0c57ed957d64c4fed64330c068138",
+      "size_bytes": 5809
     },
     {
       "path": "docs/PERFORMANCE_LEDGER.md",
@@ -8775,5 +8785,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32115631
+  "total_bytes": 32124197
 }
