@@ -1411,7 +1411,10 @@ CEILING = 234369
 # dlopen) and the wave exports the fabric pins (IFNAME/IB_HCA/GID_INDEX).
 # +5: glm5_next's driver link tail gains the weightd/attach/status/sha
 # sources (the structural seam needs them in the .so; dsv4's pattern).
-CEILING = 236899
+# +10: per-collective ordinals (the nccl backend enforces a strict
+# per-communicator sequence; the shared counter failed the HC twin's
+# first submit with VALIDATION_FAILED - the wave-1 hardware receipt).
+CEILING = 236909
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
