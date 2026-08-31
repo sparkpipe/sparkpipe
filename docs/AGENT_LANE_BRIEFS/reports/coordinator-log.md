@@ -3885,3 +3885,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-08-31 ~18:5x — cycle 20: k3 11/16 steady; rank14 exact-flags rebuild at 11.2G
 
 ## 2026-08-31 ~19:0x — cycle 21: k3 11/16; rank14 19.5G; qflash rank4 rebuilding (temp+rename); TP8 glm set progressing
+
+## 2026-08-31 ~19:3x — sparke rank14 PLACED: VERIFY-PASS, byte-exact, receipted
+
+- 1160 tensors / 21,706,046,976 bytes = byte-identical to the set's
+  uniform size; VERIFY-PASS spot round-trip + dir_sha; sha256 receipt
+  (3afce3eb...); 0 symlinks in the dir post-place. tp16 symlink-fix set
+  now complete-able 16/16 (final receipt count check running).
