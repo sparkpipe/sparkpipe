@@ -91,6 +91,10 @@ def main() -> int:
     ap.add_argument("--source", required=True)
     ap.add_argument("--tp-rank", type=int, required=True)
     ap.add_argument("--tp-degree", type=int, default=16)
+    ap.add_argument("--expected-bytes", type=int, default=None,
+                    help="override the tp16 rank-0 receipt byte gate "
+                         "(required for non-tp16 degrees — each topology "
+                         "has its own uniform rank size)")
     ap.add_argument("--deep", action="store_true")
     ap.add_argument("--skip-spot", action="store_true",
                     help="header/layout/plan-diff only (no checkpoint payload reads)")
@@ -113,8 +117,13 @@ def main() -> int:
              f"tp{args.tp_degree} rank {args.tp_rank}")
     if h["file_bytes"] != size:
         fail(f"header file_bytes {h['file_bytes']} != actual {size}")
-    if size != EXPECTED_FILE_BYTES:
-        fail(f"byte count {size} != rank-0 receipt {EXPECTED_FILE_BYTES}")
+    expected = args.expected_bytes if args.expected_bytes is not None \
+        else EXPECTED_FILE_BYTES
+    if args.expected_bytes is None and args.tp_degree != 16:
+        fail(f"--tp-degree {args.tp_degree} requires --expected-bytes "
+             f"(the {EXPECTED_FILE_BYTES} receipt is tp16-only)")
+    if size != expected:
+        fail(f"byte count {size} != expected {expected}")
     print(f"PASS header: tp{h['tp_degree']} rank {h['tp_rank']}, "
           f"file_bytes {size} == rank-0 receipt")
 
