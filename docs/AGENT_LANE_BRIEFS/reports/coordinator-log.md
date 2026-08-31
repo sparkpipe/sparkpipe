@@ -3683,3 +3683,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   relaunches dead nodes idempotently, audits placement, then cleanup
   (warm base+quarantines, slice work dirs, spark2 27B .tmp partials),
   logs+pushes each cycle, stops after completion.
+
+## 2026-08-31 ~10:2x — timer cycle 1: 16/16 nodes slicing, 0/16 receipts yet
+
+- All 16 per-node k3 shards alive (SLC), no FATAL, ~15 min in at ~9MB/s
+  per node (~15-20% of each rank). No relaunches needed. Serial relaunch
+  in the stale prompt text intentionally NOT executed (parallel layout
+  is authoritative). Cleanup pending receipts=16.
