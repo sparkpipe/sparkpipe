@@ -3743,3 +3743,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   idempotence makes reruns safe).
 - k3: sparka/b finished slicing (2157 tensors each), now in pack-verify;
   others still slicing; no FATAL; 0/16 rank receipts yet.
+
+## 2026-08-31 ~13:0x — cycle 9: k3 first ranks through verify PASS; symlink fix 14/16+2 in flight
+
+- k3: sparka/b packs VERIFY PASS (2157 tensors, 93 layers, cross-checked
+  vs base) — in final sha+place; spark5/8/c slicing done entering verify;
+  rest slicing. 0/16 receipts yet (receipts land after post-move digest).
+- symlink fix: tp16 receipts on 14/16; tp8 receipts trailing on 4 nodes
+  (second copy in flight); spark1/sparke rerun still working (0 yet).
+- Staging-dir reclaim still gated on 16/16 symlinkfix receipts.
