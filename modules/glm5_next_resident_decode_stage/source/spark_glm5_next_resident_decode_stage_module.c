@@ -195,7 +195,13 @@ struct SparkGlm5NextModuleState
 	void *tp_hc_credit_receive_bf16;
 	void *tp_hc_host_credit_send_bf16;
 	void *tp_hc_host_credit_receive_bf16;
+	/* Per-collective ordinals: the nccl backend enforces a STRICT
+	 * ordinal sequence per COMMUNICATOR (its next_ordinal), and the two
+	 * instances (main + the HC twin) interleave submits - one shared
+	 * counter failed the second comm's first submit with
+	 * VALIDATION_FAILED (the wave-1 receipt). */
 	atomic_ullong tp_next_ordinal;
+	atomic_ullong tp_next_ordinal_hc;
 };
 
 static uint32_t SparkGlm5NextBytesAreZero(const uint8_t *bytes,uint32_t count)
@@ -1847,6 +1853,7 @@ static void SparkGlm5NextModuleTpCompletion(
 static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *chain,
 	void *device_bf16,uint32_t hc_wide)
 {
+	atomic_ullong *wide_ordinal;
 	SparkGlm5NextModuleState *state;
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkTpDeviceCollective *collective;
@@ -1864,6 +1871,7 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		if ( state->tp_device_collective_hc_initialized == 0u )
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		collective = &state->tp_device_collective_hc;
+		wide_ordinal = &state->tp_next_ordinal_hc;
 		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
 		{
 			uint16_t probe_pre[256];
@@ -1881,8 +1889,11 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		}
 	}
 	else
+	{
 		collective = &state->tp_device_collective;
-	ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
+		wide_ordinal = &state->tp_next_ordinal;
+	}
+	ordinal = atomic_fetch_add_explicit(wide_ordinal,1u,memory_order_relaxed);
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
@@ -2690,6 +2701,7 @@ static SparkStatus SparkGlm5NextInitializeState(
 	atomic_init(&state->failed_count,0u);
 	atomic_init(&state->host_callback_completion_count,0u);
 	atomic_init(&state->tp_next_ordinal,0u);
+	atomic_init(&state->tp_next_ordinal_hc,0u);
 	*state_out = state;
 	return(SPARK_STATUS_OK);
 }

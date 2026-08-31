@@ -33,7 +33,8 @@ BINARY = Path("/tmp") / "lm_k3_layer_host"
 def main():
     build = subprocess.run(
         [host_cuda_cxx(), "-std=c++17", "-O0", f"-I{ROOT}/tests/host_cuda/shim", f"-I{ROOT}",
-         f"-I{ROOT}/tests/host_cuda", "-x", "c++", str(SOURCE), "-o", str(BINARY)],
+         f"-I{ROOT}/tests/host_cuda", f"-I{ROOT}/model-families/common/include", f"-I{ROOT}/include",
+         "-x", "c++", str(SOURCE), "-o", str(BINARY)],
         capture_output=True, text=True)
     if build.returncode != 0:
         errors = [l for l in build.stderr.split("\n") if "error" in l]

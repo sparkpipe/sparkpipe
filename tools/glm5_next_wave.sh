@@ -151,6 +151,10 @@ start_wave() {
         rr="$(runtime_root "$h")"
         env_prefix=""
         [[ $DEBUG_RDMA -eq 1 ]] && env_prefix="SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG=1 "
+        # NCCL fabric pins (required when the collective backend is nccl):
+        # unpinned NCCL picks the wrong RoCE port (10.10.200.x) and dies
+        # post-bootstrap - receipts NCCL_16WIDE_RECEIPTS.md
+        env_prefix="NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA=rocep1s0f1 NCCL_IB_GID_INDEX=3 $env_prefix"
         # probe=$PROBE arms the G5N-PROBE diag ladder fleet-wide; the probe
         # build scales the TP connect window itself (SPARK_GLM5_NEXT_PROBE,
         # lane/probe-fix) so the open deadline no longer expires while the

@@ -1401,7 +1401,20 @@ CEILING = 234369
 # + consumer + threshold plumbing were always in) and the certified-FP8
 # screened head PORTED to glm52 (the recipe hardware-qualified on
 # glm5_next/qwen38/dsv4/qwen4_flash: shadow at load + B1 dispatch).
-CEILING = 236742
+# +82: ACTIVATION PASS 2 - the k3 certified-FP8 screened head (the same
+# recipe, now on all six families: layer.cuh K3HeadCertifiedB1 + the
+# runner's on-device shadow build + B1 dispatch).
+# +38: the certified-launcher isolation header (host-harness consumers
+# get declarations without the full kernels header's PTX asm paths).
+# +22: THE NCCL ACTIVATION - the generator emits backend:nccl (the base
+# member set; libnccl.so.2 through backend_module_path for the backend's
+# dlopen) and the wave exports the fabric pins (IFNAME/IB_HCA/GID_INDEX).
+# +5: glm5_next's driver link tail gains the weightd/attach/status/sha
+# sources (the structural seam needs them in the .so; dsv4's pattern).
+# +10: per-collective ordinals (the nccl backend enforces a strict
+# per-communicator sequence; the shared counter failed the HC twin's
+# first submit with VALIDATION_FAILED - the wave-1 hardware receipt).
+CEILING = 236911
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

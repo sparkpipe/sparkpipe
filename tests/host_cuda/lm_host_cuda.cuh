@@ -1,4 +1,5 @@
 #pragma once
+#define LM_HOST_CUDA_PRELUDE 1
 
 // Run this tree's CUDA kernels on a CPU, single-threaded.
 //
