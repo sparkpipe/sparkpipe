@@ -3594,3 +3594,14 @@ the conflict resolution keeps both.)
   are loaded), state S (sleeping on IO).
 - Next: strace the IO syscalls, or check dmesg for ceph client
   timeouts on sparke.
+
+## 2026-08-30 ~18:5x — k3 root: journal + payload on warm are corrupted from the metadata storm
+
+- The sparke resume crashed with io.UnsupportedOperation (stream not
+  seekable) — the journal and payload on warm were corrupted by the
+  concurrent-writer mess. The clean restart is the only option.
+- PLAN: run the packer from a healthy node (spark9: 2.2T free, healthy
+  ceph mount, not spark0/f) against a CLEAN output path on warm, with
+  no concurrent metadata ops. The k3 rung resumes as soon as the
+  healthy node's build runs to completion (~1.5h at the observed
+  340MB/s read pace).
