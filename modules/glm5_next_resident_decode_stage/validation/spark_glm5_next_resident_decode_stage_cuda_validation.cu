@@ -2396,8 +2396,7 @@ int main(int argc,char **argv)
 		return(1);
 	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4c dsa run-of-8 (attention)",0u,8u) != 0)
 		return(1);
-	if (0) != 0)
-		return(1);
+
 
 	printf("glm5_next validator: %s (%d failures)\n",
 		failures == 0 ? "PASS" : "FAIL",failures);
