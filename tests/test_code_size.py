@@ -1422,7 +1422,10 @@ CEILING = 234369
 # 237333 -> 237359: qwen38_max TP16-ready attention kernels —
 # KV-head replication past the kv head count (model header +
 # kernel width params).
-CEILING = 237359
+# 237359 -> 237375: spark queue window model - 15-minute task cap
+# enforced at submit/dispatch/reserve (operator ruling), runbook
+# window section, +2 hermetic cap checks (27 total).
+CEILING = 237375
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

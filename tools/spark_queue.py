@@ -76,6 +76,15 @@ if "SPARK_QUEUE_STATE" not in os.environ:
                     shutil.copy2(src, os.path.join(STATE, name))
 # NOTE: task-side sentinel files (exit/pid/log) stay in the NODE's /tmp -
 # they are transient by design; only this host-side state is durable.
+# Operator ruling 2026-09-01: 15 minutes is the MAX for any single task.
+# The scheduling model is WINDOWS: a task's node claim is one window
+# (~1-2 min of it is weightd swap-in once persistent; 13-14 min of tests);
+# batch many tests per window (one cmd or after= chains; a task QUEUED
+# during your window runs as long as it starts before the window ends);
+# when your tasks finish, the next dev's window starts. No standing
+# claims - keep your NEXT test queued to hold your turn.
+MAX_TTL_MINUTES = 15.0
+
 DENY = ("reboot", "shutdown", "poweroff", "init 0", "init 6",
         "kill -9", "kill -KILL", "SIGKILL", "rm -rf")
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
@@ -235,6 +244,11 @@ def cmd_add(args):
     if getattr(args, "cmd_file", None):
         if args.cmd:
             sys.exit("--cmd and --cmd-file are mutually exclusive")
+    if args.ttl_min is not None and args.ttl_min > MAX_TTL_MINUTES:
+        sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute "
+                 f"task cap - batch several tests into the window (one cmd or "
+                 f"after= chains) and re-submit; renew standing claims with "
+                 f"`renew --id`")
         with open(args.cmd_file) as fh:
             args.cmd = fh.read()
     with acquire_lock():
@@ -466,7 +480,7 @@ def cmd_dispatch(args):
             rewrite_queue(entries); save_reservations(res)
             print("nothing dispatched this pass")
             return
-        ttl = float(task.get("ttl_minutes") or args.ttl)
+        ttl = min(float(task.get("ttl_minutes") or args.ttl), MAX_TTL_MINUTES)
         for n in task["nodes"]:
             res[n] = dict(id=task["id"], holder=f"task:{task['id']}",
                 acquired_at=now(), ttl_minutes=ttl,
@@ -525,6 +539,8 @@ def cmd_cancel(args):
 
 
 def cmd_reserve(args):
+    if args.ttl_min > MAX_TTL_MINUTES:
+        sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute cap")
     with acquire_lock():
         res = load_reservations()
         if args.node in res:
@@ -670,7 +686,7 @@ def main():
     a.add_argument("--exit", type=int, default=0)
     a.set_defaults(fn=cmd_done)
     a = sub.add_parser("dispatch")
-    a.add_argument("--ttl", type=int, default=15,
+    a.add_argument("--ttl", type=int, default=int(MAX_TTL_MINUTES),
         help="lease minutes held for the TASK (not the lane); a task's "
              "own --ttl at submit time overrides this default")
     a.set_defaults(fn=cmd_dispatch)
@@ -680,7 +696,7 @@ def main():
     a = sub.add_parser("reserve")
     a.add_argument("--node", required=True)
     a.add_argument("--holder", required=True)
-    a.add_argument("--ttl-min", type=float, default=360.0)
+    a.add_argument("--ttl-min", type=float, default=MAX_TTL_MINUTES)
     a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"])
     a.set_defaults(fn=cmd_reserve)
     a = sub.add_parser("release")
