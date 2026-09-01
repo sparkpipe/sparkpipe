@@ -4263,3 +4263,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - bf16-official arm probe PASSED (1160 tensors) -> item 23 LAUNCHED on
   all 16 nodes: each builds its OWN rank locally into
   glm5_next.bf16.tp16/packs (no shipping leg), verify + receipt inline.
+
+## 2026-09-01 ~19:4x — firing 41: bf16 arm 4/16 receipts; 12 nodes building (variable ceph pace)
+
+- Receipts: spark0/5/a/f. The 12 synced nodes restarted builds post-sync
+  (spark2 alive at 330MB, slow read class). Root cause of the earlier
+  FATALs was stale checkouts (nodesync gap) — all 12 now at 04d27b4c+.
+- Next: receipts land as builds finish; then item 23 closed.
