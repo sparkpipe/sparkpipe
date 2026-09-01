@@ -1900,7 +1900,7 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 					label,(unsigned long long)i,(unsigned)seq_attention_latent[i],(unsigned)run_attention_latent[i]);
 				return(SparkGlm5NextValFail(label,"run_equivalence_latent"));
 			}
-		for (row = 0u; row < SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS; row++)
+		for (row = 0u; row < run_rows; row++)
 			for (i = 0u; i < SPARK_GLM5_NEXT_VHIDDEN; i++)
 				if (seq_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i] !=
 					run_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i])
