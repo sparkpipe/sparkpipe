@@ -1314,41 +1314,41 @@ static int SparkGlm5NextValFixtureBuild(SparkGlm5NextValFixture *fixture)
 static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 {
 	uint32_t state_bytes = SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER;
-	fixture->streams = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * 8u * sizeof(uint16_t));
-	fixture->residual = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->normed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->q_compressed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQUERY_A * 8u * sizeof(uint16_t));
-	fixture->q_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQ_B_ROWS * 8u * sizeof(uint16_t));
+	fixture->streams = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * 16u * sizeof(uint16_t));
+	fixture->residual = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
+	fixture->normed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
+	fixture->q_compressed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQUERY_A * 16u * sizeof(uint16_t));
+	fixture->q_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQ_B_ROWS * 16u * sizeof(uint16_t));
 	/* kv_slot serves BOTH paths: the MLA latent row (512) AND the KDA
 	 * key row (KDA_DIM = 8192) - allocate the KDA width or the split's
 	 * key copy overflows into the neighbouring allocations (the exact
 	 * defect the step-0 probe ran down: the "k" readback returned q's
 	 * bytes from the adjacent buffer). */
-	fixture->kv_slot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 8u * sizeof(uint16_t));
-	fixture->query_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 8u * sizeof(uint16_t));
-	fixture->attention_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 8u * sizeof(uint16_t));
-	fixture->attention_value = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VATTN_COLS * 8u * sizeof(uint16_t));
-	fixture->attention_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->gate_up = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VGATE_UP_ROWS * 8u * sizeof(uint16_t));
-	fixture->intermediate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDENSE_INTER * 8u * sizeof(uint16_t));
+	fixture->kv_slot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 16u * sizeof(uint16_t));
+	fixture->query_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 16u * sizeof(uint16_t));
+	fixture->attention_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 16u * sizeof(uint16_t));
+	fixture->attention_value = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VATTN_COLS * 16u * sizeof(uint16_t));
+	fixture->attention_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
+	fixture->gate_up = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VGATE_UP_ROWS * 16u * sizeof(uint16_t));
+	fixture->intermediate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDENSE_INTER * 16u * sizeof(uint16_t));
 	fixture->expert_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)8u * SPARK_GLM5_NEXT_VTOP_K * SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t));
 	fixture->shared_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)8u * SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t));
-	fixture->fused_qkvb = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)(3u * SPARK_GLM5_NEXT_VKDA_DIM + SPARK_GLM5_NEXT_VKDA_HEADS) * 8u * sizeof(uint16_t));
-	fixture->fused_decay_gate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)2u * SPARK_GLM5_NEXT_VKDA_LOW_RANK * 8u * sizeof(uint16_t));
-	fixture->decay_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_LOW_RANK * 8u * sizeof(uint16_t));
-	fixture->gate_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_LOW_RANK * 8u * sizeof(uint16_t));
-	fixture->kda_beta_logit = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_HEADS * 8u * sizeof(uint16_t));
-	fixture->kda_gate_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 8u * sizeof(uint16_t));
-	fixture->kda_decay_logit = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 8u * sizeof(uint16_t));
-	fixture->kda_output = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->hc_collapsed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->hc_snapshot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * 8u * sizeof(uint16_t));
-	fixture->hc_mean = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->index_query = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_QUERY_DIM * 8u * sizeof(uint16_t));
-	fixture->index_key = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_DIM * 8u * sizeof(uint16_t));
-	fixture->index_gate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_DIM * 8u * sizeof(uint16_t));
-	fixture->index_packed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VINDEX_PACKED * 8u * sizeof(uint16_t));
-	fixture->index_head_buf = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_HEADS * 8u * sizeof(uint16_t));
+	fixture->fused_qkvb = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)(3u * SPARK_GLM5_NEXT_VKDA_DIM + SPARK_GLM5_NEXT_VKDA_HEADS) * 16u * sizeof(uint16_t));
+	fixture->fused_decay_gate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)2u * SPARK_GLM5_NEXT_VKDA_LOW_RANK * 16u * sizeof(uint16_t));
+	fixture->decay_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_LOW_RANK * 16u * sizeof(uint16_t));
+	fixture->gate_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_LOW_RANK * 16u * sizeof(uint16_t));
+	fixture->kda_beta_logit = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_HEADS * 16u * sizeof(uint16_t));
+	fixture->kda_gate_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 16u * sizeof(uint16_t));
+	fixture->kda_decay_logit = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 16u * sizeof(uint16_t));
+	fixture->kda_output = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
+	fixture->hc_collapsed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
+	fixture->hc_snapshot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * 16u * sizeof(uint16_t));
+	fixture->hc_mean = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
+	fixture->index_query = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_QUERY_DIM * 16u * sizeof(uint16_t));
+	fixture->index_key = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_DIM * 16u * sizeof(uint16_t));
+	fixture->index_gate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_DIM * 16u * sizeof(uint16_t));
+	fixture->index_packed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VINDEX_PACKED * 16u * sizeof(uint16_t));
+	fixture->index_head_buf = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_HEADS * 16u * sizeof(uint16_t));
 	fixture->selected_pools = (uint32_t *)SparkGlm5NextValAllocZeroed((uint64_t)8u * 512u * sizeof(uint32_t));
 	fixture->selected_positions = (uint32_t *)SparkGlm5NextValAllocZeroed((uint64_t)8u * SPARK_GLM5_NEXT_VINDEX_WIDTH * sizeof(uint32_t));
 	fixture->hc_mixes = (float *)SparkGlm5NextValAllocZeroed((uint64_t)8u * SPARK_GLM5_NEXT_VHC_MIX * sizeof(float));
