@@ -1728,7 +1728,10 @@ static int SparkGlm5NextValRunWaveOnce(SparkGlm5NextValFixture *fixture,uint32_t
 		return(SparkGlm5NextValFail(label,"attention_post"));
 	status = SparkGlm5NextLaunchCudaLayerMlp(&fixture->wave,0u);
 	if (status != 0)
+	{
+		fprintf(stderr,"glm5_next_validation %s mlp status=%d cuda=%s\n",label,status,cudaGetErrorString(cudaGetLastError()));
 		return(SparkGlm5NextValFail(label,"mlp"));
+	}
 	status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,0u);
 	if (status != 0)
 		return(SparkGlm5NextValFail(label,"mlp_post"));
