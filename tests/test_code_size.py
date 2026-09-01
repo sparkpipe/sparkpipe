@@ -1438,8 +1438,8 @@ CEILING = 234369
 # multi-row run == sequential calls, S2 an explicit runs-of-one prefix ==
 # the NULL-prefix decode reading, S3 a mixed 3-run wave == sequential,
 # S4 the conv window carry. +11 tracked: the Makefile rule + GNU-C++
-# probe. Measured exact below.
-CEILING = PLACEHOLDER
+# probe. Measured exact: 237507 on main 201ff6c + this stack.
+CEILING = 237507
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
