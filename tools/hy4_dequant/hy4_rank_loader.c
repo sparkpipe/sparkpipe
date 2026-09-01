@@ -81,7 +81,6 @@ static int gguf_parse_infos(FILE *f, long *data_offset, gguf_info **out,
         }
         free(key);
     }
-    *data_offset = ((ftell(f) + alignment - 1) / alignment) * alignment;
     gguf_info *infos = calloc((size_t)tensor_count, sizeof(gguf_info));
     for (uint64_t i = 0; i < tensor_count; ++i) {
         uint64_t len;
@@ -97,6 +96,8 @@ static int gguf_parse_infos(FILE *f, long *data_offset, gguf_info **out,
         if (gguf_read_u64(f, (uint64_t *)&infos[i].offset)) { fprintf(stderr, "info %llu: off\n", (unsigned long long)i); free(infos); return -1; }
         infos[i].type = (int)gt;
     }
+    /* the data section starts AFTER the tensor-info table */
+    *data_offset = ((ftell(f) + alignment - 1) / alignment) * alignment;
     *out = infos;
     *count = (long)tensor_count;
     return 0;

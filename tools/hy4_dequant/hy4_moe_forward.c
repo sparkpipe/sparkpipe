@@ -168,6 +168,19 @@ int main(int argc, char **argv) {
         slab.n_dims = 2; slab.dims[0] = N_EMBD; slab.dims[1] = N_FF; slab.dims[2] = 0;
         if (dequant_view(rank, &slab, dw)) return 1;
 
+        { /* slab bisection stats */
+            long nan_g = 0, nan_u = 0, nan_d = 0;
+            float mg = 0, mu = 0, md = 0;
+            for (long i = 0; i < N_FF * N_EMBD; ++i) {
+                if (gw[i] != gw[i]) nan_g++; else if (fabsf(gw[i]) > mg) mg = fabsf(gw[i]);
+                if (uw[i] != uw[i]) nan_u++; else if (fabsf(uw[i]) > mu) mu = fabsf(uw[i]);
+                if (dw[i] != dw[i]) nan_d++; else if (fabsf(dw[i]) > md) md = fabsf(dw[i]);
+            }
+            fprintf(stderr, "slab li=%d: gate nan=%ld amax=%.6f | up nan=%ld amax=%.6f | down nan=%ld amax=%.6f\n",
+                    li, nan_g, mg, nan_u, mu, nan_d, md);
+            if (nan_g || nan_u || nan_d) { fprintf(stderr, "slab NaN -- RED stop\n"); return 1; }
+        }
+
         matvec(gw, x, g, N_FF, N_EMBD);
         matvec(uw, x, u, N_FF, N_EMBD);
         for (int j = 0; j < N_FF; ++j) {
@@ -186,6 +199,18 @@ int main(int argc, char **argv) {
     printf("rank-local experts used: %ld, routed partial sum %.6f amax %.6f\n",
            used_local, psum, fabsf(y_moe[0]));
 
+    /* trace for the numpy router cross-check (written before the shared
+     * path, which may refuse not-yet-vendored types) */
+    {
+        FILE *t = fopen("/tmp/hy4_moe_trace.bin", "wb");
+        fwrite(x, 4, N_EMBD, t);
+        fwrite(bias, 4, N_EXPERT, t);
+        fwrite(logits, 4, N_EXPERT, t);
+        fwrite(w, 4, N_USED, t);
+        fwrite(sel, 4, N_USED, t);
+        fclose(t);
+    }
+
     /* shared expert (unclamped, unweighted) */
     const hy4_tensor_view *tsg = hy4_tensor_lookup(rank, "blk.47.ffn_gate_shexp.weight");
     const hy4_tensor_view *tsu = hy4_tensor_lookup(rank, "blk.47.ffn_up_shexp.weight");
@@ -202,14 +227,6 @@ int main(int argc, char **argv) {
         printf("after shared: sum %.6f amax %.6f\n", ssum, fabsf(y_moe[0]));
     }
 
-    /* trace for the numpy router cross-check */
-    FILE *t = fopen("/tmp/hy4_moe_trace.bin", "wb");
-    fwrite(x, 4, N_EMBD, t);
-    fwrite(bias, 4, N_EXPERT, t);
-    fwrite(logits, 4, N_EXPERT, t);
-    fwrite(w, 4, N_USED, t);
-    fwrite(sel, 4, N_USED, t);
-    fclose(t);
     printf("MOE FORWARD DONE (trace at /tmp/hy4_moe_trace.bin)\n");
     hy4_rank_close(rank);
     return 0;
