@@ -4184,3 +4184,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   receipt already written on sparka; ranks ~46G fp8).
 - rank4 (qwenflash) still building on sparkf (preallocated file; io-based
   probes only).
+
+## 2026-09-01 ~16:3x — firing 29: my cleanup ate the in-flight rank4 build on sparkf (2nd cleanup lesson)
+
+- The ~15:4x cleanup deleted ~/qf_rank4 on sparkf — the dir was listed
+  when the build was planned for spark4, and the relay pivot to sparkf
+  made the list stale. PLACED copies on spark4+sparkc verified INTACT
+  (46,333,527,808 B = canonical); only sparkf's working copy lost.
+- Rebuilt relaunched on sparkf (~40 min at its pace). LESSON HARDENED:
+  cleanup lists must be RE-DERIVED from current state at execution time —
+  never stale lists; anything mid-flight is excluded by looking, not by
+  memory.
