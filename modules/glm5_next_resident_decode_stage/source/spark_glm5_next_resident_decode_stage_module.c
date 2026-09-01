@@ -2225,6 +2225,24 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 					(unsigned long long)probe_ps);
 			}
 		}
+		/* DIAG/FIX CANDIDATE (multi-row deep-enqueue throttle): the TP
+		 * collective completion is delivered inline at enqueue time, so the
+		 * host enqueues the whole 45-layer wave in one burst and the NCCL
+		 * proxy plane falls behind, corrupting multi-row waves (>=3 rows)
+		 * in a way a per-layer host sync masks. SPARK_GLM5_NEXT_SYNC_EVERY=N
+		 * catches the host up every N layers without a dump, bounding the
+		 * enqueue-ahead window. */
+		{
+			static int sync_every = -1;
+			if ( sync_every < 0 )
+			{
+				const char *env = getenv("SPARK_GLM5_NEXT_SYNC_EVERY");
+				sync_every = ( env != 0 && *env != 0 ) ? atoi(env) : 0;
+			}
+			if ( sync_every > 0 &&
+				(int)((chain->next_layer + 1u) % (uint32_t)sync_every) == 0 )
+				(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
 		{
