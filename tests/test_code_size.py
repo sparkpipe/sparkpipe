@@ -1419,7 +1419,11 @@ CEILING = 234369
 # trampoline), weightd warm-path identity publish, wave-tool env
 # passthrough, spark-queue multi-dev hardening (+ durable state, batched
 # age-gated reaper, doctor), hermetic queue gate, runbook + consult doc.
-CEILING = 237353
+CEILING = 237445
+# (dsv4pro) +92 exact: the verifier's payload/scale sections compared
+# separately (the combined read ran off the payload section into the
+# next expert's weights — false scale mismatch) + the verify-only
+# finish script for already-sharded ranks.
 # (dsv4pro) +36 exact on the lane stack: the stacked-fp4 section-order
 # fix in tools/dsv4_pro_rank_pack_verify.py (+4) and the resumed ranks
 # script tools/dsv4pro_tp16_ranks.sh (+32) that main's 237317 measure
