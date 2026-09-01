@@ -1419,19 +1419,14 @@ CEILING = 234369
 # trampoline), weightd warm-path identity publish, wave-tool env
 # passthrough, spark-queue multi-dev hardening (+ durable state, batched
 # age-gated reaper, doctor), hermetic queue gate, runbook + consult doc.
-# 237333 -> 237359: qwen38_max TP16-ready attention kernels —
-# KV-head replication past the kv head count (model header +
-# kernel width params).
-# 237359 -> 237363: symmetric resource classes (gpu candidates
-# ignore cpu holds - cpu pack builds were freezing the gpu
-# queue head-of-line). NOTE: an earlier merge lost the 237375
-# pin from #769 - lanes, re-pin from MEASURED reality, never
-# carry an old ceiling forward through conflict resolution.
-# 237375 (from #769) was lost by a later merge conflict resolution;
-# re-pinned from THIS branch's measured reality. +4: symmetric
-# resource classes (gpu candidates ignore cpu holds - cpu pack
-# builds were freezing the gpu queue head-of-line).
-CEILING = 237363
+# 237353 -> 237423 (merged tree measure): dsv4pro verifier fix
+# (stacked-fp4 expected-bytes section order) + exit-4 root-cause
+# report + ranks script; carries #769/#771 pins on main.
+CEILING = 237423
+# (dsv4pro) +36 exact on the lane stack: the stacked-fp4 section-order
+# fix in tools/dsv4_pro_rank_pack_verify.py (+4) and the resumed ranks
+# script tools/dsv4pro_tp16_ranks.sh (+32) that main's 237317 measure
+# predates.
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

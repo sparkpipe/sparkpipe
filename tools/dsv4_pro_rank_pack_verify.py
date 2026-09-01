@@ -158,11 +158,15 @@ def _checkpoint_slice(source, record, indices: Sequence[int], col_start: int,
         start_block = col_start // FP4_BLOCK
         width_blocks = (width + FP4_BLOCK - 1) // FP4_BLOCK
         stride = tp16.payload_bytes(weight, 1, record.source_columns)
+        # the pack sections are all-payload-then-all-scales (copy_payload
+        # runs over every row before copy_scales starts) - never interleave
         for stacked_row in indices:
             expert, row = divmod(stacked_row, rows_per)
             raw = source.read(record.source_names[expert])
             base = row * stride + col_start // 2
             out += raw[base:base + width // 2]
+        for stacked_row in indices:
+            expert, row = divmod(stacked_row, rows_per)
             scales = source.read(record.scale_names[expert])
             base = row * block_width + start_block
             out += scales[base:base + width_blocks]
