@@ -1260,9 +1260,26 @@ extern "C" cudaError_t SparkQwen38MaxLaunchGatedNorm(cudaStream_t stream, const 
 	return(cudaGetLastError());
 }
 
+/* Degree guard for the attention launchers: either the degree DIVIDES the
+ * kv head count (1/2/4 here - the plain whole-head block cut), or it is a
+ * replicating degree (16 with 4 kv heads) whose per-rank query block sits
+ * inside one GQA group. tp1/tp2 take the dividing arm; the one-liner this
+ * replaces rejected tp1/tp2 and broke the module tier (caught by the
+ * no-regress cell: attn_decode cuda=invalid argument at tp1). */
+static int SparkQwen38MaxAttnDegreeOk(uint32_t tp_degree)
+{
+	uint32_t group = SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT
+		/ SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT;
+	if ( (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) == 0u )
+		return 1;
+	if ( (tp_degree % SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT) != 0u )
+		return 0;
+	return (group % (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree)) == 0u;
+}
+
 extern "C" cudaError_t SparkQwen38MaxLaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen38MaxAttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon, uint32_t tp_degree, uint32_t tp_rank)
 {
-	if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || ((SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT) % (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree)) != 0u )
+	if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || !SparkQwen38MaxAttnDegreeOk(tp_degree) )
 		return(cudaErrorInvalidValue);
 	dim3 grid(SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree,row_count,1u);
 	SparkQwen38AttnPrepareKernel<<<grid,SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION,0,stream>>>(q_fused_bf16,k_bf16,v_bf16,weights->query_norm_weight_bf16,weights->key_norm_weight_bf16,kv_cache_bf16,slot_mapping,row_positions,row_count,attn_layer_ordinal,cache_layer_stride,cache_block_stride,epsilon,tp_degree,tp_rank);
@@ -1271,7 +1288,7 @@ extern "C" cudaError_t SparkQwen38MaxLaunchAttnPrepare(cudaStream_t stream, void
 
 extern "C" cudaError_t SparkQwen38MaxLaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen38MaxKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
 {
-    if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || ((SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT) % (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree)) != 0u )
+    if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || !SparkQwen38MaxAttnDegreeOk(tp_degree) )
         return(cudaErrorInvalidValue);
     dim3 grid(
         (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree) /
