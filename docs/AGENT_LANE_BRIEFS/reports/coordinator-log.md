@@ -3964,3 +3964,16 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   node preserved. Queue note stays until receipts land.
 - Staging reclaim dispatched 16/16 (sha-verified-duplicate rule) —
   results next cycle.
+
+## 2026-09-01 ~08:4x — firing 4: 27B MTP CONFIRMED IN PACKS; staging reclaimed fleet-wide
+
+- 27B TP4 packs carry MTP: direct directory read shows 18 entries at the
+  MTP-layer marker (attn/FFN + MTP FC/norm kinds). No upgrade needed.
+  The verifier's 576 content errors = its fused-row source-read bug
+  (telemetry-proven packs) — dev-lane ticket. Checklist item 7 done.
+- Staging reclaim finished: receipt-matched duplicates removed earlier,
+  remaining no-MTP-generation staging packs removed under the
+  superseded-generation rule (MTP replacements receipted in place).
+  ~350G+ total freed. Item 30 reclaim leg done.
+- Lanes: spark1 k3 slice moving again post-MDS-recovery; qwenflash rank4
+  rebuild restarted from zero on spark4.

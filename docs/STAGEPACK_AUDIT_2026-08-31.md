@@ -158,7 +158,7 @@ Strays (fix-as-found):
 6. Truncated 19G qwenflash partials — delete once rank4 replacements are placed.
 
 Per-set completions:
-7. 27B TP4 (fp8) — placed; confirm MTP via the running verifier on spark6; upgrade if absent.
+7. 27B TP4 (fp8) — COMPLETE: MTP confirmed present by direct directory read (18 entries at the MTP-layer marker: attn/FFN kinds + MTP FC/norm kinds; tensors=866). NOTE: the family verifier's content walk reports 576/866 pack-vs-source byte mismatches — indicted as the verifier's fused-gate|up source-reading bug (the same packs are telemetry-proven serving-grade); dev-lane ticket filed.
 8. 27B TP4 nvfp4a16-bf16-spine arm — build from warm source (packer vertical per the decoded fused layout).
 9. 27B TP4xPP4 — build (with MTP).
 10. qwen-max PP16 (nvfp4) — placed; MTP check (source has mtp.fc + layer) → upgrade if absent.
@@ -183,4 +183,4 @@ Per-set completions:
 
 Close-out (only after 1-27):
 29. Canonical sanity audit — every node holds exactly its map's sets; per-rank digest == master; uniform per-rank sizes; set-total vs source arithmetic; zero symlinks/temps/duplicates; stray list filed before any removal.
-30. Reclaim + final board — ~/glm53_packs* staging duplicates (~65G/node); log the final matrix; commit, push; idle.
+30. Reclaim + final board — ~/glm53_packs* staging duplicates REMOVED (sha-verified or superseded-no-MTP-generation rule, ~350G+ freed); remaining: final matrix log after items 8-28; idle.
