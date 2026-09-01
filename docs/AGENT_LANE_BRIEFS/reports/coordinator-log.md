@@ -4097,3 +4097,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - bf16 TP4PP4: first placements landed (1/4 on each of b/c/d — the
   90G-stage ranks run ~15-20 min each; loops alive).
 - qwenflash rank4: 15.1/46.3G.
+
+## 2026-09-01 ~13:0x — hy4 TP16 sharding owned by the hy4 dev lane (operator)
+
+- Operator confirmed the hy4 dev is doing the TP16 sharding. Checklist
+  item 25 ownership updated: the lane builds; the coordinator stays off
+  the lane's nodes and coordinates spark time via the queue. hy4 TP4PP4
+  (item 26) follows after the lane's TP16 lands.

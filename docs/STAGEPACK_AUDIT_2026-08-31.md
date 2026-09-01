@@ -176,7 +176,7 @@ Per-set completions:
 22. qwen-flash TP8 nvfp4 arm — build (with MTP).
 23. glm-flash bf16-official arm TP16 — build (~37G/rank).
 24. glm-flash nvfp4-redhatai arm TP16 — build (~12G/rank).
-25. hy4 TP16 — packer/module vertical (hy4 dev lane owns; geometry clean; MTP 39 tensors must ride).
+25. hy4 TP16 — IN PROGRESS by the hy4 dev lane (operator confirmed the lane is doing the TP16 sharding); geometry clean (64 heads/16=4, ffn 144 blocks, KV replicated); MTP 39 tensors must ride. Coordinator: stay off the lane's nodes, integrate via queue.
 26. hy4 TP4xPP4 — build (MTP-carrying).
 27. k3 TP4xPP4 — COMPLETE (kept, verified intact) — no work.
 28. Drafter variants audit — the small dflash2/dspark dirs on warm: each has its drafter pack + descriptor, or gets one.
