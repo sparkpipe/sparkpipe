@@ -1201,6 +1201,8 @@ static int SparkGlm5NextValOracleSelftest(void)
 
 /* -- device fixture (tiers 1 and 2a) ---------------------------------------- */
 
+#define SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS 8u
+
 typedef struct SparkGlm5NextValFixture
 {
 	SparkGlm5NextLayerWeights weights;
@@ -1253,9 +1255,9 @@ typedef struct SparkGlm5NextValFixture
 	uint8_t *kv_cache,*index_cache,*kda_state_pools,*kda_window_pools;
 	uint16_t *boundary_input;
 	uint16_t boundary_host_rows[8u * SPARK_GLM5_NEXT_VHIDDEN];
-	uint32_t host_resident_slots_stage[1u];
-	uint32_t host_positions_stage[1u];
-	uint32_t host_token_ids_stage[1u];
+	uint32_t host_resident_slots_stage[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
+	uint32_t host_positions_stage[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
+	uint32_t host_token_ids_stage[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
 	uint32_t *kda_state_index;
 	/* Run structure (identity: one run per row) so the tiers exercise the
 	 * run-aware kernel path exactly as serving does. */
@@ -1677,7 +1679,6 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 /* Tier 3/4 support: an N-row single-run wave of one sequence (chunked
  * prefill shape). Mirrors SparkGlm5NextValBuildWave with rows>1, positions
  * 0..rows-1, one run, context = rows. */
-#define SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS 8u
 
 static void SparkGlm5NextValBuildRunWave(SparkGlm5NextValFixture *fixture,uint32_t layer,const uint32_t *tokens,uint32_t rows)
 {

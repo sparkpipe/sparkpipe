@@ -84,10 +84,19 @@ __global__ static void SparkGlm5NextWaveMetadataKernel(
 {
 	uint32_t row;
 	row = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row < row_count )
-		context_lengths[resident_slots[row]] = positions[row] + 1u;
-	if ( row == 0u )
+	/* One thread computes the deterministic per-slot maximum so rows sharing
+	 * a resident slot (a chunked-prefill run) get a stable context bound.
+	 * The previous multi-writer race wrote values 1..rows in arbitrary order
+	 * and made attention output nondeterministic. */
+	if ( blockIdx.x == 0u && threadIdx.x == 0u )
 	{
+		for ( row = 0u; row < row_count; ++row )
+		{
+			uint32_t slot = resident_slots[row];
+			uint32_t len = positions[row] + 1u;
+			if ( len > context_lengths[slot] )
+				context_lengths[slot] = len;
+		}
 		dense_row_offset[0] = 0u;
 		dense_row_offset[1] = row_count;
 	}
