@@ -1427,6 +1427,10 @@ CEILING = 234369
 # queue head-of-line). NOTE: an earlier merge lost the 237375
 # pin from #769 - lanes, re-pin from MEASURED reality, never
 # carry an old ceiling forward through conflict resolution.
+# 237375 (from #769) was lost by a later merge conflict resolution;
+# re-pinned from THIS branch's measured reality. +4: symmetric
+# resource classes (gpu candidates ignore cpu holds - cpu pack
+# builds were freezing the gpu queue head-of-line).
 CEILING = 237363
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:

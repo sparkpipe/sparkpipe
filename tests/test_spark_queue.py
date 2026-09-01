@@ -71,6 +71,8 @@ def run(state, *argv):
             spark_queue.main()
         rc = 0
     except SystemExit as e:
+        if isinstance(e.code, str):
+            buf.write(e.code)
         rc = e.code if isinstance(e.code, int) else 1
     finally:
         sys.argv = old_argv
@@ -201,6 +203,14 @@ def main():
     entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
     check("priority 0 beats 9 on the same node",
           entries["p-high"]["state"] == "running" and entries["p-low"]["state"] == "queued", out)
+
+    # --- 15-minute task cap (operator window model)
+    rc, out = run(tmp, "add", "--id", "too-long", "--nodes", "spark6",
+                  "--ttl-min", "240", "--cmd", "echo x")
+    check("ttl above 15 minutes refused", rc != 0 and "15-minute" in out, out)
+    rc, out = run(tmp, "add", "--id", "fits", "--nodes", "spark6",
+                  "--ttl-min", "15", "--cmd", "echo y")
+    check("ttl of exactly 15 accepted", rc == 0, out)
 
     # --- resource classes: cpu work coexists with gpu holds
     fake.exited["race"] = 9
