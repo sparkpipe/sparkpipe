@@ -1473,6 +1473,7 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->maximum_context = maximum_context;
 	wave->resident_sequence_capacity = state->resident_sequence_capacity;
 	wave->max_sequence_positions = state->max_sequence_positions;
+	wave->execution_row_capacity = state->execution_row_capacity;
 	wave->pages_per_sequence = state->pages_per_sequence;
 	wave->owns_embedding = state->owns_embedding;
 	wave->owns_final_head = state->owns_final_head;

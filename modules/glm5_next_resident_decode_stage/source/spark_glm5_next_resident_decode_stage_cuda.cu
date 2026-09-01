@@ -746,7 +746,11 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 
 static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave)
 {
-	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || wave->row_count > wave->resident_sequence_capacity || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
+	/* Rows are bounded by the slot's EXECUTION capacity (multi-row prefill
+	 * waves carry up to execution_row_capacity rows of any lane mix); the
+	 * old bound was resident_sequence_capacity - the decode-era assumption
+	 * rows==lanes, which capped prefill waves at 16. */
+	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || (wave->execution_row_capacity != 0u && wave->row_count > wave->execution_row_capacity) || (wave->execution_row_capacity == 0u && wave->row_count > wave->resident_sequence_capacity) || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(LM_LAUNCH_OK);
 }

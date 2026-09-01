@@ -205,6 +205,9 @@ typedef struct SparkGlm5NextCudaWave
 	const uint32_t *run_state_index;
 	const uint32_t *host_sequence_row_begin;
 	const uint32_t *host_run_state_index;
+	/* Row capacity of the slot buffers (execution, not sequences): a
+	 * multi-row wave may carry up to this many rows. */
+	uint32_t execution_row_capacity;
 	uint32_t kda_layer_count;
 	const uint32_t *page_table;
 	uint32_t multiprocessor_count;

@@ -102,22 +102,30 @@ void Glm5NextPoolScoreKernel(
     LmKvView index_cache,
     const uint32_t *__restrict__ sequence_of_row,
     const uint32_t *__restrict__ context_length,
+    const uint32_t *__restrict__ row_positions,   /* per-row causal bound */
     const float *__restrict__ compress_ape_f32,   /* [KPOOL, DIM] */
     uint32_t pools,
     float softmax_scale,
     float head_scale,
     float *__restrict__ pool_scores)              /* [rows, pools] */
 {
-    __shared__ float pool_key[DIM];
-    __shared__ float reduction[THREADS / LM_WARP_LANES];
-    uint32_t pool = blockIdx.x;
-    uint32_t row = blockIdx.y;
-    uint32_t sequence = sequence_of_row[row];
-    uint32_t context = context_length[sequence];
-    uint32_t first = pool * KPOOL;
-    uint32_t index, slot_in_pool, head;
-    if (pool >= pools)
-        return;
+	__shared__ float pool_key[DIM];
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t pool = blockIdx.x;
+	uint32_t row = blockIdx.y;
+	uint32_t sequence = sequence_of_row[row];
+	uint32_t context = context_length[sequence];
+	uint32_t first = pool * KPOOL;
+	uint32_t index, slot_in_pool, head;
+	if (pool >= pools)
+		return;
+	/* Multi-row runs: a row at position p must score exactly what the
+	 * 1-row-wave reference scored at context p+1 — the wave's later
+	 * positions are FUTURE keys. Masking them here keeps the pool
+	 * ranking support-identical to the reference (the attention kernel
+	 * masks the values; without this the top-k itself diverges). */
+	if ( row_positions != 0 && row_positions[row] + 1u < context )
+		context = row_positions[row] + 1u;
 
     /* Per-channel softmax over the pool's gate logits ( ape bias included )
      * then the weighted key sum, both over DIM channels in parallel. */
@@ -204,16 +212,21 @@ void Glm5NextPoolExpandKernel(
     const uint32_t *__restrict__ selected_pools,  /* [rows, TOPK/KPOOL] */
     const uint32_t *__restrict__ sequence_of_row,
     const uint32_t *__restrict__ context_length,
+    const uint32_t *__restrict__ row_positions,   /* per-row causal bound */
     uint32_t *__restrict__ selected_positions,    /* [rows, WIDTH] */
     uint32_t rows)
 {
-    uint32_t row = blockIdx.x;
-    uint32_t index;
-    if (row >= rows)
-        return;
-    uint32_t sequence = sequence_of_row[row];
-    uint32_t context = context_length[sequence];
-    uint32_t select = TOPK / KPOOL;
+	uint32_t row = blockIdx.x;
+	uint32_t index;
+	if (row >= rows)
+		return;
+	uint32_t sequence = sequence_of_row[row];
+	uint32_t context = context_length[sequence];
+	/* Same causal bound as the pool scorer: a run row expands only its
+	 * own past, matching the 1-row-wave reference's support set. */
+	if ( row_positions != 0 && row_positions[row] + 1u < context )
+		context = row_positions[row] + 1u;
+	uint32_t select = TOPK / KPOOL;
     for (index = threadIdx.x; index < WIDTH; index += THREADS)
     {
         uint32_t position = 0xFFFFFFFFu;
@@ -660,6 +673,7 @@ static int32_t Glm5NextLayerIndexer(
         buffers->index_cache,
         buffers->sequence_of_row,
         buffers->context_length,
+        buffers->row_positions,
         (const float *)buffers->index_compress_ape,
         pools,
         GLM5_NEXT_DSA_INDEX_SCALE,
@@ -700,6 +714,7 @@ static int32_t Glm5NextLayerIndexer(
         buffers->selected_pools,
         buffers->sequence_of_row,
         buffers->context_length,
+        buffers->row_positions,
         buffers->selected_positions,
         rows);
     return cudaPeekAtLastError() == cudaSuccess
