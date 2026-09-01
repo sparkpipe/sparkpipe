@@ -3938,3 +3938,17 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   Removed 13 leftover wrong-topology tp16-named files (~272G). Checklist
   item 3 → COMPLETE (audit doc updated).
 - k3: spark1 grinding; qwenflash rank4 29.9/46.3G; 27B MTP verify walking.
+
+## 2026-09-01 ~07:4x — INCIDENT: ceph MDS DOWN (cluster-level); warm jobs paused
+
+- New mounts fail "no mds is up"; existing sessions (spark5/9/0) still
+  serve reads but degrade — this MDS flap is the root cause of the
+  chronic folio_wait D-state wedges (spark1/4 today, likely earlier too).
+- spark1+spark4 drained and unmounted (my remount attempt surfaced the
+  MDS error; fstab lacks the entry — remount needs explicit options).
+  Warm jobs PAUSED: k3 rank1 slice, qwenflash rank4 rebuild (30/46G,
+  needs restart). Queue note filed for the other dev.
+- ESCALATED to operator/sysadmin. On MDS recovery: remount 1+4 with
+  explicit ceph options, relaunch both builds.
+- Healthy lanes: TP8 map COMPLETE 16/16 (one canonical rank per node);
+  27B MTP verify ~760/866.
