@@ -277,7 +277,8 @@ TEST_NAMES := \
     test_tensor_map_geometry \
     test_weight_codec \
     test_topology_switch \
-    test_qwen38_math_kernels
+    test_qwen38_math_kernels \
+    test_qwen38max_attn_slice
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
@@ -928,6 +929,11 @@ build/test_qwen38_work_control: tests/test_qwen38_work_control.cpp tests/fixture
 # source, so the tested code IS the production code.
 build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_qwen38_math_kernels (no nvcc on this host)"; fi
+
+# Host-only: the head-split staging slices, byte-exact vs a decodable
+# pattern at tp4 and tp16 (all ranks). No CUDA - runs on any host.
+build/test_qwen38max_attn_slice: tests/test_qwen38max_attn_slice.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_attn_slice.c
+	@$(CC) -std=c11 -Wall -Wextra -Werror -O2 -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $^ -o $@
 
 # Real-pack decode smoke (the execute test): needs nvcc AND a stage pack on
 # the host, both explicit - TEST_QWEN38_MAX_EXECUTE_PACK names the pack so the
