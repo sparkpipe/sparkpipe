@@ -1422,7 +1422,12 @@ CEILING = 234369
 # 237353 -> 237423 (merged tree measure): dsv4pro verifier fix
 # (stacked-fp4 expected-bytes section order) + exit-4 root-cause
 # report + ranks script; carries #769/#771 pins on main.
-CEILING = 237423
+# 237423 -> 236182: qwen38 serving-adapter consolidation - qwen38_max and
+# qwen4_flash migrate onto the serving-adapter template and the pair's
+# pasted body lands in spark_qwen38_pp_serving_adapter_common.h on
+# spark_qwen38_serving_adapter_common.h (the all-three shared spine),
+# net -1241 authored lines.
+CEILING = 236182
 # (dsv4pro) +36 exact on the lane stack: the stacked-fp4 section-order
 # fix in tools/dsv4_pro_rank_pack_verify.py (+4) and the resumed ranks
 # script tools/dsv4pro_tp16_ranks.sh (+32) that main's 237317 measure

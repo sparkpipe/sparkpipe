@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
 
 /*
@@ -72,10 +73,10 @@ typedef enum SparkQwen38_27bStagePackTensorKind
 // A kind belongs to a layer class; the resolver enforces class against the
 // hybrid layer map, so a GDN tensor on a full-attention layer is a schema
 // error at load, not a stray pointer at launch.
-#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GLOBAL 0u
-#define SPARK_QWEN38_27B_STAGEPACK_CLASS_EVERY_LAYER 1u
-#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER 2u
-#define SPARK_QWEN38_27B_STAGEPACK_CLASS_ATTN_LAYER 3u
+#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GLOBAL SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL
+#define SPARK_QWEN38_27B_STAGEPACK_CLASS_EVERY_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER
+#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GDN_LAYER
+#define SPARK_QWEN38_27B_STAGEPACK_CLASS_ATTN_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_ATTN_LAYER
 
 typedef struct SparkQwen38_27bStagePackHeader
 {
@@ -358,48 +359,36 @@ static inline int32_t SparkQwen38_27bStagePackShapeEveryLayer(uint32_t tensor_ki
 	}
 }
 
+#define SPARK_QWEN38_27B_STAGEPACK_GDN_KIND_OFFSET (SPARK_STAGEPACK_TENSOR_GDN_QKV - SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_QKV)
+
+_Static_assert(SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_NORM + SPARK_QWEN38_27B_STAGEPACK_GDN_KIND_OFFSET == SPARK_STAGEPACK_TENSOR_GDN_NORM,"qwen38_27b gdn kind run must track the shared axis");
+_Static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"qwen38_27b bf16 weight code must match the shared format");
+_Static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"qwen38_27b f32 weight code must match the shared format");
+
+static const SparkStagePackGeometryTable SparkQwen38_27bStagePackGeometry =
+{
+	.norm_width = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION,
+	.hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION,
+	.gdn_conv_channels = SPARK_QWEN38_27B_MODEL_GDN_CONV_CHANNELS,
+	.gdn_value_dimension = SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION,
+	.gdn_value_head_count = SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT,
+	.gdn_head_value_dimension = SPARK_QWEN38_27B_MODEL_GDN_HEAD_VALUE_DIMENSION,
+	.gdn_conv_kernel = SPARK_QWEN38_27B_MODEL_GDN_CONV_KERNEL
+};
+
 static inline int32_t SparkQwen38_27bStagePackShapeGdn(uint32_t tensor_kind, SparkQwen38_27bStagePackTensorShape *shape)
 {
-	shape->layer_class = SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER;
-	switch ( tensor_kind )
-	{
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_QKV:
-		shape->rows = SPARK_QWEN38_27B_MODEL_GDN_CONV_CHANNELS;
-		shape->columns = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		shape->quantizable = 1u;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_GATE:
-		shape->rows = SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION;
-		shape->columns = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		shape->quantizable = 1u;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_BETA:
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_DECAY:
-		shape->rows = SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT;
-		shape->columns = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_OUTPUT:
-		shape->rows = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION;
-		shape->quantizable = 1u;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_CONV_WEIGHT:
-		shape->rows = SPARK_QWEN38_27B_MODEL_GDN_CONV_CHANNELS;
-		shape->columns = SPARK_QWEN38_27B_MODEL_GDN_CONV_KERNEL;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_A_LOG:
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_DT_BIAS:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT;
-		shape->natural_format = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_NORM:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_27B_MODEL_GDN_HEAD_VALUE_DIMENSION;
-		return(0);
-	default:
+	SparkStagePackTensorShape common;
+	SparkStagePackShapeInit(&common);
+	if ( SparkStagePackShapeGdnCommon(tensor_kind + SPARK_QWEN38_27B_STAGEPACK_GDN_KIND_OFFSET,&SparkQwen38_27bStagePackGeometry,&common) != 0 )
 		return(-1);
-	}
+	shape->rows = common.rows;
+	shape->columns = common.columns;
+	shape->natural_format = common.natural_format;
+	shape->layer_class = common.layer_class;
+	if ( tensor_kind == SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_QKV || tensor_kind == SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_GATE || tensor_kind == SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_OUTPUT )
+		shape->quantizable = 1u;
+	return(0);
 }
 
 static inline int32_t SparkQwen38_27bStagePackShapeAttn(uint32_t tensor_kind, SparkQwen38_27bStagePackTensorShape *shape)
