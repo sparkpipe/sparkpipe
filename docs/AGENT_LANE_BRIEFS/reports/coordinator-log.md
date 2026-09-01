@@ -4287,3 +4287,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   flavor). 8 TP8 ranks building in parallel (~23G/rank), shipping to
   rank r -> spark{r} + spark{r+8} with sha receipts. Item 22 (nvfp4 arm)
   still needs a codec port; item 24 probe pending.
+
+## 2026-09-01 ~21:0x — firing 47: item 21 RE-SCOPED blocked-on-packer (split-expert source)
+
+- qwen-flash FP8 arm probe built nothing: the packer FATALs on
+  "experts.gate_up_proj not in checkpoint" — the fp8-arm source ships
+  SPLIT experts (0.gate_proj/up_proj + scale_inv) vs the bf16 source's
+  stacked layout. Loops killed; item 21 re-scoped to the packer
+  extension ticket (dev-lane). The 8 arm loops cleaned.
