@@ -140,3 +140,47 @@ artifacts, never topology variants or sources:
   board slots + queue coordination; the lane owns packer/descriptor.
 - Note: dsv4-pro's spec layers and hy4's MTP share the deepseek MTP
   shape — the dsv4 packer's mtp handling is a reusable reference.
+
+## 9. THE COMPLETE-SET CHECKLIST (operator-formatted; standing automation reference)
+
+Definition of done per set: all ranks real bytes on canonical nodes (TP4 4x,
+TP8 2x maps; rank r on spark-r), uniform per-rank size, sha256 receipted,
+MTP-carrying if the source ships it, verified against source.
+
+In flight (finish first):
+1. k3 TP16 — 14/16 placed; left: spark1 rank1 (slicing), spark4 rank4 (after its qwenflash job); then 16/16 sha placement audit.
+2. k3 cleanup — after 16/16: remove 1.56TB warm base + all slice/deploy work dirs + spark2 27B temps (bytes logged).
+3. qwen-flash TP8 (bf16) — rank4 rebuilding (29/46G) → place on spark4 + copy to sparkc; then MTP audit of placed ranks (copy_mtp_fc) → rebuild if absent.
+4. glm5_next TP8 FP8 (true, MTP) — sparka 4 ranks placed; sparkc 4-7 building → chained verify+place → swap out old wrong-topology bytes on every tp8.fp8 dir.
+
+Strays (fix-as-found):
+5. k3 duplicate ranks on spark2/spark3 (185G each) — digest-identify; remove own-rank duplicates, report foreign copies.
+6. Truncated 19G qwenflash partials — delete once rank4 replacements are placed.
+
+Per-set completions:
+7. 27B TP4 (fp8) — placed; confirm MTP via the running verifier on spark6; upgrade if absent.
+8. 27B TP4 nvfp4a16-bf16-spine arm — build from warm source (packer vertical per the decoded fused layout).
+9. 27B TP4xPP4 — build (with MTP).
+10. qwen-max PP16 (nvfp4) — placed; MTP check (source has mtp.fc + layer) → upgrade if absent.
+11. qwen-max TP4xPP4 — build (with MTP; supersedes the deleted-in-error qwen38max.tp4pp4 — its rebuild folds in here).
+12. dsv4-flash TP16 — placed; audit mtp.0.* spec layers actually in the packs.
+13. dsv4-flash TP4xPP4 — build.
+14. dsv4-pro TP4xPP4 — 10/16; build the last 6 ranks (packer rank-path extension).
+15. dsv4-pro TP16 — build from the nvfp4-pro source (877G; splicer rank-path).
+16. glm5_next (flash) TP4xPP4 — build (with MTP).
+17. glm53full bf16 TP4xPP4 — build. (TP16 done.)
+18. glm53full fp8 TP4xPP4 — build. (TP16 done.)
+19. glm53full nvfp4 TP4xPP4 — build. (TP16 done.)
+20. qwen-flash TP4xPP4 — build.
+21. qwen-flash TP8 fp8 arm — build (with MTP).
+22. qwen-flash TP8 nvfp4 arm — build (with MTP).
+23. glm-flash bf16-official arm TP16 — build (~37G/rank).
+24. glm-flash nvfp4-redhatai arm TP16 — build (~12G/rank).
+25. hy4 TP16 — packer/module vertical (hy4 dev lane owns; geometry clean; MTP 39 tensors must ride).
+26. hy4 TP4xPP4 — build (MTP-carrying).
+27. k3 TP4xPP4 — COMPLETE (kept, verified intact) — no work.
+28. Drafter variants audit — the small dflash2/dspark dirs on warm: each has its drafter pack + descriptor, or gets one.
+
+Close-out (only after 1-27):
+29. Canonical sanity audit — every node holds exactly its map's sets; per-rank digest == master; uniform per-rank sizes; set-total vs source arithmetic; zero symlinks/temps/duplicates; stray list filed before any removal.
+30. Reclaim + final board — ~/glm53_packs* staging duplicates (~65G/node); log the final matrix; commit, push; idle.
