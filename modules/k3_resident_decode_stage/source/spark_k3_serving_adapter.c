@@ -38,6 +38,14 @@ typedef struct SparkK3ServingState
 	SparkMemoryBuffer positions_device; /* DEVICE_PRIVATE */
 	SparkMemoryBuffer context_device;   /* DEVICE_PRIVATE */
 	SparkMemoryBuffer state_device;     /* DEVICE_PRIVATE */
+	/* The KDA run prefix (rows+1 entries) and the per-run state slot
+	 * (rows entries): multi-row prefill groups consecutive same-slot rows
+	 * into one sequential run through the recurrence kernels. Host
+	 * derivation, device consumption. */
+	SparkMemoryBuffer runs_host;        /* HOST_COHERENT */
+	SparkMemoryBuffer runs_device;      /* DEVICE_PRIVATE */
+	SparkMemoryBuffer seqslot_host;     /* HOST_COHERENT */
+	SparkMemoryBuffer seqslot_device;   /* DEVICE_PRIVATE */
 	SparkMemoryBuffer output_tokens;    /* DEVICE_PRIVATE */
 	SparkMemoryBuffer output_scores;    /* DEVICE_PRIVATE */
 	/* The speculation-provider slot's first real use: the DSpark drafter
@@ -467,11 +475,25 @@ static SparkStatus K3ServingInitialize(
 		status = SparkMemoryBufferAllocate(&state->state_device,
 			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->runs_host,
+			SPARK_MEMORY_SPACE_HOST_COHERENT,
+			((uint64_t)state->max_rows + 1u) * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->runs_device,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,
+			((uint64_t)state->max_rows + 1u) * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->seqslot_host,
+			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)state->max_rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->seqslot_device,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->output_tokens,
-			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->output_scores,
-			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * sizeof(uint32_t));
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status == SPARK_STATUS_CAPACITY_EXCEEDED ?
 			SPARK_STATUS_CAPACITY_EXCEEDED : status; }
@@ -497,6 +519,10 @@ static void K3ServingDestroy(void *adapter_state)
 	SparkMemoryBufferFree(&state->positions_device);
 	SparkMemoryBufferFree(&state->context_device);
 	SparkMemoryBufferFree(&state->state_device);
+	SparkMemoryBufferFree(&state->runs_host);
+	SparkMemoryBufferFree(&state->runs_device);
+	SparkMemoryBufferFree(&state->seqslot_host);
+	SparkMemoryBufferFree(&state->seqslot_device);
 	SparkMemoryBufferFree(&state->output_tokens);
 	SparkMemoryBufferFree(&state->output_scores);
 	if ( state->drafter_pack_bound != 0u )
@@ -554,6 +580,33 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		&state->context_host, (uint64_t)rows * 4u, 0);
 	(void)SparkMemoryBufferCopy(&state->state_device,
 		&state->state_host, (uint64_t)rows * 4u, 0);
+	/* The KDA runs: consecutive rows sharing a resident slot form ONE
+	 * sequential run through the recurrence kernels (a multi-row prefill
+	 * span of one sequence = one run; batch-decode rows are runs of one).
+	 * The kernels address state per SEQUENCE (state_index[sequence]), so
+	 * the run-slot array carries each run's first row's slot. A run count
+	 * that disagrees with the submission's declared active count is a
+	 * contract break - fail loud, never guess the grouping. */
+	{
+		uint32_t *runs = (uint32_t *)state->runs_host.pointer;
+		uint32_t *slots = (uint32_t *)state->state_host.pointer;
+		uint32_t *seqslots = (uint32_t *)state->seqslot_host.pointer;
+		uint32_t active = 1u;
+		runs[0] = 0u;
+		for ( uint32_t i = 1u; i < rows; ++i )
+			if ( slots[i] != slots[i - 1u] )
+				runs[active++] = i;
+		runs[active] = rows;
+		if ( submission->active_sequence_count != 0u &&
+			submission->active_sequence_count != active )
+			return SPARK_STATUS_VALIDATION_FAILED;
+		for ( uint32_t s = 0u; s < active; ++s )
+			seqslots[s] = slots[runs[s]];
+		(void)SparkMemoryBufferCopy(&state->runs_device,
+			&state->runs_host, ((uint64_t)active + 1u) * sizeof(uint32_t), 0);
+		(void)SparkMemoryBufferCopy(&state->seqslot_device,
+			&state->seqslot_host, (uint64_t)active * sizeof(uint32_t), 0);
+	}
 	memset(&dispatch, 0, sizeof(dispatch));
 	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
@@ -568,7 +621,10 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	dispatch.positions = state->positions_device.pointer;
 	dispatch.context_length = state->context_device.pointer;
 	dispatch.sequence_of_row = state->state_device.pointer;
-	dispatch.kda_state_index = state->state_device.pointer;
+	/* Per-RUN state slots (the kernels index state per sequence) + the run
+	 * prefix: one prefill span of a sequence is ONE chained KDA run. */
+	dispatch.kda_state_index = state->seqslot_device.pointer;
+	dispatch.sequence_row_begin = state->runs_device.pointer;
 	dispatch.hidden_input_bf16 = submission->hidden_input_address;
 	dispatch.hidden_input_bytes = submission->hidden_input_bytes;
 	dispatch.hidden_output_bf16 = submission->hidden_output_address;
