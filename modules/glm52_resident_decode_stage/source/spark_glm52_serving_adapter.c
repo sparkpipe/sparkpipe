@@ -57,8 +57,18 @@
 #define SPARK_GLM52_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
 #define SPARK_GLM52_SERVING_MODEL_ID "zai-org/GLM-5.2"
+/* The expected DRIVER model id must equal the model.id of the firmware the
+ * driver was compiled from (ServingAdapterTemplateLoadDriver strcmps them).
+ * The bf16 arm's firmware pins the 5.3-full identity (native publisher
+ * precision arm, per-source firmware pins); every other codec's firmware
+ * keeps the 5.2 identity. GLM52_EXPERT_WEIGHT_CODEC is a numeric define. */
+#if GLM52_EXPERT_WEIGHT_CODEC == 1
+#define SPARK_GLM52_SERVING_DRIVER_MODEL_ID \
+	"zai.glm-5.3-full.resident-decode-stage-firmware"
+#else
 #define SPARK_GLM52_SERVING_DRIVER_MODEL_ID \
 	"zai.glm-5.2.resident-decode-stage-firmware"
+#endif
 #define SPARK_GLM52_SERVING_STAGE_NAME "glm52_resident_decode_stage"
 #define SPARK_GLM52_SERVING_PROGRAM_NAME "resident_decode"
 #define SPARK_GLM52_SERVING_TARGET \
