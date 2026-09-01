@@ -4074,3 +4074,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - bf16 stages 1/2/3 launched on sparkb/c/d (rev-pinned b4734de4...);
   stage 0 queues for sparka when its dsv4 driver finishes (7/16 ranks at
   last check). fp8 + nvfp4 sets follow on the same pattern (items 18-19).
+
+## 2026-09-01 ~12:3x — firing 15: glm53full bf16 TP4PP4 healthy on b/c/d
+
+- Two script bugs caught by the exit-code gates in-cycle (stray FIRST
+  line + case deleted with it) — fixed, syntax-checked, relaunched; all
+  three stage loops confirmed writing packs. Stage 0 (sparka) queues
+  behind its dsv4 driver.
+- MTP law satisfied for glm53full trivially: source has no MTP (N/A).
