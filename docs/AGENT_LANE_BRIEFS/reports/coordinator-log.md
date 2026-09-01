@@ -4390,3 +4390,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~25:2x — firing 63: bf16 rebuilds 12.2/3.9/6.7 of 40G; on pace, single writers
 
 ## 2026-09-01 ~25:3x — firing 64: bf16 rebuilds 12.4/4.9/8.5 of 40G; fresh Mimosa scan sealed (53 findings, none blocking; same count as prior baseline)
+
+## 2026-09-01 ~25:4x — firing 65: bf16 rebuilds 13.7/22.7/17.6 of 40G (spark2 accelerating past slow-class); all on pace
