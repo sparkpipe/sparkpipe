@@ -4128,3 +4128,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Checklist items 2+4 COMPLETE (TP8 map exact + strays swept). Item 3
   closed earlier. Item 17's stage0 building on sparka (12/16 of the bf16
   set already placed by b/c/d).
+
+## 2026-09-01 ~14:2x — firing 21: rank4 relay slicing on sparkf; bf16 stage0 relaunched properly
+
+- k3 rank4 relay launched on sparkf (slice->verify->await ship), using the
+  rank1 relay pattern; spark4 stays clear of warm (chronic client).
+- bf16 stage0 on sparka: the earlier launch had silently failed (script
+  not staged — same missing-staging bug as c/d); properly staged +
+  relaunched, loop confirmed alive.
