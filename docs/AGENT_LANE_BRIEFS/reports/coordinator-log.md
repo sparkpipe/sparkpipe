@@ -4113,3 +4113,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   build MOVED to healthy sparkf (same recipe); will ship to spark4 +
   sparkc when done. spark4 cleaned of stale tmp.
 - bf16 TP4PP4: 2/4 placed per node, loops alive.
+
+## 2026-09-01 ~13:4x — firing 19: rank4 PLACE✓x2 (TP8 bf16 map COMPLETE); bf16 stage0 launched
+
+- qwenflash TP8 rank4 built on sparkf (1246 tensors, 43.15GiB — sparkf
+  ceph shredded it in ~40 min), shipped to spark4 + sparkc, dual-sha
+  receipted. Digest 5b0d8ffc... == the original rank4 generation — the
+  set is back to EXACTLY the pre-loss state. Items 2+6(TP8 leg) DONE.
+- bf16 stage0 launched on freed sparka (mkdir-first lesson applied).
+- dsv4 ship was already 16/16.
