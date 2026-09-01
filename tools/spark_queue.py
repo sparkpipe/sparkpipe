@@ -51,23 +51,31 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# THE QUEUE STATE IS MACHINE-GLOBAL (the split-brain fix): every worktree
-# and every dev session on this host MUST see ONE queue. Worktree-relative
-# state meant dev `add`s wrote a queue no dispatcher ever read.
-STATE = os.environ.get("SPARK_QUEUE_STATE", "/tmp/sparkqueue")
+# THE QUEUE STATE IS MACHINE-GLOBAL and DURABLE (the split-brain fix, then
+# the /tmp-is-volatile fix: macOS cleans /tmp and reboots wipe it - queued
+# work must survive both). Every worktree and every dev session on this
+# host sees ONE queue at ~/.sparkpipe/queue.
+STATE = os.environ.get("SPARK_QUEUE_STATE",
+    os.path.expanduser("~/.sparkpipe/queue"))
 os.makedirs(STATE, exist_ok=True)
 QUEUE = os.path.join(STATE, "queue.jsonl")
 RESERV = os.path.join(STATE, "reservations.json")
 RESULTS = os.path.join(STATE, "results.jsonl")
 LOGDIR = os.path.join(STATE, "logs")
 LOCK = os.path.join(STATE, ".lock")
-# one-time migration: absorb the live coordinator copy if the global is new
-if not os.path.exists(QUEUE) and os.path.exists(os.path.join(ROOT, "runs", "queue.jsonl")):
-    import shutil
-    for name in ("queue.jsonl", "reservations.json", "results.jsonl"):
-        src = os.path.join(ROOT, "runs", name)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(STATE, name))
+# one-time migrations: absorb prior state locations into the DEFAULT home
+# only - an explicit SPARK_QUEUE_STATE override (tests, scratch queues)
+# must start EMPTY, never inheriting production state.
+import shutil
+if "SPARK_QUEUE_STATE" not in os.environ:
+    for _prior in ("/tmp/sparkqueue", os.path.join(ROOT, "runs")):
+        if not os.path.exists(QUEUE) and os.path.exists(os.path.join(_prior, "queue.jsonl")):
+            for name in ("queue.jsonl", "reservations.json", "results.jsonl"):
+                src = os.path.join(_prior, name)
+                if os.path.exists(src):
+                    shutil.copy2(src, os.path.join(STATE, name))
+# NOTE: task-side sentinel files (exit/pid/log) stay in the NODE's /tmp -
+# they are transient by design; only this host-side state is durable.
 DENY = ("reboot", "shutdown", "poweroff", "init 0", "init 6",
         "kill -9", "kill -KILL", "SIGKILL", "rm -rf")
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
@@ -181,6 +189,47 @@ def expire_stale(res):
                   f"{pid} left running but no longer holds the queue)")
     return changed
 
+
+def cmd_doctor(args):
+    """Onboarding + health check: one command a new dev runs first."""
+    checks = []
+    ok = lambda name, detail="": checks.append((name, True, detail))
+    bad = lambda name, detail="": checks.append((name, False, detail))
+    writable = os.access(STATE, os.W_OK)
+    (ok if writable else bad)("state dir", STATE)
+    n_queued = n_running = 0
+    for e in load_queue():
+        if e.get("state") == "running":
+            n_running += 1
+        elif e.get("state") == "queued":
+            n_queued += 1
+    ok("queue", f"{n_queued} queued, {n_running} running, "
+        f"{sum(1 for _ in open(RESULTS)) if os.path.exists(RESULTS) else 0} finished")
+    res = load_reservations()
+    holds = ", ".join(f"{n}={r['id']}" for n, r in sorted(res.items())) or "(none)"
+    ok("node holds", holds)
+    try:
+        out = subprocess.run(["pgrep", "-f", "spark_queue.py dispatch"],
+            capture_output=True, text=True, timeout=5)
+        pids = [l for l in out.stdout.split() if l]
+        if pids:
+            ok("dispatcher daemon", f"pid {','.join(pids)}")
+        else:
+            bad("dispatcher daemon", "not running - restart: "
+                "nohup bash -c 'while true; do python3 "
+                "/Users/mac/sparkpipe/tools/spark_queue.py dispatch >> "
+                "~/.sparkpipe/queue/dispatcher.log 2>&1; sleep 5; done' &")
+    except Exception as exc:
+        bad("dispatcher daemon", str(exc))
+    with open(__file__) as fh:
+        body = fh.read()
+    if "STATE = " in body and 'os.path.join(ROOT, "runs")' not in body.split("def ")[0][:3000]:
+        ok("tool version", "global-state version")
+    else:
+        bad("tool version", "stale pre-split-brain copy - git pull main")
+    for name, good, detail in checks:
+        print(f"{'PASS' if good else 'FAIL'}  {name}: {detail}")
+    sys.exit(1 if any(not g for _, g, _ in checks) else 0)
 
 def cmd_add(args):
     if getattr(args, "cmd_file", None):
@@ -320,25 +369,43 @@ def cmd_dispatch(args):
                     print(f"expired {e['id']} ttl={tttl:.0f}m age={tage:.0f}m "
                           f"(nodes released)")
                     continue
-            pid = res.get(n0, {}).get("pid")
-            exit_path = f"/tmp/sparkqueue-{e['id']}.exit"
-            _, rc_txt = ssh(n0, f"cat {exit_path} 2>/dev/null", timeout=10)
-            if rc_txt.strip().lstrip('-').isdigit():
-                rc = int(rc_txt.strip())
-                e["state"] = "done"
-                append_result(e, rc, "dispatch reaped")
-                for n in e["nodes"]:
-                    if res.get(n, {}).get("id") == e["id"]:
-                        del res[n]
-                print(f"reaped {e['id']} exit={rc} (nodes released)")
+            continue
+        # Exit-file polls BATCHED PER NODE and age-gated: each poll is an
+        # ssh under the global lock, and N running tasks on N nodes with a
+        # dead one used to hold the lock for N x timeout - every other
+        # dev's add/list stacked behind it. One ssh per node; tasks
+        # younger than 25s skip this pass (the next 5s pass catches them).
+        exit_results = {}
+        by_node = {}
+        for e in entries:
+            if e.get("state") != "running":
                 continue
-            if pid and not pid_alive(n0, pid):
+            try:
+                age_s = (time.time() - time.mktime(time.strptime(
+                    e.get("dispatched_at", now()), "%Y-%m-%dT%H:%M:%S")))
+            except Exception:
+                age_s = 1e9
+            if age_s < 25.0:
+                continue
+            by_node.setdefault(e["nodes"][0], []).append(e["id"])
+        for node, ids in by_node.items():
+            listing = "; ".join(
+                f"echo {i} $(cat /tmp/sparkqueue-{i}.exit 2>/dev/null)"
+                for i in ids)
+            _, out = ssh(node, listing, timeout=12)
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1].lstrip('-').isdigit():
+                    exit_results[parts[0]] = int(parts[1])
+        for e in [x for x in entries if x.get("state") == "running"]:
+            n0 = e["nodes"][0]
+            if e["id"] in exit_results:
                 e["state"] = "done"
-                append_result(e, -1, "dispatch: pid gone without exit file")
+                append_result(e, exit_results[e["id"]], "dispatch reaped")
                 for n in e["nodes"]:
                     if res.get(n, {}).get("id") == e["id"]:
                         del res[n]
-                print(f"reaped {e['id']} pid-gone (nodes released)")
+                print(f"reaped {e['id']} exit={exit_results[e['id']]} (nodes released)")
         entries = [e for e in entries if e.get("state") != "done"]
         # stale notes age out: they never hold nodes, but ancient notes
         # pollute every listing (the 19h-old notes class)
@@ -604,6 +671,8 @@ def main():
     a.add_argument("--node")
     a.add_argument("--id")
     a.set_defaults(fn=cmd_release)
+    a = sub.add_parser("doctor")
+    a.set_defaults(fn=cmd_doctor)
     a = sub.add_parser("schedule")
     a.set_defaults(fn=cmd_schedule)
     args = p.parse_args()

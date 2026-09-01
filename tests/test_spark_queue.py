@@ -45,11 +45,17 @@ class FakeSsh:
             return 0, "4242"
         if "kill -0" in cmd:
             return 0, ""
-        if "cat /tmp/sparkqueue-" in cmd and ".exit" in cmd:
-            task_id = cmd.split("sparkqueue-")[1].split(".exit")[0]
-            if task_id in self.exited:
-                return 0, str(self.exited[task_id])
-            return 1, ""
+        if "echo " in cmd and "$(cat /tmp/sparkqueue-" in cmd:
+            lines = []
+            for piece in cmd.split(";"):
+                piece = piece.strip()
+                if not piece.startswith("echo "):
+                    continue
+                task_id = piece.split()[1]
+                code = self.exited.get(task_id)
+                lines.append(f"{task_id} {code}" if code is not None
+                             else f"{task_id} -")
+            return 0, "\n".join(lines)
         return 0, ""
 
     exited = {}
@@ -69,6 +75,22 @@ def run(state, *argv):
     finally:
         sys.argv = old_argv
     return rc, buf.getvalue()
+
+
+def rewind_dispatch_age(state, minutes=5):
+    """The reaper age-gates exit polls at 25s; pull entries back in time."""
+    import json as _json
+    path = os.path.join(state, "queue.jsonl")
+    entries = [_json.loads(l) for l in open(path) if l.strip()]
+    import time as _time
+    stamp = _time.strftime("%Y-%m-%dT%H:%M:%S",
+                           _time.localtime(_time.time() - minutes * 60))
+    for e in entries:
+        if "dispatched_at" in e:
+            e["dispatched_at"] = stamp
+    with open(path, "w") as fh:
+        for e in entries:
+            fh.write(_json.dumps(e) + "\n")
 
 
 def load_state(state, name):
@@ -121,6 +143,7 @@ def main():
 
     # --- reaper: exit sentinel releases nodes and records the exit
     fake.exited["t1"] = 0
+    rewind_dispatch_age(tmp)
     rc, out = run(tmp, "dispatch")
     res = load_state(tmp, "reservations.json")
     results = load_state(tmp, "results.jsonl")
@@ -131,6 +154,7 @@ def main():
     # --- failed exit recorded
     rc, out = run(tmp, "dispatch")
     fake.exited["t3"] = 7
+    rewind_dispatch_age(tmp)
     rc, out = run(tmp, "dispatch")
     results = load_state(tmp, "results.jsonl")
     check("t3 failure exit recorded", any(r["id"] == "t3" and r["exit"] == 7 for r in results), out)

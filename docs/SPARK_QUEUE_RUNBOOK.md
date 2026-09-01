@@ -1,13 +1,44 @@
 # Spark task queue — parallel-dev runbook (2026-09-01)
 
+## DEV QUICKSTART (the whole contract in six commands)
+
+    # 0. once, first thing in your session:
+    python3 /Users/mac/sparkpipe/tools/spark_queue.py doctor
+
+    # 1. look before you take:
+    ... list                          # who holds what right now
+
+    # 2. submit your test (id = YOURLANE-name; ttl honest; script via file):
+    ... add --id mylane-q7 --nodes spark4 --ttl-min 10 --by yourname \
+            --notes "hypothesis: if X, row 0 matches" --cmd-file run.sh
+
+    # 3. the daemon dispatches you when the nodes free up; watch:
+    ... status --id mylane-q7         # includes the log tail
+
+    # 4. take it back early if you must (kills the remote process):
+    ... cancel --id mylane-q7
+
+    # 5. coordination is notes, not chat:
+    ... add --id mylane-hold-note --nodes spark5 --kind note \
+            --notes "holding for window after k3 wave"
+
+Where `...` is `python3 /Users/mac/sparkpipe/tools/spark_queue.py`.
+Rules that matter: lower `--priority` runs first (0 highest, default 5);
+nodes are exclusive for the task's TTL; never ssh around the queue for
+GPU work; logs live at /tmp/sparkqueue-<id>.log on the task's first
+node; results persist (results.jsonl) even after entries leave the list.
+
+---
+
 One queue, one state, one dispatcher. This is the contract every lane
 follows for ANY spark-touching work; the discipline is what makes
 parallel dev safe.
 
 ## The invariants (audited + tested 2026-09-01)
 
-1. **ONE machine-global state** at `/tmp/sparkqueue` (the tool honors
-   `SPARK_QUEUE_STATE` for tests). The stale per-checkout `runs/`
+1. **ONE machine-global, durable state** at `~/.sparkpipe/queue`
+   (migrated from /tmp — macOS cleans /tmp; `SPARK_QUEUE_STATE`
+   overrides start EMPTY and never inherit production). The stale per-checkout `runs/`
    copies are dead — if you find a checkout whose `tools/spark_queue.py`
    says `RUNS = os.path.join(ROOT, "runs")`, it is OLD: pull main.
    The split-brain (two queues, mutually invisible reservations,
