@@ -1414,7 +1414,14 @@ CEILING = 234369
 # +10: per-collective ordinals (the nccl backend enforces a strict
 # per-communicator sequence; the shared counter failed the HC twin's
 # first submit with VALIDATION_FAILED - the wave-1 hardware receipt).
-CEILING = 236911
+# hy4 lane M1 (contract freeze): the family's authoritative JSON
+# (geometry + source-of-truth GGUF pin + the 16 deployed rank digests),
+# the contract generator (emits the family geometry header + normalized
+# JSON with a --check gate), the generated header, the host test, the
+# Makefile registration, and the vendored publisher config under
+# model_contracts/references/. Host-only lane paths; no common code.
+# 237866 is the exact count after it lands.
+CEILING = 237866
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

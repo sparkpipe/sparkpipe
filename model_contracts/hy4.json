@@ -1,0 +1,118 @@
+{
+  "architecture": "HYV4ForCausalLM",
+  "attention": {
+    "gated_mla": true,
+    "index_head_count": 32,
+    "index_head_dimension": 128,
+    "index_top_k": 2048,
+    "indexer_full_period": 4,
+    "learnable_sink": true,
+    "rope_theta": 10000000,
+    "rope_type": "default"
+  },
+  "hyper_connections": {
+    "epsilon": 1e-06,
+    "magnitude": 2.0,
+    "stream_count": 4
+  },
+  "model": {
+    "attention_head_count": 64,
+    "bos_token_id": 120000,
+    "eos_token_id": 120025,
+    "head_dimension": 256,
+    "hidden_dimension": 6144,
+    "kv_head_count": 8,
+    "kv_lora_rank": 512,
+    "layer_count": 78,
+    "lm_head_fp32": true,
+    "maximum_context_tokens": 1048576,
+    "mtp_layer_count": 0,
+    "pad_token_id": 120002,
+    "qk_nope_head_dimension": 192,
+    "qk_rope_head_dimension": 64,
+    "query_lora_rank": 2048,
+    "rms_norm_epsilon": 1e-05,
+    "v_head_dimension": 256,
+    "vocabulary_size": 120832
+  },
+  "model_id": "AngelSlim/Hy4-preview-GGUF",
+  "moe": {
+    "dense_ffn_intermediate_dimension": 18432,
+    "dense_ffn_layer_count": 1,
+    "expert_intermediate_dimension": 2048,
+    "experts_per_token": 8,
+    "norm_topk_prob": true,
+    "routed_expert_count": 256,
+    "routed_scaling_factor": 2.827,
+    "score_function": "elementwise",
+    "shared_expert_count": 1,
+    "swiglu_limit": 10.0
+  },
+  "mtp": {
+    "reference_layer_count": 1,
+    "reference_note": "The publisher config declares num_nextn_predict_layers=1, but the UD-IQ1_M GGUF ships no nextn tensors (blocks 0-77 only). The 39 model.mtp_layers.0.* tensors exist only in the FP8 safetensors reference. Drafter wiring is deferred per operator sequencing.",
+    "shipped_layer_count": 0
+  },
+  "qualification": {
+    "cuda_target": "sm_121a",
+    "production_ready": false,
+    "status": "NOT_MEASURED"
+  },
+  "runtime": {
+    "speculative_decoding": "deferred",
+    "speculative_decoding_reason": "No MTP tensors in the source of truth; operator sequencing rules drafter wiring last."
+  },
+  "schema_version": 1,
+  "source_bytes": 235351974336,
+  "source_index_sha256": "12d325844103bac75bd286d14e0e45f87e35e8e60401877282a30b6f26ba6ac6",
+  "source_precision": {
+    "format": "gguf_ud_iq1m_dynamic",
+    "geometry_note": "block elements and bytes per block, solved empirically from GGUF offset windows by tools/hy4_tp16_shard.py --dry-census; type ids follow the publisher's llama.cpp build (their patch extends the enum to NVFP4=40/Q1_0=41/Q2_0=42/STQ1_0=43). The solver's byte-integrity check pins these values against the file; ids 12/23 bytes are asserted by integration, names by convention.",
+    "ggml_type_geometry": {
+      "0": [
+        1,
+        4
+      ],
+      "12": [
+        256,
+        144
+      ],
+      "13": [
+        256,
+        176
+      ],
+      "14": [
+        256,
+        210
+      ],
+      "16": [
+        256,
+        66
+      ],
+      "18": [
+        256,
+        98
+      ],
+      "23": [
+        256,
+        72
+      ],
+      "24": [
+        256,
+        56
+      ],
+      "29": [
+        256,
+        56
+      ],
+      "8": [
+        32,
+        34
+      ]
+    },
+    "gguf_data_offset": 5051520,
+    "tensor_count": 2134
+  },
+  "source_revision": "779242edccdedc2109a0b36b164263a88f015bfa",
+  "source_tensor_count": 2134
+}
