@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "9cd401b6827d93b1340336b51e3b77d42409330166e60e9da1426a42d92f0135",
-      "size_bytes": 88901
+      "sha256": "4cf66bed060c19b492b861e879fed4d14cb9805cf1fbf4a84e3f63e6658f1261",
+      "size_bytes": 88902
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "ccd6f7a961b49f7bd49d78cc85ae6e19ae1a896214b380a60517e3c649c9f36d",
-      "size_bytes": 245675
+      "sha256": "aab60b993ec53484c30e98816fe30e06351ac66781fb4f2647d67f79a75d56f8",
+      "size_bytes": 245770
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -6283,8 +6283,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "45ff09cc2329a525a1505d43170ad9c5f077fef1cd925a00235d00a06001c0ce",
-      "size_bytes": 97901
+      "sha256": "ca6339b85e3e0b6d36b8a560ffb73a6437e76ced1ad042f4028b60457126407d",
+      "size_bytes": 98032
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8835,5 +8835,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32278300
+  "total_bytes": 32278527
 }
