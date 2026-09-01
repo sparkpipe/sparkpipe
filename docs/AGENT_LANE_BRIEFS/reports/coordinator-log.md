@@ -4360,3 +4360,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~23:5x — firing 56: bf16 rebuilds 6.2/2.2/4.8 of 40G; single writers
 
 ## 2026-09-01 ~24:0x — firing 57: bf16 arm 13/16; only the three rebuilders (1/2/c) outstanding
+
+## 2026-09-01 ~24:1x — firing 58: bf16 rebuilds 8.7/2.7/5.6 of 40G; single writers alive
