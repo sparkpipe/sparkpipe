@@ -1682,21 +1682,11 @@ static void SparkGlm5NextValBuildRunWave(SparkGlm5NextValFixture *fixture,uint32
 {
 	SparkGlm5NextCudaWave *wave = &fixture->wave;
 	SparkGlm5NextExecutionSlot *slot = &fixture->slot;
-	uint32_t token_words[8u],slot_words[8u],position_words[8u];
+	uint32_t token_words[8u],position_words[8u];
 	uint32_t row;
 	/* Reuse the single-row builder for the full weight/wave setup, then
 	 * override the row, run and context shape. */
 	SparkGlm5NextValBuildWave(fixture,layer,tokens[0],0u);
-	for (row = 0u; row < 8u; row++)
-	{
-		token_words[row] = row < rows ? tokens[row] : 0u;
-		slot_words[row] = 0u;
-		position_words[row] = row < rows ? row : 0u;
-	}
-	(void)cudaMemcpy(fixture->token_ids,token_words,sizeof(token_words),cudaMemcpyHostToDevice);
-	(void)cudaMemcpy(fixture->resident_slots,slot_words,sizeof(slot_words),cudaMemcpyHostToDevice);
-	(void)cudaMemcpy(fixture->positions,position_words,sizeof(position_words),cudaMemcpyHostToDevice);
-	(void)cudaMemcpy(fixture->context_lengths,&rows,sizeof(rows),cudaMemcpyHostToDevice);
 	memset(wave,0,sizeof(*wave));
 	wave->stage_index = 0u;
 	wave->first_layer_index = layer;
@@ -1710,50 +1700,25 @@ static void SparkGlm5NextValBuildRunWave(SparkGlm5NextValFixture *fixture,uint32
 	wave->pages_per_sequence = SPARK_GLM5_NEXT_VALIDATION_PAGES;
 	wave->owns_embedding = 0u;
 	wave->owns_final_head = 0u;
-	wave->hidden_input_bf16 = fixture->boundary_input;
+	/* Everything below was set by the single-row builder; override only
+	 * the row, run and context shape for the chunked form. */
+	wave->row_count = rows;
+	wave->maximum_context = rows;
 	wave->boundary_row_offset = 0u;
-	wave->layers = weights;
-	wave->slot = slot;
-	wave->kv_cache = fixture->kv_cache;
-	wave->kv_layer_stride_bytes = (uint64_t)SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES;
-	wave->index_cache = fixture->index_cache;
-	wave->index_layer_stride_bytes = (uint64_t)SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u * SPARK_GLM5_NEXT_VINDEX_PACKED * 2u;
-	fixture->host_index_ordinals[0] = UINT32_MAX;
-	fixture->host_kda_ordinals[0] = UINT32_MAX;
-	if (SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer))
-		fixture->host_kda_ordinals[0] = 0u;
-	else
-		fixture->host_index_ordinals[0] = 0u;
-	wave->index_ordinal_by_local_layer = fixture->host_index_ordinals;
-	wave->kda_ordinal_by_local_layer = fixture->host_kda_ordinals;
-	wave->kda_state_pools = fixture->kda_state_pools;
-	wave->kda_state_layer_stride_bytes = SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER;
-	{
-		uint64_t window_bytes = SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / 3u;
-		wave->kda_q_window_pool = fixture->kda_window_pools;
-		wave->kda_k_window_pool = fixture->kda_window_pools + window_bytes;
-		wave->kda_v_window_pool = fixture->kda_window_pools + 2u * window_bytes;
-		wave->kda_window_layer_stride_bytes = window_bytes;
-	}
-	wave->kda_state_index = fixture->kda_state_index;
-	wave->run_count = 1u;
-	wave->sequence_row_begin = fixture->run_begin;
-	wave->run_state_index = fixture->run_state_index;
-	wave->host_sequence_row_begin = fixture->host_run_begin;
-	wave->host_run_state_index = fixture->host_run_state_index;
-	wave->page_table = fixture->page_table;
-	wave->multiprocessor_count = fixture->multiprocessors;
+	(void)cudaMemcpy(fixture->context_lengths,&rows,sizeof(rows),cudaMemcpyHostToDevice);
 	for (row = 0u; row < 8u; row++)
 	{
+		token_words[row] = row < rows ? tokens[row] : 0u;
+		position_words[row] = row < rows ? row : 0u;
 		fixture->host_resident_slots_stage[row] = 0u;
 		fixture->host_positions_stage[row] = row < rows ? row : 0u;
 		fixture->host_token_ids_stage[row] = row < rows ? tokens[row] : 0u;
 	}
-	wave->host_resident_slots = fixture->host_resident_slots_stage;
-	wave->host_positions = fixture->host_positions_stage;
-	wave->host_token_ids = fixture->host_token_ids_stage;
-	/* Override the run shape: ONE run covering all rows (the chunked-
-	 * prefill form; BuildWave staged the identity 1-row runs). */
+	(void)cudaMemcpy(fixture->token_ids,token_words,sizeof(token_words),cudaMemcpyHostToDevice);
+	(void)cudaMemcpy(fixture->positions,position_words,sizeof(position_words),cudaMemcpyHostToDevice);
+	/* ONE run covering all rows (the chunked-prefill form; the single-row
+	 * builder staged identity 1-row runs). */
+	fixture->host_run_begin[0] = 0u;
 	fixture->host_run_begin[1] = rows;
 	fixture->host_run_state_index[0] = 0u;
 }
