@@ -4272,3 +4272,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Next: receipts land as builds finish; then item 23 closed.
 
 ## 2026-09-01 ~20:0x — firing 42: bf16 arm 5/16 receipts (sparkd joined); builds grinding
+
+## 2026-09-01 ~20:2x — firing 44: ITEM 23 COMPLETE — bf16-official arm TP16 16/16
+
+- The three dead-at-verify laggards: packs were fully built; verify+receipt
+  run directly. All VERIFY-PASS, uniform dir_sha c439d469… Item 23 CLOSED.
+- Note: bf16-arm packs need the dsz-2 verifier fix (bf16 experts = 2B/elt)
+  — committed 7afc8bc and shipped everywhere.
