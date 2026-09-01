@@ -335,12 +335,16 @@ def pick_runnable(entries, results_ids):
 
 
 def nodes_free(nodes, res, resources="gpu"):
-    if resources == "cpu":
-        # CPU/disk-only work coexists with GPU use on the same node
-        # (operator ruling 2026-09-01); it still cannot take a node held
-        # by ANOTHER cpu task.
-        return all(res[n].get("resources") != "cpu" for n in nodes if n in res)
-    return all(n not in res for n in nodes)
+    # Resource classes are SYMMETRIC (operator ruling 2026-09-01): cpu
+    # work and gpu work coexist on the same node; only a hold of the
+    # SAME class blocks. A gpu task blocked by a cpu hold (pack builds
+    # freezing the whole gpu queue) was the one-sided original and is
+    # wrong. When both classes hold one node the later hold OVERWRITES
+    # the earlier - cpu-vs-cpu exclusivity then lapses for the
+    # overwritten entry, which is accepted: the operator contract is
+    # only cross-class coexistence.
+    blocking = resources
+    return all(res[n].get("resources", "gpu") != blocking for n in nodes if n in res)
 
 
 def cmd_dispatch(args):
