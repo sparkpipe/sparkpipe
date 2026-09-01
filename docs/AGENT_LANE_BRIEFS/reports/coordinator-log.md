@@ -4307,3 +4307,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   descriptor per drafter family when speculation bring-up begins. Not a
   stagepack-matrix blocker: the MTP law covers target-model speculation
   data, which is done.
+
+## 2026-09-01 ~21:3x — firing 49: temp sweep fleet-wide (~28G stale build temps removed)
+
+- Removed every .tmp/.new partial under sparkdata on all 16 nodes — all
+  superseded qwen-max PP16 build temps (set complete+receipted) plus one
+  tiny drafter temp. Hygiene legs (symlinks=0, temps=0) of the final
+  audit PASS everywhere. Remaining final-audit legs: uniform per-rank
+  sizes + size-vs-source arithmetic per set.
