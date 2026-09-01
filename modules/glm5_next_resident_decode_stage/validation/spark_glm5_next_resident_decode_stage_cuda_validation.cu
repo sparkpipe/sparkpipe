@@ -1866,13 +1866,33 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 					label,(unsigned long long)i,(unsigned)seq_kv_slot[i],(unsigned)run_kv_slot[i]);
 				return(SparkGlm5NextValFail(label,"run_equivalence_kvslot"));
 			}
-		for (i = 0u; i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
-			if (seq_kv_cache[i] != run_kv_cache[i])
+		{
+			uint64_t divergent = 0u;
+			uint64_t first_div = ~0ull;
+			uint64_t last_div = 0u;
+			for (i = 0u; i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
+				if (seq_kv_cache[i] != run_kv_cache[i])
+				{
+					if (first_div == ~0ull)
+						first_div = i;
+					last_div = i;
+					divergent++;
+				}
+			if (divergent != 0u)
 			{
-				fprintf(stderr,"glm5_next_validation %s KV_CACHE position 0 diverges at byte %llu: seq %02x run %02x\n",
-					label,(unsigned long long)i,(unsigned)seq_kv_cache[i],(unsigned)run_kv_cache[i]);
+				uint64_t start = first_div > 16u ? first_div - 16u : 0u;
+				fprintf(stderr,"glm5_next_validation %s KV_CACHE position 0: %llu divergent bytes in [%llu..%llu]\n",
+					label,(unsigned long long)divergent,(unsigned long long)first_div,(unsigned long long)last_div);
+				fprintf(stderr,"  seq bytes %llu..: ",(unsigned long long)start);
+				for (i = start; i < start + 48u && i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
+					fprintf(stderr,"%02x",(unsigned)seq_kv_cache[i]);
+				fprintf(stderr,"\n  run bytes %llu..: ",(unsigned long long)start);
+				for (i = start; i < start + 48u && i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
+					fprintf(stderr,"%02x",(unsigned)run_kv_cache[i]);
+				fprintf(stderr,"\n");
 				return(SparkGlm5NextValFail(label,"run_equivalence_kvcache"));
 			}
+		}
 		for (i = 0u; i < (uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT; i++)
 			if (seq_attention_latent[i] != run_attention_latent[i])
 			{
