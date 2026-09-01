@@ -1851,7 +1851,14 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 			SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"second_kvc_copy"));
 		static uint16_t second_kv_slot[4096u];
+		static uint32_t positions_p1[16],positions_p2[16],ctx_p1[4],ctx_p2[4];
 		uint32_t kv_slot_diffs = 0u;
+		if (cudaMemcpy(positions_p1,fixture->positions,16u * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+			cudaMemcpy(ctx_p1,fixture->context_lengths,4u * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"meta_p1_copy"));
+		if (cudaMemcpy(positions_p2,fixture->positions,16u * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+			cudaMemcpy(ctx_p2,fixture->context_lengths,4u * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"meta_p2_copy"));
 		if (cudaMemcpy(second_kv_slot,fixture->kv_slot,
 			512u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"second_kvs_copy"));
@@ -1861,8 +1868,11 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 		for (d = 0u; d < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; d++)
 			if (second_kv_cache[d] != run_kv_cache[d])
 			{
-				fprintf(stderr,"glm5_next_validation %s RUN WAVE NONDETERMINISTIC: pass1 vs pass2 cache byte %llu: %02x vs %02x (kv_slot diffs pass1-vs-pass2: %u/512)\n",
-					label,(unsigned long long)d,(unsigned)run_kv_cache[d],(unsigned)second_kv_cache[d],kv_slot_diffs);
+				fprintf(stderr,"glm5_next_validation %s RUN WAVE NONDETERMINISTIC: pass1 vs pass2 cache byte %llu: %02x vs %02x (kv_slot diffs: %u/512; positions p1 [%u %u %u %u] p2 [%u %u %u %u]; ctx p1 [%u %u] p2 [%u %u])\n",
+					label,(unsigned long long)d,(unsigned)run_kv_cache[d],(unsigned)second_kv_cache[d],kv_slot_diffs,
+					positions_p1[0],positions_p1[1],positions_p1[2],positions_p1[3],
+					positions_p2[0],positions_p2[1],positions_p2[2],positions_p2[3],
+					ctx_p1[0],ctx_p1[1],ctx_p2[0],ctx_p2[1]);
 				break;
 			}
 	}
