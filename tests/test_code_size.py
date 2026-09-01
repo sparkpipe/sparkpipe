@@ -1414,7 +1414,12 @@ CEILING = 234369
 # +10: per-collective ordinals (the nccl backend enforces a strict
 # per-communicator sequence; the shared counter failed the HC twin's
 # first submit with VALIDATION_FAILED - the wave-1 hardware receipt).
-CEILING = 236911
+# 236911 -> 237708: the multi-row lane (experimental, not merged): MTP
+# load-and-ignore + trailing-directory validation in the glm5_next module,
+# the NCCL completion trampoline (stack-overflow fix), the multi-row run
+# plumbing + causal indexer bounds + validator tier3/4 instruments
+# (kimidev bisect in flight), and the spark-queue multi-dev hardening.
+CEILING = 237708
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
