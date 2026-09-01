@@ -168,6 +168,8 @@ start_wave() {
         # (layer G5N_VEC_LAYER, default 3: HC site stages + the whole MLA
         # chain) alongside the L0 KDA dumps.
         [[ $PROBE_VEC -eq 1 ]] && env_prefix="${env_prefix}SPARK_GLM5_NEXT_PROBE_VEC=1 SPARK_GLM5_NEXT_PROBE_VEC_PASSES=${G5N_VEC_PASSES:-30} SPARK_GLM5_NEXT_PROBE_VEC_DSA=${G5N_VEC_DSA:-0} SPARK_GLM5_NEXT_PROBE_VEC_LAYER=${G5N_VEC_LAYER:-3} SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER=${G5N_VEC_KDA_LAYER:-0} "
+        # Generic env passthrough for diag knobs (e.g. G5N_EXTRA_ENV="SPARK_GLM5_NEXT_LAYERDUMP=1 SPARK_GLM5_NEXT_FORCE_WAVE_ROWS=1").
+        [[ -n "${G5N_EXTRA_ENV:-}" ]] && env_prefix="${env_prefix}${G5N_EXTRA_ENV} "
         ssh -o BatchMode=yes -o ConnectTimeout=10 "$h" \
             "cd '$rr' && mv residentd.log residentd.log.prev-\$(date +%s) 2>/dev/null || true; env $env_prefix LD_LIBRARY_PATH='$rr/lib' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $idx > residentd.log 2>&1 < /dev/null &" </dev/null &
         pids+=($!)
