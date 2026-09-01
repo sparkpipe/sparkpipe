@@ -4090,3 +4090,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - bf16 TP4PP4 stages 1-3 building (0 placed yet — 90G ranks take
   ~15-20 min each). qwenflash rank4 14.8/46.3G. spark1 k3 receipt
   confirmed (15/16 stands).
+
+## 2026-09-01 ~12:4x — firing 17: dsv4 ship 9/16; bf16 placements landing
+
+- dsv4-flash TP4PP4: 9/16 shipped+receipted, zero fatals.
+- bf16 TP4PP4: first placements landed (1/4 on each of b/c/d — the
+  90G-stage ranks run ~15-20 min each; loops alive).
+- qwenflash rank4: 15.1/46.3G.
