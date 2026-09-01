@@ -1707,8 +1707,9 @@ static void SparkGlm5NextValBuildRunWave(SparkGlm5NextValFixture *fixture,uint32
 	fixture->host_run_state_index[0] = 0u;
 }
 
-/* One wave (begin + attention + post + mlp + mlp-post) and capture. */
-static int SparkGlm5NextValRunWaveOnce(SparkGlm5NextValFixture *fixture,uint32_t layer,const char *label)
+/* One wave; include_mlp=0 stops after AttentionPost (the fixture carries
+ * no MoE weight set - the routed leg is not fixture-shaped). */
+static int SparkGlm5NextValRunWaveOnce(SparkGlm5NextValFixture *fixture,uint32_t layer,const char *label,uint32_t include_mlp)
 {
 	int32_t status;
 	status = SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave);
@@ -1726,15 +1727,18 @@ static int SparkGlm5NextValRunWaveOnce(SparkGlm5NextValFixture *fixture,uint32_t
 	status = SparkGlm5NextLaunchCudaLayerAttentionPost(&fixture->wave,0u);
 	if (status != 0)
 		return(SparkGlm5NextValFail(label,"attention_post"));
-	status = SparkGlm5NextLaunchCudaLayerMlp(&fixture->wave,0u);
-	if (status != 0)
+	if (include_mlp != 0u)
 	{
-		fprintf(stderr,"glm5_next_validation %s mlp status=%d cuda=%s\n",label,status,cudaGetErrorString(cudaGetLastError()));
-		return(SparkGlm5NextValFail(label,"mlp"));
+		status = SparkGlm5NextLaunchCudaLayerMlp(&fixture->wave,0u);
+		if (status != 0)
+		{
+			fprintf(stderr,"glm5_next_validation %s mlp status=%d cuda=%s\n",label,status,cudaGetErrorString(cudaGetLastError()));
+			return(SparkGlm5NextValFail(label,"mlp"));
+		}
+		status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,0u);
+		if (status != 0)
+			return(SparkGlm5NextValFail(label,"mlp_post"));
 	}
-	status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,0u);
-	if (status != 0)
-		return(SparkGlm5NextValFail(label,"mlp_post"));
 	if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
 		return(SparkGlm5NextValFail(label,"sync"));
 	return(0);
@@ -1742,7 +1746,7 @@ static int SparkGlm5NextValRunWaveOnce(SparkGlm5NextValFixture *fixture,uint32_t
 
 /* The chunked-prefill contract: one N-row run wave == N sequential one-row
  * waves, bit for bit, through a full layer (KDA or DSA). */
-static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t layer,const char *label)
+static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t layer,const char *label,uint32_t include_mlp)
 {
 	static const uint32_t tokens[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS] = {1u,3u,2u,6u,5u,7u,4u,8u};
 	static uint16_t sequential[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT];
@@ -1755,7 +1759,7 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 	for (step = 0u; step < SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS; step++)
 	{
 		SparkGlm5NextValBuildWave(fixture,layer,tokens[step],step);
-		if (SparkGlm5NextValRunWaveOnce(fixture,layer,label) != 0)
+		if (SparkGlm5NextValRunWaveOnce(fixture,layer,label,include_mlp) != 0)
 			return(1);
 		if (cudaMemcpy(sequential + (uint64_t)step * SPARK_GLM5_NEXT_VHC_FLAT,fixture->streams,
 			(uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
@@ -1766,7 +1770,7 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 		cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
 		return(SparkGlm5NextValFail(label,"state_reset2"));
 	SparkGlm5NextValBuildRunWave(fixture,layer,tokens,SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS);
-	if (SparkGlm5NextValRunWaveOnce(fixture,layer,label) != 0)
+	if (SparkGlm5NextValRunWaveOnce(fixture,layer,label,include_mlp) != 0)
 		return(1);
 	if (cudaMemcpy(run_mode,fixture->streams,
 		(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
@@ -2248,9 +2252,9 @@ int main(int argc,char **argv)
 	failures += SparkGlm5NextValCheckDeterminism(&fixture,SparkGlm5NextValRunTier2aAttention,"tier2a determinism");
 
 	/* Tier 3/4: the chunked-prefill contract at both layer classes. */
-	if (SparkGlm5NextValRunTierRun(&fixture,0u,"tier3 kda run-of-8") != 0)
+	if (SparkGlm5NextValRunTierRun(&fixture,0u,"tier3 kda run-of-8",1u) != 0)
 		return(1);
-	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4 dsa run-of-8") != 0)
+	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4 dsa run-of-8 (attention)",0u) != 0)
 		return(1);
 
 	printf("glm5_next validator: %s (%d failures)\n",
