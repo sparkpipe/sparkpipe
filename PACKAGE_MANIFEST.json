@@ -1,5 +1,5 @@
 {
-  "file_count": 1764,
+  "file_count": 1765,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "19570a8bdf2bd1ab85644c65ee88a323d3d033971becd10e40791d16dfa8cb6a",
-      "size_bytes": 241501
+      "sha256": "a8a9511c4f8b0ffa099cb3c9977020f9f3c3fb101636194640b061ba49f915cc",
+      "size_bytes": 242730
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -388,8 +388,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/dsv4pro-2026-08-30.md",
-      "sha256": "c2380ca25c59a460343077d2f7ef818f72ed6a2090dab97bd6ae23892bb1613c",
-      "size_bytes": 7711
+      "sha256": "0d0c19f2cd0fe042140b5816ac1cbdbfa147279f3dd40f4fcdeea3f40b40d86d",
+      "size_bytes": 10707
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/dsv4pro-packs-2026-08-27.md",
@@ -7813,8 +7813,8 @@
     },
     {
       "path": "tools/dsv4_pro_rank_pack_verify.py",
-      "sha256": "e5054d5993caaa2583920efebca09b904f8a183a405fb4b3606626eea91e70d2",
-      "size_bytes": 14050
+      "sha256": "709597e6c964ad3694d7e2d69d18ea6687fae298fec0e3d589bcbf80c4d46ff3",
+      "size_bytes": 14292
     },
     {
       "path": "tools/dsv4_pro_stagepack.py",
@@ -7870,6 +7870,11 @@
       "path": "tools/dsv4pro_smoke_launch_rank.sh",
       "sha256": "8c66e6c618db73db13d43ac27a317ea4b89eca8a31b8e40de0f7821ba3ccabd5",
       "size_bytes": 815
+    },
+    {
+      "path": "tools/dsv4pro_tp16_ranks.sh",
+      "sha256": "b0c6a99c5f8dfc811f47fdc2a689f38b711d9a6c6e2d0b850fa7b7fae008fe64",
+      "size_bytes": 1654
     },
     {
       "path": "tools/dup_report.py",
@@ -8825,5 +8830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32255007
+  "total_bytes": 32261128
 }
