@@ -1,5 +1,5 @@
 {
-  "file_count": 1760,
+  "file_count": 1764,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "1300bf146e18c8d0c24a615e5035144868acfa042d5ed36140f242f95560fcee",
-      "size_bytes": 88872
+      "sha256": "9cd401b6827d93b1340336b51e3b77d42409330166e60e9da1426a42d92f0135",
+      "size_bytes": 88901
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "b2087fc1a06cc4ca88fc71b9e54dba39ddff3d20c3623c3334a1834ef213d01a",
-      "size_bytes": 219015
+      "sha256": "19570a8bdf2bd1ab85644c65ee88a323d3d033971becd10e40791d16dfa8cb6a",
+      "size_bytes": 241501
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -682,6 +682,11 @@
       "size_bytes": 9056
     },
     {
+      "path": "docs/CONSULT_multirow_kv_nondeterminism.md",
+      "sha256": "3b479c55f7e5282695b29daa4ca1796f7cca63d5452d6d01568412d6e3c6a390",
+      "size_bytes": 9989
+    },
+    {
       "path": "docs/DATAFILE_NAMING.md",
       "sha256": "f4689c66ccbcfaaf7aa3aecb98f58909578f600dde884b1339b362d83bd79ede",
       "size_bytes": 1994
@@ -827,6 +832,11 @@
       "size_bytes": 2911
     },
     {
+      "path": "docs/SPARK_QUEUE_RUNBOOK.md",
+      "sha256": "5d276a5cd6ab879c18ad32c43eb981e6199f25ec2983d736469e6b092c4bd240",
+      "size_bytes": 6551
+    },
+    {
       "path": "docs/SPECULATION_PROVIDER_DESIGN.md",
       "sha256": "b0ca5237a09ea9d9afc1c6669ae82714763786f7a0a5a79b024ca8ebfdf9c4c5",
       "size_bytes": 9102
@@ -838,8 +848,8 @@
     },
     {
       "path": "docs/STAGEPACK_AUDIT_2026-08-31.md",
-      "sha256": "742a2602f6bf45149595ec2f1d6b72688723fb36475f67ed7588e6a40463d8d4",
-      "size_bytes": 7787
+      "sha256": "212267c3f0ce731fbcc212593d3786d05d6fcd2c6d1db821a59bf4160773d2e2",
+      "size_bytes": 14866
     },
     {
       "path": "docs/TOPOLOGY_GUIDE.md",
@@ -3758,8 +3768,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "513f68e15d4426bc08ef42d7cab81901e07a5f32976a8fccd93f501b83ed1763",
-      "size_bytes": 139218
+      "sha256": "db087cc2c7850695967313c35e7e36c92739e95691c7fe77302726ce6d6ba969",
+      "size_bytes": 141402
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -4213,8 +4223,8 @@
     },
     {
       "path": "node/weightd_spawn.c",
-      "sha256": "52bb5486a0f84dc541d5728537266ff733669d5e0cb57aa176bfe7aa6574f7ea",
-      "size_bytes": 5191
+      "sha256": "3582d1a49d7b0718174bdb0bdf4735a5903e1d7b0c799d9c7c4642fe0050f88b",
+      "size_bytes": 5490
     },
     {
       "path": "qualification/dsv4/collectives/tp4_tree_bitwise_20260814/result.json",
@@ -5568,8 +5578,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
-      "sha256": "f8a2ba996d02f7df12c1bb0fa416165a2dd82ebadbd452e9b4f545814f36a58f",
-      "size_bytes": 34748
+      "sha256": "ae534021d62b83c66b47a5d6b66ef17004e04e4f8b813e0c26af5da471e16a65",
+      "size_bytes": 38478
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.h",
@@ -6268,8 +6278,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "0788bdbc79c149cd7a5451a42829acb09c1b76807dc3cfec5fe115f332f87d6f",
-      "size_bytes": 97145
+      "sha256": "5ceaf6a79ce2f8e4b2aea42eaae414bf31485ecfdc4e6808d881305f75fb7c96",
+      "size_bytes": 97492
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7232,6 +7242,11 @@
       "size_bytes": 5195
     },
     {
+      "path": "tests/test_spark_queue.py",
+      "sha256": "d0f334e6be0bf67bef2ebe51e6e55489ddadac68a40c72d80884e4864bb62c9d",
+      "size_bytes": 9255
+    },
+    {
       "path": "tests/test_spark_topology_probe.py",
       "sha256": "c6885cb713591054039c4005964616e30a6e77af432ce721a537688e02eddb8e",
       "size_bytes": 2487
@@ -7867,6 +7882,11 @@
       "size_bytes": 5399
     },
     {
+      "path": "tools/g5_add_mtp.py",
+      "sha256": "46ad61d9f1755e40450c6841733cdd24a7bd511feb58aad9608c19e9b2e64935",
+      "size_bytes": 5178
+    },
+    {
       "path": "tools/g5dsa_wave_task.sh",
       "sha256": "47b4f62ea00cffd282b4811483437b890f141eaf41d87394e3c3ee714644a0eb",
       "size_bytes": 1817
@@ -8118,18 +8138,18 @@
     },
     {
       "path": "tools/glm5_next_pack_verify.py",
-      "sha256": "a767eb8a73652a50c583d8cfaa7d3b47dbc8e63033d448bb8fb52655786f55f3",
-      "size_bytes": 11548
+      "sha256": "90c8771f4c59489ef7af5d150cf5b7e79b7bb98240d7fff68a88853e9f12f3b1",
+      "size_bytes": 12504
     },
     {
       "path": "tools/glm5_next_resident_stagepack.py",
-      "sha256": "01d35cf9bf9753d5d4b48802449fb80260a8f81de43293d3b9c63e7db33fe2fd",
-      "size_bytes": 38199
+      "sha256": "29eafc03bc0d1e98cf5bb9506cd06fa0790aa0a2e0ca514c770a79a31f78b670",
+      "size_bytes": 39198
     },
     {
       "path": "tools/glm5_next_wave.sh",
-      "sha256": "4249253a4da4346af14462ed31cd69160f01b753297c8b81ad47c8f7fc841147",
-      "size_bytes": 11386
+      "sha256": "5ef0a7cfa15a05db6a0a9e6b72dac259b1fd0a478d604724719f454c9bc24175",
+      "size_bytes": 11606
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -8703,8 +8723,8 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "38ab1b248478a177b39fd32db0efd4ccde5be0b4d18a08881429637874096c85",
-      "size_bytes": 22969
+      "sha256": "cc1014ed7ede9e7c73db9d83bedfaa95e8aca4a4d27d8243ead6d509b40feb79",
+      "size_bytes": 28395
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -8805,5 +8825,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32180279
+  "total_bytes": 32255007
 }
