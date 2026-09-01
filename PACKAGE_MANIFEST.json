@@ -8153,8 +8153,8 @@
     },
     {
       "path": "tools/glm5_next_wave.sh",
-      "sha256": "5ef0a7cfa15a05db6a0a9e6b72dac259b1fd0a478d604724719f454c9bc24175",
-      "size_bytes": 11606
+      "sha256": "eb7347f8e714c2ba1bae7f6a22715646ad85491f6c0df8f3946b0a6d15dfcaba",
+      "size_bytes": 12444
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -8830,5 +8830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32267445
+  "total_bytes": 32268283
 }
