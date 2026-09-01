@@ -4024,3 +4024,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Build loops: stage0 on sparka, stage1 sparkb, stage2 sparkc, stage3
   sparkd (4 ranks each: rank r = stage*4+tp -> spark{hex r}).
 - k3 rank1 relay on sparkf 46/97G; qwenflash rank4 on spark4 3.4/46G.
+
+## 2026-09-01 ~11:0x — firing 10: glm5_next TP4PP4 wave healthy on all 4 nodes
+
+- Root-caused the phantom launches: batch launcher died before c/d's scp
+  legs AND the launch pgrep self-matched its own ssh wrapper (the
+  bracket-trick must exclude the wrapper context — verify from a separate
+  connection). Fixed: stage dir+script first, launch, verify separately.
+- All 4 stage loops CONFIRMED: sparka stage0, sparkb stage1 (3/4 placed
+  already, 287t/21.6G ranks), sparkc stage2, sparkd stage3.
+- k3 relay: rank1 sliced fully (2157 tensors), in cross-verify on sparkf
+  before shipping to spark1. qwenflash rank4 rebuilding on spark4.
