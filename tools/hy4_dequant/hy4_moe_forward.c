@@ -50,9 +50,9 @@ static int dequant_view(const hy4_rank *rank, const hy4_tensor_view *tv,
     } else if (tv->type == 16) hy4_dequant_iq2_xxs(src, y, tv->nbytes / 66);
     else if (tv->type == 18) hy4_dequant_iq3_xxs(src, y, tv->nbytes / 98);
     else if (tv->type == 29) hy4_dequant_iq1_m(src, y, tv->nbytes / 56);
-    else if (tv->type == 12) hy4_dequant_row_q4_K((const block_q4_K *)src, y, tv->nbytes / 144);
-    else if (tv->type == 13) hy4_dequant_row_q5_K((const block_q5_K *)src, y, tv->nbytes / 176);
-    else if (tv->type == 14) hy4_dequant_row_q6_K((const block_q6_K *)src, y, tv->nbytes / 210);
+    else if (tv->type == 12) hy4_dequant_row_q4_K((const block_q4_K *)src, y, tv->nbytes / 144 * 256);
+    else if (tv->type == 13) hy4_dequant_row_q5_K((const block_q5_K *)src, y, tv->nbytes / 176 * 256);
+    else if (tv->type == 14) hy4_dequant_row_q6_K((const block_q6_K *)src, y, tv->nbytes / 210 * 256);
     else {
         fprintf(stderr, "dequant_view: unsupported type %d (%ld bytes)\n",
                 tv->type, tv->nbytes);
