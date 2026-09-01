@@ -669,6 +669,20 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	slot->host_output_token_ids = cursor;
 	cursor += rows;
 	slot->host_kv_access_error = cursor;
+	/* Run structure staging: begin needs rows+1 entries (a run per row is
+	 * the degenerate case), state indices rows entries. */
+	bytes = ((rows + 1u) * 2u + rows) * sizeof(uint32_t);
+	error = cudaHostAlloc((void **)&slot->host_run_begin,bytes,cudaHostAllocPortable);
+	if ( error != cudaSuccess )
+	{
+		(void)cudaFreeHost(slot->host_staging);
+		slot->host_staging = 0;
+		return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"host_run_staging"));
+	}
+	memset(slot->host_run_begin,0,bytes);
+	cursor = (uint32_t *)slot->host_run_begin;
+	cursor += rows + 1u;
+	slot->host_run_state_index = cursor;
 	return(SPARK_STATUS_OK);
 }
 
@@ -682,6 +696,10 @@ static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
 		if ( state->slots[index].host_staging != 0 )
 			(void)cudaFreeHost(state->slots[index].host_staging);
 		state->slots[index].host_staging = 0;
+		if ( state->slots[index].host_run_begin != 0 )
+			(void)cudaFreeHost(state->slots[index].host_run_begin);
+		state->slots[index].host_run_begin = 0;
+		state->slots[index].host_run_state_index = 0;
 	}
 }
 
@@ -693,6 +711,8 @@ static SparkStatus SparkGlm5NextAllocateSlotMetadata(
 	status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->token_ids);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->resident_slots);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->positions);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity + 1u,1u,sizeof(uint32_t),(void **)&slot->run_begin);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->run_state_index);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->resident_sequence_capacity,1u,sizeof(uint32_t),(void **)&slot->context_lengths);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_row_offset);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_tile_prefix);
@@ -1205,40 +1225,18 @@ static uint32_t SparkGlm5NextRoundMajorWaveRows(
 	const SparkGlm5NextResidentDecodeStageBatchView *batch,
 	uint32_t first_row)
 {
-	uint32_t lane,current,count,next;
-	if ( batch == 0 || first_row >= batch->row_count || batch->active_sequence_count == 0u )
+	/* One wave carries every remaining row; BuildWave derives the run
+	 * structure (consecutive same-slot rows = one sequential KDA run;
+	 * interleaved rows of different slots = one-row runs). The old
+	 * walk-and-clamp shipped every same-sequence row as its own wave -
+	 * correct, but it paid a full weight sweep per prompt token (prefill
+	 * ran at decode rate; 4 tok/s at 1024 rows). The multi-row form rides
+	 * the run-aware recurrence kernels (LmDeltaRuleKernel /
+	 * LmCausalConvKernel: "a run of T is bit-identical to T decode
+	 * calls"). */
+	if ( batch == 0 || first_row >= batch->row_count )
 		return(0u);
-	current = batch->active_sequence_count;
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
-		if ( batch->row_resident_slots[lane] == batch->row_resident_slots[first_row] )
-			current = lane;
-	if ( current == batch->active_sequence_count )
-		return(0u);
-	count = 1u;
-	while ( first_row + count < batch->row_count )
-	{
-		next = batch->active_sequence_count;
-		for (lane=0u; lane<batch->active_sequence_count; lane++)
-			if ( batch->row_resident_slots[lane] == batch->row_resident_slots[first_row + count] )
-				next = lane;
-		if ( next == batch->active_sequence_count || next <= current )
-			break;
-		current = next;
-		count++;
-	}
-	/* count > 1 means rows first_row..first_row+count-1 are CHUNKS OF ONE
-	 * SEQUENCE (same resident slot, later lanes). This module's KDA path is
-	 * decode-shaped: BindLayer pins sequence_row_begin to 0 ("row i is
-	 * sequence i"), so a multi-row same-sequence wave hands each chunk row
-	 * its OWN conv window and state slot - the recurrence of positions
-	 * 1..n never chains (found on glm5-dsa wave4: the engine's 16-row
-	 * prompt frames zeroed the residual streams by layer 5 and the head
-	 * mean went all-zero). Execute the chunk as one wave PER ROW; rows of
-	 * DIFFERENT sequences (count == 1 for every slot here) keep grouping
-	 * exactly as before. */
-	if ( count > 1u )
-		count = 1u;
-	return(count);
+	return(batch->row_count - first_row);
 }
 
 static SparkStatus SparkGlm5NextValidateRoundMajor(
@@ -1518,6 +1516,35 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->attention_split_partials_f32 = slot->attention_split_partials_f32;
 	wave->attention_split_partial_blocks = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(
 		state->execution_row_capacity,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT / state->tp_degree);
+	/* Run structure: consecutive rows of one resident slot are a single
+	 * sequential run through the KDA recurrence (chunked prefill; a run
+	 * of T is bit-identical to T one-row waves by the kernel contract).
+	 * The state key is the RESIDENT SLOT - stable across waves for a
+	 * sequence, unlike lane order. */
+	{
+		uint32_t run,row_of_run;
+		slot->host_run_begin[0] = 0u;
+		run = 0u;
+		for (row=1u; row<chain->wave_rows; row++)
+		{
+			if ( slot->host_resident_slots[chain->first_row + row] !=
+			     slot->host_resident_slots[chain->first_row + row - 1u] )
+			{
+				run++;
+				slot->host_run_begin[run] = row;
+			}
+		}
+		run++;
+		slot->host_run_begin[run] = chain->wave_rows;
+		for (row_of_run=0u; row_of_run<run; row_of_run++)
+			slot->host_run_state_index[row_of_run] =
+				slot->host_resident_slots[chain->first_row + slot->host_run_begin[row_of_run]];
+		wave->run_count = run;
+		wave->sequence_row_begin = slot->run_begin;
+		wave->run_state_index = slot->run_state_index;
+		wave->host_sequence_row_begin = slot->host_run_begin;
+		wave->host_run_state_index = slot->host_run_state_index;
+	}
 }
 
 static SparkStatus SparkGlm5NextModuleCombineBf16(

@@ -260,6 +260,12 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 	error = cudaMemcpyAsync(slot->resident_slots,wave->host_resident_slots,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(slot->positions,wave->host_positions,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && wave->run_count != 0u )
+	{
+		error = cudaMemcpyAsync(slot->run_begin,wave->host_sequence_row_begin,((uint64_t)wave->run_count + 1u) * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+		if ( error == cudaSuccess )
+			error = cudaMemcpyAsync(slot->run_state_index,wave->host_run_state_index,(uint64_t)wave->run_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	}
 	if ( error == cudaSuccess && wave->owns_embedding != 0u )
 		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
@@ -285,7 +291,10 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 			wave->kda_window_layer_stride_bytes,
 			(uint64_t)(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree) * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_CONV_KERNEL * 2u,
 			(uint64_t)(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree) * GLM5_NEXT_KDA_VALUE_DIM * GLM5_NEXT_KDA_CONV_KERNEL * 2u,
-			wave->kda_state_index,slot->positions,wave->kda_layer_count,wave->row_count);
+			/* slot-keyed: the row's resident slot IS the pool key (same
+			 * space as run_state_index); multi-row runs touch their slot
+			 * once (only the position-0 row resets). */
+			slot->resident_slots,slot->positions,wave->kda_layer_count,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	return(SparkGlm5NextCudaStatus(error));
@@ -493,8 +502,8 @@ static void SparkGlm5NextBindLayer(
 	buffers->kda_output_bf16 = slot->kda_output_bf16;
 	buffers->kda_retention = slot->kda_retention;
 	buffers->kda_write_gate = slot->kda_write_gate;
-	buffers->kda_state_index = wave->kda_state_index;
-	buffers->sequence_row_begin = 0; /* decode: row i is sequence i */
+	buffers->kda_state_index = wave->run_state_index;
+	buffers->sequence_row_begin = wave->sequence_row_begin;
 	kda_ordinal = wave->kda_ordinal_by_local_layer[local_layer];
 	if ( kda_ordinal != UINT32_MAX )
 	{
@@ -551,7 +560,7 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 		 * already lands its full-width rank partial in attention_out_bf16;
 		 * the HC placement runs AFTER the chain's reduce - see
 		 * SparkGlm5NextLaunchCudaLayerAttentionPost. */
-		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->row_count,1u,wave->multiprocessor_count,stream));
+		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->run_count,1u,wave->multiprocessor_count,stream));
 	}
 	status = Glm5NextLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )

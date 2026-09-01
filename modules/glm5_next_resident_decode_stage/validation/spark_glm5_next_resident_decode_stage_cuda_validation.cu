@@ -1257,6 +1257,11 @@ typedef struct SparkGlm5NextValFixture
 	uint32_t host_positions_stage[1u];
 	uint32_t host_token_ids_stage[1u];
 	uint32_t *kda_state_index;
+	/* Run structure (identity: one run per row) so the tiers exercise the
+	 * run-aware kernel path exactly as serving does. */
+	uint32_t *run_begin,*run_state_index;
+	uint32_t host_run_begin[2u];
+	uint32_t host_run_state_index[1u];
 	uint32_t host_page_table[SPARK_GLM5_NEXT_VALIDATION_PAGES];
 	uint32_t host_kv_ordinals[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint32_t host_index_ordinals[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
@@ -1428,6 +1433,11 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 	fixture->kda_state_pools = (uint8_t *)SparkGlm5NextValAllocZeroed(state_bytes);
 	fixture->kda_window_pools = (uint8_t *)SparkGlm5NextValAllocZeroed(SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER);
 	fixture->kda_state_index = (uint32_t *)SparkGlm5NextValAllocZeroed(sizeof(uint32_t));
+	fixture->run_begin = (uint32_t *)SparkGlm5NextValAllocZeroed(2u * sizeof(uint32_t));
+	fixture->run_state_index = (uint32_t *)SparkGlm5NextValAllocZeroed(sizeof(uint32_t));
+	fixture->host_run_begin[0] = 0u;
+	fixture->host_run_begin[1] = 1u;
+	fixture->host_run_state_index[0] = 0u;
 	fixture->kv_cache = (uint8_t *)SparkGlm5NextValAllocZeroed(
 		(uint64_t)SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
 	fixture->index_cache = (uint8_t *)SparkGlm5NextValAllocZeroed(
@@ -1438,7 +1448,9 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 		for (index = 0u; index < SPARK_GLM5_NEXT_VALIDATION_PAGES; index++)
 			fixture->host_page_table[index] = index;
 		if (cudaMemcpy(fixture->page_table,fixture->host_page_table,sizeof(fixture->host_page_table),cudaMemcpyHostToDevice) != cudaSuccess ||
-			cudaMemcpy(fixture->kda_state_index,&zero,sizeof(zero),cudaMemcpyHostToDevice) != cudaSuccess)
+			cudaMemcpy(fixture->kda_state_index,&zero,sizeof(zero),cudaMemcpyHostToDevice) != cudaSuccess ||
+			cudaMemcpy(fixture->run_begin,fixture->host_run_begin,sizeof(fixture->host_run_begin),cudaMemcpyHostToDevice) != cudaSuccess ||
+			cudaMemcpy(fixture->run_state_index,fixture->host_run_state_index,sizeof(fixture->host_run_state_index),cudaMemcpyHostToDevice) != cudaSuccess)
 			return(SparkGlm5NextValFail("fixture","page_table"));
 	}
 	/* o_norm: f32 ones (pack convention F32). */
@@ -1480,6 +1492,8 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 	if (cudaStreamCreate(&fixture->stream) != cudaSuccess)
 		return(SparkGlm5NextValFail("fixture","stream"));
 	fixture->slot.stream = fixture->stream;
+	fixture->slot.run_begin = fixture->run_begin;
+	fixture->slot.run_state_index = fixture->run_state_index;
 	fixture->multiprocessors = 16u;
 	return(0);
 }
@@ -1642,6 +1656,11 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 		wave->kda_window_layer_stride_bytes = window_bytes;
 	}
 	wave->kda_state_index = fixture->kda_state_index;
+	wave->run_count = 1u;
+	wave->sequence_row_begin = fixture->run_begin;
+	wave->run_state_index = fixture->run_state_index;
+	wave->host_sequence_row_begin = fixture->host_run_begin;
+	wave->host_run_state_index = fixture->host_run_state_index;
 	wave->page_table = fixture->page_table;
 	wave->multiprocessor_count = fixture->multiprocessors;
 	/* Host staging arrays for the metadata copies (Begin reads these). */
