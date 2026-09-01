@@ -341,7 +341,7 @@ static SparkStatus SparkGlm5NextPackValidateEntryGeometry(
 	const SparkGlm5NextStagePackEntry *entry,
 	SparkGlm5NextStagePackTensorShape *shape)
 {
-	uint64_t payload_bytes,scale_bytes;
+	uint64_t payload_bytes,scale_bytes,directory_end;
 	uint32_t local_layer;
 	if ( SparkGlm5NextStagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,shape) < 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -371,14 +371,23 @@ static SparkStatus SparkGlm5NextPackValidateEntryGeometry(
 	scale_bytes = SparkGlm5NextStagePackExpectedScaleBytes(shape);
 	if ( payload_bytes == 0u || entry->payload_bytes != payload_bytes || entry->scale_bytes != scale_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( entry->payload_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->payload_offset < header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes) || entry->payload_offset > header->file_bytes || entry->payload_bytes > header->file_bytes - entry->payload_offset )
+	/* Directory placement is layout-free (the MTP append tool writes the
+	 * superseding directory at the file tail): the invariant is that no
+	 * payload or scale range intersects the directory interval, not that
+	 * payloads follow it. */
+	directory_end = header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes);
+	if ( entry->payload_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->payload_offset > header->file_bytes || entry->payload_bytes > header->file_bytes - entry->payload_offset )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( entry->payload_offset < directory_end && header->directory_offset < entry->payload_offset + entry->payload_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( scale_bytes == 0u )
 	{
 		if ( entry->scale_offset != 0u )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	else if ( entry->scale_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->scale_offset < header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes) || entry->scale_offset > header->file_bytes || entry->scale_bytes > header->file_bytes - entry->scale_offset )
+	else if ( entry->scale_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->scale_offset > header->file_bytes || entry->scale_bytes > header->file_bytes - entry->scale_offset )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	else if ( entry->scale_offset < directory_end && header->directory_offset < entry->scale_offset + entry->scale_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
