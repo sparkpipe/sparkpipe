@@ -29,5 +29,19 @@ sliced entries — rank-local shapes consistent with the module by
 construction, and the MTP path is dormant anyway (operator ruling:
 accuracy first, drafter wiring last). GPU cells will confirm.
 
+## lm_head relief valve: NOT needed at TP16 under option (a)
+
+Budget arithmetic per rank at TP16 with load-time slices (BF16 bytes):
+experts 512/16 x 3 MXFP4 ≈ 5.7 GiB; lm_head full-width 3.9 GiB;
+embedding (owns_final_head only) 3.9 GiB; GDN spine full-width ≈ 8.3
+GiB; shared experts full-width ≈ 9.2 GiB (row-sliceable later if ever
+needed); attention projections sliced ≈ 0.1 GiB; KV cache (1 head,
+64 blocks x 4 attn layers) ≈ 0.5 GiB. Total ≈ 32 GiB — the 110 GiB
+law clears with ~3x headroom. Slicing lm_head would force a
+distributed argmax (vocab-row cut + per-slice argmax all-gather) into
+the shared head kernel for a 3.9 GiB saving that headroom makes
+pointless. Revisit only if R3's measured receipts contradict the
+arithmetic.
+
 Blocked-on: R1/R2 need fleet nodes (glm53full p0 wave running); R3+
 need the #765 residency ruling.
