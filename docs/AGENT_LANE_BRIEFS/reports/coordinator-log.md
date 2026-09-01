@@ -4338,3 +4338,57 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   packs; exactly ONE builder relaunched each on spark1/2/c, verified
   pgrep=1 per node. Lesson: relaunch must pgrep-before-start, and the
   one-heavy-job-per-node law includes duplicate builders of the same rank.
+
+## 2026-09-01 ~22:3x — firing 52: bf16 rebuilds 1-builder-each on 1/2/c, mid-copy; nothing to fix
+
+## 2026-09-01 ~22:4x — disk cleanup: 4.3T of k3 build artifacts removed (operator directive)
+
+- spark8: k3-recovery (2,308,746,372,418 B staging incl. the recovered
+  base) + k3tp16 (691G old builds) removed. Free: 108G -> 2258G.
+- spark6: k3tp16prod (1,960,628,754,193 B incl. k3.full.tilek32.pack
+  1.5T base copy + local rank10/11 builds) removed. Free -> 2222G.
+- Basis: all 16 canonical k3 TP16 ranks placed + digest-audited 16/16
+  PASS; warm kimi-k3 remains the rebuild source; TP4PP4 k3 set intact.
+- Kept: spark3 pro-repo (dsv4-pro full.spstage — pending items 14/15).
+
+## 2026-09-01 ~23:0x — firing 53: bf16 rebuilds mid-copy (single writers verified); k3 cleanup stands complete
+
+## 2026-09-01 ~23:2x — firing 54: bf16 rebuilds grinding (3.7/1.9/4.0 of 40G); fleet otherwise stable
+
+## 2026-09-01 ~23:4x — firing 55: bf16 rebuilds 5.3/2.0/4.6 of 40G; loops alive
+
+## 2026-09-01 ~23:5x — firing 56: bf16 rebuilds 6.2/2.2/4.8 of 40G; single writers
+
+## 2026-09-01 ~24:0x — firing 57: bf16 arm 13/16; only the three rebuilders (1/2/c) outstanding
+
+## 2026-09-01 ~24:1x — firing 58: bf16 rebuilds 8.7/2.7/5.6 of 40G; single writers alive
+
+## 2026-09-01 ~24:2x — firing 59: bf16 rebuilds 9.7/2.8/5.8 of 40G; on pace
+
+## 2026-09-01 ~24:3x — WARM BACKUP PROTECTION LAUNCHED (operator directive)
+
+- Response to dev-deletion risk: all 16 nodes now rsync their placed
+  stagepacks to /mnt/model-warm/stagepack-backup/<node>/ — node-local
+  rsync (no network leg), niced/ioniced, incremental + resumable, temp
+  files excluded. 16/16 RUNNING at dispatch. ~11-12T total to mirror;
+  warm has 42.5T free.
+- Note: qwen-max PP16 build temps discovered fleet-wide during the
+  hygiene sweep were removed with logged bytes (superseded, receipted
+  set in place). All hygiene legs (symlinks/temps) now PASS.
+- The 15-min automation re-runs the backup script to top up new sets
+  (fp8/nvfp4/bf16 arms as they land).
+
+## 2026-09-01 ~24:5x — firing 61: bf16 rebuilds 11.5/3.6/6.5 of 40G; warm backups flowing (spark8 mirror 235G)
+
+- rank4 qwenflash is receipted+placed; item 2's residual leg (sparkc
+  copy) satisfied by the dual receipt from the sparkf build. bf16 arm
+  rebuilds single-writer grinding. Backup mirror: 16/16 nodes running,
+  sample spark8 already 235G mirrored; eta several hours at nice rate.
+
+## 2026-09-01 ~25:1x — firing 62: bf16 rebuilds 11.6/3.7/6.6 of 40G; du sweep skipped (slow ceph stat), backups progressing per-node logs
+
+## 2026-09-01 ~25:2x — firing 63: bf16 rebuilds 12.2/3.9/6.7 of 40G; on pace, single writers
+
+## 2026-09-01 ~25:3x — firing 64: bf16 rebuilds 12.4/4.9/8.5 of 40G; fresh Mimosa scan sealed (53 findings, none blocking; same count as prior baseline)
+
+## 2026-09-01 ~25:4x — firing 65: bf16 rebuilds 13.7/22.7/17.6 of 40G (spark2 accelerating past slow-class); all on pace
