@@ -4162,3 +4162,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   was digest-only, so the coverage sweep was built and run NOW. Result:
   16/16 PASS on every existing set (parser bug in the first pass fixed).
   k3 digest audit: 15/16 collected PASS, spark1 still hashing.
+
+## 2026-09-01 ~15:4x — firing 26: k3 audit 16/16 PASS; CLEANUP EXECUTED; bf16 TP4PP4 done; fp8 wave launched
+
+- k3 digest audit: 16/16 PASS fleet-wide (spark1's slow hash landed).
+- CLEANUP EXECUTED: warm k3_tp16base.pack (1,562,379,187,072 B) +
+  receipt/lock + all duplicate-* quarantines removed from spark9; every
+  node's k3_tp16_slice, deploy_work, relay dirs, one-shot scripts cleaned;
+  spark2 .qwen27b temps removed. Bytes: ~1.9T warm+nodes freed.
+- Item 17 COMPLETE (bf16 TP4PP4 16/16). Item 18 (fp8 TP4PP4) BUILDING:
+  4 stage loops live. The missing-dir launch bug (3rd occurrence) is now
+  structurally fixed: mkdir -p && launch in the same command.

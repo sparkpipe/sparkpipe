@@ -148,7 +148,7 @@ TP8 2x maps; rank r on spark-r), uniform per-rank size, sha256 receipted,
 MTP-carrying if the source ships it, verified against source.
 
 In flight (finish first):
-1. k3 TP16 — COMPLETE: 16/16 placed (rank1 + rank4 via healthy-node relay after spark1/spark4 ceph wedges; dual-sha receipts). Fleet-wide re-hash audit dispatched; cleanup wave on PASS.
+1. k3 TP16 — COMPLETE + AUDITED: 16/16 placed, fleet-wide re-hash audit 16/16 PASS; cleanup EXECUTED (1.56TB warm base + quarantines + all slice/deploy work dirs + spark2 temps removed, bytes logged).
 2. k3 cleanup — after 16/16: remove 1.56TB warm base + all slice/deploy work dirs + spark2 27B temps (bytes logged).
 3. qwen-flash TP8 (bf16) — rank4 rebuilding on spark4 (post-MDS restart) → place on spark4 + copy to sparkc. MTP AUDIT DONE: placed ranks carry 36 draft/MTP-marker entries (fc_embedding/fc_hidden + per-layer kinds at the MTP marker) — no rebuild needed for MTP.
 4. glm5_next TP8 FP8 (true, MTP) — COMPLETE: 8 ranks x 2 targets = 16/16 nodes, one canonical rank each (43,479,544,832 B, 1187 tensors, flags=1, sha-receipted); wrong-topology tp16-named files removed fleet-wide (~272G).
@@ -168,8 +168,8 @@ Per-set completions:
 14. dsv4-pro TP4xPP4 — 10/16; build the last 6 ranks (packer rank-path extension). MTP CONFIRMED (8 KIND_MTP_* entries in the placed stage).
 15. dsv4-pro TP16 — build from the nvfp4-pro source (877G; splicer rank-path).
 16. glm5_next (flash) TP4xPP4 — COMPLETE: 16/16 placed (stage matrix 272/287/287/341 tensors; stage0 owns-emb, stage3 MTP+owns-head; rank r on spark-r, sha-receipted).
-17. glm53full bf16 TP4xPP4 — build. (TP16 done.)
-18. glm53full fp8 TP4xPP4 — build. (TP16 done.)
+17. glm53full bf16 TP4xPP4 — COMPLETE: 16/16 placed (stages 20/20/19/19 layers x TP4; rank r on spark-r; sha-receipted).
+18. glm53full fp8 TP4xPP4 — BUILDING: all 4 stage loops live (a=stage0, b/c/d=1/2/3).
 19. glm53full nvfp4 TP4xPP4 — build. (TP16 done.)
 20. qwen-flash TP4xPP4 — COMPLETE: 16/16 ranks built+placed (rank r on spark-r, 4 stages x 12 layers x TP4, bf16, MTP-carrying, sha-receipted; zero FATALs).
 21. qwen-flash TP8 fp8 arm — build (with MTP).
