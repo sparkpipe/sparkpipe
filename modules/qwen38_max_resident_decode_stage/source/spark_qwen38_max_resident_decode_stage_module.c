@@ -25,6 +25,12 @@
 
 #define SPARK_QWEN38_MAX_MODULE_TAG "qwen38_stage"
 
+/* TP geometry defaults: an unset degree/rank names the replicated
+ * single-rank layout; the collective timeouts default to two minutes. */
+#define SPARK_QWEN38_MAX_MODULE_TP_DEGREE_REPLICATED 1u
+#define SPARK_QWEN38_MAX_MODULE_TP_RANK_REPLICATED 0u
+#define SPARK_QWEN38_MAX_MODULE_TP_TIMEOUT_MILLI_DEFAULT 120000u
+
 /* KV tier: the resident pool is a window; blocks beyond it live in the
  * pluggable KV store (local socket, network service, or a dedicated spark
  * ring running the store), keyed by (model fingerprint, layout fingerprint,
@@ -211,25 +217,11 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 		 * layout (tp_degree 1). tp_degree > 1 needs the head-sliced
 		 * projections AND the residual all-reduce, so the initialize path
 		 * refuses it until the TP collective is wired (fail closed). */
-		const char *tp_degree_text = getenv("SPARK_QWEN38_MAX_STAGE_TP_DEGREE");
-		const char *tp_rank_text = getenv("SPARK_QWEN38_MAX_STAGE_TP_RANK");
-		char *end = 0;
-		unsigned long parsed = 1u;
-		if ( tp_degree_text != 0 )
-		{
-			parsed = strtoul(tp_degree_text,&end,10);
-			if ( end == tp_degree_text || parsed < 1u || parsed > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-		}
-		state->tp_degree = (uint32_t)parsed;
-		parsed = 0u;
-		if ( tp_rank_text != 0 )
-		{
-			parsed = strtoul(tp_rank_text,&end,10);
-			if ( end == tp_rank_text )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-		}
-		state->tp_rank = (uint32_t)parsed;
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_DEGREE",1u,SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT,SPARK_QWEN38_MAX_MODULE_TP_DEGREE_REPLICATED,&state->tp_degree);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_RANK",0u,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT - 1u,SPARK_QWEN38_MAX_MODULE_TP_RANK_REPLICATED,&state->tp_rank);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
 		/* TP sharding (expert-sharded MoE, one residual all-reduce per
 		 * layer). The attention/GDN head slicing and the KV-head split are
 		 * the follow-on increments; the expert slice works for any degree
@@ -238,33 +230,37 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		state->tp_collective_identifier = 0u;
 		state->tp_control_port_base = 0u;
-		state->tp_connect_timeout_milli = 120000u;
-		state->tp_operation_timeout_milli = 120000u;
+		state->tp_connect_timeout_milli = SPARK_QWEN38_MAX_MODULE_TP_TIMEOUT_MILLI_DEFAULT;
+		state->tp_operation_timeout_milli = SPARK_QWEN38_MAX_MODULE_TP_TIMEOUT_MILLI_DEFAULT;
 		state->tp_backend_path[0] = '\0';
 		state->tp_local_host[0] = '\0';
-		for (parsed = 0u; parsed < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; parsed++)
-			state->tp_hosts[parsed][0] = '\0';
+		for (uint32_t host_clear = 0u; host_clear < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; host_clear++)
+			state->tp_hosts[host_clear][0] = '\0';
 		if ( state->tp_degree > 1u )
 		{
-			const char *tp_backend = getenv("SPARK_QWEN38_MAX_STAGE_TP_BACKEND_PATH");
-			const char *tp_identifier = getenv("SPARK_QWEN38_MAX_STAGE_TP_IDENTIFIER");
-			const char *tp_port_base = getenv("SPARK_QWEN38_MAX_STAGE_TP_PORT_BASE");
-			const char *tp_hosts = getenv("SPARK_QWEN38_MAX_STAGE_TP_HOSTS");
-			const char *tp_local_host = getenv("SPARK_QWEN38_MAX_STAGE_TP_LOCAL_HOST");
-			const char *tp_timeout = getenv("SPARK_QWEN38_MAX_STAGE_TP_TIMEOUT_MS");
+			const char *tp_backend;
+			const char *tp_hosts;
+			const char *tp_local_host;
+			uint64_t tp_identifier;
 			const char *scan;
-			uint32_t host_index,host_start;
-			if ( tp_backend == 0 || tp_identifier == 0 || tp_port_base == 0 || tp_hosts == 0 || tp_local_host == 0 )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
+			uint32_t host_index;
+			status = SparkStageModuleEnvironmentText(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_BACKEND_PATH",&tp_backend);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkStageModuleEnvironmentUnsigned64(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_IDENTIFIER",0u,UINT64_MAX,&tp_identifier);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_PORT_BASE",1u,65535u,&state->tp_control_port_base);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkStageModuleEnvironmentText(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_HOSTS",&tp_hosts);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkStageModuleEnvironmentText(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_LOCAL_HOST",&tp_local_host);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_QWEN38_MAX_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_connect_timeout_milli);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
 			snprintf(state->tp_backend_path,sizeof(state->tp_backend_path),"%s",tp_backend);
 			snprintf(state->tp_local_host,sizeof(state->tp_local_host),"%s",tp_local_host);
-			state->tp_collective_identifier = strtoull(tp_identifier,0,10);
-			state->tp_control_port_base = (uint32_t)strtoul(tp_port_base,0,10);
-			if ( tp_timeout != 0 )
-			{
-				state->tp_connect_timeout_milli = (uint32_t)strtoul(tp_timeout,0,10);
-				state->tp_operation_timeout_milli = state->tp_connect_timeout_milli;
-			}
+			state->tp_collective_identifier = tp_identifier;
+			state->tp_operation_timeout_milli = state->tp_connect_timeout_milli;
 			/* Comma-separated peer host list, one per rank in rank order. */
 			scan = tp_hosts;
 			host_index = 0u;
@@ -281,7 +277,6 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 			}
 			if ( host_index != state->tp_degree )
 				return(SPARK_STATUS_INVALID_ARGUMENT);
-			(void)host_start;
 		}
 	}
 	state->debug_skip_gdn = getenv("SPARK_QWEN38_MAX_STAGE_DEBUG_SKIP_GDN") != 0 ? 1u : 0u;

@@ -114,6 +114,16 @@ SparkStatus SparkStageModuleEnvironmentUnsigned64(
     uint64_t minimum,
     uint64_t maximum,
     uint64_t *value);
+/* The optional counterpart: an absent/empty variable yields the named
+ * fallback without a config_missing line; a present variable is parsed and
+ * range-checked with the same fail-loud diagnostics as the required read. */
+SparkStatus SparkStageModuleEnvironmentUnsignedOrDefault(
+    const char *module_tag,
+    const char *name,
+    uint32_t minimum,
+    uint32_t maximum,
+    uint32_t fallback,
+    uint32_t *value);
 SparkStatus SparkStageModuleDeviceAllocate(
     SparkStageModuleLedger *ledger,
     uint64_t bytes,

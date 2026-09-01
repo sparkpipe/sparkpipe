@@ -305,6 +305,12 @@ typedef struct SparkQwen38_27bModuleState
 	uint32_t dflash2_state_select;
 	uint32_t tap_dump_nth;
 	uint32_t tap_capture_count;
+	/* Per-call env toggles parsed once at configure: the small-batch fused
+	 * FFN gate (default on, =0 disables), the frame-graph kill switch
+	 * (default on, leading '0' disables), and the capture trace print. */
+	uint32_t small_batch_gemm_off;
+	uint32_t frame_graph_off;
+	uint32_t captrace_on;
 	uint64_t profile_gdn_spin_nanos;
 	uint64_t profile_attn_spin_nanos;
 	uint64_t profile_ffn_spin_nanos;
@@ -445,6 +451,13 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 	status = SparkQwen38_27bDflash2ConfigLoad(&state->dflash2_config);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	{
+		const char *toggle = getenv("SPARK_QWEN38_27B_SMALL_BATCH_GEMM");
+		state->small_batch_gemm_off = toggle != 0 && strcmp(toggle,"0") == 0 ? 1u : 0u;
+		toggle = getenv("SPARK_QWEN38_27B_FRAME_GRAPH");
+		state->frame_graph_off = toggle != 0 && toggle[0] == '0' ? 1u : 0u;
+		state->captrace_on = getenv("SPARK_QWEN38_27B_CAPTRACE") != 0 ? 1u : 0u;
+	}
 	status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_27B_MODULE_TAG,"SPARK_QWEN38_27B_STAGE_COUNT",1u,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT,&state->stage_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_27B_MODULE_TAG,"SPARK_QWEN38_27B_STAGE_INDEX",0u,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT - 1u,&state->stage_index);
@@ -462,22 +475,8 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 	 * active-lane count" - the exact pre-R2b behavior - so direct module
 	 * users (validator harness, tests) keep their existing configs. The
 	 * serving adapter always sets it from the deployment's max_input_rows. */
-	state->max_input_row_count = state->max_active_sequence_count;
 	if ( status == SPARK_STATUS_OK )
-	{
-		const char *rows_text = getenv("SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS");
-		if ( rows_text != 0 && rows_text[0] != '\0' )
-		{
-			unsigned long parsed_rows = strtoul(rows_text,0,0);
-			if ( parsed_rows < 1u || parsed_rows > SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT )
-			{
-				fprintf(stderr,"%s config_invalid name=SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS value=%s\n",SPARK_QWEN38_27B_MODULE_TAG,rows_text);
-				status = SPARK_STATUS_INVALID_ARGUMENT;
-			}
-			else
-				state->max_input_row_count = (uint32_t)parsed_rows;
-		}
-	}
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_27B_MODULE_TAG,"SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS",1u,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,state->max_active_sequence_count,&state->max_input_row_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_27B_MODULE_TAG,"SPARK_QWEN38_27B_STAGE_PIPELINE_SLOTS",1u,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&state->pipeline_slot_count);
 	if ( status == SPARK_STATUS_OK )
@@ -1427,10 +1426,8 @@ static SparkStatus SparkQwen38_27bModuleRunFfn(SparkQwen38_27bModuleState *state
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
-	const char *ffn_gate_env;
 	error = SparkQwen38_27bLaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->delta_bf16,mlp_norm_bf16,slot->normalized_bf16,rows,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_27B_MODEL_RMS_NORM_EPSILON);
-	ffn_gate_env = getenv("SPARK_QWEN38_27B_SMALL_BATCH_GEMM");
-	if ( error == cudaSuccess && (ffn_gate_env == 0 || strcmp(ffn_gate_env, "0") != 0) &&
+	if ( error == cudaSuccess && state->small_batch_gemm_off == 0u &&
 		rows >= 5u && rows <= SPARK_QWEN38_27B_SMALL_BATCH_MAX_ROWS &&
 		weights->gate.weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
 		weights->up.weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
@@ -3248,25 +3245,15 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 	 * mutation makes a direct RERUN unsafe). */
 	{
 			const uint32_t graph_blocked = (context->flags & (SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER | SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER | SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST | SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW | SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_RESTORE_IN | SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_PREFIX_SNAPSHOT_OUT | SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY)) != 0u;
-		/* OPT-IN (WIP): the capture round still invalidates from an
-		 * unchecked call in the layer path (three sync blockers found and
-		 * guarded - Finish, profile-head, both syncs now capture-aware -
-		 * but a fourth remains; enable with SPARK_QWEN38_27B_FRAME_GRAPH=1
-		 * to continue the hunt from the graphs_broken diagnostics) */
 		/* DEFAULT ON (2026-08-21): the spec-graph anomaly is resolved - the
 		 * FFN TP-reduce capture guard fixed the silent replay corruption.
 		 * Verified bit-identical on both paths: spec O512 20.8s / 77 rounds
 		 * (was 21.1), no-spec 66.3s (was 67.5). Kill-switch
-		 * SPARK_QWEN38_27B_FRAME_GRAPH=0. */
-		/* Default ON: measured 78% of frames replay with zero capture
-		 * failures; the feared fourth blocker never materialized. The
-		 * opt-in era cost a free win. Kill switch: FRAME_GRAPH=0. */
-		const char *genv = getenv("SPARK_QWEN38_27B_FRAME_GRAPH");
-		int graph_off = genv != 0 && genv[0] == '0';
+		 * SPARK_QWEN38_27B_FRAME_GRAPH=0, parsed once at configure. */
 		int replayed = 0;
 		int capturing = 0;
 		cudaGraph_t cap = 0;
-		if ( graph_off == 0 && state->graphs_broken == 0u && graph_blocked == 0u && status == SPARK_STATUS_OK )
+		if ( state->frame_graph_off == 0u && state->graphs_broken == 0u && graph_blocked == 0u && status == SPARK_STATUS_OK )
 		{
 			if ( slot->graph_live != 0u && slot->graph_rows == rows && slot->graph_prefill == (prefill != 0 ? 1u : 0u) )
 			{
@@ -3327,7 +3314,7 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 					 * overwritten when re-walked, exactly like the main KV. */
 					if ( status == SPARK_STATUS_OK && state->dspark_weights.armed != 0u )
 						status = SparkQwen38_27bModuleCaptureDsparkTap(state,slot,layer,rows);
-					if ( capturing != 0 && getenv("SPARK_QWEN38_27B_CAPTRACE") != 0 )
+					if ( capturing != 0 && state->captrace_on != 0u )
 						fprintf(stderr,"captrace: post-layer %u status=%d\n",layer,(int)status);
 				}
 			}

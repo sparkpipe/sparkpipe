@@ -176,6 +176,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	SparkTpDeviceCollectiveConfig configuration;
 	SparkTpDeviceCollectiveCreditBinding *bindings;
 	const char *backend_name;
+	const char *library_path;
 	uint32_t transport_backend;
 	uint32_t credit,route,route_count,hidden,credit_count,memory_mode;
 	uint64_t credit_bytes,offset,total_bytes;
@@ -244,7 +245,8 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	{
 		configuration.backend_kind =
 			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-		configuration.backend_module_path = getenv("SPARK_QWEN38_27B_TP_TRANSPORT_LIBRARY") != 0 ? getenv("SPARK_QWEN38_27B_TP_TRANSPORT_LIBRARY") : SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_LIBRARY;
+		library_path = getenv("SPARK_QWEN38_27B_TP_TRANSPORT_LIBRARY");
+		configuration.backend_module_path = library_path != 0 ? library_path : SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_LIBRARY;
 		configuration.control_port_base =
 			SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_PORT_BASE;
 		configuration.algorithm_mask =
@@ -278,7 +280,8 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	else
 	{
 		configuration.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
-		configuration.backend_module_path = getenv("SPARK_QWEN38_27B_TP_NCCL_LIBRARY") != 0 ? getenv("SPARK_QWEN38_27B_TP_NCCL_LIBRARY") : SPARK_QWEN38_27B_TP_DEFAULT_NCCL_LIBRARY;
+		library_path = getenv("SPARK_QWEN38_27B_TP_NCCL_LIBRARY");
+		configuration.backend_module_path = library_path != 0 ? library_path : SPARK_QWEN38_27B_TP_DEFAULT_NCCL_LIBRARY;
 		configuration.control_port_base = SPARK_QWEN38_27B_TP_DEFAULT_NCCL_PORT_BASE;
 		configuration.credit_count = 1u;
 		for (index = 0u; index < degree; index++)

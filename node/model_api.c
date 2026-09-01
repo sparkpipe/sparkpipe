@@ -56,6 +56,10 @@
 
 #define API_MAX_INFLIGHT 16u
 
+/* /v1/models id when SPARK_MODEL_ID is absent (env is the bridge until the
+ * island-catalog registration formalizes the source). */
+#define API_DEFAULT_MODEL_ID "sparkpipe-model"
+
 typedef struct ApiRequest
 {
 	uint64_t id;
@@ -983,7 +987,7 @@ static void *api_connection(void *arg)
 		const char *model_id = getenv("SPARK_MODEL_ID");
 		char b[256];
 		if (model_id == 0 || model_id[0] == '\0')
-			model_id = "sparkpipe-model";
+			model_id = API_DEFAULT_MODEL_ID;
 		(void)snprintf(b, sizeof(b),
 			"{\"object\":\"list\",\"data\":[{\"id\":\"%s\","
 			"\"object\":\"model\",\"owned_by\":\"sparkpipe\","
