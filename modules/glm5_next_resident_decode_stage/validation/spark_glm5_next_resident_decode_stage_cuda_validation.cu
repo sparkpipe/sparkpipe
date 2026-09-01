@@ -2391,7 +2391,8 @@ int main(int argc,char **argv)
 	/* Tier 3/4: the chunked-prefill contract at both layer classes. */
 	if (SparkGlm5NextValRunTierRun(&fixture,0u,"tier3 kda run-of-8",1u,8u) != 0)
 		return(1);
-	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4a dsa run-of-1 (attention)",0u,1u);
+	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4a dsa run-of-1 (attention)",0u,1u) != 0)
+		return(1);
 	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4b dsa run-of-2 (attention)",0u,2u) != 0)
 		return(1);
 	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4c dsa run-of-8 (attention)",0u,8u) != 0)
