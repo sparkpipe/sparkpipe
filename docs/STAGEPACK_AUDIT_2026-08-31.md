@@ -169,7 +169,7 @@ Per-set completions:
 15. dsv4-pro TP16 — build from the nvfp4-pro source (877G; splicer rank-path).
 16. glm5_next (flash) TP4xPP4 — COMPLETE: 16/16 placed (stage matrix 272/287/287/341 tensors; stage0 owns-emb, stage3 MTP+owns-head; rank r on spark-r, sha-receipted).
 17. glm53full bf16 TP4xPP4 — COMPLETE: 16/16 placed (stages 20/20/19/19 layers x TP4; rank r on spark-r; sha-receipted).
-18. glm53full fp8 TP4xPP4 — BUILDING: all 4 stage loops live (a=stage0, b/c/d=1/2/3).
+18. glm53full fp8 TP4xPP4 — COMPLETE: 16/16 placed (all stage loops, sha-receipted).
 19. glm53full nvfp4 TP4xPP4 — build. (TP16 done.)
 20. qwen-flash TP4xPP4 — COMPLETE: 16/16 ranks built+placed (rank r on spark-r, 4 stages x 12 layers x TP4, bf16, MTP-carrying, sha-receipted; zero FATALs).
 21. qwen-flash TP8 fp8 arm — build (with MTP).

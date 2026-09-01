@@ -4218,3 +4218,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   363e8f086905afd83db356a620f9aa401c23800a (from the placed TP16 nvfp4
   receipt). Rule: NEVER fabricate receipt fields — look them up or leave
   the build unlaunched. fp8: 15/16 placed (b last rank running).
+
+## 2026-09-01 ~17:4x — firing 33: fp8 TP4PP4 COMPLETE 16/16; nvfp4 stage1 launched on sparkb
+
+- Item 18 COMPLETE. nvfp4 stages: 0 (sparka) + 3 (sparkd) building,
+  stage 1 launched on freed sparkb, stage 2 queued for sparkc. All with
+  the TRUE revision pin 363e8f086905... .
