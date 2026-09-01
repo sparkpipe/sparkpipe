@@ -1850,11 +1850,19 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 		if (cudaMemcpy(second_kv_cache,fixture->kv_cache,
 			SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"second_kvc_copy"));
+		static uint16_t second_kv_slot[4096u];
+		uint32_t kv_slot_diffs = 0u;
+		if (cudaMemcpy(second_kv_slot,fixture->kv_slot,
+			512u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"second_kvs_copy"));
+		for (d = 0u; d < 512u; d++)
+			if (second_kv_slot[d] != run_kv_slot[d])
+				kv_slot_diffs++;
 		for (d = 0u; d < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; d++)
 			if (second_kv_cache[d] != run_kv_cache[d])
 			{
-				fprintf(stderr,"glm5_next_validation %s RUN WAVE NONDETERMINISTIC: pass1 vs pass2 cache byte %llu: %02x vs %02x\n",
-					label,(unsigned long long)d,(unsigned)run_kv_cache[d],(unsigned)second_kv_cache[d]);
+				fprintf(stderr,"glm5_next_validation %s RUN WAVE NONDETERMINISTIC: pass1 vs pass2 cache byte %llu: %02x vs %02x (kv_slot diffs pass1-vs-pass2: %u/512)\n",
+					label,(unsigned long long)d,(unsigned)run_kv_cache[d],(unsigned)second_kv_cache[d],kv_slot_diffs);
 				break;
 			}
 	}
