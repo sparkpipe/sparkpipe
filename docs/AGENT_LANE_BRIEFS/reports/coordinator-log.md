@@ -4203,3 +4203,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   already happened pre-cleanup — the rebuilt pack is the spare/second
   confirmation; no further shipping needed since both targets hold the
   receipted canonical).
+
+## 2026-09-01 ~17:0x — firing 31: fp8 14/16 (a+d done; b/c one rank each); nvfp4 pre-staged
+
+- fp8 TP4PP4: 14/16 placed (sparka + sparkd stages done; sparkb/c on
+  their last rank). nvfp4 TP4PP4 (item 19) staged to launch on the first
+  nodes that free.
