@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "19570a8bdf2bd1ab85644c65ee88a323d3d033971becd10e40791d16dfa8cb6a",
-      "size_bytes": 241501
+      "sha256": "387976b2462d65bc2a5f8aacd940232876a38ddba82d342d3bbb342b199222a7",
+      "size_bytes": 243414
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -6278,7 +6278,7 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "5ceaf6a79ce2f8e4b2aea42eaae414bf31485ecfdc4e6808d881305f75fb7c96",
+      "sha256": "cb431b264739d7fbfe6a18a80f210c9ebc70b55a0600448522f43829081329cc",
       "size_bytes": 97492
     },
     {
@@ -7243,8 +7243,8 @@
     },
     {
       "path": "tests/test_spark_queue.py",
-      "sha256": "d0f334e6be0bf67bef2ebe51e6e55489ddadac68a40c72d80884e4864bb62c9d",
-      "size_bytes": 9255
+      "sha256": "96aaf190d33eb5b0a5e7385a78fcfbad4e4eba017ce79345ab625932cd8828ac",
+      "size_bytes": 10733
     },
     {
       "path": "tests/test_spark_topology_probe.py",
@@ -8723,8 +8723,8 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "cc1014ed7ede9e7c73db9d83bedfaa95e8aca4a4d27d8243ead6d509b40feb79",
-      "size_bytes": 28395
+      "sha256": "8aebac4c3b389b073fc45d594cb2524d3a762be12ff399d74c3c3566c2db87f0",
+      "size_bytes": 29428
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -8825,5 +8825,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32255007
+  "total_bytes": 32259431
 }
