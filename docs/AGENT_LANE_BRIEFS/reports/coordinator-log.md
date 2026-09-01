@@ -3892,3 +3892,17 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   uniform size; VERIFY-PASS spot round-trip + dir_sha; sha256 receipt
   (3afce3eb...); 0 symlinks in the dir post-place. tp16 symlink-fix set
   now complete-able 16/16 (final receipt count check running).
+
+## 2026-09-01 ~04:2x — status roll: k3 14/16; TP8 shape defect caught by the gate; MTP fleet done
+
+- k3 TP16: 14/16 receipts (sparkd rank13 + sparkf rank15 landed); spark1
+  slicing, spark4 queued behind its qwenflash rank4 (25.9/46.3G).
+- MTP: glm5_next TP16 fleet set 16/16 MTP-carrying (1187 tensors, flags=1,
+  all verified). TP8 FP8 set: the plan-diff gate caught the packs built
+  WITHOUT owns-embedding/owns-head (1184 vs the correct 1187 shape —
+  unservable: no rank carries embedding/head). Rebuilding all 8 with
+  --mtp --owns-embedding --owns-head on sparka/c (~25 min), then the
+  --mtp verify+place loops finish the 2x placement (queue task v2 polls
+  with ~90min lease left).
+- Queue: dual-dispatcher defect fixed (28h-old era loop TERMed); v2 task
+  running with a blocking poll cmd.
