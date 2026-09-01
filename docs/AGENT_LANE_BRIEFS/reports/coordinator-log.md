@@ -4329,3 +4329,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Uniform-audit verdict corrections: TP4PP4 sets legitimately vary per
   stage layer counts (20/20/19/19, 16/15/15/15, 11/11/11/12, 12x4);
   uniformity applies per-stage.
+
+## 2026-09-01 ~22:1x — firing 51: multiwriter race on bf16 rebuilds caught+fixed
+
+- spark1 had FIVE concurrent g5bf16arm builders (my stacked relaunches
+  raced the automation's idempotent relaunch — the skip-if-receipted
+  guard doesn't prevent duplicate STARTS). Killed all; wiped partial
+  packs; exactly ONE builder relaunched each on spark1/2/c, verified
+  pgrep=1 per node. Lesson: relaunch must pgrep-before-start, and the
+  one-heavy-job-per-node law includes duplicate builders of the same rank.
