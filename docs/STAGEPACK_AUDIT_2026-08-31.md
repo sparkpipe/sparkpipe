@@ -121,3 +121,22 @@ artifacts, never topology variants or sources:
 4. qwen-flash FP8 + NVFP4 arm packs (already queued).
 5. dsv4-pro TP16 set (rank-path extension) and remaining tp4pp4 ranks.
 6. qwen38max.tp4pp4 rebuild (573G, one node) — priority pending operator.
+
+## 8. hy4 ADDED TO THE ACTIVE SET (operator, 2026-09-01)
+
+- Source: /mnt/model-warm/hy4-preview-fp8-official — 766G FP8 official
+  (modelopt MXFP8), HYV4ForCausalLM, 78 layers, hidden 6144, 64 attn
+  heads / 8 KV heads, 256-expert MoE top-8 (moe_inter 2048),
+  hyper-connections (hc_head / hc_attn_layer), MTP PRESENT (39
+  mtp_layers.0.* tensors, deepseek-style) → per the MTP law, hy4 packs
+  MUST carry MTP.
+- Geometry pre-check (the law): TP16 heads 64/16=4 ✓, ffn 144 blocks
+  %16=0 ✓, moe 16 blocks %16=0 ✓, KV-heads 8 → replicated (glm/dsv4
+  precedent); ~48G/rank, fits the 110GiB law. TP4: all clean too.
+- Targets: TP16 set + TP4×PP4 set, both MTP-carrying. New architecture →
+  packer/module vertical = the hy4 dev lane's build (agent started by the
+  operator); closest in-tree relative: glm5_next (hc kinds exist in its
+  kind table) and dsv4 (mtp.0.* naming class). Coordinator provides
+  board slots + queue coordination; the lane owns packer/descriptor.
+- Note: dsv4-pro's spec layers and hy4's MTP share the deepseek MTP
+  shape — the dsv4 packer's mtp handling is a reusable reference.
