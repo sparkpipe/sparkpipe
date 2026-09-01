@@ -4233,3 +4233,8 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   before bash ran (pid = wrapper self-match). Fixed with mkdir-first +
   separate-connection verify. fp8 COMPLETE 16/16 (sparkc last rank
   landed). Item 18 CLOSED; item 19 at 8/16 + stage1 rebuilding.
+
+## 2026-09-01 ~18:2x — firing 35: nvfp4 9/16 (sparkb 1/4); sparkc finishing fp8 last rank, stage2 auto-queued after
+
+- nvfp4: stage1 (sparkb) placed its first rank; stage2 waits on sparkc's
+  final fp8 rank (3/4). Stage0/3 done. 9/16 + two stages in flight.
