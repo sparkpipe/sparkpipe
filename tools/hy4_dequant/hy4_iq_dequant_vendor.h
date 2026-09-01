@@ -755,8 +755,11 @@ static void hy4_dequant_iq1_m(const uint8_t *x, float *y, long nblocks) {
 #define GGML_TABLE_END() };
 
 typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qs[128]; } block_q4_K;
-typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[32]; uint8_t qh[32]; uint8_t qs[128]; } block_q5_K;
+typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qh[32]; uint8_t qs[128]; } block_q5_K;
+_Static_assert(sizeof(block_q5_K) == 176, "q5_K stride");
+_Static_assert(sizeof(block_q4_K) == 144, "q4_K stride");
 typedef struct { uint8_t ql[128]; uint8_t qh[64]; int8_t scales[16]; uint16_t d; } block_q6_K;
+_Static_assert(sizeof(block_q6_K) == 210, "q6_K stride");
 #define QK_K 256
 static inline void hy4_get_scale_min_k4(int j, const uint8_t * q, uint8_t * d, uint8_t * m) {
     if (j < 4) {
