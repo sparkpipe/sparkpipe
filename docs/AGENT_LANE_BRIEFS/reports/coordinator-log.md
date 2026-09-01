@@ -4065,3 +4065,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   lane ticket; dry-run validated everything else (4x213-tensor ranks,
   ~4.06G each).
 - k3 rank1 relay shipped+receipted (15/16); qwenflash rank4 rebuilding.
+
+## 2026-09-01 ~12:0x — firing 14: glm53full bf16 TP4PP4 stages 1-3 building (items 17-19 opened)
+
+- glm52 packer ACCEPTS TP+layer-range (proof build: 20-layer fp8 slice,
+  46,725,851,904 B, 346 tensors, receipt). Wave design: stages
+  0-19/20-39/40-58/59-77 x TP4; rank r = stage*4+tp -> spark{hex r}.
+- bf16 stages 1/2/3 launched on sparkb/c/d (rev-pinned b4734de4...);
+  stage 0 queues for sparka when its dsv4 driver finishes (7/16 ranks at
+  last check). fp8 + nvfp4 sets follow on the same pattern (items 18-19).
