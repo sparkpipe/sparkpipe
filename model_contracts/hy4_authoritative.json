@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "model_id": "AngelSlim/Hy4-preview-GGUF",
+  "architecture": "HYV4ForCausalLM",
+  "source_revision": "779242edccdedc2109a0b36b164263a88f015bfa",
+  "source_selection_note": "Operator ruling 2026-09-01: the image workload tolerates the ~1-bit dynamic quantization error profile, so the AngelSlim UD-IQ1_M GGUF is the source of truth. The FP8 safetensors (tencent/Hy4-preview-FP8 @4215ec29de873a998e849cee902654490c7ff4d1, warm dir hy4-preview-fp8-official) stay as reference only.",
+  "model": {
+    "hidden_dimension": 6144,
+    "layer_count": 78,
+    "mtp_layer_count": 0,
+    "vocabulary_size": 120832,
+    "bos_token_id": 120000,
+    "eos_token_id": 120025,
+    "pad_token_id": 120002,
+    "maximum_context_tokens": 1048576,
+    "rms_norm_epsilon": 1e-05,
+    "attention_head_count": 64,
+    "kv_head_count": 8,
+    "head_dimension": 256,
+    "qk_nope_head_dimension": 192,
+    "qk_rope_head_dimension": 64,
+    "v_head_dimension": 256,
+    "kv_lora_rank": 512,
+    "query_lora_rank": 2048,
+    "lm_head_fp32": true
+  },
+  "attention": {
+    "gated_mla": true,
+    "index_head_count": 32,
+    "index_head_dimension": 128,
+    "index_top_k": 2048,
+    "indexer_full_period": 4,
+    "rope_theta": 10000000,
+    "rope_type": "default",
+    "learnable_sink": true
+  },
+  "hyper_connections": {
+    "stream_count": 4,
+    "magnitude": 2.0,
+    "epsilon": 1e-06
+  },
+  "moe": {
+    "routed_expert_count": 256,
+    "shared_expert_count": 1,
+    "experts_per_token": 8,
+    "expert_intermediate_dimension": 2048,
+    "dense_ffn_intermediate_dimension": 18432,
+    "dense_ffn_layer_count": 1,
+    "score_function": "elementwise",
+    "swiglu_limit": 10.0,
+    "routed_scaling_factor": 2.827,
+    "norm_topk_prob": true
+  },
+  "mtp": {
+    "shipped_layer_count": 0,
+    "reference_layer_count": 1,
+    "reference_note": "The publisher config declares num_nextn_predict_layers=1, but the UD-IQ1_M GGUF ships no nextn tensors (blocks 0-77 only). The 39 model.mtp_layers.0.* tensors exist only in the FP8 safetensors reference. Drafter wiring is deferred per operator sequencing."
+  },
+  "source_precision": {
+    "format": "gguf_ud_iq1m_dynamic",
+    "tensor_count": 2134,
+    "gguf_data_offset": 5051520,
+    "ggml_type_geometry": {
+      "0": [1, 4],
+      "8": [32, 34],
+      "12": [256, 144],
+      "13": [256, 176],
+      "14": [256, 210],
+      "16": [256, 66],
+      "18": [256, 98],
+      "23": [256, 72],
+      "24": [256, 56],
+      "29": [256, 56]
+    },
+    "geometry_note": "block elements and bytes per block, solved empirically from GGUF offset windows by tools/hy4_tp16_shard.py --dry-census; type ids follow the publisher's llama.cpp build (their patch extends the enum to NVFP4=40/Q1_0=41/Q2_0=42/STQ1_0=43). The solver's byte-integrity check pins these values against the file; ids 12/23 bytes are asserted by integration, names by convention."
+  },
+  "source_index_sha256": "12d325844103bac75bd286d14e0e45f87e35e8e60401877282a30b6f26ba6ac6",
+  "source_bytes": 235351974336,
+  "source_tensor_count": 2134,
+  "shards": {
+    "topology": "tp16",
+    "placement": "/home/<peer_hosts[r]>/sparkdata/hy4.ud-iq1m.tp16/packs/rank-{RR}/",
+    "placement_verified_utc": "2026-09-01",
+    "rank_bytes": 18724364736,
+    "ranks": {
+      "0": "848b6bc1ca4332bb4c829bce2e561e69334005ac0ff4f247bdfb8e386184fe72",
+      "1": "544e3599ffda2dfef2feb3422f92fd11644c9e352c9ae5eb2e5cb8c6af376741",
+      "2": "f105f28e002990d01391b405315179360d3de6bcac7cecbddb8022aaa2d8115b",
+      "3": "4420a073fdc51b642585e8376fb15309f1a07a10278e10c249528ebd3d43824f",
+      "4": "1cc2e9ffce7767c093ebc0610a7a7ff9526058f80bc2aaced7938da1c35b93ac",
+      "5": "ed3d1849bde904bb027a76bce42c8717916c9239e16ed4db43ecdffe652760d6",
+      "6": "f3514294d201f21ac3f8c6bee9e7e7989348df0d3c4955ecfa9dc24fb02c4416",
+      "7": "75f7f8b936d370f774649872b80dba6c371aded0a86c0979d569a3f6b3329857",
+      "8": "8599216c96b8ce0ac0c11ba47558d953611383f09d3f05d5e3a2c7d3bb692381",
+      "9": "db07b7421f317b7c1df24f9e8b679a3426ad8bb850bb28df6086e953e49472c2",
+      "10": "e80a3c4b4f8e70ce35a2e0fc12f37e714ca2e4bf9d50d6b8ffdd60113b91416d",
+      "11": "2aaee3b5de18b9ab045ba59e1fdc57ce98380253b1b1cce02b7f74c57e93d056",
+      "12": "099ae48708e86b38d0c58bcb0e8249a60c9161c5f5f90a7a5e4ca7ba7ac9cfe7",
+      "13": "6ff32f0dfc7b8266691c397960734ad8677e7cf6ffef4c382239e8a7f62509f2",
+      "14": "2b9f5c28269f9270bae2e6b2114870d68bc1248edeb4bbf1943f4c4e6b9c73f6",
+      "15": "19a2b681667e317ee072e93eed209c4ea75d2e749d1bf0242738183efed58032"
+    }
+  },
+  "runtime": {
+    "speculative_decoding": "deferred",
+    "speculative_decoding_reason": "No MTP tensors in the source of truth; operator sequencing rules drafter wiring last."
+  },
+  "qualification": {
+    "cuda_target": "sm_121a",
+    "status": "NOT_MEASURED",
+    "production_ready": false
+  }
+}
