@@ -3906,3 +3906,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   with ~90min lease left).
 - Queue: dual-dispatcher defect fixed (28h-old era loop TERMed); v2 task
   running with a blocking poll cmd.
+
+## 2026-09-01 ~05:2x — TP8 placement live on sparka; sparkc chained; 27B verify walking
+
+- TP8 FP8 MTP set (1187-tensor owns+mtp shape, 43,479,544,832 B uniform):
+  sparka ranks 0-3 ALL PLACED (8 targets sha-receipted). sparkc still
+  building rank4 (slow ceph ~5MB/s class) — verify+place CHAINED to fire
+  when its build loop exits. 27B TP4 MTP question: family verify walking
+  the pack (120/866 tensors) on spark6; packer inventory says MTP kinds
+  are unconditional — expect PASS-confirm.
+- spark1 k3 slice creeping (3.6G, slow node class); spark4 rank4 next
+  after qwenflash tmp (was 26.3/46.3G).
