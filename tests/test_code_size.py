@@ -1432,6 +1432,16 @@ CEILING = 234369
 # resource classes (gpu candidates ignore cpu holds - cpu pack
 # builds were freezing the gpu queue head-of-line).
 CEILING = 237363
+# lane/spec-unified: the speculation policy core becomes model-neutral and
+# tree-capable. The SPARK_DSPARK_TARGET_* build-time shape switch and the
+# hardcoded-GLM52 hard-equality validation are replaced by a runtime contract
+# descriptor with structural validation (shorter than the chain it replaces),
+# and acceptance gains a parent-array tree resolve with the chain kept as the
+# degenerate tree (one shared code path, no second engine). The GLM52 default
+# contract fill moves to the GLM52 backend as a real function. Net +206
+# non-test lines for the foundation the unified subsystem builds on; tests are
+# excluded by construction. 237569 exact.
+CEILING = 237569
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

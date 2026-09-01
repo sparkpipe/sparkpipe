@@ -252,6 +252,7 @@ TEST_NAMES := \
     test_speculation_policy_pin \
     test_speculation_headers_coexist \
     test_speculation_tree_pin \
+    test_speculation_tree_resolve \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
@@ -507,10 +508,8 @@ build:
 build/test_modules:
 	mkdir -p build/test_modules
 
-build/obj/src/spark_speculation_policy.o: SPARK_SPECULATION_TARGET_FLAGS = -DSPARK_DSPARK_TARGET_GLM52=1
-
 build/obj/%.o: %.c | build
-	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(SPARK_SPECULATION_TARGET_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
+	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
@@ -977,6 +976,9 @@ build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_repla
 build/test_speculation_tree_pin: tests/test_speculation_tree_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_speculation_tree_resolve: tests/test_speculation_tree_resolve.c $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_glm52_dspark: tests/test_glm52_dspark.c modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -984,8 +986,8 @@ build/test_speculation_policy_pin: tests/test_speculation_policy_pin.c $(CORE_LI
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_speculation_headers_coexist: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_provider.h include/sparkpipe/spark_speculation_policy.h | build
-	$(CC) $(CPPFLAGS) -DSPARK_DSPARK_TARGET_GLM52=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
-	$(CC) $(CPPFLAGS) -DSPARK_DSPARK_TARGET_GLM52=1 -DSPARK_COEXIST_POLICY_FIRST=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@.reversed
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) -DSPARK_COEXIST_POLICY_FIRST=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@.reversed
 	./$@.reversed
 
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
