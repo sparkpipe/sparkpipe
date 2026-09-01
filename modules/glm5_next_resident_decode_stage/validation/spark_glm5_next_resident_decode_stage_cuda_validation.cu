@@ -1843,6 +1843,20 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 	}
 	if (SparkGlm5NextValRunWaveOnce(fixture,layer,label,include_mlp) != 0)
 		return(1);
+	if (include_mlp == 0u)
+	{
+		static uint8_t second_kv_cache[SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES];
+		if (cudaMemcpy(second_kv_cache,fixture->kv_cache,
+			SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"second_kvc_copy"));
+		for (i = 0u; i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
+			if (second_kv_cache[i] != run_kv_cache[i])
+			{
+				fprintf(stderr,"glm5_next_validation %s RUN WAVE NONDETERMINISTIC: pass1 vs pass2 cache byte %llu: %02x vs %02x\n",
+					label,(unsigned long long)i,(unsigned)run_kv_cache[i],(unsigned)second_kv_cache[i]);
+				break;
+			}
+	}
 	if (cudaMemcpy(run_mode,fixture->streams,
 		(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 		return(SparkGlm5NextValFail(label,"run_copy"));
