@@ -148,7 +148,7 @@ TP8 2x maps; rank r on spark-r), uniform per-rank size, sha256 receipted,
 MTP-carrying if the source ships it, verified against source.
 
 In flight (finish first):
-1. k3 TP16 — 14/16 placed; left: spark1 rank1 (slicing), spark4 rank4 (after its qwenflash job); then 16/16 sha placement audit.
+1. k3 TP16 — COMPLETE: 16/16 placed (rank1 + rank4 via healthy-node relay after spark1/spark4 ceph wedges; dual-sha receipts). Fleet-wide re-hash audit dispatched; cleanup wave on PASS.
 2. k3 cleanup — after 16/16: remove 1.56TB warm base + all slice/deploy work dirs + spark2 27B temps (bytes logged).
 3. qwen-flash TP8 (bf16) — rank4 rebuilding on spark4 (post-MDS restart) → place on spark4 + copy to sparkc. MTP AUDIT DONE: placed ranks carry 36 draft/MTP-marker entries (fc_embedding/fc_hidden + per-layer kinds at the MTP marker) — no rebuild needed for MTP.
 4. glm5_next TP8 FP8 (true, MTP) — COMPLETE: 8 ranks x 2 targets = 16/16 nodes, one canonical rank each (43,479,544,832 B, 1187 tensors, flags=1, sha-receipted); wrong-topology tp16-named files removed fleet-wide (~272G).

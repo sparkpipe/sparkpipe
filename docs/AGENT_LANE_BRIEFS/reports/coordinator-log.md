@@ -4147,3 +4147,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 
 - rank4 relay: slice COMPLETE (99,566,844,288 B), cross-verify running on
   sparkf; ships to spark4 on PASS. bf16 stage0: 1/4 placed, loop alive.
+
+## 2026-09-01 ~15:2x — firing 24: K3 TP16 16/16 — rank4 relayed, verified, placed; audit dispatched
+
+- rank4: VERIFY PASS on sparkf -> shipped to spark4 -> dual-sha match
+  (a0a23c4f...) -> receipt. THE K3 BOARD IS FULL.
+- Fleet-wide placement audit dispatched (each node re-hashes its rank vs
+  receipt). On 16/16 PASS: cleanup wave (1.56T warm base, work dirs).
+- bf16 stage0: 3/4 placed on sparka.
