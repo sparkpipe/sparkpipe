@@ -128,12 +128,13 @@ struct SparkGlm5NextModuleState
 	uint32_t *kda_state_index_host;
 	uint64_t layer_seen[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint64_t global_seen;
-	/* MTP packs (flags&MTP): the layer-45 draft head rides the spec path,
-	 * outside the stage's 0..44 layer range. Its entries are validated
-	 * (geometry, ranges, inventory) but their payloads are NOT loaded
-	 * until the drafter consumes them - load-and-ignore. */
 	uint64_t mtp_seen;
 	uint32_t pack_has_mtp;
+	SparkGlm5NextLayerWeights mtp_layer;
+	const void *mtp_eh_proj_bf16;
+	const void *mtp_enorm_bf16;
+	const void *mtp_hnorm_bf16;
+	const void *mtp_shared_norm_bf16;
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
@@ -434,6 +435,7 @@ static void SparkGlm5NextPackMarkSeen(
 }
 
 static SparkStatus SparkGlm5NextPackAssignLayer(
+	SparkGlm5NextModuleState *state,
 	SparkGlm5NextLayerWeights *weights,
 	uint32_t tensor_kind,
 	const void *payload,
@@ -483,14 +485,10 @@ static SparkStatus SparkGlm5NextPackAssignLayer(
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_SCALE: weights->hc_ffn_scale_f32 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_INDEX_COMPRESS_APE: weights->index_compress_ape_f32 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_INDEX_COMPRESS_GATE: weights->index_compress_gate_bf16 = payload; break;
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_EH_PROJ:
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_ENORM:
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_HNORM:
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_SHARED_NORM:
-		/* Unreachable today: PackLoad skips layer-45 payload loads (the
-		 * drafter rides the spec path). The cases stay so the wiring
-		 * lands as an assignment, not a schema change. */
-		break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_EH_PROJ: state->mtp_eh_proj_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_ENORM: state->mtp_enorm_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_HNORM: state->mtp_hnorm_bf16 = payload; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_SHARED_NORM: state->mtp_shared_norm_bf16 = payload; break;
 	default: return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return(SPARK_STATUS_OK);
@@ -502,8 +500,10 @@ static SparkStatus SparkGlm5NextPackAssign(
 	const void *payload,
 	const void *scale)
 {
+	if ( entry->layer_index == SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
+		return(SparkGlm5NextPackAssignLayer(state,&state->mtp_layer,entry->tensor_kind,payload,scale));
 	if ( entry->layer_index != SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER )
-		return(SparkGlm5NextPackAssignLayer(&state->layers[entry->layer_index - state->first_layer_index],entry->tensor_kind,payload,scale));
+		return(SparkGlm5NextPackAssignLayer(state,&state->layers[entry->layer_index - state->first_layer_index],entry->tensor_kind,payload,scale));
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
@@ -609,14 +609,8 @@ static SparkStatus SparkGlm5NextPackLoad(
 		status = SparkGlm5NextPackValidateRanges(entries,header.tensor_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextPackValidateInventory(state);
-	/* Load only the stage's own tensors: layer-45 entries are validated
-	 * above (geometry, ranges, inventory) but their payloads stay in the
-	 * pack file - the drafter that consumes them lands with the spec
-	 * path, and until then loading them would pin dead device memory on
-	 * every rank. */
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
-		if ( entries[index].layer_index != SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
-			status = SparkGlm5NextPackLoadEntry(state,file,&entries[index]);
+		status = SparkGlm5NextPackLoadEntry(state,file,&entries[index]);
 	if ( fclose(file) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	return(status);
