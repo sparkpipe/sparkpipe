@@ -2239,7 +2239,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 				const char *env = getenv("SPARK_GLM5_NEXT_SYNC_EVERY");
 				sync_every = ( env != 0 && *env != 0 ) ? atoi(env) : 0;
 			}
-			if ( sync_every > 0 &&
+			if ( sync_every > 0 && chain->wave.tp_rank == 0u &&
 				(int)((chain->next_layer + 1u) % (uint32_t)sync_every) == 0 )
 				(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
 		}
