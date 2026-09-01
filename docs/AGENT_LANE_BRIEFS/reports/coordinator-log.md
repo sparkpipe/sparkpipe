@@ -4377,3 +4377,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   set in place). All hygiene legs (symlinks/temps) now PASS.
 - The 15-min automation re-runs the backup script to top up new sets
   (fp8/nvfp4/bf16 arms as they land).
+
+## 2026-09-01 ~24:5x — firing 61: bf16 rebuilds 11.5/3.6/6.5 of 40G; warm backups flowing (spark8 mirror 235G)
+
+- rank4 qwenflash is receipted+placed; item 2's residual leg (sparkc
+  copy) satisfied by the dual receipt from the sparkf build. bf16 arm
+  rebuilds single-writer grinding. Backup mirror: 16/16 nodes running,
+  sample spark8 already 235G mirrored; eta several hours at nice rate.
