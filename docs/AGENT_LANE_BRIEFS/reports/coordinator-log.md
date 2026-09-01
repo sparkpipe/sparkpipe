@@ -4173,3 +4173,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Item 17 COMPLETE (bf16 TP4PP4 16/16). Item 18 (fp8 TP4PP4) BUILDING:
   4 stage loops live. The missing-dir launch bug (3rd occurrence) is now
   structurally fixed: mkdir -p && launch in the same command.
+
+## 2026-09-01 ~16:1x — firing 28: fp8 wave relaunched after self-inflicted script cleanup
+
+- Root cause of the fp8 launch failures: MY cleanup sweep deleted the wave
+  scripts (g52_tp4pp4_build.sh etc.) from all nodes while the fp8 wave
+  still needed them. Lesson added: cleanup lists must EXCLUDE scripts
+  belonging to in-flight waves; stage scripts with their work dirs, not
+  globally. Re-shipped, all 4 stage loops confirmed building (rank0
+  receipt already written on sparka; ranks ~46G fp8).
+- rank4 (qwenflash) still building on sparkf (preallocated file; io-based
+  probes only).
