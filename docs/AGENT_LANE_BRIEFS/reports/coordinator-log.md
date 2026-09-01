@@ -4142,3 +4142,8 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - rank4 relay slicing (51/97G on sparkf). bf16 stage0: first rank placed
   on sparka (1/4; ranks ~90G each, ~20 min each). Canonical placement
   spot-check: spark7 holds rank7 ✓.
+
+## 2026-09-01 ~15:0x — firing 23: rank4 sliced fully (verify running); stage0 grinding
+
+- rank4 relay: slice COMPLETE (99,566,844,288 B), cross-verify running on
+  sparkf; ships to spark4 on PASS. bf16 stage0: 1/4 placed, loop alive.
