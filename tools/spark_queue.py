@@ -76,6 +76,15 @@ if "SPARK_QUEUE_STATE" not in os.environ:
                     shutil.copy2(src, os.path.join(STATE, name))
 # NOTE: task-side sentinel files (exit/pid/log) stay in the NODE's /tmp -
 # they are transient by design; only this host-side state is durable.
+# Operator ruling 2026-09-01: 15 minutes is the MAX for any single task.
+# The scheduling model is WINDOWS: a task's node claim is one window
+# (~1-2 min of it is weightd swap-in once persistent; 13-14 min of tests);
+# batch many tests per window (one cmd or after= chains; a task QUEUED
+# during your window runs as long as it starts before the window ends);
+# when your tasks finish, the next dev's window starts. No standing
+# claims - keep your NEXT test queued to hold your turn.
+MAX_TTL_MINUTES = 15.0
+
 DENY = ("reboot", "shutdown", "poweroff", "init 0", "init 6",
         "kill -9", "kill -KILL", "SIGKILL", "rm -rf")
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
@@ -235,6 +244,11 @@ def cmd_add(args):
     if getattr(args, "cmd_file", None):
         if args.cmd:
             sys.exit("--cmd and --cmd-file are mutually exclusive")
+    if args.ttl_min is not None and args.ttl_min > MAX_TTL_MINUTES:
+        sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute "
+                 f"task cap - batch several tests into the window (one cmd or "
+                 f"after= chains) and re-submit; renew standing claims with "
+                 f"`renew --id`")
         with open(args.cmd_file) as fh:
             args.cmd = fh.read()
     with acquire_lock():
@@ -246,6 +260,7 @@ def cmd_add(args):
         if args.id in ids:
             sys.exit(f"id '{args.id}' already exists")
         entry = dict(id=args.id, nodes=args.nodes.split(","),
+            resources=args.resources,
             ttl_minutes=args.ttl_min,
             cmd=args.cmd or "", cwd=args.cwd or "$HOME",
             priority=args.priority, kind=args.kind, class_=args.klass,
@@ -270,6 +285,7 @@ def cmd_list(args):
     for e in entries:
         hold = ",".join(n for n in e["nodes"] if n in res and res[n].get("id") == e["id"])
         print(f"{e['state']:8} {e.get('priority',5)} {e['id']:24} "
+              f"[{e.get('resources','gpu')}]"
               f"[{','.join(e['nodes'])}] hold={hold or '-'} "
               f"after={e.get('after') or '-'} {e.get('notes','')[:60]}")
     if not entries:
@@ -332,8 +348,17 @@ def pick_runnable(entries, results_ids):
     return best
 
 
-def nodes_free(nodes, res):
-    return all(n not in res for n in nodes)
+def nodes_free(nodes, res, resources="gpu"):
+    # Resource classes are SYMMETRIC (operator ruling 2026-09-01): cpu
+    # work and gpu work coexist on the same node; only a hold of the
+    # SAME class blocks. A gpu task blocked by a cpu hold (pack builds
+    # freezing the whole gpu queue) was the one-sided original and is
+    # wrong. When both classes hold one node the later hold OVERWRITES
+    # the earlier - cpu-vs-cpu exclusivity then lapses for the
+    # overwritten entry, which is accepted: the operator contract is
+    # only cross-class coexistence.
+    blocking = resources
+    return all(res[n].get("resources", "gpu") != blocking for n in nodes if n in res)
 
 
 def cmd_dispatch(args):
@@ -440,12 +465,14 @@ def cmd_dispatch(args):
         candidates.sort(key=lambda e: (eff_priority(e), e["submitted_at"]))
         task = None
         for cand in candidates:
-            if not nodes_free(cand["nodes"], res):
+            rc = cand.get("resources", "gpu")
+            if not nodes_free(cand["nodes"], res, rc):
                 print(f"blocked: {cand['id']} nodes busy")
                 continue
             held_by = next((o for o in candidates
                 if o["id"] != cand["id"] and eff_priority(o) < eff_priority(cand)
                 and cand["id"] not in o.get("after", [])
+                and rc == "gpu" and o.get("resources", "gpu") == "gpu"
                 and set(cand["nodes"]).intersection(o["nodes"])), None)
             if held_by is not None:
                 print(f"held: {cand['id']} — priority barrier for "
@@ -457,11 +484,11 @@ def cmd_dispatch(args):
             rewrite_queue(entries); save_reservations(res)
             print("nothing dispatched this pass")
             return
-        ttl = float(task.get("ttl_minutes") or args.ttl)
+        ttl = min(float(task.get("ttl_minutes") or args.ttl), MAX_TTL_MINUTES)
         for n in task["nodes"]:
             res[n] = dict(id=task["id"], holder=f"task:{task['id']}",
                 acquired_at=now(), ttl_minutes=ttl,
-                pid=None)
+                resources=task.get("resources", "gpu"), pid=None)
         n0 = task["nodes"][0]
         inner = ("echo $$ > /tmp/sparkqueue-" + task['id'] + ".pid; "
                  + task['cmd']
@@ -516,12 +543,15 @@ def cmd_cancel(args):
 
 
 def cmd_reserve(args):
+    if args.ttl_min > MAX_TTL_MINUTES:
+        sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute cap")
     with acquire_lock():
         res = load_reservations()
         if args.node in res:
             sys.exit(f"{args.node} already reserved: {res[args.node]}")
         res[args.node] = dict(id=f"manual:{args.holder}", holder=args.holder,
-            acquired_at=now(), ttl_minutes=args.ttl_min)
+            acquired_at=now(), ttl_minutes=args.ttl_min,
+            resources=getattr(args, "resources", "gpu") or "gpu")
         save_reservations(res)
         print(f"reserved {args.node} for {args.holder} ttl={args.ttl_min}m")
 
@@ -633,6 +663,11 @@ def main():
     a.add_argument("--cmd")
     a.add_argument("--cmd-file", help="read the command from this file "
         "(avoids nested-quoting footguns for long scripts)")
+    a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"],
+        help="gpu (default): exclusive node claim. cpu: disk/CPU-only work - "
+             "coexists with gpu tasks and gpu holds on the same nodes "
+             "(pack builds, sha sweeps, log pulls); still exclusive "
+             "against OTHER cpu tasks on the same nodes.")
     a.add_argument("--cwd")
     a.add_argument("--priority", type=int, default=5)
     a.add_argument("--kind", default="run", choices=["run", "gate", "note"])
@@ -655,7 +690,7 @@ def main():
     a.add_argument("--exit", type=int, default=0)
     a.set_defaults(fn=cmd_done)
     a = sub.add_parser("dispatch")
-    a.add_argument("--ttl", type=int, default=15,
+    a.add_argument("--ttl", type=int, default=int(MAX_TTL_MINUTES),
         help="lease minutes held for the TASK (not the lane); a task's "
              "own --ttl at submit time overrides this default")
     a.set_defaults(fn=cmd_dispatch)
@@ -665,7 +700,8 @@ def main():
     a = sub.add_parser("reserve")
     a.add_argument("--node", required=True)
     a.add_argument("--holder", required=True)
-    a.add_argument("--ttl-min", type=float, default=360.0)
+    a.add_argument("--ttl-min", type=float, default=MAX_TTL_MINUTES)
+    a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"])
     a.set_defaults(fn=cmd_reserve)
     a = sub.add_parser("release")
     a.add_argument("--node")

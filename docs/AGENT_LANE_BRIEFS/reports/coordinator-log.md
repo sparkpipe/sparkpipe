@@ -4338,3 +4338,23 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   packs; exactly ONE builder relaunched each on spark1/2/c, verified
   pgrep=1 per node. Lesson: relaunch must pgrep-before-start, and the
   one-heavy-job-per-node law includes duplicate builders of the same rank.
+
+## 2026-09-01 ~22:3x — firing 52: bf16 rebuilds 1-builder-each on 1/2/c, mid-copy; nothing to fix
+
+## 2026-09-01 ~22:4x — disk cleanup: 4.3T of k3 build artifacts removed (operator directive)
+
+- spark8: k3-recovery (2,308,746,372,418 B staging incl. the recovered
+  base) + k3tp16 (691G old builds) removed. Free: 108G -> 2258G.
+- spark6: k3tp16prod (1,960,628,754,193 B incl. k3.full.tilek32.pack
+  1.5T base copy + local rank10/11 builds) removed. Free -> 2222G.
+- Basis: all 16 canonical k3 TP16 ranks placed + digest-audited 16/16
+  PASS; warm kimi-k3 remains the rebuild source; TP4PP4 k3 set intact.
+- Kept: spark3 pro-repo (dsv4-pro full.spstage — pending items 14/15).
+
+## 2026-09-01 ~23:0x — firing 53: bf16 rebuilds mid-copy (single writers verified); k3 cleanup stands complete
+
+## 2026-09-01 ~23:2x — firing 54: bf16 rebuilds grinding (3.7/1.9/4.0 of 40G); fleet otherwise stable
+
+## 2026-09-01 ~23:4x — firing 55: bf16 rebuilds 5.3/2.0/4.6 of 40G; loops alive
+
+## 2026-09-01 ~23:5x — firing 56: bf16 rebuilds 6.2/2.2/4.8 of 40G; single writers
