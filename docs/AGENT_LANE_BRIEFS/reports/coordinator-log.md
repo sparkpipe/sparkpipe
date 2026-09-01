@@ -4295,3 +4295,15 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   SPLIT experts (0.gate_proj/up_proj + scale_inv) vs the bf16 source's
   stacked layout. Loops killed; item 21 re-scoped to the packer
   extension ticket (dev-lane). The 8 arm loops cleaned.
+
+## 2026-09-01 ~21:1x — firing 48: drafter audit (item 28) findings filed
+
+- All 11 drafter variant dirs on warm (2.2-8.9G each: dflash2/dspark
+  speculators for glm-flash, k3 x5, 27B x2, max x2, dsv4-flash) contain
+  raw checkpoint weights, NO packs. These are SPECULATOR models — they
+  ride drafter deployments, and none has an in-tree drafter-packer vertical
+  yet (the speculator-port families each own their draft format).
+- Filed as the drafter-vertical dev-lane ticket (item 28): packer +
+  descriptor per drafter family when speculation bring-up begins. Not a
+  stagepack-matrix blocker: the MTP law covers target-model speculation
+  data, which is done.
