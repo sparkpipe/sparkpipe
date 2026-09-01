@@ -5,7 +5,9 @@
 # -> sparkpipe_model_compile -> adapter staged as .new. Deployment to
 # the fleet is a separate, later task. Exit non-zero names the stage.
 set -euo pipefail
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO"
+[[ -f Makefile ]] || { echo "NO-REPO-MAKEFILE at $REPO"; exit 1; }
 RR=/home/$(hostname)/sparkdata/dsv4_pro.tp4pp4
 PACK="$RR/packs/dsv4_pro_tp4_pp4_stage.spstage"
 [[ -s "$PACK" ]] || { echo "MISSING-RANK0-PACK $PACK"; exit 1; }
