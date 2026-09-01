@@ -22,6 +22,7 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_qwen38_max_work_control.h"
 #include "spark_qwen38_max_stagepack_format.h"
+#include "spark_qwen38_max_attn_slice.h"
 
 #define SPARK_QWEN38_MAX_MODULE_TAG "qwen38_stage"
 
@@ -487,20 +488,9 @@ static int SparkQwen38MaxModuleEntryIsAttnProjection(uint32_t tensor_kind)
 	       tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_OUTPUT;
 }
 
-/* Load the rank's whole-head slice of a full-width attention projection.
- *
- * KEY/VALUE cut along their OUTPUT rows (head-major [kv_heads*256, H]):
- * the rank's head block is a contiguous row range, and the row slice is
- * a straight span move. OUTPUT cuts along its INPUT columns ([H, Q]):
- * strided row-by-row staging into a compact rank-local buffer. QUERY
- * stays full-width (its fused q|gate row layout is not head-planar, and
- * the decode kernel already reads only the rank's head range).
- *
- * The rank-local buffer is what the resident ledger keeps: at TP16 the
- * KV projections + o_proj cost 1/degree of their full-width bytes — the
- * head-split memory win — and the kv-replication kernel math (#765)
- * indexes heads relative to the rank's base, so nothing downstream
- * re-slices. */
+/* Load the rank's whole-head slice of a full-width attention projection
+ * (cut semantics in spark_qwen38_max_attn_slice.c) and hand the caller a
+ * rank-local entry; the resident ledger keeps only the slice. */
 static SparkStatus SparkQwen38MaxModuleLoadAttnProjectionSlice(
 	SparkQwen38MaxModuleState *state,
 	FILE *file,
@@ -509,79 +499,12 @@ static SparkStatus SparkQwen38MaxModuleLoadAttnProjectionSlice(
 	SparkQwen38MaxStagePackEntry *sliced)
 {
 	SparkStatus status;
-	uint32_t heads_per_rank,local_rows,local_columns;
-	uint32_t full_rows,full_columns;
-	uint64_t column_base;
-	uint64_t source_offset,span_bytes,staging_bytes;
-	uint16_t *staging;
+	uint16_t *staging = 0;
+	uint64_t staging_bytes = 0;
 	void *device_payload = 0;
-	uint32_t row_index;
-
-	if ( entry->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	full_rows = entry->rows;
-	full_columns = entry->columns;
-	if ( (SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT % state->tp_degree) != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	heads_per_rank = SPARK_QWEN38_MAX_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(state->tp_degree);
-	if ( entry->tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_OUTPUT )
-	{
-		/* [H, Q] row-major, cut along the INPUT columns: the rank owns
-		 * the query heads its decode kernel computes - q_heads/degree
-		 * whole heads starting at rank*(q_heads/degree). Strided
-		 * row-by-row staging. */
-		uint32_t local_q_heads;
-		if ( (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % state->tp_degree) != 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		local_q_heads = SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / state->tp_degree;
-		local_columns = local_q_heads * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION;
-		column_base = (uint64_t)state->tp_rank * local_q_heads * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION;
-		local_rows = full_rows;
-		if ( local_columns == 0u || local_columns > full_columns ||
-		     entry->payload_bytes != (uint64_t)full_rows * full_columns * 2u )
-			return(SPARK_STATUS_VALIDATION_FAILED);
-		staging_bytes = (uint64_t)local_rows * local_columns * 2u;
-		staging = (uint16_t *)malloc((size_t)staging_bytes);
-		if ( staging == 0 )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		for ( row_index = 0u; row_index < local_rows; row_index++ )
-		{
-			source_offset = entry->payload_offset +
-				((uint64_t)row_index * full_columns + column_base) * 2u;
-			if ( fseeko(file,(off_t)source_offset,SEEK_SET) != 0 ||
-			     fread(staging + (uint64_t)row_index * local_columns,1u,(size_t)local_columns * 2u,file) != local_columns * 2u )
-			{
-				free(staging);
-				fprintf(stderr,"%s attn_slice_read_failed kind=%u row=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,entry->tensor_kind,row_index);
-				return(SPARK_STATUS_IO_ERROR);
-			}
-		}
-	}
-	else
-	{
-		/* KEY/VALUE [kv_heads*256, H]: cut along the OUTPUT rows - the
-		 * rank's head block is a contiguous row span; one read. */
-		local_rows = heads_per_rank * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION;
-		local_columns = full_columns;
-		if ( local_rows == 0u || local_rows > full_rows ||
-		     entry->payload_bytes != (uint64_t)full_rows * full_columns * 2u )
-			return(SPARK_STATUS_VALIDATION_FAILED);
-		source_offset = entry->payload_offset +
-			(uint64_t)SPARK_QWEN38_MAX_MODEL_ATTN_RANK_KV_HEAD_BASE(state->tp_degree,state->tp_rank)
-				* SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION * full_columns * 2u;
-		span_bytes = (uint64_t)local_rows * local_columns * 2u;
-		staging = (uint16_t *)malloc((size_t)span_bytes);
-		if ( staging == 0 )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( fseeko(file,(off_t)source_offset,SEEK_SET) != 0 ||
-		     fread(staging,1u,(size_t)span_bytes,file) != span_bytes )
-		{
-			free(staging);
-			fprintf(stderr,"%s attn_slice_read_failed kind=%u span\n",SPARK_QWEN38_MAX_MODULE_TAG,entry->tensor_kind);
-			return(SPARK_STATUS_IO_ERROR);
-		}
-		staging_bytes = span_bytes;
-	}
+	status = SparkQwen38MaxModuleStageAttnProjectionSlice(file,entry,state->tp_degree,state->tp_rank,&staging,sliced,&staging_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	status = SparkStageModuleDeviceAllocate(&state->ledger,staging_bytes,&device_payload);
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -592,17 +515,12 @@ static SparkStatus SparkQwen38MaxModuleLoadAttnProjectionSlice(
 	free(staging);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	*sliced = *entry;
-	sliced->rows = local_rows;
-	sliced->columns = local_columns;
-	sliced->payload_bytes = staging_bytes;
-	sliced->scale_bytes = 0;
-	sliced->scale_offset = 0;
 	*payload = device_payload;
 	fprintf(stderr,"%s attn_projection_sliced kind=%u layer=%u shape %ux%u -> %ux%u\n",
-		SPARK_QWEN38_MAX_MODULE_TAG,entry->tensor_kind,entry->layer_index,full_rows,full_columns,local_rows,local_columns);
+		SPARK_QWEN38_MAX_MODULE_TAG,entry->tensor_kind,entry->layer_index,entry->rows,entry->columns,sliced->rows,sliced->columns);
 	return(SPARK_STATUS_OK);
 }
+
 static SparkStatus SparkQwen38MaxModuleLoadEntry(SparkQwen38MaxModuleState *state, FILE *file, const SparkQwen38MaxStagePackEntry *entry, uint64_t file_bytes)
 {
 	SparkStatus status;
