@@ -4195,3 +4195,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   cleanup lists must be RE-DERIVED from current state at execution time —
   never stale lists; anything mid-flight is excluded by looking, not by
   memory.
+
+## 2026-09-01 ~16:4x — firing 30: fp8 12/16 placed (sparka done); rank4 rebuilt on sparkf
+
+- fp8 TP4PP4: 12/16 placed (sparka 4/4; b 2, c 3, d 3; loops alive).
+- rank4 rebuild finished on sparkf (pack exists; the ship to spark4+c
+  already happened pre-cleanup — the rebuilt pack is the spare/second
+  confirmation; no further shipping needed since both targets hold the
+  receipted canonical).
