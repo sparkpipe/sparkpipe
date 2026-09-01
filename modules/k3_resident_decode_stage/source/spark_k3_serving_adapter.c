@@ -477,23 +477,23 @@ static SparkStatus K3ServingInitialize(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->runs_host,
 			SPARK_MEMORY_SPACE_HOST_COHERENT,
-			((uint64_t)state->max_rows + 1u) * 4u);
+			((uint64_t)state->max_rows + 1u) * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->runs_device,
 			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,
-			((uint64_t)state->max_rows + 1u) * 4u);
+			((uint64_t)state->max_rows + 1u) * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->seqslot_host,
-			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)state->max_rows * 4u);
+			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)state->max_rows * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->seqslot_device,
-			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->output_tokens,
-			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->output_scores,
-			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * sizeof(uint32_t));
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status == SPARK_STATUS_CAPACITY_EXCEEDED ?
 			SPARK_STATUS_CAPACITY_EXCEEDED : status; }
@@ -603,9 +603,9 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		for ( uint32_t s = 0u; s < active; ++s )
 			seqslots[s] = slots[runs[s]];
 		(void)SparkMemoryBufferCopy(&state->runs_device,
-			&state->runs_host, ((uint64_t)active + 1u) * 4u, 0);
+			&state->runs_host, ((uint64_t)active + 1u) * sizeof(uint32_t), 0);
 		(void)SparkMemoryBufferCopy(&state->seqslot_device,
-			&state->seqslot_host, (uint64_t)active * 4u, 0);
+			&state->seqslot_host, (uint64_t)active * sizeof(uint32_t), 0);
 	}
 	memset(&dispatch, 0, sizeof(dispatch));
 	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
