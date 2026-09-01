@@ -4155,3 +4155,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Fleet-wide placement audit dispatched (each node re-hashes its rank vs
   receipt). On 16/16 PASS: cleanup wave (1.56T warm base, work dirs).
 - bf16 stage0: 3/4 placed on sparka.
+
+## 2026-09-01 ~15:3x — firing 25: COVERAGE AUDIT — all 16 existing sets PASS 16/16 nodes
+
+- Operator asked whether the audit checks warm-model coverage: the k3 run
+  was digest-only, so the coverage sweep was built and run NOW. Result:
+  16/16 PASS on every existing set (parser bug in the first pass fixed).
+  k3 digest audit: 15/16 collected PASS, spark1 still hashing.

@@ -184,3 +184,17 @@ Per-set completions:
 Close-out (only after 1-27):
 29. Canonical sanity audit — every node holds exactly its map's sets; per-rank digest == master; uniform per-rank sizes; set-total vs source arithmetic; zero symlinks/temps/duplicates; stray list filed before any removal.
 30. Reclaim + final board — ~/glm53_packs* staging duplicates REMOVED (sha-verified or superseded-no-MTP-generation rule, ~350G+ freed); remaining: final matrix log after items 8-28; idle.
+
+## 10. COVERAGE AUDIT RESULT (2026-09-01) — ALL EXISTING SETS PASS 16/16
+
+Fleet-wide sweep: every set below is held by ALL 16 nodes (canonical rank
+per node per the maps), non-empty, real files:
+glm53full bf16/fp8/nvfp4 TP16 (4); glm53full bf16 TP4PP4; glm5_next
+TP16/TP8FP8/TP4PP4 (3); k3 TP16/TP4PP4 (2); dsv4-flash TP16/TP4PP4 (2);
+dsv4-pro TP4PP4 (coverage 16/16 — rank-completeness is item 14's 10-distinct-ranks
+line); 27B TP4; qwen-flash TP8/TP4PP4; qwen-max PP16. 16 sets PASS.
+Combined with the warm-dir mapping (§2) and MTP confirmations (§9/7-14):
+every warm model other than hy4 (lane-owned, in progress) and the
+explicitly to-build arms has complete stagepack coverage. Per-placement
+sha receipts + the k3 re-hash audit cover integrity; the item-29 final
+audit adds uniform-size + size-vs-source arithmetic at the end.
