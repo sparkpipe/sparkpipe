@@ -3917,3 +3917,16 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   are unconditional — expect PASS-confirm.
 - spark1 k3 slice creeping (3.6G, slow node class); spark4 rank4 next
   after qwenflash tmp (was 26.3/46.3G).
+
+## 2026-09-01 ~07:0x — timer firing 1: strays cleared (checklist item 5), all lanes healthy
+
+- Checklist item 5 DONE: spark2/3 k3 doubles identified by digest —
+  canonical k3.stage0.rankNN.pack receipt-MATCHES on both; the second
+  files (k3.tp16.rankNN.pack, 99,562,379,520 B each, old writer
+  generation) = superseded-generation duplicates of the SAME rank ->
+  removed (~185G freed pair), removal law satisfied (replacement
+  verified in place first).
+- Item 1-3 lanes healthy: spark1 k3 slice 4.7G grinding; spark4 waiting
+  on qwenflash rank4 (29.7/46.3G); sparkc TP8 4/4 built + chained
+  verify+place loop RUNNING (placements pending).
+- Item 5 phase-1: 27B MTP verify at 660/866 tensors, still walking.
