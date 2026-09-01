@@ -1672,6 +1672,172 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	wave->host_token_ids = fixture->host_token_ids_stage;
 }
 
+
+/* Tier 3/4 support: an N-row single-run wave of one sequence (chunked
+ * prefill shape). Mirrors SparkGlm5NextValBuildWave with rows>1, positions
+ * 0..rows-1, one run, context = rows. */
+#define SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS 8u
+
+static void SparkGlm5NextValBuildRunWave(SparkGlm5NextValFixture *fixture,uint32_t layer,const uint32_t *tokens,uint32_t rows)
+{
+	SparkGlm5NextCudaWave *wave = &fixture->wave;
+	SparkGlm5NextExecutionSlot *slot = &fixture->slot;
+	uint32_t token_words[8u],slot_words[8u],position_words[8u];
+	uint32_t row;
+	/* Reuse the single-row builder for the full weight/wave setup, then
+	 * override the row, run and context shape. */
+	SparkGlm5NextValBuildWave(fixture,layer,tokens[0],0u);
+	for (row = 0u; row < 8u; row++)
+	{
+		token_words[row] = row < rows ? tokens[row] : 0u;
+		slot_words[row] = 0u;
+		position_words[row] = row < rows ? row : 0u;
+	}
+	(void)cudaMemcpy(fixture->token_ids,token_words,sizeof(token_words),cudaMemcpyHostToDevice);
+	(void)cudaMemcpy(fixture->resident_slots,slot_words,sizeof(slot_words),cudaMemcpyHostToDevice);
+	(void)cudaMemcpy(fixture->positions,position_words,sizeof(position_words),cudaMemcpyHostToDevice);
+	(void)cudaMemcpy(fixture->context_lengths,&rows,sizeof(rows),cudaMemcpyHostToDevice);
+	memset(wave,0,sizeof(*wave));
+	wave->stage_index = 0u;
+	wave->first_layer_index = layer;
+	wave->layer_count = 1u;
+	wave->tp_degree = 1u;
+	wave->tp_rank = 0u;
+	wave->row_count = rows;
+	wave->maximum_context = rows;
+	wave->resident_sequence_capacity = 1u;
+	wave->max_sequence_positions = SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u;
+	wave->pages_per_sequence = SPARK_GLM5_NEXT_VALIDATION_PAGES;
+	wave->owns_embedding = 0u;
+	wave->owns_final_head = 0u;
+	wave->hidden_input_bf16 = fixture->boundary_input;
+	wave->boundary_row_offset = 0u;
+	wave->layers = weights;
+	wave->slot = slot;
+	wave->kv_cache = fixture->kv_cache;
+	wave->kv_layer_stride_bytes = (uint64_t)SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES;
+	wave->index_cache = fixture->index_cache;
+	wave->index_layer_stride_bytes = (uint64_t)SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u * SPARK_GLM5_NEXT_VINDEX_PACKED * 2u;
+	fixture->host_index_ordinals[0] = UINT32_MAX;
+	fixture->host_kda_ordinals[0] = UINT32_MAX;
+	if (SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer))
+		fixture->host_kda_ordinals[0] = 0u;
+	else
+		fixture->host_index_ordinals[0] = 0u;
+	wave->index_ordinal_by_local_layer = fixture->host_index_ordinals;
+	wave->kda_ordinal_by_local_layer = fixture->host_kda_ordinals;
+	wave->kda_state_pools = fixture->kda_state_pools;
+	wave->kda_state_layer_stride_bytes = SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER;
+	{
+		uint64_t window_bytes = SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / 3u;
+		wave->kda_q_window_pool = fixture->kda_window_pools;
+		wave->kda_k_window_pool = fixture->kda_window_pools + window_bytes;
+		wave->kda_v_window_pool = fixture->kda_window_pools + 2u * window_bytes;
+		wave->kda_window_layer_stride_bytes = window_bytes;
+	}
+	wave->kda_state_index = fixture->kda_state_index;
+	wave->run_count = 1u;
+	wave->sequence_row_begin = fixture->run_begin;
+	wave->run_state_index = fixture->run_state_index;
+	wave->host_sequence_row_begin = fixture->host_run_begin;
+	wave->host_run_state_index = fixture->host_run_state_index;
+	wave->page_table = fixture->page_table;
+	wave->multiprocessor_count = fixture->multiprocessors;
+	for (row = 0u; row < 8u; row++)
+	{
+		fixture->host_resident_slots_stage[row] = 0u;
+		fixture->host_positions_stage[row] = row < rows ? row : 0u;
+		fixture->host_token_ids_stage[row] = row < rows ? tokens[row] : 0u;
+	}
+	wave->host_resident_slots = fixture->host_resident_slots_stage;
+	wave->host_positions = fixture->host_positions_stage;
+	wave->host_token_ids = fixture->host_token_ids_stage;
+	/* Override the run shape: ONE run covering all rows (the chunked-
+	 * prefill form; BuildWave staged the identity 1-row runs). */
+	fixture->host_run_begin[1] = rows;
+	fixture->host_run_state_index[0] = 0u;
+}
+
+/* One wave (begin + attention + post + mlp + mlp-post) and capture. */
+static int SparkGlm5NextValRunWaveOnce(SparkGlm5NextValFixture *fixture,uint32_t layer,const char *label)
+{
+	int32_t status;
+	status = SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave);
+	if (status != 0)
+	{
+		fprintf(stderr,"glm5_next_validation %s begin status=%d cuda=%s\n",label,status,cudaGetErrorString(cudaGetLastError()));
+		return(SparkGlm5NextValFail(label,"begin"));
+	}
+	status = SparkGlm5NextLaunchCudaLayerAttention(&fixture->wave,0u);
+	if (status != 0)
+	{
+		fprintf(stderr,"glm5_next_validation %s attention status=%d cuda=%s\n",label,status,cudaGetErrorString(cudaGetLastError()));
+		return(SparkGlm5NextValFail(label,"attention"));
+	}
+	status = SparkGlm5NextLaunchCudaLayerAttentionPost(&fixture->wave,0u);
+	if (status != 0)
+		return(SparkGlm5NextValFail(label,"attention_post"));
+	status = SparkGlm5NextLaunchCudaLayerMlp(&fixture->wave,0u);
+	if (status != 0)
+		return(SparkGlm5NextValFail(label,"mlp"));
+	status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,0u);
+	if (status != 0)
+		return(SparkGlm5NextValFail(label,"mlp_post"));
+	if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
+		return(SparkGlm5NextValFail(label,"sync"));
+	return(0);
+}
+
+/* The chunked-prefill contract: one N-row run wave == N sequential one-row
+ * waves, bit for bit, through a full layer (KDA or DSA). */
+static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t layer,const char *label)
+{
+	static const uint32_t tokens[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS] = {1u,3u,2u,6u,5u,7u,4u,8u};
+	static uint16_t sequential[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT];
+	static uint16_t run_mode[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT];
+	uint32_t step;
+	/* Sequential reference: fresh state, one row per wave. */
+	if (cudaMemset(fixture->kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
+		cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
+		return(SparkGlm5NextValFail(label,"state_reset"));
+	for (step = 0u; step < SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS; step++)
+	{
+		SparkGlm5NextValBuildWave(fixture,layer,tokens[step],step);
+		if (SparkGlm5NextValRunWaveOnce(fixture,layer,label) != 0)
+			return(1);
+		if (cudaMemcpy(sequential + (uint64_t)step * SPARK_GLM5_NEXT_VHC_FLAT,fixture->streams,
+			(uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"seq_copy"));
+	}
+	/* Run mode: fresh state, ONE 8-row run wave. */
+	if (cudaMemset(fixture->kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
+		cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
+		return(SparkGlm5NextValFail(label,"state_reset2"));
+	SparkGlm5NextValBuildRunWave(fixture,layer,tokens,SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS);
+	if (SparkGlm5NextValRunWaveOnce(fixture,layer,label) != 0)
+		return(1);
+	if (cudaMemcpy(run_mode,fixture->streams,
+		(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+		return(SparkGlm5NextValFail(label,"run_copy"));
+	{
+		uint32_t row;
+		uint64_t i;
+		for (row = 0u; row < SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS; row++)
+			for (i = 0u; i < SPARK_GLM5_NEXT_VHC_FLAT; i++)
+				if (sequential[(uint64_t)row * SPARK_GLM5_NEXT_VHC_FLAT + i] !=
+					run_mode[(uint64_t)row * SPARK_GLM5_NEXT_VHC_FLAT + i])
+				{
+					fprintf(stderr,"glm5_next_validation %s DIVERGES at row %u element %llu: seq %04x run %04x\n",
+						label,row,(unsigned long long)i,
+						(unsigned)sequential[(uint64_t)row * SPARK_GLM5_NEXT_VHC_FLAT + i],
+						(unsigned)run_mode[(uint64_t)row * SPARK_GLM5_NEXT_VHC_FLAT + i]);
+					return(SparkGlm5NextValFail(label,"run_equivalence"));
+				}
+	}
+	printf("PASS %s run-of-8 == 8 sequential rows (bit-exact)\n",label);
+	return(0);
+}
+
 /* Tier 1: layer 0 (KDA + dense) through both mHC sites, 4-token walk. */
 static int SparkGlm5NextValRunTier1(SparkGlm5NextValFixture *fixture,uint32_t pass,uint16_t *streams_out)
 {
@@ -2128,6 +2294,12 @@ int main(int argc,char **argv)
 	if (SparkGlm5NextValRunTier2aAttention(&fixture,0u,device_streams) != 0)
 		return(1);
 	failures += SparkGlm5NextValCheckDeterminism(&fixture,SparkGlm5NextValRunTier2aAttention,"tier2a determinism");
+
+	/* Tier 3/4: the chunked-prefill contract at both layer classes. */
+	if (SparkGlm5NextValRunTierRun(&fixture,0u,"tier3 kda run-of-8") != 0)
+		return(1);
+	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4 dsa run-of-8") != 0)
+		return(1);
 
 	printf("glm5_next validator: %s (%d failures)\n",
 		failures == 0 ? "PASS" : "FAIL",failures);
