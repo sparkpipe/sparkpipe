@@ -3952,3 +3952,15 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   explicit ceph options, relaunch both builds.
 - Healthy lanes: TP8 map COMPLETE 16/16 (one canonical rank per node);
   27B MTP verify ~760/866.
+
+## 2026-09-01 ~08:2x — MDS RECOVERED (sysadmin); both paused builds relaunched
+
+- Sysadmin: cluster up; spark1/4 mounts restored via the persistent mount
+  service (my manual remount had omitted the CephX secret — noted).
+- Verified bulk reads (deep-offset cold read 4.6GB/s after warmup; the
+  earlier "0 bytes" was a 20s timeout on a cold first-touch, not a hang).
+- Relaunched: k3 rank1 slice on spark1 (fresh dir) + qwenflash rank4
+  rebuild on spark4 (fresh; exact flash-lane recipe). One heavy job per
+  node preserved. Queue note stays until receipts land.
+- Staging reclaim dispatched 16/16 (sha-verified-duplicate rule) —
+  results next cycle.
