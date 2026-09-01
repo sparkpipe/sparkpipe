@@ -94,6 +94,20 @@ void SparkModelResidentdEnsureWeightd(
 	(void)setenv("SPARK_WEIGHTD_SOCKET",socket_path,1);
 	if ( strlen(socket_path) >= sizeof(address.sun_path) )
 		return;
+	/* publish the identity BEFORE any attach can run (the module seam
+	 * loads after this helper returns). This must happen on BOTH paths:
+	 * the already-up early return below is the WARM dev-cycle case, and
+	 * skipping the publish there leaves the attach seam without an
+	 * identity (fallback reason=no_identity -> direct load every restart,
+	 * which silently defeats the residency daemon entirely). */
+	{
+		const char *digest = SparkWeightdSpawnResolvePackDigest(runtime_root);
+		if ( digest != 0 )
+			(void)setenv("SPARK_WEIGHTD_PACK_SHA256",digest,1);
+		else
+			fprintf(stderr,"model_residentd weightd-no-digest-sidecar "
+				"root=%s (seam falls back to direct load)\n",runtime_root);
+	}
 	/* already up? the common case after the first launch */
 	probe_fd = socket(AF_UNIX,SOCK_STREAM,0);
 	if ( probe_fd >= 0 )
@@ -107,16 +121,6 @@ void SparkModelResidentdEnsureWeightd(
 			return;
 		}
 		(void)close(probe_fd);
-	}
-	/* publish the identity BEFORE any attach can run (the module seam
-	 * loads after this helper returns) */
-	{
-		const char *digest = SparkWeightdSpawnResolvePackDigest(runtime_root);
-		if ( digest != 0 )
-			(void)setenv("SPARK_WEIGHTD_PACK_SHA256",digest,1);
-		else
-			fprintf(stderr,"model_residentd weightd-no-digest-sidecar "
-				"root=%s (seam falls back to direct load)\n",runtime_root);
 	}
 	(void)snprintf(binary_path,sizeof(binary_path),"%s/bin/sparkpipe_weightd",runtime_root);
 	if ( stat(binary_path,&binary_stat) != 0 )
