@@ -4279,3 +4279,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   run directly. All VERIFY-PASS, uniform dir_sha c439d469… Item 23 CLOSED.
 - Note: bf16-arm packs need the dsz-2 verifier fix (bf16 experts = 2B/elt)
   — committed 7afc8bc and shipped everywhere.
+
+## 2026-09-01 ~20:3x — firing 45: ITEM 21 LAUNCHED — qwen-flash FP8 arm TP8 building on spark0-7
+
+- fp8-arm source probed: quant fp8 dynamic, weight_block_size [128,128],
+  weight_scale_inv present = exactly fp8-f32b128 (the packer's native
+  flavor). 8 TP8 ranks building in parallel (~23G/rank), shipping to
+  rank r -> spark{r} + spark{r+8} with sha receipts. Item 22 (nvfp4 arm)
+  still needs a codec port; item 24 probe pending.
