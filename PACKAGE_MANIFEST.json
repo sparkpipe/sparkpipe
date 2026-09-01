@@ -1,5 +1,5 @@
 {
-  "file_count": 1764,
+  "file_count": 1765,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "387976b2462d65bc2a5f8aacd940232876a38ddba82d342d3bbb342b199222a7",
-      "size_bytes": 243414
+      "sha256": "f234c049e7e32ea97105798b8ae4ba4bd040c448de66d739669badae197812fb",
+      "size_bytes": 243633
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -870,6 +870,11 @@
       "path": "docs/WEIGHTD_DESIGN.md",
       "sha256": "7896cb64af88633da188d580e846f0ab24545648e31ba6e15520ffffa90d4cb1",
       "size_bytes": 3660
+    },
+    {
+      "path": "docs/WEIGHTD_RESIDENT_CACHE_DESIGN.md",
+      "sha256": "93f63b22bf881a2d42a229e0359b74b85807dfa35e1c665d4c6d510e601fe45e",
+      "size_bytes": 3332
     },
     {
       "path": "docs/archive/AUDIT_2026-07-29_BANDWIDTH_PATH.md",
@@ -3348,8 +3353,8 @@
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h",
-      "sha256": "e26b52208f4f2da6a6d98b54bcf97e59a547ca584cb6126dcae9cedad043f578",
-      "size_bytes": 3783
+      "sha256": "d0f2d13c278b5cbcd3c68b0b234c544e987455b3a7c4518767b596ae62a913e9",
+      "size_bytes": 5102
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_work_control.h",
@@ -4088,8 +4093,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu",
-      "sha256": "ee769878b9a9e9775704646f964e0f9ff45acd91412aceb7c8e9faaac9a4f72f",
-      "size_bytes": 86929
+      "sha256": "7f35319d3664fffb810c90f3a1091e59a1729cbdb4059647e9354375e1344778",
+      "size_bytes": 87206
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
@@ -6278,8 +6283,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "cb431b264739d7fbfe6a18a80f210c9ebc70b55a0600448522f43829081329cc",
-      "size_bytes": 97492
+      "sha256": "4b5934848fcd8dc94e09c9c05fed97b69765bd20f8230aea3a6bc647ac062442",
+      "size_bytes": 97641
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8825,5 +8830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32259431
+  "total_bytes": 32264727
 }
