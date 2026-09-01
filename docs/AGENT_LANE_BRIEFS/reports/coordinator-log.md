@@ -4044,3 +4044,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   hiccup; nothing wrong).
 - glm5_next TP4PP4: sparkb STAGE DONE 4/4; sparkc 2/4, sparkd 1/4,
   sparka 0/4 (stage-0 ranks biggest with embedding) — all loops alive.
+
+## 2026-09-01 ~11:4x — firing 12: k3 15/16 (rank1 relay SHIPPED + receipted)
+
+- rank1 on spark1: 99,566,844,288 bytes, receipt written (dual-sha
+  verified). k3 TP16 = 15/16; only spark4 rank4 remains (queued behind
+  its qwenflash rank4 rebuild, now 11.3/46.3G).
+- glm5_next TP4PP4: 12/16 placed (sparkb 4/4, sparkd 4/4 done; sparkc
+  3/4; sparka 0/4 building the heavy stage-0 ranks).
