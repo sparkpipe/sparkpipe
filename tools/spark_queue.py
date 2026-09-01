@@ -246,6 +246,7 @@ def cmd_add(args):
         if args.id in ids:
             sys.exit(f"id '{args.id}' already exists")
         entry = dict(id=args.id, nodes=args.nodes.split(","),
+            resources=args.resources,
             ttl_minutes=args.ttl_min,
             cmd=args.cmd or "", cwd=args.cwd or "$HOME",
             priority=args.priority, kind=args.kind, class_=args.klass,
@@ -270,6 +271,7 @@ def cmd_list(args):
     for e in entries:
         hold = ",".join(n for n in e["nodes"] if n in res and res[n].get("id") == e["id"])
         print(f"{e['state']:8} {e.get('priority',5)} {e['id']:24} "
+              f"[{e.get('resources','gpu')}]"
               f"[{','.join(e['nodes'])}] hold={hold or '-'} "
               f"after={e.get('after') or '-'} {e.get('notes','')[:60]}")
     if not entries:
@@ -332,7 +334,12 @@ def pick_runnable(entries, results_ids):
     return best
 
 
-def nodes_free(nodes, res):
+def nodes_free(nodes, res, resources="gpu"):
+    if resources == "cpu":
+        # CPU/disk-only work coexists with GPU use on the same node
+        # (operator ruling 2026-09-01); it still cannot take a node held
+        # by ANOTHER cpu task.
+        return all(res[n].get("resources") != "cpu" for n in nodes if n in res)
     return all(n not in res for n in nodes)
 
 
@@ -440,12 +447,14 @@ def cmd_dispatch(args):
         candidates.sort(key=lambda e: (eff_priority(e), e["submitted_at"]))
         task = None
         for cand in candidates:
-            if not nodes_free(cand["nodes"], res):
+            rc = cand.get("resources", "gpu")
+            if not nodes_free(cand["nodes"], res, rc):
                 print(f"blocked: {cand['id']} nodes busy")
                 continue
             held_by = next((o for o in candidates
                 if o["id"] != cand["id"] and eff_priority(o) < eff_priority(cand)
                 and cand["id"] not in o.get("after", [])
+                and rc == "gpu" and o.get("resources", "gpu") == "gpu"
                 and set(cand["nodes"]).intersection(o["nodes"])), None)
             if held_by is not None:
                 print(f"held: {cand['id']} — priority barrier for "
@@ -461,7 +470,7 @@ def cmd_dispatch(args):
         for n in task["nodes"]:
             res[n] = dict(id=task["id"], holder=f"task:{task['id']}",
                 acquired_at=now(), ttl_minutes=ttl,
-                pid=None)
+                resources=task.get("resources", "gpu"), pid=None)
         n0 = task["nodes"][0]
         inner = ("echo $$ > /tmp/sparkqueue-" + task['id'] + ".pid; "
                  + task['cmd']
@@ -521,7 +530,8 @@ def cmd_reserve(args):
         if args.node in res:
             sys.exit(f"{args.node} already reserved: {res[args.node]}")
         res[args.node] = dict(id=f"manual:{args.holder}", holder=args.holder,
-            acquired_at=now(), ttl_minutes=args.ttl_min)
+            acquired_at=now(), ttl_minutes=args.ttl_min,
+            resources=getattr(args, "resources", "gpu") or "gpu")
         save_reservations(res)
         print(f"reserved {args.node} for {args.holder} ttl={args.ttl_min}m")
 
@@ -633,6 +643,11 @@ def main():
     a.add_argument("--cmd")
     a.add_argument("--cmd-file", help="read the command from this file "
         "(avoids nested-quoting footguns for long scripts)")
+    a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"],
+        help="gpu (default): exclusive node claim. cpu: disk/CPU-only work - "
+             "coexists with gpu tasks and gpu holds on the same nodes "
+             "(pack builds, sha sweeps, log pulls); still exclusive "
+             "against OTHER cpu tasks on the same nodes.")
     a.add_argument("--cwd")
     a.add_argument("--priority", type=int, default=5)
     a.add_argument("--kind", default="run", choices=["run", "gate", "note"])
@@ -666,6 +681,7 @@ def main():
     a.add_argument("--node", required=True)
     a.add_argument("--holder", required=True)
     a.add_argument("--ttl-min", type=float, default=360.0)
+    a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"])
     a.set_defaults(fn=cmd_reserve)
     a = sub.add_parser("release")
     a.add_argument("--node")
