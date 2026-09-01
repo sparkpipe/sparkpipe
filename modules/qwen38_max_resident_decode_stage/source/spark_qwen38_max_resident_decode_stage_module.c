@@ -321,34 +321,22 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkQwen38MaxModuleBuildOrdinals(SparkQwen38MaxModuleState *state)
-{
-	uint32_t layer;
-	for (layer = 0; layer < SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT; layer++)
-	{
-		state->gdn_ordinal_by_layer[layer] = UINT32_MAX;
-		state->attn_ordinal_by_layer[layer] = UINT32_MAX;
-	}
-	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
-	{
-		if ( SPARK_QWEN38_MAX_MODEL_LAYER_IS_GDN(layer) != 0u )
-			state->gdn_ordinal_by_layer[layer] = state->gdn_layer_count++;
-		else
-			state->attn_ordinal_by_layer[layer] = state->attn_layer_count++;
-	}
-}
+#define SPARK_PACK_LOAD_FN(name) SparkQwen38MaxModule##name
+#define SPARK_PACK_LOAD_TYPE(name) SparkQwen38Max##name
+#define SPARK_PACK_LOAD_CONST(name) SPARK_QWEN38_MAX_##name
+#define SPARK_PACK_LOAD_LAYER_IS_GDN(layer) SPARK_QWEN38_MAX_MODEL_LAYER_IS_GDN(layer)
+#define SPARK_PACK_LOAD_SEEN_TYPE uint32_t
+#define SPARK_PACK_LOAD_SEEN_ONE 1u
+#define SPARK_PACK_LOAD_SEEN_FORMAT "%08x"
+#define SPARK_PACK_LOAD_SEEN_ARG(value) (value)
+#define SPARK_PACK_LOAD_BYTES_MATCH(entry) \
+	((entry)->payload_bytes == SparkQwen38MaxStagePackPayloadBytes((entry)->weight_format,(entry)->rows,(entry)->columns) && (entry)->scale_bytes == SparkQwen38MaxStagePackScaleBytes((entry)->weight_format,(entry)->rows,(entry)->columns))
+#define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkQwen38MaxStagePackExpectedGeometry((expected),(state)->first_layer_index,(state)->layer_count)
+#define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkQwen38MaxStagePackHeaderMatches((header),(expected)) != 0 || (header)->directory_offset != SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES)
+#define SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state,header,expected) fprintf(stderr,"%s pack_geometry_mismatch\n",SPARK_QWEN38_MAX_MODULE_TAG)
+#define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) do {} while (0)
 
-static void SparkQwen38MaxModuleFillLinearView(SparkQwen38MaxLinearView *view, const SparkQwen38MaxStagePackEntry *entry, void *payload, void *scale)
-{
-	view->abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION;
-	view->weight_format = entry->weight_format;
-	view->input_dimension = entry->columns;
-	view->output_dimension = entry->rows;
-	view->weight_payload = payload;
-	view->weight_scale_e8m0 = (const uint8_t *)scale;
-	view->weight_payload_bytes = entry->payload_bytes;
-	view->weight_scale_bytes = entry->scale_bytes;
-}
+#include "sparkpipe/spark_pack_load_common.h"
 
 static SparkStatus SparkQwen38MaxModuleValidateEntry(SparkQwen38MaxModuleState *state, const SparkQwen38MaxStagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)
 {
@@ -365,21 +353,7 @@ static SparkStatus SparkQwen38MaxModuleValidateEntry(SparkQwen38MaxModuleState *
 	}
 	if ( entry->weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? entry->scale_group_size != SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE : (entry->weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ? entry->scale_group_size != 128u : entry->scale_group_size != 0u) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( entry->payload_bytes != SparkQwen38MaxStagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns) || entry->scale_bytes != SparkQwen38MaxStagePackScaleBytes(entry->weight_format,entry->rows,entry->columns) )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( entry->payload_offset > file_bytes || entry->payload_bytes > file_bytes - entry->payload_offset )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( entry->scale_bytes != 0u && (entry->scale_offset > file_bytes || entry->scale_bytes > file_bytes - entry->scale_offset) )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( entry->layer_index == SPARK_QWEN38_MAX_STAGEPACK_MTP_LAYER || (global != 0u && (entry->tensor_kind >= SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FC && entry->tensor_kind <= SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FINAL_NORM)) )
-	{
-		if ( state->owns_final_head == 0u )
-			return(SPARK_STATUS_VALIDATION_FAILED);
-	}
-	else if ( global == 0u && (entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count) )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	*is_global = global;
-	return(SPARK_STATUS_OK);
+	return(SparkQwen38MaxModuleValidateEntryPlacement(state,entry,file_bytes,is_global));
 }
 
 static SparkStatus SparkQwen38MaxModuleBindMoe(SparkQwen38MaxMoeWeights *moe, const SparkQwen38MaxStagePackEntry *entry, void *payload, void *scale)
@@ -475,110 +449,30 @@ static SparkStatus SparkQwen38MaxModuleBindLayer(SparkQwen38MaxModuleState *stat
 	}
 }
 
-static SparkStatus SparkQwen38MaxModuleLoadEntry(SparkQwen38MaxModuleState *state, FILE *file, const SparkQwen38MaxStagePackEntry *entry, uint64_t file_bytes)
+static uint32_t SparkQwen38MaxModuleExpectedGlobalBits(const SparkQwen38MaxModuleState *state)
 {
-	SparkStatus status;
-	uint32_t is_global = 0u,bit = 1u << entry->tensor_kind;
-	uint32_t *seen;
-	void *payload = 0,*scale = 0;
-	status = SparkQwen38MaxModuleValidateEntry(state,entry,file_bytes,&is_global);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"%s pack_entry_invalid kind=%u layer=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,entry->tensor_kind,entry->layer_index);
-		return(status);
-	}
-	if ( entry->layer_index == SPARK_QWEN38_MAX_STAGEPACK_MTP_LAYER || (is_global != 0u && entry->tensor_kind >= SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FC && entry->tensor_kind <= SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FINAL_NORM) )
-		seen = &state->mtp_seen_bits;
-	else
-		seen = is_global != 0u ? &state->global_seen_bits : &state->layer_seen_bits[entry->layer_index];
-	if ( (*seen & bit) != 0u )
-	{
-		fprintf(stderr,"%s pack_entry_duplicate kind=%u layer=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,entry->tensor_kind,entry->layer_index);
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	}
-	*seen |= bit;
-	status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,entry->payload_bytes,&payload);
-	if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
-		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,entry->scale_bytes,&scale);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( entry->layer_index == SPARK_QWEN38_MAX_STAGEPACK_MTP_LAYER || entry->tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FC )
-		return(SparkQwen38MaxModuleBindMtp(state,entry,payload,scale));
-	return(is_global != 0u ? SparkQwen38MaxModuleBindGlobal(state,entry,payload) : SparkQwen38MaxModuleBindLayer(state,entry,payload,scale));
-}
-
-static SparkStatus SparkQwen38MaxModuleVerifyCoverage(SparkQwen38MaxModuleState *state)
-{
-	uint32_t layer,expected_global = 0u,expected_layer;
+	uint32_t bits = 0u;
 	if ( state->owns_embedding != 0u || state->owns_final_head != 0u )
-		expected_global |= 1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_EMBEDDING;
+		bits |= 1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_EMBEDDING;
 	if ( state->owns_final_head != 0u )
-		expected_global |= (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_FINAL_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_LM_HEAD);
-	if ( state->owns_final_head != 0u )
-	{
-		uint32_t expected_mtp = (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FC) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_VALUE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY_NORM);
-		if ( state->mtp_seen_bits != expected_mtp )
-		{
-			fprintf(stderr,"%s pack_mtp_incomplete seen=%08x expected=%08x\n",SPARK_QWEN38_MAX_MODULE_TAG,state->mtp_seen_bits,expected_mtp);
-			return(SPARK_STATUS_VALIDATION_FAILED);
-		}
-	}
-	if ( state->global_seen_bits != expected_global )
-	{
-		fprintf(stderr,"%s pack_globals_incomplete seen=%08x expected=%08x\n",SPARK_QWEN38_MAX_MODULE_TAG,state->global_seen_bits,expected_global);
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	}
-	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
-	{
-		expected_layer = (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT);
-		if ( SPARK_QWEN38_MAX_MODEL_LAYER_IS_GDN(layer) != 0u )
-			expected_layer |= (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_QKV) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_OUTPUT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_CONV_WEIGHT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_A_LOG) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DT_BIAS) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_NORM);
-		else
-			expected_layer |= (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_VALUE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY_NORM);
-		if ( state->layer_seen_bits[layer] != expected_layer )
-		{
-			fprintf(stderr,"%s pack_layer_incomplete layer=%u seen=%08x expected=%08x\n",SPARK_QWEN38_MAX_MODULE_TAG,layer,state->layer_seen_bits[layer],expected_layer);
-			return(SPARK_STATUS_VALIDATION_FAILED);
-		}
-	}
-	return(SPARK_STATUS_OK);
+		bits |= (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_FINAL_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_LM_HEAD);
+	return(bits);
 }
 
-static SparkStatus SparkQwen38MaxModuleLoadPack(SparkQwen38MaxModuleState *state, const char *path)
+static uint32_t SparkQwen38MaxModuleExpectedMtpBits(void)
 {
-	SparkQwen38MaxStagePackHeader header,expected;
-	SparkQwen38MaxStagePackEntry *directory;
-	FILE *file;
-	SparkStatus status;
-	uint32_t index;
-	file = fopen(path,"rb");
-	if ( file == 0 )
-	{
-		fprintf(stderr,"%s pack_open_failed path=%s\n",SPARK_QWEN38_MAX_MODULE_TAG,path);
-		return(SPARK_STATUS_IO_ERROR);
-	}
-	status = SparkStageModulePackRead(SPARK_QWEN38_MAX_MODULE_TAG,file,0u,&header,sizeof(header));
-	if ( status == SPARK_STATUS_OK )
-	{
-		SparkQwen38MaxStagePackExpectedGeometry(&expected,state->first_layer_index,state->layer_count);
-		if ( SparkQwen38MaxStagePackHeaderMatches(&header,&expected) != 0 || header.directory_offset != SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES )
-		{
-			fprintf(stderr,"%s pack_geometry_mismatch\n",SPARK_QWEN38_MAX_MODULE_TAG);
-			status = SPARK_STATUS_VALIDATION_FAILED;
-		}
-	}
-	directory = status == SPARK_STATUS_OK ? (SparkQwen38MaxStagePackEntry *)malloc((size_t)header.tensor_count * sizeof(SparkQwen38MaxStagePackEntry)) : 0;
-	if ( status == SPARK_STATUS_OK && directory == 0 )
-		status = SPARK_STATUS_CAPACITY_EXCEEDED;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModulePackRead(SPARK_QWEN38_MAX_MODULE_TAG,file,header.directory_offset,directory,(uint64_t)header.tensor_count * sizeof(SparkQwen38MaxStagePackEntry));
-	for (index = 0; status == SPARK_STATUS_OK && index < header.tensor_count; index++)
-		status = SparkQwen38MaxModuleLoadEntry(state,file,&directory[index],header.file_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkQwen38MaxModuleVerifyCoverage(state);
-	free(directory);
-	fclose(file);
-	return(status);
+	return((1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FC) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_VALUE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY_NORM));
+}
+
+static uint32_t SparkQwen38MaxModuleExpectedLayerBits(const SparkQwen38MaxModuleState *state, uint32_t layer)
+{
+	uint32_t bits = (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT);
+	(void)state;
+	if ( SPARK_QWEN38_MAX_MODEL_LAYER_IS_GDN(layer) != 0u )
+		bits |= (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_QKV) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_GATE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_OUTPUT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_CONV_WEIGHT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_A_LOG) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DT_BIAS) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_NORM);
+	else
+		bits |= (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_VALUE) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1u << SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY_NORM);
+	return(bits);
 }
 
 void SparkQwen38MaxResidentDecodeStageDestroy(void *module_state);
