@@ -3998,3 +3998,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   each, ~22G/rank), ship+sha-receipt per rank. Nodes reserved via queue
   (coordinator-stagepacks).
 - Lanes: spark1 k3 slice 6.8G+; spark4 qwenflash rank4 rebuilding.
+
+## 2026-09-01 ~10:0x — firing 7: TP4PP4 wave 12/16 placed; k3 grinding
+
+- qwen-flash TP4xPP4: 12/16 ranks placed (sparka 4/4 done; b 3, c 3, d 2
+  built; all loops alive). Completion next cycle.
+- spark1 k3 slice 7.5G; spark4 qwenflash rank4 still building.
