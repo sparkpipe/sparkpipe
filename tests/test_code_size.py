@@ -1419,7 +1419,7 @@ CEILING = 234369
 # trampoline), weightd warm-path identity publish, wave-tool env
 # passthrough, spark-queue multi-dev hardening (+ durable state, batched
 # age-gated reaper, doctor), hermetic queue gate, runbook + consult doc.
-CEILING = 237317
+CEILING = 237333
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

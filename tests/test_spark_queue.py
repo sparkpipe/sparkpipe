@@ -202,21 +202,50 @@ def main():
     check("priority 0 beats 9 on the same node",
           entries["p-high"]["state"] == "running" and entries["p-low"]["state"] == "queued", out)
 
+    # --- resource classes: cpu work coexists with gpu holds
+    fake.exited["race"] = 9
+    rewind_dispatch_age(tmp)
+    run(tmp, "dispatch")  # reap race so spark8 is free again
+    run(tmp, "add", "--id", "gpu-hog", "--nodes", "spark5", "--cmd", "echo gpu")
+    run(tmp, "dispatch")
+    run(tmp, "add", "--id", "cpu-build", "--nodes", "spark5", "--resources", "cpu",
+        "--cmd", "echo cpu")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("cpu task dispatches onto a gpu-held node",
+          entries["cpu-build"]["state"] == "running", out)
+    res = load_state(tmp, "reservations.json")
+    check("cpu hold records its class",
+          res.get("spark5", {}).get("resources") == "cpu", str(res.get("spark5")))
+    run(tmp, "add", "--id", "gpu-waiter", "--nodes", "spark5", "--cmd", "echo g2")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("gpu task still blocked by cpu+gpu holds",
+          entries["gpu-waiter"]["state"] == "queued", out)
+    run(tmp, "add", "--id", "cpu-clash", "--nodes", "spark5", "--resources", "cpu",
+        "--cmd", "echo c2")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("cpu task blocked by another cpu hold",
+          entries["cpu-clash"]["state"] == "queued", out)
+
     # --- concurrent dispatch: two passes at once cannot double-launch
     run(tmp, "add", "--id", "race", "--nodes", "spark8", "--cmd", "echo race")
-    outs = []
-    def d():
-        outs.append(run(tmp, "dispatch"))
-    threads = [threading.Thread(target=d) for _ in range(2)]
-    [t.start() for t in threads]
-    [t.join() for t in threads]
-    launches = [l for l in fake.launches if "race" in shlex.split(l[1])[-1] or "race" in l[1]]
-    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
-    results = load_state(tmp, "results.jsonl")
-    double = sum(1 for r in results if r["id"] == "race") > 1 or entries["race"]["state"] == "done"
-    check("no double-dispatch under concurrency",
-          entries["race"]["state"] == "running" and launches.count(launches[0]) >= 1 and not double,
-          f"{outs}")
+    try:
+        outs = []
+        def d():
+            outs.append(run(tmp, "dispatch"))
+        threads = [threading.Thread(target=d) for _ in range(2)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+        results = load_state(tmp, "results.jsonl")
+        launches = [l for l in fake.launches if "race" in l[1]]
+        double = sum(1 for r in results if r["id"] == "race") > 1
+        check("no double-dispatch under concurrency",
+              entries["race"]["state"] == "running" and not double, f"{outs}")
+    except Exception as exc:  # noqa: BLE001 - report, never eat
+        check("no double-dispatch under concurrency", False, repr(exc))
 
     print(f"\n{'ALL PASS' if not failures else 'FAILURES: ' + ', '.join(failures)}")
     return 1 if failures else 0
