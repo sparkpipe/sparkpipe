@@ -4354,3 +4354,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~23:0x — firing 53: bf16 rebuilds mid-copy (single writers verified); k3 cleanup stands complete
 
 ## 2026-09-01 ~23:2x — firing 54: bf16 rebuilds grinding (3.7/1.9/4.0 of 40G); fleet otherwise stable
+
+## 2026-09-01 ~23:4x — firing 55: bf16 rebuilds 5.3/2.0/4.6 of 40G; loops alive
