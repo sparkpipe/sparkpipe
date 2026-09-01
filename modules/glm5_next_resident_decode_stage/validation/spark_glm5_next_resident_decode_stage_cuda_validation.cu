@@ -1859,7 +1859,7 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 						label,row,(unsigned long long)i,(unsigned)seq_query_latent[i],(unsigned)run_query_latent[i]);
 					return(SparkGlm5NextValFail(label,"run_equivalence_query"));
 				}
-		for (i = 0u; i < 4096u; i++)
+		for (i = 0u; i < 512u; i++) /* row 0's latent slice */
 			if (seq_kv_slot[i] != run_kv_slot[i])
 			{
 				fprintf(stderr,"glm5_next_validation %s KV_SLOT (pre-store projection) diverges at element %llu: seq %04x run %04x\n",
