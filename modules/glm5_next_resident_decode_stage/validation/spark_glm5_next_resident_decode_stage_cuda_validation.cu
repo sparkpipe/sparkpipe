@@ -1626,6 +1626,7 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	wave->row_count = 1u;
 	wave->maximum_context = position + 1u;
 	wave->resident_sequence_capacity = 1u;
+	wave->execution_row_capacity = 8u; /* fixture scratch width */
 	wave->max_sequence_positions = SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u;
 	wave->pages_per_sequence = SPARK_GLM5_NEXT_VALIDATION_PAGES;
 	wave->owns_embedding = 0u;
