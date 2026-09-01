@@ -4209,3 +4209,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - fp8 TP4PP4: 14/16 placed (sparka + sparkd stages done; sparkb/c on
   their last rank). nvfp4 TP4PP4 (item 19) staged to launch on the first
   nodes that free.
+
+## 2026-09-01 ~17:2x — firing 32: fabricated-revision CATCH — nvfp4 builds restarted with true pin
+
+- I passed a FABRICATED full-length nvfp4 revision (only had the
+  363e8f08 prefix). Caught before placement; the two nvfp4 stage loops
+  killed, wrong-revision outputs wiped, relaunched with the TRUE pin
+  363e8f086905afd83db356a620f9aa401c23800a (from the placed TP16 nvfp4
+  receipt). Rule: NEVER fabricate receipt fields — look them up or leave
+  the build unlaunched. fp8: 15/16 placed (b last rank running).
