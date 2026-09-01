@@ -4244,3 +4244,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - nvfp4 stage1 (sparkb) COMPLETE 4/4; stage2 launched on freed sparkc
   (loop confirmed writing packs).
 - fp8 TP4PP4 16/16 closed (item 18 in audit doc).
+
+## 2026-09-01 ~18:4x — firing 37: nvfp4 stage2 3/4 (final rank building)
