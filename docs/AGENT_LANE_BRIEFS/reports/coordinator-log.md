@@ -4315,3 +4315,17 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   tiny drafter temp. Hygiene legs (symlinks=0, temps=0) of the final
   audit PASS everywhere. Remaining final-audit legs: uniform per-rank
   sizes + size-vs-source arithmetic per set.
+
+## 2026-09-01 ~21:5x — firing 50: uniform-audit anomalies RESOLVED (4 found, 4 fixed)
+
+- spark1: stale k3.tp16.rank01.pack (Aug-25 generation, 99,562,379,520)
+  removed — canonical relayed rank01 receipted in place. k3 set now
+  exactly 16 packs fleet-wide.
+- spark0: probe2.qwen38sp (35,031,257,856) removed — old probe pack;
+  qwenmax.pp16 stages complete+receipted.
+- sparkc/d/e/f: partial qwen27b.tp4pp4 (incomplete blocked-build set,
+  item 9 ticketed) removed.
+- spark1/2/c: truncated bf16-arm ranks rebuilding via g5bf16arm_build.sh.
+- Uniform-audit verdict corrections: TP4PP4 sets legitimately vary per
+  stage layer counts (20/20/19/19, 16/15/15/15, 11/11/11/12, 12x4);
+  uniformity applies per-stage.
