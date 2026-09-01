@@ -4384,3 +4384,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   copy) satisfied by the dual receipt from the sparkf build. bf16 arm
   rebuilds single-writer grinding. Backup mirror: 16/16 nodes running,
   sample spark8 already 235G mirrored; eta several hours at nice rate.
+
+## 2026-09-01 ~25:1x — firing 62: bf16 rebuilds 11.6/3.7/6.6 of 40G; du sweep skipped (slow ceph stat), backups progressing per-node logs
