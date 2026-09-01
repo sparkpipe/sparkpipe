@@ -1834,8 +1834,9 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 	{
 		uint32_t row;
 		uint64_t i;
+		/* Row 0 only: the sequential capture stages one row's buffers. */
 		for (row = 0u; row < 1u; row++)
-			for (i = 0u; i < (uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT; i++)
+			for (i = 0u; i < (uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT; i++)
 				if (seq_query_latent[i] != run_query_latent[i])
 				{
 					fprintf(stderr,"glm5_next_validation %s QUERY_LATENT diverges at row %u element %llu: seq %04x run %04x\n",
