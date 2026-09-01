@@ -4255,3 +4255,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   (qwen-max TP4PP4), 14 (dsv4-pro last 6), 15 (dsv4-pro TP16), 21-24
   (arms), 28 (drafter audit), 29-30 (final audit + board).
 - Next wave launch: qwen-max TP4PP4 (item 11) on the freed nodes.
+
+## 2026-09-01 ~19:2x — firing 39: items 9+11 constraint FILED; item 23 (bf16 arm) LAUNCHED 16/16
+
+- qwen-max TP4PP4 (11) joins 27B TP4PP4 (9) under the PP+TP packer
+  combined-mode dev-lane ticket (qwen38_stagepack has no TP args).
+- bf16-official arm probe PASSED (1160 tensors) -> item 23 LAUNCHED on
+  all 16 nodes: each builds its OWN rank locally into
+  glm5_next.bf16.tp16/packs (no shipping leg), verify + receipt inline.

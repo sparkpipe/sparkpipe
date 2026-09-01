@@ -160,9 +160,9 @@ Strays (fix-as-found):
 Per-set completions:
 7. 27B TP4 (fp8) — COMPLETE: MTP confirmed present by direct directory read (18 entries at the MTP-layer marker: attn/FFN kinds + MTP FC/norm kinds; tensors=866). NOTE: the family verifier's content walk reports 576/866 pack-vs-source byte mismatches — indicted as the verifier's fused-gate|up source-reading bug (the same packs are telemetry-proven serving-grade); dev-lane ticket filed.
 8. 27B TP4 nvfp4a16-bf16-spine arm — build from warm source (packer vertical per the decoded fused layout).
-9. 27B TP4xPP4 — build (with MTP).
+9. 27B TP4xPP4 — BLOCKED on packer: qwen38_27b_stagepack hard-refuses TP>1 with sliced layers; needs the PP+TP combined-mode extension. Dev-lane ticket filed (shared with item 11).
 10. qwen-max PP16 (nvfp4) — placed; MTP CONFIRMED (stage15 carries 23 MTP-marker entries) — no upgrade needed.
-11. qwen-max TP4xPP4 — build (with MTP; supersedes the deleted-in-error qwen38max.tp4pp4 — its rebuild folds in here).
+11. qwen-max TP4xPP4 — BLOCKED on the same packer constraint (qwen38_stagepack is PP-only, no TP args; supersedes the deleted-in-error qwen38max.tp4pp4 — its rebuild folds in here). Shared PP+TP dev-lane ticket with item 9.
 12. dsv4-flash TP16 — placed; MTP CONFIRMED (all 8 KIND_MTP_* entries 41-48 present).
 13. dsv4-flash TP4xPP4 — build.
 14. dsv4-pro TP4xPP4 — 10/16; build the last 6 ranks (packer rank-path extension). MTP CONFIRMED (8 KIND_MTP_* entries in the placed stage).
