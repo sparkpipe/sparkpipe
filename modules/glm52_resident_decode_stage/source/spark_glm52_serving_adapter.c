@@ -24,16 +24,36 @@
 #error "GLM52_CONTRACT_SHA256 must identify the exact package contract"
 #endif
 
-#define SPARK_GLM52_SERVING_ADAPTER_ID \
-	"spark.glm52.serving-adapter.tp8.expert_" GLM52_EXPERT_CODEC_NAME ".v1"
-/* Deployment-facing geometry: 8 flat ranks, one per TP rank, single PP
- * stage. The residentd fans each submission out to every rank
+/* Deployment-facing geometry: FLAT_RANKS flat ranks, one per TP rank,
+ * single PP stage. The residentd fans each submission out to every rank
  * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
- * adapter maps flat rank -> tp_rank and pins the firmware stage to 0. */
-#define SPARK_GLM52_SERVING_STAGE_COUNT 8u
-#define SPARK_GLM52_SERVING_TP_DEGREE 8u
+ * adapter maps flat rank -> tp_rank and pins the firmware stage to 0.
+ * The 5.2 serving band was TP8; the glm53full fleet deploys TP16 — the
+ * rank count is a build-time selection so each topology keeps its own
+ * adapter identity (ValidateForAdapter pins deployment node_count ==
+ * stage_count and the stage configs' tp_degree == TP_DEGREE). */
+#ifndef SPARK_GLM52_SERVING_FLAT_RANKS
+#define SPARK_GLM52_SERVING_FLAT_RANKS 8
+#endif
+#if SPARK_GLM52_SERVING_FLAT_RANKS == 16
+#define SPARK_GLM52_SERVING_TOPOLOGY_TAG "tp16"
+#elif SPARK_GLM52_SERVING_FLAT_RANKS == 8
+#define SPARK_GLM52_SERVING_TOPOLOGY_TAG "tp8"
+#else
+#error "unsupported SPARK_GLM52_SERVING_FLAT_RANKS (8 or 16)"
+#endif
+#define SPARK_GLM52_SERVING_ADAPTER_ID \
+	"spark.glm52.serving-adapter." SPARK_GLM52_SERVING_TOPOLOGY_TAG \
+	".expert_" GLM52_EXPERT_CODEC_NAME ".v1"
+#define SPARK_GLM52_SERVING_STAGE_COUNT ((uint32_t)SPARK_GLM52_SERVING_FLAT_RANKS)
+#define SPARK_GLM52_SERVING_TP_DEGREE ((uint32_t)SPARK_GLM52_SERVING_FLAT_RANKS)
+#if SPARK_GLM52_SERVING_FLAT_RANKS == 16
+#define SPARK_GLM52_SERVING_STAGE_LAYERS \
+	{78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u}
+#else
 #define SPARK_GLM52_SERVING_STAGE_LAYERS \
 	{78u,78u,78u,78u,78u,78u,78u,78u}
+#endif
 #define SPARK_GLM52_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
 #define SPARK_GLM52_SERVING_MODEL_ID "zai-org/GLM-5.2"

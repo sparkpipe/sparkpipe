@@ -102,6 +102,10 @@ ADAPTER_SHARED_FLAGS := -shared
 ADAPTER_LIBRARY_EXT := so
 endif
 ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/libglm52_serving_adapter_$(EXPERT_CODEC).$(ADAPTER_LIBRARY_EXT)
+# Flat rank count the serving adapter pins (deployment node_count and the
+# stage configs' tp_degree must equal it). 8 = the 5.2 TP8 band (default,
+# unchanged identity); 16 = the glm53full fleet.
+ADAPTER_FLAT_RANKS ?= 8
 
 .PHONY: adapter
 
@@ -110,6 +114,7 @@ adapter:
 	@mkdir -p "$(BUILD_DIRECTORY)"
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) \
 		-I$(REPOSITORY_ROOT)/src $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=$(lastword $(MODULE_BATCH_VARIANT_BUCKETS)) \
+		-DSPARK_GLM52_SERVING_FLAT_RANKS=$(ADAPTER_FLAT_RANKS) \
 		source/spark_glm52_serving_adapter.c \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
