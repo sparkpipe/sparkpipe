@@ -1422,11 +1422,24 @@ CEILING = 234369
 # 237353 -> 237423 (merged tree measure): dsv4pro verifier fix
 # (stacked-fp4 expected-bytes section order) + exit-4 root-cause
 # report + ranks script; carries #769/#771 pins on main.
-CEILING = 237423
 # (dsv4pro) +36 exact on the lane stack: the stacked-fp4 section-order
 # fix in tools/dsv4_pro_rank_pack_verify.py (+4) and the resumed ranks
 # script tools/dsv4pro_tp16_ranks.sh (+32) that main's 237317 measure
 # predates.
+
+# kimi-k3 prefill run port (+73 tracked): the K3 serving adapter derives the
+# KDA run prefix (consecutive same-slot rows = one sequential recurrence run;
+# a multi-row prefill span stops being T independent 1-row hits on one state
+# slot) + per-run state slots; the runner dispatch gains sequence_row_begin
+# (the step-input contract the kernels already implement) and honors
+# active_sequence_count. Decode with distinct-slot rows is runs-of-one -
+# bit-identical by the kernels' run-of-one contract, now EXECUTED on the
+# host (build/test_k3_run_equivalence, tests/-excluded harness): S1 a
+# multi-row run == sequential calls, S2 an explicit runs-of-one prefix ==
+# the NULL-prefix decode reading, S3 a mixed 3-run wave == sequential,
+# S4 the conv window carry. +11 tracked: the Makefile rule + GNU-C++
+# probe. Measured exact below.
+CEILING = PLACEHOLDER
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

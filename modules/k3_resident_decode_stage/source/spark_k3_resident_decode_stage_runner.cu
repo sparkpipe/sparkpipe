@@ -972,10 +972,15 @@ SparkStatus SparkK3StageRunnerSubmit(
 	if ( rows == 0u || rows > state->max_rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( dispatch->active_sequence_count > rows ||
+		(dispatch->sequence_row_begin != 0 &&
+			dispatch->active_sequence_count == 0u) )
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	stream = state->stream;
 	state->rows = rows;
 	b = state->dispatch.buffers;
-	sequences = rows;
+	sequences = dispatch->active_sequence_count != 0u ?
+		dispatch->active_sequence_count : rows;
 	packed_rows = rows * K3_TOP_K;
 	memset(&in, 0, sizeof(in));
 	/* Stage 0 embeds; the others consume the transported hidden stream. */
@@ -1001,7 +1006,12 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.positions = dispatch->positions;
 	in.context_length = dispatch->context_length;
 	in.sequence_of_row = dispatch->sequence_of_row;
-	in.sequence_row_begin = 0; /* pure decode: row i is sequence i */
+	/* Multi-row prefill: consecutive rows of one sequence form a run that
+	 * chains through the KDA recurrence (sequence_row_begin prefix; NULL
+	 * keeps the pure-decode reading row i = sequence i). The kernels were
+	 * already run-aware; this wiring is what the prefill equivalence gate
+	 * pins. */
+	in.sequence_row_begin = dispatch->sequence_row_begin;
 	in.kda_state_index = dispatch->kda_state_index;
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
