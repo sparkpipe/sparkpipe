@@ -1418,8 +1418,10 @@ CEILING = 234369
 # load-and-ignore + trailing-directory validation in the glm5_next module,
 # the NCCL completion trampoline (stack-overflow fix), the multi-row run
 # plumbing + causal indexer bounds + validator tier3/4 instruments
-# (kimidev bisect in flight), and the spark-queue multi-dev hardening.
-CEILING = 237708
+# (kimidev bisect in flight), and the spark-queue multi-dev hardening
+# (+69: the 8-dev scale pass - durable state home, batched age-gated
+# reaper, doctor).
+CEILING = 237777
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
