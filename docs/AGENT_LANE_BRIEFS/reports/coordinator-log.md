@@ -3930,3 +3930,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   on qwenflash rank4 (29.7/46.3G); sparkc TP8 4/4 built + chained
   verify+place loop RUNNING (placements pending).
 - Item 5 phase-1: 27B MTP verify at 660/866 tensors, still walking.
+
+## 2026-09-01 ~07:2x — firing 2: TP8 MAP COMPLETE 16/16; wrong bytes purged
+
+- glm5_next TP8 FP8 (MTP-carrying): ALL 8 ranks placed x2 targets — every
+  node holds exactly ONE canonical tp8 rank (uniform 43,479,544,832 B).
+  Removed 13 leftover wrong-topology tp16-named files (~272G). Checklist
+  item 3 → COMPLETE (audit doc updated).
+- k3: spark1 grinding; qwenflash rank4 29.9/46.3G; 27B MTP verify walking.
