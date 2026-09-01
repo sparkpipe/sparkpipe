@@ -4015,3 +4015,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   3.5G sliced at last check. spark1's own slice dir cleaned; its ceph
   client sickness noted for the sysadmin.
 - spark4 rank4 healthy: new builder writing fresh tmp (1.28G).
+
+## 2026-09-01 ~10:4x — firing 9: SECOND TP4PP4 wave opened — glm5_next flash (MTP)
+
+- PP4 stage matrix locked by dry-runs: stage0 = L0-10 + owns-embedding
+  (272t), stage1/2 = 11 each (287t), stage3 = L33-44 + MTP + owns-head
+  (341t). Body 11+11+11+12 = 45 ✓.
+- Build loops: stage0 on sparka, stage1 sparkb, stage2 sparkc, stage3
+  sparkd (4 ranks each: rank r = stage*4+tp -> spark{hex r}).
+- k3 rank1 relay on sparkf 46/97G; qwenflash rank4 on spark4 3.4/46G.
