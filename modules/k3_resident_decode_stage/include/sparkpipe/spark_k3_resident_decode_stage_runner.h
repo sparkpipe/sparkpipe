@@ -88,7 +88,7 @@ typedef struct SparkK3StageRunnerDispatch
     uint64_t sequence_id;
     uint64_t sequence_position;
     uint64_t deadline_time_ns;
-    uint32_t row_count;            /* == active sequences, pure decode */
+    uint32_t row_count;
     uint32_t active_sequence_count;
     /* Stage 0 consumes token_ids and ignores the hidden input; stages 1..3
      * consume hidden_input_bf16 and ignore token_ids. */
@@ -97,6 +97,13 @@ typedef struct SparkK3StageRunnerDispatch
     const uint32_t *context_length;    /* rows, device */
     const uint32_t *sequence_of_row;   /* rows, device */
     const uint32_t *kda_state_index;   /* sequences, device */
+    /* The recurrence kernels' run prefix: active_sequence_count+1 entries,
+     * device, runs[0]=0, runs[s] < runs[s+1] monotone, runs[active] ==
+     * row_count. Consecutive rows runs[s]..runs[s+1)-1 of one sequence
+     * chain through the KDA state in row order; a NULL prefix means row i
+     * IS sequence i (pure decode, run of one per row). The bit-exactness
+     * contract is "a run of T is identical to T one-row waves". */
+    const uint32_t *sequence_row_begin;
     const void *hidden_input_bf16;
     uint64_t hidden_input_bytes;
     void *hidden_output_bf16;
