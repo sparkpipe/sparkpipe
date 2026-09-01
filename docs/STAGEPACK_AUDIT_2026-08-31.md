@@ -171,7 +171,7 @@ Per-set completions:
 17. glm53full bf16 TP4xPP4 — build. (TP16 done.)
 18. glm53full fp8 TP4xPP4 — build. (TP16 done.)
 19. glm53full nvfp4 TP4xPP4 — build. (TP16 done.)
-20. qwen-flash TP4xPP4 — build.
+20. qwen-flash TP4xPP4 — COMPLETE: 16/16 ranks built+placed (rank r on spark-r, 4 stages x 12 layers x TP4, bf16, MTP-carrying, sha-receipted; zero FATALs).
 21. qwen-flash TP8 fp8 arm — build (with MTP).
 22. qwen-flash TP8 nvfp4 arm — build (with MTP).
 23. glm-flash bf16-official arm TP16 — build (~37G/rank).

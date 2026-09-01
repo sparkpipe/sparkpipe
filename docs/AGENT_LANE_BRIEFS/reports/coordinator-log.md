@@ -4004,3 +4004,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - qwen-flash TP4xPP4: 12/16 ranks placed (sparka 4/4 done; b 3, c 3, d 2
   built; all loops alive). Completion next cycle.
 - spark1 k3 slice 7.5G; spark4 qwenflash rank4 still building.
+
+## 2026-09-01 ~10:2x — firing 8: TP4PP4 qwen-flash COMPLETE 16/16; k3 rank1 pivoted to relay
+
+- Checklist item 20 COMPLETE: qwen-flash TP4xPP4 16/16 placed, zero
+  FATALs (audit doc updated).
+- spark1 wedged a THIRD time (folio_wait) — chronic client sickness on
+  that node. Pivoted rank1 to the relay pattern: sparkf (healthy) slices
+  + verifies rank1, ships to spark1 with dual sha check + receipt there.
+  3.5G sliced at last check. spark1's own slice dir cleaned; its ceph
+  client sickness noted for the sysadmin.
+- spark4 rank4 healthy: new builder writing fresh tmp (1.28G).
