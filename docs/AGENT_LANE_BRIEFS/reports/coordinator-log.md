@@ -4035,3 +4035,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   already, 287t/21.6G ranks), sparkc stage2, sparkd stage3.
 - k3 relay: rank1 sliced fully (2157 tensors), in cross-verify on sparkf
   before shipping to spark1. qwenflash rank4 rebuilding on spark4.
+
+## 2026-09-01 ~11:2x — firing 11: rank1 VERIFY PASS, shipping; wave 7/16
+
+- k3 rank1 relay: K3 PACK VERIFY PASS (2157 tensors, 93 layers); scp to
+  spark1 in flight (70/97G) — receipt lands on completion. k3 then 15/16.
+- qwenflash rank4: builder alive, 8.4/46.3G (the empty ls was an ssh
+  hiccup; nothing wrong).
+- glm5_next TP4PP4: sparkb STAGE DONE 4/4; sparkc 2/4, sparkd 1/4,
+  sparka 0/4 (stage-0 ranks biggest with embedding) — all loops alive.
