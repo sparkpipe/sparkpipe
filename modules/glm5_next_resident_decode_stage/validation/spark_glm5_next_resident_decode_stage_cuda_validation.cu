@@ -1765,16 +1765,71 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 			(uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"seq_copy"));
 	}
-	/* Run mode: fresh state, ONE 8-row run wave. */
+	/* Run mode: fresh state, ONE 8-row run wave. Stage-wise capture: the
+	 * attention output BEFORE the HC placement isolates attention-side
+	 * divergence from placement-side. */
+	static uint16_t run_attention_out[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN];
+	static uint16_t seq_attention_out[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN];
+	if (include_mlp == 0u)
+	{
+		/* sequential: re-walk capturing attention_out per row */
+		if (cudaMemset(fixture->kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
+			cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"state_reset_att"));
+		for (step = 0u; step < SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS; step++)
+		{
+			int32_t st;
+			SparkGlm5NextValBuildWave(fixture,layer,tokens[step],step);
+			st = SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave);
+			if (st == 0)
+				st = SparkGlm5NextLaunchCudaLayerAttention(&fixture->wave,0u);
+			if (st != 0)
+				return(SparkGlm5NextValFail(label,"seq_att"));
+			if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
+				return(SparkGlm5NextValFail(label,"seq_att_sync"));
+			if (cudaMemcpy(seq_attention_out + (uint64_t)step * SPARK_GLM5_NEXT_VHIDDEN,fixture->attention_out,
+				(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+				return(SparkGlm5NextValFail(label,"seq_att_copy"));
+		}
+	}
 	if (cudaMemset(fixture->kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
 		cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
 		return(SparkGlm5NextValFail(label,"state_reset2"));
 	SparkGlm5NextValBuildRunWave(fixture,layer,tokens,SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS);
+	if (include_mlp == 0u)
+	{
+		int32_t st = SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave);
+		if (st == 0)
+			st = SparkGlm5NextLaunchCudaLayerAttention(&fixture->wave,0u);
+		if (st != 0)
+			return(SparkGlm5NextValFail(label,"run_att"));
+		if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"run_att_sync"));
+		if (cudaMemcpy(run_attention_out,fixture->attention_out,
+			(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"run_att_copy"));
+	}
 	if (SparkGlm5NextValRunWaveOnce(fixture,layer,label,include_mlp) != 0)
 		return(1);
 	if (cudaMemcpy(run_mode,fixture->streams,
 		(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 		return(SparkGlm5NextValFail(label,"run_copy"));
+	if (include_mlp == 0u)
+	{
+		uint32_t row;
+		uint64_t i;
+		for (row = 0u; row < SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS; row++)
+			for (i = 0u; i < SPARK_GLM5_NEXT_VHIDDEN; i++)
+				if (seq_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i] !=
+					run_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i])
+				{
+					fprintf(stderr,"glm5_next_validation %s ATTENTION_OUT diverges at row %u element %llu: seq %04x run %04x\n",
+						label,row,(unsigned long long)i,
+						(unsigned)seq_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i],
+						(unsigned)run_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i]);
+					return(SparkGlm5NextValFail(label,"run_equivalence_attention"));
+				}
+	}
 	{
 		uint32_t row;
 		uint64_t i;
