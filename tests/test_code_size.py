@@ -1424,7 +1424,9 @@ CEILING = 234369
 # report + ranks script; carries #769/#771 pins on main.
 # 237423 -> 237430: queue blocked-state promotion (dispatch-side
 # promote-before-candidates; fixes priority-inversion stranding).
-CEILING = 237523
+# 237523 -> 237525: dsv4pro newest stack tail (sampler section-split,
+# verify-only finish script, driver-rebuild cwd fix).
+CEILING = 237525
 # (dsv4pro) +93 exact: the section-split sampler (payload and scale
 # sections verified at their own directory offsets), the final
 # verify-only finish script, and tools/dsv4pro_driver_rebuild.sh —
