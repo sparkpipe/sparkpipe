@@ -4224,3 +4224,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Item 18 COMPLETE. nvfp4 stages: 0 (sparka) + 3 (sparkd) building,
   stage 1 launched on freed sparkb, stage 2 queued for sparkc. All with
   the TRUE revision pin 363e8f086905... .
+
+## 2026-09-01 ~18:0x — firing 34: nvfp4 8/16 (stages 0+3 done); stage1 relaunched mkdir-first
+
+- nvfp4 stage0 (sparka) + stage3 (sparkd) COMPLETE 4/4 each. sparkb
+  stage1 relaunches kept dying: the killed batch leg never created the
+  work dir, and the redirect into the missing dir aborted the launch
+  before bash ran (pid = wrapper self-match). Fixed with mkdir-first +
+  separate-connection verify. fp8 COMPLETE 16/16 (sparkc last rank
+  landed). Item 18 CLOSED; item 19 at 8/16 + stage1 rebuilding.
