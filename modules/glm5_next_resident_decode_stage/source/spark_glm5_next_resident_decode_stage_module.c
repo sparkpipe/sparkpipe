@@ -128,6 +128,12 @@ struct SparkGlm5NextModuleState
 	uint32_t *kda_state_index_host;
 	uint64_t layer_seen[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint64_t global_seen;
+	/* MTP packs (flags&MTP): the layer-45 draft head rides the spec path,
+	 * outside the stage's 0..44 layer range. Its entries are validated
+	 * (geometry, ranges, inventory) but their payloads are NOT loaded
+	 * until the drafter consumes them - load-and-ignore. */
+	uint64_t mtp_seen;
+	uint32_t pack_has_mtp;
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
@@ -310,7 +316,7 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( header->magic != SPARK_GLM5_NEXT_STAGEPACK_MAGIC || header->format_version != SPARK_GLM5_NEXT_STAGEPACK_FORMAT_VERSION || header->header_bytes != SPARK_GLM5_NEXT_STAGEPACK_HEADER_BYTES || header->directory_entry_bytes != SPARK_GLM5_NEXT_STAGEPACK_ENTRY_BYTES || header->codec_abi_version != SPARK_WEIGHT_CODEC_ABI_VERSION )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( (header->flags & ~SPARK_GLM5_NEXT_STAGEPACK_KNOWN_FLAGS) != 0u || (header->flags & SPARK_GLM5_NEXT_STAGEPACK_FLAG_MTP) != 0u )
+	if ( (header->flags & ~SPARK_GLM5_NEXT_STAGEPACK_KNOWN_FLAGS) != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	if ( SparkGlm5NextStagePackHeaderTpDegree(header) == 0u || SparkGlm5NextStagePackHeaderTpDegree(header) != state->tp_degree || SparkGlm5NextStagePackHeaderTpRank(header) != state->tp_rank )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -341,11 +347,21 @@ static SparkStatus SparkGlm5NextPackValidateEntryGeometry(
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( entry->layer_index != SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER )
 	{
-		if ( entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		local_layer = entry->layer_index - state->first_layer_index;
-		if ( (state->layer_seen[local_layer] & (UINT64_C(1) << entry->tensor_kind)) != 0u )
-			return(SPARK_STATUS_DUPLICATE);
+		if ( entry->layer_index == SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
+		{
+			/* Outside the stage's layer range by design (the draft head
+			 * rides the spec path): shape-validated, tracked in mtp_seen. */
+			if ( (state->mtp_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
+				return(SPARK_STATUS_DUPLICATE);
+		}
+		else
+		{
+			if ( entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count )
+				return(SPARK_STATUS_SCHEMA_ERROR);
+			local_layer = entry->layer_index - state->first_layer_index;
+			if ( (state->layer_seen[local_layer] & (UINT64_C(1) << entry->tensor_kind)) != 0u )
+				return(SPARK_STATUS_DUPLICATE);
+		}
 	}
 	else if ( (state->global_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
 		return(SPARK_STATUS_DUPLICATE);
@@ -402,6 +418,8 @@ static void SparkGlm5NextPackMarkSeen(
 {
 	if ( entry->layer_index == SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER )
 		state->global_seen |= UINT64_C(1) << entry->tensor_kind;
+	else if ( entry->layer_index == SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
+		state->mtp_seen |= UINT64_C(1) << entry->tensor_kind;
 	else
 		state->layer_seen[entry->layer_index - state->first_layer_index] |= UINT64_C(1) << entry->tensor_kind;
 }
@@ -460,8 +478,9 @@ static SparkStatus SparkGlm5NextPackAssignLayer(
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_ENORM:
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_HNORM:
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_SHARED_NORM:
-		/* The MTP head rides the spec path (M5); accepted and validated at
-		 * load, consumed later. */
+		/* Unreachable today: PackLoad skips layer-45 payload loads (the
+		 * drafter rides the spec path). The cases stay so the wiring
+		 * lands as an assignment, not a schema change. */
 		break;
 	default: return(SPARK_STATUS_SCHEMA_ERROR);
 	}
@@ -529,8 +548,16 @@ static uint64_t SparkGlm5NextExpectedGlobalMask(const SparkGlm5NextModuleState *
 
 static SparkStatus SparkGlm5NextPackValidateInventory(const SparkGlm5NextModuleState *state)
 {
+	uint64_t expected_mtp;
 	uint32_t local;
 	if ( state->global_seen != SparkGlm5NextExpectedGlobalMask(state) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	/* An MTP pack carries exactly the shape table's layer-45 inventory; a
+	 * non-MTP pack must carry none of it (a stray layer-45 entry with
+	 * flags=0 fails here instead of silently ignoring draft weights). */
+	expected_mtp = state->pack_has_mtp != 0u ?
+		SparkGlm5NextExpectedLayerMask(state,SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX) : 0u;
+	if ( state->mtp_seen != expected_mtp )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	for (local=0u; local<state->layer_count; local++)
 		if ( state->layer_seen[local] != SparkGlm5NextExpectedLayerMask(state,state->first_layer_index + local) )
@@ -560,6 +587,8 @@ static SparkStatus SparkGlm5NextPackLoad(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextPackValidateHeader(state,&header,file_bytes);
 	if ( status == SPARK_STATUS_OK )
+		state->pack_has_mtp = (header.flags & SPARK_GLM5_NEXT_STAGEPACK_FLAG_MTP) != 0u ? 1u : 0u;
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_GLM5_NEXT_MODULE_TAG,file,header.directory_offset,entries,(uint64_t)header.tensor_count * sizeof(entries[0]));
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
 	{
@@ -571,8 +600,14 @@ static SparkStatus SparkGlm5NextPackLoad(
 		status = SparkGlm5NextPackValidateRanges(entries,header.tensor_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextPackValidateInventory(state);
+	/* Load only the stage's own tensors: layer-45 entries are validated
+	 * above (geometry, ranges, inventory) but their payloads stay in the
+	 * pack file - the drafter that consumes them lands with the spec
+	 * path, and until then loading them would pin dead device memory on
+	 * every rank. */
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
-		status = SparkGlm5NextPackLoadEntry(state,file,&entries[index]);
+		if ( entries[index].layer_index != SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
+			status = SparkGlm5NextPackLoadEntry(state,file,&entries[index]);
 	if ( fclose(file) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	return(status);
