@@ -7,7 +7,7 @@
 #include "sparkpipe/spark_status.h"
 
 /*
- * Qwen 3.8 Max stage pack: a single file holding every tensor one pipeline
+ * Qwen4 Flash stage pack: a single file holding every tensor one pipeline
  * STAGE makes resident, plus the geometry the tensors were produced for.
  * The header restates the model geometry and the layer slice; every field is
  * compared against the compiled constants at load and a mismatch is a hard
@@ -37,25 +37,6 @@ typedef enum SparkQwen4FlashStagePackTensorKind
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_EMBEDDING = 0,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM = 1,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD = 2,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM = 3,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM = 4,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE = 5,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1 = 6,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3 = 7,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN = 8,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE = 9,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP = 10,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN = 11,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT = 12,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_QKV = 13,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_GATE = 14,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_BETA = 15,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DECAY = 16,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_OUTPUT = 17,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_CONV_WEIGHT = 18,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_A_LOG = 19,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DT_BIAS = 20,
-	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_NORM = 21,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY = 22,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY = 23,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE = 24,
@@ -95,10 +76,30 @@ typedef enum SparkQwen4FlashStagePackTensorKind
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_KIND_COUNT = 55
 } SparkQwen4FlashStagePackTensorKind;
 
-#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_GLOBAL 0u
-#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_EVERY_LAYER 1u
-#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_GDN_LAYER 2u
-#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_ATTN_LAYER 3u
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM SPARK_STAGEPACK_TENSOR_ATTENTION_NORM
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM SPARK_STAGEPACK_TENSOR_MLP_NORM
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE SPARK_STAGEPACK_TENSOR_MOE_GATE
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1 SPARK_STAGEPACK_TENSOR_MOE_W1
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3 SPARK_STAGEPACK_TENSOR_MOE_W3
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN SPARK_STAGEPACK_TENSOR_MOE_DOWN
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP SPARK_STAGEPACK_TENSOR_MOE_SHARED_UP
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN SPARK_STAGEPACK_TENSOR_MOE_SHARED_DOWN
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_QKV SPARK_STAGEPACK_TENSOR_GDN_QKV
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_GATE SPARK_STAGEPACK_TENSOR_GDN_GATE
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_BETA SPARK_STAGEPACK_TENSOR_GDN_BETA
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DECAY SPARK_STAGEPACK_TENSOR_GDN_DECAY
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_OUTPUT SPARK_STAGEPACK_TENSOR_GDN_OUTPUT
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_CONV_WEIGHT SPARK_STAGEPACK_TENSOR_GDN_CONV_WEIGHT
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_A_LOG SPARK_STAGEPACK_TENSOR_GDN_A_LOG
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DT_BIAS SPARK_STAGEPACK_TENSOR_GDN_DT_BIAS
+#define SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_NORM SPARK_STAGEPACK_TENSOR_GDN_NORM
+
+#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_GLOBAL SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL
+#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_EVERY_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER
+#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_GDN_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GDN_LAYER
+#define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_ATTN_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_ATTN_LAYER
 #define SPARK_QWEN4_FLASH_STAGEPACK_CLASS_PLE_LAYER 4u
 
 typedef struct SparkQwen4FlashStagePackHeader
@@ -265,10 +266,6 @@ _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPA
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"qwen4 f32 weight code must match the shared format");
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 == SPARK_STAGEPACK_FORMAT_WEIGHT_FP8_E4M3_F32B128,"qwen4 fp8 weight code must match the shared format");
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64 == SPARK_STAGEPACK_FORMAT_WEIGHT_I64,"qwen4 i64 weight code must match the shared format");
-_Static_assert(SPARK_QWEN4_FLASH_STAGEPACK_CLASS_GLOBAL == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL,"qwen4 global class must match the shared format");
-_Static_assert(SPARK_QWEN4_FLASH_STAGEPACK_CLASS_EVERY_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER,"qwen4 every-layer class must match the shared format");
-_Static_assert(SPARK_QWEN4_FLASH_STAGEPACK_CLASS_GDN_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GDN_LAYER,"qwen4 gdn class must match the shared format");
-_Static_assert(SPARK_QWEN4_FLASH_STAGEPACK_CLASS_ATTN_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_ATTN_LAYER,"qwen4 attn class must match the shared format");
 
 static const SparkStagePackGeometryTable SparkQwen4FlashStagePackGeometry =
 {
@@ -282,11 +279,6 @@ static const SparkStagePackGeometryTable SparkQwen4FlashStagePackGeometry =
 	.gdn_head_value_dimension = SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_VALUE_DIMENSION,
 	.gdn_conv_kernel = SPARK_QWEN4_FLASH_MODEL_GDN_CONV_KERNEL
 };
-
-static inline void SparkQwen4FlashStagePackShapeInit(SparkQwen4FlashStagePackTensorShape *shape)
-{
-	SparkStagePackShapeInit(shape);
-}
 
 static inline int32_t SparkQwen4FlashStagePackShapeGlobal(uint32_t tensor_kind, SparkQwen4FlashStagePackTensorShape *shape)
 {
@@ -358,13 +350,6 @@ static inline int32_t SparkQwen4FlashStagePackShapeEveryLayer(uint32_t tensor_ki
 	default:
 		return(-1);
 	}
-}
-
-static inline int32_t SparkQwen4FlashStagePackShapeGdn(uint32_t tensor_kind, SparkQwen4FlashStagePackTensorShape *shape)
-{
-	/* The whole GDN inventory of this family is the shared axis. */
-	return(SparkStagePackShapeGdnCommon(tensor_kind,
-		&SparkQwen4FlashStagePackGeometry,shape));
 }
 
 static inline int32_t SparkQwen4FlashStagePackShapeAttn(uint32_t tensor_kind, SparkQwen4FlashStagePackTensorShape *shape)
@@ -452,19 +437,19 @@ static inline int32_t SparkQwen4FlashStagePackShapePle(uint32_t tensor_kind, Spa
 
 static inline int32_t SparkQwen4FlashStagePackTensorShapeOf(uint32_t tensor_kind, SparkQwen4FlashStagePackTensorShape *shape)
 {
-	SparkQwen4FlashStagePackShapeInit(shape);
+	SparkStagePackShapeInit(shape);
 	if ( SparkQwen4FlashStagePackShapeGlobal(tensor_kind,shape) == 0 )
 		return(0);
-	SparkQwen4FlashStagePackShapeInit(shape);
+	SparkStagePackShapeInit(shape);
 	if ( SparkQwen4FlashStagePackShapeEveryLayer(tensor_kind,shape) == 0 )
 		return(0);
-	SparkQwen4FlashStagePackShapeInit(shape);
-	if ( SparkQwen4FlashStagePackShapeGdn(tensor_kind,shape) == 0 )
+	SparkStagePackShapeInit(shape);
+	if ( SparkStagePackShapeGdnCommon(tensor_kind,&SparkQwen4FlashStagePackGeometry,shape) == 0 )
 		return(0);
-	SparkQwen4FlashStagePackShapeInit(shape);
+	SparkStagePackShapeInit(shape);
 	if ( SparkQwen4FlashStagePackShapeAttn(tensor_kind,shape) == 0 )
 		return(0);
-	SparkQwen4FlashStagePackShapeInit(shape);
+	SparkStagePackShapeInit(shape);
 	if ( SparkQwen4FlashStagePackShapePle(tensor_kind,shape) == 0 )
 		return(0);
 	return(-1);

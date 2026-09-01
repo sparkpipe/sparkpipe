@@ -212,6 +212,7 @@ def main() -> int:
          f"-I{ROOT}/model-families/qwen38_27b/include",
          f"-I{ROOT}/modules/qwen38_27b_resident_decode_stage/include",
          f"-I{ROOT}/modules/qwen38_27b_resident_decode_stage/source",
+         str(ROOT / "runtime/stagepack_format.c"),
          str(SYNTHESIZER), "-o", str(synthesizer_bin)],
         capture_output=True, text=True)
     check(build.returncode == 0, f"synthesizer build: {build.stderr[:200]}")
