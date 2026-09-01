@@ -4386,3 +4386,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   sample spark8 already 235G mirrored; eta several hours at nice rate.
 
 ## 2026-09-01 ~25:1x — firing 62: bf16 rebuilds 11.6/3.7/6.6 of 40G; du sweep skipped (slow ceph stat), backups progressing per-node logs
+
+## 2026-09-01 ~25:2x — firing 63: bf16 rebuilds 12.2/3.9/6.7 of 40G; on pace, single writers
