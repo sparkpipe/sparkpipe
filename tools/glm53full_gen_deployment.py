@@ -93,7 +93,12 @@ def resident_deployment(codec, runtime_root_template):
     for rank, host in enumerate(HOSTS):
         nodes.append({
             "rank_index": rank,
-            "stage_index": 0,
+            # The deployment schema requires stage_index UNIQUE per node,
+            # and the glm52 adapter asserts tp_rank == stage_index
+            # (SparkGlm52ServingAdapterConfigure) while overriding the
+            # module context to the single 78-layer stage itself. So
+            # stage_index here IS the TP rank, not a pipeline stage.
+            "stage_index": rank,
             "runtime_root": runtime_root_template.format(host=host, codec=codec),
             "node_target": "cuda.sm121.glm52.resident_decode_stage.bf16.expert_%s" % codec,
             "transport_host": host,
