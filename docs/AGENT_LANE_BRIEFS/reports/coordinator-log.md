@@ -4052,3 +4052,16 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   its qwenflash rank4 rebuild, now 11.3/46.3G).
 - glm5_next TP4PP4: 12/16 placed (sparkb 4/4, sparkd 4/4 done; sparkc
   3/4; sparka 0/4 building the heavy stage-0 ranks).
+
+## 2026-09-01 ~11:5x — firing 13: dsv4-flash TP4PP4 BUILDING; 27B TP4PP4 needs packer extension
+
+- dsv4-flash TP4xPP4 (checklist 13): base pack found intact on warm
+  (166,918,150,256 B); the in-tree driver (dsv4_tp4_pp4_stagepacks.py,
+  flash plan 11/11/11/10) is RUNNING on sparka — 6/16 ranks emitted
+  already. Ship+sha-receipt loop fires when all 16 land.
+- 27B TP4xPP4 (checklist 9): BLOCKED on a packer constraint —
+  qwen38_27b_stagepack hard-refuses TP>1 with sliced layers ("TP packs
+  cover the whole stack"). Needs a PP+TP combined-mode extension = dev
+  lane ticket; dry-run validated everything else (4x213-tensor ranks,
+  ~4.06G each).
+- k3 rank1 relay shipped+receipted (15/16); qwenflash rank4 rebuilding.

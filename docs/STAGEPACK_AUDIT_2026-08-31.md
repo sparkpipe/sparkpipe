@@ -167,7 +167,7 @@ Per-set completions:
 13. dsv4-flash TP4xPP4 — build.
 14. dsv4-pro TP4xPP4 — 10/16; build the last 6 ranks (packer rank-path extension). MTP CONFIRMED (8 KIND_MTP_* entries in the placed stage).
 15. dsv4-pro TP16 — build from the nvfp4-pro source (877G; splicer rank-path).
-16. glm5_next (flash) TP4xPP4 — build (with MTP).
+16. glm5_next (flash) TP4xPP4 — COMPLETE: 16/16 placed (stage matrix 272/287/287/341 tensors; stage0 owns-emb, stage3 MTP+owns-head; rank r on spark-r, sha-receipted).
 17. glm53full bf16 TP4xPP4 — build. (TP16 done.)
 18. glm53full fp8 TP4xPP4 — build. (TP16 done.)
 19. glm53full nvfp4 TP4xPP4 — build. (TP16 done.)
