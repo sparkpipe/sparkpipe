@@ -40,6 +40,94 @@
 typedef int32_t SparkTpNcclResult;
 typedef struct SparkTpNcclComm *SparkTpNcclCommHandle;
 
+/* Continuation trampoline: the NCCL backend completes submissions inline
+ * ("stream-order continuation" - the callback enqueues dependent work on
+ * the same stream). A submission whose chain advances through every
+ * collective nests one frame-set per collective; a 1024-row prefill wave
+ * chains ~15k completions and overflows the 8MB stack (core receipt:
+ * 15,636 frames, SIGSEGV inside cuLaunchKernel's frame push). The guard
+ * below defers completions that arrive while another completion is
+ * already running on this thread; the outermost submit drains the ring
+ * ITERATIVELY - FIFO order is preserved, stack depth stays O(1 chain
+ * segment), and the semantics are unchanged (everything still completes
+ * before Submit returns).
+ *
+ * One process-wide ring: a chain continuation may submit to a sibling
+ * collective instance (the module's narrow + HC-wide twins), so the
+ * drain must cover both. The residentd drives all of this from one
+ * thread; the ring mutex keeps that an implementation detail, not a
+ * contract. */
+#define SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY 65536u
+
+typedef struct SparkTpNcclPendingCompletion
+{
+	SparkTpDeviceCollectiveCompletionFunction completion_function;
+	void *completion_context;
+	SparkTpDeviceCollectiveCompletion completion;
+} SparkTpNcclPendingCompletion;
+
+static SparkTpNcclPendingCompletion SparkTpNcclPendingCompletions[SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY];
+static uint32_t SparkTpNcclPendingCompletionCount;
+static uint32_t SparkTpNcclPendingCompletionHead;
+static pthread_mutex_t SparkTpNcclPendingCompletionMutex = PTHREAD_MUTEX_INITIALIZER;
+static __thread uint32_t SparkTpNcclContinuationDepth;
+
+static void SparkTpNcclDeliverCompletion(
+	SparkTpDeviceCollectiveCompletionFunction completion_function,
+	void *completion_context,
+	SparkTpDeviceCollectiveCompletion *completion,
+	uint32_t credit_count,
+	uint64_t ordinal,
+	uint32_t slot_index)
+{
+	completion->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	completion->descriptor_bytes = sizeof(*completion);
+	completion->status = SPARK_STATUS_OK;
+	completion->slot_index = slot_index;
+	completion->credit_index = (uint32_t)(ordinal % credit_count);
+	completion->ordinal = ordinal;
+	completion->generation = ordinal / credit_count + 1u;
+	if ( SparkTpNcclContinuationDepth == 0u )
+	{
+		SparkTpNcclContinuationDepth = 1u;
+		completion_function(completion_context,completion);
+		for ( ; ; )
+		{
+			SparkTpNcclPendingCompletion pending;
+			(void)pthread_mutex_lock(&SparkTpNcclPendingCompletionMutex);
+			if ( SparkTpNcclPendingCompletionCount == 0u )
+			{
+				(void)pthread_mutex_unlock(&SparkTpNcclPendingCompletionMutex);
+				break;
+			}
+			pending = SparkTpNcclPendingCompletions[SparkTpNcclPendingCompletionHead];
+			SparkTpNcclPendingCompletionHead = (SparkTpNcclPendingCompletionHead + 1u) %
+				SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY;
+			SparkTpNcclPendingCompletionCount--;
+			(void)pthread_mutex_unlock(&SparkTpNcclPendingCompletionMutex);
+			pending.completion_function(pending.completion_context,&pending.completion);
+		}
+		SparkTpNcclContinuationDepth = 0u;
+	}
+	else
+	{
+		(void)pthread_mutex_lock(&SparkTpNcclPendingCompletionMutex);
+		if ( SparkTpNcclPendingCompletionCount >= SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY )
+		{
+			(void)pthread_mutex_unlock(&SparkTpNcclPendingCompletionMutex);
+			/* Fail loudly rather than silently reorder or nest: a
+			 * submission chain this deep cannot be served. */
+			fprintf(stderr,"sparkpipe_tp_collective backend=nccl pending-completion ring exhausted\n");
+			abort();
+		}
+		SparkTpNcclPendingCompletions[(SparkTpNcclPendingCompletionHead + SparkTpNcclPendingCompletionCount) %
+			SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY] =
+			(SparkTpNcclPendingCompletion){completion_function,completion_context,*completion};
+		SparkTpNcclPendingCompletionCount++;
+		(void)pthread_mutex_unlock(&SparkTpNcclPendingCompletionMutex);
+	}
+}
+
 typedef struct SparkTpNcclUniqueId
 {
 	uint8_t bytes[SPARK_TP_NCCL_UNIQUE_ID_BYTES];
@@ -792,17 +880,14 @@ static SparkStatus SparkTpNcclSubmitAllReduce(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	memset(&completion,0,sizeof(completion));
-	completion.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	completion.descriptor_bytes = sizeof(completion);
-	completion.status = SPARK_STATUS_OK;
-	completion.slot_index = submission->slot_index;
-	completion.credit_index = (uint32_t)(submission->ordinal %
-		collective->credit_count);
-	completion.ordinal = submission->ordinal;
-	completion.generation = submission->ordinal / collective->credit_count + 1u;
 	/* The callback is a stream-order continuation: the reduction is enqueued,
-	 * and the callback may enqueue dependent work on the same stream. */
-	submission->completion_function(submission->completion_context,&completion);
+	 * and the callback may enqueue dependent work on the same stream. The
+	 * delivery trampoline keeps that continuation OFF this stack frame when
+	 * it would nest (see SparkTpNcclDeliverCompletion). */
+	SparkTpNcclDeliverCompletion(submission->completion_function,
+		submission->completion_context,&completion,
+		collective->credit_count,submission->ordinal,
+		submission->slot_index);
 	return(SPARK_STATUS_OK);
 }
 
