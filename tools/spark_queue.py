@@ -101,9 +101,11 @@ def load_queue():
 
 
 def rewrite_queue(entries):
-    with open(QUEUE, "w") as fh:
+    tmp = QUEUE + ".tmp"
+    with open(tmp, "w") as fh:
         for e in entries:
             fh.write(json.dumps(e) + "\n")
+    os.replace(tmp, QUEUE)
 
 
 def load_reservations():
@@ -117,8 +119,10 @@ def load_reservations():
 
 
 def save_reservations(res):
-    with open(RESERV, "w") as fh:
+    tmp = RESERV + ".tmp"
+    with open(tmp, "w") as fh:
         json.dump(res, fh, indent=1, sort_keys=True)
+    os.replace(tmp, RESERV)
 
 
 def append_result(entry, exit_code, note=""):
@@ -179,6 +183,11 @@ def expire_stale(res):
 
 
 def cmd_add(args):
+    if getattr(args, "cmd_file", None):
+        if args.cmd:
+            sys.exit("--cmd and --cmd-file are mutually exclusive")
+        with open(args.cmd_file) as fh:
+            args.cmd = fh.read()
     with acquire_lock():
         check_denied(args.cmd or "")
         entries = load_queue()
@@ -203,7 +212,8 @@ def cmd_add(args):
 
 
 def cmd_list(args):
-    entries = load_queue()
+    with acquire_lock():
+        entries = load_queue()
     res = load_reservations()
     if not args.all:
         entries = [e for e in entries if e["state"] in ("queued", "running", "blocked")]
@@ -226,6 +236,13 @@ def cmd_status(args):
                 if rc == 0 and tail:
                     print("--- log tail ---\n" + tail)
             return
+    if os.path.exists(RESULTS):
+        for line in reversed(open(RESULTS).read().splitlines()):
+            if line.strip() and json.loads(line)["id"] == args.id:
+                print(json.dumps(json.loads(line), indent=1, sort_keys=True))
+                print("(finished - see results.jsonl; task log was "
+                      f"/tmp/sparkqueue-{args.id}.log on {json.loads(line)['nodes'][0]})")
+                return
     sys.exit(f"no entry '{args.id}'")
 
 
@@ -236,6 +253,8 @@ def cmd_done(args):
         hit = False
         for e in entries:
             if e["id"] == args.id:
+                if e.get("state") == "running":
+                    kill_remote_task(e, res)
                 e["state"] = "done"
                 append_result(e, args.exit, "marked done")
                 for n in e["nodes"]:
@@ -377,7 +396,9 @@ def cmd_dispatch(args):
                 acquired_at=now(), ttl_minutes=ttl,
                 pid=None)
         n0 = task["nodes"][0]
-        inner = task['cmd'] + "; echo \"$?\" > /tmp/sparkqueue-" + task['id'] + ".exit"
+        inner = ("echo $$ > /tmp/sparkqueue-" + task['id'] + ".pid; "
+                 + task['cmd']
+                 + "; echo \"$?\" > /tmp/sparkqueue-" + task['id'] + ".exit")
         wrapper = ("cd " + task.get('cwd', '$HOME') + " && nohup setsid bash -c "
                    + shlex.quote(inner)
                    + " >/tmp/sparkqueue-" + task['id'] + ".log 2>&1 & echo $!")
@@ -389,6 +410,24 @@ def cmd_dispatch(args):
         rewrite_queue(entries); save_reservations(res)
         print(f"dispatched {task['id']} nodes={','.join(task['nodes'])} pid={pid}")
 
+
+def kill_remote_task(entry, res):
+    """TERM the remote process of a running task (best effort) so cancel/
+    done cannot orphan a live process on a node we are about to release.
+    The queue's own cleanup - the denylist governs submitted commands."""
+    n0 = entry["nodes"][0]
+    pid = res.get(n0, {}).get("pid")
+    if not pid or not str(pid).isdigit():
+        _, pid_txt = ssh(n0,
+            f"cat /tmp/sparkqueue-{entry['id']}.pid 2>/dev/null", timeout=10)
+        pid = pid_txt.strip() if pid_txt.strip().isdigit() else None
+    if pid:
+        # The wrapper is setsid'd: TERM the PROCESS GROUP or children
+        # (sleep, benchmarks) survive the wrapper's death as orphans.
+        rc, _ = ssh(n0, f"kill -- -{pid} {pid} 2>/dev/null", timeout=10)
+        return rc == 0
+    return False
+
 def cmd_cancel(args):
     with acquire_lock():
         entries = load_queue()
@@ -396,6 +435,8 @@ def cmd_cancel(args):
         kept = []
         for e in entries:
             if e["id"] == args.id:
+                if e.get("state") == "running":
+                    kill_remote_task(e, res)
                 append_result(e, -1, "cancelled")
                 for n in e["nodes"]:
                     if res.get(n, {}).get("id") == e["id"]:
@@ -437,6 +478,11 @@ def cmd_release(args):
 
 
 def cmd_schedule(args):
+    """Legacy name kept for the sweep: ONE dispatch pass (same semantics
+    as dispatch - the old wall-clock launch path is gone)."""
+    cmd_dispatch(args)
+
+def _legacy_schedule_unused(args):
     with acquire_lock():
         """One dispatch pass: poll running entries, then launch runnable ones."""
         lock = acquire_lock()
@@ -518,6 +564,8 @@ def main():
     a.add_argument("--id", required=True)
     a.add_argument("--nodes", required=True, help="comma list, e.g. spark3")
     a.add_argument("--cmd")
+    a.add_argument("--cmd-file", help="read the command from this file "
+        "(avoids nested-quoting footguns for long scripts)")
     a.add_argument("--cwd")
     a.add_argument("--priority", type=int, default=5)
     a.add_argument("--kind", default="run", choices=["run", "gate", "note"])
