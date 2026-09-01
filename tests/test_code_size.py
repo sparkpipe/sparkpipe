@@ -1422,7 +1422,9 @@ CEILING = 234369
 # 237353 -> 237423 (merged tree measure): dsv4pro verifier fix
 # (stacked-fp4 expected-bytes section order) + exit-4 root-cause
 # report + ranks script; carries #769/#771 pins on main.
-CEILING = 237423
+# 237423 -> 237430: queue blocked-state promotion (dispatch-side
+# promote-before-candidates; fixes priority-inversion stranding).
+CEILING = 237430
 # (dsv4pro) +36 exact on the lane stack: the stacked-fp4 section-order
 # fix in tools/dsv4_pro_rank_pack_verify.py (+4) and the resumed ranks
 # script tools/dsv4pro_tp16_ranks.sh (+32) that main's 237317 measure
