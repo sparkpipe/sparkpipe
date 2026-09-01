@@ -1422,7 +1422,16 @@ CEILING = 234369
 # 237333 -> 237359: qwen38_max TP16-ready attention kernels —
 # KV-head replication past the kv head count (model header +
 # kernel width params).
-CEILING = 237359
+# 237359 -> 237363: symmetric resource classes (gpu candidates
+# ignore cpu holds - cpu pack builds were freezing the gpu
+# queue head-of-line). NOTE: an earlier merge lost the 237375
+# pin from #769 - lanes, re-pin from MEASURED reality, never
+# carry an old ceiling forward through conflict resolution.
+# 237375 (from #769) was lost by a later merge conflict resolution;
+# re-pinned from THIS branch's measured reality. +4: symmetric
+# resource classes (gpu candidates ignore cpu holds - cpu pack
+# builds were freezing the gpu queue head-of-line).
+CEILING = 237363
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

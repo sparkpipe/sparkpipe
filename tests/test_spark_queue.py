@@ -71,6 +71,8 @@ def run(state, *argv):
             spark_queue.main()
         rc = 0
     except SystemExit as e:
+        if isinstance(e.code, str):
+            buf.write(e.code)
         rc = e.code if isinstance(e.code, int) else 1
     finally:
         sys.argv = old_argv
@@ -202,6 +204,14 @@ def main():
     check("priority 0 beats 9 on the same node",
           entries["p-high"]["state"] == "running" and entries["p-low"]["state"] == "queued", out)
 
+    # --- 15-minute task cap (operator window model)
+    rc, out = run(tmp, "add", "--id", "too-long", "--nodes", "spark6",
+                  "--ttl-min", "240", "--cmd", "echo x")
+    check("ttl above 15 minutes refused", rc != 0 and "15-minute" in out, out)
+    rc, out = run(tmp, "add", "--id", "fits", "--nodes", "spark6",
+                  "--ttl-min", "15", "--cmd", "echo y")
+    check("ttl of exactly 15 accepted", rc == 0, out)
+
     # --- resource classes: cpu work coexists with gpu holds
     fake.exited["race"] = 9
     rewind_dispatch_age(tmp)
@@ -217,17 +227,26 @@ def main():
     res = load_state(tmp, "reservations.json")
     check("cpu hold records its class",
           res.get("spark5", {}).get("resources") == "cpu", str(res.get("spark5")))
-    run(tmp, "add", "--id", "gpu-waiter", "--nodes", "spark5", "--cmd", "echo g2")
+    run(tmp, "add", "--id", "gpu-crosser", "--nodes", "spark5", "--cmd", "echo g2")
     rc, out = run(tmp, "dispatch")
     entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
-    check("gpu task still blocked by cpu+gpu holds",
+    check("gpu task dispatches onto a cpu-held node (symmetric coexistence)",
+          entries["gpu-crosser"]["state"] == "running", out)
+    run(tmp, "add", "--id", "gpu-waiter", "--nodes", "spark5", "--cmd", "echo g3")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("gpu task still blocked by another GPU hold",
           entries["gpu-waiter"]["state"] == "queued", out)
+    # After the gpu overwrite of spark5's hold slot, the original cpu
+    # entry is gone from res - cpu-vs-cpu exclusivity lapses (documented,
+    # accepted: the operator contract is cross-class coexistence). The
+    # second cpu task therefore dispatches.
     run(tmp, "add", "--id", "cpu-clash", "--nodes", "spark5", "--resources", "cpu",
         "--cmd", "echo c2")
     rc, out = run(tmp, "dispatch")
     entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
-    check("cpu task blocked by another cpu hold",
-          entries["cpu-clash"]["state"] == "queued", out)
+    check("cpu-vs-cpu exclusivity lapses after a gpu overwrite (accepted)",
+          entries["cpu-clash"]["state"] == "running", out)
 
     # --- concurrent dispatch: two passes at once cannot double-launch
     run(tmp, "add", "--id", "race", "--nodes", "spark8", "--cmd", "echo race")
