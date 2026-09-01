@@ -1771,6 +1771,8 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 	static uint16_t run_attention_out[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN];
 	static uint16_t seq_attention_out[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN];
 	static uint16_t run_query_latent[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
+	static uint16_t run_attention_latent[SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
+	static uint16_t seq_attention_latent[SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
 	static uint16_t seq_query_latent[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
 	if (include_mlp == 0u)
 	{
@@ -1792,6 +1794,9 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 			if (cudaMemcpy(seq_attention_out + (uint64_t)step * SPARK_GLM5_NEXT_VHIDDEN,fixture->attention_out,
 				(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 				return(SparkGlm5NextValFail(label,"seq_att_copy"));
+			if (step == 0u && cudaMemcpy(seq_attention_latent,fixture->attention_latent,
+				(uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+				return(SparkGlm5NextValFail(label,"seq_al_copy"));
 			if (step == 0u && cudaMemcpy(seq_query_latent,fixture->query_latent,
 				(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 				return(SparkGlm5NextValFail(label,"seq_ql_copy"));
@@ -1813,6 +1818,9 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 		if (cudaMemcpy(run_attention_out,fixture->attention_out,
 			(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"run_att_copy"));
+		if (cudaMemcpy(run_attention_latent,fixture->attention_latent,
+			(uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"run_al_copy"));
 		if (cudaMemcpy(run_query_latent,fixture->query_latent,
 			(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"run_ql_copy"));
@@ -1834,6 +1842,13 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 						label,row,(unsigned long long)i,(unsigned)seq_query_latent[i],(unsigned)run_query_latent[i]);
 					return(SparkGlm5NextValFail(label,"run_equivalence_query"));
 				}
+		for (i = 0u; i < (uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT; i++)
+			if (seq_attention_latent[i] != run_attention_latent[i])
+			{
+				fprintf(stderr,"glm5_next_validation %s ATTENTION_LATENT (pre-o_proj) diverges at element %llu: seq %04x run %04x\n",
+					label,(unsigned long long)i,(unsigned)seq_attention_latent[i],(unsigned)run_attention_latent[i]);
+				return(SparkGlm5NextValFail(label,"run_equivalence_latent"));
+			}
 		for (row = 0u; row < SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS; row++)
 			for (i = 0u; i < SPARK_GLM5_NEXT_VHIDDEN; i++)
 				if (seq_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i] !=
