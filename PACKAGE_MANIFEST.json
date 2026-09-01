@@ -6278,8 +6278,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "5ceaf6a79ce2f8e4b2aea42eaae414bf31485ecfdc4e6808d881305f75fb7c96",
-      "size_bytes": 97492
+      "sha256": "c28c046c2769422ea11dd4cc61a289ba1115c2008f9a48b9650a6d6a06cdd7fb",
+      "size_bytes": 97716
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8830,5 +8830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32261128
+  "total_bytes": 32261352
 }
