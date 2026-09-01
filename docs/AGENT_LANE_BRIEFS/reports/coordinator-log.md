@@ -4136,3 +4136,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - bf16 stage0 on sparka: the earlier launch had silently failed (script
   not staged — same missing-staging bug as c/d); properly staged +
   relaunched, loop confirmed alive.
+
+## 2026-09-01 ~14:4x — firing 22: rank4 relay 51/97G; bf16 stage0 1/4 placed
+
+- rank4 relay slicing (51/97G on sparkf). bf16 stage0: first rank placed
+  on sparka (1/4; ranks ~90G each, ~20 min each). Canonical placement
+  spot-check: spark7 holds rank7 ✓.
