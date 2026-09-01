@@ -1236,7 +1236,22 @@ static uint32_t SparkGlm5NextRoundMajorWaveRows(
 	 * calls"). */
 	if ( batch == 0 || first_row >= batch->row_count )
 		return(0u);
-	return(batch->row_count - first_row);
+	{
+		/* DIAG ONLY (multi-row bisect): SPARK_GLM5_NEXT_FORCE_WAVE_ROWS=N caps
+		 * each wave at N rows. N=1 reproduces the 1-row reference path in the
+		 * same binary, so a divergence between clamped and unclamped output is
+		 * attributable to the multi-row wave itself. */
+		static int force_rows = -1;
+		uint32_t remaining = batch->row_count - first_row;
+		if ( force_rows < 0 )
+		{
+			const char *env = getenv("SPARK_GLM5_NEXT_FORCE_WAVE_ROWS");
+			force_rows = ( env != 0 && *env != 0 ) ? atoi(env) : 0;
+		}
+		if ( force_rows > 0 && remaining > (uint32_t)force_rows )
+			remaining = (uint32_t)force_rows;
+		return(remaining);
+	}
 }
 
 static SparkStatus SparkGlm5NextValidateRoundMajor(
@@ -2181,6 +2196,34 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			}
 			(void)error;
 			fprintf(stderr,"G5N-PROBE layer %u post-mlp hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ps);
+		}
+		/* DIAG ONLY (multi-row bisect): SPARK_GLM5_NEXT_LAYERDUMP=1 dumps every
+		 * row's full hidden-streams checksum after each layer's MLP placement,
+		 * on rank 0, with the row's position — comparing a clamped (1-row) run
+		 * against an unclamped run pinpoints the first divergent layer+row. */
+		if ( chain->wave.tp_rank == 0u && getenv("SPARK_GLM5_NEXT_LAYERDUMP") != 0 )
+		{
+			uint16_t probe_row[256];
+			uint32_t probe_pi,probe_pb,probe_r;
+			uint64_t probe_ps;
+			uint64_t row_stride = (uint64_t)SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
+			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+			for ( probe_r = 0u; probe_r < chain->wave_rows; probe_r++ )
+			{
+				uint64_t row_off = (uint64_t)probe_r * row_stride;
+				probe_ps = 0u;
+				for ( probe_pb = 0u; probe_pb * 256u < row_stride; probe_pb++ )
+				{
+					error = cudaMemcpy(probe_row,(const uint8_t *)chain->slot->hidden_bf16 + (row_off + (uint64_t)probe_pb * 256u) * sizeof(uint16_t),sizeof(probe_row),cudaMemcpyDeviceToHost);
+					for ( probe_pi = 0u; probe_pi < 256u; probe_pi++ )
+						probe_ps += probe_row[probe_pi];
+				}
+				(void)error;
+				fprintf(stderr,"G5N-LAYERDUMP layer %u row %u pos %u bf16sum %llu\n",
+					(unsigned)chain->next_layer,(unsigned)probe_r,
+					(unsigned)chain->slot->host_positions[chain->first_row + probe_r],
+					(unsigned long long)probe_ps);
+			}
 		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
