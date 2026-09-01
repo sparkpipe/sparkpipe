@@ -448,6 +448,13 @@ def cmd_dispatch(args):
                     continue
             fresh.append(e)
         entries = fresh
+        # blocked -> queued when dependencies are done (the legacy schedule
+        # path marks deps-unmet entries blocked; dispatch previously never
+        # promoted them back, stranding them forever - a p0 task stranded
+        # this way let a p5 task dispatch ahead of it, 2026-09-01)
+        for e in entries:
+            if e.get("state") == "blocked" and                all(a in results_ids for a in e.get("after", [])):
+                e["state"] = "queued"
         candidates = [e for e in entries if e.get("state") == "queued"
                       and e.get("cmd")
                       and not any(a not in results_ids for a in e.get("after", []))]
