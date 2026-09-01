@@ -1881,6 +1881,23 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 			if (divergent != 0u)
 			{
 				uint64_t start = first_div > 16u ? first_div - 16u : 0u;
+				/* Cross-row contamination check: does the divergent band
+				 * match the NEXT row's kv_slot bytes? */
+				{
+					static uint16_t seq_kv_slot_row1[512];
+					uint64_t d;
+					uint32_t matches_row1 = 0u;
+					if (cudaMemcpy(seq_kv_slot_row1,fixture->kv_slot + 512u,
+						512u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+						return(SparkGlm5NextValFail(label,"row1_copy"));
+					for (d = first_div / 2u; d <= last_div / 2u; d++)
+						if (run_kv_cache[d * 2u] == (uint8_t)(seq_kv_slot_row1[d] & 0xFFu) &&
+							run_kv_cache[d * 2u + 1u] == (uint8_t)(seq_kv_slot_row1[d] >> 8))
+							matches_row1++;
+					fprintf(stderr,"  cross-check: divergent band vs CURRENT kv_slot row1: %u/%llu elements match\n",
+						matches_row1,
+						(unsigned long long)((last_div / 2u) - (first_div / 2u) + 1u));
+				}
 				fprintf(stderr,"glm5_next_validation %s KV_CACHE position 0: %llu divergent bytes in [%llu..%llu]\n",
 					label,(unsigned long long)divergent,(unsigned long long)first_div,(unsigned long long)last_div);
 				fprintf(stderr,"  seq bytes %llu..: ",(unsigned long long)start);
