@@ -4122,3 +4122,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   set is back to EXACTLY the pre-loss state. Items 2+6(TP8 leg) DONE.
 - bf16 stage0 launched on freed sparka (mkdir-first lesson applied).
 - dsv4 ship was already 16/16.
+
+## 2026-09-01 ~14:0x — firing 20: strays COMPLETE; partials swept; bf16 stage0 building
+
+- Checklist items 2+4 COMPLETE (TP8 map exact + strays swept). Item 3
+  closed earlier. Item 17's stage0 building on sparka (12/16 of the bf16
+  set already placed by b/c/d).
