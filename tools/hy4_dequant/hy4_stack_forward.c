@@ -56,6 +56,7 @@ static int dequant_view(const hy4_rank *rank, const hy4_tensor_view *tv,
     else if (tv->type == 16) hy4_dequant_iq2_xxs(src, y, tv->nbytes / 66);
     else if (tv->type == 18) hy4_dequant_iq3_xxs(src, y, tv->nbytes / 98);
     else if (tv->type == 29) hy4_dequant_iq1_m(src, y, tv->nbytes / 56);
+    else if (tv->type == 23) hy4_dequant_row_iq4_xs((const block_iq4_xs *)src, y, tv->nbytes / 136 * 256);
     else { fprintf(stderr, "unsupported type %d\n", tv->type); free(src); return -1; }
     free(src);
     return 0;
@@ -171,6 +172,10 @@ int main(int argc, char **argv) {
             !wq_b || !wkv_a || !kvan || !wkb || !wvb || !wgate || !wo || !sinks ||
             !hc_ffn_fn || !hc_ffn_sc || !hc_ffn_ba || !ln2) return 1;
 
+        float *hc_ffn_fn2 = loadt(rank, (snprintf(nm, 160, "blk.%d.hc_ffn_fn.weight", il), nm));
+        float *hc_ffn_sc2 = loadt(rank, (snprintf(nm, 160, "blk.%d.hc_ffn_scale.weight", il), nm));
+        float *hc_ffn_ba2 = loadt(rank, (snprintf(nm, 160, "blk.%d.hc_ffn_base.weight", il), nm));
+        float *ln2v = loadt(rank, (snprintf(nm, 160, "blk.%d.ffn_norm.weight", il), nm));
         for (int t = 0; t < T; ++t) {
             float pre[HC], post[HC];
             hc_mix(hc_attn_fn, streams[t], hc_attn_sc, hc_attn_ba, pre, post);
@@ -195,10 +200,10 @@ int main(int argc, char **argv) {
             for (int lh = 0; lh < RANK_HEADS; ++lh) {
                 int h = HEAD_LO + lh;
                 float qh[HK];
-                matvec(wq_b + (size_t)h * HK * 2048, qr, qh, HK, 2048);
+                matvec(wq_b + (size_t)lh * HK * 2048, qr, qh, HK, 2048);
                 rope_neox(qh + NOPE, ROT, t);
                 float q_abs[KV_LORA];
-                matvec(wkb + (size_t)h * KV_LORA * NOPE, qh, q_abs, KV_LORA, NOPE);
+                matvec(wkb + (size_t)lh * KV_LORA * NOPE, qh, q_abs, KV_LORA, NOPE);
                 float logits[T + 1], maxl = -INFINITY;
                 for (int tk = 0; tk <= t; ++tk) {
                     float s = 0;
@@ -219,36 +224,25 @@ int main(int argc, char **argv) {
                     float p = num[tk] / denom;
                     for (int i = 0; i < KV_LORA; ++i) vlat[i] += p * klat[il][tk][i];
                 }
-                matvec(wvb + (size_t)h * VD * KV_LORA, vlat,
+                matvec(wvb + (size_t)lh * VD * KV_LORA, vlat,
                        attn_all + (size_t)lh * VD, VD, KV_LORA);
             }
             /* gate slice: gate rows [h*VD .. h*VD+VD) for this rank's heads */
             float *gatev = malloc((size_t)RANK_HEADS * VD * 4);
             for (int lh = 0; lh < RANK_HEADS; ++lh)
-                matvec(wgate + (size_t)(HEAD_LO + lh) * VD * N_EMBD, att_in,
+                /* attn_gate is HEAD-SLICED in the shard: local row index */
+                matvec(wgate + (size_t)lh * VD * N_EMBD, att_in,
                        gatev + (size_t)lh * VD, VD, N_EMBD);
             for (int i = 0; i < RANK_HEADS * VD; ++i)
                 attn_all[i] *= 1.0f / (1.0f + expf(-gatev[i]));
             free(gatev);
-            /* o_proj partial: rank columns of the gate output; wo is
-             * replicated whole, so take its matching column slice via a
-             * strided matvec */
+            /* o_proj is head-SLICED: [RANK_HEADS*VD, N_EMBD] local rows;
+             * the TP16 all-reduce sums the rank partials */
             float abranch[N_EMBD];
-            for (int r = 0; r < N_EMBD; ++r) {
-                float acc = 0;
-                for (int i = 0; i < RANK_HEADS * VD; ++i)
-                    acc += wo[(size_t)r * (HEADS * VD) + HEAD_LO * VD + i] * attn_all[i];
-                abranch[r] = acc;
-            }
+            matvec(wo, attn_all, abranch, N_EMBD, RANK_HEADS * VD);
             hc_distribute(streams[t], abranch, post);
-            free(hc_attn_fn); free(hc_attn_sc); free(hc_attn_ba); free(ln1);
 
-            /* ---- ffn branch ---- */
-            float *hc_ffn_fn2 = loadt(rank, (snprintf(nm, 160, "blk.%d.hc_ffn_fn.weight", il), nm));
-            float *hc_ffn_sc2 = loadt(rank, (snprintf(nm, 160, "blk.%d.hc_ffn_scale.weight", il), nm));
-            float *hc_ffn_ba2 = loadt(rank, (snprintf(nm, 160, "blk.%d.hc_ffn_base.weight", il), nm));
-            float *ln2v = loadt(rank, (snprintf(nm, 160, "blk.%d.ffn_norm.weight", il), nm));
-            if (!hc_ffn_fn2 || !hc_ffn_sc2 || !hc_ffn_ba2 || !ln2v) return 1;
+
             float fpre[HC], fpost[HC];
             hc_mix(hc_ffn_fn2, streams[t], hc_ffn_sc2, hc_ffn_ba2, fpre, fpost);
             float fcur[N_EMBD];
@@ -340,10 +334,12 @@ int main(int argc, char **argv) {
                 free(shg); free(shu); free(shd);
                 hc_distribute(streams[t], ffn, fpost);
             }
-            free(hc_ffn_fn2); free(hc_ffn_sc2); free(hc_ffn_ba2); free(ln2v);
-            free(wq_a); free(qan); free(wq_b); free(wkv_a); free(kvan);
-            free(wkb); free(wvb); free(wgate); free(wo); free(sinks);
         }
+        /* layer-scoped frees: the weights serve ALL tokens of this layer */
+        free(hc_attn_fn); free(hc_attn_sc); free(hc_attn_ba); free(ln1);
+        free(hc_ffn_fn2); free(hc_ffn_sc2); free(hc_ffn_ba2); free(ln2v);
+        free(wq_a); free(qan); free(wq_b); free(wkv_a); free(kvan);
+        free(wkb); free(wvb); free(wgate); free(wo); free(sinks);
         fprintf(stderr, "layer %d done\n", il);
     }
 
