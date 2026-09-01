@@ -3988,3 +3988,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   every existing set; only NEW builds (TP4xPP4 wave, arms) must carry it.
 - Lanes: spark1 k3 slice 5.7G+; spark4 qwenflash rank4 rebuilding.
 - Dev-lane ticket stands: qwen38_pack_verify content-walk fused-row bug.
+
+## 2026-09-01 ~09:3x — firing 6: PHASE 2 WAVE OPENED — qwen-flash TP4xPP4 building on 4 nodes
+
+- First TP4xPP4 set: qwen-flash bf16 (cleanest geometry: 48L/PP4=12
+  exactly, TP4 heads ok, KV 2/rank, MTP via copy_mtp_fc). 16 ranks =
+  4 stages x 4 TP; rank r = stage r/4 + tp r%4, canonical placement
+  rank r -> spark{hex r}. Build loops live on sparka/b/c/d (4 ranks
+  each, ~22G/rank), ship+sha-receipt per rank. Nodes reserved via queue
+  (coordinator-stagepacks).
+- Lanes: spark1 k3 slice 6.8G+; spark4 qwenflash rank4 rebuilding.
