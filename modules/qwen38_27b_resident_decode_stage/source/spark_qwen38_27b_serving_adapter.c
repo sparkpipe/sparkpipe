@@ -415,6 +415,12 @@ static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor
 	.minimum_efficient_submission_row_count = 0u
 };
 
+#define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkQwen38_27b##name
+#define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkQwen38_27b##name
+#define SPARK_QWEN38_SERVING_ADAPTER_CONST(name) SPARK_QWEN38_27B_##name
+
+#include "sparkpipe/spark_qwen38_serving_adapter_common.h"
+
 static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 	const char *path,
 	const char *runtime_root,
@@ -464,15 +470,6 @@ static uint32_t SparkQwen38_27bServingFirstLayer(uint32_t stage_index)
 	for (index=0u; index<stage_index; index++)
 		first_layer += SparkQwen38_27bServingDescriptor.stage_layer_counts[index];
 	return(first_layer);
-}
-
-static uint32_t SparkQwen38_27bServingStageAttentionLayers(uint32_t first_layer, uint32_t layer_count)
-{
-	uint32_t layer,count;
-	count = 0u;
-	for (layer=first_layer; layer<first_layer+layer_count; layer++)
-		count += SPARK_QWEN38_27B_MODEL_LAYER_IS_GDN(layer) == 0u ? 1u : 0u;
-	return(count);
 }
 
 static uint32_t SparkQwen38_27bServingOwnsFinalHead(const SparkQwen38_27bServingState *state);
@@ -699,83 +696,6 @@ static SparkStatus SparkQwen38_27bServingValidateSubmission(
 	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
 }
 
-static SparkQwen38_27bServingPending *SparkQwen38_27bServingReservePending(
-	SparkQwen38_27bServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	SparkQwen38_27bServingPending *pending;
-	uint32_t lane;
-	pending = (SparkQwen38_27bServingPending *)
-		SparkServingAdapterTemplateReservePending(state->pending,
-			sizeof(*pending),
-			(uint32_t)offsetof(SparkQwen38_27bServingPending,common),
-			state->pipeline_slot_count,
-			(uint32_t)offsetof(SparkQwen38_27bServingPending,last_row_by_lane),
-			submission);
-	if ( pending == 0 )
-		return(0);
-	pending->owner = state;
-	pending->common.active = 1u;
-	pending->frame_status = SPARK_STATUS_OK;
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		pending->resident_slots[lane] = submission->lanes[lane].resident_sequence_slot;
-	return(pending);
-}
-
-static void SparkQwen38_27bServingOrphanDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkQwen38_27bServingState *state;
-	(void)driver_completion;
-	state = (SparkQwen38_27bServingState *)completion_context;
-	if ( state != 0 )
-		state->orphan_completion_count++;
-}
-
-static void SparkQwen38_27bServingDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkQwen38_27bServingPending *pending;
-	SparkQwen38_27bServingState *state;
-	uint32_t matches;
-	pending = (SparkQwen38_27bServingPending *)completion_context;
-	state = pending != 0 ? pending->owner : 0;
-	if ( state == 0 || pending->common.active == 0u || driver_completion == 0 )
-		return;
-	matches = driver_completion->request_id == pending->common.request_id && driver_completion->sequence_id == pending->frame_sequence_id && driver_completion->sequence_position == pending->frame_sequence_position && driver_completion->program_id == state->program->program_id;
-	if ( matches == 0u )
-	{
-		state->orphan_completion_count++;
-		pending->frame_status = SPARK_STATUS_SCHEMA_ERROR;
-		return;
-	}
-	pending->frame_status = (SparkStatus)driver_completion->status;
-	pending->residency = driver_completion->residency;
-	pending->accepted_token_count += driver_completion->accepted_token_count;
-	pending->queue_delay_ns += driver_completion->queue_delay_ns;
-	pending->service_time_ns += driver_completion->service_time_ns;
-}
-
-static void SparkQwen38_27bServingDriverWake(void *wake_context)
-{
-	SparkQwen38_27bServingState *state;
-	state = (SparkQwen38_27bServingState *)wake_context;
-	if ( state != 0 && state->wake_function != 0 )
-		state->wake_function(state->wake_context);
-}
-
-static uint32_t SparkQwen38_27bServingAvailableSubmissionCount(
-	const SparkQwen38_27bServingState *state)
-{
-	uint32_t available,index;
-	available = 0u;
-	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += state->pending[index].common.active == 0u ? 1u : 0u;
-	return(available);
-}
-
 /* Lane block bookkeeping. A lane whose frame range starts at position zero
  * is a (re)start: its old blocks return to the free stack before the new
  * coverage is allocated. On any failure the lane is dropped back to cold so
@@ -942,15 +862,6 @@ static SparkStatus SparkQwen38_27bServingPrefixBorrow(SparkQwen38_27bServingStat
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkQwen38_27bServingDropSubmission(
-	SparkQwen38_27bServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	uint32_t lane;
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		SparkQwen38_27bServingReleaseLane(state,submission->lanes[lane].resident_sequence_slot);
-}
-
 static SparkStatus SparkQwen38_27bServingCoverSubmission(
 	SparkQwen38_27bServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -1107,58 +1018,6 @@ static SparkStatus SparkQwen38_27bServingExtendSpeculativeCoverage(
 			return(status);
 	}
 	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bServingPostReceive(
-	SparkHiddenTransportSession *transport_session,
-	SparkHiddenTransportPacket *packet)
-{
-	SparkQwen38_27bServingTransportShim *shim;
-	const void *source;
-	uint32_t row;
-	shim = (SparkQwen38_27bServingTransportShim *)transport_session;
-	if ( shim == 0 || packet == 0 || shim->input_base == 0 || shim->input_rows == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	source = shim->input_base;
-	if ( shim->input_row_map != 0 )
-	{
-		for (row=0u; row<shim->input_rows; row++)
-			if ( cudaMemcpyAsync((uint8_t *)shim->input_scratch + ((uint64_t)row * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES),(const uint8_t *)shim->input_base + ((uint64_t)shim->input_row_map[row] * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES),SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)shim->execution_stream) != cudaSuccess )
-				return(SPARK_STATUS_IO_ERROR);
-		if ( cudaStreamSynchronize((cudaStream_t)shim->execution_stream) != cudaSuccess )
-			return(SPARK_STATUS_IO_ERROR);
-		source = shim->input_scratch;
-	}
-	memset(packet,0,sizeof(*packet));
-	packet->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-	packet->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_PACKET_BYTES;
-	packet->flags = SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 | SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER;
-	packet->active_sequence_count = shim->input_rows;
-	packet->hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-	packet->bytes_per_sequence = SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES;
-	packet->hidden_bf16 = source;
-	packet->cuda_stream = shim->execution_stream;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bServingSend(
-	SparkHiddenTransportSession *transport_session,
-	const SparkHiddenTransportPacket *packet)
-{
-	SparkQwen38_27bServingTransportShim *shim;
-	uint32_t row;
-	shim = (SparkQwen38_27bServingTransportShim *)transport_session;
-	if ( shim == 0 || packet == 0 || packet->hidden_bf16 == 0 || shim->output_base == 0 || packet->active_sequence_count == 0u || packet->hidden_dimension != SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( shim->output_row_map != 0 )
-	{
-		for (row=0u; row<packet->active_sequence_count; row++)
-			if ( cudaMemcpyAsync((uint8_t *)shim->output_base + ((uint64_t)shim->output_row_map[row] * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES),(const uint8_t *)packet->hidden_bf16 + ((uint64_t)row * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES),SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
-				return(SPARK_STATUS_IO_ERROR);
-	}
-	else if ( cudaMemcpyAsync(shim->output_base,packet->hidden_bf16,(uint64_t)packet->active_sequence_count * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
-		return(SPARK_STATUS_IO_ERROR);
-	return(cudaStreamSynchronize((cudaStream_t)packet->cuda_stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
 }
 
 static void SparkQwen38_27bServingBuildFrame(
@@ -1323,23 +1182,6 @@ static void SparkQwen38_27bServingBuildFrame(
 	frame->completion_context = pending;
 	pending->frame_sequence_id = frame->sequence_id;
 	pending->frame_sequence_position = frame->sequence_position;
-}
-
-static SparkStatus SparkQwen38_27bServingAdmit(
-	SparkQwen38_27bServingState *state,
-	const SparkModelServingSubmission *submission,
-	SparkModelDriverFrame *frame)
-{
-	SparkModelDriverAdmissionRequest request;
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	(void)submission;
-	status = SparkAdmissionRequestFromFrame(
-		state->program->program_id,frame,0,0u,&request);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(SparkAdmissionEvaluateAndApply(
-		state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
 static SparkStatus SparkQwen38_27bServingRunFrame(
@@ -2131,68 +1973,6 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkQwen38_27bServingProgress(
-	void *adapter_state,
-	uint32_t maximum_step_count)
-{
-	(void)maximum_step_count;
-	return(adapter_state != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
-static SparkStatus SparkQwen38_27bServingQuiesce(
-	void *adapter_state,
-	uint64_t deadline_time_ns)
-{
-	SparkQwen38_27bServingState *state;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	SparkStatus status;
-	state = (SparkQwen38_27bServingState *)adapter_state;
-	if ( state == 0 || deadline_time_ns == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->quiescing = 1u;
-	if ( SparkQwen38_27bServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		return(SPARK_STATUS_BUSY);
-	memset(&snapshot,0,sizeof(snapshot));
-	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
-}
-
-static SparkStatus SparkQwen38_27bServingSnapshot(
-	void *adapter_state,
-	SparkModelServingAdapterSnapshot *snapshot)
-{
-	SparkQwen38_27bServingState *state;
-	SparkModelDriverRuntimeSnapshot driver_snapshot;
-	uint32_t available;
-	SparkStatus status;
-	state = (SparkQwen38_27bServingState *)adapter_state;
-	if ( state == 0 || snapshot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(&driver_snapshot,0,sizeof(driver_snapshot));
-	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&driver_snapshot);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	memset(snapshot,0,sizeof(*snapshot));
-	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
-	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
-	available = SparkQwen38_27bServingAvailableSubmissionCount(state);
-	if ( available > driver_snapshot.available_dispatch_slot_count )
-		available = driver_snapshot.available_dispatch_slot_count;
-	snapshot->available_submission_count = state->quiescing == 0u ? available : 0u;
-	snapshot->active_submission_count = state->pipeline_slot_count - SparkQwen38_27bServingAvailableSubmissionCount(state);
-	snapshot->submitted_count = driver_snapshot.submitted_count;
-	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + state->orphan_completion_count;
-	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
-	snapshot->resident_token_count = driver_snapshot.resident_token_count;
-	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
-	snapshot->device_memcpy_bytes_per_submit = driver_snapshot.device_memcpy_bytes_per_submit;
-	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
-	return(SPARK_STATUS_OK);
-}
-
 static void SparkQwen38_27bServingDestroy(void *adapter_state)
 {
 	SparkQwen38_27bServingState *state;
@@ -2320,22 +2100,6 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 	state->block_table.lane_physical_block_counts = state->device_block_counts.pointer;
 	state->block_table.host_physical_block_indices = state->host_block_indices.pointer;
 	state->block_table.host_lane_physical_block_counts = state->lane_block_counts;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bServingValidateConfiguration(
-	const SparkModelServingAdapterConfiguration *configuration)
-{
-	SparkStatus status;
-	if ( configuration == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkQwen38_27bServingDescriptor,&configuration->runtime_limits);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( configuration->stage_index >= SPARK_QWEN38_27B_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_QWEN38_27B_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
