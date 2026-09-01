@@ -12,10 +12,13 @@ make -C modules/qwen38_max_resident_decode_stage REPOSITORY_ROOT="$REPO" archive
 ARCHIVE="$REPO/build/modules/qwen38_resident_decode_stage/libqwen38_resident_decode_stage.a"
 
 SYNTH="$REPO/build/q38max_synth"
-cc -std=c11 -O2 -I"$REPO" -I"$REPO/model-families/qwen38_max/include" \
+cc -std=c11 -O2 -I"$REPO" -I"$REPO/include" -I"$REPO/src" \
+   -I"$REPO/model-families/common/include" \
+   -I"$REPO/model-families/qwen38_max/include" \
    -I"$REPO/modules/qwen38_max_resident_decode_stage/include" \
    -I"$REPO/modules/qwen38_max_resident_decode_stage/source" \
-   modules/qwen38_max_resident_decode_stage/tools/qwen38_max_pack_synthesize.c -o "$SYNTH" || exit 13
+   modules/qwen38_max_resident_decode_stage/tools/qwen38_max_pack_synthesize.c \
+   "$REPO/runtime/stagepack_format.c" -o "$SYNTH" || exit 13
 PACK="$HOME/q38max_hs_regress.qwen38sp"
 "$SYNTH" --output "$PACK" --first-layer 0 --layer-count 4 || exit 13
 
