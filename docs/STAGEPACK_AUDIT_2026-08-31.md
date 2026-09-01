@@ -150,7 +150,7 @@ MTP-carrying if the source ships it, verified against source.
 In flight (finish first):
 1. k3 TP16 — 14/16 placed; left: spark1 rank1 (slicing), spark4 rank4 (after its qwenflash job); then 16/16 sha placement audit.
 2. k3 cleanup — after 16/16: remove 1.56TB warm base + all slice/deploy work dirs + spark2 27B temps (bytes logged).
-3. qwen-flash TP8 (bf16) — rank4 rebuilding (29/46G) → place on spark4 + copy to sparkc; then MTP audit of placed ranks (copy_mtp_fc) → rebuild if absent.
+3. qwen-flash TP8 (bf16) — rank4 rebuilding on spark4 (post-MDS restart) → place on spark4 + copy to sparkc. MTP AUDIT DONE: placed ranks carry 36 draft/MTP-marker entries (fc_embedding/fc_hidden + per-layer kinds at the MTP marker) — no rebuild needed for MTP.
 4. glm5_next TP8 FP8 (true, MTP) — COMPLETE: 8 ranks x 2 targets = 16/16 nodes, one canonical rank each (43,479,544,832 B, 1187 tensors, flags=1, sha-receipted); wrong-topology tp16-named files removed fleet-wide (~272G).
 
 Strays (fix-as-found):
@@ -161,11 +161,11 @@ Per-set completions:
 7. 27B TP4 (fp8) — COMPLETE: MTP confirmed present by direct directory read (18 entries at the MTP-layer marker: attn/FFN kinds + MTP FC/norm kinds; tensors=866). NOTE: the family verifier's content walk reports 576/866 pack-vs-source byte mismatches — indicted as the verifier's fused-gate|up source-reading bug (the same packs are telemetry-proven serving-grade); dev-lane ticket filed.
 8. 27B TP4 nvfp4a16-bf16-spine arm — build from warm source (packer vertical per the decoded fused layout).
 9. 27B TP4xPP4 — build (with MTP).
-10. qwen-max PP16 (nvfp4) — placed; MTP check (source has mtp.fc + layer) → upgrade if absent.
+10. qwen-max PP16 (nvfp4) — placed; MTP CONFIRMED (stage15 carries 23 MTP-marker entries) — no upgrade needed.
 11. qwen-max TP4xPP4 — build (with MTP; supersedes the deleted-in-error qwen38max.tp4pp4 — its rebuild folds in here).
-12. dsv4-flash TP16 — placed; audit mtp.0.* spec layers actually in the packs.
+12. dsv4-flash TP16 — placed; MTP CONFIRMED (all 8 KIND_MTP_* entries 41-48 present).
 13. dsv4-flash TP4xPP4 — build.
-14. dsv4-pro TP4xPP4 — 10/16; build the last 6 ranks (packer rank-path extension).
+14. dsv4-pro TP4xPP4 — 10/16; build the last 6 ranks (packer rank-path extension). MTP CONFIRMED (8 KIND_MTP_* entries in the placed stage).
 15. dsv4-pro TP16 — build from the nvfp4-pro source (877G; splicer rank-path).
 16. glm5_next (flash) TP4xPP4 — build (with MTP).
 17. glm53full bf16 TP4xPP4 — build. (TP16 done.)

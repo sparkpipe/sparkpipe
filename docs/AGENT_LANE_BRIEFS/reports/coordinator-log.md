@@ -3977,3 +3977,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   ~350G+ total freed. Item 30 reclaim leg done.
 - Lanes: spark1 k3 slice moving again post-MDS-recovery; qwenflash rank4
   rebuild restarted from zero on spark4.
+
+## 2026-09-01 ~09:0x — firing 5: PHASE 1 MTP AUDIT COMPLETE — every source-with-MTP family confirmed
+
+- Definitive directory-read audits (no reliance on the buggy content walk):
+  27B TP4 = 18 MTP entries; qwen-max PP16 = 23 (stage15); qwen-flash TP8 =
+  36 draft/MTP markers; dsv4-flash = 8 KIND_MTP_*; dsv4-pro stage = 8
+  KIND_MTP_*. glm5_next TP16/TP8 upgraded/built with MTP earlier. glm53full
+  + k3 = N/A (sources ship no MTP). THE MTP LAW IS SATISFIED FLEET-WIDE for
+  every existing set; only NEW builds (TP4xPP4 wave, arms) must carry it.
+- Lanes: spark1 k3 slice 5.7G+; spark4 qwenflash rank4 rebuilding.
+- Dev-lane ticket stands: qwen38_pack_verify content-walk fused-row bug.
