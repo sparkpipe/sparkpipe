@@ -4270,3 +4270,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   (spark2 alive at 330MB, slow read class). Root cause of the earlier
   FATALs was stale checkouts (nodesync gap) — all 12 now at 04d27b4c+.
 - Next: receipts land as builds finish; then item 23 closed.
+
+## 2026-09-01 ~20:0x — firing 42: bf16 arm 5/16 receipts (sparkd joined); builds grinding
