@@ -4246,3 +4246,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - fp8 TP4PP4 16/16 closed (item 18 in audit doc).
 
 ## 2026-09-01 ~18:4x — firing 37: nvfp4 stage2 3/4 (final rank building)
+
+## 2026-09-01 ~19:0x — firing 38: ITEM 19 COMPLETE — glm53full ALL SIX variants done
+
+- nvfp4 TP4PP4 16/16 placed. glm53full: bf16/fp8/nvfp4 x (TP16 + TP4PP4)
+  = 6 complete sets. Items 17,18,19 CLOSED.
+- Remaining: 8 (27B nvfp4a16), 9 (27B TP4PP4, packer PP+TP ticket), 11
+  (qwen-max TP4PP4), 14 (dsv4-pro last 6), 15 (dsv4-pro TP16), 21-24
+  (arms), 28 (drafter audit), 29-30 (final audit + board).
+- Next wave launch: qwen-max TP4PP4 (item 11) on the freed nodes.
