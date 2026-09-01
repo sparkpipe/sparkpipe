@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "f234c049e7e32ea97105798b8ae4ba4bd040c448de66d739669badae197812fb",
-      "size_bytes": 243633
+      "sha256": "18c9caa973f65bdec78e4e4c5dbf6dead1d74a9b9d294b790924e0197ca67340",
+      "size_bytes": 243716
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -833,8 +833,8 @@
     },
     {
       "path": "docs/SPARK_QUEUE_RUNBOOK.md",
-      "sha256": "5d276a5cd6ab879c18ad32c43eb981e6199f25ec2983d736469e6b092c4bd240",
-      "size_bytes": 6551
+      "sha256": "746fb030cd3aa9d40ed8a15a331cec08471eae942271b02825246ec906fdeba4",
+      "size_bytes": 7462
     },
     {
       "path": "docs/SPECULATION_PROVIDER_DESIGN.md",
@@ -6283,8 +6283,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "4b5934848fcd8dc94e09c9c05fed97b69765bd20f8230aea3a6bc647ac062442",
-      "size_bytes": 97641
+      "sha256": "780cbd3433cb957e83fffa5cc794fdcd4a42cdeb21feaa537bc19b77e44bcb40",
+      "size_bytes": 97825
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7248,8 +7248,8 @@
     },
     {
       "path": "tests/test_spark_queue.py",
-      "sha256": "96aaf190d33eb5b0a5e7385a78fcfbad4e4eba017ce79345ab625932cd8828ac",
-      "size_bytes": 10733
+      "sha256": "a5d26f3bf970569179862dd71283faaeea0cfb2acf2871622cd0afcffb762e86",
+      "size_bytes": 11237
     },
     {
       "path": "tests/test_spark_topology_probe.py",
@@ -8728,8 +8728,8 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "8aebac4c3b389b073fc45d594cb2524d3a762be12ff399d74c3c3566c2db87f0",
-      "size_bytes": 29428
+      "sha256": "5d6e5441869cc9c6b0d6b4e10baf7c7841f7b766ffa8ea6a10f73a54245d9f6e",
+      "size_bytes": 30464
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -8830,5 +8830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32264727
+  "total_bytes": 32267445
 }
