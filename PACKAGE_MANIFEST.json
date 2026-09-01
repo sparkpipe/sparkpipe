@@ -1,5 +1,5 @@
 {
-  "file_count": 1766,
+  "file_count": 1768,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -388,8 +388,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/dsv4pro-2026-08-30.md",
-      "sha256": "ebb164f5d9ab437622f3b6975812b8df0dd5839b0e13bb2819629e4353b48f1c",
-      "size_bytes": 11550
+      "sha256": "c040543881f362a86b71440b374837960dca5159cde2541e74f9113e47ab42bd",
+      "size_bytes": 14289
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/dsv4pro-packs-2026-08-27.md",
@@ -6283,8 +6283,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "45ff09cc2329a525a1505d43170ad9c5f077fef1cd925a00235d00a06001c0ce",
-      "size_bytes": 97901
+      "sha256": "a05151f064b70de2a08dacb946e8d25eb8677a0d2006b2595a24ede0bd1b4881",
+      "size_bytes": 98290
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7818,8 +7818,8 @@
     },
     {
       "path": "tools/dsv4_pro_rank_pack_verify.py",
-      "sha256": "709597e6c964ad3694d7e2d69d18ea6687fae298fec0e3d589bcbf80c4d46ff3",
-      "size_bytes": 14292
+      "sha256": "b88f2a0f305eb9df95f1e74988d57d844da0aaa9ed510e93c4dd66450105e20d",
+      "size_bytes": 15355
     },
     {
       "path": "tools/dsv4_pro_stagepack.py",
@@ -7857,6 +7857,11 @@
       "size_bytes": 2897
     },
     {
+      "path": "tools/dsv4pro_driver_rebuild.sh",
+      "sha256": "99c1337997a5eccf0db192a57b7d4248d7a10cea12ee0a56a7e6106c00d8af65",
+      "size_bytes": 2549
+    },
+    {
       "path": "tools/dsv4pro_rank_deploy.sh",
       "sha256": "a6a638b833de2b8ca072767156d2858fa4bfc7de506da9ad3912efbf4a451512",
       "size_bytes": 3764
@@ -7878,8 +7883,13 @@
     },
     {
       "path": "tools/dsv4pro_tp16_ranks.sh",
-      "sha256": "b0c6a99c5f8dfc811f47fdc2a689f38b711d9a6c6e2d0b850fa7b7fae008fe64",
-      "size_bytes": 1654
+      "sha256": "e698e2ebb543bc00d9731b22a3975d4c040c559eaacf8daa2a078e90fbe9eeed",
+      "size_bytes": 1716
+    },
+    {
+      "path": "tools/dsv4pro_tp16_verify_only.sh",
+      "sha256": "31d38099ba32eb7c4a571afa879bb9c75da0d04913d5c2e9168c333c61ce2cf2",
+      "size_bytes": 994
     },
     {
       "path": "tools/dup_report.py",
@@ -8835,5 +8845,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32278300
+  "total_bytes": 32286096
 }

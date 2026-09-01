@@ -1424,7 +1424,11 @@ CEILING = 234369
 # report + ranks script; carries #769/#771 pins on main.
 # 237423 -> 237430: queue blocked-state promotion (dispatch-side
 # promote-before-candidates; fixes priority-inversion stranding).
-CEILING = 237430
+CEILING = 237523
+# (dsv4pro) +93 exact: the section-split sampler (payload and scale
+# sections verified at their own directory offsets), the final
+# verify-only finish script, and tools/dsv4pro_driver_rebuild.sh —
+# main's 237430 measure predates the lane's newest stack.
 # (dsv4pro) +36 exact on the lane stack: the stacked-fp4 section-order
 # fix in tools/dsv4_pro_rank_pack_verify.py (+4) and the resumed ranks
 # script tools/dsv4pro_tp16_ranks.sh (+32) that main's 237317 measure
