@@ -1772,6 +1772,10 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 	static uint16_t seq_attention_out[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN];
 	static uint16_t run_query_latent[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
 	static uint16_t run_attention_latent[SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
+	static uint8_t run_kv_cache[SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES];
+	static uint8_t seq_kv_cache[SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES];
+	static uint16_t run_kv_slot[4096u];
+	static uint16_t seq_kv_slot[4096u];
 	static uint16_t seq_attention_latent[SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
 	static uint16_t seq_query_latent[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
 	if (include_mlp == 0u)
@@ -1794,6 +1798,12 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 			if (cudaMemcpy(seq_attention_out + (uint64_t)step * SPARK_GLM5_NEXT_VHIDDEN,fixture->attention_out,
 				(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 				return(SparkGlm5NextValFail(label,"seq_att_copy"));
+			if (step == 0u && cudaMemcpy(seq_kv_cache,fixture->kv_cache,
+				SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
+				return(SparkGlm5NextValFail(label,"seq_kvc_copy"));
+			if (step == 0u && cudaMemcpy(seq_kv_slot,fixture->kv_slot,
+				4096u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+				return(SparkGlm5NextValFail(label,"seq_kvs_copy"));
 			if (step == 0u && cudaMemcpy(seq_attention_latent,fixture->attention_latent,
 				(uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 				return(SparkGlm5NextValFail(label,"seq_al_copy"));
@@ -1818,6 +1828,12 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 		if (cudaMemcpy(run_attention_out,fixture->attention_out,
 			(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"run_att_copy"));
+		if (cudaMemcpy(run_kv_cache,fixture->kv_cache,
+			SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"run_kvc_copy"));
+		if (cudaMemcpy(run_kv_slot,fixture->kv_slot,
+			4096u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"run_kvs_copy"));
 		if (cudaMemcpy(run_attention_latent,fixture->attention_latent,
 			(uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"run_al_copy"));
@@ -1843,6 +1859,20 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 						label,row,(unsigned long long)i,(unsigned)seq_query_latent[i],(unsigned)run_query_latent[i]);
 					return(SparkGlm5NextValFail(label,"run_equivalence_query"));
 				}
+		for (i = 0u; i < 4096u; i++)
+			if (seq_kv_slot[i] != run_kv_slot[i])
+			{
+				fprintf(stderr,"glm5_next_validation %s KV_SLOT (pre-store projection) diverges at element %llu: seq %04x run %04x\n",
+					label,(unsigned long long)i,(unsigned)seq_kv_slot[i],(unsigned)run_kv_slot[i]);
+				return(SparkGlm5NextValFail(label,"run_equivalence_kvslot"));
+			}
+		for (i = 0u; i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
+			if (seq_kv_cache[i] != run_kv_cache[i])
+			{
+				fprintf(stderr,"glm5_next_validation %s KV_CACHE position 0 diverges at byte %llu: seq %02x run %02x\n",
+					label,(unsigned long long)i,(unsigned)seq_kv_cache[i],(unsigned)run_kv_cache[i]);
+				return(SparkGlm5NextValFail(label,"run_equivalence_kvcache"));
+			}
 		for (i = 0u; i < (uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT; i++)
 			if (seq_attention_latent[i] != run_attention_latent[i])
 			{
