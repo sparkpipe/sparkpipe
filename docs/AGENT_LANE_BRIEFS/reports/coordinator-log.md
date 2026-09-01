@@ -4364,3 +4364,16 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~24:1x — firing 58: bf16 rebuilds 8.7/2.7/5.6 of 40G; single writers alive
 
 ## 2026-09-01 ~24:2x — firing 59: bf16 rebuilds 9.7/2.8/5.8 of 40G; on pace
+
+## 2026-09-01 ~24:3x — WARM BACKUP PROTECTION LAUNCHED (operator directive)
+
+- Response to dev-deletion risk: all 16 nodes now rsync their placed
+  stagepacks to /mnt/model-warm/stagepack-backup/<node>/ — node-local
+  rsync (no network leg), niced/ioniced, incremental + resumable, temp
+  files excluded. 16/16 RUNNING at dispatch. ~11-12T total to mirror;
+  warm has 42.5T free.
+- Note: qwen-max PP16 build temps discovered fleet-wide during the
+  hygiene sweep were removed with logged bytes (superseded, receipted
+  set in place). All hygiene legs (symlinks/temps) now PASS.
+- The 15-min automation re-runs the backup script to top up new sets
+  (fp8/nvfp4/bf16 arms as they land).
