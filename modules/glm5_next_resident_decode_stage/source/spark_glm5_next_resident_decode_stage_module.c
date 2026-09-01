@@ -2241,7 +2241,23 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			}
 			if ( sync_every > 0 && chain->wave.tp_rank == 0u &&
 				(int)((chain->next_layer + 1u) % (uint32_t)sync_every) == 0 )
+			{
+				/* the bare sync alone does NOT fix the race (SYNC_EVERY=1 was
+				 * wrong); the LAYERDUMP's large D2H read did. SPARK_GLM5_NEXT_PACER_KB
+				 * adds a tunable D2H read of the streams as the actual fence. */
+				static int pacer_kb = -1;
+				static uint16_t *pacer_host = 0;
+				if ( pacer_kb < 0 )
+				{
+					const char *env2 = getenv("SPARK_GLM5_NEXT_PACER_KB");
+					pacer_kb = ( env2 != 0 && *env2 != 0 ) ? atoi(env2) : 0;
+					if ( pacer_kb > 0 )
+						pacer_host = (uint16_t *)malloc((size_t)pacer_kb * 1024u);
+				}
 				(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+				if ( pacer_kb > 0 && pacer_host != 0 )
+					(void)cudaMemcpy(pacer_host,chain->slot->hidden_bf16,(size_t)pacer_kb * 1024u,cudaMemcpyDeviceToHost);
+			}
 		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
