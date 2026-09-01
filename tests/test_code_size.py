@@ -1421,7 +1421,18 @@ CEILING = 234369
 # (kimidev bisect in flight), and the spark-queue multi-dev hardening
 # (+69: the 8-dev scale pass - durable state home, batched age-gated
 # reaper, doctor).
-CEILING = 237777
+# lane/spec-unified: the speculation policy core becomes model-neutral and
+# tree-capable. The SPARK_DSPARK_TARGET_* build-time shape switch and the
+# hardcoded-GLM52 hard-equality validation are replaced by a runtime contract
+# descriptor with structural validation (shorter than the chain it replaces),
+# and acceptance gains a parent-array tree resolve with the chain kept as the
+# degenerate tree (one shared code path, no second engine). The GLM52 default
+# contract fill moves to the GLM52 backend as a real function.
+# Merged the spec-unified core into the glm5_next multi-row lane; per the
+# ratchet rule the ceiling is re-pinned from MEASURED reality after the
+# conflict resolution, never carried forward.
+CEILING = 238092
+
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

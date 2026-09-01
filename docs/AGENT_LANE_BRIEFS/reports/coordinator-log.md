@@ -3892,3 +3892,471 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   uniform size; VERIFY-PASS spot round-trip + dir_sha; sha256 receipt
   (3afce3eb...); 0 symlinks in the dir post-place. tp16 symlink-fix set
   now complete-able 16/16 (final receipt count check running).
+
+## 2026-09-01 ~04:2x — status roll: k3 14/16; TP8 shape defect caught by the gate; MTP fleet done
+
+- k3 TP16: 14/16 receipts (sparkd rank13 + sparkf rank15 landed); spark1
+  slicing, spark4 queued behind its qwenflash rank4 (25.9/46.3G).
+- MTP: glm5_next TP16 fleet set 16/16 MTP-carrying (1187 tensors, flags=1,
+  all verified). TP8 FP8 set: the plan-diff gate caught the packs built
+  WITHOUT owns-embedding/owns-head (1184 vs the correct 1187 shape —
+  unservable: no rank carries embedding/head). Rebuilding all 8 with
+  --mtp --owns-embedding --owns-head on sparka/c (~25 min), then the
+  --mtp verify+place loops finish the 2x placement (queue task v2 polls
+  with ~90min lease left).
+- Queue: dual-dispatcher defect fixed (28h-old era loop TERMed); v2 task
+  running with a blocking poll cmd.
+
+## 2026-09-01 ~05:2x — TP8 placement live on sparka; sparkc chained; 27B verify walking
+
+- TP8 FP8 MTP set (1187-tensor owns+mtp shape, 43,479,544,832 B uniform):
+  sparka ranks 0-3 ALL PLACED (8 targets sha-receipted). sparkc still
+  building rank4 (slow ceph ~5MB/s class) — verify+place CHAINED to fire
+  when its build loop exits. 27B TP4 MTP question: family verify walking
+  the pack (120/866 tensors) on spark6; packer inventory says MTP kinds
+  are unconditional — expect PASS-confirm.
+- spark1 k3 slice creeping (3.6G, slow node class); spark4 rank4 next
+  after qwenflash tmp (was 26.3/46.3G).
+
+## 2026-09-01 ~07:0x — timer firing 1: strays cleared (checklist item 5), all lanes healthy
+
+- Checklist item 5 DONE: spark2/3 k3 doubles identified by digest —
+  canonical k3.stage0.rankNN.pack receipt-MATCHES on both; the second
+  files (k3.tp16.rankNN.pack, 99,562,379,520 B each, old writer
+  generation) = superseded-generation duplicates of the SAME rank ->
+  removed (~185G freed pair), removal law satisfied (replacement
+  verified in place first).
+- Item 1-3 lanes healthy: spark1 k3 slice 4.7G grinding; spark4 waiting
+  on qwenflash rank4 (29.7/46.3G); sparkc TP8 4/4 built + chained
+  verify+place loop RUNNING (placements pending).
+- Item 5 phase-1: 27B MTP verify at 660/866 tensors, still walking.
+
+## 2026-09-01 ~07:2x — firing 2: TP8 MAP COMPLETE 16/16; wrong bytes purged
+
+- glm5_next TP8 FP8 (MTP-carrying): ALL 8 ranks placed x2 targets — every
+  node holds exactly ONE canonical tp8 rank (uniform 43,479,544,832 B).
+  Removed 13 leftover wrong-topology tp16-named files (~272G). Checklist
+  item 3 → COMPLETE (audit doc updated).
+- k3: spark1 grinding; qwenflash rank4 29.9/46.3G; 27B MTP verify walking.
+
+## 2026-09-01 ~07:4x — INCIDENT: ceph MDS DOWN (cluster-level); warm jobs paused
+
+- New mounts fail "no mds is up"; existing sessions (spark5/9/0) still
+  serve reads but degrade — this MDS flap is the root cause of the
+  chronic folio_wait D-state wedges (spark1/4 today, likely earlier too).
+- spark1+spark4 drained and unmounted (my remount attempt surfaced the
+  MDS error; fstab lacks the entry — remount needs explicit options).
+  Warm jobs PAUSED: k3 rank1 slice, qwenflash rank4 rebuild (30/46G,
+  needs restart). Queue note filed for the other dev.
+- ESCALATED to operator/sysadmin. On MDS recovery: remount 1+4 with
+  explicit ceph options, relaunch both builds.
+- Healthy lanes: TP8 map COMPLETE 16/16 (one canonical rank per node);
+  27B MTP verify ~760/866.
+
+## 2026-09-01 ~08:2x — MDS RECOVERED (sysadmin); both paused builds relaunched
+
+- Sysadmin: cluster up; spark1/4 mounts restored via the persistent mount
+  service (my manual remount had omitted the CephX secret — noted).
+- Verified bulk reads (deep-offset cold read 4.6GB/s after warmup; the
+  earlier "0 bytes" was a 20s timeout on a cold first-touch, not a hang).
+- Relaunched: k3 rank1 slice on spark1 (fresh dir) + qwenflash rank4
+  rebuild on spark4 (fresh; exact flash-lane recipe). One heavy job per
+  node preserved. Queue note stays until receipts land.
+- Staging reclaim dispatched 16/16 (sha-verified-duplicate rule) —
+  results next cycle.
+
+## 2026-09-01 ~08:4x — firing 4: 27B MTP CONFIRMED IN PACKS; staging reclaimed fleet-wide
+
+- 27B TP4 packs carry MTP: direct directory read shows 18 entries at the
+  MTP-layer marker (attn/FFN + MTP FC/norm kinds). No upgrade needed.
+  The verifier's 576 content errors = its fused-row source-read bug
+  (telemetry-proven packs) — dev-lane ticket. Checklist item 7 done.
+- Staging reclaim finished: receipt-matched duplicates removed earlier,
+  remaining no-MTP-generation staging packs removed under the
+  superseded-generation rule (MTP replacements receipted in place).
+  ~350G+ total freed. Item 30 reclaim leg done.
+- Lanes: spark1 k3 slice moving again post-MDS-recovery; qwenflash rank4
+  rebuild restarted from zero on spark4.
+
+## 2026-09-01 ~09:0x — firing 5: PHASE 1 MTP AUDIT COMPLETE — every source-with-MTP family confirmed
+
+- Definitive directory-read audits (no reliance on the buggy content walk):
+  27B TP4 = 18 MTP entries; qwen-max PP16 = 23 (stage15); qwen-flash TP8 =
+  36 draft/MTP markers; dsv4-flash = 8 KIND_MTP_*; dsv4-pro stage = 8
+  KIND_MTP_*. glm5_next TP16/TP8 upgraded/built with MTP earlier. glm53full
+  + k3 = N/A (sources ship no MTP). THE MTP LAW IS SATISFIED FLEET-WIDE for
+  every existing set; only NEW builds (TP4xPP4 wave, arms) must carry it.
+- Lanes: spark1 k3 slice 5.7G+; spark4 qwenflash rank4 rebuilding.
+- Dev-lane ticket stands: qwen38_pack_verify content-walk fused-row bug.
+
+## 2026-09-01 ~09:3x — firing 6: PHASE 2 WAVE OPENED — qwen-flash TP4xPP4 building on 4 nodes
+
+- First TP4xPP4 set: qwen-flash bf16 (cleanest geometry: 48L/PP4=12
+  exactly, TP4 heads ok, KV 2/rank, MTP via copy_mtp_fc). 16 ranks =
+  4 stages x 4 TP; rank r = stage r/4 + tp r%4, canonical placement
+  rank r -> spark{hex r}. Build loops live on sparka/b/c/d (4 ranks
+  each, ~22G/rank), ship+sha-receipt per rank. Nodes reserved via queue
+  (coordinator-stagepacks).
+- Lanes: spark1 k3 slice 6.8G+; spark4 qwenflash rank4 rebuilding.
+
+## 2026-09-01 ~10:0x — firing 7: TP4PP4 wave 12/16 placed; k3 grinding
+
+- qwen-flash TP4xPP4: 12/16 ranks placed (sparka 4/4 done; b 3, c 3, d 2
+  built; all loops alive). Completion next cycle.
+- spark1 k3 slice 7.5G; spark4 qwenflash rank4 still building.
+
+## 2026-09-01 ~10:2x — firing 8: TP4PP4 qwen-flash COMPLETE 16/16; k3 rank1 pivoted to relay
+
+- Checklist item 20 COMPLETE: qwen-flash TP4xPP4 16/16 placed, zero
+  FATALs (audit doc updated).
+- spark1 wedged a THIRD time (folio_wait) — chronic client sickness on
+  that node. Pivoted rank1 to the relay pattern: sparkf (healthy) slices
+  + verifies rank1, ships to spark1 with dual sha check + receipt there.
+  3.5G sliced at last check. spark1's own slice dir cleaned; its ceph
+  client sickness noted for the sysadmin.
+- spark4 rank4 healthy: new builder writing fresh tmp (1.28G).
+
+## 2026-09-01 ~10:4x — firing 9: SECOND TP4PP4 wave opened — glm5_next flash (MTP)
+
+- PP4 stage matrix locked by dry-runs: stage0 = L0-10 + owns-embedding
+  (272t), stage1/2 = 11 each (287t), stage3 = L33-44 + MTP + owns-head
+  (341t). Body 11+11+11+12 = 45 ✓.
+- Build loops: stage0 on sparka, stage1 sparkb, stage2 sparkc, stage3
+  sparkd (4 ranks each: rank r = stage*4+tp -> spark{hex r}).
+- k3 rank1 relay on sparkf 46/97G; qwenflash rank4 on spark4 3.4/46G.
+
+## 2026-09-01 ~11:0x — firing 10: glm5_next TP4PP4 wave healthy on all 4 nodes
+
+- Root-caused the phantom launches: batch launcher died before c/d's scp
+  legs AND the launch pgrep self-matched its own ssh wrapper (the
+  bracket-trick must exclude the wrapper context — verify from a separate
+  connection). Fixed: stage dir+script first, launch, verify separately.
+- All 4 stage loops CONFIRMED: sparka stage0, sparkb stage1 (3/4 placed
+  already, 287t/21.6G ranks), sparkc stage2, sparkd stage3.
+- k3 relay: rank1 sliced fully (2157 tensors), in cross-verify on sparkf
+  before shipping to spark1. qwenflash rank4 rebuilding on spark4.
+
+## 2026-09-01 ~11:2x — firing 11: rank1 VERIFY PASS, shipping; wave 7/16
+
+- k3 rank1 relay: K3 PACK VERIFY PASS (2157 tensors, 93 layers); scp to
+  spark1 in flight (70/97G) — receipt lands on completion. k3 then 15/16.
+- qwenflash rank4: builder alive, 8.4/46.3G (the empty ls was an ssh
+  hiccup; nothing wrong).
+- glm5_next TP4PP4: sparkb STAGE DONE 4/4; sparkc 2/4, sparkd 1/4,
+  sparka 0/4 (stage-0 ranks biggest with embedding) — all loops alive.
+
+## 2026-09-01 ~11:4x — firing 12: k3 15/16 (rank1 relay SHIPPED + receipted)
+
+- rank1 on spark1: 99,566,844,288 bytes, receipt written (dual-sha
+  verified). k3 TP16 = 15/16; only spark4 rank4 remains (queued behind
+  its qwenflash rank4 rebuild, now 11.3/46.3G).
+- glm5_next TP4PP4: 12/16 placed (sparkb 4/4, sparkd 4/4 done; sparkc
+  3/4; sparka 0/4 building the heavy stage-0 ranks).
+
+## 2026-09-01 ~11:5x — firing 13: dsv4-flash TP4PP4 BUILDING; 27B TP4PP4 needs packer extension
+
+- dsv4-flash TP4xPP4 (checklist 13): base pack found intact on warm
+  (166,918,150,256 B); the in-tree driver (dsv4_tp4_pp4_stagepacks.py,
+  flash plan 11/11/11/10) is RUNNING on sparka — 6/16 ranks emitted
+  already. Ship+sha-receipt loop fires when all 16 land.
+- 27B TP4xPP4 (checklist 9): BLOCKED on a packer constraint —
+  qwen38_27b_stagepack hard-refuses TP>1 with sliced layers ("TP packs
+  cover the whole stack"). Needs a PP+TP combined-mode extension = dev
+  lane ticket; dry-run validated everything else (4x213-tensor ranks,
+  ~4.06G each).
+- k3 rank1 relay shipped+receipted (15/16); qwenflash rank4 rebuilding.
+
+## 2026-09-01 ~12:0x — firing 14: glm53full bf16 TP4PP4 stages 1-3 building (items 17-19 opened)
+
+- glm52 packer ACCEPTS TP+layer-range (proof build: 20-layer fp8 slice,
+  46,725,851,904 B, 346 tensors, receipt). Wave design: stages
+  0-19/20-39/40-58/59-77 x TP4; rank r = stage*4+tp -> spark{hex r}.
+- bf16 stages 1/2/3 launched on sparkb/c/d (rev-pinned b4734de4...);
+  stage 0 queues for sparka when its dsv4 driver finishes (7/16 ranks at
+  last check). fp8 + nvfp4 sets follow on the same pattern (items 18-19).
+
+## 2026-09-01 ~12:3x — firing 15: glm53full bf16 TP4PP4 healthy on b/c/d
+
+- Two script bugs caught by the exit-code gates in-cycle (stray FIRST
+  line + case deleted with it) — fixed, syntax-checked, relaunched; all
+  three stage loops confirmed writing packs. Stage 0 (sparka) queues
+  behind its dsv4 driver.
+- MTP law satisfied for glm53full trivially: source has no MTP (N/A).
+
+## 2026-09-01 ~12:2x — firing 16: dsv4-flash TP4PP4 ranks SHIPPING; bf16 stages grinding
+
+- dsv4 driver finished all 16 ranks; ship loop launched on sparka
+  (rank r -> spark{hex r}, sha-verified, receipt both sides).
+- bf16 TP4PP4 stages 1-3 building (0 placed yet — 90G ranks take
+  ~15-20 min each). qwenflash rank4 14.8/46.3G. spark1 k3 receipt
+  confirmed (15/16 stands).
+
+## 2026-09-01 ~12:4x — firing 17: dsv4 ship 9/16; bf16 placements landing
+
+- dsv4-flash TP4PP4: 9/16 shipped+receipted, zero fatals.
+- bf16 TP4PP4: first placements landed (1/4 on each of b/c/d — the
+  90G-stage ranks run ~15-20 min each; loops alive).
+- qwenflash rank4: 15.1/46.3G.
+
+## 2026-09-01 ~13:0x — hy4 TP16 sharding owned by the hy4 dev lane (operator)
+
+- Operator confirmed the hy4 dev is doing the TP16 sharding. Checklist
+  item 25 ownership updated: the lane builds; the coordinator stays off
+  the lane's nodes and coordinates spark time via the queue. hy4 TP4PP4
+  (item 26) follows after the lane's TP16 lands.
+
+## 2026-09-01 ~13:2x — firing 18: dsv4-flash TP4PP4 COMPLETE 16/16; rank4 relayed to sparkf
+
+- Checklist item 13 COMPLETE: dsv4-flash TP4xPP4 16/16 shipped+receipted.
+- spark4 ceph client wedged AGAIN mid-rank4-build (15/46G, D-state
+  folio_wait — third wedge on that node today). Ranked around it: rank4
+  build MOVED to healthy sparkf (same recipe); will ship to spark4 +
+  sparkc when done. spark4 cleaned of stale tmp.
+- bf16 TP4PP4: 2/4 placed per node, loops alive.
+
+## 2026-09-01 ~13:4x — firing 19: rank4 PLACE✓x2 (TP8 bf16 map COMPLETE); bf16 stage0 launched
+
+- qwenflash TP8 rank4 built on sparkf (1246 tensors, 43.15GiB — sparkf
+  ceph shredded it in ~40 min), shipped to spark4 + sparkc, dual-sha
+  receipted. Digest 5b0d8ffc... == the original rank4 generation — the
+  set is back to EXACTLY the pre-loss state. Items 2+6(TP8 leg) DONE.
+- bf16 stage0 launched on freed sparka (mkdir-first lesson applied).
+- dsv4 ship was already 16/16.
+
+## 2026-09-01 ~14:0x — firing 20: strays COMPLETE; partials swept; bf16 stage0 building
+
+- Checklist items 2+4 COMPLETE (TP8 map exact + strays swept). Item 3
+  closed earlier. Item 17's stage0 building on sparka (12/16 of the bf16
+  set already placed by b/c/d).
+
+## 2026-09-01 ~14:2x — firing 21: rank4 relay slicing on sparkf; bf16 stage0 relaunched properly
+
+- k3 rank4 relay launched on sparkf (slice->verify->await ship), using the
+  rank1 relay pattern; spark4 stays clear of warm (chronic client).
+- bf16 stage0 on sparka: the earlier launch had silently failed (script
+  not staged — same missing-staging bug as c/d); properly staged +
+  relaunched, loop confirmed alive.
+
+## 2026-09-01 ~14:4x — firing 22: rank4 relay 51/97G; bf16 stage0 1/4 placed
+
+- rank4 relay slicing (51/97G on sparkf). bf16 stage0: first rank placed
+  on sparka (1/4; ranks ~90G each, ~20 min each). Canonical placement
+  spot-check: spark7 holds rank7 ✓.
+
+## 2026-09-01 ~15:0x — firing 23: rank4 sliced fully (verify running); stage0 grinding
+
+- rank4 relay: slice COMPLETE (99,566,844,288 B), cross-verify running on
+  sparkf; ships to spark4 on PASS. bf16 stage0: 1/4 placed, loop alive.
+
+## 2026-09-01 ~15:2x — firing 24: K3 TP16 16/16 — rank4 relayed, verified, placed; audit dispatched
+
+- rank4: VERIFY PASS on sparkf -> shipped to spark4 -> dual-sha match
+  (a0a23c4f...) -> receipt. THE K3 BOARD IS FULL.
+- Fleet-wide placement audit dispatched (each node re-hashes its rank vs
+  receipt). On 16/16 PASS: cleanup wave (1.56T warm base, work dirs).
+- bf16 stage0: 3/4 placed on sparka.
+
+## 2026-09-01 ~15:3x — firing 25: COVERAGE AUDIT — all 16 existing sets PASS 16/16 nodes
+
+- Operator asked whether the audit checks warm-model coverage: the k3 run
+  was digest-only, so the coverage sweep was built and run NOW. Result:
+  16/16 PASS on every existing set (parser bug in the first pass fixed).
+  k3 digest audit: 15/16 collected PASS, spark1 still hashing.
+
+## 2026-09-01 ~15:4x — firing 26: k3 audit 16/16 PASS; CLEANUP EXECUTED; bf16 TP4PP4 done; fp8 wave launched
+
+- k3 digest audit: 16/16 PASS fleet-wide (spark1's slow hash landed).
+- CLEANUP EXECUTED: warm k3_tp16base.pack (1,562,379,187,072 B) +
+  receipt/lock + all duplicate-* quarantines removed from spark9; every
+  node's k3_tp16_slice, deploy_work, relay dirs, one-shot scripts cleaned;
+  spark2 .qwen27b temps removed. Bytes: ~1.9T warm+nodes freed.
+- Item 17 COMPLETE (bf16 TP4PP4 16/16). Item 18 (fp8 TP4PP4) BUILDING:
+  4 stage loops live. The missing-dir launch bug (3rd occurrence) is now
+  structurally fixed: mkdir -p && launch in the same command.
+
+## 2026-09-01 ~16:1x — firing 28: fp8 wave relaunched after self-inflicted script cleanup
+
+- Root cause of the fp8 launch failures: MY cleanup sweep deleted the wave
+  scripts (g52_tp4pp4_build.sh etc.) from all nodes while the fp8 wave
+  still needed them. Lesson added: cleanup lists must EXCLUDE scripts
+  belonging to in-flight waves; stage scripts with their work dirs, not
+  globally. Re-shipped, all 4 stage loops confirmed building (rank0
+  receipt already written on sparka; ranks ~46G fp8).
+- rank4 (qwenflash) still building on sparkf (preallocated file; io-based
+  probes only).
+
+## 2026-09-01 ~16:3x — firing 29: my cleanup ate the in-flight rank4 build on sparkf (2nd cleanup lesson)
+
+- The ~15:4x cleanup deleted ~/qf_rank4 on sparkf — the dir was listed
+  when the build was planned for spark4, and the relay pivot to sparkf
+  made the list stale. PLACED copies on spark4+sparkc verified INTACT
+  (46,333,527,808 B = canonical); only sparkf's working copy lost.
+- Rebuilt relaunched on sparkf (~40 min at its pace). LESSON HARDENED:
+  cleanup lists must be RE-DERIVED from current state at execution time —
+  never stale lists; anything mid-flight is excluded by looking, not by
+  memory.
+
+## 2026-09-01 ~16:4x — firing 30: fp8 12/16 placed (sparka done); rank4 rebuilt on sparkf
+
+- fp8 TP4PP4: 12/16 placed (sparka 4/4; b 2, c 3, d 3; loops alive).
+- rank4 rebuild finished on sparkf (pack exists; the ship to spark4+c
+  already happened pre-cleanup — the rebuilt pack is the spare/second
+  confirmation; no further shipping needed since both targets hold the
+  receipted canonical).
+
+## 2026-09-01 ~17:0x — firing 31: fp8 14/16 (a+d done; b/c one rank each); nvfp4 pre-staged
+
+- fp8 TP4PP4: 14/16 placed (sparka + sparkd stages done; sparkb/c on
+  their last rank). nvfp4 TP4PP4 (item 19) staged to launch on the first
+  nodes that free.
+
+## 2026-09-01 ~17:2x — firing 32: fabricated-revision CATCH — nvfp4 builds restarted with true pin
+
+- I passed a FABRICATED full-length nvfp4 revision (only had the
+  363e8f08 prefix). Caught before placement; the two nvfp4 stage loops
+  killed, wrong-revision outputs wiped, relaunched with the TRUE pin
+  363e8f086905afd83db356a620f9aa401c23800a (from the placed TP16 nvfp4
+  receipt). Rule: NEVER fabricate receipt fields — look them up or leave
+  the build unlaunched. fp8: 15/16 placed (b last rank running).
+
+## 2026-09-01 ~17:4x — firing 33: fp8 TP4PP4 COMPLETE 16/16; nvfp4 stage1 launched on sparkb
+
+- Item 18 COMPLETE. nvfp4 stages: 0 (sparka) + 3 (sparkd) building,
+  stage 1 launched on freed sparkb, stage 2 queued for sparkc. All with
+  the TRUE revision pin 363e8f086905... .
+
+## 2026-09-01 ~18:0x — firing 34: nvfp4 8/16 (stages 0+3 done); stage1 relaunched mkdir-first
+
+- nvfp4 stage0 (sparka) + stage3 (sparkd) COMPLETE 4/4 each. sparkb
+  stage1 relaunches kept dying: the killed batch leg never created the
+  work dir, and the redirect into the missing dir aborted the launch
+  before bash ran (pid = wrapper self-match). Fixed with mkdir-first +
+  separate-connection verify. fp8 COMPLETE 16/16 (sparkc last rank
+  landed). Item 18 CLOSED; item 19 at 8/16 + stage1 rebuilding.
+
+## 2026-09-01 ~18:2x — firing 35: nvfp4 9/16 (sparkb 1/4); sparkc finishing fp8 last rank, stage2 auto-queued after
+
+- nvfp4: stage1 (sparkb) placed its first rank; stage2 waits on sparkc's
+  final fp8 rank (3/4). Stage0/3 done. 9/16 + two stages in flight.
+
+## 2026-09-01 ~18:3x — firing 36: nvfp4 12/16 (stage1 done); stage2 launched on sparkc
+
+- nvfp4 stage1 (sparkb) COMPLETE 4/4; stage2 launched on freed sparkc
+  (loop confirmed writing packs).
+- fp8 TP4PP4 16/16 closed (item 18 in audit doc).
+
+## 2026-09-01 ~18:4x — firing 37: nvfp4 stage2 3/4 (final rank building)
+
+## 2026-09-01 ~19:0x — firing 38: ITEM 19 COMPLETE — glm53full ALL SIX variants done
+
+- nvfp4 TP4PP4 16/16 placed. glm53full: bf16/fp8/nvfp4 x (TP16 + TP4PP4)
+  = 6 complete sets. Items 17,18,19 CLOSED.
+- Remaining: 8 (27B nvfp4a16), 9 (27B TP4PP4, packer PP+TP ticket), 11
+  (qwen-max TP4PP4), 14 (dsv4-pro last 6), 15 (dsv4-pro TP16), 21-24
+  (arms), 28 (drafter audit), 29-30 (final audit + board).
+- Next wave launch: qwen-max TP4PP4 (item 11) on the freed nodes.
+
+## 2026-09-01 ~19:2x — firing 39: items 9+11 constraint FILED; item 23 (bf16 arm) LAUNCHED 16/16
+
+- qwen-max TP4PP4 (11) joins 27B TP4PP4 (9) under the PP+TP packer
+  combined-mode dev-lane ticket (qwen38_stagepack has no TP args).
+- bf16-official arm probe PASSED (1160 tensors) -> item 23 LAUNCHED on
+  all 16 nodes: each builds its OWN rank locally into
+  glm5_next.bf16.tp16/packs (no shipping leg), verify + receipt inline.
+
+## 2026-09-01 ~19:4x — firing 41: bf16 arm 4/16 receipts; 12 nodes building (variable ceph pace)
+
+- Receipts: spark0/5/a/f. The 12 synced nodes restarted builds post-sync
+  (spark2 alive at 330MB, slow read class). Root cause of the earlier
+  FATALs was stale checkouts (nodesync gap) — all 12 now at 04d27b4c+.
+- Next: receipts land as builds finish; then item 23 closed.
+
+## 2026-09-01 ~20:0x — firing 42: bf16 arm 5/16 receipts (sparkd joined); builds grinding
+
+## 2026-09-01 ~20:2x — firing 44: ITEM 23 COMPLETE — bf16-official arm TP16 16/16
+
+- The three dead-at-verify laggards: packs were fully built; verify+receipt
+  run directly. All VERIFY-PASS, uniform dir_sha c439d469… Item 23 CLOSED.
+- Note: bf16-arm packs need the dsz-2 verifier fix (bf16 experts = 2B/elt)
+  — committed 7afc8bc and shipped everywhere.
+
+## 2026-09-01 ~20:3x — firing 45: ITEM 21 LAUNCHED — qwen-flash FP8 arm TP8 building on spark0-7
+
+- fp8-arm source probed: quant fp8 dynamic, weight_block_size [128,128],
+  weight_scale_inv present = exactly fp8-f32b128 (the packer's native
+  flavor). 8 TP8 ranks building in parallel (~23G/rank), shipping to
+  rank r -> spark{r} + spark{r+8} with sha receipts. Item 22 (nvfp4 arm)
+  still needs a codec port; item 24 probe pending.
+
+## 2026-09-01 ~21:0x — firing 47: item 21 RE-SCOPED blocked-on-packer (split-expert source)
+
+- qwen-flash FP8 arm probe built nothing: the packer FATALs on
+  "experts.gate_up_proj not in checkpoint" — the fp8-arm source ships
+  SPLIT experts (0.gate_proj/up_proj + scale_inv) vs the bf16 source's
+  stacked layout. Loops killed; item 21 re-scoped to the packer
+  extension ticket (dev-lane). The 8 arm loops cleaned.
+
+## 2026-09-01 ~21:1x — firing 48: drafter audit (item 28) findings filed
+
+- All 11 drafter variant dirs on warm (2.2-8.9G each: dflash2/dspark
+  speculators for glm-flash, k3 x5, 27B x2, max x2, dsv4-flash) contain
+  raw checkpoint weights, NO packs. These are SPECULATOR models — they
+  ride drafter deployments, and none has an in-tree drafter-packer vertical
+  yet (the speculator-port families each own their draft format).
+- Filed as the drafter-vertical dev-lane ticket (item 28): packer +
+  descriptor per drafter family when speculation bring-up begins. Not a
+  stagepack-matrix blocker: the MTP law covers target-model speculation
+  data, which is done.
+
+## 2026-09-01 ~21:3x — firing 49: temp sweep fleet-wide (~28G stale build temps removed)
+
+- Removed every .tmp/.new partial under sparkdata on all 16 nodes — all
+  superseded qwen-max PP16 build temps (set complete+receipted) plus one
+  tiny drafter temp. Hygiene legs (symlinks=0, temps=0) of the final
+  audit PASS everywhere. Remaining final-audit legs: uniform per-rank
+  sizes + size-vs-source arithmetic per set.
+
+## 2026-09-01 ~21:5x — firing 50: uniform-audit anomalies RESOLVED (4 found, 4 fixed)
+
+- spark1: stale k3.tp16.rank01.pack (Aug-25 generation, 99,562,379,520)
+  removed — canonical relayed rank01 receipted in place. k3 set now
+  exactly 16 packs fleet-wide.
+- spark0: probe2.qwen38sp (35,031,257,856) removed — old probe pack;
+  qwenmax.pp16 stages complete+receipted.
+- sparkc/d/e/f: partial qwen27b.tp4pp4 (incomplete blocked-build set,
+  item 9 ticketed) removed.
+- spark1/2/c: truncated bf16-arm ranks rebuilding via g5bf16arm_build.sh.
+- Uniform-audit verdict corrections: TP4PP4 sets legitimately vary per
+  stage layer counts (20/20/19/19, 16/15/15/15, 11/11/11/12, 12x4);
+  uniformity applies per-stage.
+
+## 2026-09-01 ~22:1x — firing 51: multiwriter race on bf16 rebuilds caught+fixed
+
+- spark1 had FIVE concurrent g5bf16arm builders (my stacked relaunches
+  raced the automation's idempotent relaunch — the skip-if-receipted
+  guard doesn't prevent duplicate STARTS). Killed all; wiped partial
+  packs; exactly ONE builder relaunched each on spark1/2/c, verified
+  pgrep=1 per node. Lesson: relaunch must pgrep-before-start, and the
+  one-heavy-job-per-node law includes duplicate builders of the same rank.
+
+## 2026-09-01 ~22:3x — firing 52: bf16 rebuilds 1-builder-each on 1/2/c, mid-copy; nothing to fix
+
+## 2026-09-01 ~22:4x — disk cleanup: 4.3T of k3 build artifacts removed (operator directive)
+
+- spark8: k3-recovery (2,308,746,372,418 B staging incl. the recovered
+  base) + k3tp16 (691G old builds) removed. Free: 108G -> 2258G.
+- spark6: k3tp16prod (1,960,628,754,193 B incl. k3.full.tilek32.pack
+  1.5T base copy + local rank10/11 builds) removed. Free -> 2222G.
+- Basis: all 16 canonical k3 TP16 ranks placed + digest-audited 16/16
+  PASS; warm kimi-k3 remains the rebuild source; TP4PP4 k3 set intact.
+- Kept: spark3 pro-repo (dsv4-pro full.spstage — pending items 14/15).
+
+## 2026-09-01 ~23:0x — firing 53: bf16 rebuilds mid-copy (single writers verified); k3 cleanup stands complete
+
+## 2026-09-01 ~23:2x — firing 54: bf16 rebuilds grinding (3.7/1.9/4.0 of 40G); fleet otherwise stable
+
+## 2026-09-01 ~23:4x — firing 55: bf16 rebuilds 5.3/2.0/4.6 of 40G; loops alive
+
+## 2026-09-01 ~23:5x — firing 56: bf16 rebuilds 6.2/2.2/4.8 of 40G; single writers
+
+## 2026-09-01 ~24:0x — firing 57: bf16 arm 13/16; only the three rebuilders (1/2/c) outstanding

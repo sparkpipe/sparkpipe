@@ -34,6 +34,25 @@ One queue, one state, one dispatcher. This is the contract every lane
 follows for ANY spark-touching work; the discipline is what makes
 parallel dev safe.
 
+## The window model (operator ruling 2026-09-01)
+
+A task's node claim is ONE WINDOW, **15 minutes max** (enforced at
+submit). ~1-2 min of a window is weightd swap-in (once persistent
+weightd lands); plan 13-14 min of tests:
+
+- **Batch many tests per window** — one cmd that runs them in sequence,
+  or `after=`-chained tasks.
+- A task queued during your window runs as long as it **starts before
+  the window ends** (your tasks hold the nodes; others wait).
+- When your tasks finish, **the next dev's window starts** — no
+  standing claims. To hold your turn between tests, keep your NEXT
+  test queued (a queued higher-priority task blocks overlapping
+  lower-priority work from dispatching in your gap).
+- weightd persistence is what makes window rotation cheap: the next
+  model's swap-in is minutes, not a cold rebuild. Until S1 lands,
+  expect windows that switch models to spend more of their 15 min on
+  load.
+
 ## The invariants (audited + tested 2026-09-01)
 
 1. **ONE machine-global, durable state** at `~/.sparkpipe/queue`
@@ -49,9 +68,10 @@ parallel dev safe.
    unnecessary — submit and let the daemon serve you.
 3. **Priority: lower number runs first** (0 = highest, default 5).
    Tasks older than 2 h auto-elevate to 0 (anti-starvation).
-4. **Node sets are exclusive** for the task's duration; disjoint sets
-   run in parallel; `--ttl-min` is the expected duration (declare it —
-   the lease and the stale-reaper are sized by it).
+4. **Node sets are exclusive** for the task's duration (one 15-minute
+   window max, enforced); disjoint sets run in parallel; `--ttl-min`
+   is the expected duration within that cap.
+
 5. **The reaper releases nodes** via the task's exit sentinel
    (`/tmp/sparkqueue-<id>.exit` on the first node) — crashed tasks free
    their nodes within seconds of the next dispatch pass. `cancel`/

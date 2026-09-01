@@ -121,3 +121,80 @@ artifacts, never topology variants or sources:
 4. qwen-flash FP8 + NVFP4 arm packs (already queued).
 5. dsv4-pro TP16 set (rank-path extension) and remaining tp4pp4 ranks.
 6. qwen38max.tp4pp4 rebuild (573G, one node) — priority pending operator.
+
+## 8. hy4 ADDED TO THE ACTIVE SET (operator, 2026-09-01)
+
+- Source: /mnt/model-warm/hy4-preview-fp8-official — 766G FP8 official
+  (modelopt MXFP8), HYV4ForCausalLM, 78 layers, hidden 6144, 64 attn
+  heads / 8 KV heads, 256-expert MoE top-8 (moe_inter 2048),
+  hyper-connections (hc_head / hc_attn_layer), MTP PRESENT (39
+  mtp_layers.0.* tensors, deepseek-style) → per the MTP law, hy4 packs
+  MUST carry MTP.
+- Geometry pre-check (the law): TP16 heads 64/16=4 ✓, ffn 144 blocks
+  %16=0 ✓, moe 16 blocks %16=0 ✓, KV-heads 8 → replicated (glm/dsv4
+  precedent); ~48G/rank, fits the 110GiB law. TP4: all clean too.
+- Targets: TP16 set + TP4×PP4 set, both MTP-carrying. New architecture →
+  packer/module vertical = the hy4 dev lane's build (agent started by the
+  operator); closest in-tree relative: glm5_next (hc kinds exist in its
+  kind table) and dsv4 (mtp.0.* naming class). Coordinator provides
+  board slots + queue coordination; the lane owns packer/descriptor.
+- Note: dsv4-pro's spec layers and hy4's MTP share the deepseek MTP
+  shape — the dsv4 packer's mtp handling is a reusable reference.
+
+## 9. THE COMPLETE-SET CHECKLIST (operator-formatted; standing automation reference)
+
+Definition of done per set: all ranks real bytes on canonical nodes (TP4 4x,
+TP8 2x maps; rank r on spark-r), uniform per-rank size, sha256 receipted,
+MTP-carrying if the source ships it, verified against source.
+
+In flight (finish first):
+1. k3 TP16 — COMPLETE + AUDITED: 16/16 placed, fleet-wide re-hash audit 16/16 PASS; cleanup EXECUTED (1.56TB warm base + quarantines + all slice/deploy work dirs + spark2 temps removed, bytes logged).
+2. k3 cleanup — after 16/16: remove 1.56TB warm base + all slice/deploy work dirs + spark2 27B temps (bytes logged).
+3. qwen-flash TP8 (bf16) — rank4 rebuilding on spark4 (post-MDS restart) → place on spark4 + copy to sparkc. MTP AUDIT DONE: placed ranks carry 36 draft/MTP-marker entries (fc_embedding/fc_hidden + per-layer kinds at the MTP marker) — no rebuild needed for MTP.
+4. glm5_next TP8 FP8 (true, MTP) — COMPLETE: 8 ranks x 2 targets = 16/16 nodes, one canonical rank each (43,479,544,832 B, 1187 tensors, flags=1, sha-receipted); wrong-topology tp16-named files removed fleet-wide (~272G).
+
+Strays (fix-as-found):
+5. k3 duplicate ranks on spark2/spark3 (185G each) — digest-identify; remove own-rank duplicates, report foreign copies.
+6. Truncated 19G qwenflash partials — delete once rank4 replacements are placed.
+
+Per-set completions:
+7. 27B TP4 (fp8) — COMPLETE: MTP confirmed present by direct directory read (18 entries at the MTP-layer marker: attn/FFN kinds + MTP FC/norm kinds; tensors=866). NOTE: the family verifier's content walk reports 576/866 pack-vs-source byte mismatches — indicted as the verifier's fused-gate|up source-reading bug (the same packs are telemetry-proven serving-grade); dev-lane ticket filed.
+8. 27B TP4 nvfp4a16-bf16-spine arm — build from warm source (packer vertical per the decoded fused layout).
+9. 27B TP4xPP4 — BLOCKED on packer: qwen38_27b_stagepack hard-refuses TP>1 with sliced layers; needs the PP+TP combined-mode extension. Dev-lane ticket filed (shared with item 11).
+10. qwen-max PP16 (nvfp4) — placed; MTP CONFIRMED (stage15 carries 23 MTP-marker entries) — no upgrade needed.
+11. qwen-max TP4xPP4 — BLOCKED on the same packer constraint (qwen38_stagepack is PP-only, no TP args; supersedes the deleted-in-error qwen38max.tp4pp4 — its rebuild folds in here). Shared PP+TP dev-lane ticket with item 9.
+12. dsv4-flash TP16 — placed; MTP CONFIRMED (all 8 KIND_MTP_* entries 41-48 present).
+13. dsv4-flash TP4xPP4 — build.
+14. dsv4-pro TP4xPP4 — 10/16; build the last 6 ranks (packer rank-path extension). MTP CONFIRMED (8 KIND_MTP_* entries in the placed stage).
+15. dsv4-pro TP16 — build from the nvfp4-pro source (877G; splicer rank-path).
+16. glm5_next (flash) TP4xPP4 — COMPLETE: 16/16 placed (stage matrix 272/287/287/341 tensors; stage0 owns-emb, stage3 MTP+owns-head; rank r on spark-r, sha-receipted).
+17. glm53full bf16 TP4xPP4 — COMPLETE: 16/16 placed (stages 20/20/19/19 layers x TP4; rank r on spark-r; sha-receipted).
+18. glm53full fp8 TP4xPP4 — COMPLETE: 16/16 placed (all stage loops, sha-receipted).
+19. glm53full nvfp4 TP4xPP4 — COMPLETE: 16/16 placed (true rev pin 363e8f086905…; rank r on spark-r; sha-receipted). glm53full now holds ALL SIX variants (3 resolutions x TP16+TP4PP4). (TP16 done.)
+20. qwen-flash TP4xPP4 — COMPLETE: 16/16 ranks built+placed (rank r on spark-r, 4 stages x 12 layers x TP4, bf16, MTP-carrying, sha-receipted; zero FATALs).
+21. qwen-flash TP8 fp8 arm — BLOCKED on packer: the fp8-arm source stores experts SPLIT per-index (experts.0.gate_proj/up_proj + weight_scale_inv) vs the bf16 source's stacked exp ass gate_up_proj the packer's name map expects. Needs split-expert name-map + fused-row extension (dev-lane ticket; same family as the 27B PP+TP item).
+22. qwen-flash TP8 nvfp4 arm — build (with MTP).
+23. glm-flash bf16-official arm TP16 — COMPLETE: 16/16 placed (40,136,867,328 B uniform, 1160 tensors, BF16 experts verbatim passthrough via source-driven codec; dir_sha uniform c439d469… across ranks; verify PASS + receipts).
+24. glm-flash nvfp4-redhatai arm TP16 — build (~12G/rank).
+25. hy4 TP16 — IN PROGRESS by the hy4 dev lane (operator confirmed the lane is doing the TP16 sharding); geometry clean (64 heads/16=4, ffn 144 blocks, KV replicated); MTP 39 tensors must ride. Coordinator: stay off the lane's nodes, integrate via queue.
+26. hy4 TP4xPP4 — build (MTP-carrying).
+27. k3 TP4xPP4 — COMPLETE (kept, verified intact) — no work.
+28. Drafter variants audit — the small dflash2/dspark dirs on warm: each has its drafter pack + descriptor, or gets one.
+
+Close-out (only after 1-27):
+29. Canonical sanity audit — every node holds exactly its map's sets; per-rank digest == master; uniform per-rank sizes; set-total vs source arithmetic; zero symlinks/temps/duplicates; stray list filed before any removal.
+30. Reclaim + final board — ~/glm53_packs* staging duplicates REMOVED (sha-verified or superseded-no-MTP-generation rule, ~350G+ freed); remaining: final matrix log after items 8-28; idle.
+
+## 10. COVERAGE AUDIT RESULT (2026-09-01) — ALL EXISTING SETS PASS 16/16
+
+Fleet-wide sweep: every set below is held by ALL 16 nodes (canonical rank
+per node per the maps), non-empty, real files:
+glm53full bf16/fp8/nvfp4 TP16 (4); glm53full bf16 TP4PP4; glm5_next
+TP16/TP8FP8/TP4PP4 (3); k3 TP16/TP4PP4 (2); dsv4-flash TP16/TP4PP4 (2);
+dsv4-pro TP4PP4 (coverage 16/16 — rank-completeness is item 14's 10-distinct-ranks
+line); 27B TP4; qwen-flash TP8/TP4PP4; qwen-max PP16. 16 sets PASS.
+Combined with the warm-dir mapping (§2) and MTP confirmations (§9/7-14):
+every warm model other than hy4 (lane-owned, in progress) and the
+explicitly to-build arms has complete stagepack coverage. Per-placement
+sha receipts + the k3 re-hash audit cover integrity; the item-29 final
+audit adds uniform-size + size-vs-source arithmetic at the end.

@@ -234,12 +234,20 @@ class SourceReader:
 
     def expert_payload(self, name: str, r0: int, r1: int, c0: int, c1: int) -> bytes:
         dtype, shape, _ = self.meta(name)
+        if dtype == "BF16":
+            # bf16-official arm: expert weights are native BF16 — verbatim
+            # passthrough (packers repackage, never quantize). No scale plane.
+            codes = self.raw(name).view(np.uint16).reshape(shape[0], shape[1])
+            return np.ascontiguousarray(codes[r0:r1, c0:c1]).tobytes()
         if dtype != "F8_E4M3":
             raise PackFailure(f"{name}: expected F8_E4M3, got {dtype}")
         codes = self.raw(name).reshape(shape[0], shape[1])
         return np.ascontiguousarray(codes[r0:r1, c0:c1]).tobytes()
 
     def expert_scale(self, name: str, r0: int, r1: int, c0: int, c1: int) -> bytes:
+        dtype, _, _ = self.meta(name)
+        if dtype == "BF16":
+            return b""
         scale_name = name + "_scale_inv"
         _dt, scale_shape, _ = self.meta(scale_name)
         scale = self.raw(scale_name).view(np.float32).reshape(scale_shape)
@@ -557,14 +565,21 @@ class Packer:
             w2_c0 = (w2_cols // tp) * rank; w2_c1 = w2_c0 + w2_cols // tp
         w1_out_rows = w1_r1 - w1_r0
         w2_out_cols = w2_c1 - w2_c0
-        w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT, self.expert_codec,
-                   SCALE_F32, EXPERTS, w1_out_rows, w1_cols)
-        w2 = Entry(K_EXPERT_DOWN, layer, PAYLOAD_PACKED_WEIGHT, self.expert_codec,
-                   SCALE_F32, EXPERTS, w2_rows, w2_out_cols)
-        w1.payload_bytes = EXPERTS * w1_out_rows * w1_cols
-        w1.scale_bytes = EXPERTS * w1_out_rows * (w1_cols // 128) * 4
-        w2.payload_bytes = EXPERTS * w2_rows * w2_out_cols
-        w2.scale_bytes = EXPERTS * w2_rows * (w2_out_cols // 128) * 4
+        # source-driven expert codec: BF16 sources pass through verbatim
+        # with no scale plane (the packer never quantizes either direction)
+        probe_name = next(
+            (n for n in self.s.weight_map
+             if ".mlp.experts.0.up_proj.weight" in n), None)
+        experts_bf16 = probe_name is not None and self.s.meta(probe_name)[0] == "BF16"
+        codec = CODEC_BF16 if experts_bf16 else self.expert_codec
+        w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT, codec,
+                   SCALE_NONE if experts_bf16 else SCALE_F32, EXPERTS, w1_out_rows, w1_cols)
+        w2 = Entry(K_EXPERT_DOWN, layer, PAYLOAD_PACKED_WEIGHT, codec,
+                   SCALE_NONE if experts_bf16 else SCALE_F32, EXPERTS, w2_rows, w2_out_cols)
+        w1.payload_bytes = EXPERTS * w1_out_rows * w1_cols * (2 if experts_bf16 else 1)
+        w1.scale_bytes = 0 if experts_bf16 else EXPERTS * w1_out_rows * (w1_cols // 128) * 4
+        w2.payload_bytes = EXPERTS * w2_rows * w2_out_cols * (2 if experts_bf16 else 1)
+        w2.scale_bytes = 0 if experts_bf16 else EXPERTS * w2_rows * (w2_out_cols // 128) * 4
         source = self.s
 
         def produce_w1() -> Iterator[bytes]:

@@ -138,6 +138,8 @@ def main() -> int:
     end_max = 0
     for i, e in enumerate(entries):
         dsz = DT_SIZE.get(e["payload_type"])
+        if e.get("weight_codec") == 1:  # CODEC_BF16 experts: 2 B/element
+            dsz = 2
         if dsz is None:
             fail(f"entry {i}: payload_type {e['payload_type']}")
         if e["payload_offset"] % ALIGNMENT:

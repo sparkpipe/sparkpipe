@@ -221,6 +221,7 @@ static void SparkTestDsparkResolvesVerifierTokens(void)
         SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
         rejected_verifier_tokens,
         SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
+        SPARK_DSPARK_FULL_VOCAB_SIZE,
         &verify_result) == SPARK_STATUS_OK);
     assert((verify_result.flags &
         SPARK_DSPARK_VERIFY_RESULT_FLAG_REJECTED) != 0u);
@@ -235,6 +236,7 @@ static void SparkTestDsparkResolvesVerifierTokens(void)
         SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
         accepted_with_bonus_tokens,
         SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u,
+        SPARK_DSPARK_FULL_VOCAB_SIZE,
         &verify_result) == SPARK_STATUS_OK);
     assert((verify_result.flags &
         SPARK_DSPARK_VERIFY_RESULT_FLAG_ACCEPTED_ALL) != 0u);

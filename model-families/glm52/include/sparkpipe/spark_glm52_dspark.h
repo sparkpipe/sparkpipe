@@ -77,16 +77,20 @@ extern "C" {
 
 /* Legacy type aliases over the neutral policy structs. */
 typedef SparkSpeculationModelContract SparkGlm52DsparkModelContract;
-typedef SparkSpeculationDraftRequest SparkGlm52DsparkDraftRequest;
-typedef SparkSpeculationDraftResult SparkGlm52DsparkDraftResult;
-typedef SparkSpeculationVerifyResult SparkGlm52DsparkVerifyResult;
+typedef SparkSpeculationPolicyDraftRequest SparkGlm52DsparkDraftRequest;
+typedef SparkSpeculationPolicyDraftResult SparkGlm52DsparkDraftResult;
+typedef SparkSpeculationPolicyVerifyResult SparkGlm52DsparkVerifyResult;
 typedef SparkSpeculationSequenceState SparkGlm52DsparkSequenceState;
 typedef SparkSpeculationConfiguration SparkGlm52DsparkSpeculatorConfiguration;
 typedef SparkSpeculationSpeculator SparkGlm52DsparkSpeculator;
 typedef SparkSpeculationDraftFunction SparkGlm52DsparkDraftFunction;
 
-/* Legacy function aliases over the neutral policy core. */
-#define SparkGlm52DsparkBuildDefaultModelContract SparkSpeculationPolicyBuildDefaultModelContract
+/* Legacy function aliases over the neutral policy core. The GLM52 default
+ * model contract is GLM52-shaped, so it is a real function here, implemented
+ * next to the hidden tap plan in the draft-backend module. */
+SparkStatus SparkGlm52DsparkBuildDefaultModelContract(
+    SparkGlm52DsparkModelContract *model_contract);
+
 #define SparkGlm52DsparkValidateModelContract SparkSpeculationPolicyValidateModelContract
 #define SparkGlm52DsparkInitialize SparkSpeculationPolicyInitialize
 #define SparkGlm52DsparkValidate SparkSpeculationPolicyValidate
