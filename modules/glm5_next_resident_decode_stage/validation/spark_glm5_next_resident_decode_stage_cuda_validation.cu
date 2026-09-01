@@ -1779,6 +1779,10 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 	static uint16_t seq_kv_slot[4096u];
 	static uint16_t seq_attention_latent[SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
 	static uint16_t seq_query_latent[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
+	static uint32_t positions_p1[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
+	static uint32_t positions_p2[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
+	static uint32_t ctx_p1[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
+	static uint32_t ctx_p2[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
 	if (include_mlp == 0u)
 	{
 		/* sequential: re-walk capturing attention_out per row */
@@ -1841,6 +1845,13 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 		if (cudaMemcpy(run_query_latent,fixture->query_latent,
 			(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"run_ql_copy"));
+		/* Capture pass-1 metadata BEFORE the second identical wave so the
+		 * two passes are actually comparable (not two reads of the same state). */
+		if (cudaMemcpy(positions_p1,fixture->positions,
+			SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+			cudaMemcpy(ctx_p1,fixture->context_lengths,
+			SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail(label,"meta_p1_copy"));
 	}
 	if (SparkGlm5NextValRunWaveOnce(fixture,layer,label,include_mlp) != 0)
 		return(1);
@@ -1852,13 +1863,11 @@ static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t 
 			SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"second_kvc_copy"));
 		static uint16_t second_kv_slot[4096u];
-		static uint32_t positions_p1[16],positions_p2[16],ctx_p1[4],ctx_p2[4];
 		uint32_t kv_slot_diffs = 0u;
-		if (cudaMemcpy(positions_p1,fixture->positions,16u * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
-			cudaMemcpy(ctx_p1,fixture->context_lengths,4u * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"meta_p1_copy"));
-		if (cudaMemcpy(positions_p2,fixture->positions,16u * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
-			cudaMemcpy(ctx_p2,fixture->context_lengths,4u * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess)
+		if (cudaMemcpy(positions_p2,fixture->positions,
+			SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+			cudaMemcpy(ctx_p2,fixture->context_lengths,
+			SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess)
 			return(SparkGlm5NextValFail(label,"meta_p2_copy"));
 		if (cudaMemcpy(second_kv_slot,fixture->kv_slot,
 			512u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
