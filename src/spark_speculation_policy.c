@@ -387,7 +387,7 @@ SparkStatus SparkSpeculationPolicyMarkVerifierTapsReady(
 }
 
 static SparkStatus SparkSpeculationPolicyValidateDraftRequest(
-    const SparkSpeculationDraftRequest *request)
+    const SparkSpeculationPolicyDraftRequest *request)
 {
     if (request == 0 ||
         request->abi_version != SPARK_DSPARK_ABI_VERSION ||
@@ -405,7 +405,7 @@ static SparkStatus SparkSpeculationPolicyValidateDraftRequest(
 }
 
 static SparkStatus SparkSpeculationPolicyValidateDraftResult(
-    const SparkSpeculationDraftResult *result,
+    const SparkSpeculationPolicyDraftResult *result,
     uint32_t requested_token_count)
 {
     uint32_t token_index;
@@ -437,7 +437,7 @@ static SparkStatus SparkSpeculationPolicyValidateDraftResult(
 
 static uint32_t SparkSpeculationPolicyConfidenceThresholdForRequest(
     const SparkSpeculationSpeculator *speculator,
-    const SparkSpeculationDraftRequest *request)
+    const SparkSpeculationPolicyDraftRequest *request)
 {
     if (request->priority >= SPARK_DSPARK_POLICY_REALTIME_PRIORITY_THRESHOLD)
     {
@@ -448,8 +448,8 @@ static uint32_t SparkSpeculationPolicyConfidenceThresholdForRequest(
 
 static uint32_t SparkSpeculationPolicyAcceptedDraftLengthByConfidence(
     const SparkSpeculationSpeculator *speculator,
-    const SparkSpeculationDraftRequest *request,
-    const SparkSpeculationDraftResult *result)
+    const SparkSpeculationPolicyDraftRequest *request,
+    const SparkSpeculationPolicyDraftResult *result)
 {
     uint32_t token_index;
     uint32_t confidence_threshold_milli;
@@ -471,10 +471,10 @@ static uint32_t SparkSpeculationPolicyAcceptedDraftLengthByConfidence(
 
 SparkStatus SparkSpeculationPolicyEnsureDraft(
     SparkSpeculationSpeculator *speculator,
-    const SparkSpeculationDraftRequest *request)
+    const SparkSpeculationPolicyDraftRequest *request)
 {
     SparkSpeculationSequenceState *sequence_state;
-    SparkSpeculationDraftResult result;
+    SparkSpeculationPolicyDraftResult result;
     uint32_t accepted_by_confidence;
     uint32_t token_index;
     SparkStatus status;
@@ -573,7 +573,7 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
 SparkStatus SparkSpeculationPolicyGetDraft(
     SparkSpeculationSpeculator *speculator,
     uint64_t sequence_id,
-    SparkSpeculationDraftResult *draft_result)
+    SparkSpeculationPolicyDraftResult *draft_result)
 {
     SparkSpeculationSequenceState *sequence_state;
     uint32_t token_index;
@@ -614,7 +614,7 @@ SparkStatus SparkSpeculationPolicyGetDraft(
 }
 
 static SparkStatus SparkSpeculationPolicyValidateVerifyResult(
-    const SparkSpeculationVerifyResult *verify_result)
+    const SparkSpeculationPolicyVerifyResult *verify_result)
 {
     if (verify_result == 0 ||
         verify_result->abi_version != SPARK_DSPARK_ABI_VERSION ||
@@ -652,7 +652,7 @@ static SparkStatus SparkSpeculationPolicyValidateVerifyResult(
 SparkStatus SparkSpeculationPolicyCompleteVerify(
     SparkSpeculationSpeculator *speculator,
     uint64_t sequence_id,
-    const SparkSpeculationVerifyResult *verify_result)
+    const SparkSpeculationPolicyVerifyResult *verify_result)
 {
     SparkSpeculationSequenceState *sequence_state;
     SparkStatus status;
@@ -710,7 +710,7 @@ SparkStatus SparkSpeculationPolicyResolveVerifierTokens(
     uint32_t draft_token_count,
     const uint32_t *verifier_token_ids,
     uint32_t verifier_token_count,
-    SparkSpeculationVerifyResult *verify_result)
+    SparkSpeculationPolicyVerifyResult *verify_result)
 {
     uint32_t token_index;
     uint32_t accepted_token_count;

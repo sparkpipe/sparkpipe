@@ -77,9 +77,9 @@ extern "C" {
 
 /* Legacy type aliases over the neutral policy structs. */
 typedef SparkSpeculationModelContract SparkGlm52DsparkModelContract;
-typedef SparkSpeculationDraftRequest SparkGlm52DsparkDraftRequest;
-typedef SparkSpeculationDraftResult SparkGlm52DsparkDraftResult;
-typedef SparkSpeculationVerifyResult SparkGlm52DsparkVerifyResult;
+typedef SparkSpeculationPolicyDraftRequest SparkGlm52DsparkDraftRequest;
+typedef SparkSpeculationPolicyDraftResult SparkGlm52DsparkDraftResult;
+typedef SparkSpeculationPolicyVerifyResult SparkGlm52DsparkVerifyResult;
 typedef SparkSpeculationSequenceState SparkGlm52DsparkSequenceState;
 typedef SparkSpeculationConfiguration SparkGlm52DsparkSpeculatorConfiguration;
 typedef SparkSpeculationSpeculator SparkGlm52DsparkSpeculator;

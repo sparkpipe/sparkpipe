@@ -250,6 +250,7 @@ TEST_NAMES := \
     test_gemm_tile_k_fallback \
     test_serial_tp_replay \
     test_speculation_policy_pin \
+    test_speculation_headers_coexist \
     test_speculation_tree_pin \
     test_glm52_dspark \
     test_glm52_mtp_tree \
@@ -981,6 +982,11 @@ build/test_glm52_dspark: tests/test_glm52_dspark.c modules/glm52_dspark_draft_ba
 
 build/test_speculation_policy_pin: tests/test_speculation_policy_pin.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_headers_coexist: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_provider.h include/sparkpipe/spark_speculation_policy.h | build
+	$(CC) $(CPPFLAGS) -DSPARK_DSPARK_TARGET_GLM52=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) -DSPARK_DSPARK_TARGET_GLM52=1 -DSPARK_COEXIST_POLICY_FIRST=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@.reversed
+	./$@.reversed
 
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

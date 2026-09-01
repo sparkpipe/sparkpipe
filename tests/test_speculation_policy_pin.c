@@ -9,9 +9,9 @@
 #define PIN(expr) _Static_assert((expr), #expr)
 
 PIN(sizeof(SparkGlm52DsparkModelContract) == sizeof(SparkSpeculationModelContract));
-PIN(sizeof(SparkGlm52DsparkDraftRequest) == sizeof(SparkSpeculationDraftRequest));
-PIN(sizeof(SparkGlm52DsparkDraftResult) == sizeof(SparkSpeculationDraftResult));
-PIN(sizeof(SparkGlm52DsparkVerifyResult) == sizeof(SparkSpeculationVerifyResult));
+PIN(sizeof(SparkGlm52DsparkDraftRequest) == sizeof(SparkSpeculationPolicyDraftRequest));
+PIN(sizeof(SparkGlm52DsparkDraftResult) == sizeof(SparkSpeculationPolicyDraftResult));
+PIN(sizeof(SparkGlm52DsparkVerifyResult) == sizeof(SparkSpeculationPolicyVerifyResult));
 PIN(sizeof(SparkGlm52DsparkSequenceState) == sizeof(SparkSpeculationSequenceState));
 PIN(sizeof(SparkGlm52DsparkSpeculatorConfiguration) == sizeof(SparkSpeculationConfiguration));
 PIN(sizeof(SparkGlm52DsparkSpeculator) == sizeof(SparkSpeculationSpeculator));
