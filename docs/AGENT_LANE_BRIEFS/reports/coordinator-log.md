@@ -4104,3 +4104,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   item 25 ownership updated: the lane builds; the coordinator stays off
   the lane's nodes and coordinates spark time via the queue. hy4 TP4PP4
   (item 26) follows after the lane's TP16 lands.
+
+## 2026-09-01 ~13:2x — firing 18: dsv4-flash TP4PP4 COMPLETE 16/16; rank4 relayed to sparkf
+
+- Checklist item 13 COMPLETE: dsv4-flash TP4xPP4 16/16 shipped+receipted.
+- spark4 ceph client wedged AGAIN mid-rank4-build (15/46G, D-state
+  folio_wait — third wedge on that node today). Ranked around it: rank4
+  build MOVED to healthy sparkf (same recipe); will ship to spark4 +
+  sparkc when done. spark4 cleaned of stale tmp.
+- bf16 TP4PP4: 2/4 placed per node, loops alive.
