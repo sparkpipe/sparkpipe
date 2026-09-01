@@ -745,6 +745,11 @@ static SparkStatus SparkModelBatchHandlePrefillCompletion(
 		SparkModelBatchRequestState *request;
 		SparkStatus status;
 		request = &engine->requests[request_slots[lane]];
+		fprintf(stderr,"G5N-ENG prefill-complete: sub %llu lane %u slot %u counts %u computed %u prompt %u\n",
+			(unsigned long long)submission->submission_id,(unsigned)lane,
+			(unsigned)request_slots[lane],(unsigned)prefill_counts[lane],
+			(unsigned)request->computed_prompt_token_count,
+			(unsigned)request->prompt_token_count);
 		request->computed_prompt_token_count += prefill_counts[lane];
 		request->resident_bound = 1u;
 		status = SparkModelBatchPublishCompletedBlocks(engine,request,request_slots[lane],request->computed_prompt_token_count);
@@ -845,6 +850,8 @@ static void SparkModelBatchSubmitResult(
 	submission->result_received = 1u;
 	submission->result_status = status;
 	submission->admitted = status == SPARK_STATUS_OK ? 1u : 0u;
+	fprintf(stderr,"G5N-ENG submit-result: sub %llu status %u admitted %u\n",
+		(unsigned long long)submission_id,(unsigned)status,(unsigned)submission->admitted);
 }
 
 static SparkStatus SparkModelBatchApplyCompletion(
@@ -888,6 +895,9 @@ static void SparkModelBatchCompletion(
 		return;
 	}
 	status = (SparkStatus)completion->status;
+	fprintf(stderr,"G5N-ENG completion: sub %llu status %u admitted %u lane_count %u\n",
+		(unsigned long long)completion->submission_id,(unsigned)status,
+		(unsigned)submission->admitted,(unsigned)submission->lane_count);
 	if ( submission->admitted == 0u || status != SPARK_STATUS_OK )
 	{
 		status = submission->admitted == 0u ? (SparkStatus)submission->result_status : status;
