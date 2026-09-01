@@ -4338,3 +4338,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   packs; exactly ONE builder relaunched each on spark1/2/c, verified
   pgrep=1 per node. Lesson: relaunch must pgrep-before-start, and the
   one-heavy-job-per-node law includes duplicate builders of the same rank.
+
+## 2026-09-01 ~22:3x — firing 52: bf16 rebuilds 1-builder-each on 1/2/c, mid-copy; nothing to fix
