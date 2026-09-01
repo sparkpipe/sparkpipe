@@ -1414,7 +1414,12 @@ CEILING = 234369
 # +10: per-collective ordinals (the nccl backend enforces a strict
 # per-communicator sequence; the shared counter failed the HC twin's
 # first submit with VALIDATION_FAILED - the wave-1 hardware receipt).
-CEILING = 236911
+# 236911 -> 237317: glm5_next serving fixes (MTP load-and-ignore pack
+# validation, trailing-directory layout contract, NCCL completion
+# trampoline), weightd warm-path identity publish, wave-tool env
+# passthrough, spark-queue multi-dev hardening (+ durable state, batched
+# age-gated reaper, doctor), hermetic queue gate, runbook + consult doc.
+CEILING = 237317
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

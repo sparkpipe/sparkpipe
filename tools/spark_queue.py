@@ -51,23 +51,31 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# THE QUEUE STATE IS MACHINE-GLOBAL (the split-brain fix): every worktree
-# and every dev session on this host MUST see ONE queue. Worktree-relative
-# state meant dev `add`s wrote a queue no dispatcher ever read.
-STATE = os.environ.get("SPARK_QUEUE_STATE", "/tmp/sparkqueue")
+# THE QUEUE STATE IS MACHINE-GLOBAL and DURABLE (the split-brain fix, then
+# the /tmp-is-volatile fix: macOS cleans /tmp and reboots wipe it - queued
+# work must survive both). Every worktree and every dev session on this
+# host sees ONE queue at ~/.sparkpipe/queue.
+STATE = os.environ.get("SPARK_QUEUE_STATE",
+    os.path.expanduser("~/.sparkpipe/queue"))
 os.makedirs(STATE, exist_ok=True)
 QUEUE = os.path.join(STATE, "queue.jsonl")
 RESERV = os.path.join(STATE, "reservations.json")
 RESULTS = os.path.join(STATE, "results.jsonl")
 LOGDIR = os.path.join(STATE, "logs")
 LOCK = os.path.join(STATE, ".lock")
-# one-time migration: absorb the live coordinator copy if the global is new
-if not os.path.exists(QUEUE) and os.path.exists(os.path.join(ROOT, "runs", "queue.jsonl")):
-    import shutil
-    for name in ("queue.jsonl", "reservations.json", "results.jsonl"):
-        src = os.path.join(ROOT, "runs", name)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(STATE, name))
+# one-time migrations: absorb prior state locations into the DEFAULT home
+# only - an explicit SPARK_QUEUE_STATE override (tests, scratch queues)
+# must start EMPTY, never inheriting production state.
+import shutil
+if "SPARK_QUEUE_STATE" not in os.environ:
+    for _prior in ("/tmp/sparkqueue", os.path.join(ROOT, "runs")):
+        if not os.path.exists(QUEUE) and os.path.exists(os.path.join(_prior, "queue.jsonl")):
+            for name in ("queue.jsonl", "reservations.json", "results.jsonl"):
+                src = os.path.join(_prior, name)
+                if os.path.exists(src):
+                    shutil.copy2(src, os.path.join(STATE, name))
+# NOTE: task-side sentinel files (exit/pid/log) stay in the NODE's /tmp -
+# they are transient by design; only this host-side state is durable.
 DENY = ("reboot", "shutdown", "poweroff", "init 0", "init 6",
         "kill -9", "kill -KILL", "SIGKILL", "rm -rf")
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
@@ -101,9 +109,11 @@ def load_queue():
 
 
 def rewrite_queue(entries):
-    with open(QUEUE, "w") as fh:
+    tmp = QUEUE + ".tmp"
+    with open(tmp, "w") as fh:
         for e in entries:
             fh.write(json.dumps(e) + "\n")
+    os.replace(tmp, QUEUE)
 
 
 def load_reservations():
@@ -117,8 +127,10 @@ def load_reservations():
 
 
 def save_reservations(res):
-    with open(RESERV, "w") as fh:
+    tmp = RESERV + ".tmp"
+    with open(tmp, "w") as fh:
         json.dump(res, fh, indent=1, sort_keys=True)
+    os.replace(tmp, RESERV)
 
 
 def append_result(entry, exit_code, note=""):
@@ -178,7 +190,53 @@ def expire_stale(res):
     return changed
 
 
+def cmd_doctor(args):
+    """Onboarding + health check: one command a new dev runs first."""
+    checks = []
+    ok = lambda name, detail="": checks.append((name, True, detail))
+    bad = lambda name, detail="": checks.append((name, False, detail))
+    writable = os.access(STATE, os.W_OK)
+    (ok if writable else bad)("state dir", STATE)
+    n_queued = n_running = 0
+    for e in load_queue():
+        if e.get("state") == "running":
+            n_running += 1
+        elif e.get("state") == "queued":
+            n_queued += 1
+    ok("queue", f"{n_queued} queued, {n_running} running, "
+        f"{sum(1 for _ in open(RESULTS)) if os.path.exists(RESULTS) else 0} finished")
+    res = load_reservations()
+    holds = ", ".join(f"{n}={r['id']}" for n, r in sorted(res.items())) or "(none)"
+    ok("node holds", holds)
+    try:
+        out = subprocess.run(["pgrep", "-f", "spark_queue.py dispatch"],
+            capture_output=True, text=True, timeout=5)
+        pids = [l for l in out.stdout.split() if l]
+        if pids:
+            ok("dispatcher daemon", f"pid {','.join(pids)}")
+        else:
+            bad("dispatcher daemon", "not running - restart: "
+                "nohup bash -c 'while true; do python3 "
+                "/Users/mac/sparkpipe/tools/spark_queue.py dispatch >> "
+                "~/.sparkpipe/queue/dispatcher.log 2>&1; sleep 5; done' &")
+    except Exception as exc:
+        bad("dispatcher daemon", str(exc))
+    with open(__file__) as fh:
+        body = fh.read()
+    if "STATE = " in body and 'os.path.join(ROOT, "runs")' not in body.split("def ")[0][:3000]:
+        ok("tool version", "global-state version")
+    else:
+        bad("tool version", "stale pre-split-brain copy - git pull main")
+    for name, good, detail in checks:
+        print(f"{'PASS' if good else 'FAIL'}  {name}: {detail}")
+    sys.exit(1 if any(not g for _, g, _ in checks) else 0)
+
 def cmd_add(args):
+    if getattr(args, "cmd_file", None):
+        if args.cmd:
+            sys.exit("--cmd and --cmd-file are mutually exclusive")
+        with open(args.cmd_file) as fh:
+            args.cmd = fh.read()
     with acquire_lock():
         check_denied(args.cmd or "")
         entries = load_queue()
@@ -203,7 +261,8 @@ def cmd_add(args):
 
 
 def cmd_list(args):
-    entries = load_queue()
+    with acquire_lock():
+        entries = load_queue()
     res = load_reservations()
     if not args.all:
         entries = [e for e in entries if e["state"] in ("queued", "running", "blocked")]
@@ -226,6 +285,13 @@ def cmd_status(args):
                 if rc == 0 and tail:
                     print("--- log tail ---\n" + tail)
             return
+    if os.path.exists(RESULTS):
+        for line in reversed(open(RESULTS).read().splitlines()):
+            if line.strip() and json.loads(line)["id"] == args.id:
+                print(json.dumps(json.loads(line), indent=1, sort_keys=True))
+                print("(finished - see results.jsonl; task log was "
+                      f"/tmp/sparkqueue-{args.id}.log on {json.loads(line)['nodes'][0]})")
+                return
     sys.exit(f"no entry '{args.id}'")
 
 
@@ -236,6 +302,8 @@ def cmd_done(args):
         hit = False
         for e in entries:
             if e["id"] == args.id:
+                if e.get("state") == "running":
+                    kill_remote_task(e, res)
                 e["state"] = "done"
                 append_result(e, args.exit, "marked done")
                 for n in e["nodes"]:
@@ -301,25 +369,43 @@ def cmd_dispatch(args):
                     print(f"expired {e['id']} ttl={tttl:.0f}m age={tage:.0f}m "
                           f"(nodes released)")
                     continue
-            pid = res.get(n0, {}).get("pid")
-            exit_path = f"/tmp/sparkqueue-{e['id']}.exit"
-            _, rc_txt = ssh(n0, f"cat {exit_path} 2>/dev/null", timeout=10)
-            if rc_txt.strip().lstrip('-').isdigit():
-                rc = int(rc_txt.strip())
-                e["state"] = "done"
-                append_result(e, rc, "dispatch reaped")
-                for n in e["nodes"]:
-                    if res.get(n, {}).get("id") == e["id"]:
-                        del res[n]
-                print(f"reaped {e['id']} exit={rc} (nodes released)")
+            continue
+        # Exit-file polls BATCHED PER NODE and age-gated: each poll is an
+        # ssh under the global lock, and N running tasks on N nodes with a
+        # dead one used to hold the lock for N x timeout - every other
+        # dev's add/list stacked behind it. One ssh per node; tasks
+        # younger than 25s skip this pass (the next 5s pass catches them).
+        exit_results = {}
+        by_node = {}
+        for e in entries:
+            if e.get("state") != "running":
                 continue
-            if pid and not pid_alive(n0, pid):
+            try:
+                age_s = (time.time() - time.mktime(time.strptime(
+                    e.get("dispatched_at", now()), "%Y-%m-%dT%H:%M:%S")))
+            except Exception:
+                age_s = 1e9
+            if age_s < 25.0:
+                continue
+            by_node.setdefault(e["nodes"][0], []).append(e["id"])
+        for node, ids in by_node.items():
+            listing = "; ".join(
+                f"echo {i} $(cat /tmp/sparkqueue-{i}.exit 2>/dev/null)"
+                for i in ids)
+            _, out = ssh(node, listing, timeout=12)
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1].lstrip('-').isdigit():
+                    exit_results[parts[0]] = int(parts[1])
+        for e in [x for x in entries if x.get("state") == "running"]:
+            n0 = e["nodes"][0]
+            if e["id"] in exit_results:
                 e["state"] = "done"
-                append_result(e, -1, "dispatch: pid gone without exit file")
+                append_result(e, exit_results[e["id"]], "dispatch reaped")
                 for n in e["nodes"]:
                     if res.get(n, {}).get("id") == e["id"]:
                         del res[n]
-                print(f"reaped {e['id']} pid-gone (nodes released)")
+                print(f"reaped {e['id']} exit={exit_results[e['id']]} (nodes released)")
         entries = [e for e in entries if e.get("state") != "done"]
         # stale notes age out: they never hold nodes, but ancient notes
         # pollute every listing (the 19h-old notes class)
@@ -377,7 +463,9 @@ def cmd_dispatch(args):
                 acquired_at=now(), ttl_minutes=ttl,
                 pid=None)
         n0 = task["nodes"][0]
-        inner = task['cmd'] + "; echo \"$?\" > /tmp/sparkqueue-" + task['id'] + ".exit"
+        inner = ("echo $$ > /tmp/sparkqueue-" + task['id'] + ".pid; "
+                 + task['cmd']
+                 + "; echo \"$?\" > /tmp/sparkqueue-" + task['id'] + ".exit")
         wrapper = ("cd " + task.get('cwd', '$HOME') + " && nohup setsid bash -c "
                    + shlex.quote(inner)
                    + " >/tmp/sparkqueue-" + task['id'] + ".log 2>&1 & echo $!")
@@ -389,6 +477,24 @@ def cmd_dispatch(args):
         rewrite_queue(entries); save_reservations(res)
         print(f"dispatched {task['id']} nodes={','.join(task['nodes'])} pid={pid}")
 
+
+def kill_remote_task(entry, res):
+    """TERM the remote process of a running task (best effort) so cancel/
+    done cannot orphan a live process on a node we are about to release.
+    The queue's own cleanup - the denylist governs submitted commands."""
+    n0 = entry["nodes"][0]
+    pid = res.get(n0, {}).get("pid")
+    if not pid or not str(pid).isdigit():
+        _, pid_txt = ssh(n0,
+            f"cat /tmp/sparkqueue-{entry['id']}.pid 2>/dev/null", timeout=10)
+        pid = pid_txt.strip() if pid_txt.strip().isdigit() else None
+    if pid:
+        # The wrapper is setsid'd: TERM the PROCESS GROUP or children
+        # (sleep, benchmarks) survive the wrapper's death as orphans.
+        rc, _ = ssh(n0, f"kill -- -{pid} {pid} 2>/dev/null", timeout=10)
+        return rc == 0
+    return False
+
 def cmd_cancel(args):
     with acquire_lock():
         entries = load_queue()
@@ -396,6 +502,8 @@ def cmd_cancel(args):
         kept = []
         for e in entries:
             if e["id"] == args.id:
+                if e.get("state") == "running":
+                    kill_remote_task(e, res)
                 append_result(e, -1, "cancelled")
                 for n in e["nodes"]:
                     if res.get(n, {}).get("id") == e["id"]:
@@ -437,6 +545,11 @@ def cmd_release(args):
 
 
 def cmd_schedule(args):
+    """Legacy name kept for the sweep: ONE dispatch pass (same semantics
+    as dispatch - the old wall-clock launch path is gone)."""
+    cmd_dispatch(args)
+
+def _legacy_schedule_unused(args):
     with acquire_lock():
         """One dispatch pass: poll running entries, then launch runnable ones."""
         lock = acquire_lock()
@@ -518,6 +631,8 @@ def main():
     a.add_argument("--id", required=True)
     a.add_argument("--nodes", required=True, help="comma list, e.g. spark3")
     a.add_argument("--cmd")
+    a.add_argument("--cmd-file", help="read the command from this file "
+        "(avoids nested-quoting footguns for long scripts)")
     a.add_argument("--cwd")
     a.add_argument("--priority", type=int, default=5)
     a.add_argument("--kind", default="run", choices=["run", "gate", "note"])
@@ -556,6 +671,8 @@ def main():
     a.add_argument("--node")
     a.add_argument("--id")
     a.set_defaults(fn=cmd_release)
+    a = sub.add_parser("doctor")
+    a.set_defaults(fn=cmd_doctor)
     a = sub.add_parser("schedule")
     a.set_defaults(fn=cmd_schedule)
     args = p.parse_args()
