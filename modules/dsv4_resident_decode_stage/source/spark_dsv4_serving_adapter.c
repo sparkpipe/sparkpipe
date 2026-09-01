@@ -56,12 +56,10 @@
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 4u
 #elif SPARK_DSV4_SERVING_TOPOLOGY == 16
 #if defined(SPARK_DSV4_PRO_BUILD)
-#define SPARK_DSV4_SERVING_ADAPTER_ID \
-	"spark.dsv4.pro.serving-adapter.tp16.v1"
-#else
+#error "SPARK_DSV4_SERVING_TOPOLOGY 16 is flash-only; pro ships 404"
+#endif
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp16.v1"
-#endif
 #define SPARK_DSV4_SERVING_STAGE_COUNT 16u
 #define SPARK_DSV4_SERVING_TP_DEGREE 16u
 #define SPARK_DSV4_SERVING_PP_STAGE_COUNT 1u
@@ -89,12 +87,10 @@
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 16u
 #elif SPARK_DSV4_SERVING_TOPOLOGY == 4
 #if defined(SPARK_DSV4_PRO_BUILD)
-#define SPARK_DSV4_SERVING_ADAPTER_ID \
-	"spark.dsv4.pro.serving-adapter.tp4.v1"
-#else
+#error "SPARK_DSV4_SERVING_TOPOLOGY 4 is flash-only; pro ships 404"
+#endif
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp4.v1"
-#endif
 #define SPARK_DSV4_SERVING_STAGE_COUNT 4u
 #define SPARK_DSV4_SERVING_TP_DEGREE 4u
 #define SPARK_DSV4_SERVING_PP_STAGE_COUNT 1u
