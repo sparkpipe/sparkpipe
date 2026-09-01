@@ -1681,27 +1681,12 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 static void SparkGlm5NextValBuildRunWave(SparkGlm5NextValFixture *fixture,uint32_t layer,const uint32_t *tokens,uint32_t rows)
 {
 	SparkGlm5NextCudaWave *wave = &fixture->wave;
-	SparkGlm5NextExecutionSlot *slot = &fixture->slot;
 	uint32_t token_words[8u],position_words[8u];
 	uint32_t row;
-	/* Reuse the single-row builder for the full weight/wave setup, then
-	 * override the row, run and context shape. */
+	/* The single-row builder binds weights, pools, caches, slot and every
+	 * wave field; keep that wholesale and override ONLY the row, run and
+	 * context shape (the chunked-prefill form: one run over all rows). */
 	SparkGlm5NextValBuildWave(fixture,layer,tokens[0],0u);
-	memset(wave,0,sizeof(*wave));
-	wave->stage_index = 0u;
-	wave->first_layer_index = layer;
-	wave->layer_count = 1u;
-	wave->tp_degree = 1u;
-	wave->tp_rank = 0u;
-	wave->row_count = rows;
-	wave->maximum_context = rows;
-	wave->resident_sequence_capacity = 1u;
-	wave->max_sequence_positions = SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u;
-	wave->pages_per_sequence = SPARK_GLM5_NEXT_VALIDATION_PAGES;
-	wave->owns_embedding = 0u;
-	wave->owns_final_head = 0u;
-	/* Everything below was set by the single-row builder; override only
-	 * the row, run and context shape for the chunked form. */
 	wave->row_count = rows;
 	wave->maximum_context = rows;
 	wave->boundary_row_offset = 0u;
@@ -1716,8 +1701,6 @@ static void SparkGlm5NextValBuildRunWave(SparkGlm5NextValFixture *fixture,uint32
 	}
 	(void)cudaMemcpy(fixture->token_ids,token_words,sizeof(token_words),cudaMemcpyHostToDevice);
 	(void)cudaMemcpy(fixture->positions,position_words,sizeof(position_words),cudaMemcpyHostToDevice);
-	/* ONE run covering all rows (the chunked-prefill form; the single-row
-	 * builder staged identity 1-row runs). */
 	fixture->host_run_begin[0] = 0u;
 	fixture->host_run_begin[1] = rows;
 	fixture->host_run_state_index[0] = 0u;
