@@ -4531,3 +4531,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   free for the next assignment (the ticketed sets need dev-lane packer
   work first: PP+TP combined mode, split-expert name map, nvfp4a16
   vertical). Coordinator stagepack work is DONE pending those lanes.
+
+## 2026-09-01 ~29:4x — firing 90: ITEM 23 CLOSED — bf16 arm 16/16 (all three rebuilds receipted)
+
+- spark1/2/c rank receipts all landed. The multiwriter race recovery is
+  fully clean: single builders, verified packs, correct MTP-gen receipts.
+- Checklist: 27 of 30 items COMPLETE. Remaining: 9+11 (PP+TP packer
+  ticket), 8 (nvfp4a16 vertical), 22 (flash nvfp4 codec), 14 (dsv4-pro
+  last 6), 15 (dsv4-pro TP16, lane tooling landed), 25-26 (hy4 lane),
+  28 (drafter verticals), 29-30 (final board log).
