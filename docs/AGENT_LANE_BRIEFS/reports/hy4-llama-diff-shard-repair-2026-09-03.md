@@ -271,3 +271,34 @@ pass. All queue ops via the origin/main tool; dispatcher daemon still down.
 NEXT: (1) poll hy4-gpu6-attn to completion — expect ATTN_T0..T3 PASS with
 first3 matching the llama goldens within kernel-noise; (2) MoE expert-gather
 cell (same fp64 pattern); (3) then the TP16 native module port.
+
+## Receipt 09-03 (closed): hy4-gpu6 ATTN PASS — absorbed-MLA attention GPU-validated
+
+Cell hy4-gpu6d-attn [gpu][spark2]: layer 0 head 0 attention as CUDA kernels —
+KV cache built on GPU for all 4 prompt tokens (kv_a gemv 6144→576 + rms_norm
+on the 512-latent half + interleaved rope on the 64-pe half), the q path
+(q_a gemv + norms + q_b head-0 gemv), absorb (k_b gemv 192→512), the
+sink-softmax combine (scores scaled 1/√256, max over scores∪sink, sink as
+its own denominator term), and v_b decompression (512→256). Compared per
+token position against an in-harness float64 reference:
+
+    ATTN_T0  max|d| = 3.6e-08    ATTN_T2  max|d| = 3.1e-07
+    ATTN_T1  max|d| = 1.9e-07    ATTN_T3  max|d| = 1.7e-07
+    ATTN PASS
+
+first3 vs llama eval-callback goldens (head 0): t0 [0.0048, 0.0020, -0.0052]
+vs [0.0047, 0.0020, -0.0051]; t3 [0.0328, 0.0529, -0.0436] vs [0.0308,
+0.0514, -0.0408] — within llama's own kernel-noise envelope.
+
+Two more harness lessons (both found by refusing to accept a vacuous PASS):
+1. Embedding rows must come from OWNER-rank bundles — tokens 19405/63357
+   are outside rank-0's vocab slice [0..7552); reading them from rank-00
+   yielded NaNs that slipped a comparison check (NaN comparisons are always
+   false). NaN/inf is now a hard FAIL in check(), and embeddings are read
+   from the owner bundle (owner = token/7552, row = token%7552).
+2. The owner bundle filename embeds its own rank number — path derivation
+   must rewrite the file name, not just the directory.
+
+The full attention stage of the GPU port is now validated (kv path, absorb,
+sink softmax, v decompress). NEXT: MoE expert-gather cell (same fp64
+pattern), then hc_pre/hc_post/head kernels, then the TP16 native module.

@@ -219,6 +219,11 @@ static int check(const char* tag, const float* gpu, const double* ref,
                  long n, double tol_scale) {
     double worst = 0;
     for (long i = 0; i < n; ++i) {
+        if (isnan(gpu[i]) || isinf(gpu[i])) {
+            printf("%s FAIL elem %ld gpu=%f (non-finite)\n", tag, i,
+                   gpu[i]);
+            return 1;
+        }
         double m = fabs(ref[i]) > 1.0 ? fabs(ref[i]) : 1.0;
         double d = fabs((double)gpu[i] - ref[i]);
         if (d > worst) worst = d;
@@ -249,19 +254,34 @@ int main(int argc, char** argv) {
     const TensorInfo* ti;
 
     std::vector<std::vector<float>> h_embd(T, std::vector<float>(6144));
-    ti = find_tensor(tensors, "token_embd.weight");
     {
-        int bpe, bpb;
-        block_geom(12, &bpe, &bpb);
-        std::vector<uint8_t> row((size_t)6144 / bpe * bpb);
+        char owner_path[512];
         for (int tk = 0; tk < T; ++tk) {
-            if (fseek(f, (long)(data_offset + ti->offset +
-                                (uint64_t)tokens[tk] * row.size()),
-                      SEEK_SET) ||
-                fread(row.data(), 1, row.size(), f) != row.size()) {
-                printf("EMBD READ FAIL\n"); return 1;
+            const int owner = tokens[tk] / 7552;
+            const int row = tokens[tk] % 7552;
+            snprintf(owner_path, sizeof(owner_path), "%s", argv[1]);
+            char* rk = strstr(owner_path, "/rank-00/");
+            if (!rk) { printf("rank dir pattern missing\n"); return 1; }
+            snprintf(rk, sizeof(owner_path) - (size_t)(rk - owner_path),
+                     "/rank-%02d/model-ud-iq1m-tp16-rank-%02d.gguf",
+                     owner, owner);
+            std::vector<TensorInfo> ot;
+            uint64_t od;
+            if (parse_rank_gguf(owner_path, ot, &od)) return 1;
+            const TensorInfo* oe = find_tensor(ot, "token_embd.weight");
+            int bpe, bpb;
+            block_geom(12, &bpe, &bpb);
+            std::vector<uint8_t> rowb((size_t)6144 / bpe * bpb);
+            FILE* of = fopen(owner_path, "rb");
+            if (!of || fseek(of, (long)(od + oe->offset +
+                                        (uint64_t)row * rowb.size()),
+                             SEEK_SET) ||
+                fread(rowb.data(), 1, rowb.size(), of) != rowb.size()) {
+                printf("EMBD READ FAIL owner %d\n", owner);
+                return 1;
             }
-            hy4_dequant_row_q4_K((const block_q4_K*)row.data(),
+            fclose(of);
+            hy4_dequant_row_q4_K((const block_q4_K*)rowb.data(),
                                  h_embd[tk].data(), 6144);
         }
     }
