@@ -5007,3 +5007,16 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   module enablements (27B + max guards/readers), qwen-flash fp8+nvfp4
   arms, 27B nvfp4a16 vertical, hy4 official sets (lane), drafter
   verticals (item 28), flash-TP16 geometry question for the operator.
+
+## 2026-09-02 ~firing 149: OPERATOR GREEN LIGHT — all remaining max ranks resumed; MTP ruling recorded
+
+- 4G dirty cap + ~200MB packer footprint ⇒ operator approved resuming
+  on ALL sparks: ranks 8,9,11,12,13,14,15 relaunched on destinations,
+  rank0 on sparka (helper; ships to spark0). rank3 blocked on spark3
+  DISK (54G free vs 140G pack) — operator call on pro-repo.
+- MTP RULING: speculator system now carries MTP; MTP in stagepacks is
+  harmless-if-sharded but may be omitted in future sets to save disk.
+  Existing packs unchanged (removal law).
+- Flash TP16 answer: ATTN_KV_HEADS=2 (and 48 GDN value heads) cap
+  practical TP at 8 ⇒ flash is the TP8 model; TP4 also exists.
+- Write protection: chattr +i on completed sets proposed; sweep next.
