@@ -327,9 +327,20 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 	if ( SparkGlm5NextContractHash(contract_sha256) < 0 || header->model_revision[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 || memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)) != 0 || SparkGlm5NextBytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)) != 0u || SparkGlm5NextBytesAreZero(header->pack_recipe_sha256,sizeof(header->pack_recipe_sha256)) != 0u )
 	{
 		uint32_t di;
-		(void)fprintf(stderr,"glm5next_pack_header_mismatch state_rev=%s hdr_rev=%.64s contract_ret=%d contract_cmp=%d config_zero=%u recipe_zero=%u hdr_file_bytes=%llu actual=%llu\n",
-			state->model_revision != 0 ? state->model_revision : "(null)",
-			header->model_revision,
+		char rev_state[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES + 1u];
+		char rev_hdr[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES + 1u];
+		memcpy(rev_hdr,header->model_revision,SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES);
+		rev_hdr[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES] = '\0';
+		if ( state->model_revision != 0 )
+		{
+			strncpy(rev_state,state->model_revision,SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES);
+			rev_state[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES] = '\0';
+		}
+		else
+			rev_state[0] = '\0';
+		(void)fprintf(stderr,"glm5next_pack_header_mismatch state_rev=%s hdr_rev=%s contract_ret=%d contract_cmp=%d config_zero=%u recipe_zero=%u hdr_file_bytes=%llu actual=%llu\n",
+			rev_state,
+			rev_hdr,
 			SparkGlm5NextContractHash(contract_sha256),
 			memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)),
 			SparkGlm5NextBytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)),
