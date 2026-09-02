@@ -4952,3 +4952,22 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   hanging. All dupes now delivered + deduped (spark2/4/5/6/7); state
   stable at 14 single-writers. 16/16 receipt/pack counts still 0 =
   slices mid-flight (~20min in, ~140G each).
+
+## 2026-09-02 ~firing 144: OPERATOR STOP — node kills acknowledged; memory-safe packer shipped; throttled relaunch
+
+- FACTS: spark1 + spark2 REBOOTED under the 14-way max fan-out
+  (memory-exhaustion cascade — page cache + ceph client + co-tenants
+  on 119G nodes). Operator ordered stop + smaller buffering. ALL
+  packers TERMed fleet-wide immediately.
+- FIX (tools/qwen38_stagepack.py, pushed 399caca): CHUNK_BYTES 8M→512K;
+  every warm read streams through pump() with posix_fadvise DONTNEED
+  per chunk (140G streams never sit in page cache); expert scale
+  planes two-pass (no bytearray accumulation); tp1-path nvfp4 scales
+  spill to disk (SpooledTemporaryFile) instead of RAM.
+- RELAUNCH THROTTLED: wave 1 = ranks 1,4,5,6,7 on spark1/4/5/6/7
+  (highest-avail nodes), fixed packer distributed 16/16, stale tmps
+  wiped. Later waves: ranks 8,9 on spark8/9 + b,c,d,e,f and 2,10(a)
+  as avail allows; rank0 → helper after (spark0 cold); rank3 blocked
+  on spark3 disk.
+- LESSON (memory): the k3 16-way pattern assumed empty nodes; on busy
+  119G nodes the fan-out width must respect per-node avail memory.
