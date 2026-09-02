@@ -71,10 +71,10 @@ static int dequant_view(const hy4_rank *rank, const hy4_tensor_view *tv,
 
 static void matvec(const float *w, const float *x, float *y, long rows, long cols) {
     for (long r = 0; r < rows; ++r) {
-        float acc = 0;
+        double acc = 0;
         const float *row = w + r * cols;
-        for (long c = 0; c < cols; ++c) acc += row[c] * x[c];
-        y[r] = acc;
+        for (long c = 0; c < cols; ++c) acc += (double)row[c] * (double)x[c];
+        y[r] = (float)acc;
     }
 }
 
@@ -537,6 +537,10 @@ int main(int argc, char **argv) {
         for (int i = 0; i < VOCAB; ++i)
             if (alllogits[i] > gbv) { gbv = alllogits[i]; gbest = i; }
         if (t == n_tok - 1) {
+            const int refids[5] = { 52392, 55794, 198, 341, 268 };
+            for (int k = 0; k < 5; ++k)
+                fprintf(stderr, "MY_REFLOGIT %d %.6f\n", refids[k],
+                        alllogits[refids[k]]);
             int top[5]; float tvv[5];
             for (int k = 0; k < 5; ++k) {
                 int bi = 0; float bv = -1e30f;
