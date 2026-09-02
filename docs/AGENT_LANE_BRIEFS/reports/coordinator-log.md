@@ -4438,3 +4438,21 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   ticketed to dev lanes; 25-26 hy4 lane-owned; 28 drafter audit filed;
   29-30 final audit legs: hygiene PASS, coverage PASS, per-stage uniform
   PASS — remaining: size-vs-source arithmetic + final board log.
+
+## 2026-09-01 ~29:1x — firing 85: BOARD LOGGED — stagepack matrix complete for all launchable sets
+
+- Item 29 final audit: COMPLETE (hygiene sym=0/temps=0; coverage 16/16
+  per set; per-stage uniformity verified; size-vs-source arithmetic all
+  SANE per §11; per-placement sha receipts; k3 re-hash 16/16; MTP law
+  confirmed on every family that ships it).
+- Item 30: final board logged in docs/STAGEPACK_AUDIT_2026-08-31.md
+  (§1 matrix + §9 checklist + §10 coverage + §11 arithmetic). Warm
+  backup mirror flowing (15T+ mirrored of ~11-12T unique).
+- REMAINING (dev-lane builds only, all ticketed with evidence):
+  8 (27B nvfp4a16 vertical), 9+11 (PP+TP combined-mode packer), 14
+  (dsv4-pro last 6), 15 (dsv4-pro TP16 rank-path — a lane's script
+  landed), 21 (flash fp8 arm split-expert map), 22 (flash nvfp4 arm
+  codec), 28 (drafter verticals, 11 dirs), 25-26 (hy4, lane active).
+- Per the operator's completion directive ("once that is done, stop"):
+  the automation IDLES from here on these ticketed items — they are
+  dev-lane builds, not coordinator stagepack work. Board is clean.
