@@ -4508,3 +4508,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - spark0 rank1.mtp.receipt written from the verified digest.
 - Fleet note: ALL glm5_next.tp16 symlinkfix-era receipts are pre-MTP —
   receipt refresh to MTP generation queued (audit-doc item).
+
+## 2026-09-01 ~28:1x — firing 87d: spark5 rank0 repair COMPLETE (mislabeled symlink replaced with MTP pack)
+
+- spark5 rank0: real MTP pack (22,322,734,528 B) scp'd from verified
+  spark0 canonical, atomic mv into place, receipt bc48fe7c… written,
+  mislabeled symlink GONE. The only remaining symlinks on spark5 are the
+  dsv4flash rt/ serving-convenience pointers (functional, left in place).
+- glm5_next TP16 MTP-era status: rank0 (spark0+spark5) healthy/receipted;
+  rank1 (spark1+spark0) restored+receipted. Queued: refresh the remaining
+  symlinkfix-era receipts to MTP generation (bookkeeping pass).
