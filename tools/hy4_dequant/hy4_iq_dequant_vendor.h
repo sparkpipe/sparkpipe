@@ -9,6 +9,7 @@
 #ifndef HY4_IQ_DEQUANT_VENDOR_H
 #define HY4_IQ_DEQUANT_VENDOR_H
 #include <stdint.h>
+#include <math.h>
 #include <string.h>
 #include <assert.h>
 
@@ -663,8 +664,6 @@ GGML_TABLE_BEGIN(uint64_t, iq1s_grid, NGRID_IQ1S)
     0x0101010101ffff01, 0x0101010101ff01ff, 0x0101010101ff0101, 0x0101010101000000,
     0x010101010101ffff, 0x010101010101ff01, 0x01010101010101ff, 0x0101010101010101,
 GGML_TABLE_END()
-#undef GGML_TABLE_BEGIN
-#undef GGML_TABLE_END
 #define IQ1S_DELTA 0.125f
 
 static void hy4_dequant_iq2_xxs(const uint8_t *x, float *y, long nblocks) {
@@ -750,24 +749,23 @@ static void hy4_dequant_iq1_m(const uint8_t *x, float *y, long nblocks) {
     }
 }
 
-
-/* ---- K-quant + IQ4_XS extension (regenerated from llama.cpp @0cea36222 with brace-count extraction) ---- */
-#define GGML_TABLE_BEGIN(type, name, size) static const type name[size] = {
-#define GGML_TABLE_END() };
-#define QK_K 256
+/* ---- K-quant + IQ4_XS (verbatim llama.cpp @0cea36222, renames only) ---- */
 
 typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qs[128]; } block_q4_K;
 typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qh[32]; uint8_t qs[128]; } block_q5_K;
-_Static_assert(sizeof(block_q4_K) == 144, "q4_K stride");
-_Static_assert(sizeof(block_q5_K) == 176, "q5_K stride");
 typedef struct { uint8_t ql[128]; uint8_t qh[64]; int8_t scales[16]; uint16_t d; } block_q6_K;
 typedef struct { uint16_t d; uint16_t scales_h; uint8_t scales_l[4]; uint8_t qs[128]; } block_iq4_xs;
-_Static_assert(sizeof(block_q6_K) == 210, "q6_K stride");
-_Static_assert(sizeof(block_iq4_xs) == 136, "iq4_xs stride");
 typedef struct { uint16_t d; uint8_t qs[32]; } block_iq4_nl;
+#define QK_K 256
+_Static_assert(sizeof(block_q4_K) == 144, "q4_K");
+_Static_assert(sizeof(block_q5_K) == 176, "q5_K");
+_Static_assert(sizeof(block_q6_K) == 210, "q6_K");
+_Static_assert(sizeof(block_iq4_xs) == 136, "iq4_xs");
+
 GGML_TABLE_BEGIN(int8_t, kvalues_iq4nl, 16)
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
 GGML_TABLE_END()
+
 static inline void hy4_get_scale_min_k4(int j, const uint8_t * q, uint8_t * d, uint8_t * m) {
     if (j < 4) {
         *d = q[j] & 63; *m = q[j + 4] & 63;
@@ -878,6 +876,4 @@ static void hy4_dequant_row_iq4_xs(const block_iq4_xs * x, float * y, int64_t k)
     }
 }
 
-#undef GGML_TABLE_BEGIN
-#undef GGML_TABLE_END
 #endif

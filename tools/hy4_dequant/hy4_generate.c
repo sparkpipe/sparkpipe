@@ -37,9 +37,11 @@
 #define LAYERS 78
 #define VOCAB 120832
 #define VOC_PER_RANK (VOCAB / N_RANKS)
-#define PROMPT 4
+#define PROMPT 8
 #define GEN 1
 #define TOTAL_TOK (PROMPT + GEN)
+
+static int g_dump_hc = 0;
 
 static float silu(float v) { return v / (1.0f + expf(-v)); }
 
@@ -95,7 +97,23 @@ static void rms_norm(const float *x, const float *w, float *y, long n, float eps
 static void hc_mix(const float *fn, const float *streams, const float *scale,
                    const float *base, float *pre, float *post) {
     float mixed[HC * 2];
-    matvec(fn, streams, mixed, HC * 2, HC * N_EMBD);
+    /* the flattened stream vector is RMS-NORMED (no weight, model eps)
+     * before the hc_fn matvec — vendor builds RMS_NORM(hc_init) first */
+    float flat_norm[HC * N_EMBD];
+    float ss = 0;
+    for (int i = 0; i < HC * N_EMBD; ++i) ss += streams[i] * streams[i];
+    float inv = 1.0f / sqrtf(ss / (HC * N_EMBD) + 1e-5f);
+    for (int i = 0; i < HC * N_EMBD; ++i) flat_norm[i] = streams[i] * inv;
+    matvec(fn, flat_norm, mixed, HC * 2, HC * N_EMBD);
+    if (g_dump_hc) {
+        fprintf(stderr, "MY_HCIN first6: %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                flat_norm[0], flat_norm[1], flat_norm[2], flat_norm[3],
+                flat_norm[4], flat_norm[5]);
+        fprintf(stderr, "MY_HC_MIXES first8: %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                mixed[0], mixed[1], mixed[2], mixed[3],
+                mixed[4], mixed[5], mixed[6], mixed[7]);
+        g_dump_hc = 0;
+    }
     for (int i = 0; i < HC; ++i)
         pre[i] = 1.0f / (1.0f + expf(-(mixed[i] * scale[0] + base[i]))) + 1e-6f;
     for (int i = 0; i < HC; ++i)
@@ -114,6 +132,12 @@ static void hc_distribute(float *streams, const float *branch, const float *post
     for (int s = 0; s < HC; ++s)
         for (int i = 0; i < N_EMBD; ++i)
             streams[s * N_EMBD + i] += branch[i] * post[s];
+}
+
+static double fsum(const float *v, long n) {
+    double s = 0;
+    for (long i = 0; i < n; ++i) s += v[i];
+    return s;
 }
 
 static int has_nan(const float *v, long n) {
@@ -199,6 +223,7 @@ int main(int argc, char **argv) {
                 streams[t][s][i] = x0[i];
 
         for (int il = 0; il < LAYERS; ++il) {
+            if (il == 0 && t == 0) g_dump_hc = 1;
             char nm[160];
             float pre[HC], post[HC];
             /* hc fns are replicated: rank 0's copy */
@@ -292,6 +317,10 @@ int main(int argc, char **argv) {
                         attn_partial[3], attn_partial[4], attn_partial[5]);
             free(wq_a); free(qan); free(sinks);
             hc_distribute(streams[t], attn_partial, post);
+            if (il < 3 && t == 0)
+                fprintf(stderr, "post-attn L%d t0: sum %.6f nan=%d\n",
+                        il, fsum(streams, (long)HC * N_EMBD),
+                        has_nan(streams, (long)HC * N_EMBD));
 
             /* ---- ffn branch ---- */
             float fpre[HC], fpost[HC];
@@ -400,6 +429,10 @@ int main(int argc, char **argv) {
             }
             hc_distribute(streams[t], ffn, fpost);
             } /* end sparse-MoE branch */
+            if (il < 3 && t == 0)
+                fprintf(stderr, "post-ffn  L%d t0: sum %.6f nan=%d\n",
+                        il, fsum(streams, (long)HC * N_EMBD),
+                        has_nan(streams, (long)HC * N_EMBD));
             free(hc_attn_fn); free(hc_sc); free(hc_ba); free(ln1);
             free(hc_ffn_fn); free(hc_fsc); free(hc_fba); free(ln2);
         }
