@@ -208,3 +208,44 @@ NEXT: (1) poll hy4-gpu5b-qchain to completion, expect QCHAIN PASS
 receipt; (2) extend the same cell pattern to the attention-score +
 softmax-with-sink kernel and the MoE expert gather, still vs fp64;
 (3) then the TP16 native module port.
+
+## Receipt 09-03 (closed): hy4-gpu5 QCHAIN PASS — GPU q-path chain within fp32 noise of fp64
+
+Cell hy4-gpu5e-qchain [gpu][spark2]: gemv + rms_norm + interleaved-rope
+CUDA kernels composed into the q-path chain (embd row 802 -> attn_norm ->
+q_a Q5_K -> q_a_norm -> q_b Q8_0 head 0 -> rope), all weights host-dequanted
+from the node-local rank-00 bundle via the vendor header, validated
+per-stage against an in-harness float64 reference:
+
+    ATTN_NORM  max|d| = 6.5e-08  (6144 elems)
+    Q_A_GEMV   max|d| = 4.2e-06  (2048)
+    Q_A_NORM   max|d| = 2.3e-06  (2048)
+    Q_B_GEMV   max|d| = 5.5e-06  (256)
+    ROPE_POS0  max|d| = 5.5e-06  (64)
+    ROPE_POS3  max|d| = 5.5e-06  (64)
+    GOLDEN q_pe [0.32866380, -0.25685647, -0.58516574] vs numpy-fp64
+    [0.32866368, -0.25685635, -0.58516651]  (matches to ~1e-7 relative)
+    QCHAIN PASS
+
+Context: GB10 sm_121, CUDA 13.0, -fmad=false; tol 1e-3*max(1,|ref|); all
+observed deviations at or below fp32 rounding noise, i.e. the GPU chain is
+numerically indistinguishable from fp64 ground truth at this scale.
+
+Three harness defects found and fixed during bring-up (each diagnosed by
+bisecting a FAIL against the independent gguf-py bundle computation):
+1. embd_row declared after use (build).
+2. block_geom lacked the F32 case, so the attn_norm read silently returned
+   an empty buffer and the downstream range-copy segfaulted.
+3. f32 norm tensors were constructed through uint8 iterator conversion
+   (byte VALUES as floats) instead of bit reinterpretation — produced
+   plausible-looking but wildly wrong gate scales; caught because the
+   in-harness fp64 reference is only as good as its own host inputs, and
+   an independent gguf-py computation on the same bundle exposed it.
+
+Execution note: glm53flash ran live fleet meshbench sweeps/probes
+back-to-back (nccl-mb-sweep1/3, nccl-mb-probe1, p0, all 16 nodes); the
+cell dispatched on the first inter-task gap. All queue ops used the
+origin/main tool; dispatcher daemon still down, one-shot passes only.
+
+NEXT: attention-score + softmax-with-sink kernel and the MoE expert
+gather (same fp64 pattern); then TP16 native module port.
