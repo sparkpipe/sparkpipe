@@ -1,18 +1,3 @@
-/*
- * DSpark draft kernels - DSV4 Flash. The draft runs on ONE rank (the final
- * head rank, which owns the full lm_head and receives the full-width hidden
- * taps locally), so every kernel below is full-width and communication-free.
- *
- * Reference: inference/model.py DSparkBlock / DSparkAttention /
- * DSparkMarkovHead (DeepSeek-V4-Flash-0731 @ 7872f01b).
- *
- * Draft attention: for each of the BLOCK_SIZE positions and each head group,
- * online softmax over the sequence's sliding-window ring (all SW_TOKENS
- * slots, ring order - the reference attends the full ring, rotation-free)
- * plus the block's own BLOCK_SIZE kv vectors, with the learned attn_sink
- * added to the softmax denominator (no causal mask inside the block, no
- * sink in the numerator - exactly the reference semantics).
- */
 
 static __global__ void SparkDsv4DsparkAttentionKernel(
 	const uint16_t *q_bf16,
@@ -80,7 +65,6 @@ static __global__ void SparkDsv4DsparkAttentionKernel(
 	}
 	__syncthreads();
 
-	/* window ring slots + block kv vectors, one fused online-softmax pass */
 	for (slot = warp_index; slot < window_tokens + block_size;
 	     slot += SPARK_LM_CTA_WARPS)
 	{
@@ -177,7 +161,6 @@ static __global__ void SparkDsv4DsparkAttentionKernel(
 			}
 		}
 	}
-	/* attn_sink joins the denominator only (reference semantics) */
 	for (local_head = 0u; local_head < active_head_count; ++local_head)
 		running_denominator[local_head] += __expf(
 			__ldg(&sink_f32[first_head + local_head]) -
@@ -236,10 +219,6 @@ extern "C" cudaError_t SparkDsv4LaunchDsparkAttention(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-/*
- * Markov logits bias: bias = markov_w2 (vocab x rank) . embed (rank),
- * accumulated into the draft head logits (bf16 upcast to f32).
- */
 static __global__ void SparkDsv4DsparkMarkovBiasAccumKernel(
 	const uint16_t *logits_bf16,const uint16_t *markov_w2_bf16,
 	const uint16_t *markov_embed_bf16,float *logits_f32,
@@ -280,7 +259,6 @@ extern "C" cudaError_t SparkDsv4LaunchDsparkMarkovBiasAccum(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-/* Greedy argmax over a full-vocab f32 logits row. */
 static __global__ void SparkDsv4DsparkArgmaxKernel(const float *logits_f32,
 	uint32_t shard_count,uint32_t vocab_offset,uint32_t *output_token_id,
 	float *output_score)
@@ -334,8 +312,6 @@ extern "C" cudaError_t SparkDsv4LaunchDsparkArgmax(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-/* Tap: mean over the hc streams of a 4-stream hidden state, per row
- * (reference: h.mean(dim=2)). */
 static __global__ void SparkDsv4DsparkTapMeanKernel(
 	const uint16_t *streams_bf16,uint16_t *tap_bf16,uint32_t row_count,
 	uint32_t stream_count,uint32_t dimension)
@@ -377,9 +353,6 @@ extern "C" cudaError_t SparkDsv4LaunchDsparkTapMean(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-/* Expand a [rows x dim] bf16 block into [rows x streams x dim] (each stream
- * a copy), the draft block's input expansion (reference: x.unsqueeze(2)
- * .repeat(1,1,hc_mult,1)). */
 static __global__ void SparkDsv4DsparkExpandStreamsKernel(
 	const uint16_t *input_bf16,uint16_t *output_bf16,uint32_t row_count,
 	uint32_t stream_count,uint32_t dimension)

@@ -1,7 +1,3 @@
-// K3 serving adapter smoke: initialize the full adapter (config JSON ->
-// runner -> pack/bind/dispatch) on a REAL rank pack with tp_degree 1 (no
-// collective, so nothing binds a port), then destroy. Proves the residentd
-// path works end to end before the fleet run.
 
 #include <stdio.h>
 #include <string.h>

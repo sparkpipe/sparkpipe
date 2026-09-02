@@ -133,7 +133,6 @@ static uint8_t TestSendTransportBuffers[TEST_DIRECT_ROUTE_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
 static uint8_t TestReceiveTransportBuffers[TEST_DIRECT_ROUTE_COUNT]
     [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][128u];
-/* --- tp16 direct-all-to-all fixtures (self-contained) --- */
 static uint8_t Test16ReceiveBuffers[TEST16_ROUTE_COUNT]
     [TEST_REDUCE_CREDIT_COUNT][16u];
 static uint8_t Test16SendBuffers[TEST16_ROUTE_COUNT]
@@ -1188,7 +1187,6 @@ static void TestDirectAllToAll16(TestTransportControls *controls)
         SPARK_STATUS_OK);
     assert(controls->metric(TEST_METRIC_REGISTER) ==
         TEST16_ROUTE_COUNT * TEST_REDUCE_CREDIT_COUNT);
-    /* local partial = 1; every peer buffer = 1 => fold = 16 */
     values = (uint16_t *)TestFullBuffers[0u];
     for (element=0u; element<TEST16_ELEMENT_COUNT; element++)
         values[element] = 1u;

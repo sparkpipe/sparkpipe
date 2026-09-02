@@ -1,35 +1,3 @@
-/* Shared stage-pack load spine (DRY wave: the pack-loading paste).
- *
- * The qwen38_27b / qwen38_max / qwen4_flash resident-decode-stage modules
- * carried one pasted pack-loading spine: ordinal build, linear-view fill,
- * entry range validation, the load loop with duplicate detection, coverage
- * verification, and the pack frame (open, header, geometry, directory, load,
- * verify) were byte-identical modulo the family prefix; a prefix-normalized
- * diff measured BuildOrdinals/FillLinearView/LoadEntry identical across the
- * three. This header is that spine, parameterized by family macros the
- * includer defines first (the spark_work_control_common.h pattern):
- *
- *   SPARK_PACK_LOAD_FN(name)              module function names
- *   SPARK_PACK_LOAD_TYPE(name)            ModuleState/StagePackEntry/
- *                                         StagePackHeader/LinearView structs
- *   SPARK_PACK_LOAD_CONST(name)           family constants
- *   SPARK_PACK_LOAD_LAYER_IS_GDN(layer)   hybrid layer-map predicate
- *   SPARK_PACK_LOAD_SEEN_TYPE             coverage word type (uint32/64)
- *   SPARK_PACK_LOAD_SEEN_ONE              coverage bit one (1u/1ull)
- *   SPARK_PACK_LOAD_SEEN_FORMAT           coverage word printf format
- *   SPARK_PACK_LOAD_SEEN_ARG(value)       coverage word printf argument
- *   SPARK_PACK_LOAD_BYTES_MATCH(entry)    declared payload/scale byte check
- *   SPARK_PACK_LOAD_EXPECT_GEOMETRY(state, expected)
- *   SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state, header, expected)
- *   SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state, header, expected)
- *   SPARK_PACK_LOAD_PREFLIGHT(state, file, header, status)
- *
- * Every macro is mandatory: a family that omits one fails the compile. The
- * per-kind tensor inventory stays family-side as data: the family defines
- * the shape/format rules (its ValidateEntry head over its stagepack shape
- * algebra), the per-kind binds, and the three expected-coverage bit sets,
- * all declared here and defined after the include.
- */
 #ifndef SPARKPIPE_SPARK_PACK_LOAD_COMMON_H
 #define SPARKPIPE_SPARK_PACK_LOAD_COMMON_H
 
@@ -249,4 +217,4 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadPack)(SPARK_PACK_LOAD_TYPE(ModuleState
 	return(status);
 }
 
-#endif /* SPARKPIPE_SPARK_PACK_LOAD_COMMON_H */
+#endif

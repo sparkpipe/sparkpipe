@@ -119,11 +119,6 @@ static void SparkSha256Transform(uint32_t state[8], const uint8_t block[SPARK_SH
     }
 }
 
-/* Bulk transform: `block_count` consecutive 64-byte blocks folded into
- * `state` in order. The portable loop and the ARMv8 SHA-2 crypto-extension
- * loop below are two implementations of the same FIPS 180-4 function -
- * the digest is identical either way (proven per call site by the lane
- * tests, which cross-check both against the NIST vectors). */
 static void SparkSha256TransformBlocksPortability(
     uint32_t state[8],
     const uint8_t *data,
@@ -142,8 +137,6 @@ typedef void (*SparkSha256TransformBlocksFunction)(
     const uint8_t *data,
     size_t block_count);
 
-/* selected once per process by the first hash call; points at the
- * accelerated transform when this CPU has aarch64 FEAT_SHA2 */
 static SparkSha256TransformBlocksFunction g_transform_blocks =
     SparkSha256TransformBlocksPortability;
 
@@ -156,9 +149,6 @@ static SparkSha256TransformBlocksFunction g_transform_blocks =
 #define SPARK_SHA256_SHA2_TARGET __attribute__((target("sha2")))
 #endif
 
-/* aarch64 FEAT_SHA2 path: the h/h2 pairs run four rounds each (the
- * round constants are added to the message words here), and the su0/su1
- * pairs expand the schedule. Same compression function, same digest. */
 SPARK_SHA256_SHA2_TARGET
 static void SparkSha256TransformBlocksSha2(
     uint32_t state[8],
@@ -179,9 +169,6 @@ static void SparkSha256TransformBlocksSha2(
         state_save_efgh = vld1q_u32(state + 4u);
         abcd = state_save_abcd;
         efgh = state_save_efgh;
-        /* vld1q_u8 already yields uint8x16_t; the inner
-         * vreinterpretq_u8_u32 wrapper is a no-op bitcast that clang
-         * accepts laxly but gcc -Werror rejects (R2a Linux receipt). */
         m[0] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data)));
         m[1] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 16u)));
         m[2] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 32u)));
@@ -202,8 +189,6 @@ static void SparkSha256TransformBlocksSha2(
         SPARK_SHA256_SHA2_ROUND(m[3]);
         for (quad = 4u; quad < 16u; ++quad)
         {
-            /* m[quad&3] holds W[quad-4], m[(quad+1)&3] W[quad-3],
-             * m[(quad+2)&3] W[quad-2], m[(quad+3)&3] W[quad-1] */
             uint32x4_t schedule_partial =
                 vsha256su0q_u32(m[quad & 3u], m[(quad + 1u) & 3u]);
             m[quad & 3u] = vsha256su1q_u32(
@@ -246,8 +231,6 @@ static int SparkSha256CpuHasSha2(void)
 
 static SparkSha256TransformBlocksFunction SparkSha256TransformForThisCpu(void)
 {
-    /* the choice is a pure function of the CPU; racing first calls all
-     * write the same pointer */
     static atomic_uint selected;
     unsigned int expected = 0u;
     if (atomic_compare_exchange_strong(&selected, &expected, 1u))
@@ -320,8 +303,6 @@ void SparkSha256Update(SparkSha256Context *context, const void *data, size_t dat
     }
     if (remaining_bytes >= SPARK_SHA256_BLOCK_BYTES)
     {
-        /* bulk: complete blocks go straight from the caller's buffer
-         * through the per-CPU transform (portable or FEAT_SHA2) */
         size_t block_count = remaining_bytes / SPARK_SHA256_BLOCK_BYTES;
         SparkSha256TransformForThisCpu()(context->state, input, block_count);
         input += block_count * SPARK_SHA256_BLOCK_BYTES;
@@ -402,18 +383,6 @@ SparkStatus SparkSha256Bytes(const void *data, size_t data_bytes, char hex[SPARK
     return SPARK_STATUS_OK;
 }
 
-/*
- * Whole-file digest (docs/WEIGHTD_DESIGN.md L2). FIPS 180-4 SHA-256 is a
- * serial chaining: block N's compression consumes block N-1's state, so
- * NO multi-thread split of one byte stream can reproduce the sequential
- * digest - and identity keys (pack SHA-256 in attach identity) require
- * exactly that value. "Parallel pre-hash then serial-combine" produces a
- * different (tree) digest and is refused here. What CAN run in parallel
- * is the read pass: a reader thread fills a double buffer ahead of the
- * hashing thread, chunks are still hashed strictly in file order, and
- * the digest is bit-identical to the sequential pass by construction.
- * SPARK_SHA256_FILE_PIPELINE=0 forces the sequential reader (A/B).
- */
 typedef struct SparkSha256FilePipeline
 {
     int file_descriptor;
@@ -421,7 +390,6 @@ typedef struct SparkSha256FilePipeline
     int reader_started;
     pthread_mutex_t mutex;
     pthread_cond_t progress;
-    /* host heap staging: fed to the CPU hashing thread only */
     uint8_t *buffers[SPARK_SHA256_PIPELINE_BUFFERS];
     size_t buffer_bytes[SPARK_SHA256_PIPELINE_BUFFERS];
     uint64_t filled_count;
@@ -441,7 +409,6 @@ static void *SparkSha256FilePipelineReader(void *argument)
         while (pipeline->failure == 0 &&
             fill_index >= pipeline->hashed_count + SPARK_SHA256_PIPELINE_BUFFERS)
         {
-            /* both buffers hold unhashed data: wait for the hash thread */
             pthread_cond_wait(&pipeline->progress, &pipeline->mutex);
         }
         pthread_mutex_unlock(&pipeline->mutex);
@@ -519,7 +486,6 @@ static SparkStatus SparkSha256FilePipelined(
     pipeline.hashed_count = 0u;
     for (index = 0; index < (int)SPARK_SHA256_PIPELINE_BUFFERS; index++)
     {
-        /* host heap staging (one buffer per pipeline slot) */
         pipeline.buffers[index] =
             (uint8_t *)malloc((size_t)SPARK_SHA256_PIPELINE_BUFFER_BYTES);
         pipeline.buffer_bytes[index] = 0u;
@@ -554,8 +520,6 @@ static SparkStatus SparkSha256FilePipelined(
         bytes = pipeline.buffer_bytes[
             hash_index % SPARK_SHA256_PIPELINE_BUFFERS];
         pthread_mutex_unlock(&pipeline.mutex);
-        /* chunks hash strictly in file order: the digest equals the
-         * sequential one regardless of how the reads overlapped */
         SparkSha256Update(context, data, bytes);
         hash_index++;
         pthread_mutex_lock(&pipeline.mutex);
@@ -566,12 +530,10 @@ static SparkStatus SparkSha256FilePipelined(
     if (pipeline.reader_started != 0)
     {
         void *reader_result = 0;
-        /* the reader stopped on its own (eof or failure); reap it */
         (void)pthread_join(pipeline.reader_thread, &reader_result);
     }
     else if (pipeline.failure == 0)
     {
-        /* no reader thread: hash the file on this thread instead */
         uint8_t *buffer = pipeline.buffers[0];
         if (buffer == 0)
         {
@@ -632,7 +594,6 @@ SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES])
     if (pipeline_setting != 0 && pipeline_setting[0] == '0' &&
         pipeline_setting[1] == '\0')
     {
-        /* sequential reference reader (the digest is identical either way) */
         uint8_t buffer[SPARK_SHA256_READ_BUFFER_BYTES];
         size_t bytes_read;
         while ((bytes_read = fread(buffer, 1u, sizeof(buffer), file)) != 0u)

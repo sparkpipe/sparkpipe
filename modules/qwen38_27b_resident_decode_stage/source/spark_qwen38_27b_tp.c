@@ -11,18 +11,11 @@
 
 #define SPARK_QWEN38_27B_TP_TAG "qwen38_27b_tp"
 
-/* Transport-collective configuration. The control port base is the TP4
- * band's transport block; the identifier is unique to this model band. The
- * library resolves through the process LD_LIBRARY_PATH (bundled with the
- * runtime); an env override names a specific file. */
 #define SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_PORT_BASE 58700u
 #define SPARK_QWEN38_27B_TP_DEFAULT_NCCL_PORT_BASE 61620u
 #define SPARK_QWEN38_27B_TP_IDENTIFIER 0x513630545031ull
 #define SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_LIBRARY "libhidden_transport.so"
 #define SPARK_QWEN38_27B_TP_DEFAULT_NCCL_LIBRARY "libnccl.so.2"
-/* Two rails satisfy the direct-all-to-all topology contract; both map to
- * the 100G switch rail addresses because the pairwise 200.x links are
- * reserved for the split ring, which serving payloads never select. */
 static const char *SparkQwen38_27bTpRailHosts[2][SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE] =
 {
 	{ "10.10.100.10", "10.10.100.11", "10.10.100.12", "10.10.100.13",
@@ -36,9 +29,6 @@ extern cudaError_t SparkQwen38_27bLaunchAccumAddRelay(cudaStream_t stream, void 
 extern cudaError_t SparkQwen38_27bLaunchAccumAddTp4(cudaStream_t stream, void *destination, const void *const rank_devices[4], uint32_t tp_rank, uint32_t active_sequence_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38_27bLaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
 
-/* Combine functions fold the staged reduction into the consumer buffer on
- * the operation stream; the backend orders the consumer's stream after
- * them, so the next layer reads the full reduction. */
 static SparkStatus SparkQwen38_27bTpCombineBf16(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
 {
 	(void)combine_context;
@@ -63,8 +53,6 @@ static SparkStatus SparkQwen38_27bTpCombineU64Max(void *combine_context, uint64_
 	return SparkQwen38_27bLaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-/* The completion callback stores the operation status and releases the
- * waiting submitter. */
 static void SparkQwen38_27bTpPendingCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
 {
 	SparkQwen38_27bTpPending *pending = (SparkQwen38_27bTpPending *)context;
@@ -103,9 +91,6 @@ static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buf
 			(unsigned long long)(tp->next_ordinal - 1u));
 		return status;
 	}
-	/* Wait for the stream-ordered completion: the NCCL backend publishes at
-	 * submit time; the transport backend publishes once the reduction is
-	 * folded and the consumer stream is ordered after it. */
 	spin = 0u;
 	while ( atomic_load_explicit(&pending.done,memory_order_acquire) == 0u )
 	{
@@ -120,12 +105,6 @@ static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buf
 	return (SparkStatus)pending.status;
 }
 
-/* Credit-buffer allocation with explicit ownership. Every failure path
- * runs through the ownership-aware destroy, so no partial state survives:
- * device allocations are freed while credit_device_allocated is set, and
- * mapped-host aliasing (originals freed, flag cleared) is the only way the
- * device fields can outlive it. Fault-injection coverage lives in
- * tests/test_qwen38_27b_tp_faults.c. */
 SparkStatus SparkQwen38_27bTpAllocateCreditMemory(
 	SparkQwen38_27bTpState *tp,
 	uint64_t total_bytes,
@@ -216,9 +195,6 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	tp->head_rows = SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT / degree;
 	if ( degree == 1u )
 		return SPARK_STATUS_OK;
-	/* GPU-validator escape hatch: one rank validates the whole-stack TP4
-	 * path without a peer group. The collective is skipped and the reduces
-	 * become no-ops. */
 	if ( getenv("SPARK_QWEN38_27B_TP_STANDALONE") != 0 )
 	{
 		fprintf(stderr, "%s standalone degree=%u rank=%u (collective skipped)\n",
@@ -254,10 +230,6 @@ SparkStatus SparkQwen38_27bTpInitialize(
 			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL |
 			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
 		configuration.rail_count = 2u;
-		/* B64 deltas (64 x 5120 x 2 = 655360 bytes) fit one credit region,
-		 * so direct all-to-all covers every serving payload: one hop instead
-		 * of the recursive two-step. Serving never selects the split ring
-		 * (its pairwise 200.x rail is reserved). */
 		configuration.direct_all_to_all_max_payload_bytes = 655360u;
 		configuration.split_ring_min_payload_bytes = 8388608u;
 		configuration.step_rail_indices[0] = 0u;
@@ -390,10 +362,6 @@ void SparkQwen38_27bTpDestroy(SparkQwen38_27bTpState *tp)
 		return;
 	if ( tp->initialized != 0u )
 		(void)SparkTpDeviceCollectiveDestroy(&tp->collective);
-	/* Ownership, not pointer-nullness: the device fields are freed only
-	 * while they own real cudaMalloc allocations; once mapped they alias
-	 * the host buffers, which the next two frees release. Any partially
-	 * initialized state frees exactly what exists. */
 	if ( tp->credit_device_allocated != 0u )
 	{
 		if ( tp->credit_send_bf16 != 0 )

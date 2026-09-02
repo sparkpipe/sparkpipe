@@ -11,14 +11,10 @@ extern "C" {
 
 #define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 13u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
-/* Step rows double as direct-all-to-all peer routes: tp_degree-1 peers
- * need tp_degree-1 rows (recursive doubling needs log2(tp_degree)). */
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 6u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT 3u
-/* Capacity bound; the runtime peer count is tp_degree-1 (see
- * binding_route_count), set at collective creation. */
 #define SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_MAX_PEERS \
     (SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE - 1u)
 #define SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT \
@@ -70,8 +66,6 @@ typedef struct SparkTpDeviceCollectiveCreditBinding
 {
     uint32_t step_index;
     uint32_t credit_index;
-    /* Kernels use device buffers; transports may use distinct host
-     * mirrors. */
     void *send_device;
     void *receive_device;
     void *send_transport;
@@ -101,16 +95,7 @@ typedef struct SparkTpDeviceCollectiveSubmission
     uint32_t descriptor_bytes;
     uint32_t slot_index;
     uint32_t active_sequence_count;
-    /* A stream-ordered callback may enqueue dependent work on cuda_stream.
-     * It must not read full_device from the host before synchronizing. */
     uint32_t flags;
-    /* The per-submission element count. Zero keeps the collective's fixed
-     * frame (active_sequence_count x local_hidden_dimension); a non-zero
-     * value narrows THIS submission to that many BF16 elements - the routed-MoE
-     * phase-0 hook all-reduces one 7168-element segment while the frame
-     * holds three, and shipping the full frame tripled its bytes. Only the
-     * NCCL backend honours the override (its per-call count is free); the
-     * hidden-transport tier keeps the pre-registered frame. */
     uint32_t reserved0;
     uint64_t ordinal;
     const void *local_device;
@@ -147,8 +132,6 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineRelayBf16Function)(
     uint32_t hidden_dimension,
     void *cuda_stream);
 
-/* rank_devices is ordered by TP rank. The callback must reproduce the
- * recursive TP4 BF16 tree: round(0+1), round(2+3), then round(local+remote). */
 typedef SparkStatus (*SparkTpDeviceCollectiveCombineTp4Bf16Function)(
     void *combine_context,
     void *destination_device,

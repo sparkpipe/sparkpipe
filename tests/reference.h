@@ -1,14 +1,3 @@
-// Reference GEMM and format decoders. Obviously correct, deliberately slow.
-//
-// This is the oracle the fast kernel is checked against. It shares no code with
-// kernels/ on purpose: a reference that reuses the implementation's helpers
-// validates that they are self-consistent, not that they are right. Every
-// formula here is written independently from the format definition, and where
-// the two agree that agreement means something.
-//
-// It runs on a host with no CUDA. That is the point - the sparkdev can find a
-// numerics bug on a laptop, and the first run on real hardware is a comparison
-// rather than an investigation.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -19,7 +8,6 @@
 #define REF_MAX_N 256
 #define REF_MAX_K 512
 
-// -- format decoders, written from the format definitions, not from kernels/ --
 
 static float ref_bf16(uint16_t bits)
 {
@@ -29,7 +17,6 @@ static float ref_bf16(uint16_t bits)
 	return(value);
 }
 
-// E4M3: sign(1) exponent(4, bias 7) mantissa(3), no infinities, 0x7f is NaN.
 static float ref_e4m3(uint8_t code)
 {
 	int32_t sign = (code >> 7) & 1, exponent = (code >> 3) & 15, mantissa = code & 7;
@@ -41,15 +28,12 @@ static float ref_e4m3(uint8_t code)
 	return(sign ? -magnitude : magnitude);
 }
 
-// E2M1: the eight representable magnitudes, stated rather than computed.
 static float ref_e2m1(uint8_t nibble)
 {
 	static const float magnitude[8] = { 0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f };
 	return((nibble & 8u) ? -magnitude[nibble & 7u] : magnitude[nibble & 7u]);
 }
 
-// Signed n-bit two's complement at an arbitrary bit offset. Written as an
-// explicit bit loop so it cannot share a shift bug with the kernel's version.
 static int32_t ref_code(const uint8_t *base, uint32_t index, uint32_t bits)
 {
 	uint32_t start = index * bits, i;
@@ -65,11 +49,6 @@ static int32_t ref_code(const uint8_t *base, uint32_t index, uint32_t bits)
 	return(value);
 }
 
-// -- reference GEMM -----------------------------------------------------------
-//
-// One group, row-major A, column-major B, FP32 accumulate, BF16 out. No tiling,
-// no pipeline, no swizzle - the whole point is that there is nothing here to be
-// clever about.
 
 typedef float (*ref_element)(const uint8_t *plane, uint32_t row, uint32_t k, uint32_t pitch_bits, const float *scale, uint32_t scale_group);
 
@@ -102,9 +81,6 @@ static float ref_element_int6(const uint8_t *plane, uint32_t row, uint32_t k, ui
 	return((float)ref_code(plane + ((uint64_t)row * pitch_bits / 8u),k,6u) * scale[k / group]);
 }
 
-// C[m][n] = sum_k A[m][k] * B[n][k], accumulated in FP32 and rounded to BF16
-// exactly once at the end - which is what the fast kernel must also do, and a
-// common place for the two to disagree if the fast path rounds per K tile.
 static void ref_gemm(uint16_t *out, uint32_t m_count, uint32_t n_count, uint32_t k_count,
 	const uint8_t *a_plane, uint32_t a_pitch_bits, ref_element a_get, const float *a_scale, uint32_t a_group,
 	const uint8_t *b_plane, uint32_t b_pitch_bits, ref_element b_get, const float *b_scale, uint32_t b_group)

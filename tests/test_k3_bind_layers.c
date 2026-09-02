@@ -1,7 +1,3 @@
-/* Pack-lane diagnostic: bind each layer of a stage pack individually and
- * print the per-layer verdict, isolating which layer's bind fails and why
- * (KDA expected vs MLA present). One-off evidence for the lane report;
- * the bind rule itself belongs to the k3 module lane. */
 #include "sparkpipe/spark_k3_bind.h"
 #include "sparkpipe/spark_status.h"
 #include <stdio.h>

@@ -6,12 +6,6 @@
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_weight_codec.h"
 
-/* glm5_next stage pack (.g5nsp): the glm52sp v3 wire layout with the
- * glm5_next tensor-kind set - the hybrid KDA/DSA layer classes, the
- * hyper-connection weights, the indexer kpool compressor, and the MTP
- * head. Produced by tools/glm5_next_pack_synthesize.c (validation /
- * synthesized packs) and tools/glm5_next_resident_stagepack.py (real
- * checkpoint packs, M4). */
 #define SPARK_GLM5_NEXT_STAGEPACK_MAGIC UINT32_C(0x33584C47)
 #define SPARK_GLM5_NEXT_STAGEPACK_FORMAT_VERSION 1u
 #define SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER UINT32_MAX
@@ -57,7 +51,6 @@ typedef enum SparkGlm5NextStagePackTensorKind
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN = 23,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_GATE_UP = 24,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_DOWN = 25,
-    /* KDA linear-attention layers (34): the pack-V2 fusions. */
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_QKV_BETA = 26,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_DECAY_GATE_DOWN = 27,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_DECAY_UP = 28,
@@ -69,19 +62,14 @@ typedef enum SparkGlm5NextStagePackTensorKind
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE = 34,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT_NORM = 35,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT = 36,
-    /* Hyper-connections on every weight layer (not the MTP layer). fn is
-     * stored F32 (the checkpoint's BF16 rows upcast once at pack time). */
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_ATTN_FN = 37,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_ATTN_BASE = 38,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_ATTN_SCALE = 39,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_FN = 40,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_BASE = 41,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_SCALE = 42,
-    /* Indexer kpool compressor on every DSA layer. ape is F32 (the
-     * checkpoint BF16 upcast at pack time; the pool kernel reads f32). */
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_INDEX_COMPRESS_APE = 43,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_INDEX_COMPRESS_GATE = 44,
-    /* MTP head tensors (layer 45 only, spec path). */
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_EH_PROJ = 45,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_ENORM = 46,
     SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_HNORM = 47,
@@ -165,8 +153,6 @@ static inline uint32_t SparkGlm5NextStagePackLayerIsDsa(uint32_t layer_index)
         !SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer_index) ? 1u : 0u);
 }
 
-/* The MTP layer index is a DSA-class layer carrying the MTP head tensors
- * and NO hyper-connections. */
 static inline uint32_t SparkGlm5NextStagePackLayerIsMtp(uint32_t layer_index)
 {
     return(layer_index == SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX ? 1u : 0u);
@@ -242,21 +228,6 @@ static inline void SparkGlm5NextStagePackShapeF32(SparkGlm5NextStagePackTensorSh
     shape->columns = columns;
 }
 
-/* TP sharding policy (must match the packer exactly):
- *   row-sharded - the output dimension splits by ranks (heads, experts,
- *     vocab rows, or the fused per-head sections)
- *   column-sharded - the INPUT dimension splits (down projections read a
- *     rank slice of the intermediate and all-reduce)
- *   replicated - every rank carries the whole tensor (norms, q_a, kv_a,
- *     kv_b, indexer, router, HC, compressor, decay/gate bottleneck).
- * The attention OUT projections (ATTN_OUTPUT, KDA_OUT) are checkpoint
- * [hidden, heads*dim] = OUTPUT-hidden x INPUT-width, the down-projection
- * shape family: the rank slice is of the INPUT columns (this rank's
- * heads) and the out-GEMM lands the full-width rank partial the chain
- * reduces. Row-sharding them silently transposed the block (pack
- * [hidden/tp, width] consumed as [hidden, width/tp]): bounded garbage in
- * every attention partial from layer 0 - the cold-first-request
- * degeneration; TP1-invariant, which is why the M3 gates passed. */
 static inline uint32_t SparkGlm5NextStagePackTpShardsRows(uint32_t tensor_kind)
 {
     switch ( tensor_kind )
@@ -288,8 +259,6 @@ static inline uint32_t SparkGlm5NextStagePackTpShardsCols(uint32_t tensor_kind)
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_DENSE_DOWN:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_DOWN:
-    /* the per-channel KDA vectors shard along their channel/head axis
-     * (columns at rows=1); rows-sharding a 1-row tensor cannot divide. */
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_DECAY_BIAS:
     case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE:
         return(1u);
@@ -298,7 +267,6 @@ static inline uint32_t SparkGlm5NextStagePackTpShardsCols(uint32_t tensor_kind)
     }
 }
 
-/* Pack header TP identity: reserved0 = tp_degree, reserved1 = tp_rank. */
 static inline uint32_t SparkGlm5NextStagePackHeaderTpDegree(const SparkGlm5NextStagePackHeader *header)
 {
     return(header != 0 ? header->reserved0 : 0u);
@@ -309,11 +277,6 @@ static inline uint32_t SparkGlm5NextStagePackHeaderTpRank(const SparkGlm5NextSta
     return(header != 0 ? header->reserved1 : 0u);
 }
 
-/* Expected-shape table (the complexity lane's conjunction-soup conversion:
- * the 30-case switch became data). One row per tensor kind; payload_type 0
- * marks an uncovered kind, which the function refuses with the old switch
- * default (-6) — a future enum member without a table row fails loudly
- * instead of silently shape-matching. */
 typedef struct SparkGlm5NextStagePackShapeSpec
 {
     uint32_t payload_type;
@@ -322,7 +285,7 @@ typedef struct SparkGlm5NextStagePackShapeSpec
     uint32_t group_count;
     uint32_t rows;
     uint32_t columns;
-    uint32_t codec_from_arg; /* expert packed weights: codec rides the entry */
+    uint32_t codec_from_arg;
 } SparkGlm5NextStagePackShapeSpec;
 
 static const SparkGlm5NextStagePackShapeSpec SPARK_GLM5_NEXT_STAGEPACK_SHAPE_TABLE[SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KIND_COUNT] = {
@@ -397,10 +360,6 @@ static const SparkGlm5NextStagePackShapeSpec SPARK_GLM5_NEXT_STAGEPACK_SHAPE_TAB
     [SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE] =
         {SPARK_GLM5_NEXT_STAGEPACK_PAYLOAD_F32, SPARK_WEIGHT_CODEC_NONE, SPARK_WEIGHT_SCALE_ENCODING_NONE, 1u, 1u, SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT, 0u},
     [SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT_NORM] =
-        /* F32 in the pack (k3 donor convention): the gated norm instantiates
-         * Weight=float, and a bf16 store made the kernel read past the
-         * tensor - weights 64..127 came back as whatever followed, and the
-         * upper half of every head's output silently zeroed. */
         {SPARK_GLM5_NEXT_STAGEPACK_PAYLOAD_F32, SPARK_WEIGHT_CODEC_NONE, SPARK_WEIGHT_SCALE_ENCODING_NONE, 1u, 1u, SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION, 0u},
     [SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_OUT] =
         {SPARK_GLM5_NEXT_STAGEPACK_PAYLOAD_BF16, SPARK_WEIGHT_CODEC_BF16, SPARK_WEIGHT_SCALE_ENCODING_NONE, 1u, SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION, SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION, 0u},
@@ -430,8 +389,6 @@ static const SparkGlm5NextStagePackShapeSpec SPARK_GLM5_NEXT_STAGEPACK_SHAPE_TAB
         {SPARK_GLM5_NEXT_STAGEPACK_PAYLOAD_BF16, SPARK_WEIGHT_CODEC_BF16, SPARK_WEIGHT_SCALE_ENCODING_NONE, 1u, 1u, SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION, 0u},
 };
 
-/* Layer/kind compatibility rules (unchanged semantics: -3 for a kind the
- * layer class cannot carry, -4 for the dense/routed class mismatch). */
 static inline int32_t SparkGlm5NextStagePackCheckLayerKind(uint32_t layer_index,uint32_t tensor_kind)
 {
     uint32_t mtp_layer = SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX;

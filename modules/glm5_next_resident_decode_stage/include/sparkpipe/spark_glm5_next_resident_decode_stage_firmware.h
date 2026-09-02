@@ -7,9 +7,6 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
 
-// The batch-variant tuning header: the active-sequence ceiling below IS the
-// compiled bucket, so a variant build's lane tables shrink to the tight fit.
-// The unflagged build is b1024, the ceiling this stage has always had.
 #include "sparkpipe/spark_glm5_next_batch_tuning.h"
 
 #ifdef __cplusplus
@@ -19,13 +16,6 @@ extern "C" {
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 5u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
-/*
- * Whole-stack geometry: one stage owning all 45 weight layers (TP16 per
- * the fleet topology; the MTP layer 45 rides the spec path, not this
- * count). The stage split is compile-time overridable for the
- * mid-pipeline validation tier (STAGE_COUNT=2 STAGE_LAYER_COUNT=4
- * MTP_LAYER_COUNT=0 builds a small module against a synthesized pack).
- */
 #ifndef SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_STAGE_COUNT
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_STAGE_COUNT 1u
 #endif
@@ -37,10 +27,6 @@ extern "C" {
 	SPARK_BATCH_BUCKET
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 65536u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
-/* The inter-stage boundary carries ONE hidden row per token: the HC
- * streams expand at load (every stream initialises to the boundary row)
- * and collapse by unweighted mean at store - the boundary contract is a
- * single hidden row, not the stream set. */
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT \
 	SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES 2u
@@ -60,10 +46,6 @@ extern "C" {
 	 SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT | \
 	 SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT)
 
-/* R3 flash-decode partials workspace, sized per execution slot: one block of
- * (max, sum, latent accumulator) floats per (row, head, partition). The
- * partition cap is the module's copy of the shared split policy - layer.cuh
- * static_asserts the two never drift. */
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS 16u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS \
 	(SPARK_GLM5_NEXT_MODEL_LATENT_DIMENSION + 2u)
@@ -92,8 +74,6 @@ typedef struct SparkGlm5NextResidentDecodeStageNodeContext
 	uint32_t tp_rank;
 	const char *stage_pack_path;
 	const char *model_revision;
-	/* TP8 hidden-state collectives. tp_degree == 1 leaves every field
-	 * unset and the module runs the eager chunk chain without a backend. */
 	uint32_t tp_collective_backend_kind;
 	uint64_t tp_collective_identifier;
 	uint32_t tp_connect_timeout_milli;
@@ -101,14 +81,8 @@ typedef struct SparkGlm5NextResidentDecodeStageNodeContext
 	uint32_t tp_collective_control_port_base;
 	SparkTpDeviceCollectiveTopology tp_collective_topology;
 	const char *tp_collective_backend_module_path;
-	/* JIT-KV page-store host backing (flows from the serving adapter's
-	 * kv_backing_directory / kv_backing_maximum_bytes). */
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
-	/* R3 flash-decode: the decode attention splits the position range across
-	 * CTAs once the walk reaches this many positions. 0 keeps the
-	 * single-pass kernel byte-for-byte at EVERY context - the shipped
-	 * default until the GPU cell qualifies the split path. */
 	uint32_t decode_split_context_threshold;
 } SparkGlm5NextResidentDecodeStageNodeContext;
 

@@ -15,26 +15,7 @@
 extern "C" {
 #endif
 
-/*
- * Shared serving-adapter template. See the module-lifecycle header for the
- * paste doctrine this follows: every resident-stage family publishes a
- * SparkModelServingAdapterInterface and every one of them wrapped the same
- * plumbing - the descriptor's identity block, the capability chain, the
- * submission-slot reservation, the driver load/contract check, and the
- * tp_collective configuration parse. The paste was where the
- * admission-default-reject bug class was born twice; this header is the
- * single implementation. A family keeps only what is genuinely its own:
- * the geometry constants, the capability extras, the frame walk, and the
- * policy decisions this template exposes as explicit parameters.
- */
 
-/*
- * Capability chain. Every serving adapter here declares prefill, decode,
- * and driver-owned-KV; the extras are the family's honest differences
- * (speculation, JIT-KV, fanout, lease, topology build knobs). The chain
- * composes them in one place so a capability can never silently go
- * missing from one family's paste.
- */
 #define SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN_BASE \
 	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | \
@@ -43,11 +24,6 @@ extern "C" {
 #define SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(family_extras) \
 	(SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN_BASE | (family_extras))
 
-/*
- * Descriptor identity block: the fields every adapter binds the same way
- * from its constants (the ABI version pair, then the five identity
- * strings). family values are the family's own macros.
- */
 #define SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(adapter_id_value, \
 	model_id_value, model_revision_value, program_name_value, \
 	artifact_sha256_value) \
@@ -59,8 +35,6 @@ extern "C" {
 	.driver_program_name = (program_name_value), \
 	.artifact_sha256 = (artifact_sha256_value)
 
-/* JSON member access, shared: the adapters pasted these two wrappers so a
- * schema read is one call. Missing member is a SCHEMA_ERROR, as pasted. */
 int32_t SparkServingAdapterTemplateJsonMember(
 	const SparkJsonDocument *document,
 	int32_t object,
@@ -72,20 +46,6 @@ SparkStatus SparkServingAdapterTemplateJsonUnsigned(
 	const char *name,
 	uint32_t *value);
 
-/*
- * The one tp_collective configuration parser. The JSON contract (member
- * names, types, array shapes, range checks) is shared; the families'
- * genuinely different rules are explicit policy:
- *   - the peer count the peer_hosts/peer_ports arrays must match,
- *   - whether a zero collective_identifier is the degraded single-rank
- *     mode or a schema error,
- *   - whether peer_ports must be contiguous from peer_ports[0] (the
- *     control-port-base derivation; off = ports are free),
- *   - the adaptive-fabric algorithm set and the payload-threshold rule
- *     (rail-fabric builds require the full known set with ordered
- *     non-zero thresholds; single-algorithm builds require recursive
- *     doubling alone with both thresholds zero).
- */
 typedef enum SparkTpCollectiveAlgorithmPolicy
 {
 	SPARK_TP_COLLECTIVE_ALGORITHMS_FULL_KNOWN_SET = 1,
@@ -107,13 +67,6 @@ typedef struct SparkTpCollectiveConfigPolicy
 	SparkTpCollectiveThresholdPolicy thresholds;
 } SparkTpCollectiveConfigPolicy;
 
-/*
- * The parsed tp_collective block. Families copy what they keep in their
- * state layout (the template never embeds into the family state); set
- * backend_module_path_buffer/bytes to the family's destination buffer and
- * the runtime-relative backend path resolves directly into it, bounds
- * identical to the pasted parser.
- */
 typedef struct SparkTpCollectiveAdapterConfig
 {
 	uint32_t backend_kind;
@@ -136,21 +89,6 @@ SparkStatus SparkServingAdapterTemplateLoadTpCollective(
 	const SparkTpCollectiveConfigPolicy *policy,
 	SparkTpCollectiveAdapterConfig *config);
 
-/*
- * Pending-submission reservation: the common spine of every adapter's
- * ReservePending. The family pending struct embeds
- * SparkServingAdapterPendingCommon (after any owner pointer the family
- * fills itself) and passes that embedding site as common_offset — the
- * template cannot know the family layout, so the offset is family data
- * exactly like last_row_by_lane_offset; the template finds the free
- * slot via the common's active flag at common_offset, zeroes the WHOLE
- * element (element_bytes covers the family's own fields), fills the
- * common submission view, walks last_row_by_lane at the family layout's
- * offsetof, and returns the element. It deliberately does NOT set the
- * active flag: the pasted reserves mark the slot live only after the
- * family's own fill steps succeed, and a failed fill must leave the slot
- * free. Returns 0 when every slot is active, exactly as pasted.
- */
 typedef struct SparkServingAdapterPendingCommon
 {
 	uint32_t active;
@@ -178,23 +116,12 @@ void *SparkServingAdapterTemplateReservePending(
 	uint32_t last_row_by_lane_offset,
 	const SparkModelServingSubmission *submission);
 
-/*
- * Driver load + contract check. The shared spine: reset, load, the driver
- * descriptor identity compare, the program lookup, the admit/submit
- * presence check, the create request assembly, and the null-instance
- * guard. Family policy is explicit: the target pin (families that do not
- * pin the driver target leave driver_target 0), and the program
- * acceptance callback (the flag/profile contract differs per family and
- * per family build - the callback keeps those checks family-owned and
- * byte-equivalent, a shared approximation would change accept/reject
- * behavior on real descriptors).
- */
 typedef struct SparkServingAdapterDriverContract
 {
 	const char *driver_model_id;
 	const char *driver_model_revision;
 	const char *driver_stage_name;
-	const char *driver_target; /* 0 = the target is not pinned */
+	const char *driver_target;
 	const char *model_description_sha256;
 } SparkServingAdapterDriverContract;
 
@@ -205,7 +132,7 @@ typedef SparkStatus (*SparkServingAdapterProgramAcceptFunction)(
 typedef struct SparkServingAdapterDriverRequest
 {
 	SparkServingAdapterDriverContract contract;
-	void *node_context; /* 0 = omit on the create request */
+	void *node_context;
 	void *completion_context;
 	SparkModelDriverCompletionFunction completion_function;
 	SparkModelDriverWakeFunction wake_function;

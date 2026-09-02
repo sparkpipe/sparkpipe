@@ -1,29 +1,6 @@
-/* spark_weightd core (docs/WEIGHTD_DESIGN.md W2a): the identity-keyed arena
- * map, the attach/detach IPC surface, and the poll-driven server loop.
- *
- * Shape of the skeleton:
- * - The server is event-driven (one non-blocking Step; no worker threads),
- *   so the fleet-facing Run loop always comes back around to its stop flag
- *   within one poll quantum — the TERM path cannot be starved by a peer.
- * - Loads are synchronous inside Step: the NO-2x budget rules out the
- *   background-load variant (design doc), so an update is stop-attach-
- *   start and the transient copy count is exactly zero.
- * - Every allocation names its space kind (the memory-space rule):
- *   arenas are cuMem* VMM virtual arenas (cuMemCreate physical chunks at
- *   2 MiB granularity mapped into a reserved span — W2b; consumer import+
- *   map is the staged tier), pack staging is host anonymous memory, one
- *   bounded chunk.
- * - The pack digest is verified BEFORE any arena allocation, from the one
- *   open file that then supplies the load, and the file's identity (size
- *   + mtime) is re-checked after the load: attach-by-hash never lands
- *   bytes that do not hash to the identity (fail-closed HASH_MISMATCH).
- *   That is the exact guarantee the tenant-scribble protection and the
- *   determinism receipts ride on. */
 
 #define _POSIX_C_SOURCE 200809L
 #if defined(__APPLE__)
-/* st_mtimespec lives behind the Darwin extensions, which _POSIX_C_SOURCE
- * alone turns off */
 #define _DARWIN_C_SOURCE 1
 #endif
 
@@ -50,19 +27,15 @@
 #define SPARK_WEIGHTD_LOAD_CHUNK_BYTES (4ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS 10000000000ull
 
-/* The VMM page law (docs/WEIGHTD_DESIGN.md): a 25-100 GiB arena must not
- * drown the TLB in 4 KiB pages. Physical chunks are created at the driver's
- * recommended allocation granularity but never below 2 MiB, and every chunk
- * size stays a multiple of that granularity (cuMemCreate requires it). */
 #define SPARK_WEIGHTD_VMM_CHUNK_BYTES (2ull * 1024ull * 1024ull)
 
 typedef struct SparkWeightdArena
 {
-    SparkWeightdIdentity identity; /* canonical (prepared) */
-    void *device_base;             /* mapped VMM virtual base (stable VA) */
-    uint64_t virtual_bytes;        /* reserved span: chunk_count * chunk_bytes */
-    uint64_t chunk_bytes;          /* physical chunk granularity */
-    void **chunk_handles;          /* cuMem physical handles, one per chunk */
+    SparkWeightdIdentity identity;
+    void *device_base;
+    uint64_t virtual_bytes;
+    uint64_t chunk_bytes;
+    void **chunk_handles;
     uint32_t chunk_count;
     uint64_t generation;
     uint32_t refcount;
@@ -92,11 +65,6 @@ typedef struct SparkWeightdConnection
     uint8_t response[SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX];
     uint32_t response_bytes;
     uint32_t response_written;
-    /* W3 fd tier: the EXPORT_RESULT reply leaves with the chunk fds in its
-     * SCM_RIGHTS ancillary. The fds are staged here until the first
-     * completed send (the kernel takes its own references at send time, so
-     * they are handed across EXACTLY once) and are ours to close on every
-     * other path — flush error, connection death, server teardown. */
     uint32_t response_fd_count;
     int response_fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
     SparkWeightdAttachRef attaches[SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX];
@@ -131,8 +99,6 @@ static uint64_t SparkWeightdMonotonicTimeNs(void)
     return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
 }
 
-/* The stat change-detector for the verify/load window: size + mtime with
- * whatever nanosecond field the platform names it. */
 static uint64_t SparkWeightdStatMtimeNs(const struct stat *status)
 {
 #if defined(__APPLE__)
@@ -157,7 +123,6 @@ static SparkStatus SparkWeightdStringBounded(const char *text, uint32_t capacity
     return SPARK_STATUS_INVALID_ARGUMENT;
 }
 
-/* ------------------------------ identity ------------------------------ */
 
 SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity)
 {
@@ -214,7 +179,6 @@ bool SparkWeightdIdentityEqual(const SparkWeightdIdentity *left,
     return memcmp(left, right, sizeof(*left)) == 0;
 }
 
-/* ------------------------------ wire helpers ------------------------------ */
 
 static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
 {
@@ -320,15 +284,7 @@ static SparkStatus SparkWeightdStatusFromWire(uint32_t wire_status)
     return (SparkStatus)wire_status;
 }
 
-/* ------------------------------ server: VMM arenas ------------------------------ */
 
-/* W2b (docs/WEIGHTD_DESIGN.md): arenas are cuMem* VMM virtual arenas, not
- * cudaMalloc blocks. The virtual span is reserved ONCE and stays put for the
- * arena's whole life; the physical backing is a vector of independent
- * 2 MiB-granular cuMemCreate handles mapped into that span one by one. A
- * later tier can therefore attach or detach individual physical chunks (or
- * export them POSIX-fd for a consumer's read-only import + map) without
- * moving the base or copying a byte - the pointer IS the weight. */
 
 static uint64_t SparkWeightdVmmRoundUp(uint64_t value, uint64_t multiple)
 {
@@ -339,9 +295,6 @@ static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
 {
     CUdeviceptr base = (CUdeviceptr)(uintptr_t)arena->device_base;
     uint32_t index;
-    /* full teardown of a mapped arena; nothing here can recover, so every
-     * result is ignored - the stub's leak ledger catches ordering bugs in
-     * the host tests */
     (void)cuMemUnmap(base, (size_t)arena->virtual_bytes);
     for (index = 0u; index < arena->chunk_count; index++)
     {
@@ -378,8 +331,6 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
     prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
     prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     prop.location.id = device;
-    /* the shareable-handle shape the consumer import+map tier attaches
-     * through; requesting it costs nothing today */
     prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
     if (cuMemGetAllocationGranularity(&granularity, &prop,
             CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) != CUDA_SUCCESS ||
@@ -436,7 +387,6 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
         arena->chunk_count = chunk_count;
         return SPARK_STATUS_OK;
     }
-    /* unwind: unmap what was mapped, release what was created, free the VA */
     if (mapped != 0u)
     {
         (void)cuMemUnmap(base, (size_t)(mapped * chunk_bytes));
@@ -451,7 +401,6 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
     return SPARK_STATUS_CAPACITY_EXCEEDED;
 }
 
-/* ------------------------------ server: arena map ------------------------------ */
 
 static SparkWeightdArena *SparkWeightdServerFindArena(SparkWeightdServer *server,
     const SparkWeightdIdentity *identity)
@@ -467,11 +416,6 @@ static SparkWeightdArena *SparkWeightdServerFindArena(SparkWeightdServer *server
     return 0;
 }
 
-/* Free the arena at `slot` (the VMM span's physical chunks released, the
- * virtual reservation torn down) and close the slot by moving the tail arena
- * into it. Content-addressed means no external order to preserve — but every
- * connection attach reference that named the MOVED arena must follow it, or
- * its detach would miss and pin the refcount forever. */
 static void SparkWeightdServerFreeArenaSlot(SparkWeightdServer *server,
     uint32_t slot)
 {
@@ -512,11 +456,6 @@ static void SparkWeightdServerFreeArenaSlot(SparkWeightdServer *server,
     }
 }
 
-/* Reclaim cold (refcount == 0) arenas, oldest generation first, until
- * `needed_bytes` fits under the ceiling. Live arenas are NEVER evicted —
- * that is the NO-2x law: a serving process's weights cannot be pulled out
- * from under it, and an update that would need that goes through
- * stop-attach-start or fails closed. */
 static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
     uint64_t needed_bytes)
 {
@@ -536,7 +475,7 @@ static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
         }
         if (oldest_slot == server->arena_count)
         {
-            return; /* nothing cold left; the caller fails closed */
+            return;
         }
         SparkWeightdServerFreeArenaSlot(server, oldest_slot);
     }
@@ -552,8 +491,6 @@ static SparkStatus SparkWeightdServerAttachRegister(SparkWeightdServer *server,
     {
         if (connection->attaches[index].arena_generation == arena->generation)
         {
-            /* one attach per identity per connection: a serving process
-             * maps the arena once; a second claim is a protocol error */
             return SPARK_STATUS_DUPLICATE;
         }
     }
@@ -589,10 +526,7 @@ static void SparkWeightdServerDetachRelease(SparkWeightdServer *server,
     connection->attach_count--;
 }
 
-/* ------------------------------ server: load path ------------------------------ */
 
-/* Streaming digest over the caller's open file (the fast W1 bulk transform
- * runs inside SparkSha256Update — same function the pack verifier uses). */
 static SparkStatus SparkWeightdFileDigest(FILE *file,
     char hex[SPARK_SHA256_HEX_BYTES])
 {
@@ -639,9 +573,6 @@ static SparkStatus SparkWeightdFileDigest(FILE *file,
     return fseek(file, 0, SEEK_SET) == 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
-/* The cold path: verify-then-load, all through ONE open file so the bytes
- * loaded are the bytes digested, with a size+mtime re-check after the load
- * closing the window against an in-flight pack rewrite. */
 static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     SparkWeightdConnection *connection,
     const SparkWeightdIpcAttach *request,
@@ -677,7 +608,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
 
-    /* warm hit: the sub-second path (a code-only redeploy lands here) */
     arena = SparkWeightdServerFindArena(server, &identity);
     if (arena != 0)
     {
@@ -696,7 +626,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
 
-    /* cold: claim vs disk, on one open handle */
     file = fopen(request->pack_path, "rb");
     if (file == 0)
     {
@@ -724,9 +653,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
 
-    /* the NO-2x gate: make room by reclaiming COLD arenas only; if a live
-     * arena still blocks the fit, fail closed with nothing allocated — the
-     * update then goes through stop (detach) before attach, per the design */
     SparkWeightdServerReclaimCold(server, identity.arena_bytes);
     if (server->resident_bytes + identity.arena_bytes >
             server->config.device_bytes_max ||
@@ -739,10 +665,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
 
-    /* the VMM arena: a reserved virtual span carrying 2 MiB physical chunks
-     * mapped read-write for the load below. The identity — not the
-     * allocation — is the contract; the span's chunks can be attached or
-     * detached later without moving the base (docs/WEIGHTD_DESIGN.md). */
     if (SparkWeightdVmmAllocate(identity.arena_bytes, &pending) !=
         SPARK_STATUS_OK)
     {
@@ -750,9 +672,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         return;
     }
-    /* staging: host anonymous memory; the copy is host -> device arena
-     * (cross-space, named per the rule; the W1 pipelined loader is the
-     * staged daemon-side cold-path successor) */
     staging = (uint8_t *)malloc(SPARK_WEIGHTD_LOAD_CHUNK_BYTES);
     if (staging == 0)
     {
@@ -785,7 +704,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         SparkWeightdStatMtimeNs(&pack_stat_after) !=
             SparkWeightdStatMtimeNs(&pack_stat_before))
     {
-        /* the pack changed under the load: nothing served from it */
         (void)fclose(file);
         SparkWeightdVmmRelease(&pending);
         result->status = (uint32_t)SPARK_STATUS_HASH_MISMATCH;
@@ -809,7 +727,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     status = SparkWeightdServerAttachRegister(server, connection, slot);
     if (status != SPARK_STATUS_OK)
     {
-        /* the arena loaded but this connection cannot hold it */
         SparkWeightdServerFreeArenaSlot(server, slot);
         result->status = (uint32_t)status;
         result->resident_bytes = server->resident_bytes;
@@ -826,7 +743,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     result->arena_count = server->arena_count;
 }
 
-/* ------------------------------ server: export (W3 fd tier) ------------------------------ */
 
 static void SparkWeightdServerCloseStagedFds(SparkWeightdConnection *connection)
 {
@@ -838,16 +754,6 @@ static void SparkWeightdServerCloseStagedFds(SparkWeightdConnection *connection)
     connection->response_fd_count = 0u;
 }
 
-/* The daemon's half of the fd tier: hand the attached arena's physical
- * chunks to THIS connection, one position-addressed batch at a time, each
- * chunk as a CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR shareable fd. Access
- * scoping is two-layered — the socket is 0600 (owner-only, the KV backing's
- * file discipline carried to the socket) and the request's arena generation
- * must be one THIS connection holds an attach reference for: the attach ref
- * is the export capability, nothing else on the node can fish chunks out.
- * The daemon holds its fd copies only until the reply flushes; the consumer
- * closes each fd after its cuMemImportFromShareableHandle takes the driver's
- * own reference. */
 static void SparkWeightdServerExportBatch(SparkWeightdServer *server,
     SparkWeightdConnection *connection,
     const SparkWeightdIpcExport *request,
@@ -898,7 +804,6 @@ static void SparkWeightdServerExportBatch(SparkWeightdServer *server,
             result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
             return;
         }
-        /* the fd discipline: chunk fds never survive an exec in the daemon */
         (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
         connection->response_fds[index] = fd;
     }
@@ -909,7 +814,6 @@ static void SparkWeightdServerExportBatch(SparkWeightdServer *server,
     result->status = (uint32_t)SPARK_STATUS_OK;
 }
 
-/* ------------------------------ server: dispatch ------------------------------ */
 
 static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
     SparkWeightdConnection *connection,
@@ -926,7 +830,7 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
         SparkWeightdIpcHelloAck *ack = (SparkWeightdIpcHelloAck *)response;
         if (connection->hello_done != 0u)
         {
-            return 0u; /* lockstep violation: fail the connection closed */
+            return 0u;
         }
         connection->hello_done = 1u;
         SparkWeightdBuildHeader(response, result_kind, request_id);
@@ -940,7 +844,7 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
 
     if (connection->hello_done == 0u)
     {
-        return 0u; /* every exchange opens with HELLO */
+        return 0u;
     }
 
     if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_ATTACH)
@@ -1024,7 +928,6 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
     return 0u;
 }
 
-/* ------------------------------ server: connections ------------------------------ */
 
 static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
     uint32_t connection_index)
@@ -1032,14 +935,13 @@ static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
     SparkWeightdConnection *connection = &server->connections[connection_index];
     while (connection->attach_count != 0u)
     {
-        /* consumer death drops a refcount — every one of them */
         SparkWeightdServerDetachRelease(server, connection, 0u);
     }
     if (connection->fd >= 0)
     {
         (void)close(connection->fd);
     }
-    SparkWeightdServerCloseStagedFds(connection); /* unsent chunk fds die here */
+    SparkWeightdServerCloseStagedFds(connection);
     connection->fd = -1;
     connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
     connection->hello_done = 0u;
@@ -1048,14 +950,6 @@ static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
     connection->response_written = 0u;
 }
 
-/* Drain the pending response as far as the socket takes it. PENDING means
- * "not yet fully written — retry on the next step"; the connection is
- * failed closed only on a real write error. A response with staged fds
- * leaves via sendmsg with the SCM_RIGHTS ancillary instead of write(): the
- * fds cross EXACTLY once (the kernel dups them into the receiver's queue at
- * send time), so the staged set clears on the first completed send whatever
- * the byte count; on EAGAIN/EINTR nothing left the socket and the same fds
- * retry on the next step. */
 static SparkStatus SparkWeightdServerFlushResponse(
     SparkWeightdConnection *connection)
 {
@@ -1089,7 +983,6 @@ static SparkStatus SparkWeightdServerFlushResponse(
             chunk = sendmsg(connection->fd, &message, 0);
             if (chunk >= 0)
             {
-                /* delivered: the receiver's dup holds the referent now */
                 SparkWeightdServerCloseStagedFds(connection);
             }
             else if (errno == EINTR)
@@ -1102,7 +995,7 @@ static SparkStatus SparkWeightdServerFlushResponse(
             }
             else
             {
-                return SPARK_STATUS_IO_ERROR; /* fds close with the socket */
+                return SPARK_STATUS_IO_ERROR;
             }
         }
         else
@@ -1138,9 +1031,6 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
         ssize_t chunk;
         if (connection->response_bytes != 0u)
         {
-            /* the previous response has not fully left yet: stop reading so
-             * one slow consumer cannot pin the daemon (responses are tiny
-             * fixed frames, so this drains within a step or two) */
             return;
         }
         chunk = recv(connection->fd,
@@ -1161,7 +1051,6 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
         }
         if (chunk == 0)
         {
-            /* consumer death: EOF drops every refcount this connection held */
             connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
             return;
         }
@@ -1190,7 +1079,6 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
             {
                 continue;
             }
-            /* wire-shape check against the exact frame size for the kind */
             if (SparkWeightdIpcValidateHeader(header, expected_bytes,
                     header->kind) != SPARK_STATUS_OK)
             {
@@ -1203,7 +1091,6 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
             connection->request_bytes = 0u;
             if (connection->response_bytes == 0u)
             {
-                /* dispatch refused the exchange: fail the connection closed */
                 connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
                 return;
             }
@@ -1287,8 +1174,6 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
                     break;
                 }
             }
-            /* a full table just declines further connects; a pending peer
-             * sees its own connect deadline expire (fail-closed, both ways) */
         }
         poll_index = 1u;
     }
@@ -1346,9 +1231,6 @@ SparkStatus SparkWeightdServerRun(SparkWeightdServer *server,
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    /* the stop flag is written by a signal handler in the daemon and by
-     * the driving thread in tests: the load is atomic so both callers are
-     * race-free by construction */
     while (__atomic_load_n(stop, __ATOMIC_SEQ_CST) == 0)
     {
         SparkStatus status = SparkWeightdServerStep(server);
@@ -1387,14 +1269,11 @@ SparkStatus SparkWeightdServerCreate(const SparkWeightdServerConfig *config,
     instance->listen_fd = -1;
     for (index = 0u; index < SPARK_WEIGHTD_CONNECTION_COUNT_MAX; index++)
     {
-        /* calloc zero-fills state to OPEN: fresh slots must start CLOSED
-         * (fd = -1, not accepting) or the accept loop never finds a slot */
         instance->connections[index].fd = -1;
         instance->connections[index].state = SPARK_WEIGHTD_CONNECTION_CLOSED;
     }
     (void)signal(SIGPIPE, SIG_IGN);
 
-    /* a stale socket from a crashed predecessor is reclaimed, never feared */
     (void)unlink(instance->socket_path);
     instance->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (instance->listen_fd < 0)
@@ -1462,7 +1341,6 @@ uint64_t SparkWeightdServerResidentBytes(const SparkWeightdServer *server)
     return server != 0 ? server->resident_bytes : 0ull;
 }
 
-/* ------------------------------ client ------------------------------ */
 
 static SparkStatus SparkWeightdDeadlineRemaining(uint64_t deadline_ns,
     int *timeout_ms)
@@ -1520,8 +1398,6 @@ static SparkStatus SparkWeightdClientWriteAll(SparkWeightdClient *client,
     return SPARK_STATUS_OK;
 }
 
-/* Read exactly `bytes` with a hard deadline; short = dead daemon or
- * protocol fault, both fail closed. */
 static SparkStatus SparkWeightdClientReadAll(SparkWeightdClient *client,
     uint8_t *buffer,
     uint32_t bytes,
@@ -1553,8 +1429,6 @@ static SparkStatus SparkWeightdClientReadAll(SparkWeightdClient *client,
             {
                 continue;
             }
-            /* EOF mid-exchange: the daemon is gone (crash semantics:
-             * fail closed, never chase) */
             return SPARK_STATUS_IO_ERROR;
         }
         received += (uint32_t)chunk;
@@ -1646,8 +1520,6 @@ SparkStatus SparkWeightdClientConnect(const char *socket_path,
     {
         (void)close(instance->fd);
         free(instance);
-        /* refused / missing daemon: the consumer fails closed here, it does
-         * not fall back to a stale pointer (the crash contract) */
         return SPARK_STATUS_IO_ERROR;
     }
 
@@ -1741,14 +1613,7 @@ SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
     return SPARK_STATUS_OK;
 }
 
-/* ------------------------------ client: export (W3 fd tier) ------------------------------ */
 
-/* Receive exactly `bytes` of a reply frame, collecting the SCM_RIGHTS
- * ancillary that rides the FIRST data (fds always arrive with the frame's
- * leading bytes, never detached from it). Every fd that lands is made
- * close-on-exec and accounted into *fds_received; anything over capacity,
- * or a short frame, or a dead daemon fails closed with ALL received fds
- * closed — the caller never sees a partial hand it could miscount. */
 static SparkStatus SparkWeightdClientReadFrameWithFds(
     SparkWeightdClient *client,
     uint8_t *buffer,
@@ -1779,7 +1644,7 @@ static SparkStatus SparkWeightdClientReadFrameWithFds(
         poll_fd.revents = 0;
         if (poll(&poll_fd, 1u, timeout_ms) <= 0)
         {
-            goto fail; /* deadline expired or poll error */
+            goto fail;
         }
         if (received == 0u)
         {
@@ -1804,11 +1669,11 @@ static SparkStatus SparkWeightdClientReadFrameWithFds(
             }
             if (chunk <= 0)
             {
-                goto fail; /* EOF mid-exchange: the daemon is gone */
+                goto fail;
             }
             if ((message.msg_flags & MSG_CTRUNC) != 0)
             {
-                goto fail; /* truncated ancillary: a frame that cannot count */
+                goto fail;
             }
             for (control_header = CMSG_FIRSTHDR(&message); control_header != 0;
                 control_header = CMSG_NXTHDR(&message, control_header))
@@ -1821,10 +1686,6 @@ static SparkStatus SparkWeightdClientReadFrameWithFds(
                     if (payload % sizeof(int) != 0u ||
                         fd_count + count > fds_capacity)
                     {
-                        /* over the batch bound: a lying frame, never mapped.
-                         * Close what was copied; any overflow fds the kernel
-                         * already queued die with this socket, which the
-                         * caller closes on every failure path. */
                         goto fail;
                     }
                     memcpy(fds_out + fd_count, CMSG_DATA(control_header),
@@ -1924,8 +1785,6 @@ SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
         wire_result.batch_count > SPARK_WEIGHTD_EXPORT_BATCH_MAX ||
         wire_result.batch_count != fds_received)
     {
-        /* frame/refusal-shape faults close every fd already received: the
-         * batch is either exactly what the frame declares or it is nothing */
         while (fds_received != 0u)
         {
             (void)close(batch->fds[--fds_received]);

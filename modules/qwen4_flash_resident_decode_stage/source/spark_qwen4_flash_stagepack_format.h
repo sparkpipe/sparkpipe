@@ -6,27 +6,8 @@
 #include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
 
-/*
- * Qwen4 Flash stage pack: a single file holding every tensor one pipeline
- * STAGE makes resident, plus the geometry the tensors were produced for.
- * The header restates the model geometry and the layer slice; every field is
- * compared against the compiled constants at load and a mismatch is a hard
- * failure with the offending field named. Same discipline as the qwen38_27b pack.
- *
- * Layout: [header][directory: tensor_count entries][payload bytes].
- * All offsets are absolute file offsets. A tensor's payload is contiguous;
- * MXFP4 tensors append their E8M0 scale plane immediately after the payload.
- *
- * Routed experts are flattened: w1/w3 are [expert_count * intermediate, H]
- * and w2 is [expert_count * H, intermediate]. The checkpoint's fused
- * gate_up_proj is split at pack time into w1 (rows 0..I) and w3 (rows I..2I).
- */
 
-#define SPARK_QWEN4_FLASH_STAGEPACK_MAGIC 0x50533451u /* 'Q4SP' little endian: the Flash family pack format (own magic, not the qwen38 'Q8SP') */
-/* Version 2: the hyper-connection residual (full 4-stream hc_norm on the
- * norm slots plus the per-sublayer mixers), the attention indexer, the PLE
- * n-gram block and the global/mtp readout mixers join the inventory; the
- * norm-slot widths change 2560 -> 10240, so v1 packs fail closed at load. */
+#define SPARK_QWEN4_FLASH_STAGEPACK_MAGIC 0x50533451u
 #define SPARK_QWEN4_FLASH_STAGEPACK_FORMAT_VERSION 2u
 #define SPARK_QWEN4_FLASH_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_QWEN4_FLASH_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
@@ -47,9 +28,6 @@ typedef enum SparkQwen4FlashStagePackTensorKind
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM = 29,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM = 30,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM = 31,
-	/* v2: hyper-connection residual, per sublayer (attn and mlp sets),
-	 * the attention indexer (attn-layer class), the readout mixers and
-	 * the PLE block (layer PLE_LAYER_INDEX only). */
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN = 32,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP = 33,
 	SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT = 34,
@@ -148,17 +126,11 @@ typedef struct SparkQwen4FlashStagePackEntry
 	uint64_t scale_bytes;
 } SparkQwen4FlashStagePackEntry;
 
-/*
- * Fixed wire sizes: the structs are ordered so natural alignment produces no
- * padding on the LP64 targets this module builds for; the asserts make that a
- * compile error rather than a silent format drift.
- */
 #define SPARK_QWEN4_FLASH_STAGEPACK_HEADER_BYTES 120u
 #define SPARK_QWEN4_FLASH_STAGEPACK_ENTRY_BYTES 56u
 _Static_assert(sizeof(SparkQwen4FlashStagePackHeader) == SPARK_QWEN4_FLASH_STAGEPACK_HEADER_BYTES,"qwen38 stage pack header must be 120 wire bytes");
 _Static_assert(sizeof(SparkQwen4FlashStagePackEntry) == SPARK_QWEN4_FLASH_STAGEPACK_ENTRY_BYTES,"qwen38 stage pack directory entry must be 56 wire bytes");
 
-// Model-geometry compile-time proofs.
 _Static_assert(SPARK_QWEN4_FLASH_MODEL_GDN_LAYER_COUNT + SPARK_QWEN4_FLASH_MODEL_FULL_ATTENTION_LAYER_COUNT == SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT,"qwen38 layer split must cover the stack");
 _Static_assert((SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT % SPARK_QWEN4_FLASH_MODEL_ATTENTION_PERIOD) == 0u,"qwen38 layer count must be whole periods");
 _Static_assert(SPARK_QWEN4_FLASH_MODEL_GDN_LAYER_COUNT == (SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT / SPARK_QWEN4_FLASH_MODEL_ATTENTION_PERIOD) * (SPARK_QWEN4_FLASH_MODEL_ATTENTION_PERIOD - 1u),"qwen38 gdn count must match the 3:1 period");
@@ -179,15 +151,6 @@ static inline uint32_t SparkQwen4FlashStagePackFullAttentionLayersBelow(uint32_t
 	return(layer_count / SPARK_QWEN4_FLASH_MODEL_ATTENTION_PERIOD);
 }
 
-/*
- * The tensor inventory of a slice, computed, never declared: sixteen tensors
- * on every layer (two hc norms and the eight MoE tensors plus the six hc
- * mixer tensors), nine more on a GDN layer, nine more on a full-attention
- * layer (attn tensors + indexer), ten PLE tensors on the PLE layer, the
- * embedding on stage zero and the final norm, LM head, mixer pair, four MTP
- * globals plus the MTP mixer pair, twenty-five MTP layer tensors and
- * (multi-stage only) a second embedding copy on the last stage.
- */
 static inline uint32_t SparkQwen4FlashStagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {
 	uint32_t full = SparkQwen4FlashStagePackFullAttentionLayersBelow(first_layer_index + layer_count) - SparkQwen4FlashStagePackFullAttentionLayersBelow(first_layer_index);
@@ -200,10 +163,6 @@ static inline uint32_t SparkQwen4FlashStagePackExpectedTensorCount(uint32_t firs
 	return(tensors);
 }
 
-/* Real packs always carry the ten PLE tensors when the slice covers the PLE
- * layer; synthesized mid-pipeline test packs may omit the whole block (the
- * 23.8 GiB n-gram table is not synthesizable at true shape), which the
- * module accepts ONLY under the explicit allow-missing-ple env gate. */
 static inline uint32_t SparkQwen4FlashStagePackExpectedTensorCountWithPle(uint32_t first_layer_index, uint32_t layer_count, uint32_t include_ple)
 {
 	uint32_t tensors = SparkQwen4FlashStagePackExpectedTensorCount(first_layer_index,layer_count);
@@ -244,9 +203,6 @@ static inline void SparkQwen4FlashStagePackExpectedGeometry(SparkQwen4FlashStage
 	header->file_bytes = 0u;
 }
 
-/* Field-by-field comparison; returns 0 on match, nonzero on any drift.
- * The comparison is the library's; the layout proof is this family's
- * compile-time admission ticket to it. */
 SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(SparkQwen4FlashStagePackHeader);
 static inline int32_t SparkQwen4FlashStagePackHeaderMatches(const SparkQwen4FlashStagePackHeader *file_header, const SparkQwen4FlashStagePackHeader *expected)
 {
@@ -255,11 +211,6 @@ static inline int32_t SparkQwen4FlashStagePackHeaderMatches(const SparkQwen4Flas
 		(const SparkStagePackHeaderCommon *)expected));
 }
 
-/* The shape algebra and header comparison are the stagepack format
- * library's; this family states its geometry as data and keeps only the
- * v2 tensors that are genuinely its own (hyper-connections, indexer,
- * mixers, PLE). The static asserts pin the family's ABI codes to the
- * shared ones so neither side can drift silently. */
 typedef SparkStagePackTensorShape SparkQwen4FlashStagePackTensorShape;
 
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"qwen4 bf16 weight code must match the shared format");
@@ -324,8 +275,6 @@ static inline int32_t SparkQwen4FlashStagePackShapeGlobal(uint32_t tensor_kind, 
 
 static inline int32_t SparkQwen4FlashStagePackShapeEveryLayer(uint32_t tensor_kind, SparkQwen4FlashStagePackTensorShape *shape)
 {
-	/* Norms and the MoE set are the shared axis; the hyper-connection
-	 * residual pair (v2) is this family's own. */
 	if ( SparkStagePackShapeEveryLayerCommon(tensor_kind,
 		&SparkQwen4FlashStagePackGeometry,shape) == 0 )
 		return(0);
@@ -389,9 +338,6 @@ static inline int32_t SparkQwen4FlashStagePackShapeAttn(uint32_t tensor_kind, Sp
 	}
 }
 
-/* PLE block shapes; only valid on the PLE layer (layer PLE_LAYER_INDEX).
- * The I64 metadata rows are exact hash constants - they travel as raw
- * little-endian int64, never converted. */
 static inline int32_t SparkQwen4FlashStagePackShapePle(uint32_t tensor_kind, SparkQwen4FlashStagePackTensorShape *shape)
 {
 	shape->layer_class = SPARK_QWEN4_FLASH_STAGEPACK_CLASS_PLE_LAYER;
@@ -455,14 +401,6 @@ static inline int32_t SparkQwen4FlashStagePackTensorShapeOf(uint32_t tensor_kind
 	return(-1);
 }
 
-/*
- * Rank-local entry geometry: the per-kind narrowing the TP pack plan
- * applies (mirrored by tools/qwen4_flash_stagepack.py shard_ref and
- * tools/qwen4_flash_pack_verify.py - three statements of one plan, so a
- * drift fails closed at load). KV projections replicate whole when the kv
- * heads do not divide across ranks; norms, scalars and the MTP globals
- * replicate; everything else narrows along the sharded axis.
- */
 static inline void SparkQwen4FlashStagePackNarrowShape(SparkQwen4FlashStagePackTensorShape *shape, uint32_t tensor_kind, uint32_t tp_degree, uint32_t tp_rank)
 {
 	uint32_t key_heads, value_heads, experts;
@@ -480,7 +418,7 @@ static inline void SparkQwen4FlashStagePackNarrowShape(SparkQwen4FlashStagePackT
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY:
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE:
 		if ( (SPARK_QWEN4_FLASH_MODEL_ATTN_KV_HEAD_COUNT % tp_degree) != 0u )
-			break; /* replicated */
+			break;
 		shape->rows = (SPARK_QWEN4_FLASH_MODEL_ATTN_KV_HEAD_COUNT / tp_degree) * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION;
 		break;
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT:
@@ -527,24 +465,13 @@ static inline void SparkQwen4FlashStagePackNarrowShape(SparkQwen4FlashStagePackT
 		shape->rows = SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT / tp_degree;
 		break;
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NGRAM:
-		/* Vocab-sharded n-gram table (the decided plan): rank r holds rows
-		 * [r*rows/tp, (r+1)*rows/tp) of the head-major concatenated row
-		 * space; out-of-shard ids gather zero and the bf16 all-reduce
-		 * completes the embedding, exactly the main embedding pattern. */
 		shape->rows = SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_ROW_COUNT / tp_degree;
 		break;
 	default:
-		break; /* replicated: norms, scalars, MTP globals */
+		break;
 	}
 }
 
-/*
- * Kind resolved against a concrete layer: a global kind must carry the global
- * layer marker, a per-layer kind must sit inside the total layer space, and
- * the GDN/attention classes must agree with the hybrid layer map. The MTP
- * decoder is geometry-identical to a full-attention layer, so its sixteen
- * layer-shaped tensors REUSE the per-layer kinds at the reserved MTP marker.
- */
 static inline int32_t SparkQwen4FlashStagePackResolvedShape(uint32_t tensor_kind, uint32_t layer_index, uint32_t is_global, SparkQwen4FlashStagePackTensorShape *shape)
 {
 	if ( SparkQwen4FlashStagePackTensorShapeOf(tensor_kind,shape) < 0 )
@@ -587,7 +514,6 @@ static inline uint64_t SparkQwen4FlashStagePackScaleBytes(uint32_t weight_format
 		return(((uint64_t)rows * (uint64_t)columns) / SPARK_QWEN4_FLASH_MODEL_MXFP4_GROUP_SIZE);
 	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);
-	/* E8M0B128: one exponent byte per (row, 128-column block) - the 27b form. */
 	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
 		return((uint64_t)rows * ((uint64_t)columns / 128u));
 	return(0u);

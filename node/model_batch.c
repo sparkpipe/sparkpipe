@@ -14,9 +14,6 @@
 #define SPARK_MODEL_BATCH_FILE_SCHEMA_VERSION 1u
 #define SPARK_MODEL_BATCH_POLL_TIMEOUT_MS 10
 #define SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX 1048576u
-/* The seam's starvation bound: an offer waits at most this many boundaries
- * behind smaller competitors before the aging escape makes it the boundary
- * priority pick (the policy is the controller's; this is the tool's knob). */
 #define SPARK_MODEL_BATCH_CONTINUOUS_STARVATION_BOUND 4u
 
 typedef struct SparkModelBatchFileRequest
@@ -47,8 +44,6 @@ typedef struct SparkModelBatchOutput
 	uint8_t *pending_output;
 	uint32_t pending_output_bytes;
 	uint32_t pending_output_capacity;
-	/* Continuous mode (the seam): the boundary admission controller and
-	 * the release buffer its Boundary call fills. */
 	SparkContinuousBatch *admission;
 	uint64_t *released_ids;
 } SparkModelBatchOutput;
@@ -348,10 +343,6 @@ static const char *SparkModelBatchEventName(uint32_t kind)
 	}
 }
 
-/* Emission is decoupled from the decode loop: tokens are formatted into a
- * user-space buffer and written to stdout WITHOUT blocking. A slow reader
- * (the harness draining stdout) would otherwise stall the only producer of
- * the next decode submission, turning reader latency into wall-clock. */
 static int32_t SparkModelBatchOutputReserve(
 	SparkModelBatchOutput *output,
 	uint32_t bytes)
@@ -388,7 +379,7 @@ static void SparkModelBatchFlushOutput(SparkModelBatchOutput *output)
 			continue;
 		}
 		if ( written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
-			return;  /* reader is behind; keep bytes, retry next loop iteration */
+			return;
 		output->write_failed = 1u;
 		return;
 	}
@@ -419,10 +410,6 @@ static void SparkModelBatchWriteEvent(
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED || event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED || event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
 	{
 		output->terminal_count++;
-		/* Continuous mode: the engine reported a lane terminal - the
-		 * controller frees its slot at the next boundary (L3). A
-		 * NOT_FOUND here is the direct-submitted path (an offer the
-		 * controller never made resident); it has nothing to free. */
 		if ( output->admission != 0 )
 			(void)SparkContinuousBatchRetire(output->admission,event->request_id);
 	}
@@ -530,19 +517,6 @@ static SparkStatus SparkModelBatchSubmitAll(
 	return(status);
 }
 
-/* THE CONTINUOUS SERVING SEAM (default off; SPARK_MODEL_BATCH_CONTINUOUS
- * enables it). BATCH mode submits the file whole and closes admission.
- * Continuous mode runs the file through the step-boundary admission
- * controller (scheduler/continuous_batch.c): each request is OFFERED, the
- * C1 arithmetic answers against the deployment's own max_input_rows /
- * max_active_sequences, refused offers wait in the controller's queue,
- * and the run loop releases them at boundaries - after each Progress
- * pump - in the controller's policy order (smallest-first, starvation
- * bound). The engine remains the enforcer of its own admission; the
- * controller decides WHEN a request is allowed to join. A request the
- * controller names OVERSIZE (prompt rows alone exceed the deployment's
- * max_input_rows) is submitted directly - the engine chunk-prefills it -
- * and withdrawn from the queue, so nothing wedges and nothing is lost. */
 static SparkStatus SparkModelBatchContinuousInitialize(
 	const SparkModelResidentDeployment *deployment,
 	const SparkModelBatchFile *file,
@@ -623,8 +597,6 @@ static SparkStatus SparkModelBatchOfferAll(
 			if ( status == SPARK_STATUS_OK )
 				(void)SparkContinuousBatchWithdraw(output->admission,file->requests[index].request.request_id);
 		}
-		/* QUEUE_AHEAD (and any other queued outcome): the controller
-		 * holds the offer for the run loop's boundaries. */
 	}
 	return(status);
 }
@@ -689,9 +661,6 @@ static SparkStatus SparkModelBatchRun(
 	submitted = *submitted_count;
 	while ( status == SPARK_STATUS_OK && output->terminal_count<file->request_count && output->write_failed == 0u )
 	{
-		/* sequential mode: request N+1 admits only after request N reached
-		 * terminal - the production arrival pattern the prefix cache serves
-		 * (a co-scheduled group prefills every lane from zero in parallel) */
 		while ( file->sequential_submissions != 0u && submitted < file->request_count && output->terminal_count == submitted )
 		{
 			status = SparkModelBatchSubmitAll(engine,file,submitted,1u);
@@ -716,9 +685,6 @@ static SparkStatus SparkModelBatchRun(
 			status = SPARK_STATUS_IO_ERROR;
 		if ( status != SPARK_STATUS_OK )
 			break;
-		/* Continuous mode: the poll just returned - a boundary has
-		 * passed. Reclaim finished lanes, release the policy's picks,
-		 * and close engine admission once everything is submitted. */
 		if ( output->admission != 0 )
 		{
 			status = SparkModelBatchReleaseReady(engine,file,output,&submitted);
@@ -797,10 +763,6 @@ int main(int argc,char **argv)
 		status = SparkModelBatchLoadFile(batch_path,&file);
 	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_CONTINUOUS") != 0 )
 	{
-		/* The continuous serving seam (see SparkModelBatchOfferAll):
-		 * step-boundary admission driven by the deployment's own
-		 * max_input_rows / max_active_sequences. Default off - without
-		 * the env the tool is the BATCH tool it has always been. */
 		continuous = 1u;
 		status = SparkModelBatchContinuousInitialize(&deployment,&file,&output);
 	}
@@ -846,7 +808,6 @@ int main(int argc,char **argv)
 		(void)fcntl(STDOUT_FILENO,F_SETFL,fcntl(STDOUT_FILENO,F_GETFL,0) | O_NONBLOCK);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchRun(engine,&file,&output,&submitted_count,admission_closed);
-	/* Drain whatever the slow reader could not take during the run (now blocking). */
 	(void)fcntl(STDOUT_FILENO,F_SETFL,fcntl(STDOUT_FILENO,F_GETFL,0) & ~O_NONBLOCK);
 	SparkModelBatchFlushOutput(&output);
 	if ( engine != 0 && SparkModelBatchEngineGetView(engine,&engine_view) ==

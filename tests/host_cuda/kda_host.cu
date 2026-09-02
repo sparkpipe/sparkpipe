@@ -1,13 +1,3 @@
-// Run the real KDA decode path on a CPU and print what it produced.
-//
-// This includes inference/kernels/linear_attn.cuh unmodified. The kernels
-// compiled here are the kernels compiled for sm_121a; the only difference is the
-// shim that gives them a grid. A number that comes out of this file came out of
-// the code that will run on hardware, which is the point - a reimplementation
-// in the test would only prove the test agrees with itself.
-//
-// tests/test_kda_host.py drives this, compares against a transcription of
-// FlashKDA's recurrence, and is where the tolerances live.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -16,19 +6,12 @@
 
 LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 
-// Backing for the kernels' dynamic shared memory. On a device the launch sizes
-// these; here one fixed buffer per declared name is enough, because one block
-// runs at a time.
 uint32_t lm_topk_shared[LM_HOST_SHARED_BYTES / sizeof(uint32_t)];
 float lm_norm_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 
 #include "inference/kernels/dtype.cuh"
 
-// One lane per warp, overridden here rather than defaulted in mma.cuh. LmBlockSum
-// computes warps = THREADS / LM_WARP_LANES; at one thread and 32 lanes that is
-// zero and the reduction returns zero for every row, which turned an RMS norm
-// into a 225x error until the harness disagreed with the reference.
 #include "inference/kernels/mma.cuh"
 #undef LM_WARP_LANES
 #define LM_WARP_LANES LM_HOST_WARP_LANES
@@ -41,8 +24,6 @@ float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 #define CONV_KERNEL 4u
 #define STEPS 6u
 #define THREADS 1u
-// The pool stride the harness allocates at, named once and passed to both
-// kernels - which is the whole point of the parameter existing.
 #define SLOT_BYTES (HEADS * KEY_DIM * VALUE_DIM * 4u)
 
 static uint16_t bf16(float value) { return LmFloatToBf16(value); }
@@ -88,7 +69,6 @@ int main(void)
 			write_gate[head] = 0.5f + 0.25f * NextRandom(&seed);
 	}
 
-	// echo the inputs so the Python side scores the same numbers, not its own
 	printf("HEADS %u KEY_DIM %u VALUE_DIM %u STEPS %u GMIN %.9g\n",
 		HEADS, KEY_DIM, VALUE_DIM, STEPS, (double)-5.0f);
 	for (index = 0u; index < HEADS * KEY_DIM; ++index)
@@ -122,14 +102,6 @@ int main(void)
 		for (index = 0u; index < HEADS * KEY_DIM; ++index)
 			printf("ret %.9g\n", (double)retention[index]);
 	}
-	// REPLAY THE SAME STEPS FROM ZERO AND DEMAND THE SAME STATE.
-	//
-	// ReplaySSM's correctness claim is that folding the accepted prefix from a
-	// checkpoint reproduces exactly what the recurrent path would have
-	// committed. Here the checkpoint is the zero state and the accepted prefix
-	// is every step, so the fold must land on the state the decode kernel
-	// already produced - byte for byte, since both are the same arithmetic in
-	// the same order.
 	{
 		static uint8_t replay_pool[sizeof(state_pool)];
 		static LmReplayStep steps[STEPS];
@@ -158,14 +130,6 @@ int main(void)
 		printf("replay_mismatch %u of %u bytes\n",
 			mismatch, (unsigned)sizeof(state_pool));
 	}
-	// ONE RUN MUST EQUAL ITS STEPS, BIT FOR BIT.
-	//
-	// The kernel's claim is that a sequence-run is the same arithmetic as its
-	// decode steps: the state crosses tokens through shared memory at exactly
-	// the BF16 width the slot stores between calls, so no rounding path
-	// differs. Prefill and DSpark verify both stand on this, so it is a gate:
-	// replay the six steps as one run from a zero slot and demand the decode
-	// path's outputs and final state, byte for byte.
 	{
 		static uint8_t run_pool[sizeof(state_pool)];
 		static uint16_t run_output[STEPS][HEADS * VALUE_DIM];
@@ -203,8 +167,6 @@ int main(void)
 			if (run_pool[index] != state_pool[index])
 				++mismatch;
 		printf("run_mismatch %u\n", mismatch);
-		// And a run that is NOT committed must leave the slot exactly as it
-		// found it while still producing every output - the verify contract.
 		memset(run_pool, 0, sizeof(run_pool));
 		LM_HOST_LAUNCH(dim3(1u, HEADS),
 			(LmDeltaRuleKernel<THREADS, KEY_DIM, VALUE_DIM>(

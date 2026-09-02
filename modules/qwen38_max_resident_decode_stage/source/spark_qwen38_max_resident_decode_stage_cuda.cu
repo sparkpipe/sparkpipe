@@ -6,27 +6,6 @@
 #include "inference/kernels/route.cuh"
 #include "runtime/launch.h"
 
-/*
- * Qwen 3.6 27B device code. Two production hot paths share these kernels: a
- * decode microbatch of up to 512 rows, one next token per distinct lane; and
- * a prefill frame of up to 512 consecutive positions of ONE lane, whose
- * projections, norms and attention batch over all positions (each kernel is
- * already per-row correct) while the GDN core runs the chunked formulation
- * below, proven against the CPU chunk oracle and BITWISE carry-equal to the
- * recurrence.
- *
- * Shared machinery (RmsNorm, dual-format Linear, fused argmax head, reduces)
- * comes from spark_lm_kernels.cuh; this file holds only what is Qwen:
- * the depthwise conv state update, the recurrent gated delta step operating
- * in-place on the resident state pool, the fp32 gated head norm, and paged
- * GQA attention with per-head query|gate fusion, q/k head norms and partial
- * RoPE. All forms are the PINNED modeling_qwen3_5 forms, oracle-matched.
- *
- * Grid conventions: one block per (row, head) for head-shaped work, one
- * block per row for row-shaped work; row order everywhere follows the frame
- * decode batch view. Launchers are extern "C" and stream-ordered; nothing
- * here synchronizes.
- */
 
 #define SPARK_QWEN38_CUDA_DK SPARK_QWEN38_MAX_MODEL_GDN_HEAD_KEY_DIMENSION
 #define SPARK_QWEN38_CUDA_DV SPARK_QWEN38_MAX_MODEL_GDN_HEAD_VALUE_DIMENSION
@@ -45,10 +24,6 @@ static __device__ __forceinline__ float SparkQwen38RopeFrequency(uint32_t pair)
 	return(exp2f(-((float)(2u * pair) / (float)SPARK_QWEN38_MAX_MODEL_ATTN_ROPE_DIMENSION) * log2f((float)SPARK_QWEN38_MAX_MODEL_ATTN_ROPE_THETA)));
 }
 
-// Depthwise causal conv update for one decode token per row: one thread per
-// (row, channel), window = carried tail (3) plus the fresh projection, dot
-// with the 4-tap weight, silu, then rotate the tail in place. Cold rows read
-// a zero tail. Matches causal_conv1d_update with bias absent.
 static __global__ void SparkQwen38ConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
 {
 	uint32_t row = blockIdx.y,channel = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -80,9 +55,6 @@ static __global__ void SparkQwen38ConvUpdateKernel(const void *qkv_bf16, const v
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[3]);
 }
 
-// Per-head log decay and beta from the two 48-row projections plus the fp32
-// decay parameters: g = -exp(a_log) * softplus(a + dt_bias), beta =
-// sigmoid(b). One thread per (row, value head).
 static __global__ void SparkQwen38DecayBetaKernel(const void *decay_pre_bf16, const void *beta_pre_bf16, const float *a_log_f32, const float *dt_bias_f32, float *log_decay_f32, float *beta_f32, uint32_t row_count)
 {
 	uint32_t row = blockIdx.x,head = threadIdx.x;
@@ -94,16 +66,6 @@ static __global__ void SparkQwen38DecayBetaKernel(const void *decay_pre_bf16, co
 	beta_f32[index] = SparkLmSigmoid(SparkLmBf16ToFloat(beta_pre_bf16,index));
 }
 
-/*
- * Recurrent gated delta step, one block per (row, value head), 128 threads,
- * thread j owning state column j so every state access is coalesced. The
- * conv output is channel order query(2048) | key(2048) | value(6144); the
- * key head for value head h is h / 3 (GVA). q and k are L2-normalized per
- * head with eps 1e-6 and q is scaled 1/sqrt(dk), matching the oracle
- * recurrence bitwise in structure: decay, predict, delta, rank-one update,
- * read-out. State is fp32 in the resident pool and updated in place; cold
- * rows start from zero without a separate memset pass.
- */
 static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
 {
     extern __shared__ float state_shared[];
@@ -199,8 +161,6 @@ static __global__ void SparkQwen38GdnStepKernel(const void *conv_out_bf16, const
     }
 }
 
-// Gated head norm: fp32 RMSNorm over one value head, times weight, times
-// silu(z). One block per (row, head), 128 threads. Norm before gate.
 static __global__ void SparkQwen38GatedNormKernel(const void *core_bf16, const void *z_bf16, const void *norm_weight_bf16, void *output_bf16, uint32_t row_count, float epsilon)
 {
 	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
@@ -215,16 +175,6 @@ static __global__ void SparkQwen38GatedNormKernel(const void *core_bf16, const v
 	SparkLmFloatToBf16(output_bf16,index,value);
 }
 
-/*
- * Attention pre-pass for one decode token per row: per-head RMSNorm on the
- * query half of the fused query|gate projection and on the key projection,
- * partial RoPE on the first 64 dims of both, then the K and V rows land in
- * the paged cache at the row's slot. Fused layout: head h occupies columns
- * [h*512, h*512+256) query and [h*512+256, h*512+512) gate; the gate half is
- * left untouched here for the decode kernel to consume. One block per
- * (row, query head); key/value heads are written by the blocks whose query
- * head is the group leader so each cache row is written exactly once.
- */
 static __global__ void SparkQwen38AttnPrepareKernel(
     void *q_fused_bf16,
     const void *k_bf16,
@@ -242,10 +192,6 @@ static __global__ void SparkQwen38AttnPrepareKernel(
     uint32_t tp_degree,
     uint32_t tp_rank)
 {
-    /* Head-parallel geometry: rank r owns query heads
-     * [r*local_heads, (r+1)*local_heads) and the matching local KV head
-     * slice, so each rank's paged cache holds exactly 1/tp_degree of the
-     * KV heads. tp_degree 1 reproduces the replicated layout exactly. */
     const uint32_t local_heads =
         SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree;
     const uint32_t local_kv_heads =
@@ -392,33 +338,18 @@ static __global__ void SparkQwen38AttnPrepareKernel(
         SparkLmBf16ToFloat(v_bf16, key_base + column));
 }
 
-/*
- * Paged GQA decode with the fused per-head sigmoid gate, flash style:
- * eight warps stripe the context, each warp resolving its token's block
- * through the lane's table and computing the logit cooperatively - lanes
- * pair-load K so every fetch is a full transaction - into a per-warp
- * online softmax with the value half of the cache row accumulated in
- * registers. One pass, no per-token barriers, one staged merge at the
- * end where the gate multiplies the normalized output.
- */
 static __device__ __forceinline__ uint64_t SparkQwen38AttnTokenBase(const uint32_t *block_indices, uint64_t lane_base, uint32_t token, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t local_kv_head, uint32_t local_token_elements)
 {
 	uint32_t block = __ldg(block_indices + lane_base + (token / SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
 	return(((uint64_t)block * cache_block_stride) + ((uint64_t)attn_layer_ordinal * cache_layer_stride) + ((uint64_t)(token % SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) * local_token_elements) + ((uint64_t)local_kv_head * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION));
 }
 
-// Cross-warp merge with the fused sigmoid gate applied at the store.
 
 
-// One token's logit: lanes pair-load the cached key against the shared
-// query, warp-reduce, fixed 1/sqrt(head_dim) = 1/16 scale.
 
 
 static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
 {
-    /* Head-parallel geometry, mirroring the prepare kernel: local query
-     * heads per rank and the rank's local KV head slice; tp_degree 1 is
-     * the replicated layout. */
     const uint32_t local_heads =
         SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree;
     const uint32_t local_kv_heads =
@@ -774,8 +705,6 @@ static __global__ void SparkQwen38AttnDecodeKernel(const void *q_fused_bf16, con
     }
 }
 
-// Embedding gather: one thread per (row, element); token ids are validated
-// against the vocabulary on the host before upload, so the kernel trusts.
 static __global__ void SparkQwen38EmbeddingGatherKernel(const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count)
 {
 	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
@@ -785,17 +714,6 @@ static __global__ void SparkQwen38EmbeddingGatherKernel(const uint32_t *token_id
 	SparkLmFloatToBf16(hidden_bf16,index,SparkLmBf16ToFloat(embedding_bf16,((uint64_t)token_ids[row] * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION) + element));
 }
 
-/*
- * Chunked GDN prefill, mirroring the PROVEN CPU chunk stages one to one
- * (validation reference agrees with the recurrence at 2e-8 from a warmed
- * state). One launch sequence processes ONE 64-token chunk for one lane
- * across all value heads in parallel; the module loops chunks on the
- * stream, which serializes the state dependency for free. Workspace lives
- * in slot global memory (per head: qn/kn 64x128, decay/attn 64x64, w/kg
- * 64x128) because the set exceeds shared memory. This is the simple correct
- * formulation; the wmma tiling of the three inner products is the later
- * throughput commit, the same discipline as the decode attention.
- */
 #define SPARK_QWEN38_CUDA_CHUNK SPARK_QWEN38_MAX_MODEL_GDN_CHUNK_TOKENS
 #define SPARK_QWEN38_CUDA_GDN_QK_SHARED_BYTES \
     (2u * SPARK_QWEN38_CUDA_CHUNK * SPARK_QWEN38_CUDA_DK * sizeof(float))
@@ -823,9 +741,6 @@ static __device__ __forceinline__ uint64_t SparkQwen38ChunkHeadOffset(uint32_t h
 	return((uint64_t)head * per_head_elements);
 }
 
-// Stage 1: per-head L2 norms with the 1/sqrt(dk) query scale, the intra-
-// chunk decay cumsum, the decay mask and the strictly-lower beta-scaled
-// -k_beta k^T attention seed. Block per head, thread per token row.
 static __global__ void SparkQwen38ChunkPrepareKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, SparkQwen38ChunkWorkspaceView views, uint32_t token_count)
 {
 	uint32_t head = blockIdx.x,row = threadIdx.x,key_head = head / SPARK_QWEN38_CUDA_GVA_GROUP,element,column;
@@ -874,16 +789,8 @@ static __global__ void SparkQwen38ChunkPrepareKernel(const void *conv_out_bf16, 
 	}
 }
 
-// Stage 2: the forward-substitution UT transform T = (I - A)^-1, in place.
-// The row recurrence is sequential; columns of a row are parallel. Block
-// per head, thread per column.
 static __global__ void SparkQwen38ChunkSolveKernel(SparkQwen38ChunkWorkspaceView views, uint32_t token_count)
 {
-	/* The oracle snapshots the ORIGINAL row (T[i,:i] = A[i,:i] + A[i,:i] x
-	 * T[:i,:i]) BEFORE the row's columns update. Reading live A[row,e]
-	 * entries races the other columns' writes and folds extra powers of A
-	 * into the transform, so each row is staged first, barrier, then
-	 * applied - exactly the reference's clone-then-sum. */
 	__shared__ float solve_row[SPARK_QWEN38_CUDA_CHUNK];
 	uint32_t head = blockIdx.x,column = threadIdx.x,row,element;
 	uint64_t mat_base = SparkQwen38ChunkHeadOffset(head,SPARK_QWEN38_CUDA_CHUNK * SPARK_QWEN38_CUDA_CHUNK);
@@ -906,8 +813,6 @@ static __global__ void SparkQwen38ChunkSolveKernel(SparkQwen38ChunkWorkspaceView
 		views.attn[mat_base + ((uint64_t)column * SPARK_QWEN38_CUDA_CHUNK) + column] += 1.0f;
 }
 
-// Stage 3: w = T (v o beta) and kg = T (k o beta o e^G). Block per (head,
-// token row), thread per output column striped over dv then dk.
 static __global__ void SparkQwen38ChunkTransformKernel(const void *conv_out_bf16, const float *beta_f32, SparkQwen38ChunkWorkspaceView views, uint32_t token_count)
 {
 	__shared__ float exp_cum_g[SPARK_QWEN38_CUDA_CHUNK];
@@ -1006,10 +911,6 @@ static __global__ void SparkQwen38ChunkQkDecayKernel(SparkQwen38ChunkWorkspaceVi
     }
 }
 
-// Stage 4: v_new = w - kg S, out = (q o e^G) S + (q k^T o D) v_new, and the
-// carried state S <- S e^G_last + (k o e^(G_last - G))^T v_new. Block per
-// (head, state row is the thread's dk stripe? No): thread per dv column,
-// mirroring the decode step's coalesced state-column ownership.
 static __global__ void SparkQwen38ChunkStepKernel(const float *log_decay_f32, SparkQwen38ChunkWorkspaceView views, float *state_f32, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
 {
     extern __shared__ float chunk_shared[];
@@ -1136,15 +1037,6 @@ static __global__ void SparkQwen38ChunkStepKernel(const float *log_decay_f32, Sp
     }
 }
 
-/*
- * Chunked depthwise causal conv for one lane's whole prefill frame: one
- * thread per channel slides a 4-tap register window over token_count
- * consecutive positions, seeded by the carried tail, silu on each output.
- * The register triple left after the walk is exactly the oracle
- * RefConvChannel tail for every token_count including short frames, so the
- * write-back needs no blending cases. Frames chain: the tail written here
- * seeds the next frame's first window.
- */
 static __global__ void SparkQwen38ChunkConvKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
 {
 	uint32_t channel = (blockIdx.x * blockDim.x) + threadIdx.x,token,tap;
@@ -1175,7 +1067,6 @@ static __global__ void SparkQwen38ChunkConvKernel(const void *qkv_bf16, const vo
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[2]);
 }
 
-// Residual add and SwiGLU combine, both row-shaped elementwise.
 static __global__ void SparkQwen38ResidualAddKernel(void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
 	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
@@ -1207,9 +1098,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchRmsNorm(cudaStream_t stream, const vo
 
 extern "C" cudaError_t SparkQwen38MaxLaunchLinear(cudaStream_t stream, const SparkQwen38MaxLinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
-	/* The dense BF16 spine at B>=32 uses the M-group tile: the plain grid
-	 * re-reads each weight strip once per m-tile (16x at B=256); the
-	 * m-loop stages it once per k-stage for eight m-tiles. */
 	if ( view->weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && row_count >= 2u * SPARK_LM_TILE && view->input_dimension > SPARK_LM_TILE_K && view->output_dimension != 0u )
 		return(SparkLmHostLaunchBatchedLinearMloop(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
@@ -1312,13 +1200,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchChunkConv(cudaStream_t stream, const 
 	return(cudaGetLastError());
 }
 
-/*
- * One chunk of one lane's prefill through the GDN core: conv_out and the
- * decay/beta arrays hold token_count (at most 64) consecutive positions.
- * The module loops chunks on the stream; the state dependency serializes
- * for free. Workspace pointers are slot-owned device buffers sized per the
- * view layout (per head: qn/kn/w/kg 64 x 128, decay/attn 64 x 64, cum_g 64).
- */
 extern "C" cudaError_t SparkQwen38MaxLaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen38MaxGdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal)
 {
     SparkQwen38ChunkWorkspaceView views;
@@ -1404,9 +1285,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchEmbeddingGather(cudaStream_t stream, 
 	return(cudaGetLastError());
 }
 
-/* TP all-reduce combine: destination += source, one block per row, bf16
- * pairs added in f32 - the SparkTpDeviceCollective combine callback for
- * the hidden_transport backend. */
 static __global__ void SparkQwen38TpCombineAddKernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
 {
 	uint32_t row = blockIdx.x;
@@ -1444,9 +1322,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchHeadShadowQuantize(cudaStream_t strea
 	return(SparkLmHostLaunchHeadShadowQuantize<SPARK_LM_HEAD_SHADOW_GROUP>(stream,head_bf16,shadow_payload,shadow_scale,error_norm,candidate_count,hidden_dimension));
 }
 
-// Screened exact head, the mimo25 pattern: coarse fp4 tile, certified
-// screen, exact rescore, device-side overflow fallback; the token
-// equals the reference argmax always.
 extern "C" cudaError_t SparkQwen38MaxLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
 {
 	return(SparkLmHostLaunchHeadScreenedArgmax(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,candidate_count,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION));
@@ -1457,14 +1332,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchHeadArgmax(cudaStream_t stream, const
 	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,candidate_count);
 	return(cudaGetLastError());
 }
-/*
- * Routed MoE execution, Qwen 3.8: BF16 router gate -> per-row top-k
- * selection with softmax-renormalized weights -> common grouped-MoE kernels
- * over FP8 experts -> weighted pair reduce (overwrite semantics: the
- * mixture starts fresh) into the delta buffer; BF16 shared expert with the
- * learned scalar sigmoid gate (Linear(hidden,1) on the MoE input). All
- * launchers are stream-ordered.
- */
 #define SPARK_QWEN38_ROUTER_SORT_CAPACITY 512u
 
 static __device__ __forceinline__ float SparkQwen38WarpReduceMax(float value)
@@ -1516,10 +1383,6 @@ static __global__ void SparkQwen38GateSelectKernel(
         choice_score = expert < expert_count
             ? row_scores[expert] + (bias_f32 != 0 ? bias_f32[expert] : 0.0f)
             : NAN;
-        /* A NaN score must rank LAST, never first: the ordered-key map
-         * sends NaN to key 0, and key 0 decodes as UINT32_MAX here, which
-         * the route build would histogram out of bounds. -inf keeps the
-         * expert selectable-safe (it sorts below every finite logit). */
         if ( expert < expert_count && isnan(choice_score) )
             choice_score = -INFINITY;
         ordered_keys[expert] = expert < expert_count
@@ -1540,12 +1403,6 @@ static __global__ void SparkQwen38GateSelectKernel(
         : -INFINITY;
     if ( threadIdx.x < SPARK_LM_WARP_LANES )
     {
-        /* Softmax over the chosen top-k, the Qwen3_5MoeTopKRouter form:
-         * routing_weights = softmax(logits) then topk then renormalize
-         * over the selected experts. Raw logits divided by their sum (the
-         * old code) made every negative logit a negative mixture weight.
-         * Non-selected lanes hold -INFINITY, so the warp max and sum see
-         * exactly the top-k and their exp() contributes zero. */
         float max_score = SparkQwen38WarpReduceMax(selected_score);
         float exp_score;
         max_score = __shfl_sync(0xffffffffu, max_score, 0u);
@@ -1557,9 +1414,6 @@ static __global__ void SparkQwen38GateSelectKernel(
         if ( rank < topk )
         {
             indices_u32[((uint64_t)row * topk) + rank] = selected_expert;
-            /* A zero or non-finite total (all-NaN logits) yields zero
-             * weights instead of NaN, which would poison the pair reduce
-             * and the next layer's gate scores. */
             weights_f32[((uint64_t)row * topk) + rank] =
                 selected_total > 0.0f
                 ? route_scale * exp_score / selected_total
@@ -1581,10 +1435,6 @@ static __global__ void SparkQwen38SwiGluKernel(const void *gate_bf16, void *up_b
 		SparkLmFloatToBf16(up_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmSwish(SparkLmBf16ToFloat(gate_bf16,((uint64_t)row_count * dimension) - 1u)) * SparkLmBf16ToFloat(up_bf16,((uint64_t)row_count * dimension) - 1u));
 }
 
-/* Shared-expert gate: the checkpoint's shared_expert_gate is a
- * Linear(hidden, 1) (Qwen3_5MoeSparseMoeBlock: sigmoid(gate(normed_input))
- * times the shared output). One scalar per row computed from the MoE input,
- * NOT sigmoid(weight[d]) per channel. */
 static __global__ void SparkQwen38SharedGateKernel(void *accum_bf16, const void *gate_weight_bf16, const void *gate_input_bf16, uint32_t row_count, uint32_t dimension)
 {
 	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
@@ -1637,9 +1487,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchMoePairReduce(cudaStream_t stream, co
 	return(SparkLmHostLaunchMoePairReduce(stream,slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,hidden_dimension));
 }
 
-/* The routed-MoE mixture must START from zero: the attention/GDN delta was
- * already folded into hidden by the fused residual norm, and accumulating
- * on top of it would apply that delta twice per layer. */
 extern "C" cudaError_t SparkQwen38MaxLaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension)
 {
 	return(SparkLmHostLaunchMoePairReduceOverwrite(stream,slot_out_bf16,inverse_map,pair_weights_f32,output_bf16,row_count,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,hidden_dimension));
@@ -1660,8 +1507,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchSharedGate(cudaStream_t stream, void 
 	return(cudaGetLastError());
 }
 
-/* Qwen 3.8 router gate: plain bf16 dot to f32 scores (no activation here;
- * the select kernel softmax-normalizes the chosen top-k). */
 static __global__ void SparkQwen38GateScoresKernel(const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t expert_count)
 {
 	extern __shared__ float gate_shared[];
@@ -1721,20 +1566,12 @@ extern "C" cudaError_t SparkQwen38MaxConfigureCudaKernels(void)
     {
         return status;
     }
-    /* The scalar Linear path stages the input row in dynamic shared memory;
-     * the widest qwen38 input is the 16384-wide attention/GDN output
-     * projection (64KB of floats), past the 48KB static ceiling. */
     return cudaFuncSetAttribute(
         (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_CTA_WARPS>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         (int)(SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_DIMENSION * sizeof(float)));
 }
 
-/*
- * FP8 grouped expert linear via the common grouped-scalar path (FP8_E4M3
- * F32B128). The pack stores experts expert-major, so the per-group strides
- * are constant; source_row_map is the route's packed->source row table.
- */
 extern "C" cudaError_t SparkQwen38MaxLaunchGroupedExpertLinear(
 	cudaStream_t stream,
 	const SparkQwen38MaxLinearView *view,
@@ -1767,9 +1604,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchGroupedExpertLinear(
 	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT;
 	payload_stride = rows_per_expert * view->input_dimension;
 	scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
-	/* Expert shard: the pack stores experts expert-major, so the rank's
-	 * slice is one contiguous pointer shift over payload, scales, offsets
-	 * and tile prefixes; all row/output indexing stays global. */
 	payload = (const uint8_t *)view->weight_payload + ((uint64_t)tp_rank * experts_per_rank * payload_stride);
 	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * scale_stride);
 	offsets = group_row_offset + ((uint64_t)tp_rank * experts_per_rank);
@@ -1783,20 +1617,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchGroupedExpertLinear(
 		view->input_dimension,rows_per_expert,multiprocessor_count));
 }
 
-/*
- * Grouped FP8 expert linear on the TENSOR-CORE tile path:
- * SparkLmExpertTileAllKernel spans the 512 experts on gridDim.z, decodes
- * FP8_E4M3 block-128 weights to BF16 fragments (the vendor scale layout,
- * verbatim) and consumes them through wmma mma_sync. This is the same
- * kernel the dense batched path uses; only the grouped host launcher was
- * missing. Used at rows >= 16, where every M-tile is full - below that the
- * M=16 padding re-reads each expert's weight tile sixteen times and the
- * scalar grouped path wins.
- *
- * source_row_map is the route's packed->source token table for w1/w3
- * (indirect A reads), or 0 for w2 whose input is already expert-major
- * packed (identity). group_row_offset is the per-expert packed range.
- */
 extern "C" cudaError_t SparkQwen38MaxLaunchGroupedExpertTileLinear(
 	cudaStream_t stream,
 	const SparkQwen38MaxLinearView *view,
@@ -1836,11 +1656,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchGroupedExpertTileLinear(
 	payload = (const uint8_t *)view->weight_payload + ((uint64_t)tp_rank * experts_per_rank * payload_stride);
 	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * scale_stride);
 	offsets = group_row_offset + ((uint64_t)tp_rank * experts_per_rank);
-	/* The expert-stride m-loop at every tile shape: one launch of
-	 * 64 x n_tiles CTAs, each walking several experts - empty experts
-	 * cost a few cycles instead of a launch, and each k-strip is staged
-	 * once per 8-m-tile chunk (the measured B=256 collapse fix). The
-	 * expert shard is the pointer shift above; indexing stays global. */
 	return(SparkLmHostLaunchGroupedExpertTileMloop(
 		stream,
 		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,

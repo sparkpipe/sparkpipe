@@ -1196,11 +1196,6 @@ void SparkTokenizerWorkspaceDestroy(
 
 static SparkStatus SparkTokenizerWorkspaceEnsurePieceCache(SparkTokenizerWorkspace *workspace)
 {
-    // The piece cache is keyed on piece bytes and is independent of the input
-    // size, so it is allocated once and preserved across encode calls and across
-    // symbol-buffer growth. Only allocate if it is not already present; never
-    // wipe a warm cache when the symbol buffers are merely resized for a larger
-    // input, which is what lets the cache stay warm across serving requests.
     if (workspace->piece_cache_entries != 0 && workspace->piece_cache_token_pool != 0)
     {
         return SPARK_STATUS_OK;
@@ -1225,8 +1220,6 @@ static SparkStatus SparkTokenizerWorkspaceEnsurePieceCache(SparkTokenizerWorkspa
 
 static SparkStatus SparkTokenizerWorkspaceEnsureSymbolBuffers(SparkTokenizerWorkspace *workspace,uint32_t maximum_symbol_count)
 {
-    // Grow only the input-sized buffers, leaving the piece cache untouched so it
-    // stays warm. Called both on first use and whenever a larger input arrives.
     if (workspace->symbol_token_ids != 0 &&
         workspace->maximum_symbol_count >= maximum_symbol_count)
     {
@@ -1342,18 +1335,9 @@ SparkStatus SparkTokenizerFindTokenId(
     return SPARK_STATUS_OK;
 }
 
-/* The GPT-4o-style Split/Regex pre-tokenizer pattern. It differs from the
- * legacy GPT-2 run-splitter in three observable ways: \p{N} is a single
- * digit, a letter run absorbs one leading non-letter non-digit prefix byte,
- * and whitespace splits anchor on newlines and the end of the text. */
 static const char SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN[] =
     "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
-/* The digit-runs variant of the same pattern: digit pieces are runs of up to
- * three digits (\p{N}{1,3}) instead of single digits, and the letter/punct
- * classes omit the combining-mark set. One behavioral difference from the
- * single-digit variant at the piece level: "123" is one pretoken piece, not
- * three. */
 static const char SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN_DIGIT_RUNS[] =
     "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
@@ -1576,8 +1560,6 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
     }
     tokenizer->add_prefix_space = add_prefix_space ? 1u : 0u;
     tokenizer->byte_level_use_regex = use_regex ? 1u : 0u;
-    /* ignore_merges: a pretokenized piece found wholly in the vocabulary is
-     * that single token (the HF model flag; default false when absent). */
     tokenizer->ignore_merges = 0u;
     tokenizer->rank_ordered_merges = 0u;
     {
@@ -1593,10 +1575,6 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
         }
         tokenizer->ignore_merges = ignore_merges ? 1u : 0u;
     }
-    /* A Split pretokenizer always applies, independent of the ByteLevel
-     * use_regex flag (which only shapes the byte-level alphabet). The
-     * variant selects the digit-piece rule: 2 = single digits, 3 = runs of
-     * up to three digits. */
     {
         uint32_t split_variant = SPARK_TOKENIZER_SPLIT_VARIANT_NONE;
         if (SparkTokenizerJsonHasExtendedSplitPattern(
@@ -1613,7 +1591,6 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
     return SPARK_STATUS_OK;
 }
 
-/* ===================== tiktoken ranks asset ===================== */
 
 static int SparkTokenizerBase64Value(uint8_t character)
 {
@@ -1657,8 +1634,6 @@ static SparkStatus SparkTokenizerBase64Decode(
     {
         return SPARK_STATUS_PARSE_ERROR;
     }
-    /* Padding: zero, one, or two '=' confined to the final slots; everything
-     * before them is the standard alphabet. */
     body_bytes = text_bytes;
     while (body_bytes > text_bytes - 2u && text[body_bytes - 1u] == '=')
     {
@@ -1761,7 +1736,6 @@ SparkStatus SparkTokenizerLoadTiktokenRanks(
         return SPARK_STATUS_IO_ERROR;
     }
 
-    /* First pass: count entries so the vocabulary hash table is sized once. */
     line_count = 0u;
     for (cursor = 0u; cursor < file_bytes;)
     {
@@ -1788,9 +1762,6 @@ SparkStatus SparkTokenizerLoadTiktokenRanks(
         return status;
     }
 
-    /* Second pass: "base64(piece) rank" per line. Pieces are raw bytes; the
-     * byte-level alphabet maps each byte to its glyph so the shared encode
-     * and decode machinery works unchanged. */
     for (cursor = 0u; cursor < file_bytes;)
     {
         uint32_t line_end = cursor;
@@ -2392,10 +2363,6 @@ static uint32_t SparkTokenizerHeapPop(
     return 1u;
 }
 
-/* The tiktoken ranks merge rule: a pair is mergeable when the concatenated
- * piece text is a vocabulary entry, and its merge priority is that entry's
- * id (ids are assigned in merge order by the training run). The lookup is
- * by text, so no derived merges table exists for this format. */
 static SparkStatus SparkTokenizerFindRankOrderedMerge(
     const SparkTokenizer *tokenizer,
     uint32_t left_token_id,
@@ -2462,7 +2429,6 @@ static SparkStatus SparkTokenizerPushPairCandidate(
         {
             return SPARK_STATUS_OK;
         }
-        /* Priority is the merged id itself: lower id merges first. */
         candidate.rank = merged_token_id;
         candidate.left_symbol_index = left_symbol_index;
         candidate.left_generation = workspace->symbol_generations[left_symbol_index];
@@ -2537,10 +2503,6 @@ static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
     {
         return SPARK_STATUS_OK;
     }
-    /* ignore_merges (the HF model flag): a pretokenized piece that is already
-     * a vocabulary entry encodes as that single token without merging. The
-     * vocabulary is keyed by byte-glyph text, so the piece is glyph-encoded
-     * before the lookup; pieces beyond the inline key bound skip it. */
     if (tokenizer->ignore_merges != 0u && text_bytes <= SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES)
     {
         char glyph_text[SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES * 4u];
@@ -2628,8 +2590,6 @@ static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
         merged_token_id = 0u;
         if (tokenizer->rank_ordered_merges != 0u)
         {
-            /* Re-resolve by text: the pair may have been consumed by a merge
-             * that outranked it after this candidate was pushed. */
             if (SparkTokenizerFindRankOrderedMerge(
                     tokenizer,
                     workspace->symbol_token_ids[left_symbol_index],
@@ -2710,8 +2670,6 @@ static SparkStatus SparkTokenizerEncodeByteLevelPiece(
     {
         return SPARK_STATUS_OK;
     }
-    // Pieces too long to cache inline, when the cache is unavailable, or when the
-    // caller disables the cache, encode directly through the merge loop.
     if (text_bytes > SPARK_TOKENIZER_PIECE_CACHE_INLINE_BYTES ||
         (encode_flags & SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_PIECE_CACHE) != 0u ||
         workspace->piece_cache_entries == 0 || workspace->piece_cache_token_pool == 0)
@@ -2743,7 +2701,6 @@ static SparkStatus SparkTokenizerEncodeByteLevelPiece(
     entry = SparkTokenizerPieceCacheLookup(workspace,text,text_bytes,hash);
     if (entry != 0 && entry->hash != SPARK_TOKENIZER_PIECE_CACHE_EMPTY_HASH)
     {
-        // Hit: replay the memoized token sequence from the pool.
         const uint32_t *cached = &workspace->piece_cache_token_pool[entry->token_offset];
         for (token_index = 0u; token_index < entry->token_count; ++token_index)
         {
@@ -2755,8 +2712,6 @@ static SparkStatus SparkTokenizerEncodeByteLevelPiece(
         }
         return SPARK_STATUS_OK;
     }
-    // Miss: encode once into the pool tail, then, if it fits and a free slot
-    // exists, commit the entry so future occurrences hit.
     {
         uint32_t produced = 0u,invalid = 0u,pool_room,token_index_local;
         uint32_t pool_start = workspace->piece_cache_token_used;
@@ -2804,13 +2759,6 @@ static uint32_t SparkTokenizerIsAsciiWhitespace(
         value == '\r' || value == '\f' || value == '\v';
 }
 
-// Byte classification for GPT-2 style pretokenization, as a 256-entry table so
-// the hot run-scan is a branchless load rather than a chain of comparisons. The
-// classes match SparkTokenizerPieceClass exactly: 1 whitespace, 2 letter or any
-// UTF-8 continuation/lead byte (>=0x80), 3 digit, 4 everything else. Because all
-// bytes of any UTF-8 multibyte character are >=0x80 and therefore class 2, a
-// byte-at-a-time scan finds the same run boundaries as a character-at-a-time
-// scan, which is what makes the scan safe to vectorize.
 static const uint8_t g_spark_tokenizer_byte_class[256] =
 {
     4,4,4,4,4,4,4,4,4,1,1,1,1,1,4,4, 4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
@@ -2823,11 +2771,6 @@ static const uint8_t g_spark_tokenizer_byte_class[256] =
     2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
 };
 
-// Advance from start while the byte class equals target_class, returning the
-// exclusive end. Written as a plain counted loop over a byte array so the
-// compiler auto-vectorizes it to NEON or SVE2 on Grace and to AVX2 on x86; no
-// intrinsics, one portable source. The class table load and equality test are
-// data parallel, and the loop carries no dependency other than the index.
 static uint32_t SparkTokenizerScanClassRun(const char *text,uint32_t text_bytes,uint32_t start,uint8_t target_class)
 {
     uint32_t scan_position = start;
@@ -2912,10 +2855,6 @@ static uint32_t SparkTokenizerFindNextRegexPiece(
     {
         scan_position = position + 1u;
         class_id = g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]];
-        // A leading-space run of letters or digits has no interior boundary and
-        // scans in one vectorized sweep. An "other" (class 4) run can be cut
-        // short by a contraction apostrophe, so it is scanned byte by byte with
-        // the contraction check.
         if (class_id == 2u || class_id == 3u)
         {
             scan_position = SparkTokenizerScanClassRun(text, text_bytes, scan_position, (uint8_t)class_id);
@@ -2939,8 +2878,6 @@ static uint32_t SparkTokenizerFindNextRegexPiece(
     class_id = g_spark_tokenizer_byte_class[(uint8_t)text[position]];
     if (class_id == 2u || class_id == 3u || class_id == 1u)
     {
-        // Letter, digit, and whitespace runs have no interior contraction break,
-        // so they scan in a single vectorized sweep.
         scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, (uint8_t)class_id);
     }
     else
@@ -2960,11 +2897,6 @@ static uint32_t SparkTokenizerFindNextRegexPiece(
     return *piece_bytes_out != 0u;
 }
 
-/* GPT-4o-style split, one case per alternation branch in pattern order. Byte
- * classes come from the GPT-2 table, so every UTF-8 multibyte character is a
- * "letter" here: exact for ASCII text, and the same approximation the legacy
- * splitter already makes for non-ASCII text. digit_piece_maximum is 1 for the
- * single-digit pattern variant and 3 for the digit-runs variant (\p{N}{1,3}). */
 static uint32_t SparkTokenizerFindNextExtendedPiece(
     const char *text,
     uint32_t text_bytes,
@@ -2985,7 +2917,6 @@ static uint32_t SparkTokenizerFindNextExtendedPiece(
     *piece_start_out = position;
     *piece_bytes_out = 0u;
 
-    /* '(s|t|re|ve|m|ll|d) */
     if (SparkTokenizerMatchesContraction(text, text_bytes, position, &piece_bytes))
     {
         *piece_bytes_out = piece_bytes;
@@ -2994,8 +2925,6 @@ static uint32_t SparkTokenizerFindNextExtendedPiece(
 
     class_id = g_spark_tokenizer_byte_class[(uint8_t)text[position]];
 
-    /* [^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+ : a letter run, optionally absorbing one
-     * leading byte that is not CR/LF, not a letter, and not a digit. */
     if (class_id == 2u)
     {
         scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, 2u);
@@ -3011,7 +2940,6 @@ static uint32_t SparkTokenizerFindNextExtendedPiece(
         return 1u;
     }
 
-    /* \p{N} | \p{N}{1,3} : one digit, or a run of up to digit_piece_maximum. */
     if (class_id == 3u)
     {
         scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, 3u);
@@ -3024,8 +2952,6 @@ static uint32_t SparkTokenizerFindNextExtendedPiece(
         return 1u;
     }
 
-    /*  ?[^\s\p{L}\p{M}\p{N}]+[\r\n]* : a punctuation run with an optional
-     * single leading ASCII space, keeping trailing newlines. */
     if (class_id == 4u ||
         (text[position] == ' ' && position + 1u < text_bytes &&
          g_spark_tokenizer_byte_class[(uint8_t)text[position + 1u]] == 4u))
@@ -3041,12 +2967,6 @@ static uint32_t SparkTokenizerFindNextExtendedPiece(
         return 1u;
     }
 
-    /* \s*[\r\n]+ | \s+(?!\S) | \s+ : whitespace. The newline branch wins
-     * whenever the run contains CR/LF, anchoring the piece on the last one.
-     * Otherwise \s+(?!\S) backtracks off any whitespace followed by a
-     * non-space: at end of text it is the whole run, mid-text it keeps all
-     * but the last whitespace (which the next piece may absorb as a prefix);
-     * a lone mid-text space falls through to \s+. */
     if (class_id == 1u)
     {
         scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, 1u);
@@ -3158,9 +3078,6 @@ SparkStatus SparkTokenizerEncodeUtf8WithWorkspace(
         workspace->symbol_generations == 0 ||
         workspace->merge_heap == 0)
     {
-        // Grow the input-sized buffers without wiping the piece cache, so a
-        // larger request does not cold-start the cache that earlier requests
-        // warmed.
         status = SparkTokenizerWorkspaceEnsureSymbolBuffers(workspace, text_bytes + 1u);
         if (status != SPARK_STATUS_OK)
         {

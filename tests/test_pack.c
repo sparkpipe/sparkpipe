@@ -1,9 +1,3 @@
-// Sub-byte code extraction, checked exhaustively on a host.
-//
-// INT6 and INT7 have no hardware mma, so they are stored packed and decoded to
-// BF16 at fragment-load time. The extraction is pure arithmetic and every code
-// in every bit alignment is checkable without a GPU - which matters, because a
-// sign-extension error here is silent and produces plausible weights.
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

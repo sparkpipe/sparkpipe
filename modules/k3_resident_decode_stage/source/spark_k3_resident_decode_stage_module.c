@@ -13,10 +13,6 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 	status = SparkK3PackOpen(pack_path, &state->pack);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	/* The derive sentinel (PP1 / TP16) takes the slice bounds from the pack
-	 * manifest; otherwise the pack's slice must agree with the requested
-	 * slice (the PP4 stage tables guard against a pack staged on the wrong
-	 * rank). */
 	if ( first_layer == SPARK_K3_MODULE_DERIVE_SLICE ||
 		layer_count == SPARK_K3_MODULE_DERIVE_SLICE )
 	{

@@ -3,21 +3,8 @@
 
 #include <stdint.h>
 
-// A fixed-slot pool for recurrent state. A paged token arena is the wrong
-// allocator for a linear-attention cache: KDA state is one fixed-size slab
-// per sequence - decay-weighted matrix state and three convolution windows
-// per layer - that neither grows with context nor pages by tokens. What a
-// sequence needs is a slot at admission and its return at release, O(1)
-// both ways, from storage the caller sized once. No malloc: the caller
-// owns the slab and the free-list array, this header owns only the
-// arithmetic, and an exhausted pool is a loud admission failure rather
-// than a quiet allocation.
 
 #define SPARK_STATE_POOL_NO_SLOT 0xffffffffu
-// A slot in use is marked distinctly from the empty-list sentinel:
-// releasing into an EMPTY pool writes free_head (NO_SLOT) into the slot's
-// link, and if NO_SLOT also meant "in use" a second release of that slot
-// would look legal. One collision, one double-free, found by the gate.
 #define SPARK_STATE_POOL_IN_USE 0xfffffffeu
 
 typedef struct SparkStatePool

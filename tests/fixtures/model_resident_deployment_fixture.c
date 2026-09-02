@@ -127,8 +127,6 @@ static int32_t TestModelResidentWriteBody(
 		status = TestModelResidentWriteNode(stream,fixture,rank);
 	if ( status == 0 && fputs("]",stream) == EOF )
 		status = -7;
-	/* The optional tokenizer sidecar reference: emitted only when the
-	 * fixture carries one, so existing deployments are byte-identical. */
 	if ( status == 0 && fixture->tokenizer_asset_path != 0 )
 	{
 		if ( fputs(",\"tokenizer\":{\"path\":",stream) == EOF )

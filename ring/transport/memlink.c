@@ -75,12 +75,6 @@ SparkStatus SparkMemlinkResolveNeighborRank(
     return SPARK_STATUS_INVALID_ARGUMENT;
 }
 
-/* The template is configuration data, never a format string: at most
- * ONE of %x/%u/%d may appear, %% pairs are literal percent signs, and
- * every other conversion - including %n - is a hard INVALID_ARGUMENT so
- * no specifier is ever interpreted against the rank argument and no
- * malformed template silently becomes a literal hostname. Returns 0 for
- * a placeholder-free template, 1 when *placeholder is set. */
 static int SparkMemlinkTemplatePlaceholder(
     const char *host_template,
     const char **placeholder)

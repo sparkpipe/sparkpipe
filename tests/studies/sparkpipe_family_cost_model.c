@@ -1,29 +1,9 @@
-// sparkpipe_family_cost_model — GB10 decode-stage time cost for the resident
-// CUDA modules. Per-class rates are CALIBRATED by solving from glm52's
-// measured B128 Nsight buckets (docs/GLM52_B256_PER_TOKEN_KERNELS_20260704,
-// docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md), then applied to each driver's
-// CONFIG byte geometry.
-//
-// VALIDATION (glm52, measured stage totals B64~100 B128~107 B256~208 ms):
-//   model reproduces B128 within 5%, B256 within 16%. B64 runs ~35% low -
-//   the low-batch regime omits the expert-coverage ramp and residual launch
-//   overhead, so trust the model at B128+ and treat B1/B64 as lower bounds.
-//
-// MODEL FORM: a stage is 6 layers. Phases SERIALIZE within a stage (the
-// glm52 buckets SUM to the measured stage, they do not overlap), so
-//   stage = qkvo_compute + attention_bw + moe_bw + dense_bw + head_share.
-// Weight bytes are read once at coverage saturation; qkvo compute scales
-// with batch at the measured 6.5 TFLOPS effective WMMA rate.
-//
-// All numbers are PROJECTIONS. No family driver has run. k3 geometry is
-// GUESS-tagged. The four measurements that convert these to silicon truth
-// are named in the calibration doc.
 #include <stdio.h>
 #define BW 273.0e9
-#define QKVO_RATE 6.5e12    // FLOP/s, measured (2.6% of FP8 peak)
-#define ETA_ATTN 0.18       // solved from glm52 36.8ms B128
-#define ETA_MOE 0.24        // solved from glm52 27.2ms B128 (incl pack/quant/route)
-#define ETA_BW 0.80         // memory path, three-way cross-validated
+#define QKVO_RATE 6.5e12
+#define ETA_ATTN 0.18
+#define ETA_MOE 0.24
+#define ETA_BW 0.80
 #define LPS 6.0
 #define STAGES 13.0
 

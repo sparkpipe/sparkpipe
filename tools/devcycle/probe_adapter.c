@@ -1,5 +1,3 @@
-// Probe a model serving adapter .so: print its interface descriptor and
-// function-pointer nulls, mimicking SparkModelServingAdapterValidateInterface.
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>

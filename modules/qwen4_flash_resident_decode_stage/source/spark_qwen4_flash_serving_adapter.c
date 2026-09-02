@@ -1,39 +1,3 @@
-/*
- * Qwen 3.6 27B serving adapter: the SparkModelServingAdapterInterface face of
- * the qwen38_resident_decode_stage firmware driver.
- *
- * Two structural differences from the glm52/dsv4 adapters, both owned by the
- * module contract in spark_qwen4_flash_resident_decode_stage_firmware.h:
- *
- * - The module is configured through the strict process environment (the
- *   firmware description's runtime_contract lists every variable), not
- *   through a node context struct. The adapter derives the whole slice
- *   environment from its own configuration - stage pack path, PP13 stage
- *   geometry, runtime limits, and the KV pool size implied by the
- *   max_sequence_positions cap - and sets it before driver create. One
- *   resident process hosts one stage, so the process-wide setenv is the
- *   intended channel. SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION is set to 1:
- *   the published recipe this adapter loads is the qualified execution path.
- *
- * - The module's frame contract takes first-class hidden transport callbacks
- *   and a caller-owned paged KV block table with device and host mirrors.
- *   The adapter supplies both: a per-frame transport shim that lands the
- *   submission's hidden boundary in the module's expected contiguity (decode
- *   rows are already contiguous; a multi-lane prefill is round-major across
- *   lanes, so each lane frame's rows are gathered by explicit flat row index
- *   and the frame's output is scattered back the same way), and a block
- *   allocator over the module's KV pool with the host mirror the module
- *   proves coverage against before every launch.
- *
- * Prefill frames are one lane per frame capped at max_active_sequence_count
- * positions, so a multi-lane or over-cap prefill submission is split into a
- * sequence of frames inside submit; execution is submit_return synchronous,
- * and the single serving completion fires after the final frame lands.
- *
- * The adapter body is the shared qwen38 PP-pair body
- * (spark_qwen38_pp_serving_adapter_common.h); this file keeps the family's
- * identity, geometry, capability extras, and struct layouts.
- */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,16 +31,6 @@
 #define SPARK_QWEN4_FLASH_SERVING_TARGET \
 	"cuda.sm121.qwen4_flash.resident_decode_stage.fp8"
 #define SPARK_QWEN4_FLASH_SERVING_PROGRAM_NAME "resident_decode"
-/* Primary fleet topology (coordinator directive 2026-08-28): TP4xPP4 =
- * 16 world ranks, one per node; the deployment validator requires
- * node_count == stage_count and the HYBRID_TP_PP layout groups
- * parallel_group_size consecutive nodes into one TP group (4 groups of 4
- * here). Every node of a TP group lists the group's layer count (12),
- * and the group counts sum to the model's 48. The module-side slice plan
- * is pp_stage_count = stage_count / tp_degree = 4 stages of 12 layers;
- * stage 0 owns the embedding (+ PLE at layer 1), stage 3 the head/MTP.
- * The 4-rank whole-stack shape (stage_count 4, one group of 48) is the
- * alternate build. */
 #define SPARK_QWEN4_FLASH_SERVING_STAGE_COUNT 16u
 #define SPARK_QWEN4_FLASH_SERVING_DEFAULT_TP_DEGREE 4u
 #define SPARK_QWEN4_FLASH_SERVING_PARALLEL_GROUP_SIZE 4u
@@ -86,9 +40,6 @@
 	SPARK_QWEN4_FLASH_SERVING_PP_STAGE_COUNT
 #define SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT \
 	(SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT / SPARK_QWEN4_FLASH_SERVING_PP_STAGE_COUNT)
-/* Serving caps context at the model's native 262144 until the KV-tier
- * plan lands; the module's KV pool is sized from the deployment's
- * kv_block_count, and the cap merely refuses configs past the model. */
 #define SPARK_QWEN4_FLASH_SERVING_MAX_SEQUENCE_POSITIONS_CAP \
 	SPARK_QWEN4_FLASH_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_QWEN4_FLASH_SERVING_REQUIRED_PROGRAM_FLAGS \
@@ -107,8 +58,6 @@
 #define SPARK_QWEN38_SERVING_ADAPTER_CONTRACT_SHA256 QWEN4_FLASH_CONTRACT_SHA256
 #define SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
 	((tp_degree) == SPARK_QWEN4_FLASH_SERVING_PARALLEL_GROUP_SIZE)
-/* The module's slice plan counts PP stages and indexes them by group stage,
- * not the node's chain position, so the environment gets the PP view. */
 #define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
 	(state)->pp_stage_count
 #define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
@@ -118,9 +67,7 @@
 typedef struct SparkQwen4FlashServingPending
 {
 	struct SparkQwen4FlashServingState *owner;
-	/* The shared submission view (the serving-adapter template fills it). */
 	SparkServingAdapterPendingCommon common;
-	/* The frame currently inside the driver; completion matches against it. */
 	uint64_t frame_sequence_id;
 	uint64_t frame_sequence_position;
 	SparkStatus frame_status;
@@ -137,13 +84,6 @@ typedef struct SparkQwen4FlashServingPending
 	uint32_t frame_token_ids[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 } SparkQwen4FlashServingPending;
 
-/* Per-frame transport shim state. The module calls post_receive/send through
- * the frame context; the shim moves the submission boundary into the frame's
- * expected contiguity. Decode rows are contiguous. Prefill frames are one
- * lane each while the submission boundary is round-major across lanes, so a
- * lane's rows sit at irregular flat offsets whenever lane lengths differ;
- * the row maps give each frame row's flat index in the submission buffer
- * (NULL means the frame rows are contiguous from the base). */
 typedef struct SparkQwen4FlashServingTransportShim
 {
 	const void *input_base;
@@ -217,9 +157,6 @@ static const SparkModelServingAdapterDescriptor SparkQwen4FlashServingDescriptor
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
-	/* The lean module executes every frame on ONE slot (slots[0]) with a
-	 * per-frame stream sync, so concurrent inflight frames would share one
-	 * set of buffers; advertise 1 until multi-slot pipelining lands. */
 	.max_inflight_submission_count = 1u,
 	.max_active_sequence_count = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,

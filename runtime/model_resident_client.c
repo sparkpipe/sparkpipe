@@ -293,12 +293,6 @@ static SparkStatus SparkModelResidentClientOpenTcp(
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
-	/* getaddrinfo under wave load is the F1 roving flake: 16 ranks
-	 * resolve the whole peer table simultaneously and one transient
-	 * resolver miss (random rank, random wave) surfaced as
-	 * ROUTE_NOT_FOUND — killing the wave at 15/16 with a name that
-	 * pointed at routing. A short bounded retry absorbs the transient;
-	 * the failure stays rare and loud when real. */
 	addresses = 0;
 	{
 		uint32_t resolve_attempt;
@@ -497,10 +491,6 @@ static SparkModelResidentClientPending *SparkModelResidentClientReservePending(
 	return(0);
 }
 
-/* Write-through contract (p1d2 step-loop): submissions and decisions hit
- * the wire when they are queued, not on the next Progress — the loop
- * shape that lets the batch engine dispatch without a compensating
- * flush pass. */
 static SparkStatus SparkModelResidentClientFlush(SparkModelResidentClient *client);
 
 static void SparkModelResidentClientReleasePending(
@@ -523,9 +513,6 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	SparkStatus status;
 	if ( client == 0 || client->connected == 0u || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* R5 hoist: (descriptor, limits) validated once at configure
-	 * (SparkModelResidentClientValidateConfiguration); per-submission
-	 * checks and their statuses unchanged. */
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(client->adapter_descriptor,&client->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -564,9 +551,6 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	client->output_count++;
 	client->submitted_count++;
 	client->last_submission_id = submission->submission_id;
-	/* Write-through: EAGAIN leaves the bytes queued for Progress and the
-	 * POLL_WRITE descriptor; a clean send means the resident sees this
-	 * submission in the same host step that built it. */
 	(void)SparkModelResidentClientFlush(client);
 	return(SPARK_STATUS_OK);
 }
@@ -599,7 +583,6 @@ SparkStatus SparkModelResidentClientCanQueueContinuation(
 	if ( (client->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
-	/* R5 hoist: configure-time (descriptor, limits) validation. */
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
 		client->adapter_descriptor,&client->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
@@ -661,8 +644,6 @@ static SparkStatus SparkModelResidentClientQueueDecision(
 	output->message_bytes = SPARK_MODEL_RESIDENT_IPC_DECISION_BYTES;
 	output->sent_bytes = 0u;
 	client->output_count++;
-	/* Write-through, same contract as SubmitKind: decisions reach the
-	 * resident in the step they were decided. */
 	(void)SparkModelResidentClientFlush(client);
 	return(SPARK_STATUS_OK);
 }

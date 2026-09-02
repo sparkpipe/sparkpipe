@@ -1,18 +1,3 @@
-/* The model_api text edge, proven end to end on the host resident stack.
- *
- * Spawns the real residentd fleet (test serving adapter, deterministic token
- * ids 4200+lane+step) and the REAL build/sparkpipe_model_api, then speaks
- * HTTP to it:
- *   - a deployment WITHOUT a tokenizer: {"prompt": ...} gets the loud 400
- *     naming the missing sidecar; prompt_token_ids still serves; /health
- *     reports tokenizer:false.
- *   - a deployment WITH the sidecar asset: {"prompt": ...} serves 200 with
- *     tokens AND text, and the response text is exactly the sidecar decode
- *     of the response tokens; per-request stop_token_ids still bound the
- *     stream; /health reports tokenizer:true.
- *   - a deployment naming a MISSING tokenizer asset: model_api refuses to
- *     start (loud failure, not a silent token-id-only fallback).
- */
 #include <assert.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -52,9 +37,6 @@ static const char *const TestApiTransportHosts[TEST_RANK_COUNT] =
 	"test-stage-a","test-stage-b","test-stage-c"
 };
 
-/* The e2e tokenizer: byte tokens (id = byte value) plus named pieces on the
- * test adapter's deterministic id space, so every id the stack can emit
- * decodes. */
 static void TestApiAppendUtf8(FILE *file, uint32_t code_point)
 {
 	if (code_point < 0x80u)
@@ -262,7 +244,6 @@ static void TestApiStopResidents(pid_t children[TEST_RANK_COUNT],char paths[][10
 	}
 }
 
-/* ===================== tiny HTTP client ===================== */
 
 static int TestApiHttpProbePort(uint32_t port)
 {
@@ -327,9 +308,6 @@ static void TestApiHttpCallRetry(uint32_t port,const char *method,const char *pa
 		{
 			if ( received == 0u && attempt < 2u )
 			{
-				/* The daemon's accept path may not have its first
-				 * connection fully serviced yet; one clean reconnect
-				 * beats a flaky first read. */
 				close(fd);
 				nanosleep(&delay,0);
 				return(TestApiHttpCallRetry(port,method,path,body,response,
@@ -367,7 +345,6 @@ static const char *TestApiResponseJsonBody(const char *response)
 	return split + 4;
 }
 
-/* ===================== response body scanning ===================== */
 
 static uint32_t TestApiScanTokenArray(const char *body,uint32_t *tokens,uint32_t capacity)
 {
@@ -423,7 +400,6 @@ static int TestApiBodyContains(const char *body,const char *needle)
 	return strstr(body,needle) != 0;
 }
 
-/* ===================== the stack lifecycle ===================== */
 
 typedef struct TestApiStack
 {
@@ -505,8 +481,6 @@ static void TestApiStopApi(TestApiStack *stack)
 	int32_t child_status;
 	assert(kill(stack->api_child,SIGTERM) == 0 || errno == ESRCH);
 	assert(waitpid(stack->api_child,&child_status,0) == stack->api_child);
-	/* model_api installs no SIGTERM handler: default termination by the
-	 * signal is the expected teardown; an exit() status is equally fine. */
 	assert(WIFEXITED(child_status) || WIFSIGNALED(child_status));
 	if ( WIFSIGNALED(child_status) )
 		assert(WTERMSIG(child_status) == SIGTERM);
@@ -521,7 +495,6 @@ static void TestApiStopStack(TestApiStack *stack)
 	unlink(stack->deployment_path);
 }
 
-/* ===================== the cases ===================== */
 
 static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 {
@@ -535,7 +508,6 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 	body = TestApiResponseJsonBody(response);
 	assert(TestApiBodyContains(body,"tokenizer_unavailable"));
 
-	/* Ambiguous: both prompt forms together is a loud rejection. */
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
 		"{\"prompt\":\"hello\",\"prompt_token_ids\":[11,12]}",
 		response,sizeof(response));
@@ -543,7 +515,6 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 	body = TestApiResponseJsonBody(response);
 	assert(TestApiBodyContains(body,"ambiguous_prompt"));
 
-	/* The internal form keeps serving, with the exact historical shape. */
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
 		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",
 		response,sizeof(response));
@@ -555,7 +526,6 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 	token_count = TestApiScanTokenArray(body,tokens,64u);
 	assert(token_count >= 1u);
 
-	/* Per-request stops bind the token stream as before. */
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
 		"{\"prompt_token_ids\":[11],\"stop_token_ids\":[4200],\"max_tokens\":16}",
 		response,sizeof(response));
@@ -565,7 +535,6 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 	for ( uint32_t index = 0u; index < token_count; index++ )
 		assert(tokens[index] != 4200u);
 
-	/* Health reports the sidecar absence honestly. */
 	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
 	assert(TestApiBodyContains(response,"\"tokenizer\":false"));
@@ -595,8 +564,6 @@ static void TestApiTextServingWithTokenizer(TestApiStack *stack)
 	decoded = malloc(65536u);
 	assert(decoded != 0);
 
-	/* Text in: 200 with tokens AND text; the text is EXACTLY the sidecar
-	 * decode of the tokens (the bounded edge, nothing more). */
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
 		"{\"prompt\":\"hello\",\"max_tokens\":3}",response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
@@ -611,7 +578,6 @@ static void TestApiTextServingWithTokenizer(TestApiStack *stack)
 	assert(decoded_bytes == strlen(text));
 	assert(memcmp(decoded,text,decoded_bytes) == 0);
 
-	/* The text request with stops: stop ids never reach tokens or text. */
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
 		"{\"prompt\":\"hello\",\"stop_token_ids\":[4200],\"max_tokens\":16}",
 		response,sizeof(response));
@@ -626,7 +592,6 @@ static void TestApiTextServingWithTokenizer(TestApiStack *stack)
 	assert(decoded_bytes == strlen(text));
 	assert(memcmp(decoded,text,decoded_bytes) == 0);
 
-	/* The token-id form still serves WITH a tokenizer, and gains text. */
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
 		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",
 		response,sizeof(response));
@@ -634,7 +599,6 @@ static void TestApiTextServingWithTokenizer(TestApiStack *stack)
 	body = TestApiResponseJsonBody(response);
 	assert(TestApiBodyContains(body,"\"text\":"));
 
-	/* Health reports the sidecar. */
 	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
 	assert(TestApiBodyContains(response,"\"tokenizer\":true"));
@@ -647,8 +611,6 @@ static void TestApiTextServingWithTokenizer(TestApiStack *stack)
 
 static void TestApiMissingAssetIsFatal(void)
 {
-	/* A deployment that names a tokenizer asset that cannot load: the API
-	 * refuses to start rather than silently dropping text serving. */
 	TestApiStack stack;
 	int32_t child_status;
 	memset(&stack,0,sizeof(stack));
@@ -680,7 +642,6 @@ static void TestApiMissingAssetIsFatal(void)
 	assert(waitpid(stack.api_child,&child_status,0) == stack.api_child);
 	assert(WIFEXITED(child_status));
 	assert(WEXITSTATUS(child_status) != 0);
-	/* No listener may remain behind on that port. */
 	{
 		struct timespec delay;
 		delay.tv_sec = 0;
@@ -698,7 +659,6 @@ int main(void)
 	TestApiStack stack;
 	TestApiWriteTokenizerFixture("build/test_tokenizer_sidecar_api_hf.json");
 
-	/* Deployment WITHOUT a tokenizer. */
 	memset(&stack,0,sizeof(stack));
 	stack.api_port = TestApiProbeFreeTcpPort();
 	if ( stack.api_port == 0u )
@@ -707,9 +667,6 @@ int main(void)
 	TestApiStartApi(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
 	TestApiStopApi(&stack);
-	/* Same residents, REPLACED by a deployment WITH the sidecar: the API is
-	 * what comes and goes; the fleet stays. Restart against the tokenizer
-	 * deployment. */
 	TestApiStopResidents(stack.residents,stack.paths);
 	unlink(stack.deployment_path);
 	memset(&stack,0,sizeof(stack));

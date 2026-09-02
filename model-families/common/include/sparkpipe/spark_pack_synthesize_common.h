@@ -1,52 +1,3 @@
-/* Shared synthetic stage-pack generator core (DRY wave 1).
- *
- * The per-family tools/<family>_pack_synthesize.c programs were one pasted
- * template: identical xorshift noise, per-tensor seeding, payload/scale
- * fillers, chunked region writer, directory build, and CLI. This header is
- * that machinery, parameterized by family configuration macros the includer
- * defines first. Family-owned data (stage-pack types and constants, the
- * per-layer kind inventory, the quantization policy, the tier header
- * layout) stays in the family file — that is the DRY law working, not an
- * un-migrated paste.
- *
- * Noise-stream law: the emitted bytes depend ONLY on the primitive bodies
- * below and the family's shape table. Every primitive is a token-faithful
- * move of the pasted body; no arithmetic, ordering, or branch was changed.
- * Each family's synthesized pack is proven byte-identical to the quartet's
- * output (see docs/AGENT_LANE_BRIEFS/reports/dry-wave1-*.md).
- *
- * Required configuration (define before including):
- *   SPARK_SYNTH_TOOL_NAME          report/error key, exactly as pasted
- *   SPARK_SYNTH_MAX_TENSORS        directory capacity
- *   SPARK_SYNTH_CHUNK_BYTES        payload write chunk
- *   SPARK_SYNTH_ALIGN_UNIT         payload/scale alignment constant
- *   SPARK_SYNTH_CONTEXT_T          generator context type (entries[],
- *                                  entry_count, first_layer_index,
- *                                  layer_count, payload_cursor, seed)
- *   SPARK_SYNTH_ENTRY_T            family stage-pack entry type
- *   SPARK_SYNTH_SHAPE_T            family tensor-shape type
- *   SPARK_SYNTH_RESOLVE_SHAPE(kind, layer, is_global, shape)  nonzero=reject
- *   SPARK_SYNTH_PAYLOAD_KIND(entry)             payload-format field reader
- *   SPARK_SYNTH_PACKED_FORMAT                   packed-weight kind value
- *   SPARK_SYNTH_PACKED_NAN_MASK    0x7f masks e4m3 NaN lanes; 0 keeps raw
- *   SPARK_SYNTH_F32_FORMAT                      f32 payload kind value
- *   SPARK_SYNTH_PAYLOAD_BYTES(format, rows, columns)
- *   SPARK_SYNTH_SCALE_BYTES(format, rows, columns)
- *   SPARK_SYNTH_FILL_SCALE(entry, buffer, bytes, state)
- *
- * Qwen-slice template (also define SPARK_SYNTH_QWEN_TEMPLATE to get the
- * whole directory build + CLI + main()):
- *   SPARK_SYNTH_HEADER_T / SPARK_SYNTH_HEADER_BYTES / SPARK_SYNTH_ENTRY_BYTES
- *   SPARK_SYNTH_SELECT_FORMAT(quantize, shape)
- *   SPARK_SYNTH_SCALE_GROUP_SIZE(format)
- *   SPARK_SYNTH_MTP_LAYER / SPARK_SYNTH_GLOBAL_LAYER
- *   SPARK_SYNTH_TENSOR_EMBEDDING / _FINAL_NORM / _LM_HEAD
- *   SPARK_SYNTH_MODEL_LAYER_COUNT / SPARK_SYNTH_MODEL_IS_GDN(layer)
- *   SPARK_SYNTH_EXPECTED_TENSOR_COUNT(first, count)
- *   SPARK_SYNTH_EXPECTED_GEOMETRY(header, first, count)
- *   SPARK_SYNTH_EVERY_LAYER_KINDS / _GDN_LAYER_KINDS / _ATTN_LAYER_KINDS /
- *                                  _MTP_GLOBAL_KINDS   (initializer lists)
- */
 #ifndef SPARK_PACK_SYNTHESIZE_COMMON_H
 #define SPARK_PACK_SYNTHESIZE_COMMON_H
 
@@ -71,8 +22,6 @@ typedef struct SparkSynthContext
 #endif
 #endif
 
-/* xorshift64*: a lane of reproducible noise per tensor, seeded from the
- * tensor's identity so any tensor regenerates independently of the others. */
 static uint64_t SparkSynthNext(uint64_t *state)
 {
 	uint64_t value = *state;
@@ -96,8 +45,6 @@ static uint64_t SparkSynthAlign(uint64_t offset)
 	return((offset + SPARK_SYNTH_ALIGN_UNIT - 1u) & ~((uint64_t)SPARK_SYNTH_ALIGN_UNIT - 1u));
 }
 
-/* Payload noise per kind: packed bytes (raw nibbles, or finite bytes where
- * the family's packed kind has NaN lanes), small f32, small bf16. */
 static void SparkSynthFillPayload(const SPARK_SYNTH_ENTRY_T *entry, uint8_t *buffer, uint64_t bytes, uint64_t *random_state)
 {
 	uint64_t index,noise;
@@ -133,9 +80,6 @@ static void SparkSynthFillPayload(const SPARK_SYNTH_ENTRY_T *entry, uint8_t *buf
 	}
 }
 
-/* Scale noise, family-selected: per-byte jitter, or f32 block scales near
- * 1.0 (0x3f80'0000..0x3f80'0007) - small deterministic mantissa jitter,
- * never zero. */
 static void SparkSynthFillScaleBytes(uint8_t *buffer, uint64_t bytes, uint64_t *random_state)
 {
 	uint64_t index;
@@ -410,6 +354,6 @@ int main(int argc, char **argv)
 	return(0);
 }
 
-#endif /* SPARK_SYNTH_QWEN_TEMPLATE */
+#endif
 
-#endif /* SPARK_PACK_SYNTHESIZE_COMMON_H */
+#endif

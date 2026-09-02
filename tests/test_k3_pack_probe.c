@@ -1,4 +1,3 @@
-// Minimal probe: open a K3 pack and print the loader's status + config.
 #include <stdio.h>
 #include "sparkpipe/spark_k3_pack_load.h"
 

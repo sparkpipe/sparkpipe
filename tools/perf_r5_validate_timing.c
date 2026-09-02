@@ -1,25 +1,3 @@
-/* PERF PROGRAM 2 - R5 RECEIPT (perf-r1 lane, 2026-08-28).
- *
- * Submit-path validation fanout: a single submission crossing the
- * pipeline client -> residentd -> serving adapter chain used to re-run
- * SparkModelServingAdapterValidateRuntimeSubmission at EVERY layer, and
- * that function begins by re-validating the (descriptor, limits) pair —
- * the 12-check DESCRIPTOR_CHECKS array plus the limits chain — which is
- * immutable for a component's lifetime. The R5 hoist validates the pair
- * once at configure/connect and switches the per-submission path to
- * SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated (same
- * checks minus the immutable part, same statuses).
- *
- * This harness times the REAL functions on the DSV4 decode bucket shape
- * (8 lanes / 8 rows) so the per-layer saving has a number:
- *
- *   cc -O2 -Iinclude tools/perf_r5_validate_timing.c \
- *      runtime/model_serving_adapter.c -o /tmp/perf_r5_validate_timing -ldl
- *
- * Fail-loud contract: the harness ALSO asserts both functions return
- * identical statuses on the valid case, a field-invalid case, and a
- * capacity-exceeded case.
- */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -49,7 +27,7 @@ static void BuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->max_active_sequence_count = 128u;
 	descriptor->max_input_row_count = 256u;
 	descriptor->max_resident_sequence_count = 512u;
-	descriptor->max_output_token_count = BUCKET; /* one token per decode lane */
+	descriptor->max_output_token_count = BUCKET;
 	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO;
 	descriptor->minimum_efficient_submission_row_count = 16u;
 	descriptor->adapter_id = "spark.dsv4.flash.serving.v1";
@@ -128,14 +106,13 @@ int main(void)
 	submission.row_positions = row_positions;
 	submission.row_sequence_ids = row_sequences;
 
-	/* STATUS PARITY: same accept/reject decisions, same statuses. */
 	status_full = SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission);
 	status_pre = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(&descriptor,&limits,&submission);
 	printf("parity valid          : full=%d pre=%d %s\n",(int)status_full,(int)status_pre,status_full == status_pre && status_full == SPARK_STATUS_OK ? "OK" : "FAIL");
 	if (status_full != status_pre || status_full != SPARK_STATUS_OK)
 		failures++;
-	limits.resident_sequence_capacity = 128u; /* a VALID limits pair (>= max_active_sequence_count); the per-submission slot check trips */
-	lanes[7].resident_sequence_slot = 200u; /* >= capacity */
+	limits.resident_sequence_capacity = 128u;
+	lanes[7].resident_sequence_slot = 200u;
 	status_full = SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission);
 	status_pre = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(&descriptor,&limits,&submission);
 	printf("parity capacity       : full=%d pre=%d %s\n",(int)status_full,(int)status_pre,status_full == status_pre && status_full == SPARK_STATUS_CAPACITY_EXCEEDED ? "OK" : "FAIL");
@@ -143,7 +120,7 @@ int main(void)
 		failures++;
 	limits.resident_sequence_capacity = 512u;
 	lanes[7].resident_sequence_slot = 21u;
-	lanes[3].flags = 0u; /* row order violation */
+	lanes[3].flags = 0u;
 	status_full = SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission);
 	status_pre = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(&descriptor,&limits,&submission);
 	printf("parity field-invalid  : full=%d pre=%d %s\n",(int)status_full,(int)status_pre,status_full == status_pre && status_full == SPARK_STATUS_INVALID_ARGUMENT ? "OK" : "FAIL");
@@ -151,7 +128,6 @@ int main(void)
 		failures++;
 	lanes[3].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 
-	/* TIMING: valid decode bucket, both validators. */
 	start = NowSeconds();
 	for (iteration=0u; iteration<ITERATIONS; iteration++)
 		(void)SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission);
@@ -163,9 +139,6 @@ int main(void)
 	printf("timing full    %8.1f ns / submission\n",full_ns);
 	printf("timing pre     %8.1f ns / submission\n",pre_ns);
 	printf("hoisted per call      %8.1f ns (%.2fx)\n",full_ns - pre_ns,full_ns / pre_ns);
-	/* The chain re-validates the same submission ~5x (pipeline client,
-	 * resident client per rank x2 paths, residentd x2, adapter), so the
-	 * per-submission hoist across the chain is ~5x this delta today. */
 	printf("chain estimate (~5 re-validations/submit): %8.1f ns saved\n",(full_ns - pre_ns) * 5.0);
 	printf(failures == 0 ? "ALL PARITY OK\n" : "PARITY FAILURES: %d\n",failures);
 	return failures == 0 ? 0 : 1;

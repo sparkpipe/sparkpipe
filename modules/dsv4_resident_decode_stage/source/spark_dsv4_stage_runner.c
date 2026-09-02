@@ -375,8 +375,6 @@ static SparkStatus SparkDsv4StageRunnerAdmit(
         runner->stats.last_status = (uint32_t)status;
         return status;
     }
-    /* The frame carries every dispatch field except the generation tuple,
-     * which has no frame slot; copy it from the dispatch. */
     request.submission_id = dispatch->submission_id;
     request.control_generation = dispatch->control_generation;
     request.transaction_id = dispatch->transaction_id;

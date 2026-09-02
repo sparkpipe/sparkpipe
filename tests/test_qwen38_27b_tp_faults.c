@@ -1,10 +1,3 @@
-/* Fault-injection coverage for the Qwen 27B TP credit-buffer ownership
- * (audit P1: mapped-host initialization conflated allocation ownership).
- * Every scenario drives SparkQwen38_27bTpAllocateCreditMemory to a terminal
- * state and then asserts, via the stub's allocation ledger, that
- * SparkQwen38_27bTpDestroy releases every live allocation - including the
- * partial states a failed second cudaHostAlloc or a failed
- * cudaHostGetDevicePointer used to leak. */
 #include <stdio.h>
 #include <string.h>
 
@@ -12,9 +5,6 @@
 #include "sparkpipe/spark_status.h"
 #include "spark_qwen38_27b_tp.h"
 
-/* GPU accumulate kernels referenced by tp.c's combine callbacks. They are
- * never executed by this test (no collective runs); definitions exist only
- * to satisfy the host link. */
 cudaError_t SparkQwen38_27bLaunchAccumAdd(cudaStream_t stream, void *destination, const void *source, uint32_t active_sequence_count, uint32_t hidden_dimension)
 {
     (void)stream; (void)destination; (void)source;
@@ -76,25 +66,16 @@ static void fail_second_map(void)    { spark_stub_cuda_fail_host_map_call(2); }
 
 int main(void)
 {
-    /* device mode: two cudaMallocs owned by the device fields */
     run_scenario("device_happy", 0u, 0, SPARK_STATUS_OK, 1);
-    /* mapped-host mode: allocs + maps succeed; device originals are freed
-     * and the device fields alias the host buffers (flag cleared) */
     run_scenario("mapped_happy", 1u, 0, SPARK_STATUS_OK, 0);
-    /* first cudaMalloc fails: nothing survives */
     run_scenario("fail_first_malloc", 1u, fail_first_malloc,
         SPARK_STATUS_CAPACITY_EXCEEDED, 0);
-    /* second cudaMalloc fails: the first must not leak */
     run_scenario("fail_second_malloc", 1u, fail_second_malloc,
         SPARK_STATUS_CAPACITY_EXCEEDED, 0);
-    /* first cudaHostAlloc fails: both device allocations must be freed */
     run_scenario("fail_first_host_alloc", 1u, fail_first_host,
         SPARK_STATUS_CAPACITY_EXCEEDED, 0);
-    /* the audited defect: second cudaHostAlloc failed while the first
-     * stayed populated; nothing may leak now */
     run_scenario("fail_second_host_alloc", 1u, fail_second_host,
         SPARK_STATUS_CAPACITY_EXCEEDED, 0);
-    /* mapping failures are fatal and must not leak the host+device set */
     run_scenario("fail_first_host_map", 1u, fail_first_map,
         SPARK_STATUS_CAPACITY_EXCEEDED, 0);
     run_scenario("fail_second_host_map", 1u, fail_second_map,

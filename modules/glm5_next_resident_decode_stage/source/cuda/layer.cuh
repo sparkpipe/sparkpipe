@@ -14,20 +14,8 @@
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/config.h"
 
-// Block-major KV geometry: one logical block = GLM5_NEXT_KV_PAGE_SLOTS
-// tokens across the DSA layers (only the 11 sparse layers carry an MLA KV
-// row; KDA layers are O(1)-state and need none), laid out contiguously in
-// the common SparkKvCacheArena block-major layout. kPageBytes is the block
-// stride; the per-layer pool base the driver passes already carries the
-// DSA-layer offset, so SlotInPage stays the within-block token index.
 struct Glm5NextKv
 {
-    /* PER-LAYER view: one DSA layer's sub-pool. The module's pool is
-     * layer-major - layer l's sub-pool sits at pool + l * (pages * 64 *
-     * slot) - and the kernel addresses pages within its layer's sub-pool,
-     * so this page stride covers ONE layer's tokens, not eleven. (The
-     * first bring-up sized it x DSA_COUNT and the pool came out 65 GB.)
-     */
     static constexpr uint32_t kSlotBytes = GLM5_NEXT_KV_SLOT_BYTES;
     static constexpr uint32_t kPageSlots = GLM5_NEXT_KV_PAGE_SLOTS;
     static constexpr uint32_t kPageBytes =
@@ -42,9 +30,6 @@ struct Glm5NextKv
     static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
     { return pages * (uint64_t)kPageBytes; }
 };
-/* The packed indexer cache row: [ k(128) | gate(128) | valid(1) ] bf16.
- * The gate half carries the per-token pool-mix logits; valid is 1.0 for
- * every stored row (only real tokens are stored). */
 struct Glm5NextIndexKv
 {
     static constexpr uint32_t kSlotBytes =
@@ -63,7 +48,6 @@ struct Glm5NextIndexKv
     { return pages * (uint64_t)kPageBytes; }
 };
 
-/* Fuse [ k | gate | 1.0 ] into the packed 257-wide indexer cache row. */
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void Glm5NextIndexPackKernel(
@@ -82,31 +66,22 @@ void Glm5NextIndexPackKernel(
             gate_bf16[(uint64_t)row * dimension + index];
     }
     if (threadIdx.x == 0u)
-        packed_bf16[base + 2u * dimension] = 0x3F80u; /* bf16 1.0 */
+        packed_bf16[base + 2u * dimension] = 0x3F80u;
 }
 
-/* Score one 4-token k-pool for every query row: one block per (pool, row).
- *
- * pool_key = sum_j softmax_j(gate_j + ape_j) * k_j over the pool's KPOOL
- * positions (the reference's get_pooled_states; the softmax is per-channel
- * over pool positions); score_h = relu(q_h . pool_key * 128**-0.5); the
- * row's pool score is the head-weighted sum weights_proj(x)_h * 32**-0.5.
- * Positions past the sequence's context contribute nothing (masked out of
- * the softmax with -inf, exactly as the reference's grouped_valid_keys).
- */
 template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS>
 __global__ __launch_bounds__(THREADS, 1)
 void Glm5NextPoolScoreKernel(
-    const uint16_t *__restrict__ query_bf16,      /* [rows, HEADS*DIM] */
-    const uint16_t *__restrict__ head_weight_bf16,/* [rows, HEADS] */
+    const uint16_t *__restrict__ query_bf16,
+    const uint16_t *__restrict__ head_weight_bf16,
     LmKvView index_cache,
     const uint32_t *__restrict__ sequence_of_row,
     const uint32_t *__restrict__ context_length,
-    const float *__restrict__ compress_ape_f32,   /* [KPOOL, DIM] */
+    const float *__restrict__ compress_ape_f32,
     uint32_t pools,
     float softmax_scale,
     float head_scale,
-    float *__restrict__ pool_scores)              /* [rows, pools] */
+    float *__restrict__ pool_scores)
 {
     __shared__ float pool_key[DIM];
     __shared__ float reduction[THREADS / LM_WARP_LANES];
@@ -119,8 +94,6 @@ void Glm5NextPoolScoreKernel(
     if (pool >= pools)
         return;
 
-    /* Per-channel softmax over the pool's gate logits ( ape bias included )
-     * then the weighted key sum, both over DIM channels in parallel. */
     for (index = threadIdx.x; index < DIM; index += THREADS)
     {
         float maximum = -INFINITY;
@@ -167,10 +140,6 @@ void Glm5NextPoolScoreKernel(
     }
     __syncthreads();
 
-    /* Head-major dot products with per-head relu, then the weighted head
-     * sum. One thread per (head, channel-slice); block reduction per head
-     * would serialise, so each thread owns whole heads when HEADS <=
-     * THREADS and accumulates across its heads' channels serially. */
     float total = 0.0f;
     for (head = 0u; head < HEADS; ++head)
     {
@@ -193,18 +162,13 @@ void Glm5NextPoolScoreKernel(
         pool_scores[(uint64_t)row * pools + pool] = total;
 }
 
-/* Expand selected pools into raw token positions and append the tail.
- * Output width is TOPK + KPOOL - 1 (2051): 512 pools x 4 tokens, then the
- * incomplete tail (up to 3). Slots beyond the tail count carry UINT32_MAX,
- * which the latent decode kernel's causal check (position > row_position)
- * skips without a cache read. */
 template<uint32_t THREADS, uint32_t KPOOL, uint32_t TOPK, uint32_t WIDTH>
 __global__ __launch_bounds__(THREADS, 1)
 void Glm5NextPoolExpandKernel(
-    const uint32_t *__restrict__ selected_pools,  /* [rows, TOPK/KPOOL] */
+    const uint32_t *__restrict__ selected_pools,
     const uint32_t *__restrict__ sequence_of_row,
     const uint32_t *__restrict__ context_length,
-    uint32_t *__restrict__ selected_positions,    /* [rows, WIDTH] */
+    uint32_t *__restrict__ selected_positions,
     uint32_t rows)
 {
     uint32_t row = blockIdx.x;
@@ -223,8 +187,6 @@ void Glm5NextPoolExpandKernel(
                                            index / KPOOL];
             uint32_t within = index % KPOOL;
             position = pool * KPOOL + within;
-            /* A pool is only selectable complete: clamp incomplete tails
-             * out to the sentinel. */
             if (position >= context)
                 position = 0xFFFFFFFFu;
         }
@@ -293,21 +255,10 @@ struct Glm5NextLayerBuffers
     const void *dense_gate_weight;
     const void *dense_up_weight;
     const void *dense_down_weight;
-    // Bind-time fact, not a launch-time decision: the pack laid the up rows
-    // immediately behind the gate rows, so one GEMM over the concatenated
-    // tensor produces the [gate | up] layout two launches would. Zero means
-    // unknown or non-contiguous, which takes the two-launch path.
     uint32_t dense_gate_up_fused;
 
-    // Tensor-parallel sharding. The pack stores per-rank shards of the row- or
-    // column-sharded projections, so every projection dimension the kernels
-    // price must come from here rather than the full-model constant; tp_degree
-    // == 1 recovers the single-rank geometry. Replicated tensors (norms, q_a,
-    // kv_a, kv_b, indexer, router, correction) keep their full dims and the KV
-    // cache keeps all heads on every rank.
     uint32_t tp_degree;
     uint32_t tp_rank;
-    /* G5N-PROBE only: the layer's global index, for ordinal-gated dumps. */
     uint32_t layer_index;
     uint32_t attn_heads;
     uint32_t q_b_rows;
@@ -358,15 +309,10 @@ struct Glm5NextLayerBuffers
     uint32_t *group_tile_prefix_w1;
     uint32_t *group_tile_prefix_w2;
 
-    /* -- KDA (k3 donor): weights, per-layer state, and scratch. Every
-     * per-head dimension comes from kda_heads (the rank's shard), never
-     * the full-model constant. */
     const void *kda_qkv_beta_weight;
     const void *kda_decay_gate_down_weight;
     const void *kda_decay_up_weight;
     const void *kda_gate_up_weight;
-    /* BF16 conv weights, unconverted from the checkpoint (k3 packs them
-     * F32; glm5_next's LmCausalConvKernel<uint16_t> reads bf16 taps). */
     const void *kda_q_conv_weight;
     const void *kda_k_conv_weight;
     const void *kda_v_conv_weight;
@@ -393,10 +339,6 @@ struct Glm5NextLayerBuffers
     float *kda_retention;
     float *kda_write_gate;
 
-    /* -- hyper-connections (dsv4 donor): weights and per-site scratch.
-     * hidden_bf16 carries hc_mult streams of GLM5_NEXT_HIDDEN (the HC
-     * "streams_bf16" surface); residual semantics live in the HC launch
-     * pair, not the residual pointer. */
     const void *hc_attn_fn;
     const void *hc_attn_base;
     const void *hc_attn_scale;
@@ -411,7 +353,6 @@ struct Glm5NextLayerBuffers
     uint16_t *hc_snapshot_bf16;
     uint16_t *hc_mean_bf16;
 
-    /* -- indexer kpool compressor (dsv4 mechanism, glm53 geometry) */
     const void *index_compress_ape;
     const void *index_compress_gate;
     uint16_t *index_gate_bf16;
@@ -426,15 +367,11 @@ struct Glm5NextLayerBuffers
     const uint32_t *row_positions;
     uint32_t *selected_positions;
     uint32_t selected_position_count;
-    /* R3 flash-decode: the split path engages only above the deployment
-     * threshold and only with the partials workspace bound. */
     float *attention_split_partials;
     uint64_t attention_split_partial_blocks;
     uint32_t decode_split_context_threshold;
 };
 
-// The firmware header sizes the partials workspace; the shared kernel policy
-// owns the partition cap. One definition of the cap, checked not duplicated.
 static_assert(
     LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ==
         SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS,
@@ -504,12 +441,6 @@ static int32_t Glm5NextLayerIndexer(
     int32_t status;
     uint32_t pools;
 
-    /* Every DSA layer is a FULL indexer in glm5_next (indexer_types is 45x
-     * "full"); the caller gates on layer kind. The kpool selection is
-     * bypassed while the context cannot fill the pool budget (context at
-     * or below TOPK selects everything): the projections and cache stores
-     * below still run because the packed cache row must exist for future
-     * contexts, but the pool scoring pass is pure overhead there. */
     if (buffers == 0 || rows == 0u || context == 0u ||
         buffers->positions == 0 || buffers->sequence_of_row == 0 ||
         buffers->context_length == 0 ||
@@ -559,9 +490,6 @@ static int32_t Glm5NextLayerIndexer(
     {
         return status;
     }
-    /* The compressor's per-token gate logits: hidden -> 128, packed beside
-     * the key. NO rope on either half - NoPE model, and
-     * indexer_rope_interleave is not a porting dependency. */
     status = Glm5NextLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->index_compress_gate,
@@ -642,8 +570,6 @@ static int32_t Glm5NextLayerIndexer(
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
-    /* Complete pools only: context > TOPK guarantees at least TOPK/KPOOL
-     * of them, so every selected pool expands to four real positions. */
     pools = context / GLM5_NEXT_DSA_KPOOL;
     LM_LAUNCH(
         (Glm5NextPoolScoreKernel<
@@ -707,14 +633,6 @@ static int32_t Glm5NextLayerIndexer(
         : LM_LAUNCH_ERR_LAUNCH;
 }
 
-/* DSA-site full-vector probe (glm5-dsa lane): same discipline as the KDA
- * pass counter, but counting Glm5NextLayerAttention calls on the DSA layer
- * named by SPARK_GLM5_NEXT_PROBE_VEC_LAYER (default 3 - the first DSA
- * layer). Armed by the same SPARK_GLM5_NEXT_PROBE_VEC env as the KDA probe
- * plus SPARK_GLM5_NEXT_PROBE_VEC_DSA=1, so the L0 KDA dump behaviour is
- * byte-identical when the new env is unset. Waves are single-row, so pass
- * p of the first request IS position p and the host oracle can rebuild the
- * latent cache from the per-pass kv_slot dumps. */
 
 static int Glm5NextDsaProbeVecLayer(void)
 {
@@ -753,9 +671,6 @@ static int Glm5NextDsaProbeVecPass(const Glm5NextLayerBuffers *buffers)
 
 static void Glm5NextProbeVecU16(cudaStream_t stream,const uint16_t *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
 {
-    /* 16384: the HC streams surface (4 x 4096) must fit in one dump for the
-     * DSA-site oracle's mix-dot recompute (glm5-dsa lane). The KDA path
-     * never exceeds 8192, so widening the cap changes nothing there. */
     static uint16_t vec_buf[16384];
     uint32_t i;
     if ( count > 16384u || cudaStreamSynchronize(stream) != cudaSuccess ||
@@ -810,8 +725,6 @@ static int32_t Glm5NextLayerAttention(
         buffers->kv_b_value_weight == 0 ||
         buffers->q_compressed_bf16 == 0 || buffers->q_bf16 == 0 ||
         buffers->query_latent_bf16 == 0 ||
-        /* query_rope_bf16 stays null at ROPE_DIM == 0: the latent decode
-         * template never dereferences it (compile-time guarantee). */
         (context > GLM5_NEXT_DSA_SELECTED &&
          (buffers->selected_positions == 0 ||
           buffers->selected_position_count != GLM5_NEXT_DSA_SELECTED)))
@@ -825,10 +738,6 @@ static int32_t Glm5NextLayerAttention(
 
     if ( vec_pass != 0 )
     {
-        /* HC-site stages of THIS attention site: the scratch still holds
-         * this site's values (the MLP HC site runs later). The streams
-         * surface (hidden_bf16) is the mix input; collapsed is the
-         * sublayer input the norm below consumes. */
         vec_rank_heads = buffers->attn_heads;
         Glm5NextProbeVecU16(stream,buffers->hidden_bf16,
             GLM5_NEXT_HC * GLM5_NEXT_HIDDEN,layer_index,(uint32_t)vec_pass,"hc_streams");
@@ -844,8 +753,6 @@ static int32_t Glm5NextLayerAttention(
             GLM5_NEXT_HC * GLM5_NEXT_HC,layer_index,(uint32_t)vec_pass,"hc_comb");
     }
 
-    /* PLAIN norm of the HC-collapsed input: the residual bookkeeping
-     * belongs to the HC post step, so the sublayer never adds one. */
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
         rows,
@@ -864,8 +771,6 @@ static int32_t Glm5NextLayerAttention(
         Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,
             layer_index,(uint32_t)vec_pass,"attn_normed");
 
-    // The two low-rank norms are nonlinear and cannot be folded into a static
-    // hidden-to-latent matrix. Run the checkpoint sequence exactly.
     status = Glm5NextLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->q_a_weight,
@@ -966,11 +871,6 @@ static int32_t Glm5NextLayerAttention(
         Glm5NextProbeVecU16(stream,buffers->kv_slot_bf16,GLM5_NEXT_LATENT_ROW,
             layer_index,(uint32_t)vec_pass,"kv_slot");
 
-    /* ROPE-0 MLA: the query carries nope only and the latent row is the
-     * pure 512 lora, so both rope launches are GONE - not skipped at
-     * runtime, absent at compile time (NoPE: no rope exists anywhere in
-     * the glm5_next text stack). query_rope_bf16 stays null; the latent
-     * attention template below reads it only when ROPE != 0. */
     LM_LAUNCH(
         (LmPerHeadProjectKernel<
             GLM5_NEXT_LAYER_THREADS,
@@ -1002,13 +902,6 @@ static int32_t Glm5NextLayerAttention(
         buffers->positions,
         rows,
         GLM5_NEXT_LATENT_ROW);
-    // R3 flash-decode: below the deployment threshold (or with no workspace,
-    // or when the grid already fills the machine) this is the SAME
-    // single-pass launch as before, byte for byte. Above it, the position
-    // range splits across CTAs and a combine pass merges the partial
-    // softmax states deterministically. position_bound is the host-side walk
-    // bound: the selection width when the DSA selection is active, else the
-    // context.
     if (LmLatentAttentionDecodeSplitLaunch<
             Glm5NextKv, GLM5_NEXT_ATTN_THREADS, GLM5_NEXT_LATENT,
             GLM5_NEXT_ROPE_DIM>(
@@ -1073,8 +966,6 @@ static int32_t Glm5NextLayerAttention(
     return status;
 }
 
-/* Split the fused q|k|v|beta GEMM output into the four per-row buffers
- * (k3's pack-V2 split, verbatim: sections are row ranges head-major). */
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void Glm5NextSplitFusedProjectionsKernel(
@@ -1109,10 +1000,6 @@ void Glm5NextSplitFusedProjectionsKernel(
             qkvb_bf16[fused + beta_offset + index];
 }
 
-/* Split the fused decay_down|gate_down bottleneck output: the first
- * GLM5_NEXT_KDA_LOW_RANK rows are the decay latent, the second half the
- * gate latent (pack-V2's replicated fusion, resurrected for glm5_next's
- * LOW-RANK output gate). */
 template<uint32_t THREADS, uint32_t LOW_RANK>
 __global__ __launch_bounds__(THREADS, 1)
 void Glm5NextSplitDecayGateDownKernel(
@@ -1133,8 +1020,6 @@ void Glm5NextSplitDecayGateDownKernel(
     }
 }
 
-/* THE DELTA RULE'S 64 KiB OPT-IN (runtime/launch.h's shared grant table;
- * k3 names its own instantiation the same way). */
 static int32_t Glm5NextDeltaRuleOptIn(uint32_t shared_bytes)
 {
     return(LmKernelSharedMemoryOptIn(
@@ -1144,10 +1029,6 @@ static int32_t Glm5NextDeltaRuleOptIn(uint32_t shared_bytes)
         shared_bytes));
 }
 
-/* -- G5N-PROBE (kda lane, diag only, env SPARK_GLM5_NEXT_PROBE) ---------------
- * Rank-0 checksums of the KDA stage buffers between launches. Every dump
- * synchronizes the stream and copies device->host: probe builds stall the
- * chain BY DESIGN and must never ship in a serving binary. */
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -1160,8 +1041,6 @@ static int Glm5NextKdaProbeActive(const Glm5NextLayerBuffers *buffers)
     return(probe_enabled != 0 && buffers != 0 && buffers->tp_rank == 0u);
 }
 
-/* Deep-dive gate: healthy reference layer 0 + the first-zero neighbourhood
- * 16..20 + the last weight layer 44 before the head. */
 static int Glm5NextKdaProbeDeep(const Glm5NextLayerBuffers *buffers)
 {
     uint32_t layer = buffers != 0 ? buffers->layer_index : 0u;
@@ -1169,9 +1048,6 @@ static int Glm5NextKdaProbeDeep(const Glm5NextLayerBuffers *buffers)
         (layer == 0u || (layer >= 16u && layer <= 20u) || layer >= 43u));
 }
 
-/* first8 raw u16 + their float values, to separate zeros from garbage from
- * huge from NaN - the bit-pattern sum cannot. LYR is the layer index for the
- * tag; dev is a device pointer. */
 #define GLM5_NEXT_KDA_PROBE_RAW(stream,lyr,label,dev) \
     do { \
         uint16_t probe_h[256]; float probe_f[8]; uint32_t probe_i; \
@@ -1191,8 +1067,6 @@ static int Glm5NextKdaProbeDeep(const Glm5NextLayerBuffers *buffers)
         } \
     } while (0)
 
-/* Sum of the RAW uint16 bit patterns of the first count elements (the same
- * quantity the module-level probes print as bf16sum, so numbers compare). */
 static uint64_t Glm5NextProbeBf16Sum(cudaStream_t stream,const uint16_t *device,uint32_t count)
 {
     uint16_t host[256];
@@ -1221,7 +1095,6 @@ static void Glm5NextProbeFloats(cudaStream_t stream,const float *device,uint32_t
     (void)cudaMemcpy(host,device,count * sizeof(float),cudaMemcpyDeviceToHost);
 }
 
-/* Same, for a bf16 device buffer: decode to floats host-side. */
 static void Glm5NextProbeBf16Floats(cudaStream_t stream,const uint16_t *device,uint32_t count,float *host)
 {
     uint16_t probe_b[8];
@@ -1257,21 +1130,9 @@ static void Glm5NextProbeBf16Floats(cudaStream_t stream,const uint16_t *device,u
             (double)probe_s[2],(double)probe_s[3],(unsigned long long)probe_bits); \
     } while (0)
 
-/* -- G5N-VEC (glm5-attractor lane, diag only, env SPARK_GLM5_NEXT_PROBE_VEC) --
- * FULL-vector hex dumps of the LAYER-0 KDA stage buffers: the raw material
- * for the independent host oracle (a checkpoint-semantics reimplementation
- * of the KDA cell that shares no math with this module). Same discipline as
- * the checksum probes: rank 0 only, one stream sync per dump, never in a
- * serving binary. The pass id counts Glm5NextLayerKda calls on layer 0
- * (waves are single-row, so pass p of the first request IS position p). */
 
 static int Glm5NextKdaProbeVecLayer(const Glm5NextLayerBuffers *buffers)
 {
-    /* SPARK_GLM5_NEXT_PROBE_VEC_KDA_LAYER: which KDA layer dumps (default
-     * 0, the attractor lane's cell). glm5-dsa: 4 - the first MoE-layer KDA,
-     * whose attention partial is zero from the first wave while L0-2 are
-     * alive; the per-stage dumps + weight-row checksums convict the
-     * binding. */
     static int vec_layer = -1;
     if ( vec_layer < 0 )
     {
@@ -1304,20 +1165,6 @@ static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
     return((int)vec_pass);
 }
 
-/* KDA linear attention, 34 of 45 layers - k3's launch chain with the
- * glm5_next deltas:
- *
- *     q, k = L2Norm(Swish(ShortConv(W x)))        (checkpoint convs are BF16;
- *     v    = Swish(ShortConv(W x))                 LmScalarToFloat reads them)
- *     a    = exp(-5.0 * sigmoid(exp(A_log_h) * (Wf_up(Wf_down(x)) + dt_bias)))
- *     S    = (I - beta k k^T) Diag(a) S + beta k v^T,  beta = sigmoid(b_proj x)
- *     y    = W_o[ sigmoid(Wg_up(Wg_down(x))) * RMSNorm(S^T q) ]
- *
- * The decay mapping is LmBoundedDecay EXACTLY (verified against the
- * reference forget gate); the gated norm is the shared RMSNorm followed by
- * LmOutputGateKernel, which multiplies by sigmoid(gate) - RMSNormGated's
- * "sigmoid" activation, same order.
- */
 static int32_t Glm5NextLayerKda(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -1382,21 +1229,9 @@ static int32_t Glm5NextLayerKda(
     {
         Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"collapsed");
         Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"normed");
-        /* THE BINDING CONVICTION DUMPS (glm5-dsa): the layer's own weight
-         * rows as bound - if L4's KDA weights are zeros/garbage the fused
-         * GEMM emits zeros and every downstream stage reads zero, exactly
-         * the observed signature (attention partial zero from the first
-         * wave, L0-3 alive). */
         Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->attn_norm_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_attn_norm");
         Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->kda_qkv_beta_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_qkvb_row0");
         Glm5NextProbeVecU16(stream,(const uint16_t *)buffers->kda_out_weight,256u,buffers->layer_index,(uint32_t)vec_pass,"w_kda_out_row0");
-        /* THE HC-SITE STATE AT THE SAME MOMENT (glm5-dsa): the collapse
-         * came back all -0.0 (0x8000) at this layer - a value
-         * Glm5NextHcPreReduceKernel cannot produce from ANY inputs (its
-         * accumulator starts +0 and pre > 0), so either the kernel never
-         * ran or it read a different surface. pre/mixes say whether the
-         * sinkhorn ran; snapshot + the raw streams read say whether the
-         * kernel and the probe see the same memory. */
         Glm5NextProbeVecF32(stream,buffers->hc_pre_f32,GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_pre");
         Glm5NextProbeVecF32(stream,buffers->hc_post_f32,GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_post");
         Glm5NextProbeVecF32(stream,buffers->hc_mixes_f32,(2u + GLM5_NEXT_HC) * GLM5_NEXT_HC,buffers->layer_index,(uint32_t)vec_pass,"k_mixes");
@@ -1418,9 +1253,6 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
     }
-    /* TWO WIDE GEMMs over one activation read: the fused q|k|v|beta tensor
-     * (OUTPUT_DIM_HEADS class) and the fused decay|gate-down bottleneck
-     * (replicated). Both read normed_bf16 back to back. */
     status = Glm5NextLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->kda_qkv_beta_weight,
@@ -1459,8 +1291,8 @@ static int32_t Glm5NextLayerKda(
         stream,
         buffers->fused_qkvb_bf16,
         buffers->q_bf16,
-        buffers->kv_slot_bf16 /* key rows */,
-        buffers->gate_up_bf16 /* value rows: rank_v wide */,
+        buffers->kv_slot_bf16   ,
+        buffers->gate_up_bf16   ,
         buffers->kda_beta_logit,
         rows,
         rank_qk,
@@ -1498,8 +1330,6 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"gate_latent",buffers->kda_gate_latent_bf16);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"beta_logit",buffers->kda_beta_logit);
     }
-    /* THREE CONVOLUTIONS, each with its own window; the weights are the
-     * checkpoint's BF16 tensors unconverted. */
     LM_LAUNCH(
         (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
         dim3(sequences,(rank_qk + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
@@ -1548,7 +1378,6 @@ static int32_t Glm5NextLayerKda(
         rank_v,
         sequences,
         commit);
-    /* q and k only; the value is not normalised. */
     LM_LAUNCH(
         (LmL2NormalisePerHeadKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
         dim3(rows,rank_heads),
@@ -1589,8 +1418,6 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"k_postconv",buffers->kv_slot_bf16);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"v_postconv",buffers->gate_up_bf16);
     }
-    /* The two up-projections: decay logits (bounded-decay input) and the
-     * gate (waits for the delta rule to finish). */
     status = Glm5NextLaunchBf16Linear(
         buffers->kda_decay_latent_bf16,
         buffers->kda_decay_up_weight,
@@ -1666,9 +1493,6 @@ static int32_t Glm5NextLayerKda(
         Glm5NextProbeVecF32(stream,buffers->kda_retention,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"retention");
         Glm5NextProbeVecF32(stream,buffers->kda_write_gate,rank_heads,buffers->layer_index,(uint32_t)vec_pass,"write_gate");
     }
-    /* THE DELTA RULE'S 64 KiB OF DYNAMIC SHARED IS PAST THE 48 KiB DEFAULT
-     * (k3's identical lesson): the launch fails with invalid argument on
-     * device unless cudaFuncSetAttribute opts this instantiation in. */
     status = Glm5NextDeltaRuleOptIn(
         GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float));
     if (status != LM_LAUNCH_OK)
@@ -1710,8 +1534,6 @@ static int32_t Glm5NextLayerKda(
     {
         Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"delta_out");
     }
-    /* RMSNorm before the gate (head-wise, fp32 strict), then the sigmoid
-     * gate that has been waiting in kda_gate_bf16. */
 #ifdef GLM5_NEXT_KDA_DEBUG_LAUNCHES
     fprintf(stderr,"kda norm: grid %llu threads %u shared %u dim %u\n",
         (unsigned long long)((uint64_t)rows * rank_heads),GLM5_NEXT_LAYER_THREADS,
@@ -1751,10 +1573,6 @@ static int32_t Glm5NextLayerKda(
         Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"delta_gated");
         Glm5NextProbeVecU16(stream,buffers->kda_gate_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"kda_gate");
     }
-    /* Stage the gated y in kv_slot (the k scratch is dead once the delta
-     * rule has consumed it) so the out-GEMM writes the FULL-WIDTH rank
-     * partial straight into attention_out_bf16 - the buffer the chain
-     * reduces, shared with the MLA path and the MLP finalize. */
     LM_LAUNCH(
         (LmCopyRowsKernel<GLM5_NEXT_LAYER_THREADS>),
         dim3((rank_v + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS,rows),
@@ -1801,16 +1619,6 @@ static int32_t Glm5NextLayerKda(
     return(status);
 }
 
-/* -- hyper-connections (dsv4 donor, glm5_next constants) ---------------------
- *
- * mHC per the reference: mixes are fn-dots over the UNWEIGHTED-RMSNorm'd
- * flattened streams; pre = sigmoid(w*s0 + b0) + eps; post = 2*sigmoid(...);
- * comb = softmax(+eps) then ONE column normalisation and 19 alternating
- * row/column pairs (sinkhorn 20) - dsv4's iteration structure exactly,
- * with the first row pass elided by the softmax. The final head collapse
- * is an UNWEIGHTED MEAN (dsv4 weights it), then the model norm.
- *
- * One thread per row for the split: hc is 4, comb fits in 16 registers. */
 __global__ void Glm5NextHcSplitSinkhornKernel(
     const float *__restrict__ mixes_f32,
     const float *__restrict__ scale3_f32,
@@ -1880,13 +1688,6 @@ __global__ void Glm5NextHcSplitSinkhornKernel(
         comb_f32[(uint64_t)row * hc * hc + i] = comb[i];
 }
 
-/* Mix projection: 24 fp32 dots of fn against the flattened streams,
- * scaled by the rsqrt of the flattened mean square (the reference's
- * UnweightedRMSNorm applied to the mix, exactly). The staging is TILED at
- * 4096 floats (16 KB shared) like dsv4's pattern: the flat row is 4 x
- * 4096 = 64 KB, over the default dynamic-shared limit, so a single-pass
- * stage would fail launch with invalid argument. The fn weights are F32
- * in the pack (the checkpoint stores BF16; the packer upcasts once). */
 #define GLM5_NEXT_HC_MIX_TILE 4096u
 __global__ void Glm5NextHcMixKernel(
     const uint16_t *__restrict__ streams_bf16,
@@ -1905,11 +1706,9 @@ __global__ void Glm5NextHcMixKernel(
     uint32_t mix, element, tile, tile_end, tile_elements;
     const uint32_t warps = GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES;
     float value, total = 0.0f, accumulator;
-    float accum[4]; /* warps (8) >= mix rows per warp step of 3 used below */
+    float accum[4];
     if (row >= row_count)
         return;
-    /* Accumulate per-mix partials over tiles: mix_rows (24) exceeds the
-     * warp count (8), so each warp carries ceil(24/8) = 3 mixes. */
     for (mix = 0u; mix < 3u; mix++)
         accum[mix] = 0.0f;
     for (tile = 0u; tile < flat_dimension; tile += GLM5_NEXT_HC_MIX_TILE)
@@ -1954,8 +1753,6 @@ __global__ void Glm5NextHcMixKernel(
                 accum[mix / warps] * inverse_shared[0];
 }
 
-/* Stream collapse for the sublayer input, and the residual snapshot the
- * post step mixes back in: one block tile per (row, element range). */
 __global__ void Glm5NextHcPreReduceKernel(
     const uint16_t *__restrict__ streams_bf16,
     const float *__restrict__ pre_f32,
@@ -1988,8 +1785,6 @@ __global__ void Glm5NextHcPreReduceKernel(
     }
 }
 
-/* Sublayer output placement: streams_new[s] = post_s * out + sum_r
- * comb[r][s] * snapshot_r. */
 __global__ void Glm5NextHcPostKernel(
     const uint16_t *__restrict__ out_bf16,
     const uint16_t *__restrict__ snapshot_bf16,
@@ -2031,8 +1826,6 @@ __global__ void Glm5NextHcPostKernel(
     }
 }
 
-/* Final head collapse: the UNWEIGHTED MEAN of the streams (dsv4 weights
- * its hc_head; glm5_next does not), ready for the model norm + lm_head. */
 __global__ void Glm5NextHcHeadMeanKernel(
     const uint16_t *__restrict__ streams_bf16,
     uint16_t *__restrict__ reduced_bf16,
@@ -2057,11 +1850,6 @@ __global__ void Glm5NextHcHeadMeanKernel(
     }
 }
 
-/* One attention site under HC: mix -> sinkhorn -> collapse -> sublayer ->
- * place. The sublayer (KDA or MLA) receives `collapsed` as its hidden
- * input and writes `sublayer_out`; every sublayer norm runs in the PLAIN
- * form (residual bookkeeping belongs to the HC post step, not to the
- * sublayer). */
 static int32_t Glm5NextHcSite(
     const Glm5NextLayerBuffers *buffers,
     const void *fn_weight,
@@ -2084,7 +1872,7 @@ static int32_t Glm5NextHcSite(
         GLM5_NEXT_LAYER_THREADS,
         GLM5_NEXT_HC_MIX_TILE * sizeof(float),
         stream,
-        buffers->hidden_bf16 /* the streams surface */,
+        buffers->hidden_bf16   ,
         (const float *)fn_weight,
         buffers->hc_mixes_f32,
         rows,
@@ -2146,18 +1934,6 @@ static int32_t Glm5NextHcPost(
     return LM_LAUNCH_OK;
 }
 
-/* THE swiglu_limit 10.0 CLAMP IS NOT WIRED - recorded TWICE now. The
- * first attempt (Glm5NextSwigluLimitKernel, this lane) swapped it in for
- * LmSiluMulKernel at the dense/expert/shared sites and the MoE partial
- * went NaN from the first wave (conviction: the L3 mlp-post probe flipped
- * to nan while the attention post stayed healthy; reverting ONLY the swap
- * cleaned the run and restored the attractor-baseline generation). The
- * kernel is mathematically identical on finite inputs, so the mechanism is
- * latent in the MoE chain's codegen/registers, not in the clamp arithmetic
- * - unwired until that is understood. Reference form when it is retried:
- * gate.clamp(max=limit), up.clamp(-limit, limit), silu(gate)*up
- * (transformers glm5_next modeling source; dsv4 SparkDsv4SwigluClampKernel
- * precedent). */
 
 static int32_t Glm5NextLayerDenseMlp(
     const Glm5NextLayerBuffers *buffers,
@@ -2177,7 +1953,6 @@ static int32_t Glm5NextLayerDenseMlp(
         return LM_LAUNCH_ERR_SHAPE;
     }
 
-    /* PLAIN norm of the HC-collapsed input (see the attention note). */
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
         rows,
@@ -2195,12 +1970,6 @@ static int32_t Glm5NextLayerDenseMlp(
 
     if (buffers->dense_gate_up_fused != 0u)
     {
-        // The pack stores the dense gate-up stack as [up | gate] (matching the
-        // routed-expert convention), so one GEMM over the concatenated tensor
-        // writes that [up | gate] layout directly and LmSiluMulKernel runs with
-        // gate_first=false - the two-launch form below re-reads the normed
-        // activation and pays a second launch for the same weight bytes.
-        // Per-element math is identical either way; only the launch count differs.
         status = Glm5NextLaunchBf16Linear(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
@@ -2542,18 +2311,6 @@ static int32_t Glm5NextLayerMoe(
     {
         return status;
     }
-    /* THE MOE PARTIAL LANDS IN attention_out_bf16 - the buffer the chain
-     * reduces - as the routed sum, then the replicated-compute shared
-     * expert's rank partial adds IN PLACE. The finalize previously wrote
-     * the routed sum into hidden_bf16 (the HC streams surface) and the
-     * add overwrote it with attention_out + shared_out: the routed experts
-     * never reached the residual, and REDUCE_MLP summed sixteen identical
-     * copies of the already-reduced attention output - every MoE layer
-     * placed 16x the attention sublayer output as its "FFN" contribution
-     * (receipt: second r0 post == 16.000000x first r0 post on L42/L44).
-     * Rank-invariant, TP1-invisible (the reduce no-ops), and the TP1
-     * oracle mirrored the chain, so every gate passed. The dense tail
-     * (layers 0-2) always wrote attention_out directly and was correct. */
     LM_LAUNCH(
         (LmAddRowsKernel<GLM5_NEXT_LAYER_THREADS>),
         dim3(
@@ -2595,10 +2352,6 @@ static int32_t Glm5NextHead(
     }
 
     tiles = (vocabulary + GLM5_NEXT_HEAD_TILE - 1u) / GLM5_NEXT_HEAD_TILE;
-    /* glm5_next: the layer loop leaves the HC STREAMS in hidden_bf16; the
-     * head collapse is the UNWEIGHTED MEAN (hc_mean_bf16, filled by
-     * Glm5NextHcHeadMeanKernel in the wave runner) followed by this plain
-     * norm - residual_bf16 carries nothing at this point. */
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
         rows,
@@ -2644,15 +2397,6 @@ static int32_t Glm5NextHead(
         : LM_LAUNCH_ERR_LAUNCH;
 }
 
-/* R1 screened head at B1: the certified-FP8 path (kimi's #1 rock). The
- * norm kernel is the SAME fused residual RMS norm the full-vocab head
- * runs (verbatim - the normed hidden is identical by construction); the
- * certified screen then bounds-screens the shard's rows in FP8 and
- * rescores the candidates EXACTLY in BF16, so the emitted (token,score)
- * equals the full-vocab argmax the commit kernel would produce - at a
- * fraction of the byte traffic (payload is 1B/element vs BF16 2B, and
- * only the screened rows are rescored). rows==1 only; multi-row keeps
- * the full-vocab candidate path (batch amortizes it). */
 static int32_t Glm5NextHeadCertifiedB1(
     const Glm5NextLayerBuffers *buffers,
     const void *head_norm_weight,

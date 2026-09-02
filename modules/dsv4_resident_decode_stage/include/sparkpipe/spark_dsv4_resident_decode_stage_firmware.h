@@ -5,9 +5,6 @@
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 
-// The batch-variant tuning header controls only the per-submit compute width.
-// Resident lane state has its own ceiling so the scheduler can keep more
-// sequences bound than one CUDA submission can process.
 #include "sparkpipe/spark_dsv4_batch_tuning.h"
 
 #ifdef __cplusplus
@@ -16,36 +13,6 @@ extern "C" {
 
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS 128u
 
-/*
- * DeepSeek V4 resident decode stage. This header deliberately includes NO
- * model header: the translation unit picks Flash or Pro by including its
- * spark_dsv4[_pro]_model.h first (shared include guard) or via the build's
- * -include, and every view below is geometry-free - dimensions live in the
- * entries and the variant macros, verified at load.
- *
- * The stage boundary carries the FOUR hyper-connection streams: a boundary
- * packet row is hc_mult x hidden bf16 (BOUNDARY_STREAM_ELEMENTS), because
- * mHC never collapses between layers - only hc_pre inside a block and the
- * head reduction do. Stage 0 expands the embedding into four identical
- * streams; the last stage's head reduction is the only exit.
- *
- * Version 3 executes GA baseline DECODE batches (one token per lane per
- * frame) across
- * all three attention kinds, both router paths, and the full mHC
- * machinery. Prefill dense work executes every frame row together. Only the
- * short-window cache publication and sparse attention stay round-major: one
- * row per live lane, followed immediately by that row's attention. This keeps
- * the 128-slot ring causal while batching projections, compression, mHC, and
- * MoE across the whole frame. GA DSpark execution remains refused, its three
- * checkpoint layers are excluded from baseline packs, and serving reports
- * zero speculative-token capacity.
- * DSV4 defines the bytes and offsets within a 128-token cache page. The
- * model-neutral cache runtime owns logical pages, residency, prefix sharing,
- * prefetch, and eviction; this device contract owns only DSV4 page geometry
- * and the CUDA addresses used by its kernels.
- * Every accepted frame completes externally from one stream-ordered host
- * callback; submit never synchronizes a successful CUDA frame.
- */
 
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 13u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 5u
@@ -64,18 +31,13 @@ extern "C" {
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT 61u
 #define SPARK_DSV4_WEIGHT_READ_AHEAD_MAX_BLOCK_COUNT 48u
 #define SPARK_DSV4_WEIGHT_READ_AHEAD_THREAD_COUNT 256u
-/* TP graphs are fixed stage-local islands, counted per pipeline slot. */
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_ISLAND_COUNT \
 	(3u * SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT + 1u)
-/* TP1 retains the older shape cache and its independent capacity ceiling. */
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT 64u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_PEER_COUNT 16u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_TP_HOST_NAME_BYTES 64u
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL UINT32_C(0x00000001)
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIPELINE_PARALLEL UINT32_C(0x00000002)
-/* Deployment opt-in for the DSpark speculative path. The serving adapter
- * translates the SPARK_DSV4_DSPARK launch environment into this typed
- * flag; the compute module itself never reads the process environment. */
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_DSPARK UINT32_C(0x00000004)
 #define SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS \
 	(SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL | \
@@ -113,12 +75,6 @@ typedef struct SparkDsv4ResidentDecodeStageNodeContext
 	SparkTpDeviceCollectiveTopology tp_collective_topology;
 	const char *tp_collective_backend_module_path;
 	uint32_t tp_collective_control_port_base;
-	/*
-	 * TP1: optional dynamic decode-shape cache capacity; zero keeps eager
-	 * execution. TP>1: exact number of prewarmed stage-local graph islands
-	 * PER PIPELINE SLOT. It must equal 3 * layer_count + 1; zero, a short
-	 * count, capture failure, or an unsealed entry fails initialization.
-	 */
 	uint32_t cuda_graph_count;
 	const char *stage_pack_path;
 } SparkDsv4ResidentDecodeStageNodeContext;
@@ -180,10 +136,6 @@ typedef struct SparkDsv4IndexerWeights
 	SparkDsv4CompressorWeights compressor;
 } SparkDsv4IndexerWeights;
 
-// Routed experts are STACKED: one view spans all experts, expert e's block
-// is rows_per_expert consecutive rows; the launch offsets payload and
-// scale by e * rows_per_expert. Exactly one of bias / tid2eid is non-null,
-// the hash pin.
 typedef struct SparkDsv4MoeWeights
 {
 	SparkDsv4LinearView gate;
@@ -207,11 +159,6 @@ typedef struct SparkDsv4HcWeights
 	const float *ffn_scale_f32;
 } SparkDsv4HcWeights;
 
-/* DSpark draft-only extras (reference: inference/model.py DSparkBlock).
- * Stage 0 projects the concatenated target-layer hiddens; stage 2 carries
- * the output norm, the 5-position hc head, the markov logits-bias head
- * (vocab x rank embedding + head), and the acceptance confidence head.
- * The draft transformer layers themselves use SparkDsv4LayerWeights. */
 typedef struct SparkDsv4MtpWeights
 {
 	SparkDsv4LinearView main_proj;

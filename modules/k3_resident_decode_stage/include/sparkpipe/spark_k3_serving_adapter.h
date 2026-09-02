@@ -7,19 +7,6 @@
 extern "C" {
 #endif
 
-/*
- * K3 serving adapter: the residentd-facing SparkModelServingAdapterInterface
- * over the K3 stage runner. Configuration JSON members (under the runtime
- * root's adapter config path):
- *   stage_pack_path      - the rank pack for this rank/stage
- *   tp_degree, tp_rank   - the TP4 group placement
- *   max_sequences, max_rows, resident_capacity, kv_pages, kv_page_bytes
- *   tp_collective: { listen_port, connect_timeout_milli,
- *     operation_timeout_milli, collective_identifier,
- *     peers: ["host:port", ...] } - peers are the step topology
- */
-// Exported under the canonical symbol the runtime dlsym's - see
-// SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL in spark_model_serving_adapter.h.
 const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void);
 
 #ifdef __cplusplus

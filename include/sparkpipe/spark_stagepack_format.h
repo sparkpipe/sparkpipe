@@ -8,22 +8,6 @@
 extern "C" {
 #endif
 
-/*
- * Stagepack format library: the ONE implementation of the shape algebra and
- * the header comparison that the family pack formats share. The v2-style
- * pack container (magic, format version, byte-exact header, byte-exact
- * directory entries, and the per-kind shard axis a TP rank narrows along)
- * is stated once here; a family declares its geometry as data and keeps
- * only the tensors that are genuinely its own.
- *
- * The shared axis is the per-layer tensor inventory the sibling families
- * carry with identical shape formulas - the norms, the routed/shared MoE
- * projections (the routed ones narrow along the expert-shard axis: rows =
- * shard_count x per-shard rows), and the GDN set. Kind numbers are the
- * values the v1 family inventories already agree on; the neutral
- * weight-format and layer-class codes are the firmware ABI values, pinned
- * per family with _Static_assert so a family cannot drift silently.
- */
 
 #define SPARK_STAGEPACK_FORMAT_WEIGHT_BF16 0u
 #define SPARK_STAGEPACK_FORMAT_WEIGHT_F32 1u
@@ -66,10 +50,6 @@ typedef struct SparkStagePackTensorShape
 	uint32_t layer_class;
 } SparkStagePackTensorShape;
 
-/*
- * The family's geometry, as data. norm_width is the per-layer norm width
- * (families differ: hidden width vs hyper-connection stream width).
- */
 typedef struct SparkStagePackGeometryTable
 {
 	uint32_t norm_width;
@@ -85,22 +65,14 @@ typedef struct SparkStagePackGeometryTable
 
 void SparkStagePackShapeInit(SparkStagePackTensorShape *shape);
 
-/* The shared EVERY_LAYER axis; -1 for kinds outside it. */
 int32_t SparkStagePackShapeEveryLayerCommon(uint32_t tensor_kind,
 	const SparkStagePackGeometryTable *geometry,
 	SparkStagePackTensorShape *shape);
 
-/* The shared GDN_LAYER axis; -1 for kinds outside it. */
 int32_t SparkStagePackShapeGdnCommon(uint32_t tensor_kind,
 	const SparkStagePackGeometryTable *geometry,
 	SparkStagePackTensorShape *shape);
 
-/*
- * The byte-exact v2-style header, stated once. Family header structs must
- * prove layout identity with SPARK_STAGEPACK_HEADER_LAYOUT_PROOF (a drift
- * is a compile error, not a silent format change); the comparison then
- * runs once, here, for every family.
- */
 typedef struct SparkStagePackHeaderCommon
 {
 	uint32_t magic;
@@ -139,9 +111,6 @@ typedef struct SparkStagePackHeaderCommon
 		offsetof(SparkStagePackHeaderCommon,field), \
 		"stage pack header layout drift: " #family_type "." #field);
 
-/* A complete declaration (no trailing semicolon needed): an anonymous-proof
- * struct whose members are static assertions, so a family header admits
- * itself to the shared comparison by compiling this once. */
 #define SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(family_type) \
 	struct SparkStagePackHeaderLayoutProof##family_type { \
 		_Static_assert(sizeof(family_type) == SPARK_STAGEPACK_HEADER_BYTES, \
@@ -176,7 +145,6 @@ typedef struct SparkStagePackHeaderCommon
 		SPARK_STAGEPACK_HEADER_FIELD_PROOF(family_type, file_bytes) \
 	}
 
-/* Field-by-field comparison; 0 on match, negative group id on drift. */
 int32_t SparkStagePackHeaderMatches(const SparkStagePackHeaderCommon *file_header,
 	const SparkStagePackHeaderCommon *expected);
 

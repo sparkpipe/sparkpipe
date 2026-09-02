@@ -1,26 +1,3 @@
-/* Shared qwen38 PP-pair serving-adapter body (qwen38_max / qwen4_flash).
- *
- * The two PP serving adapters were one file pasted twice (a 768-line
- * identical run): the env-configured stage geometry, the paged-KV block
- * table bookkeeping, the per-frame hidden-transport shim walk, the frame
- * build/run, and the whole interface spine. This header is that body on
- * top of spark_qwen38_serving_adapter_common.h, with the family's honest
- * differences as explicit macro policy the includer defines first:
- *
- *   SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION / _CONTRACT_SHA256
- *       the family's compile-line contract pins (the family file guards
- *       them with #error first)
- *   SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree)
- *       the config's tp_degree acceptance rule
- *   SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state) / _ENV_STAGE_INDEX(state)
- *       the stage geometry values exported to the module's environment
- *   SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state)
- *       the family bind step inside initialize (qwen38_max arms its
- *       fail-closed MTP provider slot; qwen4_flash has none)
- *
- * The descriptor, the struct layouts, and the capability extras stay
- * family-side (the template's identity-is-family-data rule).
- */
 #ifndef SPARKPIPE_SPARK_QWEN38_PP_SERVING_ADAPTER_COMMON_H
 #define SPARKPIPE_SPARK_QWEN38_PP_SERVING_ADAPTER_COMMON_H
 
@@ -245,9 +222,6 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverLane)(
 	required = (uint32_t)((end_position + SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) - 1u) / SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
 	if ( required > state->blocks_per_lane )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	/* Commit each block as it is popped: on mid-loop capacity exhaustion
-	 * the lane count already covers every popped block, so the rollback
-	 * (ReleaseLane) can return them instead of leaking them. */
 	for (ordinal=state->lane_block_counts[slot]; ordinal<required; ordinal++)
 	{
 		if ( state->free_block_count == 0u )
@@ -286,8 +260,6 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverSubmission)(
 		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverLane)(state,slot,end_position);
 		if ( status != SPARK_STATUS_OK )
 		{
-			/* Coverage failure is KV exhaustion: drop every lane the
-			 * submission touches so a partial allocation cannot linger. */
 			SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDropSubmission)(state,submission);
 			return(status);
 		}
@@ -381,9 +353,6 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingBuildFrame)(
 	state->shim.output_base = submission->hidden_output_address;
 	if ( prefill != 0u )
 	{
-		/* Round-major submissions interleave lanes by wave, so with unequal
-		 * lane lengths a lane's rows sit at irregular flat offsets; gather
-		 * the lane's rows by explicit flat index instead of a fixed pitch. */
 		uint32_t lane_row,flat;
 		lane_row = 0u;
 		for (flat=0u; flat<submission->row_count; flat++)
@@ -578,9 +547,6 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit)(
 		status = SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status != SPARK_STATUS_OK )
 	{
-		/* A failed submission fires no completion, matching the glm52/dsv4
-		 * adapters; every lane it touched drops back to cold so the next
-		 * touch is a position-zero reset on both sides of the contract. */
 		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDropSubmission)(state,submission);
 		pending->common.active = 0u;
 		return(status);
@@ -724,7 +690,6 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitialize)(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
-		/* PP geometry derives from the config's tp_degree. */
 		uint32_t pp,base,extra;
 		state->pp_stage_count = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_STAGE_COUNT) / state->tp_degree;
 		if ( state->pp_stage_count > SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_MAX_PP_STAGE_COUNT) )
@@ -774,4 +739,4 @@ const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(vo
 {
 	return(&SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInterface));
 }
-#endif /* SPARKPIPE_SPARK_QWEN38_PP_SERVING_ADAPTER_COMMON_H */
+#endif

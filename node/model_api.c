@@ -1,34 +1,3 @@
-/* model_api — the production API entry point.
- *
- * Architecture: one persistent engine session driven by a single worker
- * thread; HTTP connection threads enqueue requests and wait on
- * per-request condition variables. The daemon is single-client; the
- * engine worker IS that client.
- *
- *   HTTP callers (many)
- *          |
- *   [accept → parse → enqueue → wait on condvar]
- *          |
- *   [engine worker thread]
- *     loop: dequeue → Submit → CloseAdmission
- *           Progress + poll → events fire → signal waiting threads
- *
- * Endpoints:
- *   GET  /health           → {"status":"ok","served":N,"tokenizer":BOOL}
- *   POST /v1/completions   → {"prompt_token_ids":[...],"max_tokens":N}
- *                          | {"prompt":"text","max_tokens":N}   (see below)
- *        → {"object":"text_completion","tokens":[...],"text":"...","status":0}
- *
- * Text prompts need the tokenizer sidecar: a deployment whose config carries
- * a "tokenizer":{"path":...} reference (the asset ships beside the pack and
- * resolves against the runtime root). Without it, a text prompt gets a loud
- * 400 naming the missing sidecar — never silent tokenization. The token-id
- * form stays the internal wire format and is always accepted. "text" rides
- * the response only when the sidecar is loaded, so the stream shape stays
- * backward compatible for token-id clients.
- *
- * Build: make build/sparkpipe_model_api
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,8 +25,6 @@
 
 #define API_MAX_INFLIGHT 16u
 
-/* /v1/models id when SPARK_MODEL_ID is absent (env is the bridge until the
- * island-catalog registration formalizes the source). */
 #define API_DEFAULT_MODEL_ID "sparkpipe-model"
 
 typedef struct ApiRequest
@@ -68,15 +35,15 @@ typedef struct ApiRequest
 	uint32_t max_tokens;
 	char tokens_json[API_TOKEN_BUF_BYTES];
 	volatile uint32_t tokens_json_len;
-	uint32_t *output_token_ids;  /* same stream as tokens_json, as numbers, for the text edge */
+	uint32_t *output_token_ids;
 	volatile uint32_t output_token_count;
 	volatile int done;
 	volatile int submitted;
-	volatile int inflight;   /* worker snapshot in hand: defer unlink+free */
-	volatile int orphaned;   /* waiter gone; worker completes the free */
+	volatile int inflight;
+	volatile int orphaned;
 	volatile uint32_t status;
-	SparkModelBatchRequestHandle handle; /* 0 until accepted; the cancel path */
-	uint32_t *stop_tokens;       /* per-request stops; freed at unlink */
+	SparkModelBatchRequestHandle handle;
+	uint32_t *stop_tokens;
 	uint32_t stop_token_count;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -96,17 +63,11 @@ typedef struct ApiState
 
 static ApiState S;
 
-/* The tokenizer sidecar: loaded once at startup when the deployment names a
- * tokenizer asset, read-only afterwards (encode/decode take per-call
- * workspaces, so concurrent connection threads never share scratch state). */
 static SparkTokenizerSidecar Sidecar;
 static int HaveSidecar;
-/* The deployment's engine-level EOS set; the text edge cuts decoded output
- * at the first of these or per-request stop, mirroring the token stream. */
 static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
 static uint32_t EngineStopTokenCount;
 
-/* ===================== worker: engine driving ===================== */
 
 static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 {
@@ -114,9 +75,6 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 	(void)ctx;
 	if (ev == 0)
 		return;
-	/* The walk must hold the queue lock: a completed request is unlinked
-	 * and freed by its connection thread under the same lock, and an
-	 * unlocked walk could chase a node through freed memory. */
 	pthread_mutex_lock(&S.queue_mutex);
 	for (r = S.queue_head; r != 0; r = r->next)
 	{
@@ -134,23 +92,6 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 				}
 			if ( is_request_stop )
 			{
-				/* OpenAI semantics: the stop token is emitted, then
-				 * generation ends. The engine's own EOS set can't see
-				 * per-request stops, so the API completes the request:
-				 * mark done (the worker's orphan/inflight reaping
-				 * handles an in-flight submission's natural end) and
-				 * cancel to stop paying GPU for further tokens.
-				 * THE CANCEL RUNS OUTSIDE BOTH LOCKS: the engine can
-				 * invoke this callback synchronously from Cancel
-				 * (completion of the cancelled request), and api_event
-				 * takes the queue mutex while the COMPLETED branch takes
-				 * the request mutex - cancelling under either lock
-				 * self-deadlocks the worker (sample receipt: worker in
-				 * api_event holding queue_mutex, waiting r->mutex, while
-				 * the disconnecting connection held r->mutex through
-				 * Cancel and waited queue_mutex). inflight defers the
-				 * connection thread's unlink+free until the worker's
-				 * last touch, the same contract as the submit path. */
 				pthread_mutex_lock(&r->mutex);
 				r->done = 1;
 				pthread_cond_signal(&r->cond);
@@ -195,15 +136,6 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 	pthread_mutex_unlock(&S.queue_mutex);
 }
 
-/* The orphan handshake, worker side (queued-disconnect correctness): a
- * client may depart between the submit snapshot and Submit itself. The
- * disconnect branch sets orphaned+done and reads submitted under r->mutex;
- * this side sets submitted under the queue mutex, then reads orphaned under
- * r->mutex. Whichever mutex section lands second sees the other's flag, so
- * exactly one side cancels - here when the departure beat the submit, there
- * when it followed it. The cancel runs outside both locks (the engine can
- * invoke api_event synchronously, and it takes the queue mutex first); the
- * reaper lives in the same worker thread and cannot free mid-call. */
 static void api_orphan_cancel_after_submit(ApiRequest *r)
 {
 	SparkModelBatchRequestHandle orphan_handle = 0;
@@ -222,20 +154,6 @@ static void *api_worker(void *arg)
 	(void)arg;
 	while (S.running)
 	{
-		/* submit every waiting request, oldest first: the engine batches
-		 * concurrent submissions into shared prefill/decode rounds, so
-		 * holding back everything behind the head serialized the API and
-		 * starved batching (audit: "strictly serial queue head"). */
-		/* SUBMIT MUST RUN OUTSIDE THE QUEUE LOCK. The engine can invoke
-		 * the event callback synchronously from Submit (admission
-		 * rejection, immediate completion), and api_event takes this
-		 * same non-recursive mutex - calling Submit under it self-
-		 * deadlocks the worker (gdb receipt: worker parked in
-		 * pthread_mutex_lock at api_event while holding the lock at
-		 * the Submit call site; every connection thread piles up on
-		 * the same mutex). Snapshot pending requests under the lock,
-		 * submit after unlocking; inflight defers the connection
-		 * thread's unlink+free until the worker's last touch. */
 		{
 			ApiRequest *pending[API_MAX_INFLIGHT];
 			uint32_t pending_count = 0;
@@ -311,16 +229,12 @@ static void *api_worker(void *arg)
 					pthread_mutex_unlock(&r->mutex);
 				}
 				pthread_mutex_unlock(&S.queue_mutex);
-				/* orphan handshake: no-ops on a failed submit (handle 0);
-				 * cancels when the client departed in the window above */
 				api_orphan_cancel_after_submit(r);
 				pthread_mutex_lock(&S.queue_mutex);
 				r->inflight = 0;
 				pthread_mutex_unlock(&S.queue_mutex);
 			}
 		}
-		/* drive the engine only when we have submitted work — calling
-		 * Progress/poll on a freshly-connected idle engine segfaults */
 		if (S.queue_head != 0)
 		{
 			(void)SparkModelBatchEngineProgress(S.engine, 4u);
@@ -352,7 +266,6 @@ static void *api_worker(void *arg)
 	return 0;
 }
 
-/* ===================== HTTP layer ===================== */
 
 static void send_all(int fd, const char *data, size_t len)
 {
@@ -382,8 +295,6 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 	char *path, size_t path_sz, char **body, char **body_base,
 	uint32_t *body_len)
 {
-	/* heap buffer: a static __thread of 8MB overflows TLS when the first
-	 * connection thread is created (8MB TLS + 8MB stack = crash) */
 	char *buf = (char *)malloc(API_MAX_BODY + 8192u);
 	size_t buf_cap = API_MAX_BODY + 8192u;
 	size_t total = 0, header_end = 0;
@@ -447,7 +358,6 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 	}
 	if (content_length == 0)
 	{
-		/* bodyless request (GET): succeed with an empty body */
 		buf[header_end] = '\0';
 		*body = buf + header_end;
 		*body_base = buf;
@@ -502,9 +412,6 @@ static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
 	return count;
 }
 
-/* JSON string escaping for the decoded text: control characters escape,
- * well-formed UTF-8 passes through byte for byte. Returns 0 when the buffer
- * is too small (the caller answers 500 rather than truncate text). */
 static int append_json_escaped(char *buf, size_t cap, size_t *len,
 	const char *text, uint32_t text_bytes)
 {
@@ -551,8 +458,6 @@ static int append_json_escaped(char *buf, size_t cap, size_t *len,
 	return 1;
 }
 
-/* The loud 400 for a text prompt on a deployment without a sidecar. Names
- * the missing piece so the fix is config, not code archaeology. */
 static void send_tokenizer_unavailable(int fd)
 {
 	send_response(fd, 400,
@@ -570,9 +475,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	int32_t root, mt;
 	uint32_t *request_stops = 0;
 	uint32_t request_stop_count = 0;
-	/* zero-init: the JSON parser's internal Destroy can free uninitialized
-	 * pointers if the document is stack garbage (valgrind: invalid free
-	 * from SparkJsonDocumentDestroy json.c:446) */
 	memset(&doc,0,sizeof(doc));
 	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
 	char *prompt_text = 0;
@@ -588,8 +490,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		prompt_len = parse_token_array(&doc, root, "prompt_token_ids", &prompt);
 	if (root >= 0)
 	{
-		/* Text prompt (the sidecar form). Copied out unescaped; the ids
-		 * come from the sidecar encode below, never inside the engine. */
 		int32_t pm = SparkJsonFindObjectMember(&doc, root, "prompt");
 		if (pm >= 0)
 		{
@@ -608,8 +508,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	if (root >= 0)
 	{
-		/* Per-request stops (OpenAI-compatible): stored on the request,
-		 * checked at TOKEN events — complements the engine-level EOS set. */
 		uint32_t *stops = 0;
 		uint32_t stop_len = parse_token_array(&doc, root, "stop_token_ids", &stops);
 		if (stop_len > 0 && stop_len <= API_MAX_STOP_TOKENS)
@@ -637,16 +535,12 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	if (prompt_text != 0 && !HaveSidecar)
 	{
-		/* The loud contract: text is ONLY accepted when the deployment
-		 * loaded a sidecar. Never fall back to silent tokenization. */
 		free(prompt_text);
 		send_tokenizer_unavailable(fd);
 		return;
 	}
 	if (prompt_text != 0)
 	{
-		/* The bounded encode edge: text -> ids here, then the request joins
-		 * the token-id path exactly as if the client had sent ids. */
 		SparkTokenizerWorkspace workspace;
 		SparkTokenizerEncoding encoding;
 		SparkStatus encode_status;
@@ -659,7 +553,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 			return;
 		}
 		SparkTokenizerWorkspaceReset(&workspace);
-		/* Byte-level worst case: one token per byte. */
 		prompt = malloc((size_t)prompt_text_bytes * sizeof(uint32_t) + sizeof(uint32_t));
 		if (prompt == 0 ||
 			SparkTokenizerWorkspaceInitialize(&workspace, prompt_text_bytes + 1u) != SPARK_STATUS_OK)
@@ -734,20 +627,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		S.queue_head = req;
 	S.queue_tail = req;
 	pthread_mutex_unlock(&S.queue_mutex);
-	/* Disconnect-aware wait (the unwired-cancel correctness bug): a
-	 * departed client must stop burning GPU. Poll the socket for EOF
-	 * alongside the condition; recv(MSG_PEEK|DONTWAIT)==0 = peer gone
-	 * -> cancel the engine request, mark orphaned, stop waiting. The
-	 * worker's completion path already honors `orphaned` (deferred
-	 * free), so this only ADDS the disconnect branch.
-	 * NO LOCK IS HELD ACROSS THE LOOP BODY: the mutex is taken per
-	 * iteration around the predicate + timedwait only. Holding it
-	 * across the loop (a earlier draft) self-deadlocked every slow
-	 * request: the connection thread relocked its own mutex at the
-	 * iteration lock and froze holding it, which then stopped the
-	 * worker's COMPLETED branch at the same mutex (sample receipt:
-	 * worker in api_event waiting r->mutex under queue_mutex, three
-	 * connection threads frozen at the iteration lock). */
 	while (!req->done && S.running)
 	{
 		struct pollfd disconnect_probe;
@@ -784,28 +663,11 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	if (!req->done && S.running)
 	{
-		/* the disconnect branch: cancel if submitted, mark orphaned.
-		 * orphaned is set INSIDE the mutex section that reads submitted -
-		 * the worker's post-submit orphan handshake (in api_worker) reads
-		 * orphaned under this same mutex, so whichever side runs second
-		 * sees the other's flag and exactly one side cancels. The cancel
-		 * itself runs OUTSIDE req->mutex: the engine can invoke api_event
-		 * synchronously from Cancel, and api_event's COMPLETED branch
-		 * takes this same request mutex while holding the queue mutex -
-		 * cancelling under req->mutex would reintroduce the lock-order
-		 * inversion against the worker. */
 		uint32_t cancel_submitted;
 		SparkModelBatchRequestHandle cancel_handle;
 		pthread_mutex_lock(&req->mutex);
 		cancel_submitted = req->submitted;
 		cancel_handle = cancel_submitted ? req->handle : 0;
-		/* done + orphaned are set INSIDE the same mutex section that reads
-		 * submitted: done makes the worker's existing !done snapshot
-		 * predicate skip a still-queued orphan (never submitted, never
-		 * burning GPU), and the worker's post-submit handshake (see
-		 * api_orphan_cancel_after_submit) reads orphaned under this same
-		 * mutex - whichever side runs second sees the other's flag, so
-		 * exactly one side cancels. */
 		req->orphaned = 1;
 		req->done = 1;
 		pthread_mutex_unlock(&req->mutex);
@@ -814,10 +676,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	if (req->status == 0 && HaveSidecar)
 	{
-		/* The decode edge: generated ids -> response text, cut at the first
-		 * engine EOS or per-request stop so stop_token_ids survive the text
-		 * round trip. Additive to the token stream; the shape stays
-		 * backward compatible. */
 		uint32_t decode_stops[API_MAX_STOP_TOKENS +
 			SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
 		uint32_t decode_stop_count = 0;
@@ -876,9 +734,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		}
 		else
 		{
-			/* A decode failure is loud: the ids came from the model, so a
-			 * text projection that cannot be produced is a model_error,
-			 * not a silent empty text. */
 			char err[160];
 			(void)snprintf(err, sizeof(err),
 				"{\"error\":{\"message\":\"tokenizer sidecar failed to decode "
@@ -905,8 +760,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 			send_response(fd, 500, "{\"error\":\"oom\"}");
 	}
 	else
-		/* OpenAI error shape: front doors (liteLLM) and clients read
-		 * {"error":{...}}, not a completion object under a 500. */
 	{
 		char err[128];
 		(void)snprintf(err, sizeof(err),
@@ -915,10 +768,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 			req->status, req->status);
 		send_response(fd, 500, err);
 	}
-	/* dequeue - DEFERRED while the worker holds a submit snapshot
-	 * (inflight): the worker touches the request after Submit outside
-	 * the lock, so freeing here would race; the worker reaps the
-	 * orphan at the top of its loop. */
 	pthread_mutex_lock(&S.queue_mutex);
 	if (req->inflight)
 	{
@@ -941,10 +790,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		}
 	}
 	pthread_mutex_unlock(&S.queue_mutex);
-	/* The request is unlinked under the queue lock and the worker's event
-	 * walk holds the same lock, so nothing can reach it anymore: the
-	 * waiter already woke (done was signaled under req->mutex) and the
-	 * worker's last touch of this request preceded that signal. */
 	pthread_mutex_destroy(&req->mutex);
 	pthread_cond_destroy(&req->cond);
 	free(req->stop_tokens);
@@ -980,10 +825,6 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
 	{
-		/* OpenAI model-list: what liteLLM's model discovery and health
-		 * probing read. The served id comes from SPARK_MODEL_ID (the
-		 * island-catalog registration will formalize the source; env is
-		 * the honest bridge until then). */
 		const char *model_id = getenv("SPARK_MODEL_ID");
 		char b[256];
 		if (model_id == 0 || model_id[0] == '\0')
@@ -1001,8 +842,6 @@ static void *api_connection(void *arg)
 		handle_completion(fd, body, body_len);
 	else
 		send_response(fd, 404, "{\"error\":\"not found\"}");
-	/* the receive buffer (up to API_MAX_BODY + 8K) is the connection's to
-	 * release; body itself is an interior pointer into it */
 	free(body_base);
 	close(fd);
 	return 0;
@@ -1042,18 +881,11 @@ int main(int argc, char **argv)
 	cfg.runtime_root = root;
 	cfg.request_capacity = 64;
 	cfg.max_context_tokens = API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS;
-	/* R2a: the prefill budget tracks the deployment's max_input_row_count
-	 * (the engine refuses a budget above it), not a hardcoded 16 - a
-	 * wide-rows deployment was silently prefilled 16 rows per submission. */
 	cfg.max_prefill_rows_per_submission = dep.runtime_limits.max_input_row_count;
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.event_function = api_event;
 	cfg.event_context = 0;
-	/* EOS wiring (the perf-walk correctness bug: stop_token_count=0
-	 * meant every request generated to FULL budget). Two sources,
-	 * both honored: the deployment env (comma-separated token ids —
-	 * the model's EOS set) and the per-request JSON body. */
 	{
 		const char *eos_env = getenv("SPARK_EOS_TOKEN_IDS");
 		if ( eos_env != 0 && eos_env[0] != '\0' )
@@ -1073,11 +905,6 @@ int main(int argc, char **argv)
 			fprintf(stderr,"model_api: %u EOS token(s) from env\n",cfg.stop_token_count);
 		}
 	}
-	/* The tokenizer sidecar: a deployment that names a tokenizer asset gets
-	 * text-in/text-out at this edge. A named-but-unloadable asset is FATAL
-	 * here - the deployment promised text serving and cannot honor it; a
-	 * silent token-id-only start would be the failure mode this lane exists
-	 * to remove. The engine's stop set is snapshotted for the decode cut. */
 	EngineStopTokenCount = cfg.stop_token_count;
 	memcpy(EngineStopTokens, cfg.stop_token_ids,
 		sizeof(uint32_t) * (size_t)cfg.stop_token_count);

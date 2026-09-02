@@ -1,40 +1,3 @@
-/*
- * Qwen 3.6 27B serving adapter: the SparkModelServingAdapterInterface face of
- * the qwen38_resident_decode_stage firmware driver.
- *
- * Two structural differences from the glm52/dsv4 adapters, both owned by the
- * module contract in spark_qwen38_max_resident_decode_stage_firmware.h:
- *
- * - The module is configured through the strict process environment (the
- *   firmware description's runtime_contract lists every variable), not
- *   through a node context struct. The adapter derives the whole slice
- *   environment from its own configuration - stage pack path, PP13 stage
- *   geometry, runtime limits, and the KV pool size implied by the
- *   max_sequence_positions cap - and sets it before driver create. One
- *   resident process hosts one stage, so the process-wide setenv is the
- *   intended channel. SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION is set to 1:
- *   the published recipe this adapter loads is the qualified execution path.
- *
- * - The module's frame contract takes first-class hidden transport callbacks
- *   and a caller-owned paged KV block table with device and host mirrors.
- *   The adapter supplies both: a per-frame transport shim that lands the
- *   submission's hidden boundary in the module's expected contiguity (decode
- *   rows are already contiguous; a multi-lane prefill is round-major across
- *   lanes, so each lane frame's rows are gathered by explicit flat row index
- *   and the frame's output is scattered back the same way), and a block
- *   allocator over the module's KV pool with the host mirror the module
- *   proves coverage against before every launch.
- *
- * Prefill frames are one lane per frame capped at max_active_sequence_count
- * positions, so a multi-lane or over-cap prefill submission is split into a
- * sequence of frames inside submit; execution is submit_return synchronous,
- * and the single serving completion fires after the final frame lands.
- *
- * The adapter body is the shared qwen38 PP-pair body
- * (spark_qwen38_pp_serving_adapter_common.h); this file keeps the family's
- * identity, geometry, capability extras, struct layouts, and the embedded
- * MTP provider slot.
- */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,19 +32,9 @@
 #define SPARK_QWEN38_MAX_SERVING_TARGET \
 	"cuda.sm121.qwen38.resident_decode_stage.fp8"
 #define SPARK_QWEN38_MAX_SERVING_PROGRAM_NAME "resident_decode"
-/* 16 world ranks; stage_index is the world rank. The TP degree is a
- * RUNTIME value from the stage configuration ("tp_degree": 4 -> TP4xPP4,
- * 16 -> TP16xPP1), so one adapter serves both topologies. Pipeline
- * boundaries (hidden in/out, token in/out) are PP boundaries and the
- * per-PP-stage layer counts derive from the degree. The TP-rank tensor
- * sharding (column/row-parallel hidden slices and the router/expert
- * all-reduces) is OUTSTANDING and lands with the rank-local packs. */
 #define SPARK_QWEN38_MAX_SERVING_STAGE_COUNT 16u
 #define SPARK_QWEN38_MAX_SERVING_DEFAULT_TP_DEGREE 4u
 #define SPARK_QWEN38_MAX_SERVING_MAX_PP_STAGE_COUNT 4u
-/* Serving caps context at the model's native 262144 until the KV-tier
- * plan lands; the module's KV pool is sized from the deployment's
- * kv_block_count, and the cap merely refuses configs past the model. */
 #define SPARK_QWEN38_MAX_SERVING_MAX_SEQUENCE_POSITIONS_CAP \
 	SPARK_QWEN38_MAX_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_QWEN38_MAX_SERVING_REQUIRED_PROGRAM_FLAGS \
@@ -111,9 +64,7 @@
 typedef struct SparkQwen38MaxServingPending
 {
 	struct SparkQwen38MaxServingState *owner;
-	/* The shared submission view (the serving-adapter template fills it). */
 	SparkServingAdapterPendingCommon common;
-	/* The frame currently inside the driver; completion matches against it. */
 	uint64_t frame_sequence_id;
 	uint64_t frame_sequence_position;
 	SparkStatus frame_status;
@@ -130,13 +81,6 @@ typedef struct SparkQwen38MaxServingPending
 	uint32_t frame_token_ids[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 } SparkQwen38MaxServingPending;
 
-/* Per-frame transport shim state. The module calls post_receive/send through
- * the frame context; the shim moves the submission boundary into the frame's
- * expected contiguity. Decode rows are contiguous. Prefill frames are one
- * lane each while the submission boundary is round-major across lanes, so a
- * lane's rows sit at irregular flat offsets whenever lane lengths differ;
- * the row maps give each frame row's flat index in the submission buffer
- * (NULL means the frame rows are contiguous from the base). */
 typedef struct SparkQwen38MaxServingTransportShim
 {
 	const void *input_base;
@@ -187,22 +131,10 @@ typedef struct SparkQwen38MaxServingState
 	void *gather_scratch;
 	SparkQwen38MaxServingTransportShim shim;
 	SparkQwen38MaxServingPending pending[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
-	/* The speculation-provider slot (the family's first real use): the
-	 * in-checkpoint MTP head behind the embedded-provider shape. The
-	 * module's MTP forward FAILS CLOSED today (the module header says so
-	 * plainly); the provider carries the contract and renders that fact
-	 * with a reason instead of a silent zero. */
 	SparkSpeculationProvider provider;
 	uint32_t provider_bound;
 } SparkQwen38MaxServingState;
 
-/*
- * The embedded MTP provider (the block-drafter binding shape from
- * tests/test_speculation_provider_slot.c, one-token chain). LIFECYCLE +
- * CONTRACT only: the MTP forward stays module-owned and fail-closed, so
- * draft ops refuse with the reason - the design's supports() -> WHY, not
- * a bare UNSUPPORTED.
- */
 
 static SparkStatus SparkQwen38MaxMtpCapabilityQuery(
 	const SparkSpeculationGeometryQuery *geometry,
@@ -230,9 +162,6 @@ static SparkStatus SparkQwen38MaxMtpDraftBegin(void *provider_state,
 {
 	(void)provider_state;
 	(void)request;
-	/* fail closed with the reason: the module executes decode only and
-	 * its MTP draft forward is UNSUPPORTED (see the module header);
-	 * landing it is the provider's first kernel work. */
 	return(SPARK_STATUS_UNSUPPORTED);
 }
 
@@ -249,8 +178,6 @@ static void SparkQwen38MaxMtpDraftCancel(void *provider_state)
 	(void)provider_state;
 }
 
-/* THE one accepted-prefix accounting: MTP drafts one token after the
- * anchor, so a verified chain of N rows commits N-1. */
 static SparkStatus SparkQwen38MaxMtpVerifyAccount(void *provider_state,
 	uint32_t verified_count, SparkSpeculationVerifyContract *contract_out)
 {
@@ -339,17 +266,11 @@ static const SparkModelServingAdapterDescriptor SparkQwen38MaxServingDescriptor 
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
-	/* The lean module executes every frame on ONE slot (slots[0]) with a
-	 * per-frame stream sync, so concurrent inflight frames would share one
-	 * set of buffers; advertise 1 until multi-slot pipelining lands. */
 	.max_inflight_submission_count = 1u,
 	.max_active_sequence_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_resident_sequence_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	/* the in-checkpoint MTP head's envelope behind the provider slot
-	 * (one draft layer); the shared validator pins this count to the
-	 * SPECULATION capability flag above */
 	.max_speculative_token_count = SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.stage_layer_counts = {0u,0u,0u,0u},

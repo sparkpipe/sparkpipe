@@ -81,7 +81,6 @@ int main(int argc, char **argv)
 	buffers[1].bytes = batch * 4u;
 	frame.buffers = buffers;
 	frame.buffer_count = 2u;
-	/* Warm one step (allocations, lazy state), then time the rest. */
 	frame.sequence_position = 0u;
 	status = SparkQwen38ResidentDecodeStageExecute(state,&frame);
 	if (status != SPARK_STATUS_OK)

@@ -1,35 +1,5 @@
 #pragma once
 
-// CUDA graph capture. Record a step's launches once, replay them thereafter.
-//
-// A decode layer issues about twenty launches and a model has seventy-eight
-// layers, so a token costs roughly 1,560 launches. Each is a few microseconds of
-// driver work on the host, and at four tokens per second that host work is not
-// hidden by anything - the GPU finishes a 30-microsecond kernel and waits for the
-// CPU to ask for the next one.
-//
-// A captured graph replaces all of it with one submission. The driver walks a
-// recorded dependency tree it already validated, and the host cost of a step
-// becomes one call instead of 1,560.
-//
-// WHY THIS IS SMALL WHERE THE OLD ONE WAS 1,501 LINES. The old capture had to
-// enumerate every launch it was recording, because the launches were spread
-// across a 27,000-line file with no single function that issued them in order.
-// Here the sequence IS a function - GlmLayerAttention followed by
-// GlmLayerMoe - so capturing it is capturing one call, and the graph knows
-// nothing about what is inside.
-//
-// THE CONSTRAINT THAT MAKES IT WORK. A graph records pointers, not values, so
-// every buffer a captured step touches must live at the same address on replay.
-// That is why the workspace is allocated once per bucket and never reallocated -
-// and it is also why a graph is keyed by bucket: a different row count means a
-// different grid, which is baked into the recording.
-//
-// WHAT MUST NOT BE CAPTURED. Anything whose control flow depends on device data.
-// The sparse path branches on whether the context exceeds the selection budget,
-// and that is a host-side decision made before capture; capturing one branch and
-// replaying it for the other silently attends to the wrong positions. So the key
-// includes the branch, and a step whose branch differs from its key rebuilds.
 
 #include <cuda_runtime.h>
 #include <stdint.h>
@@ -39,20 +9,13 @@
 #define LM_GRAPH_ERR_FULL (-82)
 #define LM_GRAPH_ERR_SHAPE (-83)
 
-// What makes two steps interchangeable. Two steps with the same key issue the
-// same launches against the same addresses, so one recording serves both.
-//
-// It is a struct rather than a hash because a hash collision here does not
-// produce a wrong answer, it produces a wrong SEQUENCE - replaying a graph
-// recorded for a different shape, which reads and writes whatever those pointers
-// meant last time.
 typedef struct LmGraphKey
 {
 	uint32_t rows;
 	uint32_t layer_kind;
 	uint32_t format;
-	uint32_t sparse;               /* the branch, not a hint */
-	uint32_t context_bucket;       /* selection budget class, not the length */
+	uint32_t sparse;
+	uint32_t context_bucket;
 }
 LmGraphKey;
 
@@ -105,10 +68,6 @@ static LmGraphEntry *LmGraphFind(LmGraphCache *cache, const LmGraphKey *key)
 	return(0);
 }
 
-// Replay if this shape has been seen, otherwise report a miss so the caller
-// captures. Split rather than combined because capture needs the caller's launch
-// sequence and this file must not know what that is - a graph module that knows
-// which kernels it records is a graph module that has to change when they do.
 static int32_t LmGraphReplay(LmGraphCache *cache, const LmGraphKey *key, cudaStream_t stream)
 {
 	LmGraphEntry *entry = LmGraphFind(cache,key);
@@ -126,10 +85,6 @@ static int32_t LmGraphReplay(LmGraphCache *cache, const LmGraphKey *key, cudaStr
 
 static int32_t LmGraphBeginCapture(cudaStream_t stream)
 {
-	// Relaxed rather than global: a global capture forbids any other stream from
-	// launching for the duration, which stalls the transport posting the previous
-	// layer's hidden state. Relaxed captures this stream's work and leaves the
-	// ring alone.
 	return(cudaStreamBeginCapture(stream,cudaStreamCaptureModeRelaxed) == cudaSuccess
 		? LM_GRAPH_OK : LM_GRAPH_ERR_CAPTURE);
 }
@@ -150,9 +105,6 @@ static int32_t LmGraphEndCapture(LmGraphCache *cache, const LmGraphKey *key, cud
 		}
 	if ( entry == 0 )
 	{
-		// No slot. Destroying a live graph mid-serving to make room would stall
-		// whichever request is replaying it, so the miss is reported and the
-		// caller runs un-captured. Slow is better than stalled.
 		cudaGraphDestroy(graph);
 		return(LM_GRAPH_ERR_FULL);
 	}
@@ -170,14 +122,6 @@ static int32_t LmGraphEndCapture(LmGraphCache *cache, const LmGraphKey *key, cud
 	return(LM_GRAPH_OK);
 }
 
-// Context is bucketed rather than exact, because a graph recorded at 8,192
-// tokens is valid at 8,193: the grid depends on the SELECTION BUDGET, which is
-// fixed, not on the context length. Only the sparse-versus-dense branch changes
-// with context, and that is its own key field.
-//
-// Without bucketing every token would be a new key and the cache would capture
-// once per step, which costs more than it saves - the failure mode the old
-// implementation's comments warn about.
 static uint32_t LmGraphContextBucket(uint32_t context, uint32_t selection_budget)
 {
 	return(context <= selection_budget ? 0u : 1u);

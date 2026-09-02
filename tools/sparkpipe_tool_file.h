@@ -5,9 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// Read a whole file into a NUL-terminated buffer the caller frees, or return
-// null. Four tools carried their own copy of this; it is one thing and it now
-// lives in one place. Header-only so no tool needs new build wiring.
 static char *SparkToolReadWholeFile(const char *path, uint32_t *text_bytes_out)
 {
 	FILE *file;

@@ -1,13 +1,3 @@
-// The topology switch: quiesce bounds, checkpoint pins, the swap poll loop,
-// warm versus recompute resume, and the budget arithmetic.
-//
-// Everything the machine decides is schedule arithmetic over two vtables -
-// the swap device and the checkpoint write path - so the whole protocol is
-// checkable on a host: the swap mock completes after a programmed number of
-// polls and remembers which recipes it was asked to move between, and the
-// write mock remembers every manifest offset, which is how the assertions
-// can say "the pinned blocks survived a full tier" and "the drain cost no
-// extra step" rather than hoping.
 #include "sparkpipe/spark_topology_switch.h"
 
 #include "sparkpipe/spark_sha256.h"
@@ -31,7 +21,6 @@ static void expect(int condition, const char *label)
 #define SWITCH_MAX_BLOCKS 8u
 #define TEST_NAMESPACE 0x5150u
 
-// -- the mock tier drive -----------------------------------------------------
 
 typedef struct MockRead
 {
@@ -97,13 +86,12 @@ static SparkStatus MockPollRead(void *context, uint64_t ticket)
 	return(SPARK_STATUS_NOT_FOUND);
 }
 
-// -- the mock swap device ------------------------------------------------------
 
 typedef struct MockSwap
 {
 	uint64_t from_recipe_id;
 	uint64_t target_recipe_id;
-	uint32_t polls_per_swap;         /* programmed swap latency, in polls */
+	uint32_t polls_per_swap;
 	uint32_t polls_left;
 	uint32_t begins;
 }
@@ -133,7 +121,6 @@ static SparkStatus MockPollSwap(void *context)
 	return(SPARK_STATUS_OK);
 }
 
-// -- the mock checkpoint write path --------------------------------------------
 
 typedef struct MockWrites
 {
@@ -156,7 +143,6 @@ static SparkStatus MockWriteBlock(
 	return(SPARK_STATUS_OK);
 }
 
-// -- the fixture -----------------------------------------------------------------
 
 #define RECIPE_TP_ID 11u
 #define RECIPE_PP_ID 22u
@@ -214,10 +200,10 @@ static SparkStatus FixtureOpen(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	fixture->recipe_tp.recipe_id = RECIPE_TP_ID;
-	fixture->recipe_tp.weight_pack_bytes = 100000000000ULL;   /* 100 GB */
+	fixture->recipe_tp.weight_pack_bytes = 100000000000ULL;
 	fixture->recipe_tp.strategy = SPARK_TOPOLOGY_STRATEGY_TENSOR_PARALLEL;
 	fixture->recipe_pp.recipe_id = RECIPE_PP_ID;
-	fixture->recipe_pp.weight_pack_bytes = 80000000000ULL;    /* 80 GB */
+	fixture->recipe_pp.weight_pack_bytes = 80000000000ULL;
 	fixture->recipe_pp.strategy = SPARK_TOPOLOGY_STRATEGY_PIPELINE_PARALLEL;
 	fixture->swap.polls_per_swap = swap_polls;
 	fixture->swap_vtable.context = &fixture->swap;
@@ -228,11 +214,11 @@ static SparkStatus FixtureOpen(
 	fixture->sw_config.kv_namespace = TEST_NAMESPACE;
 	fixture->sw_config.max_sequences = SWITCH_MAX_SEQS;
 	fixture->sw_config.max_blocks_per_sequence = SWITCH_MAX_BLOCKS;
-	fixture->sw_config.step_time_microseconds = 20000u;       /* a 20 ms step */
+	fixture->sw_config.step_time_microseconds = 20000u;
 	fixture->sw_config.manifest_block_bytes = MOCK_BLOCK_BYTES;
-	fixture->sw_config.nvme_read_bytes_per_second = 5000000000ULL;   /* 5 GB/s */
-	fixture->sw_config.nvme_write_bytes_per_second = 2000000000ULL;  /* 2 GB/s */
-	fixture->sw_config.swap_fixed_microseconds = 500000u;            /* 0.5 s */
+	fixture->sw_config.nvme_read_bytes_per_second = 5000000000ULL;
+	fixture->sw_config.nvme_write_bytes_per_second = 2000000000ULL;
+	fixture->sw_config.swap_fixed_microseconds = 500000u;
 	fixture->sw_config.tier = &fixture->tier;
 	fixture->sw_config.initial_recipe = fixture->recipe_tp;
 	table_bytes = SparkTopologySwitchTableBytes(&fixture->sw_config);
@@ -250,8 +236,6 @@ static SparkStatus FixturePublishCommitted(
 	SparkNvmeTierWriteReservation reservation;
 	SparkStatus status;
 
-	/* Serving write-back always presents the payload's SHA-256 (B3): the
-	 * fixture's stand-in content is the key itself, digested for real. */
 	{
 		uint8_t content_digest[SPARK_NVME_TIER_DIGEST_BYTES];
 		SparkSha256Context digest_context;
@@ -267,9 +251,6 @@ static SparkStatus FixturePublishCommitted(
 	return(SparkNvmeTierCommitWrite(tier,&reservation));
 }
 
-// Publish a sequence's blocks the way serving write-back would: under the
-// same namespaced key the switch computes, which is the whole reason resume
-// can find them.
 static void FixturePublishBlocks(
 	Fixture *fixture,
 	const uint64_t *content_hashes,
@@ -296,8 +277,6 @@ static void FixtureTrackWithKv(
 		"its tier keys register");
 }
 
-// Drive Advance until STEADY, bounded so a wedged machine fails the test
-// rather than hanging it. Returns the number of Advance calls used.
 static uint32_t FixtureAdvanceToSteady(Fixture *fixture, uint32_t first_step)
 {
 	uint32_t step;
@@ -322,10 +301,6 @@ int main(void)
 			"different content hashes differently");
 		expect(SparkTopologySwitchKvKey(0x9999u,777u) != key_a,
 			"a different model namespace hashes differently");
-		/* The namespace carries model + neutral geometry and NOT the
-		   strategy, so the same function names a block before and after a
-		   TP<->PP switch. What would make it differ - a strategy field -
-		   is absent from the signature by construction. */
 	}
 
 	printf("\ninitialisation validates the shape\n");
@@ -341,7 +316,7 @@ int main(void)
 			== RECIPE_TP_ID, "the running recipe is the initial one");
 		{
 			SparkTopologySwitchConfiguration broken = fixture.sw_config;
-			broken.manifest_block_bytes = 16u;   /* cannot hold one key list */
+			broken.manifest_block_bytes = 16u;
 			expect(SparkTopologySwitchInitialize(&fixture.sw,&broken,
 				&fixture.swap_vtable,MockWriteBlock,&fixture.writes,
 				fixture.sw_tables) == SPARK_STATUS_INVALID_ARGUMENT,
@@ -396,8 +371,6 @@ int main(void)
 		expect(SparkTopologySwitchAdvance(&fixture.sw,1u)
 			== SPARK_TOPOLOGY_SWITCH_QUIESCE,
 			"one sequence still decoding holds the machine in QUIESCE");
-		/* Sequence 3 does not reach a boundary; it finishes. Completing
-		   mid-quiesce is a drain, and checkpointing finished work is waste. */
 		expect(SparkTopologySwitchSequenceComplete(&fixture.sw,3u)
 			== SPARK_STATUS_OK, "a sequence completing mid-quiesce drains it");
 		expect(FixtureAdvanceToSteady(&fixture,2u) == 1u,
@@ -456,8 +429,6 @@ int main(void)
 		(void)SparkTopologySwitchSequenceAtBoundary(&fixture.sw,8u);
 		expect(SparkTopologySwitchAdvance(&fixture.sw,1u)
 			== SPARK_TOPOLOGY_SWITCH_SWAP, "checkpointed, swap in flight");
-		/* Mid-swap, ordinary serving write-back continues and floods the
-		   32-record tier with fresh records. */
 		for ( index = 0u; index < 64u; ++index )
 			(void)FixturePublishCommitted(&fixture.tier,9000u + index,&offset);
 		SparkNvmeTierGetStatistics(&fixture.tier,&tier_statistics);
@@ -485,7 +456,6 @@ int main(void)
 		uint32_t submits_before;
 		(void)FixtureOpen(&fixture,32u,0u);
 		FixturePublishBlocks(&fixture,blocks_warm,3u);
-		/* blocks_cold are never published: the tier never saw them. */
 		FixtureTrackWithKv(&fixture,11u,192u,blocks_warm,3u);
 		FixtureTrackWithKv(&fixture,12u,128u,blocks_cold,2u);
 		(void)SparkTopologySwitchBegin(&fixture.sw,&fixture.recipe_pp);
@@ -516,11 +486,9 @@ int main(void)
 		uint64_t blocks[4] = { 5000u,5001u,5002u,5003u };
 		uint64_t offset;
 		uint32_t index;
-		(void)FixtureOpen(&fixture,8u,0u);   /* an 8-record tier, on purpose */
+		(void)FixtureOpen(&fixture,8u,0u);
 		FixturePublishBlocks(&fixture,blocks,4u);
 		FixtureTrackWithKv(&fixture,21u,256u,blocks,4u);
-		/* Long after the write-back, a busy serving mix floods the tier and
-		   the sequence's records age out - before any switch is requested. */
 		for ( index = 0u; index < 32u; ++index )
 			(void)FixturePublishCommitted(&fixture.tier,8000u + index,&offset);
 		(void)SparkTopologySwitchBegin(&fixture.sw,&fixture.recipe_pp);
@@ -540,10 +508,8 @@ int main(void)
 			&fixture.recipe_pp,4u,10000000000ULL,&budget) == SPARK_STATUS_OK,
 			"the estimate computes");
 		expect(budget.quiesce_us == 20000u, "quiesce is one decode step");
-		/* 4 manifests x 4096 B at 2 GB/s = 8 us. */
 		expect(budget.checkpoint_us == 8u, "checkpoint is manifest writes");
 		expect(budget.swap_fixed_us == 500000u, "the fixed cost passes through");
-		/* 80 GB at 5 GB/s = 16 s. */
 		expect(budget.swap_stream_us == 16000000u,
 			"the stream is pack bytes over read bandwidth");
 		expect(budget.resume_warm_us == 2000000u,

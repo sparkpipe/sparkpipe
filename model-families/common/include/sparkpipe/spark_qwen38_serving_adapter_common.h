@@ -1,23 +1,3 @@
-/* Shared qwen38-family serving-adapter body (the three-adapter paste).
- *
- * The qwen38_max / qwen38_27b / qwen4_flash serving adapters are one
- * lineage: the submission-slot lifecycle, the driver-completion match, the
- * hidden-transport shim, and the progress/quiesce/snapshot/interface spine
- * were byte-identical modulo the family prefix. This header is that body,
- * parameterized by three family macros the includer defines first (the
- * spark_work_control_common.h pattern):
- *
- *   SPARK_QWEN38_SERVING_ADAPTER_FN(name)    family function/object names
- *   SPARK_QWEN38_SERVING_ADAPTER_TYPE(name)  the state/pending/shim structs
- *   SPARK_QWEN38_SERVING_ADAPTER_CONST(name) family constants
- *
- * The family TU keeps its own struct layouts (the template's
- * family-layout-as-data rule), its descriptor, and every function whose
- * behavior genuinely diverges (KV block ownership, frame build, submit
- * policy); ReleaseLane is the family's, declared here and called by the
- * shared drop path. The pending struct embeds
- * SparkServingAdapterPendingCommon right after the owner pointer.
- */
 #ifndef SPARKPIPE_SPARK_QWEN38_SERVING_ADAPTER_COMMON_H
 #define SPARKPIPE_SPARK_QWEN38_SERVING_ADAPTER_COMMON_H
 
@@ -270,4 +250,4 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateConfiguration)
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
-#endif /* SPARKPIPE_SPARK_QWEN38_SERVING_ADAPTER_COMMON_H */
+#endif

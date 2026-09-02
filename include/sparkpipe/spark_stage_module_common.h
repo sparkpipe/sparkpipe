@@ -26,13 +26,6 @@ typedef struct SparkStageModuleLedger
     uint64_t device_allocation_bytes[SPARK_STAGE_MODULE_MAX_DEVICE_ALLOCATIONS];
     uint32_t device_allocation_count;
     uint64_t device_bytes_resident;
-    /* The weightd pack arena (structural residency): opaque
-     * SparkStageModulePackArena, lazily attached on the first device
-     * region load when SPARK_WEIGHTD_* names a live daemon. Regions
-     * served from the arena are slices of the consumer-side VMM map -
-     * never entered into device_allocations, released by unmap at
-     * LedgerRelease while the daemon keeps the arena warm for the next
-     * code-only attach. Null when unset or after a clean fallback. */
     void *pack_arena;
 } SparkStageModuleLedger;
 
@@ -114,9 +107,6 @@ SparkStatus SparkStageModuleEnvironmentUnsigned64(
     uint64_t minimum,
     uint64_t maximum,
     uint64_t *value);
-/* The optional counterpart: an absent/empty variable yields the named
- * fallback without a config_missing line; a present variable is parsed and
- * range-checked with the same fail-loud diagnostics as the required read. */
 SparkStatus SparkStageModuleEnvironmentUnsignedOrDefault(
     const char *module_tag,
     const char *name,
@@ -148,15 +138,6 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     uint64_t offset,
     uint64_t bytes,
     void **pointer);
-/* Pipelined pack loading (docs/WEIGHTD_DESIGN.md L1): a worker thread
- * reads pack regions into a two-slot ring of pinned host staging while
- * the calling thread issues the H2D copies onto one internal stream.
- * Regions may be enqueued back to back (a whole pack directory), and the
- * copies are issued strictly in enqueue order, so the device bytes and
- * their arrival order match the synchronous loader bit for bit - only
- * the host read and the device copy now overlap. Every pointer returned
- * by Region becomes safe to use only after Finish reports OK; Finish
- * issues the remaining copies and blocks until the stream drains. */
 SparkStatus SparkStageModuleLoadPipelineRequested(void);
 SparkStatus SparkStageModuleLoadPipelineCreate(
     const char *module_tag,
@@ -199,7 +180,6 @@ SparkStatus SparkStageModuleIndexClaimOrdinal(
     uint32_t index_capacity,
     uint32_t index,
     uint32_t *ordinal_out);
-/* Prepare runs after every index is claimed; failure releases the full set. */
 SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
     atomic_uint *index_states,
     uint32_t index_capacity,
@@ -229,7 +209,6 @@ SparkStatus SparkStageModuleWaitForSlots(
 void SparkStageModuleSlotRelease(
     atomic_uint *slot_states,
     uint32_t slot_index);
-/* The callback runs under both claims; the dispatch slot is released last. */
 void SparkStageModuleCompleteAndReleaseClaims(
     SparkModelDriverCompletionFunction completion_function,
     void *completion_context,

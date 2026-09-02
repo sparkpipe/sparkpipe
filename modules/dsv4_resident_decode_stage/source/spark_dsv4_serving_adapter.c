@@ -42,10 +42,6 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
-/* Stage-major (pp_stage * TP degree + tp_rank): each pipeline stage's four
- * TP replicas carry the same layer count and the per-stage counts sum to
- * the model's layer count. Pro is 61 = 16+15+15+15; Flash-0731 is
- * 43 = 11+11+11+10. */
 #ifdef SPARK_DSV4_PRO_BUILD
 #define SPARK_DSV4_SERVING_STAGE_LAYERS \
 	{16u,16u,16u,16u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u}
@@ -189,7 +185,6 @@
 	 SPARK_DSV4_SERVING_CHAIN_DEPTH : \
 	 SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT)
 
-/* Optional members stay last so the exact-member check can clip them. */
 static const char *const SparkDsv4ServingConfigurationMembersBase[] =
 {
 	"schema_version",
@@ -220,7 +215,6 @@ static const char *const SparkDsv4ServingConfigurationMembersTp[] =
 typedef struct SparkDsv4ServingPending
 {
 	struct SparkDsv4ServingAdapterState *owner;
-	/* The shared submission view (the serving-adapter template fills it). */
 	SparkServingAdapterPendingCommon common;
 	uint32_t emit_count;
 	uint32_t cache_lane_count;
@@ -234,9 +228,7 @@ typedef struct SparkDsv4ServingPending
 
 typedef struct SparkDsv4ServingAdapterState
 {
-	/* This state's own allocation, typed (memory-M1): freed through the
-	 * handle so the space the state lives in is named, not assumed. */
-	SparkMemoryBuffer allocation; /* HOST_COHERENT, this state */
+	SparkMemoryBuffer allocation;
 	SparkLoadedModelDriver driver;
 	void *driver_instance;
 	const SparkModelDriverProgramDescriptor *program;
@@ -324,10 +316,6 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 		SPARK_DSV4_SERVING_TP_DEGREE : 0u
 };
 
-/* The tp_collective parse is the serving-adapter template's; the family
- * policy is the rail-fabric flavor: the full known algorithm set, ordered
- * non-zero payload thresholds, peer arrays staged per pipeline stage, and
- * contiguous peer ports (the overflow-guarded base derivation). */
 static const SparkTpCollectiveConfigPolicy SparkDsv4ServingTpCollectivePolicy =
 {
 	.peer_count = SPARK_DSV4_SERVING_STAGE_COUNT,
@@ -527,9 +515,6 @@ static SparkStatus SparkDsv4ServingReservePending(
 	if ( pending_out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*pending_out = 0;
-	/* The common reservation spine is the serving-adapter template's; the
-	 * cache lanes and emit rows below are this family's frame shape, and a
-	 * failed fill leaves the slot free (the template never marks active). */
 	pending = (SparkDsv4ServingPending *)SparkServingAdapterTemplateReservePending(
 		state->pending,sizeof(*pending),
 		(uint32_t)offsetof(SparkDsv4ServingPending,common),
@@ -599,11 +584,6 @@ static void SparkDsv4ServingDriverCompletion(
 	if ( matches != 0u )
 		completion.residency = driver_completion->residency;
 	completion.accepted_token_count = driver_completion->accepted_token_count;
-	/* DSpark verify (DECODE) frames emit 1..tokens_per_sequence tokens
-	 * depending on acceptance; the module's completion carries the actual
-	 * count. PREFILL/RELEASE completions carry tokens_per_sequence == 0u by
-	 * contract and must NOT be fenced by this gate (a RELEASE would otherwise
-	 * be rejected as SCHEMA_ERROR). */
 	if ( matches != 0u &&
 		pending->common.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE &&
 		(driver_completion->tokens_per_sequence == 0u ||
@@ -670,8 +650,6 @@ static void SparkDsv4ServingDestroy(void *adapter_state)
 	SparkMemoryBufferFree(&state->allocation);
 }
 
-/* The program's runtime-limits contract, family policy on the shared spine:
- * a shared approximation would change accept/reject on real descriptors. */
 static SparkStatus SparkDsv4ServingAcceptsProgram(
 	const SparkModelDriverProgramDescriptor *program,
 	void *accept_context)
@@ -693,7 +671,7 @@ static SparkStatus SparkDsv4ServingLoadDriver(
 	request.contract.driver_model_id = SPARK_DSV4_SERVING_DRIVER_MODEL_ID;
 	request.contract.driver_model_revision = SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION;
 	request.contract.driver_stage_name = SPARK_DSV4_SERVING_DRIVER_STAGE_NAME;
-	request.contract.driver_target = 0; /* this family does not pin the target */
+	request.contract.driver_target = 0;
 	request.contract.model_description_sha256 = SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256;
 	request.node_context = &state->node_context;
 	request.completion_context = state;
@@ -782,8 +760,6 @@ static void SparkDsv4ServingInitializeState(
 	state->wake_context = configuration->wake_context;
 }
 
-/* Same contract the module's former env read implemented: exactly "1"
- * arms the path; unset or any other value leaves it off. */
 static uint32_t SparkDsv4ServingDsparkEnvEnabled(void)
 {
 	const char *value = getenv("SPARK_DSV4_DSPARK");
@@ -802,12 +778,6 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 	state->node_context.flags = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL : 0u;
 	if ( SPARK_DSV4_SERVING_HYBRID != 0u )
 		state->node_context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIPELINE_PARALLEL;
-	/* DSpark is deployment-opt-in: SPARK_DSV4_DSPARK=1 arms the speculative
-	 * path (draft drive, verify expansion, taps, acceptance). The adapter
-	 * translates the launch environment into the typed node-context flag —
-	 * the compute module is environment-free by architecture. Anything
-	 * else, including an unset environment, leaves the no-spec path free
-	 * of the draft machinery's host work. */
 	if ( SparkDsv4ServingDsparkEnvEnabled() != 0u )
 		state->node_context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_DSPARK;
 	state->node_context.stage_count = SPARK_DSV4_SERVING_HYBRID != 0u ? SPARK_DSV4_SERVING_PP_STAGE_COUNT : SPARK_DSV4_SERVING_STAGE_COUNT;
@@ -879,7 +849,6 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 			state->node_context.tp_collective_identifier ^= (uint64_t)state->node_context.pp_stage_index << 32u;
 		}
 	}
-	/* Zero keeps the eager decode path; the deployment opts into capture. */
 	state->node_context.cuda_graph_count = cuda_graph_count;
 	state->node_context.stage_pack_path = state->stage_pack_path;
 	return(SPARK_STATUS_OK);
@@ -903,15 +872,13 @@ static SparkStatus SparkDsv4ServingInitialize(
 	status = SparkMemoryBufferAllocate(&state_buffer,
 		SPARK_MEMORY_SPACE_HOST_COHERENT,sizeof(SparkDsv4ServingAdapterState));
 	if ( status == SPARK_STATUS_OK )
-		memset(state_buffer.pointer,0,sizeof(SparkDsv4ServingAdapterState)); /* calloc semantics */
+		memset(state_buffer.pointer,0,sizeof(SparkDsv4ServingAdapterState));
 	if ( status != SPARK_STATUS_OK )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state = (SparkDsv4ServingAdapterState *)state_buffer.pointer;
 	state->allocation = state_buffer;
 	SparkDsv4ServingInitializeState(state,configuration);
 	status = SparkDsv4ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&cuda_graph_count);
-	/* The peer-port contiguity (with its overflow guard) is the template's
-	 * contiguous-peer-ports policy now, checked inside the parse. */
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
@@ -942,7 +909,6 @@ static SparkStatus SparkDsv4ServingValidateSubmissionBase(
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(&SparkDsv4ServingDescriptor,&state->runtime_limits,submission);
-	/* R5 hoist: the adapter validated (descriptor, limits) at configure; per-submission checks unchanged. */
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )

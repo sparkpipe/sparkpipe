@@ -717,22 +717,13 @@ SparkStatus SparkStageModulePackRead(
     return SPARK_STATUS_OK;
 }
 
-/* ------------------- structural weightd residency -------------------
- * One seam, every family: all module pack loaders converge on
- * SparkStageModuleLoadDeviceRegion, so the residency decision lives HERE
- * and each family inherits it with zero per-module wiring (replacing the one
- * family-level MODULE_ADDITIONAL_HOST_SOURCES bolt-on - the DRY
- * violation this removes). The attach helper's contract is unconditional fallback:
- * env off, no daemon, no identity, daemon refusal, or an unaligned/
- * out-of-range slice falls through to today's direct load - the arena
- * is a performance tier, never a correctness dependency. */
 
 typedef struct SparkStageModulePackArena
 {
 	SparkWeightdAttachOutcome outcome;
 	uint64_t pack_bytes;
 	char pack_path[SPARK_WEIGHTD_PATH_BYTES];
-	int failed;             /* fallback decided; do not retry this ledger */
+	int failed;
 } SparkStageModulePackArena;
 
 static void SparkStageModulePackArenaRelease(SparkStageModuleLedger *ledger)
@@ -747,9 +738,6 @@ static void SparkStageModulePackArenaRelease(SparkStageModuleLedger *ledger)
 	ledger->pack_arena = 0;
 }
 
-/* Lazily attach (and consumer-map) the pack file's arena. Returns 1 when
- * ledger->pack_arena holds a mapped consumer base, 0 for the clean
- * fallback. */
 static int SparkStageModulePackArenaEnsure(
 	SparkStageModuleLedger *ledger,
 	FILE *file)
@@ -775,8 +763,6 @@ static int SparkStageModulePackArenaEnsure(
 	if (arena == 0)
 		return 0;
 	ledger->pack_arena = arena;
-	/* the pack path from the already-open handle (no caller plumbing):
-	 * /proc/self/fd on Linux, F_GETPATH on Darwin (the host gates) */
 	path_bytes = -1;
 	(void)snprintf(fd_path,sizeof(fd_path),"/proc/self/fd/%d",fileno(file));
 	path_bytes = readlink(fd_path,arena->pack_path,sizeof(arena->pack_path) - 1u);
@@ -807,7 +793,6 @@ static int SparkStageModulePackArenaEnsure(
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&arena->outcome,reason);
 	if (status != SPARK_STATUS_OK || arena->outcome.client == 0)
 	{
-		/* fallback: named reason, nothing to release (client == 0) */
 		fprintf(stderr,"stage-module weightd fallback: status=%s reason=%s\n",
 			SparkStatusToString(status),reason);
 		arena->failed = 1;
@@ -817,7 +802,6 @@ static int SparkStageModulePackArenaEnsure(
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,reason);
 	if (status != SPARK_STATUS_OK || arena->outcome.map_base == 0)
 	{
-		/* ImportMap released the attach on its own fallback paths */
 		if (arena->outcome.client != 0)
 			(void)SparkWeightdAttachRelease(&arena->outcome);
 		memset(&arena->outcome,0,sizeof(arena->outcome));
@@ -827,10 +811,6 @@ static int SparkStageModulePackArenaEnsure(
 	return 1;
 }
 
-/* A region is arena-servable when it lies inside the pack and the pack
- * offset is 256B-aligned (the pointer contract the synchronous path's
- * fresh cudaMalloc buffers set; the packers' payload offsets already
- * satisfy it, and anything that does not simply falls back). */
 static int SparkStageModulePackArenaSlice(
 	SparkStageModuleLedger *ledger,
 	FILE *file,
@@ -930,28 +910,6 @@ static SparkStatus SparkStageModuleLoadRegionSynchronous(
     return SPARK_STATUS_OK;
 }
 
-/*
- * The pipelined pack loader (W1, docs/WEIGHTD_DESIGN.md L1). One worker
- * thread owns all file reads (pread, so the stdio position is untouched);
- * the calling thread owns every CUDA call and the allocation ledger. A
- * two-slot ring of pinned host staging buffers decouples them: the worker
- * fills chunk N+1 while the device copy of chunk N runs. Chunks are
- * copied onto one internal stream strictly in enqueue order, so the
- * device bytes and their arrival order match the synchronous loader bit
- * for bit - only the wall time changes.
- *
- * Order/safety invariants (S = SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS):
- * - The main thread issues copies only from Drain, always in chunk
- *   order, and records one event per slot after each copy.
- * - The worker starts reading chunk N only after chunk N-S's copy was
- *   ISSUED (copy_issued_count >= N-S+1, so the slot event is the record
- *   of exactly that copy) and COMPLETED (cudaEventSynchronize) - it can
- *   never rewrite a buffer a live DMA is still reading.
- * - The main thread may reuse a ring descriptor (chunk N+S) only once
- *   chunk N's copy was issued, which the ring-full predicate enforces;
- *   by then the worker published chunk N's read, so descriptors and
- *   buffers never race.
- */
 #define SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS 2u
 
 typedef struct SparkStageModuleLoadChunk
@@ -971,7 +929,6 @@ struct SparkStageModuleLoadPipeline
     int worker_joined;
     pthread_mutex_t mutex;
     pthread_cond_t progress;
-    /* pinned (cudaHostAlloc) host staging: the H2D DMA reads these slots */
     void *slot_staging[SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS];
     cudaEvent_t slot_copy_events[SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS];
     cudaStream_t upload_stream;
@@ -996,9 +953,6 @@ static SparkStatus SparkStageModuleLoadPipelineWaitForSlotCopyIssued(
     SparkStageModuleLoadPipeline *pipeline,
     uint64_t chunk_index)
 {
-    /* Called from the worker WITHOUT the mutex held: wait until the main
-     * thread issued chunk (index - S), then block on its completion
-     * event; the event for this slot is exactly that copy's record. */
     pthread_mutex_lock(&pipeline->mutex);
     while (pipeline->copy_issued_count + 1u + SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS <=
                chunk_index + 1u &&
@@ -1076,7 +1030,6 @@ static void *SparkStageModuleLoadPipelineWorker(void *argument)
         }
         if (pipeline->read_done_count == pipeline->enqueued_count)
         {
-            /* drained, and (failed or aborting): go home */
             pthread_mutex_unlock(&pipeline->mutex);
             break;
         }
@@ -1161,7 +1114,6 @@ SparkStatus SparkStageModuleLoadPipelineCreate(
         error = cudaEventCreateWithFlags(
             &pipeline->slot_copy_events[slot], cudaEventDisableTiming);
     }
-    /* pinned host staging so the H2D copies run without a bounce buffer */
     for (slot = 0u; error == cudaSuccess &&
         slot < SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS; ++slot)
     {
@@ -1189,10 +1141,6 @@ SparkStatus SparkStageModuleLoadPipelineCreate(
     return SPARK_STATUS_OK;
 }
 
-/* Issue the oldest read chunk's copy onto the upload stream; the mutex
- * must be held. The copy is pinned-host staging -> device-private space.
- * Returns 1 when a copy was issued, 0 when nothing is issuable, and
- * records CUDA failures in pipeline->failure. */
 static int SparkStageModuleLoadPipelineIssueNext(
     SparkStageModuleLoadPipeline *pipeline)
 {
@@ -1234,10 +1182,6 @@ static SparkStatus SparkStageModuleLoadPipelineDrain(
     SparkStageModuleLoadPipeline *pipeline,
     int blocking)
 {
-    /* Issue every copy whose chunk read has published, in order; with
-     * blocking set, also wait for reads so every enqueued chunk issues.
-     * The mutex is held throughout: the CUDA calls here are enqueues
-     * (async copy, event record), not waits. */
     SparkStatus status = SPARK_STATUS_OK;
     pthread_mutex_lock(&pipeline->mutex);
     for (;;)
@@ -1302,7 +1246,6 @@ SparkStatus SparkStageModuleLoadPipelineRegion(
             pipeline->enqueued_count - pipeline->copy_issued_count >=
                 SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS)
         {
-            /* ring full: issue the next copy to free the oldest slot */
             if (SparkStageModuleLoadPipelineIssueNext(pipeline) != 0)
             {
                 continue;
@@ -1353,7 +1296,6 @@ SparkStatus SparkStageModuleLoadPipelineFinish(
         status = SparkStageModuleCudaStatus(
             pipeline->module_tag, error, "load_pipeline_finish");
     }
-    /* stop the worker: it exits once the reads drain or a failure lands */
     pthread_mutex_lock(&pipeline->mutex);
     pipeline->abort_requested = 1;
     pthread_cond_broadcast(&pipeline->progress);
@@ -1391,7 +1333,6 @@ void SparkStageModuleLoadPipelineDestroy(
             pipeline->worker_joined = 1;
         }
     }
-    /* in-flight DMA may still read a staging slot: drain before freeing */
     if (pipeline->upload_stream != 0)
     {
         (void)cudaStreamSynchronize(pipeline->upload_stream);
@@ -1423,13 +1364,8 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     SparkStageModuleLoadPipeline *pipeline = 0;
     SparkStatus status;
 
-    /* Structural residency first: a mapped weightd arena serves the
-     * region as a zero-copy slice of the pack - no read, no copy, no
-     * per-family wiring (see SparkStageModulePackArenaEnsure). */
     if (SparkStageModulePackArenaSlice(ledger,file,offset,bytes,pointer) != 0)
         return SPARK_STATUS_OK;
-    /* The pipelined path pays off (and pays its pinned-slot/thread setup)
-     * only on the large regions; small tensors keep the synchronous loop. */
     if (SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK &&
         bytes >= SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES)
     {
@@ -1446,7 +1382,6 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
             SparkStageModuleLoadPipelineDestroy(pipeline);
             return status;
         }
-        /* fall through: no pipeline is a performance loss, not an error */
     }
     return SparkStageModuleLoadRegionSynchronous(
         ledger, file, offset, bytes, pointer);

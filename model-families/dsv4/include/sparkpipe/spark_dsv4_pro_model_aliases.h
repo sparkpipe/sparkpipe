@@ -1,17 +1,5 @@
 #pragma once
 
-/*
- * DSV4 Pro in the model-generic SPARK_DSV4_MODEL_* namespace.
- *
- * The generic DSV4 resident-decode module and serving adapter are written
- * against the Flash header's full derived surface. This header provides the
- * identical name space backed by the Pro geometry, so a Pro build is a
- * compile-time header swap (module Makefile MODEL_HEADER override, adapter
- * -include) rather than a source fork.
- *
- * Force-include this INSTEAD of spark_dsv4_model.h for Pro builds; never
- * include both in one translation unit.
- */
 
 #include <stdint.h>
 
@@ -56,7 +44,6 @@
 
 #define SPARK_DSV4_MODEL_DRIVER_MODEL_ID "deepseek.v4.pro.resident-decode-stage-firmware"
 #define SPARK_DSV4_MODEL_DRIVER_REVISION "h7168-l61-dsa-e384k6-hash3-v129280-ga0813-v1"
-/* sha256 of examples/model_descriptions/dsv4_pro_resident_decode_stage_firmware*.json */
 #define SPARK_DSV4_MODEL_DESCRIPTION_SHA256 "8ffb4fec1f7874ad195c3139b9120a0a48edb22815b55b05fe4bed3066ee9160"
 #define SPARK_DSV4_MODEL_DESCRIPTION_SHA256_B1 "d0a9242f57777e7534c9d1f95d8934a05e669015509eb00f25b19d87b3875d36"
 #define SPARK_DSV4_MODEL_MODULE_ID "spark.dsv4.pro.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h7168.l61.e384.k6.ga0813.v1"
@@ -105,8 +92,6 @@
 #define SPARK_DSV4_MODEL_LAYER_KIND_HCA 2u
 #define SPARK_DSV4_MODEL_LAYER_KIND_INVALID UINT32_MAX
 
-/* Pro backbone ratios: layers 0-1 HCA (128), then alternating CSA (4) and
- * HCA (128); the MTP layer is SWA (0). Mirrors SparkDsv4ProCompressionRatios. */
 static const uint16_t SparkDsv4ModelCompressionRatios[SPARK_DSV4_MODEL_LAYER_COUNT] =
 {
     128u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u, 4u, 128u,

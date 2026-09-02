@@ -1,9 +1,3 @@
-/* Qwen 3.8 Max resident decode stage: stage-pack load + validation, a lean
- * decode-only Execute (GDN/attention + routed FP8 MoE per layer, argmax
- * head on the final stage), and the firmware's first-class hidden-transport
- * contract for PP handoffs. Prefill, MTP and speculation fail closed with
- * SPARK_STATUS_UNSUPPORTED.
- */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
@@ -26,23 +20,14 @@
 
 #define SPARK_QWEN38_MAX_MODULE_TAG "qwen38_stage"
 
-/* TP geometry defaults: an unset degree/rank names the replicated
- * single-rank layout; the collective timeouts default to two minutes. */
 #define SPARK_QWEN38_MAX_MODULE_TP_DEGREE_REPLICATED 1u
 #define SPARK_QWEN38_MAX_MODULE_TP_RANK_REPLICATED 0u
 #define SPARK_QWEN38_MAX_MODULE_TP_TIMEOUT_MILLI_DEFAULT 120000u
 
-/* KV tier: the resident pool is a window; blocks beyond it live in the
- * pluggable KV store (local socket, network service, or a dedicated spark
- * ring running the store), keyed by (model fingerprint, layout fingerprint,
- * rank, sequence, logical block). Default provider "none" keeps the
- * all-resident behavior byte-identical to before the tier landed. */
 #define SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS 16u
 #define SPARK_QWEN38_MAX_MODULE_KV_POLL_BOUND 10000u
 #define SPARK_QWEN38_MAX_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES 4096u
 #define SPARK_QWEN38_MAX_MODULE_KV_MAX_BLOCKS_PER_LANE 4096u
-/* Mirrors SPARK_LM_HEAD_SCREEN_CAP / SPARK_LM_HEAD_SHADOW_GROUP from the
- * common CUDA header (module.c cannot include that header under cc). */
 #define SPARK_QWEN38_MAX_MODULE_HEAD_SCREEN_CAP 4096u
 #define SPARK_QWEN38_MAX_MODULE_HEAD_SHADOW_GROUP 32u
 
@@ -99,10 +84,6 @@ typedef struct SparkQwen38MaxModuleSlot
 	float *chunk_w_f32;
 	float *chunk_kg_f32;
 	uint32_t *mtp_draft_ids;
-	/* Screened head: coarse logits + screen candidates (the exact
-	 * full-vocab matvec reads 4 GB of head weight PER ROW; the shadow
-	 * path reads the 4-bit copy instead and rescores a certified
-	 * candidate set - identical argmax, a fraction of the bytes). */
 	void *head_logits_bf16;
 	uint32_t *head_candidate_ids;
 	uint32_t *head_candidate_counts;
@@ -114,13 +95,8 @@ typedef struct SparkQwen38MaxModuleState
 	uint32_t multiprocessor_count;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
-	/* Measurement aids (timing probe bisect): skip one block of the layer
-	 * to price the GDN/attention half vs the MoE half. Default 0. */
 	uint32_t debug_skip_gdn;
 	uint32_t debug_skip_moe;
-	/* Tensor-parallel collective: one residual all-reduce per layer after
-	 * the expert-sharded MoE. Env-driven (TP_BACKEND_PATH / TP_IDENTIFIER /
-	 * TP_PORT_BASE / TP_HOSTS / TP_TIMEOUT_MS), mirrors the dsv4 wiring. */
 	SparkTpDeviceCollective tp_device_collective;
 	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[8u];
 	uint32_t tp_credit_binding_count;
@@ -172,8 +148,6 @@ typedef struct SparkQwen38MaxModuleState
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
 	const void *lm_head_weight_bf16;
-	/* One-time 4-bit shadow of the head weights + certified per-neuron
-	 * error bounds for the screened argmax. */
 	uint8_t *head_shadow_payload;
 	uint8_t *head_shadow_scale;
 	float *head_error_norm_f32;
@@ -182,10 +156,6 @@ typedef struct SparkQwen38MaxModuleState
 	SparkQwen38MaxGdnLayerWeights gdn_by_layer[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	SparkQwen38MaxAttnLayerWeights attn_by_layer[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	SparkQwen38MaxMoeWeights moe_by_layer[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	/* KV tier state. Logical blocks are (lane, logical_block) identities;
-	 * kv_logical_to_slot[lane * lane_stride + logical] holds slot+1 while the
-	 * block is resident, 0 while it lives in the store. Slots are pool
-	 * windows; kv_slot_dirty marks a slot whose cached rows the store lacks. */
 	SparkStageKvClient kv_client;
 	SparkQwen38MaxWorkControlKvState kv_work;
 	SparkQwen38MaxWorkControlKvPlanConfig kv_plan;
@@ -215,19 +185,11 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 {
 	SparkStatus status;
 	{
-		/* Optional head-parallel TP geometry. Unset means the replicated
-		 * layout (tp_degree 1). tp_degree > 1 needs the head-sliced
-		 * projections AND the residual all-reduce, so the initialize path
-		 * refuses it until the TP collective is wired (fail closed). */
 		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_DEGREE",1u,SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT,SPARK_QWEN38_MAX_MODULE_TP_DEGREE_REPLICATED,&state->tp_degree);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_RANK",0u,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT - 1u,SPARK_QWEN38_MAX_MODULE_TP_RANK_REPLICATED,&state->tp_rank);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
-		/* TP sharding (expert-sharded MoE, one residual all-reduce per
-		 * layer). The attention/GDN head slicing and the KV-head split are
-		 * the follow-on increments; the expert slice works for any degree
-		 * that divides the 512 experts. tp>1 needs the collective env. */
 		if ( state->tp_rank >= state->tp_degree || state->tp_degree > SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % state->tp_degree) != 0u )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		state->tp_collective_identifier = 0u;
@@ -263,7 +225,6 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 			snprintf(state->tp_local_host,sizeof(state->tp_local_host),"%s",tp_local_host);
 			state->tp_collective_identifier = tp_identifier;
 			state->tp_operation_timeout_milli = state->tp_connect_timeout_milli;
-			/* Comma-separated peer host list, one per rank in rank order. */
 			scan = tp_hosts;
 			host_index = 0u;
 			while ( *scan != '\0' && host_index < state->tp_degree )
@@ -303,11 +264,6 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_QWEN38_MAX_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	/* The grouped scalar expert path prices its row tiles at SPARK_LM_TILE
-	 * (16) rows while the route build switches to 32-row tiles past 409
-	 * sequences; a batch that crosses the boundary would silently skip rows
-	 * in every expert group. Refuse it loudly until the MoE moves to the
-	 * launch-planner GEMM (which shares one tile-M with the route build). */
 	if ( state->max_active_sequence_count > 409u )
 	{
 		fprintf(stderr,"%s config_batch_too_wide max_active=%u (grouped scalar path supports at most 409 rows at a 16-row tile; see audit doc)\n",SPARK_QWEN38_MAX_MODULE_TAG,state->max_active_sequence_count);
@@ -346,8 +302,6 @@ static SparkStatus SparkQwen38MaxModuleValidateEntry(SparkQwen38MaxModuleState *
 	uint32_t global = entry->layer_index == SPARK_QWEN38_MAX_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
 	if ( SparkQwen38MaxStagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,&shape) != 0 || entry->rows != shape.rows || entry->columns != shape.columns )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	/* Strict natural format, except the three routed-expert tensors may also
-	 * arrive BF16 (synthesized test packs); anything else fails. */
 	if ( entry->weight_format != shape.natural_format )
 	{
 		if ( (shape.natural_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && shape.natural_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128) || entry->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
@@ -482,13 +436,6 @@ extern cudaError_t SparkQwen38MaxConfigureCudaKernels(void);
 static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot);
 static SparkStatus SparkQwen38MaxModuleAllocateSlotHostMirrors(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot);
 
-/* --------------------------------------------------------------------------
- * KV tier: the resident pool becomes a WINDOW over the logical block space.
- * Nonresident blocks page through the pluggable KV store (local socket,
- * network service address, or a dedicated spark ring running the store
- * service), keyed by (model fingerprint, layout fingerprint, rank, sequence,
- * logical block). Provider "none" keeps the all-resident behavior.
- * ------------------------------------------------------------------------*/
 
 static uint64_t SparkQwen38MaxModuleFingerprint(const void *bytes, uint64_t count, uint64_t basis)
 {
@@ -511,12 +458,8 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 	state->kv_logical_page_capacity = host_services->kv_logical_page_capacity;
 	state->kv_physical_page_capacity = host_services->kv_physical_page_capacity;
 	state->kv_backing_maximum_bytes = host_services->kv_backing_maximum_bytes;
-	/* The ABI validator enforced (logical==0)==(physical==0) and
-	 * physical<=logical; a byte cap with no backing path is refused here. */
 	if ( host_services->kv_backing_directory == 0 && host_services->kv_backing_maximum_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* The store provider is optional; getenv stays quiet when it is unset
-	 * instead of logging a config_missing on every storeless deployment. */
 	provider = getenv("SPARK_QWEN38_MAX_STAGE_KV_STORE");
 	if ( provider == 0 )
 		provider = none;
@@ -540,9 +483,6 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 	layout_fp = SparkQwen38MaxModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
 	block_record_bytes = (uint64_t)block_record_elements * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
 	staging_bytes = block_record_bytes * SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS;
-	/* The resident pool is a window: clamp the device pool to the physical
-	 * page capacity the deployment declared, so the adapter's freelist can
-	 * span the full logical space while the device holds the window. */
 	if ( state->kv_physical_page_capacity != 0u && state->kv_block_count > state->kv_physical_page_capacity )
 		state->kv_block_count = state->kv_physical_page_capacity;
 	if ( state->kv_block_count == 0u )
@@ -567,9 +507,6 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 	state->kv_slot_free_stack = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
 	state->kv_block_staging = malloc((size_t)staging_bytes);
 	state->kv_gdn_staging = malloc(SPARK_QWEN38_MAX_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES);
-	/* Device-side rewritten block table, sized for the full logical space
-	 * (max lanes x max blocks per lane); the module owns it so the const
-	 * adapter mirror stays untouched. */
 	if ( cudaMalloc((void **)&state->kv_table_indices_device,(size_t)SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_QWEN38_MAX_MODULE_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t)) != cudaSuccess )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( cudaMalloc((void **)&state->kv_table_counts_device,(size_t)SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t)) != cudaSuccess )
@@ -612,7 +549,6 @@ static SparkStatus SparkQwen38MaxModuleKvWaitBatch(SparkQwen38MaxModuleState *st
 	return(SparkQwen38MaxWorkControlAcknowledge(batch));
 }
 
-/* Write one dirty resident slot back to the store, leaving it free. */
 static SparkStatus SparkQwen38MaxModuleKvEvictSlot(SparkQwen38MaxModuleState *state, uint32_t slot)
 {
 	SparkQwen38MaxWorkControlKvBatchState *batch = &state->kv_work.evict;
@@ -636,9 +572,6 @@ static SparkStatus SparkQwen38MaxModuleKvEvictSlot(SparkQwen38MaxModuleState *st
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
-	/* Invalidate the reverse mapping BEFORE the metadata is scrubbed: a
-	 * stale nonzero kv_logical_to_slot entry reads as resident on the next
-	 * demand and would address a slot that now holds a different block. */
 	if ( state->kv_logical_to_slot != 0 && state->kv_slot_lane[slot] != UINT32_MAX &&
 		state->kv_slot_logical[slot] != UINT32_MAX && state->kv_logical_stride != 0u )
 	{
@@ -656,9 +589,6 @@ static SparkStatus SparkQwen38MaxModuleKvEvictSlot(SparkQwen38MaxModuleState *st
 	return(SPARK_STATUS_OK);
 }
 
-/* Make every block the frame's attention will read resident in the window,
- * rewrite the block table to window slots, and refresh the per-row slot
- * mappings. No-op when the tier is inactive. */
 static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot, SparkQwen38MaxResidentDecodeStageFrameContext *context, SparkQwen38MaxKvBlockTableView *table, uint32_t rows)
 {
 	SparkQwen38MaxWorkControlKvBatchState *restore_batch = &state->kv_work.restore;
@@ -671,11 +601,6 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 	uint64_t logical_capacity;
 	SparkStatus status;
 	cudaError_t error;
-	/* Transaction ledger: slots popped from the free stack stay listed
-	 * here until their batch commits (kv_logical_to_slot is published).
-	 * Any failure unwinds by returning the uncommitted slots and clearing
-	 * this frame's pins, so transient store/CUDA errors cannot shrink the
-	 * usable KV pool. */
 	uint32_t uncommitted[SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS];
 	uint32_t uncommitted_count = 0u;
 	uint32_t unwind_index;
@@ -698,8 +623,6 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 		state->kv_logical_stride = table->lane_stride;
 	}
 	state->kv_logical_stride = table->lane_stride;
-	/* Pass 1: distinct lanes, required block counts, sequence ids, and pin
-	 * every already-resident block the frame needs so eviction skips it. */
 	for (row = 0u; row < rows; row++)
 	{
 		uint32_t lane = slot->host_row_lane_indices[row];
@@ -730,11 +653,6 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 				state->kv_slot_pinned[slot_index - 1u] = 1u;
 		}
 	}
-	/* Pass 2: restore every nonresident block the frame needs, BATCHED.
-	 * The per-block submit+wait of the first cut serialized one store
-	 * round trip PER BLOCK - a 4096-block context restore was 4096
-	 * latencies. Up to SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS blocks now
-	 * ride one GET batch and one wait. */
 	{
 		SparkQwen38MaxWorkControlPendingLane pending_lanes[SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS];
 		uint32_t pending_slots[SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS];
@@ -752,7 +670,6 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 					continue;
 				if ( state->kv_slot_free_count == 0u )
 				{
-					/* Round-robin eviction, skipping pinned (frame-needed) slots. */
 					uint32_t scans = 0u;
 					while ( state->kv_slot_pinned[state->kv_evict_cursor] != 0u )
 					{
@@ -860,11 +777,6 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 			}
 		}
 	}
-	/* Pass 3: build the rewritten table in the module's own buffers (the
-	 * adapter's host mirror stays logical), point the frame's view at them,
-	 * upload ONLY the touched lanes' slices (the full-table upload of the
-	 * first cut moved 8 MB per frame; a lane slice is 16 KB), and refresh
-	 * the row slot mappings ahead of the layer walk. */
 	for (lane_index = 0u; lane_index < lane_count; lane_index++)
 	{
 		uint32_t lane = lane_list[lane_index];
@@ -927,8 +839,6 @@ fail:
 	return(fail_status);
 }
 
-/* The frame just wrote K/V rows into window slots: mark them dirty so the
- * store receives them before the slots are reused. */
 static void SparkQwen38MaxModuleKvMarkWritten(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot, uint32_t rows)
 {
 	uint32_t row,slot_index;
@@ -947,12 +857,6 @@ extern cudaError_t SparkQwen38MaxLaunchHeadShadowQuantize(cudaStream_t stream, c
 extern cudaError_t SparkQwen38MaxLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen38MaxLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
 
-/* --------------------------------------------------------------------------
- * Tensor-parallel collective: one residual all-reduce per layer. The
- * combine callback runs the elementwise add kernel; the module waits on an
- * atomic flag set by the completion callback (the device collective's own
- * progress thread drives the transfer phases).
- * ------------------------------------------------------------------------*/
 
 static SparkStatus SparkQwen38MaxModuleTpCombineBf16(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
 {
@@ -995,8 +899,6 @@ static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModu
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 	configuration.credit_count = 2u * state->pipeline_slot_count;
 	configuration.local_hidden_dimension = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-	/* The backend sizes its credit planes by this; use the static maximum
-	 * (dsv4 does the same) so the .so contract is configuration-free. */
 	configuration.max_active_sequence_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
 	configuration.connect_timeout_milli = state->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
@@ -1092,8 +994,6 @@ static SparkStatus SparkQwen38MaxModuleTpAllReduceHidden(SparkQwen38MaxModuleSta
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = 0u;
 	submission.active_sequence_count = rows;
-	/* Stream-ordered: the backend orders its device work after the
-	 * pair-reduce on the slot stream before the completion fires. */
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
 	submission.local_device = device_bf16;
@@ -1160,10 +1060,6 @@ static SparkStatus SparkQwen38MaxModulePrepare(
 	status = SparkQwen38MaxModuleConfigure(state);
 	if ( status == SPARK_STATUS_OK )
 		SparkStageModuleAtomicStateArrayInitialize(state->slot_states,state->pipeline_slot_count);
-	/* tp_degree > 1 runs the expert-sharded MoE with one residual
-	 * all-reduce per layer (the collective opens right after the slot
-	 * allocation); the head-parallel attention/GDN slicing is the next
-	 * increment. tp=1 is the replicated path, byte-identical as before. */
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentText(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_PACK_PATH",&pack_path);
 	if ( status == SPARK_STATUS_OK )
@@ -1190,10 +1086,6 @@ static SparkStatus SparkQwen38MaxModulePrepare(
 		status = SparkQwen38MaxModuleInitializeTpCollective(state);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 	{
-		/* One-time 4-bit shadow of the 248320 x 8192 head weights plus
-		 * certified per-neuron error bounds: the screened argmax reads
-		 * the shadow (1.02 GB) instead of the bf16 head (4.07 GB) per
-		 * row and rescores a bounded candidate set exactly. */
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION / 2u,(void **)&state->head_shadow_payload);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT * (SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION / SPARK_QWEN38_MAX_MODULE_HEAD_SHADOW_GROUP),(void **)&state->head_shadow_scale);
@@ -1300,9 +1192,6 @@ void SparkQwen38MaxResidentDecodeStageDestroy(void *module_state)
 	SparkStageModuleLifecycleDestroy(module_state,&SparkQwen38MaxModuleLifecycle);
 }
 
-/* ---------------------------------------------------------------------------
- * Execution core: slot allocation and the per-layer runners.
- * -------------------------------------------------------------------------*/
 
 #define SPARK_QWEN38_MAX_MODULE_STAGED_ROW_CAPACITY \
 	(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT + SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS)
@@ -1329,12 +1218,6 @@ extern cudaError_t SparkQwen38MaxLaunchMoePairReduce(cudaStream_t stream, const 
 extern cudaError_t SparkQwen38MaxLaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38MaxLaunchGroupedExpertLinear(cudaStream_t stream, const SparkQwen38MaxLinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank);
 extern cudaError_t SparkQwen38MaxLaunchGroupedExpertTileLinear(cudaStream_t stream, const SparkQwen38MaxLinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, void *output_bf16, uint32_t source_row_count, uint32_t tp_degree, uint32_t tp_rank);
-/* The MoE switches from the scalar grouped path to the tensor-core tile
- * path (SparkLmExpertTileAllKernel / SparkLmExpertTileAllMloopKernel) at
- * 8 rows. Measured on spark4: tile-at-1/2/4 LOSES (the 512-expert grid's
- * ~8K dead CTAs dominate a tiny batch), tile-at-8 wins 36.4 -> 21.7 ms,
- * tile-at-12 wins 54.5 -> 23.9 ms. The dense linears use the force-tile
- * path at every batch instead (no expert dimension, no dead CTAs). */
 #define SPARK_QWEN38_MAX_MODULE_MOE_TILE_ROWS 8u
 extern cudaError_t SparkQwen38MaxLaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension);
 extern cudaError_t SparkQwen38MaxLaunchSharedGate(cudaStream_t stream, void *accum_bf16, const void *gate_weight_bf16, const void *gate_input_bf16, uint32_t row_count, uint32_t dimension);
@@ -1345,8 +1228,6 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 	uint64_t hidden_bytes = rows * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t expert_bytes = rows * SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t moe_up_bytes = rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
-	/* The w2 output holds rows * top_k packed rows at the HIDDEN width,
-	 * not the expert width - the pair reduce reads it back at hidden. */
 	uint64_t moe_down_bytes = rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
 	SparkStatus status;
 	cudaStream_t stream = 0;
@@ -1359,8 +1240,6 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->output_token_ids);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 	{
-		/* Screened head: coarse logits at bf16 rows x vocab, screen
-		 * candidates at rows x SPARK_LM_HEAD_SCREEN_CAP, counts. */
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES,(void **)&slot->head_logits_bf16);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MAX_MODULE_HEAD_SCREEN_CAP * sizeof(uint32_t),(void **)&slot->head_candidate_ids);
@@ -1502,13 +1381,6 @@ static SparkStatus SparkQwen38MaxModuleRunAttnLayer(SparkQwen38MaxModuleState *s
 	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"attn_layer"));
 }
 
-/*
- * Routed MoE + shared expert, the layer's FFN side. The fused residual norm
- * already folded the attention/GDN delta into hidden, so delta_bf16 is
- * OVERWRITTEN by the routed expert mixture (weighted pair reduce from zero)
- * and then accumulates the shared expert output (scalar-gate-multiplied)
- * before the final residual add.
- */
 static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot, const void *mlp_norm_bf16, const SparkQwen38MaxMoeWeights *weights, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -1525,8 +1397,6 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 	{
 		if ( rows >= SPARK_QWEN38_MAX_MODULE_MOE_TILE_ROWS )
 		{
-			/* Tensor-core tile path: gridDim.z spans the experts, FP8
-			 * decodes to BF16 fragments under wmma mma_sync. */
 			error = SparkQwen38MaxLaunchGroupedExpertTileLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_gate_packed_bf16,rows,state->tp_degree,state->tp_rank);
 			if ( error == cudaSuccess )
 				error = SparkQwen38MaxLaunchGroupedExpertTileLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_slot_up_bf16,rows,state->tp_degree,state->tp_rank);
@@ -1550,10 +1420,6 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 		error = SparkQwen38MaxLaunchMoePairReduceOverwrite(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->delta_bf16,rows,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess && state->tp_degree > 1u )
 	{
-		/* Expert-sharded TP: the pair reduce holds only THIS rank's
-		 * experts' contribution. Reduce the DELTA before the replicated
-		 * shared expert and the residual add join it - reducing the hidden
-		 * instead would double-count the shared expert and the base. */
 		status = SparkQwen38MaxModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
@@ -1592,12 +1458,6 @@ static SparkStatus SparkQwen38MaxModuleRunLayer(SparkQwen38MaxModuleState *state
 	return(status);
 }
 
-/* ---------------------------------------------------------------------------
- * Pools, slot host mirrors, and the lean decode Execute path.
- * Decode-only for now: prefill, speculation and the KV tier land with the
- * serving adapter. The attention block table is a one-block-per-lane view
- * (valid for contexts up to KV_BLOCK_TOKENS); the adapter replaces it.
- * -------------------------------------------------------------------------*/
 
 #define SPARK_QWEN38_MAX_MODULE_HOST_ROW_CAPACITY \
 	(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT + SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS)
@@ -1695,13 +1555,6 @@ static cudaError_t SparkQwen38MaxModuleEmitHead(SparkQwen38MaxModuleState *state
 	return(error);
 }
 
-/* The firmware's transport contract (firmware header, frame context): a
- * stage with stage_index > 0 requires HIDDEN_INPUT_TRANSPORT on every
- * frame and a stage with stage_index + 1 < stage_count requires
- * HIDDEN_OUTPUT_TRANSPORT; the module refuses a frame whose transport
- * flags disagree with its position, in either direction. The one escape is
- * the unqualified smoke path (context absent AND the env gate set), which
- * runs the stage on its own buffers. */
 static SparkStatus SparkQwen38MaxModuleValidateFrameContext(SparkQwen38MaxModuleState *state, const SparkQwen38MaxResidentDecodeStageFrameContext *context)
 {
 	uint32_t wants_input,wants_output,has_input,has_output;
@@ -1727,7 +1580,6 @@ static SparkStatus SparkQwen38MaxModuleValidateFrameContext(SparkQwen38MaxModule
 	return(SPARK_STATUS_OK);
 }
 
-/* Land the previous stage's hidden residual into the slot's hidden buffer. */
 static SparkStatus SparkQwen38MaxModuleConsumeHiddenInput(SparkQwen38MaxModuleSlot *slot, SparkQwen38MaxResidentDecodeStageFrameContext *context, uint32_t rows)
 {
 	SparkHiddenTransportPacket *packet = &context->hidden_input_packet;
@@ -1746,7 +1598,6 @@ static SparkStatus SparkQwen38MaxModuleConsumeHiddenInput(SparkQwen38MaxModuleSl
 	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"hidden_input"));
 }
 
-/* Hand the slot's final hidden residual to the next stage. */
 static SparkStatus SparkQwen38MaxModuleEmitHiddenOutput(SparkQwen38MaxModuleSlot *slot, SparkQwen38MaxResidentDecodeStageFrameContext *context, uint32_t rows)
 {
 	SparkHiddenTransportPacket *packet = &context->hidden_output_packet;
@@ -1772,8 +1623,6 @@ static SparkStatus SparkQwen38MaxModuleRunDecode(SparkQwen38MaxModuleState *stat
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkStatus status;
 	cudaError_t error;
-	/* The KV table comes from the frame context when the serving adapter
-	 * provides one; the synthesized identity table is the smoke path. */
 	if ( context != 0 && context->kv_block_table != 0 )
 		table = *context->kv_block_table;
 	else
@@ -1798,10 +1647,6 @@ static SparkStatus SparkQwen38MaxModuleRunDecode(SparkQwen38MaxModuleState *stat
 	status = SparkQwen38MaxModuleUploadRows(state,slot,frame,rows);
 	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u )
 	{
-		/* Zero the grouped expert output buffer so the rank-local pair
-		 * reduce over ALL pairs sums only this rank's experts (the peers'
-		 * rows live in their own buffers; the all-reduce completes the
-		 * mixture). */
 		error = cudaMemsetAsync(slot->moe_slot_out_bf16,0,(uint64_t)rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN38_MAX_MODEL_HIDDEN_BF16_BYTES,stream);
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"tp_slot_zero");
 	}

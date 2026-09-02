@@ -1,4 +1,3 @@
-/* Large stage packs exceed 2 GB: 64-bit file offsets are required. */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
@@ -32,32 +31,6 @@
 
 #include "inference/kernels/graph.cuh"
 
-/*
- * DeepSeek V4 resident decode stage host module, PP-Nx native, one variant
- * per build through the -include'd model header.
- *
- * One process is one STAGE over a layer slice; the pack must declare that
- * slice and the computed tensor inventory exactly. The stage boundary
- * carries the FOUR hyper-connection streams (hc_mult x hidden per row);
- * stage zero expands the embedding, the head stage's sigmoid reduction is
- * the only collapse. Execute serves DECODE frames: one token per lane
- * across up to max_active lanes, every attention kind, both router paths,
- * the full mHC chain. Prefill advances one round-major wave at a time, so
- * all live sequences at one prompt step share the same CUDA launch while
- * preserving each sequence's state dependency. A causal bulk-prefill kernel
- * can replace the wavefront after separate qualification.
- * GA DSpark execution remains refused until a native pass lands. Baseline
- * stage packs exclude all three checkpoint DSpark layers and expose no
- * speculative-token capability.
- *
- * The hash router pins to token ids, which exist only where the embedding
- * lives: a slice that starts inside the hash range without owning the
- * embedding is refused at configuration, not discovered at runtime.
- *
-	 * KV is a physical page pool addressed through per-sequence page tables.
-	 * Logical pages and prefix identity are owned by the generic cache layer;
-	 * this module defines only DSV4's per-page payload and CUDA addressing.
- */
 
 #define SPARK_DSV4_MODULE_TAG "dsv4_stage"
 #define SPARK_DSV4_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
@@ -79,8 +52,6 @@ typedef struct SparkDsv4LayerWeights
 } SparkDsv4LayerWeights;
 
 typedef struct SparkDsv4ModuleState SparkDsv4ModuleState;
-/* Mirrors LM_FRAME_ERROR_WORDS (frame_error.cuh): the six-word per-frame
- * error record {code, kind, row, sequence, position, page}. */
 #define SPARK_DSV4_FRAME_ERROR_WORDS 6u
 
 typedef struct SparkDsv4ModuleSlot SparkDsv4ModuleSlot;
@@ -144,10 +115,6 @@ struct SparkDsv4ModuleSlot
 	uint32_t *output_token_ids;
 	uint32_t *resident_token_ids;
 	uint32_t *prefill_emit_rows_u32;
-	/* R2c bulk prefill: per-row snapshot of the lane's window ring page
-	 * taken BEFORE the whole-frame KV scatter, so the bulk attention can
-	 * serve window columns from the pre-frame ring exactly like the
-	 * wavefront it replaced. rows x window x head_dim BF16. */
 	void *prefill_window_shadow_bf16;
 	uint32_t *row_lane_indices;
 	uint32_t *row_page_table_indices;
@@ -207,9 +174,6 @@ struct SparkDsv4ModuleSlot
 	uint32_t *moe_inverse_u32;
 	uint32_t page_table_update_count;
 	SparkDsv4TpFrameContinuation *tp_continuation;
-	/* DSpark draft workspace. The draft runs replicated at full width on
-	 * every rank (identical math, no draft collectives); the verify rides
-	 * the standard TP island chain at bucket width. */
 	uint32_t dspark_armed;
 	uint32_t dspark_verify_rows;
 	uint32_t dspark_verify_accept;
@@ -232,10 +196,6 @@ struct SparkDsv4ModuleSlot
 	void *dspark_verify_tap_bf16;
 	void *dspark_logits_bf16;
 	float *dspark_logits_f32;
-	/* Per-frame error record (inference/kernels/frame_error.cuh, 6 words):
-	 * kernels report sparse-index corruption here; the device slot is
-	 * cleared at frame start, copied back to the pinned mirror before the
-	 * completion callback, and a non-zero code fails the frame. */
 	uint32_t *frame_error;
 	uint32_t *host_frame_error;
 };
@@ -346,9 +306,6 @@ struct SparkDsv4ModuleState
 	uint32_t index_slot_capacity;
 	uint32_t multiprocessor_count;
 	uint32_t dspark_enabled;
-	/* Sparse-attention partials: one slot per (row, head-group, split)
-	 * block; sized for max(multiprocessor_count, bucket_rows * head_groups)
-	 * so multi-wave grids stay within the allocation. */
 	uint32_t sparse_attn_partial_capacity;
 	void *execution_stream;
 	char kv_backing_directory[SPARK_KV_PAGE_STORE_PATH_BYTES];
@@ -373,21 +330,14 @@ struct SparkDsv4ModuleState
 	uint64_t mtp_seen_bits[SPARK_DSV4_STAGEPACK_MTP_LAYER_COUNT_MAX];
 	uint64_t global_seen_bits;
 	SparkDsv4LayerWeights layers[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
-	/* DSpark draft: three full transformer layers (mtp.0..2) carrying the
-	 * standard per-layer tensor set, plus the stage extras below. */
 	SparkDsv4LayerWeights mtp_layers[SPARK_DSV4_STAGEPACK_MTP_LAYER_COUNT_MAX];
 	SparkDsv4MtpWeights mtp;
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
 	const void *lm_head_weight_bf16;
-	/* DSpark state: the replicated draft ring (one sliding window per draft
-	 * layer per resident lane) and the per-rank lm_head view + mtp head
-	 * scale for the draft logits. */
 	void *dspark_ring_bf16;
 	uint64_t dspark_ring_lane_stride;
 	uint64_t dspark_ring_layer_stride;
-	/* Lane-level draft state: the anchor step's taps + token/position, so any
-	 * pipeline slot can run the next draft (slots cycle across submissions). */
 	void *dspark_tap_store_bf16;
 	uint8_t dspark_lane_ready[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t dspark_lane_anchor[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -421,16 +371,10 @@ struct SparkDsv4ModuleState
 	uint64_t index_kv_state_offset_by_layer[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
 	uint64_t index_score_state_offset_by_layer[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_LAYER_COUNT];
 	uint64_t resident_state_bytes;
-	/* TP1's optional dynamic whole-frame shape cache. */
 	uint32_t graph_capacity;
 	uint32_t graph_sealed;
 	LmGraphCache graph_cache;
 	LmGraphEntry graph_entries[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT];
-	/*
-	 * TP production uses fixed-width, stage-local graph islands. The flat
-	 * allocation is [pipeline slot][3 * local layers + 1]. Every entry is
-	 * captured and instantiated before readiness, then sealed as one unit.
-	 */
 	SparkDsv4TpGraphIsland *tp_graph_islands;
 	uint32_t tp_graph_islands_per_slot;
 	uint32_t tp_graph_island_count;
@@ -447,16 +391,6 @@ struct SparkDsv4ModuleState
 	atomic_ullong failed_count;
 	atomic_ullong tokens_emitted;
 	atomic_ullong host_callback_completion_count;
-	/* W2b serving-side attach (W3 fd tier): the weightd arena this slice's
-	 * tensors bind into when a running weightd served the identity, else 0
-	 * (direct pack load). The outcome owns the full attach state - client,
-	 * and since W3 the consumer's OWN imported map (the daemon exports the
-	 * arena's chunks as POSIX shareable fds; ImportMap verifies the chunk
-	 * set against the pack's byte range, then maps them at this process's
-	 * own span). The bytes are DAEMON-owned - the module only borrows the
-	 * mapping; Release unmaps it and closes the client WITHOUT detaching,
-	 * the daemon reaps the dropped connection and keeps the arena warm for
-	 * the next attach. */
 	SparkWeightdAttachOutcome weightd_outcome;
 	void *weightd_arena_base;
 	uint64_t weightd_arena_bytes;
@@ -534,7 +468,6 @@ extern cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_b
 extern cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const void *kv_bf16, const void *score_bf16, const float *ape_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlapped, uint32_t width, void *emit_bf16, uint32_t *emitted);
 extern cudaError_t SparkDsv4LaunchKvEmission(cudaStream_t stream, void *emit_bf16, const uint32_t *emitted, const void *norm_weight_bf16, const float *freqs_f32, const uint64_t *row_emit_positions, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots, uint32_t rotate);
 extern cudaError_t SparkDsv4LaunchCacheScatter(cudaStream_t stream, const void *source_bf16, const uint32_t *emitted, void *cache_bf16, uint64_t cache_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t width, uint64_t base_slot, uint32_t ratio, uint32_t ring_slots);
-/* R2c bulk causal prefill: window-ring snapshot + whole-frame attention. */
 extern cudaError_t SparkDsv4LaunchWindowShadow(cudaStream_t stream, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, void *shadow_bf16, uint32_t row_count, uint32_t head_dim, uint32_t window_tokens);
 extern cudaError_t SparkDsv4LaunchBulkPrefillAttn(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const void *staged_kv_bf16, const uint64_t *row_positions, const void *shadow_bf16, const uint32_t *row_lane_indices, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t page_table_rows, uint32_t compressed_entries_per_page, uint32_t pool_page_count, const int32_t *topk_idxs, const uint32_t *valid_topk_counts, uint32_t topk, const float *sink_f32, float scale, void *out_bf16, float *partials_f32, uint32_t partial_capacity, uint32_t multiprocessor_count, uint32_t row_count, uint32_t head_count, uint32_t head_dim, const void *frame_error);
 extern cudaError_t SparkDsv4LaunchDsparkAttention(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, uint32_t lane_index, const void *block_kv_bf16, const float *sink_f32, float scale, void *out_bf16, uint32_t block_size, uint32_t head_count, uint32_t head_dim, uint32_t window_tokens);
@@ -660,9 +593,6 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind =
 		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	/* Attention completion submits the FFN reduction before its callback
-	 * releases the current transport credit. Keep the two reductions for each
-	 * live slot on different credits; later layers reuse them after release. */
 	configuration.credit_count = state->pipeline_slot_count *
 		SPARK_DSV4_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
@@ -817,9 +747,6 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	return(SPARK_STATUS_OK);
 }
 
-/* DSpark is deployment-opt-in: the serving adapter translates the
- * SPARK_DSV4_DSPARK=1 launch environment into the typed node-context
- * flag FLAG_DSPARK. The module never reads the process environment. */
 static uint32_t SparkDsv4ModuleDsparkContextEnabled(
 	const SparkDsv4ResidentDecodeStageNodeContext *context)
 {
@@ -827,9 +754,6 @@ static uint32_t SparkDsv4ModuleDsparkContextEnabled(
 		(context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_DSPARK) != 0u) ? 1u : 0u;
 }
 
-/* Node-context field rules (the complexity lane's conjunction-soup
- * conversion, 2026-08-28: the ~30-term || chain in Configure became four
- * named predicates; same order, same short-circuit verdicts). */
 
 static uint32_t SparkDsv4ModuleContextSliceIsValid(
 	const SparkDsv4ResidentDecodeStageNodeContext *context)
@@ -979,14 +903,6 @@ static SparkStatus SparkDsv4ModuleConfigure(
 			host_services->kv_backing_maximum_bytes;
 	}
 	state->mtp_armed = 0u;
-	/* DSpark speculation is opt-in per deployment: the adapter sets
-	 * FLAG_DSPARK from SPARK_DSV4_DSPARK=1 (the launch-env pattern the
-	 * qwen38 spec envs use). The former hardcoded 1u made every no-spec
-	 * frame pay the draft-path host work: the layer-40..42 tap +
-	 * cudaStreamSynchronize, the head-max acceptance sync, and per-frame
-	 * staging traffic - measured ~17% at the B1 no-spec decode cell.
-	 * Speculative deployments export the env in their launch
-	 * configuration. */
 	state->dspark_enabled = SparkDsv4ModuleDsparkContextEnabled(context);
 	status = SparkDsv4ModuleInitializeTpCollective(state,context);
 	if ( status != SPARK_STATUS_OK )
@@ -995,9 +911,6 @@ static SparkStatus SparkDsv4ModuleConfigure(
 	return(SPARK_STATUS_OK);
 }
 
-// The slice sanity beyond ranges: position agreement, and the hash-router
-// pin - token ids exist only beside the embedding, so a slice that starts
-// inside the hash range without layer zero cannot route and is refused.
 static SparkStatus SparkDsv4ModuleValidateSlice(SparkDsv4ModuleState *state)
 {
 	if ( state->stage_index >= state->stage_count || state->first_layer_index + state->layer_count > SPARK_DSV4_MODEL_LAYER_COUNT )
@@ -1033,9 +946,6 @@ static SparkStatus SparkDsv4ModuleValidateSlice(SparkDsv4ModuleState *state)
 	return(SPARK_STATUS_OK);
 }
 
-// Per-stage ordinals: dense compress and CSA numbering inside the slice,
-// and the topk column budget - the window plus the larger of the indexer
-// top-k and the full compressed slot count an HCA layer attends.
 static void SparkDsv4ModuleBuildOrdinals(SparkDsv4ModuleState *state)
 {
 	uint32_t layer,kind,hca_columns = state->max_sequence_positions / SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO;
@@ -1087,9 +997,6 @@ static int32_t SparkDsv4ModuleResolvedShape(
 			shape->rows = state->vocabulary_rows_per_rank;
 		return(0);
 	}
-	/* DSpark draft layers are REPLICATED full-width on every rank (the
-	 * draft runs replicated with zero draft collectives), so the MTP layer
-	 * range keeps the full geometry instead of the TP shard. */
 	if ( SparkDsv4StagePackLayerIsMtp(entry->layer_index) != 0u )
 		return(0);
 	switch ( entry->tensor_kind )
@@ -1300,15 +1207,6 @@ static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state,
 		fprintf(stderr,"%s pack_entry_invalid kind=%u layer=%u\n",SPARK_DSV4_MODULE_TAG,entry->tensor_kind,entry->layer_index);
 		return(status);
 	}
-	/* Attached arenas bind borrowed slices straight out of the weightd
-	 * arena - the verified pack image: no allocation, no copy, the pointer
-	 * IS the weight, and the ledger records nothing it would free.
-	 * ValidateEntry has already bounded every offset against file_bytes and
-	 * the attach proved arena_bytes == file_bytes. Otherwise the file
-	 * loads run: through the shared pipeline the reads overlap the copies;
-	 * the payload-then-scale enqueue order and the per-tensor directory
-	 * order are preserved, so the device arrival order matches the
-	 * synchronous loader. The binds below only record addresses. */
 	if ( state->weightd_arena_base != 0 )
 	{
 		payload = (void *)((uint8_t *)state->weightd_arena_base + entry->payload_offset);
@@ -1336,9 +1234,6 @@ static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state,
 	return(SparkDsv4ModuleBindLayer(state,entry,payload,scale));
 }
 
-// Coverage: every layer in the slice must have seen the exact kind set its
-// attention class demands, the MTP layer its SWA score-routed set, and the
-// globals the position-derived set - a missing tensor is a refused pack.
 static uint64_t SparkDsv4ModuleExpectedLayerBits(uint32_t layer_index)
 {
 	uint32_t kind = SparkDsv4StagePackLayerKind(layer_index),tensor;
@@ -1373,9 +1268,6 @@ static SparkStatus SparkDsv4ModuleVerifyCoverage(SparkDsv4ModuleState *state)
 		for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_FINAL_NORM; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE; tensor++)
 			expected_globals |= 1ull << tensor;
 	}
-	/* DSpark draft: every rank's pack carries the three full draft layers
-	 * (they ride the standard per-layer kinds under the MTP layer range)
-	 * plus the stage extras; a missing draft tensor is a refused pack. */
 	if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
 	{
 		uint32_t stage;
@@ -1405,16 +1297,6 @@ static SparkStatus SparkDsv4ModuleVerifyCoverage(SparkDsv4ModuleState *state)
 	return(SPARK_STATUS_OK);
 }
 
-// W2b serving-side attach (docs/WEIGHTD_DESIGN.md): ask a running weightd
-// for this slice's arena BY IDENTITY before the direct load. The identity is
-// the deployment's, not computed per process: the pack digest comes from the
-// environment (the warm redeploy path cannot afford a full-pack re-hash
-// here), the topology is the tp configuration hash, and the geometry
-// fingerprint folds the pack header's geometry fields. The daemon stays the
-// bytes authority - it verifies the digest before any arena exists, so a
-// stale identity only falls back, never serves wrong bytes. Env-off is
-// silent (kill-switch parity with SPARK_STAGE_MODULE_LOAD_PIPELINE=0);
-// every other fallback logs one line and takes the direct pack load below.
 static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, const char *path, const SparkDsv4StagePackHeader *header)
 {
 	SparkWeightdPackSlice slice;
@@ -1447,8 +1329,6 @@ static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, con
 	status = SparkWeightdAttachPack(&slice,path,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&outcome,reason);
 	if ( status != SPARK_STATUS_OK )
 	{
-		// a transport fault out of the client itself must never fail the
-		// load - the direct pack read below is the contract
 		fprintf(stderr,"%s weightd_attach_error status=%s\n",SPARK_DSV4_MODULE_TAG,SparkStatusToString(status));
 		return(SPARK_STATUS_OK);
 	}
@@ -1459,20 +1339,10 @@ static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, con
 	}
 	if ( outcome.arena_bytes != (uint64_t)header->file_bytes )
 	{
-		// the arena is the pack image by construction; a size disagreement
-		// means a different pack arrived under the claimed identity
 		SparkWeightdAttachRelease(&outcome);
 		fprintf(stderr,"%s weightd_fallback reason=arena_mismatch\n",SPARK_DSV4_MODULE_TAG);
 		return(SPARK_STATUS_OK);
 	}
-	// W3 fd tier: the import leg. The daemon hands this process the arena's
-	// physical chunks as POSIX shareable fds; ImportMap verifies the chunk
-	// set covers the pack's byte range (the identity check) BEFORE mapping
-	// and maps them at this process's own span - device_handle becomes a
-	// real cross-process base here, not the daemon's pid-local stopgap.
-	// Every "not mapped" outcome is a fallback (the helper releases the
-	// attach), never a wrong-byte risk: the daemon's digest gate still
-	// owns the bytes.
 	status = SparkWeightdAttachImportMap(&outcome,(uint64_t)header->file_bytes,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,reason);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1529,15 +1399,6 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_DSV4_MODULE_TAG,file,header.directory_offset,directory,(uint64_t)header.tensor_count * sizeof(SparkDsv4StagePackEntry));
-	/* Serving-side attach first: a running weightd serves the arena by
-	 * identity (digest-verified daemon-side) and the tensors bind straight
-	 * into it with no per-tensor copy. Any fallback lands on the direct
-	 * load below - one pack-wide load pipeline: the worker thread reads
-	 * tensor N+1's staging while tensor N's upload runs
-	 * (docs/WEIGHTD_DESIGN.md L1). Every fill is per-tensor independent
-	 * and the single upload stream keeps the directory arrival order, so
-	 * the device image is identical to the sequential load;
-	 * SPARK_STAGE_MODULE_LOAD_PIPELINE=0 restores the synchronous path. */
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleWeightdAttach(state,path,&header);
 	pipeline = 0;
@@ -1560,8 +1421,6 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 	return(status);
 }
 
-// Host YaRN frequency table, the reference precompute arithmetic; the
-// interpolation ramp engages only when original positions are declared.
 static void SparkDsv4ModuleComputeFreqs(float *freqs, float base, uint32_t original, float factor)
 {
 	uint32_t rope_dim = SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,pair;
@@ -1614,25 +1473,7 @@ static SparkStatus SparkDsv4ModuleUploadFreqs(SparkDsv4ModuleState *state)
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"freq_upload"));
 }
 
-/*
- * Cache pools. Each layer holds only the slots required by its attention
- * class: SWA keeps the local window, HCA keeps its compressed stream, and
- * CSA keeps both. Per-layer offsets preserve the reference's contiguous
- * [window | stream] addressing while compressor state uses the matching
- * class footprint. The indexer keeps its rotated cache and small overlap
- * state per CSA ordinal.
- */
-// One-time MXFP4 shadow of the lm_head plus per-neuron certified error
-// norms, the mimo25 screened-head pattern; head stage only, built
-// synchronously at initialize.
 
-/*
- * The hash routing tables come off the pack unchecked and feed the
- * device grouping kernel's shared histogram directly, so a corrupt or
- * mismatched table would write out of bounds. One init-time scan per
- * hash layer, blocking readback, hard failure on any out-of-range
- * entry.
- */
 static SparkStatus SparkDsv4ModuleValidateHashTables(SparkDsv4ModuleState *state)
 {
 	uint32_t layer,*flag_device,flag_host = 0u;
@@ -1689,8 +1530,6 @@ static SparkStatus SparkDsv4ModuleBuildHeadShadow(SparkDsv4ModuleState *state)
 	return(status);
 }
 
-// Post-pack validation and derived-weight construction, one call from
-// the initialize chain.
 static SparkStatus SparkDsv4ModuleFinalizeLoad(SparkDsv4ModuleState *state)
 {
 	SparkStatus status;
@@ -1892,8 +1731,6 @@ static SparkStatus SparkDsv4ModuleAllocatePools(SparkDsv4ModuleState *state)
 	}
 	if ( status == SPARK_STATUS_OK && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
 	{
-		/* Replicated draft ring: one 128-slot sliding window per draft
-		 * layer per resident lane, bf16 512-wide kv. */
 		uint64_t ring_layer_elements = (uint64_t)SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS *
 			SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION;
 		state->dspark_ring_layer_stride = ring_layer_elements;
@@ -2030,7 +1867,6 @@ static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state,
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT * sizeof(float),(void **)&slot->moe_scores_f32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(float),(void **)&slot->moe_weights_f32);
-	/* device-private: the frame error slot kernels report corruption into. */
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t),(void **)&slot->frame_error);
 	return(status);
@@ -2537,7 +2373,6 @@ static SparkStatus SparkDsv4ModuleValidateFrameContinuity(
 	return(SPARK_STATUS_OK);
 }
 
-// The host half of staging: validate and refill the slot's pinned buffers.
 static SparkStatus SparkDsv4ModuleStageRowValues(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -2577,9 +2412,6 @@ static SparkStatus SparkDsv4ModuleStageRowValues(
 	return(SPARK_STATUS_OK);
 }
 
-// The H2D half of staging, split from the host fill so a graph capture can
-// record exactly these two copies: the pinned source buffers are per-slot
-// fixed, so a replay re-reads whatever the current frame's fill left there.
 static SparkStatus SparkDsv4ModuleStageRowCopies(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -2647,12 +2479,6 @@ static SparkStatus SparkDsv4ModuleStageRows(
 
 static SparkStatus SparkDsv4ModuleDsparkDrive(SparkDsv4ModuleState *state,SparkDsv4ModuleSlot *slot,uint32_t lane_index,uint32_t anchor_token_id,uint64_t anchor_position);
 
-/* DSpark verify expansion: stage 8 rows of the single lane (anchor +
- * SPEC_STEP drafts) through the slot's pinned staging, so the B8 islands
- * replay one batched verify frame. Runs after the draft on the submission
- * path; the draft tokens arrive device-side in dspark_draft_token_ids. */
-/* Copy the staged row arrays (3 x u32 + 3 x u64, the exact layout
- * StageRowCopies records) for the verify expansion's rows. */
 static cudaError_t SparkDsv4ModuleStageVerifyRowCopies(
 	SparkDsv4ModuleSlot *slot,uint32_t rows)
 {
@@ -2676,12 +2502,6 @@ static cudaError_t SparkDsv4ModuleStageVerifyRowCopies(
 	return(error);
 }
 
-/* DSpark verify expansion: stage 8 rows of the single lane (anchor +
- * SPEC_STEP drafts) through the slot's pinned staging, so the B8 islands
- * replay one batched verify frame. Runs after the draft on the submission
- * path; the draft tokens arrive device-side in dspark_draft_token_ids.
- * Each row's physical page resolves from the prepared page table exactly
- * like SparkDsv4ModuleStageRowValues (row_lane_indices = physical page). */
 static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -2742,11 +2562,6 @@ static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
 	return(status);
 }
 
-/* Pad a staged single row up to BUCKET rows by duplicating row 0 at the
- * same position (the islands only replay bucket-width shapes; identical
- * rows write identical KV and produce identical outputs, so only row 0's
- * token is emitted). Used for 1-row prefill frames and the draft-failed
- * decode fallback on the B8 bucket. */
 static SparkStatus SparkDsv4ModulePadDuplicateRows(
 	SparkDsv4ModuleSlot *slot,
 	uint32_t rows)
@@ -2782,12 +2597,6 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 	row_lane_indices = prefill != 0u ? context->prefill_batch->row_lane_indices : context->decode_batch->row_lane_indices;
 	row_positions = prefill != 0u ? context->prefill_batch->row_positions : context->decode_batch->row_positions;
 	row_count = prefill != 0u ? context->prefill_batch->row_count : context->decode_batch->row_count;
-	/* DSpark: if the previous step published a ready lane, run the draft
-	 * from the LANE store on the submission path (host syncs are legal
-	 * here, unlike the completion callback). The per-frame staging trace
-	 * print that lived here fired on every submission (prefill and decode
-	 * alike) and was removed: stderr is unbuffered, it is pure
-	 * instrumentation, and it sat ahead of the dspark gate. */
 	if ( SPARK_BATCH_BUCKET == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u &&
 		state->dspark_enabled != 0u && row_count == 1u )
 	{
@@ -2819,8 +2628,6 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 						fprintf(stderr,"dspark_drive_failed status=%u tp_rank=%u lane=%u\n",(uint32_t)dspark_status,state->tp_rank,lane_index);
 					else
 					{
-						/* k=7 verify expansion: stage SPEC_STEP+1 rows of the lane
-						 * (anchor + drafts) instead of the 1-row submission */
 						SparkStatus expand_status = SparkDsv4ModuleExpandDsparkVerify(
 							state,slot,frame,lane_index,
 							state->dspark_lane_anchor[lane_index],
@@ -2832,9 +2639,6 @@ static SparkStatus SparkDsv4ModuleStageFrameRows(SparkDsv4ModuleState *state, Sp
 					}
 				}
 			}
-			/* Prefill single-lane frames and the decode fallback (lane not
-			 * armed / draft failed): stage the one real row, then pad
-			 * duplicates to bucket width so the islands can replay. */
 			if ( prefill != 0u || slot->dspark_verify_rows == 0u )
 			{
 				SparkStatus stage_status = SparkDsv4ModuleStageRows(state,slot,
@@ -2877,7 +2681,6 @@ static SparkStatus SparkDsv4ModuleBeginStreams(SparkDsv4ModuleState *state, Spar
 	return(SPARK_STATUS_OK);
 }
 
-// One mHC boundary: preserve the residual, mix and split with Sinkhorn, then reduce.
 static cudaError_t SparkDsv4ModuleHcEnter(SparkDsv4ModuleSlot *slot, const void *streams_bf16, const float *fn, const float *scale3, const float *base, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -2899,13 +2702,6 @@ static cudaError_t SparkDsv4ModuleHcEnter(SparkDsv4ModuleSlot *slot, const void 
 	return(error);
 }
 
-/*
- * The compressor for one decode token, attention side: wkv/wgate on the
- * normalized x, widen to fp32, ape by in-group position, the state step,
- * and for boundary rows the emitted slot gets norm, rope at the group
- * start position, the fp8 cache sim, and lands at position/ratio behind
- * the window. The fused device epilogue owns the boundary predicate.
- */
 static cudaError_t SparkDsv4ModuleRunCompressorProjection(
 	SparkDsv4ModuleSlot *slot,SparkDsv4CompressorScratch *scratch,
 	cudaStream_t stream,const SparkDsv4CompressorWeights *weights,uint32_t rows)
@@ -3031,11 +2827,6 @@ static cudaError_t SparkDsv4ModuleStageTopk(SparkDsv4ModuleState *state, SparkDs
 	return(SparkDsv4LaunchBuildAttentionIndices(stream,slot->row_positions,slot->topk_idxs,slot->slot_counts,slot->attention_slot_counts,rows,state->topk_column_count,state->index_slot_capacity,layer_kind));
 }
 
-/*
- * All o-composition groups in one launch: grid.z walks wo_a's contiguous
- * group blocks against each group's slice of the attention output, ranks
- * landing at the group's offset - block-diagonal through the strided kernel.
- */
 static cudaError_t SparkDsv4ModuleRunOutputComposition(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4LayerWeights *layer, uint32_t rows)
 {
 	SparkDsv4LinearView view = layer->attn.wo_a;
@@ -3220,15 +3011,6 @@ static cudaError_t SparkDsv4ModuleRunCausalAttention(SparkDsv4ModuleState *state
 		return(cudaErrorInvalidValue);
 	if ( rows == 1u )
 		return(SparkDsv4ModuleRunAttentionRows(state,slot,cache,lane_stride,sink_f32,layer_kind,0u,rows));
-	/* R2c bulk causal prefill: the old round-major wavefront launched a
-	 * scatter+attention pair per wave, so a one-sequence chunk ran
-	 * rows sequential near-empty grids. Now: snapshot every frame
-	 * lane's window ring page, scatter the whole frame's KV once, then
-	 * run one attention launch over all rows. The kernel keeps the
-	 * wavefront's per-row column order and values: in-frame window
-	 * slots resolve to the staged row, everything else falls back to
-	 * the pre-frame ring snapshot - identical math, wave-serial
-	 * causality without the wave serialization. */
 	error = SparkDsv4LaunchWindowShadow((cudaStream_t)slot->cuda_stream,cache,
 		lane_stride,slot->row_lane_indices,slot->prefill_window_shadow_bf16,
 		rows,SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
@@ -3361,10 +3143,6 @@ static cudaError_t SparkDsv4ModuleRunAttentionSerialPrologue(SparkDsv4ModuleStat
 			freqs,rows);
 	if ( error == cudaSuccess )
 		error = SparkDsv4ModuleRunKvPost(slot,stream,layer,freqs,rows);
-	/* Row-0 gate: a verify/pad frame's duplicate or draft rows must not
-	 * advance the committed compressor state or the index cache in the
-	 * batched prologue - only the anchor (row 0) writes. The accepted
-	 * drafts are re-applied at the commit (rows 1..accepted). */
 	if ( error == cudaSuccess && kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA )
 		error = SparkDsv4ModuleRunCompressor(state,slot,&slot->compressor,stream,
 			&layer->compressor,state->compress_kv_state_f32 + state_offset,
@@ -3486,14 +3264,6 @@ static cudaError_t SparkDsv4ModuleRunAttentionProjected(
 	return(error);
 }
 
-/*
- * Device-grouped routed MoE, mirrored from mimo25: one grouping kernel,
- * three all-expert tile launches with device-side counts, the clamped
- * swiglu with the routing weight folded at the intermediate running
- * dense over the grouped pairs, and the unweighted pair reduce
- * accumulating race-free through the inverse map. No host round trips,
- * no per-layer synchronize; the step is graph-capturable end to end.
- */
 static cudaError_t SparkDsv4ModuleRunMoeShared(SparkDsv4ModuleSlot *slot, cudaStream_t stream, const SparkDsv4MoeWeights *moe, uint32_t rows, uint32_t expert_width)
 {
 	cudaError_t error;
@@ -3563,11 +3333,6 @@ static SparkStatus SparkDsv4ModuleRunMoe(SparkDsv4ModuleState *state, SparkDsv4M
 		"moe_parallel_reduce"));
 }
 
-/*
- * TP=1 retains the original whole-frame launch sequence so its decode graph
- * cache remains valid. TP>1 cannot use this body: each collective splits the
- * frame into stream-ordered graph islands.
- */
 static SparkStatus SparkDsv4ModuleRunLocalLayer(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -3846,8 +3611,6 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
 			"tp_head_maxloc_finish");
-	/* DSpark acceptance reads the head tokens on the host: the D2H above
-	 * is asynchronous, so fence before touching host_output_token_ids. */
 	if ( status == SPARK_STATUS_OK && state->dspark_enabled != 0u )
 	{
 		cudaError_t sync_error = cudaStreamSynchronize(
@@ -3856,11 +3619,6 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,
 				sync_error,"dspark_head_sync");
 	}
-	/* DSpark: greedy Leviathan acceptance over the staged rows, burst
-	 * emission, and the anchor step's taps + token to the LANE store
-	 * (slots cycle across submissions, so the next draft runs from state,
-	 * not from this slot). The D2D tap copy rides the stream before the
-	 * completion callback fires. */
 	if ( status == SPARK_STATUS_OK &&
 		(continuation->rows == 1u || continuation->dspark_verify != 0u) &&
 		state->dspark_enabled != 0u )
@@ -3886,21 +3644,8 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			async->completion.tokens_per_sequence = 1u + accepted;
 			async->tokens_per_sequence = 1u + accepted;
 			async->emitted_token_count = 1u + accepted;
-			/* The completion emits 1 + accepted tokens. The anchor (the
-			 * "1") was ALREADY folded into lane_next_positions and the
-			 * cache lane's context_token_count by the 1-row submission's
-			 * frame-continuity advance, so only the accepted bonus drafts
-			 * advance them further here. Advancing by 1 + accepted again
-			 * double-counts the anchor and leaves the residentd's KV page
-			 * prepare BUSY forever on the next step (next_token_position
-			 * lands one past the next submission's sequence_position). */
 			async->lane_next_positions[0] += accepted;
 			async->cache_lanes[0].context_token_count += accepted;
-			/* Commit replay: the row-0 gate wrote only the anchor in
-			 * the prologue; re-apply rows 1..accepted through the
-			 * committed compressor state so the next frame's boundary
-			 * pool reads the exact accepted-prefix d values (the
-			 * rejected rows keep the old committed value). */
 			if ( accepted != 0u )
 			{
 				uint32_t row;
@@ -3942,8 +3687,6 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 				SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 			if ( continuation->dspark_verify != 0u )
 			{
-				/* publish the ACCEPTED row's taps from the per-row tap
-				 * buffer (row 0 for the padded fallback frames) */
 				uint64_t row_bytes = SPARK_DSV4_MODEL_HIDDEN_DIMENSION *
 					SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 				for (layer = 0u; layer < SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT; layer++)
@@ -4092,9 +3835,6 @@ static void SparkDsv4ModuleContinueLayers(void *context,SparkStatus status)
 				SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT &&
 			(continuation->rows == 1u || continuation->dspark_verify != 0u) )
 		{
-			/* Tap the target hidden (mean over the hc streams) at the
-			 * draft's attachment layers. Verify frames tap ALL staged rows
-			 * (the acceptance loop picks the accepted row afterwards). */
 			uint8_t *tap_dst = (uint8_t *)slot->dspark_tap_bf16 +
 				(uint64_t)(continuation->layer_index -
 					SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST) *
@@ -4190,11 +3930,6 @@ static cudaError_t SparkDsv4ModuleProjectHead(SparkDsv4ModuleState *state, Spark
 		error = SparkDsv4LaunchRmsNorm(stream,slot->reduced_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
 	{
-		/* Every row uses the certified 1-row head: the screened-argmax
-		 * route diverges from the certified head's exact rescore and flips
-		 * near-tie argmaxes. The certified kernels are strictly 1-row, so
-		 * run them once per row on the stream (scratch/candidates are safe
-		 * to share - launches are stream-ordered per row). */
 		uint32_t row;
 		for (row = 0u; row < rows && error == cudaSuccess; row++)
 		{
@@ -4253,7 +3988,6 @@ static SparkStatus SparkDsv4ModuleLaunchTpProjectionIsland(
 	layer = &state->layers[layer_index];
 	stream = (cudaStream_t)slot->cuda_stream;
 	error = cudaSuccess;
-	/* A0 owns the stable token-id -> four-stream prologue on stage zero. */
 	if ( layer_index == state->first_layer_index &&
 		state->owns_embedding != 0u )
 	{
@@ -4265,7 +3999,6 @@ static SparkStatus SparkDsv4ModuleLaunchTpProjectionIsland(
 			return(begin_status != SPARK_STATUS_OK ? begin_status :
 				SPARK_STATUS_VALIDATION_FAILED);
 	}
-	/* Fold the prior layer's post-FFN boundary into every A island after A0. */
 	if ( layer_index != state->first_layer_index )
 		error = SparkDsv4LaunchHcPost(stream,slot->ffn_accum_bf16,
 			slot->residual_bf16,slot->post_f32,slot->comb_f32,
@@ -4460,7 +4193,6 @@ static SparkStatus SparkDsv4ModuleCaptureTpIsland(
 			"tp_graph_begin_capture"));
 	status = SparkDsv4ModuleLaunchTpIslandBody(state,slot,island_index,
 		SPARK_BATCH_BUCKET,&kind,&layer_index);
-	/* End every successfully-started capture, including an invalidated one. */
 	end_error = cudaStreamEndCapture(stream,&graph);
 	if ( status != SPARK_STATUS_OK || end_error != cudaSuccess || graph == 0 )
 	{
@@ -4509,7 +4241,6 @@ static SparkStatus SparkDsv4ModulePrewarmTpGraphs(
 	if ( state->tp_graph_islands == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->tp_graph_island_count = (uint32_t)total;
-	/* FinalizeLoad's qualification gates already synchronize uploaded state. */
 	status = SPARK_STATUS_OK;
 	for (slot_index=0u; status==SPARK_STATUS_OK &&
 		slot_index<state->pipeline_slot_count; slot_index++)
@@ -4527,7 +4258,6 @@ static SparkStatus SparkDsv4ModulePrewarmTpGraphs(
 		if ( state->tp_graph_islands[island_index].live == 0u ||
 			state->tp_graph_islands[island_index].executable == 0 )
 			return(SPARK_STATUS_VALIDATION_FAILED);
-	/* No graph is launched during prewarm: capture cannot mutate KV state. */
 	state->tp_graphs_sealed = 1u;
 	return(SPARK_STATUS_OK);
 }
@@ -4557,9 +4287,6 @@ static SparkStatus SparkDsv4ModuleRunPrefillHead(SparkDsv4ModuleState *state, Sp
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"prefill_head"));
 }
 
-/* DSpark drive, submission-path (host syncs allowed): the draft forward
- * plus the sequential markov chain with per-rank greedy samples. The
- * cross-rank sample reduce and the verify/acceptance loop follow. */
 static SparkStatus SparkDsv4ModuleDsparkDrive(
 	SparkDsv4ModuleState *state,
 	SparkDsv4ModuleSlot *slot,
@@ -4626,7 +4353,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkHead(
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
-	/* hc head mix + reduce + final norm over the 5 draft positions */
 	error = SparkDsv4LaunchHcMix(stream,slot->dspark_x_bf16,
 		state->mtp.hc_head_fn_f32,slot->mixes_f32,block,
 		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,
@@ -4648,7 +4374,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkHead(
 			SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 	if ( error != cudaSuccess )
 		fprintf(stderr,"dspark_head_fail stage=rms_norm error=%d\n",(int)error);
-	/* base logits over this rank's lm_head shard */
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchLinear(stream,&state->lm_head_view,
 			slot->normalized_bf16,slot->dspark_logits_bf16,block);
@@ -4681,7 +4406,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t stage,index;
 
-	/* stage-0 prelude: main_x = main_norm(main_proj(concat(tap40..42))) */
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchLinear(stream,&state->mtp.main_proj,
 			slot->dspark_tap_bf16,slot->dspark_main_x_bf16,1u);
@@ -4689,7 +4413,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 		error = SparkDsv4LaunchRmsNorm(stream,slot->dspark_main_x_bf16,
 			state->mtp.main_norm_weight_bf16,slot->dspark_main_x_bf16,1u,
 			dim,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-	/* block input: embed([anchor, noise x (block-1)]) expanded x streams */
 	for (index = 0u; index < block; index++)
 		slot->dspark_host_input_token_ids[index] = index == 0u ? anchor_token_id :
 			SPARK_DSV4_MODEL_DSPARK_NOISE_TOKEN_ID;
@@ -4714,7 +4437,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 		stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
 	{
 		const SparkDsv4LayerWeights *layer = &state->mtp_layers[stage];
-		/* hc_pre (attn) + attn norm */
 		error = SparkDsv4ModuleHcEnter(slot,slot->dspark_x_bf16,
 			layer->hc.attn_fn_f32,layer->hc.attn_scale_f32,
 			layer->hc.attn_base_f32,block);
@@ -4722,7 +4444,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 			error = SparkDsv4LaunchRmsNorm(stream,slot->reduced_bf16,
 				layer->attn_norm_bf16,slot->normalized_bf16,block,dim,
 				SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
-		/* block q/kv (full width: the MTP range is packed unsharded) */
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchFp8LinearPair(stream,&layer->attn.wq_a,
 				&layer->attn.wkv,slot->normalized_bf16,slot->delta_bf16,
@@ -4757,8 +4478,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				SPARK_DSV4_MODEL_KV_QUANT_BLOCK,
 				SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 		DSPARK_S0_TRACE("qkv");
-		/* draft attention: window ring + block kvs, non-causal, sink in
-		 * the denominator */
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchDsparkAttention(stream,
 				slot->dspark_q_attn_bf16,
@@ -4775,7 +4494,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT,
 				SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION,
 				SPARK_DSV4_MODEL_ATTN_ROPE_DIMENSION,1u);
-		/* output composition (full 8 groups) + wo_b */
 		if ( error == cudaSuccess )
 		{
 			SparkDsv4LinearView wo_a = layer->attn.wo_a;
@@ -4799,7 +4517,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				slot->residual_bf16,slot->post_f32,slot->comb_f32,
 				slot->dspark_x_bf16,block,streams,dim);
 		DSPARK_S0_TRACE("attn_compose");
-		/* hc_pre (ffn) + ffn norm + MoE */
 		if ( error == cudaSuccess )
 			error = SparkDsv4ModuleHcEnter(slot,slot->dspark_x_bf16,
 				layer->hc.ffn_fn_f32,layer->hc.ffn_scale_f32,
@@ -4820,8 +4537,6 @@ static SparkStatus SparkDsv4ModuleRunDsparkDraft(
 				slot->residual_bf16,slot->post_f32,slot->comb_f32,
 				slot->dspark_x_bf16,block,streams,dim);
 		DSPARK_S0_TRACE("moe");
-		/* the target position's kv enters this draft layer's ring at
-		 * anchor_position % window */
 		{
 			uint32_t host_lane = lane_index;
 			uint64_t host_position = anchor_position;
@@ -4882,12 +4597,6 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 	rows = prefill != 0 ? prefill->row_count : context->decode_batch->row_count;
 	if ( slot->dspark_verify_rows != 0u )
 		rows = slot->dspark_verify_rows;
-	/* A full-width prefill wave has exactly one row per active lane.  Its
-	 * causal attention is therefore the decode attention operation, and all
-	 * row values already live in slot-owned staging before this function.
-	 * Drop the stack-owned view before any asynchronous TP continuation.
-	 * The DSpark bucket-8 padding stages single-lane prefills to bucket
-	 * width, so rows == SPARK_BATCH_BUCKET is the only gate left. */
 	if ( prefill != 0 && state->tp_degree > 1u )
 	{
 		if ( rows != SPARK_BATCH_BUCKET )
@@ -4937,10 +4646,6 @@ static SparkStatus SparkDsv4ModuleRunFrame(
 		continuation->rows = rows;
 		continuation->layer_index = state->first_layer_index;
 		continuation->active = 1u;
-		/* DSpark verify frames replace the engine's sequential chain
-		 * (tokens_per_sequence) with ONE parallel 8-row verify forward;
-		 * the acceptance loop at the head decides how many of the staged
-		 * rows become emitted tokens. */
 		continuation->dspark_verify = is_prefill == 0u &&
 			slot->dspark_verify_rows != 0u ? 1u : 0u;
 		continuation->chain_step_count = is_prefill != 0u ? 1u :
@@ -4994,33 +4699,11 @@ static SparkStatus SparkDsv4ModuleFinishFrameContinuation(
 	return(status);
 }
 
-/*
- * Decode-step CUDA graphs, per docs/archive/PERF_ROADMAP_2026-08-01.md D10/D1: the
- * eager step costs hundreds of driver launches and at cohort width 1 the GPU
- * idles between them. A decode frame's launch SHAPE depends only on the
- * pipeline slot (every buffer above is per-slot fixed) and the lane count
- * (every grid derives from rows), so one recording per (slot, rows) pair
- * replays every later frame of that shape: token ids, lane indices, and
- * positions ride the slot's pinned staging through the two recorded H2D
- * copies, and the caches are indexed on device. The stage has no
- * position-dependent host branch - the topk column count and the window
- * ring are capacity constants - so no context term belongs in the key.
- *
- * The frame's boundary buffers are the one remaining per-frame address:
- * rather than key on daemon pointers, the graphed step bounces the hidden
- * input into the slot's own stream buffer ahead of the graph and bounces the
- * last stage's output back after it, one contiguous D2D copy each way, so
- * the recording only ever names module-owned addresses.
- *
- * Fail-closed: any capture or replay-launch failure fails the frame; a replay
- * never substitutes for a shape it was not recorded from.
- */
 static SparkStatus SparkDsv4ModuleBounceBoundary(void *destination, const void *source, uint32_t rows, cudaStream_t stream, const char *site)
 {
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaMemcpyAsync(destination,source,(uint64_t)rows * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,cudaMemcpyDeviceToDevice,stream),site));
 }
 
-// The exact launch sequence a decode graph records.
 static SparkStatus SparkDsv4ModuleRunCapturedDecode(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, uint32_t rows)
 {
 	const void *input_streams_bf16;
@@ -5062,7 +4745,6 @@ static SparkStatus SparkDsv4ModuleCaptureDecode(SparkDsv4ModuleState *state, Spa
 	graph_status = LmGraphEndCapture(&state->graph_cache,key,stream);
 	if ( status == SPARK_STATUS_OK && graph_status == LM_GRAPH_OK )
 	{
-		// Captured work only recorded; replay it so this frame executes.
 		graph_status = LmGraphReplay(&state->graph_cache,key,stream);
 		if ( graph_status == LM_GRAPH_OK )
 			return(SPARK_STATUS_OK);
@@ -5071,9 +4753,6 @@ static SparkStatus SparkDsv4ModuleCaptureDecode(SparkDsv4ModuleState *state, Spa
 			SPARK_DSV4_MODULE_TAG,graph_status);
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	// The attempt failed. If EndCapture still instantiated a recording made
-	// with a failed launch inside, that recording has a hole: retire the
-	// entry rather than risk replaying a short sequence.
 	entry = LmGraphFind(&state->graph_cache,key);
 	if ( entry != 0 && status != SPARK_STATUS_OK )
 	{
@@ -5100,8 +4779,6 @@ static SparkStatus SparkDsv4ModuleRunGraphedDecode(
 	LmGraphKey key;
 	SparkStatus status;
 	int32_t graph_status;
-	// The pinned-staging fill is host work the recording cannot contain, and
-	// the recorded copies read it at replay time: it runs every frame, first.
 	status = SparkDsv4ModuleStageRowValues(state,slot,(const uint32_t *)frame->buffers[0].address,context->decode_batch->row_lane_indices,context->decode_batch->row_positions,rows);
 	if ( status == SPARK_STATUS_OK && state->owns_embedding == 0u )
 		status = SparkDsv4ModuleBounceBoundary(slot->streams_bf16,context->hidden_input_bf16,rows,stream,"graph_boundary_in");
@@ -5211,9 +4888,6 @@ SparkDsv4ModuleCacheAdmissionFrameContext(
 		return(0);
 	context = (const SparkDsv4ResidentDecodeStageFrameContext *)
 		frame->user_context;
-	/* Only a complete, ABI-exact context can name prepared ownership.  Shape,
-	 * view, boundary, and continuity fields intentionally are not accepted as
-	 * substitutes for the five control-plane identity fields. */
 	if ( context->abi_version !=
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION ||
 		context->descriptor_bytes < (uint32_t)sizeof(*context) ||
@@ -5475,10 +5149,6 @@ static SparkStatus SparkDsv4ModulePrepareCachePages(
 			SparkDsv4ModuleClearCacheAdmission(state,prepared,0u);
 			async->prepared_cache_admission_index = UINT32_MAX;
 		}
-		/* Once COMMITTED capacity has been consumed, BUSY/PENDING is not a
-		 * retryable adapter result: the exact prepared ownership was terminally
-		 * resolved above.  Fence the route instead of letting residentd retry a
-		 * submission whose COMMIT record no longer exists. */
 		if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 			status = SPARK_STATUS_INTERNAL_ERROR;
 	}
@@ -5557,11 +5227,6 @@ static SparkStatus SparkDsv4ModuleFinishCachePages(
 		result = SparkDsv4ModuleAbortCacheLanesLocked(async);
 	else if ( result != SPARK_STATUS_OK )
 	{
-		/* CompleteLane is sequential and can fail after an earlier lane has
-		 * published.  The common path already unpinned every lane, so fence the
-		 * entire batch by releasing each sequence binding without unpinning a
-		 * second time.  Immutable published pages may remain reusable, but no
-		 * partially advanced lane is allowed to keep serving. */
 		async->aborted_cache_lane_count = async->prepared_cache_lane_count;
 		for (index=0u; index<async->prepared_cache_lane_count; index++)
 		{
@@ -5682,9 +5347,6 @@ static void SparkDsv4ModuleCompleteAfterFailedEnqueue(
 		SparkDsv4ModuleCompleteAsync(async);
 		return;
 	}
-	/* A failed fence cannot prove that device work released this slot's
-	 * buffers.  Publish one terminal error, but deliberately retain the lane,
-	 * slot, and ADOPTING cache claims as quarantined capacity. */
 	async->completion.status = synchronize_status;
 	completion_function = async->completion_function;
 	completion_context = async->completion_context;
@@ -5698,8 +5360,6 @@ static void SparkDsv4ModuleCompleteAfterFailedEnqueue(
 static SparkStatus SparkDsv4ModuleEnqueueAsync(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, uint32_t slot_index)
 {
 	cudaError_t error;
-	/* Frame error copyback (frame_error.cuh): pinned mirror lands on the
-	 * stream before the host callback reads it. device -> pinned host. */
 	error = cudaMemcpyAsync(slot->host_frame_error,slot->frame_error,
 		SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t),
 		cudaMemcpyDeviceToHost,(cudaStream_t)slot->cuda_stream);
@@ -5759,8 +5419,6 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 	}
 	slot = &state->slots[slot_index];
 	slot->cuda_stream = frame->execution_stream;
-	/* Fresh frame, fresh error record (frame_error.cuh). Stream-ordered
-	 * ahead of every launch, including a graph replay of the decode step. */
 	frame_error_clear = cudaMemsetAsync(slot->frame_error,0,
 		SPARK_DSV4_FRAME_ERROR_WORDS * sizeof(uint32_t),
 		(cudaStream_t)slot->cuda_stream);
@@ -5804,8 +5462,6 @@ static SparkStatus SparkDsv4ModuleExecuteFrame(
 		synchronize_status = SparkDsv4ModuleSynchronizeFailedSlot(slot);
 		if ( synchronize_status != SPARK_STATUS_OK )
 		{
-			/* The slot and lane claims are the fence when CUDA cannot prove that
-			 * their buffers are idle. */
 			atomic_fetch_add_explicit(&state->failed_count,1u,
 				memory_order_relaxed);
 			return(synchronize_status);
@@ -5902,8 +5558,6 @@ static SparkStatus SparkDsv4ModuleExecuteRelease(
 	return(SPARK_STATUS_OK);
 }
 
-/* Frame execution hook for the shared firmware-module lifecycle (the
- * lifecycle shell already rejected null state/frame). */
 static SparkStatus SparkDsv4ModuleExecute(
 	void *module_state, SparkModelDriverFrame *frame)
 {
@@ -6180,10 +5834,6 @@ static SparkStatus SparkDsv4ModulePrepareCacheAdmission(
 		free_record->request.admission_flags = 0u;
 		free_record->request.cache_lanes = free_record->cache_lanes;
 		status = SparkDsv4ModuleProgressCacheAdmission(state,free_record);
-		/* A BUSY/PENDING result is not an accepted PREPARE, so the resident
-		 * route has nobody that can later COMMIT or ABORT this record.  Keep the
-		 * global page-store job, but release this exact capacity ownership and
-		 * let a later PREPARE resolve/prefetch it afresh. */
 		if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 		{
 			SparkDsv4ModuleClearCacheAdmission(state,free_record,1u);
@@ -6247,8 +5897,6 @@ static SparkStatus SparkDsv4ModuleRequireCommittedCacheAdmission(
 	return(status);
 }
 
-/* Admission hook for the shared firmware-module lifecycle (the shell
- * already rejected null arguments). */
 static SparkStatus SparkDsv4ModuleAdmit(
 	void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
@@ -6326,8 +5974,6 @@ static SparkStatus SparkDsv4ModuleAdmit(
 	return(SPARK_STATUS_OK);
 }
 
-/* Snapshot extension hook: the paged-cache and host-completion counters on
- * top of the shared slot/counter base. */
 static void SparkDsv4ModuleSnapshotExtend(
     void *module_state,
     SparkModelDriverRuntimeSnapshot *snapshot)
@@ -6346,9 +5992,6 @@ static void SparkDsv4ModuleSnapshotExtend(
 	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
 }
 
-/* Teardown hook for the shared firmware-module lifecycle: runs after the
- * lifecycle's quiesce wait; the lifecycle releases the ledger and frees the
- * state afterwards. */
 static void SparkDsv4ModuleStateTeardown(void *module_state)
 {
     SparkDsv4ModuleState *state;
@@ -6357,12 +6000,6 @@ static void SparkDsv4ModuleStateTeardown(void *module_state)
     state = (SparkDsv4ModuleState *)module_state;
 	if ( state->weightd_outcome.client != 0 || state->weightd_outcome.map_base != 0 )
 	{
-		// W2b/W3 attach teardown: Release unmaps the consumer's imported
-		// chunks and closes WITHOUT detaching - the daemon reaps the dead
-		// socket, drops this process's reference, and the arena stays
-		// resident warm for the next attach (the sub-second code-redeploy
-		// path). The borrowed mapping dies here; the bytes never belonged
-		// to this process.
 		SparkWeightdAttachRelease(&state->weightd_outcome);
 	}
 	state->weightd_arena_base = 0;
@@ -6454,11 +6091,6 @@ static void SparkDsv4ModuleStateTeardown(void *module_state)
 	}
 }
 
-/*
- * Shared firmware-module lifecycle wiring (see
- * include/sparkpipe/spark_stage_module_lifecycle.h). Everything above this
- * point is family work; the five ABI entry points below are the template's.
- */
 static void SparkDsv4ModuleDescribe(
 	void *module_state,
 	SparkStageModuleLifecycle *lifecycle)
@@ -6477,12 +6109,6 @@ static void SparkDsv4ModuleDescribe(
 	lifecycle->tokens_emitted = &state->tokens_emitted;
 }
 
-/* Configuration, pack load, pools and slots in the family's original order.
- * The lifecycle allocated and zeroed the state and initialized the ledger
- * tag and the five submission counters before this runs, and routes any
- * failure to the full destroy path (the pre-lifecycle manual teardown of a
- * half-configured state is subsumed by it: zeroed slots quiesce instantly
- * and every teardown branch is guarded). */
 static SparkStatus SparkDsv4ModulePrepare(
 	void *module_state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -6514,11 +6140,6 @@ static SparkStatus SparkDsv4ModulePrepare(
 		status = SparkDsv4ModuleValidateSlice(state);
 	if ( status == SPARK_STATUS_OK )
 	{
-		/* Worst-case sparse-attention block count for this bucket: the
-		 * launch needs one partial slot per (row, head-group, split);
-		 * when blocks exceed the SM count the split count clamps to 1
-		 * and the grid queues in waves, so the capacity must cover
-		 * bucket_rows * head_groups even past multiprocessor_count. */
 		uint32_t head_groups = (SparkDsv4ModuleTpQueryHeads(state) +
 			SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA - 1u) /
 			SPARK_DSV4_SPARSE_ATTN_HEADS_PER_CTA;

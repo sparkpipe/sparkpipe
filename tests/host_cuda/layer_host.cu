@@ -1,18 +1,3 @@
-// Run the rest of K3's layer kernels on a CPU.
-//
-// The KDA recurrence and the router already execute; this covers what a layer
-// touches around them: the short convolution with its Swish, the per-head L2
-// normalisation, SiTU, the fused residual RMS norm, the attention output gate,
-// and the MoE finalize.
-//
-// The finalize is here for a specific reason. Its launch was wrong four ways
-// and compiled - tokens and dimension swapped, the expert id where the packed
-// row belongs, a 1D grid for a kernel that reads blockIdx.y. tests/test_kernel_launches.py
-// catches that by reading the call site; this catches it by running the kernel
-// and comparing numbers, which is the half that survives someone rewriting the
-// call in a form the parser does not recognise.
-//
-// Every header is included unmodified.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -28,10 +13,6 @@ float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 
 #include "inference/kernels/dtype.cuh"
 
-// One lane per warp, overridden here rather than defaulted in mma.cuh. LmBlockSum
-// computes warps = THREADS / LM_WARP_LANES; at one thread and 32 lanes that is
-// zero and the reduction returns zero for every row, which turned an RMS norm
-// into a 225x error until the harness disagreed with the reference.
 #include "inference/kernels/mma.cuh"
 #undef LM_WARP_LANES
 #define LM_WARP_LANES LM_HOST_WARP_LANES
@@ -146,12 +127,6 @@ int main(void)
 	for (index = 0u; index < ROWS * TOP_K; ++index)
 		printf("rweight %.9g\n", (double)route_weight[index]);
 
-	// short convolution with Swish, the three rows as ONE RUN. The reference
-	// below this gate has always flowed the window across the rows - and the
-	// old per-row-block kernel only matched it because a one-thread host runs
-	// blocks in ascending order. On a device those blocks raced the slot. The
-	// run kernel makes the flowing semantics the actual contract: one
-	// sequence, one block per channel group, the taps in registers.
 	static uint32_t conv_run_begin[2] = { 0u, ROWS };
 	LM_HOST_LAUNCH(dim3(1u, CHANNELS),
 		(LmCausalConvKernel<THREADS, CONV_KERNEL, LM_CONV_SWISH,float>(
@@ -177,7 +152,6 @@ int main(void)
 		(LmOutputGateKernel<THREADS>(gated, gate_val, CHANNELS)));
 	Emit("gateout", gated, ROWS * CHANNELS);
 
-	// the launch that was wrong four ways: 2D grid, tokens then top_k then dim
 	LM_HOST_LAUNCH(dim3(CHANNELS, ROWS),
 		(LmMoeFinalizeKernel<THREADS>(
 			expert_out, packed_row, route_weight, finalized,
