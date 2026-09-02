@@ -4924,3 +4924,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   restored. Deferred: rank0 (spark0=cold-storage) + rank3 (spark3 54G
   free — pro-repo 1004G blocks it; flag to operator) → build on helper
   nodes after drain, ship to canonical.
+
+## 2026-09-02 ~firing 139: max fan-out deduped (spark4+spark2) — 14 single-writer builds
+
+- The hung-launch sweeps belatedly delivered duplicates on spark4 (2
+  writers) as well as spark2 (3 writers + 4 tmps, ~190G orphans).
+  Both nodes: kill-all, tmp wipe, single clean relaunch. Verified
+  proc=2 (wrapper+python) fleet-wide = single writer everywhere.
+- Still deferred: rank0 (spark0 cold), rank3 (spark3 54G free).
+  Builds land ~30-60min/rank; ships + receipts after drain; rank0/rank3
+  on helper nodes (spark9/sparkf post-drain), then ships.
