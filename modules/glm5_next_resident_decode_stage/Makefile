@@ -50,6 +50,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/spark_weightd_attach.c \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
+	../../src/spark_ck128.c \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \

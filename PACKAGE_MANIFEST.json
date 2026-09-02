@@ -3518,8 +3518,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile",
-      "sha256": "68845f9f5eb93a45caa512ce694f6b5d866d9a9c93df9472e34c4de651c5ce64",
-      "size_bytes": 4442
+      "sha256": "c5ed387420ba6af531f64c5b93bcbff058de6b5aa9f91744c3fb5aaaf6a35164",
+      "size_bytes": 4469
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile.pro",
@@ -3748,8 +3748,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/Makefile",
-      "sha256": "30977677f26e932523f58c0a520739924fba56ad1e490ee313232b0e05ddc693",
-      "size_bytes": 4754
+      "sha256": "bb20120cbaea25d2974c6851a2e813229821b23499c6d6f96d545c33b7e25c3a",
+      "size_bytes": 4781
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/README.md",
@@ -8905,5 +8905,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31028770
+  "total_bytes": 31028824
 }
