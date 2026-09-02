@@ -4615,3 +4615,8 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   ~99.6G — sparka's healthy write class, ~40 min/rank. 14, 15 follow.
 - Item 15 state: 12/16 ranks built on warm (0-10, 12); 13 building;
   14, 15 queued in the same chain.
+
+## 2026-09-01 ~30:9x — firing 101c: rank13 BUILT (13/16); ranks 14-15 launched on sparka
+
+- rank13: receipt.json + sha + spstage complete on warm. Only 14, 15
+  remain; launched the chain for them on sparka (~1.5h each + verify).
