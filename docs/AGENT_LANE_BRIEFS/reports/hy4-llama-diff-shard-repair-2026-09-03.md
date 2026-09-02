@@ -249,3 +249,25 @@ origin/main tool; dispatcher daemon still down, one-shot passes only.
 
 NEXT: attention-score + softmax-with-sink kernel and the MoE expert
 gather (same fp64 pattern); then TP16 native module port.
+
+## Receipt 09-03 (next tick): hy4-gpu6 absorbed-MLA attention cell — STAGED+QUEUED (glm53flash live campaign holds fleet)
+
+Increment: the attention block as CUDA kernels — kv path (kv_a gemv 6144→576,
+rms_norm on the 512-latent half, interleaved rope on the 64-pe half, KV cache
+for all 4 prompt tokens), the full q path (reuses the proven qchain kernels),
+absorb (k_b gemv 192→512 per head), the sink-softmax attention combine (scores
+= q_abs·k_lat + q_pe·k_pe scaled 1/√256; max over scores∪sink; sink as its own
+denominator term — the exact ggml semantics fixed two ticks ago), and v
+decompression (v_b gemv 512→256) — layer 0 head 0, causal over the 4-token
+prompt, compared per token position against an in-harness fp64 reference
+(tol 1e-3) AND against llama.cpp eval-callback goldens (attn_kqv-0 head 0:
+t0 [0.0047, 0.0020, -0.0051] .. t3 [0.0308, 0.0514, -0.0408]).
+
+Submitted as hy4-gpu6-attn [gpu][spark2]. NOT RUN YET: glm53flash's live
+meshbench campaign (nccl-mb-probe1/probe2/mb-curve1, p0, all 16 nodes,
+chained) holds the priority barrier; the cell dispatches on the first free
+pass. All queue ops via the origin/main tool; dispatcher daemon still down.
+
+NEXT: (1) poll hy4-gpu6-attn to completion — expect ATTN_T0..T3 PASS with
+first3 matching the llama goldens within kernel-noise; (2) MoE expert-gather
+cell (same fp64 pattern); (3) then the TP16 native module port.
