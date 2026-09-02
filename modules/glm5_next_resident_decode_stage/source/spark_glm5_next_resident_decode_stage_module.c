@@ -331,7 +331,7 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 		char rev_hdr[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES + 1u];
 		memcpy(rev_hdr,header->model_revision,SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES);
 		rev_hdr[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES] = '\0';
-		if ( state->model_revision != 0 )
+		if ( state->model_revision[0] != '\0' )
 		{
 			strncpy(rev_state,state->model_revision,SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES);
 			rev_state[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES] = '\0';
