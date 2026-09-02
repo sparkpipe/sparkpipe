@@ -4876,3 +4876,22 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Module-side ticket (27B lane): lift config guard
   module.c:412-413 so conforming TP4PP4 packs load. Max-family lane:
   runtime-TP residency is the rework item per operator ruling.
+
+## 2026-09-02 ~firing 136: design-conformance sweep (operator asked "how many other abominations")
+
+- Ran the classes the mechanical audit never gated:
+  1. Shared/multi-rank packs (max pattern): ZERO placed anywhere.
+  2. MTP presence, new dsv4-pro TP16 + TP4PP4: PASS — kinds 41-49 all
+     present (9 MTP entries/pack; replicated per stage, family design).
+  3. Receipt staleness (glm5_next TP16): PASS — canonical digest ==
+     bytes, .mtp.receipts present.
+  4. Topology-honest naming: PASS — tp8.fp8 files exactly the canonical
+     43,479,544,832-B MTP size; the 272G wrong-topology purge held.
+  5. Deprecated glm52 model packs: none found.
+- Strays removed (~71.7MB): glm5_next.tp16.bak* stale pre-MTP receipt
+  stubs on all 16 nodes + empty dsv4_flash.tp16v3 dir on spark5.
+- FLAGS for owners: hy4.ud-iq1m.tp16 (lane set; IQ1_M extreme-quant
+  provenance — if lane-quantized that breaks the no-quantization law);
+  qwen38-dflash2-drafter.qwen36sp (item 28, never evaluated).
+- Root fix stands: design conformance is now an audit leg (item 29),
+  not a judgment call.
