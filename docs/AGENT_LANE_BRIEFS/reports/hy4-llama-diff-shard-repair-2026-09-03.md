@@ -128,3 +128,18 @@ The CLI is the prompt path: `encode` output feeds hy4_generate.c's
 prompt-ids file directly (text -> ids -> forward -> greedy loop).
 A gen=1 greedy decode on the 4-token prompt was launched as the
 end-to-end loop receipt (llama continuation reference: 52392 " jumps").
+
+## Receipt 09-03 (closed): greedy decode loop GREEN end-to-end
+
+gen=1 run on the tokenizer-encoded 4-token prompt (spark2
+hy4-cmp/gen1.log): prefill argmax 299 (" of") fed back, t=4 forward
+top-1 logit 17.8445 -> GENERATED TOKEN 269 (" the"). Decoded
+continuation: "The quick brown fox of the". All 5 token-stacks finite.
+llama.cpp gives " jumps" (52392) for the same prompt — per the fp64
+analysis above, a near-tie flip caused by llama's own CPU kernel
+rounding, not a semantic difference.
+
+Ladder state: dequant all classes green; loader green; single-layer
+green; tokenizer wired (selftest 4/4); greedy decode loop green; whole-
+layer llama diff closed. Next: GPU port (dequant cells already green),
+TP16 native module, tok/s.
