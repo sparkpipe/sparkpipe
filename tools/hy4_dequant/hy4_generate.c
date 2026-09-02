@@ -437,10 +437,34 @@ int main(int argc, char **argv) {
             free(hc_ffn_fn); free(hc_fsc); free(hc_fba); free(ln2);
         }
 
-        /* lm_head: rank-local vocab slices, global argmax */
+        /* lm_head: hc_head collapse of the 4 streams first (vendor
+         * build_hc_head: rms over the flattened hc*embd vector, fn mixes,
+         * pre = sigmoid(mixes*scale+base)+eps, weighted reduce), then
+         * output_norm, then the rank-local vocab matvec */
+        float *hfn = load0("output_hc_fn.weight");
+        float *hsc = load0("output_hc_scale.weight");
+        float *hba = load0("output_hc_base.weight");
+        float flat[N_EMBD * HC];
+        memcpy(flat, streams[t], sizeof(float) * N_EMBD * HC);
+        float fss = 0;
+        for (int i = 0; i < N_EMBD * HC; ++i) fss += flat[i] * flat[i];
+        float finv = 1.0f / sqrtf(fss / (N_EMBD * HC) + 1e-5f);
+        for (int i = 0; i < N_EMBD * HC; ++i) flat[i] *= finv;
+        float hm[HC];
+        matvec(hfn, flat, hm, HC, N_EMBD * HC);
+        float hpre[HC];
+        for (int s = 0; s < HC; ++s)
+            hpre[s] = 1.0f / (1.0f + expf(-(hm[s] * hsc[0] + hba[s]))) + 1e-6f;
+        float collapsed[N_EMBD];
+        for (int i = 0; i < N_EMBD; ++i) {
+            float acc = 0;
+            for (int s = 0; s < HC; ++s) acc += streams[t][s * N_EMBD + i] * hpre[s];
+            collapsed[i] = acc;
+        }
+        free(hfn); free(hsc); free(hba);
         float *onorm = load0("output_norm.weight");
         float normed[N_EMBD];
-        rms_norm(streams[t][0], onorm, normed, N_EMBD, 1e-5f);
+        rms_norm(collapsed, onorm, normed, N_EMBD, 1e-5f);
         free(onorm);
         int gbest = -1; float gbv = -INFINITY;
         float *alllogits = malloc((size_t)VOCAB * 4);
