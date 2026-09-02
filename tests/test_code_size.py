@@ -1419,50 +1419,17 @@ CEILING = 234369
 # trampoline), weightd warm-path identity publish, wave-tool env
 # passthrough, spark-queue multi-dev hardening (+ durable state, batched
 # age-gated reaper, doctor), hermetic queue gate, runbook + consult doc.
-<<<<<<< HEAD
-# 237333 -> 237359: qwen38_max TP16-ready attention kernels —
-# KV-head replication past the kv head count (model header +
-# kernel width params).
-# 237359 -> 237363: symmetric resource classes (gpu candidates
-# ignore cpu holds - cpu pack builds were freezing the gpu
-# queue head-of-line). NOTE: an earlier merge lost the 237375
-# pin from #769 - lanes, re-pin from MEASURED reality, never
-# carry an old ceiling forward through conflict resolution.
-# 237375 (from #769) was lost by a later merge conflict resolution;
-# re-pinned from THIS branch's measured reality. +4: symmetric
-# resource classes (gpu candidates ignore cpu holds - cpu pack
-# builds were freezing the gpu queue head-of-line).
-CEILING = 237363
-# lane/spec-unified: the speculation policy core becomes model-neutral and
-# tree-capable. The SPARK_DSPARK_TARGET_* build-time shape switch and the
-# hardcoded-GLM52 hard-equality validation are replaced by a runtime contract
-# descriptor with structural validation (shorter than the chain it replaces),
-# and acceptance gains a parent-array tree resolve with the chain kept as the
-# degenerate tree (one shared code path, no second engine). The GLM52 default
-# contract fill moves to the GLM52 backend as a real function. Net +206
-# non-test lines for the foundation the unified subsystem builds on; tests are
-# excluded by construction. 237569 exact.
-CEILING = 237569
-=======
-# 237353 -> 237423 (merged tree measure): dsv4pro verifier fix
-# (stacked-fp4 expected-bytes section order) + exit-4 root-cause
-# report + ranks script; carries #769/#771 pins on main.
-# 237423 -> 237430: queue blocked-state promotion (dispatch-side
-# promote-before-candidates; fixes priority-inversion stranding).
-# 237523 -> 237525: dsv4pro newest stack tail (sampler section-split,
-# verify-only finish script, driver-rebuild cwd fix).
-# 237525 -> 237543: qwen38_max attention launcher degree guard
-# (tp1/tp2 reject) + module archive link fix.
-CEILING = 237543
-# (dsv4pro) +93 exact: the section-split sampler (payload and scale
-# sections verified at their own directory offsets), the final
-# verify-only finish script, and tools/dsv4pro_driver_rebuild.sh —
-# main's 237430 measure predates the lane's newest stack.
-# (dsv4pro) +36 exact on the lane stack: the stacked-fp4 section-order
-# fix in tools/dsv4_pro_rank_pack_verify.py (+4) and the resumed ranks
-# script tools/dsv4pro_tp16_ranks.sh (+32) that main's 237317 measure
-# predates.
->>>>>>> origin/main
+# 237333 -> 237359: qwen38_max TP16-ready attention kernels (KV-head
+# replication past the kv head count). 237359 -> 237363: symmetric resource
+# classes. lane/spec-unified: the speculation policy core becomes
+# model-neutral and tree-capable (runtime contract descriptor + structural
+# validation; parent-array tree resolve with the chain as the degenerate
+# case; GLM52 default-fill moves to the GLM52 backend). Main purge history:
+# 237353 -> 237543 (dsv4pro verifier/ranks, queue blocked-state promotion,
+# qwen38_max attention launcher guard) then the comment purge. Merged;
+# ceiling re-pinned from MEASURED reality after the conflict resolution.
+CEILING = 219352
+
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
