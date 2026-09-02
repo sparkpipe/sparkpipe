@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "bc172d440d0f629d79e95ba0195358d98be862e014d2a942f7809992a810e92b",
-      "size_bytes": 247747
+      "sha256": "045ed663fc403c8cadb7b2aaebff9da496e2c9e0cbf44f9d56a85c120ac5497c",
+      "size_bytes": 254279
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -563,8 +563,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-hillclimb-inventory-2026-08-30.md",
-      "sha256": "1cdcf2581427d0fdec8e2a685341c483b2f529a00eab6b3eabebc033777a6db0",
-      "size_bytes": 3140
+      "sha256": "b11b0d3a432838726d9fba8de5f3bc1e48c4b0e95d58aac01da9b23c52e68a8e",
+      "size_bytes": 4466
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-m5-2026-08-28.md",
@@ -848,8 +848,8 @@
     },
     {
       "path": "docs/STAGEPACK_AUDIT_2026-08-31.md",
-      "sha256": "a77fac5cc01b7c3e967d2eca21a901b21e9f5b4bb6b3fd2e8ff19118d81421bc",
-      "size_bytes": 16131
+      "sha256": "941183c8cf694fd84d83624ac8397f47e71c9f968506a26b62256f49d13de671",
+      "size_bytes": 16199
     },
     {
       "path": "docs/TOPOLOGY_GUIDE.md",
@@ -8688,7 +8688,7 @@
     },
     {
       "path": "tools/qwen4_flash_deploy_v4.py",
-      "sha256": "4b33ea2412bdfcb347fce8b9b7d946445ae4922bc8995bf328974de9aabe2be9",
+      "sha256": "4b9ad8a3754ad5f3cf2a650ea52de300cf4d371ec0136b1f40465acc5f60e997",
       "size_bytes": 5003
     },
     {
@@ -8698,8 +8698,8 @@
     },
     {
       "path": "tools/qwen4_flash_fleet16_launch.sh",
-      "sha256": "2e132f0f514b6129ad01ba7066aea12c95d78174b0bc6086367d6516afd26820",
-      "size_bytes": 8740
+      "sha256": "8b874e822ad929cf8964b7ac13af49b2b6004f5f7f2f1d8c0dbe6d8c88893966",
+      "size_bytes": 8787
     },
     {
       "path": "tools/qwen4_flash_live_launch.sh",
@@ -8728,8 +8728,8 @@
     },
     {
       "path": "tools/qwen4_flash_wave_cells.sh",
-      "sha256": "cd40a3b9f3ac7b959aa84f84a02dbe837fe7eb9f506079b9c0403e14a35ff5ea",
-      "size_bytes": 2970
+      "sha256": "825ebc279dda19061596a59b0c170f2199cc25c2b26c592408a12690aa5322ae",
+      "size_bytes": 3571
     },
     {
       "path": "tools/registrar_stage.sh",
@@ -8870,5 +8870,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30962325
+  "total_bytes": 30970899
 }

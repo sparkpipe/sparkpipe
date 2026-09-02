@@ -54,3 +54,25 @@ file an INTEGRATION REQUEST if geometry fights the kernel).
   record (check frame N's error while frame N+1 is enqueued). RED-stop
   semantics preserved: an error still fails loud one frame later; exactness
   gate = full stream-hash equality on the B1 smoke before/after.
+
+## 09-01 addendum: roofline from numbers in hand + queue reality
+
+- Analytic B1 floor: ~4.7 GB active expert bytes/token (10/512 experts x 48
+  layers x ~9.8 MB), ~1.2 GB per rank (12-layer stage). At GB10 unified-BW
+  class (~250 GB/s effective) that is ~5 ms/token/rank -> ~200 tok/s IF
+  bandwidth-bound and overlapped. GLM lane's serving memo (12.7 tok/s,
+  NCCL CPU-path ~90% roofline, no GPUDirect) says the gap to expect between
+  analytic and real is large; the wave baseline locates which side of the
+  floor we are on.
+- Decision rule when baselines land: near the BW floor -> hill = bytes +
+  overlap (candidate 1 prefetch; operator-gated official-FP8 transcription
+  as the bytes lever). Far below the floor -> hill = serialization, and
+  candidate 2 (per-frame sync/copyback, 4 host round-trips/token) becomes
+  first target with a real delta to chase. No speculative module rewrites
+  before that number exists.
+- Queue reality (09-01): strict head-of-line FCFS observed - glm53full
+  wave1b (p0, 16 nodes) gates every gpu-class task behind it, including
+  single-node cells on free nodes (qwen38flash-s1-standalone on spark0,
+  -s0-standalone on spark5, both staged+queued). Cell receipts follow the
+  moment the fleet frees. Stage-0 cell is the more informative of the two
+  (PLE + GDN-heavy, heaviest pack).
