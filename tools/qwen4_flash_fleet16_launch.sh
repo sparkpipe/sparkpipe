@@ -62,7 +62,7 @@ for e in json.load(open('$table_path')):
 "; }
 
 record_pid() {  # host rank pid kind
-  ssh -o BatchMode=yes "$coordinator_host" "echo '$1 $2 $3 $4' >> '$pid_file'"
+  ssh -o BatchMode=yes -n "$coordinator_host" "echo '$1 $2 $3 $4' >> '$pid_file'"
 }
 
 term_recorded() {
@@ -103,7 +103,7 @@ if [[ "$mode" == "api" ]]; then
   pid=$(ssh -o BatchMode=yes "$coordinator_host" bash -s <<REMOTE
 set -euo pipefail
 cd "$deploy_dir"
-nohup "\$PWD/bin/sparkpipe_model_api" --deployment "\$PWD" --rank-index $coordinator_rank > "\$PWD/api.log" 2>&1 < /dev/null &
+nohup "\$PWD/bin/sparkpipe_model_api" --deployment "\$PWD/deployment.json" --rank-index $coordinator_rank > "\$PWD/api.log" 2>&1 < /dev/null &
 echo \$!
 REMOTE
 )
@@ -130,7 +130,7 @@ ssh -o BatchMode=yes "$coordinator_host" "rm -f '$pid_file'"
 # that dies mid-flight on a missing pack wastes the whole 180s window).
 while read -r rank host pos pp tp rail tp_hosts; do
   pack=$(python3 -c "import json;print(json.load(open('$table_path'))[$(python3 -c "import json;t=json.load(open('$table_path'));print([i for i,e in enumerate(t) if e['rank']==$rank][0])")]['pack'])")
-  ssh -o BatchMode=yes "$host" "[[ -s '$(deploy_dir_for "$host")/$pack' ]]" || { echo "PACK MISSING on $host: $pack" >&2; exit 5; }
+  ssh -o BatchMode=yes -n "$host" "[[ -s '$(deploy_dir_for "$host")/$pack' ]]" || { echo "PACK MISSING on $host: $pack" >&2; exit 5; }
 done < <(rows)
 echo "all 16 packs present"
 
@@ -152,12 +152,12 @@ export SPARK_QWEN4_FLASH_TP_DEGREE=4
 export SPARK_QWEN4_FLASH_TP_RANK=$tp
 export SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH="\$dir/lib/libhidden_transport_spark_host_rdma_verbs.so"
 export SPARK_QWEN4_FLASH_STAGE_TP_IDENTIFIER=$identifier
-export SPARK_QWEN4_FLASH_STAGE_TP_PORT_BASE=66840
+export SPARK_QWEN4_FLASH_STAGE_TP_PORT_BASE=64500
 export SPARK_QWEN4_FLASH_STAGE_TP_HOSTS="$tp_hosts"
 export SPARK_QWEN4_FLASH_STAGE_TP_LOCAL_HOST="$rail"
 export SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS=180000
 export LD_LIBRARY_PATH="\$dir/lib:\${LD_LIBRARY_PATH:-}"
-nohup "\$dir/bin/sparkpipe_model_residentd" --deployment "\$dir" --rank-index "$rank" > "\$dir/residentd-r$rank.log" 2>&1 < /dev/null &
+nohup "\$dir/bin/sparkpipe_model_residentd" --deployment "\$dir/deployment.json" --rank-index "$rank" > "\$dir/residentd-r$rank.log" 2>&1 < /dev/null &
 echo \$!
 REMOTE
 )
@@ -179,14 +179,14 @@ watchdog_trip=0
 while :; do
   (( $(date +%s) >= deadline )) && break
   while read -r rank host pos pp tp rail tp_hosts; do
-    line=$(ssh -o BatchMode=yes "$host" "grep -a 'model_residentd ready' '$(deploy_dir_for "$host")/residentd-r$rank.log' 2>/dev/null | tail -1" || true)
+    line=$(ssh -o BatchMode=yes -n "$host" "grep -a 'model_residentd ready' '$(deploy_dir_for "$host")/residentd-r$rank.log' 2>/dev/null | tail -1" || true)
     if [[ -n "$line" ]]; then
       if [[ -z "${ready_seen[$rank]:-}" ]]; then ready_seen[$rank]=1; ready_count=$((ready_count+1)); echo "$host rank $rank READY: $line"; fi
     fi
   done < <(rows)
   (( ready_count >= 16 )) && { echo "ALL 16 RANKS READY"; break; }
   for host in $(python3 -c "import json;print(' '.join(sorted(set(e['host'] for e in json.load(open('$table_path'))))))"); do
-    mib=$(ssh -o BatchMode=yes "$host" "nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits 2>/dev/null | awk '{s+=\$1} END{print s+0}'" || echo 0)
+    mib=$(ssh -o BatchMode=yes -n "$host" "nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits 2>/dev/null | awk '{s+=\$1} END{print s+0}'" || echo 0)
     if (( mib > mem_limit_gib * 1024 )); then
       echo "WATCHDOG TRIP on $host: ${mib}MiB > ${mem_limit_gib}GiB - TERM own fleet" >&2
       term_recorded
@@ -205,7 +205,7 @@ if (( ready_count < 16 )); then
   echo "NOT all ranks ready after ${ready_timeout}s ($ready_count/16); tails:" >&2
   while read -r rank host pos pp tp rail tp_hosts; do
     echo "--- $host rank $rank ---" >&2
-    ssh -o BatchMode=yes "$host" "tail -4 '$(deploy_dir_for "$host")/residentd-r$rank.log'" >&2 || true
+    ssh -o BatchMode=yes -n "$host" "tail -4 '$(deploy_dir_for "$host")/residentd-r$rank.log'" >&2 || true
   done < <(rows)
   exit 4
 fi
