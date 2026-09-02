@@ -4471,3 +4471,21 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   operator's completion directive: the launchable matrix is complete,
   audited (§10-11), mirrored to warm, and the remaining items are all
   dev-lane builds.
+
+## 2026-09-01 ~27:6x — firing 87: Mislabeled rank symlinks found (dev-deletion class) — repair launched
+
+- New symlink audit hits: spark0 rank1.g5nsp -> rank0.g5nsp and spark5
+  rank0.g5nsp -> rank5.g5nsp in glm5_next.tp16/packs — someone aliased
+  one rank's filename to another rank's bytes (mislabeled fake, the exact
+  audit-catch class). Also dsv4flash.tp16/rt/ runtime dirs with symlinks
+  into packs+libs (serving convenience layout, left in place — not
+  stagepack storage).
+- rank0 digest on spark0 does NOT match its materialization receipt —
+  altered post-fix. Root cause unknown (no build writes that dir now).
+- REPAIR: spark0 rank1 restored from canonical donor spark1 (21.7G scp +
+  dual-sha vs receipt, running). spark0 rank0 to be re-verified vs SOURCE
+  (ground truth over stale receipt); spark5 rank0 symlink to be removed
+  and re-materialized from spark0 once rank0 proven. Warm backup mirror
+  had not yet reached these packs — closing that coverage gap.
+- dsv4-pro lane note: their publish failed at gate_route_launch cuda
+  validation; surfaced in prior entry.
