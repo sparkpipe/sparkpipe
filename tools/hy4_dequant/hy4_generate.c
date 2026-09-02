@@ -224,6 +224,7 @@ int main(int argc, char **argv) {
 
         for (int il = 0; il < LAYERS; ++il) {
             if (il == 0 && t == 0) g_dump_hc = 1;
+
             char nm[160];
             float pre[HC], post[HC];
             /* hc fns are replicated: rank 0's copy */
@@ -235,6 +236,9 @@ int main(int argc, char **argv) {
             float cur[N_EMBD];
             hc_reduce(streams[t], pre, cur);
             rms_norm(cur, ln1, cur, N_EMBD, 1e-5f);
+            if (il == 0 && t == 0)
+                fprintf(stderr, "MY_ATTIN first3: %.6f %.6f %.6f\n",
+                        cur[0], cur[1], cur[2]);
 
             /* kv from replicated kv_a (rank 0) */
             float *wkv_a = load0((snprintf(nm, 160, "blk.%d.attn_kv_a_mqa.weight", il), nm));
@@ -475,6 +479,20 @@ int main(int argc, char **argv) {
                     normed[0], normed[1], normed[2]);
         free(onorm);
         int gbest = -1; float gbv = -INFINITY;
+        if (t == 0) {
+            int bad = 0;
+            {
+                int nan_count = 0;
+                double s = 0;
+                const float *sp = (const float *)streams[t];
+                for (int i = 0; i < N_EMBD * HC; ++i) {
+                    if (isnan(sp[i])) nan_count++;
+                    else s += sp[i];
+                }
+                fprintf(stderr, "T0-POST78: nan=%d sum=%.4f s[0]=%.4f s[%d]=%.4f\n",
+                        nan_count, s, sp[0], N_EMBD, sp[N_EMBD]);
+            }
+        }
         float *alllogits = malloc((size_t)VOCAB * 4);
         for (int r = 0; r < N_RANKS; ++r) {
             snprintf(path, sizeof(path), "%s/rank-%02d", argv[1], r);
