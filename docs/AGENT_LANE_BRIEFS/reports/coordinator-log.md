@@ -4800,3 +4800,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   destination-digest skip. Staged on sparka; fires when 16/16 lands.
 
 ## 2026-09-02 ~firing 124: TP4PP4 11/16 built, rank11 in flight; ships ~45min out
+
+## 2026-09-02 ~firing 125: TP4PP4 14/16 built, rank14 in flight — ships next cycle
