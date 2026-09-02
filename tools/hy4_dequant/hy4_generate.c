@@ -401,6 +401,7 @@ int main(int argc, char **argv) {
         rms_norm(streams[t][0], onorm, normed, N_EMBD, 1e-5f);
         free(onorm);
         int gbest = -1; float gbv = -INFINITY;
+        float *alllogits = malloc((size_t)VOCAB * 4);
         for (int r = 0; r < N_RANKS; ++r) {
             snprintf(path, sizeof(path), "%s/rank-%02d", argv[1], r);
             const hy4_tensor_view *tv = hy4_tensor_lookup(R[r], "output.weight");
@@ -409,9 +410,25 @@ int main(int argc, char **argv) {
             float lg[VOC_PER_RANK];
             matvec(owl, normed, lg, VOC_PER_RANK, N_EMBD);
             free(owl);
-            for (int v = 0; v < VOC_PER_RANK; ++v)
-                if (lg[v] > gbv) { gbv = lg[v]; gbest = r * VOC_PER_RANK + v; }
+            for (int v = 0; v < VOC_PER_RANK; ++v) alllogits[r * VOC_PER_RANK + v] = lg[v];
         }
+        if (t == PROMPT - 1) {
+            int top[5]; float tvv[5];
+            for (int k = 0; k < 5; ++k) {
+                int bi = 0; float bv = -1e30f;
+                for (int i = 0; i < VOCAB; ++i) {
+                    int used = 0;
+                    for (int m = 0; m < k; ++m) if (top[m] == i) used = 1;
+                    if (!used && alllogits[i] > bv) { bv = alllogits[i]; bi = i; }
+                }
+                top[k] = bi; tvv[k] = bv;
+            }
+            for (int k = 0; k < 5; ++k) {
+                fprintf(stderr, "HY4_TOP %d %.6f", top[k], tvv[k]);
+                fputc(10, stderr);
+            }
+        }
+        free(alllogits);
         generated = gbest;
         printf("t=%d token id %d (logit %.4f)%s\n", t, tokens[t], gbv,
                t >= PROMPT ? " GENERATED" : " prompt");
