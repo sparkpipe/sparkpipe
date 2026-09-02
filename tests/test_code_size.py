@@ -1428,7 +1428,14 @@ CEILING = 234369
 # 237353 -> 237543 (dsv4pro verifier/ranks, queue blocked-state promotion,
 # qwen38_max attention launcher guard) then the comment purge. Merged;
 # ceiling re-pinned from MEASURED reality after the conflict resolution.
-CEILING = 219352
+# weightd fast-load merge (glm53): +1101 measured over the stale pin
+# (src/spark_ck128.c + header, tools/ck128_stamp.c, the single-pass
+# 64 MiB staging loader in runtime/spark_weightd.c, weightdctl
+# reclaim/timeout/identity-parity, and the scanner-remediation helpers
+# in k3_pack/qwen4_flash_deploy_v4/qwen4_flash_fetch_fp8/
+# ga_cold_manifest/test_batch_variants). Re-pinned 219352 -> 220453
+# from the merged tree's measured count on spark5.
+CEILING = 220453
 
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
