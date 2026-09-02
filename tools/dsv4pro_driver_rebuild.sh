@@ -7,6 +7,8 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
+mkdir -p /mnt/model-warm/packbuild/dsv4pro
+exec > /mnt/model-warm/packbuild/dsv4pro/driver_rebuild_$(date +%s).log 2>&1
 [[ -f Makefile ]] || { echo "NO-REPO-MAKEFILE at $REPO"; exit 1; }
 RR=/home/$(hostname)/sparkdata/dsv4_pro.tp4pp4
 PACK="$RR/packs/dsv4_pro_tp4_pp4_stage.spstage"
