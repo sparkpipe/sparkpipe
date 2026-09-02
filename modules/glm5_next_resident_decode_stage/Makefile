@@ -90,8 +90,16 @@ RUNTIME_CONFIGURATION := \
 	SPARK_GLM5_NEXT_STAGE_PIPELINE_SLOTS=$(PIPELINE_SLOT_COUNT)
 
 GPU_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_cuda.sh
+MTP_PARITY_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_mtp_parity.sh
 
 include ../resident_decode_stage_rules.mk
+
+.PHONY: validate_mtp_parity
+validate_mtp_parity: require_cuda_target $(MODULE_ARCHIVE)
+	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
+		$(MTP_PARITY_VALIDATOR) \
+		$(VALIDATION_CONFIGURATION_SHA256) \
+		$(MODULE_ARCHIVE)
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)

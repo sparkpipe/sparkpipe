@@ -129,6 +129,25 @@ These targets load `model.layers.1.*` and `model.layers.2.*` respectively,
 matching the live GLM config's `first_k_dense_replace=3`. They are per-layer
 checks; they do not yet chain hidden activations through layers 0, 1, and 2.
 
+The MTP chain-speculation parity gate (the B1 greedy byte-exactness contract
+for `SPARK_GLM5_NEXT_MTP`) is:
+
+```sh
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm5_next_resident_decode_stage validate_mtp_parity EXPERT_CODEC=fp8 \
+    MODEL_REVISION=parity \
+    CONTRACT_SHA256=0000000000000000000000000000000000000000000000000000000000000000
+```
+
+That gate needs no stage pack: it synthesizes a four-layer stack (three KDA
+layers + one DSA/MoE layer) plus the layer-45 MTP draft weights at full model
+geometry, decodes a fixed prompt serially, then re-runs it through draft ->
+verify (commit=0, replay recording) -> resolve -> fold, cycling forced
+full-reject / mid-chain / full-accept drafts against organic ones. It fails
+nonzero unless the emitted token stream is identical to baseline and the KDA
+state, conv windows, KV cache, and index cache bytes match the serial decode
+at every burst boundary.
+
 The node context binds resident weight pointers, paged KV cache, streams, workspaces, RoPE tables, token maps, and output buffers once when the driver instance is created. Per-submission inputs are only dynamic decode facts such as active sequence count, requested token count, sequence identity, deadline, priority, and residency token. The firmware admission function chooses the opaque pipeline slot; SparkPipe does not assign or interpret CUDA stream/KV ownership.
 
 The module also publishes direct admission and snapshot symbols. They expose only neutral scheduling data: accepted/rejected, dispatch slot, dispatch generation/cookies, private queue pressure, resident token capacity, active submissions, CUDA graph capture/replay counts, stale-admission count, and zero memcpy/host-staging counters.
