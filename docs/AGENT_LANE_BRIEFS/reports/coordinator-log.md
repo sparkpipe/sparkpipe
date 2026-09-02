@@ -4456,3 +4456,18 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Per the operator's completion directive ("once that is done, stop"):
   the automation IDLES from here on these ticketed items — they are
   dev-lane builds, not coordinator stagepack work. Board is clean.
+
+## 2026-09-01 ~29:2x — firing 86: dsv4-pro rebuild lane ACTIVE but PUBLISH-FAILING (defect surfaced)
+
+- A dev lane is actively rebuilding dsv4-pro TP4PP4 ranks from
+  spark0:~/dsv4pro_checkout via the module publish flow (item 14 in
+  motion — coordinator stands down, no duplication).
+- THEIR LATEST PUBLISH FAILED: validation gate 'gate_route_launch'
+  cuda=invalid argument -> validation_failed -> publish error. Logs at
+  /mnt/model-warm/packbuild/dsv4pro/driver_rebuild_1788319960.log.
+- This is a module-side defect in the lane's build (cuda kernel arg),
+  not a stagepack-placement problem. Surfaced here + in queue notes for
+  the lane. Coordinator automation moves to idle/monitor per the
+  operator's completion directive: the launchable matrix is complete,
+  audited (§10-11), mirrored to warm, and the remaining items are all
+  dev-lane builds.
