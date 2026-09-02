@@ -3375,11 +3375,29 @@ extern "C" cudaError_t SparkDsv4LaunchGateRoute(
 		((bias_f32 == 0) == (tid2eid_u32 == 0)) )
 		return(cudaErrorInvalidValue);
 	if ( row_count == 1u )
-		return(SparkDsv4LaunchGateRouteCooperative(stream,gate,input_bf16,
-			scores_f32,bias_f32,tid2eid_u32,token_ids,topk,route_scale,
-			indices_u32,weights_f32,expert_width,group_row_offset,
-			route_packed_row,route_source_token,group_tile_prefix_w1,
-			group_tile_prefix_w2));
+	{
+		int per_sm = 0;
+		int sm_count = 0;
+		uint32_t blocks_needed = (gate->rows + SPARK_LM_CTA_WARPS - 1u) /
+			SPARK_LM_CTA_WARPS;
+		if ( cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm,
+				SparkDsv4GateRouteCooperativeKernel,SPARK_LM_CTA_THREADS,
+				gate->columns * sizeof(float)) == cudaSuccess &&
+			per_sm > 0 &&
+			cudaDeviceGetAttribute(&sm_count,
+				cudaDevAttrMultiProcessorCount,stream) == cudaSuccess &&
+			sm_count > 0 &&
+			(uint32_t)per_sm * (uint32_t)sm_count >= blocks_needed )
+			return(SparkDsv4LaunchGateRouteCooperative(stream,gate,input_bf16,
+				scores_f32,bias_f32,tid2eid_u32,token_ids,topk,route_scale,
+				indices_u32,weights_f32,expert_width,group_row_offset,
+				route_packed_row,route_source_token,group_tile_prefix_w1,
+				group_tile_prefix_w2));
+		return(SparkDsv4LaunchGateRouteBatched(stream,gate,input_bf16,scores_f32,
+			bias_f32,tid2eid_u32,token_ids,row_count,expert_count,topk,route_scale,
+			indices_u32,weights_f32,expert_width,group_row_offset,route_packed_row,
+			route_source_token,group_tile_prefix_w1,group_tile_prefix_w2));
+	}
 	return(SparkDsv4LaunchGateRouteBatched(stream,gate,input_bf16,scores_f32,
 		bias_f32,tid2eid_u32,token_ids,row_count,expert_count,topk,route_scale,
 		indices_u32,weights_f32,expert_width,group_row_offset,route_packed_row,
