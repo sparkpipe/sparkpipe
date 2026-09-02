@@ -4624,3 +4624,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~30:9x — firing 101d: rank14 building (44.4/99.6G); rank15 queued
 
 ## 2026-09-01 ~31:0x — firing 102: rank14 tmp at 64G/99.6G; building steadily
+
+## 2026-09-01 ~31:1x — firing 102b: ranks 14+15 relaunched as ISOLATED chains
+
+- rank14's first attempt in my chain died (frozen 64G tmp, sharder gone —
+  same non-deterministic death class as rank13's first attempt, which
+  then SUCCEEDED on relaunch). rank15 died in the lane's original run
+  with an unpack error. Both relaunched as separate detached chains with
+  independent logs (r14.log, r15.log) — isolation so one failure can't
+  abort the other (the set -e chain was the amplification).
+- 13/16 ranks built on warm. If 14/15 fail again on relaunch, the logs
+  now capture the true error per-rank.
