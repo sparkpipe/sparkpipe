@@ -5040,3 +5040,17 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   sparkf 139G, spark2 4G, spark5 3G. All nodes now 808G-2.2T free.
 - rank3 (last max TP4PP4 rank) UNBLOCKED and building on spark3.
 - In flight: r02/r05/r13/r11/r14 + r03; done: 11/16.
+
+## 2026-09-02 ~firing 152: TPmax LAW + hy4 stagepack takeover (operator)
+
+- TP16 is redefined as TPmax: the biggest TP that fits the model.
+  flash (2 KV heads) → TPmax=TP8, so flash is COMPLETE. 27B → TP4.
+  Completeness criterion = TPmax + TP4xPP4 per model/variant.
+- Operator transferred hy4 stagepacks to the coordinator (single-dev
+  law). Recon: NO hy4 packer exists in-repo; lane's warm build dir
+  is empty (only an iq1m arm on nodes, provenance-flagged).
+  PLAN: extend the dsv4 parameterized sharder with a hy4 geometry plan
+  (HYV4 = dsv4-family: 78L/6144h/64attn+8KV/256exp-top8/hyper-conns,
+  MTP 39 deepseek-style tensors → MTP-carrying packs), then TP16
+  (~48G/rank, geometry pre-check was clean) + TP4xPP4 (78L →
+  20/19/19/20), per-destination fan-out with the memory-safe pump.
