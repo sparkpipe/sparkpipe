@@ -1426,7 +1426,9 @@ CEILING = 234369
 # promote-before-candidates; fixes priority-inversion stranding).
 # 237523 -> 237525: dsv4pro newest stack tail (sampler section-split,
 # verify-only finish script, driver-rebuild cwd fix).
-CEILING = 237525
+# 237525 -> 237543: qwen38_max attention launcher degree guard
+# (tp1/tp2 reject) + module archive link fix.
+CEILING = 237543
 # (dsv4pro) +93 exact: the section-split sampler (payload and scale
 # sections verified at their own directory offsets), the final
 # verify-only finish script, and tools/dsv4pro_driver_rebuild.sh —
