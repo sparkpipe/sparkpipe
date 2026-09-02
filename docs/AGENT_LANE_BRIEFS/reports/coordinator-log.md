@@ -4573,3 +4573,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   landed: dsv4pro_tp16_ranks.sh + stage json), 21 (fp8 arm split-expert
   name-map), 22/24 (nvfp4 codecs), 8 (nvfp4a16 vertical), 9/11 (PP+TP
   combined mode) — packer work, sequenced after the builds above.
+
+## 2026-09-01 ~30:9x — dsv4-pro base pack FOUND on sparka (no copy needed)
+
+- sparka:~/sparkdata/dsv4_pro.tp16/dsv4_pro_full.spstage = 892,904,019,728 B
+  — byte-count identical to spark3's pro-repo base. The TP4PP4 driver
+  (pro plan 16/15/15/15) consumes exactly this. Item 14 runs on sparka
+  after its in-flight rank10 TP16 build completes — no slow copy.
+- The failed 832G spark3->spark8 copy abandoned (degraded link, multi-
+  writer corruption); dirs cleaned both sides.
