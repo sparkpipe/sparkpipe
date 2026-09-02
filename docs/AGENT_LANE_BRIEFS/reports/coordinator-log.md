@@ -4971,3 +4971,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   on spark3 disk.
 - LESSON (memory): the k3 16-way pattern assumed empty nodes; on busy
   119G nodes the fan-out width must respect per-node avail memory.
+
+## 2026-09-02 ~firing 145: wave 1 healthy under memory-safe packer — fadvise holding
+
+- 5 single-writers at 15-24G/140G; spark1 avail ROSE to 76G (fadvise
+  working — no cache pile). No node near critical at 5-wide.
+- Next waves only as these drain (~75min/rank at the safe rate).
