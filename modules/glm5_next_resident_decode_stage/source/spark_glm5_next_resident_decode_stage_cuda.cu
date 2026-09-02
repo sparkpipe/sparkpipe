@@ -569,7 +569,7 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 		 * already lands its full-width rank partial in attention_out_bf16;
 		 * the HC placement runs AFTER the chain's reduce - see
 		 * SparkGlm5NextLaunchCudaLayerAttentionPost. */
-		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->run_count,1u,wave->multiprocessor_count,stream));
+		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->run_count,wave->commit,wave->multiprocessor_count,stream));
 	}
 	status = Glm5NextLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )

@@ -1626,6 +1626,7 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	wave->tp_degree = 1u;
 	wave->tp_rank = 0u;
 	wave->row_count = 1u;
+	wave->commit = 1u;
 	wave->maximum_context = position + 1u;
 	wave->resident_sequence_capacity = 1u;
 	wave->execution_row_capacity = 8u; /* fixture scratch width */

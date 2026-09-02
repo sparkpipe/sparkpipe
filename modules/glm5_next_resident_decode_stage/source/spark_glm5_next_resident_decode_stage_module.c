@@ -1479,6 +1479,7 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->tp_degree = state->tp_degree;
 	wave->tp_rank = state->tp_rank;
 	wave->row_count = chain->wave_rows;
+	wave->commit = 1u;
 	wave->maximum_context = maximum_context;
 	wave->resident_sequence_capacity = state->resident_sequence_capacity;
 	wave->max_sequence_positions = state->max_sequence_positions;
