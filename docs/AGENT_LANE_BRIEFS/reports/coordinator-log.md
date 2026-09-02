@@ -4997,3 +4997,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   fix — RSS ~200MB each, avail stable. spark8/9/b builds stay paused
   (14G avail, co-tenant allocations); sparkc-f deferred; rank0/rank3
   per prior flags.
+
+## 2026-09-02 ~firing 148: 4G dirty-page cap fleet-wide (operator); remaining-work list filed
+
+- vm.dirty_bytes=4G + background 512M applied and persisted
+  (/etc/sysctl.d/99-dirty-cap.conf) on all 16 nodes.
+- Remaining stagepack list (19 lines) filed in this firing's report to
+  the operator: 9 qwen-max ranks queued/blocked on node memory, 2
+  module enablements (27B + max guards/readers), qwen-flash fp8+nvfp4
+  arms, 27B nvfp4a16 vertical, hy4 official sets (lane), drafter
+  verticals (item 28), flash-TP16 geometry question for the operator.
