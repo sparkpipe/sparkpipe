@@ -143,3 +143,40 @@ Ladder state: dequant all classes green; loader green; single-layer
 green; tokenizer wired (selftest 4/4); greedy decode loop green; whole-
 layer llama diff closed. Next: GPU port (dequant cells already green),
 TP16 native module, tok/s.
+
+## Receipt 09-03 (next tick): hy4-gpu4 — GPU dequant ALL classes BITWISE PASS
+
+Cell hy4-gpu4c-dequant-all [gpu][spark2] (queue): CUDA kernels for
+Q4_K/Q5_K/Q6_K/IQ4_XS/IQ1_M/IQ2_XXS/IQ3_XXS ported one-to-one from the
+vendor header, run against real blocks (512 blocks = 131,072 elements per
+class) from the node-local rank-02 pack, compared BITWISE (memcmp on float
+bits) with the CPU vendor dequant. Result:
+
+    TYPE 12 (Q4_K)    512 blocks BITWISE PASS
+    TYPE 13 (Q5_K)    512 blocks BITWISE PASS
+    TYPE 14 (Q6_K)    512 blocks BITWISE PASS
+    TYPE 23 (IQ4_XS)  512 blocks BITWISE PASS
+    TYPE 29 (IQ1_M)   512 blocks BITWISE PASS
+    TYPE 16 (IQ2_XXS) 512 blocks BITWISE PASS
+    TYPE 18 (IQ3_XXS) 512 blocks BITWISE PASS
+    DEQUANT_ALL PASS (7 classes)
+
+Context: GB10 sm_121, CUDA 13.0, nvcc -O2 -fmad=false; fp16 conversions via
+an uploaded 65536-entry host-built table (bitwise parity by construction);
+tables (iq1s_grid 2048, iq2xxs_grid 256, iq3xxs_grid 256, ksigns/kmask,
+kvalues_iq4nl) uploaded from the vendor header — no duplicated data. With
+the earlier Q8_0 cell, ALL 9 weight classes in the pack are GPU-bitwise
+verified. The dequant layer of the GPU port is complete.
+
+Two build/run defects fixed in the same tick: _Static_assert is C11 (nvcc
+C++ needs a `#define _Static_assert static_assert` shim before including
+the vendor header — header stays verbatim), and the GGUF KV string parser
+silently aborted on any string longer than the fixed buffer (a chat-template
+KV) — rstr now streams strings of any length.
+
+Queue ops this tick (tool = origin/main spark_queue.py): nccl-burst-sweep2/
+sweep4 claims were stale (TTL expired 8h prior, processes verified dead on
+spark3+spark5, sweep finished per results.jsonl) and were reaped via
+dispatch's own TTL/exit-file reap + done marks; dispatcher daemon was DOWN
+since 09-02 22:25, one-shot `dispatch` passes used to run the queue (k3
+spark8 cpu cells remain queued ahead per FCFS).
