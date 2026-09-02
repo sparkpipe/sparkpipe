@@ -13,13 +13,13 @@
  *   2 MiB granularity mapped into a reserved span — W2b; consumer import+
  *   map is the staged tier), pack staging is host anonymous memory, one
  *   bounded chunk.
- * - The pack streams once through explicit 64 MiB pread chunks into a
+ * - The pack streams once through explicit 64 MiB chunks into a
  *   staging buffer: every chunk feeds the digest (the fast ck128 sidecar
  *   when the placement wrote one, sha256 otherwise) and the arena copy in
  *   the same pass, and the file's identity (size + mtime) is re-checked
- *   after the load. pread (not mmap fault-in) keeps the read at full
- *   sequential speed independent of page-cache state. The arena is
- *   published only after both pass, so bytes that do not hash to the
+ *   after the load. Whole-chunk reads (not mmap fault-in) keep the read
+ *   at full sequential speed independent of page-cache state. The arena
+ *   is published only after both pass, so bytes that do not hash to the
  *   identity are never served (fail-closed HASH_MISMATCH). That is the
  *   exact guarantee the tenant-scribble protection and the determinism
  *   receipts ride on. */
@@ -767,18 +767,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         size_t chunk = remaining < SPARK_WEIGHTD_LOAD_CHUNK_BYTES
             ? (size_t)remaining
             : (size_t)SPARK_WEIGHTD_LOAD_CHUNK_BYTES;
-        size_t got = 0u;
-        while (got < chunk)
-        {
-            ssize_t n = pread(fileno(file), staging + got, chunk - got,
-                (off_t)(loaded + got));
-            if (n <= 0)
-            {
-                break;
-            }
-            got += (size_t)n;
-        }
-        if (got != chunk)
+        if (fread(staging, 1u, chunk, file) != chunk)
         {
             free(staging);
             (void)fclose(file);
