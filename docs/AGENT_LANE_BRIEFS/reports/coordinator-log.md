@@ -4402,3 +4402,7 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~26:3x — firing 69: bf16 arm 15/16 (spark2 rank2 PLACED+receipted); only spark1 rank1 left (22.4/40G)
 
 ## 2026-09-01 ~26:4x — firing 70: bf16 arm 15/16; spark1 rank1 at 23.1/40G (last one)
+
+## 2026-09-01 ~26:5x — firing 71: spark1 rank1 at 23.9/40G — the fleet's last unfinished rank
+
+## 2026-09-01 ~27:0x — firing 72: spark1 rank1 at 25.0/40G
