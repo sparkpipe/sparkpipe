@@ -323,15 +323,25 @@ def write_all_ranks(out_root: Path, source: GgufReader, metadata: list,
         if len(data) != nbytes:
             die(f"short read at {tensor['name']}")
         for rank, entry in sorted(per_rank.items()):
-            rel = entry["src_byte_offset"] - tensor["offset"]
-            piece = data[rel:rel + entry["nbytes"]]
-            if len(piece) != entry["nbytes"]:
-                die(f"slice out of range at {tensor['name']} rank {rank}: "
-                    f"dims={tensor['dims']} type={tensor['type']} "
-                    f"data={len(data)} rel={rel} want={entry['nbytes']}")
-            files[rank].write(piece)
-            manifests[rank]["digest"].update(piece)
-            manifests[rank]["size"] += len(piece)
+            gather = entry.get("gather")
+            if gather is None:
+                rel = entry["src_byte_offset"] - tensor["offset"]
+                piece = data[rel:rel + entry["nbytes"]]
+                if len(piece) != entry["nbytes"]:
+                    die(f"slice out of range at {tensor['name']} rank {rank}: "
+                        f"dims={tensor['dims']} type={tensor['type']} "
+                        f"data={len(data)} rel={rel} want={entry['nbytes']}")
+                files[rank].write(piece)
+                manifests[rank]["digest"].update(piece)
+                manifests[rank]["size"] += len(piece)
+            else:
+                for row in range(gather["rows"]):
+                    start = row * gather["src_row_bytes"] \
+                        + gather["src_row_offset"]
+                    piece = data[start:start + gather["row_piece_bytes"]]
+                    files[rank].write(piece)
+                    manifests[rank]["digest"].update(piece)
+                    manifests[rank]["size"] += len(piece)
         pad = (alignment - nbytes % alignment) % alignment
         if pad:
             for rank in sorted(per_rank):
@@ -367,17 +377,24 @@ def slice_entry(tensor: dict, action: str, rank: int, ranks: int,
     if action == "split0":
         if len(dims) != 2:
             die(f"{tensor['name']}: split0 needs a 2D tensor")
-        rows = dims[0]
-        if rows % ranks:
-            die(f"{tensor['name']}: dim0 {rows} not divisible by {ranks}")
-        chunk = rows // ranks
-        if chunk % blck:
+        in_dim, out_rows = dims[0], dims[1]
+        if in_dim % ranks:
+            die(f"{tensor['name']}: dim0 {in_dim} not divisible by {ranks}")
+        chunk = in_dim // ranks
+        if chunk % blck or in_dim % blck:
             die(f"{tensor['name']}: dim0 chunk {chunk} not block aligned "
                 f"(block {blck})")
-        bytes_per_block = nbytes // (rows // blck)
-        return {"tensor": tensor, "dims": [chunk, dims[1]],
-                "src_byte_offset": tensor["offset"] + rank * chunk // blck * bytes_per_block,
-                "nbytes": chunk // blck * bytes_per_block,
+        blocks_per_row = in_dim // blck
+        bytes_per_block = nbytes // (blocks_per_row * out_rows)
+        src_row_bytes = blocks_per_row * bytes_per_block
+        row_piece_bytes = chunk // blck * bytes_per_block
+        return {"tensor": tensor, "dims": [chunk, out_rows],
+                "nbytes": row_piece_bytes * out_rows,
+                "gather": {"src_row_bytes": src_row_bytes,
+                           "row_piece_bytes": row_piece_bytes,
+                           "rows": out_rows,
+                           "src_row_offset": rank * chunk // blck
+                           * bytes_per_block},
                 "slice": {"dim": 0, "start": rank * chunk, "count": chunk}}
     if action == "split2":
         if len(dims) != 3:
@@ -481,29 +498,36 @@ def main() -> int:
             if len(rank_gguf.tensors) != len(source.tensors):
                 die(f"rank {rank}: tensor count mismatch")
             infos = {t["name"]: t for t in rank_gguf.tensors}
-            checked = 0
             for tensor in source.tensors:
                 if tensor["name"] not in infos:
                     die(f"rank {rank}: missing {tensor['name']}")
-                if checked >= 4:
-                    continue
                 info = infos[tensor["name"]]
-                nbytes = source.tensor_bytes(tensor)
-                source.file.seek(source.data_offset + tensor["offset"])
-                source_bytes = source.file.read(nbytes)
                 plan_entry = next(e for e in plan[rank]
                                   if e["tensor"]["name"] == tensor["name"])
-                rel = plan_entry["src_byte_offset"] - tensor["offset"]
-                slice_len = plan_entry["nbytes"]
-                rank_gguf.file.seek(rank_gguf.data_offset + info["offset"])
-                rank_bytes = rank_gguf.file.read(slice_len)
-                expected = source_bytes[rel:rel + slice_len]
-                if expected != rank_bytes:
-                    die(f"rank {rank}: byte mismatch at {tensor['name']}")
-                checked += 1
+                base = source.data_offset + tensor["offset"]
+                g = plan_entry.get("gather")
+                if g is None:
+                    rel = plan_entry["src_byte_offset"] - tensor["offset"]
+                    ln = min(512, plan_entry["nbytes"])
+                    probes = ((rel, ln),
+                              (rel + plan_entry["nbytes"] - ln, ln))
+                else:
+                    rows = (0, g["rows"] - 1)
+                    probes = tuple(
+                        (row * g["src_row_bytes"] + g["src_row_offset"],
+                         g["row_piece_bytes"], row * g["row_piece_bytes"])
+                        for row in rows)
+                for probe in probes:
+                    src_off, ln = probe[0], probe[1]
+                    rank_off = probe[2] if len(probe) > 2 else src_off
+                    source.file.seek(base + src_off)
+                    expected = source.file.read(ln)
+                    rank_gguf.file.seek(
+                        rank_gguf.data_offset + info["offset"] + rank_off)
+                    if expected != rank_gguf.file.read(ln):
+                        die(f"rank {rank}: byte mismatch at {tensor['name']}")
             print(f"rank {rank:02d}: verify OK "
-                  f"({len(rank_gguf.tensors)} tensors, "
-                  f"4 byte-sampled)")
+                  f"({len(rank_gguf.tensors)} tensors, boundary-sampled)")
         return 0
 
     if args.dry_census or args.out is None:
