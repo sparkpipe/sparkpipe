@@ -170,7 +170,7 @@ Per-set completions:
 16. glm5_next (flash) TP4xPP4 — COMPLETE: 16/16 placed (stage matrix 272/287/287/341 tensors; stage0 owns-emb, stage3 MTP+owns-head; rank r on spark-r, sha-receipted).
 17. glm53full bf16 TP4xPP4 — COMPLETE: 16/16 placed (stages 20/20/19/19 layers x TP4; rank r on spark-r; sha-receipted).
 18. glm53full fp8 TP4xPP4 — COMPLETE: 16/16 placed (all stage loops, sha-receipted).
-19. glm53full nvfp4 TP4xPP4 — COMPLETE: 16/16 placed (true rev pin 363e8f086905…; rank r on spark-r; sha-receipted). glm53full now holds ALL SIX variants (3 resolutions x TP16+TP4PP4). (TP16 done.)
+19. glm53full nvfp4 TP4xPP4 — COMPLETE: 16/16 placed (true rev pin 363e8f086905…; rank r on spark-r; sha-receipted). glm53full now holds ALL SIX variants (3 resolutions x TP16+TP4PP4). All four stage loops verified 4/4 placed on b/c/d completion sweep. (TP16 done.)
 20. qwen-flash TP4xPP4 — COMPLETE: 16/16 ranks built+placed (rank r on spark-r, 4 stages x 12 layers x TP4, bf16, MTP-carrying, sha-receipted; zero FATALs).
 21. qwen-flash TP8 fp8 arm — BLOCKED on packer: the fp8-arm source stores experts SPLIT per-index (experts.0.gate_proj/up_proj + weight_scale_inv) vs the bf16 source's stacked exp ass gate_up_proj the packer's name map expects. Needs split-expert name-map + fused-row extension (dev-lane ticket; same family as the 27B PP+TP item).
 22. qwen-flash TP8 nvfp4 arm — build (with MTP).

@@ -4518,3 +4518,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - glm5_next TP16 MTP-era status: rank0 (spark0+spark5) healthy/receipted;
   rank1 (spark1+spark0) restored+receipted. Queued: refresh the remaining
   symlinkfix-era receipts to MTP generation (bookkeeping pass).
+
+## 2026-09-01 ~29:2x — firing 88: glm53full TP4PP4 x3 CONFIRMED COMPLETE (final sweep)
+
+- fp8 + nvfp4 stage loops closed 4/4 placed each; with bf16 earlier, all
+  three glm53full TP4PP4 sets stand 16/16. glm53full = SIX complete sets.
+- Item 18/19 formally CLOSED on the completion sweep.
