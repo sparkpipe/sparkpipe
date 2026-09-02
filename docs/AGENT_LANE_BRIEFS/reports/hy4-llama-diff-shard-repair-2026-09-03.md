@@ -180,3 +180,31 @@ spark3+spark5, sweep finished per results.jsonl) and were reaped via
 dispatch's own TTL/exit-file reap + done marks; dispatcher daemon was DOWN
 since 09-02 22:25, one-shot `dispatch` passes used to run the queue (k3
 spark8 cpu cells remain queued ahead per FCFS).
+
+## Receipt 09-03 (next tick): hy4-gpu5 q-path chain cell — STAGED+QUEUED (dispatch blocked by glm53flash fleet sweep campaign)
+
+Increment: GPU kernels for the forward's core primitives — gemv (fp32
+FMA, one thread per row), rms_norm (block reduction + scale, eps inside),
+and INTERLEAVED rope — composed into the exact q-path chain already
+proven in fp64 during the llama diff (embd row 802 -> attn_norm ->
+q_a -> q_a_norm -> q_b head 0 -> rope), all weights from the node-local
+rank-00 bundle. Validated per-stage against an in-harness float64
+reference (tol 5e-4..1e-3 * max(1,|ref|)), plus a golden check against
+the numpy-fp64 q_pe values captured last tick (0.32866367,
+-0.25685636, -0.58516650). Sources: tools/hy4_gpu/hy4_qchain_test.cu +
+run_qchain_test.sh.
+
+Submitted as hy4-gpu5b-qchain [gpu][spark2] (v2 fixed an embd_row
+declaration; v1's build failure was diagnosed and fixed in-tick).
+NOT RUN YET: glm53flash is chaining live fleet-wide meshbench sweeps
+(nccl-mb-sweep1/3, p0, all 16 nodes, ~14 min each, resubmitted back to
+back); my p5 cell correctly holds behind the priority barrier and will
+dispatch on the first free pass (or automatically after the 120-min
+anti-starvation aging). No stale claims this time — the sweeps are live
+work; nothing was reaped. Dispatcher daemon still down; one-shot
+dispatch passes used.
+
+NEXT: (1) poll hy4-gpu5b-qchain to completion, expect QCHAIN PASS
+receipt; (2) extend the same cell pattern to the attention-score +
+softmax-with-sink kernel and the MoE expert gather, still vs fp64;
+(3) then the TP16 native module port.
