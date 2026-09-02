@@ -750,17 +750,24 @@ static void hy4_dequant_iq1_m(const uint8_t *x, float *y, long nblocks) {
     }
 }
 
-/* ---- K-quant extension (q4_K/q5_K/q6_K), same provenance ---- */
+
+/* ---- K-quant + IQ4_XS extension (regenerated from llama.cpp @0cea36222 with brace-count extraction) ---- */
 #define GGML_TABLE_BEGIN(type, name, size) static const type name[size] = {
 #define GGML_TABLE_END() };
+#define QK_K 256
 
 typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qs[128]; } block_q4_K;
 typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qh[32]; uint8_t qs[128]; } block_q5_K;
-_Static_assert(sizeof(block_q5_K) == 176, "q5_K stride");
 _Static_assert(sizeof(block_q4_K) == 144, "q4_K stride");
+_Static_assert(sizeof(block_q5_K) == 176, "q5_K stride");
 typedef struct { uint8_t ql[128]; uint8_t qh[64]; int8_t scales[16]; uint16_t d; } block_q6_K;
+typedef struct { uint16_t d; uint16_t scales_h; uint8_t scales_l[4]; uint8_t qs[128]; } block_iq4_xs;
 _Static_assert(sizeof(block_q6_K) == 210, "q6_K stride");
-#define QK_K 256
+_Static_assert(sizeof(block_iq4_xs) == 136, "iq4_xs stride");
+typedef struct { uint16_t d; uint8_t qs[32]; } block_iq4_nl;
+GGML_TABLE_BEGIN(int8_t, kvalues_iq4nl, 16)
+    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+GGML_TABLE_END()
 static inline void hy4_get_scale_min_k4(int j, const uint8_t * q, uint8_t * d, uint8_t * m) {
     if (j < 4) {
         *d = q[j] & 63; *m = q[j + 4] & 63;
@@ -848,19 +855,6 @@ static void hy4_dequant_row_q6_K(const block_q6_K * x, float * y, int64_t k) {
         }
     }
 }
-#undef GGML_TABLE_BEGIN
-#undef GGML_TABLE_END
-
-
-/* ---- IQ4_XS extension, same provenance ---- */
-#define GGML_TABLE_BEGIN(type, name, size) static const type name[size] = {
-#define GGML_TABLE_END() };
-GGML_TABLE_BEGIN(int8_t, kvalues_iq4nl, 16)
-    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
-GGML_TABLE_END()
-#undef GGML_TABLE_BEGIN
-#undef GGML_TABLE_END
-typedef struct { uint16_t d; uint16_t scales_h; uint8_t scales_l[4]; uint8_t qs[128]; } block_iq4_xs;
 static void hy4_dequant_row_iq4_xs(const block_iq4_xs * x, float * y, int64_t k) {
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
@@ -884,7 +878,6 @@ static void hy4_dequant_row_iq4_xs(const block_iq4_xs * x, float * y, int64_t k)
     }
 }
 
-//===================================== Q8_K ==============================================
-
-
+#undef GGML_TABLE_BEGIN
+#undef GGML_TABLE_END
 #endif

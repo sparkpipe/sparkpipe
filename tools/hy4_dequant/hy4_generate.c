@@ -179,6 +179,8 @@ int main(int argc, char **argv) {
     int tokens[TOTAL_TOK];
     for (int i = 0; i < PROMPT; ++i)
         tokens[i] = i < n_prompt ? tokens_fixed[i] : 0;
+    for (int i = PROMPT; i < TOTAL_TOK; ++i)
+        tokens[i] = 0; /* set from the sampled id at each step */
     int generated = -1;
 
     /* per-token hc streams, cached per token for autoregressive carry */
@@ -284,6 +286,10 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < N_EMBD; ++i) attn_partial[i] += opart[i];
                 free(wq_b); free(wkb); free(wvb); free(wo); free(wgate);
             }
+            if (il == 0 && t == 0)
+                fprintf(stderr, "MY_ATTN_OUT first6: %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                        attn_partial[0], attn_partial[1], attn_partial[2],
+                        attn_partial[3], attn_partial[4], attn_partial[5]);
             free(wq_a); free(qan); free(sinks);
             hc_distribute(streams[t], attn_partial, post);
 
@@ -309,6 +315,9 @@ int main(int argc, char **argv) {
                 for (int j = 0; j < 18432; ++j) u[j] = silu(g[j]) * u[j];
                 matvec(dd, u, h, N_EMBD, 18432);
                 hc_distribute(streams[t], h, fpost);
+                if (t == 0)
+                    fprintf(stderr, "MY_FFN_OUT first6: %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                            h[0], h[1], h[2], h[3], h[4], h[5]);
                 free(dg); free(du); free(dd);
             } else {
             float *ginp = load0((snprintf(nm, 160, "blk.%d.ffn_gate_inp.weight", il), nm));
