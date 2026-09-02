@@ -119,7 +119,7 @@ assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
  KIND_ATTN_KEY_NORM, KIND_MTP_FC, KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM,
  KIND_MTP_FINAL_NORM) = range(32)
 
-CHUNK_BYTES = 8 * 1024 * 1024
+CHUNK_BYTES = 512 * 1024  # small chunks: page cache + RSS stay tiny on 119G nodes
 BF16_BYTES = 2
 F32_BYTES = 4
 
@@ -436,7 +436,7 @@ def copy_nvfp4_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
     experts = EXPERT_COUNT
     rows_per_expert = ref.rows // experts
     scale_cols = ref.columns // 16
-    scales = bytearray()
+    scales = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
     for e in range(experts):
         shard, meta, off = source.resolve(ref.name.replace("{e}", str(e)))
         with (source.root / shard).open("rb") as f:
@@ -456,8 +456,13 @@ def copy_nvfp4_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
             sraw = f.read(rows_per_expert * scale_cols)
         if len(sraw) != rows_per_expert * scale_cols:
             raise PackFailure("short read on nvfp4 scale plane")
-        scales += sraw
-    out.write(bytes(scales))
+        scales.write(sraw)
+    scales.seek(0)
+    while True:
+        chunk = scales.read(CHUNK_BYTES)
+        if not chunk:
+            break
+        out.write(chunk)
 
 
 def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
@@ -719,6 +724,24 @@ def packed_tp_shape(ref, plan):
         return sum(c for _, c in plan.segments), ref.columns
     raise PackFailure(f"unknown tp plan {plan.kind}")
 
+def pump(fd, offset: int, length: int, out) -> None:
+    """Stream fd[offset:offset+length) to out in small chunks, evicting
+    each chunk from the page cache (DONTNEED) so warm reads never pile up
+    resident memory on the 119G nodes."""
+    remaining = length
+    while remaining > 0:
+        step = min(remaining, CHUNK_BYTES)
+        raw = os.pread(fd, step, offset)
+        if len(raw) != step:
+            raise PackFailure(f"short read at {offset}")
+        out.write(raw)
+        try:
+            os.posix_fadvise(fd, offset, step, os.POSIX_FADV_DONTNEED)
+        except (AttributeError, OSError):
+            pass
+        offset += step
+        remaining -= step
+
 def copy_row_window(source: SafetensorsSource, ref, plan, out) -> None:
     """Contiguous row-axis slice of a whole-row-packed tensor."""
     shard, meta, off = source.resolve(ref.name)
@@ -727,31 +750,14 @@ def copy_row_window(source: SafetensorsSource, ref, plan, out) -> None:
         else ref.columns * BF16_BYTES
     scale_row = ref.columns // 16 if ref.weight_format == WEIGHT_FP8_F32B128 else 0
     with (source.root / shard).open("rb") as f:
-        f.seek(off + plan.row_off * row_bytes)
-        remaining = plan.row_count * row_bytes
-        while remaining > 0:
-            step = min(remaining, CHUNK_BYTES)
-            raw = f.read(step)
-            if len(raw) != step:
-                raise PackFailure(f"short read on {ref.name}")
-            remaining -= step
-            out.write(raw)
+        pump(f.fileno(), off + plan.row_off * row_bytes,
+             plan.row_count * row_bytes, out)
         if scale_row:
             s_shard, _, s_off = source.resolve(
                 ref.name[:-len(".weight")] + ".weight_scale")
-            f2 = (source.root / s_shard).open("rb")
-            try:
-                f2.seek(s_off + plan.row_off * scale_row)
-                remaining = plan.row_count * scale_row
-                while remaining > 0:
-                    step = min(remaining, CHUNK_BYTES)
-                    raw = f2.read(step)
-                    if len(raw) != step:
-                        raise PackFailure(f"short read on {ref.name} scales")
-                    remaining -= step
-                    out.write(raw)
-            finally:
-                f2.close()
+            with (source.root / s_shard).open("rb") as f2:
+                pump(f2.fileno(), s_off + plan.row_off * scale_row,
+                     plan.row_count * scale_row, out)
 
 def copy_col_window_bf16(source: SafetensorsSource, ref, plan, out) -> None:
     """Column-axis slice of a BF16 tensor (strided per row)."""
@@ -759,61 +765,51 @@ def copy_col_window_bf16(source: SafetensorsSource, ref, plan, out) -> None:
     row_bytes = ref.columns * BF16_BYTES
     span = plan.col_count * BF16_BYTES
     with (source.root / shard).open("rb") as f:
+        fd = f.fileno()
         for r in range(ref.rows):
-            f.seek(off + r * row_bytes + plan.col_off * BF16_BYTES)
-            remaining = span
-            while remaining > 0:
-                step = min(remaining, CHUNK_BYTES)
-                raw = f.read(step)
-                if len(raw) != step:
-                    raise PackFailure(f"short read on {ref.name}")
-                remaining -= step
-                out.write(raw)
+            pump(fd, off + r * row_bytes + plan.col_off * BF16_BYTES, span, out)
 
 def copy_experts_bounded(source: SafetensorsSource, ref, plan, out) -> None:
-    """The per-expert nvfp4/fp8 streams, bounded to this rank's experts."""
+    """The per-expert nvfp4/fp8 streams, bounded to this rank's experts.
+    Two-pass (all payloads, then all scales) so no scale accumulation
+    sits in RAM."""
     experts = EXPERT_COUNT
     first = plan.row_off // (ref.rows // experts)
     last = first + plan.row_count // (ref.rows // experts)
     rows_per_expert = ref.rows // experts
     scale_cols = ref.columns // 16
-    scales = bytearray()
-    for e in range(first, last):
-        shard, meta, off = source.resolve(ref.name.replace("{e}", str(e)))
-        with (source.root / shard).open("rb") as f:
-            f.seek(off)
-            remaining = rows_per_expert * (ref.columns // 2)
-            while remaining > 0:
-                step = min(remaining, CHUNK_BYTES)
-                raw = f.read(step)
-                if len(raw) != step:
-                    raise PackFailure("short read on nvfp4 payload")
-                remaining -= step
-                out.write(raw)
-        s_shard, _, s_off = source.resolve(
-            ref.name.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale")
-        with (source.root / s_shard).open("rb") as f:
-            f.seek(s_off)
-            sraw = f.read(rows_per_expert * scale_cols)
-        if len(sraw) != rows_per_expert * scale_cols:
-            raise PackFailure("short read on nvfp4 scale plane")
-        scales += sraw
-    out.write(bytes(scales))
+    nvfp4 = ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4"
+    elem_row = (ref.columns // 2) if nvfp4 else ref.columns
+    handles = []
+    try:
+        for e in range(first, last):
+            name = ref.name.replace("{e}", str(e))
+            shard, meta, off = source.resolve(name)
+            f = (source.root / shard).open("rb")
+            handles.append(f)
+            pump(f.fileno(), off, rows_per_expert * elem_row, out)
+    finally:
+        for f in handles:
+            f.close()
+    shandles = []
+    try:
+        for e in range(first, last):
+            s_shard, _, s_off = source.resolve(
+                ref.name.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale")
+            sf = (source.root / s_shard).open("rb")
+            shandles.append(sf)
+            pump(sf.fileno(), s_off, rows_per_expert * scale_cols, out)
+    finally:
+        for f in shandles:
+            f.close()
 
 def copy_qkv_segments(source: SafetensorsSource, ref, plan, out) -> None:
     shard, meta, off = source.resolve(ref.name)
     row_bytes = ref.columns * BF16_BYTES
     with (source.root / shard).open("rb") as f:
+        fd = f.fileno()
         for seg_off, seg_count in plan.segments:
-            f.seek(off + seg_off * row_bytes)
-            remaining = seg_count * row_bytes
-            while remaining > 0:
-                step = min(remaining, CHUNK_BYTES)
-                raw = f.read(step)
-                if len(raw) != step:
-                    raise PackFailure(f"short read on {ref.name}")
-                remaining -= step
-                out.write(raw)
+            pump(fd, off + seg_off * row_bytes, seg_count * row_bytes, out)
 
 def copy_tp_plan(source: SafetensorsSource, ref, plan, out) -> None:
     if plan.kind == "experts":
