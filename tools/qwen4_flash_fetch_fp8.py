@@ -17,18 +17,55 @@ skipped, mismatches are re-fetched.
 import argparse
 import concurrent.futures
 import hashlib
+import ipaddress
 import json
 import os
+import pathlib
+import socket
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 REPO = "Qwen/Qwen3.8-Flash-Next-FP8"
 DEFAULT_COMMIT = "970c569adaca6b35532111fd6b27351b2baefe50"
 
 
+def _hf_url(url):
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https":
+        raise ValueError(f"non-https url rejected: {url}")
+    host = parts.hostname or ""
+    if not (host == "huggingface.co" or host.endswith(".huggingface.co") or
+            host == "hf.co" or host.endswith(".hf.co")):
+        raise ValueError(f"non-huggingface host rejected: {url}")
+    for info in socket.getaddrinfo(host, None):
+        address = ipaddress.ip_address(info[4][0])
+        if (address.is_private or address.is_loopback or address.is_link_local or
+                address.is_reserved or address.is_multicast):
+            raise ValueError(f"host resolves to non-public address: {url}")
+    return url
+
+
+class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _hf_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_ValidatingRedirectHandler)
+
+
+def _contained(base, leaf):
+    root = os.path.realpath(base)
+    path = os.path.realpath(os.path.join(base, leaf))
+    if not (path == root or path.startswith(root + os.sep)):
+        raise ValueError(f"path escapes dest dir: {leaf}")
+    return path
+
+
 def api_json(url):
-    with urllib.request.urlopen(url, timeout=60) as response:
+    with _OPENER.open(_hf_url(url), timeout=60) as response:
         return json.load(response)
 
 
@@ -36,13 +73,13 @@ def list_tree(commit):
     entries = []
     cursor = f"https://huggingface.co/api/models/{REPO}/tree/{commit}?recursive=true"
     while cursor:
-        with urllib.request.urlopen(cursor, timeout=60) as response:
+        with _OPENER.open(_hf_url(cursor), timeout=60) as response:
             page = json.load(response)
             link = response.headers.get("Link", "")
         entries.extend(page)
         cursor = None
         if 'rel="next"' in link:
-            cursor = link.split("<", 1)[1].split(">", 1)[0]
+            cursor = _hf_url(link.split("<", 1)[1].split(">", 1)[0])
     return entries
 
 
@@ -56,7 +93,8 @@ def sha256_file(path):
 
 def fetch_one(entry, commit, dest, attempts=4):
     path = entry["path"]
-    target = os.path.join(dest, path)
+    target = _contained(dest, path)
+    tmp = _contained(dest, path + ".part")
     expected = (entry.get("lfs") or {}).get("oid")
     size = entry.get("size") or (entry.get("lfs") or {}).get("size") or 0
     if os.path.isfile(target) and size and os.path.getsize(target) == size:
@@ -65,10 +103,14 @@ def fetch_one(entry, commit, dest, attempts=4):
     os.makedirs(os.path.dirname(target) or dest, exist_ok=True)
     url = f"https://huggingface.co/{REPO}/resolve/{commit}/{path}"
     for attempt in range(attempts):
-        tmp = target + ".part"
         try:
             started = time.time()
-            urllib.request.urlretrieve(url, tmp)
+            with _OPENER.open(_hf_url(url), timeout=120) as response, pathlib.Path(tmp).open("wb") as out:
+                while True:
+                    chunk = response.read(1 << 22)
+                    if not chunk:
+                        break
+                    out.write(chunk)
             if size and os.path.getsize(tmp) != size:
                 raise IOError(f"short read {os.path.getsize(tmp)} != {size}")
             got = sha256_file(tmp) if expected else None
@@ -105,8 +147,8 @@ def main():
             for e in entries
         ],
     }
-    with open(os.path.join(args.dest, "provenance.json"), "w") as handle:
-        json.dump(provenance, handle, indent=1, sort_keys=True)
+    pathlib.Path(_contained(args.dest, "provenance.json")).write_text(
+        json.dumps(provenance, indent=1, sort_keys=True) + "\n")
     print(f"q4fp8_fetch commit={args.commit} files={len(entries)} total_gib={total / 2**30:.2f}", flush=True)
 
     done_bytes = 0
