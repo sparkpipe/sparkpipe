@@ -503,7 +503,7 @@ def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
 
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
-            receipt: dict, dry_run: bool) -> dict:
+            receipt: dict, dry_run: bool, tp_degree: int = 1, tp_rank: int = 0) -> dict:
     source = SafetensorsSource(checkpoint)
     source.check_config()
     refs = build_inventory(first_layer, layer_count)
@@ -511,45 +511,61 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     cursor = 0
     for ref in refs:
         shard, meta, offset = source.check_shape(ref)
+        plan = build_tp_plan(ref, tp_degree, tp_rank)
+        pr, pc = packed_tp_shape(ref, plan)
         if (ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4"
                 and ref.layer == MTP_LAYER):
-            payload_bytes = ref.rows * ref.columns * BF16_BYTES
+            payload_bytes = pr * pc * BF16_BYTES
             scale_bytes = 0
         elif ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4":
             # codec-6 sizing: U8-packed payload (2 values/byte) + one F8_E4M3
             # scale byte per 16 values; F32 global/input scales ride the
             # manifest entry, not the payload stream.
-            payload_bytes = ref.rows * (ref.columns // 2)
-            scale_bytes = ref.rows * (ref.columns // 16)
+            payload_bytes = pr * (pc // 2)
+            scale_bytes = pr * (pc // 16)
         elif ref.weight_format == WEIGHT_FP8_F32B128:
-            payload_bytes = ref.rows * ref.columns
-            scale_bytes = (ref.rows // 128) * (ref.columns // 128) * F32_BYTES
+            payload_bytes = pr * pc
+            scale_bytes = (pr // 128) * (pc // 128) * F32_BYTES
         else:
-            payload_bytes = ref.rows * ref.columns * (BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES)
+            element_bytes = BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES
+            payload_bytes = pr * pc * element_bytes
             scale_bytes = 0
         payload_offset = align_up(cursor, PAYLOAD_ALIGNMENT)
-        plans.append((ref, offset, payload_offset, payload_bytes, scale_bytes))
+        plans.append((ref, offset, payload_offset, payload_bytes, scale_bytes, plan))
         cursor = payload_offset + payload_bytes + scale_bytes
     payload_base = align_up(HEADER_BYTES + len(plans) * ENTRY_BYTES, PAYLOAD_ALIGNMENT)
     file_bytes = payload_base + cursor
 
-    header = HEADER_STRUCT.pack(
-        MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, len(plans),
-        HIDDEN, layer_count, first_layer, LAYER_COUNT,
-        ATTENTION_PERIOD, FULL_PHASE,
-        GDN_KEY_HEADS, GDN_VALUE_HEADS, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
-        GDN_CONV_KERNEL, ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM,
-        ATTN_ROPE_DIM, EXPERT_COUNT, EXPERTS_PER_TOKEN, EXPERT_INTERMEDIATE,
-        VOCAB, MXFP4_GROUP, MTP_LAYERS,
-        HEADER_BYTES, file_bytes)
+    if tp_degree > 1:
+        header = HEADER2_STRUCT.pack(
+            MAGIC, FORMAT2_VERSION, HEADER2_BYTES, ENTRY_BYTES, len(plans),
+            HIDDEN, layer_count, first_layer, LAYER_COUNT,
+            ATTENTION_PERIOD, FULL_PHASE,
+            GDN_KEY_HEADS, GDN_VALUE_HEADS, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
+            GDN_CONV_KERNEL, ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM,
+            ATTN_ROPE_DIM, EXPERT_COUNT, EXPERTS_PER_TOKEN, EXPERT_INTERMEDIATE,
+            VOCAB, MXFP4_GROUP, MTP_LAYERS,
+            tp_degree, tp_rank, HEADER2_BYTES, file_bytes)
+        payload_base = align_up(HEADER2_BYTES + len(plans) * ENTRY_BYTES, PAYLOAD_ALIGNMENT)
+        file_bytes = payload_base + cursor
+    else:
+        header = HEADER_STRUCT.pack(
+            MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, len(plans),
+            HIDDEN, layer_count, first_layer, LAYER_COUNT,
+            ATTENTION_PERIOD, FULL_PHASE,
+            GDN_KEY_HEADS, GDN_VALUE_HEADS, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
+            GDN_CONV_KERNEL, ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM,
+            ATTN_ROPE_DIM, EXPERT_COUNT, EXPERTS_PER_TOKEN, EXPERT_INTERMEDIATE,
+            VOCAB, MXFP4_GROUP, MTP_LAYERS,
+            HEADER_BYTES, file_bytes)
     entries = b"".join(
         ENTRY_STRUCT.pack(
-            ref.kind, ref.layer, ref.weight_format, ref.rows, ref.columns,
+            ref.kind, ref.layer, ref.weight_format, pr, pc,
             128 if ref.weight_format == WEIGHT_FP8_F32B128 else 0,
             payload_base + payload_offset, payload_bytes,
             payload_base + payload_offset + payload_bytes if scale_bytes else 0,
             scale_bytes)
-        for ref, _, payload_offset, payload_bytes, scale_bytes in plans)
+        for ref, _, payload_offset, payload_bytes, scale_bytes, plan in plans)
     receipt.update({
         "first_layer_index": first_layer,
         "layer_count": layer_count,
@@ -575,9 +591,15 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         if padding < 0:
             raise PackFailure("directory overruns the payload base")
         hashing.write(b"\0" * padding)
-        for ref, source_offset, payload_offset, payload_bytes, scale_bytes in plans:
+        receipt.update({
+            "tp_degree": tp_degree,
+            "tp_rank": tp_rank,
+        })
+        for ref, source_offset, payload_offset, payload_bytes, scale_bytes, plan in plans:
             before = hashing.tell()
-            if (ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4"
+            if plan is not None:
+                copy_tp_plan(source, ref, plan, hashing)
+            elif (ref.weight_format == WEIGHT_FP8_F32B128 and EXPERT_CODEC == "nvfp4"
                     and ref.layer == MTP_LAYER):
                 base = ref.name.replace("{e}.", "")
                 base = base[:-len(".weight")] if base.endswith(".weight") else base
@@ -635,6 +657,176 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     return receipt
 
 
+# --- TP sharding (conforming per-rank packs; operator design law: a
+# stagepack contains exactly the bytes its rank loads) -----------------
+
+FORMAT2_VERSION = 2
+HEADER2_BYTES = 128
+HEADER2_STRUCT = struct.Struct("<28I2Q")
+assert HEADER2_STRUCT.size == HEADER2_BYTES
+
+def tp_window(total: int, degree: int, rank: int) -> tuple[int, int]:
+    assert total % degree == 0, f"tp_window: {total} not divisible by {degree}"
+    per = total // degree
+    return rank * per, per
+
+class TpPlan:
+    """RowWindow / ColWindow / ExpertRange / QkvSegments / None(replicated)."""
+    def __init__(self, kind: str, **kw):
+        self.kind = kind
+        self.__dict__.update(kw)
+
+def build_tp_plan(ref, degree: int, rank: int):
+    if degree <= 1:
+        return None
+    if ref.layer == GLOBAL_LAYER or ref.layer == MTP_LAYER:
+        return None  # globals replicate; MTP chain rides every stage pack
+    k = ref.kind
+    if k in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
+        off, count = tp_window(ref.rows, degree, rank)  # expert-major rows
+        return TpPlan("experts", row_off=off, row_count=count)
+    if k in (KIND_MOE_SHARED_GATE, KIND_MOE_SHARED_UP, KIND_ATTN_QUERY,
+             KIND_ATTN_KEY, KIND_ATTN_VALUE, KIND_GDN_GATE):
+        off, count = tp_window(ref.rows, degree, rank)
+        return TpPlan("rows", row_off=off, row_count=count)
+    if k in (KIND_LM_HEAD,):
+        off, count = tp_window(ref.rows, degree, rank)
+        return TpPlan("rows", row_off=off, row_count=count)
+    if k in (KIND_MOE_SHARED_DOWN, KIND_GDN_OUTPUT, KIND_ATTN_OUTPUT):
+        off, count = tp_window(ref.columns, degree, rank)
+        return TpPlan("cols", col_off=off, col_count=count)
+    if k == KIND_GDN_QKV:
+        qk = GDN_KEY_HEADS * GDN_HEAD_KEY_DIM
+        v = GDN_VALUE_HEADS * GDN_HEAD_VALUE_DIM
+        qk_off, qk_count = tp_window(qk, degree, rank)
+        v_off, v_count = tp_window(v, degree, rank)
+        return TpPlan("qkv", qk=qk,
+                      segments=((qk_off, qk_count),
+                                (qk + qk_off, qk_count),
+                                (2 * qk + v_off, v_count)))
+    return None  # norms, router, shared-gate-weight, conv, a_log/dt_bias, embed
+
+def packed_tp_shape(ref, plan):
+    if plan is None:
+        return ref.rows, ref.columns
+    if plan.kind == "rows":
+        return plan.row_count, ref.columns
+    if plan.kind == "cols":
+        return ref.rows, plan.col_count
+    if plan.kind == "experts":
+        return plan.row_count, ref.columns
+    if plan.kind == "qkv":
+        return sum(c for _, c in plan.segments), ref.columns
+    raise PackFailure(f"unknown tp plan {plan.kind}")
+
+def copy_row_window(source: SafetensorsSource, ref, plan, out) -> None:
+    """Contiguous row-axis slice of a whole-row-packed tensor."""
+    shard, meta, off = source.resolve(ref.name)
+    row_bytes = (ref.columns // 2) if (ref.weight_format == WEIGHT_FP8_F32B128
+                                       and EXPERT_CODEC == "nvfp4") \
+        else ref.columns * BF16_BYTES
+    scale_row = ref.columns // 16 if ref.weight_format == WEIGHT_FP8_F32B128 else 0
+    with (source.root / shard).open("rb") as f:
+        f.seek(off + plan.row_off * row_bytes)
+        remaining = plan.row_count * row_bytes
+        while remaining > 0:
+            step = min(remaining, CHUNK_BYTES)
+            raw = f.read(step)
+            if len(raw) != step:
+                raise PackFailure(f"short read on {ref.name}")
+            remaining -= step
+            out.write(raw)
+        if scale_row:
+            s_shard, _, s_off = source.resolve(
+                ref.name[:-len(".weight")] + ".weight_scale")
+            f2 = (source.root / s_shard).open("rb")
+            try:
+                f2.seek(s_off + plan.row_off * scale_row)
+                remaining = plan.row_count * scale_row
+                while remaining > 0:
+                    step = min(remaining, CHUNK_BYTES)
+                    raw = f2.read(step)
+                    if len(raw) != step:
+                        raise PackFailure(f"short read on {ref.name} scales")
+                    remaining -= step
+                    out.write(raw)
+            finally:
+                f2.close()
+
+def copy_col_window_bf16(source: SafetensorsSource, ref, plan, out) -> None:
+    """Column-axis slice of a BF16 tensor (strided per row)."""
+    shard, meta, off = source.resolve(ref.name)
+    row_bytes = ref.columns * BF16_BYTES
+    span = plan.col_count * BF16_BYTES
+    with (source.root / shard).open("rb") as f:
+        for r in range(ref.rows):
+            f.seek(off + r * row_bytes + plan.col_off * BF16_BYTES)
+            remaining = span
+            while remaining > 0:
+                step = min(remaining, CHUNK_BYTES)
+                raw = f.read(step)
+                if len(raw) != step:
+                    raise PackFailure(f"short read on {ref.name}")
+                remaining -= step
+                out.write(raw)
+
+def copy_experts_bounded(source: SafetensorsSource, ref, plan, out) -> None:
+    """The per-expert nvfp4/fp8 streams, bounded to this rank's experts."""
+    experts = EXPERT_COUNT
+    first = plan.row_off // (ref.rows // experts)
+    last = first + plan.row_count // (ref.rows // experts)
+    rows_per_expert = ref.rows // experts
+    scale_cols = ref.columns // 16
+    scales = bytearray()
+    for e in range(first, last):
+        shard, meta, off = source.resolve(ref.name.replace("{e}", str(e)))
+        with (source.root / shard).open("rb") as f:
+            f.seek(off)
+            remaining = rows_per_expert * (ref.columns // 2)
+            while remaining > 0:
+                step = min(remaining, CHUNK_BYTES)
+                raw = f.read(step)
+                if len(raw) != step:
+                    raise PackFailure("short read on nvfp4 payload")
+                remaining -= step
+                out.write(raw)
+        s_shard, _, s_off = source.resolve(
+            ref.name.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale")
+        with (source.root / s_shard).open("rb") as f:
+            f.seek(s_off)
+            sraw = f.read(rows_per_expert * scale_cols)
+        if len(sraw) != rows_per_expert * scale_cols:
+            raise PackFailure("short read on nvfp4 scale plane")
+        scales += sraw
+    out.write(bytes(scales))
+
+def copy_qkv_segments(source: SafetensorsSource, ref, plan, out) -> None:
+    shard, meta, off = source.resolve(ref.name)
+    row_bytes = ref.columns * BF16_BYTES
+    with (source.root / shard).open("rb") as f:
+        for seg_off, seg_count in plan.segments:
+            f.seek(off + seg_off * row_bytes)
+            remaining = seg_count * row_bytes
+            while remaining > 0:
+                step = min(remaining, CHUNK_BYTES)
+                raw = f.read(step)
+                if len(raw) != step:
+                    raise PackFailure(f"short read on {ref.name}")
+                remaining -= step
+                out.write(raw)
+
+def copy_tp_plan(source: SafetensorsSource, ref, plan, out) -> None:
+    if plan.kind == "experts":
+        copy_experts_bounded(source, ref, plan, out)
+    elif plan.kind == "rows":
+        copy_row_window(source, ref, plan, out)
+    elif plan.kind == "cols":
+        copy_col_window_bf16(source, ref, plan, out)
+    elif plan.kind == "qkv":
+        copy_qkv_segments(source, ref, plan, out)
+    else:
+        raise PackFailure(f"unknown tp plan {plan.kind}")
+
 def main() -> int:
     global EXPERT_CODEC
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -651,8 +843,15 @@ def main() -> int:
              "F32 global, the radixark bf16-spine source; payload streams "
              "rows*cols/2, scales rows*cols/16, global + input_scale in the "
              "manifest entry)")
+    parser.add_argument("--tp-degree", type=int, default=1,
+                        help="tensor-parallel degree; shards the pack for --tp-rank "
+                             "(emits the v2 128-byte header carrying tp_degree/tp_rank)")
+    parser.add_argument("--tp-rank", type=int, default=0,
+                        help="this rank's shard (0 .. tp-degree-1)")
     args = parser.parse_args()
     EXPERT_CODEC = args.expert_codec
+    if args.tp_degree < 1 or args.tp_rank < 0 or args.tp_rank >= args.tp_degree:
+        parser.error("--tp-rank must satisfy 0 <= tp-rank < tp-degree")
 
     if args.first_layer is None or args.layer_count is None:
         parser.error("--first-layer and --layer-count are required")
@@ -670,7 +869,8 @@ def main() -> int:
                            "gdn_a_log_dt_bias": "f32"},
     }
     result = convert(args.checkpoint, args.output or Path("/dev/null"),
-                     args.first_layer, args.layer_count, receipt, args.dry_run)
+                     args.first_layer, args.layer_count, receipt, args.dry_run,
+                     args.tp_degree, args.tp_rank)
     if not args.dry_run:
         receipt_path = args.receipt or Path(str(args.output) + ".receipt.json")
         write_receipt(result, receipt_path, suffix=None)
