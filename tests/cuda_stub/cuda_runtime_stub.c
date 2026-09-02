@@ -443,6 +443,11 @@ const char *cudaGetErrorString(cudaError_t error)
     return error == cudaSuccess ? "cudaSuccess" : "cudaTestError";
 }
 
+cudaError_t cudaGetLastError(void)
+{
+    return cudaSuccess;
+}
+
 cudaError_t cudaGetDevice(int *device)
 {
     if (device == 0)

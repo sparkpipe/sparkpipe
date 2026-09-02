@@ -120,6 +120,7 @@ cudaError_t cudaHostGetDevicePointer(
     void *host_pointer,
     unsigned int flags);
 const char *cudaGetErrorString(cudaError_t error);
+cudaError_t cudaGetLastError(void);
 
 #include <stdint.h>
 

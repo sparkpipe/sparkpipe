@@ -774,36 +774,22 @@ static void SparkGlm5NextMtpParityBuildDraftWave(SparkGlm5NextMtpParityFixture *
 	wave->slot = &fixture->slot;
 }
 
-static int SparkGlm5NextMtpParityRunWave(SparkGlm5NextMtpParityFixture *fixture,const char *label)
+static int SparkGlm5NextMtpParityLaunchFail(const char *label,const char *stage,int32_t status)
 {
-	uint32_t local;
+	printf("FAIL %s: %s status %d cuda %s\n",label,stage,(int)status,
+		cudaGetErrorString(cudaGetLastError()));
+	return(1);
+}
+
+static int SparkGlm5NextMtpParityResetKvAccess(SparkGlm5NextMtpParityFixture *fixture,const char *label)
+{
+	return(SparkGlm5NextMtpParityCuda(cudaMemsetAsync(fixture->slot.kv_access_error,0,
+		SPARK_GLM5_NEXT_MTP_PARITY_KV_ACCESS_WORDS * sizeof(uint32_t),fixture->stream),label,"kv_access_reset"));
+}
+
+static int SparkGlm5NextMtpParityCheckKvAccess(SparkGlm5NextMtpParityFixture *fixture,const char *label)
+{
 	uint32_t kv_access[SPARK_GLM5_NEXT_MTP_PARITY_KV_ACCESS_WORDS];
-	if ( SparkGlm5NextMtpParityCuda(cudaMemsetAsync(fixture->slot.kv_access_error,0,
-		SPARK_GLM5_NEXT_MTP_PARITY_KV_ACCESS_WORDS * sizeof(uint32_t),fixture->stream),label,"kv_access_reset") != 0 )
-		return(1);
-	if ( SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave) != 0 )
-		return(SparkGlm5NextMtpParityFail(label,"begin"));
-	for ( local = 0u; local < SPARK_GLM5_NEXT_MTP_PARITY_LAYERS; local++ )
-	{
-		if ( SparkGlm5NextLaunchCudaLayerAttention(&fixture->wave,local) != 0 )
-			return(SparkGlm5NextMtpParityFail(label,"attention"));
-		if ( SparkGlm5NextLaunchCudaLayerAttentionPost(&fixture->wave,local) != 0 )
-			return(SparkGlm5NextMtpParityFail(label,"attention_post"));
-		if ( SparkGlm5NextLaunchCudaLayerMlp(&fixture->wave,local) != 0 )
-			return(SparkGlm5NextMtpParityFail(label,"mlp"));
-		if ( SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,local) != 0 )
-			return(SparkGlm5NextMtpParityFail(label,"mlp_post"));
-	}
-	if ( SparkGlm5NextLaunchCudaWaveHead(&fixture->wave) != 0 )
-		return(SparkGlm5NextMtpParityFail(label,"head"));
-	if ( SparkGlm5NextMtpParityCuda(SparkGlm5NextLaunchHeadMaxlocUnpack(fixture->stream,
-		fixture->slot.head_maxloc_u64,fixture->slot.output_token,fixture->wave.row_count),label,"maxloc_unpack") != 0 )
-		return(1);
-	if ( SparkGlm5NextMtpParityCuda(cudaMemcpyAsync(fixture->host_output,fixture->slot.output_token,
-		(uint64_t)fixture->wave.row_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,fixture->stream),label,"output_readback") != 0 )
-		return(1);
-	if ( SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),label,"sync") != 0 )
-		return(1);
 	if ( SparkGlm5NextMtpParityCuda(cudaMemcpy(kv_access,fixture->slot.kv_access_error,
 		sizeof(kv_access),cudaMemcpyDeviceToHost),label,"kv_access_readback") != 0 )
 		return(1);
@@ -814,6 +800,44 @@ static int SparkGlm5NextMtpParityRunWave(SparkGlm5NextMtpParityFixture *fixture,
 		return(1);
 	}
 	return(0);
+}
+
+static int SparkGlm5NextMtpParityRunWave(SparkGlm5NextMtpParityFixture *fixture,const char *label)
+{
+	uint32_t local;
+	int32_t status;
+	if ( SparkGlm5NextMtpParityResetKvAccess(fixture,label) != 0 )
+		return(1);
+	status = SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave);
+	if ( status != 0 )
+		return(SparkGlm5NextMtpParityLaunchFail(label,"begin",status));
+	for ( local = 0u; local < SPARK_GLM5_NEXT_MTP_PARITY_LAYERS; local++ )
+	{
+		status = SparkGlm5NextLaunchCudaLayerAttention(&fixture->wave,local);
+		if ( status != 0 )
+			return(SparkGlm5NextMtpParityLaunchFail(label,"attention",status));
+		status = SparkGlm5NextLaunchCudaLayerAttentionPost(&fixture->wave,local);
+		if ( status != 0 )
+			return(SparkGlm5NextMtpParityLaunchFail(label,"attention_post",status));
+		status = SparkGlm5NextLaunchCudaLayerMlp(&fixture->wave,local);
+		if ( status != 0 )
+			return(SparkGlm5NextMtpParityLaunchFail(label,"mlp",status));
+		status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,local);
+		if ( status != 0 )
+			return(SparkGlm5NextMtpParityLaunchFail(label,"mlp_post",status));
+	}
+	status = SparkGlm5NextLaunchCudaWaveHead(&fixture->wave);
+	if ( status != 0 )
+		return(SparkGlm5NextMtpParityLaunchFail(label,"head",status));
+	if ( SparkGlm5NextMtpParityCuda(SparkGlm5NextLaunchHeadMaxlocUnpack(fixture->stream,
+		fixture->slot.head_maxloc_u64,fixture->slot.output_token,fixture->wave.row_count),label,"maxloc_unpack") != 0 )
+		return(1);
+	if ( SparkGlm5NextMtpParityCuda(cudaMemcpyAsync(fixture->host_output,fixture->slot.output_token,
+		(uint64_t)fixture->wave.row_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,fixture->stream),label,"output_readback") != 0 )
+		return(1);
+	if ( SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),label,"sync") != 0 )
+		return(1);
+	return(SparkGlm5NextMtpParityCheckKvAccess(fixture,label));
 }
 
 static int SparkGlm5NextMtpParityStashHidden(SparkGlm5NextMtpParityFixture *fixture,uint32_t row)
@@ -932,6 +956,11 @@ static int SparkGlm5NextMtpParityFixtureBuild(SparkGlm5NextMtpParityFixture *fix
 	uint32_t index;
 	memset(fixture,0,sizeof(*fixture));
 	fixture->random_state = 0x5eed1234u;
+	if ( SparkGlm5NextConfigureCudaModule(&fixture->multiprocessor_count) != 0 )
+	{
+		SparkGlm5NextMtpParityFail("configure","sm_121 target required");
+		return(1);
+	}
 	if ( SparkGlm5NextMtpParityCuda(cudaStreamCreate(&fixture->stream),"fixture","stream") != 0 )
 		return(1);
 	replay_layout = SparkGlm5NextKdaReplayLayoutFor(
@@ -1064,9 +1093,17 @@ static int SparkGlm5NextMtpParityRunSpeculative(SparkGlm5NextMtpParityFixture *f
 		uint32_t committed;
 		uint32_t index;
 		mode = step % SPARK_GLM5_NEXT_MTP_PARITY_MODE_COUNT;
-		if ( SparkGlm5NextLaunchCudaMtpDraft(&fixture->draft_wave,0,
-			fixture->draft_hidden_bf16,current,draft_tokens) != 0 )
-			return(SparkGlm5NextMtpParityFail("spec_draft","launch"));
+		if ( SparkGlm5NextMtpParityResetKvAccess(fixture,"spec_draft") != 0 )
+			return(1);
+		{
+			int32_t draft_status;
+			draft_status = SparkGlm5NextLaunchCudaMtpDraft(&fixture->draft_wave,0,
+				fixture->draft_hidden_bf16,current,draft_tokens);
+			if ( draft_status != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail("spec_draft","launch",draft_status));
+		}
+		if ( SparkGlm5NextMtpParityCheckKvAccess(fixture,"spec_draft") != 0 )
+			return(1);
 		counts[mode]++;
 		expected = UINT32_MAX;
 		if ( mode == SPARK_GLM5_NEXT_MTP_PARITY_MODE_FORCE_REJECT )
@@ -1121,8 +1158,12 @@ static int SparkGlm5NextMtpParityRunSpeculative(SparkGlm5NextMtpParityFixture *f
 			}
 		if ( SparkGlm5NextMtpParityStashHidden(fixture,committed - 1u) != 0 )
 			return(1);
-		if ( SparkGlm5NextLaunchCudaMtpCommit(&fixture->wave,committed) != 0 )
-			return(SparkGlm5NextMtpParityFail("spec_commit","fold"));
+		{
+			int32_t commit_status;
+			commit_status = SparkGlm5NextLaunchCudaMtpCommit(&fixture->wave,committed);
+			if ( commit_status != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail("spec_commit","fold",commit_status));
+		}
 		if ( SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),"spec_commit","sync") != 0 )
 			return(1);
 		if ( SparkGlm5NextMtpParityCompareState(fixture,
@@ -1156,8 +1197,6 @@ int main(int argc,char **argv)
 		return(2);
 	}
 	printf("glm5_next MTP parity: configuration %s\n",argv[1]);
-	if ( SparkGlm5NextConfigureCudaModule(&fixture.multiprocessor_count) != 0 )
-		return(SparkGlm5NextMtpParityFail("configure","sm_121 target required"));
 	if ( SparkGlm5NextMtpParityFixtureBuild(&fixture) != 0 )
 		return(1);
 	if ( SparkGlm5NextMtpParityRunBaseline(&fixture) != 0 )

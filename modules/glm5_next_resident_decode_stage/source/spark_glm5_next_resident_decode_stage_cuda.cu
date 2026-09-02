@@ -879,10 +879,16 @@ static int32_t SparkGlm5NextBindMtpLayer(
 	buffers->row_positions = slot->mtp_positions + step;
 	buffers->context_length = slot->mtp_context + step;
 	buffers->sequence_of_row = slot->mtp_sequence;
-	if ( LmKvViewInitialize(&buffers->cache,slot->mtp_kv_pool,slot->mtp_page_table,1u,1u,1u,(LmKvAccessError *)slot->kv_access_error) != 0 )
+	if ( slot->kv_access_error == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
-	if ( LmKvViewInitialize(&buffers->index_cache,slot->mtp_index_pool,slot->mtp_page_table,1u,1u,1u,(LmKvAccessError *)slot->kv_access_error) != 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
+	buffers->cache.pool = (uint8_t *)slot->mtp_kv_pool;
+	buffers->cache.page_table = slot->mtp_page_table;
+	buffers->cache.page_table_stride = 1u;
+	buffers->cache.sequence_count = 1u;
+	buffers->cache.pool_page_count = 1u;
+	buffers->cache.access_error = (LmKvAccessError *)slot->kv_access_error;
+	buffers->index_cache = buffers->cache;
+	buffers->index_cache.pool = (uint8_t *)slot->mtp_index_pool;
 	return(LM_LAUNCH_OK);
 }
 
