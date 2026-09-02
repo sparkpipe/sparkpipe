@@ -4606,3 +4606,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Item 15 completion: ranks 0-15 on warm -> ship to canonical nodes
   (rank r -> spark{hex r}) -> receipts. Item 14 (TP4PP4) then builds on
   the local full base.
+
+## 2026-09-01 ~31:2x — firing 101: rank3 building (4G tmp); chain healthy; board stable
