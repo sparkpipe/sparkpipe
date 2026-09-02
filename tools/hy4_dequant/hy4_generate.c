@@ -317,7 +317,7 @@ int main(int argc, char **argv) {
                         attn_partial[3], attn_partial[4], attn_partial[5]);
             free(wq_a); free(qan); free(sinks);
             hc_distribute(streams[t], attn_partial, post);
-            if (il < 3 && t == 0)
+            if (t == 0)
                 fprintf(stderr, "post-attn L%d t0: sum %.6f nan=%d\n",
                         il, fsum(streams, (long)HC * N_EMBD),
                         has_nan(streams, (long)HC * N_EMBD));
@@ -429,7 +429,7 @@ int main(int argc, char **argv) {
             }
             hc_distribute(streams[t], ffn, fpost);
             } /* end sparse-MoE branch */
-            if (il < 3 && t == 0)
+            if (t == 0)
                 fprintf(stderr, "post-ffn  L%d t0: sum %.6f nan=%d\n",
                         il, fsum(streams, (long)HC * N_EMBD),
                         has_nan(streams, (long)HC * N_EMBD));
