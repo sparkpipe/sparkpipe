@@ -4786,3 +4786,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   ETA ~2h for 16 ranks, then per-node ships.
 
 ## 2026-09-02 ~firing 119: TP4PP4 rank00 at 80G/99.6G on warm output; writer healthy
+
+## 2026-09-02 ~firing 120: TP4PP4 2/16 built, rank02 at 62G/99.6G; ~9-10min/rank on warm writes
