@@ -19,6 +19,7 @@
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_qwen38_max_work_control.h"
 #include "spark_qwen38_max_stagepack_format.h"
@@ -139,6 +140,7 @@ typedef struct SparkQwen38MaxModuleState
 	uint32_t tp_operation_timeout_milli;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
+	atomic_uint slot_states[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t kv_block_count;
 	uint32_t cache_layer_count;
 	uint32_t mtp_cache_ordinal;
@@ -475,7 +477,6 @@ static uint32_t SparkQwen38MaxModuleExpectedLayerBits(const SparkQwen38MaxModule
 	return(bits);
 }
 
-void SparkQwen38MaxResidentDecodeStageDestroy(void *module_state);
 static SparkStatus SparkQwen38MaxModuleAllocatePools(SparkQwen38MaxModuleState *state);
 extern cudaError_t SparkQwen38MaxConfigureCudaKernels(void);
 static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot);
@@ -1118,36 +1119,47 @@ static SparkStatus SparkQwen38MaxModuleTpAllReduceHidden(SparkQwen38MaxModuleSta
 	return(SPARK_STATUS_IO_ERROR);
 }
 
-SparkStatus SparkQwen38MaxResidentDecodeStageInitialize(
-    const SparkFirmwareModuleConfiguration *configuration,
-    const SparkFirmwareModuleHostServices *host_services,
-    void **module_state)
+static SparkStatus SparkQwen38MaxModuleExecuteFrame(void *module_state, SparkModelDriverFrame *frame);
+
+static SparkStatus SparkQwen38MaxModuleInitializeGate(void)
 {
-	SparkQwen38MaxModuleState *state;
-	const char *pack_path;
 	uint32_t allow_unqualified_execution;
-	SparkStatus status;
-	pack_path = 0;
 	allow_unqualified_execution = 0u;
-	status = SparkFirmwareModuleValidateInitialization(configuration,host_services,module_state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution);
-	if ( status != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
+	if ( SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution) != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
 		return(SPARK_STATUS_MODULE_NOT_VALIDATED);
-	state = (SparkQwen38MaxModuleState *)calloc(1u,sizeof(*state));
-	if ( state == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state->allow_unqualified_execution = allow_unqualified_execution;
-	state->ledger.module_tag = SPARK_QWEN38_MAX_MODULE_TAG;
-	atomic_init(&state->submitted_count,0u);
-	atomic_init(&state->completed_count,0u);
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkQwen38MaxModuleDescribe(void *module_state, SparkStageModuleLifecycle *lifecycle)
+{
+	SparkQwen38MaxModuleState *state = (SparkQwen38MaxModuleState *)module_state;
+	lifecycle->module_tag = SPARK_QWEN38_MAX_MODULE_TAG;
+	lifecycle->ledger = &state->ledger;
+	lifecycle->slot_states = state->slot_states;
+	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
+	lifecycle->submitted_count = &state->submitted_count;
+	lifecycle->completed_count = &state->completed_count;
+	lifecycle->rejected_count = &state->rejected_count;
+	lifecycle->failed_count = &state->failed_count;
+	lifecycle->tokens_emitted = &state->tokens_emitted;
+}
+
+static SparkStatus SparkQwen38MaxModulePrepare(
+	void *module_state,
+	const SparkFirmwareModuleConfiguration *configuration,
+	const SparkFirmwareModuleHostServices *host_services)
+{
+	SparkQwen38MaxModuleState *state = (SparkQwen38MaxModuleState *)module_state;
+	const char *pack_path;
+	SparkStatus status;
+	(void)configuration;
+	pack_path = 0;
+	state->allow_unqualified_execution = 1u;
 	atomic_init(&state->tp_completion_flag,0u);
 	atomic_init(&state->tp_next_ordinal,0u);
-	atomic_init(&state->rejected_count,0u);
-	atomic_init(&state->failed_count,0u);
-	atomic_init(&state->tokens_emitted,0u);
 	status = SparkQwen38MaxModuleConfigure(state);
+	if ( status == SPARK_STATUS_OK )
+		SparkStageModuleAtomicStateArrayInitialize(state->slot_states,state->pipeline_slot_count);
 	/* tp_degree > 1 runs the expert-sharded MoE with one residual
 	 * all-reduce per layer (the collective opens right after the slot
 	 * allocation); the head-parallel attention/GDN slicing is the next
@@ -1193,45 +1205,19 @@ SparkStatus SparkQwen38MaxResidentDecodeStageInitialize(
 			status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)state->slots[0].cuda_stream),"head_shadow_sync");
 	}
 	if ( status != SPARK_STATUS_OK )
-	{
 		fprintf(stderr,"%s initialize_failed status=%d\n",SPARK_QWEN38_MAX_MODULE_TAG,(int)status);
-		SparkQwen38MaxResidentDecodeStageDestroy(state);
-		return(status);
-	}
-	*module_state = state;
-	fprintf(stderr,"%s initialize ok slice=%u+%u gdn=%u attn=%u owns_embedding=%u owns_head=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,state->first_layer_index,state->layer_count,state->gdn_layer_count,state->attn_layer_count,state->owns_embedding,state->owns_final_head);
-	return(SPARK_STATUS_OK);
+	return(status);
 }
 
-
-
-SparkStatus SparkQwen38MaxResidentDecodeStageAdmit(
-    void *module_state,
-    const SparkModelDriverAdmissionRequest *request,
-    SparkModelDriverAdmissionDecision *decision)
-{
-	(void)module_state;
-	(void)request;
-	(void)decision;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-SparkStatus SparkQwen38MaxResidentDecodeStageSnapshot(
-    void *module_state,
-    uint32_t program_id,
-    SparkModelDriverRuntimeSnapshot *snapshot)
-{
-	(void)module_state;
-	(void)program_id;
-	(void)snapshot;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-void SparkQwen38MaxResidentDecodeStageDestroy(void *module_state)
+static void SparkQwen38MaxModuleReportReady(void *module_state)
 {
 	SparkQwen38MaxModuleState *state = (SparkQwen38MaxModuleState *)module_state;
-	if ( state == 0 )
-		return;
+	fprintf(stderr,"%s initialize ok slice=%u+%u gdn=%u attn=%u owns_embedding=%u owns_head=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,state->first_layer_index,state->layer_count,state->gdn_layer_count,state->attn_layer_count,state->owns_embedding,state->owns_final_head);
+}
+
+static void SparkQwen38MaxModuleStateTeardown(void *module_state)
+{
+	SparkQwen38MaxModuleState *state = (SparkQwen38MaxModuleState *)module_state;
 	SparkStageKvClientClose(&state->kv_client);
 	if ( state->tp_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
@@ -1249,8 +1235,69 @@ void SparkQwen38MaxResidentDecodeStageDestroy(void *module_state)
 		cudaFree(state->kv_table_indices_device);
 	if ( state->kv_table_counts_device != 0 )
 		cudaFree(state->kv_table_counts_device);
-	SparkStageModuleLedgerRelease(&state->ledger);
-	free(state);
+}
+
+static SparkStatus SparkQwen38MaxModuleAdmit(
+	void *module_state,
+	const SparkModelDriverAdmissionRequest *request,
+	SparkModelDriverAdmissionDecision *decision)
+{
+	(void)module_state;
+	(void)request;
+	(void)decision;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
+static const SparkStageModuleLifecycleOps SparkQwen38MaxModuleLifecycle =
+{
+	sizeof(SparkQwen38MaxModuleState),
+	SparkQwen38MaxModuleInitializeGate,
+	SparkQwen38MaxModuleDescribe,
+	SparkQwen38MaxModulePrepare,
+	SparkQwen38MaxModuleReportReady,
+	SparkQwen38MaxModuleStateTeardown,
+	SparkQwen38MaxModuleExecuteFrame,
+	SparkQwen38MaxModuleAdmit,
+	0
+};
+
+SparkStatus SparkQwen38MaxResidentDecodeStageInitialize(
+    const SparkFirmwareModuleConfiguration *configuration,
+    const SparkFirmwareModuleHostServices *host_services,
+    void **module_state)
+{
+	return(SparkStageModuleLifecycleInitialize(configuration,host_services,module_state,&SparkQwen38MaxModuleLifecycle));
+}
+
+SparkStatus SparkQwen38MaxResidentDecodeStageAdmit(
+    void *module_state,
+    const SparkModelDriverAdmissionRequest *request,
+    SparkModelDriverAdmissionDecision *decision)
+{
+	return(SparkStageModuleLifecycleAdmit(module_state,request,decision,&SparkQwen38MaxModuleLifecycle));
+}
+
+SparkStatus SparkQwen38MaxResidentDecodeStageExecute(
+    void *module_state,
+    SparkModelDriverFrame *frame)
+{
+	return(SparkStageModuleLifecycleExecute(module_state,frame,&SparkQwen38MaxModuleLifecycle));
+}
+
+SparkStatus SparkQwen38MaxResidentDecodeStageSnapshot(
+    void *module_state,
+    uint32_t program_id,
+    SparkModelDriverRuntimeSnapshot *snapshot)
+{
+	(void)module_state;
+	(void)program_id;
+	(void)snapshot;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
+void SparkQwen38MaxResidentDecodeStageDestroy(void *module_state)
+{
+	SparkStageModuleLifecycleDestroy(module_state,&SparkQwen38MaxModuleLifecycle);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1789,17 +1836,15 @@ static SparkStatus SparkQwen38MaxModuleRunDecode(SparkQwen38MaxModuleState *stat
 	return(status);
 }
 
-SparkStatus SparkQwen38MaxResidentDecodeStageExecute(
-    void *module_state,
-    SparkModelDriverFrame *frame)
+static SparkStatus SparkQwen38MaxModuleExecuteFrame(
+	void *module_state,
+	SparkModelDriverFrame *frame)
 {
 	SparkQwen38MaxModuleState *state = (SparkQwen38MaxModuleState *)module_state;
 	SparkQwen38MaxResidentDecodeStageFrameContext *context;
 	SparkQwen38MaxModuleSlot *slot;
 	uint32_t rows,row;
 	SparkStatus status;
-	if ( state == 0 || frame == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	context = (SparkQwen38MaxResidentDecodeStageFrameContext *)frame->user_context;
