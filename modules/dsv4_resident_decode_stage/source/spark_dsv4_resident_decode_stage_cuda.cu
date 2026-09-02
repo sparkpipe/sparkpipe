@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_lm_kernels.cuh"
+#include <stdio.h>
 #include "sparkpipe/spark_row_compaction.cuh"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 #include "spark_dsv4_pool_layout.h"
@@ -3379,11 +3380,14 @@ extern "C" cudaError_t SparkDsv4LaunchGateRoute(
 		int per_sm = 0;
 		int sm_count = 0;
 		int device = 0;
+		int occupancy_error = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm,
+				SparkDsv4GateRouteCooperativeKernel,SPARK_LM_CTA_THREADS,
+				gate->columns * sizeof(float));
 		uint32_t blocks_needed = (gate->rows + SPARK_LM_CTA_WARPS - 1u) /
 			SPARK_LM_CTA_WARPS;
-		if ( cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm,
-				SparkDsv4GateRouteCooperativeKernel,SPARK_LM_CTA_THREADS,
-				gate->columns * sizeof(float)) == cudaSuccess &&
+		fprintf(stderr,"dsv4 gateroute diag: rows=%u cols=%u occ=%d per_sm=%d need=%u\n",
+			gate->rows,gate->columns,occupancy_error,per_sm,blocks_needed);
+		if ( occupancy_error == cudaSuccess &&
 			per_sm > 0 &&
 			cudaGetDevice(&device) == cudaSuccess &&
 			cudaDeviceGetAttribute(&sm_count,
