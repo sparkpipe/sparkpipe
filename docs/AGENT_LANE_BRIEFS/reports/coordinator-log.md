@@ -4830,3 +4830,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-02 ~firing 129: TP4PP4 ships resumed clean — rank3 landed, on rank6, 0 errors
 
 ## 2026-09-02 ~firing 130: rank06 transferring at 590MB/s (log lags sha-verify); ships ~10 ranks out
+
+## 2026-09-02 ~firing 131: TP4PP4 ships 9/16, zero errors, on rank9
