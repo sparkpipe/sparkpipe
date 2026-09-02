@@ -4392,3 +4392,49 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~25:3x — firing 64: bf16 rebuilds 12.4/4.9/8.5 of 40G; fresh Mimosa scan sealed (53 findings, none blocking; same count as prior baseline)
 
 ## 2026-09-01 ~25:4x — firing 65: bf16 rebuilds 13.7/22.7/17.6 of 40G (spark2 accelerating past slow-class); all on pace
+
+## 2026-09-01 ~25:5x — firing 66: bf16 rebuilds 14.3/30.2/18.8 of 40G; spark2 close to done
+
+## 2026-09-01 ~26:0x — firing 67: bf16 rebuilds 16.0/36.2/20.1 of 40G; spark2 nearly done
+
+## 2026-09-01 ~26:2x — firing 68: bf16 arm 14/16 (sparkc rank12 PLACED+receipted); spark1 21.7G spark2 ~30G grinding
+
+## 2026-09-01 ~26:3x — firing 69: bf16 arm 15/16 (spark2 rank2 PLACED+receipted); only spark1 rank1 left (22.4/40G)
+
+## 2026-09-01 ~26:4x — firing 70: bf16 arm 15/16; spark1 rank1 at 23.1/40G (last one)
+
+## 2026-09-01 ~26:5x — firing 71: spark1 rank1 at 23.9/40G — the fleet's last unfinished rank
+
+## 2026-09-01 ~27:0x — firing 72: spark1 rank1 at 25.0/40G
+
+## 2026-09-01 ~27:1x — firing 73: spark1 rank1 at 26.4/40G
+
+## 2026-09-01 ~27:2x — firing 74: spark1 rank1 at 27.2/40G
+
+## 2026-09-01 ~27:3x — firing 75: spark1 rank1 at 28.3/40G
+
+## 2026-09-01 ~27:4x — firing 76: spark1 rank1 at 29.3/40G
+
+## 2026-09-01 ~27:5x — firing 77: spark1 rank1 at 30.4/40G
+
+## 2026-09-01 ~28:0x — firing 78: spark1 rank1 at 32.0/40G (~8 min left)
+
+## 2026-09-01 ~28:1x — firing 79: spark1 rank1 at 33.3/40G (~4 min left)
+
+## 2026-09-01 ~28:2x — firing 80: spark1 rank1 at 34.7/40G (~2 min left)
+
+## 2026-09-01 ~28:3x — firing 81: spark1 rank1 at 36.1/40G (~4 min)
+
+## 2026-09-01 ~28:4x — firing 82: spark1 rank1 at 38.7/40G (~1 min to tensor completion, then verify)
+
+## 2026-09-01 ~28:5x — firing 83: spark1 rank1 at 39.9/40G — writing its final tensors
+
+## 2026-09-01 ~29:0x — firing 84: ITEM 23 COMPLETE — bf16-official arm TP16 16/16 PLACED
+
+- spark1 rank1: PLACED, sha256 64df3d5b…, receipt written. The
+  bf16-official arm is fully placed: 16/16 ranks, uniform 40,136,867,328
+  B, BF16 experts verbatim (source-driven codec), all verified vs source.
+- Checklist: items 1-5, 7, 10, 12-14, 16-20, 23 complete; 9/11/8/22/15
+  ticketed to dev lanes; 25-26 hy4 lane-owned; 28 drafter audit filed;
+  29-30 final audit legs: hygiene PASS, coverage PASS, per-stage uniform
+  PASS — remaining: size-vs-source arithmetic + final board log.

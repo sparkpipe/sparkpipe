@@ -17,6 +17,10 @@ import tempfile
 import threading
 import time
 
+def now_stamp():
+    import time as _t
+    return _t.strftime('%Y-%m-%dT%H:%M:%S')
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOL = os.path.join(REPO, "tools", "spark_queue.py")
 
@@ -203,6 +207,21 @@ def main():
     entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
     check("priority 0 beats 9 on the same node",
           entries["p-high"]["state"] == "running" and entries["p-low"]["state"] == "queued", out)
+
+    # --- blocked-state stranding fix: blocked entries with met deps promote
+    import json as _j, os as _os
+    qpath = _os.path.join(tmp, "queue.jsonl")
+    entries = [_j.loads(l) for l in open(qpath) if l.strip()]
+    entries.append(dict(id="was-blocked", nodes=["spark6"], cmd="echo b",
+        priority=5, kind="run", after=[], submitted_by="t", notes="",
+        state="blocked", submitted_at=now_stamp()))
+    with open(qpath, "w") as fh:
+        for e in entries:
+            fh.write(_j.dumps(e) + "\n")
+    rc, out = run(tmp, "dispatch")
+    entries = {_j.loads(l)["id"]: _j.loads(l) for l in open(qpath) if l.strip()}
+    check("blocked entry with met deps is promoted and dispatched",
+          entries.get("was-blocked", {}).get("state") == "running", out)
 
     # --- 15-minute task cap (operator window model)
     rc, out = run(tmp, "add", "--id", "too-long", "--nodes", "spark6",

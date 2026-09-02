@@ -15,6 +15,7 @@ for rank in "$@"; do
   if [[ -s "$pack" && -s "$OUT/rank${rank}.receipt.json" && -s "$OUT/rank${rank}.sha" ]]; then
     echo "RANK${rank}-ALREADY-DONE"; continue
   fi
+  rm -f "$OUT"/.rank${rank}.spstage.*.tmp 2>/dev/null || true
   python3 "$TOOLS/dsv4_tp16_stagepack.py" \
     --input-pack "$OUT/dsv4_pro_full.spstage" --output "$pack" \
     --rank "$rank" --tp-degree 16 --pp-stages 1 --pp-stage 0 \
