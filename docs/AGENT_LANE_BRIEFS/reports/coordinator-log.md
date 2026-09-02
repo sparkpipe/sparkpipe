@@ -4752,3 +4752,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   (legal coexistence per queue design) and continue. The item-14 TP4PP4
   BUILD will NOT co-locate with GPU work on sparka (one-IO-heavy-job
   law / reboot-cascade class) — it waits for a genuinely free window.
+
+## 2026-09-02 ~firing 115: ships 7/16, zero mismatches, on rank7
