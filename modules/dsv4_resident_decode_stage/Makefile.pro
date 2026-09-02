@@ -31,6 +31,7 @@ MODEL_HEADER := ../../model-families/dsv4/include/sparkpipe/spark_dsv4_model.h
 MODULE_ENTRY_PREFIX := SparkDsv4ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_dsv4_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
+	../../runtime/stage_module_lifecycle.c \
 	source/spark_dsv4_stage_runner.c \
 	source/spark_dsv4_paged_cache.c \
 	../../model-families/dsv4/src/spark_dsv4_parallel_shape.c \
