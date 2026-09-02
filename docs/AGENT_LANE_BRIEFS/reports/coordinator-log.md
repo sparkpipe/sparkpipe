@@ -4676,3 +4676,17 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Ship pass deliberately NOT started for the 13 ready masters: it would
   compete with the chain on sparka (one-heavy-job law). Ships when the
   chain drains.
+
+## 2026-09-02 ~firing 106: ROOT CAUSE — set -e same-file cp killed both chains
+
+- rank9 COMPLETE (receipt 1399B + sha + pack, all gates passed). But the
+  9→11→10 chain died after rank9: with OUT==CENTRAL the script's receipt
+  copy is a file-onto-itself cp (scp fails → cp fallback errors "same
+  file", exit 1) and set -e terminates the script. Same benign kill ended
+  the earlier r14/r15 chains invisibly — they were last-in-invocation so
+  it looked like completion.
+- Fix (no lane-script edit): ranks 11 and 10 relaunched as sequential
+  single-rank invocations under one wrapper (pid 105019) — the cp quirk
+  can at worst end each rank's own invocation after that rank is done.
+  rank11 slicing at check.
+- BOARD: 14/16 dsv4pro TP16 masters receipted; rank11+rank10 building.
