@@ -730,8 +730,14 @@ def main() -> int:
     args = parser.parse_args()
     if args.tp_degree < 1 or args.tp_rank < 0 or args.tp_rank >= args.tp_degree:
         parser.error("--tp-rank must satisfy 0 <= tp-rank < tp-degree")
-    if args.tp_degree > 1 and args.first_layer != 0 and args.layer_count != LAYER_COUNT:
-        parser.error("TP packs cover the whole stack: --first-layer 0 --layer-count 64")
+    if args.tp_degree > 1 and (args.first_layer != 0 or args.layer_count != LAYER_COUNT):
+        # Combined TP+PP mode: the inventory is stage-aware (embedding on
+        # stage zero, head + MTP on the head stage) and build_tp_plan
+        # shards per tensor, so the two dimensions compose. The module
+        # side must load stage-sliced TP packs via the TP4PP4 rank map.
+        print(f"qwen38_27b_stagepack: combined TP{args.tp_degree}+PP slice "
+              f"{args.first_layer}+{args.layer_count} (module needs the "
+              f"TP4PP4 rank map; single-pack full-stack loaders will reject it)")
 
     if args.verify is not None:
         result = verify(args.verify)
