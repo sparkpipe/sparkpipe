@@ -109,3 +109,22 @@ commit of the reference build).
 2. Greedy decode loop on the corrected forward; then the GPU port:
    dequant bitwise cells already green (Q8_0 GPU==CPU); MLA + hc + MoE
    per-kernel exactness vs fp64 references, then TP16 native, then tok/s.
+
+## Receipt 09-03 (later tick): hyv4 pretokenizer ported, selftest 4/4 PASS
+
+`tools/hy4_dequant/hy4_tokenize.py` now implements the real pretokenizer
+(three sequential regex splits ported verbatim from llama-vocab.cpp
+LLAMA_VOCAB_PRE_TYPE_HYV4: `\p{N}{1,3}`; CJK run class; GPT-style word
+split with the ASCII punct class, then byte-level + BPE; NO BOS).
+Verified inside the tool via `selftest` against two independent
+llama.cpp tokenizations of the same GGUF:
+
+- "The quick brown fox" -> [802, 5466, 19405, 63357] PASS
+- "-p The quick brown fox -n 4 --temp 0" -> [2707, 499, 5466, 19405,
+  63357, 516, 77, 220, 19, 2411, 22093, 220, 15] PASS
+- decode(encode(x)) == x round-trips on both PASS
+
+The CLI is the prompt path: `encode` output feeds hy4_generate.c's
+prompt-ids file directly (text -> ids -> forward -> greedy loop).
+A gen=1 greedy decode on the 4-token prompt was launched as the
+end-to-end loop receipt (llama continuation reference: 52392 " jumps").

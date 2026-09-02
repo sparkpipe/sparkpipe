@@ -1,19 +1,46 @@
 #!/usr/bin/env python3
 """hy4 lane: GGUF-BPE tokenizer CLI (encode text -> ids, decode ids -> text).
 
-The same byte-level BPE verified against round-trips on real GGUF vocab
-(see tick-7 receipt). Reads the tokenizer KVs straight from the rank-00
-GGUF header (first ~5 MB). No ceph, no warm: node-local file only.
+Byte-level BPE with the hyv4 pretokenizer ported from llama.cpp
+(llama-vocab.cpp LLAMA_VOCAB_PRE_TYPE_HYV4: three sequential regex splits,
+then byte-level). Verified against llama.cpp tokenizations of the same
+GGUF:
+  "The quick brown fox"                  -> [802, 5466, 19405, 63357]
+  "-p The quick brown fox -n 4 --temp 0" -> [2707, 499, 5466, 19405, 63357,
+                                             516, 77, 220, 19, 2411, 22093,
+                                             220, 15]
+hyv4 emits NO BOS. Reads the tokenizer KVs straight from the rank-00 GGUF
+header (first ~5 MB). No ceph, no warm: node-local file only. Needs the
+`regex` module (RE2-compatible \\p classes): run with the spark2 venv
+python or any interpreter that has it.
 
 Usage:
   hy4_tokenize.py encode "some text"          # prints ids (space separated)
   hy4_tokenize.py decode 1 2 3                # prints text
   hy4_tokenize.py bos                         # prints the bos token id
+  hy4_tokenize.py selftest                    # llama-vector verification
 """
 import struct
 import sys
 
 GGUF = "/home/spark2/hy4-allranks/rank-00/model-ud-iq1m-tp16-rank-00.gguf"
+
+try:
+    import regex as _rx
+except ImportError:
+    _rx = None
+
+HYV4_SPLITS = [
+    r"\p{N}{1,3}",
+    r"[一-龥぀-ゟ゠-ヿ]+",
+    r"""[!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+""",
+]
+
+SELFTEST_CASES = [
+    ("The quick brown fox", [802, 5466, 19405, 63357]),
+    ("-p The quick brown fox -n 4 --temp 0",
+     [2707, 499, 5466, 19405, 63357, 516, 77, 220, 19, 2411, 22093, 220, 15]),
+]
 
 
 def load_tokenizer():
@@ -46,6 +73,39 @@ def load_tokenizer():
     return kv
 
 
+def byte_encoder():
+    bs = (list(range(ord("!"), ord("~") + 1)) +
+          list(range(0xA1, 0xAC + 1)) + list(range(0xAE, 0xFF + 1)))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return {b: chr(c) for b, c in zip(bs, cs)}
+
+
+def hyv4_fragments(text):
+    if _rx is None:
+        raise SystemExit("the `regex` module is required (spark2 venv python)")
+    frags = [text]
+    for pat in HYV4_SPLITS:
+        rx = _rx.compile(pat)
+        nxt = []
+        for frag in frags:
+            pos = 0
+            for m in rx.finditer(frag):
+                if m.start() > pos:
+                    nxt.append(frag[pos:m.start()])
+                nxt.append(frag[m.start():m.end()])
+                pos = m.end()
+            if pos < len(frag):
+                nxt.append(frag[pos:])
+        frags = nxt
+    return frags
+
+
 def main():
     kv = load_tokenizer()
     tokens = kv["tokenizer.ggml.tokens"]
@@ -53,17 +113,8 @@ def main():
     bos = kv.get("tokenizer.ggml.bos_token_id")
     index = {t: i for i, t in enumerate(tokens)}
     ranks = {pair: i for i, pair in enumerate(merges)}
-
-    bs = (list(range(ord("!"), ord("~") + 1)) +
-          list(range(0xA1, 0xAC + 1)) + list(range(0xAE, 0xFF + 1)))
-    n = 0
-    char_to_byte = {}
-    for b in range(256):
-        if b in bs:
-            char_to_byte[chr(b)] = chr(b)
-        else:
-            char_to_byte[chr(256 + n)] = chr(b)
-            n += 1
+    be = byte_encoder()
+    char_to_byte = {v: chr(k) for k, v in be.items()}
 
     def bpe_word(word):
         parts = list(word)
@@ -78,12 +129,13 @@ def main():
                     break
         return parts
 
-    def encode(text, prepend_bos=True):
+    def encode(text, prepend_bos=False):
         ids = [bos] if (prepend_bos and bos is not None) else []
-        words = text.split(" ")
-        for j, w in enumerate(words):
-            marked = ("\u0120" + w) if j else w
-            for piece in bpe_word(marked):
+        for frag in hyv4_fragments(text):
+            if not frag:
+                continue
+            word = "".join(be[b] for b in frag.encode("utf-8"))
+            for piece in bpe_word(word):
                 ids.append(index[piece])
         return ids
 
@@ -102,6 +154,19 @@ def main():
         print(decode(ids))
     elif cmd == "bos":
         print(bos)
+    elif cmd == "selftest":
+        ok = True
+        for text, want in SELFTEST_CASES:
+            got = encode(text)
+            passed = got == want
+            ok &= passed
+            print("PASS" if passed else "FAIL", repr(text), got)
+        for text, want in SELFTEST_CASES:
+            rt = decode(encode(text))
+            passed = rt == text
+            ok &= passed
+            print("PASS" if passed else "FAIL", "roundtrip", repr(text))
+        raise SystemExit(0 if ok else 1)
     else:
         raise SystemExit("unknown cmd")
 
