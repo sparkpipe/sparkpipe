@@ -4754,3 +4754,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   law / reboot-cascade class) — it waits for a genuinely free window.
 
 ## 2026-09-02 ~firing 115: ships 7/16, zero mismatches, on rank7
+
+## 2026-09-02 ~firing 116: ships 11/16; rank10 rebuild digest-identical (80bfb72a…) to the deleted original
+
+- Rebuild fidelity proven: rank10's fresh sha matches the pre-deletion
+  canonical receipt digest exactly. glm53 hold on sparka expired —
+  item 14 can launch once ships drain.
