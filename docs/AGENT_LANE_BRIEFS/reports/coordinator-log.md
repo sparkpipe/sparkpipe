@@ -5081,3 +5081,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   captured verification output.
 - ETA: 13/16 done; r02+r05 in flight; r00 re-ship trivial ⇒ matrix
   complete in ~1.5h ± 30min. Broader list unchanged: +3-5 days.
+
+## 2026-09-02 ~firing 157: hy4 chain mapped — blocker identified
+
+- hy4 geometry plan committed in dsv4_tp16_stagepack.py (slicer).
+- Next dependency found: the FULL-PACK builder (dsv4_stagepack.py) has
+  no --model/hy4 support and must be checked for modelopt-MXFP8 source
+  format support before any hy4 base pack can be built. That code read
+  + extension is the next work item (hy4 is highest priority).
+- qwen-max: r02/r05/r13 still building; r00 re-ship to spark0 queued.
