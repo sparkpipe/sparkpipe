@@ -4828,3 +4828,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Ship pass resumed (ranks 0-2 skip by digest; 3 re-attempts, 4-15 go).
 
 ## 2026-09-02 ~firing 129: TP4PP4 ships resumed clean — rank3 landed, on rank6, 0 errors
+
+## 2026-09-02 ~firing 130: rank06 transferring at 590MB/s (log lags sha-verify); ships ~10 ranks out
