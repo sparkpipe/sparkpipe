@@ -4591,3 +4591,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Item 14 (TP4PP4): the pro base pack (892,904,019,728 B) confirmed on
   sparka locally — the TP4PP4 driver runs there after the TP16 sequence
   completes. No external input needed.
+
+## 2026-09-01 ~31:0x — firing 100: rank10 at 97.9G of ~99.6G stage size; verify+receipt imminent
