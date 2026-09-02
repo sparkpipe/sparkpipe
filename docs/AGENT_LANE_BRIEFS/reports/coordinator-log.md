@@ -4713,3 +4713,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   requires the pack, which is absent). ETA both ranks ~40min.
 
 ## 2026-09-02 ~firing 109: rank11 42.5G/98G, full class; rank10 next
+
+## 2026-09-02 ~firing 110: rank11 BUILT (15/16); rank10 slicing 27G/98G
+
+- The sequential-invocation wrapper worked exactly as designed: rank11's
+  own invocation ended at the benign same-file cp AFTER writing its
+  receipt+sha; rank10 rolled in automatically. Ship script staged on
+  sparka (syntax-checked). 16/16 + ships next firing.
