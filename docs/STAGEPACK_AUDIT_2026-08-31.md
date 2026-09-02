@@ -174,7 +174,7 @@ Per-set completions:
 20. qwen-flash TP4xPP4 — COMPLETE: 16/16 ranks built+placed (rank r on spark-r, 4 stages x 12 layers x TP4, bf16, MTP-carrying, sha-receipted; zero FATALs).
 21. qwen-flash TP8 fp8 arm — BLOCKED on packer: the fp8-arm source stores experts SPLIT per-index (experts.0.gate_proj/up_proj + weight_scale_inv) vs the bf16 source's stacked exp ass gate_up_proj the packer's name map expects. Needs split-expert name-map + fused-row extension (dev-lane ticket; same family as the 27B PP+TP item).
 22. qwen-flash TP8 nvfp4 arm — build (with MTP).
-23. glm-flash bf16-official arm TP16 — COMPLETE: 16/16 placed (40,136,867,328 B uniform, 1160 tensors, BF16 experts verbatim passthrough via source-driven codec; dir_sha uniform c439d469… across ranks; verify PASS + receipts).
+23. glm-flash bf16-official arm TP16 — 15/16 placed (spark2 rank2 landed; only spark1 rank1 still building — 22.4G of 40G) (40,136,867,328 B uniform, 1160 tensors, BF16 experts verbatim passthrough via source-driven codec; dir_sha uniform c439d469… across ranks; verify PASS + receipts).
 24. glm-flash nvfp4-redhatai arm TP16 — build (~12G/rank).
 25. hy4 TP16 — IN PROGRESS by the hy4 dev lane (operator confirmed the lane is doing the TP16 sharding); geometry clean (64 heads/16=4, ffn 144 blocks, KV replicated); MTP 39 tensors must ride. Coordinator: stay off the lane's nodes, integrate via queue.
 26. hy4 TP4xPP4 — build (MTP-carrying).

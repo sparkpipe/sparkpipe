@@ -4392,3 +4392,21 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~25:3x — firing 64: bf16 rebuilds 12.4/4.9/8.5 of 40G; fresh Mimosa scan sealed (53 findings, none blocking; same count as prior baseline)
 
 ## 2026-09-01 ~25:4x — firing 65: bf16 rebuilds 13.7/22.7/17.6 of 40G (spark2 accelerating past slow-class); all on pace
+
+## 2026-09-01 ~25:5x — firing 66: bf16 rebuilds 14.3/30.2/18.8 of 40G; spark2 close to done
+
+## 2026-09-01 ~26:0x — firing 67: bf16 rebuilds 16.0/36.2/20.1 of 40G; spark2 nearly done
+
+## 2026-09-01 ~26:2x — firing 68: bf16 arm 14/16 (sparkc rank12 PLACED+receipted); spark1 21.7G spark2 ~30G grinding
+
+## 2026-09-01 ~26:3x — firing 69: bf16 arm 15/16 (spark2 rank2 PLACED+receipted); only spark1 rank1 left (22.4/40G)
+
+## 2026-09-01 ~26:4x — firing 70: bf16 arm 15/16; spark1 rank1 at 23.1/40G (last one)
+
+## 2026-09-01 ~26:5x — firing 71: spark1 rank1 at 23.9/40G — the fleet's last unfinished rank
+
+## 2026-09-01 ~27:0x — firing 72: spark1 rank1 at 25.0/40G
+
+## 2026-09-01 ~27:1x — firing 73: spark1 rank1 at 26.4/40G
+
+## 2026-09-01 ~27:2x — firing 74: spark1 rank1 at 27.2/40G
