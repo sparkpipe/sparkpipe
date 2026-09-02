@@ -153,6 +153,22 @@ int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s allranks_dir [gen]\n", argv[0]); return 2; }
     int gen = argc > 2 ? atoi(argv[2]) : GEN;
 
+    /* prompt ids come from the verified GGUF tokenizer (hy4_tokenize.py
+     * encode, BOS prepended); the C side stays arithmetic-only */
+    int tokens_fixed[TOTAL_TOK];
+    int n_prompt = 0;
+    if (argc > 3) {
+        FILE *pf = fopen(argv[3], "r");
+        if (!pf) { fprintf(stderr, "prompt file missing\n"); return 2; }
+        int v;
+        while (n_prompt < PROMPT && fscanf(pf, "%d", &v) == 1)
+            tokens_fixed[n_prompt++] = v;
+        fclose(pf);
+        fprintf(stderr, "prompt ids (%d):", n_prompt);
+        for (int i = 0; i < n_prompt; ++i) fprintf(stderr, " %d", tokens_fixed[i]);
+        fprintf(stderr, "\n");
+    }
+
     char path[1100];
     for (int r = 0; r < N_RANKS; ++r) {
         snprintf(path, sizeof(path), "%s/rank-%02d", argv[1], r);
@@ -161,7 +177,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "16 rank bundles open\n");
 
     int tokens[TOTAL_TOK];
-    for (int i = 0; i < PROMPT; ++i) tokens[i] = i; /* deterministic prompt ids */
+    for (int i = 0; i < PROMPT; ++i)
+        tokens[i] = i < n_prompt ? tokens_fixed[i] : 0;
     int generated = -1;
 
     /* per-token hc streams, cached per token for autoregressive carry */
