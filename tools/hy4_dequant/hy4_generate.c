@@ -78,12 +78,12 @@ static void matvec(const float *w, const float *x, float *y, long rows, long col
     }
 }
 
-static void rope_neox(float *v, int rot, int pos) {
+static void rope_pairs(float *v, int rot, int pos) {
     for (int d = 0; d < rot / 2; ++d) {
         float ang = pos * powf(1e7f, -2.0f * d / rot);
-        float a = v[d], b = v[d + rot / 2];
-        v[d] = a * cosf(ang) - b * sinf(ang);
-        v[d + rot / 2] = a * sinf(ang) + b * cosf(ang);
+        float a = v[2 * d], b = v[2 * d + 1];
+        v[2 * d] = a * cosf(ang) - b * sinf(ang);
+        v[2 * d + 1] = a * sinf(ang) + b * cosf(ang);
     }
 }
 
@@ -109,6 +109,9 @@ static void hc_mix(const float *fn, const float *streams, const float *scale,
         fprintf(stderr, "MY_HCIN first6: %.4f %.4f %.4f %.4f %.4f %.4f\n",
                 flat_norm[0], flat_norm[1], flat_norm[2], flat_norm[3],
                 flat_norm[4], flat_norm[5]);
+        fprintf(stderr, "MY_HCIN last3: %.4f %.4f %.4f\n",
+                flat_norm[HC * N_EMBD - 3], flat_norm[HC * N_EMBD - 2],
+                flat_norm[HC * N_EMBD - 1]);
         fprintf(stderr, "MY_HC_MIXES first8: %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
                 mixed[0], mixed[1], mixed[2], mixed[3],
                 mixed[4], mixed[5], mixed[6], mixed[7]);
@@ -201,10 +204,10 @@ int main(int argc, char **argv) {
     fprintf(stderr, "16 rank bundles open\n");
 
     int tokens[TOTAL_TOK];
-    for (int i = 0; i < PROMPT; ++i)
+    int n_tok = n_prompt > 0 ? n_prompt : PROMPT;
+    int total = n_tok + gen;
+    for (int i = 0; i < total; ++i)
         tokens[i] = i < n_prompt ? tokens_fixed[i] : 0;
-    for (int i = PROMPT; i < TOTAL_TOK; ++i)
-        tokens[i] = 0; /* set from the sampled id at each step */
     int generated = -1;
 
     /* per-token hc streams, cached per token for autoregressive carry */
@@ -213,11 +216,16 @@ int main(int argc, char **argv) {
     static float klat[LAYERS][TOTAL_TOK][KV_LORA];
     static float kpe[LAYERS][TOTAL_TOK][ROT];
 
-    for (int t = 0; t < TOTAL_TOK; ++t) {
-        if (t >= PROMPT) tokens[t] = generated;
+    for (int t = 0; t < total; ++t) {
+        if (t >= n_tok) tokens[t] = generated;
         /* embedding from the owning rank */
         float x0[N_EMBD];
         if (embed_token(tokens[t], x0)) { fprintf(stderr, "embed fail\n"); return 1; }
+        if (t == 0)
+            fprintf(stderr,
+                    "MY_EMBD t0 first3 %.6f %.6f %.6f last3 %.6f %.6f %.6f\n",
+                    x0[0], x0[1], x0[2], x0[N_EMBD - 3], x0[N_EMBD - 2],
+                    x0[N_EMBD - 1]);
         for (int s = 0; s < HC; ++s)
             for (int i = 0; i < N_EMBD; ++i)
                 streams[t][s][i] = x0[i];
@@ -248,8 +256,18 @@ int main(int argc, char **argv) {
             float kvc[KV_LORA + ROT];
             matvec(wkv_a, cur, kvc, KV_LORA + ROT, N_EMBD);
             memcpy(kpe[il][t], kvc + KV_LORA, ROT * 4);
-            rope_neox(kpe[il][t], ROT, t);
+            rope_pairs(kpe[il][t], ROT, t);
             rms_norm(kvc, kvan, klat[il][t], KV_LORA, 1e-5f);
+            if (il == 0 && t == 0) {
+                fprintf(stderr,
+                        "MY_KV_CMPR first3 %.6f %.6f %.6f last3 %.6f %.6f %.6f\n",
+                        klat[0][0][0], klat[0][0][1], klat[0][0][2],
+                        klat[0][0][KV_LORA - 3], klat[0][0][KV_LORA - 2],
+                        klat[0][0][KV_LORA - 1]);
+                fprintf(stderr, "MY_K_PE first3 %.6f %.6f %.6f last3 %.6f %.6f %.6f\n",
+                        kpe[0][0][0], kpe[0][0][1], kpe[0][0][2],
+                        kpe[0][0][ROT - 3], kpe[0][0][ROT - 2], kpe[0][0][ROT - 1]);
+            }
             free(wkv_a); free(kvan);
 
             /* attention: per-rank head slices, partial o_proj summed */
@@ -279,19 +297,30 @@ int main(int argc, char **argv) {
                     int h = r * RANK_HEADS + lh;
                     float qh[HK];
                     matvec(wq_b + (size_t)lh * HK * 2048, qr_buf, qh, HK, 2048);
-                    rope_neox(qh + NOPE, ROT, t);
+                    rope_pairs(qh + NOPE, ROT, t);
+                    if (il == 0 && t == 0 && r == 0 && lh == 0)
+                        fprintf(stderr,
+                                "MY_Q_PE h0 first3 %.6f %.6f %.6f last3 %.6f %.6f %.6f\n",
+                                qh[NOPE], qh[NOPE + 1], qh[NOPE + 2],
+                                qh[HK - 3], qh[HK - 2], qh[HK - 1]);
                     float q_abs[KV_LORA];
                     matvec(wkb + (size_t)lh * KV_LORA * NOPE, qh, q_abs, KV_LORA, NOPE);
-                    float logits[TOTAL_TOK + 1], maxl = -INFINITY;
+                    if (il == 0 && t == 0 && r == 0 && lh == 0)
+                        fprintf(stderr, "MY_Q_ABS h0 first3 %.6f %.6f %.6f\n",
+                                q_abs[0], q_abs[1], q_abs[2]);
+                    float logits[TOTAL_TOK + 1], maxl = sinks[h];
                     for (int tk = 0; tk <= t; ++tk) {
                         float s = 0;
                         for (int i = 0; i < KV_LORA; ++i) s += q_abs[i] * klat[il][tk][i];
                         for (int i = 0; i < ROT; ++i) s += qh[NOPE + i] * kpe[il][tk][i];
-                        logits[tk] = s / sqrtf((float)HK) + sinks[h];
+                        logits[tk] = s / sqrtf((float)HK);
                         if (logits[tk] > maxl) maxl = logits[tk];
                     }
-                    float sink_p = expf(sinks[h] - maxl);
-                    float denom = sink_p, num[TOTAL_TOK];
+                    if (il == 0 && t == 0 && r == 0 && lh == 0)
+                        fprintf(stderr,
+                                "MY_LOGITS h0: %.6f %.6f %.6f %.6f sink %.6f\n",
+                                logits[0], logits[1], logits[2], logits[3], sinks[h]);
+                    float denom = expf(sinks[h] - maxl), num[TOTAL_TOK];
                     for (int tk = 0; tk <= t; ++tk) {
                         num[tk] = expf(logits[tk] - maxl);
                         denom += num[tk];
@@ -304,6 +333,9 @@ int main(int argc, char **argv) {
                     }
                     matvec(wvb + (size_t)lh * VD * KV_LORA, vlat,
                            attn_heads + (size_t)lh * VD, VD, KV_LORA);
+                    if (il == 0 && t == 0 && r == 0 && lh == 0)
+                        fprintf(stderr, "MY_ATTN_KVQ h0 first3 %.6f %.6f %.6f\n",
+                                attn_heads[0], attn_heads[1], attn_heads[2]);
                 }
                 float *gatev = malloc((size_t)RANK_HEADS * VD * 4);
                 for (int lh = 0; lh < RANK_HEADS; ++lh)
@@ -317,10 +349,10 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < N_EMBD; ++i) attn_partial[i] += opart[i];
                 free(wq_b); free(wkb); free(wvb); free(wo); free(wgate);
             }
-            if (il == 0 && t == 0)
-                fprintf(stderr, "MY_ATTN_OUT first6: %.4f %.4f %.4f %.4f %.4f %.4f\n",
-                        attn_partial[0], attn_partial[1], attn_partial[2],
-                        attn_partial[3], attn_partial[4], attn_partial[5]);
+            if (t == 0)
+                fprintf(stderr,
+                        "MY_ATTN_L%d t0 first3 %.6f %.6f %.6f\n", il,
+                        attn_partial[0], attn_partial[1], attn_partial[2]);
             free(wq_a); free(qan); free(sinks);
             hc_distribute(streams[t], attn_partial, post);
             if (t == 0)
@@ -351,8 +383,8 @@ int main(int argc, char **argv) {
                 matvec(dd, u, h, N_EMBD, 18432);
                 hc_distribute(streams[t], h, fpost);
                 if (t == 0)
-                    fprintf(stderr, "MY_FFN_OUT first6: %.4f %.4f %.4f %.4f %.4f %.4f\n",
-                            h[0], h[1], h[2], h[3], h[4], h[5]);
+                    fprintf(stderr, "MY_FFN_L%d t0 first3 %.6f %.6f %.6f\n",
+                            il, h[0], h[1], h[2]);
                 free(dg); free(du); free(dd);
             } else {
             float *ginp = load0((snprintf(nm, 160, "blk.%d.ffn_gate_inp.weight", il), nm));
@@ -374,6 +406,14 @@ int main(int argc, char **argv) {
                 key[best] = -INFINITY;
                 sel[k] = best; ww[k] = probs[best];
             }
+            if (il == 1 && t == 0)
+                fprintf(stderr,
+                        "MY_MOE_L1 sel %d %d %d %d %d %d %d %d raww "
+                        "%.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n",
+                        sel[0], sel[1], sel[2], sel[3],
+                        sel[4], sel[5], sel[6], sel[7],
+                        ww[0], ww[1], ww[2], ww[3],
+                        ww[4], ww[5], ww[6], ww[7]);
             float wsum = 0;
             for (int k = 0; k < N_USED; ++k) wsum += ww[k];
             if (wsum < 6.103515625e-5f) wsum = 6.103515625e-5f;
@@ -411,9 +451,8 @@ int main(int argc, char **argv) {
                     matvec(uw, fcur, u, N_FF, N_EMBD);
                     for (int j = 0; j < N_FF; ++j) {
                         if (u[j] > 10.0f) u[j] = 10.0f; if (u[j] < -10.0f) u[j] = -10.0f;
-                        float ga = silu(g[j]);
-                        if (ga > 10.0f) ga = 10.0f;
-                        u[j] = ga * u[j];
+                        float gj = g[j] > 10.0f ? 10.0f : g[j];
+                        u[j] = silu(gj) * u[j];
                     }
                     matvec(dw2, u, h, N_EMBD, N_FF);
                     for (int i = 0; i < N_EMBD; ++i) ffn[i] += ww[k] * h[i];
@@ -433,6 +472,9 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < N_EMBD; ++i) ffn[i] += h[i];
                 free(shg); free(shu); free(shd);
             }
+            if (t == 0)
+                fprintf(stderr, "MY_FFN_L%d t0 first3 %.6f %.6f %.6f\n",
+                        il, ffn[0], ffn[1], ffn[2]);
             hc_distribute(streams[t], ffn, fpost);
             } /* end sparse-MoE branch */
             if (t == 0)
@@ -480,21 +522,6 @@ int main(int argc, char **argv) {
                     collapsed[0], collapsed[1], collapsed[2],
                     normed[0], normed[1], normed[2]);
         free(onorm);
-        int gbest = -1; float gbv = -INFINITY;
-        if (t == 0) {
-            int bad = 0;
-            {
-                int nan_count = 0;
-                double s = 0;
-                const float *sp = (const float *)streams[t];
-                for (int i = 0; i < N_EMBD * HC; ++i) {
-                    if (isnan(sp[i])) nan_count++;
-                    else s += sp[i];
-                }
-                fprintf(stderr, "T0-POST78: nan=%d sum=%.4f s[0]=%.4f s[%d]=%.4f\n",
-                        nan_count, s, sp[0], N_EMBD, sp[N_EMBD]);
-            }
-        }
         float *alllogits = malloc((size_t)VOCAB * 4);
         for (int r = 0; r < N_RANKS; ++r) {
             snprintf(path, sizeof(path), "%s/rank-%02d", argv[1], r);
@@ -506,7 +533,10 @@ int main(int argc, char **argv) {
             free(owl);
             for (int v = 0; v < VOC_PER_RANK; ++v) alllogits[r * VOC_PER_RANK + v] = lg[v];
         }
-        if (t == PROMPT - 1) {
+        int gbest = 0; float gbv = -INFINITY;
+        for (int i = 0; i < VOCAB; ++i)
+            if (alllogits[i] > gbv) { gbv = alllogits[i]; gbest = i; }
+        if (t == n_tok - 1) {
             int top[5]; float tvv[5];
             for (int k = 0; k < 5; ++k) {
                 int bi = 0; float bv = -1e30f;
@@ -525,7 +555,7 @@ int main(int argc, char **argv) {
         free(alllogits);
         generated = gbest;
         printf("t=%d token id %d (logit %.4f)%s\n", t, tokens[t], gbv,
-               t >= PROMPT ? " GENERATED" : " prompt");
+               t >= n_tok ? " GENERATED" : " prompt");
         fflush(stdout);
     }
     printf("GENERATED TOKEN: %d\n", generated);
