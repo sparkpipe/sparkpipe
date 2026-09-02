@@ -85,3 +85,33 @@ Every property lands as a host pin (the test_speculation_tree_pin
 pattern) BEFORE any cell runs; the merged-verify equivalence (composed
 tree resolve == the same tree verified as one provider's output) is the
 S1-style host gate for this program.
+
+## Step 1 in implementation terms (added 09-03 after the API survey)
+
+The blocker surfaced by reading `include/sparkpipe/spark_speculation_tree.h`:
+the machinery is COMPILE-TIME-shaped — the topology is a static table
+behind `#define SPARK_SPECULATION_TREE_*` constants, and resolve walks it
+directly. Composition needs a RUNTIME plan (the compositor's whole output
+is a plan). Step 1 therefore lands as a refactor + a wrapper, not new
+semantics:
+
+1. `SparkSpeculationTreePlan` (runtime): row count, the node table
+   (`SparkSpeculationTreeNode rows[MAX_VERIFIER_ROWS]`), candidate count,
+   vocab bound, max committed, context extension — the five macros become
+   fields; `MAX_VERIFIER_ROWS` bounds composition (64 initial).
+2. The existing functions gain a `const SparkSpeculationTreePlan *`
+   first parameter (`SparkSpeculationTreeNodeAt(plan,row)` and friends);
+   the macro form becomes a static inline wrapper that builds a
+   `static const Plan` from the includer's constants — glm52's include
+   surface and all call sites compile UNCHANGED.
+3. The step-1 gate is the bit-identity claim: a host pin runs the glm52
+   topology through BOTH forms (macro-static and wrapper-built plan)
+   across exhaustive verifier-token vectors and requires byte-identical
+   resolutions. The pin lands with the refactor in one commit.
+4. THEN the compositor (still step 1): `SparkSpeculationTreeCompose(`
+   `const SparkSpeculationDraftNode *sets[], const uint32_t counts[],`
+   `const uint32_t priorities[], uint32_t set_count,`
+   `SparkSpeculationTreePlan *out)` — greedy by (priority, score) under
+   the row budget, reusing TopologyIsValid generalized to a plan. The
+   one-provider glm52 composition exercises it before any second
+   provider exists.
