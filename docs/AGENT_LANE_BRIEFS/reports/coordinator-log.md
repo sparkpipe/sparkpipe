@@ -4934,3 +4934,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Still deferred: rank0 (spark0 cold), rank3 (spark3 54G free).
   Builds land ~30-60min/rank; ships + receipts after drain; rank0/rank3
   on helper nodes (spark9/sparkf post-drain), then ships.
+
+## 2026-09-02 ~firing 140: spark5 deduped (2nd belated writer); 14 single-writer, ~15min into slices
