@@ -651,6 +651,16 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             pad = align_up(hashing.tell(), PAYLOAD_ALIGNMENT) - hashing.tell()
             if pad:
                 hashing.write(b"\0" * pad)
+            # force writeback + evict the just-written range so dirty
+            # pages never approach the kernel's 20%-of-RAM threshold
+            try:
+                fd = temp.fileno()
+                os.sync_file_range(fd, before, hashing.tell() - before,
+                                   2)  # SYNC_FILE_RANGE_WRITE
+                os.posix_fadvise(fd, before, hashing.tell() - before,
+                                 os.POSIX_FADV_DONTNEED)
+            except (AttributeError, OSError):
+                pass
         hashing.flush()
         os.fsync(temp.fileno())
     os.replace(temp_path, output)
