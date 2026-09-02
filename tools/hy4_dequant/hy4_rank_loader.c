@@ -220,7 +220,9 @@ int hy4_rank_open(const char *pack_dir, int tolerate_sha_mismatch,
                 const char *brace = strchr(sat, '{');
                 if (brace && brace < obj_end) {
                     long dim = 0, start = 0;
-                    if (!mget_long(brace, "dim", &dim)) tv->slice_kind = (int)dim;
+                    /* encode split-on-dim as dim+1 so split0 (dim 0) never
+                     * collides with the replicate marker 0 */
+                    if (!mget_long(brace, "dim", &dim)) tv->slice_kind = (int)dim + 1;
                     if (!mget_long(brace, "start", &start)) tv->slice_start = start;
                 } else {
                     tv->slice_kind = 0; /* string "replicate" */
