@@ -5100,3 +5100,9 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - r05 alive at ~10MB/s (8.7G/140G). Both remaining ranks are slow
   under the 4G-flush tradeoff: ETA 3-13h depending on rate stability.
 - 14/16 done: everything else placed, receipted, chattr-protected.
+
+## 2026-09-02 ~firing 159: rank05 DONE (419t, 83.04G, sha'd) — 15/16; only rank02 left
+
+- rank05 completed cleanly with receipt; chattr +i applied.
+- rank02 (spark2): last rank, ~6G into 140G, slow warm class.
+- ETA: matrix 16/16 in ~1-3h ± 1h (rank02's rate is the only variable).
