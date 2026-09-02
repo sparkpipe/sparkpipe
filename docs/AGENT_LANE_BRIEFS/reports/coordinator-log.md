@@ -4784,3 +4784,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   corruption class); killed 233780 properly. Single writer 238151 now,
   0 deleted fds, rank00 tmp flowing ~200MB/s warm-write class.
   ETA ~2h for 16 ranks, then per-node ships.
+
+## 2026-09-02 ~firing 119: TP4PP4 rank00 at 80G/99.6G on warm output; writer healthy
