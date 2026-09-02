@@ -1,9 +1,3 @@
-/*
- * Stagepack format library implementation. See
- * include/sparkpipe/spark_stagepack_format.h for the contract: the shape
- * algebra and the header comparison stated once, the family geometry as
- * data, and the layout proof as compile-time teeth.
- */
 
 #include <string.h>
 
@@ -29,7 +23,6 @@ static int32_t SparkStagePackShapeMoE(uint32_t tensor_kind,
 		return(0);
 	case SPARK_STAGEPACK_TENSOR_MOE_W1:
 	case SPARK_STAGEPACK_TENSOR_MOE_W3:
-		/* The routed projections narrow along the expert-shard axis. */
 		shape->rows = geometry->routed_expert_count * geometry->expert_intermediate_dimension;
 		shape->columns = geometry->hidden_dimension;
 		shape->natural_format = SPARK_STAGEPACK_FORMAT_WEIGHT_FP8_E4M3_F32B128;
@@ -166,7 +159,6 @@ static int32_t SparkStagePackHeaderMatchesMoEGeometry(
 	return(0);
 }
 
-/* Field-by-field comparison; 0 on match, negative group id on drift. */
 int32_t SparkStagePackHeaderMatches(const SparkStagePackHeaderCommon *file_header,
 	const SparkStagePackHeaderCommon *expected)
 {

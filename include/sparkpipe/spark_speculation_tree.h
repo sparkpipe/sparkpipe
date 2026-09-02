@@ -1,11 +1,5 @@
 #pragma once
 
-/* Neutral speculative-decode tree machinery: node topology, resolution
- * paths, and the longest-prefix resolve walk. The tree SHAPE is per-model:
- * the includer defines SPARK_SPECULATION_TREE_* shape constants, the
- * vocabulary bound, and SPARK_SPECULATION_TREE_NODE_ROWS (the topology
- * table) before including this header; the machinery here is identical for
- * every drafter depth/candidate layout. */
 
 #include <stdint.h>
 

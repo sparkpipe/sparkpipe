@@ -1,15 +1,3 @@
-/* weightdctl — manual load/unload driver for the weightd residency daemon
- * (the operator's debug-one-step law: scripts drive the daemon directly
- * before anything automated rides it).
- *
- *   weightdctl load   <pack-path> <model> <revision>   (attach; cold-loads)
- *   weightdctl unload <pack-path> <model> <revision>   (release+detach)
- *   weightdctl status                                      (attach probe)
- *
- * The identity fields mirror what a deployment would publish; the SHA is
- * computed from the file when SPARK_WEIGHTD_PACK_SHA256 is unset (a real
- * deployment carries it from placement receipts).
- */
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_sha256.h"
 #include <stdio.h>
@@ -68,9 +56,8 @@ int main(int argc, char **argv)
     memset(&slice, 0, sizeof(slice));
     slice.model = argv[3];
     slice.revision = argv[4];
-    slice.topology = 16u; /* tp16 identity for these debug loads */
-    slice.geometry_fingerprint = bytes; /* header-fold stand-in for the debug
-                                         * driver; deployments publish real */
+    slice.topology = 16u;
+    slice.geometry_fingerprint = bytes;
     slice.pack_bytes = bytes;
     SparkWeightdAttachOutcome outcome;
     memset(&outcome, 0, sizeof(outcome));
@@ -91,8 +78,6 @@ int main(int argc, char **argv)
            mode, (unsigned long long)outcome.arena_bytes,
            (unsigned long long)outcome.arena_generation,
            outcome.loaded_from_pack, outcome.refcount);
-    SparkWeightdAttachRelease(&outcome); /* unmap; the arena itself stays
-                                          * resident (unload semantics come
-                                          * from the daemon's reclaim path) */
+    SparkWeightdAttachRelease(&outcome);
     return 0;
 }

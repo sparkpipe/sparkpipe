@@ -52,6 +52,19 @@ run_cell() {  # name batch_json
 
 echo "# qwen4_flash wave cells receipt $(date -u +%FT%TZ)" > "$receipt"
 echo "table=$table_path mode=$mode" >> "$receipt"
-[[ "$mode" == "smoke" || "$mode" == "both" ]] && run_cell smoke q4f_smoke_batch.json
+if [[ "$mode" == "smoke" || "$mode" == "both" ]]; then
+  run_cell smoke q4f_smoke_batch.json
+  # determinism gate: second smoke pass must hash identically (exactness
+  # before trusting any timing from this receipt)
+  run_cell smoke2 q4f_smoke_batch.json
+  h1=$(grep " PASS smoke " "$receipt" | tail -2 | head -1 | sed 's/.*hash=\([0-9a-f]*\).*/\1/')
+  h2=$(grep " PASS smoke2 " "$receipt" | tail -1 | sed 's/.*hash=\([0-9a-f]*\).*/\1/')
+  if [[ -n "$h1" && "$h1" == "$h2" ]]; then
+    echo "== DETERMINISM PASS smoke==smoke2 hash=${h1:0:16}" | tee -a "$receipt"
+  else
+    echo "== DETERMINISM FAIL smoke=$h1 smoke2=$h2 - RED STOP, timings void" | tee -a "$receipt"
+    exit 8
+  fi
+fi
 [[ "$mode" == "cell32k" || "$mode" == "both" ]] && run_cell cell32k qwen4_flash_b1_32k_batch.json
 echo "receipt: $receipt"

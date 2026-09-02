@@ -1,15 +1,3 @@
-// GLM 5.2 CUDA unity surface.
-//
-// The shipping precision contract is deliberately explicit:
-//
-//     attention, dense/shared paths, router, residuals and activations: BF16
-//     routed-expert weights:                   build-selected package codec
-//     routed-expert inputs and outputs:                            BF16
-//     accumulators:                                                FP32
-//
-// Each codec is a separate AOT module and immutable package. Runtime selection
-// inside a module is forbidden: startup verifies the package codec against the
-// one compiled here before any weight pointer reaches a kernel.
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
 #error "GLM5_NEXT_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -253,10 +241,6 @@ extern "C" int32_t Glm5NextLayerAttentionBf16Graphed(
     }
 
     key.rows = rows;
-    // CONTRACT: the key carries no layer or buffer identity, so one cache must
-    // serve exactly one layer's buffers. Sharing a cache across layers replays
-    // the first-captured layer's graph - right shapes, wrong weights - and LmGraphKey
-    // lives in kernels/, so the discipline lives here until a caller exists.
     key.layer_kind = 0u;
     key.format = 0u;
     key.sparse = context > GLM5_NEXT_DSA_SELECTED ? 1u : 0u;
@@ -282,10 +266,6 @@ extern "C" int32_t Glm5NextLayerAttentionBf16Graphed(
         layer_in_group,
         multiprocessors,
         stream);
-    // Captured work does not execute: the launches above only recorded. The
-    // first step of a new key must replay the graph it just built or the layer
-    // silently skips attention. EndCapture failure leaves nothing to replay,
-    // so fall back to running eagerly - the capture attempt itself ran nothing.
     if ( status != LM_LAUNCH_OK )
     {
         LmGraphEndCapture(graphs, &key, stream);

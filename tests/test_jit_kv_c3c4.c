@@ -1,30 +1,3 @@
-// The JIT-KV pager's next two conditions (docs/JIT_KV_RESPONSE.md C3 + C4),
-// on a host, against the read-vtable fake backing - no GPU, no reservations,
-// no fleet.
-//
-// C3 MEASURED BANDWIDTH IN ADMISSION: the pager folds an EMA over the
-// observed page-in and page-out throughputs (payload bytes over elapsed
-// microseconds against the INJECTED clock - a host test advances a fake
-// clock per poll, so the measurement is deterministic) and the admission
-// arithmetic consumes it: the aggregate restore debt (parked blocks awaiting
-// page-in, plus this admission's own park-outs) must cross the caller's
-// slack at the MEASURED rate. The proof: identical arena state, identical
-// slack - the slow-tier fixture QUEUES the admission, the fast-tier fixture
-// ADMITS it; with nothing measured the tier's nominal bandwidth stands in,
-// and with slack 0 the decision is the pre-C3 capacity-only answer.
-//
-// C4 ASYNC PARK WORKER: the park write-out leaves the arena's clock. The
-// eviction path stages the payload pager-side and reserves the tier record
-// inline (slot accounting exact at enqueue), the worker runs only the
-// backing write (the W2a weightd discipline: atomic stop flag, poll
-// quantum), and the OWNING thread publishes completions - the tier's
-// readable index, the block's BACKING_VALID, the page-out receipt, or the
-// B1 degrade for an IO-class failure. The proofs: a park mid-write does
-// not block an admission that fits; a mid-write park answers QUEUED, never
-// a dispatch on partial state; an IO-class write degrades (abort + drop +
-// recompute), never wedges; TERM mid-park leaves every reservation resolved
-// commit-or-abort and the arena consistent; parks after shutdown complete
-// inline.
 #include "sparkpipe/spark_kv_pager.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -51,9 +24,6 @@ static void expect(int condition, const char *label)
 #define C34_MAX_RESIDENT_SLOTS 4u
 #define C34_PARK_QUEUE 4u
 
-/* the fake clock: monotonic in the only sense a host proof needs - it
-   advances a fixed step per call, so elapsed time is an exact multiple of
-   the poll/write count the pager performs. */
 typedef struct C34Clock
 {
 	uint64_t now_us;
@@ -160,15 +130,11 @@ static SparkStatus C34CancelRead(void *context,uint64_t ticket)
 	return(SPARK_STATUS_NOT_FOUND);
 }
 
-/* the backing store: where the C4 gate lives. A gated write SPINS until the
-   test disarms the gate - the worker is stuck mid-write exactly as a slow
-   drive would stick it - and the counters attribute each write to the
-   thread that ran it. */
 typedef struct C34Backing
 {
 	uint32_t failures_left;
 	uint32_t gate_armed;
-	uint32_t gate_skip_writes;      /* the first N writes bypass the gate */
+	uint32_t gate_skip_writes;
 	atomic_uint writes_entered;
 	atomic_uint writes_completed;
 	uint64_t worker_writes;
@@ -202,7 +168,6 @@ static SparkStatus C34BackingWrite(
 	}
 	if ( backing->gate_armed != 0u && ordinal >= backing->gate_skip_writes )
 	{
-		/* the slow drive: the write leg is stuck until the test says so */
 		while ( backing->gate_armed != 0u )
 			C34Sleep(50u);
 	}
@@ -267,8 +232,6 @@ static void C34Digest(uint32_t block_index,uint8_t *digest_out)
 	SparkSha256Finalize(&context,digest_out);
 }
 
-/* The host module seam: the device planes ARE host mappings under the stub,
-   so the save/restore pair is a plain copy through the pager's view. */
 static SparkStatus C34ModuleSave(void *module_context,
 	const SparkKvPagerBlockView *view)
 {
@@ -301,7 +264,6 @@ static SparkStatus C34BackingWriteEntry(
 		bytes));
 }
 
-/* The budget law, asserted after every state change in every scenario. */
 static void C34CheckBudget(C34Fixture *fixture,const char *where)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -430,8 +392,6 @@ static SparkStatus C34Open(
 	return(SparkKvPagerInitialize(&fixture->pager,pager_configuration));
 }
 
-/* Admit + fill one block: commit the reservation immediately before the
-   block becomes resident, acquire, mark residency, write the planes, dirty. */
 static int32_t C34FillBlock(C34Fixture *fixture,uint32_t block_index)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -538,10 +498,6 @@ static int32_t C34DispatchOffer(
 	return(1);
 }
 
-/* The restore debt exactly as the pager's admission arithmetic counts it:
-   every allocated non-resident block still holding its backing (in-flight
-   parks included). The scenario derives its slack predictions from THIS,
-   so the proof compares the pager against the same state it sees. */
 static uint64_t C34RestoreDebtBlocks(C34Fixture *fixture)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -582,7 +538,6 @@ static int32_t C34DispatchUntilReady(
 	return(0);
 }
 
-/* bounded wait on the backing store's atomic counters */
 static int32_t C34WaitFor(atomic_uint *counter,uint32_t target)
 {
 	uint32_t attempt;
@@ -595,8 +550,6 @@ static int32_t C34WaitFor(atomic_uint *counter,uint32_t target)
 	return(0);
 }
 
-/* bounded completion drain: publish until the pager has resolved `target`
-   park write legs (or the wait budget runs out) */
 static int32_t C34DrainUntil(C34Fixture *fixture,uint32_t target)
 {
 	uint32_t attempt;
@@ -665,9 +618,6 @@ int main(void)
 		uint64_t measured_slow,measured_fast,prediction_slow,prediction_fast;
 		uint64_t debt_bytes,slack_us;
 
-		/* Two identical fixtures; only the fake drive's speed differs.
-		   Three parks (page-out samples) and one rewind (page-in sample)
-		   leave the EMA holding that fixture's measured throughput. */
 		expect(C34Open(&slow,8u,2u,8u,8u,4u,2000000u,0u,4000000000ull) ==
 			SPARK_STATUS_OK,"the slow-tier fixture opens (4 polls/read)");
 		expect(C34Open(&fast,8u,2u,8u,8u,1u,2000000u,0u,4000000000ull) ==
@@ -700,12 +650,6 @@ int main(void)
 		expect(slow.pager.statistics.measured_bandwidth_samples >= 4u &&
 			fast.pager.statistics.measured_bandwidth_samples >= 4u,
 			"page-out and page-in samples both folded");
-		/* The state is now identical in both fixtures: two resident, two
-		   parked (the restore debt), zero free. The debt plus this
-		   admission's own park-out must cross the caller's slack at the
-		   measured rate; the slack sits strictly between the two
-		   predictions, so the SAME admission must split on the
-		   measurement alone. */
 		debt_bytes = C34RestoreDebtBlocks(&slow) * C34_BLOCK_BYTES;
 		expect(debt_bytes == 2u * C34_BLOCK_BYTES &&
 			C34RestoreDebtBlocks(&fast) == 2u,
@@ -735,9 +679,6 @@ int main(void)
 		C34CheckBudget(&slow,"scenario 1 slow end");
 		C34CheckBudget(&fast,"scenario 1 fast end");
 
-		/* the nominal fallback: with no clock, nothing is ever measured
-		   and the tier's configured number stands in - a slow NOMINAL
-		   figure queues exactly where a measurement would not. */
 		expect(C34Open(&nominal,8u,2u,8u,8u,2u,0u,0u,1024ull) ==
 			SPARK_STATUS_OK,
 			"the no-clock fixture opens (nominal 1024 B/s)");
@@ -917,7 +858,6 @@ int main(void)
 		expect(SparkKvPagerShutdown(&fixture.pager) == SPARK_STATUS_OK,
 			"shutdown stays idempotent after TERM");
 
-		/* parks AFTER shutdown complete inline on the arena's clock */
 		expect(C34Open(&fixture,8u,2u,8u,8u,2u,0u,C34_PARK_QUEUE,
 			5000000000ull) == SPARK_STATUS_OK,
 			"a fresh async fixture opens");

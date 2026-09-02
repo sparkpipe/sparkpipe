@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "sparkpipe/spark_stage_module_common.h"
 
@@ -339,6 +340,53 @@ static void SparkTestCudaReadAheadArmsBeforeJoining(void)
 
 int main(void)
 {
+    uint32_t value;
+
+    value = 0u;
+    assert(SparkStageModuleEnvironmentUnsignedOrDefault(
+               "stage_common_test",
+               "SPARK_STAGE_MODULE_COMMON_TEST_ABSENT",
+               1u,
+               16u,
+               4u,
+               &value) == SPARK_STATUS_OK);
+    assert(value == 4u);
+    assert(setenv(
+               "SPARK_STAGE_MODULE_COMMON_TEST_ABSENT", "9", 1) == 0);
+    assert(SparkStageModuleEnvironmentUnsignedOrDefault(
+               "stage_common_test",
+               "SPARK_STAGE_MODULE_COMMON_TEST_ABSENT",
+               1u,
+               16u,
+               4u,
+               &value) == SPARK_STATUS_OK);
+    assert(value == 9u);
+    assert(setenv(
+               "SPARK_STAGE_MODULE_COMMON_TEST_ABSENT", "99", 1) == 0);
+    assert(SparkStageModuleEnvironmentUnsignedOrDefault(
+               "stage_common_test",
+               "SPARK_STAGE_MODULE_COMMON_TEST_ABSENT",
+               1u,
+               16u,
+               4u,
+               &value) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(setenv(
+               "SPARK_STAGE_MODULE_COMMON_TEST_ABSENT", "garbage", 1) == 0);
+    assert(SparkStageModuleEnvironmentUnsignedOrDefault(
+               "stage_common_test",
+               "SPARK_STAGE_MODULE_COMMON_TEST_ABSENT",
+               1u,
+               16u,
+               4u,
+               &value) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkStageModuleEnvironmentUnsignedOrDefault(
+               "stage_common_test",
+               "SPARK_STAGE_MODULE_COMMON_TEST_ABSENT",
+               1u,
+               16u,
+               0u,
+               &value) == SPARK_STATUS_INVALID_ARGUMENT);
+    (void)unsetenv("SPARK_STAGE_MODULE_COMMON_TEST_ABSENT");
     SparkTestFailedIndexSetClaimPreservesForeignOwnership();
     SparkTestDuplicateIndexSetIsRejectedWithoutLeakingClaims();
     SparkTestSlotClaimAndRelease();

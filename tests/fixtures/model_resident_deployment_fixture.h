@@ -16,9 +16,6 @@ typedef struct TestModelResidentDeploymentFixture
 	const char *adapter_configuration_path;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
-	/* Optional: emits the deployment's "tokenizer":{"path":...} sidecar
-	 * reference when non-NULL; NULL keeps the file byte-identical to the
-	 * pre-sidecar schema. */
 	const char *tokenizer_asset_path;
 	const char *const *runtime_roots;
 	const char *const *transport_hosts;

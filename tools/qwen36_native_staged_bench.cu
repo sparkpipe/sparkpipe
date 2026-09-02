@@ -1,13 +1,3 @@
-// cp.async shared-staged B-tile variant of the native block-scaled fp8 MMA
-// linear - the scoped FFN kernel project (see qwen38_27b_native_linear_bench.cu
-// for the baselines: byte-load 125.6 GB/s wins width tweaks; K-split null).
-// This harness: correctness vs the library kernel on RANDOM data + GB/s.
-//
-// Build on spark2 from the repo root:
-//   /usr/local/cuda/bin/nvcc -std=c++17 -O3 -gencode arch=compute_121a,code=sm_121a \
-//     -I . -I include -I model-families/common/include \
-//     -I modules/qwen38_27b_resident_decode_stage/include \
-//     tools/qwen38_27b_native_staged_bench.cu -o /tmp/staged_bench -lcudart
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,23 +10,7 @@ static double now_s(void){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
 
 #define ST_TILE_N 128u
 #define ST_CHUNK_K 128u
-#define ST_B_STRIDE (ST_CHUNK_K + 16u)  /* pad to 16B: cp.async alignment AND breaks the 32-word bank period */
-/* THE COMPLETE MEASURED MAP (2026-08-22, M=8 K=5120 N=17408, all bit-exact
- * vs the library kernel):
- *   direct byte-load (production)          125.6 GB/s
- *   staged ring D=2 + A double-buffered    127.6 GB/s  <- best, marginal
- *   staged D=4                             112    (72KB shared -> 1 CTA/SM)
- *   staged CHUNK_K=256                     105    (same occupancy loss)
- *   K-split (grid.z)                       113-116
- *   4-byte loads (direct)                   83-92
- *   pure coalesced reads                   266-276 GB/s
- * THE LAW AND THE TENSION: effective bandwidth ~= (in-flight/latency) x
- * CTAs, and the 101376B/SM shared budget caps in-flight x occupancy - every
- * extra ring stage steals a resident CTA. D=2 x 2 CTAs (72KB in flight/SM)
- * is the budget's sweet spot and it lands at ~127: past this, the design
- * must ESCAPE the shared budget - warp-specialized producer/consumer stages
- * with minimal per-stage shared, or TMA bulk copies. That is the remaining
- * FFN kernel project (prize: -79ms/round, 149->~70ms FFN). */
+#define ST_B_STRIDE (ST_CHUNK_K + 16u)
 
 static __device__ __forceinline__ void StCpAsync16(void *shmem, const void *gmem)
 {
@@ -68,8 +42,8 @@ void SparkQwen38_27bStagedLinearKernel(
 	uint32_t input_dimension,
 	uint32_t output_dimension)
 {
-	extern __shared__ uint8_t staged_b[];          /* [2][ST_TILE_N][ST_B_STRIDE] double buffer */
-	__shared__ uint8_t activation_e4m3[2u * 16u * ST_CHUNK_K];      /* A double buffer */
+	extern __shared__ uint8_t staged_b[];
+	__shared__ uint8_t activation_e4m3[2u * 16u * ST_CHUNK_K];
 	__shared__ uint8_t activation_scale_e8m0[2u * 16u * (ST_CHUNK_K / 32u)];
 	float total[2][4] = {};
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
@@ -79,8 +53,6 @@ void SparkQwen38_27bStagedLinearKernel(
 	uint32_t chunks = input_dimension / ST_CHUNK_K;
 	uint32_t chunk, step, ni, entry, t;
 
-	/* stage one chunk: 128 neurons x 128B = 1024 x 16B, two per thread,
-	 * fully coalesced along K (8 threads span one neuron's 128B line) */
 	#define ST_STAGE(buf, chunk_index) do { \
 		for ( t = threadIdx.x; t < ST_TILE_N * (ST_CHUNK_K / 16u); t += SPARK_LM_CTA_THREADS ) { \
 			uint32_t neuron = t / (ST_CHUNK_K / 16u); \
@@ -92,14 +64,6 @@ void SparkQwen38_27bStagedLinearKernel(
 		StCpCommit(); \
 	} while (0)
 
-	/* VERIFIED depth-2 ring (bit-exact vs the library kernel, ~113 GB/s at
-	 * M=8 K=5120 N=17408; the byte-load direct kernel measures 125.6):
-	 * stage the next chunk into the OTHER buffer, wait for the current. */
-	/* D-deep ring: chunk c lives at ring[c % D]. Prologue stages chunks
-	 * 0..D-2 (D-1 groups in flight); each iteration stages chunk c+D-1 then
-	 * waits until <= D-1 outstanding - exactly chunk c complete. The tail
-	 * drains with wait<0> (serializes the last D-1 chunks; fine). The
-	 * trailing barrier protects ring[c % D] from the restage at c+D. */
 	{
 		uint32_t pc;
 		for ( pc = 0u; pc + 1u < D && pc < chunks; ++pc )
@@ -123,8 +87,6 @@ void SparkQwen38_27bStagedLinearKernel(
 		else
 			StCpWait<0>();
 		__syncthreads();
-		/* A for the NEXT chunk stages NOW (its latency hides under this
-		 * chunk's compute); compute reads THIS chunk's slot */
 		{
 			uint32_t aslot = ((chunk + 1u) & 1u) * 16u * ST_CHUNK_K;
 			uint32_t sscale_slot = ((chunk + 1u) & 1u) * 16u * (ST_CHUNK_K / 32u);
@@ -160,7 +122,7 @@ void SparkQwen38_27bStagedLinearKernel(
 				SparkLmSm121Mma<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(total[ni], a, b, scale_a, scale_b);
 			}
 		}
-		__syncthreads();   /* chunk's compute done AND next chunk's A staged */
+		__syncthreads();
 	}
 	#pragma unroll
 	for ( ni = 0u; ni < 2u; ++ni )
@@ -217,7 +179,6 @@ int main(int argc, char **argv)
 	CHECK(cudaMalloc(&in, (uint64_t)M * K * 2u));
 	CHECK(cudaMalloc(&out, (uint64_t)M * N * 2u));
 	CHECK(cudaMalloc(&ref, (uint64_t)M * N * 2u));
-	/* RANDOM data so the comparison is meaningful */
 	{
 		uint8_t *h = (uint8_t *)malloc(payload_bytes);
 		srand(12345);
@@ -230,7 +191,6 @@ int main(int argc, char **argv)
 		free(h);
 		h = (uint8_t *)malloc((size_t)M * K * 2u);
 		{
-			/* valid bf16 values in [-2, 2): raw random bits are NaN patterns */
 			uint16_t *h16 = (uint16_t *)h;
 			for (uint64_t i = 0; i < (size_t)M * K; i++)
 			{
@@ -243,11 +203,10 @@ int main(int argc, char **argv)
 	}
 	cudaStream_t stream;
 	CHECK(cudaStreamCreate(&stream));
-	/* correctness vs the library kernel at every depth */
 	CHECK(SparkLmHostLaunchSm121NativeLinear<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(
 		stream, payload, scale, payload_bytes, scale_bytes, in, K, 0u, 0u,
 		ref, N, 0u, 0u, 1u, M, K, N));
-	for ( uint32_t depth = 2u; depth <= 4u; depth += 2u )  /* K must be % CHUNK_K; depth 6+ exceeds the 101376B shared opt-in cap */
+	for ( uint32_t depth = 2u; depth <= 4u; depth += 2u )
 	{
 		CHECK(LaunchStaged(stream, payload, scale, in, K, out, N, M, K, N, depth));
 		CHECK(cudaStreamSynchronize(stream));

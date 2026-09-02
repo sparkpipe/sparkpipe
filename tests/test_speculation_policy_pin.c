@@ -1,8 +1,11 @@
+<<<<<<< HEAD
 /* Pin the model-neutral speculation-policy core: exact byte layouts of the
  * neutral descriptors (32-wide draft arrays, 8-wide aux layer table), the
  * GLM52 alias identity, structural (not hard-equality) contract validation,
  * and chain acceptance parity. */
 #include <stddef.h>
+=======
+>>>>>>> origin/main
 #include <stdint.h>
 #include <string.h>
 
@@ -51,6 +54,7 @@ int main(void)
 	status = SparkGlm52DsparkValidateModelContract(&contract);
 	if ( status != SPARK_STATUS_OK )
 		return 2;
+<<<<<<< HEAD
 
 	/* Structural validation: a K3-shaped contract (different dims, vocab,
 	 * budget) must validate; nothing hard-compares to GLM52 constants. */
@@ -86,6 +90,8 @@ int main(void)
 		return 7;
 
 	/* Greedy accept over the draft: 11,12 match, then divergence. */
+=======
+>>>>>>> origin/main
 	memset(&verify_result, 0, sizeof(verify_result));
 	status = SparkGlm52DsparkResolveVerifierTokens(draft_tokens, 4u,
 		verifier_tokens, 5u, 163840u, &verify_result);

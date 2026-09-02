@@ -28,6 +28,7 @@ SPARKPIPE_COMPILER_SOURCES := \
 SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
     src/spark_orchestrator.c \
+    runtime/stagepack_format.c \
     runtime/runtime_completion.c \
     runtime/model_runtime.c \
 	runtime/model_serving_adapter.c \

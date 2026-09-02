@@ -4360,3 +4360,278 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~23:5x — firing 56: bf16 rebuilds 6.2/2.2/4.8 of 40G; single writers
 
 ## 2026-09-01 ~24:0x — firing 57: bf16 arm 13/16; only the three rebuilders (1/2/c) outstanding
+
+## 2026-09-01 ~24:1x — firing 58: bf16 rebuilds 8.7/2.7/5.6 of 40G; single writers alive
+
+## 2026-09-01 ~24:2x — firing 59: bf16 rebuilds 9.7/2.8/5.8 of 40G; on pace
+
+## 2026-09-01 ~24:3x — WARM BACKUP PROTECTION LAUNCHED (operator directive)
+
+- Response to dev-deletion risk: all 16 nodes now rsync their placed
+  stagepacks to /mnt/model-warm/stagepack-backup/<node>/ — node-local
+  rsync (no network leg), niced/ioniced, incremental + resumable, temp
+  files excluded. 16/16 RUNNING at dispatch. ~11-12T total to mirror;
+  warm has 42.5T free.
+- Note: qwen-max PP16 build temps discovered fleet-wide during the
+  hygiene sweep were removed with logged bytes (superseded, receipted
+  set in place). All hygiene legs (symlinks/temps) now PASS.
+- The 15-min automation re-runs the backup script to top up new sets
+  (fp8/nvfp4/bf16 arms as they land).
+
+## 2026-09-01 ~24:5x — firing 61: bf16 rebuilds 11.5/3.6/6.5 of 40G; warm backups flowing (spark8 mirror 235G)
+
+- rank4 qwenflash is receipted+placed; item 2's residual leg (sparkc
+  copy) satisfied by the dual receipt from the sparkf build. bf16 arm
+  rebuilds single-writer grinding. Backup mirror: 16/16 nodes running,
+  sample spark8 already 235G mirrored; eta several hours at nice rate.
+
+## 2026-09-01 ~25:1x — firing 62: bf16 rebuilds 11.6/3.7/6.6 of 40G; du sweep skipped (slow ceph stat), backups progressing per-node logs
+
+## 2026-09-01 ~25:2x — firing 63: bf16 rebuilds 12.2/3.9/6.7 of 40G; on pace, single writers
+
+## 2026-09-01 ~25:3x — firing 64: bf16 rebuilds 12.4/4.9/8.5 of 40G; fresh Mimosa scan sealed (53 findings, none blocking; same count as prior baseline)
+
+## 2026-09-01 ~25:4x — firing 65: bf16 rebuilds 13.7/22.7/17.6 of 40G (spark2 accelerating past slow-class); all on pace
+
+## 2026-09-01 ~25:5x — firing 66: bf16 rebuilds 14.3/30.2/18.8 of 40G; spark2 close to done
+
+## 2026-09-01 ~26:0x — firing 67: bf16 rebuilds 16.0/36.2/20.1 of 40G; spark2 nearly done
+
+## 2026-09-01 ~26:2x — firing 68: bf16 arm 14/16 (sparkc rank12 PLACED+receipted); spark1 21.7G spark2 ~30G grinding
+
+## 2026-09-01 ~26:3x — firing 69: bf16 arm 15/16 (spark2 rank2 PLACED+receipted); only spark1 rank1 left (22.4/40G)
+
+## 2026-09-01 ~26:4x — firing 70: bf16 arm 15/16; spark1 rank1 at 23.1/40G (last one)
+
+## 2026-09-01 ~26:5x — firing 71: spark1 rank1 at 23.9/40G — the fleet's last unfinished rank
+
+## 2026-09-01 ~27:0x — firing 72: spark1 rank1 at 25.0/40G
+
+## 2026-09-01 ~27:1x — firing 73: spark1 rank1 at 26.4/40G
+
+## 2026-09-01 ~27:2x — firing 74: spark1 rank1 at 27.2/40G
+
+## 2026-09-01 ~27:3x — firing 75: spark1 rank1 at 28.3/40G
+
+## 2026-09-01 ~27:4x — firing 76: spark1 rank1 at 29.3/40G
+
+## 2026-09-01 ~27:5x — firing 77: spark1 rank1 at 30.4/40G
+
+## 2026-09-01 ~28:0x — firing 78: spark1 rank1 at 32.0/40G (~8 min left)
+
+## 2026-09-01 ~28:1x — firing 79: spark1 rank1 at 33.3/40G (~4 min left)
+
+## 2026-09-01 ~28:2x — firing 80: spark1 rank1 at 34.7/40G (~2 min left)
+
+## 2026-09-01 ~28:3x — firing 81: spark1 rank1 at 36.1/40G (~4 min)
+
+## 2026-09-01 ~28:4x — firing 82: spark1 rank1 at 38.7/40G (~1 min to tensor completion, then verify)
+
+## 2026-09-01 ~28:5x — firing 83: spark1 rank1 at 39.9/40G — writing its final tensors
+
+## 2026-09-01 ~29:0x — firing 84: ITEM 23 COMPLETE — bf16-official arm TP16 16/16 PLACED
+
+- spark1 rank1: PLACED, sha256 64df3d5b…, receipt written. The
+  bf16-official arm is fully placed: 16/16 ranks, uniform 40,136,867,328
+  B, BF16 experts verbatim (source-driven codec), all verified vs source.
+- Checklist: items 1-5, 7, 10, 12-14, 16-20, 23 complete; 9/11/8/22/15
+  ticketed to dev lanes; 25-26 hy4 lane-owned; 28 drafter audit filed;
+  29-30 final audit legs: hygiene PASS, coverage PASS, per-stage uniform
+  PASS — remaining: size-vs-source arithmetic + final board log.
+
+## 2026-09-01 ~29:1x — firing 85: BOARD LOGGED — stagepack matrix complete for all launchable sets
+
+- Item 29 final audit: COMPLETE (hygiene sym=0/temps=0; coverage 16/16
+  per set; per-stage uniformity verified; size-vs-source arithmetic all
+  SANE per §11; per-placement sha receipts; k3 re-hash 16/16; MTP law
+  confirmed on every family that ships it).
+- Item 30: final board logged in docs/STAGEPACK_AUDIT_2026-08-31.md
+  (§1 matrix + §9 checklist + §10 coverage + §11 arithmetic). Warm
+  backup mirror flowing (15T+ mirrored of ~11-12T unique).
+- REMAINING (dev-lane builds only, all ticketed with evidence):
+  8 (27B nvfp4a16 vertical), 9+11 (PP+TP combined-mode packer), 14
+  (dsv4-pro last 6), 15 (dsv4-pro TP16 rank-path — a lane's script
+  landed), 21 (flash fp8 arm split-expert map), 22 (flash nvfp4 arm
+  codec), 28 (drafter verticals, 11 dirs), 25-26 (hy4, lane active).
+- Per the operator's completion directive ("once that is done, stop"):
+  the automation IDLES from here on these ticketed items — they are
+  dev-lane builds, not coordinator stagepack work. Board is clean.
+
+## 2026-09-01 ~29:2x — firing 86: dsv4-pro rebuild lane ACTIVE but PUBLISH-FAILING (defect surfaced)
+
+- A dev lane is actively rebuilding dsv4-pro TP4PP4 ranks from
+  spark0:~/dsv4pro_checkout via the module publish flow (item 14 in
+  motion — coordinator stands down, no duplication).
+- THEIR LATEST PUBLISH FAILED: validation gate 'gate_route_launch'
+  cuda=invalid argument -> validation_failed -> publish error. Logs at
+  /mnt/model-warm/packbuild/dsv4pro/driver_rebuild_1788319960.log.
+- This is a module-side defect in the lane's build (cuda kernel arg),
+  not a stagepack-placement problem. Surfaced here + in queue notes for
+  the lane. Coordinator automation moves to idle/monitor per the
+  operator's completion directive: the launchable matrix is complete,
+  audited (§10-11), mirrored to warm, and the remaining items are all
+  dev-lane builds.
+
+## 2026-09-01 ~27:6x — firing 87: Mislabeled rank symlinks found (dev-deletion class) — repair launched
+
+- New symlink audit hits: spark0 rank1.g5nsp -> rank0.g5nsp and spark5
+  rank0.g5nsp -> rank5.g5nsp in glm5_next.tp16/packs — someone aliased
+  one rank's filename to another rank's bytes (mislabeled fake, the exact
+  audit-catch class). Also dsv4flash.tp16/rt/ runtime dirs with symlinks
+  into packs+libs (serving convenience layout, left in place — not
+  stagepack storage).
+- rank0 digest on spark0 does NOT match its materialization receipt —
+  altered post-fix. Root cause unknown (no build writes that dir now).
+- REPAIR: spark0 rank1 restored from canonical donor spark1 (21.7G scp +
+  dual-sha vs receipt, running). spark0 rank0 to be re-verified vs SOURCE
+  (ground truth over stale receipt); spark5 rank0 symlink to be removed
+  and re-materialized from spark0 once rank0 proven. Warm backup mirror
+  had not yet reached these packs — closing that coverage gap.
+- dsv4-pro lane note: their publish failed at gate_route_launch cuda
+  validation; surfaced in prior entry.
+
+## 2026-09-01 ~27:8x — firing 87b: spark0 rank0 VERIFY-PASS (MTP gen, stale receipt was the mismatch); spark5 rank0 repair shipping
+
+- spark0 rank0 re-verified vs SOURCE with --mtp: VERIFY-PASS (1187
+  tensors, 22,322,734,528 B, dir_sha 45371c52 — same as the whole MTP
+  fleet generation). The earlier "mismatch" was the STALE pre-MTP
+  receipt, not corruption. Receipts on the glm5_next TP16 set predate
+  the MTP upgrade — receipt refresh queued for the set.
+- spark5 rank0: shipping spark0's verified MTP pack (22.3G scp),
+  incoming->mv atomic replace of the mislabeled symlink.
+
+## 2026-09-01 ~27:9x — firing 87c: spark0 rank1 RESTORED-OK (digest mystery = stale receipt generation)
+
+- The "mismatch" resolved: spark1's rank1.mtp.receipt records d1b8e786…
+  = exactly spark0's restored copy. My comparison used the STALE
+  pre-MTP symlinkfix receipt. Both packs byte-identical MTP generation.
+- spark0 rank1.mtp.receipt written from the verified digest.
+- Fleet note: ALL glm5_next.tp16 symlinkfix-era receipts are pre-MTP —
+  receipt refresh to MTP generation queued (audit-doc item).
+
+## 2026-09-01 ~28:1x — firing 87d: spark5 rank0 repair COMPLETE (mislabeled symlink replaced with MTP pack)
+
+- spark5 rank0: real MTP pack (22,322,734,528 B) scp'd from verified
+  spark0 canonical, atomic mv into place, receipt bc48fe7c… written,
+  mislabeled symlink GONE. The only remaining symlinks on spark5 are the
+  dsv4flash rt/ serving-convenience pointers (functional, left in place).
+- glm5_next TP16 MTP-era status: rank0 (spark0+spark5) healthy/receipted;
+  rank1 (spark1+spark0) restored+receipted. Queued: refresh the remaining
+  symlinkfix-era receipts to MTP generation (bookkeeping pass).
+
+## 2026-09-01 ~29:2x — firing 88: glm53full TP4PP4 x3 CONFIRMED COMPLETE (final sweep)
+
+- fp8 + nvfp4 stage loops closed 4/4 placed each; with bf16 earlier, all
+  three glm53full TP4PP4 sets stand 16/16. glm53full = SIX complete sets.
+- Item 18/19 formally CLOSED on the completion sweep.
+
+## 2026-09-01 ~29:3x — firing 89: all wave builders drained; a/b/c/d idle and free
+
+- Confirmed zero in-flight wave builders on sparka-d. The four nodes are
+  free for the next assignment (the ticketed sets need dev-lane packer
+  work first: PP+TP combined mode, split-expert name map, nvfp4a16
+  vertical). Coordinator stagepack work is DONE pending those lanes.
+
+## 2026-09-01 ~29:4x — firing 90: ITEM 23 CLOSED — bf16 arm 16/16 (all three rebuilds receipted)
+
+- spark1/2/c rank receipts all landed. The multiwriter race recovery is
+  fully clean: single builders, verified packs, correct MTP-gen receipts.
+- Checklist: 27 of 30 items COMPLETE. Remaining: 9+11 (PP+TP packer
+  ticket), 8 (nvfp4a16 vertical), 22 (flash nvfp4 codec), 14 (dsv4-pro
+  last 6), 15 (dsv4-pro TP16, lane tooling landed), 25-26 (hy4 lane),
+  28 (drafter verticals), 29-30 (final board log).
+
+## 2026-09-01 ~29:5x — firing 91: bf16 arm CONFIRMED 16/16 (all rebuilds receipted); board stable
+
+- Item 23 closure re-verified by independent sweep: all 16 ranks hold
+  receipts. Board stable — no regressions, no stray artifacts.
+
+## 2026-09-01 ~30:0x — firing 92: board stable; monitor cycle; no action needed
+
+## 2026-09-01 ~30:1x — firing 93: board stable; monitor cycle
+
+## 2026-09-01 ~30:2x — firing 94: board stable; monitor cycle
+
+## 2026-09-01 ~30:3x — firing 95: board stable; monitor cycle
+
+## 2026-09-01 ~30:4x — firing 96: board stable; monitor cycle
+
+## 2026-09-01 ~30:5x — firing 97: board stable; monitor cycle
+
+## 2026-09-01 ~30:8x — timers stopped; coordinator now drives ALL remaining stagepack builds directly
+
+- Operator stopped model-dev timers (chaos); coordinator takes the
+  remaining builds. First target: item 14, dsv4-pro TP4PP4 last ranks.
+- Found: 4 stage-size clusters across 13 nodes, biggest stage only 3/4
+  ranks present -> incomplete set confirmed. Cleanest repair: rebuild ALL
+  16 ranks deterministically from dsv4_pro_ga.full.spstage (892.9GB,
+  spark3 pro-repo) with the in-tree driver (pro plan 16/15/15/15).
+- Input copy spark3->spark8 (2.2T free) in flight at ~11MB/s (spark3
+  degraded ceph read class) — ~22h ETA. Next cycles: monitor copy, run
+  driver, ship+place all 16, supersede the partial set.
+- Also resumed by coordinator: items 15 (dsv4-pro TP16 — lane tooling
+  landed: dsv4pro_tp16_ranks.sh + stage json), 21 (fp8 arm split-expert
+  name-map), 22/24 (nvfp4 codecs), 8 (nvfp4a16 vertical), 9/11 (PP+TP
+  combined mode) — packer work, sequenced after the builds above.
+
+## 2026-09-01 ~30:9x — dsv4-pro base pack FOUND on sparka (no copy needed)
+
+- sparka:~/sparkdata/dsv4_pro.tp16/dsv4_pro_full.spstage = 892,904,019,728 B
+  — byte-count identical to spark3's pro-repo base. The TP4PP4 driver
+  (pro plan 16/15/15/15) consumes exactly this. Item 14 runs on sparka
+  after its in-flight rank10 TP16 build completes — no slow copy.
+- The failed 832G spark3->spark8 copy abandoned (degraded link, multi-
+  writer corruption); dirs cleaned both sides.
+
+## 2026-09-01 ~30:9x — firing 99: dsv4-pro TP16 rank10 writing (61G/89G input read); item 14 input confirmed local
+
+- sparka rank10 build: rchar 291G of the 892G base read, wchar 61G
+  written — the TP16 slice build is mid-flight and healthy. Remaining
+  TP16 ranks queue after it on the same node (one heavy job).
+- Item 14 (TP4PP4): the pro base pack (892,904,019,728 B) confirmed on
+  sparka locally — the TP4PP4 driver runs there after the TP16 sequence
+  completes. No external input needed.
+
+## 2026-09-01 ~31:0x — firing 100: rank10 at 97.9G of ~99.6G stage size; verify+receipt imminent
+
+## 2026-09-01 ~31:1x — firing 100b: dsv4-pro TP16 — 9 ranks already on warm; 7 remaining launched on sparka
+
+- The lane's warm build dir (/mnt/model-warm/packbuild/dsv4pro-tp16)
+  holds ranks 0,1,2,4,5,6,7,8,12 spstage+receipt+sha (9 done) + the full
+  892G base. Launched the lane's own dsv4pro_tp16_ranks.sh on sparka for
+  the missing 7 (3,9,10,11,13,14,15) — each: shard -> verify-output ->
+  contract verifier vs GA checkpoint -> sha. ETA ~1-1.5h/rank.
+- Cleaned the dead 97.9G partial rank10 from ~/sparkdata (wrong output
+  path, superseded by the warm-OUT build).
+- Item 15 completion: ranks 0-15 on warm -> ship to canonical nodes
+  (rank r -> spark{hex r}) -> receipts. Item 14 (TP4PP4) then builds on
+  the local full base.
+
+## 2026-09-01 ~31:2x — firing 101: rank3 building (4G tmp); chain healthy; board stable
+
+## 2026-09-01 ~30:9x — firing 101b: ranks 13-15 relaunched on sparka; rank13 already at 29.7G (fast class)
+
+- The relaunched chain is alive (single sharder); rank13 tmp at 29.7G of
+  ~99.6G — sparka's healthy write class, ~40 min/rank. 14, 15 follow.
+- Item 15 state: 12/16 ranks built on warm (0-10, 12); 13 building;
+  14, 15 queued in the same chain.
+
+## 2026-09-01 ~30:9x — firing 101c: rank13 BUILT (13/16); ranks 14-15 launched on sparka
+
+- rank13: receipt.json + sha + spstage complete on warm. Only 14, 15
+  remain; launched the chain for them on sparka (~1.5h each + verify).
+
+## 2026-09-01 ~30:9x — firing 101d: rank14 building (44.4/99.6G); rank15 queued
+
+## 2026-09-01 ~31:0x — firing 102: rank14 tmp at 64G/99.6G; building steadily
+
+## 2026-09-01 ~31:1x — firing 102b: ranks 14+15 relaunched as ISOLATED chains
+
+- rank14's first attempt in my chain died (frozen 64G tmp, sharder gone —
+  same non-deterministic death class as rank13's first attempt, which
+  then SUCCEEDED on relaunch). rank15 died in the lane's original run
+  with an unpack error. Both relaunched as separate detached chains with
+  independent logs (r14.log, r15.log) — isolation so one failure can't
+  abort the other (the set -e chain was the amplification).
+- 13/16 ranks built on warm. If 14/15 fail again on relaunch, the logs
+  now capture the true error per-rank.

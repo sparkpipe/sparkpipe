@@ -4,30 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * CPU reference oracles for the Qwen 3.6 27B stage, encoding the PINNED
- * forms from modeling_qwen3_5 (transformers main, 2026-07) in plain fp32 C:
- *
- * - recurrent gated delta rule: q,k L2-normalized per head (eps 1e-6), query
- *   scaled by 1/sqrt(dk); per step S *= exp(g), delta = beta * (v - S^T k),
- *   S += outer(k, delta), o = S^T q
- * - depthwise causal conv, kernel 4, NO bias, silu on the conv output, with
- *   the carried tail state the driver hands across dispatches
- * - gated RMSNorm per value head: fp32 norm, times weight, times silu(z)
- * - full attention with the FUSED per-head query|gate projection layout,
- *   per-head q/k RMSNorm, partial RoPE on the first 64 dims (HF rotate-half
- *   pairing), GQA sharing, and sigmoid(gate) on the attention output
- *
- * The tests are self-contained on synthetic data and assert closed-form or
- * invariance properties, plus the state-carry contract: a sequence processed
- * in one pass must equal the same sequence processed in two carried passes,
- * which is exactly the boundary the resident driver crosses every dispatch.
- * The chunk-vs-recurrence oracle lands together with the CUDA chunk kernel,
- * mirroring its algorithm, as the K3 module did.
- *
- * These are dimension-generic; the tests run small head counts with the real
- * per-head widths where the width matters (rope pairing, gated norm).
- */
 
 static uint64_t SparkQwen38_27bRefNext(uint64_t *state)
 {
@@ -72,12 +48,6 @@ static void SparkQwen38_27bRefL2Norm(const float *input, float *output, uint32_t
 		output[element] = input[element] * total;
 }
 
-/*
- * Recurrent gated delta rule for ONE head, sequence-major. state is dk x dv
- * row-major and is read and written, which is the carry contract. q and k
- * arrive un-normalized; the L2 norm and the query scale live here, matching
- * torch_recurrent_gated_delta_rule with use_qk_l2norm_in_kernel.
- */
 static void SparkQwen38_27bRefGdnRecurrence(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens, uint32_t dk, uint32_t dv)
 {
 	float qn[256],kn[256],delta[256];
@@ -113,8 +83,6 @@ static void SparkQwen38_27bRefGdnRecurrence(const float *q, const float *k, cons
 	}
 }
 
-// Depthwise causal conv over one channel: kernel 4, no bias, silu output.
-// tail[3] carries the last three raw inputs across calls.
 static void SparkQwen38_27bRefConvChannel(const float *input, const float *weight, float *tail, float *output, uint32_t tokens)
 {
 	float window[4];
@@ -147,7 +115,6 @@ static void SparkQwen38_27bRefGatedNorm(const float *input, const float *z, cons
 		output[element] = (input[element] * inverse) * weight[element] * SparkQwen38_27bRefSilu(z[element]);
 }
 
-// HF rotate-half partial RoPE on the first rope_dim dims of one head vector.
 static void SparkQwen38_27bRefRope(float *vector, uint32_t rope_dim, uint32_t position, float theta)
 {
 	uint32_t pair,half = rope_dim / 2u;
@@ -165,13 +132,6 @@ static void SparkQwen38_27bRefRope(float *vector, uint32_t rope_dim, uint32_t po
 	}
 }
 
-/*
- * Full attention for one query row at position (tokens - 1) against a cache
- * of `tokens` positions, one kv head shared by `group` query heads, with the
- * fused per-head [query|gate] input layout and sigmoid gating on the output.
- * q_fused is group heads x (2 x head_dim); k/v caches are tokens x head_dim,
- * already normalized and roped by the caller for all but the newest row.
- */
 static void SparkQwen38_27bRefAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t head_dim, uint32_t rope_dim, uint32_t tokens, float epsilon)
 {
 	float qh[512],scores[128],probability;
@@ -213,17 +173,6 @@ static void SparkQwen38_27bRefAttention(const float *q_fused, const float *k_cac
 	}
 }
 
-/*
- * Chunked gated delta rule for one head, chunk 64, matching
- * torch_chunk_gated_delta_rule exactly: intra-chunk cumulative decay, the
- * forward-substitution UT transform T = (I - A)^-1 applied to beta-scaled
- * values and decayed keys, then per chunk out = (q o e^G) S + (q k^T o D) v_new
- * with v_new = T v_beta - (T (k_beta o e^G)) S and the state carried as
- * S <- S e^G_last + (k o e^(G_last - G))^T v_new. tokens must be a multiple
- * of the chunk; state is read and written, the same carry contract as the
- * recurrence. This is the CPU mirror the wmma prefill kernel is checked
- * against.
- */
 #define SPARK_QWEN38_27B_REF_CHUNK 64u
 
 static void SparkQwen38_27bRefChunkPrepare(const float *q, const float *k, const float *beta, const float *g, float *qn, float *kn, float *cum_g, float *decay, float *attn, uint32_t dk)
@@ -268,7 +217,6 @@ static void SparkQwen38_27bRefChunkForwardSubstitute(float *attn)
 		attn[(row * SPARK_QWEN38_27B_REF_CHUNK) + row] += 1.0f;
 }
 
-// w = T (v o beta); kg = T (k o beta o e^G): the two transformed operands.
 static void SparkQwen38_27bRefChunkTransform(const float *attn, const float *kn, const float *v, const float *beta, const float *cum_g, float *w, float *kg, uint32_t dk, uint32_t dv)
 {
 	uint32_t row,column,element;
@@ -362,9 +310,6 @@ static int32_t SparkQwen38_27bRefTestChunkAgainstRecurrence(void)
 		g[index] = -0.05f - (0.4f * fabsf(SparkQwen38_27bRefUniform(&noise)));
 		beta[index] = 0.2f + (0.6f * fabsf(SparkQwen38_27bRefUniform(&noise)));
 	}
-	// Warm a nonzero state with 64 recurrent tokens, then run the NEXT 128
-	// tokens both ways from that shared state: the initial-state path is
-	// exactly what mid-sequence chunked prefill needs.
 	memset(state_rec,0,sizeof(state_rec));
 	SparkQwen38_27bRefGdnRecurrence(q,k,v,g,beta,state_rec,out_rec,64u,32u,32u);
 	memcpy(state_chunk,state_rec,sizeof(state_rec));
@@ -427,8 +372,6 @@ static int32_t SparkQwen38_27bRefTestSaturatedDecay(void)
 	SparkQwen38_27bRefFill(v,32u,&noise);
 	SparkQwen38_27bRefFill(state,32u * 32u,&noise);
 	SparkQwen38_27bRefGdnRecurrence(q,k,v,&g,&beta,state,output,1u,32u,32u);
-	// With exp(-30) the prior state is annihilated: o = <q_n, k_n> * beta * v
-	// with q_n scaled by 1/sqrt(dk).
 	SparkQwen38_27bRefL2Norm(q,qn,32u);
 	SparkQwen38_27bRefL2Norm(k,kn,32u);
 	for (index = 0; index < 32u; index++)
@@ -515,8 +458,6 @@ static int32_t SparkQwen38_27bRefTestAttention(void)
 	SparkQwen38_27bRefFill(k_cache,48u * 256u,&noise);
 	for (index = 0; index < 256u; index++)
 		q_norm[index] = 1.0f;
-	// Constant value cache: softmax mixing must reproduce it exactly, so the
-	// output equals sigmoid(gate) times the constant per element.
 	for (token = 0; token < 48u; token++)
 		for (index = 0; index < 256u; index++)
 			v_cache[(token * 256u) + index] = 0.25f;
@@ -528,7 +469,6 @@ static int32_t SparkQwen38_27bRefTestAttention(void)
 		if ( delta > difference )
 			difference = delta;
 	}
-	// RoPE inner-product invariance at equal positions on the roped span.
 	SparkQwen38_27bRefFill(head,256u,&noise);
 	memcpy(rotated_q,head,sizeof(head));
 	SparkQwen38_27bRefFill(head,256u,&noise);

@@ -1,10 +1,4 @@
 #pragma once
-// Minimal bf16 stub for the host harness. The shared model-family kernels
-// (model-families/common/include/sparkpipe/spark_lm_kernels.cuh) use exactly
-// the conversions below; anything else breaks the build here rather than
-// silently picking up a different definition. Rounding is round-to-nearest-
-// even in both directions, matching the device converts the kernels bind at
-// nvcc time (__float2bfloat16 / __floats2bfloat162_rn are _rn).
 #include <stdint.h>
 #include <string.h>
 
@@ -21,8 +15,6 @@ static inline float __bfloat162float(__nv_bfloat16 value)
 
 static inline __nv_bfloat16 __float2bfloat16(float value)
 {
-	// Round to nearest even: add the truncated-half plus the low bit of the
-	// kept mantissa, then truncate. Infinities and NaNs carry through.
 	__nv_bfloat16 out;
 	uint32_t bits;
 	memcpy(&bits, &value, sizeof(bits));

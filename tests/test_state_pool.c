@@ -1,5 +1,3 @@
-// The slot pool's whole contract: every slot reachable exactly once,
-// double release refused, exhaustion loud, addresses disjoint and stable.
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

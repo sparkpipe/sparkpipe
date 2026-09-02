@@ -2,13 +2,6 @@
 
 #include <stdint.h>
 
-/* Continuous-batching scheduler policy. The batch engine admits the whole
- * ready set (every request with KV resident) up to the resource caps
- * (MAX_ACTIVE lanes, prefill row budget, KV pages) and passes
- * minimum_by_kind floors of 1: any nonzero ready set dispatches on the
- * next Progress. The old fixed-bucket ladder (defer a kind until
- * minimum_efficient rows queue up, or the request ages out) is gone; the
- * bypass counters remain as the starvation escape for aged requests. */
 uint32_t SparkModelBatchSchedulerPlanCacheBoundLaneCount(
 	uint32_t maximum_lane_count,
 	uint32_t physical_page_capacity,
@@ -28,7 +21,6 @@ uint32_t SparkModelBatchSchedulerPlanMixedLaneCount(
 	const uint32_t inflight_by_kind[4],
 	uint32_t selected_kind,
 	uint32_t submission_capacity);
-/* Tail bypasses count scheduler scans while inflight work guarantees a wakeup. */
 uint32_t SparkModelBatchSchedulerChooseWorkKind(
 	const uint32_t queued_by_kind[4],
 	const uint32_t minimum_by_kind[4],

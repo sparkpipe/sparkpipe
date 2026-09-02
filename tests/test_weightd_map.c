@@ -1,38 +1,3 @@
-/* W3 weightd lane (docs/WEIGHTD_DESIGN.md) fd-tier host tests — cuda-stub
- * only, no GPU. Proves the POSIX-fd export + consumer import/map tier:
- *
- * 1. EXPORT GATES: the EXPORT exchange is answered only for an arena the
- *    connection holds an attach reference for (NOT_FOUND otherwise), a bad
- *    batch offset is INVALID_ARGUMENT, export before HELLO fails the
- *    connection, and a detached arena is no longer exportable.
- * 2. EXPORT BATCH: the reply reveals the arena's chunk geometry (2 MiB
- *    chunk law, chunk_count covering the arena) and delivers REAL received
- *    fds — live, close-on-exec, owner-only mode (the 0600 discipline).
- * 3. IMPORT MAP: the attach helper maps the imported chunks at the
- *    CONSUMER's own span (RW via cuMemSetAccess); the bytes read back
- *    through the consumer-local mapping equal the pack bytes — the
- *    device_handle stopgap replaced — and Release unmaps + releases + frees
- *    exactly (the stub's leak ledger and driver orderings enforce it)
- *    WITHOUT detaching: the arena stays warm and a fresh attach+map after
- *    every consumer left is STILL warm (same generation).
- * 4. IDENTITY CHECK: a chunk set that does not cover the caller's expected
- *    byte range is refused ("import_short") with the attach released and
- *    nothing mapped.
- * 5. MULTI-BATCH: a 65-chunk arena arrives as two SCM_RIGHTS batches
- *    (64 + 1) and the mapped span still reads back byte-exact (SHA-256 over
- *    the map equals the pack digest).
- * 6. CROSS-PROCESS: a real forked consumer process attaches warm, imports,
- *    maps at ITS OWN VA, and reads the pack bytes through the imported
- *    mapping — fds genuinely cross the process boundary.
- * 7. SCRIBBLE-PROBE RECEIPT: the enforcement half of the staged consumer-map
- *    PROT_READ flip (the W3 report's honest limit). The stub's
- *    cuda_stub_vmm_probe_write models the driver's write fault: a write
- *    through a read-only or ungranted mapping is refused and touches
- *    nothing, through a read-write mapping it lands. The production
- *    consumer leg grants RW today, so the probe through a real ImportMap
- *    mapping LANDS — recorded as the pathology the one-constant flip
- *    removes; when the flip lands (GPU receipt), that same probe must be
- *    refused and the assertion flips with it. */
 
 #include <assert.h>
 #include <errno.h>
@@ -56,7 +21,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "cuda.h"
 
-#define SPARK_TEST_CHUNK_BYTES (2ull * 1024ull * 1024ull) /* the stub's law */
+#define SPARK_TEST_CHUNK_BYTES (2ull * 1024ull * 1024ull)
 #define SPARK_TEST_SMALL_BYTES (256ull * 1024ull)
 #define SPARK_TEST_TWO_CHUNK_BYTES (2ull * SPARK_TEST_CHUNK_BYTES)
 #define SPARK_TEST_BATCH_ARENA_BYTES (65ull * SPARK_TEST_CHUNK_BYTES)
@@ -113,7 +78,7 @@ static void SparkTestStopServer(SparkTestServerThread *thread_context,
         fprintf(stderr, "outstanding stub allocs=%u\n",
             spark_stub_cuda_outstanding_allocs());
     }
-    assert(spark_stub_cuda_outstanding_allocs() == 0u); /* nothing leaked */
+    assert(spark_stub_cuda_outstanding_allocs() == 0u);
 }
 
 static uint32_t SparkTestNextRandom(uint32_t *state)
@@ -183,8 +148,6 @@ static void SparkTestMakeSlice(SparkWeightdPackSlice *slice,
     slice->pack_bytes = pack_bytes;
 }
 
-/* Attach + import/map through the production helper path (env-published
- * identity, like every real consumer). */
 static void SparkTestAttachAndMap(SparkWeightdAttachOutcome *outcome,
     const char *socket_path,
     const char *pack_path,
@@ -213,7 +176,6 @@ static void SparkTestAttachAndMap(SparkWeightdAttachOutcome *outcome,
     assert(reason[0] == '\0');
 }
 
-/* ------------------------------ 1 + 2. export gates and batch shape ------------------------------ */
 
 static void SparkTestExportGatesAndBatch(void)
 {
@@ -258,44 +220,38 @@ static void SparkTestExportGatesAndBatch(void)
     }
     generation = attach.arena_generation;
 
-    /* batch 0: geometry + REAL fds with the OS scoping discipline */
     memset(&batch, 0, sizeof(batch));
     assert(SparkWeightdClientExportBatch(client, generation, 0u, &batch,
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(batch.status == SPARK_STATUS_OK);
-    assert(batch.chunk_bytes == SPARK_TEST_CHUNK_BYTES); /* the 2 MiB law */
-    assert(batch.chunk_count == 1u); /* a 256 KiB arena, one chunk */
+    assert(batch.chunk_bytes == SPARK_TEST_CHUNK_BYTES);
+    assert(batch.chunk_count == 1u);
     assert(batch.batch_offset == 0u);
     assert(batch.batch_count == 1u);
     assert(fcntl(batch.fds[0], F_GETFD) >= 0);
     assert(fcntl(batch.fds[0], F_GETFD) & FD_CLOEXEC);
     assert(fstat(batch.fds[0], &fd_status) == 0);
-    assert((fd_status.st_mode & 077) == 0); /* owner-only, the 0600 law */
+    assert((fd_status.st_mode & 077) == 0);
     assert(close(batch.fds[0]) == 0);
 
-    /* a second export of the same chunk is legal (fresh shareable fd) */
     memset(&batch, 0, sizeof(batch));
     assert(SparkWeightdClientExportBatch(client, generation, 0u, &batch,
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(batch.status == SPARK_STATUS_OK && batch.batch_count == 1u);
     assert(close(batch.fds[0]) == 0);
 
-    /* offset beyond the chunk count: refused, no fds */
     memset(&batch, 0, sizeof(batch));
     assert(SparkWeightdClientExportBatch(client, generation, 1u, &batch,
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(batch.status == SPARK_STATUS_INVALID_ARGUMENT);
     assert(batch.batch_count == 0u);
 
-    /* an unknown generation: NOT_FOUND, no fds */
     memset(&batch, 0, sizeof(batch));
     assert(SparkWeightdClientExportBatch(client, generation + 0x5A5Aull, 0u,
         &batch, SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(batch.status == SPARK_STATUS_NOT_FOUND);
     assert(batch.batch_count == 0u);
 
-    /* the export capability is the attach ref: a DIFFERENT connection that
-     * never attached cannot fish chunks out of the daemon */
     assert(SparkWeightdClientConnect(SPARK_TEST_SOCKET, &stranger, 0) ==
         SPARK_STATUS_OK);
     memset(&batch, 0, sizeof(batch));
@@ -306,7 +262,6 @@ static void SparkTestExportGatesAndBatch(void)
     SparkWeightdClientClose(stranger);
     stranger = 0;
 
-    /* detach: the arena is no longer exportable through this connection */
     assert(SparkWeightdClientDetach(client, generation, &detach,
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(detach.status == SPARK_STATUS_OK);
@@ -318,7 +273,6 @@ static void SparkTestExportGatesAndBatch(void)
     SparkWeightdClientClose(client);
     client = 0;
 
-    /* EXPORT before HELLO: the connection dies lockstep-clean (raw socket) */
     {
         struct sockaddr_un address;
         uint8_t frame[sizeof(SparkWeightdIpcExport)];
@@ -345,7 +299,7 @@ static void SparkTestExportGatesAndBatch(void)
         poll_fd.events = POLLIN;
         poll_fd.revents = 0;
         assert(poll(&poll_fd, 1u, 5000) > 0);
-        assert(read(fd, buffer, sizeof(buffer)) == 0); /* EOF, no answer */
+        assert(read(fd, buffer, sizeof(buffer)) == 0);
         (void)close(fd);
     }
 
@@ -355,7 +309,6 @@ static void SparkTestExportGatesAndBatch(void)
     printf("w3 weightd: export gates + batch shape green\n");
 }
 
-/* ------------------------------ 3 + 4. import map, identity gate, warm ------------------------------ */
 
 static void SparkTestImportMapWarmAndCoverageGate(void)
 {
@@ -383,32 +336,25 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
     SparkTestStartServer(&thread_context, &thread_handle, SPARK_TEST_SOCKET,
         8ull * SPARK_TEST_CHUNK_BYTES);
 
-    /* first consumer: cold load + the import map at ITS OWN span */
     SparkTestAttachAndMap(&first, SPARK_TEST_SOCKET, SPARK_TEST_PACK, digest,
         sizeof(pack_image));
     assert(first.loaded_from_pack == 1u);
     assert(first.map_chunk_bytes == SPARK_TEST_CHUNK_BYTES);
-    assert(first.map_chunk_count == 2u); /* 4 MiB arena, 2 MiB chunks */
+    assert(first.map_chunk_count == 2u);
     assert(first.map_handle_count == 2u && first.map_mapped_count == 2u);
     assert(first.map_span_bytes == sizeof(pack_image));
     memcpy(map_probe, first.map_base, sizeof(map_probe));
     assert(memcmp(map_probe, pack_image, sizeof(pack_image)) == 0);
     generation = first.arena_generation;
 
-    /* second consumer, SAME identity: warm hit + its own mapping of the
-     * same arena — both consumers read identical bytes */
     SparkTestAttachAndMap(&second, SPARK_TEST_SOCKET, SPARK_TEST_PACK,
         digest, sizeof(pack_image));
     assert(second.loaded_from_pack == 0u);
     assert(second.arena_generation == generation);
-    assert(second.map_base != first.map_base); /* distinct consumer VAs ... */
+    assert(second.map_base != first.map_base);
     memcpy(map_probe, second.map_base, sizeof(map_probe));
-    assert(memcmp(map_probe, pack_image, sizeof(pack_image)) == 0); /* ...
-        over the same bytes */
+    assert(memcmp(map_probe, pack_image, sizeof(pack_image)) == 0);
 
-    /* THE IDENTITY CHECK: a caller whose expected byte range exceeds the
-     * chunk set is refused before anything is mapped; the helper released
-     * the attach (close-only), so the arena stays resident warm */
     SparkTestMakeSlice(&slice, sizeof(pack_image));
     SparkTestClearAttachEnv();
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
@@ -423,7 +369,6 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
     assert(gated.client == 0 && gated.map_base == 0);
     assert(strcmp(reason, "import_short") == 0);
 
-    /* argument faults stay transport faults (nothing to map / double map) */
     {
         SparkWeightdAttachOutcome unmapped;
         memset(&unmapped, 0, sizeof(unmapped));
@@ -435,16 +380,12 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
         assert(strcmp(reason, "already_mapped") == 0);
     }
 
-    /* both consumers release: unmap + release + free, WITHOUT detaching —
-     * the reaped refcounts leave the arena resident warm */
     SparkWeightdAttachRelease(&first);
     assert(first.map_base == 0 && first.map_handles == 0);
     assert(first.map_chunk_count == 0u && first.map_mapped_count == 0u);
     assert(first.client == 0 && first.device_handle == 0ull);
     SparkWeightdAttachRelease(&second);
 
-    /* the code-redeploy leg: a fresh consumer after every consumer left is
-     * STILL warm (same arena generation) and maps the same bytes again */
     SparkTestAttachAndMap(&again, SPARK_TEST_SOCKET, SPARK_TEST_PACK, digest,
         sizeof(pack_image));
     assert(again.loaded_from_pack == 0u);
@@ -453,14 +394,13 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
     assert(memcmp(map_probe, pack_image, sizeof(pack_image)) == 0);
     SparkWeightdAttachRelease(&again);
 
-    SparkTestStopServer(&thread_context, thread_handle); /* ledger green */
+    SparkTestStopServer(&thread_context, thread_handle);
     SparkTestClearAttachEnv();
     (void)remove(SPARK_TEST_PACK);
     (void)remove(SPARK_TEST_SOCKET);
     printf("w3 weightd: consumer import map + identity gate + warm green\n");
 }
 
-/* ------------------------------ 5. multi-batch ------------------------------ */
 
 static void SparkTestMultiBatch(void)
 {
@@ -473,8 +413,6 @@ static void SparkTestMultiBatch(void)
     SparkSha256Context sha;
     uint64_t offset;
 
-    /* 65 chunks: one batch of 64 + one batch of 1 through the SCM_RIGHTS
-     * ancillary, then mapped into ONE consumer span and verified whole */
     spark_stub_cuda_reset_faults();
     SparkTestWritePack(SPARK_TEST_PACK, 703u, SPARK_TEST_BATCH_ARENA_BYTES,
         digest);
@@ -487,7 +425,6 @@ static void SparkTestMultiBatch(void)
     assert(outcome.map_handle_count == 65u && outcome.map_mapped_count == 65u);
     assert(outcome.map_span_bytes == SPARK_TEST_BATCH_ARENA_BYTES);
 
-    /* SHA-256 over the consumer's mapping == the pack digest */
     SparkSha256Initialize(&sha);
     for (offset = 0; offset < SPARK_TEST_BATCH_ARENA_BYTES;
         offset += sizeof(probe))
@@ -510,13 +447,7 @@ static void SparkTestMultiBatch(void)
     printf("w3 weightd: 65-chunk two-batch import map green\n");
 }
 
-/* ------------------------------ 6. cross-process ------------------------------ */
 
-/* The child consumer body: a REAL second process. It attaches warm, runs
- * the import map, and verifies the bytes through ITS OWN mapping against
- * the pack file it reads itself — the fd crossing is genuine SCM_RIGHTS;
- * nothing about the daemon's address space is reachable from here. Never
- * returns: exits 0 on the verified mapping, nonzero otherwise. */
 static void SparkTestConsumerChild(const char *socket_path,
     const char *pack_path,
     const char *digest,
@@ -533,7 +464,7 @@ static void SparkTestConsumerChild(const char *socket_path,
     (void)signal(SIGPIPE, SIG_IGN);
     SparkTestAttachAndMap(&outcome, socket_path, pack_path, digest,
         pack_bytes);
-    assert(outcome.loaded_from_pack == 0u); /* warm: the arena was resident */
+    assert(outcome.loaded_from_pack == 0u);
     SparkSha256Initialize(&sha);
     for (offset = 0; offset < pack_bytes; offset += sizeof(probe))
     {
@@ -577,9 +508,6 @@ static void SparkTestCrossProcess(void)
     SparkTestStartServer(&thread_context, &thread_handle, SPARK_TEST_SOCKET,
         4ull * SPARK_TEST_CHUNK_BYTES);
 
-    /* the parent consumer first: the cold load + its own import map (the
-     * arena must be resident for the child's attach to be the WARM fd
-     * hand-off the tier exists for) */
     {
         static uint8_t pack_image[SPARK_TEST_SMALL_BYTES];
         FILE *pack_file = fopen(SPARK_TEST_PACK, "rb");
@@ -603,7 +531,7 @@ static void SparkTestCrossProcess(void)
         (void)close(pipe_fds[0]);
         SparkTestConsumerChild(SPARK_TEST_SOCKET, SPARK_TEST_PACK, digest,
             SPARK_TEST_SMALL_BYTES, pipe_fds[1]);
-        _exit(127); /* not reached */
+        _exit(127);
     }
     (void)close(pipe_fds[1]);
     reaped = waitpid(consumer_pid, &wait_status, 0);
@@ -612,9 +540,6 @@ static void SparkTestCrossProcess(void)
     assert(read(pipe_fds[0], &received, 1) == 1 && received == 'P');
     (void)close(pipe_fds[0]);
 
-    /* WARM RE-ATTACH AFTER CONSUMER EXIT: the child's release closed its
-     * socket; the daemon reaped it, kept the arena resident, and a fresh
-     * consumer maps the same generation warm without any reload */
     SparkTestAttachAndMap(&after, SPARK_TEST_SOCKET, SPARK_TEST_PACK, digest,
         SPARK_TEST_SMALL_BYTES);
     assert(after.loaded_from_pack == 0u);
@@ -628,20 +553,7 @@ static void SparkTestCrossProcess(void)
     printf("w3 weightd: cross-process import map + warm re-attach green\n");
 }
 
-/* ------------------------------ 7. scribble-probe receipt ------------------------------ */
 
-/* The W3 report's honest limit made enforceable-in-test: the consumer map is
-   RW today and the PROT_READ flip is staged on the GPU receipt. This test
-   lands NOW so the flip is justified and mechanical when it lands:
-   - the stub probe IS the driver's write fault in host form (refusal on a
-     read-only or ungranted mapping, landing on a read-write one) - the
-     proof that flipping the constant will actually bite;
-   - the production ImportMap grants RW today, so the probe through a real
-     consumer mapping LANDS - the honest record of the state being flipped.
-   FLIP CONTRACT: when runtime/spark_weightd_attach.c's
-   CU_MEM_ACCESS_FLAGS_PROT_READWRITE becomes CU_MEM_ACCESS_FLAGS_PROT_READ,
-   the production probe assert below flips from CUDA_SUCCESS to
-   CUDA_ERROR_INVALID_VALUE in the same commit. */
 static void SparkTestScribbleProbeReceipt(void)
 {
     SparkTestServerThread thread_context;
@@ -656,7 +568,6 @@ static void SparkTestScribbleProbeReceipt(void)
     CUdeviceptr span;
     uint32_t index;
 
-    /* the enforcement half on a raw stub mapping */
     memset(&prop, 0, sizeof(prop));
     prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
     prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
@@ -669,17 +580,14 @@ static void SparkTestScribbleProbeReceipt(void)
     assert(cuMemAddressReserve(&span, 4096u, 0u, 0ull, 0ull) == CUDA_SUCCESS);
     assert(cuMemMap(span, 4096u, 0u, chunk, 0ull) == CUDA_SUCCESS);
 
-    /* ungranted: the write is refused and nothing is touched */
     assert(cuda_stub_vmm_probe_write(span, scribble, 8u) ==
         CUDA_ERROR_INVALID_VALUE);
-    /* read-only grant: STILL refused - this is what the staged flip buys */
     access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     access.location.id = 0;
     access.flags = CU_MEM_ACCESS_FLAGS_PROT_READ;
     assert(cuMemSetAccess(span, 4096u, &access, 1u) == CUDA_SUCCESS);
     assert(cuda_stub_vmm_probe_write(span, scribble, sizeof(scribble)) ==
         CUDA_ERROR_INVALID_VALUE);
-    /* read-write grant: the scribble lands */
     access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     assert(cuMemSetAccess(span, 4096u, &access, 1u) == CUDA_SUCCESS);
     assert(cuda_stub_vmm_probe_write(span, scribble, sizeof(scribble)) ==
@@ -690,9 +598,6 @@ static void SparkTestScribbleProbeReceipt(void)
     assert(cuMemRelease(chunk) == CUDA_SUCCESS);
     assert(cuMemAddressFree(span, 4096u) == CUDA_SUCCESS);
 
-    /* the production-path half: today's consumer map is RW - the scribble
-       LANDS through the real ImportMap mapping. Chunk-multiple arena (the
-       shape every consumer and the whole fd tier standardizes on). */
     spark_stub_cuda_reset_faults();
     SparkTestWritePack(SPARK_TEST_PACK, 703u, sizeof(pack_image), digest);
     {
@@ -714,11 +619,10 @@ static void SparkTestScribbleProbeReceipt(void)
         sizeof(scribble)) == CUDA_SUCCESS);
     assert(memcmp(outcome.map_base, pack_image, sizeof(pack_image)) != 0);
     SparkWeightdAttachRelease(&outcome);
-    /* the released mapping is no longer a capability: refused */
     assert(cuda_stub_vmm_probe_write(
         (CUdeviceptr)(uintptr_t)outcome.map_base, scribble, 8u) ==
         CUDA_ERROR_INVALID_VALUE);
-    SparkTestStopServer(&thread_context, thread_handle); /* ledger green */
+    SparkTestStopServer(&thread_context, thread_handle);
     SparkTestClearAttachEnv();
     (void)remove(SPARK_TEST_PACK);
     (void)remove(SPARK_TEST_SOCKET);

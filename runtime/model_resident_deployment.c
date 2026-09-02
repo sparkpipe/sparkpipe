@@ -12,10 +12,6 @@ static const char *const SparkModelResidentDeploymentRootMembers[] =
 	"schema_version","coordinator_rank_index","adapter","driver","transport",
 	"runtime_limits","nodes","tokenizer","weightd"
 };
-/* The root's required members. "tokenizer" is the one OPTIONAL member: the
- * sidecar asset reference. Deployment files without it stay valid (schema
- * version 2, additive), and consumers that never touch the sidecar see no
- * change. */
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT 7u
 static const char *const SparkModelResidentDeploymentTokenizerMembers[] =
 {
@@ -276,10 +272,6 @@ static SparkStatus SparkModelResidentDeploymentParseTransport(
 	return(status == SPARK_STATUS_OK ? SparkModelResidentDeploymentUnsigned(document,object,"control_port_base",&deployment->transport_control_port_base) : status);
 }
 
-/* Root members are the required seven plus the optional "tokenizer". The
- * shared exact-members validator pins the count, so the optional member gets
- * its own check: every key must be a known root member (no unknowns, no
- * duplicates) and every required member must be present exactly once. */
 static int32_t SparkModelResidentDeploymentNextDirectChild(
 	const SparkJsonDocument *document,
 	int32_t parent,
@@ -306,7 +298,6 @@ static SparkStatus SparkModelResidentDeploymentValidateRootMembers(
 	uint32_t child_index;
 	required_seen_count = 0u;
 	memset(seen,0,sizeof(seen));
-	/* Direct children alternate key,value: keys sit at even offsets. */
 	child_index = 0u;
 	for ( key_token_index = SparkModelResidentDeploymentNextDirectChild(document,root,root);
 		key_token_index >= 0;
@@ -316,7 +307,6 @@ static SparkStatus SparkModelResidentDeploymentValidateRootMembers(
 		uint32_t match_count;
 		if ( (child_index & 1u) != 0u )
 		{
-			/* Odd offset: this child is the previous key's value. */
 			child_index++;
 			continue;
 		}
@@ -360,7 +350,6 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	object = SparkModelResidentDeploymentMember(document,root,"tokenizer");
 	if ( object < 0 )
 	{
-		/* Absent: the deployment has no sidecar; token-id serving only. */
 		deployment->tokenizer_asset_path = 0;
 		return(SPARK_STATUS_OK);
 	}
@@ -381,7 +370,6 @@ static SparkStatus SparkModelResidentDeploymentParseWeightd(
 	object = SparkModelResidentDeploymentMember(document,root,"weightd");
 	if ( object < 0 )
 	{
-		/* Absent: residency off - the seam's direct-load path. */
 		deployment->weightd_socket_path = 0;
 		return(SPARK_STATUS_OK);
 	}

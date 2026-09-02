@@ -44,8 +44,6 @@ int main(void)
     assert(SparkJsonGetArrayElementCount(&document, values_token) == 3u);
     SparkJsonDocumentDestroy(&document);
 
-    /* Sequential array access walks the same tokens as indexed access
-     * (the one-pass contract request-scale loops rely on). */
     {
         static const char ArrayJson[] = "{\"ids\":[7,13,0,999,42,1]}";
         SparkJsonDocumentReset(&document);

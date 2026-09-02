@@ -1,7 +1,3 @@
-// Qwen 3.8's model geometry for the host tiers, mirroring the values the
-// qwen38 driver family will pin in inference/llms/qwen_3_8/config.h. The
-// firmware config is the source of truth; a conformance check holds the two
-// in lockstep, same as the qwen38_27b family.
 #ifndef SPARKPIPE_SPARK_QWEN38_MAX_MODEL_H
 #define SPARKPIPE_SPARK_QWEN38_MAX_MODEL_H
 
@@ -14,7 +10,6 @@
 #define SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT 16u
 #define SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT 128u
 
-// Wider geometry vocabulary for the resident decode stage module.
 #define SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT SPARK_QWEN38_MAX_MODEL_VOCAB_COUNT
 #define SPARK_QWEN38_MAX_MODEL_MAXIMUM_CONTEXT_TOKENS 262144u
 #define SPARK_QWEN38_MAX_MODEL_RMS_NORM_EPSILON 1e-06f
@@ -53,11 +48,6 @@
 #define SPARK_QWEN38_MAX_MODEL_ATTN_CACHE_TOKEN_ELEMENTS \
 	(2u * SPARK_QWEN38_MAX_MODEL_ATTN_KV_DIMENSION)
 
-// Attention KV sharding at a TP degree: whole-kv-head cuts only. When the
-// degree exceeds the kv head count (TP16 with 4 kv heads) the kv heads
-// replicate across consecutive rank groups - each rank's query heads sit
-// inside one GQA group either way, so ranks sharing a head also share a
-// cache shard and the output all-reduce still sums exactly once per head.
 #define SPARK_QWEN38_MAX_MODEL_ATTN_KV_SHARD_COUNT(tp_degree) \
 	(((tp_degree) < SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT) \
 		? (uint32_t)(tp_degree) \
@@ -65,9 +55,6 @@
 #define SPARK_QWEN38_MAX_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(tp_degree) \
 	(SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT \
 		/ SPARK_QWEN38_MAX_MODEL_ATTN_KV_SHARD_COUNT(tp_degree))
-/* The rank's first kv head, in whole-head units. For degrees dividing the
- * kv head count this is the plain rank*local block; for replicating
- * degrees it is the shared group's head (ranks 0..3 -> head 0 at TP16). */
 #define SPARK_QWEN38_MAX_MODEL_ATTN_RANK_KV_HEAD_BASE(tp_degree, tp_rank) \
 	((((uint32_t)(tp_rank)) * SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT) \
 		/ (uint32_t)(tp_degree))
@@ -75,7 +62,6 @@
 	(SPARK_QWEN38_MAX_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(tp_degree) \
 		* SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION)
 
-// Routed MoE, pinned against config.json at the contract revision.
 #define SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT 512u
 #define SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN 10u
 #define SPARK_QWEN38_MAX_MODEL_SHARED_EXPERT_COUNT 1u

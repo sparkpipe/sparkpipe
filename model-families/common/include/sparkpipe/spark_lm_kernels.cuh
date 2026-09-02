@@ -11,31 +11,7 @@
 #include "inference/kernels/activation.cuh"
 #include "sparkpipe/spark_head_screen.h"
 
-/*
- * Shared device kernels for the sparkpipe model-driver family.
- *
- * Extracted verbatim from the audited K3 resident decode stage (2026-07-18
- * production audit) and renamed SparkLm*: every driver module includes this
- * header inside its own translation unit, so each module gets its own
- * internal-linkage instantiation. One source, zero ABI coupling between
- * modules, zero runtime cost. The MXFP4 group size is a template parameter,
- * never a defaulted macro, so a module that disagrees with the pack format
- * fails to build instead of silently decoding garbage.
- *
- * Consumers today: qwen38_27b, dsv4, mimo25 (from first line). The K3 module
- * retrofits onto this header at its PP v2 pass; until then the K3 copies of
- * these functions remain the audited originals this file was taken from.
- */
 
-/*
- * Launch statements are the only device-only syntax in this header. nvcc
- * (which defines __CUDACC__ in every pass over a .cu consumer) compiles
- * them; a plain C++ build - the THREADS==1 host oracle
- * (tests/host_cuda/spark_lm_batched_host.cu), which is this header's
- * host-compilability proof - invokes kernel bodies through the harness's
- * LM_HOST_LAUNCH instead and elides the launch statements. A launcher CALL
- * from a host-syntax build is a link error, not a silent no-op.
- */
 #if defined(__CUDACC__)
 #define SPARK_LM_LAUNCH(launch_statement) launch_statement
 #else
@@ -84,14 +60,6 @@ static __device__ __forceinline__ void SparkLmFloatToBf16(void *destination, uin
 	((__nv_bfloat16 *)destination)[index] = __float2bfloat16(value);
 }
 
-/*
- * Read immutable device weights on an auxiliary stream so an exposed
- * collective window can populate cache without changing model arithmetic.
- * Every thread publishes its checksum into private scratch, preventing the
- * compiler from deleting the vector loads while keeping inference outputs
- * completely disjoint from this hint path. One uint4 load warms each measured
- * 32-byte GB10 cache sector; the small auxiliary range is read completely.
- */
 static __global__ void SparkLmWeightReadAheadKernel(
 	const uint4 *payload,uint64_t sector_count,const uint4 *auxiliary_payload,
 	uint64_t auxiliary_vector_count,uint32_t *sink_u32)
@@ -150,7 +118,6 @@ static inline cudaError_t SparkLmHostLaunchWeightReadAhead(
 	return(cudaGetLastError());
 }
 
-// E2M1 nibble to float: sign, 2 exponent bits (bias 1), 1 mantissa bit.
 static __device__ __forceinline__ float SparkLmDecodeE2m1(uint32_t nibble)
 {
 	const float magnitude[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
@@ -158,8 +125,6 @@ static __device__ __forceinline__ float SparkLmDecodeE2m1(uint32_t nibble)
 	return((nibble & 8u) != 0u ? -value : value);
 }
 
-// E4M3fn byte to float: 4 exponent bits bias 7, 3 mantissa bits, finite
-// only, 0x7f/0xff are NaN -> zero; subnormals at 2^-9 granularity.
 static __device__ __forceinline__ float SparkLmDecodeE4m3(uint32_t byte_value)
 {
 	uint32_t exponent = (byte_value >> 3u) & 0x0fu,mantissa = byte_value & 7u;
@@ -173,7 +138,6 @@ static __device__ __forceinline__ float SparkLmDecodeE4m3(uint32_t byte_value)
 	return(sign * magnitude);
 }
 
-// E8M0 scale byte: pure power of two, bias 127, 0xff reserved as NaN -> zero.
 static __device__ __forceinline__ float SparkLmDecodeE8m0(uint32_t byte_value)
 {
 	if ( byte_value == 0xffu )
@@ -200,15 +164,6 @@ static __device__ __forceinline__ float SparkLmSwish(float value)
 	return(value * SparkLmSigmoid(value));
 }
 
-/*
- * Vectorized memory primitives. Every model dimension in the family is a
- * multiple of 64, every device buffer is cudaMalloc-aligned and every row
- * stride is even, so 4-byte and 16-byte lane loads are always legal; the
- * dot loops still carry scalar tails so the kernels stay correct for any
- * dimension. One 4-byte load per lane turns a warp's weight traffic into
- * full 128-byte transactions - the difference between two and eight
- * sectors per request on every quantized format.
- */
 static __device__ __forceinline__ float2 SparkLmLoadBf16Pair(const void *source, uint64_t pair_index)
 {
 	uint32_t raw = __ldg(((const uint32_t *)source) + pair_index);
@@ -297,7 +252,6 @@ static __device__ void SparkLmBitonicSortKeysAscending(uint64_t *shared_keys)
     }
 }
 
-// Block sum over blockDim.x threads; scratch must hold SPARK_LM_CTA_WARPS floats.
 static __device__ float SparkLmBlockReduceSum(float value, float *scratch)
 {
 	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES,warp = threadIdx.x / SPARK_LM_WARP_LANES;
@@ -317,8 +271,6 @@ static __device__ float SparkLmBlockReduceSum(float value, float *scratch)
 	return(value);
 }
 
-// Thread-0 softmax over a small shared scalar table; every thread leaves with
-// the normalized weights visible.
 static __device__ void SparkLmSharedSoftmax(const float *logits, float *weights, uint32_t count)
 {
 	uint32_t candidate;
@@ -396,16 +348,6 @@ static __global__ void SparkLmRmsNormKernel(const void *input_bf16, const void *
 		staged_input,reduce_scratch);
 }
 
-// Fused residual-add + RMS-norm. The per-layer sequence hidden += delta then
-// normalized = rmsnorm(hidden) is two full-hidden passes, each a global
-// read+write. This folds the add into the norm: hidden and delta are read,
-// the sum is formed in registers, the UPDATED hidden is written back, and
-// the norm computes on the sum in the same pass - one read+write of hidden
-// instead of two, on every layer, accuracy-identical. A null delta_bf16
-// makes this a plain norm, so the single kernel serves both and the plain
-// path stays byte-identical. The sum is recomputed in the second element
-// loop from hidden (now holding the sum) rather than restaged, keeping the
-// register footprint flat.
 static __global__ void SparkLmFusedResidualRmsNormKernel(void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
     extern __shared__ float staged_hidden[];
@@ -481,15 +423,6 @@ static __global__ void SparkLmFusedResidualRmsNormKernel(void *hidden_bf16, cons
     }
 }
 
-/*
- * Row-major linear, one warp per output neuron, eight neurons in flight per
- * block, activations staged once in shared memory. The weight branch is
- * launch-uniform (bf16 or MXFP4 nibble pairs with one E8M0 scale per group),
- * so both formats share the loop. Weight fetch is the bound at decode batch
- * sizes, which this layout keeps fully coalesced. GROUP_SIZE is the MXFP4
- * scale group and must match the stage pack; it is a template parameter so a
- * mismatch is a compile error at the launch site, never a silent default.
- */
 static __device__ __forceinline__ float SparkLmDotRowBf16(const float *shared_input, const void *weight_payload, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
 	uint64_t pair_row = ((uint64_t)neuron * input_dimension) >> 1u;
@@ -545,9 +478,6 @@ typedef union
 	__half2 values;
 } SparkLmHalf2Bits;
 
-// Decode full payload words with native packed converts. The scalar GEMV
-// consumes float pairs, but it must not pay one transcendental/table path per
-// weight while the target can widen the packed checkpoint representation.
 static __device__ __forceinline__ void SparkLmDecodeE2m1x8Half2(uint32_t packed, uint32_t decoded[4])
 {
 #if LM_SM121_NATIVE_COMPUTE_PTX
@@ -601,9 +531,6 @@ static __device__ __forceinline__ void SparkLmDecodeE4m3x4Half2(uint32_t packed,
 #endif
 }
 
-// One 4-byte load carries eight E2M1 elements; an eight-element run at an
-// eight-aligned base never crosses a scale group (eight divides every
-// GROUP_SIZE in use), so each run costs one scale decode.
 template <uint32_t GROUP_SIZE>
 static __device__ __forceinline__ float SparkLmDotRowMxfp4(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
@@ -664,8 +591,6 @@ static __device__ __forceinline__ void SparkLmDotRowMxfp4Pair(const float *share
 	*second_total = second_value;
 }
 
-// FP8 weights with F32 scales on [BLOCK, BLOCK] 2-D tiles - the MiMo
-// checkpoint layout: element (r, c) multiplies scale[(r/B)*(C/B) + c/B].
 template <uint32_t BLOCK>
 static __device__ __forceinline__ float SparkLmDotRowFp8F32(const float *shared_input, const void *weight_payload, const float *weight_scale_f32, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
@@ -679,10 +604,6 @@ static __device__ __forceinline__ float SparkLmDotRowFp8F32(const float *shared_
 	{
 		packed = __ldg(((const uint32_t *)weight_payload) + run_row + run);
 		scale_value = __ldg(weight_scale_f32 + scale_row + ((run << 2u) / BLOCK));
-		/* Native SM121 e4m3x2 decode (cvt.rn.f16x2.e4m3x2) into f16 pairs:
-		 * e4m3 is exactly representable in f16, so this is bit-lossless versus
-		 * the old per-byte SparkLmDecodeE4m3, whose exp2f() transcendental made
-		 * the FP8 dot compute-bound instead of memory-bound. */
 		SparkLmDecodeE4m3x4Half2(packed,decoded);
 		#pragma unroll
 		for (pair = 0u; pair < 2u; pair++)
@@ -696,11 +617,6 @@ static __device__ __forceinline__ float SparkLmDotRowFp8F32(const float *shared_
 	return(accumulator);
 }
 
-/* E8M0B128: same E4M3 payload decode as F32B128, but the scale is one e8m0
- * byte per row per 128-K group (2^(code-127)) - the MX pack layout the
- * native block-scaled path reads. This is the M=1 GEMV decode: at single
- * row the pure-streaming scalar beats the warp-specialized MMA (228 vs
- * 171 GB/s measured - no shared-staging round trip). */
 static __device__ __forceinline__ float SparkLmDotRowFp8E8m0(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
 	uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 2u,scale_row = (uint64_t)neuron * (input_dimension >> 7u);
@@ -712,10 +628,6 @@ static __device__ __forceinline__ float SparkLmDotRowFp8E8m0(const float *shared
 	for (run = lane; run < run_count; run += SPARK_LM_WARP_LANES)
 	{
 		packed = __ldg(((const uint32_t *)weight_payload) + run_row + run);
-		/* e8m0 scale = 2^(code-127); IEEE exponent bits are (e+127)<<23, so
-		 * the scale is __int_as_float(code << 23) EXACTLY - one instruction
-		 * vs the exp2f transcendental this replaced (which cost real rate at
-		 * 5120 K: one exp2f per 4 elements). */
 		scale_value = __uint_as_float((uint32_t)__ldg(weight_scale_e8m0 + scale_row + ((run << 2u) >> 7u)) << 23u);
 		SparkLmDecodeE4m3x4Half2(packed,decoded);
 		#pragma unroll
@@ -730,8 +642,6 @@ static __device__ __forceinline__ float SparkLmDotRowFp8E8m0(const float *shared
 	return(accumulator);
 }
 
-// FP8 weights: one e4m3 byte per element, one E8M0 scale per GROUP_SIZE
-// columns per row - the DeepSeek block-quantized layout.
 template <uint32_t GROUP_SIZE>
 static __device__ __forceinline__ float SparkLmDotRowFp8(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
@@ -805,8 +715,6 @@ static __device__ __forceinline__ void SparkLmDotRowFp8Pair(
 	*second_total = second;
 }
 
-// Token embedding gather is a pure row copy: 16-byte vector moves, no
-// conversion round trip, scalar tail for a non-multiple-of-eight hidden.
 static __global__ void SparkLmEmbeddingGatherKernel(const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t hidden_dimension)
 {
 	uint32_t row = blockIdx.x,element,vector_count = hidden_dimension >> 3u;
@@ -885,39 +793,6 @@ static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *w
 	}
 }
 
-/*
- * Small-batch batched linear: rows 2..SPARK_LM_TILE-1 in ONE weight stream.
- *
- * The scalar GEMV above gives every row its own weight-strip pass: grid.x is
- * the row, so B rows re-read the whole matrix B times. At B=1 that is the
- * bandwidth-optimal shape (the measured 228 GB/s winner), but the B2 and B4
- * decode points inherit B streams too, which is why the small-B rate stays
- * in the B1 class instead of climbing. This kernel flips the loop: one CTA
- * owns a neuron strip, stages every row's K-chunk slice in shared memory,
- * loads each weight word once, and applies it to all rows. Total weight
- * traffic is one matrix stream for any row count below SPARK_LM_TILE; the
- * rows' activations are B*K-chunk*4 shared bytes per chunk (at most
- * 15*512*4 = 30 KB, inside the 48 KB default) and the K walk is chunked so
- * no input dimension is excluded.
- *
- * ROUTING STATUS (measured 2026-08-29, spark5, GB10, 27B FP8 89 MB verify
- * shape at 29.9 GB arena scale): NOT routed by default. The per-row scalar
- * route's concurrent row streams overlap in the memory system and BEAT this
- * kernel through B8 (scalar 2.03x/3.36x aggregate at B2/B4 vs this kernel's
- * 1.53x/2.58x - the shared-staging round trip is the difference, the same
- * scalar-beats-tile result the tile path measured at M=9). Equal at B8.
- * This kernel stays compiled, host-oracle-proven, and available: on a
- * bandwidth profile where per-row overlap does NOT absorb the rows, routing
- * rows 2..15 here is the one-launch change in SparkLmHostLaunchBatchedLinear.
- *
- * Bit-exactness with the scalar kernel is by construction, not by tolerance:
- * each row keeps the scalar kernel's own accumulation chain - the same
- * lane-strided run order (the chunk is a whole number of every format's run
- * granularity times the warp width, so chunking never reorders a lane's
- * sequence), the same decode, the same value*scale product feeding fmaf,
- * the same tail handling, the same SparkLmWarpReduceSum - so the family
- * oracles diff this kernel against the B1 path exactly, on host and device.
- */
 #define SPARK_LM_BATCHED_LINEAR_CHUNK 512u
 
 template <uint32_t MAX_ROWS>
@@ -1242,15 +1117,6 @@ static __global__ void SparkLmBf16LinearPairKernel(
 			((uint64_t)row * output_dimension) + neuron,accumulator);
 }
 
-/*
- * Expert-batched machinery: the serving plane groups a decode batch's
- * routed rows by expert (PR497's expert-queue regime emits exactly these
- * per-expert row lists), and the driver turns each group into batched
- * launches over an indirected row map. Slots are dense per group; the
- * scatter applies the routing weight to the expert OUTPUT (or the caller
- * pre-applies it at the intermediate) and adds into the true row. No
- * atomics: within one expert's group every target row is distinct.
- */
 template <uint32_t GROUP_SIZE>
 static __global__ void SparkLmGatherLinearKernel(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension)
 {
@@ -1287,8 +1153,6 @@ static __global__ void SparkLmGatherLinearKernel(uint32_t weight_format, const v
 		SparkLmFloatToBf16(output_bf16,((uint64_t)slot * output_dimension) + neuron,accumulator);
 }
 
-// destination[row_map[slot]] += source[slot] * weights[weight_map[slot]];
-// weight_map (and the weight scaling) optional for a plain scatter add.
 static __global__ void SparkLmScatterScaledAddKernel(void *destination_bf16, const void *source_bf16, const uint32_t *row_map, const float *weights_f32, const uint32_t *weight_map, uint32_t slot_count, uint32_t width)
 {
 	uint32_t slot = blockIdx.x,element,target;
@@ -1312,8 +1176,6 @@ static __global__ void SparkLmScatterScaledAddKernel(void *destination_bf16, con
 		SparkLmFloatToBf16(destination_bf16,((uint64_t)target * width) + element,SparkLmBf16ToFloat(destination_bf16,((uint64_t)target * width) + element) + SparkLmBf16ToFloat(source_bf16,((uint64_t)slot * width) + element) * weight);
 }
 
-// One weight element decoded to float for the tile loader, every format
-// through the same dot-helper arithmetic.
 template <uint32_t GROUP_SIZE>
 static __device__ __forceinline__ float SparkLmWeightElement(uint32_t weight_format, const void *weight_payload, const void *weight_scale, uint32_t neuron, uint32_t element, uint32_t input_dimension)
 {
@@ -1330,17 +1192,6 @@ static __device__ __forceinline__ float SparkLmWeightElement(uint32_t weight_for
 	return(SparkLmDecodeE2m1((element & 1u) != 0u ? packed >> 4u : packed & 0x0fu) * SparkLmDecodeE8m0(((const uint8_t *)weight_scale)[((uint64_t)neuron * (input_dimension / GROUP_SIZE)) + (element / GROUP_SIZE)]));
 }
 
-/*
- * Argmax over a precomputed logits matrix, the second phase of the
- * two-phase head: the tile GEMM writes logits [row][candidate] with the
- * head weights read once per SIXTEEN rows instead of once per row - the
- * old one-block-per-row argmax streamed the entire vocab-by-hidden
- * matrix per row, sixteen times the traffic of this split at a full row
- * tile. Warps stripe the candidates with paired loads, ties go to the
- * lower index, and the optional id table maps restricted candidates.
- */
-// Warp-then-block argmax reduce with ties to the lower index; thread
-// zero leaves the winner in the scratch slots' zeroth entries.
 static __device__ void SparkLmArgmaxReduce(float running_best, uint32_t running_candidate, float *best_score, uint32_t *best_candidate)
 {
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES,offset,candidate,shuffle_candidate;
@@ -1373,8 +1224,6 @@ static __device__ void SparkLmArgmaxReduce(float running_best, uint32_t running_
 	__syncthreads();
 }
 
-// Block max of a per-thread scalar into a shared float, warp shuffles
-// then a thread-zero scan; both barriers included.
 static __device__ void SparkLmAttnBlockScalarMax(float local_maximum, float *scratch, float *shared_maximum)
 {
 	uint32_t offset,warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
@@ -1398,36 +1247,17 @@ static __device__ void SparkLmAttnBlockScalarMax(float local_maximum, float *scr
 	__syncthreads();
 }
 
-/*
- * Screened full-vocabulary head: an MXFP4 shadow of the lm_head (built
- * once at initialize, one third the bytes) produces coarse logits
- * through the tensor-core tile; the screen then keeps only candidates
- * whose coarse logit PLUS its certified error bound reaches the best
- * guaranteed lower bound, and the exact bf16 rescore touches just those
- * rows. The bound is |exact - coarse| <= ||hidden||_2 * e_n with e_n
- * the neuron's quantization error norm precomputed at shadow build, so
- * the true argmax is provably in the candidate set and the emitted
- * token EQUALS the reference argmax, deterministically. Rows whose set
- * overflows the cap fall back to the exact full scan on device - no
- * host round trip anywhere. Idle compute buys a ~4x cut of the head
- * stage's dominant memory stream.
- */
 #define SPARK_LM_HEAD_SCREEN_CAP 4096u
 #define SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT 128u
 #define SPARK_LM_HEAD_FALLBACK_ROW_GROUP_MAX 4u
 #define SPARK_LM_HEAD_FALLBACK_SHARED_BYTES 32768u
 
-// Rounding slack for the SCREEN only: the certified e_n bound covers
-// the fp4 weight error, this covers the bf16 store of the coarse logit
-// and the tile's own accumulate rounding, relative-aware so large
-// logits stay sound. Applied on both sides of the keep test.
 static __device__ __forceinline__ float SparkLmHeadScreenSlack(float coarse)
 {
 	return(1.0f + (fabsf(coarse) * 0.0078125f));
 }
 #define SPARK_LM_HEAD_SHADOW_GROUP 32u
 
-// Nearest E2M1 code for value / scale, magnitude set {0,.5,1,1.5,2,3,4,6}.
 static __device__ __forceinline__ uint32_t SparkLmEncodeE2m1(float value)
 {
 	const float edges[7] = {0.25f,0.75f,1.25f,1.75f,2.5f,3.5f,5.0f};
@@ -1439,9 +1269,6 @@ static __device__ __forceinline__ uint32_t SparkLmEncodeE2m1(float value)
 	return(sign | code);
 }
 
-// One warp per neuron row: per-group absmax to an E8M0 scale (smallest
-// power of two whose 6.0 span covers the group), nibble encode, and the
-// accumulated squared error reduced into the neuron's certified bound.
 static __global__ void SparkLmHeadShadowQuantizeKernel(const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale_e8m0, float *error_norm_f32, uint32_t candidate_count, uint32_t hidden_dimension)
 {
 	uint32_t neuron = (blockIdx.x * SPARK_LM_CTA_WARPS) + (threadIdx.x / SPARK_LM_WARP_LANES);
@@ -1483,10 +1310,6 @@ static __global__ void SparkLmHeadShadowQuantizeKernel(const void *head_bf16, ui
 		error_norm_f32[neuron] = sqrtf(error_squares);
 }
 
-// Screen one row: the hidden norm prices the bound, pass one takes the
-// best guaranteed lower bound L = max(coarse - s*e), pass two appends
-// every candidate whose upper bound reaches L. Overflow leaves the
-// count past the cap and the exact fallback owns the row.
 static __global__ void SparkLmHeadScreenKernel(const void *hidden_bf16, const void *coarse_logits_bf16, const float *error_norm_f32, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
 {
 	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
@@ -1622,8 +1445,6 @@ static __device__ __forceinline__ void SparkLmHeadExactArgmaxRowGroup(const uint
 	}
 }
 
-// Overflow rows retain exact bf16 scoring, but stripe the vocabulary over
-// enough CTAs to use the GPU instead of assigning the full scan to one SM.
 static __global__ void SparkLmHeadFallbackRescoreKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_counts, float *partial_scores, uint32_t *partial_candidates, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count)
 {
 	extern __shared__ float hidden_shared[];
@@ -1645,8 +1466,6 @@ static __global__ void SparkLmHeadFallbackRescoreKernel(const void *hidden_bf16,
 	}
 }
 
-// Wider batches group rows so each exact bf16 weight pair feeds several
-// independent dot products. Per-row FMA and warp-reduction order is unchanged.
 static __global__ void SparkLmHeadGroupedFallbackRescoreKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_counts, float *partial_scores, uint32_t *partial_candidates, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count, uint32_t rows_per_group)
 {
 	extern __shared__ uint32_t hidden_shared_pairs[];
@@ -1688,8 +1507,6 @@ static __global__ void SparkLmHeadGroupedFallbackRescoreKernel(const void *hidde
 	}
 }
 
-// Screened rows rescore their compact list. Overflow rows reduce the exact
-// chunk winners with the same score and lower-token tie rule.
 static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_ids, const uint32_t *candidate_counts, const float *partial_scores, const uint32_t *partial_candidates, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t hidden_dimension)
 {
 	extern __shared__ float hidden_shared[];
@@ -1726,19 +1543,6 @@ static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, c
 	}
 }
 
-/*
- * B1 certified FP8 head screen. The FP8 copy is screening data only: every
- * retained candidate is rescored against the untouched BF16 target head and
- * the emitted score is that exact BF16 dot product. One norm per 32-element
- * group certifies
- *
- *   |dot_bf16 - dot_fp8| <= sum_g ||h_g||_2 ||w_g - q_g||_2
- *
- * and also includes a Higham gamma bound for both FP32 accumulation paths.
- * All stored norms and screen endpoints round outward. The full rank-local
- * vocabulary is a valid candidate capacity at B1, so this path never needs an
- * overflow compatibility scan.
- */
 #define SPARK_LM_HEAD_CERTIFIED_FP8_THREADS 1024u
 #define SPARK_LM_HEAD_CERTIFIED_FP8_WARPS 32u
 
@@ -1950,18 +1754,6 @@ static __global__ void SparkLmHeadCertifiedReduceKernel(const float *partial_sco
 
 
 
-/*
- * Single-pass decode attention for one (row, head): eight warps stripe
- * the key range, each warp computing one key's logit cooperatively -
- * lanes pair-load the key so every K fetch is a full-width transaction -
- * and folding it into a per-warp online softmax: running max, running
- * denominator, and the value accumulation held in registers, four lanes
- * of float2 covering up to 256 value channels. One QK pass total, no
- * atomics anywhere; the eight partials merge once through shared at the
- * end, where the optional attention sink joins the denominator. Ring
- * addressing when window_slots is nonzero, dense otherwise; kv head =
- * head / group_size on split K and V caches.
- */
 #define SPARK_LM_ATTN_MAX_VALUE_PAIRS_PER_LANE 4u
 
 static __device__ __forceinline__ float SparkLmAttnKeyLogit(const float *q_shared, const void *k_cache_bf16, uint64_t key_base, uint32_t head_pairs, uint32_t lane, float scale)
@@ -1980,9 +1772,6 @@ static __device__ __forceinline__ float SparkLmAttnKeyLogit(const float *q_share
     return __shfl_sync(0xffffffffu, accumulator, 0) * scale;
 }
 
-// Cross-warp merge and store: block max over the warp partials, the
-// denominator with the optional sink folded in, then the per-element
-// weighted recombination of the staged accumulators.
 static __device__ void SparkLmAttnMergeStore(float *merge_max, float *merge_den, const float *merge_acc, const float *sink_f32, uint32_t head, uint32_t value_dim, void *out_bf16, uint64_t out_base)
 {
     uint32_t element;
@@ -2024,8 +1813,6 @@ static __device__ void SparkLmAttnMergeStore(float *merge_max, float *merge_den,
     }
 }
 
-// Stage the head's query into shared, zero the merge scratch and the
-// register accumulators.
 static __device__ void SparkLmAttnStage(const void *q_bf16, uint64_t q_row_stride, uint32_t row, uint32_t head, uint32_t head_dim, uint32_t value_dim, float *q_shared, float *merge_acc, float2 *accumulator)
 {
 	uint32_t element,pair;
@@ -2532,22 +2319,6 @@ static cudaError_t SparkLmHostLaunchGroupedAttnDecode(
     return cudaGetLastError();
 }
 
-/*
- * Head grouping trades KV traffic against CTA count, and the right trade
- * depends entirely on batch. Grouping four query heads per CTA reads each KV
- * head a quarter as often, which is what you want once rows alone fill the
- * machine. At small batch it is backwards: mimo25 at one row yields sixteen
- * CTAs against forty-eight SMs, so two thirds of the GPU idles while each CTA
- * walks the whole context. One head per CTA gives sixty-four CTAs and a
- * quarter the shared memory, and the extra KV rereads are nearly free at one
- * row because a single row's KV slice is small.
- *
- * This picks the LARGEST grouping - least KV traffic - that still fills the
- * machine, and only falls to narrower groups when it would not. Splitting the
- * context across CTAs as well (an exact online-softmax merge over partials)
- * would add parallelism beyond this, but needs a workspace and a second pass;
- * it is worth doing only once this no longer fills the SMs.
- */
 #define SPARK_LM_ATTN_TARGET_CTAS 96u
 
 static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t stream, const void *q_bf16, uint64_t q_row_stride, const void *k_cache_bf16, const void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, uint64_t k_slot_stride, uint64_t v_slot_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t group_size, uint32_t head_dim, uint32_t value_dim, uint32_t window_slots)
@@ -2572,17 +2343,6 @@ static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t strea
 #define SPARK_LM_TILE_N 128u
 #define SPARK_LM_TILE_K 64u
 
-/*
- * Native SM121 decode compute.
- *
- * This is intentionally separate from the portable weight-only GEMM below.
- * The portable path decodes a packed weight to BF16 before mma, which is a
- * useful compatibility implementation but is not a native MX deployment
- * route.  DSV4 calls only this section for its qualified B1/B8/B1024 shapes.
- * Every quantized multiply reaches one of the architecture-gated block-scaled
- * atoms in inference/kernels/mma.cuh; unsupported shapes return an error at the
- * host wrapper and unsupported device code traps rather than falling back.
- */
 #define SPARK_LM_SM121_NATIVE_TILE_M 16u
 #define SPARK_LM_SM121_NATIVE_WIDE_TILE_M 64u
 #define SPARK_LM_SM121_NATIVE_TILE_N 128u
@@ -2590,10 +2350,6 @@ static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t strea
 #define SPARK_LM_SM121_NATIVE_K 32u
 #define SPARK_LM_SM121_NATIVE_WEIGHT_FP8 8u
 #define SPARK_LM_SM121_NATIVE_WEIGHT_MXFP4 4u
-// With one routed row per selected expert, N32 gives W13 exactly two CTAs per
-// SM across the six selected TP4 experts. W2 uses N128 and four CTAs per SM:
-// that leaves one complete task per CTA while halving activation restaging.
-// Larger decode buckets keep the block-scaled MMA schedule.
 #define SPARK_LM_SM121_B1_EXPERT_W13_TILE_N 32u
 #define SPARK_LM_SM121_B1_EXPERT_W2_TILE_N 128u
 #define SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM 2u
@@ -2601,8 +2357,6 @@ static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t strea
 
 static inline uint32_t SparkLmSm121NativeDecodeShape(uint32_t rows)
 {
-	/* 7 = the DSpark serving block (k=7 drafts); it rides the generic
-	 * NATIVE_TILE_N config alongside 5 (the trained block). */
 	return(rows == 1u || rows == 5u || rows == 7u || rows == 8u || rows == 16u || rows == 32u || rows == 64u || rows == 1024u ? 1u : 0u);
 }
 
@@ -2636,13 +2390,6 @@ static __device__ __forceinline__ float SparkLmSm121Bf16Round(float value)
 	return(__bfloat162float(__float2bfloat16(value)));
 }
 
-/*
- * Quantize TILE_M BF16 rows to one native MXFP8 K32 operand tile.  A warp owns
- * a row, so the scale is the exact row-block amax and the payload written to
- * shared memory is the E4M3 byte representation consumed by mma.  Indirect
- * routed rows follow source_row_map; ragged rows become numeric zero and never
- * read beyond either the route map or the source tensor.
- */
 template<uint32_t TILE_M>
 static __device__ void SparkLmSm121StageMxf8(
 	const void *input_bf16,
@@ -2746,11 +2493,6 @@ static __device__ __forceinline__ void SparkLmSm121LoadMxf4B(
 		{
 			k = k_base + LmMma8OperandBByte(lane,reg) + byte_index;
 			code_byte = __ldg(payload_e2m1 + row_base + (k >> 1u));
-			/*
-			 * kind::mxf8f6f4 requires E2M1 in bits [5:2] of each
-			 * 8-bit register container.  The checkpoint stays nibble-packed
-			 * until here; these are the required two padding bits per side.
-			 */
 			packed |= (((code_byte >> ((k & 1u) * 4u)) & 15u) << 2u)
 				<< (byte_index * 8u);
 		}
@@ -2769,15 +2511,6 @@ static __device__ __forceinline__ void SparkLmSm121LoadMxf8B(
 	uint32_t reg,byte_index;
 	uint32_t neuron = neuron_base + LmMma8OperandBRow(lane);
 	uint64_t row_base = (uint64_t)neuron * input_dimension;
-	/* MEASURED (2026-08-22, M=8 K=5120 N=17408 micro-bench on GB10): the
-	 * byte-by-byte __ldg assembly is the FASTEST B load at 125.6 GB/s
-	 * effective; a single 4-byte load per register (bit-identical bytes)
-	 * measured 83.7 and __ldg-4B measured 91.7 - the extra outstanding
-	 * byte transactions are memory-level parallelism this kernel NEEDS
-	 * (its per-warp access is 8 quads x 16B at 5120B stride). Do not
-	 * "optimize" this to wider loads without re-measuring; the path past
-	 * ~125 GB/s is a cp.async shared-staged B tile (coalesced wide loads,
-	 * CUTLASS-style), not load-width tweaks. */
 	#pragma unroll
 	for (reg = 0u; reg < 2u; ++reg)
 	{
@@ -3026,7 +2759,6 @@ void SparkLmSm121FusedDenseW13Kernel(
 				LmMmaAccumulatorColumn(lane,entry);
 			if ( row >= row_count || column >= output_dimension )
 				continue;
-			/* GA boundary: projection -> BF16 -> clamp/SiLU/product -> BF16. */
 			gate = SparkLmSm121Bf16Round(gate_total[ni][entry]);
 			up = SparkLmSm121Bf16Round(up_total[ni][entry]);
 			if ( limit > 0.0f )
@@ -3236,9 +2968,6 @@ void SparkLmSm121B1ExpertW13Kernel(
 	{
 		SparkLmSm121B1ExpertTask<TILE_N>(group_row_offset,group_tile_prefix,
 			group_count,output_dimension,task,&group,&row,&neuron_base);
-		/* The route build groups rows in TILE_M-strided tiles; the B1 task
-		 * covers ONE row per launch, so walk the tile's consecutive packed
-		 * rows here (rows==1 batches: exactly one row, unchanged). */
 		row_limit = __ldg(group_row_offset + group + 1u);
 		row_end = row + SPARK_LM_SM121_NATIVE_TILE_M;
 		if ( row_end > row_limit )
@@ -3311,7 +3040,6 @@ void SparkLmSm121B1ExpertW2Kernel(
 	{
 		SparkLmSm121B1ExpertTask<TILE_N>(group_row_offset,group_tile_prefix,
 			group_count,output_dimension,task,&group,&row,&neuron_base);
-		/* Walk the tile's consecutive packed rows (see the W13 kernel). */
 		row_limit = __ldg(group_row_offset + group + 1u);
 		row_end = row + SPARK_LM_SM121_NATIVE_TILE_M;
 		if ( row_end > row_limit )
@@ -3538,11 +3266,6 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedDenseW13(
 		output_dimension == 0u ||
 		output_dimension % SPARK_LM_SM121_NATIVE_TILE_N != 0u || limit <= 0.0f )
 		return(cudaErrorInvalidValue);
-	/* Multi-row must be bit-identical to the certified 1-row math: the
-	 * native tiled kernel quantizes the activation with per-TILE scales
-	 * (a tile spans rows), so a rows>1 batch diverges from the 1-row
-	 * GEMV's per-row quantization. Launch the exact GEMV once per row,
-	 * base pointers advanced by the row strides. */
 	{
 		uint32_t row;
 		for (row = 0u; row < row_count; row++)
@@ -3598,13 +3321,6 @@ static inline cudaError_t SparkLmHostLaunchSm121FusedExpertW13(
 		multiprocessor_count > UINT32_MAX /
 			SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM )
 		return(cudaErrorInvalidValue);
-	/* All row counts use the certified B1 exact kernel (per-row activation
-	 * quantization): the native tiled kernel's per-tile scales diverge for
-	 * rows>1 batches. The B1 kernel enumerates every (group,row,neuron-
-	 * tile) task via the shared prefix structures; the per-neuron math is
-	 * tile-size independent, so instantiate it with the tile N the route
-	 * build actually used for the prefixes (32 for the 1-row cooperative
-	 * build, 128 for the batched build - see SparkLmSm121ExpertW13TileN). */
 	block_count = multiprocessor_count *
 		SPARK_LM_SM121_B1_EXPERT_BLOCKS_PER_SM;
 	if ( rows == 1u )
@@ -3659,10 +3375,6 @@ static inline cudaError_t SparkLmHostLaunchSm121ExpertW2(
 		return(cudaErrorInvalidValue);
 	packed_rows = rows * top_k;
 	(void)packed_rows;
-	/* All row counts use the certified B1 exact kernel (per-row activation
-	 * quantization); the native tiled kernel's per-tile scales diverge for
-	 * rows>1 batches. The B1 kernel enumerates all (group,row,neuron-tile)
-	 * tasks via the shared prefix structures. */
 	block_count = multiprocessor_count *
 		SPARK_LM_SM121_B1_EXPERT_W2_BLOCKS_PER_SM;
 	SPARK_LM_LAUNCH((
@@ -3676,12 +3388,6 @@ static inline cudaError_t SparkLmHostLaunchSm121ExpertW2(
 	return(cudaGetLastError());
 }
 
-/*
- * Decode a 32-element contiguous run of one weight row into bf16, the
- * tile stager's unit: vector payload loads (4-byte lanes, 16-byte for
- * bf16), one scale fetch per in-group run. The format is launch-uniform
- * so the branch never diverges.
- */
 template <uint32_t GROUP_SIZE>
 static __device__ __forceinline__ void SparkLmTileDecodeRun(uint32_t weight_format, const void *weight_payload, const void *weight_scale, uint32_t neuron, uint32_t k_base, uint32_t input_dimension, __nv_bfloat16 *destination)
 {
@@ -3721,16 +3427,6 @@ static __device__ __forceinline__ void SparkLmTileDecodeRun(uint32_t weight_form
 	}
 }
 
-// CONTRACT: k_base + SPARK_LM_TILE_K must not exceed input_dimension. Rows
-// are bounded by slot_count and zero-filled past it, but K is NOT bounded -
-// a partial trailing K tile reads past the row. Callers whose width is not a
-// multiple of SPARK_LM_TILE_K must not use the tile path; see
-// SparkLmHostLaunchBatchedLinear, which routes those to the scalar kernel.
-// source_row_count bounds the route map: a mapped row past the activation
-// tensor is route-map corruption (frame_error.cuh, K1) - this stager clamps
-// to row 0 so the load stays in bounds, the tile holds bounded bytes instead
-// of a wild global read, and the driver's frame-error slot names the frame.
-// Every caller passes its launch's source row count; there is no default.
 static __device__ __forceinline__ void SparkLmTileStageInput(const void *input_bf16, const uint32_t *input_row_map, uint32_t slot_base, uint32_t slot_count, uint32_t source_row_count, uint32_t k_base, uint32_t input_dimension, __nv_bfloat16 *tile)
 {
 	uint32_t entry,slot,source_row;
@@ -3907,15 +3603,6 @@ static __device__ __forceinline__ void SparkLmTileStageWeightProducerHalf(
     }
 }
 
-/*
- * Row-tiled expert GEMM on tensor cores, all eight warps computing: a
- * 16-slot by 128-neuron block accumulator, K staged 64 wide in shared.
- * Each warp owns a 16-neuron column slice; the weight stage decodes each
- * neuron's K-run ONCE into shared bf16 - thread t owns 32 contiguous
- * elements of neuron t mod 128 - and the tile is reused by all sixteen
- * gathered rows. Missing rows and neurons stage zeros; stores are
- * guarded, so any slot count and output width are served.
- */
 template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC>
 static __device__ void SparkLmExpertTileBodyAllWarps(
     uint32_t weight_format,
@@ -4213,13 +3900,6 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
     }
 }
 
-/* Dense tile with an inner M-group loop: one CTA owns M_GROUP m-tiles of
- * one n-tile and stages each k-stage's weight strip ONCE, reusing it for
- * every m-tile's MMA. The plain grid stages the same weight strip once per
- * m-tile, so B=256 (16 m-blocks) re-reads a dense weight 16x; this cuts
- * the amplification to ceil(m_blocks/M_GROUP). BF16 only - the qwen38
- * dense spine; scaled formats keep the original grid. Caller: qwen38's
- * SparkQwen38LaunchLinear via SparkLmHostLaunchBatchedLinearMloop. */
 #define SPARK_LM_MLOOP_GROUP 8u
 template <uint32_t GROUP_SIZE>
 static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, const void *input_bf16, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension)
@@ -4260,9 +3940,6 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
     valid_m = (row_limit + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
     if (valid_m > SPARK_LM_MLOOP_GROUP)
         valid_m = SPARK_LM_MLOOP_GROUP;
-    /* Prologue: stage every valid m-tile's first input strip and the
-     * weight strip for k=0. Invalid tiles stage zeros so their accum
-     * fragments stay zero and the epilogue's slot bound drops them. */
     for (m = 0u; m < valid_m; ++m)
         for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += blockDim.x)
         {
@@ -4406,19 +4083,9 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
     }
 }
 
-/* Grouped-expert m-loop: grid.x is ONE (n-tiles x experts only), each CTA
- * walks its expert's row group in chunks of M_GROUP m-tiles, and each
- * k-stage's weight strip is staged ONCE and shared across the chunk. The
- * plain grid (m_blocks x n_tiles x experts) launched ~122K empty CTAs at
- * B=256 (m-tiles beyond a group of ~5 rows) at ~1.25 us of launch/retire
- * each - the measured 233 GB/s collapse. Caller: qwen38 grouped FP8
- * experts via SparkLmHostLaunchGroupedExpertTileMloop. */
 template <uint32_t GROUP_SIZE>
 static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_expert_stride_bytes, uint64_t scale_expert_stride_bytes, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t expert_count)
 {
-    /* Expert-stride loop: one CTA walks several experts so the launch uses
-     * a fixed CTA budget instead of 512 experts x n_tiles whose empty CTAs
-     * dominate small batches (measured ~1.25 us each). */
     uint32_t expert;
     for (expert = blockIdx.z; expert < expert_count; expert += gridDim.z)
     {
@@ -4470,7 +4137,6 @@ static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, c
         chunk_m = (count - chunk_base + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
         if (chunk_m > M_GROUP)
             chunk_m = M_GROUP;
-        /* Prologue: stage the chunk's input strips and the k=0 weight. */
         for (m = 0u; m < chunk_m; ++m)
         {
             row_limit = count - (chunk_base + (m * SPARK_LM_TILE));
@@ -4600,16 +4266,6 @@ static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, c
     }
 }
 
-// Body dispatch keeps independently selectable all-warp and software-pipelined
-// BF16 schedules, chosen by SPARK_LM_EXPERT_TILE_POLICY. Both are live: the
-// AUTOMATIC default selects between them at runtime on input_dimension, so
-// neither can be removed without a measurement showing one dominates.
-//
-// The direct-FP8 branch that used to sit here selected spark_lm_fp8_tile.cuh
-// under SPARK_LM_FP8_TILE. That macro was defined nowhere in the tree, so the
-// branch was unreachable and the header it included was never compiled. Both
-// are removed; spark_lm_group_gemm.cuh is the FP8 path, with its fragment
-// mapping verified against CUTLASS rather than hand-derived.
 template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
 static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t slot_base, uint32_t neuron_base)
 {
@@ -4679,15 +4335,6 @@ static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const voi
 	SparkLmExpertTileDispatch<GROUP_SIZE,ACTIVATION_CODEC>(weight_format,weight_payload,weight_scale,input_bf16,input_row_map,output_bf16,slot_count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
 }
 
-/*
- * One-row grouped expert tile: the tensor-core path is deliberately M=16,
- * so a B1 group still pads fifteen rows and performs the same weight tile
- * work.  This path keeps the route grouping and the device prefix, but makes
- * one CTA own a complete 128-neuron tile.  It stages the source activation
- * once, then has its eight warps walk the sixteen scalar neurons in that tile.
- * The result is exact with the scalar linear arithmetic and avoids reloading
- * the same activation once per eight-neuron sub-tile.
- */
 static __device__ __forceinline__ uint32_t SparkLmGroupedScalarGroupOfTile(const uint32_t *group_tile_prefix, uint32_t group_count, uint32_t tile_index)
 {
 	uint32_t low = 0u,high = group_count,middle;
@@ -4764,16 +4411,6 @@ static __global__ void SparkLmGroupedScalarLinearKernel(uint32_t weight_format, 
 	}
 }
 
-/*
- * All-expert tile: gridDim.z spans the routed expert table, the group
- * offsets live on DEVICE, and empty or out-of-range tiles exit in a few
- * cycles - the whole routed w1/w3/w2 phase becomes ONE launch with no
- * host knowledge of the grouping. Identity mapping (row_map zero) shifts
- * the input base by the group offset so the w2 shape works unchanged.
- * gridDim.x MUST cover the worst-case group - the FULL pair count, not
- * the row count: hash-routed layers can send several of one row's ranks
- * to the same expert, so a group is bounded only by the pair total.
- */
 template <uint32_t GROUP_SIZE>
 static __global__ void SparkLmExpertTileAllKernel(uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_expert_stride_bytes, uint64_t scale_expert_stride_bytes, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
 {
@@ -4789,14 +4426,6 @@ static __global__ void SparkLmExpertTileAllKernel(uint32_t weight_format, const 
 	SparkLmExpertTileDispatch<GROUP_SIZE>(weight_format,payload,scale,input,row_map,output,count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
 }
 
-/*
- * Device grouping: ONE single-block kernel replaces the per-layer host
- * round trip - histogram, exclusive prefix, and an atomic scatter whose
- * inverse map restores canonical route order for the pair reduce. Indices
- * come from the driver's
- * own gate select and are in range by construction. Kills the stream
- * synchronize every MoE layer paid and makes the step graph-capturable.
- */
 #define SPARK_LM_MOE_MAX_EXPERTS 1024u
 
 static __global__ void SparkLmMoeGroupKernel(const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t expert_count, uint32_t experts_per_token, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map)
@@ -4831,9 +4460,6 @@ static __global__ void SparkLmMoeGroupKernel(const uint32_t *pair_expert_ids, ui
 	}
 }
 
-// Race-free replacement for the per-group output scatter: every pair's
-// expert output sits at its grouped slot, so one block per row sums the
-// row's contributions through the inverse map and accumulates once.
 #define SPARK_LM_MOE_MAX_TOPK 16u
 
 static __global__ void SparkLmMoePairReduceKernel(const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t experts_per_token, uint32_t width)
@@ -4863,13 +4489,6 @@ static __global__ void SparkLmMoePairReduceKernel(const void *slot_out_bf16, con
 	}
 }
 
-/*
- * TP rank shards occupy a column slice of a full hidden row.  Keeping the
- * destination base, full row stride, and rank-column offset separate prevents
- * B>1 from treating adjacent shards of row zero as subsequent rows.  Routed
- * expert outputs remain packed at the local shard width; only the destination
- * accumulation is strided.
- */
 static __global__ void SparkLmMoePairReduceStridedKernel(
 	const void *slot_out_bf16,
 	const uint32_t *inverse_map,
@@ -4960,14 +4579,6 @@ static __global__ void SparkLmMoePairReduceOverwriteKernel(const void *slot_out_
 
 
 
-/*
- * Fused LM head: matvec against the row's hidden and a running argmax, no
- * logits tensor ever materialized. One block per row; each warp owns a
- * stripe of candidates, keeps its running best in registers, and the block
- * reduces bests through shared memory. token_ids may be null, in which case
- * the winning candidate INDEX is written (dense-vocab head); non-null maps
- * through a restricted-vocabulary id table.
- */
 static __global__ void SparkLmHeadArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count)
 {
 	__shared__ float best_score[SPARK_LM_CTA_WARPS];
@@ -5012,10 +4623,6 @@ static __global__ void SparkLmHeadArgmaxKernel(const void *hidden_bf16, const vo
 	}
 }
 
-/*
- * Shared host-side launch pipelines - each driver wraps these in a
- * two-line extern with its own constants, so the sequence lives once.
- */
 template <uint32_t GROUP_SIZE>
 static cudaError_t SparkLmHostLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension)
 {
@@ -5171,11 +4778,6 @@ static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmaxWithScore(cudaStrea
 			output_scores,candidate_offset,row_count,candidate_count,
 			hidden_dimension));
 
-	/*
-	 * DSV4's exact decode shapes use the native packed shadow projection.  The
-	 * compatibility branches remain for other model families and non-native
-	 * batch shapes; DSV4's wrapper rejects those shapes before this function.
-	 */
 	if ( SparkLmSm121NativeDecodeShape(row_count) != 0u &&
 		(hidden_dimension % 128u) == 0u &&
 		(candidate_count % SPARK_LM_SM121_NATIVE_TILE_N) == 0u )
@@ -5293,44 +4895,6 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 	return(cudaGetLastError());
 }
 
-// Size-aware batched dense linear/QKVO projection. The tile path is also the
-// fast path for tiny aligned batches: it zero-fills the padded M rows and
-// keeps one weight tile resident while tensor cores process the live row. The
-// scalar fallback remains for widths with a partial K tile or a scale layout
-// that the tile decoder does not implement.
-//
-//   B < SPARK_LM_TILE  (tiny): the tensor tile for aligned production shapes;
-//     scalar only for the explicitly unsupported layouts. This avoids making
-//     B1 pay one scalar CTA per 128 output neurons for every projection.
-//   SPARK_LM_TILE <= B <= READ_ONCE: one tile pass, weight read once across
-//     the batch. Per-token cost is flat B16..B128 - one kernel serves it.
-//   B > READ_ONCE (wide): the SAME tile, but grid.x rasterizes M as the
-//     FAST axis so adjacent M-blocks of one N-tile reuse the weight strip
-//     from L2 instead of re-reading DRAM. This is the measured knob - the
-//     deleted per-size wide-warp variants lost to grid rasterization, not
-//     to a kernel-per-size. ceil(B/TILE) M-blocks per N-tile, M fastest.
-//
-// All three inherit the FP8 tensor path under SPARK_LM_FP8_TILE (the tile
-// dispatch), and every dimension is parametric so the shape carries to the
-// next model generation unchanged.
-//
-/*
- * Hard validation of the tile's input contract. The tile does not fail on
- * bad input, it silently produces wrong numbers, in two ways. A width that
- * is not a multiple of the K tile leaves a partial trailing K tile whose
- * stagers bound rows and neurons but never K, so it folds whatever follows
- * the row into the dot product. And a weight format the decoder has no
- * branch for - F32 and U32 - falls past the BF16 and MXFP4 early returns
- * into the FP8 path and is read as packed E4M3 bytes.
- *
- * Both are latent today: every shipped projection width is K-aligned and no
- * live view carries F32 or U32. Both would be silent wrong tokens the moment
- * that changes, with nothing in the output to reveal it. They fail loudly
- * here instead, naming the offending value, because a plausible wrong answer
- * costs far more than a refused launch. The tiny-batch scalar path carries
- * explicit tails and handles any width, so only the tile regime is bound by
- * the K-multiple rule.
- */
 static inline cudaError_t SparkLmValidateLinearContract(uint32_t weight_format, uint32_t row_count, uint32_t input_dimension)
 {
 	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
@@ -5372,14 +4936,6 @@ static inline cudaError_t SparkLmHostLaunchGroupedScalarLinear(cudaStream_t stre
 	return(cudaGetLastError());
 }
 
-// The tile also REQUIRES input_dimension to be a multiple of the K tile. Its
-// stagers bound rows and neurons but never K, so a trailing partial K tile
-// stages whatever follows the row in memory and folds it into the dot
-// product - wrong output, no crash. Expert widths are always K-aligned so
-// this never bit the expert path, but a dense projection can have any width
-// and the next model generation may well introduce one. Non-aligned widths
-// therefore take the scalar path, which carries explicit scalar tails and
-// handles arbitrary dimensions exactly.
 template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
 static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
@@ -5398,18 +4954,6 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		return(cudaErrorInvalidValue);
 	if ( row_count < SPARK_LM_TILE )
 	{
-		/* B1..B15 stay on the per-row scalar GEMV. MEASURED (GB10, 27B FP8
-		 * 89 MB verify shape, 29.9 GB arena - tools/p3_batched_small_rows_
-		 * bench.cu ledger): the memory system OVERLAPS the per-row streams,
-		 * so scalar aggregate is 2.03x at B2 and 3.36x at B4, while the
-		 * one-weight-stream batched kernel below pays the shared-staging
-		 * tax and reaches only 1.53x / 2.58x (equal at B8). The per-row
-		 * route wins through B8; the batched kernel stays as the
-		 * bit-exact-proven one-pass alternative for a bandwidth profile
-		 * where overlap does not absorb the rows - switching the route is
-		 * the single launch below. (The knee-sweep "B1==B2==8.31" premise
-		 * was a misread of the CSV: 8.31 is the B1 aggregate; B2 measured
-		 * 16.63 = 2.00x, matching this bench's scalar 2.03x.) */
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
 		dim3 scalar_grid(row_count,(output_dimension +
 			SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
@@ -5420,17 +4964,6 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 			input_dimension,output_dimension)));
 		return(cudaGetLastError());
 	}
-	// B >= TILE: the tensor tile spans BOTH the read-once (B<=128) and the
-	// wide (B>128) regimes in one launch. grid.x is the M axis (blockIdx.x
-	// -> M in the tile body), so the default rasterization already walks all
-	// M-blocks of one N-tile consecutively - adjacent M-blocks reuse the
-	// weight strip warm in L2, which IS the "make M the fast grid" knob the
-	// scaling analysis names. That is why the per-size wide-warp variants
-	// were deleted rather than kept: the tile subsumes them. No third path
-	// is built because the measurement shows none pays - per-token cost is
-	// flat B16..B128 and the wide regime is the same kernel with more
-	// M-blocks. A future in-block M-chunk loop, if B256+ profiling demands
-	// it, changes the tile body, not this dispatcher.
 	dim3 tile_grid(m_blocks,n_tiles);
 	SPARK_LM_LAUNCH((
 	SparkLmExpertTileKernel<GROUP_SIZE,ACTIVATION_CODEC><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension)
@@ -5456,8 +4989,6 @@ static inline uint32_t SparkLmSm121B1Fp8LinearPairPolicy(
 		SPARK_LM_PAIR_POLICY_FLAT_16 : SPARK_LM_PAIR_POLICY_FLAT_8);
 }
 
-/* M-group dense launch: BF16 only, at least two m-tiles, K past one
- * tile so the pipelined loop engages. Caller: qwen38 dense linears. */
 static inline cudaError_t SparkLmHostLaunchBatchedLinearMloop(cudaStream_t stream, const void *weight_payload, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
@@ -5471,12 +5002,8 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinearMloop(cudaStream_t strea
 	return(cudaGetLastError());
 }
 
-/* Grouped m-loop launch: qwen38 grouped FP8 experts. */
 static inline cudaError_t SparkLmHostLaunchGroupedExpertTileMloop(cudaStream_t stream, uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_stride, uint64_t scale_stride, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t expert_count)
 {
-	/* Expert-stride CTA budget: 64 columns x n_tiles CTAs, each walking up
-	 * to expert_count/64 experts - empty experts cost a few cycles instead
-	 * of a launch. */
 	uint32_t budget = expert_count < 64u ? expert_count : 64u;
 	dim3 grid(1u,(output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,budget);
 	SPARK_LM_LAUNCH((
@@ -5535,12 +5062,6 @@ static inline cudaError_t SparkLmHostLaunchBf16LinearPair(
 		second_output_bf16,row_count,input_dimension,output_dimension));
 }
 
-/*
- * True B1 is a matrix-vector product: padding it to the M16 tensor-core atom
- * multiplies the activation work by sixteen and is slower on GB10.  Keep the
- * native tensor path for the qualified B8/B1024 buckets; only B1 selects the
- * bandwidth-oriented GEMV shared by model families.
- */
 template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
 static inline cudaError_t SparkLmHostLaunchSm121DecodeLinear(cudaStream_t stream, uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
@@ -5585,13 +5106,6 @@ static inline cudaError_t SparkLmHostLaunchSm121DecodeLinearPair(
 	combined_output_dimension = first_output_dimension + second_output_dimension;
 	if ( row_count != 1u )
 	{
-		/* Multi-row must be bit-identical to the certified 1-row math:
-		 * the verify anchor (row 0) is diffed against the 1-row lean
-		 * baseline, and the two-launch batched route accumulates
-		 * fp16-level noise (first divergent tensor: delta_wq_a,
-		 * measured). Run the exact pair kernel once per row instead of
-		 * two batched linears: same shared-input load, same dot, same
-		 * writeback as the rows==1 path, row by row. */
 		uint64_t input_row_bytes = (uint64_t)input_dimension * 2u;
 		uint64_t first_row_bytes = (uint64_t)first_output_dimension * 2u;
 		uint64_t second_row_bytes = (uint64_t)second_output_dimension * 2u;
@@ -5681,12 +5195,6 @@ static inline cudaError_t SparkLmHostLaunchSm121StridedDecodeLinear(cudaStream_t
 		(ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE &&
 		 (input_dimension % SparkActivationCodecGroupSize(ACTIVATION_CODEC)) != 0u) )
 		return(cudaErrorInvalidValue);
-	/* Multi-row must be bit-identical to the certified 1-row math: the
-	 * native MXFP8 route quantizes the BF16 activation per-K-block,
-	 * which diverges from the 1-row strided kernel and corrupts the
-	 * verify anchor's output composition (wo_a -> o_ranks). Launch the
-	 * exact strided kernel once per row, base pointers advanced by the
-	 * row strides (strides are in BF16 elements). */
 	{
 		uint32_t row;
 		for (row = 0u; row < row_count; row++)

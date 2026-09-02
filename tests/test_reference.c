@@ -1,17 +1,7 @@
-// Round-trip every format through pack -> reference decode, and check the
-// reference GEMM against an independent FP64 accumulation.
-//
-// Two properties, and they catch different things:
-//   1. pack then decode returns the original value, for every representable
-//      code at every position - catches packing and extraction errors
-//   2. the reference GEMM in FP32 matches an FP64 sum to BF16 precision -
-//      catches accumulation-order errors in the reference itself, which would
-//      otherwise make the oracle wrong in the same direction as a buggy kernel
 #include "reference.h"
 
 static int32_t failures = 0;
 
-// -- packers, the inverse of the decoders in reference.h ---------------------
 
 static void pack_code(uint8_t *base, uint32_t index, uint32_t bits, int32_t value)
 {
@@ -46,7 +36,6 @@ static int round_trip(uint32_t bits, uint32_t slots)
     return bad;
 }
 
-// -- E2M1 and E4M3 are enumerable in full -------------------------------------
 
 static int enumerate_e2m1(void)
 {
@@ -62,9 +51,7 @@ static int enumerate_e2m1(void)
 static int enumerate_e4m3(void)
 {
     int bad = 0, i;
-    // Monotonic in magnitude across the finite range, and exact at the powers
-    // of two, which is enough to catch a bias or a subnormal error.
-    if (ref_e4m3(0x38u) != 1.0f) ++bad;          /* exponent 7, mantissa 0 */
+    if (ref_e4m3(0x38u) != 1.0f) ++bad;
     if (ref_e4m3(0x40u) != 2.0f) ++bad;
     if (ref_e4m3(0x30u) != 0.5f) ++bad;
     if (ref_e4m3(0xb8u) != -1.0f) ++bad;
@@ -76,7 +63,6 @@ static int enumerate_e4m3(void)
     return bad;
 }
 
-// -- the reference GEMM against an FP64 sum -----------------------------------
 
 static int gemm_against_fp64(void)
 {
@@ -100,8 +86,6 @@ static int gemm_against_fp64(void)
             float got = ref_bf16(out[(m * 8u) + n]);
             for (k = 0; k < 64u; ++k)
                 exact += (double)ref_bf16(a[(m * 64u) + k]) * (double)ref_bf16(b[(n * 64u) + k]);
-            /* BF16 carries 8 significant bits, so agreement to 1 part in 256 is
-               the most that can be asked of the rounded result. */
             if (!(fabs(got - exact) <= fabs(exact) / 200.0))
             {
                 if (bad < 3)
@@ -113,8 +97,6 @@ static int gemm_against_fp64(void)
     return bad;
 }
 
-// Every decoder must be reachable from a GEMM, or the oracle validates less
-// than it appears to. This runs a one-element product through each.
 static int every_decoder_reaches_the_gemm(void)
 {
     static uint8_t plane[512];
@@ -126,9 +108,9 @@ static int every_decoder_reaches_the_gemm(void)
     memset(plane, 0, sizeof(plane));
     pack_code(plane, 0u, 6u, 9);
     if (ref_element_int6(plane, 0u, 0u, 4096u, scale, 128u) != 18.0f) ++bad;
-    plane[0] = 0x38u;                        /* e4m3 1.0 */
+    plane[0] = 0x38u;
     if (ref_element_e4m3(plane, 0u, 0u, 4096u, scale, 128u) != 2.0f) ++bad;
-    plane[0] = 0x05u;                        /* e2m1 low nibble = 3.0 */
+    plane[0] = 0x05u;
     if (ref_element_e2m1(plane, 0u, 0u, 4096u, scale, 128u) != 6.0f) ++bad;
     printf("  all five decoders reachable and scaled: %s\n", bad ? "NO" : "yes");
     return bad;

@@ -10,13 +10,6 @@
 extern "C" {
 #endif
 
-/*
- * K3 pack V2 loader (docs/K3_PACK_FORMAT_V2.md). Opens the pack, validates
- * magic/version, parses the manifest config, and resolves tensors BY NAME:
- * the serving module owns the inventory (the bind table), this file stays a
- * dumb, CUDA-free name -> payload resolver shared by host gates and the
- * serving tier.
- */
 
 #define SPARK_K3_PACK_MAGIC 0x4B33504Bu
 #define SPARK_K3_PACK_FORMAT_VERSION 2u
@@ -30,7 +23,7 @@ extern "C" {
 typedef struct SparkK3PackEntry
 {
 	char name[SPARK_K3_PACK_MAX_NAME_BYTES];
-	uint64_t payload_offset;   /* absolute file offset */
+	uint64_t payload_offset;
 	uint64_t bytes;
 	uint32_t kind;
 	uint32_t shape_count;
@@ -75,9 +68,6 @@ SparkStatus SparkK3PackOpen(const char *path, SparkK3Pack *pack);
 void SparkK3PackClose(SparkK3Pack *pack);
 SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 	SparkK3PackEntry *entry);
-/* The interleaved tensor's k-tile width (128 or 32 elements), read from the
- * manifest's per-tensor interleave geometry; the serving tier picks the
- * matching INTERLEAVED_B GEMM instantiation from it. */
 SparkStatus SparkK3PackLoadInterleaveTileK(SparkK3Pack *pack, const char *name,
 	uint32_t *tile_k);
 const void *SparkK3PackPayload(const SparkK3Pack *pack,

@@ -1,6 +1,3 @@
-// GB10 DRAM read-bandwidth probe: streams a working set with a pure-read
-// kernel (fp32 accumulators kept in registers), sweeping sizes from 64 MB
-// to 8 GB to separate L2 from DRAM. Reports achieved GB/s per size.
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdint>
@@ -16,7 +13,7 @@ __global__ void ReadKernel(const float4 *data, float *sink, uint64_t elements)
         acc += v.x + v.y + v.z + v.w;
     }
     if (acc == 12345.678f)
-        sink[0] = acc; // defeat dead-code elimination
+        sink[0] = acc;
 }
 
 int main(int argc, char **argv)
@@ -43,7 +40,6 @@ int main(int argc, char **argv)
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-    // Warm-up pass
     ReadKernel<<<blocks, threads>>>(data, sink, elements);
     cudaDeviceSynchronize();
     const int iterations = 8;

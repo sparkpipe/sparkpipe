@@ -1,10 +1,3 @@
-// The seam, crossed: K3 builds its cache from the COMMON machinery using
-// only its geometry header. The estimator prices the MLA latent arena from
-// the request - 576 elements a token, 24 layers, no DSA rows - and the
-// arena pages 576-wide tokens exactly as it pages glm's. The KDA side
-// budgets one slab per sequence through the slot pool, at the byte sizes
-// the kernel config defines. No glm symbol appears in this file: that
-// absence is the test.
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -93,8 +86,6 @@ static void K3TestSlotPoolBudgetsKdaState(void)
 	static uint32_t next_free[K3_TEST_SEQUENCES];
 	SparkStatePool pool;
 	uint32_t slot;
-	// the true slab is ~6.5 MB a sequence; the pool math is what is under
-	// test here, so the backing shrinks and the SIZES stay symbolic
 	assert(SPARK_K3_KV_KDA_SLOT_BYTES ==
 		SPARK_K3_KV_KDA_LAYER_COUNT *
 		(SPARK_K3_KV_KDA_STATE_BYTES_PER_LAYER +

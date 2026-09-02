@@ -13,14 +13,6 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "modules/glm52_resident_decode_stage/source/cuda/config.h"
 
-// Block-major KV geometry: one logical block = GLM52_KV_PAGE_SLOTS tokens
-// across all GLM52_LAYERS layers, laid out contiguously (the common
-// SparkKvCacheArena block-major layout). kPageBytes is the block stride; the
-// per-layer pool base the driver passes already carries the layer offset, so
-// SlotInPage stays the within-block token index. This mirrors the shared
-// arena's default block stride (block_token_count x layer_count x kv_head_count
-// x head_dim x bytes_per_scalar) and is the TRANSPOSE of the old layer-major
-// pool: same bytes, different order.
 struct Glm52Kv
 {
     static constexpr uint32_t kSlotBytes = GLM52_KV_SLOT_BYTES;
@@ -97,18 +89,8 @@ struct Glm52LayerBuffers
     const void *dense_gate_weight;
     const void *dense_up_weight;
     const void *dense_down_weight;
-    // Bind-time fact, not a launch-time decision: the pack laid the up rows
-    // immediately behind the gate rows, so one GEMM over the concatenated
-    // tensor produces the [gate | up] layout two launches would. Zero means
-    // unknown or non-contiguous, which takes the two-launch path.
     uint32_t dense_gate_up_fused;
 
-    // Tensor-parallel sharding. The pack stores per-rank shards of the row- or
-    // column-sharded projections, so every projection dimension the kernels
-    // price must come from here rather than the full-model constant; tp_degree
-    // == 1 recovers the single-rank geometry. Replicated tensors (norms, q_a,
-    // kv_a, kv_b, indexer, router, correction) keep their full dims and the KV
-    // cache keeps all heads on every rank.
     uint32_t tp_degree;
     uint32_t tp_rank;
     uint32_t attn_heads;
@@ -168,15 +150,11 @@ struct Glm52LayerBuffers
     const uint32_t *row_positions;
     uint32_t *selected_positions;
     uint32_t selected_position_count;
-    /* R3 flash-decode: the split path engages only above the deployment
-     * threshold and only with the partials workspace bound. */
     float *attention_split_partials;
     uint64_t attention_split_partial_blocks;
     uint32_t decode_split_context_threshold;
 };
 
-// The firmware header sizes the partials workspace; the shared kernel policy
-// owns the partition cap. One definition of the cap, checked not duplicated.
 static_assert(
     LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS,
@@ -249,11 +227,6 @@ static int32_t Glm52LayerIndexer(
     {
         return LM_LAUNCH_OK;
     }
-    /* The DSA selection is bypassed entirely while the context fits the
-     * selection width (the top-k selects every position), so the indexer's
-     * projections, norms, rope and cache store are pure overhead there.
-     * Skip the whole launch sequence and save ~8 kernel launches per
-     * full-indexer layer on every short-context token. */
     if (context <= GLM52_DSA_SELECTED)
     {
         return LM_LAUNCH_OK;
@@ -480,8 +453,6 @@ static int32_t Glm52LayerAttention(
         GLM52_HIDDEN,
         GLM52_RMS_EPSILON);
 
-    // The two low-rank norms are nonlinear and cannot be folded into a static
-    // hidden-to-latent matrix. Run the checkpoint sequence exactly.
     status = Glm52LaunchBf16Linear(
         buffers->normed_bf16,
         buffers->q_a_weight,
@@ -628,13 +599,6 @@ static int32_t Glm52LayerAttention(
         buffers->positions,
         rows,
         GLM52_LATENT_ROW);
-    // R3 flash-decode: below the deployment threshold (or with no workspace,
-    // or when the grid already fills the machine) this is the SAME
-    // single-pass launch as before, byte for byte. Above it, the position
-    // range splits across CTAs and a combine pass merges the partial
-    // softmax states deterministically. position_bound is the host-side walk
-    // bound: the selection width when the DSA selection is active, else the
-    // context.
     if (LmLatentAttentionDecodeSplitLaunch<
             Glm52Kv, GLM52_ATTN_THREADS, GLM52_LATENT, GLM52_ROPE_DIM>(
             buffers->query_latent_bf16,
@@ -722,12 +686,6 @@ static int32_t Glm52LayerDenseMlp(
 
     if (buffers->dense_gate_up_fused != 0u)
     {
-        // The pack stores the dense gate-up stack as [up | gate] (matching the
-        // routed-expert convention), so one GEMM over the concatenated tensor
-        // writes that [up | gate] layout directly and LmSiluMulKernel runs with
-        // gate_first=false - the two-launch form below re-reads the normed
-        // activation and pays a second launch for the same weight bytes.
-        // Per-element math is identical either way; only the launch count differs.
         status = Glm52LaunchBf16Linear(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
@@ -822,8 +780,6 @@ static int32_t Glm52LayerMoe(
     LmGemmArguments gemm;
     int32_t status;
 
-    /* LmBf16Format carries kScaleGroup 0 (no scale plane); the divisibility
-     * law only applies to codecs that actually tile scale groups. */
     static_assert(ExpertFormat::kScaleGroup == 0u ||
         (GLM52_HIDDEN % ExpertFormat::kScaleGroup == 0u &&
         GLM52_EXPERT_INTERMEDIATE % ExpertFormat::kScaleGroup == 0u),
@@ -1113,14 +1069,6 @@ static int32_t Glm52Head(
     }
 
     tiles = (vocabulary + GLM52_HEAD_TILE - 1u) / GLM52_HEAD_TILE;
-    // The stream arrives SPLIT: the layer loop leaves the last MLP output in
-    // hidden_bf16 and everything before it in residual_bf16, and the true
-    // final stream is their sum. Norming hidden alone - as this did - drops
-    // the whole residual stream at the one norm the model cannot afford to
-    // lose. The fold is free: the kernel adds the residual and writes no
-    // residual back when residual_out is null.
-    // CONTRACT: a caller that flushes residual into hidden itself must zero
-    // residual_bf16 afterwards, or the stream is counted twice here.
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS, uint16_t>),
         rows,
@@ -1166,13 +1114,6 @@ static int32_t Glm52Head(
         : LM_LAUNCH_ERR_LAUNCH;
 }
 
-/* R1 screened head at B1 (the certified-FP8 path, hardware-qualified on
- * glm5_next/qwen38/dsv4/qwen4_flash at 5.1-5.3x shard / 2.7-3.1x full
- * vocab): the SAME fused residual RMS norm the full-vocab head runs
- * (verbatim - identical normed stream), then the certified FP8 screen
- * (bounds guarantee the true argmax is in the candidate set) + exact-BF16
- * rescore - argmax-equal by construction. rows==1 only; multi-row keeps
- * the full-vocab path (batch amortizes it). */
 static int32_t Glm52HeadCertifiedB1(
     const Glm52LayerBuffers *buffers,
     const void *head_norm_weight,

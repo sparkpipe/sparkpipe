@@ -28,13 +28,6 @@ extern "C" {
 
 #define SPARK_KV_PAGE_STORE_DIRECT_IO_ALIGNMENT UINT64_C(4096)
 
-/*
- * Device-neutral backing for opaque fixed-size KV pages. The cache decides
- * what to evict and when to fetch it; a model driver supplies only the copy
- * primitive needed to move its physical page between device and host memory.
- * Anonymous backing is volatile scratch capacity with no durability guarantee.
- * DIRECT_IO is opt-in and fails closed on unsupported or unaligned backing.
- */
 typedef SparkStatus (*SparkKvPageStoreCopyFunction)(
 	void *context,
 	uint32_t direction,

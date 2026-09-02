@@ -70,11 +70,6 @@ static inline SparkStatus SparkRowLayoutDirectLaneOrdinal(
 	return(SPARK_STATUS_OK);
 }
 
-/*
- * Validate one round-major frame in O(lanes + rows). The ordinal callback
- * must provide a stable O(1) mapping for every live lane. A valid frame is
- * ordered lexicographically by (zero-based lane occurrence, lane ordinal).
- */
 static inline SparkStatus SparkRowLayoutValidateRoundMajor(
 	uint32_t row_count,
 	uint32_t lane_count,
@@ -113,7 +108,6 @@ static inline SparkStatus SparkRowLayoutValidateRoundMajor(
 	return(SPARK_STATUS_OK);
 }
 
-/* Return the next already-validated round-major wave without lane scans. */
 static inline uint32_t SparkRowLayoutRoundMajorWaveRowCount(
 	uint32_t first_row,
 	uint32_t row_count,

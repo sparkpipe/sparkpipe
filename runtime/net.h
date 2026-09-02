@@ -1,22 +1,5 @@
 #pragma once
 
-// The helpers every listener and every tool wrote for itself.
-//
-// Counted before writing this: six ParseU32, four CreateListenSocket, four
-// SetNonblocking, two MonotonicNs - sixteen definitions of four functions
-// across node/, api/, tools/ and deployment/. Five of the six ParseU32 were
-// byte-identical after whitespace; two of the CreateListenSocket were exactly
-// identical, so the backlog and SO_REUSEADDR had to be changed twice to take
-// effect and nothing said so.
-//
-// Two variants deliberately did NOT fold in, because they are different
-// functions wearing the same name rather than copies:
-//
-//   node/memlink_tool.c resolves through getaddrinfo, so it accepts a host
-//                       name and both address families.
-//
-// Error codes are unique per site across the whole header so a return value
-// identifies the call that produced it.
 
 #include <arpa/inet.h>
 #include <fcntl.h>

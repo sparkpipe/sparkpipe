@@ -32,7 +32,6 @@ typedef struct SparkGlm5NextLayerWeights
 	const void *expert_down_scale;
 	const void *shared_gate_up_bf16;
 	const void *shared_down_bf16;
-	/* KDA (pack-V2 fusions; conv/bias/log-scale arrive rank-sliced). */
 	const void *kda_qkv_beta_bf16;
 	const void *kda_decay_gate_down_bf16;
 	const void *kda_decay_up_bf16;
@@ -44,14 +43,12 @@ typedef struct SparkGlm5NextLayerWeights
 	const float *kda_head_log_scale_f32;
 	const void *kda_out_norm_bf16;
 	const void *kda_out_bf16;
-	/* Hyper-connections (fn/base/scale stored F32). */
 	const void *hc_attn_fn_f32;
 	const void *hc_attn_base_f32;
 	const void *hc_attn_scale_f32;
 	const void *hc_ffn_fn_f32;
 	const void *hc_ffn_base_f32;
 	const void *hc_ffn_scale_f32;
-	/* Indexer kpool compressor. */
 	const void *index_compress_ape_f32;
 	const void *index_compress_gate_bf16;
 } SparkGlm5NextLayerWeights;
@@ -92,7 +89,6 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *intermediate_bf16;
 	uint16_t *expert_out_bf16;
 	uint16_t *shared_out_bf16;
-	/* KDA per-layer state and scratch. */
 	uint8_t *kda_state_pool;
 	const uint32_t *kda_state_index;
 	uint16_t *kda_qkv_window_pool;
@@ -106,7 +102,6 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *kda_output_bf16;
 	float *kda_retention;
 	float *kda_write_gate;
-	/* Hyper-connection scratch. */
 	float *hc_mixes_f32;
 	float *hc_pre_f32;
 	float *hc_post_f32;
@@ -127,7 +122,6 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t *output_token;
 	float *output_score;
 	uint64_t *head_maxloc_u64;
-	/* R1 screened-head scratch (per head-owning rank shard size). */
 	void *head_certified_scratch;
 	uint32_t *head_certified_candidates;
 	uint32_t *head_screened_count;
@@ -166,8 +160,6 @@ typedef struct SparkGlm5NextCudaWave
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
-	/* R1 certified-FP8 shadow of the lm_head shard (built on-device at
-	 * load on head-owning ranks; 0 elsewhere and before the build). */
 	const uint8_t *head_certified_fp8_payload;
 	const float *head_certified_fp8_scale_f32;
 	const float *head_certified_fp8_norm_f32;
@@ -178,8 +170,6 @@ typedef struct SparkGlm5NextCudaWave
 	uint8_t *index_cache;
 	uint64_t index_layer_stride_bytes;
 	const uint32_t *index_ordinal_by_local_layer;
-	/* KDA per-layer pools: fp32 state + the three bf16 conv windows,
-	 * indexed by KDA ordinal (only 34 layers carry them). */
 	uint8_t *kda_state_pools;
 	uint64_t kda_state_layer_stride_bytes;
 	uint8_t *kda_q_window_pool;
@@ -191,9 +181,6 @@ typedef struct SparkGlm5NextCudaWave
 	uint32_t kda_layer_count;
 	const uint32_t *page_table;
 	uint32_t multiprocessor_count;
-	/* R3 flash-decode: 0 keeps the single-pass decode attention byte-for-
-	 * byte; above the threshold the position range splits across CTAs and a
-	 * combine pass merges the per-partition softmax states. */
 	uint32_t decode_split_context_threshold;
 	float *attention_split_partials_f32;
 	uint64_t attention_split_partial_blocks;
@@ -207,7 +194,6 @@ int32_t SparkGlm5NextLaunchCudaWave(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
-/* HC placement on the REDUCED sublayer output (chain reduce-completion stages). */
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);

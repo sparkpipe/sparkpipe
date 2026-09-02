@@ -89,10 +89,6 @@ static int32_t SparkGlm52CudaStatus(cudaError_t status)
 	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-/* Cross-rank head argmax: pack (score, token) into one u64 per row so the
- * TP collective can reduce-max it. The score's float bits are order-mapped
- * (negative-safe); the token is inverted so equal scores keep the LOWEST
- * token id, and the rank's vocab offset is folded in at pack time. */
 static __device__ __forceinline__ uint32_t SparkGlm52OrderedHeadScore(float score)
 {
 	uint32_t bits;
@@ -129,9 +125,6 @@ static __global__ void SparkGlm52HeadMaxlocUnpackKernel(
 
 static __device__ __forceinline__ float2 SparkGlm52LoadBf16Pair(const void *base,uint64_t element)
 {
-	/* Little-endian pair layout: x occupies the LOW 16 bits, y the HIGH.
-	 * The bits are REINTERPRETED (int_as_float), never integer-converted:
-	 * BF16 lives in the top 16 bits of the float's bit pattern. */
 	uint32_t packed = ((const uint32_t *)base)[element];
 	float2 pair;
 	pair.x = __int_as_float((int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
@@ -298,10 +291,6 @@ static void SparkGlm52BindLayer(
 	buffers->q_b_weight = weight->q_b_bf16;
 	buffers->kv_a_weight = weight->kv_a_bf16;
 	buffers->kv_a_norm_weight = weight->kv_a_norm_bf16;
-	/* kv_b is replicated across ranks, but each rank computes only its own
-	 * attn_heads local query heads, and the per-head projection kernels index
-	 * the weight by LOCAL head id. Offset both per-head tensors to this
-	 * rank's head slice (global head tp_rank*attn_heads). */
 	{
 		uint64_t head_offset = (uint64_t)wave->tp_rank * buffers->attn_heads;
 		uint64_t key_head_stride = (uint64_t)GLM52_LATENT * GLM52_QK_NOPE_DIM;
@@ -430,9 +419,6 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 		uint32_t rank_offset;
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		/* R1: B1 decode takes the certified-FP8 screened head (the shadow
-		 * built at load; argmax-equal by construction). Multi-row keeps
-		 * the full-vocab rescore - batch amortizes it. */
 		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 )
 			status = Glm52HeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
 		else

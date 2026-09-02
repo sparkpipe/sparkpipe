@@ -1,23 +1,3 @@
-/*
- * The speculation-provider slot: proves BOTH binding shapes fit the ONE
- * interface (docs/SPECULATION_PROVIDER_DESIGN.md sequencing step 2).
- *
- * Shape A (module-provider): the provider lives behind a resolve function
- * like a separate firmware-module unit - the adapter asks for the kind
- * and receives an ops table it does not compile in. This is the shape of
- * the dispatch-policy draft backend (the only provider-shaped module in
- * the tree).
- *
- * Shape B (embedded-provider): the provider is a static ops table inside
- * the family adapter - the shape of the block-diffusion drafter compiled
- * into its adapter today.
- *
- * No family migrates onto the slot in this sprint: this test pins the
- * interface both future cutovers must satisfy - capability query with a
- * reason, the draft lifecycle, and the ONE verify accounting (the
- * accepted-token-count/chain-width/tokens-per-sequence contract where
- * the lease-advance bug class dies).
- */
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -37,7 +17,6 @@ static const SparkSpeculationKvContract test_kv_contract =
 	.block_history_depth = 2u
 };
 
-/* ---- the shared provider behavior both shapes serve ---- */
 
 static SparkStatus test_provider_capability_query(
 	const SparkSpeculationGeometryQuery *geometry,
@@ -88,7 +67,6 @@ static SparkStatus test_provider_draft_next(
 	state = (TestProviderState *)provider_state;
 	if ( state == 0 || draft == 0 || draft->ids == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* Anchor-first: draft[0] restates the just-committed token. */
 	for (index=0u; index<draft->count; index++)
 		draft->ids[index] = 1000u + index;
 	draft->first_draft_is_committed = 1u;
@@ -114,7 +92,7 @@ static SparkStatus test_provider_verify_account(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(contract_out,0,sizeof(*contract_out));
 	contract_out->chain_width = verified_count;
-	contract_out->accepted_token_count = verified_count - 1u; /* anchor */
+	contract_out->accepted_token_count = verified_count - 1u;
 	contract_out->tokens_per_sequence = contract_out->accepted_token_count;
 	contract_out->chain_live = 1u;
 	return(SPARK_STATUS_OK);
@@ -142,7 +120,6 @@ static const SparkSpeculationProviderDescriptor test_provider_descriptor =
 	.environment_schema_count = 2u
 };
 
-/* ---- Shape A: the provider arrives through a module-style resolve ---- */
 
 static SparkStatus test_module_resolve_provider(
 	void *module_unit,
@@ -156,7 +133,6 @@ static SparkStatus test_module_resolve_provider(
 	return(SPARK_STATUS_OK);
 }
 
-/* ---- Shape B: the provider is a static table inside the adapter ---- */
 
 int main(void)
 {
@@ -171,12 +147,9 @@ int main(void)
 	char refusal[128];
 	TestProviderState embedded_state;
 
-	/* Shape A: resolve, then validate the ONE interface. */
 	assert(test_module_resolve_provider(0,&provider) == SPARK_STATUS_OK);
 	assert(SparkSpeculationProviderValidate(&provider) == SPARK_STATUS_OK);
 
-	/* The adapter drives the capability query, draft lifecycle, and the
-	 * verify accounting identically for either shape. */
 	memset(&geometry,0,sizeof(geometry));
 	assert(provider.ops->capability_query(&geometry,refusal,
 		sizeof(refusal)) == SPARK_STATUS_UNSUPPORTED);
@@ -208,8 +181,6 @@ int main(void)
 		&test_kv_contract;
 	assert(kv->block_history_depth == 2u);
 
-	/* Shape B: the same ops, embedded - a static table with the adapter's
-	 * own state, no resolve step. */
 	provider.descriptor = &test_provider_descriptor;
 	provider.ops = &test_provider_ops;
 	provider.provider_state = &embedded_state;
@@ -220,7 +191,6 @@ int main(void)
 		SPARK_STATUS_OK);
 	provider.ops->draft_cancel(provider.provider_state);
 
-	/* The validator refuses a provider that skips its contract. */
 	{
 		SparkSpeculationProvider broken;
 		SparkSpeculationProviderOps broken_ops = test_provider_ops;

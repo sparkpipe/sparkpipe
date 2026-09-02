@@ -1,41 +1,8 @@
-/* Large stage packs exceed 2 GB: 64-bit file offsets are required. */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
 #include "spark_glm5_next_stagepack_format.h"
 
-/*
- * Synthetic glm5_next stage pack writer, tier- and slice-aware.
- *
- * Emits every tensor one pipeline STAGE will demand, at the geometry the
- * module was compiled for, with reproducible pseudo-random contents: the
- * loader, the shape table, the TP shard arithmetic and the hybrid layer
- * walk run end to end against it. These are not the model's weights -
- * they are correctly shaped noise, and the module cannot tell the
- * difference by design.
- *
- * The tensor list is DERIVED from the same shape table
- * (SparkGlm5NextStagePackExpectedShape) the loader validates against, so
- * the two can never disagree: the per-layer kinds fall out of the layer
- * class (34 KDA / 11 DSA / dense-first-3), and the MTP layer's entries
- * only appear when --mtp names a slice that reaches layer 45.
- *
- * The noise and write machinery (xorshift lane, per-tensor seeding,
- * alignment, payload/scale fillers, chunked region writer) is the shared
- * generator core; this file owns the tier geometry (tp degree, expert
- * codec), the kind-walk inventory, and the tier header layout.
- *
- * Usage:
- *   cc -o glm5_next_pack_synthesize \
- *     -I../../include -I../../model-families/common/include \
- *     -I../../model-families/glm5_next/include \
- *     -I../../modules/glm5_next_resident_decode_stage/include \
- *     -I../../modules/glm5_next_resident_decode_stage/source \
- *     tools/glm5_next_pack_synthesize.c
- *   ./glm5_next_pack_synthesize --output stage.g5nsp \
- *     --first-layer 0 --layer-count 45 [--mtp] \
- *     [--tp-degree 1] [--owns-embedding] [--owns-head] [--seed 1]
- */
 
 #define SPARK_GLM5_NEXT_SYNTHESIZE_MAX_TENSORS 2048u
 #define SPARK_GLM5_NEXT_SYNTHESIZE_CHUNK_BYTES (8u * 1024u * 1024u)
@@ -55,9 +22,6 @@ typedef struct SparkGlm5NextSynthesizeContext
 	uint64_t seed;
 } SparkGlm5NextSynthesizeContext;
 
-/* Shared generator core configuration: the glm5_next packed payload kind
- * carries e4m3 NaN lanes, so packed bytes are masked finite; scales are
- * always f32 blocks near 1.0. */
 #define SPARK_SYNTH_CONTEXT_T SparkGlm5NextSynthesizeContext
 #define SPARK_SYNTH_CHUNK_BYTES SPARK_GLM5_NEXT_SYNTHESIZE_CHUNK_BYTES
 #define SPARK_SYNTH_ALIGN_UNIT SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES
@@ -100,17 +64,12 @@ static int32_t SparkGlm5NextSynthesizeAppend(SparkGlm5NextSynthesizeContext *con
 	return(0);
 }
 
-/* The per-layer inventory falls straight out of the shape table: every
- * kind that is legal on this layer appends. */
 static int32_t SparkGlm5NextSynthesizeAppendLayer(SparkGlm5NextSynthesizeContext *context, uint32_t layer_index)
 {
 	uint32_t kind;
 	for (kind = SPARK_GLM5_NEXT_STAGEPACK_TENSOR_ATTN_NORM;
 	     kind < SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KIND_COUNT; kind++)
 	{
-		/* The MTP head kinds are only legal on the MTP layer, which the
-		 * table itself enforces; a kind the table rejects here is simply
-		 * not part of this layer's inventory. */
 		int32_t appended = SparkGlm5NextSynthesizeAppend(context,kind,layer_index);
 		if ( appended == -1 || appended == -3 )
 			return(-(int32_t)kind);
@@ -277,7 +236,6 @@ int main(int argc, char **argv)
 	header.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16;
 	header.expert_weight_codec = context.expert_codec;
 	header.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16;
-	/* reserved0/1 are the TP identity per the format header. */
 	header.reserved0 = context.tp_degree;
 	header.reserved1 = 0u;
 	snprintf(header.model_revision,sizeof(header.model_revision),"%s",revision);

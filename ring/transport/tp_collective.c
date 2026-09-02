@@ -20,11 +20,6 @@
 #define SPARK_TP_COLLECTIVE_HANDSHAKE_MAGIC 0x53545043u
 #define SPARK_TP_COLLECTIVE_OPERATION_MAGIC 0x5354504fu
 #define SPARK_TP_COLLECTIVE_OPERATION_SUM_F32 1u
-/* BF16 payload with F32 accumulate per exchange step (audit NET-011): decode
-   all-reduce tensors are BF16, so staging F32 doubled both the host-staging
-   copies and the wire bytes. The wire kind is negotiated in the operation
-   header, so a rank mixing kinds fails validation instead of silently
-   decoding the peer's bytes with the wrong element width. */
 #define SPARK_TP_COLLECTIVE_OPERATION_SUM_BF16 2u
 #define SPARK_TP_COLLECTIVE_CONNECT_RETRY_NANOSECONDS 2000000L
 #define SPARK_TP_COLLECTIVE_IO_CHUNK_BYTES ((uint64_t)INT_MAX)
@@ -1191,7 +1186,6 @@ static int SparkTpCollectiveMemoryRangesOverlap(
     return first_begin < second_end && second_begin < first_end;
 }
 
-/* Widens one BF16 lane to F32: the high half of the F32 bit pattern. */
 static float SparkTpCollectiveBf16ToF32(uint16_t value_bf16)
 {
     uint32_t bits;
@@ -1202,13 +1196,6 @@ static float SparkTpCollectiveBf16ToF32(uint16_t value_bf16)
     return value;
 }
 
-/* Narrows one F32 lane to BF16 with round-to-nearest-even, matching the
-   device-side narrowing a CUDA kernel would apply, so the host-staged and the
-   future device-resident path round identically. NaN inputs are canonicalised
-   before the bias add, which would otherwise carry into the exponent and
-   produce infinity. Every rank runs this same code on the same partials, so
-   the BF16 variant keeps the F32 variant's bitwise-identical-across-ranks
-   guarantee. */
 static uint16_t SparkTpCollectiveF32ToBf16(float value)
 {
     uint32_t bits;
@@ -1241,10 +1228,6 @@ static void SparkTpCollectiveReduceSumF32(
     }
 }
 
-/* The standard BF16-all-reduce recipe (vLLM custom all-reduce, NCCL): the
-   wire and the staging buffers stay BF16, each exchange step accumulates in
-   F32 and narrows once, so precision cost is one rounding per doubling step
-   instead of one per element-pair in F32 staged at twice the bytes. */
 static void SparkTpCollectiveReduceSumBf16(
     void *values,
     const void *scratch,

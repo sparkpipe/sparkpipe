@@ -24,8 +24,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: test_qwen38_pack_load PACK\n");
         return 2;
     }
-    /* Defaults smoke a 1-layer mid stage; pre-set the env to override the
-     * slice (e.g. a real stage-0 pack: INDEX=0 FIRST_LAYER=0). */
     setenv("SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION","1",1);
     if ( getenv("SPARK_QWEN38_MAX_STAGE_COUNT") == 0 )
         setenv("SPARK_QWEN38_MAX_STAGE_COUNT","4",1);

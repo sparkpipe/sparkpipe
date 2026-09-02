@@ -1,19 +1,3 @@
-// K3 resident decode stage runner: embed -> slice -> head over the dispatch,
-// with the TP4 all-reduce wiring (see the header for the ownership layout).
-//
-// The slice's layer_collective hook fires after every layer and all-reduces
-// the input-sharded projection destinations the layer wrote WITHOUT the
-// partial fold (tp_sharded): attention_out (kda_out / mla_out), hidden
-// (routed_up / dense_down) and shared_out (shared_w2). The attention fold
-// keeps the fused path's rule - SET at a block boundary (the slice already
-// set the partial to the LOCAL attention output there, and the summed value
-// replaces it), ADD otherwise; the MLP folds are ALWAYS adds, because the
-// boundary restart already happened with the attention output and the MoE
-// half accumulates on top of it. The embedding (stage 0) and the head
-// candidates (last stage) use the same ring collective; the head exchange
-// is a slot-encoded SUM - each rank fills only its slot, so the sum over
-// the rank slots IS the all-gather of the four local argmaxes and the
-// winner reduces locally.
 
 #include <cstdio>
 #include <cstdlib>
@@ -26,11 +10,8 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
-/* the kernels below take the state through opaque contexts; forward */
 typedef struct SparkK3RunnerState SparkK3RunnerState;
 
-// The dense GEMM's row offsets are [0, rows] per step; a device-side write
-// keeps the hot path free of host traffic (the CUDA-graph capture contract).
 __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
 {
 	if ( threadIdx.x == 0u )
@@ -40,12 +21,6 @@ __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t ro
 	}
 }
 
-// The stream-ordered completion the device tier's submission carries: fold
-// the summed fused segment(s) into the AttnRes partial with the
-// fused-epilogue rule (SET at a boundary restart, ADD otherwise), then free
-// the heap context. The folds land on the SUBMISSION's stream, so the order
-// (NCCL kernels, then folds, then the next consumer) holds without the
-// legacy default stream.
 typedef struct SparkK3RunnerTpContext
 {
 	K3LayerBuffers *buffers;
@@ -69,8 +44,6 @@ static void K3RunnerTpCompletion(void *context,
 	uint16_t *fused = tp->fused;
 	if ( tp->phase == 2u )
 	{
-		/* the gate|up segment: write the SUMMED partial back into the scratch
-		 * the w1 half left it in, so SiTU runs on the full-width gate|up */
 		cudaMemcpyAsync(b->gate_up_bf16, fused,
 			(uint64_t)tp->gate_up_elements * 2u,
 			cudaMemcpyDeviceToDevice, tp->stream);
@@ -79,7 +52,6 @@ static void K3RunnerTpCompletion(void *context,
 	}
 	if ( tp->phase == 0u )
 	{
-		/* the attention segment: restart at a boundary, accumulate otherwise */
 		if ( tp->boundary != 0u )
 			K3PartialSet(b, fused, rows, tp->stream);
 		else
@@ -87,8 +59,6 @@ static void K3RunnerTpCompletion(void *context,
 	}
 	else
 	{
-		/* the MLP segment(s): routed_up (the dense_down at layer 0) and the
-		 * shared_w2 always accumulate on top of the restart */
 		K3PartialAdd(b, fused, rows, tp->stream);
 		if ( tp->segments == 2u )
 			K3PartialAdd(b, fused + elements, rows, tp->stream);
@@ -96,9 +66,6 @@ static void K3RunnerTpCompletion(void *context,
 	delete tp;
 }
 
-// The per-phase pack: phase 0 stages attention_out, phase 1 stages hidden
-// (routed_up / dense_down) and, for routed layers, shared_out after it, phase 2
-// stages the w1 gate|up partial (packed_rows x 2*intermediate wide).
 __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	const uint16_t *hidden,const uint16_t *shared,const uint16_t *gate_up,
 	uint16_t *fused,uint32_t rows,uint32_t phase,uint32_t segments,
@@ -125,9 +92,6 @@ __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	}
 }
 
-// The recursive TP4 BF16 tree the device collective's direct all-to-all
-// contract specifies: round(0+1), round(2+3), round(local+remote), each
-// widen-add-narrow so every rank lands the bit-identical BF16 sum.
 __global__ static void K3RunnerCombineTp4TreeKernel(const uint16_t *const *rank_devices,
 	uint16_t *destination,uint32_t tp_rank,uint32_t rows,uint32_t hidden_dimension)
 {
@@ -145,7 +109,6 @@ __global__ static void K3RunnerCombineTp4TreeKernel(const uint16_t *const *rank_
 	(void)tp_rank;
 }
 
-// The two-rank BF16 combine (the collective's plain fallback path).
 static SparkStatus K3RunnerCombineBf16(void *combine_context,
 	void *destination_device,const void *source_device,
 	uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream)
@@ -159,8 +122,6 @@ static SparkStatus K3RunnerCombineBf16(void *combine_context,
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-// Host side of the combine contract (the device collective's
-// CombineTp4Bf16 function pointer).
 static SparkStatus K3RunnerCombineTp4Bf16(void *combine_context,
 	void *destination_device,const void *const rank_devices[4],uint32_t tp_rank,
 	uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream)
@@ -188,12 +149,10 @@ typedef struct SparkK3RunnerState
 	uint16_t *fused_device;
 	uint32_t fused_rows;
 	uint64_t tp_next_ordinal;
-	uint32_t rows;              /* the step in flight, for the hook */
+	uint32_t rows;
 	const uint16_t *embed_weight;
 	const uint16_t *head_norm_weight;
 	const uint16_t *head_weight;
-	/* R1: the certified-FP8 shadow of the lm_head slice (built on-device
-	 * at load, one sweep; the recipe hardware-qualified on 5 families). */
 	uint8_t *head_certified_fp8_payload;
 	float *head_certified_fp8_scale_f32;
 	float *head_certified_fp8_norm_f32;
@@ -202,20 +161,14 @@ typedef struct SparkK3RunnerState
 	uint32_t *head_screened_count;
 	uint32_t vocab;
 	uint32_t vocab_slice_rows;
-	/* host staging for the BF16 collective: values + scratch */
 	uint16_t *staging_values;
 	uint16_t *staging_scratch;
 	uint32_t staging_capacity;
-	/* the fused per-layer collective packs attention_out | hidden |
-	 * shared_out into one staging buffer (3 x rows x K3_HIDDEN) */
 	uint32_t fused_capacity;
-	/* head candidate slot exchange: rows x (2 * tp_degree) floats */
 	float *head_slots_host;
 	float *head_slots_device;
-	/* the device-tier head exchange: rows x u64 winner packs (layer.cuh) */
 	uint64_t *head_maxloc;
 	uint32_t head_slots_capacity;
-	/* per-step device arrays the dispatch step consumes */
 	uint32_t *route_expert;
 	uint32_t *route_packed_row;
 	uint32_t *route_source_token;
@@ -232,18 +185,15 @@ typedef struct SparkK3RunnerState
 	float *output_score;
 	uint32_t *output_token_host;
 	float *output_score_host;
-	/* per-token device tensors for the serial-TP half step (single-token decode) */
-	uint32_t *positions;        /* rows */
-	uint32_t *context_length;   /* rows */
-	uint32_t *sequence_of_row;  /* rows */
-	uint32_t *kda_state_index;  /* sequences */
+	uint32_t *positions;
+	uint32_t *context_length;
+	uint32_t *sequence_of_row;
+	uint32_t *kda_state_index;
 	cudaStream_t stream;
 	uint32_t max_rows;
 	uint32_t max_context;
 	uint32_t multiprocessors;
 	uint64_t kv_page_bytes;
-	/* captured slice graphs, keyed by rows (sequences = rows, commit = 1,
-	 * packed_rows = rows * K3_TOP_K - all deterministic per shape) */
 	struct
 	{
 		cudaGraphExec_t executable;
@@ -255,7 +205,6 @@ typedef struct SparkK3RunnerState
 	uint32_t graphs_broken;
 } SparkK3RunnerState;
 
-/* The dense-offset kernel + the whole slice launch form the capture unit. */
 static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
 	SparkK3StepInput *in, uint32_t rows, uint32_t sequences,
 	uint32_t packed_rows, cudaStream_t stream)
@@ -265,10 +214,6 @@ static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
 		packed_rows, state->max_context, state->multiprocessors, stream);
 }
 
-/* Capture-safe only with no collective (tp_degree 1: the layer folds its own
- * projections and the hook no-ops) or with the NCCL device tier (the host
- * tiers' syncs and host staging are not replayable), and never on the legacy
- * default stream. */
 static uint32_t K3RunnerGraphsEligible(const SparkK3RunnerState *state,
 	cudaStream_t stream)
 {
@@ -298,13 +243,9 @@ static int32_t K3RunnerLaunchSliceGraph(SparkK3RunnerState *state,
 				return error == cudaSuccess ? SPARK_K3_DISPATCH_OK :
 					SPARK_K3_DISPATCH_ERR_CUDA;
 			}
-			/* first sighting was the warm run; capture now */
 			break;
 		}
 	}
-	/* First sighting of this shape: run the warm step DIRECT (the shared-memory
-	 * opt-ins and tensor-map encodes must precede capture), slot it, and
-	 * capture on the next submit. */
 	if ( i == 4u )
 	{
 		for ( i = 0u; i < 4u; ++i )
@@ -328,8 +269,6 @@ static int32_t K3RunnerLaunchSliceGraph(SparkK3RunnerState *state,
 	cudaError_t end_error = cudaStreamEndCapture(stream, &graph);
 	if ( end_error != cudaSuccess || status != SPARK_K3_DISPATCH_OK || graph == 0 )
 	{
-		/* An invalidated capture discards the recorded work - the step did
-		 * NOT execute. Run it directly and disable the graph path. */
 		if ( graph != 0 )
 			(void)cudaGraphDestroy(graph);
 		s->graphs_broken = 1u;
@@ -343,7 +282,6 @@ static int32_t K3RunnerLaunchSliceGraph(SparkK3RunnerState *state,
 		s->graphs_broken = 1u;
 		return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream);
 	}
-	/* store (reuse the warm slot when found, else the first free one) */
 	for ( i = 0u; i < 4u; ++i )
 		if ( s->graphs[i].live != 0u && s->graphs[i].rows == rows )
 		{
@@ -361,8 +299,6 @@ static int32_t K3RunnerLaunchSliceGraph(SparkK3RunnerState *state,
 			return cudaGraphLaunch(executable, stream) == cudaSuccess ?
 				SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
 		}
-	/* no slot: keep the executable orphaned-safe by launching, then leak-free
-	 * teardown cannot reach it - destroy immediately and run direct */
 	(void)cudaGraphExecDestroy(executable);
 	s->graphs_broken = 1u;
 	return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream);
@@ -380,10 +316,6 @@ static uint32_t K3RunnerLayerCount(uint32_t stage_index)
 	return(count[stage_index % 4u]);
 }
 
-// One BF16 all-reduce of a rows x K3_HIDDEN device tensor: sync the stream,
-// stage to the host, all-reduce in place, upload. The sync-per-projection is
-// the host-collective tier's known cost; the device-direct tier replaces it
-// without changing this file's contract.
 static void K3RunnerEmbedCompletion(void *context,
 	const SparkTpDeviceCollectiveCompletion *completion)
 {
@@ -400,12 +332,6 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 		state->device_collective.backend_kind ==
 			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
 	{
-		/* THE DEVICE TIER: the embedding is slot-encoded (the out-of-slice
-		 * rank contributes zero), so ONE stream-ordered all-reduce of the
-		 * rows x K3_HIDDEN buffer IS the embedding exchange - no sync, no
-		 * host staging. The buffer reduces in place; nothing folds. NCCL
-		 * only: the hidden-transport tier cannot narrow its pre-registered
-		 * frame. */
 		SparkTpDeviceCollectiveSubmission submission;
 		memset(&submission, 0, sizeof(submission));
 		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -444,18 +370,6 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 	return SPARK_STATUS_OK;
 }
 
-// The slice's per-layer hook, fired in two phases. Phase 0 all-reduces
-// and folds the attention output (kda_out / mla_out) BEFORE the MLP-side
-// retrieval, whose partial mix must contain the post-attention contribution;
-// phase 1 does the MoE's routed_up (layer 0's dense_down) and, for routed
-// layers, the shared_w2. At tp_degree 1 the layer folded its own projections
-// (tp_sharded = 0) and the hook is a no-op.
-/* ENV-GATED STATE DUMPS for the offline equivalence bisect: K3_HOOK_DUMP =
- * a path prefix; the hook writes the raw BF16 states per rank/layer/phase
- * (attention_out, hidden, shared_out, the AttnRes partial). The tp_degree 1
- * leg dumps at the hook entry (the layer's own values); the TP4 legs dump
- * again after the all-reduce and the fold - the two are directly
- * comparable. */
 static const char *K3RunnerDumpPrefix(void)
 {
 	static const char *prefix = 0;
@@ -504,8 +418,6 @@ static void K3RunnerHookDump(SparkK3RunnerState *state, uint32_t rank,
 		b->shared_out_bf16, elements);
 	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "partial",
 		b->attnres_partial_bf16, elements);
-	/* the MLA intermediates: the per-head query (rows x rank q dim) and the
-	 * gated value (rows x rank v dim) */
 	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "query",
 		b->query_bf16, state->rows * K3_RANK_DIM(b, mla_q_up_rows, K3_MLA_Q_DIM));
 	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "value",
@@ -522,20 +434,12 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint32_t segments = phase == 0u ? 1u : (layer == 0u ? 1u : 2u);
-	/* THE KDA PHASE-0 SOURCE IS hidden_bf16, NOT attention_out: the o_proj
-	 * writes its output there (the in-place GEMM fix in layer.cuh). The MLA
-	 * o_proj still lands in attention_out. */
 	uint16_t *phase0_source =
 		(K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT)
 			? b->hidden_bf16 : b->attention_out_bf16;
 	K3RunnerHookDump(state, state->tp_rank, layer, phase, "pre", elements);
 	if ( b->tp_sharded == 0u )
 		return;
-	/* THE w1 GATE|UP ALL-REDUCE. The input-split w1 emits a FULL-width gate|up
-	 * partial (packed_rows x 2*intermediate), and SiTU is non-linear, so the
-	 * partial must be summed BEFORE SiTU. This is the point the replay harness
-	 * folds host-side; the serving tier does it here (NCCL honours reserved0;
-	 * the hidden-transport tier keeps its pre-registered 7168 frame). */
 	if ( phase == 2u )
 	{
 		const uint32_t gate_up_elements =
@@ -587,9 +491,6 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	}
 	if ( state->device_collective_created != 0 )
 	{
-		/* THE DEVICE TIER: one pack kernel + ONE stream-ordered combine
-		 * submission per phase; the completion folds the summed segment(s)
-		 * into the partial on the same stream. No sync, no host staging. */
 		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
 			phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 			state->fused_device,rows,phase,segments,0u);
@@ -611,9 +512,6 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		submission.flags =
 			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 		submission.ordinal = state->tp_next_ordinal++;
-		/* the per-phase payload, not the 3-segment frame: phase 0 ships ONE
-		 * segment (14 KB per row), phase 1 one or two - the fixed frame
-		 * tripled phase 0's bytes on the wire */
 		submission.reserved0 = elements * segments;
 		submission.local_device = state->fused_device;
 		submission.full_device = state->fused_device;
@@ -625,10 +523,6 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	}
 	if ( state->collective_created != 0 )
 	{
-		/* THE HOST TIER: per-phase stage + all-reduce + upload + fold. Two
-		 * exchanges per layer instead of one - the ordering the MLP-side
-		 * retrieval needs - the device tier replaces this whole block with
-		 * two stream-ordered combines. */
 		cudaStreamSynchronize(stream);
 		if ( phase == 0u )
 		{
@@ -704,17 +598,12 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->graph_capture_enabled =
 		(configuration->flags & SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS) != 0u ?
 		1u : 0u;
-	/* Zero kv_page_bytes means the K3 latent KV geometry (the adapter is
-	 * CUDA-free and cannot see it). */
 	if ( configuration->kv_page_bytes == 0u )
 		state->kv_page_bytes = K3GlobalKv::kPageBytes;
 	else
 		state->kv_page_bytes = configuration->kv_page_bytes;
 	runner->stats.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	runner->stats.descriptor_bytes = (uint32_t)sizeof(SparkK3StageRunnerStats);
-	/* Pack + bind + pools + device objects. The PP4 placement checks the
-	 * pack slice against the stage tables; the PP1 placement (TP16) takes
-	 * the slice bounds from the pack manifest itself. */
 	{
 		uint32_t first_layer = configuration->stage_count == 4u ?
 			K3RunnerFirstLayer(configuration->stage_index) :
@@ -733,43 +622,25 @@ SparkStatus SparkK3StageRunnerInitialize(
 		configuration->kv_pages_per_sequence,
 		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
-	/* The pack mmap registers (in chunks) for UVA weight access: the tensor
-	 * maps encode the registered addresses, so a failed registration is
-	 * fatal - the unregistered path cannot launch the GEMMs. */
 	if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK )
 		{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	if ( SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
 			state->module.bound,state->module.bound_count) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
-	/* The page tables start all-zero (every position maps to physical page
-	 * 0); the serving tier owns the real mappings and rewrites them before
-	 * publishing a step, but an uninitialised table would be a wild read. */
 	cudaMemset(state->dispatch.page_table, 0,
 		(uint64_t)state->module.sizing.mla_layer_count *
 		configuration->kv_pages_per_sequence * 4u);
 	state->vocab = state->module.pack.config.vocab;
-	/* The rank pack's embed/lm_head are ALREADY the rank's slice: the
-	 * sharder row-split them by the PACK's tp degree, so the rank's rows
-	 * come from the tensor's own shape, never vocab / run_degree (which
-	 * double-divides for a TP4 pack run single-rank, or vice versa). */
 	if ( SparkK3PackLoadEntry(&state->module.pack,"model.embed_tokens.weight",&entry) == 0 &&
 		entry.shape_count >= 1u )
 		state->vocab_slice_rows = entry.shape[0];
 	else
 		state->vocab_slice_rows = state->vocab;
-	/* The TP contract: sharded ranks defer the partial epilogues to the hook. */
 	state->dispatch.buffers->tp_sharded = configuration->tp_degree > 1u ? 1u : 0u;
-	/* The hook registers unconditionally: at tp_degree 1 it no-ops (the
-	 * layer folds its own projections) except for the env-gated state dumps
-	 * the equivalence bisect reads. */
 	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 	state->dispatch.slice_state->collective_context = state;
 	if ( configuration->tp_degree > 1u )
 	{
-		/* The host TCP tier is the TP4 fallback; a TP16 deployment has no
-		 * host tier (its f32 frame tops out at 4 ranks) and exchanges on
-		 * the device tier alone - refusing tp_collective == 0 there made
-		 * TP16 runner construction impossible. */
 		if ( configuration->tp_collective == 0 &&
 			configuration->device_collective == 0 )
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
@@ -785,8 +656,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->collective_created = 1;
 		}
 	}
-	/* The diagnostic override wins over the TP hook (tests use it at
-	 * tp_degree 1 to observe the serving path layer by layer). */
 	if ( configuration->layer_collective_override != 0 )
 	{
 		state->dispatch.slice_state->layer_collective =
@@ -794,22 +663,14 @@ SparkStatus SparkK3StageRunnerInitialize(
 		state->dispatch.slice_state->collective_context =
 			configuration->layer_collective_context;
 	}
-	/* The device-direct tier: the fused buffer + the collective with the
-	 * K3 combine kernels. */
 	if ( configuration->device_collective != 0 )
 	{
 		state->fused_rows = configuration->max_input_row_count;
-		/* The fused stage must hold the widest per-phase payload: the w1
-		 * gate|up is packed_rows x 2*intermediate (24576 u16 at B1), wider
-		 * than the 3*hidden frame the phase 0/1 hooks used. */
 		cudaMalloc(&state->fused_device,
 			(uint64_t)state->fused_rows * K3_TOP_K *
 			(K3_EXPERT_INTERMEDIATE * 2u) * 2u);
 		SparkTpDeviceCollectiveConfig device_config =
 			*configuration->device_collective;
-		/* The K3 combine kernels replace the transport's math for the
-		 * hidden-transport backend; NCCL reduces in the library, and its
-		 * config validation rejects non-null combine functions. */
 		if ( device_config.backend_kind ==
 			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 		{
@@ -823,7 +684,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
 		state->device_collective_created = 1;
 	}
-	/* Stage 0 and the head stage need the model-level tensors. */
 	if ( runner->owns_embedding != 0u &&
 		SparkK3PackLoadEntry(&state->module.pack,"model.embed_tokens.weight",&entry) == 0 )
 		state->embed_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
@@ -833,7 +693,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->head_norm_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
 		if ( SparkK3PackLoadEntry(&state->module.pack,"lm_head.weight",&entry) == 0 )
 			state->head_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
-	/* R1: build the certified-FP8 shadow of the head slice on device */
 	{
 		uint64_t shard_rows = (uint64_t)state->vocab_slice_rows;
 		uint64_t dim = K3_HIDDEN;
@@ -849,7 +708,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 			(void)cudaDeviceSynchronize();
 		else
 		{
-			/* fail loud: the shadow is a load-time contract */
 			cudaFree(state->head_certified_fp8_payload);
 			cudaFree(state->head_certified_fp8_scale_f32);
 			cudaFree(state->head_certified_fp8_norm_f32);
@@ -860,9 +718,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 		}
 	}
 	}
-	/* Host staging + head slots + the per-step device arrays. The stage must
-	 * hold the widest per-phase payload - the w1 gate|up (packed_rows x
-	 * 2*intermediate = 24576 u16 at B1) is wider than the 3*hidden frame. */
 	state->staging_capacity = configuration->max_input_row_count *
 		K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
 	state->staging_values = new uint16_t[state->staging_capacity];
@@ -892,8 +747,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 		(uint64_t)configuration->max_input_row_count * 4u);
 	cudaMalloc(&state->output_score,
 		(uint64_t)configuration->max_input_row_count * 4u);
-	/* per-token tensors for the serial-TP half step (single token, position 0,
-	 * context length 1, sequence 0, state slot 0). */
 	cudaMalloc(&state->positions, 4u);
 	cudaMalloc(&state->context_length, 4u);
 	cudaMalloc(&state->sequence_of_row, 4u);
@@ -910,7 +763,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 	return SPARK_STATUS_OK;
 }
 
-// The head's cross-rank argmax: the slot-encoded sum (see the header).
 static SparkStatus K3RunnerHeadExchange(SparkK3RunnerState *state,
 	uint32_t rows, uint32_t tp_degree, uint32_t tp_rank,
 	uint32_t *output_token_ids, float *output_scores)
@@ -927,8 +779,6 @@ static SparkStatus K3RunnerHeadExchange(SparkK3RunnerState *state,
 		state->head_slots_host[row * 2u * tp_degree + rank_slot] = output_scores[row];
 		state->head_slots_host[row * 2u * tp_degree + rank_slot + 1u] = (float)output_token_ids[row];
 	}
-	/* The collective exchanges HOST buffers (the wire is TCP); the slot
-	 * vector lives in host memory end to end. */
 	status = SparkTpCollectiveAllReduceSumF32(&state->collective,
 		state->head_slots_host, slots, (float *)state->staging_values);
 	if ( status != SPARK_STATUS_OK )
@@ -978,7 +828,6 @@ SparkStatus SparkK3StageRunnerSubmit(
 	sequences = rows;
 	packed_rows = rows * K3_TOP_K;
 	memset(&in, 0, sizeof(in));
-	/* Stage 0 embeds; the others consume the transported hidden stream. */
 	if ( runner->owns_embedding != 0u )
 	{
 		status = K3Embedding(state->embed_weight, dispatch->token_ids,
@@ -1001,7 +850,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.positions = dispatch->positions;
 	in.context_length = dispatch->context_length;
 	in.sequence_of_row = dispatch->sequence_of_row;
-	in.sequence_row_begin = 0; /* pure decode: row i is sequence i */
+	in.sequence_row_begin = 0;
 	in.kda_state_index = dispatch->kda_state_index;
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
@@ -1017,9 +866,6 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.output_token = state->output_token;
 	in.output_score = state->output_score;
 	(void)dense_offsets;
-	/* Device-side dense offsets: no host traffic on the hot path (the
-	 * CUDA-graph capture contract; a per-step H2D would sync). The slice
-	 * runs through the per-shape graph when capture is eligible. */
 	if ( K3RunnerGraphsEligible(state, stream) != 0u )
 		status = K3RunnerLaunchSliceGraph(state, &in, rows, sequences,
 			packed_rows, stream);
@@ -1028,14 +874,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 			packed_rows, stream);
 	if ( status != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
-	/* The head stage commits the tokens - only when the pack actually
-	 * carries the head weight (a PP1 slice pack lacks it, and the
-	 * equivalence legs run such packs with stage_count 1). */
 	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
 	{
-		/* R1: B1 decode takes the certified-FP8 screened head (argmax-equal
-		 * by construction; 5-family-qualified recipe); multi-row keeps the
-		 * full-vocab rescore - batch amortizes it. */
 		if ( rows == 1u && state->head_certified_fp8_payload != 0 )
 			status = K3HeadCertifiedB1(b, state->head_norm_weight, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32, state->head_certified_fp8_norm_f32, state->head_certified_scratch, state->head_certified_candidates, state->head_screened_count, state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
 		else
@@ -1045,11 +885,6 @@ SparkStatus SparkK3StageRunnerSubmit(
 			return SPARK_STATUS_INTERNAL_ERROR;
 		if ( state->device_collective_created != 0 )
 		{
-			/* THE DEVICE TIER: the winner pack (layer.cuh) carries the
-			 * argmax as one u64 per row, so the exchange is a single
-			 * stream-ordered max - no host round-trip, no staging, and
-			 * no 4-rank cap (the host TCP tier below is the TP4
-			 * fallback only). */
 			SparkTpDeviceCollectiveSubmission submission;
 			if ( K3HeadMaxlocPack(state->output_score, state->output_token,
 				state->head_maxloc, rows, stream) != LM_LAUNCH_OK )
@@ -1164,10 +999,6 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 			(void)cudaGraphExecDestroy(state->graphs[i].executable);
 	cudaFree(state->fused_device);
 	SparkK3DispatchDestroy(&state->dispatch);
-	/* The dispatch registered the pack mmap for UVA weight access; a
-	 * re-initialise remaps (often the same address) and registering an
-	 * already-registered region fails, so the runner unregisters before the
-	 * munmap. */
 	if ( state->module.pack.mapping != 0 )
 		SparkK3DispatchUnregisterPack(&state->module.pack);
 	SparkK3ModuleDestroy(&state->module);
@@ -1199,7 +1030,6 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	runner->private_state = 0;
 }
 
-/* bind.cu's serial-TP half-step ABI (docs/serial_tp_replay.md). */
 extern "C" int32_t K3StageSliceHalf(const void *layer_weights, const void *slice_state, void *layer_buffers, uint32_t layer, uint32_t phase, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, void *stream);
 
 SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t layer, uint32_t phase,
@@ -1221,7 +1051,7 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	b = d->buffers;
 	stream = state->stream;
-	rows = 1u;            /* the replay is single-token decode (B1) */
+	rows = 1u;
 	sequences = 1u;
 	packed_rows = rows * K3_TOP_K;
 	if ( phase == 0u )
@@ -1229,8 +1059,6 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
 	if ( phase == 2u )
 	{
-		/* MoE rest: feed the all-reduced gate|up back into the scratch the w1
-		 * half left it in, so SiTU runs on the summed partial. */
 		cudaMemcpy(b->gate_up_bf16, partial_input_bf16,
 			(uint64_t)packed_rows * (K3_EXPERT_INTERMEDIATE * 2u) * 2u,
 			cudaMemcpyDeviceToDevice);
@@ -1238,14 +1066,7 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	else if ( partial_input_bf16 != 0 )
 		cudaMemcpy(b->attnres_partial_bf16, partial_input_bf16,
 			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
-	/* Fill the per-step device tensors the normal dispatch step would set
-	 * (the half step bypasses SparkK3DispatchStep). The routing arrays are
-	 * consumed by the MoE path; the dense/group prefixes by every GEMM. */
 	b->dense_row_offset = state->dense_row_offset;
-	/* The non-grouped GEMMs derive their row extent from
-	 * dense_row_offset[1]-[0] (the dispatch step's launch wrote it; the half
-	 * step bypasses that launch), so write [0, rows] here or every dense
-	 * projection sees zero rows and the AttnRes fold never happens. */
 	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
 	b->dense_tile_prefix = state->dense_tile_prefix;
 	b->group_row_offset = state->group_row_offset;
@@ -1255,7 +1076,7 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	b->route_packed_row = state->route_packed_row;
 	b->route_source_token = state->route_source_token;
 	b->route_weight = state->route_weight;
-	b->sequence_row_begin = 0; /* identity: row i is sequence i */
+	b->sequence_row_begin = 0;
 	b->positions = state->positions;
 	b->context_length = state->context_length;
 	b->sequence_of_row = state->sequence_of_row;
@@ -1268,13 +1089,6 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 			layer, phase, status);
 		return SPARK_STATUS_INTERNAL_ERROR;
 	}
-	/* Capture the rank's CONTRIBUTION (the un-folded input-sharded projection
-	 * output), NOT the folded partial. Phase 1 on a MoE layer is the w1 half
-	 * and captures the gate|up partial (packed_rows x 2*inter); every other
-	 * phase captures hidden_bf16 (kda_out/dense_down/routed_up), with
-	 * attention_out_bf16 for the MLA phase 0 and shared_out_bf16 added on the
-	 * MoE rest (phase 2). The harness sums these across ranks and folds the
-	 * sum; the replicated partial is only the retrieval's read. */
 	if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
 	{
 		cudaMemcpy(partial_output_bf16, b->gate_up_bf16,

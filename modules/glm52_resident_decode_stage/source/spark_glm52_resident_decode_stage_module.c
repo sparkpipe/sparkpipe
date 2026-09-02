@@ -87,8 +87,6 @@ struct SparkGlm52ModuleState
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
-	/* R1: the certified-FP8 shadow of the lm_head shard (head-owning
-	 * ranks only; built on-device at load, one head sweep). */
 	uint8_t *head_certified_fp8_payload;
 	float *head_certified_fp8_scale_f32;
 	float *head_certified_fp8_norm_f32;
@@ -127,8 +125,6 @@ struct SparkGlm52ModuleState
 	atomic_ullong rejected_count;
 	atomic_ullong failed_count;
 	atomic_ullong host_callback_completion_count;
-	/* The shared lifecycle's counter view carries a tokens_emitted bucket;
-	 * glm52 counts emissions driver-side, so this stays zero. */
 	atomic_ullong tokens_emitted;
 	SparkTpDeviceCollective tp_device_collective;
 	uint32_t tp_device_collective_initialized;
@@ -190,9 +186,6 @@ static SparkStatus SparkGlm52ModuleConfigure(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	/* Lenient: existing serving configs may omit the backing fields. The
-	 * page-store backing then falls back to a default path in
-	 * SparkGlm52KvInitialize; a configured value is used as-is. */
 	state->stage_index = context->stage_index;
 	state->first_layer_index = context->first_layer_index;
 	state->layer_count = context->layer_count;
@@ -201,10 +194,6 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
-	/* Identifier zero names a degraded single-rank bringup mode: the pack
-	 * keeps its real tp geometry but no collective peers exist, so the chain
-	 * runs with every reduce elided and the math is rank-local. Real
-	 * deployments always set a non-zero identifier. */
 	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
@@ -255,9 +244,6 @@ static SparkStatus SparkGlm52PackValidateHeader(
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
-	/* The pack identity gate, one named conjunct per return so a
-	 * hash_mismatch in the daemon log says WHICH identity failed
-	 * (the R3 cell died here with the sub-condition unobservable). */
 	if ( SparkGlm52ContractHash(contract_sha256) < 0 )
 	{
 		fprintf(stderr,"glm52 pack gate: contract hash unreadable\n");
@@ -732,10 +718,6 @@ static SparkStatus SparkGlm52PageCopy(
 	state = (SparkGlm52ModuleState *)context;
 	if ( state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* The page-store worker treats this callback as complete when it
-	 * returns and immediately performs NVMe I/O or reuses its single
-	 * staging buffer; an async copy on the execution stream would still
-	 * be in flight and corrupt both directions. Complete the copy here. */
 	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
 		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
 	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
@@ -799,9 +781,6 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 		table.page_store_config.backing_path = state->kv_backing_directory;
 	else
 	{
-		/* Fallback for serving configs that predate the backing fields: keep
-		 * the store functional with a well-known default (the page store
-		 * opens the path once; it does not retain the pointer). */
 		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
 			"/tmp/sparkpipe_glm52_kv_%s",state->model_revision);
 		table.page_store_config.backing_path = state->kv_backing_default;
@@ -846,10 +825,6 @@ static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 	status = SparkGlm52BuildPageTable(state);
 	main_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
 	index_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
-	/* Block-major pool: one 64-token block holds all layers contiguously; the
-	 * per-layer pool base the kernel receives is kv_cache + layer *
-	 * main_page_bytes, and the block stride (main_page_bytes * layer_count) is
-	 * the shared arena's default. */
 	state->kv_layer_stride_bytes = main_page_bytes;
 	state->index_layer_stride_bytes = (uint64_t)state->page_count * index_page_bytes;
 	if ( status != SPARK_STATUS_OK || state->kv_layer_stride_bytes == 0u || state->page_count > UINT64_MAX / (main_page_bytes * state->layer_count) )
@@ -881,9 +856,6 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 	state = (SparkGlm52ModuleState *)context;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* Remember each lane's full identity for the completion tail (CompleteLane
-	 * / RollbackLaneTransaction run after the kernel writes KV, keyed by
-	 * resident slot). */
 	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
 	{
 		lane = &request->cache_lanes[lane_index];
@@ -934,15 +906,6 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 				return(status);
 		}
 	}
-	/* Decide: the admission ladder terminates with whatever the decision
-	 * holds when a predicate returns, and the initializer's default is
-	 * REJECTED/UNSUPPORTED_SHAPE - a predicate that only performs its
-	 * cache mutations and returns would reject EVERY submission as an
-	 * unsupported shape (first seen as adapter_submit status=unsupported
-	 * on every rank at bring-up). The cache branches above either returned
-	 * an error or only mutated the page cache, so this request's shape was
-	 * already vetted by SparkAdmissionEvaluateShape's rule block: accept.
-	 * The cache-release branch decides for itself above. */
 	decision->accepted = 1u;
 	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
 	return(SPARK_STATUS_OK);
@@ -1135,13 +1098,6 @@ static SparkStatus SparkGlm52ValidateFrame(
 	return(status);
 }
 
-/*
- * TP8 execution chain. One CUDA chunk = one half-layer (attention or MLP);
- * between chunks the hidden stream is all-reduced across ranks through the
- * spark_tp_device_collective, whose stream-ordered completion resumes the
- * chain. tp_degree == 1 runs the identical chain with the reduce elided, so
- * the single-rank path exercises every chunk boundary.
- */
 #define SPARK_GLM52_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
 
 typedef enum SparkGlm52ChainStage
@@ -1290,9 +1246,6 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 	configuration.credit_count = state->pipeline_slot_count * SPARK_GLM52_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
-	/* The chain never reduces more rows than one execution wave, so the
-	 * credit buffers are priced by execution_row_capacity, not the bucket's
-	 * absolute input-row ceiling. */
 	configuration.max_active_sequence_count = state->execution_row_capacity;
 	configuration.connect_timeout_milli = context->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
@@ -1510,7 +1463,6 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_ATTENTION;
 		chain->next_layer = 0u;
-		/* The embedding wrote the partial stream into hidden_bf16. */
 		launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->hidden_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm52TpChainFail(chain,launch_status);
@@ -1522,9 +1474,6 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			return;
 		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_REDUCE_ATTENTION;
-		/* The attention writes its partial output into attention_out_bf16,
-		 * NOT hidden_bf16: the hidden buffer still holds the pre-attention
-		 * stream and must not be reduced again. */
 		launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->attention_out_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm52TpChainFail(chain,launch_status);
@@ -1540,7 +1489,6 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			return;
 		}
 		chain->stage = SPARK_GLM52_CHAIN_STAGE_REDUCE_MLP;
-		/* The MLP finalize writes its partial stream into hidden_bf16. */
 		launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->hidden_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm52TpChainFail(chain,launch_status);
@@ -1652,12 +1600,6 @@ static void SparkGlm52PrepareAsyncCompletion(
 	async->lane_count = batch->active_sequence_count;
 	async->row_count = batch->row_count;
 	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[0].address : 0;
-	// The compiled bucket is the hard ceiling at the copy, not just upstream
-	// of it: SparkGlm52ValidateFrame rejects an active_sequence_count above
-	// resident_sequence_capacity and ModuleConfigure bounds that capacity by
-	// MAX_ACTIVE_SEQUENCE_COUNT, but a tight variant build (b8 lane tables)
-	// prices a broken invariant as a heap overflow the compiler can see, so
-	// the loop names the ceiling itself.
 	for (lane=0u; lane<batch->active_sequence_count && lane<SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
 	{
 		async->lane_indices[lane] = batch->row_resident_slots[lane];
@@ -1901,8 +1843,6 @@ static void SparkGlm52ModuleSnapshotExtend(
 	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
 }
 
-/* Family teardown AFTER the lifecycle's quiesce wait; the lifecycle
- * releases the ledger and frees the state afterwards. */
 static void SparkGlm52ModuleStateTeardown(void *module_state)
 {
 	SparkGlm52ModuleState *state;
@@ -1927,14 +1867,6 @@ static void SparkGlm52ModuleStateTeardown(void *module_state)
 	free(state->kv_lane_cache_lanes);
 }
 
-/* Configuration, pack load, caches, slots, tp collective - the family's
- * original order. The lifecycle allocated and zeroed the state, set the
- * ledger tag, and initialized the submission counters before this runs,
- * and routes any failure to the full destroy path (quiesce over the still-
- * zeroed slot array, family teardown, ledger release). */
-/* R1: build the certified-FP8 shadow of the lm_head shard on the
- * device (one sweep of the head; the recipe hardware-qualified on
- * glm5_next/qwen38/dsv4/qwen4_flash). */
 static SparkStatus SparkGlm52BuildHeadShadow(SparkGlm52ModuleState *state)
 {
 	uint64_t head_rows,dim;
@@ -1988,18 +1920,11 @@ static SparkStatus SparkGlm52ModulePrepare(
 		atomic_init(&state->lane_sequence_ids[lane],0u);
 		atomic_init(&state->lane_next_positions[lane],0u);
 	}
-	/* submitted/completed/rejected/failed/tokens_emitted are the shared
-	 * lifecycle's; these two are glm52's own counters. */
 	atomic_init(&state->host_callback_completion_count,0u);
 	atomic_init(&state->tp_next_ordinal,0u);
 	return(SPARK_STATUS_OK);
 }
 
-/* Shared firmware-module lifecycle wiring (see
- * include/sparkpipe/spark_stage_module_lifecycle.h). Everything above this
- * block is family work; the five ABI entry points below are the template's.
- * glm52 runs no environment gate and publishes no readiness banner, so
- * those hooks stay unset. */
 static void SparkGlm52ModuleDescribe(
 	void *module_state,
 	SparkStageModuleLifecycle *lifecycle)
@@ -2020,10 +1945,10 @@ static void SparkGlm52ModuleDescribe(
 static const SparkStageModuleLifecycleOps SparkGlm52ModuleLifecycle =
 {
 	sizeof(SparkGlm52ModuleState),
-	0, /* initialize_gate */
+	0,
 	SparkGlm52ModuleDescribe,
 	SparkGlm52ModulePrepare,
-	0, /* state_report_ready */
+	0,
 	SparkGlm52ModuleStateTeardown,
 	SparkGlm52ModuleExecuteFrame,
 	SparkGlm52ModuleAdmit,

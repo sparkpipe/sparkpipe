@@ -1,9 +1,5 @@
 #pragma once
 
-/*
- * Pro builds define SPARK_DSV4_PRO_BUILD and get the Pro geometry through
- * the model-generic name space; Flash builds are unchanged by this guard.
- */
 #if defined(SPARK_DSV4_PRO_BUILD)
 #include "sparkpipe/spark_dsv4_pro_model_aliases.h"
 #else
@@ -12,7 +8,6 @@
 
 #include "sparkpipe/spark_weight_codec.h"
 
-/* Generated from the exact source revision by tools/generate_dsv4_contracts.py. */
 #define SPARK_DSV4_MODEL_ID "deepseek-ai/DeepSeek-V4-Flash-0731"
 #define SPARK_DSV4_MODEL_SOURCE_REVISION "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
 
@@ -40,9 +35,6 @@
 #define SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT 3u
 #define SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST \
 	(SPARK_DSV4_MODEL_LAYER_COUNT - SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT)
-#ifndef SPARK_DSV4_MODEL_DSPARK_SPEC_STEP
-#define SPARK_DSV4_MODEL_DSPARK_SPEC_STEP 7u
-#endif
 #define SPARK_DSV4_MODEL_MAX_POSITIONS 1048576u
 #define SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT 64u
 #define SPARK_DSV4_MODEL_ATTN_KV_HEAD_COUNT 1u
@@ -134,3 +126,11 @@ static inline uint32_t SparkDsv4ModelLayerKind(uint32_t layer_index)
 }
 
 #endif /* SPARK_DSV4_PRO_BUILD */
+
+/* Common-scope default (was Flash-branch-only, which left the shared
+ * module's DSpark verify expansion undeclared in the Pro build): the
+ * verify frame stages anchor + SPEC_STEP drafts. The non-spec Pro arm
+ * never exercises the path; revisited with the Pro spec work if it does. */
+#ifndef SPARK_DSV4_MODEL_DSPARK_SPEC_STEP
+#define SPARK_DSV4_MODEL_DSPARK_SPEC_STEP 7u
+#endif

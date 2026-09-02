@@ -254,10 +254,6 @@ def render_header(
     lines = ["#pragma once", ""]
     if variant == "flash":
         lines.extend([
-            "/*",
-            " * Pro builds define SPARK_DSV4_PRO_BUILD and get the Pro geometry through",
-            " * the model-generic name space; Flash builds are unchanged by this guard.",
-            " */",
             "#if defined(SPARK_DSV4_PRO_BUILD)",
             '#include "sparkpipe/spark_dsv4_pro_model_aliases.h"',
             "#else",
@@ -268,7 +264,6 @@ def render_header(
         "",
         "#include \"sparkpipe/spark_weight_codec.h\"",
         "",
-        "/* Generated from the exact source revision by tools/generate_dsv4_contracts.py. */",
         f"#define {prefix}_ID {json.dumps(contract['model_id'])}",
         f"#define {prefix}_SOURCE_REVISION {json.dumps(contract['source_revision'])}",
         "",
@@ -276,7 +271,6 @@ def render_header(
     for suffix, value in defines:
         if variant == "pro" and suffix == "VOCAB_COUNT":
             dspark = contract["dspark"]
-            lines.append("/* DSpark speculative stage. */")
             lines.append(f"#define {prefix}_DSPARK_BLOCK_SIZE {dspark['block_size']}u")
             lines.append(f"#define {prefix}_DSPARK_TARGET_LAYER_COUNT {len(dspark['target_layer_ids'])}u")
             lines.append(f"#define {prefix}_DSPARK_MARKOV_RANK {dspark['markov_rank']}u")
@@ -354,24 +348,17 @@ def render_header(
             f"#define {prefix}_ROUTED_SCALING_FACTOR {c_float(moe['routed_scaling_factor'])}",
             f"#define {prefix}_SWIGLU_LIMIT {c_float(moe['swiglu_limit'])}",
             "#if defined(SPARK_DSV4_PRO_EXPERT_CODEC_FP8_E4M3)",
-            "/* Variant builds: FP8-E4M3 expert weights (requires the FP8 expert kernel",
-            " * variant and an FP8-expert pack; default remains MXFP4-E2M1). */",
             "#define SPARK_DSV4_PRO_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3",
             "#else",
             "#define SPARK_DSV4_PRO_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1",
             "#endif",
             f"#define {prefix}_NON_EXPERT_WEIGHT_CODEC {WEIGHT_CODEC_MACROS[precision['non_expert_linear_weight_codec']]}",
             "#if defined(SPARK_DSV4_PRO_KV_CODEC_FP8_E4M3)",
-            "/* Variant builds: E4M3 KV cache with UE8M0 block scales (block 64, rope",
-            " * tail kept BF16) - matches the reference act_quant layout; requires the",
-            " * FP8-KV cache kernels and an FP8-KV pack header. Default remains BF16. */",
             "#define SPARK_DSV4_PRO_KV_CACHE_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3",
             "#else",
             f"#define {prefix}_KV_CACHE_CODEC {WEIGHT_CODEC_MACROS[precision['kv_cache_codec']]}",
             "#endif",
-            f"#define {prefix}_NON_EXPERT_ACTIVATION_CODEC {activation_codec_macro(precision, 'non_expert_activation_format')}"
-            + (" /* first-light: BF16 activations, matching the Flash-validated kernel set */"
-               if precision["non_expert_activation_format"] == "bf16" else ""),
+            f"#define {prefix}_NON_EXPERT_ACTIVATION_CODEC {activation_codec_macro(precision, 'non_expert_activation_format')}",
             f"#define {prefix}_EXPERT_ACTIVATION_CODEC {activation_codec_macro(precision, 'routed_expert_activation_format')}",
             f"#define {prefix}_OUTPUT_COMPOSITION_ACTIVATION_CODEC {OUTPUT_ACTIVATION_CODEC_MACROS[precision['output_composition_activation_format']]}",
             "",

@@ -31,8 +31,6 @@ int main(int argc, char **argv)
         return 2;
     }
     setenv("SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION","1",1);
-    /* Slice geometry defaults to the 1-layer GDN smoke; the environment can
-     * override for other slices (e.g. a GDN+attention pack). */
     setenv("SPARK_QWEN38_MAX_STAGE_COUNT",getenv("TEST_QWEN38_MAX_STAGE_COUNT") ? getenv("TEST_QWEN38_MAX_STAGE_COUNT") : "4",1);
     setenv("SPARK_QWEN38_MAX_STAGE_INDEX",getenv("TEST_QWEN38_MAX_STAGE_INDEX") ? getenv("TEST_QWEN38_MAX_STAGE_INDEX") : "1",1);
     setenv("SPARK_QWEN38_MAX_STAGE_FIRST_LAYER",getenv("TEST_QWEN38_MAX_FIRST_LAYER") ? getenv("TEST_QWEN38_MAX_FIRST_LAYER") : "1",1);
@@ -72,9 +70,6 @@ int main(int argc, char **argv)
     fprintf(stderr,"execute[0] status=%d output_token=%u\n",(int)status,output_tokens[0]);
     if ( status == SPARK_STATUS_OK )
     {
-        /* Second decode step at position 1: same slot, exercises the
-         * recurrent state path with the carried conv tail and GDN state
-         * (row_cold is 0, so the recurrence accumulates). */
         frame.sequence_position = 1u;
         output_tokens[0] = 0xdeadbeefu;
         status = SparkQwen38MaxResidentDecodeStageExecute(state,&frame);

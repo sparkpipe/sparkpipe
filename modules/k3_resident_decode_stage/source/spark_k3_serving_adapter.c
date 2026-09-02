@@ -23,29 +23,19 @@ typedef struct SparkK3ServingState
 	void *completion_context;
 	char *pack_path;
 	uint32_t max_rows;
-	/* the device-direct tier's config + topology (zeroed when the host
-	 * TCP tier is in use) */
 	SparkTpDeviceCollectiveConfig device_config;
 	SparkTpDeviceCollectiveTopology device_topology;
 	char device_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
 		[SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
 	int device_collective_present;
-	/* Per-submit host-converted arrays and their device twins, every
-	 * allocation naming its space (memory-M1, riding the template). */
-	SparkMemoryBuffer positions_host;   /* HOST_COHERENT */
-	SparkMemoryBuffer context_host;     /* HOST_COHERENT */
-	SparkMemoryBuffer state_host;       /* HOST_COHERENT */
-	SparkMemoryBuffer positions_device; /* DEVICE_PRIVATE */
-	SparkMemoryBuffer context_device;   /* DEVICE_PRIVATE */
-	SparkMemoryBuffer state_device;     /* DEVICE_PRIVATE */
-	SparkMemoryBuffer output_tokens;    /* DEVICE_PRIVATE */
-	SparkMemoryBuffer output_scores;    /* DEVICE_PRIVATE */
-	/* The speculation-provider slot's first real use: the DSpark drafter
-	 * pack binds file-backed at initialize when the operator arms it, and
-	 * the provider rides on the bound pack. The draft forward is NOT
-	 * landed - the draft ops fail closed naming that - so arming proves
-	 * the wire path (bind + contract + refusal surfacing) without
-	 * changing a serving cell. */
+	SparkMemoryBuffer positions_host;
+	SparkMemoryBuffer context_host;
+	SparkMemoryBuffer state_host;
+	SparkMemoryBuffer positions_device;
+	SparkMemoryBuffer context_device;
+	SparkMemoryBuffer state_device;
+	SparkMemoryBuffer output_tokens;
+	SparkMemoryBuffer output_scores;
 	SparkK3DsparkPack drafter_pack;
 	uint32_t drafter_pack_bound;
 	char speculation_refusal[SPARK_K3_DSPARK_MAX_REFUSAL_BYTES];
@@ -79,12 +69,7 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	memset(&state->runner_config, 0, sizeof(state->runner_config));
 	state->runner_config.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	state->runner_config.descriptor_bytes = (uint32_t)sizeof(state->runner_config);
-	/* The residentd's stage_index IS the world rank (the deployment has one
-	 * node per rank, like the DSV4 hybrid); the runner wants the PP stage
-	 * and the TP placement, derived here: world_rank = pp*4 + tp. */
 	state->runner_config.tp_degree = K3ServingJsonU32(&doc, root, "tp_degree", 1u);
-	/* world_rank = pp_stage * tp_degree + tp_rank; the deployment's world
-	 * size fixes the PP stage count (4 for TP4xPP4, 1 for TP16). */
 	{
 		uint32_t world_size = K3ServingJsonU32(&doc, root, "world_size", 16u);
 		if ( state->runner_config.tp_degree == 0u ||
@@ -110,10 +95,7 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		K3ServingJsonU32(&doc, root, "kv_pages", 2u);
 	if ( K3ServingJsonU32(&doc, root, "capture_graphs", 0u) != 0u )
 		state->runner_config.flags |= SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;
-	/* Zero lets the runner supply K3GlobalKv::kPageBytes (the CUDA-side
-	 * geometry the adapter cannot see without the device headers). */
 	state->runner_config.kv_page_bytes = 0u;
-	/* The device-direct tier: an optional "device_collective" object. */
 	{
 		int32_t dev = SparkJsonFindObjectMember(&doc, root, "device_collective");
 		if ( dev >= 0 )
@@ -184,25 +166,12 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 					state->device_hosts[i],
 					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES);
 			}
-			/* The runner completes the config (degree/rank/combine functions)
-			 * and applies the topology. */
 			state->device_collective_present = 1;
 		}
 	}
 	state->runner_config.rank_pack_path = state->pack_path;
 	state->runner_config.execution_stream = configuration->execution_stream;
 	state->runner_config.multiprocessors = 48u;
-	/* The host TCP tier caps at SPARK_TP_COLLECTIVE_MAX_STEPS ranks; wider
-	 * placements (TP16) must carry a device_collective. Within the cap the
-	 * host tier is parsed for EVERY tp_degree > 1 (device tier or not):
-	 * the runner builds it as the fallback path when both tiers exist, and
-	 * refusing a null tp_collective there handed the runner a null config
-	 * on every device-collective deployment (the 2026-08-30 fleet wave
-	 * died 16/16 at adapter_initialize on exactly this). ABOVE the cap
-	 * there is no host tier to parse (the generator omits tp_collective
-	 * from TP16 configs): the runner takes the device tier alone and
-	 * accepts a null tp_collective only because the device collective
-	 * exists - the guard below already refused the tierless case. */
 	if ( state->runner_config.tp_degree > SPARK_TP_COLLECTIVE_MAX_STEPS )
 	{
 		if ( state->device_collective_present == 0 )
@@ -266,15 +235,6 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 }
 static void K3ServingDestroy(void *adapter_state);
 
-/*
- * The embedded DSpark provider (the block-drafter binding shape from
- * tests/test_speculation_provider_slot.c): a static ops table whose state
- * is the bound drafter pack. LIFECYCLE + CONTRACT only - the draft inner
- * loop stays provider-owned kernels, which this family has not landed, so
- * draft_begin refuses with the reason instead of pretending (the
- * supports() -> WHY rule; the wire surface renders it, never a bare
- * UNSUPPORTED without a cause).
- */
 
 static SparkStatus K3DsparkProviderCapabilityQuery(
 	const SparkSpeculationGeometryQuery *geometry,
@@ -300,10 +260,6 @@ static SparkStatus K3DsparkProviderDraftBegin(void *provider_state,
 {
 	(void)provider_state;
 	(void)request;
-	/* fail closed with the reason: the DSpark draft forward (5-layer
-	 * backbone walk, markov bias, confidence gate) is not landed; only
-	 * the wire path (pack format + bind) exists. Recorded as the kernel
-	 * follow-up in the lane report. */
 	return(SPARK_STATUS_UNSUPPORTED);
 }
 
@@ -320,9 +276,6 @@ static void K3DsparkProviderDraftCancel(void *provider_state)
 	(void)provider_state;
 }
 
-/* THE one accepted-prefix accounting (where the lease-advance bug class
- * dies): block drafts are anchor-first, so a verified chain of N rows
- * commits N-1 drafts, and each sequence carries exactly what it accepted. */
 static SparkStatus K3DsparkProviderVerifyAccount(void *provider_state,
 	uint32_t verified_count, SparkSpeculationVerifyContract *contract_out)
 {
@@ -339,9 +292,6 @@ static SparkStatus K3DsparkProviderVerifyAccount(void *provider_state,
 
 static const SparkSpeculationKvContract K3DsparkKvContract =
 {
-	/* block-local v1: the drafter reads its scratch frame plus the
-	 * anchor's tail frame; no multi-block history yet (the 27B's
-	 * BLOCK_KV is the precedent to grow into) */
 	.frame_flags = SPARK_SPECULATION_KV_FLAG_SCRATCH_FRAME |
 		SPARK_SPECULATION_KV_FLAG_TAIL_FRAME,
 	.block_history_depth = 0u
@@ -364,9 +314,6 @@ static const SparkSpeculationProviderOps K3DsparkProviderOps =
 	.kv_contract = K3DsparkProviderKvContract
 };
 
-/* The canonical launch contract keys (the family env names
- * SPARK_K3_SERVING_SPECULATE / SPARK_K3_DSPARK_PACK_PATH are aliases
- * until the env migration, per the design's sequencing). */
 static const char *const K3DsparkEnvironmentSchema[] =
 {
 	"SPEC_METHOD",
@@ -392,7 +339,7 @@ static SparkStatus K3ServingBindSpeculationProvider(SparkK3ServingState *state)
 	const char *pack_path;
 	SparkStatus status;
 	if ( speculate == 0 || speculate[0] == '\0' || strcmp(speculate, "0") == 0 )
-		return(SPARK_STATUS_OK); /* unarmed: cell-unchanged serving */
+		return(SPARK_STATUS_OK);
 	pack_path = getenv("SPARK_K3_DSPARK_PACK_PATH");
 	if ( pack_path == 0 || pack_path[0] == '\0' )
 	{
@@ -527,13 +474,9 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	if ( state == 0 || submission == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	rows = submission->row_count;
-	/* The serving ABI carries uint64 positions; the K3 kernels consume
-	 * uint32. Host-convert per submission (the runner's collective tier
-	 * already syncs, so this copy is not a new stall class). */
 	positions_host64 = (uint64_t *)malloc((uint64_t)rows * 8u);
 	if ( positions_host64 == 0 )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	/* row_positions is host memory in the serving ABI; a plain copy. */
 	memcpy(positions_host64, submission->row_positions,
 		(uint64_t)rows * sizeof(uint64_t));
 	for ( uint32_t i = 0u; i < rows; ++i )
@@ -546,8 +489,6 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 			: i;
 	}
 	free(positions_host64);
-	/* Space-aware copies (the tags resolve host-to-device); the pasted
-	 * submits ignore copy errors and that is unchanged here. */
 	(void)SparkMemoryBufferCopy(&state->positions_device,
 		&state->positions_host, (uint64_t)rows * 4u, 0);
 	(void)SparkMemoryBufferCopy(&state->context_device,
@@ -580,8 +521,6 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	status = SparkK3StageRunnerSubmit(&state->runner, &dispatch);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	/* The runner completed the step synchronously; publish the completion
-	 * through the serving ABI. */
 	if ( state->completion_function != 0 )
 	{
 		SparkModelServingCompletion completion;
@@ -599,8 +538,6 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		completion.accepted_token_count = rows;
 		completion.token_count = rows;
 		completion.tokens_per_sequence = 1u;
-		/* A copy-destination view of the per-submit scratch: the tags
-		 * resolve device-to-host; the pasted submit ignored copy errors. */
 		SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
 			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * 4u);
 		(void)SparkMemoryBufferCopy(&tokens, &state->output_tokens,
@@ -619,7 +556,6 @@ static SparkStatus K3ServingPrefetch(void *adapter_state,
 	(void)adapter_state;
 	(void)submissions;
 	(void)submission_count;
-	/* No content-addressed prefix cache in this driver yet. */
 	return SPARK_STATUS_OK;
 }
 
@@ -643,8 +579,6 @@ static SparkStatus K3ServingQuiesce(void *adapter_state, uint64_t deadline_time_
 {
 	(void)adapter_state;
 	(void)deadline_time_ns;
-	/* The runner is synchronous: nothing can be in flight once submit
-	 * returned. */
 	return SPARK_STATUS_OK;
 }
 
@@ -680,11 +614,6 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		"k3-tp4pp4",
 		"k3",
 		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"),
-	/* The shared capability chain's base carries DRIVER_OWNS_KV, which k3
-	 * must NOT declare: its slot-reuse contract is NONE and the shared
-	 * descriptor validator pins the two together
-	 * (runtime/model_serving_adapter.c). This list is the family's honest
-	 * difference, not an un-migrated paste. */
 	.capability_flags =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
@@ -692,8 +621,6 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
-	/* One node per RANK (the hybrid's contract): the residentd checks the
-	 * node count against this. */
 	.stage_count = 16u,
 	.layer_count = 93u,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -707,14 +634,8 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_input_row_count = 16u,
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
-	/* the DSpark drafter's envelope: block-1 draft tokens per round behind
-	 * the provider slot (the descriptor is the envelope; the provider's
-	 * capability query + bind carry the evidence). The shared validator
-	 * pins this count to the SPECULATION capability flag above. */
 	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
 	.resident_sequence_slot_reuse = 0u,
-	/* Stage-major (PP stage × TP rank): TP4 groups have equal counts (hybrid
-	 * contract); PP stage layer splits sum to 93. */
 	.stage_layer_counts = { 24u, 24u, 24u, 24u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u },
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },
@@ -740,9 +661,6 @@ static const SparkModelServingAdapterInterface K3ServingInterface =
 	.reset = K3ServingReset,
 };
 
-// The runtime dlsym's SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL, which
-// is exactly "SparkModelServingAdapterGetInterface" - a family-specific
-// name here is invisible to the loader (the found-and-fixed K3 export bug).
 const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
 {
 	return &K3ServingInterface;

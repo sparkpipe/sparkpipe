@@ -13,8 +13,6 @@
 #include <string.h>
 #include <time.h>
 
-/* Present in cudart; the host-only compatibility header used by unit tests
- * intentionally exposes only its older subset. */
 extern cudaError_t cudaEventQuery(cudaEvent_t event);
 
 #define SPARK_TP_DEVICE_COLLECTIVE_PORT_STRIDE 64u
@@ -323,13 +321,6 @@ static uint32_t SparkTpDeviceCollectiveRouteBinding(
     if ((implementation->collective->algorithm_mask &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) != 0u)
         return route_index;
-    /* The 2->1 row alias exists for the TP4 counter-rotating split ring,
-     * where binding rows are shared across the ring's route indices. A
-     * recursive-doubling-only collective (TP8/TP16) uses raw step rows in
-     * BuildOperationPackets, so aliasing here would register session-2
-     * templates from row 1 while its recursive ops present row-2 pointers
-     * - the activate template compare then fails every op at step 2 with
-     * INVALID_ARGUMENT (the first TP16 family's lane receipt, wave-26 probe). */
     if ((implementation->collective->algorithm_mask &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) != 0u)
         return route_index == SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX ?
@@ -895,21 +886,11 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
     uint32_t partner_rank;
     SparkStatus status;
 
-    /* Route rows are algorithm-scoped. A direct-all-to-all row r pairs
-     * this rank with tp_rank ^ (r+1): for a d2d-only collective the
-     * rows 0..tp_degree-2 cover every distinct peer exactly once. The
-     * ^3 pairing is the TP4 counter-rotating split ring's route at
-     * index 2; every other doubling row is a recursive-doubling round
-     * whose partner is 2^step away. Guarding on the algorithm mask
-     * keeps TP4 unchanged and gives TP8/TP16 their correct third round
-     * (^4). */
     if ((SparkTpDeviceCollectiveAlgorithmMask(config) &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) != 0u &&
         (SparkTpDeviceCollectiveAlgorithmMask(config) &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) == 0u)
     {
-        /* Direct-all-to-all rows: row r pairs with tp_rank ^ (r+1), which
-         * visits every distinct peer exactly once across rows 0..tp-2. */
         partner_rank = config->tp_rank ^ (uint32_t)(step_index + 1u);
     }
     else
@@ -1126,15 +1107,6 @@ static SparkStatus SparkTpDeviceCollectiveBuildOperationPackets(
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return SparkTpDeviceCollectiveBuildRingPackets(
             implementation,operation,step_index,send_packet,receive_packet);
-    /* RegisterCredits remaps the step through RouteBinding; the op-build
-     * read it RAW, so under a non-identity remap (TP16's 4-step tree:
-     * step 2 -> row 1) the receive template came from a different row
-     * than the packets — ActivatePersistentReceive rejected the size
-     * mismatch (8 credits x 128KiB = 0x100000, the exact observed
-     * delta) and every completion arrived async-INVALID_ARGUMENT,
-     * terminating the whole first TP16 fleet at layer 0. TP8/TP4
-     * are identity remaps, which is why the TP8/TP4 families never
-     * hit it. */
     binding = &implementation->bindings[
         SparkTpDeviceCollectiveRouteBinding(implementation,step_index)]
         [operation->credit_index];
@@ -1325,10 +1297,6 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueDirectAllToAllSendPack(
 {
     const SparkTpDeviceCollectiveCreditBinding *binding;
 
-    /* Direct all-to-all sends identical immutable bytes to every peer. The
-     * operation owns its credit until every send completion arrives, so one
-     * canonical packed slot can safely back all three transport sessions.
-     * Recursive and split-ring paths retain their route-local bindings. */
     binding = &implementation->bindings[0u][operation->credit_index];
     return SparkTpDeviceCollectivePackSendRows(
         implementation->collective,binding,source,source_pitch,width,width,
@@ -1517,8 +1485,6 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueDirectAllToAllConsumption(
             (uint32_t)(route_index + 1u);
         rank_devices[peer_rank] = binding->receive_device;
     }
-    /* NULL-tail convention: combines fold until a NULL slot. Slots past
-     * tp_degree are uninitialized stack, so terminate explicitly. */
     for (peer_rank = implementation->collective->tp_degree;
          peer_rank < SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT;
          peer_rank++)
@@ -3177,7 +3143,6 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         }
         else
         {
-            /* Direct-all-to-all peer rows carry the flat hidden width. */
             step_hidden_dimension = config->local_hidden_dimension;
         }
         if (step_hidden_dimension > UINT32_MAX)

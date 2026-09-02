@@ -28,8 +28,8 @@ CHAIN = [
     (8, "spark8"), (9, "spark9"), (10, "sparka"), (11, "sparkb"),    # stage 2
     (12, "sparkc"), (13, "sparkd"), (14, "sparke"), (15, "sparkf"),  # stage 3
 ]
-TP_PORT_BASE = 66840      # module TP collective (PP transport base is 66640)
-PP_TRANSPORT_PORT_BASE = 66640
+TP_PORT_BASE = 64500      # module TP collective (PP transport base is 66640)
+PP_TRANSPORT_PORT_BASE = 64000
 CONTROL_PORT_BASE = 18180
 
 
@@ -95,7 +95,7 @@ def main():
                       "mode": "host-rdma",
                       "control_port_base": PP_TRANSPORT_PORT_BASE},
         "runtime_limits": {
-            "max_inflight_submissions": 4,
+            "max_inflight_submissions": 1,
             "max_active_sequences": 8,
             "max_input_rows": 8,
             "resident_sequence_capacity": 8,

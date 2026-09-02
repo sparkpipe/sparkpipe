@@ -153,8 +153,6 @@ static inline void SparkGlm52StagePackShapeBf16(SparkGlm52StagePackTensorShape *
 	shape->columns = columns;
 }
 
-/* TP sharding policy: which kinds are row- or column-sharded across ranks.
- * Must match tools/glm52_resident_stagepack.py exactly. */
 static inline uint32_t SparkGlm52StagePackTpShardsRows(uint32_t tensor_kind)
 {
 	switch ( tensor_kind )
@@ -185,7 +183,6 @@ static inline uint32_t SparkGlm52StagePackTpShardsCols(uint32_t tensor_kind)
 	}
 }
 
-/* Pack header TP identity: reserved0 = tp_degree, reserved1 = tp_rank. */
 static inline uint32_t SparkGlm52StagePackHeaderTpDegree(const SparkGlm52StagePackHeader *header)
 {
 	return(header != 0 ? header->reserved0 : 0u);

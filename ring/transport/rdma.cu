@@ -54,17 +54,11 @@
     (SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT * \
      SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_WR_PER_PACKET)
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_QUEUE_DEPTH 256u
-/* NET-004: work completions drained per ibv_poll_cq call; polling one WC
- * at a time used to pay the full verbs call overhead per completion. */
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT 32u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT \
     (SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT * \
      SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_WR_PER_PACKET)
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS 50u
-/* Bounded control-plane bring-up: the receiver accept() and the sender
- * connect retry used to wait for the peer forever, which is how one failed
- * rank wedged every later rank at 0% CPU with no diagnostic. The timeout is
- * per transport session open, env-overridable for slow fabrics. */
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_DEFAULT_MS 120000u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_ENV "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_OPEN_TIMEOUT_MS"
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES 64u
@@ -161,11 +155,6 @@ typedef struct SparkHiddenSparkHostRdmaCachedMemoryRegion
     const void *pointer;
     uint64_t bytes;
     uint64_t last_use_epoch;
-    /* NET-001: pins the slot against LRU eviction while in-flight work
-     * still references the registration: posted send WRs (sender side)
-     * or an advertised rkey a remote write may still target (receiver
-     * side). Deregistering either would fault the wire, so only slots
-     * with in_flight_count == 0 are eviction candidates. */
     uint32_t in_flight_count;
     struct ibv_mr *memory_region;
 } SparkHiddenSparkHostRdmaCachedMemoryRegion;
@@ -183,8 +172,6 @@ typedef struct SparkHiddenSparkHostRdmaPendingReceive
     uint32_t receive_index;
     uint64_t generation;
     uint64_t returned_generation;
-    /* NET-001: cached-region slots pinned while this receive's rkeys are
-     * advertised to the peer; NO_INDEX when the region is absent. */
     uint32_t hidden_region_index;
     uint32_t sideband_region_index;
     SparkHiddenTransportPacket packet_template;
@@ -219,8 +206,6 @@ typedef struct SparkHiddenSparkHostRdmaInflightSend
     uint32_t posted_lane_mask;
     uint32_t completed_lane_mask;
     uint32_t doorbell;
-    /* NET-001: cached-region slots pinned until every posted WR for this
-     * send completes; NO_INDEX when the region is absent. */
     uint32_t hidden_region_index;
     uint32_t sideband_region_index;
     SparkStatus status;
@@ -1930,13 +1915,6 @@ static SparkStatus SparkHiddenSparkHostRdmaGetCachedMemoryRegion(
     }
     if (free_index == SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT)
     {
-        /* NET-001: the cache used to return a permanent
-         * CAPACITY_EXCEEDED once all slots filled, even though
-         * last_use_epoch was already tracked. Evict the
-         * least-recently-used registration that no in-flight work
-         * references; slots pinned by posted send WRs or advertised
-         * receive rkeys are never evicted because deregistering them
-         * would fault in-flight RDMA. */
         uint64_t oldest_epoch;
         uint32_t victim_index;
 
@@ -1958,8 +1936,6 @@ static SparkStatus SparkHiddenSparkHostRdmaGetCachedMemoryRegion(
         }
         if (victim_index == SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT)
         {
-            /* Every registration is pinned by in-flight work: transient
-             * back-pressure the caller may retry, not exhaustion. */
             return SPARK_STATUS_BUSY;
         }
         ibv_dereg_mr(state->cached_regions[victim_index].memory_region);
@@ -2020,11 +1996,6 @@ static SparkStatus SparkHiddenSparkHostRdmaRegisterReceiveRegion(
     {
         return status;
     }
-    /* NET-001: the descriptor's rkey stays reachable by the peer until
-     * the receive completes, so pin the cached region against LRU
-     * eviction for exactly that long. The cache owns the MR lifetime;
-     * callers must release through
-     * SparkHiddenSparkHostRdmaReleasePendingReceive, never ibv_dereg_mr. */
     region_index = SparkHiddenSparkHostRdmaCachedRegionIndex(state,
         memory_region);
     if (region_index == SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX)
@@ -2525,8 +2496,6 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    /* FIFO receive WQEs are replenished lane credits. Immediate data owns
-     * the logical receive identity and its persistent generation tag. */
     immediate = ntohl(work_completion->imm_data);
     receive_index = immediate &
         SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_MASK;
@@ -2911,10 +2880,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueue(
     SparkHiddenSparkHostRdmaState *state,
     uint32_t lane_index)
 {
-    /* NET-004: drain the CQ in batches instead of one ibv_poll_cq call
-     * per completion; per-WC call overhead dominated the pump loop for
-     * small doorbell packets (vLLM/FlashInfer poll their CQs the same
-     * way). A short final batch means the queue is empty. */
     struct ibv_wc work_completions[
         SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT];
     SparkStatus status;
@@ -3185,9 +3150,6 @@ static void SparkHiddenSparkHostRdmaReleasePendingReceive(
     {
         return;
     }
-    /* NET-001: drop the eviction pins taken by
-     * SparkHiddenSparkHostRdmaRegisterReceiveRegion; the MR cache owns
-     * the registrations themselves. */
     if (state != 0)
     {
         if (receive->hidden_region_index <
@@ -3250,8 +3212,6 @@ static SparkStatus SparkHiddenSparkHostRdmaCreatePendingReceive(
         return status;
     }
     *receive_out = receive;
-    /* Advertising the registered destination accepts the receive. Poll
-     * owns finalization after the peer signals transfer completion. */
     return SPARK_STATUS_OK;
 }
 
@@ -3472,9 +3432,6 @@ static SparkStatus SparkHiddenSparkHostRdmaBuildLaneWrite(
             local_bytes,state->lane_count,lane_index,&partition);
     else
     {
-        /* Non-striped (doorbell) writes go whole to the caller-selected
-         * lane; callers only invoke this on the packet's assigned
-         * doorbell lane (NET-003). */
         partition.offset = 0u;
         partition.byte_count = local_bytes;
         status = SPARK_STATUS_OK;
@@ -3520,9 +3477,6 @@ static SparkStatus SparkHiddenSparkHostRdmaCountPayloadLaneWrite(
             bytes,state->lane_count,lane_index,&partition);
     else
     {
-        /* Non-striped (doorbell) writes count whole on the
-         * caller-selected lane; callers only invoke this on the
-         * packet's assigned doorbell lane (NET-003). */
         partition.offset = 0u;
         partition.byte_count = bytes;
         status = SPARK_STATUS_OK;
@@ -3570,8 +3524,6 @@ static SparkStatus SparkHiddenSparkHostRdmaCheckPacketQueueCapacity(
     uint32_t lane_index;
     uint32_t write_count;
 
-    /* NET-003: a doorbell packet only consumes WR budget on its
-     * assigned lane; striped packets consume on every lane. */
     lane_index = doorbell != 0u ? doorbell_lane : 0u;
     lane_count = doorbell != 0u ? doorbell_lane + 1u : state->lane_count;
     for (; lane_index < lane_count; ++lane_index)
@@ -3727,8 +3679,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPostPacketWrites(
     uint32_t send_index;
 
     send_index = (uint32_t)(send - state->inflight_sends);
-    /* NET-003: doorbell packets post only on their receive slot's
-     * assigned lane; striped packets still post across all lanes. */
     lane_index = send->doorbell != 0u ?
         SparkHiddenSparkHostRdmaDoorbellLane(
             state,remote_receive->receive_index) : 0u;
@@ -3878,8 +3828,6 @@ static SparkStatus SparkHiddenSparkHostRdmaCommitInflightSend(
         SparkHiddenSparkHostRdmaReleaseRemoteReceive(
             state,send->remote_receive_index);
     }
-    /* NET-001: all WRs for this send completed, so unpin its cached
-     * regions before the slot is wiped. */
     SparkHiddenSparkHostRdmaReleaseSendRegions(state,send);
     memset(send,0,sizeof(*send));
     return status;
@@ -4023,8 +3971,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(
         remote_receive->used = 0u;
         goto fail_send;
     }
-    /* Posted WRs accept the packet. The source registration and remote
-     * receive slot stay pinned until poll retires every signaled lane. */
     return SPARK_STATUS_OK;
 
 fail_send:
@@ -4620,8 +4566,6 @@ static SparkStatus SparkHiddenSparkHostRdmaRegisterPersistentReceive(
     memset(&message,0,sizeof(message));
     message.type =
         SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_PERSISTENT_ADVERTISE;
-    /* The template describes maximum buffer capacity. Doorbell eligibility
-     * is evaluated against each actual packet when it is sent. */
     message.reserved = credit_index + 1u;
     message.active_sequence_count = state->endpoint.max_active_sequence_count;
     message.sideband_kind = packet_template->sideband_kind;
@@ -5328,10 +5272,6 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         return SPARK_STATUS_INTERNAL_ERROR;
     }
     state->endpoint = *endpoint;
-    /* Diagnostics were dead code: debug_enabled had no config path and
-     * stayed 0 forever. The control-error/completion reports (which name
-     * the message type behind async INVALID_ARGUMENT completions) are
-     * now reachable via SPARK_RDMA_DEBUG=1 in the daemon environment. */
     state->debug_enabled = getenv("SPARK_RDMA_DEBUG") != 0 ? 1u : 0u;
     if ((endpoint->configuration_flags &
             SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT) != 0u)

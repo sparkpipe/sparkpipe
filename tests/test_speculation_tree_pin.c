@@ -1,7 +1,3 @@
-/* Pin the GLM 5.2 MTP tree SHAPE against the measured configuration.
- * The tree machinery is neutral; these constants are the GLM 5.2 case,
- * and changing them changes the speculation geometry the GLM receipts
- * were qualified with. */
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_mtp_tree.h"
@@ -23,9 +19,6 @@ PIN(SPARK_SPECULATION_TREE_VOCAB_COUNT == 154880u);
 int main(void)
 {
 	SparkSpeculationTreeResolution resolution;
-	/* candidates 0-4; the verifier agrees with candidate 0 at the input
-	 * row only, then diverges (depth-1 children are candidates 1 and 2,
-	 * neither of which the verifier produced): path = depth 1 primary. */
 	const uint32_t candidates[5] = { 11u, 12u, 13u, 14u, 15u };
 	const uint32_t verifier[6] = { 11u, 99u, 99u, 99u, 99u, 99u };
 	if ( SparkSpeculationTreeTopologyIsValid() != 1u )

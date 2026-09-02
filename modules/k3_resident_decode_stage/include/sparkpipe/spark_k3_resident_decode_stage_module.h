@@ -12,19 +12,8 @@
 extern "C" {
 #endif
 
-/*
- * K3 resident decode stage module: pack loading, per-layer binding, and the
- * slice-scaled pool sizing. The dispatch into the CUDA driver family
- * (K3StageSlice from inference/llms/kimi_k3/bind.cu) lives in the module's
- * CUDA translation unit; this header is the CUDA-free core shared with host
- * gates.
- */
 
-/* The full K3 stack (93 layers) must fit one bound slice for the PP1
- * placements (TP16); the PP4 stages bind at most 24. */
 #define SPARK_K3_MODULE_MAX_BOUND_LAYERS 93u
-/* Pass as first_layer/layer_count to SparkK3ModuleInitialize to take the
- * slice bounds from the pack manifest (PP1 / TP16 placements). */
 #define SPARK_K3_MODULE_DERIVE_SLICE UINT32_MAX
 
 typedef struct SparkK3ModuleState

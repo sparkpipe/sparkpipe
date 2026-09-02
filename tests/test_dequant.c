@@ -1,8 +1,3 @@
-// Free dequantisation: signed codes to BF16 bit patterns with no conversion.
-//
-// Every code at every bit alignment, checked against the arithmetic path. A
-// dequant error here is silent and produces plausible weights, so it is
-// exhaustive rather than sampled.
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
