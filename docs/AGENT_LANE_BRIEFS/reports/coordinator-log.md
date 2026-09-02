@@ -4743,3 +4743,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   (reads 1,337MB/s after), relaunch. Idempotency proved itself:
   RANK0/1-ALREADY-PLACED on relaunch; rank2 sha recompute → ship; rank8
   same treatment queued. ETA ~50min for the remaining 14.
+
+## 2026-09-02 ~firing 114: rank2 shipped post-remount (3/16 done); sparka now GPU-held by glm53-mesh-wave11
+
+- rank2 PLACED (sha regenerated at 1.3GB/s, destination verified).
+  Passing ranks 3-15 now, ~3min/rank.
+- Note: glm53-mesh-wave11 grabbed sparka GPU hold. Ships are cpu-class
+  (legal coexistence per queue design) and continue. The item-14 TP4PP4
+  BUILD will NOT co-locate with GPU work on sparka (one-IO-heavy-job
+  law / reboot-cascade class) — it waits for a genuinely free window.
