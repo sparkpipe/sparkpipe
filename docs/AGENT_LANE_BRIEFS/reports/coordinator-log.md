@@ -4910,3 +4910,17 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   each spark{hex r} builds its own rank from warm), ships + receipts,
   then the max-lane module ticket (tp-aware ResolvedShape + config
   guard + v2 header reader). 27B TP4PP4 ships also pending.
+
+## 2026-09-02 ~firing 138: max TP4PP4 fan-out LIVE (14/14 single-writer); 27B TP4PP4 PLACED 16/16
+
+- 27B TP4PP4 (item 9) PLACEMENT DONE: all 16 ranks on canonical nodes,
+  destination-sha-gated, receipts written (4.36G stage0, 1.82G stages
+  1-2, 5.19G stage3 classes). Module ticket pending (config guard).
+- max TP4PP4 fan-out: ranks 1-15 building on their destination nodes
+  (k3 pattern, ~140G/rank from warm). Launch lessons re-learned:
+  ssh fires but HANGS without local timeout (rc=124 expected); pgrep
+  self-match faked "running" once; a hung sweep belatedly delivered 3
+  duplicate rank02 writers on spark2 — killed, cleaned, single-writer
+  restored. Deferred: rank0 (spark0=cold-storage) + rank3 (spark3 54G
+  free — pro-repo 1004G blocks it; flag to operator) → build on helper
+  nodes after drain, ship to canonical.
