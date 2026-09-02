@@ -4936,3 +4936,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   on helper nodes (spark9/sparkf post-drain), then ships.
 
 ## 2026-09-02 ~firing 140: spark5 deduped (2nd belated writer); 14 single-writer, ~15min into slices
+
+## 2026-09-02 ~firing 141: spark6 deduped again (belated pair); rank02 orphan tmp cleaned
+
+- Belated pair on spark6 killed; my first wipe caught the LIVE writer's
+  tmp too (deleted-fd class) — clean restart done, single writer
+  confirmed slicing rank06. Old rank02 orphan tmp (misfire-era) removed.
+- 14/14 single-writer; ranks land over next cycles. rank0/rank3 helper
+  builds + ships after drain.
