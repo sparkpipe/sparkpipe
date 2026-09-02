@@ -469,6 +469,10 @@ int main(int argc, char **argv) {
         float *onorm = load0("output_norm.weight");
         float normed[N_EMBD];
         rms_norm(collapsed, onorm, normed, N_EMBD, 1e-5f);
+        if (t == 0)
+            fprintf(stderr, "L78OUT: collapsed %.4f %.4f %.4f | normed %.4f %.4f %.4f\n",
+                    collapsed[0], collapsed[1], collapsed[2],
+                    normed[0], normed[1], normed[2]);
         free(onorm);
         int gbest = -1; float gbv = -INFINITY;
         float *alllogits = malloc((size_t)VOCAB * 4);
