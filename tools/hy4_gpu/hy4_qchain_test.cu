@@ -180,6 +180,7 @@ static const TensorInfo* find_tensor(const std::vector<TensorInfo>& t,
 
 static int block_geom(uint32_t type, int* bpe, int* bpb) {
     switch (type) {
+        case 0: *bpe = 1; *bpb = 4; return 0;
         case 12: *bpe = 256; *bpb = 144; return 0;
         case 13: *bpe = 256; *bpb = 176; return 0;
         case 14: *bpe = 256; *bpb = 210; return 0;
@@ -269,7 +270,8 @@ int main(int argc, char** argv) {
 
     ti = find_tensor(tensors, "blk.0.attn_norm.weight");
     read_tensor(f, ti, data_offset, raw);
-    std::vector<float> h_anorm(raw.begin(), raw.begin() + 6144 * 4);
+    std::vector<float> h_anorm(6144);
+    memcpy(h_anorm.data(), raw.data(), 6144 * 4);
 
     ti = find_tensor(tensors, "blk.0.attn_q_a.weight");
     read_tensor(f, ti, data_offset, raw);
@@ -279,7 +281,8 @@ int main(int argc, char** argv) {
 
     ti = find_tensor(tensors, "blk.0.attn_q_a_norm.weight");
     read_tensor(f, ti, data_offset, raw);
-    std::vector<float> h_qan(raw.begin(), raw.begin() + 2048 * 4);
+    std::vector<float> h_qan(2048);
+    memcpy(h_qan.data(), raw.data(), 2048 * 4);
 
     ti = find_tensor(tensors, "blk.0.attn_q_b.weight");
     read_tensor(f, ti, data_offset, raw);
@@ -361,7 +364,7 @@ int main(int argc, char** argv) {
 
     float* d_pe = d_qh + 192;
     k_rope<<<1, 32>>>(d_pe, 64, 0.0f);
-    cudaMemcpy(gpu.data(), d_pe, 256 * 4, cudaMemcpyDeviceToHost);
+    cudaMemcpy(gpu.data(), d_qh, 256 * 4, cudaMemcpyDeviceToHost);
     bad += check("ROPE_POS0", gpu.data() + 192, ref_pe0.data(), 64, 5e-4);
     const float golden[3] = {0.32866367f, -0.25685636f, -0.58516650f};
     for (int i = 0; i < 3; ++i)
@@ -369,7 +372,7 @@ int main(int argc, char** argv) {
                gpu[192 + i], golden[i]);
 
     k_rope<<<1, 32>>>(d_pe, 64, 3.0f);
-    cudaMemcpy(gpu.data(), d_pe, 256 * 4, cudaMemcpyDeviceToHost);
+    cudaMemcpy(gpu.data(), d_qh, 256 * 4, cudaMemcpyDeviceToHost);
     bad += check("ROPE_POS3", gpu.data() + 192, ref_pe3.data(), 64, 5e-4);
 
     printf("QCHAIN %s\n", bad ? "FAIL" : "PASS");
