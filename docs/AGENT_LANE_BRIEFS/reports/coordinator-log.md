@@ -5063,3 +5063,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - chattr +i applied to every placed max pack fleet-wide.
 - Remaining after these land: ship r00 → spark0 (helper-built), then
   16/16. Only blockers left fleet-wide are the two module tickets.
+
+## 2026-09-02 ~firing 154: rank00 shipped to spark0; ETA line added per operator
+
+- STATUS FORMAT CHANGE (operator): every status report ends with an
+  ETA line incl. uncertainty.
+- rank00 shipped sparka→spark0 (+chattr). VERIFY the destination sha
+  next firing (verification output was not captured).
