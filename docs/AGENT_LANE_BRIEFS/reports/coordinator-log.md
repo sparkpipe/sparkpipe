@@ -4489,3 +4489,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   had not yet reached these packs — closing that coverage gap.
 - dsv4-pro lane note: their publish failed at gate_route_launch cuda
   validation; surfaced in prior entry.
+
+## 2026-09-01 ~27:8x — firing 87b: spark0 rank0 VERIFY-PASS (MTP gen, stale receipt was the mismatch); spark5 rank0 repair shipping
+
+- spark0 rank0 re-verified vs SOURCE with --mtp: VERIFY-PASS (1187
+  tensors, 22,322,734,528 B, dir_sha 45371c52 — same as the whole MTP
+  fleet generation). The earlier "mismatch" was the STALE pre-MTP
+  receipt, not corruption. Receipts on the glm5_next TP16 set predate
+  the MTP upgrade — receipt refresh queued for the set.
+- spark5 rank0: shipping spark0's verified MTP pack (22.3G scp),
+  incoming->mv atomic replace of the mislabeled symlink.
