@@ -4499,3 +4499,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   the MTP upgrade — receipt refresh queued for the set.
 - spark5 rank0: shipping spark0's verified MTP pack (22.3G scp),
   incoming->mv atomic replace of the mislabeled symlink.
+
+## 2026-09-01 ~27:9x — firing 87c: spark0 rank1 RESTORED-OK (digest mystery = stale receipt generation)
+
+- The "mismatch" resolved: spark1's rank1.mtp.receipt records d1b8e786…
+  = exactly spark0's restored copy. My comparison used the STALE
+  pre-MTP symlinkfix receipt. Both packs byte-identical MTP generation.
+- spark0 rank1.mtp.receipt written from the verified digest.
+- Fleet note: ALL glm5_next.tp16 symlinkfix-era receipts are pre-MTP —
+  receipt refresh to MTP generation queued (audit-doc item).
