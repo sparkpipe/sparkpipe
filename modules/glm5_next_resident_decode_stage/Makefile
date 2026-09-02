@@ -46,6 +46,7 @@ MODULE_ENTRY_PREFIX := SparkGlm5NextResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm5_next_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
+	../../src/spark_speculation_policy.c \
 	../../runtime/spark_weightd.c \
 	../../runtime/spark_weightd_attach.c \
 	../../src/spark_status.c \

@@ -16,9 +16,13 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 5u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 6u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP UINT32_C(0x00000001)
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS \
+	SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH 2u
 /*
  * Whole-stack geometry: one stage owning all 45 weight layers (TP16 per
  * the fleet topology; the MTP layer 45 rides the spec path, not this
@@ -110,6 +114,7 @@ typedef struct SparkGlm5NextResidentDecodeStageNodeContext
 	 * single-pass kernel byte-for-byte at EVERY context - the shipped
 	 * default until the GPU cell qualifies the split path. */
 	uint32_t decode_split_context_threshold;
+	uint32_t flags;
 } SparkGlm5NextResidentDecodeStageNodeContext;
 
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \
@@ -148,6 +153,58 @@ static inline uint32_t SparkGlm5NextResidentDecodeStageFirstLayer(uint32_t stage
 {
 	return(stage_index * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE);
 }
+
+typedef struct SparkGlm5NextKdaReplayLayout
+{
+	uint64_t pre_q_offset;
+	uint64_t pre_k_offset;
+	uint64_t pre_v_offset;
+	uint64_t key_offset;
+	uint64_t value_offset;
+	uint64_t retention_offset;
+	uint64_t write_gate_offset;
+	uint64_t layer_bytes;
+} SparkGlm5NextKdaReplayLayout;
+
+static inline SparkGlm5NextKdaReplayLayout SparkGlm5NextKdaReplayLayoutFor(
+	uint32_t rank_kda_heads,
+	uint32_t steps)
+{
+	SparkGlm5NextKdaReplayLayout layout;
+	uint64_t rank_qk_bytes;
+	uint64_t rank_value_bytes;
+	uint64_t rank_retention_bytes;
+	uint64_t rank_gate_bytes;
+	uint64_t cursor;
+	rank_qk_bytes = (uint64_t)rank_kda_heads *
+		SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION *
+		SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES * steps;
+	rank_value_bytes = (uint64_t)rank_kda_heads *
+		SPARK_GLM5_NEXT_MODEL_KDA_HEAD_VALUE_DIMENSION *
+		SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES * steps;
+	rank_retention_bytes = (uint64_t)rank_kda_heads *
+		SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION * (uint64_t)sizeof(float) * steps;
+	rank_gate_bytes = (uint64_t)rank_kda_heads * (uint64_t)sizeof(float) * steps;
+	cursor = 0u;
+	layout.pre_q_offset = cursor;
+	cursor += rank_qk_bytes;
+	layout.pre_k_offset = cursor;
+	cursor += rank_qk_bytes;
+	layout.pre_v_offset = cursor;
+	cursor += rank_value_bytes;
+	layout.key_offset = cursor;
+	cursor += rank_qk_bytes;
+	layout.value_offset = cursor;
+	cursor += rank_value_bytes;
+	layout.retention_offset = cursor;
+	cursor += rank_retention_bytes;
+	layout.write_gate_offset = cursor;
+	cursor += rank_gate_bytes;
+	layout.layer_bytes = cursor;
+	return(layout);
+}
+
+#define SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES 32u
 
 static inline uint32_t SparkGlm5NextResidentDecodeStageBoundaryCarriesDsa(uint32_t source_stage_index)
 {

@@ -143,6 +143,18 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;
 	void *kv_access_error;
+	uint16_t *mtp_hidden_bf16;
+	uint16_t *mtp_concat_bf16;
+	uint8_t *mtp_kv_pool;
+	uint8_t *mtp_index_pool;
+	uint32_t *mtp_page_table;
+	uint32_t *mtp_sequence;
+	uint32_t *mtp_positions;
+	uint32_t *mtp_context;
+	uint32_t *mtp_committed;
+	void *mtp_replay_steps;
+	uint16_t *mtp_conv_scratch;
+	uint8_t *kda_replay_pool;
 } SparkGlm5NextExecutionSlot;
 
 typedef struct SparkGlm5NextCudaWave
@@ -216,7 +228,22 @@ typedef struct SparkGlm5NextCudaWave
 	uint32_t decode_split_context_threshold;
 	float *attention_split_partials_f32;
 	uint64_t attention_split_partial_blocks;
+	uint32_t mtp_verify;
+	uint32_t mtp_draft_depth;
+	const SparkGlm5NextLayerWeights *mtp_layer_weights;
+	const void *mtp_eh_proj_bf16;
+	const void *mtp_enorm_bf16;
+	const void *mtp_hnorm_bf16;
+	const void *mtp_shared_norm_bf16;
+	uint64_t kda_replay_layer_bytes;
 } SparkGlm5NextCudaWave;
+
+typedef struct SparkGlm5NextMtpDraftOps
+{
+	void *context;
+	SparkStatus (*reduce_rows_bf16)(void *context, uint16_t *rows_bf16, uint32_t row_count, uint32_t width);
+	SparkStatus (*reduce_max_u64)(void *context, uint64_t *values, uint32_t count);
+} SparkGlm5NextMtpDraftOps;
 
 #ifdef __cplusplus
 extern "C" {
@@ -235,6 +262,8 @@ cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64
 cudaError_t SparkGlm5NextLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
 cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
+int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const SparkGlm5NextMtpDraftOps *ops,uint16_t *committed_hidden_bf16,uint32_t first_token,uint32_t *host_draft_tokens);
+int32_t SparkGlm5NextLaunchCudaMtpCommit(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps);
 int32_t SparkGlm5NextConfigureCudaModule(uint32_t *multiprocessor_count);
 
 #ifdef __cplusplus

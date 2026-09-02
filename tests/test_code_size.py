@@ -1431,7 +1431,12 @@ CEILING = 234369
 # Merged the spec-unified core into the glm5_next multi-row lane; per the
 # ratchet rule the ceiling is re-pinned from MEASURED reality after the
 # conflict resolution, never carried forward.
-CEILING = 238092
+# glm5_next MTP chain speculation (lane/glm5next-spec): the layer-45 draft
+# forward (eh_proj over [hnorm|enorm], DSA+MoE via the shared layer kernels),
+# the commit=0 verify wave with per-KDA-layer ReplaySSM recording, the
+# fold/conv-recommit driver, the policy-core resolve wiring, and the
+# adapter's burst emission. +686 measured on this lane.
+CEILING = 238773
 
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:

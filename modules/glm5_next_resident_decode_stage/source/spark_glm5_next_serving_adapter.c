@@ -59,6 +59,16 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL)
 
+static int32_t SparkGlm5NextServingMtpEnvEnabled(void)
+{
+	const char *value = getenv("SPARK_GLM5_NEXT_MTP");
+	if ( value == 0 || (value[0] == '0' && value[1] == '\0') )
+		return(0);
+	if ( value[0] == '1' && value[1] == '\0' )
+		return(1);
+	return(-1);
+}
+
 static const char *const SparkGlm5NextServingConfigurationMembers[] =
 {
 	"schema_version",
@@ -111,6 +121,7 @@ typedef struct SparkGlm5NextServingState
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
+	uint32_t mtp_enabled;
 	uint32_t quiescing;
 	uint64_t orphan_completion_count;
 	uint16_t tp_listen_port;
@@ -133,6 +144,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
 		SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
@@ -150,7 +162,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.max_input_row_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	.max_speculative_token_count = 0u,
+	.max_speculative_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,
 	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.adapter_id = SPARK_GLM5_NEXT_SERVING_ADAPTER_ID,
 	.model_id = SPARK_GLM5_NEXT_SERVING_MODEL_ID,
@@ -679,11 +691,27 @@ static void SparkGlm5NextServingDriverCompletion(
 		 * client face is whichever rank the API connects to (rank 0), so
 		 * the old final-stage-only gate left that rank's clients with
 		 * status-only completions forever. */
-		completion.tokens_per_sequence = 1u;
-		completion.token_count = pending->active_sequence_count;
+		uint32_t burst = driver_completion->tokens_per_sequence != 0u ?
+			driver_completion->tokens_per_sequence : 1u;
+		if ( burst > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u ||
+			(burst > 1u && (pending->active_sequence_count != 1u || state->mtp_enabled == 0u)) )
+		{
+			completion.status = SPARK_STATUS_SCHEMA_ERROR;
+			completion.accepted_token_count = 0u;
+			completion.completion_flags = 0u;
+			pending->active = 0u;
+			state->completion_function(state->completion_context,&completion);
+			return;
+		}
+		completion.tokens_per_sequence = burst;
+		completion.token_count = pending->active_sequence_count * burst;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
-		for (index=0u; index<completion.token_count; index++)
-			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
+		if ( burst == 1u )
+			for (index=0u; index<completion.token_count; index++)
+				completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
+		else
+			for (index=0u; index<completion.token_count; index++)
+				completion.token_ids[index] = pending->output_token_ids[index];
 	}
 	fprintf(stderr,"G5N-DBG completion emit: sub %llu status %u flags %u tokcnt %u tps %u acc %u raw_acc %u ext %u resid_zero %d\n",
 		(unsigned long long)completion.submission_id,(unsigned)completion.status,
@@ -821,6 +849,16 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
+	{
+		int32_t mtp_env = SparkGlm5NextServingMtpEnvEnabled();
+		if ( mtp_env < 0 )
+		{
+			(void)fprintf(stderr,"GLM5_NEXT-ADAPTER SPARK_GLM5_NEXT_MTP must be exactly 0 or 1\n");
+			SparkGlm5NextServingDestroy(state);
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		}
+		state->mtp_enabled = (uint32_t)mtp_env;
+	}
 	status = SparkGlm5NextServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
 	/* execution_row_capacity bounds the per-submission ROW width (prefill
 	 * chunks carry many rows of ONE sequence), not the resident sequence
@@ -850,6 +888,7 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->node_context.decode_split_context_threshold = decode_split_context_threshold;
 		state->node_context.tp_degree = tp_degree;
 		state->node_context.tp_rank = tp_rank;
+		state->node_context.flags = state->mtp_enabled != 0u ? SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP : 0u;
 		state->node_context.stage_pack_path = state->stage_pack_path;
 		state->node_context.model_revision = GLM5_NEXT_MODEL_REVISION;
 		state->node_context.tp_collective_backend_kind = state->tp_collective_backend_kind;
@@ -955,6 +994,8 @@ static void SparkGlm5NextServingBuildFrame(
 	buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 	buffer->address = pending->output_token_ids;
 	buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
+	if ( state->mtp_enabled != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		buffer->bytes *= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u;
 	memset(frame,0,sizeof(*frame));
 	frame->request_id = submission->request_id;
 	frame->sequence_id = submission->sequence_id;
