@@ -4667,3 +4667,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Cleanup candidates AFTER new set is digest-verified in place (REMOVAL-
   ORDER): old Aug-28 dsv4_pro_tp4pp4 stage packs (dsv4_pro_tp4_pp4_stage
   .spstage, ~94G/node) — the verifier-failing superseded generation.
+
+## 2026-09-02 ~firing 105: rank9 through packer gates; contract verifier running
+
+- rank9: build + --verify-output PASS (97,940,352,176 B, 1975 tensors,
+  validated:true); dsv4_pro_rank_pack_verify.py vs GA checkpoint now
+  running (pid 103726) → receipt lands → chain proceeds to rank11.
+- Ship pass deliberately NOT started for the 13 ready masters: it would
+  compete with the chain on sparka (one-heavy-job law). Ships when the
+  chain drains.
