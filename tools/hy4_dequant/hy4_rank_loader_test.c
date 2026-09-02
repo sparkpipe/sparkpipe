@@ -14,12 +14,13 @@ int main(int argc, char **argv) {
     int failures = 0;
     /* expectations: rank-02 (third rank) of the deployed TP16 bundle,
      * verified against the shard plan + dequant runs 2026-09-02 */
+    /* kind encoding: 0 = replicate, dim+1 = split on that dim */
     struct { const char *name; int type; int n_dims; long d0, d1, d2; int kind; long nbytes; } cases[] = {
-        {"token_embd.weight", 12, 2, 6144, 7552, 0, 1, 26099712},
+        {"token_embd.weight", 12, 2, 6144, 7552, 0, 2, 26099712},
         {"blk.0.attn_kv_a_mqa.weight", 8, 2, 6144, 576, 0, 0, 3760128},
-        {"blk.47.ffn_gate_exps.weight", 16, 3, 6144, 2048, 16, 2, 51904512},
-        {"blk.47.ffn_down_exps.weight", 18, 3, 2048, 6144, 16, 2, 77070336},
-        {"output.weight", 0, 2, 6144, 7552, 0, 1, 185597952},
+        {"blk.47.ffn_gate_exps.weight", 16, 3, 6144, 2048, 16, 3, 51904512},
+        {"blk.47.ffn_down_exps.weight", 18, 3, 2048, 6144, 16, 3, 77070336},
+        {"output.weight", 0, 2, 6144, 7552, 0, 2, 185597952},
     };
     for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         const hy4_tensor_view *tv = hy4_tensor_lookup(rank, cases[i].name);
