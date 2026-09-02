@@ -4635,3 +4635,21 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   abort the other (the set -e chain was the amplification).
 - 13/16 ranks built on warm. If 14/15 fail again on relaunch, the logs
   now capture the true error per-rank.
+
+## 2026-09-02 ~firing 103: dsv4-pro TP16 — DELETION found + rebuild chain live
+
+- Inventory: ranks 0-8,12-15 masters+receipts on warm CENTRAL (sparka);
+  rank9/11 packs GONE (never survived: unpack-40B crash in logs);
+  rank10's CANONICAL bytes on sparka GONE (receipt+sha left orphaned).
+  Firing-101 logged 0-10+12 built ⇒ post-build deletion by external actor
+  class again. rank10's stale canonical receipt+sha swept to
+  logs/stale-sweeps/ (receipt-without-bytes = false artifact).
+- Relaunch: serial chain `dsv4pro_tp16_ranks.sh 9 11 10` on sparka
+  (pid 65047, chain9-11-10.log) — one heavy job per node; rank9 tmp
+  growing (21G/98G at check). ~1.5h/rank.
+- Built tools/dsv4pro_tp16_ship.sh: rank r → spark{hex r} canonical ship
+  with destination sha256 verify + receipt/sha copy; idempotent
+  (digest-match ⇒ ALREADY-PLACED). Runs the moment 16/16 masters exist.
+- Fleet sweep: sparka chain is the ONLY stagepack writer on all 16 nodes.
+- spark3 local disk 96% full (150G) — flagged; dsv4-pro TP4PP4 (item 14)
+  will build on sparka off its LOCAL base (892,904,019,728 B) after ships.
