@@ -4540,3 +4540,8 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   ticket), 8 (nvfp4a16 vertical), 22 (flash nvfp4 codec), 14 (dsv4-pro
   last 6), 15 (dsv4-pro TP16, lane tooling landed), 25-26 (hy4 lane),
   28 (drafter verticals), 29-30 (final board log).
+
+## 2026-09-01 ~29:5x — firing 91: bf16 arm CONFIRMED 16/16 (all rebuilds receipted); board stable
+
+- Item 23 closure re-verified by independent sweep: all 16 ranks hold
+  receipts. Board stable — no regressions, no stray artifacts.
