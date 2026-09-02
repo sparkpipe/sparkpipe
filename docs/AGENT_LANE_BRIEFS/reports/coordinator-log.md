@@ -4814,3 +4814,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Ship pass live (dsv4pro_tp4pp4_ship.sh on sparka): rank00 already
   arriving on spark0. Old Aug-28 superseded stage packs on the nodes
   (dsv4_pro_tp4_pp4_stage.spstage) = cleanup AFTER full placement.
+
+## 2026-09-02 ~firing 127: TP4PP4 ships 1/16 (rank0 sha-verified on spark0); ~50min remaining
