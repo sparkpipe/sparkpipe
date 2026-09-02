@@ -4732,3 +4732,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   sparka from the LOCAL base.
 
 ## 2026-09-02 ~firing 112: ships 2/16 placed (r0→spark0, r1→spark1), ~3min/rank
+
+## 2026-09-02 ~firing 113: ships wedged on 0-byte rank2.sha; remounted, pass relaunched
+
+- rank2 ship stalled 25+min: rank2.sha (and rank8.sha) are 0-BYTE
+  deletion-era artifacts — `[[ -s ]]` correctly rejected them, sending
+  the script into a local 98G warm sha256sum, and sparka's ceph client
+  had degraded AGAIN under sustained reads (0MB/s D-state).
+- Fix: TERM pass (clean exit, no D linger), mount-service restart
+  (reads 1,337MB/s after), relaunch. Idempotency proved itself:
+  RANK0/1-ALREADY-PLACED on relaunch; rank2 sha recompute → ship; rank8
+  same treatment queued. ETA ~50min for the remaining 14.
