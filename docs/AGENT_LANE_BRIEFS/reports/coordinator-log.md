@@ -4582,3 +4582,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   after its in-flight rank10 TP16 build completes — no slow copy.
 - The failed 832G spark3->spark8 copy abandoned (degraded link, multi-
   writer corruption); dirs cleaned both sides.
+
+## 2026-09-01 ~30:9x — firing 99: dsv4-pro TP16 rank10 writing (61G/89G input read); item 14 input confirmed local
+
+- sparka rank10 build: rchar 291G of the 892G base read, wchar 61G
+  written — the TP16 slice build is mid-flight and healthy. Remaining
+  TP16 ranks queue after it on the same node (one heavy job).
+- Item 14 (TP4PP4): the pro base pack (892,904,019,728 B) confirmed on
+  sparka locally — the TP4PP4 driver runs there after the TP16 sequence
+  completes. No external input needed.
