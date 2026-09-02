@@ -4557,3 +4557,19 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~30:4x — firing 96: board stable; monitor cycle
 
 ## 2026-09-01 ~30:5x — firing 97: board stable; monitor cycle
+
+## 2026-09-01 ~30:8x — timers stopped; coordinator now drives ALL remaining stagepack builds directly
+
+- Operator stopped model-dev timers (chaos); coordinator takes the
+  remaining builds. First target: item 14, dsv4-pro TP4PP4 last ranks.
+- Found: 4 stage-size clusters across 13 nodes, biggest stage only 3/4
+  ranks present -> incomplete set confirmed. Cleanest repair: rebuild ALL
+  16 ranks deterministically from dsv4_pro_ga.full.spstage (892.9GB,
+  spark3 pro-repo) with the in-tree driver (pro plan 16/15/15/15).
+- Input copy spark3->spark8 (2.2T free) in flight at ~11MB/s (spark3
+  degraded ceph read class) — ~22h ETA. Next cycles: monitor copy, run
+  driver, ship+place all 16, supersede the partial set.
+- Also resumed by coordinator: items 15 (dsv4-pro TP16 — lane tooling
+  landed: dsv4pro_tp16_ranks.sh + stage json), 21 (fp8 arm split-expert
+  name-map), 22/24 (nvfp4 codecs), 8 (nvfp4a16 vertical), 9/11 (PP+TP
+  combined mode) — packer work, sequenced after the builds above.
