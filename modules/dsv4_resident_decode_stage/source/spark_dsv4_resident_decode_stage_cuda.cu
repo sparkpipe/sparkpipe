@@ -14,9 +14,6 @@
 #include <math.h>
 #include <stdio.h>
 
-/* Bitonic sort needs a power of two; pad to the next one (Pro has 384
- * experts). The router pads non-existent experts with zero keys, which
- * sort below every real key, so the top-k tail still selects real experts. */
 #if SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 256u
 #define SPARK_DSV4_ROUTER_SORT_CAPACITY 256u
 #elif SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 512u
@@ -128,15 +125,6 @@ static __global__ void SparkDsv4AccumU64MaxKernel(
 		destination[element] = source[element];
 }
 
-/*
- * Production DSV4 compute is an SM121-only, fail-closed route.  This runtime
- * architecture check is not a hardware-qualification receipt.  Cache the
- * check per executor thread (a resident module binds a thread to one device)
- * so the hot layer loop does not issue a device-properties query.  A caller
- * that moves the same resident executor thread to another device violates the
- * module binding contract; the SM121 device code is independently guarded by
- * LM_SM121_NATIVE_COMPUTE_PTX and traps on any non-SM121 image.
- */
 static cudaError_t SparkDsv4RequireNativeSm121(void)
 {
 	static thread_local int32_t checked = 0;
@@ -162,24 +150,7 @@ static cudaError_t SparkDsv4RequireNativeDecodeShape(uint32_t rows)
 	return(SparkDsv4RequireNativeSm121());
 }
 
-/*
- * DeepSeek V4 device kernels. The variant model header arrives via the
- * build's -include ahead of everything here; nothing below names a
- * variant. Shared machinery (linear over bf16/fp8/mxfp4, rms norm, head
- * argmax, embedding gather, reductions) comes from spark_lm_kernels.cuh;
- * this file holds only what DeepSeek V4 adds: adjacent-pair rope and its
- * inverse, the unweighted query-head rms, the fp8/fp4 quantize-dequantize
- * cache sims with power-of-two scales, Hadamard rotation, sink-in-
- * denominator sparse attention over gathered cache slots, the gated
- * softmax compressor in both prefill and decode-state forms, indexer
- * scoring and iterative top-k, the two router gates, the swiglu clamp,
- * and the full mHC split with inference Sinkhorn. Every kernel body stays
- * within fifty lines; the sparse-attention two-pass and the compressor
- * pooling decompose through device helpers.
- */
 
-// e2m1 snap with RN-even at every midpoint: the mantissa-zero neighbour
-// wins ties, matching the reference cast exactly.
 static __device__ __forceinline__ float SparkDsv4EncodeE2m1(float value)
 {
 	const float points[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
@@ -204,11 +175,6 @@ static __device__ __forceinline__ float SparkDsv4Pow2CeilScale(float amax, float
 	return(exp2f(ceilf(log2f(amax / format_max))));
 }
 
-/*
- * In-place block quantize-dequantize sim over the trailing width of each
- * row: per block amax (floored 1e-4), power-of-two scale, snap, rescale -
- * fp8 with 448 or fp4 with 6 by format_max. One warp per (row, block).
- */
 static __device__ __forceinline__ void SparkDsv4QuantSimGroup(
 	void *data_bf16,uint32_t row,uint32_t group,uint32_t lane,
 	uint32_t row_stride,uint32_t width,uint32_t block,float format_max,
@@ -254,9 +220,6 @@ static __global__ void SparkDsv4QuantSimKernel(void *data_bf16, uint32_t row_cou
 		format_max,fp4);
 }
 
-// Adjacent-pair rotation on the LAST rope_dim entries of every head; the
-// inverse conjugates - the attention output's de-rotation. One block per
-// (row, head), threads over pairs; freqs are the layer's YaRN table.
 static __device__ __forceinline__ void SparkDsv4RopePair(
 	void *data_bf16,const float *freqs_f32,const uint64_t *row_positions,
 	uint32_t row,uint32_t head,uint32_t head_count,uint32_t head_dim,
@@ -294,7 +257,6 @@ static __global__ void SparkDsv4RopeKernel(void *data_bf16, const float *freqs_f
 		head_dim,rope_dim,inverse);
 }
 
-// The unweighted per-head query rms the reference applies before rope.
 static __device__ __forceinline__ void SparkDsv4QueryHeadRmsRow(
 	void *data_bf16,uint32_t row,uint32_t head,uint32_t head_count,
 	uint32_t head_dim,float epsilon,float *reduce_scratch)
@@ -362,8 +324,6 @@ static __global__ void SparkDsv4KvPostKernel(
 			head_dim,rope_dim,lane,inverse);
 }
 
-// In-place Hadamard rotation scaled n^-0.5 on power-of-two vectors; one
-// block per vector, the whole vector staged in shared memory.
 static __device__ __forceinline__ void SparkDsv4HadamardRow(
 	void *data_bf16,uint32_t vector,uint32_t width,float *hadamard_shared)
 {
@@ -472,12 +432,6 @@ static __global__ void SparkDsv4SparseAttnKernel(
     __shared__ float merge_scale[
         heads_per_cta * SPARK_LM_CTA_WARPS];
     __shared__ float inverse_denominator[heads_per_cta];
-    /* R2c bulk prefill: window slot -> this frame's staged KV row.
-     * -1 = the slot was not written by this frame; the query reads the
-     * pre-frame ring snapshot instead. Filled serially by thread 0 in
-     * ascending row order, so a slot shared by two in-frame positions
-     * keeps the newest - the same value the wavefront would have left
-     * in the ring. */
     __shared__ int32_t bulk_window_source[SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS];
     LmFrameError *frame_error =
         (LmFrameError *)frame_error_void;
@@ -584,15 +538,6 @@ static __global__ void SparkDsv4SparseAttnKernel(
     }
     __syncthreads();
 
-    /* K2 (BUG_LEDGER): the top-k indices come from an on-device indexer
-     * build. A corrupt build used to send this kernel through the page
-     * table with an unchecked ordinal and back with an unchecked physical
-     * page - a wild KV address. Bounds-check at the index consumer and
-     * report through the frame's error record: the slot is skipped, the
-     * frame is failed by the module's end-of-frame check, and the context
-     * lives. Field packing per frame_error.cuh: row = attention row,
-     * sequence = raw cache index, position = the derived position or page,
-     * page = the bound violated. */
     page_ordinal = row_page_table_indices[row];
     if ( page_ordinal >= page_table_rows )
     {
@@ -627,9 +572,6 @@ static __global__ void SparkDsv4SparseAttnKernel(
                 if (staged_kv_bf16 != 0 && shadow_bf16 != 0 &&
                     local_cache_index < SPARK_DSV4_MODEL_SLIDING_WINDOW_TOKENS)
                 {
-                    /* R2c bulk prefill window slot: this frame's staged
-                     * row when one wrote the slot (position <= the
-                     * query's), else the pre-frame ring snapshot. */
                     int32_t source_row = bulk_window_source[local_cache_index];
                     if (source_row >= 0)
                     {
@@ -986,8 +928,6 @@ static __global__ void SparkDsv4SparseAttnMergeKernel(const float *partials_f32,
     }
 }
 
-// Softmax pooling of one output channel over the pool slots: -inf scores
-// drop out; shared by decode and prefill compressor forms.
 static __device__ __forceinline__ float SparkDsv4PoolChannel(const float *kv, const float *score, uint32_t slots, uint32_t stride, uint32_t channel)
 {
 	uint32_t slot;
@@ -1006,10 +946,6 @@ static __device__ __forceinline__ float SparkDsv4PoolChannel(const float *kv, co
 	return(value / total);
 }
 
-// The overlap gather pool: 2*ratio slots where slot i < ratio reads the
-// previous group's FIRST channel half and slot i >= ratio the current
-// group's SECOND half - the concatenation the reference builds before its
-// single softmax pool.
 static __device__ __forceinline__ float SparkDsv4PoolOverlapChannel(const float *kv_state, const float *score_state, uint32_t ratio, uint32_t channels, uint32_t width, uint32_t channel)
 {
 	uint32_t slot,source;
@@ -1033,11 +969,6 @@ static __device__ __forceinline__ float SparkDsv4PoolOverlapChannel(const float 
 	return(value / total);
 }
 
-/*
- * One CTA owns each live lane and advances its rows in packet order. This
- * keeps different lanes parallel without racing a lane's recurrent state.
- * State layout per lane: [coff*ratio slots][coff*d ch] f32.
- */
 static __global__ void SparkDsv4CompressStepKernel(const void *kv_bf16,
 	const void *score_bf16,const float *ape_f32,float *kv_state_f32,
 	float *score_state_f32,uint64_t state_lane_stride,
@@ -1138,13 +1069,6 @@ static __global__ void SparkDsv4CacheScatterKernel(
 		row_lane_indices,row_positions,row,width,base_slot,ratio,ring_slots);
 }
 
-/*
- * R2c bulk prefill, pass 1 of 3: snapshot each frame row's lane window
- * ring page BEFORE the whole-frame KV scatter. The bulk attention reads
- * these snapshots for window slots the frame did not write, which is
- * exactly the value the replaced wavefront would have observed (its
- * ring reads always predate any later in-frame scatter of the slot).
- */
 static __global__ void SparkDsv4WindowShadowKernel(
 	const uint16_t *cache_bf16,
 	uint64_t cache_lane_stride,
@@ -1167,12 +1091,6 @@ static __global__ void SparkDsv4WindowShadowKernel(
 		shadow_bf16[destination + element] = cache_bf16[source + element];
 }
 
-/*
- * One boundary-predicated CTA replaces the five post-compressor launches.
- * Every emitting row retains each BF16 materialization boundary and the
- * reference operation order. A non-emitting CTA returns before touching the
- * staging row or cache, so graph replay never needs a host-side predicate.
- */
 static __global__ void SparkDsv4KvEmissionKernel(
 	void *emit_bf16,const uint32_t *emitted,const void *norm_weight_bf16,
 	const float *freqs_f32,const uint64_t *row_emit_positions,
@@ -1301,11 +1219,6 @@ static __global__ void SparkDsv4BuildAttentionIndicesKernel(
 	}
 }
 
-// The gate scores: linear against the router weight in fp32 with
-// sqrtsoftplus applied.  B1 used to put all 256 experts behind one warp
-// loop per row.  Keep the shared activation broadcast, but make the expert
-// tile the grid-y axis so every warp owns one expert and the launch exposes
-// the full SM parallelism without changing the arithmetic.
 static __device__ __forceinline__ void SparkDsv4GateScoreExpert(
 	const float *gate_shared,const void *weight_bf16,float *scores_f32,
 	uint32_t input_dimension,uint32_t expert_count,uint32_t expert,
@@ -1337,12 +1250,6 @@ static __global__ void SparkDsv4GateScoresKernel(const void *weight_bf16, const 
 		expert,lane);
 }
 
-/*
- * noaux_tc selection and the hash path share one CTA per row.  The table
- * path copies the pinned expert ids directly; the score path performs exact
- * block-parallel top-k over scores plus bias with lower-index tie breaking.
- * Weights gather original scores, sum-normalize, and apply the route scale.
- */
 static __global__ void SparkDsv4GateSelectKernel(
     const float *scores_f32,
     const float *bias_f32,
@@ -1555,8 +1462,6 @@ static __global__ void SparkDsv4GateRouteCooperativeKernel(
 		(uint32_t *)gate_shared);
 }
 
-// The swiglu clamp on gathered gate/up rows, routing weight folded in:
-// up two-sided, gate max-only, silu(gate)*up in fp32.
 static __global__ void SparkDsv4SwigluClampKernel(const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width, float limit, const float *row_weights_f32, const uint32_t *weight_map)
 {
 	uint32_t row = blockIdx.x,element;
@@ -1655,8 +1560,6 @@ static __global__ void SparkDsv4AccumAddTp4TreeKernel(
 	}
 }
 
-// The indexer score: relu(q_h . kv) per head times the projected head
-// weight, summed over heads - one warp per slot, lanes over dims.
 static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
 {
     static const uint32_t maximum_pairs_per_lane =
@@ -1779,9 +1682,6 @@ static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const voi
     }
 }
 
-/*
- * Exact byte-radix top-k with canonical lower-slot tie breaking.
- */
 static __device__ __forceinline__ uint64_t SparkDsv4OrderedTopKKey(
     float score,
     uint32_t slot)
@@ -2025,14 +1925,6 @@ static __global__ void SparkDsv4TopKKernel(const float *scores_f32, const uint32
     }
 }
 
-/*
- * mHC mixes for one row: 24 (or hc for the head) fp32 dot products of the
- * fn rows against the flattened streams, scaled by the rsqrt of the
- * flattened mean square - the norm applied to the mix, exactly the
- * reference order. One block per row, one warp per mix row.
- */
-/* Pro tiles the HcMix staging: 4096 floats = 16 KB shared, safely under the
- * GB10 99 KB dynamic-shared limit for any hidden size. Flash builds ignore it. */
 #define SPARK_DSV4_HC_MIX_TILE 4096u
 #define SPARK_LM_HC_MIX_ROWS_PER_WARP 3u
 
@@ -2045,9 +1937,6 @@ static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const floa
 	if ( row >= row_count )
 		return;
 #if defined(SPARK_DSV4_PRO_BUILD)
-	/* Pro's flat dimension (4 streams x 7168 = 28672 floats = 112 KB) exceeds
-	 * the GB10 dynamic-shared limit (101376 B), so tile the staging. Flash
-	 * builds keep the original single-pass path. */
 	float mix_accum[SPARK_LM_HC_MIX_ROWS_PER_WARP];
 	uint32_t tile,tile_end,tile_elements,mix_index,mix_row;
 	total = 0.0f;
@@ -2224,13 +2113,6 @@ static __global__ void SparkDsv4HcMixSplitKFinalizeKernel(const float *partials_
 	SparkDsv4HcParallelSinkhorn(mixes,scale3_f32,base_f32,iterations,hc_epsilon,pre_f32,post_f32,comb_f32,row,comb,sums);
 }
 
-/*
- * The split with inference Sinkhorn, one thread per row: sigmoid pre
- * (+eps), doubled sigmoid post, comb row-softmax +eps then the iteration
- * count of alternating row and column normalizations with +eps inside
- * every division - the first row pass is the softmax itself, matching the
- * reference kernel step for step at hc = 4.
- */
 static __global__ void SparkDsv4HcSplitSinkhornKernel(const float *mixes_f32, const float *scale3_f32, const float *base_f32, uint32_t row_count, uint32_t hc, uint32_t iterations, float epsilon, float *pre_f32, float *post_f32, float *comb_f32)
 {
 	uint32_t row = blockIdx.x * blockDim.x + threadIdx.x,i,j,iteration,mix_rows = (2u + hc) * hc;
@@ -2282,8 +2164,6 @@ static __global__ void SparkDsv4HcSplitSinkhornKernel(const float *mixes_f32, co
 		comb_f32[((uint64_t)row * hc * hc) + i] = comb[i];
 }
 
-// Stream reduction by pre, expansion by post + transposed comb, and the
-// sigmoid head reduction - three small element kernels.
 static __global__ void SparkDsv4HcPreReduceKernel(
 	const void *streams_bf16,const float *pre_f32,void *reduced_bf16,
 	void *residual_bf16,uint32_t row_count,uint32_t hc,uint32_t dimension,
@@ -2363,8 +2243,6 @@ static __global__ void SparkDsv4HcHeadReduceKernel(const void *streams_bf16, con
 	}
 }
 
-// bf16 rows widened to f32 (times a scalar) for the compressor's fp32
-// pooling and the indexer's pre-scaled head weights.
 static __global__ void SparkDsv4WidenKernel(const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale)
 {
 	uint32_t row = blockIdx.x,element;
@@ -2623,8 +2501,6 @@ extern "C" cudaError_t SparkDsv4LaunchHeadCertifiedFp8Quantize(cudaStream_t stre
 		hidden_dimension));
 }
 
-// Screened exact head, the mimo25 pattern; replaces the block-per-row
-// full scan outright - dsv4 never carried the intermediate tiled form.
 extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
 {
 	cudaError_t status = SparkDsv4RequireNativeDecodeShape(row_count);
@@ -2886,10 +2762,6 @@ extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(uint32_t *multiprocessor_co
             (int)(hc_mix_shared_elements * sizeof(float)));
     }
 #if defined(SPARK_DSV4_PRO_BUILD)
-    /* Pro's output composition (16 groups x 1024 = 16384) stages 64 KB of
-     * activations in the decode LinearKernel - over the 48 KB default.
-     * Opt the exact instantiation in; Flash's 8192-wide input never needs
-     * this and keeps its original attribute set. */
     if ( error == cudaSuccess )
         error = cudaFuncSetAttribute(
             SparkLmLinearKernel<128u,
@@ -3022,14 +2894,6 @@ extern "C" cudaError_t SparkDsv4LaunchWindowShadow(cudaStream_t stream,
     return(cudaGetLastError());
 }
 
-/*
- * R2c bulk causal prefill: the same sparse-attention kernel with the
- * window slots resolved against this frame's staged KV rows and the
- * pre-frame ring snapshot instead of the live ring. One launch covers
- * the whole frame, so prefill no longer pays a scatter+attention pair
- * per round-major wave; the per-row column order and values are
- * identical to the wavefront.
- */
 extern "C" cudaError_t SparkDsv4LaunchBulkPrefillAttn(
     cudaStream_t stream,
     const void *q_bf16,
@@ -3262,10 +3126,6 @@ extern "C" cudaError_t SparkDsv4LaunchSwigluClamp(cudaStream_t stream, const voi
 	return(cudaGetLastError());
 }
 
-// Init-time range scan of a hash routing table: any entry at or past
-// the expert count trips the flag. Runs once per hash layer at
-// initialize with a blocking readback - the load path is allowed to
-// synchronize.
 static __global__ void SparkDsv4ValidateTid2EidKernel(const uint32_t *tid2eid, uint64_t entry_count, uint32_t expert_count, uint32_t *violation_flag)
 {
 	uint64_t entry = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,stride = (uint64_t)gridDim.x * blockDim.x;
@@ -3388,7 +3248,6 @@ extern "C" cudaError_t SparkDsv4LaunchGateRoute(
 
 extern "C" cudaError_t SparkDsv4LaunchExpertUp(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t multiprocessor_count)
 {
-	/* W1 and W3 must be issued together by SparkDsv4LaunchFusedExpertW13Act. */
 	(void)stream;
 	(void)stacked;
 	(void)input_bf16;
@@ -3690,7 +3549,5 @@ extern "C" cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const vo
 	return(cudaGetLastError());
 }
 #include "spark_dsv4_dspark_kernels.cuh"
-#if defined(SPARK_DSV4_MODEL_MTP_LAYER_COUNT) && (SPARK_DSV4_MODEL_MTP_LAYER_COUNT > 0u)
 #include "spark_dsv4_dspark_pro_kernels.cuh"
 #include "spark_dsv4_dspark_pro_chain.cuh"
-#endif

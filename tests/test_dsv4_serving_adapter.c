@@ -335,7 +335,6 @@ int main(void)
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
 	assert(snapshot.submitted_count == 5u);
 	assert(snapshot.completed_count == 5u);
-	/* No cuda_graph_count in the stage configuration: the driver saw 0. */
 	assert(snapshot.kv_token_capacity == 0u);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);

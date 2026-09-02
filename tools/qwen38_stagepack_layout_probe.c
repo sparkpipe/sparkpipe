@@ -1,13 +1,3 @@
-/* Wire-layout probe for the qwen38_max stage pack header and directory
- * entry: prints one "kind field offset size" line per struct member so a
- * CPU-side audit can compare the C layout against the Python struct
- * layouts the packer and verifier use. Pure C, no CUDA, no GPU: the
- * stagepack format contract is checkable entirely on the build host.
- *
- * Usage: cc -I<family source dir> -I<firmware include dir> -I<model
- * family include dir> -I<repo include dir> -o probe <this file>
- * The probe adapts to the header's FORMAT_VERSION: v2 headers add the
- * TP fields, wherever that header's family chose to put them. */
 #include <stddef.h>
 #include <stdio.h>
 

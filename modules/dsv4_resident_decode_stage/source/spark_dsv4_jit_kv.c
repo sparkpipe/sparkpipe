@@ -1,7 +1,3 @@
-// The family wiring of the JIT-KV pager for this module's resident decode
-// stage (see spark_dsv4_jit_kv.h for the contract): the KV_BLOCKS_SAVE_OUT
-// / KV_BLOCKS_RESTORE_IN frame ops behind the pager's module seam, and the
-// deployment parkability condition over the shared arena predicate.
 
 #include "spark_dsv4_jit_kv.h"
 
@@ -27,10 +23,6 @@ static uint32_t SparkDsv4KvFramesViewIsValid(
 	return 1u;
 }
 
-/* Stage the op (the device-plane copy, exactly as the frame context will
- * execute it), then hand it to the submit primitive - the TERM copy on the
- * host, the frame-context submission behind the spark receipt on device.
- * A refusal stages and counts, and never touches the staging bytes. */
 static SparkStatus SparkDsv4KvFramesRun(
 	SparkDsv4KvFrames *frames,
 	const SparkKvPagerBlockView *view,
@@ -145,8 +137,6 @@ SparkStatus SparkDsv4KvFramesRestore(
 		SPARK_DSV4_KV_FRAMES_OP_RESTORE_IN);
 }
 
-/* The TERM copy primitive: the frame op against host mappings. The layout
- * is the pager's staging contract - key plane then value plane. */
 SparkStatus SparkDsv4KvFramesSubmitHostCopy(
 	void *submit_context,
 	const SparkDsv4KvFrameOp *op)
@@ -234,8 +224,6 @@ SparkStatus SparkDsv4JitKvDecideParkability(
 	*parkability_out = parkability;
 	if ( parkability.unprotected_active_count != 0u )
 	{
-		/* the deployment's active set must be pinned before work is
-		   offered: dispatch against a parkable block is the cliff. */
 		return SPARK_STATUS_BUSY;
 	}
 	return SPARK_STATUS_OK;

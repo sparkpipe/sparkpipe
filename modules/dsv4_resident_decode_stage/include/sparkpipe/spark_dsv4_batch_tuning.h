@@ -1,31 +1,8 @@
 #pragma once
 
-// THE BATCH-VARIANT TUNING HEADER, dsv4 resident decode stage.
-//
-// Same contract as the glm52 variant header: one source tree, N compiled
-// modules, -DSPARK_BATCH_BUCKET=<n> the ONLY difference between them, a
-// bucket a capacity ceiling rather than a fixed batch. Read the why in
-// modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_batch_tuning.h
-// first; this file carries only what is dsv4's.
-//
-// THE SET IS EVERY POWER OF TWO FROM B1 TO B1024, the same eleven-bucket
-// ladder as glm52: runtime selection takes the tightest ceiling at or above
-// the microbatch, so a live batch pads to at most twice itself, and B1024
-// stays the explicitly configured default archive. The variant convention
-// INSERTS .b<n>. ahead of
-// the version suffix: a variant-published dsv4 module is a new module
-// identity, and the unbucketed ID (SPARK_DSV4_MODEL_MODULE_ID, which the
-// default archive is) stays valid until the contract generator adopts the
-// bucketed form - exactly the k3 header's stance.
 
 #include <stdint.h>
 
-// This header deliberately includes NO model header - the firmware header's
-// own pattern: the translation unit picks Flash or Pro by including its
-// spark_dsv4[_pro]_model.h first, and pulling the Flash header in here would
-// pre-empt that choice through the shared include guard. Only the grouped
-// tile macros below expand model geometry, and only the CUDA translation
-// unit - which always has the model header - expands them.
 
 #if SPARK_BATCH_BUCKET != 1u && SPARK_BATCH_BUCKET != 2u && \
 	SPARK_BATCH_BUCKET != 4u && SPARK_BATCH_BUCKET != 8u && \
@@ -33,16 +10,12 @@
 	SPARK_BATCH_BUCKET != 64u && SPARK_BATCH_BUCKET != 128u && \
 	SPARK_BATCH_BUCKET != 256u && SPARK_BATCH_BUCKET != 512u && \
 	SPARK_BATCH_BUCKET != 1024u && \
-	/* DSpark spec-step buckets (SPEC_STEP+1 for k=5/8/10) */ \
+	   \
 	SPARK_BATCH_BUCKET != 6u && SPARK_BATCH_BUCKET != 9u && \
 	SPARK_BATCH_BUCKET != 11u
 #error SPARK_BATCH_BUCKET must name a built variant bucket: 1, 2, 4, 6, 8, 9, 11, 16, 32, 64, 128, 256, 512, 1024
 #endif
 
-// THE CANONICAL MODULE IDENTITY. Prefix and suffix written once; the eleven
-// variant IDs are compositions, so a rename cannot drift them apart. Each
-// variant publishes under its own ID and keeps SPEC.md's content-addressed
-// artifact contract intact.
 #define SPARK_DSV4_BATCH_VARIANT_MODULE_ID_PREFIX \
 	"spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731"
 #define SPARK_DSV4_BATCH_VARIANT_MODULE_ID_SUFFIX \
@@ -120,19 +93,9 @@
 #define SPARK_DSV4_BATCH_TUNING_MODULE_ID SPARK_DSV4_BATCH_VARIANT_MODULE_ID_B1024
 #endif
 
-// THE ACTIVE-SEQUENCE CEILING THE FIRMWARE SIZES ITS COMPUTE WORKSPACE BY.
-// Resident sequence ownership is independent of this batch bucket, and the
-// paged KV pool is independently memory-budgeted. Every compiled bucket now
-// executes its advertised width; a b1024 module is not a renamed b128.
 #define SPARK_DSV4_BATCH_TUNING_SEQUENCE_CEILING \
 	SPARK_BATCH_BUCKET
 
-// THE GROUPED TILE HEIGHT AT THE BUCKET CEILING. Derived, not tabulated, the
-// glm52 rule applied to dsv4's geometry: the mean group holds
-// bucket*experts_per_token/routed_experts rows, the busiest group is priced
-// at twice the mean, and the tile rounds UP through 16/32/64. For dsv4
-// (top-6 of 256) the ceilings land at 16 for b1 through b256, 32 at b512,
-// and 64 at b1024 - the same monotonic shape as glm52.
 #define SPARK_DSV4_BATCH_TUNING_GROUPED_PEAK_ROWS \
 	((((SPARK_BATCH_BUCKET) * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN + \
 	SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT - 1u) / \
@@ -141,9 +104,6 @@
 	(SPARK_DSV4_BATCH_TUNING_GROUPED_PEAK_ROWS <= 16u ? 16u : \
 	SPARK_DSV4_BATCH_TUNING_GROUPED_PEAK_ROWS <= 32u ? 32u : 64u)
 
-// RUNTIME VARIANT SELECTION: smallest built bucket >= the requested maximum
-// active-sequence count, 0 above b1024. Same contract as glm52's; duplicated
-// per family because the module IDs it selects between are model content.
 static inline uint32_t SparkDsv4BatchVariantBucketCeiling(
 	uint32_t max_active_sequence_count)
 {

@@ -80,7 +80,6 @@ typedef struct SparkGlm52ExecutionSlot
 	uint32_t *output_token;
 	float *output_score;
 	uint64_t *head_maxloc_u64;
-	/* R1 screened-head scratch (per head-owning rank shard size). */
 	void *head_certified_scratch;
 	uint32_t *head_certified_candidates;
 	uint32_t *head_screened_count;
@@ -119,8 +118,6 @@ typedef struct SparkGlm52CudaWave
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
-	/* R1 certified-FP8 shadow of the lm_head shard (head-owning ranks;
-	 * built on-device at load; 0 elsewhere/before). */
 	const uint8_t *head_certified_fp8_payload;
 	const float *head_certified_fp8_scale_f32;
 	const float *head_certified_fp8_norm_f32;
@@ -133,9 +130,6 @@ typedef struct SparkGlm52CudaWave
 	const uint32_t *index_ordinal_by_local_layer;
 	const uint32_t *page_table;
 	uint32_t multiprocessor_count;
-	/* R3 flash-decode: 0 keeps the single-pass decode attention byte-for-
-	 * byte; above the threshold the position range splits across CTAs and a
-	 * combine pass merges the per-partition softmax states. */
 	uint32_t decode_split_context_threshold;
 	float *attention_split_partials_f32;
 	uint64_t attention_split_partial_blocks;

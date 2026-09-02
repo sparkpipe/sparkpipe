@@ -1,8 +1,4 @@
 #pragma once
-// Minimal fp16 stub for the host harness. The kernels use exactly one thing
-// from this header, __half2float, which is checkable: see the grep in
-// tools/gates.sh. If a kernel starts using more, the build breaks here rather
-// than silently picking up a different definition.
 #include <stdint.h>
 #include <string.h>
 typedef struct { uint16_t raw; } __half;

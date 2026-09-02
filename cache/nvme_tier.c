@@ -2,35 +2,12 @@
 
 #include <string.h>
 
-// The mechanics behind the contract in spark_nvme_tier.h. Three tables, all
-// carved from one caller-provided blob at init (runtime/arena.h pattern: one
-// allocation, no malloc afterwards):
-//
-//   SLOTS     one per block the budget buys; slot index IS the device record,
-//             so the offset is multiplication and there is no second allocator
-//             to disagree with the first about what is free.
-//   STAGING   pinned DMA buffers, double-buffered at minimum: one fills from
-//             the drive while the other's contents are consumed upstairs, so
-//             the drive never waits on consumption and consumption never waits
-//             on the drive.
-//   PENDING   the lookahead min-heap, ordered by earliest deadline and FIFO
-//             inside equal deadlines, so Pump always issues the most urgent
-//             valid read while making queue mutation O(log n).
-//
-// EVICTION IS A CLOCK, and that is a load-bearing choice. A full LRU scan
-// over a budget of millions of records costs microseconds-to-milliseconds on
-// the path that admits a write-back, and an exact ordering buys nothing when
-// the evicted bytes are re-fetchable: the cost of a wrong victim is one
-// re-read, not a stall. Second-chance gives recency approximated by a single
-// bit, O(1) amortised, and the generation counter makes eviction safe against
-// DMA already in flight - a read landing in a recycled slot is waste to be
-// discarded, never data to be believed.
 
 #define NVME_TIER_SLOT_EMPTY 0u
-#define NVME_TIER_SLOT_WRITING 1u    /* reserved device offset, not readable */
-#define NVME_TIER_SLOT_PRESENT 2u    /* committed on the drive, nothing moving */
-#define NVME_TIER_SLOT_FILLING 3u    /* a read into staging is in flight */
-#define NVME_TIER_SLOT_READY 4u      /* landed in staging, awaiting Consume */
+#define NVME_TIER_SLOT_WRITING 1u
+#define NVME_TIER_SLOT_PRESENT 2u
+#define NVME_TIER_SLOT_FILLING 3u
+#define NVME_TIER_SLOT_READY 4u
 
 #define NVME_TIER_STAGING_FREE 0u
 #define NVME_TIER_STAGING_FILLING 1u
@@ -43,26 +20,20 @@
 
 typedef struct NvmeTierSlot
 {
-	uint64_t content_hash;         /* 0 until first write reservation */
-	uint64_t last_use;             /* monotonic tick, for observability */
+	uint64_t content_hash;
+	uint64_t last_use;
 	uint32_t next_in_bucket;
-	uint32_t next_free;            /* free-list link while EMPTY */
-	uint32_t generation;           /* bumped on every recycle */
-	uint32_t need_by_step;         /* earliest deadline anyone has stated */
-	uint32_t issued_step;          /* when the in-flight read was submitted */
+	uint32_t next_free;
+	uint32_t generation;
+	uint32_t need_by_step;
+	uint32_t issued_step;
 	uint32_t pin_count;
-	uint32_t staging_index;        /* while FILLING or READY */
+	uint32_t staging_index;
 	uint8_t state;
-	uint8_t referenced;            /* the clock's second-chance bit */
-	uint8_t queued;                /* sits in the pending queue */
+	uint8_t referenced;
+	uint8_t queued;
 	uint8_t reserved0;
 	uint8_t digest[SPARK_NVME_TIER_DIGEST_BYTES];
-	/* B3 TIER INTEGRITY: SHA-256 of the payload this record stands for,
-	 * presented by the writer at ReserveWrite and demanded back by every
-	 * reader and every landing. The 64-bit content_hash buckets; THIS is
-	 * the identity. A digest that does not match is a collision or drive
-	 * corruption: fail loud (HASH_MISMATCH), quarantine the record, never
-	 * hand back wrong-KV. */
 }
 NvmeTierSlot;
 
@@ -70,11 +41,11 @@ typedef struct NvmeTierStagingState
 {
 	uint64_t ticket;
 	uint32_t slot;
-	uint32_t generation;           /* of the slot at issue time */
+	uint32_t generation;
 	uint32_t need_by_step;
 	uint32_t issued_step;
 	uint8_t state;
-	uint8_t holder;                /* PREFETCH is preemptible, DEMAND is not */
+	uint8_t holder;
 	uint8_t reserved0;
 	uint8_t reserved1;
 }
@@ -83,10 +54,10 @@ NvmeTierStagingState;
 typedef struct NvmeTierPendingEntry
 {
 	uint32_t slot;
-	uint32_t generation;           /* of the slot at enqueue time */
+	uint32_t generation;
 	uint32_t need_by_step;
 	uint32_t reserved0;
-	uint64_t order;                /* FIFO tie-break inside one deadline */
+	uint64_t order;
 }
 NvmeTierPendingEntry;
 
@@ -135,9 +106,6 @@ static uint64_t NvmeTierSaturatingMultiplyU64(uint64_t left, uint64_t right)
 	return(left * right);
 }
 
-// Exact floor(left * right / divisor) unless the mathematical result exceeds
-// uint64_t, in which case it saturates. Decomposing both operands around the
-// divisor prevents the intermediate product from wrapping before division.
 static uint64_t NvmeTierSaturatingMultiplyDivideU64(
 	uint64_t left,
 	uint64_t right,
@@ -230,12 +198,6 @@ static uint32_t NvmeTierLookup(
 	return(SPARK_NVME_TIER_NO_SLOT);
 }
 
-// B3 TIER INTEGRITY. The 64-bit content_hash is a bucket key, not an
-// identity: two tenants' blocks can collide on it, and serving either
-// caller the other's bytes is silent cross-tenant KV corruption. Every
-// record stores the SHA-256 its writer presented; every reader must present
-// the digest it expects and every restored buffer must match the record's
-// digest. Mismatch is SPARK_STATUS_HASH_MISMATCH - loud, never wrong-KV.
 static uint32_t NvmeTierDigestIsUsable(
 	const uint8_t *digest)
 {
@@ -256,14 +218,6 @@ static uint32_t NvmeTierDigestMatches(
 		1u : 0u );
 }
 
-// Resolve hash -> slot AND bind the presented digest to it when one is
-// given. Returns the slot index, or SPARK_NVME_TIER_NO_SLOT with a status
-// explaining: NOT_FOUND (absent), HASH_MISMATCH (collision or corruption -
-// never alias), OK. An unusable (NULL/zero) digest is KEY-ONLY bookkeeping
-// access: OffsetOf, Pin and the planning paths classify records they never
-// hand bytes from, so they may pass NULL. The data-carrying APIs
-// (ReserveWrite, RequestDemand, Consume) reject an unusable digest before
-// reaching here - bytes never move on a key-only match.
 static uint32_t NvmeTierLookupVerified(
 	const SparkNvmeTier *tier,
 	uint64_t content_hash,
@@ -460,9 +414,6 @@ SparkStatus SparkNvmeTierInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-// Release a staging buffer back to FREE, detaching it from its slot. The slot
-// drops to PRESENT when it still names this buffer: the on-drive record
-// outlives every staging cycle, which is what makes dropping a prefetch cheap.
 static void NvmeTierStagingRelease(SparkNvmeTier *tier, uint32_t staging_index)
 {
 	NvmeTierStagingState *staging_states;
@@ -487,24 +438,6 @@ static void NvmeTierStagingRelease(SparkNvmeTier *tier, uint32_t staging_index)
 	staging_states[staging_index].slot = SPARK_NVME_TIER_NO_SLOT;
 }
 
-// The eviction clock. Two revolutions at worst: the first clears second-chance
-// bits, the second is guaranteed to meet a victim it cleared - unless every
-// slot is one it must not touch:
-//
-//   pinned        - admission promised this block to a scheduled sequence.
-//   demand-held   - its staging buffer is the decode path's data; evicting it
-//                   under the reader is the one eviction that WOULD stall a
-//                   step, which is the thing this tier exists to prevent.
-//   filling, no cancel - the device owns the staging buffer until the read
-//                   lands; recycling the slot now would let late DMA land in a
-//                   buffer already reused for someone else.
-//
-// A single revolution cannot evict anything once every slot has its grace
-// bit set - found by the test's ninth publish into an 8-record tier. Two
-// revolutions with no victim means the tier is genuinely wedged (every record
-// pinned or demand-held) and the caller hears BUSY - loud, instead of the
-// silent alternative of evicting a block a scheduled sequence is about to
-// read.
 static uint32_t NvmeTierClockEvict(SparkNvmeTier *tier)
 {
 	NvmeTierSlot *slots;
@@ -613,7 +546,6 @@ static uint32_t NvmeTierSlotAcquire(SparkNvmeTier *tier)
 	}
 	if ( NvmeTierClockEvict(tier) == SPARK_NVME_TIER_NO_SLOT )
 		return(SPARK_NVME_TIER_NO_SLOT);
-	// The clock pushed its victim onto the free list.
 	index = tier->free_head;
 	tier->free_head = slots[index].next_free;
 	slots[index].next_free = SPARK_NVME_TIER_NO_SLOT;
@@ -666,8 +598,6 @@ SparkStatus SparkNvmeTierReserveWrite(
 	slot_index = NvmeTierLookup(tier,content_hash);
 	if ( slot_index != SPARK_NVME_TIER_NO_SLOT )
 	{
-		/* B3: same 64-bit hash, DIFFERENT digest = collision. Fail loud;
-		 * treating it as already_present would alias two tenants' KV. */
 		if ( NvmeTierDigestMatches(slots[slot_index].digest,
 				content_digest) == 0u )
 		{
@@ -813,15 +743,6 @@ SparkStatus SparkNvmeTierOffsetOf(
 	return(SPARK_STATUS_OK);
 }
 
-// -- the pending queue ------------------------------------------------------------
-//
-// Bounded binary min-heap ordered by (need_by_step, insertion order). The old
-// sorted array shifted every later entry on insertion, removal, and deadline
-// tightening. At the lookahead capacities used for long-context scheduling that
-// turned a burst into repeated O(n) memory traffic on the owner thread. A heap
-// retains exact FIFO tie ordering while making each mutation O(log n). The
-// occasional slot lookup remains a bounded linear search; it reads only compact
-// metadata and never moves the queue payload.
 
 static uint32_t NvmeTierPendingLess(
 	const NvmeTierPendingEntry *left,
@@ -942,8 +863,6 @@ static void NvmeTierPendingRemoveAt(
 		NvmeTierPendingSiftDown(queue,position);
 }
 
-// An earlier deadline decreases the heap key. The original insertion order is
-// retained so equal deadlines remain FIFO after tightening.
 static void NvmeTierPendingTighten(
 	NvmeTierPendingQueue *queue,
 	uint32_t position,
@@ -983,21 +902,16 @@ SparkStatus SparkNvmeTierPlanLookahead(
 		if ( slot_index == SPARK_NVME_TIER_NO_SLOT &&
 			lookup_status == SPARK_STATUS_HASH_MISMATCH )
 		{
-			// The hash resolves but the digest contradicts it: admitting
-			// against this record would serve the wrong tenant's KV.
 			return(SPARK_STATUS_HASH_MISMATCH);
 		}
 		if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
 		{
-			// Not on the drive. Admission must see this: planning around an
-			// absent block as if it were queued is how a sequence gets admitted
-			// warm and starts cold.
 			report.absent_count++;
 			continue;
 		}
 		slot = &slots[slot_index];
 		slot->last_use = tier->tick++;
-		slot->referenced = 1u;      /* someone will need it: the clock should know */
+		slot->referenced = 1u;
 		if ( need_by < slot->need_by_step || slot->state == NVME_TIER_SLOT_PRESENT )
 			slot->need_by_step = need_by;
 		if ( slot->state == NVME_TIER_SLOT_READY )
@@ -1014,7 +928,6 @@ SparkStatus SparkNvmeTierPlanLookahead(
 			report.already_inflight_count++;
 			continue;
 		}
-		// PRESENT. Queued already: an earlier deadline pulls it forward.
 		{
 			int32_t position = NvmeTierPendingFind(queue,slot_index);
 			if ( position >= 0 )
@@ -1024,10 +937,6 @@ SparkStatus SparkNvmeTierPlanLookahead(
 				continue;
 			}
 		}
-		// Late risk is reported, not hidden: a need closer than the transfer
-		// time cannot arrive on schedule, and the caller prefers to know
-		// before admission rather than at the stalled step. The read is still
-		// queued - late bytes beat no bytes by exactly the recompute time.
 		if ( need_by <= step_now
 			|| need_by - step_now < tier->transfer_steps )
 			report.late_risk_count++;
@@ -1045,23 +954,6 @@ SparkStatus SparkNvmeTierPlanLookahead(
 	return(SPARK_STATUS_OK);
 }
 
-// Staging for a demand load. The ordering is the priority contract in code:
-//
-//   1. a FREE buffer;
-//   2. a buffer holding a landed PREFETCH nobody has consumed - the bytes are
-//      on the drive, so dropping them costs one future re-read at most;
-//   3. a buffer a PREFETCH read is still filling, cancelled - the drive loses
-//      some positioning, the decode step keeps its budget;
-//   4. nothing: every buffer holds DEMAND data awaiting consumption, which is
-//      a sizing bug and is counted as one (demand_stalls) rather than hidden
-//      as latency.
-//
-// Pinned slots are skipped in 2 and 3: admission pinned them precisely because
-// a scheduled sequence cannot afford to re-fetch them.
-// A displaced prefetch is re-queued, not forgotten: the need that motivated it
-// is still in the schedule, and dropping it outright would convert a cheap
-// buffer hand-off into a demand load later - exactly the critical-path read
-// the prefetch existed to prevent.
 static void NvmeTierPrefetchRequeue(SparkNvmeTier *tier, uint32_t slot_index, uint32_t need_by_step)
 {
 	NvmeTierSlot *slots = (NvmeTierSlot *)tier->slots;
@@ -1189,8 +1081,6 @@ static SparkStatus NvmeTierIssueRead(
 		tier->configuration.block_bytes,&ticket);
 	if ( status != SPARK_STATUS_OK )
 	{
-		// The device refused; leave the slot PRESENT so a later pump retries,
-		// and the buffer free so nothing else pays for the refusal.
 		tier->statistics.io_errors++;
 		NvmeTierStagingRelease(tier,staging_index);
 		return(status);
@@ -1220,11 +1110,6 @@ SparkStatus SparkNvmeTierRequestDemand(
 		content_digest,step_now,0u,result_out));
 }
 
-// The W2 semantics live here (see spark_nvme_tier.h): `deadline_step == 0`
-// is the legacy behavior on every branch - the yank of a queued entry
-// BEFORE staging acquisition, the immediate issue, the demand_stalls
-// accounting. A hint never takes MORE than the legacy path would; it only
-// converts a saturation stall into an ordered place in the deadline queue.
 SparkStatus SparkNvmeTierRequestDemandDeadline(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
@@ -1247,18 +1132,12 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 	if ( slot_index == SPARK_NVME_TIER_NO_SLOT &&
 		status == SPARK_STATUS_HASH_MISMATCH )
 	{
-		// A hash collision against a committed record: the caller would be
-		// handed another tenant's bytes. MISS would silently recompute from
-		// the wrong sequence's tokens; this fails loud instead.
 		tier->statistics.digest_mismatches++;
 		result_out->state = SPARK_NVME_TIER_DEMAND_MISS;
 		return(SPARK_STATUS_HASH_MISMATCH);
 	}
 	if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
 	{
-		// The genuine miss, and the only one: the bytes are not on this tier
-		// at all, so somebody recomputes. Counted, because a rising line here
-		// is the write-back path falling behind, not bad luck.
 		tier->statistics.demand_misses++;
 		result_out->state = SPARK_NVME_TIER_DEMAND_MISS;
 		return(SPARK_STATUS_OK);
@@ -1270,9 +1149,6 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 	{
 		NvmeTierStagingState *held
 			= &((NvmeTierStagingState *)tier->staging_state)[slot->staging_index];
-		// Promote to DEMAND-held. Without this, a second demand load could
-		// preempt-steal this buffer between the hit and the caller's Consume,
-		// handing back a pointer whose bytes are about to be overwritten.
 		held->holder = NVME_TIER_HOLDER_DEMAND;
 		tier->statistics.demand_hits++;
 		result_out->state = SPARK_NVME_TIER_DEMAND_READY;
@@ -1289,8 +1165,6 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 		held = &((NvmeTierStagingState *)tier->staging_state)[slot->staging_index];
 		if ( deadline_step != 0u && deadline_step < held->need_by_step )
 		{
-			// The gate waits on THIS read: its staging deadline tightens so
-			// late-landing statistics measure against the real need.
 			held->need_by_step = deadline_step;
 			tier->statistics.demand_deadline_orders++;
 		}
@@ -1305,11 +1179,6 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 		result_out->state = SPARK_NVME_TIER_DEMAND_IN_FLIGHT;
 		return(SPARK_STATUS_OK);
 	}
-	// PRESENT. The W2 branch first: under a hint, a SATURATED tier orders
-	// the gated block in the pending debt instead of stalling it - the
-	// pending heap is earliest-deadline-first, so the next staging buffer
-	// to free carries this read. Only after ordering fails (queue full)
-	// does the legacy stall answer.
 	if ( deadline_step != 0u )
 	{
 		NvmeTierPendingQueue *queue = (NvmeTierPendingQueue *)tier->pending;
@@ -1321,9 +1190,6 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 			{
 				uint32_t before = queue->entries[position].need_by_step;
 				NvmeTierPendingTighten(queue,(uint32_t)position,deadline_step);
-				/* Tighten applied iff the stale deadline was later; the
-				   sift-up may have moved a DIFFERENT entry into
-				   `position`, so the entry is not re-read here. */
 				if ( before > deadline_step )
 					tier->statistics.demand_deadline_orders++;
 				result_out->ordered = 1u;
@@ -1342,9 +1208,6 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 			}
 			return(SPARK_STATUS_BUSY);
 		}
-		// Staging was free: the immediate issue the legacy path would have
-		// taken. Drop any stale queue entry first - the demand read IS the
-		// answer now.
 		if ( slot->queued != 0u )
 		{
 			int32_t position = NvmeTierPendingFind(queue,slot_index);
@@ -1360,11 +1223,6 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 		result_out->state = SPARK_NVME_TIER_DEMAND_STARTED;
 		return(SPARK_STATUS_OK);
 	}
-	// Legacy (no hint), byte-for-byte the pre-W2 behavior: the queue loses
-	// the entry BEFORE staging is attempted, and a saturated tier answers
-	// BUSY with the entry no longer ordered - the gated block then re-issues
-	// only after whatever the queue drains first. That inversion is exactly
-	// what the hint branch above exists to prevent.
 	if ( slot->queued != 0u )
 	{
 		NvmeTierPendingQueue *queue = (NvmeTierPendingQueue *)tier->pending;
@@ -1388,11 +1246,6 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 	return(SPARK_STATUS_OK);
 }
 
-// A record whose bytes failed their digest is gone, not served: drop it
-// from the index, recycle the slot, and let the caller's recompute path
-// rebuild the block. Quarantine keeps a corrupt on-drive record from being
-// re-read forever while keeping the failure LOUD (Pump answers
-// HASH_MISMATCH for the call that found it).
 static void NvmeTierQuarantineSlot(SparkNvmeTier *tier, uint32_t slot_index)
 {
 	NvmeTierSlot *slots = (NvmeTierSlot *)tier->slots;
@@ -1415,10 +1268,6 @@ static void NvmeTierQuarantineSlot(SparkNvmeTier *tier, uint32_t slot_index)
 	tier->statistics.slots_in_use = tier->slots_in_use;
 }
 
-// Verify a landed staging buffer against its record's digest. The buffer
-// becomes READY only on a match; a mismatch quarantines the record and
-// answers HASH_MISMATCH - restored bytes are verified-correct or never
-// handed to a caller.
 static SparkStatus NvmeTierVerifyLanding(
 	SparkNvmeTier *tier,
 	uint32_t slot_index,
@@ -1453,8 +1302,6 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 	slots = (NvmeTierSlot *)tier->slots;
 	staging_states = (NvmeTierStagingState *)tier->staging_state;
 	queue = (NvmeTierPendingQueue *)tier->pending;
-	// Completions first, issues second: a buffer freed by a landing can carry
-	// the next read in the same pump, which is the double-buffer doing its job.
 	for ( index = 0u; index < tier->configuration.staging_buffer_count; ++index )
 	{
 		NvmeTierStagingState *held;
@@ -1502,10 +1349,6 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 			NvmeTierStagingRelease(tier,index);
 			continue;
 		}
-		/* B3: the bytes just landed are checked against the record's
-		 * digest BEFORE they become readable. On mismatch the record is
-		 * quarantined (the next demand is a MISS -> recompute) and the
-		 * failure is loud. */
 		if ( NvmeTierVerifyLanding(tier,slot_index,index) !=
 			SPARK_STATUS_OK )
 		{
@@ -1526,10 +1369,6 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 	for ( index = 0u; index < tier->configuration.staging_buffer_count; ++index )
 		if ( staging_states[index].state == NVME_TIER_STAGING_FREE )
 			free_count++;
-	// Prefetches issue only into staging ABOVE the demand reserve. The reserve
-	// is the mechanism behind "prefetch never starves demand": a lookahead
-	// queue deep enough to fill every buffer would turn the next miss into a
-	// stall, so the last buffers are simply not prefetch's to take.
 	while ( queue->count != 0u
 		&& free_count > tier->configuration.demand_reserve_buffers )
 	{
@@ -1541,7 +1380,7 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 			|| slots[slot_index].generation != head.generation
 			|| slots[slot_index].state != NVME_TIER_SLOT_PRESENT
 			|| slots[slot_index].queued == 0u )
-			continue;   /* evicted or already claimed while it waited */
+			continue;
 		slots[slot_index].queued = 0u;
 		for ( index = 0u; index < tier->configuration.staging_buffer_count; ++index )
 			if ( staging_states[index].state == NVME_TIER_STAGING_FREE )
@@ -1550,8 +1389,8 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 				break;
 			}
 		if ( staging_index == SPARK_NVME_TIER_NO_SLOT )
-			break;      /* reserve miscounted: stop rather than take it */
-		staging_states[staging_index].state = NVME_TIER_STAGING_FILLING;  /* claim */
+			break;
+		staging_states[staging_index].state = NVME_TIER_STAGING_FILLING;
 		staging_states[staging_index].holder = NVME_TIER_HOLDER_PREFETCH;
 		staging_states[staging_index].slot = SPARK_NVME_TIER_NO_SLOT;
 		free_count--;
@@ -1587,8 +1426,6 @@ SparkStatus SparkNvmeTierConsume(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	slots[slot_index].last_use = tier->tick++;
 	slots[slot_index].referenced = 1u;
-	// The record stays PRESENT: consumption copies the bytes upstairs, it does
-	// not move them. Eviction, and only eviction, reclaims the drive.
 	NvmeTierStagingRelease(tier,slots[slot_index].staging_index);
 	return(SPARK_STATUS_OK);
 }
@@ -1679,9 +1516,6 @@ SparkStatus SparkNvmeTierWillBeResidentBy(
 				assessment_out->late_count++;
 			continue;
 		}
-		// PRESENT: the read still has to be issued, so the queue in front of
-		// it is part of the ETA. One staging buffer's worth of queue drains
-		// per landing, so queue depth approximates the wait in steps.
 		{
 			const NvmeTierPendingQueue *queue = (const NvmeTierPendingQueue *)tier->pending;
 			eta_steps = (uint64_t)tier->transfer_steps * ( 1u + queue->count );

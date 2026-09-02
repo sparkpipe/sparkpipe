@@ -1,22 +1,3 @@
-// Run K3's MLA path on a CPU: store into a paged cache, then attend over it.
-//
-// This is the last of K3's forward that had never executed. It needs more setup
-// than the other harnesses because the cache is paged - a page table per
-// sequence, a pool, and slots addressed through LmKvSlot - and that addressing
-// is exactly what wants testing. LmKvSlot returns null for an unmapped page
-// rather than an address into page zero, and the comment on it says why: the
-// alternative is reading another sequence's keys and getting output that is
-// fluent and wrong.
-//
-// TWO SEQUENCES, NOT ONE. A single sequence cannot tell correct page
-// addressing from ignoring the page table, because with one sequence every
-// mapping is the identity. The second sequence's pages are deliberately
-// interleaved with the first's so a kernel that indexed by position alone would
-// read the wrong tokens.
-//
-// The geometry is K3's shape at small size: a latent row plus an unrotated
-// slice, which is what LmKvLatent describes and what the absorbed attention
-// kernel reads as its key.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -35,11 +16,6 @@ float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 #undef LM_WARP_LANES
 #define LM_WARP_LANES LM_HOST_WARP_LANES
 
-// kv.cuh guards its store kernel on __CUDACC__ - it is the only such guard in
-// the kernel tree, and the effect was that the one kernel responsible for
-// WRITING the cache could not be compiled for the host and therefore could not
-// be tested. Declaring it here says the harness is a device-code compiler for
-// this purpose, which it is.
 #define __CUDACC__ 1
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/attn.cuh"
@@ -77,8 +53,6 @@ int main(void)
 	static LmKvAccessError access_error;
 	uint32_t index, sequence, position, head;
 
-	// INTERLEAVED PAGES. Sequence 0 gets pages 0 and 2, sequence 1 gets 1 and 3,
-	// so position-only addressing lands in the other sequence's tokens.
 	page_table[0] = 0u; page_table[1] = 2u;
 	page_table[2] = 1u; page_table[3] = 3u;
 

@@ -26,10 +26,6 @@
 
 #define SPARK_GLM52_SERVING_ADAPTER_ID \
 	"spark.glm52.serving-adapter.tp8.expert_" GLM52_EXPERT_CODEC_NAME ".v1"
-/* Deployment-facing geometry: 8 flat ranks, one per TP rank, single PP
- * stage. The residentd fans each submission out to every rank
- * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
- * adapter maps flat rank -> tp_rank and pins the firmware stage to 0. */
 #define SPARK_GLM52_SERVING_STAGE_COUNT 8u
 #define SPARK_GLM52_SERVING_TP_DEGREE 8u
 #define SPARK_GLM52_SERVING_STAGE_LAYERS \
@@ -71,7 +67,6 @@ static const char *const SparkGlm52ServingConfigurationMembers[] =
 typedef struct SparkGlm52ServingPending
 {
 	struct SparkGlm52ServingState *owner;
-	/* The shared submission view (the serving-adapter template fills it). */
 	SparkServingAdapterPendingCommon common;
 	uint32_t last_row_by_lane[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
@@ -148,12 +143,6 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.boundary_sideband_bytes_per_sequence = {0u}
 };
 
-/* The tp_collective parse is the serving-adapter template's; the family
- * policy is glm52's TP8 flavor: recursive doubling alone with both
- * algorithm-specific thresholds zero, the degraded single-rank zero
- * identifier allowed, and contiguous peer ports deriving the control-port
- * base. The peer arrays stage against the configuration's tp_degree - the
- * parse runs before the tp_degree==8 cross-check, exactly as pasted. */
 static SparkStatus SparkGlm52ServingLoadTpCollective(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -297,9 +286,6 @@ static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 		return(0);
 	pending->owner = state;
 	pending->common.active = 1u;
-	/* glm52 stages resident slots per ROW: the TP8 fanout's row order is
-	 * the slot order (the family fill step; the template owns the common
-	 * view and last_row_by_lane). */
 	for (row=0u; row<submission->row_count; row++)
 		pending->resident_slots[row] =
 			submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot;
@@ -404,11 +390,6 @@ static void SparkGlm52ServingDestroy(void *adapter_state)
 	free(state);
 }
 
-/* The program's flag/profile contract stays family policy on the shared
- * spine: SparkModelDriverProgramSupportsRuntimeLimits also checks the
- * profile's max_inflight and max_resident_sequences, which the pasted
- * inline conditions did not - a shared approximation would change
- * accept/reject behavior on real descriptors. */
 static SparkStatus SparkGlm52ServingAcceptsProgram(
 	const SparkModelDriverProgramDescriptor *program,
 	void *accept_context)
@@ -499,8 +480,6 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 		state->node_context.descriptor_bytes = SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
 		state->node_context.stage_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT;
-		/* Firmware stage is always 0; the deployment's flat rank index is the
-		 * TP rank, cross-checked against the stage config below. */
 		state->node_context.stage_index = 0u;
 		state->node_context.first_layer_index = 0u;
 		state->node_context.layer_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
@@ -540,9 +519,6 @@ static SparkStatus SparkGlm52ServingValidateBoundaries(
 {
 	uint64_t boundary_bytes;
 	boundary_bytes = (uint64_t)submission->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	/* Every TP8 fanout rank runs the full single-stage firmware: it owns the
-	 * embedding and the head, so it accepts no hidden boundaries and no DSA
-	 * sidebands. */
 	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	(void)boundary_bytes;
@@ -645,14 +621,6 @@ static SparkStatus SparkGlm52ServingAdmit(
 		state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
-/* The module's KV page cache is driven through the admission ladder: PREPARE
- * maps the submission's lanes (resident calls this after validation, before
- * the route is reserved), COMMIT makes the prepared ownership visible once
- * the coordinator resolves, ABORT discards it, and the RELEASE frame flag
- * frees lanes through the module's own predicate. Without this wiring the
- * lanes reach SparkKvPageCacheCompleteLane never prepared and every request
- * completes INTERNAL_ERROR (first seen at B1 bring-up). Mirrors the dsv4
- * adapter's prefetch contract. */
 static SparkStatus SparkGlm52ServingPrefetch(
 	void *adapter_state,
 	const SparkModelServingSubmission *submissions,

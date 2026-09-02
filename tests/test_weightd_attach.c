@@ -1,17 +1,3 @@
-/* W2 weightd lane (docs/WEIGHTD_DESIGN.md W2b) serving-side attach tests —
- * cuda-stub only, the weightd server runs in-process on a thread. Proves
- * the two binding contracts of the module-load attach:
- *
- * 1. FALLBACK: every "not attached" outcome (kill switch, socket unset,
- *    daemon absent, identity missing/malformed, daemon refusal) returns
- *    cleanly with a reason so the caller proceeds with its direct pack
- *    load — and a daemon refusal allocates nothing (arena_count 0).
- * 2. WARM HIT: the first attach cold-loads (loaded_from_pack 1) and the
- *    arena bytes equal the pack bytes; a second attach of the same
- *    identity is the warm path (loaded_from_pack 0, one arena, refcount 2,
- *    same generation and handle); after both consumers release, the next
- *    attach is STILL warm (cold retention — the code-redeploy win); and a
- *    changed identity (revision env) is a second arena. */
 
 #include <assert.h>
 #include <pthread.h>
@@ -144,7 +130,6 @@ static void SparkTestMakeSlice(SparkWeightdPackSlice *slice,
     slice->pack_bytes = pack_bytes;
 }
 
-/* ------------------------------ 1. the gates ------------------------------ */
 
 static void SparkTestFallbackGates(void)
 {
@@ -158,7 +143,6 @@ static void SparkTestFallbackGates(void)
     SparkTestMakeSlice(&slice, 65536ull);
     SparkTestClearAttachEnv();
 
-    /* the kill-switch probe itself mirrors the W1 pipeline convention */
     assert(SparkWeightdAttachRequested() == SPARK_STATUS_BUSY);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
     assert(SparkWeightdAttachRequested() == SPARK_STATUS_OK);
@@ -166,14 +150,12 @@ static void SparkTestFallbackGates(void)
     assert(SparkWeightdAttachRequested() == SPARK_STATUS_BUSY);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, 0);
 
-    /* socket unset: the daemon is absent by deployment */
     SparkTestClearAttachEnv();
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
         SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_OK);
     assert(outcome.client == 0);
     assert(strcmp(reason, "no_socket") == 0);
 
-    /* the kill switch beats a configured socket */
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "0");
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
@@ -183,7 +165,6 @@ static void SparkTestFallbackGates(void)
     assert(strcmp(reason, "env_off") == 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, 0);
 
-    /* socket set, no daemon listening: fail closed at the front door */
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
     (void)unlink(SPARK_TEST_SOCKET);
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
@@ -191,21 +172,18 @@ static void SparkTestFallbackGates(void)
     assert(outcome.client == 0);
     assert(strcmp(reason, "no_daemon") == 0);
 
-    /* digest env missing: no identity, no attach */
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, 0);
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
         SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_OK);
     assert(outcome.client == 0);
     assert(strcmp(reason, "no_identity") == 0);
 
-    /* digest env malformed (not 64 hex characters): refused client-side */
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, "zz48");
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
         SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_OK);
     assert(outcome.client == 0);
     assert(strcmp(reason, "identity") == 0);
 
-    /* argument faults stay transport faults (no fallback invented here) */
     {
         SparkWeightdAttachOutcome ignored;
         char unused_reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
@@ -215,7 +193,7 @@ static void SparkTestFallbackGates(void)
         assert(SparkWeightdAttachPack(&slice, "", SPARK_TEST_TIMEOUT_NS,
             &ignored, unused_reason) == SPARK_STATUS_INVALID_ARGUMENT);
     }
-    SparkWeightdAttachRelease(0); /* documented no-op */
+    SparkWeightdAttachRelease(0);
 
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, 0);
@@ -223,7 +201,6 @@ static void SparkTestFallbackGates(void)
     printf("attach fallback gates green\n");
 }
 
-/* ------------------------------ 2. daemon refusal ------------------------------ */
 
 static void SparkTestRefusedAttachFallsBackAndAllocatesNothing(void)
 {
@@ -239,8 +216,6 @@ static void SparkTestRefusedAttachFallsBackAndAllocatesNothing(void)
     SparkTestWritePack(SPARK_TEST_PACK, 22u, 65536ull, digest);
     SparkTestMakeSlice(&slice, 65536ull);
 
-    /* a stale deployment digest: valid hex, wrong content — the daemon's
-     * digest gate refuses and NOTHING becomes resident */
     SparkTestClearAttachEnv();
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256,
@@ -251,7 +226,6 @@ static void SparkTestRefusedAttachFallsBackAndAllocatesNothing(void)
     assert(outcome.client == 0);
     assert(strcmp(reason, "hash_mismatch") == 0);
 
-    /* wrong size claim: refused before any allocation */
     {
         SparkWeightdPackSlice wrong_size;
         SparkTestMakeSlice(&wrong_size, 65537ull);
@@ -261,14 +235,12 @@ static void SparkTestRefusedAttachFallsBackAndAllocatesNothing(void)
         assert(outcome.client == 0);
         assert(strcmp(reason, "invalid_argument") == 0);
     }
-    /* missing pack file: IO_ERROR refusal, still a clean fallback */
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
     assert(SparkWeightdAttachPack(&slice, "/tmp/spark_weightd_attach_missing.spack",
         SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_OK);
     assert(outcome.client == 0);
     assert(strcmp(reason, "io_error") == 0);
 
-    /* the daemon served three refusals and stayed up, holding nothing */
     {
         SparkWeightdClient *probe = 0;
         SparkWeightdHelloResult hello;
@@ -289,7 +261,6 @@ static void SparkTestRefusedAttachFallsBackAndAllocatesNothing(void)
     printf("refused attach falls back with nothing resident green\n");
 }
 
-/* ------------------------------ 3. cold, warm, retention ------------------------------ */
 
 static void SparkTestColdWarmAndRetention(void)
 {
@@ -315,7 +286,6 @@ static void SparkTestColdWarmAndRetention(void)
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
     SparkTestStartServer(&thread_context, &thread_handle);
 
-    /* first consumer: the cold path loads the pack once */
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
         SPARK_TEST_TIMEOUT_NS, &cold, reason) == SPARK_STATUS_OK);
     assert(cold.client != 0);
@@ -325,9 +295,6 @@ static void SparkTestColdWarmAndRetention(void)
     assert(cold.arena_bytes == sizeof(pack_bytes));
     assert(cold.device_handle != 0ull);
 
-    /* the pointer IS the weight: the arena bytes equal the pack bytes.
-     * (Stub semantics: device pointers are host pointers and the server
-     * shares this process; the cross-process truth is the fd tier.) */
     pack_file = fopen(SPARK_TEST_PACK, "rb");
     assert(pack_file != 0);
     assert(fread(pack_bytes, 1u, sizeof(pack_bytes), pack_file) ==
@@ -337,7 +304,6 @@ static void SparkTestColdWarmAndRetention(void)
         sizeof(arena_probe));
     assert(memcmp(arena_probe, pack_bytes, sizeof(pack_bytes)) == 0);
 
-    /* second consumer, SAME identity: the warm hit — one arena, two refs */
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
         SPARK_TEST_TIMEOUT_NS, &warm, reason) == SPARK_STATUS_OK);
     assert(warm.client != 0);
@@ -346,18 +312,14 @@ static void SparkTestColdWarmAndRetention(void)
     assert(warm.arena_generation == cold.arena_generation);
     assert(warm.device_handle == cold.device_handle);
 
-    /* both consumers release; the arena stays resident cold. Release
-     * zeroes the outcome, so the identity to compare against is saved. */
     {
         uint64_t generation = cold.arena_generation;
         uint64_t handle = cold.device_handle;
         SparkWeightdAttachRelease(&cold);
         assert(cold.client == 0 && cold.device_handle == 0ull);
-        assert(cold.arena_generation == 0ull); /* no stale handle reuse */
+        assert(cold.arena_generation == 0ull);
         SparkWeightdAttachRelease(&warm);
 
-        /* the code-redeploy path: a fresh process-shaped attach is STILL
-         * warm — same arena generation, same handle, cold retention */
         assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
             SPARK_TEST_TIMEOUT_NS, &again, reason) == SPARK_STATUS_OK);
         assert(again.client != 0);
@@ -366,7 +328,6 @@ static void SparkTestColdWarmAndRetention(void)
         assert(again.arena_generation == generation);
         assert(again.device_handle == handle);
 
-        /* a different revision is a different identity: a second arena */
         SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_REVISION, "next-rev");
         assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
             SPARK_TEST_TIMEOUT_NS, &revisioned, reason) == SPARK_STATUS_OK);

@@ -1,20 +1,3 @@
-// Numerical gate for the interleaved expert GEMM (pack V2 mxfp4_ws_interleaved_v1).
-//
-// Builds a tiny interleaved weight tensor exactly as tools/k3_pack.py lays it
-// out - per expert, per 128-element pack k-tile, per 16-neuron cell: 16 rows
-// of 64 payload bytes (128 E2M1 nibble pairs) and one 64-byte scale row
-// (16 neurons x 4 E8M0 group scales) - and runs BOTH interleaved launches the
-// MoE layer uses (the w1 indirect path over the route map and the w2 direct
-// path) against a CPU fp32 reference.
-//
-// The weight pattern is chosen so every addressing mistake changes the answer:
-// all payload is 1.0, expert 0 scales are 2^0 in cell 0 and 2^-1 elsewhere,
-// expert 1 scales are all 2^-1. Correct output per (packed row, neuron) is the
-// row's BF16 sum times the neuron's scale; a wrong cell offset, wrong expert
-// (z), wrong scale row, or a mis-staged sector moves whole columns.
-//
-// Payload 1.0 encodes to E2M1 code 2 (s0 e01 m0) in BOTH nibbles, so the test
-// is immune to the pair's nibble order; the scales are exact powers of two.
 
 #include <math.h>
 #include <stdio.h>
@@ -24,8 +7,6 @@
 #include "runtime/gemm.cuh"
 #include "inference/kernels/formats/mxfp4.cuh"
 
-// Host-side BF16 round-trips (round-to-nearest-even), matching the device
-// conversion the GEMM pipeline performs; LmFloatToBf16 is __device__-only.
 static uint16_t HostFloatToBf16(float f)
 {
 	uint32_t u;
@@ -46,8 +27,8 @@ static float HostBf16ToFloat(uint16_t h)
 #define TEST_TOKENS 2u
 #define TEST_TOP_K 2u
 #define TEST_PACKED (TEST_TOKENS * TEST_TOP_K)
-#define TEST_IN 256u     // two 128-element pack k-tiles
-#define TEST_OUT 128u    // 8 cells, one TILE_N-wide neuron tile
+#define TEST_IN 256u
+#define TEST_OUT 128u
 #define TEST_CELLS (TEST_OUT / 16u)
 #define TEST_K_TILES (TEST_IN / 128u)
 #define TEST_ROWS_PER_EXPERT (TEST_K_TILES * TEST_CELLS * 17u)
@@ -56,12 +37,10 @@ static float HostBf16ToFloat(uint16_t h)
 #define TEST_STAGES 2u
 #define TEST_WARPS 8u
 
-// The three interleaved direct instantiations this TU launches.
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 16u, TEST_TILE_N, 128u, TEST_STAGES, TEST_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 32u, TEST_TILE_N, 128u, TEST_STAGES, TEST_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, TEST_TILE_N, 128u, TEST_STAGES, TEST_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 16u, TEST_TILE_N, 128u, TEST_STAGES, TEST_WARPS, true, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
-// THE TILE_K 32 VARIANTS (TP16 grid): 16-byte cell rows, SWIZZLE_NONE maps.
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 16u, TEST_TILE_N, 32u, TEST_STAGES, TEST_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 32u, TEST_TILE_N, 32u, TEST_STAGES, TEST_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, TEST_TILE_N, 32u, TEST_STAGES, TEST_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
@@ -73,7 +52,6 @@ template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, TEST_TILE_N, 1
 
 static void BuildInterleavedWeights(uint8_t *bytes)
 {
-	// Per expert: k-tile t, cell c, rows 0..15 payload, row 16 scales.
 	for ( uint32_t e = 0u; e < TEST_EXPERTS; ++e )
 	{
 		for ( uint32_t t = 0u; t < TEST_K_TILES; ++t )
@@ -84,16 +62,16 @@ static void BuildInterleavedWeights(uint8_t *bytes)
 					+ ((size_t)t * TEST_CELLS + c) * 17u * 64u;
 				for ( uint32_t r = 0u; r < 16u; ++r )
 					for ( uint32_t b = 0u; b < 64u; ++b )
-						cell[r * 64u + b] = 0x22u; /* 1.0, 1.0 */
+						cell[r * 64u + b] = 0x22u;
 				for ( uint32_t n = 0u; n < 16u; ++n )
 				{
 					uint8_t code;
 					if ( e == 1u )
-						code = 126u;               /* 2^-1 */
+						code = 126u;
 					else if ( c == 0u )
-						code = 127u;               /* 2^0  */
+						code = 127u;
 					else
-						code = 126u;               /* 2^-1 */
+						code = 126u;
 					for ( uint32_t g = 0u; g < 4u; ++g )
 						cell[16u * 64u + n * 4u + g] = code;
 				}
@@ -108,10 +86,6 @@ static void BuildInterleavedWeights(uint8_t *bytes)
 
 static void BuildInterleavedWeights32(uint8_t *bytes)
 {
-	// The same logical weights on the 32-element grid: per expert, per
-	// 32-element pack k-tile, per 16-neuron cell, 16 rows of 16 payload
-	// bytes (32 E2M1 nibble pairs) and one 16-byte scale row (one E8M0
-	// byte per neuron - a 32-element tile is exactly one scale group).
 	for ( uint32_t e = 0u; e < TEST_EXPERTS; ++e )
 	{
 		for ( uint32_t t = 0u; t < TEST_K_TILES_32; ++t )
@@ -122,7 +96,7 @@ static void BuildInterleavedWeights32(uint8_t *bytes)
 					+ ((size_t)t * TEST_CELLS + c) * 17u * 16u;
 				for ( uint32_t r = 0u; r < 16u; ++r )
 					for ( uint32_t b = 0u; b < 16u; ++b )
-						cell[r * 16u + b] = 0x22u; /* 1.0, 1.0 */
+						cell[r * 16u + b] = 0x22u;
 				for ( uint32_t n = 0u; n < 16u; ++n )
 				{
 					uint8_t code;
@@ -139,8 +113,8 @@ static void BuildInterleavedWeights32(uint8_t *bytes)
 	}
 }
 
-#define TEST_WIDE_OUT 7168u  /* 56 neuron tiles over 48 SMs: the second wave */
-#define TEST_PLAIN_K 3072u   /* the o_proj's real k extent: 24 k-tiles */
+#define TEST_WIDE_OUT 7168u
+#define TEST_PLAIN_K 3072u
 #define TEST_WIDE_CELLS (TEST_WIDE_OUT / 16u)
 #define TEST_WIDE_ROWS_PER_EXPERT (TEST_K_TILES * TEST_WIDE_CELLS * 17u)
 #define TEST_WIDE_EXPERT_BYTES ((size_t)TEST_WIDE_ROWS_PER_EXPERT * 64u)
@@ -157,7 +131,7 @@ static void BuildInterleavedWeightsWide(uint8_t *bytes)
 					+ ((size_t)t * TEST_WIDE_CELLS + c) * 17u * 64u;
 				for ( uint32_t r = 0u; r < 16u; ++r )
 					for ( uint32_t b = 0u; b < 64u; ++b )
-						cell[r * 64u + b] = 0x22u; /* 1.0, 1.0 */
+						cell[r * 64u + b] = 0x22u;
 				for ( uint32_t n = 0u; n < 16u; ++n )
 				{
 					uint8_t code = ( e == 1u || c != 0u ) ? 126u : 127u;
@@ -171,9 +145,6 @@ static void BuildInterleavedWeightsWide(uint8_t *bytes)
 
 static float ExpectedValue(const float *a_row, uint32_t neuron)
 {
-	// a_row is the fp32 source row; the GEMM input is its BF16 rounding, so
-	// the reference sums the rounded values - the tolerance is the fp32
-	// accumulation-order slack, not the rounding.
 	float sum = 0.0f;
 	for ( uint32_t k = 0u; k < TEST_IN; ++k )
 		sum += (double)HostBf16ToFloat(HostFloatToBf16(a_row[k]));
@@ -226,8 +197,6 @@ int main(void)
 	cudaMemcpy(d_group_offset, h_group_offset, sizeof(h_group_offset), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_group_prefix, h_group_prefix, sizeof(h_group_prefix), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_source_map, h_source_map, sizeof(h_source_map), cudaMemcpyHostToDevice);
-	// The packed activation for the direct (w2-style) test is the un-gathered
-	// tensor expanded expert-major: row p duplicates token source_row_map[p].
 	{
 		uint16_t *tmp = (uint16_t *)malloc(TEST_PACKED * TEST_IN * sizeof(uint16_t));
 		for ( p = 0u; p < TEST_PACKED; ++p )
@@ -237,7 +206,6 @@ int main(void)
 		free(tmp);
 	}
 
-	// --- map encode diagnostics ---
 	{
 		alignas(64) CUtensorMap act_map, wgt_map;
 		int32_t s1 = LmGemmEncodeActivationMap(&act_map, d_packed, TEST_PACKED,
@@ -247,7 +215,6 @@ int main(void)
 		printf("encode act=%d interleaved-weight=%d\n", s1, s2);
 	}
 
-	// --- w2-style: direct interleaved over the packed activation ---
 	{
 		LmGemmArguments gemm;
 		memset(&gemm, 0, sizeof(gemm));
@@ -287,7 +254,6 @@ int main(void)
 		}
 	}
 
-	// --- w1-style: indirect interleaved over the route map ---
 	{
 		LmGemmArguments gemm;
 		memset(&gemm, 0, sizeof(gemm));
@@ -328,7 +294,6 @@ int main(void)
 		}
 	}
 
-	// --- the TILE_K 32 grid: same weights, same expected values ---
 	{
 		uint8_t *h_weight32 = (uint8_t *)malloc(TEST_EXPERT_BYTES_32 * TEST_EXPERTS);
 		uint8_t *d_weight32 = 0;
@@ -381,9 +346,6 @@ int main(void)
 		free(h_weight32);
 	}
 
-	// --- THE SECOND-WAVE PROBE: 7168 output columns = 56 neuron tiles over
-	// the persistent grid's 48 SMs, so tiles 48..55 form the second wave.
-	// The tail's correctness is what the equivalence gate found broken. ---
 	{
 		uint8_t *h_weight_wide = (uint8_t *)malloc(TEST_WIDE_EXPERT_BYTES * TEST_EXPERTS);
 		uint8_t *d_weight_wide = 0;
@@ -391,7 +353,6 @@ int main(void)
 		uint16_t *h_out_wide = (uint16_t *)malloc(TEST_PACKED * TEST_WIDE_OUT * sizeof(uint16_t));
 		BuildInterleavedWeightsWide(h_weight_wide);
 		cudaMalloc(&d_weight_wide, TEST_WIDE_EXPERT_BYTES * TEST_EXPERTS);
-		/* the wide prefix: 1 row-tile x 56 neuron tiles per group */
 		uint32_t *d_group_prefix_wide = 0;
 		uint32_t h_group_prefix_wide[TEST_EXPERTS + 1u] =
 			{ 0u, TEST_WIDE_OUT / TEST_TILE_N,
@@ -454,9 +415,6 @@ int main(void)
 		free(h_out_wide);
 	}
 
-	// --- THE PLAIN-PATH SECOND-WAVE PROBE: a BF16 weight [7168, TEST_IN]
-	// whose rows are the column index + 1 (so every output column carries a
-	// distinct value) - the o_proj-style dense GEMM, 56 tiles over 48 SMs. ---
 	{
 		const uint32_t plain_rows = TEST_WIDE_OUT;
 		uint16_t *h_weight_plain = (uint16_t *)malloc((size_t)plain_rows * TEST_IN * 2u);
@@ -470,9 +428,6 @@ int main(void)
 		cudaMalloc(&d_out_plain, TEST_PACKED * plain_rows * 2u);
 		cudaMemcpy(d_weight_plain, h_weight_plain,
 			(size_t)plain_rows * TEST_IN * 2u, cudaMemcpyHostToDevice);
-		/* THE REAL PROJECTION SHAPE: the ungrouped dense case (group_count 1,
-		 * no prefix) - the o_proj's exact launch, whose 56-tile second wave
-		 * the equivalence gate found wrong. */
 		uint32_t *d_dense_offset_plain = 0;
 		uint32_t h_dense_offset_plain[2u] = { 0u, TEST_PACKED };
 		cudaMalloc(&d_dense_offset_plain, sizeof(h_dense_offset_plain));
@@ -487,10 +442,6 @@ int main(void)
 		gemm.prefix_built = 0u;
 		gemm.output_bf16 = d_out_plain;
 		uint32_t plain_failures = 0u, plain_tail = 0u, plain_head = 0u;
-		/* EIGHT RUNS of the same launch: the real tail is nondeterministic
-		 * (the full-run sums swing across runs), so a race shows as the
-		 * per-iteration mismatch counts moving. */
-		/* the real-k activation + weight for the wide case */
 		uint16_t *d_packed_plain = 0;
 		cudaMalloc(&d_packed_plain, TEST_PACKED * TEST_PLAIN_K * 2u);
 		{
@@ -498,10 +449,6 @@ int main(void)
 			for ( p = 0u; p < TEST_PACKED; ++p )
 				for ( k = 0u; k < TEST_PLAIN_K; ++k )
 				{
-					/* THE SIGNEDNESS TRAP: (int32_t)(...) % 11u - 5 performs the
-					 * subtraction in UNSIGNED space, wrapping the intended
-					 * negatives to ~4.29e9 (bf16 0x4E80). Store the residue in
-					 * an int32 first so the -5 is signed. */
 					int32_t v = ((int32_t)((p * TEST_PLAIN_K + k) * 37u) % 11u) - 5;
 					tmp[p * TEST_PLAIN_K + k] = HostFloatToBf16((float)v * 0.25f);
 				}

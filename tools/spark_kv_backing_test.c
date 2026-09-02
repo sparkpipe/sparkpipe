@@ -1,11 +1,3 @@
-/* Unit test for the JIT-KV backing store (docs/JIT_KV_DESIGN.md step 1).
- * Verifies: open/geometry, alloc/free lifecycle, 4 MiB block round-trip
- * integrity, horizon exhaustion (-1 -> backpressure signal, not thrash),
- * release-then-realloc, reopen-with-mismatch refusal, and the B4 hygiene
- * contract (0600 at creation, 0644 migrated on open, symlink refused,
- * namespaced paths with traversal rejected).
- * Build: make build/spark_kv_backing_test && ./build/spark_kv_backing_test
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,7 +33,7 @@ int main(void)
 		block[i] = (unsigned char)(i * 131u + 7u);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.path = path;
-	configuration.maximum_bytes = 3ull * 1024ull * 1024ull * 1024ull; /* 3 GB = 768 slots */
+	configuration.maximum_bytes = 3ull * 1024ull * 1024ull * 1024ull;
 	CHECK(SparkKvBackingOpen(&configuration,&backing) == SPARK_STATUS_OK, "open");
 	CHECK(backing.slot_count == 768u, "geometry 768 slots");
 	CHECK(file_mode_is(path,0600u), "B4: fresh slot file is 0600, world-blind");
@@ -62,7 +54,6 @@ int main(void)
 	c = SparkKvBackingAllocate(&backing);
 	CHECK(c >= 0 && backing.slot_live[c] != 0u, "released slot is reusable");
 	CHECK(SparkKvBackingWriteBlock(&backing,(uint32_t)b,(void *)0) == SPARK_STATUS_INVALID_ARGUMENT, "null buffer rejected");
-	/* horizon exhaustion */
 	{
 		int64_t slot;
 		uint32_t allocated = 2u;
@@ -72,11 +63,9 @@ int main(void)
 		CHECK(SparkKvBackingLiveBytes(&backing) == 3ull * 1024ull * 1024ull * 1024ull, "live bytes == budget");
 	}
 	SparkKvBackingClose(&backing);
-	/* reopen with the same budget succeeds (header persisted) */
 	configuration.maximum_bytes = 3ull * 1024ull * 1024ull * 1024ull;
 	CHECK(SparkKvBackingOpen(&configuration,&backing) == SPARK_STATUS_OK, "same-geometry reopen");
 	SparkKvBackingClose(&backing);
-	/* a file carrying a foreign non-zero header must be refused */
 	{
 		FILE *foreign = fopen(path,"r+b");
 		if ( foreign != 0 )
@@ -86,7 +75,6 @@ int main(void)
 		}
 		CHECK(SparkKvBackingOpen(&configuration,&backing) == SPARK_STATUS_TARGET_MISMATCH, "foreign header refused");
 	}
-	/* B4: a legacy 0644 file is migrated to 0600 by open */
 	{
 		FILE *legacy = fopen(path,"wb");
 		if ( legacy != 0 )
@@ -98,7 +86,6 @@ int main(void)
 		CHECK(file_mode_is(path,0600u), "B4: open migrated 0644 to 0600");
 		unlink(path);
 	}
-	/* B4: a symlink at the slot path is refused, not followed */
 	{
 		const char *target = "/tmp/spark_kv_backing_symlink_target.bin";
 		unlink(target);
@@ -113,8 +100,6 @@ int main(void)
 		unlink(path);
 		unlink(target);
 	}
-	/* B4: namespaced paths - traversal and separators rejected, layout
-	 * created 0700, composed path lands inside the namespace */
 	{
 		char resolved[1024];
 		char expected[1024];

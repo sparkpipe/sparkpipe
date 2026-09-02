@@ -9,24 +9,6 @@
 extern "C" {
 #endif
 
-/*
- * Stage-module client for the family KV backing tier (spark_kv_store, the
- * Mooncake provider). One instance per stage: it loads the provider shared
- * object, initializes it with the stage's rank, layer slice and fingerprints,
- * and gives modules fingerprinted key construction plus batch submit/poll
- * under the corrected contract (poll returns OK on delivery; the batch
- * outcome travels only in completion.status).
- *
- * Enablement is EXPLICIT: the module passes either the literal string "none"
- * (tier disabled, every call after Open is a refused no-op returning
- * NOT_FOUND/INVALID) or a provider .so path. There is no inferred default.
- *
- * Keys bind model fingerprint, cache-layout fingerprint, rank, sequence and
- * logical block, so a model or layout change can never consume stale KV.
- * The residency DECISION - which packets prefetch when, against which work
- * queue - belongs to the runtime work-control layer exactly as it does for
- * any model; this client is the provider plumbing that layer drives.
- */
 
 typedef struct SparkStageKvClient
 {

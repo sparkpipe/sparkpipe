@@ -25,10 +25,6 @@
 #define SPARK_TP_NCCL_BOOTSTRAP_MAGIC 0x53504e43u
 #define SPARK_TP_NCCL_BOOTSTRAP_ABI_VERSION 1u
 #define SPARK_TP_NCCL_CONNECT_RETRY_NANO 2000000L
-/* NCCL encodes versions as MMmmpp: 2.28.9 -> 22809, 2.21.0 -> 22100.
- * The 23000 literal rejected EVERY modern NCCL (22809 < 23000) - the
- * backend could never load any library. 2.21.0 is the oldest with
- * the surface the backend uses. */
 #define SPARK_TP_NCCL_MINIMUM_VERSION 22100
 #define SPARK_TP_NCCL_SUCCESS 0
 #define SPARK_TP_NCCL_IN_PROGRESS 7
@@ -40,23 +36,6 @@
 typedef int32_t SparkTpNcclResult;
 typedef struct SparkTpNcclComm *SparkTpNcclCommHandle;
 
-/* Continuation trampoline: the NCCL backend completes submissions inline
- * ("stream-order continuation" - the callback enqueues dependent work on
- * the same stream). A submission whose chain advances through every
- * collective nests one frame-set per collective; a 1024-row prefill wave
- * chains ~15k completions and overflows the 8MB stack (core receipt:
- * 15,636 frames, SIGSEGV inside cuLaunchKernel's frame push). The guard
- * below defers completions that arrive while another completion is
- * already running on this thread; the outermost submit drains the ring
- * ITERATIVELY - FIFO order is preserved, stack depth stays O(1 chain
- * segment), and the semantics are unchanged (everything still completes
- * before Submit returns).
- *
- * One process-wide ring: a chain continuation may submit to a sibling
- * collective instance (the module's narrow + HC-wide twins), so the
- * drain must cover both. The residentd drives all of this from one
- * thread; the ring mutex keeps that an implementation detail, not a
- * contract. */
 #define SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY 65536u
 
 typedef struct SparkTpNcclPendingCompletion
@@ -115,8 +94,6 @@ static void SparkTpNcclDeliverCompletion(
 		if ( SparkTpNcclPendingCompletionCount >= SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY )
 		{
 			(void)pthread_mutex_unlock(&SparkTpNcclPendingCompletionMutex);
-			/* Fail loudly rather than silently reorder or nest: a
-			 * submission chain this deep cannot be served. */
 			fprintf(stderr,"sparkpipe_tp_collective backend=nccl pending-completion ring exhausted\n");
 			abort();
 		}
@@ -880,10 +857,6 @@ static SparkStatus SparkTpNcclSubmitAllReduce(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	memset(&completion,0,sizeof(completion));
-	/* The callback is a stream-order continuation: the reduction is enqueued,
-	 * and the callback may enqueue dependent work on the same stream. The
-	 * delivery trampoline keeps that continuation OFF this stack frame when
-	 * it would nest (see SparkTpNcclDeliverCompletion). */
 	SparkTpNcclDeliverCompletion(submission->completion_function,
 		submission->completion_context,&completion,
 		collective->credit_count,submission->ordinal,

@@ -46,10 +46,6 @@ int32_t SparkJsonFindObjectMember(const SparkJsonDocument *document, int32_t obj
 SparkStatus SparkJsonValidateObjectMembersExact(const SparkJsonDocument *document, int32_t object_token_index, const char *const *member_names, uint32_t member_count);
 uint32_t SparkJsonGetArrayElementCount(const SparkJsonDocument *document, int32_t array_token_index);
 int32_t SparkJsonGetArrayElement(const SparkJsonDocument *document, int32_t array_token_index, uint32_t element_index);
-/* Sequential access: one step each. Iterating a whole array through
- * SparkJsonGetArrayElement is O(n^2) (every indexed access walks the
- * child chain from the array head); loops over request-scale arrays
- * must walk first/next instead. */
 int32_t SparkJsonGetArrayElementFirst(const SparkJsonDocument *document, int32_t array_token_index);
 int32_t SparkJsonGetArrayElementNext(const SparkJsonDocument *document, int32_t array_token_index, int32_t element_token_index);
 bool SparkJsonTokenIsType(const SparkJsonDocument *document, int32_t token_index, SparkJsonTokenType expected_type);

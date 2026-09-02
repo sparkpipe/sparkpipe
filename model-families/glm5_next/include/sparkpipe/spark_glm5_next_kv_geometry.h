@@ -4,15 +4,6 @@
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_glm5_next_model.h"
 
-/* glm5_next cache geometry for the common KV machinery (mirrors
- * spark_glm52_kv_geometry.h / spark_k3_kv_geometry.h).
- *
- * glm5_next is HYBRID: the 11 DSA weight layers cache the compressed KV_A
- * latent (the PURE 512 lora - rope dim 0, versus glm52's 576); the 34 KDA
- * layers carry no per-token KV at all (fp32 recurrent state + conv windows
- * live in the resident stage's own pools), so the machinery's layer count
- * is the DSA count. The indexer's packed 257-wide row is a separate
- * stage-owned pool and stays zero here, exactly the glm52 pattern. */
 
 #define SPARK_GLM5_NEXT_KV_LAYOUT SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE
 #define SPARK_GLM5_NEXT_KV_LAYER_COUNT SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT
@@ -24,8 +15,6 @@
 #define SPARK_GLM5_NEXT_KV_FP8_SCALE_BLOCK_SIZE \
 	SPARK_GLM5_NEXT_MODEL_FP8_SCALE_BLOCK
 #define SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT 64u
-/* Arena block geometry: one compressed KV_A row per token, 11 DSA layers
- * per block. */
 #define SPARK_GLM5_NEXT_KV_ARENA_KV_HEAD_COUNT 1u
 #define SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM \
 	SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION

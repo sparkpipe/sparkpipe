@@ -139,14 +139,6 @@ static void SparkTestKvEvictionBackpressurePreservesResidentOwner(void)
 	assert(fixture.evict_count == 2u);
 }
 
-/* B1 WRITE-BACK WEDGE repro, injected-fault form (docs/JIT_KV_RESPONSE.md).
- * The backing store fails EVERY write with an ENOSPC-class status. Pre-fix
- * behavior: the dirty residents can never be written, so they can never be
- * evicted, so the third admission returns IO_ERROR forever - admission is
- * wedged for the life of the process. Post-fix contract: the eviction
- * DEGRADES - the block is dropped (dirty bits discarded, backing marked
- * invalid so restore can never hand back stale bytes) and the sequence
- * recomputes it on demand. Serving continues. */
 static void SparkTestKvEvictionIoErrorDegradesInsteadOfWedging(void)
 {
 	SparkTestKvFixture fixture;
@@ -163,7 +155,6 @@ static void SparkTestKvEvictionIoErrorDegradesInsteadOfWedging(void)
 		SPARK_STATUS_OK);
 	assert(SparkKvCacheArenaMarkBlockDirty(&fixture.arena,block1) ==
 		SPARK_STATUS_OK);
-	/* Full-disk fault injection: every write-back fails. */
 	fixture.evict_status = SPARK_STATUS_IO_ERROR;
 	block2 = SparkTestKvAcquire(&fixture);
 	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2) ==
@@ -171,30 +162,19 @@ static void SparkTestKvEvictionIoErrorDegradesInsteadOfWedging(void)
 	block3 = SparkTestKvAcquire(&fixture);
 	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block3) ==
 		SPARK_STATUS_OK);
-	/* Admission never wedged: resident capacity is exactly full and both
-	 * dirty blocks were degraded out of the way. */
 	assert(fixture.arena.resident_block_count == SPARK_TEST_RESIDENT_SLOT_COUNT);
 	assert(fixture.arena.write_back_degraded_block_count == 2u);
 	assert(fixture.evict_count == 2u);
-	/* The degraded block is gone: not resident, not dirty, and - the load-
-	 * bearing half - backing INVALID, so restore answers NOT_FOUND instead
-	 * of silently handing back stale bytes. */
 	assert(SparkKvCacheArenaResolveBlock(&fixture.arena,block0,&view) ==
 		SPARK_STATUS_OK);
 	assert((view.flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
 	assert((view.flags & SPARK_KV_CACHE_BLOCK_FLAG_DIRTY) == 0u);
 	assert((view.flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) == 0u);
-	/* Recompute-on-demand: the dropped block is admitted again as a blank
-	 * that the caller must refill (no valid backing to restore from). */
 	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block0) ==
 		SPARK_STATUS_OK);
 	assert((fixture.blocks[block0].flags &
 		SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
 	assert(fixture.arena.write_back_degraded_block_count == 3u);
-	/* A healthy backing store still gets real write-backs after the fault
-	 * clears - degradation is per-attempt, not a poisoned state. Force the
-	 * dirty, once-degraded block to be the LRU victim and evict it for
-	 * real. */
 	fixture.evict_status = SPARK_STATUS_OK;
 	assert(SparkKvCacheArenaMarkBlockDirty(&fixture.arena,block0) ==
 		SPARK_STATUS_OK);
@@ -211,10 +191,6 @@ static void SparkTestKvEvictionIoErrorDegradesInsteadOfWedging(void)
 	assert(fixture.evict_count == 4u);
 }
 
-/* B1's boundary: only the IO class (backing store refused the write) and
- * capacity class (no room left on the device) degrade. A program error must
- * stay LOUD - the block stays resident and dirty, the status propagates, and
- * nothing is silently dropped. */
 static void SparkTestKvEvictionInternalErrorStaysLoud(void)
 {
 	SparkTestKvFixture fixture;
@@ -232,8 +208,6 @@ static void SparkTestKvEvictionInternalErrorStaysLoud(void)
 	block2 = SparkTestKvAcquire(&fixture);
 	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2) ==
 		SPARK_STATUS_INTERNAL_ERROR);
-	/* Fail loud, not degrade: the victim is untouched, nothing was
-	 * dropped, and the admission genuinely failed. */
 	assert((fixture.blocks[block1].flags &
 		SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
 	assert((fixture.blocks[block1].flags &
@@ -242,13 +216,6 @@ static void SparkTestKvEvictionInternalErrorStaysLoud(void)
 	assert(fixture.arena.resident_block_count == SPARK_TEST_RESIDENT_SLOT_COUNT);
 }
 
-/* B1 repro, real-page-store form: the backing FILESYSTEM is full. RLIMIT_
- * FSIZE caps the backing file at one page, so the first write-back lands
- * and every later one fails with the ENOSPC-class path (pwrite -> EFBIG ->
- * IO_ERROR) on the page store's worker thread - the exact shape of a full
- * NVMe tier. Serving must continue: admissions keep succeeding, healthy
- * records still restore byte-exact, degraded records are never restored
- * from, and the failed reservation leaves no backing-state debris. */
 static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 {
 	SparkTestKvFixture fixture;
@@ -266,7 +233,6 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 	assert(descriptor >= 0);
 	assert(close(descriptor) == 0);
 	assert(unlink(path) == 0);
-	/* The fault: one page fits on the "disk", nothing more. */
 	old_handler = signal(SIGXFSZ,SIG_IGN);
 	assert(old_handler != SIG_ERR);
 	assert(getrlimit(RLIMIT_FSIZE,&old_limit) == 0);
@@ -281,9 +247,6 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 	configuration.logical_page_capacity = SPARK_TEST_LOGICAL_BLOCK_COUNT;
 	configuration.transfer_capacity = SPARK_TEST_RESIDENT_SLOT_COUNT;
 	configuration.page_bytes = SPARK_TEST_BLOCK_BYTES;
-	/* Two backing SLOTS, but the rlimit-capped "disk" only ever holds one
-	 * page: slot 0 lands at offset 0 (fits), slot 1 would extend the file
-	 * past the limit and fails forever - the persistent-full condition. */
 	configuration.maximum_backing_bytes = 2u * SPARK_TEST_BLOCK_BYTES;
 	configuration.backing_path = path;
 	configuration.staging_address = staging;
@@ -291,8 +254,6 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 	assert(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_OK);
 	fixture.arena.evict_function = SparkKvPageStoreWriteback;
 	fixture.arena.evict_context = &store;
-	/* block0 is parked successfully - page 0 is the one page that fits.
-	 * block1 only fills the second resident slot (no eviction yet). */
 	block0 = SparkTestKvAcquire(&fixture);
 	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block0) ==
 		SPARK_STATUS_OK);
@@ -305,7 +266,6 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 	block1 = SparkTestKvAcquire(&fixture);
 	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block1) ==
 		SPARK_STATUS_OK);
-	/* First eviction: block0's write-back is the one page that fits. */
 	block2 = SparkTestKvAcquire(&fixture);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
 	while ( status == SPARK_STATUS_BUSY )
@@ -317,9 +277,6 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 	assert(store.write_count == 1u);
 	assert((fixture.blocks[block0].flags &
 		SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) != 0u);
-	/* The disk is now full: every further write-back must extend the file
-	 * past the limit and fails with the ENOSPC-class status, and every
-	 * further admission must DEGRADE its victim - not wedge. */
 	block3 = SparkTestKvAcquire(&fixture);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block3);
 	while ( status == SPARK_STATUS_BUSY )
@@ -339,22 +296,12 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 	assert(fixture.arena.resident_block_count == SPARK_TEST_RESIDENT_SLOT_COUNT);
 	assert(fixture.arena.write_back_degraded_block_count == 2u);
 	assert(store.write_count == 1u);
-	/* The failed write-back left no backing-state debris behind. */
 	assert(store.backing_page_count == 1u);
-	/* block1 was degraded: restore refuses it (NOT_FOUND), so the caller
-	 * recomputes - it is never handed stale or partial bytes. */
 	assert(SparkKvCacheArenaResolveBlock(&fixture.arena,block1,&view) ==
 		SPARK_STATUS_OK);
 	assert((view.flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) == 0u);
 	assert(SparkKvPageStorePrefetch(&store,&fixture.arena,block1) ==
 		SPARK_STATUS_NOT_FOUND);
-	/* Serving continues for the healthy record: block0 restores byte-exact
-	 * through the same store, after the same fault. The path to RESIDENT is
-	 * deliberately status-agnostic: the restore's own make-room eviction
-	 * queues write-backs that fail (the disk is still full), Progress reaps
-	 * their terminal IO_ERROR, and the next attempt's eviction consumes the
-	 * completed failure and DEGRADES the victim - after which the restore
-	 * lands. Bounded, so a real wedge still fails the test. */
 	for ( index = 0u; index < 10000u; ++index )
 	{
 		if ( (fixture.blocks[block0].flags &

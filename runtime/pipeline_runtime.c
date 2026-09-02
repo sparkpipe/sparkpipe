@@ -390,13 +390,6 @@ SparkStatus SparkPipelineRuntimeBuildFanoutRankPlan(
 	return(status == SPARK_STATUS_OK ? SparkPipelineRuntimeValidateRankPlan(descriptor,rank_plan) : status);
 }
 
-/* Rank-plan validity rules as a predicate table (the complexity lane's
- * conjunction-soup conversion, 2026-08-28). Rows run in the ORIGINAL
- * if-chain order; SPARK_STATUS_OK keeps the walk going, anything else is
- * the verdict. The mode-dependent tail (transported vs parallel-fanout)
- * stays one named row carrying the original if/else verbatim. The
- * accept/reject set is proven identical by the before/after fuzz pair
- * (docs/AGENT_LANE_BRIEFS/reports/ccn-2026-08-28.md). */
 typedef SparkStatus (*SparkPipelineRuntimeRankPlanCheck)(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkPipelineRuntimeRankPlan *rank_plan);

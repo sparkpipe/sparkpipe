@@ -1,7 +1,3 @@
-/* qwen38 TP4 throughput benchmark: fixed decode microbatch sizes B1/B2/B4/B8.
- * B lanes share one prompt, prefill separately, then every decode step is
- * ONE submission with B rows (one per lane) through the full prepare/commit
- * path on all four ranks. Reports per-step latency and tokens/sec. */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 #include <inttypes.h>
@@ -148,8 +144,6 @@ static int DriveStep(SparkModelResidentClient **clients, RankCollect *collects, 
 		return(1);
 	for (rank = 0u; rank < rank_count; rank++)
 	{
-		/* Speculation may commit more tokens than the submission asked for
-		 * (accepted drafts); report the extra as speculative yield. */
 		if ( collects[rank].token_count > expected_tokens && rank == 0u )
 			fprintf(stderr, "speculative extra tokens=%u expected=%u\n", collects[rank].token_count - expected_tokens, expected_tokens);
 		if ( collects[rank].token_count < expected_tokens )
@@ -297,8 +291,6 @@ int main(int argc, char **argv)
 	submission.row_sequence_ids = decode_sequence_ids;
 	submission.request_id = base_sequence;
 	submission.sequence_id = base_sequence;
-	/* The decode walk advances by the completion's returned token count:
-	 * with speculation one submission can commit several positions. */
 	step = 0u;
 	while ( step < step_count )
 	{
@@ -330,9 +322,6 @@ int main(int argc, char **argv)
 		committed_count = collects[0].token_count / batch_size;
 		if ( committed_count == 0u || committed_count > step_count - step )
 			committed_count = step_count - step;
-		/* The completion packs tokens lane-major (lane x tokens_per_sequence
-		 * + step), so the last committed id of lane l sits at its lane block's
-		 * tail. */
 		for (lane = 0u; lane < batch_size; lane++)
 			decode_token_ids[lane] = collects[0].token_ids[(lane * committed_count) + (committed_count - 1u)];
 		step += committed_count;

@@ -208,14 +208,8 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
     }
 
     local_index_key_layer_count = 0u;
-    // A MODEL WITHOUT AN INDEX CACHE ASKS FOR ZERO INDEX LAYERS. The
-    // request says how many layers carry index keys; scanning a model layer
-    // schedule here priced every other model's cache with model's calendar.
     local_index_key_layer_count = request->index_key_layer_count;
     {
-        // ONE FORMULA SET, SHARED WITH THE ESTIMATOR. The stage budget
-        // builds the estimator's request from its own geometry fields and
-        // asks the same helper; four duplicated layout formulas retired.
         SparkKvCacheCapacityRequest geometry;
         memset(&geometry,0,sizeof(geometry));
         geometry.layout = request->attention_cache_layout;
@@ -385,10 +379,6 @@ SparkStatus SparkKvCacheEstimateCapacity(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    // Layout-conditional shape requirements: the compressed layouts
-    // carry a latent and a rope slice; the full layouts carry heads.
-    // Compressed layouts carry two shared slices while full layouts carry
-    // per-head key and value slices.
     if (request->layout == SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE ||
         request->layout == SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE_FP8_E4M3)
     {
@@ -1072,23 +1062,6 @@ static uint32_t SparkKvCacheBlockIsProtectedFromResidentEviction(
             logical_block_index);
 }
 
-/*
- * C5 REUSE-VALUE KEEPNESS (docs/JIT_KV_RESPONSE.md C5). One number, higher
- * = keep, computed only when the arena's eviction policy is REUSE_VALUE:
- *
- *   keepness = restore_count * RESTORE_WEIGHT - age + dirty * DIRTY_BONUS
- *
- * The restored-again history dominates: a block the workload restored twice
- * came back on purpose, and no plausible recency gap outvotes the second
- * restore (weights are orders of magnitude apart by construction - see the
- * SPARK_KV_CACHE_REUSE_VALUE_* constants in spark_kv_cache.h). Dirtiness
- * outranks recency too: parking a clean block is free (no write-back, no
- * flash wear), so a clean block drops before a dirty one even when the
- * clean one is the younger. Recency is the residual term, exactly the LRU
- * direction. Inputs are clamped (ages beyond 2^54 epochs, histories beyond
- * 2^16 restores) so the int64_t arithmetic can never overflow and the
- * ordering stays exact inside the documented domain.
- */
 static int64_t SparkKvCacheReuseValueKeepness(
     const SparkKvCacheArena *arena,
     const SparkKvCacheBlock *block)
@@ -1117,12 +1090,6 @@ static int64_t SparkKvCacheReuseValueKeepness(
     return keepness;
 }
 
-/* True when `block` is the better victim than `victim` under the arena's
- * eviction policy. LRU (the default) is the historical order: fewer
- * references first, then the older epoch. REUSE_VALUE keeps the
- * reference-count primary and replaces the recency tiebreak with the
- * keepness score above (references still lose first - a referenced block is
- * someone's working set; the reuse-value policy only ranks the rest). */
 static uint32_t SparkKvCacheBlockIsBetterEvictionVictim(
     const SparkKvCacheArena *arena,
     const SparkKvCacheBlock *victim,
@@ -1230,21 +1197,6 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
             arena->value_block_stride_bytes);
         if (status != SPARK_STATUS_OK)
         {
-            /* B1 WRITE-BACK WEDGE (docs/JIT_KV_RESPONSE.md): the backing
-             * store refused the write (ENOSPC / full disk surface here as
-             * IO_ERROR; no free backing slot or no device room as
-             * CAPACITY_EXCEEDED). Retrying forever wedges the arena: the
-             * block can never be written, so it can never stop being a
-             * victim, so no new resident slot can ever be granted and
-             * admission stalls permanently. DEGRADE instead, per the JIT-KV
-             * contract: drop the block and let the sequence recompute it on
-             * demand. Clearing BACKING_VALID alongside DIRTY is what makes
-             * the drop safe - restore (SparkKvPageStorePrefetch) gates on
-             * BACKING_VALID and answers NOT_FOUND, never reading a stale or
-             * partial slot. Transient statuses are NOT degradation: BUSY is
-             * the async write-back in flight (the ordinary backpressure
-             * path), and any other status is a program error that must stay
-             * loud. */
             if (status == SPARK_STATUS_IO_ERROR ||
                 status == SPARK_STATUS_CAPACITY_EXCEEDED)
             {
@@ -1462,24 +1414,6 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
     return SPARK_STATUS_OK;
 }
 
-/*
- * The JIT-KV restore half (docs/JIT_KV_DESIGN.md): a block the pager PARKED -
- * ALLOCATED, non-resident, BACKING_VALID, exactly the state eviction leaves -
- * becomes resident again after the pager has brought its bytes back from the
- * backing tier. SparkKvCacheArenaMarkBlockResident refuses backing-valid
- * blocks on purpose, because a plain mark would hand out a resident block
- * nobody re-filled; THIS is the re-fill path's counterpart, for the caller
- * that owns the backing truth (the pager restored the bytes digest-verified
- * at the tier boundary). BACKING_VALID survives - the backing copy still
- * matches, so re-parking the block later is a deduplicated no-write - and
- * DIRTY stays clear. Room is made the same way as every other residency
- * grant: the resident victim picked by the arena's eviction policy is
- * evicted through the arena's evict function, which under the pager IS a
- * page-out. Each fresh re-attachment also bumps the block's restore_count -
- * the restored-again history the C5 REUSE_VALUE victim policy ranks (a block
- * the workload keeps restoring is hot; LRU never reads it). Blocks that were
- * never parked (blank) are refused: they go through MarkBlockResident.
- */
 SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index)
@@ -1533,8 +1467,6 @@ SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     }
     arena->resident_block_count += 1u;
     block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT;
-    /* C5: a completed page-in is the restored-again event. Saturating: the
-     * count ranks victims, it is not an accounting quantity. */
     if (block->restore_count != UINT32_MAX)
     {
         block->restore_count += 1u;
@@ -1544,11 +1476,6 @@ SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     return SPARK_STATUS_OK;
 }
 
-/*
- * The parkability predicate (see spark_kv_cache.h): the resident-eviction
- * selector's structural exclusions as a single answer. The selector and the
- * pager's admission pool count must agree with this test, not restate it.
- */
 uint32_t SparkKvCacheArenaBlockIsParkable(
     const SparkKvCacheArena *arena,
     uint32_t logical_block_index)

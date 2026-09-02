@@ -123,11 +123,6 @@ const char *cudaGetErrorString(cudaError_t error);
 
 #include <stdint.h>
 
-/* Test hooks: fault injection plus the allocation ledger. Fail-call indexes
- * are 1-based and count only the allocation family (cudaMalloc +
- * cudaHostAlloc for fail_alloc_call, cudaHostGetDevicePointer for
- * fail_host_map_call). reset_faults also releases every tracked live
- * allocation so one test's leak never poisons the next. */
 void spark_stub_cuda_reset_faults(void);
 void spark_stub_cuda_fail_alloc_call(uint32_t one_based_call_index);
 void spark_stub_cuda_fail_host_map_call(uint32_t one_based_call_index);

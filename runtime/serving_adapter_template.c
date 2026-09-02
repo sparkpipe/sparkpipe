@@ -1,10 +1,3 @@
-/*
- * Shared serving-adapter template implementation. See
- * include/sparkpipe/spark_serving_adapter_template.h for the contract and
- * the paste this replaces (the tp_collective parse alone was re-pasted
- * per TP family, and the load/reserve spines per every family). The
- * family owns its policy; this file owns the walk.
- */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,10 +93,6 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 	}
 	else
 	{
-		/* Single-algorithm builds run recursive doubling alone; builds
-		 * may add direct_all_to_all (any supported tp_degree; the
-		 * transport routes tp_degree-1 peers on step rows). Split-ring
-		 * remains tp4-only via the FULL_KNOWN_SET policy. */
 		if ( count != 1u ||
 			mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
 		{
@@ -132,11 +121,6 @@ static SparkStatus SparkTpCollectiveLoadStepRails(
 	SparkStatus status;
 	token = SparkServingAdapterTemplateJsonMember(document,object,
 		"step_rail_indices");
-	/* Two legal shapes: the 3-entry split-ring routes (the legacy
-	 * form) and the tp_degree-entry direct-all-to-all peer routes
-	 * (one rail per step row - the struct is sized MAX_STEPS). The
-	 * old 3-only bound rejected the generator's d2a configs at load
-	 * (the engagement redeploy's SCHEMA_ERROR). */
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -408,7 +392,6 @@ SparkStatus SparkServingAdapterTemplateLoadTpCollective(
 		policy->peer_count > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE ||
 		config->backend_module_path_buffer == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* Reset the outputs but keep the caller-set destination pointers. */
 	memset(&config->topology,0,sizeof(config->topology));
 	config->backend_kind = 0u;
 	config->collective_identifier = 0u;
@@ -458,9 +441,6 @@ SparkStatus SparkServingAdapterTemplateLoadDriver(
 		configuration->node_target,driver,error_buffer,sizeof(error_buffer));
 	if ( status != SPARK_STATUS_OK )
 	{
-		/* the caller only sees the status code; the buffer names the exact
-		 * failing check (receipt debugging, cell-runner 2026-08-29: a
-		 * hash_mismatch boot loop named nothing) */
 		(void)fprintf(stderr, "serving load driver '%s' failed: %s\n",
 			configuration->driver_shared_object_path, error_buffer);
 		return(status);
@@ -526,10 +506,6 @@ void *SparkServingAdapterTemplateReservePending(
 	{
 		void *element;
 		element = elements + ((size_t)index * element_bytes);
-		/* The family struct embeds the common view after its own owner
-		 * pointer, so the view lives at the family-supplied common_offset,
-		 * not at the element base (same family-layout-as-data rule as
-		 * last_row_by_lane_offset below). */
 		common = (SparkServingAdapterPendingCommon *)(void *)
 			((uint8_t *)element + common_offset);
 		if ( common->active != 0u )
@@ -557,9 +533,6 @@ void *SparkServingAdapterTemplateReservePending(
 			lane = submission->row_lane_indices[row];
 			last_row_by_lane[lane] = row;
 		}
-		/* The ACTIVE flag is the family's to set: the pasted reserve marks
-		 * the slot live only after the family's own fill steps (cache lanes,
-		 * emit rows) succeed, and a failed fill must leave the slot free. */
 		return(element);
 	}
 	return(0);

@@ -1,33 +1,3 @@
-// Fragment-mapping verifier for mma.sync.m16n8k32 E4M3.
-//
-// The register-to-matrix-element mapping is the one part of an mma.sync kernel
-// that a wrong implementation renders silently incorrect while still
-// assembling. It does not need silicon to check: CUTLASS states the mapping as
-// CuTe (Shape,Stride) layouts, and a layout is arithmetic. This file evaluates
-// those layouts directly and compares them against the closed-form indexing the
-// kernel uses, exhaustively, for every (lane, value) pair.
-//
-// Ground truth, transcribed from
-// third_party/flashinfer/3rdparty/cutlass/include/cute/atom/mma_traits_sm89.hpp
-// MMA_Traits<SM89_16x8x32_F32E4M3E4M3F32_TN> and mma_traits_sm80.hpp
-// SM80_16x8_Row:
-//
-//   ALayout ((4,8),(4,2,2)) : ((64,1),(16,8,256))
-//   BLayout ((4,8),(4,2))   : ((32,1),(8,128))
-//   CLayout ((4,8),(2,2))   : ((32,1),(16,8))
-//
-// A CuTe layout maps (thread, value) to a linear index into the logical MMA
-// tile, which is column-major: A is m + 16k, B is n + 8k, C is m + 16n. The
-// checks below invert that and confirm the kernel's formulas reproduce it.
-//
-// Three properties are checked, and each catches a different error:
-//   1. agreement  - kernel formula equals the CUTLASS layout everywhere
-//   2. bijection  - the mapping covers every tile element exactly once, which
-//                   catches any permutation error the agreement check could
-//                   miss if both sides shared a mistake
-//   3. bank spread - the shared-memory addresses the fragment loads generate,
-//                    with and without the 128-byte swizzle, so the swizzle is
-//                    justified by a count rather than by assertion
 
 #include <stdint.h>
 #include <stdio.h>
@@ -43,8 +13,6 @@ typedef struct layout_mode
 }
 layout_mode_t;
 
-// Evaluate one CuTe mode: decompose the flat coordinate colexicographically
-// across the mode's shape and dot it with the stride.
 static uint32_t layout_mode_index(const layout_mode_t *mode, uint32_t coordinate)
 {
 	uint32_t index = 0,rank,digit;
@@ -70,8 +38,6 @@ static uint32_t cute_index(const layout_mode_t *thread_mode, const layout_mode_t
 	return(layout_mode_index(thread_mode,lane) + layout_mode_index(value_mode,value));
 }
 
-// Kernel-side closed forms. These are what the GEMM actually computes; the
-// point of this file is that they are not trusted until checked.
 static void kernel_a_coordinate(uint32_t lane, uint32_t reg, uint32_t byte, uint32_t *m, uint32_t *k)
 {
 	*m = (lane / 4u) + (8u * (reg % 2u));
@@ -169,8 +135,6 @@ static int32_t verify_accumulator_c(void)
 	return(mismatches == 0 && uncovered == 0 ? 0 : -1);
 }
 
-// The mapping that the deleted first draft used, kept as a negative control. If
-// this ever reports zero mismatches the verifier itself is broken.
 static int32_t verify_known_bad_c_is_rejected(void)
 {
 	layout_mode_t thread_mode = { { 4u, 8u, 0u, 0u }, { 32u, 1u, 0u, 0u }, 2u };
@@ -191,12 +155,6 @@ static int32_t verify_known_bad_c_is_rejected(void)
 	return(mismatches > 0 ? 0 : -1);
 }
 
-// ldmatrix.x4 gathers 512 bytes: lane L supplies a 16-byte row. Composing
-// Copy_Traits<SM75_U32x4_LDSM_N>'s SrcLayout (32,128):(128,1) with its DstLayout
-// (32,(32,4)):(32,(1,1024)) gives register r of thread t from source bytes
-// [t*4 + r*128, +4), which lands in the chunk supplied by lane t/4 + 8r. For
-// that to feed the A layout above, lane L must supply row (L%8) + 8*((L/8)%2)
-// at k offset 16*(L/16).
 static uint32_t ldmatrix_row_for_lane(uint32_t lane)
 {
 	return((lane % 8u) + (8u * ((lane / 8u) % 2u)));
@@ -207,9 +165,6 @@ static uint32_t ldmatrix_chunk_for_lane(uint32_t lane)
 	return(lane / 16u);
 }
 
-// 128-byte swizzle: within a row, the 16-byte chunk at index c moves to
-// c ^ (row % 8). TMA applies this when the tensor map is encoded with
-// CU_TENSOR_MAP_SWIZZLE_128B, so the fragment load must apply the same xor.
 static uint32_t swizzle_chunk(uint32_t chunk, uint32_t row)
 {
 	return(chunk ^ (row % VERIFY_SWIZZLE_CHUNKS));
@@ -235,12 +190,6 @@ static uint32_t count_bank_conflicts(int32_t apply_swizzle, uint32_t k_base)
 	return(worst);
 }
 
-// -- Pipeline schedule check ------------------------------------------------
-// Appended as a second gate. The stage/phase schedule in
-// LmGemmKernel is pure integer logic and its failure modes -
-// consuming a stage never produced, overwriting a stage before it is consumed,
-// waiting on the wrong mbarrier phase - are all decidable on the host. Only the
-// hardware behaviour of the transfers themselves needs the ring.
 #define PIPE_MAX_STAGES 8
 #define PIPE_MAX_K_TILES 64
 
@@ -253,7 +202,6 @@ static int32_t verify_pipeline_schedule(uint32_t stages, uint32_t k_tiles)
 		produced_round[stage] = 0xffffffffu;
 		consumed_round[stage] = 0xffffffffu;
 	}
-	// prologue: stages 0 .. stages-2
 	for (fill = 0; fill + 1u < stages && fill < k_tiles; ++fill)
 		produced_round[fill % stages] = fill / stages;
 	for (k_tile = 0; k_tile < k_tiles; ++k_tile)
@@ -263,7 +211,6 @@ static int32_t verify_pipeline_schedule(uint32_t stages, uint32_t k_tiles)
 		ahead = k_tile + stages - 1u;
 		if ( ahead < k_tiles )
 		{
-			// a stage may only be refilled after its previous contents were consumed
 			if ( produced_round[ahead % stages] != 0xffffffffu
 				&& consumed_round[ahead % stages] != produced_round[ahead % stages] )
 				errors++;
@@ -279,20 +226,11 @@ static int32_t verify_pipeline_schedule(uint32_t stages, uint32_t k_tiles)
 	return((int32_t)errors);
 }
 
-// -- Persistent multi-tile schedule check ------------------------------------
-// The verifier above covers one output tile, where the wait parity equals
-// (k_tile / stages) & 1. The kernel's barriers initialise once and serve every
-// tile the persistent CTA runs, so a stage's phase accumulates across tiles
-// and the parity is the per-stage completion count modulo two - the per-tile
-// formula is exact only when k_tiles % (2 * stages) == 0, and matches an
-// already-completed old phase otherwise. This models the kernel's per-stage
-// parity bitmask across a multi-tile schedule and checks it against the
-// cumulative produce/consume counts, which are the barrier's true phase.
 static int32_t verify_pipeline_persistent(uint32_t stages, uint32_t k_tiles, uint32_t output_tiles)
 {
 	uint32_t produced[PIPE_MAX_STAGES],consumed[PIPE_MAX_STAGES];
 	uint32_t k_tile,stage,ahead,fill,tile,errors = 0,stale = 0;
-	uint32_t phase = 0; /* the kernel's parity bitmask, one bit per stage */
+	uint32_t phase = 0;
 	for (stage = 0; stage < stages; ++stage)
 	{
 		produced[stage] = 0;
@@ -300,10 +238,8 @@ static int32_t verify_pipeline_persistent(uint32_t stages, uint32_t k_tiles, uin
 	}
 	for (tile = 0; tile < output_tiles; ++tile)
 	{
-		// prologue: stages 0 .. stages-2
 		for (fill = 0; fill + 1u < stages && fill < k_tiles; ++fill)
 		{
-			// a stage may only be refilled after its previous contents were consumed
 			if ( produced[fill % stages] != consumed[fill % stages] )
 				errors++;
 			produced[fill % stages]++;
@@ -318,28 +254,19 @@ static int32_t verify_pipeline_persistent(uint32_t stages, uint32_t k_tiles, uin
 					errors++;
 				produced[ahead % stages]++;
 			}
-			// the wait must target the phase the barrier completes next
 			if ( ((phase >> stage) & 1u) != (consumed[stage] & 1u) )
 				errors++;
-			// and the staged data must be the round just produced, not an old one
 			if ( produced[stage] != consumed[stage] + 1u )
 				errors++;
-			// where the per-tile k formula disagrees, a k-derived wait is stale
 			if ( ((k_tile / stages) & 1u) != (consumed[stage] & 1u) )
 				stale++;
 			consumed[stage]++;
 			phase ^= 1u << stage;
 		}
-		// every k tile produced in this tile is consumed in this tile
 		for (stage = 0; stage < stages; ++stage)
 			if ( produced[stage] != consumed[stage] )
 				errors++;
 	}
-	// Coverage, not behaviour: multi-tile runs with k_tiles % (2 * stages) != 0
-	// must actually reach a wait the per-tile formula gets wrong, or this gate
-	// says nothing about the bug it exists for. Single-tile runs must never
-	// reach one - the model reproduces the old formula where the old formula
-	// was right.
 	if ( output_tiles > 1u && (k_tiles % (2u * stages)) != 0u && stale == 0u )
 		errors++;
 	if ( output_tiles == 1u && stale != 0u )
@@ -387,11 +314,6 @@ static int32_t verify_pipeline_matrix(void)
 }
 
 
-// -- SM120 atom equivalence and the NVFP4 block-scaled atom -----------------
-// sm_121a selects SM120_16x8x32_TN via rr_op_selector_sm120, not the SM89 atom.
-// SM120_16x8x32_TN inherits MMA_Traits<SM80_16x8x32_S32S8S8S32_TN>, so this
-// checks the inherited layout against the SM89 one element by element rather
-// than trusting that "both are 8-bit at m16n8k32" implies identical mappings.
 static int32_t verify_sm120_equals_sm89(void)
 {
 	layout_mode_t sm89_a_t = { { 4u, 8u, 0u, 0u }, { 64u, 1u, 0u, 0u }, 2u };
@@ -416,9 +338,6 @@ static int32_t verify_sm120_equals_sm89(void)
 	return(differences == 0 ? 0 : -1);
 }
 
-// NVFP4 atom: SM120::BLOCKSCALED::SM120_16x8x64_TN_VS.
-//   ALayout ((4,8),(8,2,2)) : ((128,1),(16,8,512))  -> (M16,K64)
-//   BLayout ((4,8),(8,2))   : ((64,1),(8,256))      -> (N8,K64)
 static void kernel_nvfp4_a_coordinate(uint32_t lane, uint32_t reg, uint32_t nibble, uint32_t *m, uint32_t *k)
 {
 	*m = (lane / 4u) + (8u * (reg % 2u));
@@ -474,14 +393,6 @@ static int32_t verify_nvfp4_operands(void)
 }
 
 
-// -- NVFP4 scale-factor layouts ---------------------------------------------
-// SFALayout ((2,2,8),64) : ((8,0,1),16)  -> (M16,K64)
-// SFBLayout ((4,8),64)   : ((0,1),8)     -> (N8,K64)
-// Both carry a stride-0 mode, which is why CUTLASS annotates them "effectively
-// 16 threads" and "effectively 8 threads": lanes differing only in that mode
-// address the same element, so several lanes must supply the same scale. That
-// redundancy is the whole reason the instruction takes {byte-id, thread-id}
-// selectors, and getting them wrong reads a valid-looking wrong scale.
 static void kernel_sfa_coordinate(uint32_t lane, uint32_t value, uint32_t *m, uint32_t *k)
 {
 	*m = (8u * (lane % 2u)) + (lane / 4u);
@@ -528,7 +439,6 @@ static int32_t verify_nvfp4_scale_layouts(void)
 			b_max = b_multiplicity[index];
 	printf("  SFA mismatches=%-4u lanes sharing each element=%u (CUTLASS: effectively 16 threads)\n",a_bad,a_max);
 	printf("  SFB mismatches=%-4u lanes sharing each element=%u (CUTLASS: effectively 8 threads)\n",b_bad,b_max);
-	// 32 lanes over 16 effective -> 2 lanes per element; over 8 effective -> 4.
 	if ( a_max != 2u || b_max != 4u )
 	{
 		printf("  SHARING FACTOR DISAGREES WITH THE STRIDE-0 MODE - decode is wrong\n");
@@ -538,11 +448,6 @@ static int32_t verify_nvfp4_scale_layouts(void)
 }
 
 
-// -- lm_mma.cuh formulas ------------------------------------------------------
-// The rewrite's operand loaders index by REGISTER and byte-within-register
-// rather than by (register, byte-in-K). These are the exact formulas in
-// lm_mma.cuh; the check is that they reproduce the same CuTe layouts already
-// verified above, so the new library cannot drift from the old verification.
 static void lm_mma8_a(uint32_t lane, uint32_t reg, uint32_t byte, uint32_t *m, uint32_t *k)
 {
 	*m = (lane / 4u) + (8u * (reg % 2u));
@@ -606,8 +511,6 @@ static int32_t verify_lm_mma_formulas(void)
 }
 
 
-// BF16 m16n8k16. Every packed format decodes into this layout, so it is the one
-// mapping the whole library depends on rather than one of several.
 static void lm_mma16_a(uint32_t lane, uint32_t reg, uint32_t half, uint32_t *m, uint32_t *k)
 {
 	*m = (lane / 4u) + (8u * (reg % 2u));
@@ -653,8 +556,6 @@ static int32_t verify_bf16_atom(void)
 			gap++;
 	printf("  BF16 m16n8k16 A/B: mismatches=%u/384  covered exactly once=%u/384\n",
 		bad,384u - gap);
-	// The property the decode path rests on: the two halves of a register are
-	// adjacent in k, so one 32-bit read or one pair-extract serves it.
 	for (lane = 0; lane < VERIFY_LANES; ++lane)
 	{
 		uint32_t reg,k0,k1,dummy;
@@ -670,22 +571,8 @@ static int32_t verify_bf16_atom(void)
 	return((bad == 0 && gap == 0) ? 0 : -1);
 }
 
-// -- Indirect A staging: row map, tail clamp, box equivalence ----------------
-// LmPipelineProduceIndirectA (tile.cuh) stages packed A row p from source row
-// source_row_map[clamp(p)] with one bulk copy per 16-byte swizzle chunk
-// instead of one TMA box. The numerics-identical claim is a BYTE claim: for
-// every live row the staged tile must equal what gather-plus-box stages,
-// because the fragment loads and the accumulate order downstream are shared
-// code. Both stagings are address arithmetic over a tagged source, so a host
-// can check them directly - the poisoned indices past row_limit included,
-// since the clamp is the difference between dead traffic and a wild copy.
-//
-// The pipeline protocol needs no new check here: the indirect produce
-// declares the same a_bytes + b_bytes through the same helper and completes
-// through the same complete_tx count, so the schedule and parity models above
-// cover both paths by construction.
 #define IND_SOURCE_ROWS 40u
-#define IND_ROW_PITCH 128u /* BF16 at kTileK 64: one 128-byte swizzle span */
+#define IND_ROW_PITCH 128u
 #define IND_CHUNK_BYTES 16u
 #define IND_K_TILES 3u
 #define IND_SOURCE_PITCH (IND_ROW_PITCH * IND_K_TILES)
@@ -704,18 +591,12 @@ static uint8_t ind_tag(uint32_t source_row, uint32_t byte_in_row)
 	return((uint8_t)(source_row * 61u + byte_in_row * 7u + 1u));
 }
 
-// The kernel's formulas, transcribed from tile.cuh and gemm.cuh - checked,
-// not trusted. The consume side (scale_a follows the source row) clamps by
-// the same rule, so one function stands for both.
 static uint32_t indirect_clamped_row(uint32_t row_base, uint32_t row_limit, uint32_t local_row)
 {
 	uint32_t packed = row_base + local_row;
 	return(packed >= row_limit ? row_base : packed);
 }
 
-// One staging of the model. With apply_clamp=0 the clamp is removed, which
-// must be CAUGHT by the poison check - a clamp that nothing detects is not a
-// verified clamp. Returns the number of defects seen.
 static int32_t indirect_stage_model(uint32_t tile_m, uint32_t row_base, uint32_t row_limit, uint32_t k_tile, int32_t apply_clamp)
 {
 	uint32_t r,c,x,packed,source_row,chunks,dst,errors = 0;
@@ -729,8 +610,6 @@ static int32_t indirect_stage_model(uint32_t tile_m, uint32_t row_base, uint32_t
 			if ( apply_clamp != 0 )
 				packed = indirect_clamped_row(row_base,row_limit,r);
 			source_row = ind_row_index[packed];
-			// the poison guard: an index past row_limit is the next group's
-			// business, and past the array's end it is a wild address
 			if ( packed >= row_limit && packed != row_base )
 				errors++;
 			if ( source_row >= IND_SOURCE_ROWS )
@@ -745,8 +624,6 @@ static int32_t indirect_stage_model(uint32_t tile_m, uint32_t row_base, uint32_t
 				ind_writes[dst + x]++;
 			}
 		}
-	// every staged byte written exactly once: the chunk decomposition is a
-	// permutation of the tile, or the fragments read unwritten memory
 	for (r = 0u; r < tile_m * IND_ROW_PITCH; ++r)
 		if ( ind_writes[r] != 1u )
 			errors++;
@@ -766,16 +643,10 @@ static int32_t verify_indirect_staging(void)
 					row_limit = row_base + valid;
 					if ( row_limit > IND_MAX_PACKED )
 						continue;
-					// live indices in range, everything at or past row_limit
-					// poisoned: the next group's bytes are not this tile's
 					for (x = 0u; x < IND_MAX_PACKED; ++x)
 						ind_row_index[x] = x < row_limit
 							? ((x * 17u + 5u) % IND_SOURCE_ROWS)
 							: IND_POISON;
-					// REFERENCE: the old dataflow. Gather the live rows into a
-					// packed buffer (what LmGatherRowsKernel materialises),
-					// then stage it the way the TMA box does - one swizzled
-					// 128-byte span per row, chunk c landing at c ^ (r % 8).
 					memset(ind_gathered,0,sizeof(ind_gathered));
 					memset(ind_staged_box,0,sizeof(ind_staged_box));
 					for (r = 0u; r < valid; ++r)
@@ -791,24 +662,16 @@ static int32_t verify_indirect_staging(void)
 								+ (swizzle_chunk(x / IND_CHUNK_BYTES,r) * IND_CHUNK_BYTES)
 								+ (x % IND_CHUNK_BYTES)] =
 								ind_gathered[(r * IND_ROW_PITCH) + x];
-					// KERNEL MODEL: chunked staging through the index.
 					errors = indirect_stage_model(tile_ms[tile_m],row_base,row_limit,k_tile,1);
 					if ( errors != 0 )
 						printf("  tile_m=%u valid=%u base=%u k=%u: %d staging defects\n",
 							tile_ms[tile_m],valid,row_base,k_tile,errors);
 					total += errors;
-					// live rows: byte-identical to gather-plus-box, which is
-					// the numerics-identical property stated as bytes
 					for (r = 0u; r < valid; ++r)
 						for (x = 0u; x < IND_ROW_PITCH; ++x)
 							if ( ind_staged_ind[(r * IND_ROW_PITCH) + x]
 								!= ind_staged_box[(r * IND_ROW_PITCH) + x] )
 								total++;
-					// tail rows: the clamp duplicated row_base's source row.
-					// Dead traffic - the stores are dropped - but the clamp
-					// itself is checked, not assumed. The staged row is
-					// swizzled, so the expected tag lands at the swizzled
-					// position, same as the box reference.
 					for (r = valid; r < tile_ms[tile_m]; ++r)
 						for (x = 0u; x < IND_ROW_PITCH; ++x)
 							if ( ind_staged_ind[(r * IND_ROW_PITCH)
@@ -816,8 +679,6 @@ static int32_t verify_indirect_staging(void)
 								+ (x % IND_CHUNK_BYTES)]
 								!= ind_tag(ind_row_index[row_base],(k_tile * IND_ROW_PITCH) + x) )
 								total++;
-					// removing the clamp MUST trip the poison guard, or the
-					// guard verifies nothing
 					if ( valid < tile_ms[tile_m] )
 					{
 						if ( indirect_stage_model(tile_ms[tile_m],row_base,row_limit,k_tile,0) != 0 )

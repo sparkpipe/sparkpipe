@@ -251,13 +251,6 @@ const void *SparkK3PackPayload(const SparkK3Pack *pack,
 	return(pack->mapping + pack->payload_base + entry->payload_offset);
 }
 
-/*
- * K3DS drafter-pack bind (spark_k3_dspark_format.h). Same file-backed mmap
- * discipline as SparkK3PackOpen - the family pack loader's mapping is the
- * sanctioned file-backed path, this is its drafter twin. Every check names
- * its field in the refusal buffer: the bind IS the provider capability
- * query's evidence, and a wrong-shaped drafter must never load silently.
- */
 
 typedef struct SparkK3DsparkEntryRaw
 {
@@ -266,7 +259,7 @@ typedef struct SparkK3DsparkEntryRaw
 	uint32_t format;
 	uint32_t rows;
 	uint32_t columns;
-	uint64_t payload_offset;   /* absolute file offset, as the packer writes */
+	uint64_t payload_offset;
 	uint64_t payload_bytes;
 } SparkK3DsparkEntryRaw;
 
@@ -355,7 +348,6 @@ SparkStatus SparkK3DsparkPackBind(const char *path, SparkK3DsparkPack *pack,
 	pack->fd = -1;
 	if ( refusal != 0 && refusal_bytes != 0 )
 		refusal[0] = '\0';
-	/* file-backed pack mmap (the sanctioned file-backed path) */
 	pack->fd = open(path, O_RDONLY);
 	if ( pack->fd < 0 )
 	{
@@ -384,7 +376,6 @@ SparkStatus SparkK3DsparkPackBind(const char *path, SparkK3DsparkPack *pack,
 		SparkK3DsparkRefuse(refusal,refusal_bytes,"drafter pack: mmap failed");
 		return(SPARK_STATUS_IO_ERROR);
 	}
-	/* wire header: the Q6SP v3 core + the DSpark extension */
 	magic = SparkK3PackReadU32Le(pack->mapping);
 	version = SparkK3PackReadU32Le(pack->mapping + 4u);
 	header_bytes = SparkK3PackReadU32Le(pack->mapping + 8u);
@@ -420,7 +411,6 @@ SparkStatus SparkK3DsparkPackBind(const char *path, SparkK3DsparkPack *pack,
 	pack->vocab = SparkK3PackReadU32Le(pack->mapping + 84u);
 	pack->block_size = SparkK3PackReadU32Le(pack->mapping + 88u);
 	pack->draft_token_count = pack->block_size >= 1u ? pack->block_size - 1u : 0u;
-	/* the DSpark extension: taps, markov rank, mask, window, flags */
 	ext = pack->mapping + SPARK_K3_DSPARK_CORE_HEADER_BYTES;
 	for ( tap_index = 0u; tap_index < 5u; tap_index++ )
 		pack->target_tap_layers[tap_index] =
@@ -431,7 +421,6 @@ SparkStatus SparkK3DsparkPackBind(const char *path, SparkK3DsparkPack *pack,
 	pack->flags = SparkK3DsparkEntryU32(ext, SPARK_K3_DSPARK_EXT_FLAGS);
 	pack->confidence_input_dimension =
 		SparkK3DsparkEntryU32(ext, SPARK_K3_DSPARK_EXT_CONFIDENCE_INPUT_DIM);
-	/* pinned redhatai geometry, field by field - the WHY rule */
 	#define SPARK_K3_DSPARK_BIND_CHECK(field, expected, label) \
 		do { if ( (field) != (expected) ) { \
 			(void)snprintf(text,sizeof(text),"drafter pack: %s %u != pinned %u", \
@@ -467,8 +456,6 @@ SparkStatus SparkK3DsparkPackBind(const char *path, SparkK3DsparkPack *pack,
 		SparkK3DsparkPackRelease(pack);
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
-	/* the entry inventory, in packer order: per-layer kinds 0..10 layer-major,
-	 * then the globals - exactly the redhatai tensor count */
 	if ( pack->tensor_count != SPARK_K3_DSPARK_REDHATAI_TENSOR_COUNT )
 	{
 		(void)snprintf(text,sizeof(text),"drafter pack: tensor_count %u != "

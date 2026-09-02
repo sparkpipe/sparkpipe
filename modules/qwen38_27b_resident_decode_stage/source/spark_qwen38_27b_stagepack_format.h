@@ -3,36 +3,12 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
 
-/*
- * Qwen 3.6 27B stage pack: a single file holding every tensor one pipeline
- * STAGE makes resident, plus the geometry the tensors were produced for.
- *
- * The header restates the model geometry and the layer slice; every field is
- * compared against the compiled constants at load and a mismatch is a hard
- * failure with the offending field named. Unlike the K3 v1 pack, the slice is
- * first-class: first_layer_index and layer_count describe this stage's layers
- * and the expected tensor count is COMPUTED from the slice, so a pack cannot
- * misdeclare its own inventory. The whole-stack case is first_layer_index 0
- * with layer_count 64, which is simply the one-stage pipeline.
- *
- * The MODELING-PIN pass against transformers main modeling_qwen3_5 (2026-07)
- * settled the checkpoint layout this table now states: the GDN q|k|v
- * projection is ONE fused tensor in conv channel order, beta and decay are
- * separate 48-row projections, the depthwise conv carries NO bias, and the
- * attention query projection fuses a per-head output gate (each head's 512
- * columns are 256 query then 256 gate, applied as sigmoid before o_proj).
- *
- * Layout: [header][directory: tensor_count entries][payload bytes].
- * All offsets are absolute file offsets. Payload of a tensor is contiguous.
- */
 
-#define SPARK_QWEN38_27B_STAGEPACK_MAGIC 0x50533651u /* 'Q6SP' little endian */
+#define SPARK_QWEN38_27B_STAGEPACK_MAGIC 0x50533651u
 #define SPARK_QWEN38_27B_STAGEPACK_FORMAT_VERSION 3u
-/* v3 added tp_degree/tp_rank. A v2 pack read into the v3 struct leaves the
- * two TP fields zero; the loader treats degree 0 as degree 1 (no tensor
- * parallelism), so v2 PP packs stay loadable. */
 #define SPARK_QWEN38_27B_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_QWEN38_27B_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
 #define SPARK_QWEN38_27B_STAGEPACK_PAYLOAD_ALIGNMENT 256u
@@ -69,13 +45,10 @@ typedef enum SparkQwen38_27bStagePackTensorKind
 	SPARK_QWEN38_27B_STAGEPACK_TENSOR_KIND_COUNT = 27
 } SparkQwen38_27bStagePackTensorKind;
 
-// A kind belongs to a layer class; the resolver enforces class against the
-// hybrid layer map, so a GDN tensor on a full-attention layer is a schema
-// error at load, not a stray pointer at launch.
-#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GLOBAL 0u
-#define SPARK_QWEN38_27B_STAGEPACK_CLASS_EVERY_LAYER 1u
-#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER 2u
-#define SPARK_QWEN38_27B_STAGEPACK_CLASS_ATTN_LAYER 3u
+#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GLOBAL SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL
+#define SPARK_QWEN38_27B_STAGEPACK_CLASS_EVERY_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER
+#define SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GDN_LAYER
+#define SPARK_QWEN38_27B_STAGEPACK_CLASS_ATTN_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_ATTN_LAYER
 
 typedef struct SparkQwen38_27bStagePackHeader
 {
@@ -123,19 +96,11 @@ typedef struct SparkQwen38_27bStagePackEntry
 	uint64_t scale_bytes;
 } SparkQwen38_27bStagePackEntry;
 
-/*
- * Fixed wire sizes. The structs are ordered so natural alignment produces no
- * padding on the LP64 targets this module builds for; the asserts make that a
- * compile error rather than a silent format drift.
- */
 #define SPARK_QWEN38_27B_STAGEPACK_HEADER_BYTES 120u
 #define SPARK_QWEN38_27B_STAGEPACK_ENTRY_BYTES 56u
 _Static_assert(sizeof(SparkQwen38_27bStagePackHeader) == SPARK_QWEN38_27B_STAGEPACK_HEADER_BYTES,"qwen38_27b stage pack header must be 120 wire bytes");
 _Static_assert(sizeof(SparkQwen38_27bStagePackEntry) == SPARK_QWEN38_27B_STAGEPACK_ENTRY_BYTES,"qwen38_27b stage pack directory entry must be 56 wire bytes");
 
-// Model-geometry compile-time proofs live here, in the C-only pack header,
-// because the CUDA translation unit includes the model header and the C++
-// front end does not accept _Static_assert.
 _Static_assert(SPARK_QWEN38_27B_MODEL_GDN_LAYER_COUNT + SPARK_QWEN38_27B_MODEL_FULL_ATTENTION_LAYER_COUNT == SPARK_QWEN38_27B_MODEL_LAYER_COUNT,"qwen38_27b layer split must cover the stack");
 _Static_assert((SPARK_QWEN38_27B_MODEL_LAYER_COUNT % SPARK_QWEN38_27B_MODEL_ATTENTION_PERIOD) == 0u,"qwen38_27b layer count must be whole periods");
 _Static_assert(SPARK_QWEN38_27B_MODEL_GDN_LAYER_COUNT == (SPARK_QWEN38_27B_MODEL_LAYER_COUNT / SPARK_QWEN38_27B_MODEL_ATTENTION_PERIOD) * (SPARK_QWEN38_27B_MODEL_ATTENTION_PERIOD - 1u),"qwen38_27b gdn count must match the 3:1 period");
@@ -149,25 +114,11 @@ _Static_assert(SPARK_QWEN38_27B_MODEL_GDN_QK_DIMENSION == 2048u && SPARK_QWEN38_
 _Static_assert(SPARK_QWEN38_27B_MODEL_ATTN_QUERY_DIMENSION == 6144u && SPARK_QWEN38_27B_MODEL_ATTN_KV_DIMENSION == 1024u,"qwen38_27b attention projection widths per config");
 _Static_assert((SPARK_QWEN38_27B_MODEL_GDN_CHUNK_TOKENS % 16u) == 0u,"qwen38_27b chunk must tile for wmma");
 
-// Full-attention layers among the first n of the stack: phase 3 in period 4
-// puts them at 3, 7, 11, ..., so the count is simply n / 4.
 static inline uint32_t SparkQwen38_27bStagePackFullAttentionLayersBelow(uint32_t layer_count)
 {
 	return(layer_count / SPARK_QWEN38_27B_MODEL_ATTENTION_PERIOD);
 }
 
-/*
- * The tensor inventory of a slice, computed, never declared: five tensors on
- * every layer (two norms and the SwiGLU triple), nine more on a GDN layer,
- * six more on a full-attention layer, the embedding on stage zero and the
- * final norm plus LM head on the last stage.
- */
-/*
- * The head stage's MTP draft chain embeds its own draft tokens, and the
- * vocabulary is untied, so on a multi-stage split the head pack carries a
- * second copy of the embedding table. A whole-stack pack already holds it
- * as the stage-zero global, so the whole-stack tensor count is unchanged.
- */
 static inline uint32_t SparkQwen38_27bStagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {
 	uint32_t full = SparkQwen38_27bStagePackFullAttentionLayersBelow(first_layer_index + layer_count) - SparkQwen38_27bStagePackFullAttentionLayersBelow(first_layer_index);
@@ -212,8 +163,6 @@ static inline void SparkQwen38_27bStagePackExpectedGeometry(SparkQwen38_27bStage
 	header->file_bytes = 0u;
 }
 
-// Field-by-field comparison; each field owns a unique negative code so the
-// failing load names exactly which dimension the pack disagrees on.
 static inline int32_t SparkQwen38_27bStagePackCompareGeometry(const SparkQwen38_27bStagePackHeader *file_header, const SparkQwen38_27bStagePackHeader *expected)
 {
 	if ( file_header->magic != expected->magic )
@@ -358,48 +307,36 @@ static inline int32_t SparkQwen38_27bStagePackShapeEveryLayer(uint32_t tensor_ki
 	}
 }
 
+#define SPARK_QWEN38_27B_STAGEPACK_GDN_KIND_OFFSET (SPARK_STAGEPACK_TENSOR_GDN_QKV - SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_QKV)
+
+_Static_assert(SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_NORM + SPARK_QWEN38_27B_STAGEPACK_GDN_KIND_OFFSET == SPARK_STAGEPACK_TENSOR_GDN_NORM,"qwen38_27b gdn kind run must track the shared axis");
+_Static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"qwen38_27b bf16 weight code must match the shared format");
+_Static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"qwen38_27b f32 weight code must match the shared format");
+
+static const SparkStagePackGeometryTable SparkQwen38_27bStagePackGeometry =
+{
+	.norm_width = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION,
+	.hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION,
+	.gdn_conv_channels = SPARK_QWEN38_27B_MODEL_GDN_CONV_CHANNELS,
+	.gdn_value_dimension = SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION,
+	.gdn_value_head_count = SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT,
+	.gdn_head_value_dimension = SPARK_QWEN38_27B_MODEL_GDN_HEAD_VALUE_DIMENSION,
+	.gdn_conv_kernel = SPARK_QWEN38_27B_MODEL_GDN_CONV_KERNEL
+};
+
 static inline int32_t SparkQwen38_27bStagePackShapeGdn(uint32_t tensor_kind, SparkQwen38_27bStagePackTensorShape *shape)
 {
-	shape->layer_class = SPARK_QWEN38_27B_STAGEPACK_CLASS_GDN_LAYER;
-	switch ( tensor_kind )
-	{
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_QKV:
-		shape->rows = SPARK_QWEN38_27B_MODEL_GDN_CONV_CHANNELS;
-		shape->columns = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		shape->quantizable = 1u;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_GATE:
-		shape->rows = SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION;
-		shape->columns = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		shape->quantizable = 1u;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_BETA:
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_DECAY:
-		shape->rows = SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT;
-		shape->columns = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_OUTPUT:
-		shape->rows = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		shape->columns = SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION;
-		shape->quantizable = 1u;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_CONV_WEIGHT:
-		shape->rows = SPARK_QWEN38_27B_MODEL_GDN_CONV_CHANNELS;
-		shape->columns = SPARK_QWEN38_27B_MODEL_GDN_CONV_KERNEL;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_A_LOG:
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_DT_BIAS:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT;
-		shape->natural_format = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32;
-		return(0);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_NORM:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN38_27B_MODEL_GDN_HEAD_VALUE_DIMENSION;
-		return(0);
-	default:
+	SparkStagePackTensorShape common;
+	SparkStagePackShapeInit(&common);
+	if ( SparkStagePackShapeGdnCommon(tensor_kind + SPARK_QWEN38_27B_STAGEPACK_GDN_KIND_OFFSET,&SparkQwen38_27bStagePackGeometry,&common) != 0 )
 		return(-1);
-	}
+	shape->rows = common.rows;
+	shape->columns = common.columns;
+	shape->natural_format = common.natural_format;
+	shape->layer_class = common.layer_class;
+	if ( tensor_kind == SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_QKV || tensor_kind == SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_GATE || tensor_kind == SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_OUTPUT )
+		shape->quantizable = 1u;
+	return(0);
 }
 
 static inline int32_t SparkQwen38_27bStagePackShapeAttn(uint32_t tensor_kind, SparkQwen38_27bStagePackTensorShape *shape)
@@ -448,21 +385,6 @@ static inline int32_t SparkQwen38_27bStagePackTensorShapeOf(uint32_t tensor_kind
 	return(-1);
 }
 
-/*
- * Kind resolved against a concrete layer: a global kind must carry the global
- * layer marker, a per-layer kind must sit inside the total layer space, and
- * the GDN/attention classes must agree with the hybrid layer map.
- */
-/*
- * The MTP decoder is geometry-identical to a full-attention layer, so its
- * eleven layer-shaped tensors REUSE the per-layer kinds at the reserved MTP
- * layer marker; only the four MTP globals (fc, the two pre-fc norms, the
- * final norm) are new kinds. Pinned from the checkpoint safetensors index.
- */
-/* TP packs store one rank's row/column window of each shardable tensor;
- * replicated kinds (norms, conv, gates, beta/decay, MTP) are unchanged.
- * The fused GDN q|k|v projection is stitched q|k|v per rank, so its row
- * count is (2*qk + v) / degree. */
 static inline void SparkQwen38_27bStagePackApplyTpShard(uint32_t tensor_kind, uint32_t tp_degree, SparkQwen38_27bStagePackTensorShape *shape)
 {
 	if ( tp_degree <= 1u )
@@ -470,8 +392,6 @@ static inline void SparkQwen38_27bStagePackApplyTpShard(uint32_t tensor_kind, ui
 	switch ( tensor_kind )
 	{
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_EMBEDDING:
-		/* Replicated: no collective broadcast primitive yet, so every rank
-		 * gathers from the full table (matches the packer's TP plan). */
 		break;
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_LM_HEAD:
 		shape->rows /= tp_degree;
@@ -509,9 +429,6 @@ static inline int32_t SparkQwen38_27bStagePackResolvedShape(uint32_t tensor_kind
 {
 	if ( SparkQwen38_27bStagePackTensorShapeOf(tensor_kind,shape) < 0 )
 		return(-1);
-	/* The MTP decoder's attention/FFN tensors shard exactly like main
-	 * layers (the fc and the three norms live at the GLOBAL layer and keep
-	 * full shapes via the default case below). */
 	SparkQwen38_27bStagePackApplyTpShard(tensor_kind,tp_degree,shape);
 	if ( layer_index == SPARK_QWEN38_27B_STAGEPACK_MTP_LAYER )
 		return((is_global == 0u && (shape->layer_class == SPARK_QWEN38_27B_STAGEPACK_CLASS_EVERY_LAYER || shape->layer_class == SPARK_QWEN38_27B_STAGEPACK_CLASS_ATTN_LAYER)) ? 0 : -6);

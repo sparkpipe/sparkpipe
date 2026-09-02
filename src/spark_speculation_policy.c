@@ -1,7 +1,3 @@
-/* spark_speculation_policy.c - neutral dispatch-policy core (audit step 3).
- * Extracted from the first adopting model's dispatch policy; a pure textual
- * rename into the SparkSpeculation / SparkSpeculationPolicy namespaces; the
- * 80 tap-plan lines remain in the model module. */
 #include "sparkpipe/spark_speculation_policy.h"
 
 #include <string.h>

@@ -21,6 +21,5 @@ struct LmGemmArguments
     uint32_t group_count;
     uint32_t input_dimension;
     uint32_t output_dimension;
-    // Mirrors inference/kernels/gemm.cuh's frame error slot (frame_error.cuh).
     void *frame_error;
 };

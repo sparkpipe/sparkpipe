@@ -1,24 +1,8 @@
-/* Large stage packs exceed 2 GB: 64-bit file offsets are required. */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
 #include "spark_qwen38_max_stagepack_format.h"
 
-/*
- * Synthetic qwen38_max stage pack writer, slice-aware.
- *
- * Emits every tensor one pipeline STAGE will demand, at the geometry the
- * module was compiled for, with reproducible pseudo-random contents: the
- * loader, the shape table, the slice arithmetic and the layer walk run end
- * to end against it. This file is the family configuration — stage-pack
- * types, the per-layer kind inventory, and the quantization policy; the
- * machinery is the shared generator core.
- *
- * Family facts (recorded, not re-derived): --bf16 downgrades every tensor
- * to BF16; the whole-stack inventory exceeds the 1024-entry directory
- * capacity, so the full-slice run fails closed in the directory build
- * exactly as it always has — slices are the supported input.
- */
 
 #define SPARK_SYNTH_QWEN_TEMPLATE 1
 #define SPARK_SYNTH_TOOL_NAME "qwen38_pack_synthesize"

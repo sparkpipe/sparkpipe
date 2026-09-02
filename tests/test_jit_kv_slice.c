@@ -1,23 +1,3 @@
-// The JIT-KV vertical slice, end to end on a host (docs/JIT_KV_DESIGN.md,
-// docs/JIT_KV_RESPONSE.md C1): a real arena + real nvme tier + the real
-// pager running the real eviction/pager/backpressure paths, with the
-// module's KV_BLOCKS_SAVE_OUT / KV_BLOCKS_RESTORE_IN frame ops and the
-// backing pwrite standing in as TERM host copies. The device is a region of
-// host memory bounded by an explicit budget; the drive is a byte image.
-//
-// The five proofs:
-//   1. fill the KV tier beyond the resident budget;
-//   2. LRU eviction pages OUT with digest-verified write-back (the victim
-//      order is recency, not fill order, and the write-back is the real
-//      ReserveWrite/CommitWrite tier path under the payload's SHA-256);
-//   3. rewind: the evicted block pages IN digest-verified and lands
-//      BIT-EXACT; re-parking it deduplicates onto the same tier record;
-//   4. backpressure: saturated device and full park horizon REFUSE
-//      admissions - queued, repeated offers stay healthy, protected
-//      residents are never evicted, a tier-boundary BUSY stays a clean
-//      retryable answer - never a wedge, never a silent drop;
-//   5. the device budget holds at EVERY instant: the budget assert runs
-//      after every single state change in every scenario.
 #include "sparkpipe/spark_kv_pager.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -131,9 +111,6 @@ static SparkStatus SliceCancelRead(void *context, uint64_t ticket)
 	return(SPARK_STATUS_NOT_FOUND);
 }
 
-/* The module seam, TERM form: the "device" planes are host memory, so the
- * frame ops are copies. Layout is the pager's contract: key plane then value
- * plane, contiguous in the staging buffer. */
 typedef struct SliceModule
 {
 	uint32_t save_count;
@@ -191,8 +168,6 @@ typedef struct SliceFixture
 	_Alignas(SLICE_BLOCK_BYTES) uint8_t tier_staging[4u * SLICE_BLOCK_BYTES];
 	_Alignas(SLICE_BLOCK_BYTES) uint8_t pager_staging[2u * SLICE_BLOCK_BYTES];
 	_Alignas(SLICE_BLOCK_BYTES) uint8_t drive[12u * SLICE_BLOCK_BYTES];
-	/* golden[block] = the block's true payload: key plane then value plane,
-	   the layout the pager's staging contract names. */
 	uint8_t golden[SLICE_MAX_LOGICAL_BLOCKS][SLICE_BLOCK_BYTES];
 	uint32_t logical_block_count;
 	uint32_t resident_capacity;
@@ -202,8 +177,6 @@ typedef struct SliceFixture
 }
 SliceFixture;
 
-/* Same fold as the pager: digest bytes -> the tier's bucket key. Test-local
-   so the tier PIN path can name records the pager parked. */
 static uint64_t SliceFoldDigest(const uint8_t *digest)
 {
 	uint64_t hash = 0u;
@@ -246,7 +219,6 @@ static SparkStatus SliceBackingWrite(
 	return(SPARK_STATUS_OK);
 }
 
-/* The budget law, asserted after EVERY state change in every scenario. */
 static void SliceCheckBudget(SliceFixture *fixture, const char *where)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -363,10 +335,6 @@ static SparkStatus SliceOpen(
 	return(SparkKvPagerInitialize(&fixture->pager,pager_configuration));
 }
 
-/* Admit + fill one block: the exact C1 flow - commit the reservation
-   immediately before the block becomes resident, acquire it for the lane,
-   mark residency (which may park an LRU victim through the pager), write
-   the module's planes, dirty it. */
 static int32_t SliceFillBlock(SliceFixture *fixture, uint32_t block_index)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -514,8 +482,6 @@ int main(void)
 			"the device budget is exactly filled by lane A");
 		expect(fixture.pager.statistics.page_out_count == 0u,
 			"nothing parked while the load fits");
-		/* lane A keeps touching block 1: recency, not fill order, must
-		   decide the victims. */
 		expect(SparkKvCacheArenaRetainBlock(&fixture.arena,1u) ==
 			SPARK_STATUS_OK && SparkKvCacheArenaReleaseBlockReference(
 				&fixture.arena,1u) == SPARK_STATUS_OK,
@@ -571,7 +537,6 @@ int main(void)
 			"lane B admits by parking lane A");
 		for ( index = 4u; index < 8u; ++index )
 			SliceFillBlock(&fixture,index);
-		/* THE REWIND: lane A's decode returns to block 1. */
 		SliceDigest(1u,digest);
 		{
 			uint32_t attempt;
@@ -609,9 +574,6 @@ int main(void)
 			"making room paged the LRU resident out (lane B's oldest)");
 		expect(fixture.tier.statistics.slots_in_use == 5u,
 			"the tier now holds five records");
-		/* the restored block is re-dirtied (the sequence touched it), then
-		   pressure returns: its re-park must DEDUPLICATE - the tier record
-		   still holds those exact bytes under the same digest. */
 		expect(SparkKvCacheArenaMarkBlockDirty(&fixture.arena,1u) ==
 			SPARK_STATUS_OK,
 			"the restored block is re-dirtied (bytes unchanged)");
@@ -702,8 +664,6 @@ int main(void)
 		expect(SliceAdmitDemand(&fixture,2u,&decision) &&
 			decision.outcome == SPARK_KV_PAGER_QUEUED,
 			"it stays queued - the horizon does not lie or thrash");
-		/* pin BOTH tier records: the pager's write-back now hits the tier's
-		   BUSY (no free slot, none evictable). */
 		SliceDigest(0u,digest0);
 		{
 			uint8_t digest1[SPARK_KV_PAGER_DIGEST_BYTES];
@@ -715,8 +675,6 @@ int main(void)
 				"both tier records pin");
 		}
 		{
-			/* rewind lane R's block 0: the make-room write-back is BUSY at
-			   the tier - a clean retryable answer, not a drop, not a wedge */
 			SparkStatus status = SparkKvPagerRestoreBlock(&fixture.pager,0u,
 				digest0);
 			expect(status == SPARK_STATUS_BUSY,

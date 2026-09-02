@@ -1,20 +1,3 @@
-/*
- * K3DS drafter pack: format + bind gate (CPU-only, no CUDA).
- *
- * Builds a full redhatai-geometry pack IN A SPARSE FILE (correct header,
- * entries, and payload bounds; the payloads themselves are holes - the bind
- * never reads payload bytes, it proves layout), then:
- *   - a good pack binds, and the geometry fields round-trip;
- *   - payloads resolve by (kind, layer) with the right byte counts;
- *   - a truncated pack, a wrong magic, a radixark-class block 7, a foreign
- *     tap layer, and a missing-flags pack each FAIL naming the field;
- *   - kind 14 (the reserved slot) never resolves.
- * Run: cc -std=c11 -Wall -Wextra -Werror -O3 -D_GNU_SOURCE -Iinclude -Isrc
- *        -Imodel-families/k3/include -Imodules/k3_resident_decode_stage/include
- *        -Imodules/k3_resident_decode_stage/source
- *        tests/test_k3_dspark_pack.c modules/k3_resident_decode_stage/source/spark_k3_pack_load.c
- *        runtime/json.c src/spark_status.c -o build/test_k3_dspark_pack && ./build/test_k3_dspark_pack
- */
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +31,6 @@ static const uint32_t test_taps[5] =
 	SPARK_K3_DSPARK_TARGET_TAP_LAYER_4
 };
 
-/* the packer's inventory: per-layer kinds 0..10 layer-major, then globals */
 static uint32_t entry_kind(uint32_t index)
 {
 	if ( index < SPARK_K3_DSPARK_LAYER_COUNT * SPARK_K3_DSPARK_PER_LAYER_KIND_COUNT )
@@ -104,7 +86,7 @@ static void build_pack(struct TestPack *out, uint32_t block_size,
 	put_u32(bytes + 8u, SPARK_K3_DSPARK_HEADER_BYTES);
 	put_u32(bytes + 12u, SPARK_K3_DSPARK_ENTRY_BYTES);
 	put_u32(bytes + 16u, SPARK_K3_DSPARK_REDHATAI_TENSOR_COUNT);
-	put_u32(bytes + 20u, 7168u);                       /* hidden */
+	put_u32(bytes + 20u, 7168u);
 	put_u32(bytes + 24u, SPARK_K3_DSPARK_LAYER_COUNT);
 	put_u32(bytes + 32u, SPARK_K3_DSPARK_LAYER_COUNT);
 	put_u32(bytes + 64u, SPARK_K3_DSPARK_ATTN_QUERY_HEADS);
@@ -115,8 +97,8 @@ static void build_pack(struct TestPack *out, uint32_t block_size,
 	put_u32(bytes + 84u, SPARK_K3_DSPARK_VOCAB);
 	put_u32(bytes + 88u, block_size);
 	put_u32(bytes + 92u, SPARK_K3_DSPARK_TARGET_TAP_COUNT);
-	put_u32(bytes + 96u, 1u);                          /* tp_degree */
-	put_u32(bytes + 100u, 0u);                         /* tp_rank */
+	put_u32(bytes + 96u, 1u);
+	put_u32(bytes + 100u, 0u);
 	put_u64(bytes + 104u, SPARK_K3_DSPARK_HEADER_BYTES);
 	put_u64(bytes + 112u, out->file_bytes);
 	for ( index = 0u; index < 5u; index++ )
@@ -216,7 +198,6 @@ int main(void)
 		printf("FAIL: bound geometry fields do not round-trip\n");
 		failures++;
 	}
-	/* payload resolution: the projector (global) and one per-layer kind */
 	if ( SparkK3DsparkPackPayload(&bound, SPARK_K3_DSPARK_TENSOR_PROJECTOR,
 		0xFFFFFFFFu, &payload, &payload_bytes) != SPARK_STATUS_OK ||
 		payload_bytes != (uint64_t)7168u * 5u * 7168u * 2u )
@@ -231,7 +212,6 @@ int main(void)
 		printf("FAIL: per-layer payload wrong\n");
 		failures++;
 	}
-	/* the reserved slot never resolves, in either scope */
 	SparkK3DsparkKindShape(SPARK_K3_DSPARK_TENSOR_RESERVED_14, &rows, &columns);
 	if ( rows != 0u || columns != 0u ||
 		SparkK3DsparkPackPayload(&bound, SPARK_K3_DSPARK_TENSOR_RESERVED_14,
@@ -242,7 +222,6 @@ int main(void)
 	}
 	SparkK3DsparkPackRelease(&bound);
 
-	/* radixark-class block 7: refused, naming the field */
 	{
 		struct TestPack radix;
 		build_pack(&radix, 7u, test_taps[0], SPARK_K3_DSPARK_FLAGS_REQUIRED,
@@ -250,7 +229,6 @@ int main(void)
 		failures += expect_refusal(&radix, "block_size");
 		free(radix.bytes);
 	}
-	/* a foreign first tap: refused, naming the field */
 	{
 		struct TestPack foreign;
 		build_pack(&foreign, SPARK_K3_DSPARK_BLOCK_SIZE, 7u,
@@ -258,7 +236,6 @@ int main(void)
 		failures += expect_refusal(&foreign, "tap_layer_0");
 		free(foreign.bytes);
 	}
-	/* a pack missing the confidence+markov flag (a DFlash2-class pack): refused */
 	{
 		struct TestPack noflag;
 		build_pack(&noflag, SPARK_K3_DSPARK_BLOCK_SIZE, test_taps[0],
@@ -267,7 +244,6 @@ int main(void)
 		failures += expect_refusal(&noflag, "flags");
 		free(noflag.bytes);
 	}
-	/* wrong magic: refused */
 	{
 		struct TestPack badmagic;
 		build_pack(&badmagic, SPARK_K3_DSPARK_BLOCK_SIZE, test_taps[0],
@@ -275,7 +251,6 @@ int main(void)
 		failures += expect_refusal(&badmagic, "magic");
 		free(badmagic.bytes);
 	}
-	/* truncated file: the header's file_bytes disagrees with the actual size */
 	{
 		int fd;
 		if ( write_sparse("/tmp/k3dsp-test.k3dsp", &pack) != 0 )

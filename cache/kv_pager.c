@@ -1,13 +1,3 @@
-// The JIT-KV pager (docs/JIT_KV_DESIGN.md adapter layer): park, restore,
-// and admission backpressure joining the resident arena to the backing tier.
-// The contract lives in sparkpipe/spark_kv_pager.h; this file is the policy -
-// LRU page-out through the arena's evict function, digest-verified page-in,
-// and the queue-not-wedge admission rule of docs/JIT_KV_RESPONSE.md C1.
-// C3 wires the MEASURED tier bandwidth (an EMA over observed page-in and
-// page-out throughput against the injected clock) into the admission
-// arithmetic; C4 moves the park write-out onto a worker thread with
-// completion publishing on the owning thread (TERM-safe by the W2a
-// stop-flag + poll-quantum discipline).
 
 #include "sparkpipe/spark_kv_pager.h"
 
@@ -29,7 +19,6 @@ static uint32_t SparkKvPagerDigestIsUsable(
 	return(usable != 0u);
 }
 
-/* The tier's bucket key, folded from the payload digest (see header). */
 static uint64_t SparkKvPagerHashFromDigest(
     const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES])
 {
@@ -77,7 +66,6 @@ static void SparkKvPagerRecordPageOut(
 	statistics->page_out_history_count += 1u;
 }
 
-/* ---- C3: the measured tier bandwidth ------------------------------- */
 
 static uint64_t SparkKvPagerClockNow(const SparkKvPager *pager)
 {
@@ -86,10 +74,6 @@ static uint64_t SparkKvPagerClockNow(const SparkKvPager *pager)
 			pager->configuration.clock_context) : 0u);
 }
 
-/* One observed throughput sample (bytes moved over measured microseconds)
- * folded into the EMA at alpha = 1/2. Degenerate samples (no clock, no
- * bytes, no elapsed time - a demand hit with no transfer behind it) fold
- * nothing: the EMA only ever holds measured movement. */
 static void SparkKvPagerFoldBandwidthSample(
 	SparkKvPager *pager,uint64_t payload_bytes,uint64_t elapsed_microseconds)
 {
@@ -108,12 +92,6 @@ static void SparkKvPagerFoldBandwidthSample(
 	pager->statistics.measured_bandwidth_samples += 1u;
 }
 
-/* ---- C4: the park queue, the worker, completion publishing --------- */
-/* The park ring is SPSC both ways: the owning thread produces park entries
- * and consumes completions, the worker the reverse. The cursors carry the
- * ordering (acquire on the foreign cursor, release on the local one); both
- * wrap safely because unsigned subtraction is the occupancy test and the
- * capacity bound keeps slot reuse a whole ring behind its consumer. */
 
 static uint32_t SparkKvPagerParkQueuePush(SparkKvPager *pager,
 	const SparkKvPagerParkEntry *entry)
@@ -179,13 +157,6 @@ static uint32_t SparkKvPagerParkCompletionPop(SparkKvPager *pager,
 	return(1u);
 }
 
-/* A park still between enqueue and publish, matched by the block and the
- * exact payload digest (a recycled block re-parked under new content must
- * not defer ITS restore). Two states defer: still queued in the ring, and
- * popped - mid-write on the worker (the inflight slot is published before
- * the pop, so the two windows overlap and never gap). A completion that is
- * pushed but not yet drained answers BUSY at worst once more: the next
- * offer drains it and proceeds - never wrong data, one extra offer. */
 static uint32_t SparkKvPagerParkIsInFlight(const SparkKvPager *pager,
 	uint32_t logical_block_index,
 	const uint8_t content_digest[SPARK_KV_PAGER_DIGEST_BYTES])
@@ -218,10 +189,6 @@ static uint32_t SparkKvPagerParkIsInFlight(const SparkKvPager *pager,
 	return(0u);
 }
 
-/* The worker's - and shutdown's inline - write leg: one staged park to the
- * tier offset its reservation holds. The clock bracket is the C3 page-out
- * sample; it rides the completion so the fold happens on the owning
- * thread's side of the ring. */
 static void SparkKvPagerParkExecuteWrite(SparkKvPager *pager,
 	const SparkKvPagerParkEntry *entry,
 	SparkKvPagerParkCompletion *completion_out)
@@ -240,10 +207,6 @@ static void SparkKvPagerParkExecuteWrite(SparkKvPager *pager,
 		SparkKvPagerClockNow(pager) - write_started;
 }
 
-/* Completion publishing (the owning thread only): the tier's readable
- * index, the block's flag transition, the page-out receipt - or the B1
- * degrade. This is the inline write-back's success/failure pair, moved to
- * publish time; nothing here trusts the write, only its completion record. */
 static void SparkKvPagerPublishCompletion(SparkKvPager *pager,
 	const SparkKvPagerParkCompletion *completion)
 {
@@ -267,11 +230,6 @@ static void SparkKvPagerPublishCompletion(SparkKvPager *pager,
 	}
 	if ( status != SPARK_STATUS_OK )
 	{
-		/* B1 carried to the async leg: the write failed, so the
-		 * reservation aborts (the tier slot returns) and the block
-		 * DEGRADES - dropped, recomputable, never a wedge and never a
-		 * resident-trusted byte. The owning thread applies it, exactly
-		 * where the inline path applies its own. */
 		(void)SparkNvmeTierAbortWrite(pager->configuration.tier,
 			&completion->reservation);
 		block->flags &= (uint32_t)~SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
@@ -310,11 +268,6 @@ static void *SparkKvPagerParkWorkerMain(void *argument)
 	SparkKvPagerParkCompletion completion;
 	uint32_t tail;
 
-	/* the W2a discipline: the stop flag is an atomic the owning thread
-	 * stores; this loop observes it within one poll quantum plus one
-	 * backing write - the write is the bound, never a wake-up promise.
-	 * An empty queue sleeps the quantum; TERM never drops a staged park,
-	 * shutdown completes what this loop leaves. */
 	while ( atomic_load_explicit(&pager->park_worker_stop,
 		memory_order_seq_cst) == 0 )
 	{
@@ -326,9 +279,6 @@ static void *SparkKvPagerParkWorkerMain(void *argument)
 			SparkKvPagerParkWorkerSleep();
 			continue;
 		}
-		/* publish the inflight slot BEFORE the pop releases it from the
-		 * ring: a restore offer must see the park in one of the two
-		 * places for the whole window between enqueue and publish. */
 		entry = pager->park_queue[tail % SPARK_KV_PAGER_PARK_QUEUE_CAPACITY];
 		pager->park_write_inflight = entry;
 		atomic_store_explicit(&pager->park_write_inflight_valid,1u,
@@ -378,9 +328,6 @@ SparkStatus SparkKvPagerInitialize(
 	{
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	/* The device law: the configured budget is nonzero, at most the law, and
-	 * large enough to hold the arena's ENTIRE resident capacity - a pager
-	 * whose own arena can break its budget is a wedge on a timer. */
 	resident_bytes = (uint64_t)configuration->arena->resident_block_capacity *
 		block_bytes;
 	if ( configuration->device_budget_bytes == 0u ||
@@ -389,16 +336,11 @@ SparkStatus SparkKvPagerInitialize(
 	{
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	/* One pager owns the arena's eviction path; a second install would
-	 * silently detach the first owner's write-back. */
 	if ( configuration->arena->evict_function != 0 &&
 		configuration->arena->evict_function != SparkKvPagerEvictWriteback )
 	{
 		return(SPARK_STATUS_BUSY);
 	}
-	/* C4 fences: the park queue, when async, is bounded and must hold one
-	 * staged payload per entry - the pager owns the bytes from eviction on,
-	 * so the arena's device slot is reusable before the write lands. */
 	if ( configuration->park_queue_blocks >
 		SPARK_KV_PAGER_PARK_QUEUE_CAPACITY ||
 		(configuration->park_queue_blocks != 0u &&
@@ -424,9 +366,6 @@ SparkStatus SparkKvPagerInitialize(
 	atomic_init(&pager->park_completion_tail,0u);
 	atomic_init(&pager->park_worker_stop,0u);
 	atomic_init(&pager->park_write_inflight_valid,0u);
-	/* C5: the park policy is the arena's victim policy - ONE definition
-	 * lives in the arena's selectors; the pager installs it beside the
-	 * evict binding it owns (and unwinds it with that binding). */
 	configuration->arena->eviction_policy = configuration->park_policy;
 	configuration->arena->evict_function = SparkKvPagerEvictWriteback;
 	configuration->arena->evict_context = pager;
@@ -436,9 +375,6 @@ SparkStatus SparkKvPagerInitialize(
 
 		if ( pthread_create(&worker,0,SparkKvPagerParkWorkerMain,pager) != 0 )
 		{
-			/* loud: the environment refused the worker. Unwind the
-			 * evict binding - the pager never runs half-installed - and
-			 * the caller may retry with park_queue_blocks 0 (inline). */
 			configuration->arena->eviction_policy =
 				SPARK_KV_PAGER_PARK_POLICY_LRU;
 			configuration->arena->evict_function = 0;
@@ -485,14 +421,9 @@ SparkStatus SparkKvPagerAdmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	arena = pager->configuration.arena;
 	tier = pager->configuration.tier;
-	/* publish first: a finished park's commit (or degrade) is state the
-	 * arithmetic below reads - tier slots, BACKING_VALID, residency. */
 	(void)SparkKvPagerPollParkCompletions(pager);
 	pager->statistics.admission_requests += 1u;
 
-	/* The exact overflow arithmetic of the arena's own residency grant
-	 * (SparkKvCacheArenaMakeRoomForResidentBlocks): resident + reserved +
-	 * unassigned is the occupied device budget. */
 	unassigned = atomic_load(&arena->unassigned_resident_block_count);
 	occupied = (uint32_t)(arena->resident_block_count +
 		arena->reserved_block_count) + unassigned;
@@ -504,13 +435,6 @@ SparkStatus SparkKvPagerAdmit(
 	queued_restore_bytes = 0u;
 	if ( deficit != 0u || admission->restore_slack_microseconds != 0u )
 	{
-		/* ONE scan answers both consumers: C1's parkable pool (the exact
-		 * victim set of the arena's own selector, through the ONE shared
-		 * predicate - residency references and reservations are protected)
-		 * and C3's outstanding restore debt, every parked block still
-		 * awaiting its page-in (in-flight parks included: the arena marked
-		 * them BACKING_VALID at eviction, and the pager owns their bytes
-		 * until publish). */
 		for ( block_index = 0u; block_index < arena->logical_block_count;
 			++block_index )
 		{
@@ -526,10 +450,6 @@ SparkStatus SparkKvPagerAdmit(
 	}
 	if ( deficit != 0u )
 	{
-		/* C1: name the refusal BEFORE touching anything. Backing headroom
-		 * is the park budget: when it cannot hold the deficit, the request
-		 * QUEUES - parking into a full horizon would degrade blocks the
-		 * tier could have kept, which is the thrash the design forbids. */
 		if ( parkable < deficit )
 		{
 			decision.outcome = SPARK_KV_PAGER_QUEUED;
@@ -552,15 +472,6 @@ SparkStatus SparkKvPagerAdmit(
 	}
 	if ( admission->restore_slack_microseconds != 0u )
 	{
-		/* C3: capacities say the request FITS; bandwidth says whether it
-		 * can SERVE. The aggregate IO the pager still owes - the parked
-		 * blocks' page-ins plus this admission's own park-outs - must
-		 * cross the caller's slack at the MEASURED bandwidth (the EMA
-		 * over observed page-in/page-out throughput); with nothing
-		 * measured yet the tier's nominal configured bandwidth stands in.
-		 * A slow tier therefore answers QUEUED where a fast tier answers
-		 * ADMITTED on identical state, and with no number at all the
-		 * capacity checks alone decide - never queue on ignorance. */
 		uint64_t bandwidth = pager->statistics.measured_bytes_per_second;
 		if ( bandwidth == 0u )
 			bandwidth = tier->configuration.device_bytes_per_second;
@@ -579,8 +490,6 @@ SparkStatus SparkKvPagerAdmit(
 			}
 		}
 	}
-	/* The grant itself, which under the pager trims to fit: every block the
-	 * trim evicts is a page-out through SparkKvPagerEvictWriteback. */
 	status = SparkKvCacheArenaReserveUnassignedResidentBlocks(arena,
 		admission->block_demand);
 	if ( status == SPARK_STATUS_OK )
@@ -593,14 +502,11 @@ SparkStatus SparkKvPagerAdmit(
 	}
 	else if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 	{
-		/* The trim stalled on protected residents: queue, never evict them. */
 		decision.outcome = SPARK_KV_PAGER_QUEUED;
 		pager->statistics.admission_queued_device += 1u;
 	}
 	else if ( status == SPARK_STATUS_BUSY )
 	{
-		/* A write-back in flight at the tier (or a pinned-full horizon):
-		 * backpressure, not a wedge and never a silent drop. */
 		decision.outcome = SPARK_KV_PAGER_QUEUED;
 		pager->statistics.admission_queued_backing += 1u;
 	}
@@ -664,9 +570,6 @@ SparkStatus SparkKvPagerEvictWriteback(
 		(void)SparkKvPagerPollParkCompletions(pager);
 	if ( asynchronous != 0u )
 	{
-		/* the entry's OWN plane: the payload is captured pager-side, so
-		 * the arena may reuse the evicted device slot while the write
-		 * leg still runs on the worker. */
 		queue_head = atomic_load_explicit(&pager->park_head,
 			memory_order_relaxed);
 		staging = (uint8_t *)pager->configuration.park_staging +
@@ -688,12 +591,10 @@ SparkStatus SparkKvPagerEvictWriteback(
 	view.key_device_address = key_device_address;
 	view.value_device_address = value_device_address;
 	view.host_staging = staging;
-	/* 1. the module seam: the block's planes land in the pager staging. */
 	status = pager->configuration.module_save(pager->configuration.module_context,
 		&view);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	/* 2. the digest is the identity; the folded key is only a bucket. */
 	SparkKvPagerDigestOf(staging,pager->block_bytes,digest);
 	status = SparkNvmeTierReserveWrite(pager->configuration.tier,
 		SparkKvPagerHashFromDigest(digest),digest,&reservation);
@@ -708,21 +609,11 @@ SparkStatus SparkKvPagerEvictWriteback(
 		entry.payload_bytes = (uint64_t)pager->block_bytes;
 		if ( SparkKvPagerParkQueuePush(pager,&entry) != 0u )
 		{
-			/* staged and reserved; the worker owns the write leg and the
-			 * owning thread publishes the completion (the tier's readable
-			 * index, BACKING_VALID, the page-out receipt - or the B1
-			 * degrade). The arena's clock is free the moment this
-			 * returns: that is C4. */
 			return(SPARK_STATUS_OK);
 		}
-		/* the queue is momentarily full: the write completes inline on
-		 * the arena's clock - slower, never dropped, never wedged. */
 	}
 	if ( reservation.already_present == 0u )
 	{
-		/* 3. the backing write leg at the offset the tier reserved. An
-		 * IO-class failure aborts the reservation and propagates: the
-		 * arena's B1 degrade owns it (drop + recompute, never a wedge). */
 		write_started = SparkKvPagerClockNow(pager);
 		status = pager->configuration.backing_write(
 			pager->configuration.backing_context,reservation.device_offset,
@@ -752,17 +643,6 @@ SparkStatus SparkKvPagerRestoreBlock(
         content_digest,SPARK_KV_PAGER_DISPATCH_NO_DEADLINE_HINT));
 }
 
-/* W2: `deadline_step` is the dispatch gate's hint (0 = none). The pager is
- * transparent about it: every RequestDemand poll of THIS restore carries the
- * same hint, so while the gate waits, the tier's pending restore debt keeps
- * ordering itself around this block - earliest deadline first. The gate is
- * the only caller that knows which block the dispatcher is blocked on; this
- * is the wire that lets the tier's lookahead act on it.
- * The debt-lane follow-up (jikv-c5's named one-liner): `poll_budget_exhausted`
- * lets the DISPATCH GATE tell "the tier stayed not-ready for the whole poll
- * budget" (backpressure) apart from a hard IO error surfaced mid-loop. Public
- * callers keep every historical answer byte for byte; only the gate consumes
- * the flag. */
 static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
     SparkKvPager *pager,
     uint32_t logical_block_index,
@@ -784,9 +664,6 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
         return(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *poll_budget_exhausted = 0u;
-	/* publish first: the block this restore is asking about may have
-	 * finished its park write a moment ago - its commit is the state the
-	 * flag checks and the tier request below read. */
 	(void)SparkKvPagerPollParkCompletions(pager);
 	arena = pager->configuration.arena;
 	if ( logical_block_index >= arena->logical_block_count )
@@ -803,25 +680,8 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 	if ( SparkKvPagerParkIsInFlight(pager,logical_block_index,
 		content_digest) != 0u )
 	{
-		/* C4: the park's write leg is still queued or running - the bytes
-		 * exist pager-side but the tier's readable index does not hold
-		 * them yet. BUSY is the honest answer (C2's dispatch translates
-		 * it to QUEUED): the caller re-offers, nothing recomputes work
-		 * the pager is about to publish, nothing reads partial state. */
 		return(SPARK_STATUS_BUSY);
 	}
-	/* Bring the record's bytes up digest-verified. STARTED/IN_FLIGHT pump;
-	 * MISS hands the recompute path back; anything else stays loud. Each
-	 * poll is a measured unit: the clock ticks across the transfer so the
-	 * landing's elapsed time is the C3 page-in sample. The W2 deadline hint
-	 * rides every poll. An ORDERED busy - the tier could not take the read
-	 * yet and parked this block at its deadline in the pending debt - is
-	 * answered after ONE pump: the caller's re-offer is the queue, and
-	 * burning the poll budget spinning on a saturated tier is the wedge the
-	 * contract forbids. Without the hint the loop keeps the historical
-	 * spin-to-the-limit behavior byte for byte - the exhaustion is REPORTED
-	 * (`poll_budget_exhausted`) so the dispatch gate can answer it QUEUED
-	 * while every other caller keeps the historical IO_ERROR. */
 	{
 		uint64_t read_started = 0u;
 		uint32_t read_issued = 0u;
@@ -864,10 +724,6 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 		}
 		if ( attempt == SPARK_KV_PAGER_RESTORE_POLL_LIMIT )
 		{
-			/* Every poll answered not-ready (BUSY or an in-flight join):
-			 * backpressure, not breakage - no error was surfaced mid-loop.
-			 * The status stays the historical IO_ERROR; the flag is the
-			 * gate's queue answer waiting to happen. */
 			*poll_budget_exhausted = 1u;
 			return(SPARK_STATUS_IO_ERROR);
 		}
@@ -878,9 +734,6 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 				SparkKvPagerClockNow(pager) - read_started);
 		}
 	}
-	/* The tier verified the landing; the pager re-verifies the buffer it is
-	 * about to copy from, because the staging leg is the pager's own
-	 * responsibility once the pointer is handed over. */
 	SparkKvPagerDigestOf(demand.staging_pointer,(uint64_t)pager->block_bytes,
 		landed_digest);
 	if ( memcmp(landed_digest,content_digest,SPARK_KV_PAGER_DIGEST_BYTES) != 0 )
@@ -889,19 +742,10 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 			SparkKvPagerHashFromDigest(content_digest),content_digest);
 		return(SPARK_STATUS_HASH_MISMATCH);
 	}
-	/* Land the verified bytes into the pager's OWN staging plane and release
-	 * the tier's buffer BEFORE make-room. The residency grant below may page
-	 * the LRU victim out, and those write-backs need the tier free to evict
-	 * - including the record these bytes just came from. Holding the tier's
-	 * demand staging across make-room would protect that record from its own
-	 * clock and turn a busy tier into a deadlock. */
 	memcpy(pager->landing_staging,demand.staging_pointer,
 		pager->block_bytes);
 	(void)SparkNvmeTierConsume(pager->configuration.tier,
 		SparkKvPagerHashFromDigest(content_digest),content_digest);
-	/* Re-attach residency (it fixes the device addresses, and its make-room
-	 * may page the LRU victim out); on saturation answer BUSY - the caller
-	 * retries, nothing was dropped. */
 	status = SparkKvCacheArenaMarkParkedBlockResident(arena,logical_block_index);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -919,9 +763,6 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 		view.key_device_address = block_view.key_device_address;
 		view.value_device_address = block_view.value_device_address;
 		view.host_staging = pager->landing_staging;
-		/* the module seam, reversed: landing copy into the device planes. A
-		 * failure here leaves the block holding unverified bytes, so it is
-		 * parked straight back out - never resident-and-trusted. */
 		status = pager->configuration.module_restore(
 			pager->configuration.module_context,&view);
 		if ( status != SPARK_STATUS_OK )
@@ -952,23 +793,6 @@ SparkStatus SparkKvPagerRestoreBlockDeadline(
 		content_digest,deadline_step,&poll_budget_exhausted));
 }
 
-/* C2 (docs/JIT_KV_RESPONSE.md): the dispatch gate. ONE restore path feeds
- * it - SparkKvPagerRestoreBlock, the same digest-verified page-in every
- * rewind takes - and READY is answered only AFTER the residency flag is
- * verified, because a pre-restore dispatch is the cliff the contract
- * reverses. BUSY is the tier saturated: QUEUED, the dispatch waits, and
- * the repeated offer IS the queue (nothing wedged, nothing dropped, no
- * half-restored residency). MISS has no bytes to gate on: RECOMPUTE.
- * Everything else stays loud. W2: the offer's deadline hint (the struct's
- * former reserved0) rides into the restore, so the tier's pending restore
- * debt orders earliest-deadline-first around the block this gate is
- * actually waiting on - under saturation the gated block completes before
- * the FIFO backlog, not after it. The queue-not-wedge answer is UNIVERSAL
- * now: a hintless offer that spins its whole poll budget on a not-ready
- * tier is the same backpressure - the gate answers it QUEUED too (the
- * tier's legacy yank-before-acquire and the spin itself are hintless
- * semantics and stay byte for byte; only the terminal answer changed).
- * Only an error the restore surfaced mid-loop stays loud. */
 SparkStatus SparkKvPagerDispatchBlock(
 	SparkKvPager *pager,
 	const SparkKvPagerDispatch *dispatch,
@@ -1000,10 +824,6 @@ SparkStatus SparkKvPagerDispatchBlock(
 		dispatch->deadline_step,&poll_budget_exhausted);
 	if ( status == SPARK_STATUS_IO_ERROR && poll_budget_exhausted != 0u )
 	{
-		/* the whole poll budget burned on a tier that never said ready and
-		 * never errored: backpressure. The same QUEUED discipline the
-		 * hinted path answers after one ordered pump - the re-offer is the
-		 * queue, and the hard error the old gate surfaced here is gone. */
 		status = SPARK_STATUS_BUSY;
 	}
 	if ( status == SPARK_STATUS_OK )
@@ -1013,8 +833,6 @@ SparkStatus SparkKvPagerDispatchBlock(
 		if ( status == SPARK_STATUS_OK &&
 			(block_view.flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u )
 		{
-			/* the restore path claimed success without residency: never
-			   answer READY on trust, only on the verified flag. */
 			status = SPARK_STATUS_INTERNAL_ERROR;
 		}
 		if ( status == SPARK_STATUS_OK )
@@ -1026,15 +844,12 @@ SparkStatus SparkKvPagerDispatchBlock(
 	}
 	else if ( status == SPARK_STATUS_BUSY )
 	{
-		/* backpressure: the dispatch waits; the re-offer is the queue. */
 		decision.outcome = SPARK_KV_PAGER_DISPATCH_QUEUED;
 		pager->statistics.dispatch_queued += 1u;
 		status = SPARK_STATUS_OK;
 	}
 	else if ( status == SPARK_STATUS_NOT_FOUND )
 	{
-		/* no backing bytes (degraded or blank): the recompute path owns
-		   the block; dispatch never runs on partial state. */
 		decision.outcome = SPARK_KV_PAGER_DISPATCH_RECOMPUTE;
 		pager->statistics.dispatch_recompute += 1u;
 		status = SPARK_STATUS_OK;
@@ -1098,22 +913,12 @@ SparkStatus SparkKvPagerShutdown(SparkKvPager *pager)
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pager->park_worker_active == 0u )
 		return(SPARK_STATUS_OK);
-	/* TERM: store the stop flag and join. The worker observes the flag
-	 * within one poll quantum plus one backing write - the write is the
-	 * bound (a wedged write is the drive's contract, not this loop's).
-	 * No mutex anywhere on the path, so the join cannot deadlock on pager
-	 * state the owning thread holds. */
 	atomic_store_explicit(&pager->park_worker_stop,1u,memory_order_seq_cst);
 	memcpy(&worker,pager->park_worker_handle,sizeof(worker));
 	pthread_join(worker,0);
 	pager->park_worker_active = 0u;
 	atomic_store_explicit(&pager->park_write_inflight_valid,0u,
 		memory_order_release);
-	/* The worker left staged parks unconsumed - that is the point of the
-	 * stop flag. Complete every one of them INLINE on the owning thread
-	 * (same write leg, same completion publication): every reservation
-	 * resolves commit-or-abort, every staged payload is accounted, the
-	 * arena and the tier are consistent after TERM mid-park. */
 	while ( SparkKvPagerParkQueuePop(pager,&entry) != 0u )
 	{
 		SparkKvPagerParkExecuteWrite(pager,&entry,&completion);

@@ -1,29 +1,8 @@
-/* Large stage packs exceed 2 GB: 64-bit file offsets are required. */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
 #include "spark_qwen4_flash_stagepack_format.h"
 
-/*
- * Synthetic qwen4_flash stage pack writer, slice-aware.
- *
- * Emits every tensor one pipeline STAGE will demand, at the geometry the
- * module was compiled for, with reproducible pseudo-random contents: the
- * loader, the shape table, the slice arithmetic and the layer walk run end
- * to end against it. This file is the family configuration — stage-pack
- * types, the HC+MoE and indexer-augmented kind inventory, the FP8 scale
- * layout, and the quantization policy; the machinery is the shared
- * generator core.
- *
- * Family facts (recorded, not re-derived): --bf16 substitutes BF16 only
- * where the quantized codecs would sit (natural F32B128 experts): f32/
- * bf16-natural kinds (A_log, dt_bias, norms...) keep their natural format
- * — the loader accepts BF16 over an F32B128 natural shape ONLY, and a
- * blanket conversion produces pack_entry_invalid on the first f32-natural
- * kind. MXFP4 scales group at 32; the FP8_E4M3 codec scales at 128
- * blocks; everything else is unscaled. The geometry resolver takes the
- * stage index (pinned 0u here, as pasted).
- */
 
 #define SPARK_SYNTH_QWEN_TEMPLATE 1
 #define SPARK_SYNTH_TOOL_NAME "qwen4_flash_pack_synthesize"

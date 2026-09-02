@@ -44,15 +44,6 @@ typedef void (*SparkModelPipelineStageCompletionFunction)(
 	void *completion_context,
 	const SparkModelPipelineStageCompletion *completion);
 
-/*
- * One event-loop thread owns submit/progress/destroy. Submit-result and final
- * completion callbacks run after the completed transaction is released and may
- * submit more work. They must not recursively call progress or destroy.
- *
- * Stage-completion callbacks are observation-only: they run while the
- * transaction is active, must copy any descriptor they retain, and must not
- * call a pipeline-client function.
- */
 
 typedef struct SparkModelPipelineClientConfiguration
 {
@@ -79,7 +70,6 @@ typedef struct SparkModelPipelineClientView
 	uint32_t active_transaction_count;
 	uint32_t transaction_capacity;
 	uint32_t failed_status;
-	/* First stage where the client observed a fatal error, not causal proof. */
 	uint32_t failed_stage_index;
 	uint32_t active_continue_lease_count;
 	uint32_t reserved0;

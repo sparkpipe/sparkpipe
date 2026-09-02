@@ -1,6 +1,3 @@
-/* Pin the neutral speculation-policy extraction: the GLM52 ABI aliases
- * must resolve to byte-identical struct layouts and the neutral core must
- * behave identically for the GLM52 target. */
 #include <stdint.h>
 #include <string.h>
 
@@ -30,7 +27,6 @@ int main(void)
 	status = SparkGlm52DsparkValidateModelContract(&contract);
 	if ( status != SPARK_STATUS_OK )
 		return 2;
-	/* Greedy accept over the draft: 11,12 match, then divergence. */
 	memset(&verify_result, 0, sizeof(verify_result));
 	status = SparkGlm52DsparkResolveVerifierTokens(draft_tokens, 4u,
 		verifier_tokens, 5u, &verify_result);

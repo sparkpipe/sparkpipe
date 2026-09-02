@@ -1,16 +1,5 @@
 #pragma once
 
-/* Model-neutral speculation dispatch policy (speculation audit step 3).
- *
- * This header OWNS the dispatch-policy descriptor struct layouts under neutral
- * names and the neutral-core function prototypes. The struct layouts are
- * byte-identical to the first adopting ABI's structs (same fields, same
- * order, same array sizes); only the type names move. Per-model shapes
- * (array sizes, tap sites) resolve through spark_dspark_drafter.h, which the
- * package selects with exactly one SPARK_DSPARK_TARGET_* define.
- *
- * The first adopting model's ABI header keeps typedef aliases (see the alias
- * block at the bottom) so existing consumers compile unchanged. */
 
 #include <stdint.h>
 
@@ -21,11 +10,6 @@
 extern "C" {
 #endif
 
-/* Descriptor-byte macros, now over the neutral layouts. These are the
- * SPARK_DSPARK_* names the policy source already uses; the adopting model's
- * ABI header keeps its legacy *_DESCRIPTOR_BYTES as aliases to these. The
- * hidden tap plan stays model-specific and keeps its macro in the family
- * header. */
 #define SPARK_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkSpeculationConfiguration))
 #define SPARK_DSPARK_DESCRIPTOR_BYTES \
@@ -168,8 +152,6 @@ typedef struct SparkSpeculationSpeculator
     void *draft_context;
 } SparkSpeculationSpeculator;
 
-/* Neutral-core function prototypes (the 10 public entry points; the 13
- * internal helpers stay static in spark_speculation_policy.c). */
 SparkStatus SparkSpeculationPolicyBuildDefaultModelContract(
     SparkSpeculationModelContract *model_contract);
 

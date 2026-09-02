@@ -1,9 +1,5 @@
 #pragma once
 
-/*
- * Pro builds define SPARK_DSV4_PRO_BUILD and get the Pro geometry through
- * the model-generic name space; Flash builds are unchanged by this guard.
- */
 #if defined(SPARK_DSV4_PRO_BUILD)
 #include "sparkpipe/spark_dsv4_pro_model_aliases.h"
 #else
@@ -12,7 +8,6 @@
 
 #include "sparkpipe/spark_weight_codec.h"
 
-/* Generated from the exact source revision by tools/generate_dsv4_contracts.py. */
 #define SPARK_DSV4_MODEL_ID "deepseek-ai/DeepSeek-V4-Flash-0731"
 #define SPARK_DSV4_MODEL_SOURCE_REVISION "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
 

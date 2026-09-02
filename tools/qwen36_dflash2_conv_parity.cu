@@ -1,5 +1,3 @@
-// qwen38_27b_dflash2_conv_parity.cu - parity harness: the DFlash2 grouped conv kernel
-// vs the numpy _grouped_conv oracle. Runs on synthetic inputs, dumps out.bin.
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <stdio.h>
@@ -38,7 +36,6 @@ static __global__ void bf16_to_f32_kernel(const __nv_bfloat16 *in, float *out, u
 }
 
 int main(void) {
-    // deterministic synthetic inputs via LCG
     uint32_t s = 12345u;
     auto next = [&](){ s = s * 1664525u + 1013904223u; return (float)(s & 0xFFFF) / 65536.0f - 0.5f; };
 
@@ -63,7 +60,6 @@ int main(void) {
     __nv_bfloat16 *h_out = (__nv_bfloat16*)malloc(B * H * 2);
     cudaMemcpy(h_out, d_out, B * H * 2, cudaMemcpyDeviceToHost);
 
-    // dump x (bf16->f32), delta, base, out (bf16->f32) for the numpy compare
     FILE *f = fopen("/tmp/dflash2_conv_parity.bin", "wb");
     float *buf = (float*)malloc(B * H * 4);
     for (uint32_t i = 0; i < B * H; i++) buf[i] = __bfloat162float(h_x[i]);

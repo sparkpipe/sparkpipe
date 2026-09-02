@@ -1,20 +1,3 @@
-// Bind weights to the layer and run a rank's slice of MiMo 2.5.
-//
-// The third driver, after glm5_2 and qwen_3_6, and the one where the layer-kind
-// dispatch earns the most: MiMo's two kinds differ in FOUR things - KV head
-// count, fused projection width, sliding window and rope theta - and all four
-// are already bound into the entry points. So the driver chooses a wrapper and
-// gets the other three for free.
-//
-// That is what the dual-theta item on the model-support list turns out to be in
-// this model: not a lookup the driver performs, but a consequence of picking the
-// right entry point. deepseek_v4 needs the same thing and cannot have it yet,
-// because it has one entry point for three kinds.
-//
-// Weights arrive as an explicit per-layer table for the same reason as
-// qwen_3_6: no MiMo pack format exists, and inventing one from the layer's
-// requirements is the mistake glm5_2/bind.cu records its author stopping to
-// avoid.
 
 #include "inference/kernels/formats/fp8.cuh"
 #include "inference/llms/mimo_2_5/layer.cuh"
@@ -27,9 +10,6 @@ struct Mimo25LayerWeights
 	const void *qkv_scale;
 	const void *output_weight;
 	const void *output_scale;
-	// The routed half. A dense layer leaves these null and a routed layer
-	// leaves the dense pair null; which applies is decided by the layer index
-	// against MIMO25_FIRST_ROUTED_LAYER, not by which pointers are set.
 	const void *router_weight;
 	const void *expert_w1_weight;
 	const void *expert_w1_scale;
@@ -60,10 +40,6 @@ static void Mimo25BindLayer(const Mimo25LayerWeights *weights, Mimo25LayerBuffer
 	buffers->dense_down_scale = weights->dense_down_scale;
 }
 
-// One kind selects the KV geometry, the projection width, the window and the
-// theta together, because the entry point carries all four. Getting the window
-// right and the theta wrong would be a model that runs and is subtly wrong at
-// long context - the two travel together here so they cannot separate.
 template<class Format, class FullKv, class SwaKv>
 static int32_t Mimo25LaunchAttentionHalf(const Mimo25LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
@@ -87,12 +63,6 @@ static int32_t Mimo25LaunchAttentionHalf(const Mimo25LayerBuffers *buffers, uint
 	}
 }
 
-// One stage slice: the layers this rank owns, in order.
-//
-// The kind comes from the absolute layer index. MiMo's period is seven and no
-// rank count in use divides by seven, so a rank starting mid-period that used
-// its own offset would run sliding-window attention where the model wants
-// global, on every layer it owns, and produce fluent output while doing it.
 template<class Format, class FullKv, class SwaKv>
 static int32_t Mimo25LaunchSlice(const Mimo25LayerWeights *weights, Mimo25LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {

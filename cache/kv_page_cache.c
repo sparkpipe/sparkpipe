@@ -906,7 +906,6 @@ static SparkStatus SparkKvPageCachePublishNewEntry(
 		entry_index;
 	cache->epoch++;
 	entry->last_used_epoch = cache->epoch;
-	/* The sequence's parent reference becomes the child's parent reference. */
 	bucket = SparkKvPageCacheBucket(cache,&entry->identity,entry->token_count);
 	entry->hash_next = cache->hash_bucket_heads[bucket];
 	cache->hash_bucket_heads[bucket] = entry_index;
