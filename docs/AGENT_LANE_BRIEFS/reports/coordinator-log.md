@@ -5070,3 +5070,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   ETA line incl. uncertainty.
 - rank00 shipped sparka→spark0 (+chattr). VERIFY the destination sha
   next firing (verification output was not captured).
+
+## 2026-09-02 ~firing 155: r05 died (parent dir deleted externally — same actor class), relaunched; r00 ship FAILED, retry queued
+
+- r05 (spark5): died on os.replace ENOENT — its output parent dir was
+  externally deleted mid-build. Relaunched (convert mkdirs).
+- r13 done+protected; r14 done+protected. r02 building.
+- rank00 ship to spark0 DID NOT LAND (0 files in packs; earlier
+  "protected" echo was unconditional). Re-ship queued next firing with
+  captured verification output.
+- ETA: 13/16 done; r02+r05 in flight; r00 re-ship trivial ⇒ matrix
+  complete in ~1.5h ± 30min. Broader list unchanged: +3-5 days.
