@@ -4944,3 +4944,11 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   confirmed slicing rank06. Old rank02 orphan tmp (misfire-era) removed.
 - 14/14 single-writer; ranks land over next cycles. rank0/rank3 helper
   builds + ships after drain.
+
+## 2026-09-02 ~firing 142: spark7 deduped (kept 16-min writer, killed belated 5-min pair)
+
+- Root of the dupe wave: TaskStop killed the launch LOOP, not the
+  in-flight hung ssh's — each had already delivered its python before
+  hanging. All dupes now delivered + deduped (spark2/4/5/6/7); state
+  stable at 14 single-writers. 16/16 receipt/pack counts still 0 =
+  slices mid-flight (~20min in, ~140G each).
