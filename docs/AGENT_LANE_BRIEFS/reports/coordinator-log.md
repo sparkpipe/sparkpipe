@@ -4832,3 +4832,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-02 ~firing 130: rank06 transferring at 590MB/s (log lags sha-verify); ships ~10 ranks out
 
 ## 2026-09-02 ~firing 131: TP4PP4 ships 9/16, zero errors, on rank9
+
+## 2026-09-02 ~firing 132: TP4PP4 ships 12/16, zero errors; ranks 12-15 in flight
