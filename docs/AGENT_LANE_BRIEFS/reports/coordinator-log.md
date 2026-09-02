@@ -4396,3 +4396,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~25:5x — firing 66: bf16 rebuilds 14.3/30.2/18.8 of 40G; spark2 close to done
 
 ## 2026-09-01 ~26:0x — firing 67: bf16 rebuilds 16.0/36.2/20.1 of 40G; spark2 nearly done
+
+## 2026-09-01 ~26:2x — firing 68: bf16 arm 14/16 (sparkc rank12 PLACED+receipted); spark1 21.7G spark2 ~30G grinding
