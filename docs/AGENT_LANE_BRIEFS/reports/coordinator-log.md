@@ -4790,3 +4790,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-02 ~firing 120: TP4PP4 2/16 built, rank02 at 62G/99.6G; ~9-10min/rank on warm writes
 
 ## 2026-09-02 ~firing 121: TP4PP4 5/16 built, rank05 in flight; pace holding
+
+## 2026-09-02 ~firing 122: TP4PP4 8/16 built (halfway), rank08 in flight
