@@ -4608,3 +4608,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   the local full base.
 
 ## 2026-09-01 ~31:2x — firing 101: rank3 building (4G tmp); chain healthy; board stable
+
+## 2026-09-01 ~30:9x — firing 101b: ranks 13-15 relaunched on sparka; rank13 already at 29.7G (fast class)
+
+- The relaunched chain is alive (single sharder); rank13 tmp at 29.7G of
+  ~99.6G — sparka's healthy write class, ~40 min/rank. 14, 15 follow.
+- Item 15 state: 12/16 ranks built on warm (0-10, 12); 13 building;
+  14, 15 queued in the same chain.
