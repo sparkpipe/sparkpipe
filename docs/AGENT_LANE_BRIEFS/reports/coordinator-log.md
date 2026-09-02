@@ -4772,3 +4772,15 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   hit 47.5G in ~2min (NVMe class). ETA all 16 ~1h, then per-node ships
   (rankNN → spark{hex NN}, packs/dsv4_pro.tp4_pp4.rankNN.spstage +
   rankNN.receipt, flash-set convention).
+
+## 2026-09-02 ~firing 118: TP4PP4 rerouted to warm (ENOSPC dodge); single writer confirmed
+
+- Reality check: ranks are 99.6G each (16 × 99.6G = 1.59T) — local
+  output would ENOSPC at ~rank11 on sparka's 1.1T free. TERMed the local
+  build, deleted its intermediates (rebuildable), relaunched with output
+  to /mnt/model-warm/packbuild/dsv4pro-tp4pp4 (23T free).
+- First TERM hit the wrapper, not the python — transient TWO-writer
+  state (old one on orphaned fds in the rm'd dir, no shared path, no
+  corruption class); killed 233780 properly. Single writer 238151 now,
+  0 deleted fds, rank00 tmp flowing ~200MB/s warm-write class.
+  ETA ~2h for 16 ranks, then per-node ships.
