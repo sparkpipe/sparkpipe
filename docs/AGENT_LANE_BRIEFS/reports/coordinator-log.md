@@ -4730,3 +4730,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   (~550MB/s class). All 16 expected within the hour.
 - On completion: item 15 CLOSED; item 14 (TP4PP4) build launches on
   sparka from the LOCAL base.
+
+## 2026-09-02 ~firing 112: ships 2/16 placed (r0→spark0, r1→spark1), ~3min/rank
