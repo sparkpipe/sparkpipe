@@ -4690,3 +4690,17 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   can at worst end each rank's own invocation after that rank is done.
   rank11 slicing at check.
 - BOARD: 14/16 dsv4pro TP16 masters receipted; rank11+rank10 building.
+
+## 2026-09-02 ~firing 107: sparka warm client degraded → REMOUNT fixed; chain back at full speed
+
+- rank11 stalled twice at ~1.9-2.0GB written: D-state folio_wait, mmap
+  fault path ~4MB/s, warm writes 13.8MB/s. Cluster HEALTHY (sparkc 215,
+  spark9 288 MB/s same test) ⇒ sparka-local client-session degradation
+  (mount up since the node's 20:58 KST boot). Direct reads/writes on
+  sparka to warm were fine-ish; page-cache/mmap path was the stuck one.
+- Fix: no mount users → `sudo systemctl restart ds4-ceph-warm-mount.service`
+  → writes 278MB/s. Chain 11→10 relaunched: rank11 tmp 12.3→14.1GB in
+  30s (59MB/s, state R). ~25min/rank; both ranks land within the hour.
+- LESSON (new wedge-remedy tier): folio_wait stall + slow mmap/writes on
+  ONE node with healthy peers ⇒ restart that node's warm mount service
+  (never hand-mount). Relay only if the service restart doesn't clear it.
