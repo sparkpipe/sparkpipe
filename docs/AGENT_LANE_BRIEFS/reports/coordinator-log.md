@@ -4859,3 +4859,20 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   qwen38_27b_stagepack (the "TP packs cover the whole stack" refusal);
   then item 11 (qwen-max), qwen38max.tp4pp4 rebuild, flash fp8/nvfp4
   arms. hy4 + drafter remain lane-owned.
+
+## 2026-09-02 ~firing 135: OPERATOR DESIGN RULING — per-rank sharding is the law; max TP4PP4 pattern non-conforming
+
+- Operator ruled: full-width packs + runtime TP slicing violate the
+  stagepack design (per-node memory economy). Codified in
+  docs/STAGEPACK_AUDIT_2026-08-31.md (item 29 leg: 1 pack file = 1 rank,
+  no shared packs) and fleet memory.
+- FACTS on the ground: NO max TP4PP4 bytes exist anywhere (warm CENTRAL
+  or node sparkdata) — the lane's qwen38_tp4pp4_packs.py produced no
+  placed set; my coverage audits never counted one (item 11 was
+  ticketed, unbuilt). What I got wrong: I classified the pattern as a
+  valid alternative instead of a design violation. Corrected.
+- The 27B TP4PP4 build in flight (rank05/16 done) IS conforming:
+  16 per-rank pre-sharded packs, tp-aware verify per rank.
+- Module-side ticket (27B lane): lift config guard
+  module.c:412-413 so conforming TP4PP4 packs load. Max-family lane:
+  runtime-TP residency is the rework item per operator ruling.

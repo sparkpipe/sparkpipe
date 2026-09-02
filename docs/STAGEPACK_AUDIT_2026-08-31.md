@@ -185,6 +185,26 @@ Close-out (only after 1-27):
 29. Canonical sanity audit — every node holds exactly its map's sets; per-rank digest == master; uniform per-rank sizes; set-total vs source arithmetic; zero symlinks/temps/duplicates; stray list filed before any removal.
 30. Reclaim + final board — ~/glm53_packs* staging duplicates REMOVED (sha-verified or superseded-no-MTP-generation rule, ~350G+ freed); remaining: final matrix log after items 8-28; idle.
 
+### Item 29 audit leg added 2026-09-02 (OPERATOR DESIGN LAW)
+
+**A stagepack contains exactly the bytes its rank loads.** Per-rank
+pre-sharding IS the system design — the point of stagepacks is
+minimizing per-node memory. Full-width packs whose TP dimension is
+sliced at runtime from resident full-width buffers (the qwen38_max
+lane's TP4PP4 pattern) 4×'s per-rank weight residency, weakens load
+validation to launch-time offset arithmetic (a wrong tp_rank silently
+reads wrong bytes from a legitimate pack), and breaks the rank↔artifact
+canonical map. Such sets are NON-CONFORMING: audit leg = every pack
+file maps 1:1 to one rank; no pack serves multiple ranks. Conforming
+form: 16 per-rank pre-sharded files with tp-aware shape validation
+(27B module contract). The 27B module's config guard
+(spark_qwen38_27b_resident_decode_stage_module.c:412-413) blocks
+loading conforming TP4PP4 packs and must be lifted by its lane; the
+max-family module's runtime-TP residency is itself the rework item.
+No non-conforming max TP4PP4 bytes exist on warm CENTRAL or any node
+sparkdata dir as of this ruling (the lane's tool produced no placed
+set); the 27B TP4PP4 set built under this program is conforming.
+
 ## 10. COVERAGE AUDIT RESULT (2026-09-01) — ALL EXISTING SETS PASS 16/16
 
 Fleet-wide sweep: every set below is held by ALL 16 nodes (canonical rank
