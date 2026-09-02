@@ -4760,3 +4760,15 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Rebuild fidelity proven: rank10's fresh sha matches the pre-deletion
   canonical receipt digest exactly. glm53 hold on sparka expired —
   item 14 can launch once ships drain.
+
+## 2026-09-02 ~firing 117: ITEM 15 CLOSED — 16/16 dsv4pro TP16 placed fleet-wide; item 14 launched
+
+- Ship pass finished 16/16, zero sha mismatches. Final sweep: every
+  spark{0-9,a-f} holds exactly 1 pack + 1 receipt, real bytes, 0
+  symlinks; sizes 97,942,187,184 (ranks 0/1, owns-emb) and
+  97,940,352,176 (rest) matching the masters. ITEM 15 DONE.
+- Item 14 (dsv4pro TP4PP4) LIVE on sparka: in-tree packer --model pro
+  (61L → 16/15/15/15), LOCAL base input, local build dir; rank00 tmp
+  hit 47.5G in ~2min (NVMe class). ETA all 16 ~1h, then per-node ships
+  (rankNN → spark{hex NN}, packs/dsv4_pro.tp4_pp4.rankNN.spstage +
+  rankNN.receipt, flash-set convention).
