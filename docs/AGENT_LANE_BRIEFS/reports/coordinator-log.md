@@ -4895,3 +4895,18 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   qwen38-dflash2-drafter.qwen36sp (item 28, never evaluated).
 - Root fix stands: design conformance is now an audit leg (item 29),
   not a judgment call.
+
+## 2026-09-02 ~firing 137: qwen-max TP4PP4 (item 11) — packer vertical landed, dry-run 16/16 PASS
+
+- qwen38_stagepack now shards per-rank (operator design law): tp plan
+  for all ~25 kinds (expert-bounded nvfp4 loops for W1/W3/DOWN; row/
+  col windows bf16; GDN_QKV fused segments; replicated globals/MTP),
+  v2 128B header carrying tp_degree/tp_rank (v1 packs byte-stable).
+  tools/qwen38_max_tp4pp4_stagepacks.py drives 16 ranks (23/23/23/23).
+- Dry-run: 16/16 PASS — stage3 442 tensors, 139.75G/rank, uniform
+  across TP ranks. Conforming: ~140G per node vs the runtime-TP
+  pattern's 4x full-width residency.
+- NEXT: real build fan-out (per-destination-node slicing, k3 pattern —
+  each spark{hex r} builds its own rank from warm), ships + receipts,
+  then the max-lane module ticket (tp-aware ResolvedShape + config
+  guard + v2 header reader). 27B TP4PP4 ships also pending.
