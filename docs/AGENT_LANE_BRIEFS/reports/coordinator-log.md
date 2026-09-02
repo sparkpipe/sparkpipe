@@ -5054,3 +5054,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   MTP 39 deepseek-style tensors → MTP-carrying packs), then TP16
   (~48G/rank, geometry pre-check was clean) + TP4xPP4 (78L →
   20/19/19/20), per-destination fan-out with the memory-safe pump.
+
+## 2026-09-02 ~firing 153: max TP4PP4 12-13/16 done; r14 relaunched; new packs chattr-protected
+
+- DONE (pack+receipt): r00,01,03,04,06,07,08,09,10,11*,12,15
+  (*r11 rebuilding over an already-complete pack — byte-identical,
+  harmless). BUILDING: r02, r05, r13, r14 (relaunched after a death).
+- chattr +i applied to every placed max pack fleet-wide.
+- Remaining after these land: ship r00 → spark0 (helper-built), then
+  16/16. Only blockers left fleet-wide are the two module tickets.
