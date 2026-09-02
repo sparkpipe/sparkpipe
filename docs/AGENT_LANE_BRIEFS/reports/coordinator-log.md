@@ -4524,3 +4524,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - fp8 + nvfp4 stage loops closed 4/4 placed each; with bf16 earlier, all
   three glm53full TP4PP4 sets stand 16/16. glm53full = SIX complete sets.
 - Item 18/19 formally CLOSED on the completion sweep.
+
+## 2026-09-01 ~29:3x — firing 89: all wave builders drained; a/b/c/d idle and free
+
+- Confirmed zero in-flight wave builders on sparka-d. The four nodes are
+  free for the next assignment (the ticketed sets need dev-lane packer
+  work first: PP+TP combined mode, split-expert name map, nvfp4a16
+  vertical). Coordinator stagepack work is DONE pending those lanes.
