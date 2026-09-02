@@ -458,9 +458,13 @@ int main(int argc, char **argv) {
         float collapsed[N_EMBD];
         for (int i = 0; i < N_EMBD; ++i) {
             float acc = 0;
-            for (int s = 0; s < HC; ++s) acc += streams[t][s * N_EMBD + i] * hpre[s];
+            for (int s = 0; s < HC; ++s) acc += streams[t][s][i] * hpre[s];
             collapsed[i] = acc;
         }
+        fprintf(stderr, "HCHEAD L? t=%d: mixes %.4f %.4f %.4f %.4f | "
+                "hpre %.4f %.4f %.4f %.4f | collapsed first3 %.4f %.4f %.4f\n",
+                t, hm[0], hm[1], hm[2], hm[3], hpre[0], hpre[1], hpre[2],
+                hpre[3], collapsed[0], collapsed[1], collapsed[2]);
         free(hfn); free(hsc); free(hba);
         float *onorm = load0("output_norm.weight");
         float normed[N_EMBD];
