@@ -34,7 +34,6 @@ static void copy_range(FILE *in, long off, long nbytes, FILE *out,
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: %s allranks_dir out.gguf\n", argv[0]); return 2; }
     const char *base = argv[1];
     hy4_rank *R[RANKS];
     char dir[300], pack[400];
@@ -47,28 +46,21 @@ int main(int argc, char **argv) {
     }
     snprintf(pack, sizeof(pack), "%s/rank-00/model-ud-iq1m-tp16-rank-00.gguf", base);
 
-    /* rank-0's file header (magic..infos, padded) is the output header */
-    FILE *f0 = fopen(pack, "rb");
-    if (!f0) { fprintf(stderr, "no rank-0 pack\n"); return 1; }
-    /* loader computed data_offset; recover the header bytes via its view of
-     * the first tensor offset */
-    const hy4_tensor_view *first = NULL;
-    long min_off = -1;
-    for (int i = 0; i < R[0]->tensor_count; ++i) {
-        long off = R[0]->views[i].file_offset;
-        if (min_off < 0 || off < min_off) { min_off = off; first = &R[0]->views[i]; }
-    }
-    (void)first;
-    /* header length = the minimal tensor file_offset (data start, aligned) */
-    long header_len = min_off;
-
+    /* the output header must be the ORIGINAL source header (full tensor
+     * dims); rank files carry sliced dims, so take it from the captured
+     * original-header file (argv[3]) */
+    if (argc != 4) { fprintf(stderr, "usage: %s allranks_dir out.gguf orig_header\n", argv[0]); return 2; }
+    FILE *hf = fopen(argv[3], "rb");
+    if (!hf) { fprintf(stderr, "orig header missing\n"); return 1; }
+    long header_len = 5051520; /* validated: loader data_offset for rank files */
     FILE *out = fopen(argv[2], "wb");
     if (!out) { fprintf(stderr, "out open failed\n"); return 1; }
     unsigned char *hdr = malloc((size_t)header_len);
-    fseek(f0, 0, SEEK_SET);
-    if (fread(hdr, 1, (size_t)header_len, f0) != (size_t)header_len) return 3;
+    if (fread(hdr, 1, (size_t)header_len, hf) != (size_t)header_len) return 3;
+    fclose(hf);
     fwrite(hdr, 1, (size_t)header_len, out);
-    fprintf(stderr, "header %ld bytes\n", header_len);
+    fprintf(stderr, "header %ld bytes from original\n", header_len);
+    (void)pack;
 
     /* tensors in offset order, per rank: the loader stores views in name
      * order; rank files were written in offset order with matching info
