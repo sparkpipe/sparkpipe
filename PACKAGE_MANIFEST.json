@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "06fb76ea97dee39ea42d48eedb496d28aa53f9a0ea7757dcf9ba47014e211361",
-      "size_bytes": 261790
+      "sha256": "5b904800474bb70052fb63e057b6222c940861303c4ea0b1837014ff7d66af83",
+      "size_bytes": 264044
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -3518,8 +3518,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile",
-      "sha256": "68845f9f5eb93a45caa512ce694f6b5d866d9a9c93df9472e34c4de651c5ce64",
-      "size_bytes": 4442
+      "sha256": "c5ed387420ba6af531f64c5b93bcbff058de6b5aa9f91744c3fb5aaaf6a35164",
+      "size_bytes": 4469
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile.pro",
@@ -3748,8 +3748,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/Makefile",
-      "sha256": "30977677f26e932523f58c0a520739924fba56ad1e490ee313232b0e05ddc693",
-      "size_bytes": 4754
+      "sha256": "bb20120cbaea25d2974c6851a2e813229821b23499c6d6f96d545c33b7e25c3a",
+      "size_bytes": 4781
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/README.md",
@@ -5618,8 +5618,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
-      "sha256": "b77de1f9b49d82df65ab9cd512067b2156587ce36ccdede5a87817202f802937",
-      "size_bytes": 36804
+      "sha256": "24be1f9c939a0d3f29f13d7257327e145dafefbc32ac23f7e9bbc5e8f9d605c1",
+      "size_bytes": 36824
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.h",
@@ -5828,8 +5828,8 @@
     },
     {
       "path": "sources.mk",
-      "sha256": "973d80111a3919155235be25a7d0d0b86a0b7fcd3a4b7a4f9504d49b136325e4",
-      "size_bytes": 3544
+      "sha256": "d617d3d2aeab119d1f716315ec94d95abc25b4f23258e93ec8905a39703fdd0c",
+      "size_bytes": 3568
     },
     {
       "path": "src/spark_admission.c",
@@ -8905,5 +8905,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31026472
+  "total_bytes": 31028824
 }
