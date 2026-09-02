@@ -5106,3 +5106,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - rank05 completed cleanly with receipt; chattr +i applied.
 - rank02 (spark2): last rank, ~6G into 140G, slow warm class.
 - ETA: matrix 16/16 in ~1-3h ± 1h (rank02's rate is the only variable).
+
+## 2026-09-02 ~firing 160: rank02 RELOCATED to sparkf — 407MB/s (vs spark2's 0.4MB/s crawl)
+
+- spark2's warm client degraded AGAIN post-reboot (bulk streaming
+  0.4MB/s while small reads passed; mount-service restart attempted).
+  Rather than wait: rank02 relocated to healthy sparkf — 407MB/s
+  slicing, lands in ~6min. Ship sparkf→spark2 (831G free) + protect
+  next. spark2's mount service restart needs a follow-up (timed out).
+- 15/16 placed; 16/16 within ~30min ± 15min.
