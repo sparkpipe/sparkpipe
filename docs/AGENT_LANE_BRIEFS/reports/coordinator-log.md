@@ -4424,3 +4424,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~28:2x — firing 80: spark1 rank1 at 34.7/40G (~2 min left)
 
 ## 2026-09-01 ~28:3x — firing 81: spark1 rank1 at 36.1/40G (~4 min)
+
+## 2026-09-01 ~28:4x — firing 82: spark1 rank1 at 38.7/40G (~1 min to tensor completion, then verify)
