@@ -237,6 +237,8 @@ int main(int argc, char **argv) {
             hc_reduce(streams[t], pre, cur);
             rms_norm(cur, ln1, cur, N_EMBD, 1e-5f);
             if (il == 0 && t == 0)
+                fprintf(stderr, "MY_ATTIN first3: %.6f %.6f %.6f\n", cur[0], cur[1], cur[2]);
+            if (il == 0 && t == 0)
                 fprintf(stderr, "MY_ATTIN first3: %.6f %.6f %.6f\n",
                         cur[0], cur[1], cur[2]);
 
