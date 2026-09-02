@@ -22,9 +22,12 @@ import os
 REVISION = "f5d08274bafd880402bd16f5e3e6c514136ec06c"
 PACKS = "../packs_v4"
 # chain position -> (world rank, host); PP stage = position // 4
+# Rank-major stages: the runtime's BuildRankPlan derives PP neighbors as
+# rank +/- 4, so stage p MUST own ranks 4p..4p+3. Storage rotation kept:
+# stage 0 (heaviest) lives on spark4-7.
 CHAIN = [
-    (4, "spark4"), (5, "spark5"), (6, "spark6"), (7, "spark7"),      # stage 0
-    (0, "spark0"), (1, "spark1"), (2, "spark2"), (3, "spark3"),      # stage 1
+    (0, "spark4"), (1, "spark5"), (2, "spark6"), (3, "spark7"),      # stage 0
+    (4, "spark0"), (5, "spark1"), (6, "spark2"), (7, "spark3"),      # stage 1
     (8, "spark8"), (9, "spark9"), (10, "sparka"), (11, "sparkb"),    # stage 2
     (12, "sparkc"), (13, "sparkd"), (14, "sparke"), (15, "sparkf"),  # stage 3
 ]
