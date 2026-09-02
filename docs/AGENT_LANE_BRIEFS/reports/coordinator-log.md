@@ -4816,3 +4816,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   (dsv4_pro_tp4_pp4_stage.spstage) = cleanup AFTER full placement.
 
 ## 2026-09-02 ~firing 127: TP4PP4 ships 1/16 (rank0 sha-verified on spark0); ~50min remaining
+
+## 2026-09-02 ~firing 128: spark3 100% full killed ship at rank3; cleaned + resumed
+
+- rank3 scp died at 62/99.6G: spark3 ENOSPC (0B free). Its packs dir
+  held the Aug-28 superseded dsv4_pro_tp4_pp4_stage.spstage (99.6G,
+  board-proven verifier-failing generation, regeneration source intact
+  on warm) — removed under the corruption criterion + the dead partial.
+  151G free now. NOTE: spark3's pro-repo holds 1004G (lane data, NOT
+  mine to touch) — flag to operator if the lane needs that node again.
+- Ship pass resumed (ranks 0-2 skip by digest; 3 re-attempts, 4-15 go).
