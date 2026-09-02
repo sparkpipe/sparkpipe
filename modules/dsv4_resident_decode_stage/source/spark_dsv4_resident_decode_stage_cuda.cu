@@ -3378,14 +3378,16 @@ extern "C" cudaError_t SparkDsv4LaunchGateRoute(
 	{
 		int per_sm = 0;
 		int sm_count = 0;
+		int device = 0;
 		uint32_t blocks_needed = (gate->rows + SPARK_LM_CTA_WARPS - 1u) /
 			SPARK_LM_CTA_WARPS;
 		if ( cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm,
 				SparkDsv4GateRouteCooperativeKernel,SPARK_LM_CTA_THREADS,
 				gate->columns * sizeof(float)) == cudaSuccess &&
 			per_sm > 0 &&
+			cudaGetDevice(&device) == cudaSuccess &&
 			cudaDeviceGetAttribute(&sm_count,
-				cudaDevAttrMultiProcessorCount,stream) == cudaSuccess &&
+				cudaDevAttrMultiProcessorCount,device) == cudaSuccess &&
 			sm_count > 0 &&
 			(uint32_t)per_sm * (uint32_t)sm_count >= blocks_needed )
 			return(SparkDsv4LaunchGateRouteCooperative(stream,gate,input_bf16,
