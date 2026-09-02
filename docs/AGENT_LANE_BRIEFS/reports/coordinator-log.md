@@ -4428,3 +4428,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~28:4x — firing 82: spark1 rank1 at 38.7/40G (~1 min to tensor completion, then verify)
 
 ## 2026-09-01 ~28:5x — firing 83: spark1 rank1 at 39.9/40G — writing its final tensors
+
+## 2026-09-01 ~29:0x — firing 84: ITEM 23 COMPLETE — bf16-official arm TP16 16/16 PLACED
+
+- spark1 rank1: PLACED, sha256 64df3d5b…, receipt written. The
+  bf16-official arm is fully placed: 16/16 ranks, uniform 40,136,867,328
+  B, BF16 experts verbatim (source-driven codec), all verified vs source.
+- Checklist: items 1-5, 7, 10, 12-14, 16-20, 23 complete; 9/11/8/22/15
+  ticketed to dev lanes; 25-26 hy4 lane-owned; 28 drafter audit filed;
+  29-30 final audit legs: hygiene PASS, coverage PASS, per-stage uniform
+  PASS — remaining: size-vs-source arithmetic + final board log.
