@@ -4798,3 +4798,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - tools/dsv4pro_tp4pp4_ship.sh: rankNN → spark{hex NN}, zero-padded
   pack names, top-level rankNN.receipt in the flash-set format, idempotent
   destination-digest skip. Staged on sparka; fires when 16/16 lands.
+
+## 2026-09-02 ~firing 124: TP4PP4 11/16 built, rank11 in flight; ships ~45min out
