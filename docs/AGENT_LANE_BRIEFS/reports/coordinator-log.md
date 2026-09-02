@@ -4844,3 +4844,18 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   background — reports next firing. Post-placement cleanup list: old
   Aug-28 superseded dsv4_pro_tp4_pp4_stage.spstage + stale receipt on
   the nodes that still hold them (~1.5TB fleet-wide; removals logged).
+
+## 2026-09-02 ~firing 134: DIGEST AUDIT PASS + 1.43TB superseded-pack cleanup — ITEM 14 FULLY CLOSED
+
+- Idempotent re-run: 16/16 ALREADY-PLACED (every destination re-hashed,
+  digest-matched). Fleet sweep: receipts correctly paired rank↔host,
+  0 symlinks everywhere.
+- Removed the old Aug-28 superseded dsv4_pro_tp4_pp4_stage.spstage +
+  stale receipts from 15 nodes (spark3 done at firing 128):
+  1,431,997,494,884 B freed, per-node counts logged above.
+- dsv4-pro is now the second family (after dsv4-flash) with BOTH
+  TP16 and TP4PP4 complete, receipted, and audit-clean end to end.
+- NEXT FRONT (coordinator code work): item 9 — PP+TP combined mode in
+  qwen38_27b_stagepack (the "TP packs cover the whole stack" refusal);
+  then item 11 (qwen-max), qwen38max.tp4pp4 rebuild, flash fp8/nvfp4
+  arms. hy4 + drafter remain lane-owned.
