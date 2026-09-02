@@ -219,10 +219,17 @@ def selftest():
     rx_bad = rx.replace("aa", "ab")
     tx_bad = tx.replace("aa", "ab")
     d = tempfile.mkdtemp()
-    open(f"{d}/r0", "w").write(tx)
-    open(f"{d}/r1", "w").write(rx)
-    open(f"{d}/r1b", "w").write(rx_bad)
-    open(f"{d}/r0b", "w").write(tx_bad)
+    real_d = os.path.realpath(d) + os.sep
+    def sp(name):
+        # selftest sandbox paths: join under the mkdtemp base (containment)
+        joined = os.path.join(d, name)
+        if not os.path.realpath(joined).startswith(real_d):
+            raise AssertionError("selftest path escaped sandbox")
+        return joined
+    open(sp("r0"), "w").write(tx)
+    open(sp("r1"), "w").write(rx)
+    open(sp("r1b"), "w").write(rx_bad)
+    open(sp("r0b"), "w").write(tx_bad)
     good = load_run([f"0:{d}/r0", f"1:{d}/r1"])
     hop_bad = load_run([f"0:{d}/r0", f"1:{d}/r1b"])
     tx_diverged = load_run([f"0:{d}/r0b", f"1:{d}/r1b"])
@@ -234,7 +241,7 @@ def selftest():
     zline = f"hidden_tcp_send_header seq=1 token=1 active=1 sideband_kind=0 sideband_bps=0 hidden_hash={zh} sideband_hash={zero_hash(0) if False else '0'*16} hidden_bytes=4 sideband_bytes=0 total=64\n"
     pline_rx = "hidden_tcp_deliver seq=1 token=2 active=1 sideband_kind=0 hidden_hash=00000000000000cc sideband_hash=0000000000000000 hidden_bytes=4 sideband_bytes=0\n"
     pline_tx = "hidden_tcp_send_header seq=1 token=2 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=00000000000000cc sideband_hash=0000000000000000 hidden_bytes=4 sideband_bytes=0 total=64\n"
-    open(f"{d}/rz", "w").write(zline + pline_rx + pline_tx)
+    open(sp("rz"), "w").write(zline + pline_rx + pline_tx)
     zrun = load_run([f"5:{d}/rz"])
     assert chain_report(zrun) == 2
     ones = bytes([0x80, 0x3f] * 4)
@@ -247,15 +254,15 @@ def selftest():
     hidden_ones = bytes([0x80, 0x3f] * MODEL_CONTRACT["hidden_dimension"])
     os.mkdir(reference_dir)
     os.mkdir(candidate_dir)
-    open(f"{reference_dir}/after_layer_0.bf16", "wb").write(hidden_ones)
-    open(f"{candidate_dir}/token_0000_after_layer_0000.bf16", "wb").write(hidden_ones)
+    open(os.path.join(reference_dir, "after_layer_0.bf16"), "wb").write(hidden_ones)
+    open(os.path.join(candidate_dir, "token_0000_after_layer_0000.bf16"), "wb").write(hidden_ones)
     assert layer_numeric_report(reference_dir, candidate_dir) == 0
-    os.remove(f"{candidate_dir}/token_0000_after_layer_0000.bf16")
-    open(f"{candidate_dir}/after_layer_0.bf16", "wb").write(hidden_ones)
+    os.remove(os.path.join(candidate_dir, "token_0000_after_layer_0000.bf16"))
+    open(os.path.join(candidate_dir, "after_layer_0.bf16"), "wb").write(hidden_ones)
     assert layer_numeric_report(reference_dir, candidate_dir) == 0
     phase_name = "token_0000_layer_0000_moe_output.bf16"
-    open(f"{reference_dir}/{phase_name}", "wb").write(hidden_ones)
-    open(f"{candidate_dir}/{phase_name}", "wb").write(hidden_ones)
+    open(os.path.join(reference_dir, phase_name), "wb").write(hidden_ones)
+    open(os.path.join(candidate_dir, phase_name), "wb").write(hidden_ones)
     assert phase_numeric_report(reference_dir, candidate_dir) == 0
     print("selftest_ok")
 
