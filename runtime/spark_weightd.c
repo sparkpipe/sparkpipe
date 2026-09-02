@@ -70,6 +70,7 @@ typedef struct SparkWeightdArena
     void **chunk_handles;          /* cuMem physical handles, one per chunk */
     uint32_t chunk_count;
     uint64_t generation;
+    uint64_t last_used;
     uint32_t refcount;
 } SparkWeightdArena;
 
@@ -517,15 +518,25 @@ static void SparkWeightdServerFreeArenaSlot(SparkWeightdServer *server,
     }
 }
 
-/* Reclaim cold (refcount == 0) arenas, oldest generation first, until
- * `needed_bytes` fits under the ceiling. Live arenas are NEVER evicted —
- * that is the NO-2x law: a serving process's weights cannot be pulled out
- * from under it, and an update that would need that goes through
- * stop-attach-start or fails closed. */
+/* Reclaim cold (refcount == 0) arenas, least-recently-used first, until
+ * `needed_bytes` fits under the effective ceiling (device max minus the KV
+ * reserve). Live arenas are NEVER evicted — that is the NO-2x law: a
+ * serving process's weights cannot be pulled out from under it, and an
+ * update that would need that goes through stop-attach-start or fails
+ * closed. */
+static uint64_t SparkWeightdServerEffectiveCeiling(
+    const SparkWeightdServer *server)
+{
+    uint64_t reserve = server->config.kv_reserve_bytes %
+        (server->config.device_bytes_max + 1u);
+    return server->config.device_bytes_max - reserve;
+}
+
 static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
     uint64_t needed_bytes)
 {
-    while (server->resident_bytes + needed_bytes > server->config.device_bytes_max)
+    uint64_t ceiling = SparkWeightdServerEffectiveCeiling(server);
+    while (server->resident_bytes + needed_bytes > ceiling)
     {
         uint32_t oldest_slot = server->arena_count;
         uint32_t index;
@@ -533,8 +544,8 @@ static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
         {
             if (server->arenas[index].refcount == 0u &&
                 (oldest_slot == server->arena_count ||
-                    server->arenas[index].generation <
-                        server->arenas[oldest_slot].generation))
+                    server->arenas[index].last_used <
+                        server->arenas[oldest_slot].last_used))
             {
                 oldest_slot = index;
             }
@@ -567,6 +578,7 @@ static SparkStatus SparkWeightdServerAttachRegister(SparkWeightdServer *server,
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     arena->refcount++;
+    arena->last_used = SparkWeightdMonotonicTimeNs();
     connection->attaches[connection->attach_count].arena_generation =
         arena->generation;
     connection->attaches[connection->attach_count].arena_slot = arena_slot;
@@ -723,7 +735,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
      * update then goes through stop (detach) before attach, per the design */
     SparkWeightdServerReclaimCold(server, identity.arena_bytes);
     if (server->resident_bytes + identity.arena_bytes >
-            server->config.device_bytes_max ||
+            SparkWeightdServerEffectiveCeiling(server) ||
         server->arena_count >= SPARK_WEIGHTD_ARENA_COUNT_MAX)
     {
         (void)fclose(file);
@@ -846,6 +858,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     server->arenas[slot].chunk_count = pending.chunk_count;
     server->next_arena_generation++;
     server->arenas[slot].generation = server->next_arena_generation;
+    server->arenas[slot].last_used = SparkWeightdMonotonicTimeNs();
     server->arena_count++;
     server->resident_bytes += identity.arena_bytes;
 
