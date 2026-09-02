@@ -215,17 +215,15 @@ int hy4_rank_open(const char *pack_dir, int tolerate_sha_mismatch,
         tv->nbytes = bytes;
         {
             const char *sat = strstr(obj, "\"slice\":");
-            if (sat) {
+            const char *obj_end = strchr(obj, '}');
+            if (sat && obj_end && sat < obj_end) {
                 const char *brace = strchr(sat, '{');
-                const char *close = strchr(sat, '}');
-                if (brace && close) {
-                    const char *cur2 = brace;
+                if (brace && brace < obj_end) {
                     long dim = 0, start = 0;
                     if (!mget_long(brace, "dim", &dim)) tv->slice_kind = (int)dim;
                     if (!mget_long(brace, "start", &start)) tv->slice_start = start;
-                    (void)cur2;
                 } else {
-                    tv->slice_kind = 0; /* "replicate" */
+                    tv->slice_kind = 0; /* string "replicate" */
                 }
             }
         }
