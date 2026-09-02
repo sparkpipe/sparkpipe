@@ -5020,3 +5020,14 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Flash TP16 answer: ATTN_KV_HEADS=2 (and 48 GDN value heads) cap
   practical TP at 8 ⇒ flash is the TP8 model; TP4 also exists.
 - Write protection: chattr +i on completed sets proposed; sweep next.
+
+## 2026-09-02 ~firing 150: WRITE PROTECTION LIVE — chattr +i on completed sets fleet-wide
+
+- All 16 nodes: immutable flag set on every dsv4_pro.tp16,
+  dsv4_pro.tp4pp4, qwen38_27b.tp4pp4, and completed qwen38_max.tp4pp4
+  pack (sudo chattr +i; verified via lsattr). Even root cannot modify
+  or delete until the flag is cleared — the deletion class is closed
+  for these sets. Unfix recipe: sudo chattr -i <file>.
+- Extend to the older sets (k3, glm53full, etc.) with the same loop as
+  each completes its audit. sparke duplicate writer killed (relaunch
+  next firing).
