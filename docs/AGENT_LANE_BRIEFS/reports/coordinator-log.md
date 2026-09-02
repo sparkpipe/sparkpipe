@@ -4826,3 +4826,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   151G free now. NOTE: spark3's pro-repo holds 1004G (lane data, NOT
   mine to touch) — flag to operator if the lane needs that node again.
 - Ship pass resumed (ranks 0-2 skip by digest; 3 re-attempts, 4-15 go).
+
+## 2026-09-02 ~firing 129: TP4PP4 ships resumed clean — rank3 landed, on rank6, 0 errors
