@@ -4593,3 +4593,16 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   completes. No external input needed.
 
 ## 2026-09-01 ~31:0x — firing 100: rank10 at 97.9G of ~99.6G stage size; verify+receipt imminent
+
+## 2026-09-01 ~31:1x — firing 100b: dsv4-pro TP16 — 9 ranks already on warm; 7 remaining launched on sparka
+
+- The lane's warm build dir (/mnt/model-warm/packbuild/dsv4pro-tp16)
+  holds ranks 0,1,2,4,5,6,7,8,12 spstage+receipt+sha (9 done) + the full
+  892G base. Launched the lane's own dsv4pro_tp16_ranks.sh on sparka for
+  the missing 7 (3,9,10,11,13,14,15) — each: shard -> verify-output ->
+  contract verifier vs GA checkpoint -> sha. ETA ~1-1.5h/rank.
+- Cleaned the dead 97.9G partial rank10 from ~/sparkdata (wrong output
+  path, superseded by the warm-OUT build).
+- Item 15 completion: ranks 0-15 on warm -> ship to canonical nodes
+  (rank r -> spark{hex r}) -> receipts. Item 14 (TP4PP4) then builds on
+  the local full base.
