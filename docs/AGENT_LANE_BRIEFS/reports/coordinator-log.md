@@ -5031,3 +5031,12 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Extend to the older sets (k3, glm53full, etc.) with the same loop as
   each completes its audit. sparke duplicate writer killed (relaunch
   next firing).
+
+## 2026-09-02 ~firing 151: fleet disk check + 1.23TB artifact cleanup (operator order); rank3 UNBLOCKED
+
+- Disk sweep all 16 nodes, removed rebuildable intermediates (logged):
+  spark3 pro-repo dsv4pro base+staging packs 1003G (canonical TP16 +
+  TP4PP4 sets all placed+digest-verified on warm/nodes), sparke 83G,
+  sparkf 139G, spark2 4G, spark5 3G. All nodes now 808G-2.2T free.
+- rank3 (last max TP4PP4 rank) UNBLOCKED and building on spark3.
+- In flight: r02/r05/r13/r11/r14 + r03; done: 11/16.
