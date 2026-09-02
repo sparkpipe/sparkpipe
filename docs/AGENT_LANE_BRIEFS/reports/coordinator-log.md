@@ -5090,3 +5090,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   format support before any hy4 base pack can be built. That code read
   + extension is the next work item (hy4 is highest priority).
 - qwen-max: r02/r05/r13 still building; r00 re-ship to spark0 queued.
+
+## 2026-09-02 ~firing 158: r02 fixed (session-detach kill class) and slicing; r05 alive but slow
+
+- r02's silent deaths: `& exit 0` tore down the ssh session before
+  setsid finished detaching (new systemd on the rebooted node kills
+  session procs). Fix = hold the session ~3s (`sleep 3` before exit).
+  r02 now slicing (46MB/15s — slow warm class).
+- r05 alive at ~10MB/s (8.7G/140G). Both remaining ranks are slow
+  under the 4G-flush tradeoff: ETA 3-13h depending on rate stability.
+- 14/16 done: everything else placed, receipted, chattr-protected.
