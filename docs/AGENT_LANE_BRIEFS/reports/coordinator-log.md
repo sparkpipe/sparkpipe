@@ -4977,3 +4977,16 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - 5 single-writers at 15-24G/140G; spark1 avail ROSE to 76G (fadvise
   working — no cache pile). No node near critical at 5-wide.
 - Next waves only as these drain (~75min/rank at the safe rate).
+
+## 2026-09-02 ~firing 146: 50GB mystery answered — dirty-page writeback; output now sync+dropped per tensor
+
+- The 50GB+ was kernel PAGE CACHE, not process RSS (~350MB): (a) warm
+  read-ahead (fixed earlier via fadvise), (b) the 140GB LOCAL WRITES
+  sitting as dirty pages — kernel default dirty thresholds allow ~20%
+  of RAM before forcing flush. (c) co-tenant daemons own the rest.
+- FIX pushed f4a3dad: per tensor, sync_file_range(WRITE) + fadvise
+  DONTNEED on the output range — dirty window stays ~chunk-sized.
+- Full footprint now ~200MB RSS/build (measured spark2/5/a). Builds
+  restarted on spark2/5/a with the fix; spark8/9/b stay PAUSED (14G
+  avail, operator-flagged) until the co-tenant allocations drain;
+  sparkb-f + spark3/4 deferred per operator.
