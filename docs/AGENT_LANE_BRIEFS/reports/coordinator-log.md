@@ -4653,3 +4653,17 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - Fleet sweep: sparka chain is the ONLY stagepack writer on all 16 nodes.
 - spark3 local disk 96% full (150G) — flagged; dsv4-pro TP4PP4 (item 14)
   will build on sparka off its LOCAL base (892,904,019,728 B) after ships.
+
+## 2026-09-02 ~firing 104: rank9 grinding; item 14 (pro TP4PP4) staged
+
+- rank9 rebuild at ~28G/98G (warm-write class ~30MB/s); chain 9→11→10
+  alive (pid 65047), sparka reservation held.
+- Item 14 staged: naming per the completed flash set —
+  ~/sparkdata/dsv4_pro.tp4pp4/packs/dsv4_pro.tp4_pp4.rankNN.spstage
+  (rank r on spark{hex r}) + rankNN.receipt. Build = in-tree
+  dsv4_tp4_pp4_stagepacks.py --model pro --input-pack sparka's LOCAL
+  dsv4_pro_full.spstage (892,904,019,728 B), output local (~830G; fits
+  sparka's 1.2T free), then per-node ship by exit code.
+- Cleanup candidates AFTER new set is digest-verified in place (REMOVAL-
+  ORDER): old Aug-28 dsv4_pro_tp4pp4 stage packs (dsv4_pro_tp4_pp4_stage
+  .spstage, ~94G/node) — the verifier-failing superseded generation.
