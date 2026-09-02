@@ -4990,3 +4990,10 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   restarted on spark2/5/a with the fix; spark8/9/b stay PAUSED (14G
   avail, operator-flagged) until the co-tenant allocations drain;
   sparkb-f + spark3/4 deferred per operator.
+
+## 2026-09-02 ~firing 147: max TP4PP4 5/16 done (r01,04,06,07,10); r02+05 grinding at ~200MB RSS
+
+- rank10 placed (sparka). r02/r05 building with the output-eviction
+  fix — RSS ~200MB each, avail stable. spark8/9/b builds stay paused
+  (14G avail, co-tenant allocations); sparkc-f deferred; rank0/rank3
+  per prior flags.
