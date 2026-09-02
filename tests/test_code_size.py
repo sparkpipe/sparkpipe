@@ -1419,24 +1419,17 @@ CEILING = 234369
 # trampoline), weightd warm-path identity publish, wave-tool env
 # passthrough, spark-queue multi-dev hardening (+ durable state, batched
 # age-gated reaper, doctor), hermetic queue gate, runbook + consult doc.
-# 237353 -> 237423 (merged tree measure): dsv4pro verifier fix
-# (stacked-fp4 expected-bytes section order) + exit-4 root-cause
-# report + ranks script; carries #769/#771 pins on main.
-# 237423 -> 237430: queue blocked-state promotion (dispatch-side
-# promote-before-candidates; fixes priority-inversion stranding).
-# 237523 -> 237525: dsv4pro newest stack tail (sampler section-split,
-# verify-only finish script, driver-rebuild cwd fix).
-# 237525 -> 237543: qwen38_max attention launcher degree guard
-# (tp1/tp2 reject) + module archive link fix.
-CEILING = 237543
-# (dsv4pro) +93 exact: the section-split sampler (payload and scale
-# sections verified at their own directory offsets), the final
-# verify-only finish script, and tools/dsv4pro_driver_rebuild.sh —
-# main's 237430 measure predates the lane's newest stack.
-# (dsv4pro) +36 exact on the lane stack: the stacked-fp4 section-order
-# fix in tools/dsv4_pro_rank_pack_verify.py (+4) and the resumed ranks
-# script tools/dsv4pro_tp16_ranks.sh (+32) that main's 237317 measure
-# predates.
+# 237333 -> 237359: qwen38_max TP16-ready attention kernels (KV-head
+# replication past the kv head count). 237359 -> 237363: symmetric resource
+# classes. lane/spec-unified: the speculation policy core becomes
+# model-neutral and tree-capable (runtime contract descriptor + structural
+# validation; parent-array tree resolve with the chain as the degenerate
+# case; GLM52 default-fill moves to the GLM52 backend). Main purge history:
+# 237353 -> 237543 (dsv4pro verifier/ranks, queue blocked-state promotion,
+# qwen38_max attention launcher guard) then the comment purge. Merged;
+# ceiling re-pinned from MEASURED reality after the conflict resolution.
+CEILING = 219352
+
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

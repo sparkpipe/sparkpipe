@@ -16,6 +16,7 @@ SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
     src/spark_admission.c \
+    src/spark_speculation_policy.c \
     runtime/filesystem.c \
     runtime/json.c
 
@@ -73,8 +74,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
 
 SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c \
-	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c \
-	src/spark_speculation_policy.c
+	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c
 
 SPARKPIPE_QWEN38_27B_SOURCES := \
     model-families/qwen38_27b/src/spark_qwen38_27b_work_control.c

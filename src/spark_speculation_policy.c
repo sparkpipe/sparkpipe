@@ -2,100 +2,47 @@
 
 #include <string.h>
 
-static const uint32_t SparkSpeculationPolicyDefaultAuxLayerIds[
-    SPARK_DSPARK_AUX_LAYER_COUNT] =
-    SPARK_DSPARK_AUX_LAYER_IDS_INITIALIZER;
-
-SparkStatus SparkSpeculationPolicyBuildDefaultModelContract(
-    SparkSpeculationModelContract *model_contract)
-{
-    uint32_t layer_index;
-
-    if (model_contract == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    memset(model_contract, 0, sizeof(*model_contract));
-    model_contract->abi_version = SPARK_DSPARK_ABI_VERSION;
-    model_contract->descriptor_bytes =
-        SPARK_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES;
-    model_contract->verifier_hidden_dtype =
-        SPARK_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16;
-    model_contract->draft_dtype = SPARK_DSPARK_DRAFT_DTYPE_BF16;
-    model_contract->draft_layer_count = SPARK_DSPARK_DRAFT_LAYER_COUNT;
-    model_contract->block_size = SPARK_DSPARK_BLOCK_SIZE;
-    model_contract->hidden_dimension = SPARK_DSPARK_HIDDEN_DIMENSION;
-    model_contract->intermediate_dimension =
-        SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
-    model_contract->attention_head_count =
-        SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT;
-    model_contract->kv_head_count = SPARK_DSPARK_DRAFT_KV_HEAD_COUNT;
-    model_contract->head_dimension = SPARK_DSPARK_DRAFT_HEAD_DIMENSION;
-    model_contract->vocab_size = SPARK_DSPARK_FULL_VOCAB_SIZE;
-    model_contract->draft_vocab_size = SPARK_DSPARK_FULL_VOCAB_SIZE;
-    model_contract->markov_rank = SPARK_DSPARK_MARKOV_RANK;
-    model_contract->max_anchors = SPARK_DSPARK_MAX_ANCHORS;
-    model_contract->maximum_speculative_token_count =
-        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
-    model_contract->verifier_accept_k = 1u;
-    model_contract->aux_layer_count = SPARK_DSPARK_AUX_LAYER_COUNT;
-    model_contract->enable_confidence_head = 1u;
-    model_contract->confidence_head_with_markov = 1u;
-    for (layer_index = 0u;
-         layer_index < SPARK_DSPARK_AUX_LAYER_COUNT;
-         ++layer_index)
-    {
-        model_contract->aux_layer_ids[layer_index] =
-            SparkSpeculationPolicyDefaultAuxLayerIds[layer_index];
-    }
-    return SPARK_STATUS_OK;
-}
-
 SparkStatus SparkSpeculationPolicyValidateModelContract(
     const SparkSpeculationModelContract *model_contract)
 {
     uint32_t layer_index;
 
     if (model_contract == 0 ||
-        model_contract->abi_version != SPARK_DSPARK_ABI_VERSION ||
+        model_contract->abi_version != SPARK_SPECULATION_ABI_VERSION ||
         model_contract->descriptor_bytes !=
-            SPARK_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES ||
+            SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES ||
         model_contract->verifier_hidden_dtype !=
-            SPARK_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16 ||
-        model_contract->draft_dtype != SPARK_DSPARK_DRAFT_DTYPE_BF16 ||
-        model_contract->draft_layer_count !=
-            SPARK_DSPARK_DRAFT_LAYER_COUNT ||
-        model_contract->block_size != SPARK_DSPARK_BLOCK_SIZE ||
-        model_contract->hidden_dimension !=
-            SPARK_DSPARK_HIDDEN_DIMENSION ||
-        model_contract->intermediate_dimension !=
-            SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION ||
-        model_contract->attention_head_count !=
-            SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT ||
-        model_contract->kv_head_count !=
-            SPARK_DSPARK_DRAFT_KV_HEAD_COUNT ||
-        model_contract->head_dimension !=
-            SPARK_DSPARK_DRAFT_HEAD_DIMENSION ||
-        model_contract->vocab_size != SPARK_DSPARK_FULL_VOCAB_SIZE ||
-        model_contract->draft_vocab_size !=
-            SPARK_DSPARK_FULL_VOCAB_SIZE ||
-        model_contract->markov_rank != SPARK_DSPARK_MARKOV_RANK ||
-        model_contract->max_anchors != SPARK_DSPARK_MAX_ANCHORS ||
-        model_contract->maximum_speculative_token_count !=
-            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
-        model_contract->verifier_accept_k != 1u ||
-        model_contract->aux_layer_count != SPARK_DSPARK_AUX_LAYER_COUNT ||
-        model_contract->enable_confidence_head != 1u ||
-        model_contract->confidence_head_with_markov != 1u)
+            SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16 ||
+        model_contract->draft_dtype != SPARK_SPECULATION_DRAFT_DTYPE_BF16 ||
+        model_contract->draft_layer_count == 0u ||
+        model_contract->block_size == 0u ||
+        model_contract->hidden_dimension == 0u ||
+        model_contract->attention_head_count == 0u ||
+        model_contract->kv_head_count == 0u ||
+        model_contract->kv_head_count > model_contract->attention_head_count ||
+        model_contract->head_dimension == 0u ||
+        model_contract->vocab_size == 0u ||
+        model_contract->draft_vocab_size == 0u ||
+        model_contract->draft_vocab_size > model_contract->vocab_size ||
+        model_contract->maximum_speculative_token_count == 0u ||
+        model_contract->maximum_speculative_token_count >
+            SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT ||
+        model_contract->verifier_accept_k == 0u ||
+        model_contract->verifier_accept_k >
+            model_contract->maximum_speculative_token_count ||
+        model_contract->aux_layer_count >
+            SPARK_SPECULATION_MAX_AUX_LAYER_COUNT ||
+        model_contract->enable_confidence_head > 1u ||
+        model_contract->confidence_head_with_markov > 1u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     for (layer_index = 0u;
-         layer_index < SPARK_DSPARK_AUX_LAYER_COUNT;
+         layer_index < model_contract->aux_layer_count;
          ++layer_index)
     {
-        if (model_contract->aux_layer_ids[layer_index] !=
-            SparkSpeculationPolicyDefaultAuxLayerIds[layer_index])
+        if (model_contract->aux_layer_ids[layer_index] ==
+            SPARK_SPECULATION_INVALID_LAYER_INDEX)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -108,7 +55,7 @@ static uint32_t SparkSpeculationPolicyNormalizePolicyFlags(
 {
     if (policy_flags == 0u)
     {
-        return SPARK_DSPARK_POLICY_DEFAULT_FLAGS;
+        return SPARK_SPECULATION_POLICY_DEFAULT_FLAGS;
     }
     return policy_flags;
 }
@@ -118,11 +65,11 @@ static uint32_t SparkSpeculationPolicyNormalizeSpeculativeTokenCount(
 {
     if (token_count == 0u)
     {
-        return SPARK_DSPARK_DEFAULT_MAX_VERIFY_TOKENS;
+        return SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT;
     }
-    if (token_count > SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
+    if (token_count > SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT)
     {
-        return SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+        return SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT;
     }
     return token_count;
 }
@@ -135,9 +82,9 @@ static uint32_t SparkSpeculationPolicyNormalizeConfidenceMilli(
     {
         return default_confidence_milli;
     }
-    if (confidence_milli > SPARK_DSPARK_CONFIDENCE_MILLI_ONE)
+    if (confidence_milli > SPARK_SPECULATION_CONFIDENCE_MILLI_ONE)
     {
-        return SPARK_DSPARK_CONFIDENCE_MILLI_ONE;
+        return SPARK_SPECULATION_CONFIDENCE_MILLI_ONE;
     }
     return confidence_milli;
 }
@@ -146,15 +93,16 @@ SparkStatus SparkSpeculationPolicyValidate(
     const SparkSpeculationSpeculator *speculator)
 {
     if (speculator == 0 ||
-        speculator->abi_version != SPARK_DSPARK_ABI_VERSION ||
-        speculator->descriptor_bytes != SPARK_DSPARK_DESCRIPTOR_BYTES ||
+        speculator->abi_version != SPARK_SPECULATION_ABI_VERSION ||
+        speculator->descriptor_bytes != SPARK_SPECULATION_DESCRIPTOR_BYTES ||
         speculator->sequence_state_count == 0u ||
         speculator->sequence_states == 0 ||
         speculator->draft_function == 0 ||
         speculator->default_speculative_token_count == 0u ||
         speculator->default_speculative_token_count >
-            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
-        (speculator->policy_flags & ~SPARK_DSPARK_POLICY_KNOWN_FLAGS) != 0u ||
+            SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT ||
+        (speculator->policy_flags & ~SPARK_SPECULATION_POLICY_KNOWN_FLAGS) !=
+            0u ||
         SparkSpeculationPolicyValidateModelContract(
             &speculator->model_contract) != SPARK_STATUS_OK)
     {
@@ -169,9 +117,9 @@ static SparkStatus SparkSpeculationPolicyValidateConfiguration(
     uint32_t policy_flags;
 
     if (configuration == 0 ||
-        configuration->abi_version != SPARK_DSPARK_ABI_VERSION ||
+        configuration->abi_version != SPARK_SPECULATION_ABI_VERSION ||
         configuration->descriptor_bytes !=
-            SPARK_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES ||
+            SPARK_SPECULATION_CONFIGURATION_DESCRIPTOR_BYTES ||
         configuration->sequence_state_count == 0u ||
         configuration->sequence_states == 0 ||
         configuration->draft_function == 0 ||
@@ -183,7 +131,7 @@ static SparkStatus SparkSpeculationPolicyValidateConfiguration(
 
     policy_flags = SparkSpeculationPolicyNormalizePolicyFlags(
         configuration->policy_flags);
-    if ((policy_flags & ~SPARK_DSPARK_POLICY_KNOWN_FLAGS) != 0u)
+    if ((policy_flags & ~SPARK_SPECULATION_POLICY_KNOWN_FLAGS) != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -199,9 +147,9 @@ static void SparkSpeculationPolicyInitializeSequenceState(
     SparkSpeculationSequenceState *sequence_state)
 {
     memset(sequence_state, 0, sizeof(*sequence_state));
-    sequence_state->abi_version = SPARK_DSPARK_ABI_VERSION;
+    sequence_state->abi_version = SPARK_SPECULATION_ABI_VERSION;
     sequence_state->descriptor_bytes =
-        SPARK_DSPARK_SEQUENCE_STATE_DESCRIPTOR_BYTES;
+        SPARK_SPECULATION_SEQUENCE_STATE_DESCRIPTOR_BYTES;
 }
 
 static SparkSpeculationSequenceState *SparkSpeculationPolicyFindSequenceState(
@@ -222,7 +170,7 @@ static SparkSpeculationSequenceState *SparkSpeculationPolicyFindSequenceState(
 
         sequence_state = &speculator->sequence_states[state_index];
         if ((sequence_state->flags &
-                SPARK_DSPARK_SEQUENCE_STATE_FLAG_VALID) != 0u &&
+                SPARK_SPECULATION_SEQUENCE_STATE_FLAG_VALID) != 0u &&
             sequence_state->sequence_id == sequence_id)
         {
             return sequence_state;
@@ -244,7 +192,7 @@ static SparkSpeculationSequenceState *SparkSpeculationPolicyFindFreeSequenceStat
 
         sequence_state = &speculator->sequence_states[state_index];
         if ((sequence_state->flags &
-                SPARK_DSPARK_SEQUENCE_STATE_FLAG_VALID) == 0u)
+                SPARK_SPECULATION_SEQUENCE_STATE_FLAG_VALID) == 0u)
         {
             return sequence_state;
         }
@@ -274,7 +222,7 @@ static SparkSpeculationSequenceState *SparkSpeculationPolicyAcquireSequenceState
         return 0;
     }
     SparkSpeculationPolicyInitializeSequenceState(sequence_state);
-    sequence_state->flags = SPARK_DSPARK_SEQUENCE_STATE_FLAG_VALID;
+    sequence_state->flags = SPARK_SPECULATION_SEQUENCE_STATE_FLAG_VALID;
     sequence_state->request_id = request_id;
     sequence_state->sequence_id = sequence_id;
     return sequence_state;
@@ -298,8 +246,8 @@ SparkStatus SparkSpeculationPolicyInitialize(
     }
 
     memset(speculator, 0, sizeof(*speculator));
-    speculator->abi_version = SPARK_DSPARK_ABI_VERSION;
-    speculator->descriptor_bytes = SPARK_DSPARK_DESCRIPTOR_BYTES;
+    speculator->abi_version = SPARK_SPECULATION_ABI_VERSION;
+    speculator->descriptor_bytes = SPARK_SPECULATION_DESCRIPTOR_BYTES;
     speculator->policy_flags = SparkSpeculationPolicyNormalizePolicyFlags(
         configuration->policy_flags);
     speculator->sequence_state_count = configuration->sequence_state_count;
@@ -309,11 +257,11 @@ SparkStatus SparkSpeculationPolicyInitialize(
     speculator->minimum_confidence_milli =
         SparkSpeculationPolicyNormalizeConfidenceMilli(
             configuration->minimum_confidence_milli,
-            SPARK_DSPARK_DEFAULT_MIN_CONFIDENCE_MILLI);
+            SPARK_SPECULATION_DEFAULT_MIN_CONFIDENCE_MILLI);
     speculator->realtime_minimum_confidence_milli =
         SparkSpeculationPolicyNormalizeConfidenceMilli(
             configuration->realtime_minimum_confidence_milli,
-            SPARK_DSPARK_DEFAULT_REALTIME_MIN_CONFIDENCE_MILLI);
+            SPARK_SPECULATION_DEFAULT_REALTIME_MIN_CONFIDENCE_MILLI);
     speculator->next_tap_generation = 1u;
     speculator->next_draft_generation = 1u;
     speculator->model_contract = *configuration->model_contract;
@@ -361,10 +309,10 @@ SparkStatus SparkSpeculationPolicyMarkVerifierTapsReady(
     }
 
     sequence_state->flags &=
-        ~(SPARK_DSPARK_SEQUENCE_STATE_FLAG_DRAFT_READY |
-          SPARK_DSPARK_SEQUENCE_STATE_FLAG_VERIFY_INFLIGHT);
+        ~(SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY |
+          SPARK_SPECULATION_SEQUENCE_STATE_FLAG_VERIFY_INFLIGHT);
     sequence_state->flags |=
-        SPARK_DSPARK_SEQUENCE_STATE_FLAG_TAPS_READY;
+        SPARK_SPECULATION_SEQUENCE_STATE_FLAG_TAPS_READY;
     sequence_state->sequence_position = sequence_position;
     sequence_state->tap_generation = speculator->next_tap_generation;
     speculator->next_tap_generation += 1u;
@@ -383,14 +331,15 @@ SparkStatus SparkSpeculationPolicyMarkVerifierTapsReady(
 }
 
 static SparkStatus SparkSpeculationPolicyValidateDraftRequest(
-    const SparkSpeculationDraftRequest *request)
+    const SparkSpeculationPolicyDraftRequest *request)
 {
     if (request == 0 ||
-        request->abi_version != SPARK_DSPARK_ABI_VERSION ||
-        request->descriptor_bytes != SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES ||
+        request->abi_version != SPARK_SPECULATION_ABI_VERSION ||
+        request->descriptor_bytes !=
+            SPARK_SPECULATION_DRAFT_REQUEST_DESCRIPTOR_BYTES ||
         request->requested_token_count == 0u ||
         request->requested_token_count >
-            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
+            SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT ||
         request->sequence_id == 0u ||
         request->tap_generation == 0u ||
         request->reserved != 0u)
@@ -401,18 +350,20 @@ static SparkStatus SparkSpeculationPolicyValidateDraftRequest(
 }
 
 static SparkStatus SparkSpeculationPolicyValidateDraftResult(
-    const SparkSpeculationDraftResult *result,
-    uint32_t requested_token_count)
+    const SparkSpeculationPolicyDraftResult *result,
+    uint32_t requested_token_count,
+    uint32_t vocab_size)
 {
     uint32_t token_index;
 
     if (result == 0 ||
-        result->abi_version != SPARK_DSPARK_ABI_VERSION ||
-        result->descriptor_bytes != SPARK_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES ||
-        (result->flags & ~SPARK_DSPARK_DRAFT_RESULT_KNOWN_FLAGS) != 0u ||
+        result->abi_version != SPARK_SPECULATION_ABI_VERSION ||
+        result->descriptor_bytes !=
+            SPARK_SPECULATION_DRAFT_RESULT_DESCRIPTOR_BYTES ||
+        (result->flags & ~SPARK_SPECULATION_DRAFT_RESULT_KNOWN_FLAGS) != 0u ||
         result->token_count == 0u ||
         result->token_count > requested_token_count ||
-        result->token_count > SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
+        result->token_count > SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -421,9 +372,9 @@ static SparkStatus SparkSpeculationPolicyValidateDraftResult(
          token_index < result->token_count;
          ++token_index)
     {
-        if (result->token_ids[token_index] >= SPARK_DSPARK_FULL_VOCAB_SIZE ||
+        if (result->token_ids[token_index] >= vocab_size ||
             result->confidence_milli[token_index] >
-                SPARK_DSPARK_CONFIDENCE_MILLI_ONE)
+                SPARK_SPECULATION_CONFIDENCE_MILLI_ONE)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -433,9 +384,9 @@ static SparkStatus SparkSpeculationPolicyValidateDraftResult(
 
 static uint32_t SparkSpeculationPolicyConfidenceThresholdForRequest(
     const SparkSpeculationSpeculator *speculator,
-    const SparkSpeculationDraftRequest *request)
+    const SparkSpeculationPolicyDraftRequest *request)
 {
-    if (request->priority >= SPARK_DSPARK_POLICY_REALTIME_PRIORITY_THRESHOLD)
+    if (request->priority >= SPARK_SPECULATION_POLICY_REALTIME_PRIORITY_THRESHOLD)
     {
         return speculator->realtime_minimum_confidence_milli;
     }
@@ -444,8 +395,8 @@ static uint32_t SparkSpeculationPolicyConfidenceThresholdForRequest(
 
 static uint32_t SparkSpeculationPolicyAcceptedDraftLengthByConfidence(
     const SparkSpeculationSpeculator *speculator,
-    const SparkSpeculationDraftRequest *request,
-    const SparkSpeculationDraftResult *result)
+    const SparkSpeculationPolicyDraftRequest *request,
+    const SparkSpeculationPolicyDraftResult *result)
 {
     uint32_t token_index;
     uint32_t confidence_threshold_milli;
@@ -467,10 +418,10 @@ static uint32_t SparkSpeculationPolicyAcceptedDraftLengthByConfidence(
 
 SparkStatus SparkSpeculationPolicyEnsureDraft(
     SparkSpeculationSpeculator *speculator,
-    const SparkSpeculationDraftRequest *request)
+    const SparkSpeculationPolicyDraftRequest *request)
 {
     SparkSpeculationSequenceState *sequence_state;
-    SparkSpeculationDraftResult result;
+    SparkSpeculationPolicyDraftResult result;
     uint32_t accepted_by_confidence;
     uint32_t token_index;
     SparkStatus status;
@@ -485,26 +436,31 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
     {
         return status;
     }
+    if (request->requested_token_count >
+        speculator->model_contract.maximum_speculative_token_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
 
     sequence_state = SparkSpeculationPolicyFindSequenceState(
         speculator,
         request->sequence_id);
     if (sequence_state == 0 ||
         (sequence_state->flags &
-            SPARK_DSPARK_SEQUENCE_STATE_FLAG_TAPS_READY) == 0u ||
+            SPARK_SPECULATION_SEQUENCE_STATE_FLAG_TAPS_READY) == 0u ||
         sequence_state->tap_generation != request->tap_generation)
     {
         return SPARK_STATUS_NOT_FOUND;
     }
     if ((sequence_state->flags &
-            SPARK_DSPARK_SEQUENCE_STATE_FLAG_DRAFT_READY) != 0u)
+            SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY) != 0u)
     {
         return SPARK_STATUS_OK;
     }
 
     memset(&result, 0, sizeof(result));
-    result.abi_version = SPARK_DSPARK_ABI_VERSION;
-    result.descriptor_bytes = SPARK_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES;
+    result.abi_version = SPARK_SPECULATION_ABI_VERSION;
+    result.descriptor_bytes = SPARK_SPECULATION_DRAFT_RESULT_DESCRIPTOR_BYTES;
 
     speculator->draft_request_count += 1u;
     status = speculator->draft_function(
@@ -517,7 +473,8 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
     }
     status = SparkSpeculationPolicyValidateDraftResult(
         &result,
-        request->requested_token_count);
+        request->requested_token_count,
+        speculator->model_contract.vocab_size);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -534,10 +491,10 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
     }
     if (accepted_by_confidence < result.token_count)
     {
-        result.flags |= SPARK_DSPARK_DRAFT_RESULT_FLAG_CONFIDENCE_TRUNCATED;
+        result.flags |= SPARK_SPECULATION_DRAFT_RESULT_FLAG_CONFIDENCE_TRUNCATED;
     }
 
-    sequence_state->flags |= SPARK_DSPARK_SEQUENCE_STATE_FLAG_DRAFT_READY;
+    sequence_state->flags |= SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY;
     sequence_state->draft_generation = speculator->next_draft_generation;
     speculator->next_draft_generation += 1u;
     if (speculator->next_draft_generation == 0u)
@@ -546,7 +503,7 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
     }
     sequence_state->draft_token_count = accepted_by_confidence;
     for (token_index = 0u;
-         token_index < SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+         token_index < SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT;
          ++token_index)
     {
         if (token_index < accepted_by_confidence)
@@ -569,7 +526,7 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
 SparkStatus SparkSpeculationPolicyGetDraft(
     SparkSpeculationSpeculator *speculator,
     uint64_t sequence_id,
-    SparkSpeculationDraftResult *draft_result)
+    SparkSpeculationPolicyDraftResult *draft_result)
 {
     SparkSpeculationSequenceState *sequence_state;
     uint32_t token_index;
@@ -586,16 +543,16 @@ SparkStatus SparkSpeculationPolicyGetDraft(
         sequence_id);
     if (sequence_state == 0 ||
         (sequence_state->flags &
-            SPARK_DSPARK_SEQUENCE_STATE_FLAG_DRAFT_READY) == 0u ||
+            SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY) == 0u ||
         sequence_state->draft_token_count == 0u)
     {
         return SPARK_STATUS_NOT_FOUND;
     }
 
     memset(draft_result, 0, sizeof(*draft_result));
-    draft_result->abi_version = SPARK_DSPARK_ABI_VERSION;
+    draft_result->abi_version = SPARK_SPECULATION_ABI_VERSION;
     draft_result->descriptor_bytes =
-        SPARK_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES;
+        SPARK_SPECULATION_DRAFT_RESULT_DESCRIPTOR_BYTES;
     draft_result->token_count = sequence_state->draft_token_count;
     for (token_index = 0u;
          token_index < sequence_state->draft_token_count;
@@ -610,16 +567,17 @@ SparkStatus SparkSpeculationPolicyGetDraft(
 }
 
 static SparkStatus SparkSpeculationPolicyValidateVerifyResult(
-    const SparkSpeculationVerifyResult *verify_result)
+    const SparkSpeculationPolicyVerifyResult *verify_result)
 {
     if (verify_result == 0 ||
-        verify_result->abi_version != SPARK_DSPARK_ABI_VERSION ||
+        verify_result->abi_version != SPARK_SPECULATION_ABI_VERSION ||
         verify_result->descriptor_bytes !=
-            SPARK_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES ||
-        (verify_result->flags & ~SPARK_DSPARK_VERIFY_RESULT_KNOWN_FLAGS) != 0u ||
+            SPARK_SPECULATION_VERIFY_RESULT_DESCRIPTOR_BYTES ||
+        (verify_result->flags & ~SPARK_SPECULATION_VERIFY_RESULT_KNOWN_FLAGS) !=
+            0u ||
         verify_result->proposed_token_count == 0u ||
         verify_result->proposed_token_count >
-            SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
+            SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT ||
         verify_result->accepted_draft_token_count >
             verify_result->proposed_token_count ||
         verify_result->committed_token_count >
@@ -629,14 +587,14 @@ static SparkStatus SparkSpeculationPolicyValidateVerifyResult(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((verify_result->flags &
-            SPARK_DSPARK_VERIFY_RESULT_FLAG_ACCEPTED_ALL) != 0u &&
+            SPARK_SPECULATION_VERIFY_RESULT_FLAG_ACCEPTED_ALL) != 0u &&
         verify_result->accepted_draft_token_count !=
             verify_result->proposed_token_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((verify_result->flags &
-            SPARK_DSPARK_VERIFY_RESULT_FLAG_REJECTED) != 0u &&
+            SPARK_SPECULATION_VERIFY_RESULT_FLAG_REJECTED) != 0u &&
         verify_result->accepted_draft_token_count >=
             verify_result->proposed_token_count)
     {
@@ -648,7 +606,7 @@ static SparkStatus SparkSpeculationPolicyValidateVerifyResult(
 SparkStatus SparkSpeculationPolicyCompleteVerify(
     SparkSpeculationSpeculator *speculator,
     uint64_t sequence_id,
-    const SparkSpeculationVerifyResult *verify_result)
+    const SparkSpeculationPolicyVerifyResult *verify_result)
 {
     SparkSpeculationSequenceState *sequence_state;
     SparkStatus status;
@@ -669,7 +627,7 @@ SparkStatus SparkSpeculationPolicyCompleteVerify(
         sequence_id);
     if (sequence_state == 0 ||
         (sequence_state->flags &
-            SPARK_DSPARK_SEQUENCE_STATE_FLAG_DRAFT_READY) == 0u ||
+            SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY) == 0u ||
         sequence_state->draft_token_count != verify_result->proposed_token_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -694,81 +652,200 @@ SparkStatus SparkSpeculationPolicyCompleteVerify(
     speculator->verify_dispatch_count += 1u;
 
     sequence_state->flags &=
-        ~(SPARK_DSPARK_SEQUENCE_STATE_FLAG_DRAFT_READY |
-          SPARK_DSPARK_SEQUENCE_STATE_FLAG_VERIFY_INFLIGHT);
+        ~(SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY |
+          SPARK_SPECULATION_SEQUENCE_STATE_FLAG_VERIFY_INFLIGHT);
     sequence_state->draft_token_count = 0u;
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkSpeculationPolicyDraftParentIndex(
+    const uint32_t *draft_parent_indices,
+    uint32_t node_index)
+{
+    if (draft_parent_indices != 0)
+    {
+        return draft_parent_indices[node_index];
+    }
+    if (node_index == 0u)
+    {
+        return SPARK_SPECULATION_PARENT_INDEX_ROOT;
+    }
+    return node_index - 1u;
+}
+
+static SparkStatus SparkSpeculationPolicyValidateDraftTree(
+    const uint32_t *draft_token_ids,
+    const uint32_t *draft_parent_indices,
+    uint32_t draft_token_count,
+    uint32_t vocab_size)
+{
+    uint32_t node_index;
+    uint32_t sibling_index;
+
+    for (node_index = 0u;
+         node_index < draft_token_count;
+         ++node_index)
+    {
+        uint32_t parent_index;
+
+        if (draft_token_ids[node_index] >= vocab_size)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        parent_index = SparkSpeculationPolicyDraftParentIndex(
+            draft_parent_indices,
+            node_index);
+        if (parent_index != SPARK_SPECULATION_PARENT_INDEX_ROOT &&
+            parent_index >= node_index)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        for (sibling_index = 0u;
+             sibling_index < node_index;
+             ++sibling_index)
+        {
+            if (SparkSpeculationPolicyDraftParentIndex(
+                    draft_parent_indices,
+                    sibling_index) == parent_index &&
+                draft_token_ids[sibling_index] ==
+                    draft_token_ids[node_index])
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkSpeculationPolicyResolveVerifierTree(
+    const uint32_t *draft_token_ids,
+    const uint32_t *draft_parent_indices,
+    uint32_t draft_token_count,
+    const uint32_t *verifier_token_ids,
+    uint32_t verifier_token_count,
+    uint32_t vocab_size,
+    SparkSpeculationPolicyVerifyResult *verify_result)
+{
+    uint32_t accepted_depth[SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint32_t accepted_node_count;
+    uint32_t best_node_index;
+    uint32_t best_depth;
+    uint32_t bonus_row_index;
+    uint32_t node_index;
+    uint32_t verifier_index;
+    SparkStatus status;
+
+    if (draft_token_ids == 0 || verifier_token_ids == 0 || verify_result == 0 ||
+        draft_token_count == 0u ||
+        draft_token_count > SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT ||
+        verifier_token_count < draft_token_count ||
+        verifier_token_count > draft_token_count + 1u ||
+        (draft_parent_indices != 0 &&
+            verifier_token_count != draft_token_count + 1u) ||
+        vocab_size == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    status = SparkSpeculationPolicyValidateDraftTree(
+        draft_token_ids,
+        draft_parent_indices,
+        draft_token_count,
+        vocab_size);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    for (verifier_index = 0u;
+         verifier_index < verifier_token_count;
+         ++verifier_index)
+    {
+        if (verifier_token_ids[verifier_index] >= vocab_size)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+
+    accepted_node_count = 0u;
+    best_node_index = SPARK_SPECULATION_PARENT_INDEX_ROOT;
+    best_depth = 0u;
+    for (node_index = 0u;
+         node_index < draft_token_count;
+         ++node_index)
+    {
+        uint32_t parent_index;
+        uint32_t parent_depth;
+        uint32_t verifier_row_index;
+
+        parent_index = SparkSpeculationPolicyDraftParentIndex(
+            draft_parent_indices,
+            node_index);
+        parent_depth = parent_index == SPARK_SPECULATION_PARENT_INDEX_ROOT ?
+            0u : accepted_depth[parent_index];
+        verifier_row_index =
+            parent_index == SPARK_SPECULATION_PARENT_INDEX_ROOT ?
+                0u : parent_index + 1u;
+        if ((parent_index == SPARK_SPECULATION_PARENT_INDEX_ROOT ||
+                parent_depth != 0u) &&
+            draft_token_ids[node_index] ==
+                verifier_token_ids[verifier_row_index])
+        {
+            accepted_depth[node_index] = parent_depth + 1u;
+            accepted_node_count += 1u;
+            if (accepted_depth[node_index] > best_depth)
+            {
+                best_depth = accepted_depth[node_index];
+                best_node_index = node_index;
+            }
+        }
+        else
+        {
+            accepted_depth[node_index] = 0u;
+        }
+    }
+
+    memset(verify_result, 0, sizeof(*verify_result));
+    verify_result->abi_version = SPARK_SPECULATION_ABI_VERSION;
+    verify_result->descriptor_bytes =
+        SPARK_SPECULATION_VERIFY_RESULT_DESCRIPTOR_BYTES;
+    verify_result->proposed_token_count = draft_token_count;
+    verify_result->accepted_draft_token_count = best_depth;
+    verify_result->committed_token_count = best_depth;
+    if (accepted_node_count == draft_token_count)
+    {
+        verify_result->flags = SPARK_SPECULATION_VERIFY_RESULT_FLAG_ACCEPTED_ALL;
+    }
+    else
+    {
+        verify_result->flags = SPARK_SPECULATION_VERIFY_RESULT_FLAG_REJECTED;
+    }
+    bonus_row_index = best_node_index == SPARK_SPECULATION_PARENT_INDEX_ROOT ?
+        0u : best_node_index + 1u;
+    if (bonus_row_index < verifier_token_count)
+    {
+        verify_result->committed_token_count = best_depth + 1u;
+        verify_result->fallback_token_id =
+            verifier_token_ids[bonus_row_index];
+    }
+    return SPARK_STATUS_OK;
+}
 
 SparkStatus SparkSpeculationPolicyResolveVerifierTokens(
     const uint32_t *draft_token_ids,
     uint32_t draft_token_count,
     const uint32_t *verifier_token_ids,
     uint32_t verifier_token_count,
-    SparkSpeculationVerifyResult *verify_result)
+    uint32_t vocab_size,
+    SparkSpeculationPolicyVerifyResult *verify_result)
 {
-    uint32_t token_index;
-    uint32_t accepted_token_count;
-
-    if (draft_token_ids == 0 || verifier_token_ids == 0 || verify_result == 0 ||
-        draft_token_count == 0u ||
-        draft_token_count > SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
-        verifier_token_count < draft_token_count ||
-        verifier_token_count > draft_token_count + 1u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    for (token_index = 0u;
-         token_index < draft_token_count;
-         ++token_index)
-    {
-        if (draft_token_ids[token_index] >= SPARK_DSPARK_FULL_VOCAB_SIZE ||
-            verifier_token_ids[token_index] >= SPARK_DSPARK_FULL_VOCAB_SIZE)
-        {
-            return SPARK_STATUS_INVALID_ARGUMENT;
-        }
-    }
-    if (verifier_token_count > draft_token_count &&
-        verifier_token_ids[draft_token_count] >= SPARK_DSPARK_FULL_VOCAB_SIZE)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    accepted_token_count = draft_token_count;
-    for (token_index = 0u;
-         token_index < draft_token_count;
-         ++token_index)
-    {
-        if (draft_token_ids[token_index] != verifier_token_ids[token_index])
-        {
-            accepted_token_count = token_index;
-            break;
-        }
-    }
-
-    memset(verify_result, 0, sizeof(*verify_result));
-    verify_result->abi_version = SPARK_DSPARK_ABI_VERSION;
-    verify_result->descriptor_bytes =
-        SPARK_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES;
-    verify_result->proposed_token_count = draft_token_count;
-    verify_result->accepted_draft_token_count = accepted_token_count;
-    if (accepted_token_count == draft_token_count)
-    {
-        verify_result->flags = SPARK_DSPARK_VERIFY_RESULT_FLAG_ACCEPTED_ALL;
-        verify_result->committed_token_count = verifier_token_count;
-        if (verifier_token_count > draft_token_count)
-        {
-            verify_result->fallback_token_id = verifier_token_ids[draft_token_count];
-        }
-        return SPARK_STATUS_OK;
-    }
-
-    verify_result->flags = SPARK_DSPARK_VERIFY_RESULT_FLAG_REJECTED;
-    verify_result->committed_token_count = accepted_token_count + 1u;
-    verify_result->fallback_token_id = verifier_token_ids[accepted_token_count];
-    return SPARK_STATUS_OK;
+    return SparkSpeculationPolicyResolveVerifierTree(
+        draft_token_ids,
+        0,
+        draft_token_count,
+        verifier_token_ids,
+        verifier_token_count,
+        vocab_size,
+        verify_result);
 }
 
 SparkStatus SparkSpeculationPolicyCancelSequence(

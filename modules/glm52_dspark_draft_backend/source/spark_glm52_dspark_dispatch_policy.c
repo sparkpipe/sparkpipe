@@ -6,6 +6,51 @@ static const uint32_t SparkGlm52DsparkDefaultAuxLayerIds[
     SPARK_DSPARK_AUX_LAYER_COUNT] =
     SPARK_DSPARK_AUX_LAYER_IDS_INITIALIZER;
 
+SparkStatus SparkGlm52DsparkBuildDefaultModelContract(
+    SparkGlm52DsparkModelContract *model_contract)
+{
+    uint32_t layer_index;
+
+    if (model_contract == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(model_contract, 0, sizeof(*model_contract));
+    model_contract->abi_version = SPARK_DSPARK_ABI_VERSION;
+    model_contract->descriptor_bytes =
+        SPARK_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+    model_contract->verifier_hidden_dtype =
+        SPARK_DSPARK_VERIFIER_HIDDEN_DTYPE_BF16;
+    model_contract->draft_dtype = SPARK_DSPARK_DRAFT_DTYPE_BF16;
+    model_contract->draft_layer_count = SPARK_DSPARK_DRAFT_LAYER_COUNT;
+    model_contract->block_size = SPARK_DSPARK_BLOCK_SIZE;
+    model_contract->hidden_dimension = SPARK_DSPARK_HIDDEN_DIMENSION;
+    model_contract->intermediate_dimension =
+        SPARK_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
+    model_contract->attention_head_count =
+        SPARK_DSPARK_DRAFT_ATTENTION_HEAD_COUNT;
+    model_contract->kv_head_count = SPARK_DSPARK_DRAFT_KV_HEAD_COUNT;
+    model_contract->head_dimension = SPARK_DSPARK_DRAFT_HEAD_DIMENSION;
+    model_contract->vocab_size = SPARK_DSPARK_FULL_VOCAB_SIZE;
+    model_contract->draft_vocab_size = SPARK_DSPARK_FULL_VOCAB_SIZE;
+    model_contract->markov_rank = SPARK_DSPARK_MARKOV_RANK;
+    model_contract->max_anchors = SPARK_DSPARK_MAX_ANCHORS;
+    model_contract->maximum_speculative_token_count =
+        SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+    model_contract->verifier_accept_k = 1u;
+    model_contract->aux_layer_count = SPARK_DSPARK_AUX_LAYER_COUNT;
+    model_contract->enable_confidence_head = 1u;
+    model_contract->confidence_head_with_markov = 1u;
+    for (layer_index = 0u;
+         layer_index < SPARK_DSPARK_AUX_LAYER_COUNT;
+         ++layer_index)
+    {
+        model_contract->aux_layer_ids[layer_index] =
+            SparkGlm52DsparkDefaultAuxLayerIds[layer_index];
+    }
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
     SparkGlm52DsparkHiddenTapPlan *tap_plan)
 {

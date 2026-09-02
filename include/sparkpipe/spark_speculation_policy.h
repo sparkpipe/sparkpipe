@@ -1,29 +1,66 @@
 #pragma once
 
-
 #include <stdint.h>
 
 #include "sparkpipe/spark_status.h"
-#include "sparkpipe/spark_dspark_drafter.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES \
+#define SPARK_SPECULATION_ABI_VERSION 3u
+#define SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT 32u
+#define SPARK_SPECULATION_MAX_AUX_LAYER_COUNT 8u
+#define SPARK_SPECULATION_PARENT_INDEX_ROOT 0xffffffffu
+#define SPARK_SPECULATION_INVALID_LAYER_INDEX 0xffffffffu
+#define SPARK_SPECULATION_CONFIDENCE_MILLI_ONE 1000u
+#define SPARK_SPECULATION_DEFAULT_MIN_CONFIDENCE_MILLI 350u
+#define SPARK_SPECULATION_DEFAULT_REALTIME_MIN_CONFIDENCE_MILLI 250u
+#define SPARK_SPECULATION_POLICY_REALTIME_PRIORITY_THRESHOLD 4000000000u
+#define SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16 1u
+#define SPARK_SPECULATION_DRAFT_DTYPE_BF16 1u
+
+#define SPARK_SPECULATION_POLICY_FLAG_ENABLE_REALTIME 0x00000001u
+#define SPARK_SPECULATION_POLICY_FLAG_ENABLE_UNDERFILLED_DECODE 0x00000002u
+#define SPARK_SPECULATION_POLICY_FLAG_REQUIRE_CONFIDENCE_HEAD 0x00000004u
+#define SPARK_SPECULATION_POLICY_FLAG_REQUIRE_MARKOV_HEAD 0x00000008u
+#define SPARK_SPECULATION_POLICY_DEFAULT_FLAGS \
+    (SPARK_SPECULATION_POLICY_FLAG_ENABLE_REALTIME | \
+     SPARK_SPECULATION_POLICY_FLAG_ENABLE_UNDERFILLED_DECODE | \
+     SPARK_SPECULATION_POLICY_FLAG_REQUIRE_CONFIDENCE_HEAD | \
+     SPARK_SPECULATION_POLICY_FLAG_REQUIRE_MARKOV_HEAD)
+#define SPARK_SPECULATION_POLICY_KNOWN_FLAGS \
+    SPARK_SPECULATION_POLICY_DEFAULT_FLAGS
+
+#define SPARK_SPECULATION_SEQUENCE_STATE_FLAG_VALID 0x00000001u
+#define SPARK_SPECULATION_SEQUENCE_STATE_FLAG_TAPS_READY 0x00000002u
+#define SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY 0x00000004u
+#define SPARK_SPECULATION_SEQUENCE_STATE_FLAG_VERIFY_INFLIGHT 0x00000008u
+
+#define SPARK_SPECULATION_DRAFT_RESULT_FLAG_CONFIDENCE_TRUNCATED 0x00000001u
+#define SPARK_SPECULATION_DRAFT_RESULT_KNOWN_FLAGS \
+    SPARK_SPECULATION_DRAFT_RESULT_FLAG_CONFIDENCE_TRUNCATED
+
+#define SPARK_SPECULATION_VERIFY_RESULT_FLAG_ACCEPTED_ALL UINT32_C(0x00000001)
+#define SPARK_SPECULATION_VERIFY_RESULT_FLAG_REJECTED UINT32_C(0x00000002)
+#define SPARK_SPECULATION_VERIFY_RESULT_KNOWN_FLAGS \
+    (SPARK_SPECULATION_VERIFY_RESULT_FLAG_ACCEPTED_ALL | \
+     SPARK_SPECULATION_VERIFY_RESULT_FLAG_REJECTED)
+
+#define SPARK_SPECULATION_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkSpeculationConfiguration))
-#define SPARK_DSPARK_DESCRIPTOR_BYTES \
+#define SPARK_SPECULATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkSpeculationSpeculator))
-#define SPARK_DSPARK_SEQUENCE_STATE_DESCRIPTOR_BYTES \
+#define SPARK_SPECULATION_SEQUENCE_STATE_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkSpeculationSequenceState))
-#define SPARK_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES \
+#define SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkSpeculationModelContract))
-#define SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkSpeculationDraftRequest))
-#define SPARK_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkSpeculationDraftResult))
-#define SPARK_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkSpeculationVerifyResult))
+#define SPARK_SPECULATION_DRAFT_REQUEST_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkSpeculationPolicyDraftRequest))
+#define SPARK_SPECULATION_DRAFT_RESULT_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkSpeculationPolicyDraftResult))
+#define SPARK_SPECULATION_VERIFY_RESULT_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkSpeculationPolicyVerifyResult))
 
 typedef struct SparkSpeculationModelContract
 {
@@ -47,10 +84,10 @@ typedef struct SparkSpeculationModelContract
     uint32_t aux_layer_count;
     uint32_t enable_confidence_head;
     uint32_t confidence_head_with_markov;
-    uint32_t aux_layer_ids[SPARK_DSPARK_AUX_LAYER_COUNT];
+    uint32_t aux_layer_ids[SPARK_SPECULATION_MAX_AUX_LAYER_COUNT];
 } SparkSpeculationModelContract;
 
-typedef struct SparkSpeculationDraftRequest
+typedef struct SparkSpeculationPolicyDraftRequest
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -62,19 +99,19 @@ typedef struct SparkSpeculationDraftRequest
     uint64_t sequence_id;
     uint64_t sequence_position;
     uint64_t tap_generation;
-} SparkSpeculationDraftRequest;
+} SparkSpeculationPolicyDraftRequest;
 
-typedef struct SparkSpeculationDraftResult
+typedef struct SparkSpeculationPolicyDraftResult
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
     uint32_t flags;
     uint32_t token_count;
-    uint32_t confidence_milli[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
-    uint32_t token_ids[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
-} SparkSpeculationDraftResult;
+    uint32_t confidence_milli[SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint32_t token_ids[SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT];
+} SparkSpeculationPolicyDraftResult;
 
-typedef struct SparkSpeculationVerifyResult
+typedef struct SparkSpeculationPolicyVerifyResult
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -84,12 +121,12 @@ typedef struct SparkSpeculationVerifyResult
     uint32_t committed_token_count;
     uint32_t fallback_token_id;
     uint32_t reserved;
-} SparkSpeculationVerifyResult;
+} SparkSpeculationPolicyVerifyResult;
 
 typedef SparkStatus (*SparkSpeculationDraftFunction)(
     void *context,
-    const SparkSpeculationDraftRequest *request,
-    SparkSpeculationDraftResult *result);
+    const SparkSpeculationPolicyDraftRequest *request,
+    SparkSpeculationPolicyDraftResult *result);
 
 typedef struct SparkSpeculationSequenceState
 {
@@ -106,8 +143,8 @@ typedef struct SparkSpeculationSequenceState
     uint64_t sequence_position;
     uint64_t tap_generation;
     uint64_t draft_generation;
-    uint32_t draft_token_ids[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
-    uint32_t draft_confidence_milli[SPARK_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint32_t draft_token_ids[SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint32_t draft_confidence_milli[SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkSpeculationSequenceState;
 
 typedef struct SparkSpeculationConfiguration
@@ -152,9 +189,6 @@ typedef struct SparkSpeculationSpeculator
     void *draft_context;
 } SparkSpeculationSpeculator;
 
-SparkStatus SparkSpeculationPolicyBuildDefaultModelContract(
-    SparkSpeculationModelContract *model_contract);
-
 SparkStatus SparkSpeculationPolicyValidateModelContract(
     const SparkSpeculationModelContract *model_contract);
 
@@ -174,24 +208,34 @@ SparkStatus SparkSpeculationPolicyMarkVerifierTapsReady(
 
 SparkStatus SparkSpeculationPolicyEnsureDraft(
     SparkSpeculationSpeculator *speculator,
-    const SparkSpeculationDraftRequest *request);
+    const SparkSpeculationPolicyDraftRequest *request);
 
 SparkStatus SparkSpeculationPolicyGetDraft(
     SparkSpeculationSpeculator *speculator,
     uint64_t sequence_id,
-    SparkSpeculationDraftResult *draft_result);
+    SparkSpeculationPolicyDraftResult *draft_result);
 
 SparkStatus SparkSpeculationPolicyCompleteVerify(
     SparkSpeculationSpeculator *speculator,
     uint64_t sequence_id,
-    const SparkSpeculationVerifyResult *verify_result);
+    const SparkSpeculationPolicyVerifyResult *verify_result);
+
+SparkStatus SparkSpeculationPolicyResolveVerifierTree(
+    const uint32_t *draft_token_ids,
+    const uint32_t *draft_parent_indices,
+    uint32_t draft_token_count,
+    const uint32_t *verifier_token_ids,
+    uint32_t verifier_token_count,
+    uint32_t vocab_size,
+    SparkSpeculationPolicyVerifyResult *verify_result);
 
 SparkStatus SparkSpeculationPolicyResolveVerifierTokens(
     const uint32_t *draft_token_ids,
     uint32_t draft_token_count,
     const uint32_t *verifier_token_ids,
     uint32_t verifier_token_count,
-    SparkSpeculationVerifyResult *verify_result);
+    uint32_t vocab_size,
+    SparkSpeculationPolicyVerifyResult *verify_result);
 
 SparkStatus SparkSpeculationPolicyCancelSequence(
     SparkSpeculationSpeculator *speculator,
