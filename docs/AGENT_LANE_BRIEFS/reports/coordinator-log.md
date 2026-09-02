@@ -4802,3 +4802,15 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-02 ~firing 124: TP4PP4 11/16 built, rank11 in flight; ships ~45min out
 
 ## 2026-09-02 ~firing 125: TP4PP4 14/16 built, rank14 in flight — ships next cycle
+
+## 2026-09-02 ~firing 126: TP4PP4 BUILD 16/16 + ships LIVE; size classes fully explained
+
+- Build done: manifest written, tool exit clean. Five size classes:
+  stage0 99.6G ×4, stage1 94.28G ×4, stage2 94.26G ×4, stage3
+  94,748,565,432 ×2 + 94,746,730,424 ×2. Stage-3 pair split DECODED:
+  output head vocab 129,280 rows = 1,010 tiles of 128 → TP4 = 253/253/
+  252/252 tiles; one tile = 128×7168×2B = 1,835,008B = exactly the
+  delta. Same 554-tensor count everywhere; benign plan remainder.
+- Ship pass live (dsv4pro_tp4pp4_ship.sh on sparka): rank00 already
+  arriving on spark0. Old Aug-28 superseded stage packs on the nodes
+  (dsv4_pro_tp4_pp4_stage.spstage) = cleanup AFTER full placement.
