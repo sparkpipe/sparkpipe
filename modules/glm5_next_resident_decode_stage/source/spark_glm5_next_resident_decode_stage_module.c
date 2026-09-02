@@ -325,7 +325,25 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
 	if ( SparkGlm5NextContractHash(contract_sha256) < 0 || header->model_revision[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 || memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)) != 0 || SparkGlm5NextBytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)) != 0u || SparkGlm5NextBytesAreZero(header->pack_recipe_sha256,sizeof(header->pack_recipe_sha256)) != 0u )
+	{
+		uint32_t di;
+		(void)fprintf(stderr,"glm5next_pack_header_mismatch state_rev=%s hdr_rev=%s contract_ret=%d contract_cmp=%d config_zero=%u recipe_zero=%u hdr_file_bytes=%llu actual=%llu\n",
+			state->model_revision != 0 ? state->model_revision : "(null)",
+			header->model_revision,
+			SparkGlm5NextContractHash(contract_sha256),
+			memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)),
+			SparkGlm5NextBytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)),
+			SparkGlm5NextBytesAreZero(header->pack_recipe_sha256,sizeof(header->pack_recipe_sha256)),
+			(unsigned long long)header->file_bytes,
+			(unsigned long long)file_bytes);
+		for ( di = 0u; di < SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES; di++ )
+			(void)fprintf(stderr,"%02x",contract_sha256[di]);
+		(void)fprintf(stderr," vs_hdr ");
+		for ( di = 0u; di < SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES; di++ )
+			(void)fprintf(stderr,"%02x",header->contract_sha256[di]);
+		(void)fprintf(stderr,"\n");
 		return(SPARK_STATUS_HASH_MISMATCH);
+	}
 	if ( header->file_bytes != file_bytes || header->directory_offset < header->header_bytes || header->directory_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || header->tensor_count > UINT64_MAX / header->directory_entry_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;
