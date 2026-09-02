@@ -312,6 +312,7 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 {
 	uint8_t contract_sha256[SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES];
 	uint64_t directory_bytes,directory_end;
+	memset(contract_sha256,0,sizeof(contract_sha256));
 	if ( state == 0 || header == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( header->magic != SPARK_GLM5_NEXT_STAGEPACK_MAGIC || header->format_version != SPARK_GLM5_NEXT_STAGEPACK_FORMAT_VERSION || header->header_bytes != SPARK_GLM5_NEXT_STAGEPACK_HEADER_BYTES || header->directory_entry_bytes != SPARK_GLM5_NEXT_STAGEPACK_ENTRY_BYTES || header->codec_abi_version != SPARK_WEIGHT_CODEC_ABI_VERSION )
