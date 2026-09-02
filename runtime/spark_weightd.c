@@ -767,18 +767,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         size_t chunk = remaining < SPARK_WEIGHTD_LOAD_CHUNK_BYTES
             ? (size_t)remaining
             : (size_t)SPARK_WEIGHTD_LOAD_CHUNK_BYTES;
-        size_t got = 0u;
-        while (got < chunk)
-        {
-            ssize_t n = pread(fileno(file), staging + got, chunk - got,
-                (off_t)(loaded + got));
-            if (n <= 0)
-            {
-                break;
-            }
-            got += (size_t)n;
-        }
-        if (got != chunk)
+        if (fread(staging, 1u, chunk, file) != chunk)
         {
             free(staging);
             (void)fclose(file);
