@@ -4834,3 +4834,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-02 ~firing 131: TP4PP4 ships 9/16, zero errors, on rank9
 
 ## 2026-09-02 ~firing 132: TP4PP4 ships 12/16, zero errors; ranks 12-15 in flight
+
+## 2026-09-02 ~firing 133: ITEM 14 PLACEMENT DONE — 16/16 TP4PP4 placed, exit 0
+
+- RANK15-PLACED sparkf closed the pass: 16/16 ranks on canonical nodes,
+  every one gated by destination sha256 (zero mismatches over the whole
+  run), rankNN.receipt + rankNN.sha written per node, flash convention.
+- Digest audit re-run (idempotent pass) hashing all 16 destinations in
+  background — reports next firing. Post-placement cleanup list: old
+  Aug-28 superseded dsv4_pro_tp4_pp4_stage.spstage + stale receipt on
+  the nodes that still hold them (~1.5TB fleet-wide; removals logged).
