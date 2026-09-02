@@ -353,8 +353,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "7e463b11e0391d845477fd724714b21d33249532a71357597ffa9cd389f6da2e",
-      "size_bytes": 254149
+      "sha256": "045ed663fc403c8cadb7b2aaebff9da496e2c9e0cbf44f9d56a85c120ac5497c",
+      "size_bytes": 254279
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -8870,5 +8870,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 30970769
+  "total_bytes": 30970899
 }
