@@ -4408,3 +4408,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-01 ~27:0x — firing 72: spark1 rank1 at 25.0/40G
 
 ## 2026-09-01 ~27:1x — firing 73: spark1 rank1 at 26.4/40G
+
+## 2026-09-01 ~27:2x — firing 74: spark1 rank1 at 27.2/40G
