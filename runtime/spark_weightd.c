@@ -13,12 +13,16 @@
  *   2 MiB granularity mapped into a reserved span — W2b; consumer import+
  *   map is the staged tier), pack staging is host anonymous memory, one
  *   bounded chunk.
- * - The pack digest is verified BEFORE any arena allocation, from the one
- *   open file that then supplies the load, and the file's identity (size
- *   + mtime) is re-checked after the load: attach-by-hash never lands
- *   bytes that do not hash to the identity (fail-closed HASH_MISMATCH).
- *   That is the exact guarantee the tenant-scribble protection and the
- *   determinism receipts ride on. */
+ * - The pack streams once through explicit 64 MiB pread chunks into a
+ *   staging buffer: every chunk feeds the digest (the fast ck128 sidecar
+ *   when the placement wrote one, sha256 otherwise) and the arena copy in
+ *   the same pass, and the file's identity (size + mtime) is re-checked
+ *   after the load. pread (not mmap fault-in) keeps the read at full
+ *   sequential speed independent of page-cache state. The arena is
+ *   published only after both pass, so bytes that do not hash to the
+ *   identity are never served (fail-closed HASH_MISMATCH). That is the
+ *   exact guarantee the tenant-scribble protection and the determinism
+ *   receipts ride on. */
 
 #define _POSIX_C_SOURCE 200809L
 #if defined(__APPLE__)
@@ -46,15 +50,16 @@
 #include <cuda.h>
 
 #include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_ck128.h"
 
-#define SPARK_WEIGHTD_LOAD_CHUNK_BYTES (4ull * 1024ull * 1024ull)
+#define SPARK_WEIGHTD_LOAD_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS 10000000000ull
 
 /* The VMM page law (docs/WEIGHTD_DESIGN.md): a 25-100 GiB arena must not
  * drown the TLB in 4 KiB pages. Physical chunks are created at the driver's
  * recommended allocation granularity but never below 2 MiB, and every chunk
  * size stays a multiple of that granularity (cuMemCreate requires it). */
-#define SPARK_WEIGHTD_VMM_CHUNK_BYTES (2ull * 1024ull * 1024ull)
+#define SPARK_WEIGHTD_VMM_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 
 typedef struct SparkWeightdArena
 {
@@ -591,52 +596,40 @@ static void SparkWeightdServerDetachRelease(SparkWeightdServer *server,
 
 /* ------------------------------ server: load path ------------------------------ */
 
-/* Streaming digest over the caller's open file (the fast W1 bulk transform
- * runs inside SparkSha256Update — same function the pack verifier uses). */
-static SparkStatus SparkWeightdFileDigest(FILE *file,
-    char hex[SPARK_SHA256_HEX_BYTES])
+static SparkStatus SparkWeightdSidecarCk128(const char *pack_path,
+    char hex[SPARK_CK128_HEX_BYTES])
 {
-    SparkSha256Context context;
-    uint8_t *buffer = (uint8_t *)malloc(SPARK_WEIGHTD_LOAD_CHUNK_BYTES);
-    SparkStatus status = SPARK_STATUS_OK;
+    char sidecar_path[SPARK_WEIGHTD_PATH_BYTES + 8];
+    FILE *sidecar;
+    int written;
+    uint32_t index;
 
-    if (buffer == 0)
+    written = snprintf(sidecar_path, sizeof(sidecar_path), "%s.ck128", pack_path);
+    if (written <= 0 || (size_t)written >= sizeof(sidecar_path))
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        return SPARK_STATUS_NOT_FOUND;
     }
-    if (fseek(file, 0, SEEK_SET) != 0)
+    sidecar = fopen(sidecar_path, "rb");
+    if (sidecar == 0)
     {
-        free(buffer);
-        return SPARK_STATUS_IO_ERROR;
+        return SPARK_STATUS_NOT_FOUND;
     }
-    SparkSha256Initialize(&context);
-    for (;;)
+    if (fread(hex, 1u, 32u, sidecar) != 32u || hex[0] == '\0')
     {
-        size_t bytes_read = fread(buffer, 1u, SPARK_WEIGHTD_LOAD_CHUNK_BYTES, file);
-        if (bytes_read != 0u)
+        (void)fclose(sidecar);
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    hex[32] = '\0';
+    (void)fclose(sidecar);
+    for (index = 0u; index < 32u; index++)
+    {
+        char c = hex[index];
+        if ((c < '0' || c > '9') && (c < 'a' || c > 'f'))
         {
-            SparkSha256Update(&context, buffer, bytes_read);
-        }
-        if (bytes_read < SPARK_WEIGHTD_LOAD_CHUNK_BYTES)
-        {
-            if (ferror(file) != 0)
-            {
-                status = SPARK_STATUS_IO_ERROR;
-            }
-            break;
+            return SPARK_STATUS_NOT_FOUND;
         }
     }
-    free(buffer);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    {
-        uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-        SparkSha256Finalize(&context, digest);
-        SparkSha256DigestToHex(digest, hex);
-    }
-    return fseek(file, 0, SEEK_SET) == 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+    return SPARK_STATUS_OK;
 }
 
 /* The cold path: verify-then-load, all through ONE open file so the bytes
@@ -650,13 +643,20 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     SparkWeightdIdentity identity = request->identity;
     SparkWeightdArena *arena;
     SparkWeightdArena pending;
-    char pack_sha256[SPARK_SHA256_HEX_BYTES];
+    char expected_hex[SPARK_SHA256_HEX_BYTES];
+    char computed_hex[SPARK_SHA256_HEX_BYTES];
     struct stat pack_stat_before;
     struct stat pack_stat_after;
-    uint8_t *staging = 0;
     FILE *file = 0;
+    uint8_t *staging = 0;
+    SparkCk128Context ck_context;
+    SparkSha256Context sha_context;
+    SparkStatus verify_status;
+    int use_ck128;
     SparkStatus status;
     uint64_t loaded = 0ull;
+    uint64_t load_start_ns;
+    uint64_t load_end_ns;
     uint32_t slot;
 
     memset(&pending, 0, sizeof(pending));
@@ -711,17 +711,11 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
         return;
     }
-    if (SparkWeightdFileDigest(file, pack_sha256) != SPARK_STATUS_OK)
+    use_ck128 = SparkWeightdSidecarCk128(request->pack_path, expected_hex) ==
+        SPARK_STATUS_OK;
+    if (!use_ck128)
     {
-        (void)fclose(file);
-        result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
-        return;
-    }
-    if (memcmp(pack_sha256, identity.pack_sha256, SPARK_SHA256_HEX_BYTES) != 0)
-    {
-        (void)fclose(file);
-        result->status = (uint32_t)SPARK_STATUS_HASH_MISMATCH;
-        return;
+        memcpy(expected_hex, identity.pack_sha256, SPARK_SHA256_HEX_BYTES);
     }
 
     /* the NO-2x gate: make room by reclaiming COLD arenas only; if a live
@@ -739,7 +733,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
 
-    /* the VMM arena: a reserved virtual span carrying 2 MiB physical chunks
+    /* the VMM arena: a reserved virtual span carrying physical chunks
      * mapped read-write for the load below. The identity — not the
      * allocation — is the contract; the span's chunks can be attached or
      * detached later without moving the base (docs/WEIGHTD_DESIGN.md). */
@@ -750,9 +744,6 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         return;
     }
-    /* staging: host anonymous memory; the copy is host -> device arena
-     * (cross-space, named per the rule; the W1 pipelined loader is the
-     * staged daemon-side cold-path successor) */
     staging = (uint8_t *)malloc(SPARK_WEIGHTD_LOAD_CHUNK_BYTES);
     if (staging == 0)
     {
@@ -761,14 +752,49 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         return;
     }
+    load_start_ns = SparkWeightdMonotonicTimeNs();
+    if (use_ck128)
+    {
+        SparkCk128Initialize(&ck_context);
+    }
+    else
+    {
+        SparkSha256Initialize(&sha_context);
+    }
     while (loaded < identity.arena_bytes)
     {
         uint64_t remaining = identity.arena_bytes - loaded;
         size_t chunk = remaining < SPARK_WEIGHTD_LOAD_CHUNK_BYTES
             ? (size_t)remaining
             : (size_t)SPARK_WEIGHTD_LOAD_CHUNK_BYTES;
-        if (fread(staging, 1u, chunk, file) != chunk ||
-            cudaMemcpy((void *)((uint8_t *)pending.device_base + loaded),
+        size_t got = 0u;
+        while (got < chunk)
+        {
+            ssize_t n = pread(fileno(file), staging + got, chunk - got,
+                (off_t)(loaded + got));
+            if (n <= 0)
+            {
+                break;
+            }
+            got += (size_t)n;
+        }
+        if (got != chunk)
+        {
+            free(staging);
+            (void)fclose(file);
+            SparkWeightdVmmRelease(&pending);
+            result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
+            return;
+        }
+        if (use_ck128)
+        {
+            SparkCk128Update(&ck_context, staging, chunk);
+        }
+        else
+        {
+            SparkSha256Update(&sha_context, staging, chunk);
+        }
+        if (cudaMemcpy((void *)((uint8_t *)pending.device_base + loaded),
                 staging, chunk, cudaMemcpyHostToDevice) != cudaSuccess)
         {
             free(staging);
@@ -780,18 +806,46 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         loaded += (uint64_t)chunk;
     }
     free(staging);
+    if (use_ck128)
+    {
+        uint8_t digest[16];
+        SparkCk128Finalize(&ck_context, digest);
+        SparkCk128DigestToHex(digest, computed_hex);
+    }
+    else
+    {
+        uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+        SparkSha256Finalize(&sha_context, digest);
+        SparkSha256DigestToHex(digest, computed_hex);
+    }
+    verify_status = memcmp(computed_hex, expected_hex, use_ck128 ? 32u : 64u) == 0
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_HASH_MISMATCH;
     if (fstat(fileno(file), &pack_stat_after) != 0 ||
         pack_stat_after.st_size != pack_stat_before.st_size ||
         SparkWeightdStatMtimeNs(&pack_stat_after) !=
             SparkWeightdStatMtimeNs(&pack_stat_before))
     {
-        /* the pack changed under the load: nothing served from it */
-        (void)fclose(file);
-        SparkWeightdVmmRelease(&pending);
-        result->status = (uint32_t)SPARK_STATUS_HASH_MISMATCH;
-        return;
+        verify_status = SPARK_STATUS_HASH_MISMATCH;
     }
     (void)fclose(file);
+    if (verify_status != SPARK_STATUS_OK)
+    {
+        SparkWeightdVmmRelease(&pending);
+        result->status = (uint32_t)verify_status;
+        return;
+    }
+    load_end_ns = SparkWeightdMonotonicTimeNs();
+    if (load_end_ns > load_start_ns)
+    {
+        printf("weightd cold-load bytes=%llu seconds=%.3f gbps=%.2f checksum=%s\n",
+            (unsigned long long)identity.arena_bytes,
+            (double)(load_end_ns - load_start_ns) / 1e9,
+            (double)identity.arena_bytes /
+                ((double)(load_end_ns - load_start_ns) / 1e9) / 1e9,
+            use_ck128 ? "ck128" : "sha256");
+        fflush(stdout);
+    }
 
     slot = server->arena_count;
     memset(&server->arenas[slot], 0, sizeof(server->arenas[slot]));

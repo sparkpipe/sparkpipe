@@ -39,6 +39,36 @@ int main(int argc, char **argv)
         (void)reason;
         return 0;
     }
+    if (argc >= 2 && strcmp(argv[1], "reclaim") == 0)
+    {
+        SparkWeightdClient *client = 0;
+        SparkWeightdHelloResult hello;
+        SparkWeightdReclaimResult reclaim;
+        const char *socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+        if (socket == 0)
+        {
+            fprintf(stderr, "weightdctl: %s unset\n",
+                SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+            return 2;
+        }
+        if (SparkWeightdClientConnect(socket, &client, &hello) !=
+            SPARK_STATUS_OK)
+        {
+            fprintf(stderr, "weightdctl: no daemon\n");
+            return 1;
+        }
+        if (SparkWeightdClientReclaim(client, &reclaim,
+                SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) != SPARK_STATUS_OK)
+        {
+            SparkWeightdClientClose(client);
+            return 1;
+        }
+        printf("RECLAIM status=%u reclaimed_bytes=%llu arenas=%u resident=%llu\n",
+            reclaim.status, (unsigned long long)reclaim.reclaimed_bytes,
+            reclaim.arena_count, (unsigned long long)reclaim.resident_bytes);
+        SparkWeightdClientClose(client);
+        return 0;
+    }
     if (argc != 5 || (strcmp(argv[1], "load") != 0 && strcmp(argv[1], "unload") != 0))
     {
         fprintf(stderr,
@@ -68,15 +98,26 @@ int main(int argc, char **argv)
     memset(&slice, 0, sizeof(slice));
     slice.model = argv[3];
     slice.revision = argv[4];
-    slice.topology = 16u; /* tp16 identity for these debug loads */
-    slice.geometry_fingerprint = bytes; /* header-fold stand-in for the debug
-                                         * driver; deployments publish real */
+    slice.topology = 0u;
+    slice.geometry_fingerprint = 0ull;
     slice.pack_bytes = bytes;
     SparkWeightdAttachOutcome outcome;
     memset(&outcome, 0, sizeof(outcome));
     char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
+    uint64_t attach_timeout_ns = 300000000000ull;
+    {
+        const char *timeout_env = getenv("SPARK_WEIGHTDCTL_TIMEOUT_NS");
+        if (timeout_env != 0 && timeout_env[0] != '\0')
+        {
+            attach_timeout_ns = strtoull(timeout_env, 0, 10);
+        }
+        if (attach_timeout_ns == 0ull)
+        {
+            attach_timeout_ns = 300000000000ull;
+        }
+    }
     SparkStatus s = SparkWeightdAttachPack(&slice, pack,
-        SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, &outcome, reason);
+        attach_timeout_ns, &outcome, reason);
     if (s != SPARK_STATUS_OK)
     {
         fprintf(stderr, "weightdctl: attach fault %d\n", (int)s);
