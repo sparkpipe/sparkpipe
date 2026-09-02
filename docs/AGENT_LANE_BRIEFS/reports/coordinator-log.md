@@ -4720,3 +4720,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   own invocation ended at the benign same-file cp AFTER writing its
   receipt+sha; rank10 rolled in automatically. Ship script staged on
   sparka (syntax-checked). 16/16 + ships next firing.
+
+## 2026-09-02 ~firing 111: 16/16 MASTERS + SHIP PASS LIVE
+
+- rank10 receipted (1401B, exact size) — the dsv4pro TP16 build phase is
+  COMPLETE: 16/16 masters with receipt+sha on warm CENTRAL, zero lanes
+  running. Ship pass launched (rank r → spark{hex r}, destination sha256
+  gate + receipt/sha copy, idempotent): rank0 PLACED on spark0 in ~3min
+  (~550MB/s class). All 16 expected within the hour.
+- On completion: item 15 CLOSED; item 14 (TP4PP4) build launches on
+  sparka from the LOCAL base.
