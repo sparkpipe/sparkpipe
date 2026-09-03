@@ -1,0 +1,293 @@
+#include "sparkpipe/spark_kv_backing.h"
+
+#include <errno.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#define SPARK_KV_BACKING_TAG "kv_backing"
+#define SPARK_KV_BACKING_FILE_MODE 0600
+#define SPARK_KV_BACKING_DIRECTORY_MODE 0700
+
+typedef struct SparkKvBackingHeader
+{
+	char magic[8];
+	uint64_t slot_bytes;
+	uint32_t slot_count;
+	uint32_t free_hint;
+	uint32_t reserved[8];
+} SparkKvBackingHeader;
+
+static SparkStatus spark_kv_backing_write_header(SparkKvBacking *backing)
+{
+	SparkKvBackingHeader header;
+	ssize_t written;
+	memset(&header,0,sizeof(header));
+	memcpy(header.magic,SPARK_KV_BACKING_MAGIC,sizeof(header.magic));
+	header.slot_bytes = backing->slot_bytes;
+	header.slot_count = backing->slot_count;
+	header.free_hint = backing->free_hint;
+	written = pwrite(backing->file_descriptor,&header,sizeof(header),0);
+	if ( written != (ssize_t)sizeof(header) )
+		return(SPARK_STATUS_IO_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvBackingResolvePath(char *path_out, size_t path_out_bytes,
+	const char *root_directory, const char *deployment_id,
+	const char *tenant_id, const char *model_id)
+{
+	size_t used;
+	int written;
+	static const char allowed[] =
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-";
+	if ( path_out == 0 || path_out_bytes == 0 || root_directory == 0 ||
+		root_directory[0] == '\0' || deployment_id == 0 || tenant_id == 0 ||
+		model_id == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	used = 0u;
+	{
+		const char *components[3];
+		uint32_t index;
+		components[0] = deployment_id;
+		components[1] = tenant_id;
+		components[2] = model_id;
+		used = (size_t)snprintf(path_out,path_out_bytes,"%s/",
+			root_directory);
+		if ( used >= path_out_bytes )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		for ( index = 0u; index < 3u; index++ )
+		{
+			const char *component = components[index];
+			uint32_t position;
+			if ( component[0] == '\0' )
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			for ( position = 0u; component[position] != '\0'; position++ )
+			{
+				if ( component[position] == '/' ||
+					component[position] == '\\' )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+				if ( position == 0u && component[position] == '.' )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+				if ( (size_t)(unsigned char)component[position] >= 128u )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+				if ( strchr(allowed,component[position]) == 0 )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+			}
+			written = snprintf(path_out + used,path_out_bytes - used,
+				"%s%s",component,index < 2u ? "/" : "");
+			if ( written < 0 || (size_t)written >= path_out_bytes - used )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			used += (size_t)written;
+		}
+		written = snprintf(path_out + used,path_out_bytes - used,".slots");
+		if ( written < 0 || (size_t)written >= path_out_bytes - used )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvBackingCreateNamespaces(const char *root_directory,
+	const char *deployment_id, const char *tenant_id)
+{
+	char path[1024];
+	size_t root_length;
+	if ( root_directory == 0 || root_directory[0] == '\0' ||
+		deployment_id == 0 || deployment_id[0] == '\0' ||
+		tenant_id == 0 || tenant_id[0] == '\0' )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( mkdir(root_directory,SPARK_KV_BACKING_DIRECTORY_MODE) != 0 )
+	{
+		if ( errno != EEXIST )
+			return(SPARK_STATUS_IO_ERROR);
+		(void)chmod(root_directory,SPARK_KV_BACKING_DIRECTORY_MODE);
+	}
+	root_length = (size_t)snprintf(path,sizeof(path),"%s/%s",
+		root_directory,deployment_id);
+	if ( root_length >= sizeof(path) )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( mkdir(path,SPARK_KV_BACKING_DIRECTORY_MODE) != 0 )
+	{
+		if ( errno != EEXIST )
+			return(SPARK_STATUS_IO_ERROR);
+		(void)chmod(path,SPARK_KV_BACKING_DIRECTORY_MODE);
+	}
+	if ( snprintf(path,sizeof(path),"%s/%s/%s",root_directory,
+			deployment_id,tenant_id) >= (int)sizeof(path) )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( mkdir(path,SPARK_KV_BACKING_DIRECTORY_MODE) != 0 )
+	{
+		if ( errno != EEXIST )
+			return(SPARK_STATUS_IO_ERROR);
+		(void)chmod(path,SPARK_KV_BACKING_DIRECTORY_MODE);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
+	SparkKvBacking *backing)
+{
+	SparkKvBackingHeader header;
+	uint64_t capacity_bytes;
+	uint32_t index;
+	int descriptor;
+	int enabled = 1;
+	if ( configuration == 0 || backing == 0 || configuration->path == 0 ||
+		configuration->path[0] == '\0' || configuration->maximum_bytes <
+		SPARK_KV_BACKING_SLOT_BYTES )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(backing,0,sizeof(*backing));
+	backing->slot_bytes = SPARK_KV_BACKING_SLOT_BYTES;
+	backing->slot_count = (uint32_t)(configuration->maximum_bytes /
+		backing->slot_bytes);
+	if ( backing->slot_count == 0u || backing->slot_count >
+		SPARK_KV_BACKING_MAX_SLOT_COUNT )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor = open(configuration->path,
+		O_RDWR | O_CREAT | O_NOFOLLOW
+#ifdef O_CLOEXEC
+		| O_CLOEXEC
+#endif
+		,SPARK_KV_BACKING_FILE_MODE);
+	if ( descriptor < 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	if ( fchmod(descriptor,SPARK_KV_BACKING_FILE_MODE) != 0 )
+	{
+		close(descriptor);
+		return(SPARK_STATUS_IO_ERROR);
+	}
+#ifdef POSIX_FADV_RANDOM
+	(void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
+#endif
+	if ( ftruncate(descriptor,SPARK_KV_BACKING_HEADER_BYTES +
+		(uint64_t)backing->slot_count * backing->slot_bytes) != 0 )
+	{
+		close(descriptor);
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	backing->file_descriptor = descriptor;
+	backing->slot_live = (uint8_t *)calloc((size_t)backing->slot_count,1u);
+	if ( backing->slot_live == 0 )
+	{
+		close(descriptor);
+		backing->file_descriptor = -1;
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	if ( pread(descriptor,&header,sizeof(header),0) == (ssize_t)sizeof(header) )
+	{
+		uint32_t nonzero = 0u,i;
+		for ( i = 0u; i < sizeof(header.magic); i++ )
+			nonzero |= (uint32_t)(unsigned char)header.magic[i];
+		if ( nonzero != 0u && (memcmp(header.magic,SPARK_KV_BACKING_MAGIC,
+			sizeof(header.magic)) != 0 || header.slot_bytes != backing->slot_bytes) )
+		{
+			free(backing->slot_live);
+			backing->slot_live = 0;
+			close(descriptor);
+			backing->file_descriptor = -1;
+			return(SPARK_STATUS_TARGET_MISMATCH);
+		}
+	}
+	backing->free_hint = 0u;
+	(void)enabled;
+	if ( spark_kv_backing_write_header(backing) != SPARK_STATUS_OK )
+	{
+		free(backing->slot_live);
+		backing->slot_live = 0;
+		close(descriptor);
+		backing->file_descriptor = -1;
+		return(SPARK_STATUS_IO_ERROR);
+	}
+	(void)index;
+	(void)capacity_bytes;
+	return(SPARK_STATUS_OK);
+}
+
+void SparkKvBackingClose(SparkKvBacking *backing)
+{
+	if ( backing == 0 )
+		return;
+	if ( backing->file_descriptor >= 0 )
+		close(backing->file_descriptor);
+	free(backing->slot_live);
+	memset(backing,0,sizeof(*backing));
+}
+
+int64_t SparkKvBackingAllocate(SparkKvBacking *backing)
+{
+	uint32_t slot;
+	if ( backing == 0 || backing->slot_live == 0 )
+		return(-1);
+	for ( slot = 0u; slot < backing->slot_count; slot++ )
+	{
+		uint32_t candidate = (backing->free_hint + slot) % backing->slot_count;
+		if ( backing->slot_live[candidate] == 0u )
+		{
+			backing->slot_live[candidate] = 1u;
+			backing->live_count++;
+			backing->free_hint = (candidate + 1u) % backing->slot_count;
+			return((int64_t)candidate);
+		}
+	}
+	return(-1);
+}
+
+void SparkKvBackingRelease(SparkKvBacking *backing, uint32_t slot)
+{
+	if ( backing == 0 || backing->slot_live == 0 || slot >= backing->slot_count )
+		return;
+	if ( backing->slot_live[slot] != 0u )
+	{
+		backing->slot_live[slot] = 0u;
+		backing->live_count--;
+	}
+}
+
+static SparkStatus spark_kv_backing_transfer(SparkKvBacking *backing, uint32_t slot,
+	void *buffer, int reading)
+{
+	uint64_t offset;
+	size_t remaining = (size_t)backing->slot_bytes;
+	uint8_t *cursor = (uint8_t *)buffer;
+	if ( backing == 0 || backing->file_descriptor < 0 || buffer == 0 ||
+		slot >= backing->slot_count || backing->slot_live[slot] == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	offset = SPARK_KV_BACKING_HEADER_BYTES + (uint64_t)slot * backing->slot_bytes;
+	while ( remaining > 0u )
+	{
+		size_t chunk = remaining > (64u * 1024u * 1024u) ?
+			(64u * 1024u * 1024u) : remaining;
+		ssize_t moved = reading ?
+			pread(backing->file_descriptor,cursor,chunk,(off_t)offset) :
+			pwrite(backing->file_descriptor,cursor,chunk,(off_t)offset);
+		if ( moved <= 0 )
+			return(SPARK_STATUS_IO_ERROR);
+		cursor += (size_t)moved;
+		offset += (uint64_t)moved;
+		remaining -= (size_t)moved;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvBackingWriteBlock(SparkKvBacking *backing, uint32_t slot,
+	const void *host_buffer)
+{
+	return(spark_kv_backing_transfer(backing,slot,(void *)(size_t)host_buffer,0));
+}
+
+SparkStatus SparkKvBackingReadBlock(SparkKvBacking *backing, uint32_t slot,
+	void *host_buffer)
+{
+	return(spark_kv_backing_transfer(backing,slot,host_buffer,1));
+}
+
+uint64_t SparkKvBackingLiveBytes(const SparkKvBacking *backing)
+{
+	if ( backing == 0 )
+		return(0ull);
+	return((uint64_t)backing->live_count * backing->slot_bytes);
+}

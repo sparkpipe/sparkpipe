@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260903T165141996Z-4280-7e7732d4dbad",
+  "runId": "20260903T165141996Z-4280-7e7732d4dbad",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "1451c7df7a4f18096e95202e4ef0ded1f72ebafc",
+  "diffHash": "cc9819a4a5286f05e05d094c7d876c01802d71c5017a5dce89fe17806cdcada0",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260903T165141996Z-4280-7e7732d4dbad.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "include/sparkpipe/spark_stagepack_format.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-03T16:51:42.252Z"
+}

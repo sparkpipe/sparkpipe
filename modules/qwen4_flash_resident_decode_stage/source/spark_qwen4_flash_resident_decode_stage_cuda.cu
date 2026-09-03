@@ -2196,18 +2196,22 @@ extern "C" cudaError_t SparkQwen4FlashLaunchFusedExpertW13Act(cudaStream_t strea
 {
 	cudaError_t status;
 	uint64_t required_rows = (uint64_t)SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT * expert_width;
-	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || w1->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w3->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != required_rows || w3->output_dimension != required_rows || w1->input_dimension != SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION || w3->input_dimension != SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION )
+	uint32_t lm_format;
+	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || (w1->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && w1->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED) || w1->weight_format != w3->weight_format || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != required_rows || w3->output_dimension != required_rows || w1->input_dimension != SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION || w3->input_dimension != SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION )
 		return(cudaErrorInvalidValue);
-	status = SparkLmHostLaunchSm121FusedExpertW13(stream,w1->weight_payload,w1->weight_scale_e8m0,w3->weight_payload,w3->weight_scale_e8m0,input_bf16,route_source_token,group_row_offset,group_tile_prefix,activated_bf16,rows,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,expert_width,limit,multiprocessor_count);
+	lm_format = w1->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED ? SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 : SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1;
+	status = SparkLmHostLaunchSm121FusedExpertW13(stream,w1->weight_payload,w1->weight_scale_e8m0,w3->weight_payload,w3->weight_scale_e8m0,input_bf16,route_source_token,group_row_offset,group_tile_prefix,activated_bf16,rows,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,expert_width,limit,lm_format,multiprocessor_count);
 	return(status);
 }
 
 extern "C" cudaError_t SparkQwen4FlashLaunchExpertDown(cudaStream_t stream, const SparkQwen4FlashLinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count)
 {
 	uint64_t required_rows = (uint64_t)SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT * hidden_dimension;
-	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || stacked->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != required_rows || stacked->input_dimension != expert_width )
+	uint32_t lm_format;
+	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || (stacked->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && stacked->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED) || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != required_rows || stacked->input_dimension != expert_width )
 		return(cudaErrorInvalidValue);
-	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->weight_payload,stacked->weight_scale_e8m0,input_bf16,group_row_offset,group_tile_prefix,output_bf16,rows,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,multiprocessor_count));
+	lm_format = stacked->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED ? SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 : SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1;
+	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->weight_payload,stacked->weight_scale_e8m0,input_bf16,group_row_offset,group_tile_prefix,output_bf16,rows,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,lm_format,multiprocessor_count));
 }
 
 extern "C" cudaError_t SparkQwen4FlashLaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension)

@@ -1,0 +1,695 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260902T053751819Z-27773-2bd7a4295620",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "bash-discovery",
+      "target": "tests/host_cuda/shim/runtime/launch.h",
+      "reason": "bash_discovery_truncated: changed-file discovery exceeded 80 files"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "tests/test_dequant.c",
+      "reason": "candidate_limit_exceeded: 60 changed reviewable file(s) were not scanned because the limit is 20"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/dsv4_loader_bench.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/generate_dsv4_contracts.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/perf_r5_validate_timing.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/qwen36_stagepack_rans.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/qwen38_tp4_bench.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/qwen38_tp4_e2e.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/spark_kv_backing_test.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/sparkpipe_registrar.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/weightdctl.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "text/tokenizer.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "text/tokenizer_sidecar.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tests/reference.h",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tests/serial_tp_replay.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tests/serial_tp_replay.h",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tests/test_cache.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tests/test_continuous_batch.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 809,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 80
+    },
+    "change_tracking": {
+      "touched_observed": 0,
+      "touched_retained": 0,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 80,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": true
+    },
+    "candidates": {
+      "eligible_files": 80,
+      "selected_files": 20,
+      "limit": 20,
+      "truncated": true
+    },
+    "scanning": {
+      "required_files": 16,
+      "scanned_files": 0,
+      "skipped_files": 0,
+      "failed_files": 16,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "bash_discovery_truncated": 1,
+      "candidate_limit_exceeded": 1,
+      "scanner_failed": 16,
+      "project_check_failed": 18
+    },
+    "reasons": [
+      {
+        "code": "bash_discovery_truncated",
+        "stage": "bash-discovery",
+        "target": "tests/host_cuda/shim/runtime/launch.h",
+        "detail": "changed-file discovery exceeded 80 files",
+        "affects_completion": true
+      },
+      {
+        "code": "candidate_limit_exceeded",
+        "stage": "candidate-select",
+        "target": "tests/test_dequant.c",
+        "detail": "60 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/dsv4_loader_bench.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/generate_dsv4_contracts.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/perf_r5_validate_timing.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen36_stagepack_rans.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_tp4_bench.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_tp4_e2e.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/spark_kv_backing_test.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/sparkpipe_registrar.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/weightdctl.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "text/tokenizer.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "text/tokenizer_sidecar.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/reference.h",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/serial_tp_replay.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/serial_tp_replay.h",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/test_cache.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/test_continuous_batch.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "bash-discovery",
+        "target": "tests/host_cuda/shim/runtime/launch.h",
+        "detail": "bash_discovery_truncated: changed-file discovery exceeded 80 files",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "tests/test_dequant.c",
+        "detail": "candidate_limit_exceeded: 60 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/dsv4_loader_bench.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/generate_dsv4_contracts.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/perf_r5_validate_timing.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen36_stagepack_rans.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_tp4_bench.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_tp4_e2e.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/spark_kv_backing_test.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/sparkpipe_registrar.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/weightdctl.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "text/tokenizer.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "text/tokenizer_sidecar.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/reference.h",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/serial_tp_replay.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/serial_tp_replay.h",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/test_cache.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/test_continuous_batch.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-02T05:37:51.819Z",
+  "session_id": "sess_aca7c08e-991a-41d9-99d5-c53325cc2722",
+  "target": ".",
+  "revision": "5101cbdd09a51ad12d745278a697ce0f4cd51455",
+  "rules_version": "unavailable",
+  "diff_hash": "acb116d7bed0a1b16507a54e2b28c3f0545b80f03a1b152ba50e38baa96e41fd",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 16,
+    "changed_files": [
+      {
+        "file": "tests/reference.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 83
+          }
+        ],
+        "before_hash": "523cc84a362ed2e1bdc1815c7ae13f8b881af2b567e97189e93390855e48ac24",
+        "after_hash": "0cc8fb3cd4c4d5188fc4c3ac2d9471778f26551afd809eb73dc3c230d16439c0"
+      },
+      {
+        "file": "tests/serial_tp_replay.c",
+        "ranges": [
+          {
+            "start": 47,
+            "end": 47
+          },
+          {
+            "start": 130,
+            "end": 130
+          },
+          {
+            "start": 135,
+            "end": 135
+          }
+        ],
+        "before_hash": "a466af852f6ff35b92483af4cbc6c64385b97710ee924754d3d03977e84822a8",
+        "after_hash": "2920fdd38db6cac95a5121a2a187d387117706f4e0e874fd271f4617c12305df"
+      },
+      {
+        "file": "tests/serial_tp_replay.h",
+        "ranges": [
+          {
+            "start": 66,
+            "end": 66
+          },
+          {
+            "start": 75,
+            "end": 75
+          }
+        ],
+        "before_hash": "327405778e2acdc8c5352d6b02271e2192225bd2941108d02b89adcdf0e818b0",
+        "after_hash": "cb684402bdf296f6e3294375d43b8dfe312a576216a458ca7f43ecb3cc192ef6"
+      },
+      {
+        "file": "tests/test_cache.c",
+        "ranges": [
+          {
+            "start": 35,
+            "end": 35
+          },
+          {
+            "start": 52,
+            "end": 52
+          },
+          {
+            "start": 63,
+            "end": 63
+          },
+          {
+            "start": 151,
+            "end": 151
+          },
+          {
+            "start": 213,
+            "end": 213
+          },
+          {
+            "start": 215,
+            "end": 215
+          }
+        ],
+        "before_hash": "b7a2f1a3accd94a65bcc432669917927198e7729002fe178547d4e19ba5cd220",
+        "after_hash": "6ad830930c2a8cd27cbd739fc86e52212c00fe1047bdc3d239d490defc1d8170"
+      },
+      {
+        "file": "tests/test_continuous_batch.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 532
+          }
+        ],
+        "before_hash": "2f527dc75fcd612ccd390d43afa0b07f68a0b447cc96c1a503b749ab5bb05d47",
+        "after_hash": "d496175a64a53225488e28e82df77402b9727249953f5b3f1f65bd09fc0c7a2b"
+      },
+      {
+        "file": "text/tokenizer_sidecar.c",
+        "ranges": [
+          {
+            "start": 7,
+            "end": 241
+          }
+        ],
+        "before_hash": "2a5585d6ed3eb900b10dac91e1627cd5771eaf7362d7e43c9484df73069bdd6f",
+        "after_hash": "c9e12edd388f2b54900214796bdf322154a34632e7db558810cbeb4bd568a304"
+      },
+      {
+        "file": "text/tokenizer.c",
+        "ranges": [
+          {
+            "start": 1199,
+            "end": 3080
+          }
+        ],
+        "before_hash": "c9c1019ca5f66d0fd02d18b06755497464c1c71c8a7bea15fae823dedb7bea24",
+        "after_hash": "874435ec90720cdf32dd5773ebac8618be564579e71d472fc6b10a2dfd37a319"
+      },
+      {
+        "file": "tools/dsv4_loader_bench.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 306
+          }
+        ],
+        "before_hash": "d5127b834b28c2bbb8a5ed81993bc2b2a29da88cd088cb9d262af6a6f891e4e6",
+        "after_hash": "ffc629b601c2584bc171cc661b2e1be1a8aa3a392e14e2bbcca09f4e4eabdd05"
+      },
+      {
+        "file": "tools/generate_dsv4_contracts.py",
+        "ranges": [
+          {
+            "start": 361,
+            "end": 361
+          }
+        ],
+        "before_hash": "97accfbdcf1c021c81fbc9a7cccb6d488155cd11f862f8391ed2481f517fdca3",
+        "after_hash": "c4c760565de23e3dd1f6e24ac3b625f830d1076a5c935e140684b0597fdddb72"
+      },
+      {
+        "file": "tools/perf_r5_validate_timing.c",
+        "ranges": [
+          {
+            "start": 30,
+            "end": 30
+          },
+          {
+            "start": 114,
+            "end": 115
+          },
+          {
+            "start": 123,
+            "end": 123
+          }
+        ],
+        "before_hash": "4cff273cc49a0b30331998a9f9734d03b6c828b5ba3ce211894debda67840587",
+        "after_hash": "123df5bc9199a4042655b774809446b6156aeee13b175bb0c18bc1c6b0200263"
+      },
+      {
+        "file": "tools/qwen36_stagepack_rans.c",
+        "ranges": [
+          {
+            "start": 26,
+            "end": 29
+          },
+          {
+            "start": 232,
+            "end": 240
+          },
+          {
+            "start": 365,
+            "end": 365
+          }
+        ],
+        "before_hash": "4caff0ad44660b62c67d14dbe719988cead5dda3247dd69710d00c41fa8f0b94",
+        "after_hash": "995c66a20c137db38eeed5a8adda3c6f667d2a97bc1caf909ac4adf2e208feae"
+      },
+      {
+        "file": "tools/qwen38_tp4_bench.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 324
+          }
+        ],
+        "before_hash": "33293d1e8eee13f90fc9ce9d84e4a4b50ce2f45ebf79eb57250f17e2dbeaeef5",
+        "after_hash": "a5e08b9d36343d3e88dc598a254cbddaee858978a34b9aa3157414a0efe25b52"
+      },
+      {
+        "file": "tools/qwen38_tp4_e2e.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 269
+          }
+        ],
+        "before_hash": "ca7eaacba8516639303c1af65d7dd4162d72d764875d7f119f5bba95ed19e087",
+        "after_hash": "b0df25a535229fd765b7cc6cb6dafbbd6f156995b7978f8946ed9fa8ba97a2b2"
+      },
+      {
+        "file": "tools/spark_kv_backing_test.c",
+        "ranges": [
+          {
+            "start": 36,
+            "end": 36
+          }
+        ],
+        "before_hash": "5b6f6c79a6f81b7d979adf753297ba9b94c3eeb6f5c1da5dded3caf931d4dd00",
+        "after_hash": "b10bca4e510c4ea693bf60f561acdf16bcf38814e6cdd52711bf8b4bfcf75825"
+      },
+      {
+        "file": "tools/sparkpipe_registrar.c",
+        "ranges": [
+          {
+            "start": 31,
+            "end": 34
+          },
+          {
+            "start": 428,
+            "end": 428
+          }
+        ],
+        "before_hash": "7162ee83666b28d406d1e97fcd103f7aeff4bc810fe2985fc435e53c200d19a4",
+        "after_hash": "67506577e85742abea135a4adcf3d6f71505cf711476ecda7803165842bec702"
+      },
+      {
+        "file": "tools/weightdctl.c",
+        "ranges": [
+          {
+            "start": 59,
+            "end": 60
+          },
+          {
+            "start": 81,
+            "end": 81
+          }
+        ],
+        "before_hash": "628c74c6cca919b0025a30ae875d9de6700107a0cd42665cca21bd5c110fbd57",
+        "after_hash": "39083f2c98a4dd23d8c310eefee8bcc56ba89f21a19b156c6ca27249f9fb3253"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-02T05:37:49.522Z",
+    "completed_at": "2026-09-02T05:37:51.819Z",
+    "duration_ms": 2297,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 2297,
+    "peakMemoryBytes": 130367488,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 0,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260902T053751819Z-27773-2bd7a4295620.json",
+    "latest_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722.json",
+    "history_summary": ".mimosa/history/run-20260902T053751819Z-27773-2bd7a4295620.json"
+  }
+}

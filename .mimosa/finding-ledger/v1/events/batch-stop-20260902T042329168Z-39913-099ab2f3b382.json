@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260902T042329168Z-39913-099ab2f3b382",
+  "runId": "20260902T042329168Z-39913-099ab2f3b382",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "edcdf39cd13f9d1808bcd233a25628b9ee44f8a0",
+  "diffHash": "659eab09fa026ccac9219f924e7df853a5fa9e018aba35a71cbe195fc508f79b",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260902T042329168Z-39913-099ab2f3b382.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "tests/test_dsv4_pro_exact32k_stage.py",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-02T04:23:29.434Z"
+}

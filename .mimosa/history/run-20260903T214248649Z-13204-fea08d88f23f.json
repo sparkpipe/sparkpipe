@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260903T214248649Z-13204-fea08d88f23f",
+  "runStatus": "inconclusive",
+  "errors": [
+    "scan:tools/qwen4_flash_stagepack.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "69b82eef1901c43fe9f3e3f69ef80156c7e9f195",
+  "diffHash": "e468a1b3c43e3b6e2c92a0eae6db33aa0d0de6b0229154ef3676e482f48de016",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-03T21:42:48.649Z",
+  "timing": {
+    "startedAt": "2026-09-03T21:42:46.332Z",
+    "completedAt": "2026-09-03T21:42:48.649Z",
+    "durationMs": 2317
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "scanner_failed": 1,
+      "project_check_failed": 1
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260903T214248649Z-13204-fea08d88f23f.json"
+}

@@ -1,0 +1,144 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "posttooluse-46ef16ed34ae652aeeb7e627c8b5aaec",
+  "runId": null,
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "PostToolUse"
+  },
+  "revision": null,
+  "diffHash": null,
+  "rulesVersion": null,
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": null,
+  "events": [
+    {
+      "eventId": "hook-4fd17bd7f82b07877c8da79c69640d88",
+      "findingId": "mimosa-40aef9f1317f898c4ec6ec19",
+      "type": "static_fix_verified",
+      "at": "2026-09-02T19:09:53.489Z",
+      "identity": {
+        "projectRelativeFile": "tools/qwen38_27b_tp4pp4_stagepacks.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "fd316e3c61b5386fc4192f5d1fe54771d9841332e98d45217e521b6377edc16f",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 54,
+      "endLine": 54,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "fd316e3c61b5386fc4192f5d1fe54771d9841332e98d45217e521b6377edc16f"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-4fae5bee4714757880ec9f62a5b3049a",
+      "findingId": "mimosa-2d975d2430ceeecca7036a77",
+      "type": "static_fix_verified",
+      "at": "2026-09-02T19:09:53.489Z",
+      "identity": {
+        "projectRelativeFile": "tools/qwen38_27b_tp4pp4_stagepacks.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "cee0e11cf19aa07f796bdc9c8b7aa42fab857ec557c0be207cfb376d183894e4",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 63,
+      "endLine": 63,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "cee0e11cf19aa07f796bdc9c8b7aa42fab857ec557c0be207cfb376d183894e4"
+      },
+      "sequence": 1
+    },
+    {
+      "eventId": "hook-24e837333dca716804360915f5c0ca90",
+      "findingId": "mimosa-d384da67746714ebca4d3398",
+      "type": "static_fix_verified",
+      "at": "2026-09-02T19:09:53.489Z",
+      "identity": {
+        "projectRelativeFile": "tools/qwen38_27b_tp4pp4_stagepacks.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "f35fe4bb9db61911be42d8c216bf70d0f53b9c54f47dbd4b34624352d9f22abe",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 54,
+      "endLine": 54,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "f35fe4bb9db61911be42d8c216bf70d0f53b9c54f47dbd4b34624352d9f22abe"
+      },
+      "sequence": 2
+    },
+    {
+      "eventId": "hook-61886add357560d698c408b43a00a563",
+      "findingId": "mimosa-06312c3191c4563f62ff57b2",
+      "type": "static_fix_verified",
+      "at": "2026-09-02T19:09:53.489Z",
+      "identity": {
+        "projectRelativeFile": "tools/qwen38_27b_tp4pp4_stagepacks.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "af3f4b65c60d0298c17685f40bb0caec8a07616d9ac14c07da928d541c5b6f5c",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 65,
+      "endLine": 65,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "af3f4b65c60d0298c17685f40bb0caec8a07616d9ac14c07da928d541c5b6f5c"
+      },
+      "sequence": 3
+    },
+    {
+      "eventId": "hook-e24a883df68c88bd48b6cad6881fc797",
+      "findingId": "mimosa-16f377a9e11434986bc96626",
+      "type": "static_fix_verified",
+      "at": "2026-09-02T19:09:53.489Z",
+      "identity": {
+        "projectRelativeFile": "tools/qwen38_27b_tp4pp4_stagepacks.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "3c3040bd339d9a3b34ca20a13b80f42fa28aaddd1a2cb2f67124f4eb5f8552da",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 36,
+      "endLine": 36,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "3c3040bd339d9a3b34ca20a13b80f42fa28aaddd1a2cb2f67124f4eb5f8552da"
+      },
+      "sequence": 4
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-09-02T19:09:53.701Z"
+}

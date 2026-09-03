@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260902T134717304Z-41292-edb65a825da4",
+  "runStatus": "inconclusive",
+  "errors": [
+    "baseline-read:tools/ck128_stamp.c: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:src/spark_ck128.c: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:include/sparkpipe/spark_ck128.h: baseline_snapshot_unreadable: file is missing from task baseline",
+    "scan:tools/ck128_stamp.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/k3_pack.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/qwen4_flash_deploy_v4.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/qwen4_flash_fetch_fp8.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/weightdctl.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/devcycle/ga_cold_manifest.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/test_batch_variants.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/test_code_size.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:src/spark_ck128.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:runtime/spark_weightd.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:include/sparkpipe/spark_ck128.h: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "46015fdef0419cee40d24942fc59ca7f620b8cf2",
+  "diffHash": "2e808f191eb9b0e1889599ae4bec3b3370470192bcbc47b9be701233315289f4",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-02T13:47:17.304Z",
+  "timing": {
+    "startedAt": "2026-09-02T13:47:15.035Z",
+    "completedAt": "2026-09-02T13:47:17.304Z",
+    "durationMs": 2269
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "baseline_snapshot_unreadable": 3,
+      "scanner_failed": 11,
+      "project_check_failed": 14
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260902T134717304Z-41292-edb65a825da4.json"
+}

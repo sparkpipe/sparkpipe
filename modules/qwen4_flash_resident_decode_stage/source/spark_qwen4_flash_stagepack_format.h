@@ -217,6 +217,7 @@ _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPA
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"qwen4 f32 weight code must match the shared format");
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 == SPARK_STAGEPACK_FORMAT_WEIGHT_FP8_E4M3_F32B128,"qwen4 fp8 weight code must match the shared format");
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64 == SPARK_STAGEPACK_FORMAT_WEIGHT_I64,"qwen4 i64 weight code must match the shared format");
+_Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED == SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED,"qwen4 nvfp4 weight code must match the shared format");
 
 static const SparkStagePackGeometryTable SparkQwen4FlashStagePackGeometry =
 {
@@ -496,7 +497,8 @@ static inline int32_t SparkQwen4FlashStagePackResolvedShape(uint32_t tensor_kind
 static inline uint64_t SparkQwen4FlashStagePackPayloadBytes(uint32_t weight_format, uint32_t rows, uint32_t columns)
 {
 	uint64_t elements = (uint64_t)rows * (uint64_t)columns;
-	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
+	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ||
+		weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
 		return(elements / 2u);
 	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
 		weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
@@ -512,6 +514,26 @@ static inline uint64_t SparkQwen4FlashStagePackScaleBytes(uint32_t weight_format
 {
 	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
 		return(((uint64_t)rows * (uint64_t)columns) / SPARK_QWEN4_FLASH_MODEL_MXFP4_GROUP_SIZE);
+	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
+	{
+		/* per-expert segment: rows x columns/16 e4m3 plane + the F32
+		 * input_scale + F32 weight_scale_2 globals. The expert count
+		 * derives from the fused geometry: gate/up carry columns ==
+		 * hidden and rows = experts x intermediate; down carries
+		 * columns == intermediate and rows = experts x hidden. */
+		uint64_t plane = (uint64_t)rows * ((uint64_t)columns / 16u);
+		uint64_t per_expert,experts;
+		if ( columns == SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION )
+			per_expert = SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
+		else if ( columns == SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION )
+			per_expert = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
+		else
+			return(0u);
+		if ( per_expert == 0u || (rows % per_expert) != 0u )
+			return(0u);
+		experts = (uint64_t)rows / per_expert;
+		return(plane + experts * 8u);
+	}
 	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);
 	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
