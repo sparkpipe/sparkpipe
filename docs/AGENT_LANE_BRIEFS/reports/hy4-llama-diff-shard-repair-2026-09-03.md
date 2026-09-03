@@ -371,3 +371,22 @@ NEXT: (1) verify PASS on rank 0, verify one mid-build rank (e.g. rank 7);
 completes; (3) weightd/residentd load-path wiring for the FP8 pack format;
 (4) GPU inference cells move to the FP8 packs (dequant-free: FP8 bytes are
 the native kernel format; MX scale application kernels needed).
+
+## 09-03 (next tick): FP8 chain progress + hc cell staged
+
+FP8 build chain on sparkc: rank 00 done (63.6 GB, sha 403b54b1db9bf8d7),
+rank 01 done (peak RSS 557 MB), rank 02 in progress. The independent
+rank-0 verify competed with the chain for warm reads (both crawl under
+concurrency — the known warm-stall pattern) and was killed to unblock the
+chain; re-verify runs after ALL_DONE. Lesson: serialize warm-heavy jobs
+per node.
+
+GPU hyper-connection cell (tools/hy4_gpu/hy4_hc_test.cu — hc_pre flat-rms
++ fn gemv + sigmoid gates + weighted reduce, hc_post distribute, hc_head
+collapse; fp64 checks + llama hc_mixes-0 goldens) is written, staged to
+spark2, and submitted as hy4-gpu8-hc; execution queued behind the live
+glm53flash fleet campaign (nccl-db-d2a4 at close).
+
+NEXT: (1) hy4-gpu8-hc receipt; (2) FP8 chain completion + post-chain
+verify; (3) placement fan-out rank r -> spark{hex r}; (4) weightd/
+residentd load-path wiring for the FP8 safetensors-per-rank format.
