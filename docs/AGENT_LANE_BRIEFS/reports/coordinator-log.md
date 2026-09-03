@@ -5144,3 +5144,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-03 firing 164: backups 7/16 finished, 9 grinding (~250G+ per node already mirrored)
 
 ## 2026-09-03 firing 165: backups 14/16 finished, 2 grinding — mirror nearly current
+
+## 2026-09-03 firing 166: backups 14/16 settled; sparka+sparkf finishing (the two 2-pack relay nodes)
