@@ -333,11 +333,16 @@ int main(int argc, char **argv)
         for (buffer_index = 0u; buffer_index < 64u; buffer_index++)
         {
             payload[buffer_index] = 0;
-            if (cudaMalloc(&payload[buffer_index], (size_t)rows * BENCH_HIDDEN * 2u) != cudaSuccess)
+            void *host_alias = 0;
+            void *device_alias = 0;
+            if (cudaHostAlloc(&host_alias, (size_t)rows * BENCH_HIDDEN * 2u,
+                    cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
+                cudaHostGetDevicePointer(&device_alias, host_alias, 0u) != cudaSuccess)
             {
-                printf("payload alloc failed\n");
+                printf("payload mapped alloc failed\n");
                 return 1;
             }
+            payload[buffer_index] = (__nv_bfloat16 *)device_alias;
         }
     }
     verify_host = (uint16_t *)malloc((size_t)rows * BENCH_HIDDEN * 2u);
