@@ -499,3 +499,34 @@ stages) demonstrably executes; the sums move with each fix as expected.
 
 FP8 packs: still 16/16 on sparkc, link still down; verify (setsid) +
 placement resume when it returns.
+
+## Receipt 09-03 (closed): hy4-gpu9n LAYER_STATE PASS — full-layer GPU assembly validated
+
+Cell hy4-gpu9n-layer [gpu][spark2]: token 802 through layers 0 and 1 on
+GPU, all 64 heads from the 16 rank-bundle slices, dense layer-0 FFN, the
+256-expert routed MoE + shared expert in layer 1, both hc stages —
+
+    GPUSUM post-attn L0 -0.618768   (CPU -0.618758)
+    GPUSUM post-ffn  L0 -2.229357   (CPU -2.229346)
+    GPUSUM post-attn L1 -4.347372   (CPU -4.347359)
+    GPUSUM post-ffn  L1  3.274987   (CPU  3.274961)
+    LAYER_STATE PASS (max|d| = 2.68e-06, 24576 elems)
+
+Probes all match their anchors: flat-norm = llama node_6 (0.6739...),
+hc_mixes = llama golden (112.76...), cur = attn_norm (0.083460...),
+head-0 score -0.719982 / p 0.064027 (the validated attention values),
+klat = llama kv_cmpr. Context: GB10 sm_121, CUDA 13.0, -fmad=false,
+single-token causal (t0 attention), tol 2e-3.
+
+Root cause of the divergence: the embedding load dequanted the ENTIRE
+1.7 GB token_embd slice into a 6144-float buffer — a 186 MB heap overflow
+that corrupted neighboring allocations and produced the plausible-looking
+wrong values of v6-v13. Fixed to a single-row read (row 802, 3456 bytes).
+With it, every earlier "fixed" symptom resolved at once.
+
+THE GPU PORT ASSEMBLY IS COMPLETE: dequant (9 classes bitwise),
+gemv/rms/rope, absorbed-MLA attention with sinks, MoE with HYV4 clamp,
+hyper-connections — composed and validated against the CPU forward at
+fp32-noise level. Next: the TP16 native module port (this cell is the
+module forward's blueprint), then tok/s. FP8 packs await verify +
+placement when sparkc's link returns.
