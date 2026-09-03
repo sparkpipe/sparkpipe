@@ -657,13 +657,14 @@ class Nvfp4OfficialCheckShapeMixin:
         if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
             proj = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
                     KIND_MOE_DOWN: "down_proj"}[ref.kind]
-            base = ref.name.replace("mlp.experts.", "mlp.experts.{e}." + proj + ".")
+            fused = "gate_up_proj" if ref.kind in (KIND_MOE_W1, KIND_MOE_W3) else "down_proj"
+            base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + proj)
             rows_per_expert = ref.rows // EXPERT_COUNT
             anchor = None
             packed_cols = ref.columns // 2
             scale_cols = ref.columns // 16
             for e in range(EXPERT_COUNT):
-                name = base.replace("{e}", str(e))
+                name = base.replace("{e}", str(e)) + ".weight"
                 shard, meta, offset = self.resolve(name)
                 if meta["dtype"] != "U8" or meta["shape"] != [rows_per_expert, packed_cols]:
                     raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected U8 [{rows_per_expert},{packed_cols}]")
@@ -674,6 +675,11 @@ class Nvfp4OfficialCheckShapeMixin:
                 if s_meta["dtype"] != "F8_E4M3" or s_meta["shape"] != [rows_per_expert, scale_cols]:
                     raise PackFailure(f"{sname}: {s_meta['dtype']} {s_meta['shape']}, expected F8_E4M3 [{rows_per_expert},{scale_cols}]")
             return anchor
+        if ref.kind == KIND_PLE_NGRAM:
+            # The ngram table arrives as F8_E4M3 in the nvfp4 release and
+            # widens losslessly to the BF16 wire on copy (the same LUT
+            # class as the fp8-official ngram path).
+            return self.resolve(ref.name + ".shard_0.weight")
         return super().check_shape(ref)
 
 
