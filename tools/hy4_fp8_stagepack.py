@@ -246,7 +246,8 @@ def build_rank(entries, rank: int, checkpoint: Path, out_dir: Path):
                         (e["dims"][e["split"]] // TP), "kind": spec[0]})}
             for (e, spec, off, nbytes) in plan],
     }
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1))
+    (out_dir / f"manifest-rank-{rank:02d}.json").write_text(
+        json.dumps(manifest, indent=1))
     return {"tensor_count": len(plan), "bytes": cursor + 8 + len(blob),
             "sha256": hexd}
 
@@ -256,6 +257,9 @@ def main(argv=None) -> int:
     ap.add_argument("--checkpoint", type=Path, required=True)
     ap.add_argument("--output-directory", type=Path)
     ap.add_argument("--rank", type=int)
+    ap.add_argument("--manifest-only", action="store_true",
+                    help="regenerate the rank manifest + sha sidecar from "
+                         "the existing pack file without re-copying data")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -297,6 +301,49 @@ def main(argv=None) -> int:
 
     if args.rank is None:
         ap.error("--rank required without --dry-run")
+    if args.manifest_only:
+        out_dir = args.output_directory
+        path = out_dir / f"model-fp8-tp16-rank-{args.rank:02d}.safetensors"
+        file_digest = hashlib.sha256()
+        with open(path, "rb") as rf:
+            for chunk in iter(lambda: rf.read(1 << 22), b""):
+                file_digest.update(chunk)
+        hexd = file_digest.hexdigest()
+        (out_dir / (path.name + ".sha256")).write_text(
+            f"{hexd}  {path.name}\n")
+        plan = []
+        for e in entries:
+            out_dims, sp = rank_view(e, args.rank)
+            plan.append((e, sp, 0, 0))
+        manifest_tensors = []
+        for (e, spec, off, nbytes) in plan:
+            if spec[0] == "full":
+                sl = "replicate"
+            else:
+                if e["split"] is None:
+                    raise SystemExit(
+                        f"manifest: {e['name']} non-full with split None "
+                        f"({spec[0]})")
+                sl = {"dim": e["split"],
+                      "start": args.rank * (e["dims"][e["split"]] // TP),
+                      "kind": spec[0]}
+            manifest_tensors.append({"name": e["name"],
+                                     "dtype": e["dtype"],
+                                     "dims": e["dims"], "slice": sl})
+        manifest = {
+            "schema": "hy4-fp8-tp16-v1",
+            "rank": args.rank,
+            "ranks": TP,
+            "source_checkpoint": str(args.checkpoint),
+            "file": path.name,
+            "file_sha256": hexd,
+            "tensors": manifest_tensors,
+        }
+        (out_dir / f"manifest-rank-{args.rank:02d}.json").write_text(
+            json.dumps(manifest, indent=1))
+        print(f"rank{args.rank:02d} manifest+sha regenerated "
+              f"({hexd[:16]})", flush=True)
+        return 0
     result = build_rank(entries, args.rank, args.checkpoint,
                         args.output_directory)
     print(f"rank{args.rank:02d} ok tensors={result['tensor_count']} "
