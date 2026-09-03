@@ -344,7 +344,7 @@ int main(int argc, char **argv)
     if (verify_host == 0)
         return 1;
 
-    for (ordinal = 0u; ordinal < 20u; ordinal++)
+    for (ordinal = 0u; ordinal < 68u; ordinal++)
     {
         uint64_t wait_started = bench_now_ns();
         bench_fill_bf16_kernel<<<(rows * BENCH_HIDDEN + 255u) / 256u, 256u, 0, stream>>>(
@@ -395,7 +395,7 @@ int main(int argc, char **argv)
     }
 
     started_ns = bench_now_ns();
-    for (ordinal = 20u; ordinal < 20u + iters; ordinal++)
+    for (ordinal = 68u; ordinal < 68u + iters; ordinal++)
     {
         bench_fill_bf16_kernel<<<(rows * BENCH_HIDDEN + 255u) / 256u, 256u, 0, stream>>>(
             payload[ordinal % 64u], (float)(rank + 1u), rows * BENCH_HIDDEN);

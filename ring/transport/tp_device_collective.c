@@ -3577,6 +3577,13 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         binding = &config->credit_bindings[binding_index];
         implementation->bindings[binding->step_index][binding->credit_index] =
             *binding;
+        if (config->registration_cuda_stream != 0)
+        {
+            (void)cudaMemsetAsync(binding->send_device,0,1u,
+                (cudaStream_t)config->registration_cuda_stream);
+            (void)cudaMemsetAsync(binding->receive_device,0,1u,
+                (cudaStream_t)config->registration_cuda_stream);
+        }
     }
     for (step_index = 0u; step_index < implementation->route_count;
         ++step_index)
