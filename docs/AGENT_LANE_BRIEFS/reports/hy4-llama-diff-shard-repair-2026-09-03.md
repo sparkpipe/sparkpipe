@@ -545,3 +545,32 @@ placement when sparkc's link returns.
   prefill token). Draft in the worktree; submit after the MoE-union
   staging is converted to host-dequant + upload (device-pointer dequant
   is the bug class the LAYER_STATE hunt just proved out).
+
+## 09-03 (FP8 verify): RED STOP — rank packs have content corruption; placement blocked
+
+The independent verifier caught real corruption in the built FP8 packs
+(working exactly as designed — this is the UD-IQ1_M split0 lesson
+repeating at the FP8 layer):
+
+- Direct manual byte-compare (python, pack vs source) confirms
+  `model.layers.72.self_attn.kv_a_layernorm.weight` (a 1024-byte
+  replicated BF16 norm) holds WRONG bytes in rank-07; its correct content
+  sits 320,511,404 bytes EARLIER in the file than the header claims.
+- The constant-shift hypothesis is falsified: layer-1 regions do not
+  match at claimed−320MB either. The file has multiple/variable
+  displacement — i.e., the data stream got reordered or over/under-written
+  relative to the header plan somewhere from layer 1 onward.
+
+Per the exactness discipline: RED STOP — no placement of these packs.
+The 16 built files stay on sparkc (~/hy4-fp8-packs/) as forensic
+material. The verifier did its job; the packer writer needs a fix.
+
+Suspected area: build_rank's data-write loop vs its header-cursor plan
+(alignment, gather byte accounting, or an entry emitting more bytes than
+reserved). Next tick: rebuild rank 7 with a per-tensor
+write-then-verify-in-pass (hash each tensor region immediately after
+writing and compare against an independently computed expectation), find
+the first divergent tensor, fix the writer, rebuild all 16.
+
+The UD-IQ1_M packs are UNAFFECTED (different format, independently
+verified at placement). GPU-port work (LAYER_STATE PASS) is unaffected.
