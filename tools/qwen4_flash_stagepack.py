@@ -647,6 +647,43 @@ class Fp8OfficialSource(Fp8OfficialCheckShapeMixin, SafetensorsSource):
     repackage-only passthrough into the fused pack layout."""
 
 
+class Nvfp4OfficialCheckShapeMixin:
+    """Mixin for the nvfp4-official variant: MOE kinds validate the SPLIT
+    per-expert packed tensors (experts.{e}.{gate,up,down}_proj.weight, U8,
+    plus F8_E4M3 weight_scale [rows, cols/16] and F32 input_scale planes)
+    instead of the fused name."""
+
+    def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
+        if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
+            proj = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
+                    KIND_MOE_DOWN: "down_proj"}[ref.kind]
+            base = ref.name.replace("mlp.experts.", "mlp.experts.{e}." + proj + ".")
+            rows_per_expert = ref.rows // EXPERT_COUNT
+            anchor = None
+            packed_cols = ref.columns // 2
+            scale_cols = ref.columns // 16
+            for e in range(EXPERT_COUNT):
+                name = base.replace("{e}", str(e))
+                shard, meta, offset = self.resolve(name)
+                if meta["dtype"] != "U8" or meta["shape"] != [rows_per_expert, packed_cols]:
+                    raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected U8 [{rows_per_expert},{packed_cols}]")
+                if anchor is None:
+                    anchor = (shard, meta, offset)
+                sname = name[:-len(".weight")] + ".weight_scale"
+                s_meta = self.resolve(sname)[1]
+                if s_meta["dtype"] != "F8_E4M3" or s_meta["shape"] != [rows_per_expert, scale_cols]:
+                    raise PackFailure(f"{sname}: {s_meta['dtype']} {s_meta['shape']}, expected F8_E4M3 [{rows_per_expert},{scale_cols}]")
+            return anchor
+        return super().check_shape(ref)
+
+
+class Nvfp4OfficialSource(Nvfp4OfficialCheckShapeMixin, SafetensorsSource):
+    """The official nvfp4 release (qwen3.8-flash-next-nvfp4-radixark) source
+    reader: split per-expert U8-packed e2m1 tensors + F8_E4M3 per-16 scale
+    planes + F32 input scales, repackage-only passthrough into the fused
+    pack layout under the NVFP4 wire code."""
+
+
 # -- TP sharding ----------------------------------------------------------------
 
 
@@ -975,7 +1012,46 @@ def pump_read(fd, offset: int, length: int, out) -> None:
         offset += step
         remaining -= step
 
-def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
+def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
+    """nvfp4-official arm: gather the rank's SPLIT per-expert U8-packed
+    e2m1 tensors into the fused expert-major pack layout, verbatim bytes
+    + verbatim F8_E4M3 per-16 scale planes. Two-pass (payloads, then
+    scales) so nothing accumulates in RAM. Repackage-only."""
+    expert_start, expert_count = getattr(ref, "expert_slice", (0, EXPERT_COUNT))
+    rows_per_expert = ref.rows // expert_count
+    split_name = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
+                  KIND_MOE_DOWN: "down_proj"}[ref.kind]
+    fused = "gate_up_proj" if ref.kind in (KIND_MOE_W1, KIND_MOE_W3) else "down_proj"
+    split_suffix = split_name + ".weight"
+    base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + split_suffix)
+    scale_suffix = split_name + ".weight_scale"
+    scale_base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + scale_suffix)
+    payload_fds, scale_fds = [], []
+    try:
+        for e in range(expert_start, expert_start + expert_count):
+            shard, meta, off = source.resolve(base.replace("{e}", str(e)))
+            f = (source.root / shard).open("rb")
+            payload_fds.append((f, off))
+        for f, off in payload_fds:
+            pump_read(f.fileno(), off, rows_per_expert * ref.columns, out)
+    finally:
+        for f, _ in payload_fds:
+            f.close()
+    s_rows = rows_per_expert
+    s_cols = ref.columns // 16
+    try:
+        for e in range(expert_start, expert_start + expert_count):
+            s_shard, _, s_off = source.resolve(
+                base.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale")
+            sf = (source.root / s_shard).open("rb")
+            scale_fds.append((sf, s_off))
+        for sf, s_off in scale_fds:
+            pump_read(sf.fileno(), s_off, s_rows * s_cols, out)
+    finally:
+        for sf, _ in scale_fds:
+            sf.close()
+
+def copy_fp8_official_experts(source, ref: TensorRef, offset: int, out) -> None:
     """fp8-official arm: gather the rank's SPLIT per-expert F8_E4M3
     tensors into the fused expert-major pack layout, verbatim bytes +
     verbatim F32 weight_scale_inv planes. Two-pass (payloads, then
@@ -1097,7 +1173,8 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             receipt: dict, dry_run: bool, tp_degree: int, tp_rank: int,
             expert_format: str) -> dict:
     import numpy as np  # noqa: F401  (quantization paths import lazily)
-    source_cls = Fp8OfficialSource if expert_format == "fp8-official" else SafetensorsSource
+    source_cls = {"fp8-official": Fp8OfficialSource,
+                  "nvfp4-official": Nvfp4OfficialSource}.get(expert_format, SafetensorsSource)
     source = source_cls(checkpoint)
     source.check_config()
     inventory = build_inventory(first_layer, layer_count)
@@ -1110,18 +1187,26 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         full_ref.source_offset = offset
     refs = [shard_ref(ref, tp_degree, tp_rank) for ref in inventory]
     # The routed experts' WIRE format (natural is F32B128; the CLI flag
-    # swaps in the per-row MX plane or the policy-mandated BF16
-    # repackage). The plan below must price payload and scale bytes by
-    # the WIRE format - the writer emits exactly this layout.
+    # swaps in the per-row MX plane, the policy-mandated BF16 repackage,
+    # or the verbatim nvfp4-packed bytes). The plan below must price
+    # payload and scale bytes by the WIRE format - the writer emits
+    # exactly this layout.
     expert_wire_format = {"fp8-f32b128": WEIGHT_FP8_F32B128,
                           "fp8-e8m0b128": WEIGHT_FP8_E8M0B128,
                           "fp8-official": WEIGHT_FP8_F32B128,
+                          "nvfp4-official": 8,
                           "bf16": WEIGHT_BF16}[expert_format]
     plans = []
     cursor = 0
     for ref in refs:
         wire = expert_wire_format if ref.weight_format == WEIGHT_FP8_F32B128 else ref.weight_format
-        if wire in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
+        if wire == 8:
+            # NVFP4 wire: U8-packed e2m1 payloads (2 values/byte) +
+            # e4m3 scale bytes per 16 values + the per-tensor F32
+            # input scale. Verbatim passthrough of the release bytes.
+            payload_bytes = ref.rows * (ref.columns // 2)
+            scale_bytes = ref.rows * (ref.columns // 16) + 4
+        elif wire in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
             payload_bytes = ref.rows * ref.columns
             # F32B128: one f32 per 128x128 tile; E8M0B128: one exponent byte
             # per (row, 128-column block) - the per-row MX plane the module's
@@ -1192,6 +1277,8 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
                 copy_mtp_fc(source, ref, temp)
             elif expert_format == "fp8-official" and ref.kind == KIND_PLE_NGRAM:
                 copy_ngram_f8_widen(source, ref, tp_degree, tp_rank, temp)
+            elif expert_format == "nvfp4-official" and ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
+                copy_nvfp4_official_experts(source, ref, temp)
             elif ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
                 if expert_format == "fp8-official":
                     copy_fp8_official_experts(source, ref, temp)
