@@ -62,10 +62,10 @@
 static int32_t SparkGlm5NextServingMtpEnvEnabled(void)
 {
 	const char *value = getenv("SPARK_GLM5_NEXT_MTP");
-	if ( value == 0 || (value[0] == '0' && value[1] == '\0') )
-		return(0);
-	if ( value[0] == '1' && value[1] == '\0' )
+	if ( value == 0 || (value[0] == '1' && value[1] == '\0') )
 		return(1);
+	if ( value[0] == '0' && value[1] == '\0' )
+		return(0);
 	return(-1);
 }
 
