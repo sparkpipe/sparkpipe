@@ -11,7 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 /* Present in cudart; the host-only compatibility header used by unit tests
  * intentionally exposes only its older subset. */
@@ -26,9 +25,41 @@ extern cudaError_t cudaEventQuery(cudaEvent_t event);
 #define SPARK_TP_DEVICE_COLLECTIVE_RECURSIVE_KIND 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_KIND 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND 3u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_LANE_COUNT 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_CHUNKS_PER_LANE 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_CHUNK_COUNT 8u
+#define SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_ROUTE_COUNT 4u
+
+static uint32_t SparkTpDeviceCollectiveLiteralRingEnabled(
+    uint32_t algorithm_mask,
+    uint32_t tp_degree)
+{
+    return (algorithm_mask &
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) !=
+               0u &&
+        tp_degree != 4u ? 1u : 0u;
+}
+
+static uint32_t SparkTpDeviceCollectiveLiteralRingPhaseCount(
+    const SparkTpDeviceCollective *collective)
+{
+    return 2u * (collective->tp_degree - 1u);
+}
+
+static uint32_t SparkTpDeviceCollectiveLiteralRingChunkCount(
+    const SparkTpDeviceCollective *collective)
+{
+    return 2u * collective->tp_degree;
+}
+
+static uint32_t SparkTpDeviceCollectiveLiteralRingRoute(
+    uint32_t phase_index,
+    uint32_t lane_index)
+{
+    return 2u * lane_index + (phase_index & 1u);
+}
+
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_STREAM_COUNT 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_U64_TRANSPORT_HIDDEN_DIMENSION 4u
@@ -234,6 +265,10 @@ static uint32_t SparkTpDeviceCollectiveOperationPhaseCount(
         SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_KIND)
         return 1u;
     if (operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+        return SparkTpDeviceCollectiveLiteralRingPhaseCount(
+            implementation->collective);
+    if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT;
     return implementation->collective->step_count;
@@ -247,6 +282,9 @@ static uint32_t SparkTpDeviceCollectiveProfilePhase(
         SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_KIND)
         return 0u;
     if (operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+        return token_index;
+    if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return token_index / SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT;
     return token_index;
@@ -257,6 +295,12 @@ static uint32_t SparkTpDeviceCollectiveResourceMask(
 {
     uint32_t base;
 
+    if (operation->algorithm_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+        return (1u << SparkTpDeviceCollectiveLiteralRingRoute(
+                    operation->current_step,0u)) |
+            (1u << SparkTpDeviceCollectiveLiteralRingRoute(
+                    operation->current_step,1u));
     if (operation->algorithm_kind !=
             SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND &&
         operation->algorithm_kind !=
@@ -276,6 +320,8 @@ static uint32_t SparkTpDeviceCollectiveReservationMask(
     const SparkTpDeviceCollectiveOperation *operation)
 {
     if (operation->algorithm_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND ||
+        operation->algorithm_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND ||
         operation->algorithm_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_KIND)
@@ -288,6 +334,9 @@ static uint32_t SparkTpDeviceCollectiveResourceRoute(
     uint32_t resource_index)
 {
     if (operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+        return resource_index;
+    if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return resource_index %
             SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT;
@@ -298,6 +347,9 @@ static uint32_t SparkTpDeviceCollectiveResourcePhase(
     const SparkTpDeviceCollectiveOperation *operation,
     uint32_t resource_index)
 {
+    if (operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+        return operation->current_step;
     if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return resource_index /
@@ -322,6 +374,10 @@ static uint32_t SparkTpDeviceCollectiveRouteBinding(
 {
     if ((implementation->collective->algorithm_mask &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) != 0u)
+        return route_index;
+    if (SparkTpDeviceCollectiveLiteralRingEnabled(
+            implementation->collective->algorithm_mask,
+            implementation->collective->tp_degree) != 0u)
         return route_index;
     /* The 2->1 row alias exists for the TP4 counter-rotating split ring,
      * where binding rows are shared across the ring's route indices. A
@@ -389,7 +445,13 @@ static uint32_t SparkTpDeviceCollectiveSelectAlgorithm(
         payload_bytes >= collective->split_ring_min_payload_bytes &&
         payload_bytes >= SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_CHUNK_COUNT *
             SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT)
-        return SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND;
+    {
+        if (collective->tp_degree == 4u)
+            return SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND;
+        if (SparkTpDeviceCollectiveLiteralRingEnabled(
+            collective->algorithm_mask,collective->tp_degree) != 0u)
+            return SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND;
+    }
     return SPARK_TP_DEVICE_COLLECTIVE_RECURSIVE_KIND;
 }
 
@@ -516,7 +578,11 @@ static uint32_t SparkTpDeviceCollectiveConfigRouteCount(
 {
     if ((SparkTpDeviceCollectiveAlgorithmMask(config) &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) != 0u)
+    {
+        if (config->tp_degree != 4u)
+            return SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_ROUTE_COUNT;
         return SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT;
+    }
     if ((SparkTpDeviceCollectiveAlgorithmMask(config) &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) != 0u)
         return config->tp_degree - 1u;
@@ -527,8 +593,15 @@ static uint32_t SparkTpDeviceCollectiveConfigBindingRouteCount(
     const SparkTpDeviceCollectiveConfig *config,
     uint32_t step_count)
 {
+    if ((SparkTpDeviceCollectiveAlgorithmMask(config) &
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) != 0u)
+    {
+        if (config->tp_degree != 4u)
+            return SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_ROUTE_COUNT;
+        return SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT;
+    }
     return (SparkTpDeviceCollectiveAlgorithmMask(config) &
-        SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) != 0u ?
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) != 0u ?
         config->tp_degree - 1u : step_count;
 }
 
@@ -576,7 +649,8 @@ static SparkStatus SparkTpDeviceCollectiveValidateAlgorithms(
     if ((algorithm_mask &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) !=
             0u &&
-        (config->tp_degree != 4u || config->rail_count != 2u ||
+        ((config->tp_degree != 4u && config->tp_degree != 16u) ||
+         config->rail_count != 2u ||
          config->operation_kind !=
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ||
          config->split_ring_min_payload_bytes == 0u))
@@ -597,6 +671,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateAlgorithms(
         config->direct_all_to_all_max_payload_bytes != 0u)
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ((algorithm_mask & multi_route_mask) != 0u &&
+        config->tp_degree == 4u &&
         (config->step_rail_indices[0] ==
             config->step_rail_indices[
                 SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX] ||
@@ -605,6 +680,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateAlgorithms(
                 SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX]))
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ((algorithm_mask & multi_route_mask) == multi_route_mask &&
+        config->tp_degree == 4u &&
         config->direct_all_to_all_max_payload_bytes >=
             config->split_ring_min_payload_bytes)
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -887,6 +963,39 @@ static SparkStatus SparkTpDeviceCollectiveOpenSession(
         session);
 }
 
+typedef struct RingReceiveOpener
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    const SparkTpDeviceCollectiveConfig *config;
+    uint32_t forward_rank;
+    uint32_t backward_rank;
+    SparkStatus status;
+} RingReceiveOpener;
+
+static void *SparkTpDeviceCollectiveOpenRingReceives(void *context)
+{
+    RingReceiveOpener *opener = (RingReceiveOpener *)context;
+    SparkTpDeviceCollectiveImplementation *implementation =
+        opener->implementation;
+    const SparkTpDeviceCollectiveConfig *config = opener->config;
+    uint32_t route;
+    for (route = 0u; route < 4u; route++)
+    {
+        uint32_t partner = route < 2u ? opener->backward_rank :
+            opener->forward_rank;
+        SparkStatus status = SparkTpDeviceCollectiveOpenSession(
+            implementation,config,route,partner,config->tp_rank,
+            implementation->receive_route_names[route],
+            &implementation->receive_sessions[route]);
+        if (status != SPARK_STATUS_OK)
+        {
+            opener->status = status;
+            return 0;
+        }
+    }
+    return 0;
+}
+
 static SparkStatus SparkTpDeviceCollectiveOpenStep(
     SparkTpDeviceCollectiveImplementation *implementation,
     const SparkTpDeviceCollectiveConfig *config,
@@ -894,6 +1003,44 @@ static SparkStatus SparkTpDeviceCollectiveOpenStep(
 {
     uint32_t partner_rank;
     SparkStatus status;
+
+    if (SparkTpDeviceCollectiveLiteralRingEnabled(
+            config->algorithm_mask == 0u ?
+                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING :
+                config->algorithm_mask,config->tp_degree) != 0u)
+    {
+        uint32_t forward_rank = (config->tp_rank + 1u) % config->tp_degree;
+        uint32_t backward_rank =
+            (config->tp_rank + config->tp_degree - 1u) % config->tp_degree;
+        RingReceiveOpener opener;
+        pthread_t opener_thread;
+        uint32_t route;
+        if (step_index != 0u)
+            return SPARK_STATUS_OK;
+        memset(&opener,0,sizeof(opener));
+        opener.implementation = implementation;
+        opener.config = config;
+        opener.forward_rank = forward_rank;
+        opener.backward_rank = backward_rank;
+        opener.status = SPARK_STATUS_OK;
+        if (pthread_create(&opener_thread,0,
+                SparkTpDeviceCollectiveOpenRingReceives,&opener) != 0)
+            return SPARK_STATUS_INTERNAL_ERROR;
+        for (route = 0u; route < 4u; route++)
+        {
+            uint32_t partner = route < 2u ? forward_rank : backward_rank;
+            status = SparkTpDeviceCollectiveOpenSession(
+                implementation,config,route,config->tp_rank,partner,
+                implementation->send_route_names[route],
+                &implementation->send_sessions[route]);
+            if (status != SPARK_STATUS_OK)
+                break;
+        }
+        pthread_join(opener_thread,0);
+        if (status == SPARK_STATUS_OK)
+            status = opener.status;
+        return status;
+    }
 
     /* Route rows are algorithm-scoped. A direct-all-to-all row r pairs
      * this rank with tp_rank ^ (r+1): for a d2d-only collective the
@@ -1020,6 +1167,88 @@ static uint32_t SparkTpDeviceCollectiveRingLogicalChunk(
     if (lane_index == 0u)
         return (rank + 9u - phase - receive_chunk) & 3u;
     return (rank + 3u + phase + receive_chunk) & 3u;
+}
+
+static uint32_t SparkTpDeviceCollectiveLiteralRingSendChunk(
+    const SparkTpDeviceCollective *collective,
+    uint32_t phase_index,
+    uint32_t lane_index)
+{
+    uint32_t degree;
+    uint32_t rank;
+
+    degree = collective->tp_degree;
+    rank = collective->tp_rank;
+    if (phase_index < degree - 1u)
+    {
+        if (lane_index == 0u)
+            return (rank + degree - 1u - phase_index) % degree;
+        return (rank + phase_index + 1u) % degree;
+    }
+    {
+        uint32_t phase = phase_index - (degree - 1u);
+        if (lane_index == 0u)
+            return (rank + degree - phase) % degree;
+        return (rank + phase) % degree;
+    }
+}
+
+static uint32_t SparkTpDeviceCollectiveLiteralRingReceiveChunk(
+    const SparkTpDeviceCollective *collective,
+    uint32_t phase_index,
+    uint32_t lane_index)
+{
+    uint32_t degree;
+    uint32_t rank;
+
+    degree = collective->tp_degree;
+    rank = collective->tp_rank;
+    if (phase_index < degree - 1u)
+    {
+        if (lane_index == 0u)
+            return (rank + degree - 2u - phase_index) % degree;
+        return (rank + phase_index + 2u) % degree;
+    }
+    {
+        uint32_t phase = phase_index - (degree - 1u);
+        if (lane_index == 0u)
+            return (rank + degree - 1u - phase) % degree;
+        return (rank + phase + 1u) % degree;
+    }
+}
+
+static SparkStatus SparkTpDeviceCollectiveLiteralRingChunkRange(
+    const SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveOperation *operation,
+    uint32_t global_chunk,
+    uint64_t *offset_bytes_out,
+    uint32_t *element_count_out)
+{
+    uint64_t base_count;
+    uint64_t element_count;
+    uint64_t element_offset;
+    uint64_t remainder;
+    uint64_t total_elements;
+    uint32_t chunk_count;
+
+    if (offset_bytes_out == 0 || element_count_out == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    chunk_count = SparkTpDeviceCollectiveLiteralRingChunkCount(collective);
+    total_elements = (uint64_t)operation->active_sequence_count *
+        collective->local_hidden_dimension;
+    base_count = total_elements / chunk_count;
+    remainder = total_elements % chunk_count;
+    element_offset = (uint64_t)global_chunk * base_count +
+        (global_chunk < remainder ? global_chunk : remainder);
+    element_count = base_count + (global_chunk < remainder ? 1u : 0u);
+    if (element_count == 0u || element_count > UINT32_MAX ||
+        element_offset > UINT64_MAX /
+            SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT)
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    *offset_bytes_out = element_offset *
+        SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
+    *element_count_out = (uint32_t)element_count;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkTpDeviceCollectiveRingChunk(
@@ -1316,6 +1545,109 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRingSendPack(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkTpDeviceCollectiveEnqueueLiteralRingSendPack(
+    SparkTpDeviceCollectiveImplementation *implementation,
+    SparkTpDeviceCollectiveOperation *operation,
+    uint32_t phase_index)
+{
+    const SparkTpDeviceCollectiveCreditBinding *binding;
+    fprintf(stderr,"LR-PACK rank=%u ordinal=%llu phase=%u enter\n",
+        implementation->collective->tp_rank,
+        (unsigned long long)operation->ordinal,phase_index);
+    SparkStatus status;
+    uint64_t chunk_bytes;
+    uint64_t source_offset;
+    uint32_t element_count;
+    uint32_t lane_index;
+    uint32_t chunk;
+    uint32_t route;
+
+    for (lane_index = 0u; lane_index < 2u; lane_index++)
+    {
+        chunk = SparkTpDeviceCollectiveLiteralRingSendChunk(
+            implementation->collective,phase_index,lane_index);
+        status = SparkTpDeviceCollectiveLiteralRingChunkRange(
+            implementation->collective,operation,2u * chunk + lane_index,
+            &source_offset,&element_count);
+        if (status != SPARK_STATUS_OK)
+            return status;
+        chunk_bytes = (uint64_t)element_count *
+            SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
+        route = SparkTpDeviceCollectiveLiteralRingRoute(
+            phase_index,lane_index);
+        binding = &implementation->bindings[route]
+            [operation->credit_index];
+        status = SparkTpDeviceCollectivePackSendRows(
+            implementation->collective,binding,
+            (const uint8_t *)operation->full_device + source_offset,
+            chunk_bytes,chunk_bytes,chunk_bytes,1u,operation->cuda_stream);
+        if (status != SPARK_STATUS_OK)
+            return status;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkTpDeviceCollectiveEnqueueLiteralRingConsumption(
+    SparkTpDeviceCollectiveImplementation *implementation,
+    SparkTpDeviceCollectiveOperation *operation)
+{
+    const SparkTpDeviceCollectiveCreditBinding *binding;
+    SparkStatus status;
+    uint64_t chunk_bytes;
+    uint64_t destination_offset;
+    uint32_t element_count;
+    uint32_t lane_index;
+    uint32_t chunk;
+    uint32_t route;
+    uint32_t phase;
+
+    phase = operation->current_step;
+    for (lane_index = 0u; lane_index < 2u; lane_index++)
+    {
+        chunk = SparkTpDeviceCollectiveLiteralRingReceiveChunk(
+            implementation->collective,phase,lane_index);
+        status = SparkTpDeviceCollectiveLiteralRingChunkRange(
+            implementation->collective,operation,2u * chunk + lane_index,
+            &destination_offset,&element_count);
+        if (status != SPARK_STATUS_OK)
+            return status;
+        chunk_bytes = (uint64_t)element_count *
+            SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
+        route = SparkTpDeviceCollectiveLiteralRingRoute(phase,lane_index);
+        binding = &implementation->bindings[route][operation->credit_index];
+        status = SparkTpDeviceCollectiveStageReceive(
+            implementation->collective,binding,chunk_bytes,chunk_bytes,1u,
+            operation->cuda_stream);
+        if (status != SPARK_STATUS_OK)
+            return status;
+        if (phase < implementation->collective->tp_degree - 1u)
+            status = implementation->combine_bf16_function(
+                implementation->combine_context,
+                (uint8_t *)operation->full_device + destination_offset,
+                binding->receive_device,1u,element_count,
+                operation->cuda_stream);
+        else
+            status = SparkTpDeviceCollectiveCopyRows(
+                (uint8_t *)operation->full_device + destination_offset,
+                chunk_bytes,binding->receive_device,chunk_bytes,chunk_bytes,
+                1u,cudaMemcpyDeviceToDevice,operation->cuda_stream);
+        if (status != SPARK_STATUS_OK)
+            return status;
+    }
+    if (phase + 1u < SparkTpDeviceCollectiveLiteralRingPhaseCount(
+            implementation->collective))
+    {
+        status = SparkTpDeviceCollectiveEnqueueLiteralRingSendPack(
+            implementation,operation,phase + 1u);
+        if (status != SPARK_STATUS_OK)
+            return status;
+    }
+    return SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
+        implementation->consumer_events[operation->credit_index],
+        (cudaStream_t)operation->cuda_stream));
+}
+
+
 static SparkStatus SparkTpDeviceCollectiveEnqueueDirectAllToAllSendPack(
     SparkTpDeviceCollectiveImplementation *implementation,
     SparkTpDeviceCollectiveOperation *operation,
@@ -1371,6 +1703,10 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueLocalPlacement(
     {
         return status;
     }
+    if (operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+        return SparkTpDeviceCollectiveEnqueueLiteralRingSendPack(
+            implementation,operation,0u);
     if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return SparkTpDeviceCollectiveEnqueueRingSendPack(
@@ -1548,6 +1884,10 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueReceiveConsumption(
     uint64_t destination_offset;
     SparkStatus status;
 
+    if (operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+        return SparkTpDeviceCollectiveEnqueueLiteralRingConsumption(
+            implementation,operation);
     if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return SparkTpDeviceCollectiveEnqueueRingConsumption(
@@ -1881,6 +2221,20 @@ static SparkStatus SparkTpDeviceCollectiveAdvanceStreamOrderedConsumption(
         return status;
     }
     status = SPARK_STATUS_OK;
+    if (operation->algorithm_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+    {
+        operation->current_step += 1u;
+        (void)SparkTpDeviceCollectiveTransitionPhase(operation,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE);
+        if (SparkTpDeviceCollectiveTransitionPhase(operation,
+                SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE,
+                SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING) == 0u)
+            return SPARK_STATUS_INTERNAL_ERROR;
+        operation->consumption_enqueued = 0u;
+        return SPARK_STATUS_OK;
+    }
     if (SparkTpDeviceCollectiveCanCombineRelayBf16(
             implementation,operation) == 0u)
     {
@@ -1909,6 +2263,10 @@ static uint32_t SparkTpDeviceCollectiveCompletionTokenIsValid(
     if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_KIND)
         return token_index < operation->direct_peer_count;
+    if (operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+        return token_index < 2u *
+            (implementation->collective->tp_degree - 1u);
     if (operation->algorithm_kind !=
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return token_index < implementation->collective->step_count;
@@ -2450,6 +2808,16 @@ static void SparkTpDeviceCollectiveProgressConsumption(
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY);
+        return;
+    }
+    if (operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
+    {
+        operation->current_step += 1u;
+        operation->consumption_enqueued = 0u;
+        (void)SparkTpDeviceCollectiveTransitionPhase(operation,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE,
+            SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE);
         return;
     }
     if (operation->algorithm_kind ==
@@ -3445,6 +3813,8 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
         }
         return SPARK_STATUS_OK;
     }
+    fprintf(stderr,"LR-SUBMIT rank=%u ordinal=%llu pre-active\n",
+        collective->tp_rank,(unsigned long long)submission->ordinal);
     if (atomic_load_explicit(&implementation->admission_open,
             memory_order_acquire) == 0u)
     {
