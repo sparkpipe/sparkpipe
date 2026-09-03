@@ -1039,7 +1039,9 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
             f = (source.root / shard).open("rb")
             payload_fds.append((f, off))
         for f, off in payload_fds:
-            pump_read(f.fileno(), off, rows_per_expert * ref.columns, out)
+            # The packed U8 tensor holds 2 nibbles per byte: the byte span
+            # per expert is rows x (logical_cols / 2).
+            pump_read(f.fileno(), off, rows_per_expert * (ref.columns // 2), out)
     finally:
         for f, _ in payload_fds:
             f.close()
