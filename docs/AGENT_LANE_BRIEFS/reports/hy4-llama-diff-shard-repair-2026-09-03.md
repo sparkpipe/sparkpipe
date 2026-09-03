@@ -324,3 +324,50 @@ Context: GB10 sm_121, CUDA 13.0, -fmad=false, tol 1e-3*max(1,|ref|).
 With dequant (9 classes bitwise), q-chain, and attention cells green, the
 remaining GPU-port pieces are the hc_pre/hc_post/hc_head kernels, then
 full-layer assembly, then the TP16 native module port.
+
+## 09-03 (later tick): FP8 (unquantized) TP16 stagepacks — operator directive
+
+Operator: build stagepacks for the FULL UNQUANTIZED hy4 (inference-first on
+full precision; new weightd/residentd improvements), with the packer memory
+limited per the stagepack dev's improved patterns.
+
+Source: /mnt/model-warm/hy4-preview-fp8-official (766 GB, 130 safetensors
+shards, 2838 tensors). MXFP8 modelopt layout: F8_E4M3 weights with U8 E8M0
+scale companions (group-32 along the input dim), BF16 for the exclude list
+(embed_tokens, lm_head, norms, gates, hc fns, indexer proj), MTP layer
+present (39 tensors) and included.
+
+Build node: sparkc (2.1T free, warm visible, new weightd running; operator
+sanctioned a different spark over spark2's 745G free).
+
+Packer: tools/hy4_fp8_stagepack.py — safetensors-per-rank (schema
+hy4-fp8-tp16-v1, manifest + .sha256 sidecar), verbatim bytes (no
+requantization), TP16 splits: vocab/head/expert dim0 ranges, o_proj-family
+dim1 row gathers, replicate the rest (5.6 GB/rank: dense layer-0 MLP,
+shared experts, q_a/kv_a, gates, hc fns, MTP eh_proj). Memory discipline
+from the qwen38_max packer: 512 KiB streaming chunks, posix_fadvise
+DONTNEED per source chunk, sync_file_range + DONTNEED per output tensor.
+
+Census per rank: 2838 tensors = 652 range (50.0 G) + 79 gather (0.5 G) +
+2107 replicate (5.6 G) = 56.1 G; 16 ranks ≈ 898 G.
+
+Progress: rank 0 BUILT (63.6 GB file, sha 403b54b1db9bf8d7..., peak RSS
+558 MB per /usr/bin/time — memory discipline confirmed). Independent
+verifier (tools/hy4_fp8_pack_verify.py — byte-compares range/gather/
+replicate/MTP/scale samples against source reads) running; ranks 1-15
+building in a detached chain on sparkc (build.log).
+
+Defects found and fixed during bring-up:
+1. Expert scale names use a single `_scale` suffix (not `.weight_scale`)
+   and fell through to replicate — split_rule now strips both.
+2. safetensors data_offsets are RELATIVE TO EACH SHARD'S DATA SECTION;
+   the first rank-0 build copied shard headers as payloads. Offsets are
+   now resolved with per-shard data starts, and the verifier byte-compares
+   against the source so this class cannot pass silently.
+3. os.sync_file_range is not present on every Python build — guarded.
+
+NEXT: (1) verify PASS on rank 0, verify one mid-build rank (e.g. rank 7);
+(2) place packs to the fleet (rank r -> spark{hex r}) once the chain
+completes; (3) weightd/residentd load-path wiring for the FP8 pack format;
+(4) GPU inference cells move to the FP8 packs (dequant-free: FP8 bytes are
+the native kernel format; MX scale application kernels needed).
