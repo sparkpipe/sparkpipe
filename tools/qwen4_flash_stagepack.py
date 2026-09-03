@@ -448,7 +448,8 @@ class SafetensorsSource(_BaseSafetensorsSource):
         split_name = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
                       KIND_MOE_DOWN: "down_proj"}[ref.kind]
         rows_per_expert = ref.rows // expert_count
-        base = ref.name.replace("mlp.experts.", "mlp.experts.{e}.")
+        fused = "gate_up_proj" if ref.kind in (KIND_MOE_W1, KIND_MOE_W3) else "down_proj"
+        base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + split_name + ".weight")
         anchor = None
         for e in range(expert_start, expert_start + expert_count):
             name = base.replace("{e}", str(e))
@@ -459,8 +460,11 @@ class SafetensorsSource(_BaseSafetensorsSource):
                 anchor = (shard, meta, offset)
             sname = name[:-len(".weight")] + ".weight_scale_inv"
             s_meta = self.resolve(sname)[1]
-            if s_meta["dtype"] != "F32":
-                raise PackFailure(f"{sname}: scale dtype {s_meta['dtype']}, expected F32")
+            if s_meta["dtype"] not in ("F32", "BF16"):
+                raise PackFailure(f"{sname}: scale dtype {s_meta['dtype']}, expected F32 or BF16")
+            expect_scale = [rows_per_expert // 128, ref.columns // 128]
+            if s_meta["shape"] != expect_scale:
+                raise PackFailure(f"{sname}: scale shape {s_meta['shape']}, expected {expect_scale}")
         return anchor
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
@@ -619,11 +623,21 @@ def float_to_e4m3(values: "np.ndarray") -> "np.ndarray":
 
 class Fp8OfficialCheckShapeMixin:
     """Mixin for the fp8-official variant: MOE kinds validate the SPLIT
-    per-expert tensors instead of the fused name."""
+    per-expert tensors instead of the fused name; the PLE ngram table
+    arrives as F8_E4M3 and widens losslessly to the BF16 wire format."""
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
         if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
             return self.check_moe_split(ref, 0, EXPERT_COUNT)
+        if ref.kind == KIND_PLE_NGRAM:
+            shard, meta, offset = self.resolve(
+                f"{LAYER_PREFIX}{PLE_LAYER}.ple.ple_embedding.ngram_embedding.shard_0.weight")
+            if meta["dtype"] == "F8_E4M3" and meta["shape"] == [PLE_NGRAM_ROWS // 128, PLE_NGRAM_HEAD_DIM]:
+                ref.ple_ngram_f8 = True
+                return shard, meta, offset
+            if meta["dtype"] == "BF16" and meta["shape"] == [PLE_NGRAM_ROWS // 128, PLE_NGRAM_HEAD_DIM]:
+                return shard, meta, offset
+            raise PackFailure(f"ngram shard_0: {meta['dtype']} {meta['shape']}")
         return super().check_shape(ref)
 
 
@@ -775,6 +789,51 @@ def bf16_to_f32_matrix(packed_u16) -> "np.ndarray":
     return bits.view(np.float32)
 
 
+def _e4m3_to_bf16_lut():
+    """256-entry byte table: e4m3 code -> bf16 bits (lossless widening)."""
+    import numpy as np
+    raw = np.arange(256, dtype=np.uint8)
+    sign = (raw & 0x80).astype(np.uint32) << 24
+    exp = ((raw >> 3) & 0xF).astype(np.int32)
+    man = (raw & 0x7).astype(np.uint32)
+    # e4m3 bias 7 -> f32 exponent field; subnormals flow through f32 math.
+    value = np.where(exp == 0,
+                     (man / 8.0) * 2.0 ** -6,
+                     (1.0 + man / 8.0) * 2.0 ** (exp - 7))
+    bits = (np.frombuffer(value.astype("<f4").tobytes(), dtype=np.uint32)
+            | sign).astype(np.uint32) >> 16
+    return np.where((raw & 0x7F) == 0x7F, np.uint32(0x7FC0), bits.astype(np.uint32)).astype("<u2")
+
+_E4M3_BF16_LUT = None
+
+def copy_ple_ngram_f8_widen(source, ref: TensorRef, offset: int, out) -> None:
+    """PLE ngram stored as F8_E4M3 in the official fp8 source: stream the
+    raw bytes and widen each value losslessly to BF16 (the pack's wire
+    format for this tensor). Chunked + page-cache-evicting per the
+    memory law."""
+    global _E4M3_BF16_LUT
+    import numpy as np
+    if _E4M3_BF16_LUT is None:
+        _E4M3_BF16_LUT = _e4m3_to_bf16_lut()
+    shard, _, off = source.resolve(ref.name)
+    total = ref.rows * ref.columns
+    with (source.root / shard).open("rb") as f:
+        fd = f.fileno()
+        remaining = total
+        while remaining > 0:
+            step = min(remaining, 512 * 1024)
+            raw = os.pread(fd, step, off)
+            if len(raw) != step:
+                raise PackFailure(f"short read on {ref.name}")
+            codes = np.frombuffer(raw, dtype=np.uint8)
+            out.write(_E4M3_BF16_LUT[codes].tobytes())
+            try:
+                os.posix_fadvise(fd, off, step, os.POSIX_FADV_DONTNEED)
+            except (AttributeError, OSError):
+                pass
+            off += step
+            remaining -= step
+
 def copy_sharded_bf16(source: SafetensorsSource, ref: TensorRef, offset: int, out) -> None:
     import numpy as np
     # I64 hash constants: raw little-endian copy, never converted.
@@ -918,7 +977,11 @@ def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
     rows_per_expert = ref.rows // expert_count
     split_name = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
                   KIND_MOE_DOWN: "down_proj"}[ref.kind]
-    base = ref.name.replace("mlp.experts.", "mlp.experts.{e}.")
+    fused = "gate_up_proj" if ref.kind in (KIND_MOE_W1, KIND_MOE_W3) else "down_proj"
+    split_suffix = split_name + ".weight"
+    base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + split_suffix)
+    scale_suffix = split_name + ".weight_scale_inv"
+    scale_base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + scale_suffix)
     payload_fds, scale_fds = [], []
     try:
         for e in range(expert_start, expert_start + expert_count):
@@ -930,16 +993,36 @@ def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
     finally:
         for f, _ in payload_fds:
             f.close()
+    # Scales: source planes are F32 or BF16; the pack's F32B128 wire plane
+    # is F32, so BF16 values widen losslessly on the way through.
+    s_rows = rows_per_expert // FP8_BLOCK
+    s_cols = ref.columns // FP8_BLOCK
     try:
         for e in range(expert_start, expert_start + expert_count):
-            s_shard, _, s_off = source.resolve(
-                base.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale_inv")
+            s_shard, s_meta, s_off = source.resolve(scale_base.replace("{e}", str(e)))
             sf = (source.root / s_shard).open("rb")
-            scale_fds.append((sf, s_off))
-        for sf, s_off in scale_fds:
-            s_meta_rows = rows_per_expert // FP8_BLOCK
-            pump_read(sf.fileno(), s_off,
-                      s_meta_rows * (ref.columns // FP8_BLOCK) * F32_BYTES, out)
+            scale_fds.append((sf, s_off, s_meta["dtype"]))
+        for sf, s_off, s_dtype in scale_fds:
+            remaining = s_rows * s_cols * F32_BYTES
+            offset = s_off
+            while remaining > 0:
+                step = min(remaining, 512 * 1024)
+                if s_dtype == "BF16":
+                    half = step // 2
+                    raw = sf.read(half)
+                    if len(raw) != half:
+                        raise PackFailure("short read on weight_scale_inv")
+                    widened = bytearray(step)
+                    widened[2::4] = raw[0::2]
+                    widened[3::4] = raw[1::2]
+                    out.write(bytes(widened))
+                else:
+                    raw = sf.read(step)
+                    if len(raw) != step:
+                        raise PackFailure("short read on weight_scale_inv")
+                    out.write(raw)
+                offset += step
+                remaining -= step
     finally:
         for sf, _ in scale_fds:
             sf.close()
@@ -1066,6 +1149,8 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             before = temp.tell()
             if ref.kind == KIND_MTP_FC:
                 copy_mtp_fc(source, ref, temp)
+            elif getattr(ref, "ple_ngram_f8", False):
+                copy_ple_ngram_f8_widen(source, ref, getattr(ref, "source_offset", 0), temp)
             elif ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
                 if expert_format == "fp8-official":
                     copy_fp8_official_experts(source, ref, temp)
