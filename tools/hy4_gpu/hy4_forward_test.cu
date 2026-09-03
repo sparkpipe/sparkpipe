@@ -38,7 +38,7 @@ extern "C" {
 #define N_FF 2048
 #define N_EXPERT 256
 #define N_USED 8
-#define LAYERS 2
+#define LAYERS 78
 
 __global__ void k_gemv(const float* W, const float* x, float* y, int rows,
                        int K) {
@@ -331,7 +331,7 @@ int main(int argc, char** argv) {
     CHECK_CUDA(cudaMalloc(&d_mixes, 8 * 4));
     CHECK_CUDA(cudaMalloc(&d_pre, 4 * 4));
     CHECK_CUDA(cudaMalloc(&d_post, 4 * 4));
-    CHECK_CUDA(cudaMalloc(&d_red, N_EMBD * 4));
+    CHECK_CUDA(cudaMalloc(&d_red, (size_t)7552 * 4));
     CHECK_CUDA(cudaMalloc(&d_cur, N_EMBD * 4));
     CHECK_CUDA(cudaMalloc(&d_ss, 4));
     CHECK_CUDA(cudaMalloc(&d_branch, (size_t)T * N_EMBD * 4));
@@ -774,6 +774,9 @@ int main(int argc, char** argv) {
         float pre[4];
         for (int s = 0; s < HC; ++s)
             pre[s] = 1.0f / (1.0f + expf(-(hm[s] * hs + hb[s]))) + 1e-6f;
+        fprintf(stderr, "HCHEADGPU t=%d: mixes %.4f %.4f %.4f %.4f | "
+                "hpre %.4f %.4f %.4f %.4f\n", t, hm[0], hm[1], hm[2], hm[3],
+                pre[0], pre[1], pre[2], pre[3]);
         cudaMemcpy(d_hh_pre, pre, 16, cudaMemcpyHostToDevice);
     }
     k_hc_reduce<<<N_EMBD / 256, 256>>>(d_st, (float*)d_hh_pre, d_coll,
@@ -782,6 +785,12 @@ int main(int argc, char** argv) {
     k_rms_sq<<<1, 256>>>(d_coll, d_ss, N_EMBD);
     k_rms_scale<<<N_EMBD / 256, 256>>>(d_coll, (float*)d_onorm, d_normed,
                                        N_EMBD, 1e-5f, d_ss);
+    {
+        float nf[3];
+        cudaMemcpy(nf, d_normed, 12, cudaMemcpyDeviceToHost);
+        fprintf(stderr, "L78GPU: normed %.4f %.4f %.4f\n", nf[0], nf[1],
+                nf[2]);
+    }
 
     const int vocab_per_rank = 7552;
     CHECK_CUDA(cudaMalloc(&d_outw, (size_t)vocab_per_rank * N_EMBD * 4));
