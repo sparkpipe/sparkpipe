@@ -876,18 +876,21 @@ def copy_sharded_bf16(source: SafetensorsSource, ref: TensorRef, offset: int, ou
     row_slice = getattr(ref, "row_slice", None)
     column_slice = getattr(ref, "column_slice", None)
     if row_slice is None and column_slice is None:
-        # whole-tensor stream (handles f32 widening and conv squeeze)
+        # whole-tensor stream (handles f32 widening and conv squeeze),
+        # small chunks + fadvise per the node-memory law.
         elements = ref.rows * ref.columns
         source_bytes = elements * BF16_BYTES
         with path.open("rb") as file:
-            file.seek(offset)
-            remaining = source_bytes
-            while remaining > 0:
-                step = min(remaining, CHUNK_BYTES)
-                chunk = file.read(step)
+            fd = file.fileno()
+            offset_left = source_bytes
+            position = offset
+            while offset_left > 0:
+                step = min(offset_left, 512 * 1024)
+                chunk = os.pread(fd, step, position)
                 if len(chunk) != step:
                     raise PackFailure(f"short read on {ref.name}")
-                remaining -= step
+                offset_left -= step
+                position += step
                 if ref.weight_format == WEIGHT_BF16:
                     out.write(chunk)
                 else:
@@ -895,6 +898,10 @@ def copy_sharded_bf16(source: SafetensorsSource, ref: TensorRef, offset: int, ou
                     widened[2::4] = chunk[0::2]
                     widened[3::4] = chunk[1::2]
                     out.write(widened)
+                try:
+                    os.posix_fadvise(fd, position - step, step, os.POSIX_FADV_DONTNEED)
+                except (AttributeError, OSError):
+                    pass
         return
     if ref.kind == KIND_PLE_NGRAM:
         # Stream this rank's contiguous shard span (128/tp shards) in row
