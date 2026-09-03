@@ -1034,6 +1034,40 @@ def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
         for sf, _, _ in scale_fds:
             sf.close()
 
+def copy_ngram_f8_widen(source, ref: TensorRef, tp_degree: int, tp_rank: int, out) -> None:
+    """PLE ngram table under the fp8-official source: the table spans 128
+    F8 shards (PLE_NGRAM_ROWS//128 rows each); this rank's TP slice is
+    shards_per_rank consecutive shards, widened losslessly F8->BF16 via
+    the LUT onto the pack's BF16 wire. Chunked + fadvise per the memory
+    law. Repackage-only."""
+    global _E4M3_BF16_LUT
+    import numpy as np
+    if _E4M3_BF16_LUT is None:
+        _E4M3_BF16_LUT = _e4m3_to_bf16_lut()
+    shards_per_rank = 128 // tp_degree
+    first = tp_rank * shards_per_rank
+    rows_per_shard = PLE_NGRAM_ROWS // 128
+    raw_per_shard = rows_per_shard * PLE_NGRAM_HEAD_DIM
+    for i in range(first, first + shards_per_rank):
+        shard, meta, off = source.resolve(ref.name + f".shard_{i}.weight")
+        with (source.root / shard).open("rb") as f:
+            fd = f.fileno()
+            remaining = raw_per_shard
+            pos = off
+            while remaining > 0:
+                step = min(remaining, 512 * 1024)
+                raw = os.pread(fd, step, pos)
+                if len(raw) != step:
+                    raise PackFailure(f"short read on {ref.name}.shard_{i}")
+                codes = np.frombuffer(raw, dtype=np.uint8)
+                out.write(_E4M3_BF16_LUT[codes].tobytes())
+                try:
+                    os.posix_fadvise(fd, pos, step, os.POSIX_FADV_DONTNEED)
+                except (AttributeError, OSError):
+                    pass
+                pos += step
+                remaining -= step
+
 def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: str, out) -> None:
     """Read the fused per-layer expert tensors [E, 2I, H] / [E, H, I],
     split w1/w3 per expert, quantize per 128x128 block, and stack the
@@ -1156,8 +1190,8 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             before = temp.tell()
             if ref.kind == KIND_MTP_FC:
                 copy_mtp_fc(source, ref, temp)
-            elif getattr(ref, "ple_ngram_f8", False):
-                copy_ple_ngram_f8_widen(source, ref, getattr(ref, "source_offset", 0), temp)
+            elif expert_format == "fp8-official" and ref.kind == KIND_PLE_NGRAM:
+                copy_ngram_f8_widen(source, ref, tp_degree, tp_rank, temp)
             elif ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
                 if expert_format == "fp8-official":
                     copy_fp8_official_experts(source, ref, temp)
