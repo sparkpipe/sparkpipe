@@ -1312,8 +1312,8 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path, help="receipt output (default: <output>.receipt.json)")
     parser.add_argument("--tp-degree", type=int, default=1)
     parser.add_argument("--tp-rank", type=int, default=0)
-    parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128", "bf16", "fp8-official"), default="fp8-f32b128",
-                        help="fp8-official = the official fp8 release's split experts pass through verbatim (repackage-only)")
+    parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128", "bf16", "fp8-official", "nvfp4-official"), default="fp8-f32b128",
+                        help="fp8-official = the official fp8 release's split experts pass through verbatim (repackage-only); nvfp4-official = the official nvfp4 release's split U8-packed experts + e4m3 scale planes verbatim")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
