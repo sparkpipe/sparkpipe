@@ -5148,3 +5148,4 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 ## 2026-09-03 firing 166: backups 14/16 settled; sparka+sparkf finishing (the two 2-pack relay nodes)
 2026-09-03T01:38:57Z firing 167: sparka+sparkf backup transfers running (2-pack relay nodes); all else mirrored
 2026-09-03T01:52:39Z firing 168: sparka/sparkf mirror transfers ongoing (2-pack nodes, ~430G combined); all 14 others complete. Matrix remains placed+protected; variants next (flash arms, nvfp4a16, drafter).
+2026-09-03T02:08:48Z firing 169: item 21 recon DONE — flash fp8 source stores SPLIT per-expert tensors (mlp.experts.N.gate/up/down_proj + weight_scale_inv) under model.language_model.* prefix, 152089 tensors total. Item 21 = split→fused expert mapping in qwen4_flash_stagepack.py (gather per-expert rows into stacked layout), same class as max packer's per-expert loops. Mirror transfers on sparka/sparkf still running. ETA: item 21 code ~half day; mirror ~30min.
