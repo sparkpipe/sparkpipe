@@ -5115,3 +5115,18 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
   slicing, lands in ~6min. Ship sparkf→spark2 (831G free) + protect
   next. spark2's mount service restart needs a follow-up (timed out).
 - 15/16 placed; 16/16 within ~30min ± 15min.
+
+## 2026-09-03 firing 162: QWEN-MAX TP4xPP4 16/16 COMPLETE — final audit clean
+
+- rank00 shipped sparka→spark0 (root cause of every failed attempt:
+  the packs DIR never existed on spark0 — mkdir was the fix), sha
+  verified, chattr-protected, receipt in place.
+- FINAL AUDIT 16/16 PASS: every node holds exactly its canonical rank
+  (1 pack + 1 receipt; sparka 2 = r00-relay + r10; sparkf 2 = r02-relay
+  + r15), all immutable-flagged, zero symlinks.
+- Qwen-max now has PP16 + TP4xPP4 complete. With this, EVERY active
+  base model in warm has its TPmax + TP4xPP4 (or sanctioned substitutes)
+  sets placed, digest-gated, and write-protected.
+- REMAINING (non-blocking the placed matrix): module enablement tickets
+  (27B + max guards/readers), flash fp8/nvfp4 arms, 27B nvfp4a16,
+  hy4 (returned to hy4 dev — handoff filed), drafter pass (item 28).
