@@ -8,6 +8,9 @@
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define BENCH_HIDDEN 4096u
 #define BENCH_PORT_BASE 57340u
@@ -161,6 +164,7 @@ int main(int argc, char **argv)
     SparkStatus status;
     int retry;
 
+    printf("BENCH-BUILD %s %s\n", __DATE__, __TIME__);
     if (argc < 6)
     {
         printf("usage: rank degree iters rows mode(0 async 1 sync) [transport]\n");
@@ -367,7 +371,7 @@ int main(int argc, char **argv)
                 if (status != SPARK_STATUS_BUSY ||
                     bench_now_ns() - retry_started > 600000000000ull)
                 {
-                    printf("warmup submit %llu -> %u\n", (unsigned long long)ordinal, (unsigned)status);
+                    printf("warmup submit %llu -> %u t=%.1fs\n", (unsigned long long)ordinal, (unsigned)status,(bench_now_ns()-retry_started)/1e9);
                     return 1;
                 }
                 usleep(50u);

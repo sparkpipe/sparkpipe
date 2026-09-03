@@ -2591,10 +2591,11 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
          work_completion->opcode != IBV_WC_RECV))
         return SPARK_STATUS_IO_ERROR;
     receive = &state->pending_receives[receive_index];
-    fprintf(stderr,"LR-DB route=%s imm_slot=%u wr_slot=%u tag=%u armed=%u armed_gen=%llu complete=%u\n",
+    fprintf(stderr,"LR-DB route=%s imm_slot=%u wr_slot=%u tag=%u armed=%u armed_gen=%llu complete=%u t_ns=%llu\n",
         state->endpoint.route_name,receive_index,
         (uint32_t)receive_credit_index,generation_tag,
-        receive->active,(unsigned long long)receive->generation,receive->complete);
+        receive->active,(unsigned long long)receive->generation,receive->complete,
+        (unsigned long long)SparkHiddenSparkHostRdmaMonotonicNs());
     if (receive->complete != 0u ||
         (receive->persistent_registered == 0u &&
          (receive->active == 0u || generation_tag != 0u)) ||
