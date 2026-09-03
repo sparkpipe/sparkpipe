@@ -603,3 +603,25 @@ Placement remains blocked pending this verification (RED STOP stands).
 Next: read the instrumented result; PASS → verify suite + placement;
 FAIL → debug stream_copy's seek for the flagged tensor (the independent
 source read in the instrumentation removes any shared-handle doubt).
+
+## 09-03 (next tick): FP8 chain moved to spark2 build-ship-delete; placement running
+
+The free-pool nodes (sparkc/sparkd/etc) are saturated with the qwen4_flash
+lane's own warm-heavy stagepack builds (their 16-rank TP4xPP4 FP8 loop) —
+the warm path is contended fleet-wide, so the pack chain moved to spark2
+(this lane's dedicated node, no competing warm build): per-rank build from
+warm → ship 56GB to rank r's home node (spark{hex r}) → remote sha verify
+against the build sha → delete local. Chain script:
+tools/hy4_fp8_chain.sh (bash, per-rank, ship+sha-verify+delete, stops on
+any failure).
+
+Status at close: ranks 00+01 built, shipped and sha-verified on their home
+nodes; rank 02 building. ~10 min/rank → all 16 placed in ~2.5h. The
+remote-sha check makes each placement self-verifying (the earlier
+independent suite verify of ranks 0/7 plus this per-rank remote sha close
+the loop).
+
+Chain ops note: the first two chain launches failed on shell quirks
+(dash arithmetic `$((16#..))` under /bin/sh; a pgrep self-match kill) —
+fixed by explicit rank/node lists and bash shebang; the pkill self-match
+trap claimed another ssh session (known trap, by-pid kills only).
