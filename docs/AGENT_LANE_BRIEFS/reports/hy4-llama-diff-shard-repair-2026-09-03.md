@@ -700,3 +700,63 @@ FP8 packs (MX scale-apply kernels).
 NEXT: read both results; on FORWARD PASS + verify PASS -> placement +
 weightd/residentd wiring; the GPU forward cell then IS the TP16 native
 module's decode blueprint.
+
+## 09-04: FP8 pack forensics — three stacked defects root-caused; repairs proven
+
+The first sampled verify on the fresh fanout packs flagged mismatches
+(q_a_proj-49 + mtp shared up_proj since the OLD per-rank packs — same
+two tensors, so a shared-root suspect). Byte-level probes escalated to
+three independent defects, all fixed with receipts:
+
+1. HEADER ALIGN-DRIFT (all ranks): fanout header cursors are 8-byte
+   aligned; the writer never writes pad bytes. Declared offsets drift
+   from actual data by cumulative padding. Drift map (rank 0, replicate
+   probes found in-shard): 0 through tensor ~1000, then monotone to
+   -18KB. NOT closed-form (defect 2 injects positive jumps), so the
+   header repair is EMPIRICAL: locate each tensor by content (equality
+   at expected sequential position; bounded find + mid-tensor
+   confirm >1MB; forward-unique match for smalls), rewrite header in
+   place via dd — data section untouched. Rank 0: VERIFY PASS.
+
+2. WRITER 1-D SPLIT BUG (ranks 1-15, 79 tensors each): for 1-D dim0
+   range-split tensors (learnable_sink_param, 64 heads -> 4/rank) the
+   packer's 1-D row_bytes fallback (esize*dims[0]) treats the whole
+   tensor as ONE row -> owner rank 0 gets all 256B (240B spill into
+   the next slot — the entire "oversize" 18,840B anomaly), ranks 1-15
+   get ZERO bytes: 79 missing 16B holes per pack, stream shifted
+   -16B per hole thereafter. Fix = segmented rebuild per rank:
+   locate non-sink tensors by content (sinks occupy zero stream
+   bytes), emit fresh pack = copied segments + sink slices straight
+   from the checkpoint, header declares the now-real layout. RSS
+   peaked 949MB (mmap + madvise every 128MB — under the operator's
+   new 1GB node-tooling cap; an earlier 56GB whole-file read got
+   OOM-killed and that class of read is banned).
+
+3. VERIFIER 3-D RANGE BUG: byte-compare verifier's range branch used
+   dims[1]-only row span for 3-D tensors — accidentally correct only
+   for rank 0 (start=0), so its range samples were blind on all other
+   ranks and it FALSE-FLAGGED the rebuilt rank 1's expert tensors.
+   Fixed to esize*prod(dims[1:]).
+
+Receipts: ranks 0 + 1 VERIFY PASS (12 samples each + sha gates);
+ranks 2-15 rebuild batch running detached on sparkc (~2.5 min/rank;
+rb_XX.done markers + rebuild.log). Sidecars + manifest file_sha256
+rewritten per repaired rank; manifest carries header_repaired tag.
+
+Forward cell: the TOP1=0 val=0.0000 mystery was LAYERS=2 — the file
+was still the LAYER_STATE cell config; the 78-layer conversion never
+landed (log showed "layer 0 done" then head: il%10 print cadence).
+Also real: d_red sized N_EMBD but lm_head gemv writes 7552 floats
+(22KB device heap overflow every head pass). v5 (170d8f7) = LAYERS 78
++ d_red 7552 + HCHEADGPU/L78GPU stderr anchors. First detached v5
+run OOMed at its first 393KB cudaMalloc — a glm53 fleet sweep took
+the GPU in the gap after my 26s launcher released its lease (detached
+runs escape queue protection; this is the cost of the ttl-15+setsid
+pattern on a shared node). Relaunch queued with a GPU-free guard
+(waits >=8GB free, hy4-fwd-top1d).
+
+NEXT: (1) top1d receipt (TOP1=299 expected, ~2h run); (2) ranks 2-15
+rebuild completes -> spot-verify ranks 7 + 15; (3) placement rank r ->
+spark{hex r}:~/sparkdata/hy4.fp8.tp16/packs/rank-XX/; (4) weightd/
+residentd load wiring for hy4-fp8-tp16-v1; (5) TP16 native module
+port (the forward cell is the blueprint).
