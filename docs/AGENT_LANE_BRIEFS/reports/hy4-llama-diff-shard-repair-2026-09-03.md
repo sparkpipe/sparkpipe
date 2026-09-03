@@ -640,3 +640,22 @@ When build4 completes: verify ranks 0+7 with the fixed verifier, settle
 the q_a_proj-49 4-byte replicate question (targeted probe), then place
 all 16 via the proven push paths (spark0-9 direct; hex nodes via spark2
 push), and wire the weightd/residentd load path for hy4-fp8-tp16-v1.
+
+## 09-03 (next tick): fanout packer launched, mislaunch cleaned; relaunch pending
+
+The single-pass fanout packer (tools/hy4_fp8_stagepack_fanout.py — one
+sequential warm pass fanning to all 16 rank outputs, 813 GB total reads
+vs 13 TB for 16 per-rank passes) was launched but its nohup/setsid launch
+chained badly: stdout landed on a pipe that died with the launching ssh,
+and the first stdout flush killed the process (broken pipe) after ~8.19
+GB of rank-00. Current state: NO packer process running; one orphaned
+8.19 GB partial rank-00 at ~/hy4-fp8-packs/ (deleted before relaunch).
+
+Relaunch procedure (next tick): delete the partial, launch via a staged
+runner script with ABSOLUTE paths (log + output dir), verify the rank-00
+file grows in ~/hy4-fp8-packs/, and monitor. The warm path is contended
+by the qwen4_flash fleet builds (observed ~14 MB/s on sparkc) — the pass
+takes ~16 h contended, faster when their loop gaps. The single-pass
+design means progress is monotonic and restartable by simply rerunning
+(completed ranks are skipped only by manual deletion — safest to let it
+overwrite; verification happens after completion anyway).
