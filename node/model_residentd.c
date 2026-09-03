@@ -2800,7 +2800,7 @@ static int32_t SparkModelResidentdPollTimeoutMs(
 	for (index=0u; active == 0u && index<runtime->route_capacity; index++)
 		active = runtime->routes[index].active;
 	pthread_mutex_unlock(&runtime->mutex);
-	return(active != 0u ? 10 : 1000);
+	return(active != 0u ? 1 : 1000);
 }
 
 static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
