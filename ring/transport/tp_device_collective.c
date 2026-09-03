@@ -1545,6 +1545,25 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRingSendPack(
     return SPARK_STATUS_OK;
 }
 
+static void SparkTpDeviceCollectiveLiteralRingBeginPhase(
+    SparkTpDeviceCollectiveOperation *operation)
+{
+    uint32_t lane;
+    operation->current_step += 1u;
+    operation->consumption_enqueued = 0u;
+    for (lane = 0u; lane < 2u; lane++)
+    {
+        uint32_t mask = 1u << SparkTpDeviceCollectiveLiteralRingRoute(
+            operation->current_step,lane);
+        operation->reserved_send_mask &= ~mask;
+        operation->sent_mask &= ~mask;
+        operation->send_complete_mask &= ~mask;
+        operation->receive_complete_mask &= ~mask;
+        operation->released_receive_mask &= ~mask;
+        operation->activated_receive_mask &= ~mask;
+    }
+}
+
 static SparkStatus SparkTpDeviceCollectiveEnqueueLiteralRingSendPack(
     SparkTpDeviceCollectiveImplementation *implementation,
     SparkTpDeviceCollectiveOperation *operation,
@@ -2023,6 +2042,11 @@ static SparkStatus SparkTpDeviceCollectiveMarkOperationFailure(
     hook_called = 0u;
     observed_state = atomic_load_explicit(
         &operation->lifecycle,memory_order_acquire);
+    fprintf(stderr,"LR-FAIL rank=%u ordinal=%llu step=%u status=%u phase_byte=%u\n",
+        implementation->collective->tp_rank,
+        (unsigned long long)operation->ordinal,operation->current_step,
+        (uint32_t)status,
+        (uint32_t)(observed_state & 0xffu));
     for (;;)
     {
         uint32_t phase;
@@ -2224,8 +2248,7 @@ static SparkStatus SparkTpDeviceCollectiveAdvanceStreamOrderedConsumption(
     if (operation->algorithm_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
     {
-        operation->current_step += 1u;
-        operation->consumption_enqueued = 0u;
+        SparkTpDeviceCollectiveLiteralRingBeginPhase(operation);
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE);
@@ -2813,8 +2836,7 @@ static void SparkTpDeviceCollectiveProgressConsumption(
     if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
     {
-        operation->current_step += 1u;
-        operation->consumption_enqueued = 0u;
+        SparkTpDeviceCollectiveLiteralRingBeginPhase(operation);
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_ACTIVE,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE);
