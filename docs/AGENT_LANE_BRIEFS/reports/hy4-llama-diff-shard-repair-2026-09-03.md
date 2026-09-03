@@ -530,3 +530,18 @@ hyper-connections — composed and validated against the CPU forward at
 fp32-noise level. Next: the TP16 native module port (this cell is the
 module forward's blueprint), then tok/s. FP8 packs await verify +
 placement when sparkc's link returns.
+
+## 09-03 (next tick): FP8 verify running clean; full-forward cell in work
+
+- FP8 rank-0/7 verification relaunched under setsid via a staged script
+  (tools/hy4_gpu/run_fp8_verify.sh) on sparkc — the earlier attempt was
+  OOM/killed and the one before that died with its ssh session. Receipts
+  land next tick; placement fan-out follows a PASS.
+- The full 78-layer GPU forward cell (hy4_forward_test) is being built on
+  the validated layer-cell pieces: layer-outer/token-inner order so
+  per-layer weights stream from the bundles once, KV caches resident on
+  device, per-token hc streams, batched expert-union gathering per layer,
+  lm_head argmax at the final position expecting 299 (the CPU greedy
+  prefill token). Draft in the worktree; submit after the MoE-union
+  staging is converted to host-dequant + upload (device-pointer dequant
+  is the bug class the LAYER_STATE hunt just proved out).
