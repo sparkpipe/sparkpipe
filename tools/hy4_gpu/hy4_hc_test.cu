@@ -218,28 +218,6 @@ static int check(const char* tag, const float* gpu, const double* ref,
     return 0;
 }
 
-static int check(const char* tag, const float* gpu, const double* ref,
-                 long n, double tol_scale) {
-    double worst = 0;
-    for (long i = 0; i < n; ++i) {
-        if (isnan(gpu[i]) || isinf(gpu[i])) {
-            printf("%s FAIL elem %ld gpu=%f (non-finite)\n", tag, i,
-                   gpu[i]);
-            return 1;
-        }
-        double m = fabs(ref[i]) > 1.0 ? fabs(ref[i]) : 1.0;
-        double d = fabs((double)gpu[i] - ref[i]);
-        if (d > worst) worst = d;
-        if (d > tol_scale * m) {
-            printf("%s FAIL elem %ld gpu=%.8f ref=%.8f |d|=%.3g\n",
-                   tag, i, gpu[i], ref[i], d);
-            return 1;
-        }
-    }
-    printf("%s PASS (max|d|=%.3g, %ld elems)\n", tag, worst, n);
-    return 0;
-}
-
 int main(int argc, char** argv) {
     if (argc != 2) {
         fprintf(stderr, "usage: %s <rank00.gguf>\n", argv[0]);
