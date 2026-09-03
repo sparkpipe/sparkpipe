@@ -302,3 +302,25 @@ Two more harness lessons (both found by refusing to accept a vacuous PASS):
 The full attention stage of the GPU port is now validated (kv path, absorb,
 sink softmax, v decompress). NEXT: MoE expert-gather cell (same fp64
 pattern), then hc_pre/hc_post/head kernels, then the TP16 native module.
+
+## Receipt 09-03 (closed): hy4-gpu7 MOE PASS — expert-gather GPU-validated vs fp64
+
+Cell hy4-gpu7b-moe [gpu][spark2]: the routed-expert MoE FFN of layer 1 as
+CUDA kernels. Router logits via gemv (gate_inp F32), sigmoid probs, biased
+top-8 selection (probs + exp_probs_b), weights renormalized x 2.827; per
+selected expert: owner-rank bundle slab reads (expert e -> rank e/16, slab
+e%16), host dequant (gate/up IQ1_M|IQ2_XXS, down IQ3_XXS|IQ4_XS via the
+vendor header), upload, gate/up gemvs, HYV4 swiglu-clamp kernel (up +-10,
+gate pre-silu <= 10), down gemv, weighted accumulate; plus the shared
+expert (Q6_K, unclamped, weight 1). MoE input = deterministic seeded
+pattern (isolates the MoE stage; hc kernels are a separate cell).
+
+    selected: 129 179 203 173 113 47 216 21
+    MOE_ROUTED      PASS  max|d| = 3.2e-05  (6144 elems)
+    MOE_WITH_SHEXP  PASS  max|d| = 3.7e-05  (6144 elems)
+    MOE PASS
+
+Context: GB10 sm_121, CUDA 13.0, -fmad=false, tol 1e-3*max(1,|ref|).
+With dequant (9 classes bitwise), q-chain, and attention cells green, the
+remaining GPU-port pieces are the hc_pre/hc_post/hc_head kernels, then
+full-layer assembly, then the TP16 native module port.
