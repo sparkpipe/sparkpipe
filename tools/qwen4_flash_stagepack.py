@@ -1057,7 +1057,7 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
         for sf, _ in scale_fds:
             sf.close()
 
-def copy_fp8_official_experts(source, ref: TensorRef, offset: int, out) -> None:
+def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
     """fp8-official arm: gather the rank's SPLIT per-expert F8_E4M3
     tensors into the fused expert-major pack layout, verbatim bytes +
     verbatim F32 weight_scale_inv planes. Two-pass (payloads, then
