@@ -285,7 +285,26 @@ int main(int argc, char** argv) {
     fclose(df);
 
     std::vector<float> h_embd(N_EMBD);
-    load_dequant(R[0], "token_embd.weight", h_embd.data(), N_EMBD);
+    {
+        const hy4_tensor_view* tv = hy4_tensor_lookup(R[0],
+                                                      "token_embd.weight");
+        if (!tv) { fprintf(stderr, "missing token_embd\n"); return 1; }
+        long row_bytes = tv->nbytes / 7552;
+        char efile[600];
+        snprintf(efile, sizeof(efile),
+                 "%s/model-ud-iq1m-tp16-rank-00.gguf", R[0]->path);
+        std::vector<uint8_t> rowb((size_t)row_bytes);
+        FILE* ef = fopen(efile, "rb");
+        if (!ef ||
+            fseek(ef, (long)(tv->file_offset + (uint64_t)802 * row_bytes),
+                  SEEK_SET) ||
+            fread(rowb.data(), 1, rowb.size(), ef) != rowb.size()) {
+            fprintf(stderr, "embed read fail\n"); return 1;
+        }
+        fclose(ef);
+        hy4_dequant_row_q4_K((const block_q4_K*)rowb.data(), h_embd.data(),
+                             N_EMBD);
+    }
 
     float *d_streams, *d_flat, *d_mixes, *d_pre, *d_post, *d_red, *d_cur,
           *d_ss, *d_branch, *d_q, *d_qr, *d_qh_all, *d_gatev, *d_kv,
@@ -348,7 +367,7 @@ int main(int argc, char** argv) {
     CHECK_CUDA(cudaMalloc(&d_dg, 18432 * 4));
     CHECK_CUDA(cudaMalloc(&d_du, 18432 * 4));
     CHECK_CUDA(cudaMalloc(&d_qpe, ROT * 4));
-    CHECK_CUDA(cudaMalloc(&d_s, 4));
+    CHECK_CUDA(cudaMalloc(&d_s, 8));
     CHECK_CUDA(cudaMalloc(&d_ones, (size_t)HC * N_EMBD * 4));
     {
         std::vector<float> init((size_t)HC * N_EMBD);
@@ -383,6 +402,19 @@ int main(int argc, char** argv) {
 
         snprintf(nm, sizeof(nm), "blk.%d.attn_norm.weight", il);
         load_f32_dev(R[0], nm, d_an, N_EMBD);
+        if (il == 0) {
+            float dbg[11];
+            cudaMemcpy(dbg, d_flat, 12, cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg + 3, d_red, 12, cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg + 6, d_mixes, 32, cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg + 8, d_pre, 16, cudaMemcpyDeviceToHost);
+            printf("PROBE flat[0..2]=%.4f %.4f %.4f red[0..2]=%.4f %.4f "
+                   "%.4f\n", dbg[0], dbg[1], dbg[2], dbg[3], dbg[4],
+                   dbg[5]);
+            printf("PROBE mixes=%.2f %.2f %.2f %.2f pre=%.4f %.4f %.4f "
+                   "%.4f\n", dbg[6], dbg[7], dbg[8], dbg[9], dbg[8 + 4],
+                   dbg[9 + 4], dbg[10], dbg[11]);
+        }
         k_rms_sq<<<1, 256>>>(d_red, d_ss, N_EMBD);
         k_rms_scale<<<N_EMBD / 256, 256>>>(d_red, (float*)d_an, d_cur,
                                            N_EMBD, 1e-5f, d_ss);
@@ -404,6 +436,14 @@ int main(int argc, char** argv) {
         k_rms_sq<<<1, 256>>>(d_kv, d_ss, KV_LORA);
         k_rms_scale<<<KV_LORA / 256, 256>>>(d_kv, (float*)d_wkva_n, d_klat,
                                             KV_LORA, 1e-5f, d_ss);
+        if (il == 0) {
+            float dbg[6];
+            cudaMemcpy(dbg, d_cur, 12, cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg + 3, d_kv, 12, cudaMemcpyDeviceToHost);
+            printf("PROBE cur[0..2]=%.6f %.6f %.6f kvraw[0..2]=%.6f "
+                   "%.6f %.6f\n", dbg[0], dbg[1], dbg[2], dbg[3], dbg[4],
+                   dbg[5]);
+        }
         cudaMemcpy(d_kpe, d_kv + KV_LORA, ROT * 4, cudaMemcpyDeviceToDevice);
         k_rope<<<1, 32>>>(d_kpe, ROT, 0.0f);
         snprintf(nm, sizeof(nm), "blk.%d.attn_sinks.weight", il);
@@ -433,6 +473,18 @@ int main(int argc, char** argv) {
                 k_dot<<<1, 1>>>(d_qabs, d_klat, d_s, KV_LORA);
                 k_dot<<<1, 1>>>(d_qh_all + lh * HK + NOPE, d_kpe, d_s + 1,
                                 ROT);
+                cudaError_t derr = cudaDeviceSynchronize();
+                if (derr != cudaSuccess) {
+                    printf("dot sync fail: %s\n",
+                           cudaGetErrorString(derr));
+                    return 1;
+                }
+                cudaError_t lerr = cudaGetLastError();
+                if (lerr != cudaSuccess) {
+                    printf("dot launch fail: %s\n",
+                           cudaGetErrorString(lerr));
+                    return 1;
+                }
                 float sh[2];
                 cudaMemcpy(sh, d_s, 8, cudaMemcpyDeviceToHost);
                 float sc = (sh[0] + sh[1]) / 16.0f;
