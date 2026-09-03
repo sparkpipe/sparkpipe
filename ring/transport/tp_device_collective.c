@@ -2223,6 +2223,10 @@ static SparkStatus SparkTpDeviceCollectiveAdvanceStreamOrderedConsumption(
 
     status = SparkTpDeviceCollectiveArmReceiveRelease(
         implementation,operation);
+    fprintf(stderr,"LR-ADV rank=%u ordinal=%llu step=%u arm=%u\n",
+        implementation->collective->tp_rank,
+        (unsigned long long)operation->ordinal,operation->current_step,
+        (uint32_t)status);
     if (status != SPARK_STATUS_OK)
         return status;
     terminal_step = operation->current_step + 1u ==
@@ -2230,6 +2234,9 @@ static SparkStatus SparkTpDeviceCollectiveAdvanceStreamOrderedConsumption(
             implementation,operation);
     if (terminal_step != 0u)
     {
+        fprintf(stderr,"LR-TERMINAL rank=%u ordinal=%llu step=%u\n",
+            implementation->collective->tp_rank,
+            (unsigned long long)operation->ordinal,operation->current_step);
         if (operation->cuda_stream != operation->continuation_cuda_stream)
             status = SparkTpDeviceCollectiveCudaStatus(cudaStreamWaitEvent(
                 (cudaStream_t)operation->continuation_cuda_stream,
@@ -2938,6 +2945,9 @@ static void SparkTpDeviceCollectivePublishCompletion(
     SparkStatus status;
     uint64_t state_word;
 
+    fprintf(stderr,"LR-PUBLISH rank=%u ordinal=%llu\n",
+        implementation->collective->tp_rank,
+        (unsigned long long)operation->ordinal);
     if (SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_CALLBACK_CLAIMED) == 0u)
