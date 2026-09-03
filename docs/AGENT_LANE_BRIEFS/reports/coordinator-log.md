@@ -5147,3 +5147,4 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 
 ## 2026-09-03 firing 166: backups 14/16 settled; sparka+sparkf finishing (the two 2-pack relay nodes)
 2026-09-03T01:38:57Z firing 167: sparka+sparkf backup transfers running (2-pack relay nodes); all else mirrored
+2026-09-03T01:52:39Z firing 168: sparka/sparkf mirror transfers ongoing (2-pack nodes, ~430G combined); all 14 others complete. Matrix remains placed+protected; variants next (flash arms, nvfp4a16, drafter).
