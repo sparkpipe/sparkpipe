@@ -435,6 +435,34 @@ const char *cudaGetErrorString(cudaError_t error)
     return error == cudaSuccess ? "cudaSuccess" : "cudaTestError";
 }
 
+#define SPARK_CUDA_STUB_TOTAL_MEMORY_BYTES (128ull * 1024ull * 1024ull * 1024ull)
+
+cudaError_t cudaMemGetInfo(size_t *free_bytes, size_t *total_bytes)
+{
+    if (free_bytes == 0 || total_bytes == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    *total_bytes = (size_t)SPARK_CUDA_STUB_TOTAL_MEMORY_BYTES;
+    *free_bytes = (size_t)SPARK_CUDA_STUB_TOTAL_MEMORY_BYTES;
+    return cudaSuccess;
+}
+
+cudaError_t cudaEventElapsedTime(
+    float *milliseconds,
+    cudaEvent_t start,
+    cudaEvent_t end)
+{
+    (void)start;
+    (void)end;
+    if (milliseconds == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    *milliseconds = 0.0f;
+    return cudaSuccess;
+}
+
 cudaError_t cudaGetDevice(int *device)
 {
     if (device == 0)

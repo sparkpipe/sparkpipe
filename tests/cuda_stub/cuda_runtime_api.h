@@ -32,6 +32,8 @@ typedef enum cudaStreamCaptureMode
 #define cudaErrorInvalidValue 1
 #define cudaErrorMemoryAllocation 2
 #define cudaErrorNotReady 34
+#define cudaErrorLaunchFailure 719
+#define cudaErrorUnknown 999
 #define cudaDevAttrMultiProcessorCount 16
 #define cudaStreamDefault 0u
 #define cudaStreamNonBlocking 1u
@@ -120,6 +122,11 @@ cudaError_t cudaHostGetDevicePointer(
     void *host_pointer,
     unsigned int flags);
 const char *cudaGetErrorString(cudaError_t error);
+cudaError_t cudaMemGetInfo(size_t *free_bytes, size_t *total_bytes);
+cudaError_t cudaEventElapsedTime(
+    float *milliseconds,
+    cudaEvent_t start,
+    cudaEvent_t end);
 
 #include <stdint.h>
 
