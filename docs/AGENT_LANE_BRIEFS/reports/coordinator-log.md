@@ -5130,3 +5130,13 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - REMAINING (non-blocking the placed matrix): module enablement tickets
   (27B + max guards/readers), flash fp8/nvfp4 arms, 27B nvfp4a16,
   hy4 (returned to hy4 dev — handoff filed), drafter pass (item 28).
+
+## 2026-09-03 firing 163: warm backup mirror refresh — new sets backing up (16 rsyncs live)
+
+- All 16 nodes rsyncing their NEW completed sets to the warm backup
+  mirror: dsv4_pro.tp16, dsv4_pro.tp4pp4, qwen38_27b.tp4pp4,
+  qwen38_max.tp4pp4 (~4.7TB total aggregate). Safe under the 4G dirty
+  cap; rsync is idempotent/resumable. Monitor + verify next cycles.
+- ETA: backup mirror current in ~1-3h; then the remaining variant
+  work (flash arms, nvfp4a16, drafter) ~3-5 days; module tickets
+  lane-side.
