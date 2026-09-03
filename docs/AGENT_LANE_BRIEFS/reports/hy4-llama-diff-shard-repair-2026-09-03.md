@@ -414,3 +414,32 @@ NEXT: (1) setsid verify ranks 0 + 7 (byte-compare vs source); (2) place
 packs rank r -> spark{hex r}; (3) weightd/residentd load-path wiring for
 hy4-fp8-tp16-v1; (4) GPU inference cells switch to FP8 packs (MX
 scale-application kernels).
+
+## Receipt 09-03 (closed): hy4-gpu8b HC PASS — GPU port kernel layer COMPLETE
+
+Cell hy4-gpu8b-hc [gpu][spark2]: hc_pre (rms over the flattened 24576
+stream vector, hc_fn gemv, sigmoid pre/post gates, weighted reduce),
+hc_post distribute, hc_head collapse — all validated against an
+in-harness float64 reference on real layer-0/final weights with the real
+hc_init (replicated embedding row 802):
+
+    HC_MIXES       max|d| = 1.1e-03 on O(100-300) values (relative ~1e-5)
+                   gpu [112.7597, 76.8200, 74.4943, 95.1448, -289.2010,
+                        -282.9741, -332.2350, -281.2709]
+                   llama golden [112.7601, 76.8200, 74.4942, 95.1446,
+                                 ?, -282.9738, -332.2355, -281.2696]
+    HC_REDUCED     max|d| = 1.4e-08  (6144)
+    HC_DISTRIBUTE  max|d| = 6.5e-08  (24576)
+    HC_HEAD        max|d| = 4.7e-08  (6144)
+    HC PASS
+
+With this, every kernel group of the GPU port is validated:
+dequant (9 classes bitwise), gemv/rms_norm/rope chain, absorbed-MLA
+attention with sink softmax, MoE expert gather with HYV4 clamp, and the
+hyper-connection stage. Remaining before serving: full-layer assembly
+(compose all kernels, diff layer-0/layer-1 against the CPU forward's
+dumps), then the TP16 native module.
+
+FP8 packs: build complete (16/16 on sparkc) but sparkc's link is down at
+close (proxy flap); the rank-0/7 verification relaunch (setsid) and
+placement fan-out are the next FP8 items once it returns.
