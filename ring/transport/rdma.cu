@@ -1181,6 +1181,9 @@ static SparkStatus SparkHiddenSparkHostRdmaDiscoverDevice(
     uint32_t device_name_bytes,
     int32_t *gid_index_out)
 {
+    static char cached_host[64];
+    static char cached_device[64];
+    static int32_t cached_gid_index = -1;
     struct ibv_device **devices;
     struct ibv_device *selected_device;
     struct ibv_context *probe;
@@ -1198,6 +1201,15 @@ static SparkStatus SparkHiddenSparkHostRdmaDiscoverDevice(
     if (local_host == 0 || verbs_port == 0u || device_name == 0 ||
         device_name_bytes == 0u || gid_index_out == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
+    if (cached_gid_index >= 0 && strlen(local_host) < sizeof(cached_host) &&
+        strncmp(local_host,cached_host,sizeof(cached_host)) == 0u)
+    {
+        written = snprintf(device_name,device_name_bytes,"%s",cached_device);
+        if (written < 0 || (uint32_t)written >= device_name_bytes)
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        *gid_index_out = cached_gid_index;
+        return SPARK_STATUS_OK;
+    }
     status = SparkHiddenSparkHostRdmaResolveIpv4(local_host,&local_address);
     if (status != SPARK_STATUS_OK)
         return status;
@@ -1257,6 +1269,10 @@ static SparkStatus SparkHiddenSparkHostRdmaDiscoverDevice(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     *gid_index_out = selected_gid_index;
+    (void)snprintf(cached_host,sizeof(cached_host),"%s",local_host);
+    (void)snprintf(cached_device,sizeof(cached_device),"%s",
+        ibv_get_device_name(selected_device));
+    cached_gid_index = selected_gid_index;
     ibv_free_device_list(devices);
     return SPARK_STATUS_OK;
 }
@@ -2575,6 +2591,10 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
          work_completion->opcode != IBV_WC_RECV))
         return SPARK_STATUS_IO_ERROR;
     receive = &state->pending_receives[receive_index];
+    fprintf(stderr,"LR-DB route=%s imm_slot=%u wr_slot=%u tag=%u armed=%u armed_gen=%llu complete=%u\n",
+        state->endpoint.route_name,receive_index,
+        (uint32_t)receive_credit_index,generation_tag,
+        receive->active,(unsigned long long)receive->generation,receive->complete);
     if (receive->complete != 0u ||
         (receive->persistent_registered == 0u &&
          (receive->active == 0u || generation_tag != 0u)) ||
@@ -2582,6 +2602,10 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
          generation_tag != SparkHiddenSparkHostRdmaDoorbellGenerationTag(
             receive->generation)))
     {
+        fprintf(stderr,"LR-DB-DROP route=%s slot=%u tag=%u armed=%u armed_gen=%llu complete=%u\n",
+            state->endpoint.route_name,receive_index,generation_tag,
+            receive->active,(unsigned long long)receive->generation,
+            receive->complete);
         return SPARK_STATUS_IO_ERROR;
     }
     receive->complete = 1u;

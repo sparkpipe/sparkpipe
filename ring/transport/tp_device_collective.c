@@ -2225,15 +2225,11 @@ static SparkStatus SparkTpDeviceCollectiveAdvanceStreamOrderedConsumption(
             SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
     {
         operation->current_step += 1u;
+        operation->consumption_enqueued = 0u;
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_CONSUME_BUILDING,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE);
-        if (SparkTpDeviceCollectiveTransitionPhase(operation,
-                SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE,
-                SPARK_TP_DEVICE_COLLECTIVE_PHASE_SEND_BUILDING) == 0u)
-            return SPARK_STATUS_INTERNAL_ERROR;
-        operation->consumption_enqueued = 0u;
-        return SPARK_STATUS_OK;
+        return SPARK_STATUS_BUSY;
     }
     if (SparkTpDeviceCollectiveCanCombineRelayBf16(
             implementation,operation) == 0u)
@@ -2296,6 +2292,10 @@ static void SparkTpDeviceCollectiveRouteCompletion(
     {
         return;
     }
+    fprintf(stderr,"LR-COMP route=? tok=%llu seq=%llu recv=%u status=%u\n",
+        (unsigned long long)completion->token_index,
+        (unsigned long long)completion->sequence_id,
+        receive_completion,(uint32_t)completion->status);
     if (completion->sequence_id == 0u || completion->token_index >= 32u)
     {
         if (implementation->profile_enabled != 0u)
