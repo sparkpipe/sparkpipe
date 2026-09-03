@@ -677,3 +677,26 @@ much faster when their loop gaps. Completion check: grep fanout.log for
 placement (rank r -> spark{hex r}:~/sparkdata/hy4.fp8.tp16/packs/), then
 weightd/residentd load wiring for hy4-fp8-tp16-v1, then GPU cells on the
 FP8 packs (MX scale-apply kernels).
+
+## 09-03 (later): two long-running jobs detached; results land next tick
+
+1. FP8 fanout packer (sparkc): single warm pass over 813 GB fanning to
+   all 16 rank outputs; progress visible via per-rank file growth.
+   sparkc/spark2 ssh flaked during polling (proxy flap) — the job is
+   setsid-detached and unaffected. Completion check: 16 "rankNN done
+   sha=" lines in ~/hy4-fp8-packs/fanout.log, then the verify suite
+   (ranks 0+7), then placement (rank r -> spark{hex r}).
+
+2. Full 78-layer GPU forward (spark2, hy4_forward_test v3): the d_branch
+   buffer was sized for one token while the MoE accumulate indexed it per
+   token (OOB write poisoning the context — the layer-0 "done" print then
+   illegal-access at the next alloc). Fixed to T*N_EMBD; also fixed two
+   per-token buffer bugs found by inspection (attn-normed cur and qr were
+   computed per token but only the last token's copy survived — the
+   attention phase read stale data for tokens 0-2 via d_cur/d_qr instead
+   of d_cur_all/d_qr_all). v3 running detached (~1h+); completion check:
+   TOP1 line — expect 299 (the CPU greedy prefill token).
+
+NEXT: read both results; on FORWARD PASS + verify PASS -> placement +
+weightd/residentd wiring; the GPU forward cell then IS the TP16 native
+module's decode blueprint.
