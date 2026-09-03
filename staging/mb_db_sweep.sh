@@ -39,7 +39,7 @@ run_one() {
     for r in $(seq 0 15); do
         h=$(printf "spark%x" "$r")
         timeout 10 ssh -o BatchMode=yes -o ConnectTimeout=4 "$h" \
-            "rm -f /tmp/mb_db_r${r}.log; systemd-run --user --collect --unit=mbdb-$STAMP-$r --working-directory=\$HOME --setenv=BENCH_ALGO=$AVAL --setenv=MB_PROFILE=1 bash \$HOME/mb_db.sh $r $ITERS $ROWS $MODE" \
+            "rm -f /tmp/mb_db_r${r}.log; systemd-run --user --collect --unit=mbdb-$STAMP-$r --working-directory=\$HOME --setenv=BENCH_ALGO=$AVAL --setenv=MB_PROFILE=1 --setenv=BENCH_CREDITS=${BENCH_CREDITS:-64} bash \$HOME/mb_db.sh $r $ITERS $ROWS $MODE" \
             >>"$LOG" 2>&1 &
         while [ $(jobs -r | wc -l) -ge 4 ]; do wait -n; done
     done

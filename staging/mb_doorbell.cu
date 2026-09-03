@@ -15,7 +15,7 @@
 #define BENCH_HIDDEN 4096u
 #define BENCH_PORT_BASE 57340u
 #define BENCH_IDENTIFIER 0x444f4f52424f4f01ull
-#define BENCH_CREDITS 64u
+static uint32_t BENCH_CREDITS = 64u;
 
 static __global__ void bench_fill_bf16_kernel(
     __nv_bfloat16 *destination, float value, uint32_t elements)
@@ -164,7 +164,14 @@ int main(int argc, char **argv)
     SparkStatus status;
     int retry;
 
-    printf("BENCH-BUILD %s %s\n", __DATE__, __TIME__);
+    {
+        const char *credits_env = getenv("BENCH_CREDITS");
+        if (credits_env != 0 && credits_env[0] >= '0' && credits_env[0] <= '9')
+            BENCH_CREDITS = (uint32_t)strtoul(credits_env,0,10);
+        if (BENCH_CREDITS == 0u || BENCH_CREDITS > 64u)
+            BENCH_CREDITS = 64u;
+    }
+    printf("BENCH-BUILD %s %s credits=%u\n", __DATE__, __TIME__, BENCH_CREDITS);
     if (argc < 6)
     {
         printf("usage: rank degree iters rows mode(0 async 1 sync) [transport]\n");
