@@ -1570,9 +1570,10 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueLiteralRingSendPack(
     uint32_t phase_index)
 {
     const SparkTpDeviceCollectiveCreditBinding *binding;
-    fprintf(stderr,"LR-PACK rank=%u ordinal=%llu phase=%u enter\n",
+    fprintf(stderr,"LR-PACK rank=%u ordinal=%llu phase=%u t_ns=%llu\n",
         implementation->collective->tp_rank,
-        (unsigned long long)operation->ordinal,phase_index);
+        (unsigned long long)operation->ordinal,phase_index,
+        (unsigned long long)SparkTpDeviceCollectiveNowNano());
     SparkStatus status;
     uint64_t chunk_bytes;
     uint64_t source_offset;
