@@ -4731,6 +4731,10 @@ static SparkStatus SparkHiddenSparkHostRdmaReservePersistentSend(
     }
     if (generation <= receive->returned_generation)
     {
+        fprintf(stderr,"LR-RACE3 route=%s credit=%u gen=%llu mirror_returned=%llu\n",
+            state->endpoint.route_name,credit_index,
+            (unsigned long long)generation,
+            (unsigned long long)receive->returned_generation);
         return SPARK_STATUS_VALIDATION_FAILED;
     }
     receive->used = 1u;
@@ -4837,12 +4841,21 @@ static SparkStatus SparkHiddenSparkHostRdmaActivatePersistentReceive(
     }
     if (generation <= receive->returned_generation)
     {
+        fprintf(stderr,"LR-RACE2 route=%s credit=%u gen=%llu returned=%llu\n",
+            state->endpoint.route_name,credit_index,
+            (unsigned long long)generation,
+            (unsigned long long)receive->returned_generation);
         return SPARK_STATUS_VALIDATION_FAILED;
     }
     if (receive->complete != 0u &&
         receive->completion_generation_tag !=
             SparkHiddenSparkHostRdmaDoorbellGenerationTag(generation))
+    {
+        fprintf(stderr,"LR-RACE1 route=%s credit=%u arm_gen=%llu early_tag=%u\n",
+            state->endpoint.route_name,credit_index,
+            (unsigned long long)generation,receive->completion_generation_tag);
         return SPARK_STATUS_VALIDATION_FAILED;
+    }
     early_complete = receive->complete;
     receive->active = 1u;
     receive->complete = early_complete;

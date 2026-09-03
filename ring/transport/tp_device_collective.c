@@ -2141,6 +2141,14 @@ static uint32_t SparkTpDeviceCollectiveTransitionPhase(
     {
         if (SparkTpDeviceCollectiveStatePhase(observed_state) != expected_phase)
         {
+            if (SparkTpDeviceCollectiveStatePhase(observed_state) !=
+                SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE)
+                fprintf(stderr,
+                    "LR-XITION rank=%u ordinal=%llu want=%u->%u saw=%u\n",
+                    operation->slot_index & 15u,
+                    (unsigned long long)operation->ordinal,
+                    expected_phase,desired_phase,
+                    (uint32_t)(observed_state & 0xffu));
             return 0u;
         }
         desired_state = (observed_state &
@@ -3035,6 +3043,12 @@ static void SparkTpDeviceCollectiveReleaseOperation(
         (operation->sent_mask & ~operation->send_complete_mask) != 0u ||
         operation->reserved_send_mask != operation->sent_mask)
     {
+        fprintf(stderr,"LR-PARK rank=%u ordinal=%llu pending=%u act=%08x sent=%08x sendc=%08x resv=%08x step=%u\n",
+            implementation->collective->tp_rank,
+            (unsigned long long)operation->ordinal,pending,
+            operation->activated_receive_mask,operation->sent_mask,
+            operation->send_complete_mask,operation->reserved_send_mask,
+            operation->current_step);
         return;
     }
     atomic_store_explicit(&operation->lifecycle,
@@ -3727,6 +3741,13 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE ||
         generation <= SparkTpDeviceCollectiveStateGeneration(expected_state))
     {
+        fprintf(stderr,
+            "LR-SUBMITBUSY rank=%u ordinal=%llu credit=%u gen=%llu state_phase=%u state_gen=%llu\n",
+            collective->tp_rank,
+            (unsigned long long)submission->ordinal,credit_index,
+            (unsigned long long)generation,
+            (uint32_t)(expected_state & 0xffu),
+            (unsigned long long)(expected_state >> 16u));
         return SPARK_STATUS_BUSY;
     }
     desired_state = SparkTpDeviceCollectiveStateWord(generation,
@@ -3821,6 +3842,10 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
             implementation->consumer_events[credit_index],
             (cudaStream_t)operation->cuda_stream));
     }
+    if (status != SPARK_STATUS_OK)
+        fprintf(stderr,"LR-SUBMITLATE rank=%u ordinal=%llu status=%u\n",
+            collective->tp_rank,
+            (unsigned long long)submission->ordinal,(uint32_t)status);
     if (status != SPARK_STATUS_OK || collective->step_count == 0u)
     {
         if (status != SPARK_STATUS_OK)
