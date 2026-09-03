@@ -1,5 +1,5 @@
 {
-  "file_count": 1780,
+  "file_count": 1793,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -23,8 +23,8 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "4024a7f5b8fd61d7abc430e43fc443d0b99e3fdbb4b7ba2c9be807393e5caaa4",
-      "size_bytes": 115
+      "sha256": "8a8dda125875de8f116170b7a60e2ef56034b17598d1cdad9ee32cc35119d1b0",
+      "size_bytes": 159
     },
     {
       "path": ".updaterepo-policy",
@@ -257,6 +257,16 @@
       "size_bytes": 6102
     },
     {
+      "path": "deployment/rtx5090_speculation/node.example.json",
+      "sha256": "8e38ba1576f117ee3df12a2ec8ad8e2508af6c25575f890005a676c37b8eebdc",
+      "size_bytes": 1537
+    },
+    {
+      "path": "deployment/rtx5090_speculation/spark_ssh_failover.example.json",
+      "sha256": "f5d733d87368fd13e341c634f2a64a6885ef578198975a9ac2e433c896b0e676",
+      "size_bytes": 3214
+    },
+    {
       "path": "deployment/src/spark_hardware_topology_tables.c",
       "sha256": "8e3bad0c6d1509c8e25078f581d73f190dd82fd9019ce0b53391ad5eefec8e69",
       "size_bytes": 14180
@@ -353,8 +363,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
-      "sha256": "5b904800474bb70052fb63e057b6222c940861303c4ea0b1837014ff7d66af83",
-      "size_bytes": 264044
+      "sha256": "724b5df723f1e7c83a4f941034c23c5dac90b05fdba584bb2605a672c5e17255",
+      "size_bytes": 295967
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -817,6 +827,11 @@
       "size_bytes": 8155
     },
     {
+      "path": "docs/RTX5090_SPECULATION_NODE.md",
+      "sha256": "12c8fbed25141b7c9ce4822f490578cfec62b9c89382d3465e2849312d35df7a",
+      "size_bytes": 3970
+    },
+    {
       "path": "docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md",
       "sha256": "279a3720de27b99344ef6d454e79f96a944ad6274dae588b4b06d420cedc9638",
       "size_bytes": 25421
@@ -830,6 +845,11 @@
       "path": "docs/SPARK_HOST_RDMA_DOORBELL.md",
       "sha256": "0c32981f874cfba48341e61edbbc70bb891dd7ffa3d6d670372d8db9c6c9e49e",
       "size_bytes": 2911
+    },
+    {
+      "path": "docs/SPARK_MANAGEMENT_FAILOVER.md",
+      "sha256": "5749f0bbce6823d76b4553f3a709515eb0d56b6b00f75a393d1dd200bbae9688",
+      "size_bytes": 2938
     },
     {
       "path": "docs/SPARK_QUEUE_RUNBOOK.md",
@@ -853,8 +873,8 @@
     },
     {
       "path": "docs/STAGEPACK_AUDIT_2026-08-31.md",
-      "sha256": "941183c8cf694fd84d83624ac8397f47e71c9f968506a26b62256f49d13de671",
-      "size_bytes": 16199
+      "sha256": "ed3dbca872e6290134f4dd64bfb4bbd91f88474cc73078dd51915f0350b19d22",
+      "size_bytes": 17402
     },
     {
       "path": "docs/TOPOLOGY_GUIDE.md",
@@ -7252,6 +7272,11 @@
       "size_bytes": 2085
     },
     {
+      "path": "tests/test_rtx5090_spec_node.py",
+      "sha256": "763b3ffad2cfe786ad801a77f0cf4748009b09eae87dfc6e5fc7027b5cd324ea",
+      "size_bytes": 3590
+    },
+    {
       "path": "tests/test_runtime_completion.c",
       "sha256": "6a975d3b17f585578cb847636da73d9117d0f20454e276bfbad379d58a5d5a3c",
       "size_bytes": 16737
@@ -7290,6 +7315,11 @@
       "path": "tests/test_spark_queue.py",
       "sha256": "4063d5beb8d5a54380860869b8a041bf791b2c6f622d5533ab3684d6d43ccf97",
       "size_bytes": 12707
+    },
+    {
+      "path": "tests/test_spark_ssh_failover.py",
+      "sha256": "fe531155ffb38914551d1bb1768e62dca9645c8a1968432af5aaa968c9246b27",
+      "size_bytes": 9561
     },
     {
       "path": "tests/test_spark_topology_probe.py",
@@ -7893,8 +7923,8 @@
     },
     {
       "path": "tools/dsv4_tp16_stagepack.py",
-      "sha256": "50eb0f9329c46d842c124442b2b2355703c673fd1b3ea60663d54e8f385f026a",
-      "size_bytes": 21545
+      "sha256": "64646fec04a95896d57d0d9b4c55f18ff8191cef90cfb70260793087140ad247",
+      "size_bytes": 22185
     },
     {
       "path": "tools/dsv4_tp4_decode_roofline.py",
@@ -7950,6 +7980,11 @@
       "path": "tools/dsv4pro_tp16_verify_only.sh",
       "sha256": "31d38099ba32eb7c4a571afa879bb9c75da0d04913d5c2e9168c333c61ce2cf2",
       "size_bytes": 994
+    },
+    {
+      "path": "tools/dsv4pro_tp4pp4_ship.sh",
+      "sha256": "82db80f29fcc045a8421eedf77f0a55f39bf30505d361facc9bffe7eb4c40303",
+      "size_bytes": 2023
     },
     {
       "path": "tools/dup_report.py",
@@ -8242,6 +8277,11 @@
       "size_bytes": 2002
     },
     {
+      "path": "tools/hardware/rtx5090_qualify.cu",
+      "sha256": "0cc030196c4750e8c1ff4492f64fdeb7bca185d9a4ed1adee1923d5676f06930",
+      "size_bytes": 7009
+    },
+    {
       "path": "tools/hardware/run_probe_job.py",
       "sha256": "ec3f0b499b296cf890ecc0fbed6a3a2017d08e8405ca7a40401ec47d09d179c3",
       "size_bytes": 20532
@@ -8320,6 +8360,11 @@
       "path": "tools/install_cuda13_compile_only_debian13.sh",
       "sha256": "dfa2df269792ff12fa7aaca8db2de88977288716773e400933ee75d353be9562",
       "size_bytes": 1035
+    },
+    {
+      "path": "tools/install_spark_ssh_failover.py",
+      "sha256": "432d969b90d1d6cd2a0cccdb96387d74009f454ce1463a01b224f6d0893d825a",
+      "size_bytes": 7795
     },
     {
       "path": "tools/inventory.sh",
@@ -8648,13 +8693,23 @@
     },
     {
       "path": "tools/qwen38_27b_stagepack.py",
-      "sha256": "c3c63c1c7c1c82790abb3b6c943b2f56d6b1665100efa67ffeacd03b11ebb7d7",
-      "size_bytes": 38287
+      "sha256": "c94aa3c1a0b68f38d6fb4963dc0c87f8dd95c0b1016bd9c8ca70d6c771c3c1b8",
+      "size_bytes": 38719
+    },
+    {
+      "path": "tools/qwen38_27b_tp4pp4_stagepacks.py",
+      "sha256": "6ff254d4f4779375b1da63309815cb8d4f95ccdbc6faee4804e2ee4d6cc724c6",
+      "size_bytes": 4681
     },
     {
       "path": "tools/qwen38_fuzz_matrix.sh",
       "sha256": "4de6f633ccc3b2625aa5d3d498336363e7f0e3254b9bd9b004c0b92673487205",
       "size_bytes": 2965
+    },
+    {
+      "path": "tools/qwen38_max_tp4pp4_stagepacks.py",
+      "sha256": "a4b97c5fca353f6cea5a81d798c92138e218a47d669135a8a69c4f3f1d2a5110",
+      "size_bytes": 4594
     },
     {
       "path": "tools/qwen38_pack_verify.py",
@@ -8663,8 +8718,8 @@
     },
     {
       "path": "tools/qwen38_stagepack.py",
-      "sha256": "967ac8030526a55dd1554cc5fd01477614fc311b2b4a6a5c6139b3e42d2b009f",
-      "size_bytes": 32757
+      "sha256": "7ef540f748a7b46f49da763323da818d3e3bb20ec3eca3b6a1c0abec555cbbba",
+      "size_bytes": 42006
     },
     {
       "path": "tools/qwen38_stagepack_layout_audit.py",
@@ -8748,8 +8803,8 @@
     },
     {
       "path": "tools/qwen4_flash_stagepack.py",
-      "sha256": "6d05c05046866bf44ed8f598d3bef9b1641bbeaa9964266e8f17f92de4269ee9",
-      "size_bytes": 53128
+      "sha256": "f79011ab69150cea6cafb4eceea29cfab9f4dacf257941ef0d35af340f9c9557",
+      "size_bytes": 64297
     },
     {
       "path": "tools/qwen4_flash_tp4_smoke.sh",
@@ -8770,6 +8825,11 @@
       "path": "tools/registrar_stage.sh",
       "sha256": "2fc58f6fedfe241fa85cbc79a17b2c99559e0e049172869ee133a64399853495",
       "size_bytes": 1868
+    },
+    {
+      "path": "tools/rtx5090_spec_node.py",
+      "sha256": "b31964c60dc4ebc38480347ee03e9daa6acbe095df1f05a4276d2ae6a97952a3",
+      "size_bytes": 14123
     },
     {
       "path": "tools/runtime/apply_runtime_completion_overlay.py",
@@ -8805,6 +8865,11 @@
       "path": "tools/spark_queue.py",
       "sha256": "faaa197c9afaa8c5819931d4ed6d61427c6dccdde341982c92d25409634d32d7",
       "size_bytes": 31241
+    },
+    {
+      "path": "tools/spark_ssh_proxy.py",
+      "sha256": "42a454e9706f068c8db7c5e3e06e16f34a43a90cc0d76f046a150d68837445dd",
+      "size_bytes": 16131
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -8905,5 +8970,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31028824
+  "total_bytes": 31164650
 }
