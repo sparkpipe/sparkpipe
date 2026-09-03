@@ -5194,3 +5194,4 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 2026-09-03T12:57:16Z firing 188: rank02 landed on sparka (pack+receipt+chattr ✓). FLASH FP8 TP8: 16/16 FULLY PLACED+PROTECTED across both maps. Remaining mirror: sparkf (systemd rsync running, 457G+). ALL COORDINATOR-BUILDABLE STAGEPACK WORK COMPLETE. LANE-SIDE: nvfp4 module ticket, 27B nvfp4a16, 27B+max guards. IDLE per item 8.
 2026-09-03T13:08:02Z firing 189: monitor cycle — all quiet; sparkf mirror transferring (457G); spot health clean (spark2/9 stable, 70G avail). IDLE per item 8.
 2026-09-03T13:22:53Z firing 190: monitor cycle — all quiet; sparkf mirror transferring; fleet spot health clean (spark3/4/6/8: 69-72G avail). IDLE per item 8.
+2026-09-03T13:37:52Z firing 191: monitor cycle — all quiet; sparkf mirror transferring; fleet spot clean. IDLE per item 8.
