@@ -625,3 +625,18 @@ Chain ops note: the first two chain launches failed on shell quirks
 (dash arithmetic `$((16#..))` under /bin/sh; a pgrep self-match kill) —
 fixed by explicit rank/node lists and bash shebang; the pkill self-match
 trap claimed another ssh session (known trap, by-pid kills only).
+
+## 09-03 (next tick): build moved back to sparkc — spark2's warm path stalls at ~2MB/s
+
+spark2's warm/ceph client stalled at ~2 MB/s on the rank-02 build (8
+hours/rank — the known spark2 warm-stall pattern resurfacing), so the
+chain moved BACK to sparkc: the stale instrumented run and partial files
+were killed/cleaned, and a fresh 16-rank build chain (build4.log) is
+running with the fixed packer. sparkc's warm path is contended by the
+qwen4_flash lane's own stagepack builds but still delivers ~2 min/rank.
+The corrupt old packs were deleted; ranks rebuild from the warm source.
+
+When build4 completes: verify ranks 0+7 with the fixed verifier, settle
+the q_a_proj-49 4-byte replicate question (targeted probe), then place
+all 16 via the proven push paths (spark0-9 direct; hex nodes via spark2
+push), and wire the weightd/residentd load path for hy4-fp8-tp16-v1.
