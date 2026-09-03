@@ -109,7 +109,9 @@ def main(argv=None) -> int:
         elif sl["kind"] == "range":
             esize = 1 if t["dtype"] in ("F8_E4M3", "U8") else \
                 (2 if t["dtype"] == "BF16" else 4)
-            row = esize * (t["dims"][1] if len(t["dims"]) > 1 else 1)
+            row = esize
+            for d in t["dims"][1:]:
+                row *= d
             start = sl["start"] * row
             want = src_reader(shard)(d0 + start, b - a)
         else:
