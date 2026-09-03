@@ -117,8 +117,7 @@ def main(argv=None) -> int:
             chunk = t["dims"][dim] // 16
             esize = 1 if t["dtype"] in ("F8_E4M3", "U8") else \
                 (2 if t["dtype"] == "BF16" else 4)
-            step = esize * (t["dims"][-1] if len(t["dims"]) > 1 else 1)
-            lo, hi = sl["start"] * step, (sl["start"] + chunk) * step
+            lo, hi = sl["start"] * esize, (sl["start"] + chunk) * esize
             rows = 1
             for d in t["dims"][:-1]:
                 rows *= d
