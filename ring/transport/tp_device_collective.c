@@ -3680,7 +3680,7 @@ fail_create:
     return status;
 }
 
-static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
+static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission,
     uint32_t operation_kind)
@@ -3887,6 +3887,21 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
         return SPARK_STATUS_INTERNAL_ERROR;
     }
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind)
+{
+    SparkStatus status = SparkTpDeviceCollectiveSubmitHiddenInner(
+        collective,submission,operation_kind);
+    if (status != SPARK_STATUS_OK)
+        fprintf(stderr,"LR-SUBRET rank=%u ordinal=%llu status=%u\n",
+            collective != 0 ? collective->tp_rank : 0u,
+            (unsigned long long)(submission != 0 ? submission->ordinal : 0u),
+            (uint32_t)status);
+    return status;
 }
 
 SparkStatus SparkTpDeviceCollectiveSubmitBf16(

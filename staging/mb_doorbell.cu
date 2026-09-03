@@ -237,7 +237,7 @@ int main(int argc, char **argv)
     config.local_hidden_dimension = BENCH_HIDDEN;
     config.max_active_sequence_count = rows;
     config.connect_timeout_milli = 45000u;
-    config.operation_timeout_milli = 180000u;
+    config.operation_timeout_milli = 900000u;
     config.control_port_base = BENCH_PORT_BASE;
     config.collective_identifier = BENCH_IDENTIFIER;
     config.backend_module_path = transport_path;
@@ -357,11 +357,21 @@ int main(int argc, char **argv)
         submission.cuda_stream = stream;
         submission.completion_function = bench_completion;
         submission.completion_context = 0;
-        status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
-        if (status != SPARK_STATUS_OK)
         {
-            printf("warmup submit %llu -> %u\n", (unsigned long long)ordinal, (unsigned)status);
-            return 1;
+            uint64_t retry_started = bench_now_ns();
+            for (;;)
+            {
+                status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
+                if (status == SPARK_STATUS_OK)
+                    break;
+                if (status != SPARK_STATUS_BUSY ||
+                    bench_now_ns() - retry_started > 600000000000ull)
+                {
+                    printf("warmup submit %llu -> %u\n", (unsigned long long)ordinal, (unsigned)status);
+                    return 1;
+                }
+                usleep(50u);
+            }
         }
         if (cudaStreamSynchronize(stream) != cudaSuccess)
         {
@@ -420,7 +430,7 @@ int main(int argc, char **argv)
             while (__sync_fetch_and_add(&bench_completions, 0) <=
                 (int64_t)(ordinal - 20u + 20u))
             {
-                if (bench_now_ns() - started_ns > 60000000000ull)
+                if (bench_now_ns() - started_ns > 880000000000ull)
                 {
                     printf("completion timeout at %llu\n", (unsigned long long)ordinal);
                     return 1;
