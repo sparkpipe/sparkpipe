@@ -1047,6 +1047,7 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
             f.close()
     s_rows = rows_per_expert
     s_cols = ref.columns // 16
+    input_f32_path = None
     try:
         for e in range(expert_start, expert_start + expert_count):
             s_shard, _, s_off = source.resolve(
@@ -1055,6 +1056,14 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
             scale_fds.append((sf, s_off))
         for sf, s_off in scale_fds:
             pump_read(sf.fileno(), s_off, s_rows * s_cols, out)
+        # The tensor-level input global scale (modelopt: one F32; the
+        # release stores identical per-expert copies — take the first).
+        in_shard, _, in_off = source.resolve(
+            base.replace("{e}", str(expert_start))[:-len(".weight")] + ".input_scale")
+        input_f32_path = in_shard
+        with (source.root / in_shard).open("rb") as f:
+            f.seek(in_off)
+            out.write(f.read(4))
     finally:
         for sf, _ in scale_fds:
             sf.close()
