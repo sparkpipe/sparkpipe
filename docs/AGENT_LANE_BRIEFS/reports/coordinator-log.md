@@ -5140,3 +5140,5 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 - ETA: backup mirror current in ~1-3h; then the remaining variant
   work (flash arms, nvfp4a16, drafter) ~3-5 days; module tickets
   lane-side.
+
+## 2026-09-03 firing 164: backups 7/16 finished, 9 grinding (~250G+ per node already mirrored)
