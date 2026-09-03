@@ -659,3 +659,21 @@ takes ~16 h contended, faster when their loop gaps. The single-pass
 design means progress is monotonic and restartable by simply rerunning
 (completed ranks are skipped only by manual deletion — safest to let it
 overwrite; verification happens after completion anyway).
+
+## 09-03 (next tick): fanout packer launched clean — single warm pass in progress
+
+After killing two overlapping instances (a launcher chain split caused a
+duplicate launch on top of the ssh-drop survivor), exactly ONE fanout
+python is running on sparkc: single sequential pass over the 813 GB
+checkpoint, fanning to all 16 rank outputs. rank-00 growing (201 MB at
+first sample). Internal redirects in the staged runner
+(run_fp8_fanout.sh: cd + rm partials + exec python >> fanout.log) make it
+immune to launcher-ssh drops — the earlier death was the stdout pipe
+dying with its launching ssh (first flush after drop = broken pipe).
+
+ETA: ~16 h if the qwen4_flash warm contention holds (~14 MB/s observed),
+much faster when their loop gaps. Completion check: grep fanout.log for
+"rankNN done sha=" lines ×16. Then the verify suite on ranks 0+7, then
+placement (rank r -> spark{hex r}:~/sparkdata/hy4.fp8.tp16/packs/), then
+weightd/residentd load wiring for hy4-fp8-tp16-v1, then GPU cells on the
+FP8 packs (MX scale-apply kernels).
