@@ -3908,6 +3908,10 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission)
 {
+    fprintf(stderr,"LR-ENTRY rank=%u ordinal=%llu backend=%u\n",
+        collective != 0 ? collective->tp_rank : 0u,
+        (unsigned long long)(submission != 0 ? submission->ordinal : 0u),
+        collective != 0 ? collective->backend_kind : 99u);
     if (collective != 0 && collective->backend_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
         return SparkTpDeviceCollectiveNcclSubmitBf16(collective,submission);
