@@ -13,6 +13,9 @@ extern "C" {
 #define SPARK_STAGEPACK_FORMAT_WEIGHT_F32 1u
 #define SPARK_STAGEPACK_FORMAT_WEIGHT_FP8_E4M3_F32B128 4u
 #define SPARK_STAGEPACK_FORMAT_WEIGHT_I64 7u
+/* NVFP4 (modelopt): U8-packed 4-bit payloads, e4m3 scale bytes per 16
+ * values, F32 global/input scales. Used by the nvfp4 release arms. */
+#define SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED 8u
 
 #define SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL 0u
 #define SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER 1u
