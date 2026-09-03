@@ -574,3 +574,32 @@ the first divergent tensor, fix the writer, rebuild all 16.
 
 The UD-IQ1_M packs are UNAFFECTED (different format, independently
 verified at placement). GPU-port work (LAYER_STATE PASS) is unaffected.
+
+## 09-03 (later tick): gather-slice root cause fixed; instrumented rebuild running
+
+ROOT CAUSE of the FP8 corruption found by arithmetic: rank_view's dim-1
+gather computed the row-slice bytes as `c0, c1 = lo * step, hi * step`
+with step = FULL row bytes — for rank 0 (lo=0) that degenerated to
+writing FULL o_proj rows (rank-0 file 63.59 GB vs the correct 56.13 GB
+census — a 7.5 GB overrun), and for every other rank the slice fell past
+the row end, writing EMPTY bytes for all 78 o_proj gathers (ranks 1-15
+collapsed, the observed 320 MB displacement at layer 72, and the earlier
+verify MISMATCHes). Fixed to `lo * esize, hi * esize` in the packer AND
+the verifier's gather expectation.
+
+Rebuilt all 16 ranks with the fix: uniform 56,131,321,268 bytes per rank
+(matches the census exactly). Re-verified rank 0 with the fixed verifier:
+all range/gather/replicate samples PASS except two replicates
+(q_a_proj-49, MTP shared_experts.up_proj — both [2048,6144] F8, ~98.6%
+of bytes differing, pack = source shifted 4 bytes) whose 4-byte shift is
+unexplained by the fixed slice math. To settle it definitively, the
+packer gained HY4_PACK_VERIFY_WRITE instrumentation: per-tensor read-back
+compare against an independent fresh source read, with a shift-scan on
+mismatch. The instrumented rank-0 rebuild runs detached on sparkc
+(rank0vw.log, setsid — safe from ssh drops) and will name the first
+divergent tensor, or pass clean, when it reaches that tensor.
+
+Placement remains blocked pending this verification (RED STOP stands).
+Next: read the instrumented result; PASS → verify suite + placement;
+FAIL → debug stream_copy's seek for the flagged tensor (the independent
+source read in the instrumentation removes any shared-handle doubt).

@@ -132,8 +132,7 @@ def rank_view(entry: dict, rank: int):
         rows *= g
     out = list(dims)
     out[dim] = chunk
-    step = dims[-1] * esize
-    c0, c1 = lo * step, hi * step
+    c0, c1 = lo * esize, hi * esize
     return (out, ("gather", rows, (c0, c1)))
 
 
@@ -186,7 +185,7 @@ def build_rank(entries, rank: int, checkpoint: Path, out_dir: Path):
         cursor += nbytes
     blob = json.dumps(header, separators=(",", ":")).encode()
     path = out_dir / f"model-fp8-tp16-rank-{rank:02d}.safetensors"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
     os.write(fd, struct.pack("<Q", len(blob)))
     os.write(fd, blob)
     digest = hashlib.sha256()
@@ -222,6 +221,31 @@ def build_rank(entries, rank: int, checkpoint: Path, out_dir: Path):
                 pass
         output_flush(fd, before, os.lseek(fd, 0, os.SEEK_CUR) - before)
         os.lseek(fd, 0, os.SEEK_END)
+        if os.environ.get("HY4_PACK_VERIFY_WRITE"):
+            pbase_cur = 8 + len(blob)
+            got = os.pread(fd, nbytes, pbase_cur + off)
+            f2 = open(checkpoint / e["shard"], "rb")
+            b2 = e["data_start"] + e["start"]
+            if spec[0] == "range":
+                b2 += spec[1]
+            f2.seek(b2)
+            want = f2.read(nbytes)
+            f2.close()
+            if got != want:
+                dif = next((i for i in range(nbytes)
+                            if got[i] != want[i]), -1)
+                shift = -1
+                window = os.pread(fd, nbytes + (1 << 21),
+                                  max(0, pbase_cur + off - (1 << 20)))
+                at = window.find(want[:64])
+                if at >= 0:
+                    shift = (max(0, pbase_cur + off - (1 << 20)) + at
+                             - (pbase_cur + off))
+                raise SystemExit(
+                    f"VERIFY-WRITE MISMATCH {e['name']} off={off} "
+                    f"nbytes={nbytes} first_diff={dif} shift={shift} "
+                    f"src={e['shard']} start={e['start']}")
+            print(f"  vw ok {e['name']}", flush=True)
     for s in src.values():
         s.close()
     os.close(fd)
