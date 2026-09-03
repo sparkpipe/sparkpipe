@@ -5234,3 +5234,4 @@ IDHEX-to-stdout + inline-id argv forms). NEXT: the module-side backend
 2026-09-03T22:59:42Z firing 197: monitor — all quiet; the placed matrix complete; the nvfp4 port ticket is the active front.
 2026-09-03T23:03:48Z firing 198: Mimosa flagged tests/test_draft_bridge.c:56 — ASSESSED FALSE POSITIVE. The flagged region is the MODE constant defines + the test CHECK macro; the socket stub in the same file binds INADDR_LOOPBACK on an ephemeral port (kernel-assigned), single-process local test — no external exposure, no unvalidated input reaching the pack logic. The lane-authored file is correct as-is; no change made.
 2026-09-03T23:06:49Z firing 200: monitor — all quiet; the placed matrix complete; the nvfp4 port ticket is the active front.
+2026-09-03T23:09:17Z firing 201: monitor — all quiet; the placed matrix complete; the nvfp4 port ticket is the active front.
