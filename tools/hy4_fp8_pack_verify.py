@@ -61,7 +61,8 @@ def main(argv=None) -> int:
     pf.seek(0)
     for chunk in iter(lambda: pf.read(1 << 22), b""):
         digest.update(chunk)
-    manifest = json.load(open(args.pack_dir / "manifest.json"))
+    manifest = json.load(open(args.pack_dir /
+                              f"manifest-rank-{args.rank:02d}.json"))
     if manifest.get("file_sha256") != digest.hexdigest():
         print("SHA MISMATCH vs manifest")
         return 1

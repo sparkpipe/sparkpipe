@@ -390,3 +390,27 @@ glm53flash fleet campaign (nccl-db-d2a4 at close).
 NEXT: (1) hy4-gpu8-hc receipt; (2) FP8 chain completion + post-chain
 verify; (3) placement fan-out rank r -> spark{hex r}; (4) weightd/
 residentd load-path wiring for the FP8 safetensors-per-rank format.
+
+## 09-03 (next tick): FP8 packs 16/16 BUILT; manifest collision fixed; verify pending relaunch
+
+The 15-rank chain completed: ALL 16 FP8 rank packs exist on sparkc
+(~/hy4-fp8-packs/model-fp8-tp16-rank-XX.safetensors), peak RSS 557-558 MB
+per rank build. Defect found by the first verification attempt: ALL ranks
+wrote the same manifest.json (rank 15's survived) — fixed to per-rank
+manifest-rank-XX.json plus a --manifest-only mode that regenerates
+manifest + sha sidecar from an existing pack without re-copying data
+(needed one more fix: rank_view returns (out_dims, spec) and the
+manifest-only path initially unpacked it wrong; the diagnostic raise now
+names any tensor whose slice kind disagrees with its split). All 16
+per-rank manifests + sha sidecars regenerated.
+
+Verification state: the sample byte-compare runs (rank 0, rank 7) were
+killed twice — once by warm-read contention with the build chain, once by
+a fleet-proxy disconnect (launched without setsid; lesson repeated: EVERY
+detached remote job gets setsid). Relaunch under setsid next tick; the
+checks are cheap once warm reads flow.
+
+NEXT: (1) setsid verify ranks 0 + 7 (byte-compare vs source); (2) place
+packs rank r -> spark{hex r}; (3) weightd/residentd load-path wiring for
+hy4-fp8-tp16-v1; (4) GPU inference cells switch to FP8 packs (MX
+scale-application kernels).
