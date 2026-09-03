@@ -654,7 +654,7 @@ class Nvfp4OfficialCheckShapeMixin:
     instead of the fused name."""
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
-        if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
+        if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN) and ref.layer != MTP_LAYER:
             proj = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
                     KIND_MOE_DOWN: "down_proj"}[ref.kind]
             fused = "gate_up_proj" if ref.kind in (KIND_MOE_W1, KIND_MOE_W3) else "down_proj"
@@ -1283,7 +1283,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
                 copy_mtp_fc(source, ref, temp)
             elif expert_format == "fp8-official" and ref.kind == KIND_PLE_NGRAM:
                 copy_ngram_f8_widen(source, ref, tp_degree, tp_rank, temp)
-            elif expert_format == "nvfp4-official" and ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
+            elif expert_format == "nvfp4-official" and ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN) and ref.layer != MTP_LAYER:
                 copy_nvfp4_official_experts(source, ref, temp)
             elif ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
                 if expert_format == "fp8-official":
