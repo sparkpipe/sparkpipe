@@ -463,19 +463,6 @@ class SafetensorsSource(_BaseSafetensorsSource):
                 raise PackFailure(f"{sname}: scale dtype {s_meta['dtype']}, expected F32")
         return anchor
 
-class Fp8OfficialSource(SafetensorsSource):
-    """The official fp8 release (qwen3.8-flash-next-fp8): split per-expert
-    F8_E4M3 tensors + F32 weight_scale_inv planes. Repackage-only — the
-    fp8 bytes and scales pass through verbatim into the fused pack
-    layout; no quantization happens anywhere in this path."""
-
-    def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
-        if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
-            # Full-width validation of the SPLIT tensors; the anchor
-            # (first expert's resolve) feeds the writer's gather.
-            return self.check_moe_split(ref, 0, EXPERT_COUNT)
-        return super().check_shape(ref)
-
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
         name, rows, columns = ref.name, ref.rows, ref.columns
         if ref.kind == KIND_MTP_FC:
@@ -625,6 +612,25 @@ def float_to_e4m3(values: "np.ndarray") -> "np.ndarray":
     overflow = magnitude > FP8_E4M3_MAX
     codes = np.where(overflow, (sign << 7) | np.uint8(0x7E), codes)
     return codes
+
+
+# -- TP sharding ----------------------------------------------------------------
+
+
+class Fp8OfficialCheckShapeMixin:
+    """Mixin for the fp8-official variant: MOE kinds validate the SPLIT
+    per-expert tensors instead of the fused name."""
+
+    def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
+        if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
+            return self.check_moe_split(ref, 0, EXPERT_COUNT)
+        return super().check_shape(ref)
+
+
+class Fp8OfficialSource(Fp8OfficialCheckShapeMixin, SafetensorsSource):
+    """The official fp8 release (qwen3.8-flash-next-fp8) source reader:
+    split per-expert F8_E4M3 tensors + F32 weight_scale_inv planes,
+    repackage-only passthrough into the fused pack layout."""
 
 
 # -- TP sharding ----------------------------------------------------------------
