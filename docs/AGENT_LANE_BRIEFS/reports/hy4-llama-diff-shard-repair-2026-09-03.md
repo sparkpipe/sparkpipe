@@ -443,3 +443,31 @@ dumps), then the TP16 native module.
 FP8 packs: build complete (16/16 on sparkc) but sparkc's link is down at
 close (proxy flap); the rank-0/7 verification relaunch (setsid) and
 placement fan-out are the next FP8 items once it returns.
+
+## 09-03 (next tick): full-layer GPU assembly cell — bisecting to the last bug
+
+Cell hy4_layer_test (hy4-gpu9* series, [gpu][spark2]): token 802 through
+layers 0 and 1 on GPU — all 64 heads gathered from the 16 rank-bundle
+slices (q_b/k_b/v_b/gate/wo per-rank gemvs, head-sliced), dense layer-0
+FFN, the 256-expert routed MoE + shared expert in layer 1, both hc
+stages — compared against the CPU forward's dumped layer-1 state
+(hy4_generate now takes a dump arg: dump file + layer index; l1state.t0).
+
+Execution is green through layer 0 (all heads, dense FFN) and through
+layer 1's router + expert slabs. The final state diffed at |d|=0.014-0.022
+on early elements — beyond fp32 noise. Stage-sum checkpoints (GPUSUM
+post-attn/post-ffn per layer vs the CPU run's logged sums) plus a head-0
+probe pinned it: the absorb gemv was reading the 2048-dim q_lora vector
+instead of the head's 192-element nope slice — score came out ~1e27,
+p0 = 1.0, and the attention output was the unweighted v projection.
+One-line fix submitted (hy4-gpu9i-layer, v9); queued behind the live
+glm53flash campaign at close (dispatch retries in flight).
+
+Also this tick: the CPU forward gained the state-dump flag (dump file +
+layer index), and the FP8 chain state stands at 16/16 built with per-rank
+manifests; the rank-0/7 verify + placement resume when sparkc's link
+returns.
+
+NEXT: (1) v9 receipt — expect LAYER_STATE PASS at fp32-noise level;
+(2) FP8 verify + placement; (3) TP16 native module port (the assembly
+cell IS the module's forward blueprint).
