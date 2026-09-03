@@ -9,6 +9,17 @@ SPECS="${1:-1:0:2000:rd}"
 ALL="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 log() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
 log "db_sweep_start specs=[$SPECS]"
+B=$(md5sum "$HOME/mb_doorbell" | cut -d' ' -f1)
+MISMATCH=""
+for h in $ALL; do
+    r=$(timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=4 "$h" "md5sum \$HOME/mb_doorbell 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
+    [ "$r" = "$B" ] || MISMATCH="$MISMATCH $h"
+done
+if [ -n "$MISMATCH" ]; then
+    log "mb_preflight FAILED (mixed binaries:$MISMATCH) - refusing to launch"
+    exit 1
+fi
+log "mb_preflight ok ($B)"
 
 teardown() {
     local h
