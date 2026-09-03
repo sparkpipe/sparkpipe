@@ -471,3 +471,31 @@ returns.
 NEXT: (1) v9 receipt — expect LAYER_STATE PASS at fp32-noise level;
 (2) FP8 verify + placement; (3) TP16 native module port (the assembly
 cell IS the module's forward blueprint).
+
+## 09-03 (next tick): full-layer assembly — L0+L1 run end-to-end; score-dot bug under active bisect
+
+Iteration status (hy4-gpu9* series): v5 fixed the slab reads (they opened
+the bundle DIR — the loader path is the pack dir; the GGUF filename embeds
+the rank). v6-v10 bisected the remaining state divergence with stage-sum
+checkpoints (GPUSUM post-attn/post-ffn per layer vs the CPU run's logged
+sums) and a head-0 probe:
+
+- v6 (sink=0): post-attn L0 sum +1.096 vs CPU -0.619 — wrong.
+- v7 (sinks loaded): +6.457 — wrong the other way; sinks confirmed
+  [1.9623, 2.2837, 0.7103, ...].
+- v8 probe: head-0 score = ~1e27 — the absorb gemv was reading the
+  2048-dim q_lora vector instead of the head's nope slice. Fixed (v9).
+- v9: score still garbage (~8e32) but v10's value probes show qh, qabs
+  and klat are all SANE at probe time — while the dot result reads exactly
+  0.0. Leading suspects: d_s is allocated 4 bytes but the second dot
+  writes d_s[1] (OOB clobber), and there is no launch-error check or
+  device sync before the 8-byte readback.
+
+Next iteration (v11, mechanical): size d_s to 8 bytes, add
+cudaGetLastError after every launch, cudaDeviceSynchronize before the
+score readback. Everything else in the layer (L0 all-head attention +
+dense FFN, L1 router + owner-bundle expert slabs + shared expert, both hc
+stages) demonstrably executes; the sums move with each fix as expected.
+
+FP8 packs: still 16/16 on sparkc, link still down; verify (setsid) +
+placement resume when it returns.

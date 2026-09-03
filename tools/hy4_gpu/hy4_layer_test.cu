@@ -439,10 +439,18 @@ int main(int argc, char** argv) {
                 float snk = sinks_h[r * RANK_HEADS + lh];
                 float M = sc > snk ? sc : snk;
                 float p = expf(sc - M) / (expf(sc - M) + expf(snk - M));
-                if (il == 0 && r == 0 && lh == 0)
-                    printf("PROBE h0 sc=%.6f sink=%.6f p=%.6f "
-                           "sinks[0..2]=%.4f %.4f %.4f\n",
-                           sc, snk, p, sinks_h[0], sinks_h[1], sinks_h[2]);
+                if (il == 0 && r == 0 && lh == 0) {
+                    float dbg[9];
+                    cudaMemcpy(dbg, d_qh_all, 12, cudaMemcpyDeviceToHost);
+                    cudaMemcpy(dbg + 3, d_qabs, 12, cudaMemcpyDeviceToHost);
+                    cudaMemcpy(dbg + 6, d_klat, 12, cudaMemcpyDeviceToHost);
+                    printf("PROBE h0 sc=%.6f sink=%.6f p=%.6f\n", sc, snk,
+                           p);
+                    printf("PROBE qh[0..2]=%.6f %.6f %.6f qabs[0..2]=%.6f "
+                           "%.6f %.6f klat[0..2]=%.6f %.6f %.6f\n",
+                           dbg[0], dbg[1], dbg[2], dbg[3], dbg[4], dbg[5],
+                           dbg[6], dbg[7], dbg[8]);
+                }
                 cudaMemcpy(d_vlat, d_klat, KV_LORA * 4,
                            cudaMemcpyDeviceToDevice);
                 k_scale<<<KV_LORA / 256, 256>>>(d_vlat, p, KV_LORA);
