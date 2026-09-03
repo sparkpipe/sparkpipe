@@ -439,6 +439,43 @@ class SafetensorsSource(_BaseSafetensorsSource):
         }
         super().check_config(expectations, section="text_config")
 
+    def check_moe_split(self, ref: TensorRef, expert_start: int, expert_count: int) -> tuple[str, dict, int]:
+        """fp8-official variant: validate the SPLIT per-expert tensors
+        (experts.{e}.{gate,up,down}_proj.weight, F8_E4M3, plus their
+        F32 weight_scale_inv planes) and return the anchor resolve for
+        the slice's first expert. The pack layout stays fused
+        expert-major; copy_fp8_official_experts does the gather."""
+        split_name = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
+                      KIND_MOE_DOWN: "down_proj"}[ref.kind]
+        rows_per_expert = ref.rows // expert_count
+        base = ref.name.replace("mlp.experts.", "mlp.experts.{e}.")
+        anchor = None
+        for e in range(expert_start, expert_start + expert_count):
+            name = base.replace("{e}", str(e))
+            shard, meta, offset = self.resolve(name)
+            if meta["dtype"] != "F8_E4M3" or meta["shape"] != [rows_per_expert, ref.columns]:
+                raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected F8_E4M3 [{rows_per_expert},{ref.columns}]")
+            if anchor is None:
+                anchor = (shard, meta, offset)
+            sname = name[:-len(".weight")] + ".weight_scale_inv"
+            s_meta = self.resolve(sname)[1]
+            if s_meta["dtype"] != "F32":
+                raise PackFailure(f"{sname}: scale dtype {s_meta['dtype']}, expected F32")
+        return anchor
+
+class Fp8OfficialSource(SafetensorsSource):
+    """The official fp8 release (qwen3.8-flash-next-fp8): split per-expert
+    F8_E4M3 tensors + F32 weight_scale_inv planes. Repackage-only — the
+    fp8 bytes and scales pass through verbatim into the fused pack
+    layout; no quantization happens anywhere in this path."""
+
+    def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
+        if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN):
+            # Full-width validation of the SPLIT tensors; the anchor
+            # (first expert's resolve) feeds the writer's gather.
+            return self.check_moe_split(ref, 0, EXPERT_COUNT)
+        return super().check_shape(ref)
+
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
         name, rows, columns = ref.name, ref.rows, ref.columns
         if ref.kind == KIND_MTP_FC:
@@ -849,6 +886,58 @@ def copy_mtp_fc(source: SafetensorsSource, ref: TensorRef, out) -> None:
     out.write(fused.astype("<u2").tobytes())
 
 
+def pump_read(fd, offset: int, length: int, out) -> None:
+    """Stream fd[offset:offset+length) to out in small chunks, evicting
+    each chunk from the page cache (memory law: no big warm streams)."""
+    remaining = length
+    while remaining > 0:
+        step = min(remaining, 512 * 1024)
+        raw = os.pread(fd, step, offset)
+        if len(raw) != step:
+            raise PackFailure(f"short read at {offset}")
+        out.write(raw)
+        try:
+            os.posix_fadvise(fd, offset, step, os.POSIX_FADV_DONTNEED)
+        except (AttributeError, OSError):
+            pass
+        offset += step
+        remaining -= step
+
+def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
+    """fp8-official arm: gather the rank's SPLIT per-expert F8_E4M3
+    tensors into the fused expert-major pack layout, verbatim bytes +
+    verbatim F32 weight_scale_inv planes. Two-pass (payloads, then
+    scales) so nothing accumulates in RAM. Repackage-only."""
+    expert_start, expert_count = getattr(ref, "expert_slice", (0, EXPERT_COUNT))
+    rows_per_expert = ref.rows // expert_count
+    split_name = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
+                  KIND_MOE_DOWN: "down_proj"}[ref.kind]
+    base = ref.name.replace("mlp.experts.", "mlp.experts.{e}.")
+    payload_fds, scale_fds = [], []
+    try:
+        for e in range(expert_start, expert_start + expert_count):
+            shard, meta, off = source.resolve(base.replace("{e}", str(e)))
+            f = (source.root / shard).open("rb")
+            payload_fds.append((f, off))
+        for f, off in payload_fds:
+            pump_read(f.fileno(), off, rows_per_expert * ref.columns, out)
+    finally:
+        for f, _ in payload_fds:
+            f.close()
+    try:
+        for e in range(expert_start, expert_start + expert_count):
+            s_shard, _, s_off = source.resolve(
+                base.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale_inv")
+            sf = (source.root / s_shard).open("rb")
+            scale_fds.append((sf, s_off))
+        for sf, s_off in scale_fds:
+            s_meta_rows = rows_per_expert // FP8_BLOCK
+            pump_read(sf.fileno(), s_off,
+                      s_meta_rows * (ref.columns // FP8_BLOCK) * F32_BYTES, out)
+    finally:
+        for sf, _ in scale_fds:
+            sf.close()
+
 def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: str, out) -> None:
     """Read the fused per-layer expert tensors [E, 2I, H] / [E, H, I],
     split w1/w3 per expert, quantize per 128x128 block, and stack the
@@ -878,7 +967,8 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             receipt: dict, dry_run: bool, tp_degree: int, tp_rank: int,
             expert_format: str) -> dict:
     import numpy as np  # noqa: F401  (quantization paths import lazily)
-    source = SafetensorsSource(checkpoint)
+    source_cls = Fp8OfficialSource if expert_format == "fp8-official" else SafetensorsSource
+    source = source_cls(checkpoint)
     source.check_config()
     inventory = build_inventory(first_layer, layer_count)
     # Shape-validate the FULL refs against the checkpoint first and stash
@@ -895,6 +985,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     # the WIRE format - the writer emits exactly this layout.
     expert_wire_format = {"fp8-f32b128": WEIGHT_FP8_F32B128,
                           "fp8-e8m0b128": WEIGHT_FP8_E8M0B128,
+                          "fp8-official": WEIGHT_FP8_F32B128,
                           "bf16": WEIGHT_BF16}[expert_format]
     plans = []
     cursor = 0
@@ -970,7 +1061,10 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             if ref.kind == KIND_MTP_FC:
                 copy_mtp_fc(source, ref, temp)
             elif ref.weight_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
-                quantize_experts(source, ref, expert_format, temp)
+                if expert_format == "fp8-official":
+                    copy_fp8_official_experts(source, ref, temp)
+                else:
+                    quantize_experts(source, ref, expert_format, temp)
             else:
                 copy_sharded_bf16(source, ref, getattr(ref, "source_offset", 0), temp)
             wrote = temp.tell() - before
@@ -999,7 +1093,8 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path, help="receipt output (default: <output>.receipt.json)")
     parser.add_argument("--tp-degree", type=int, default=1)
     parser.add_argument("--tp-rank", type=int, default=0)
-    parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128", "bf16"), default="fp8-f32b128")
+    parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128", "bf16", "fp8-official"), default="fp8-f32b128",
+                        help="fp8-official = the official fp8 release's split experts pass through verbatim (repackage-only)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
