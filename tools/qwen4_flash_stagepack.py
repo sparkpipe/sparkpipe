@@ -1024,7 +1024,7 @@ def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
                 offset += step
                 remaining -= step
     finally:
-        for sf, _ in scale_fds:
+        for sf in scale_fds:
             sf.close()
 
 def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: str, out) -> None:
