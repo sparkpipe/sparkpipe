@@ -8,14 +8,15 @@ for pair in "spark0 00 0" "spark1 01 1" "spark2 02 2" "spark3 03 3" "spark4 04 4
   n=${pair%% *}; rest=${pair#* }; nn=${rest%% *}; r=${rest##* }
   (
     timeout 7200 ssh -o ConnectTimeout=10 "$n" '
-      f="$HOME/g5-rebuild/glm5_next_stage.tp8.rank'"$nn"'.g5nsp"
+      d="$HOME/g5-rebuild/glm5_next_stage.tp8.rank'"$nn"'.g5nsp"
+      f="$d/glm5_next_stage.tp8.rank'"$nn"'.g5nsp"
       for i in $(seq 1 120); do [ -f "$f" ] && break; sleep 10; done
       [ -f "$f" ] || { echo "RANK'"$nn"' BUILD NEVER LANDED"; exit 1; }
       python3 "$HOME/sparkpipe/tools/glm5_next_pack_verify.py" \
         --pack "$f" --source /mnt/model-warm/glm-5.3-flash \
         --tp-rank '"$r"' --tp-degree 8 &&
       sudo chattr -i "$HOME/sparkdata/glm5_next.tp8.fp8/packs/glm5_next_stage.tp8.rank'"$nn"'.g5nsp" 2>/dev/null
-      sudo cp "$f/glm5_next_stage.tp8.rank'"$nn"'.g5nsp" \
+      sudo cp "$f" \
         "$HOME/sparkdata/glm5_next.tp8.fp8/packs/" &&
       sudo chown '"$(whoami)"' "$HOME/sparkdata/glm5_next.tp8.fp8/packs/glm5_next_stage.tp8.rank'"$nn"'.g5nsp &&
       sudo chattr +i "$HOME/sparkdata/glm5_next.tp8.fp8/packs/glm5_next_stage.tp8.rank'"$nn"'.g5nsp &&

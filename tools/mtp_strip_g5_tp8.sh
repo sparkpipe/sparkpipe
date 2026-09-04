@@ -4,7 +4,7 @@ set -u
 NODES="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 for n in $NODES; do
   (
-    timeout 3600 ssh -o ConnectTimeout=10 "$n" '
+    timeout 7200 ssh -o ConnectTimeout=10 "$n" '
       for f in "$HOME/sparkdata/glm5_next.tp8.fp8/packs/"*.g5nsp; do
         [ -f "$f" ] || continue
         case "$f" in *receipt*) continue ;; esac
