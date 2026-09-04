@@ -1,4 +1,6 @@
 import mmap
+import os
+import pathlib
 import struct
 import sys
 
@@ -93,13 +95,19 @@ class Murmur3_x64_128:
         return struct.pack("<QQ", h1, h2).hex()
 
 
+def resolve_pack(text):
+    if ".." in pathlib.PurePath(text).parts:
+        raise SystemExit("REFUSED: path contains '..'")
+    return pathlib.Path(os.path.realpath(text))
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: ck128_stamp.py <pack-path>", file=sys.stderr)
         return 2
-    pack = sys.argv[1]
+    pack = resolve_pack(sys.argv[1])
     hasher = Murmur3_x64_128()
-    with open(pack, "rb") as f:
+    with pack.open("rb") as f:
         with mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ) as m:
             step = 64 * 1024 * 1024
             pos = 0
@@ -108,8 +116,8 @@ def main():
                 hasher.update(m[pos:pos + step])
                 pos += step
     digest = hasher.digest()
-    out = pack + ".ck128"
-    with open(out, "w") as fo:
+    out = pathlib.Path(str(pack) + ".ck128")
+    with out.open("w") as fo:
         fo.write(digest + "\n")
     print(f"ck128 {digest} -> {out}")
     return 0
