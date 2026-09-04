@@ -5663,20 +5663,29 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     uint32_t region_index;
     uint32_t region_lkey;
 
+    fprintf(stderr,
+        "SFX-ENTER route=%s buf=%p bytes=%llu seq=%u\n",
+        transport_state != 0 ?
+            ((SparkHiddenSparkHostRdmaState *)transport_state)
+                ->endpoint.route_name : "?",
+        local_buffer,(unsigned long long)bytes,sequence);
     state = (SparkHiddenSparkHostRdmaState *)transport_state;
     if (state == 0 || local_buffer == 0 || state->is_sender == 0u ||
         bytes == 0u)
     {
-        
+        fprintf(stderr,"SFX-EXIT guard-args\n");
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (state->fixed_remote.address == 0u)
+    {
+        fprintf(stderr,"SFX-EXIT no-remote-addr\n");
         return SPARK_STATUS_BUSY;
+    }
     status = SparkHiddenSparkHostRdmaRegisterReceiveRegion(state,local_buffer,
         bytes,&descriptor,&region_index);
     if (status != SPARK_STATUS_OK)
     {
-        
+        fprintf(stderr,"SFX-EXIT reg-fail status=%u\n",(unsigned)status);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     region_lkey = state->cached_regions[region_index].memory_region->lkey;
@@ -5687,12 +5696,14 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
             SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_SEND_WR_PER_LANE)
     {
         state->cached_regions[region_index].in_flight_count -= 1u;
+        fprintf(stderr,"SFX-EXIT wr-cap\n");
         return SPARK_STATUS_BUSY;
     }
     send = SparkHiddenSparkHostRdmaReserveInflightSend(state);
     if (send == 0)
     {
         state->cached_regions[region_index].in_flight_count -= 1u;
+        fprintf(stderr,"SFX-EXIT no-inflight-slot\n");
         return SPARK_STATUS_BUSY;
     }
     memset(send,0,sizeof(*send));
