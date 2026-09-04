@@ -3145,7 +3145,7 @@ static void SparkTpDeviceCollectiveProgressOperation(
     uint64_t before_state;
     uint32_t advance;
 
-    for (advance=0u; advance<8u; advance++)
+    for (advance=0u; advance<32u; advance++)
     {
         before_state = atomic_load_explicit(
             &operation->lifecycle,memory_order_acquire);
