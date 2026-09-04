@@ -2576,12 +2576,20 @@ static void SparkTpDeviceCollectiveReserveOperation(
         }
         if ((operation->reserved_send_mask & mask) == 0u)
         {
+            uint64_t reserve_t0 = SparkTpDeviceCollectiveNowNano();
             status = SparkHiddenTransportReservePersistentSend(
                 implementation->send_sessions[route_index],
                 operation->credit_index,transport_generation,&send_packet);
             if (status == SPARK_STATUS_OK)
             {
                 operation->reserved_send_mask |= mask;
+                if (SparkTpDeviceCollectiveNowNano() - reserve_t0 > 1000000ull)
+                    fprintf(stderr,
+                        "LR-RSVSLOW rank=%u ordinal=%llu route=%u wait_us=%llu\n",
+                        implementation->collective->tp_rank,
+                        (unsigned long long)operation->ordinal,route_index,
+                        (unsigned long long)(
+                            (SparkTpDeviceCollectiveNowNano()-reserve_t0)/1000ull));
             }
             else if (status != SPARK_STATUS_BUSY)
             {
