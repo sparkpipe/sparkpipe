@@ -43,6 +43,7 @@ typedef struct SparkSpeculationSeamConfiguration
 	uint32_t abi_version;
 	uint32_t descriptor_bytes;
 	uint32_t available_source_mask;
+	uint32_t default_source_mask;
 	uint32_t default_speculative_token_count;
 	uint32_t lane_count;
 	uint32_t max_committed_token_count;

@@ -903,6 +903,7 @@ static SparkStatus SparkDsv4ServingInitializeSpeculation(
 	if ( state->draft_bridge_host[0] == '\0' )
 		configuration.available_source_mask &=
 			~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
+	configuration.default_source_mask = configuration.available_source_mask;
 	configuration.default_speculative_token_count =
 		SPARK_DSV4_MODEL_DSPARK_SPEC_STEP;
 	configuration.lane_count = state->max_active_sequence_count;

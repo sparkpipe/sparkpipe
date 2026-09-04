@@ -96,7 +96,9 @@ static SparkStatus SparkSpeculationSeamValidateConfiguration(
         return SPARK_STATUS_SCHEMA_ERROR;
     }
     if ((configuration->available_source_mask &
-            ~SPARK_SPECULATION_SEAM_KNOWN_SOURCES) != 0u)
+            ~SPARK_SPECULATION_SEAM_KNOWN_SOURCES) != 0u ||
+        (configuration->default_source_mask &
+            ~configuration->available_source_mask) != 0u)
     {
         return SPARK_STATUS_SCHEMA_ERROR;
     }
@@ -110,10 +112,20 @@ static SparkStatus SparkSpeculationSeamValidateConfiguration(
     {
         return SPARK_STATUS_SCHEMA_ERROR;
     }
-    status = SparkSpeculationSeamParseControl(
-        configuration->control_value,
-        configuration->available_source_mask,
-        &enabled_source_mask);
+    if (configuration->control_value == 0 ||
+        (configuration->control_value[0] == '1' &&
+            configuration->control_value[1] == '\0'))
+    {
+        enabled_source_mask = configuration->default_source_mask;
+        status = SPARK_STATUS_OK;
+    }
+    else
+    {
+        status = SparkSpeculationSeamParseControl(
+            configuration->control_value,
+            configuration->available_source_mask,
+            &enabled_source_mask);
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;
