@@ -800,7 +800,7 @@ def verify(pack_path: Path) -> dict:
                                 else rows * columns * element_bytes)
             if payload_bytes != expected_payload:
                 raise PackFailure(f"entry {index}: payload byte count mismatch")
-            cursor = (scale_offset + scale_bytes) if is_fp8 else (payload_offset + payload_bytes)
+            cursor = (scale_offset + scale_bytes) if (is_fp8 or is_nvfp4) else (payload_offset + payload_bytes)
         if align(cursor) != align(file_bytes):
             raise PackFailure("trailing payload does not close the file")
     return {"file": str(pack_path), "bytes": file_bytes, "tensor_count": tensor_count,

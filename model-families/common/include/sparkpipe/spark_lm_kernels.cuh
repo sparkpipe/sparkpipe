@@ -1011,7 +1011,7 @@ static __global__ void SparkLmBatchedLinearKernel(uint32_t weight_format, const 
 				 * the segment tail (plane + 4); the dense 27B pack is
 				 * one segment per tensor. */
 				uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 3u,scale_row = (uint64_t)neuron * (input_dimension / 16u);
-				const float *weight_global = (const float *)((const uint8_t *)weight_scale + ((uint64_t)output_dimension * (input_dimension / 16u)) + 4u);
+				const float *weight_global = (const float *)((const uint8_t *)weight_scale + ((uint64_t)output_dimension * (input_dimension / 16u)));
 				uint32_t local_runs = chunk_width >> 3u,pair;
 				for (run_local = lane; run_local < local_runs; run_local += SPARK_LM_WARP_LANES)
 				{
@@ -1218,7 +1218,7 @@ static __global__ void SparkLmGatherLinearKernel(uint32_t weight_format, const v
 	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
 		/* dense nvfp4: one segment [plane][global F32]; the global sits
 		 * at output_dimension * (input_dimension / 16) + 4. */
-		accumulator = SparkLmDotRowNvfp4<16u>(shared_input,weight_payload,(const uint8_t *)weight_scale,(const float *)((const uint8_t *)weight_scale + ((uint64_t)output_dimension * (input_dimension / 16u)) + 4u),neuron,input_dimension,lane);
+		accumulator = SparkLmDotRowNvfp4<16u>(shared_input,weight_payload,(const uint8_t *)weight_scale,(const float *)((const uint8_t *)weight_scale + ((uint64_t)output_dimension * (input_dimension / 16u))),neuron,input_dimension,lane);
 	else
 		accumulator = SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,weight_payload,(const uint8_t *)weight_scale,neuron,input_dimension,lane);
 	accumulator = SparkLmWarpReduceSum(accumulator);
@@ -3739,7 +3739,7 @@ static __device__ void SparkLmExpertTileBodyAllWarps(
 {
     const float *body_weight_global = weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 ?
         (const float *)((const uint8_t *)weight_scale +
-            ((uint64_t)output_dimension * (input_dimension / 16u)) + 4u) :
+            ((uint64_t)output_dimension * (input_dimension / 16u))) :
         (const float *)0;
     __shared__ __nv_bfloat16 tile_input[
         SPARK_LM_TILE * SPARK_LM_TILE_K];
@@ -3858,7 +3858,7 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
 {
     const float *body_weight_global = weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 ?
         (const float *)((const uint8_t *)weight_scale +
-            ((uint64_t)output_dimension * (input_dimension / 16u)) + 4u) :
+            ((uint64_t)output_dimension * (input_dimension / 16u))) :
         (const float *)0;
     __shared__ __nv_bfloat16 tile_input[2u][
         SPARK_LM_TILE * SPARK_LM_TILE_K];

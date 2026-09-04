@@ -312,6 +312,7 @@ static inline int32_t SparkQwen38_27bStagePackShapeEveryLayer(uint32_t tensor_ki
 _Static_assert(SPARK_QWEN38_27B_STAGEPACK_TENSOR_GDN_NORM + SPARK_QWEN38_27B_STAGEPACK_GDN_KIND_OFFSET == SPARK_STAGEPACK_TENSOR_GDN_NORM,"qwen38_27b gdn kind run must track the shared axis");
 _Static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"qwen38_27b bf16 weight code must match the shared format");
 _Static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"qwen38_27b f32 weight code must match the shared format");
+_Static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED == SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED,"qwen38_27b nvfp4 weight code must match the shared format");
 
 static const SparkStagePackGeometryTable SparkQwen38_27bStagePackGeometry =
 {
@@ -448,7 +449,8 @@ static inline int32_t SparkQwen38_27bStagePackResolvedShape(uint32_t tensor_kind
 static inline uint64_t SparkQwen38_27bStagePackPayloadBytes(uint32_t weight_format, uint32_t rows, uint32_t columns)
 {
 	uint64_t elements = (uint64_t)rows * (uint64_t)columns;
-	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
+	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ||
+		weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
 		return(elements / 2u);
 	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
 		weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
@@ -462,6 +464,10 @@ static inline uint64_t SparkQwen38_27bStagePackScaleBytes(uint32_t weight_format
 {
 	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
 		return(((uint64_t)rows * (uint64_t)columns) / 32u);
+	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
+		/* the dense nvfp4 segment: the per-16 e4m3 plane + the F32
+		 * weight global at the tail. */
+		return(((uint64_t)rows * (uint64_t)columns) / 16u + 4u);
 	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);
 	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
