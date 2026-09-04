@@ -507,13 +507,16 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	if ( state->bridge_host == 0 )
 		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
 	control_value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
-	if ( control_value == 0 )
-		control_value = "0";
-	status = SparkSpeculationSeamParseControl(control_value,available_sources,&enabled_sources);
-	if ( status != SPARK_STATUS_OK )
+	if ( control_value == 0 || (control_value[0] == '1' && control_value[1] == '\0') )
+		enabled_sources = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
+	else
 	{
-		fprintf(stderr,"qwen38_27b_serving %s control value rejected: status=%d available=0x%x\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,(int)status,available_sources);
-		return(status);
+		status = SparkSpeculationSeamParseControl(control_value,available_sources,&enabled_sources);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"qwen38_27b_serving %s control value rejected: status=%d available=0x%x\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,(int)status,available_sources);
+			return(status);
+		}
 	}
 	status = SparkQwen38_27bServingResolveSpeculationMethods(enabled_sources,&state->spec_method,&state->speculation_enabled);
 	if ( status != SPARK_STATUS_OK )
@@ -522,6 +525,7 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
 	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
 	seam_configuration.available_source_mask = available_sources;
+	seam_configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
 	seam_configuration.default_speculative_token_count = state->speculative_draft_count;
 	seam_configuration.lane_count = state->max_active_sequence_count;
 	seam_configuration.max_committed_token_count = state->max_sequence_positions;

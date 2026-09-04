@@ -476,6 +476,7 @@ static void TestSeamWriteConfiguration(
     configuration->abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
     configuration->descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
     configuration->available_source_mask = available_source_mask;
+    configuration->default_source_mask = available_source_mask;
     configuration->default_speculative_token_count = 4u;
     configuration->lane_count = 2u;
     configuration->max_committed_token_count = SPARK_TEST_SEAM_MAX_COMMITTED;
@@ -1694,6 +1695,69 @@ static uint32_t TestSeamRunCase(
     return 0u;
 }
 
+static uint32_t TestSeamDefaultSourceMask(void)
+{
+    SparkSpeculationSeamConfiguration configuration;
+    SparkSpeculationSeam *seam;
+    uint32_t available;
+
+    available =
+        SPARK_SPECULATION_SEAM_SOURCE_MTP |
+        SPARK_SPECULATION_SEAM_SOURCE_DSPARK |
+        SPARK_SPECULATION_SEAM_SOURCE_NGRAM |
+        SPARK_SPECULATION_SEAM_SOURCE_SUFFIX;
+
+    seam = 0;
+    TestSeamWriteConfiguration(&configuration, available, 0u, 0u, 0u);
+    configuration.bridge_host = 0;
+    configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP;
+    configuration.control_value = 0;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamEnabledSources(seam) ==
+        SPARK_SPECULATION_SEAM_SOURCE_MTP);
+    SparkSpeculationSeamDestroy(seam);
+
+    seam = 0;
+    TestSeamWriteConfiguration(&configuration, available, 0u, 0u, 0u);
+    configuration.bridge_host = 0;
+    configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP;
+    configuration.control_value = "1";
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamEnabledSources(seam) ==
+        SPARK_SPECULATION_SEAM_SOURCE_MTP);
+    SparkSpeculationSeamDestroy(seam);
+
+    seam = 0;
+    TestSeamWriteConfiguration(&configuration, available, 0u, 0u, 0u);
+    configuration.bridge_host = 0;
+    configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP;
+    configuration.control_value = "0x2";
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamEnabledSources(seam) ==
+        SPARK_SPECULATION_SEAM_SOURCE_DSPARK);
+    SparkSpeculationSeamDestroy(seam);
+
+    seam = 0;
+    TestSeamWriteConfiguration(&configuration, available, 0u, 0u, 0u);
+    configuration.bridge_host = 0;
+    configuration.default_source_mask = 0x40u;
+    configuration.control_value = 0;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_SCHEMA_ERROR);
+    SPARK_TEST_SEAM_CHECK(seam == 0);
+    return 0u;
+}
+
 int main(void)
 {
     uint32_t failures;
@@ -1748,6 +1812,9 @@ int main(void)
     failures += TestSeamRunCase(
         "local_stage_after_cancel",
         TestSeamLocalStageAfterCancel);
+    failures += TestSeamRunCase(
+        "default_source_mask",
+        TestSeamDefaultSourceMask);
     if (failures != 0u)
     {
         fprintf(stderr, "FAILURES %u\n", (unsigned)failures);
