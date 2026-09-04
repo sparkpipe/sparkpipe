@@ -154,6 +154,191 @@ def is_immutable(pack: Path) -> bool:
 
 
 
+G5NSP_MAGIC = 0x33584C47
+G5NSP_HEADER_BYTES = 264
+G5NSP_DIR_OFF = 512           # align(264): every g5nsp pack's original directory
+G5NSP_ENTRY_BYTES = 64        # <IIIIIIIIQQQQ>
+G5NSP_MTP_LAYER = 45          # the model has layers 0..44; 45 = the MTP sentinel
+
+
+def strip_g5nsp(pack: Path, args) -> int:
+    """glm5_next MTP-upgraded packs (g5_add_mtp layout): the upgrade
+    appended the MTP payloads and a superseding directory at the tail
+    and patched flags/entry_count/directory_offset/file_bytes. The
+    ORIGINAL pack is a byte-prefix, and its directory at G5NSP_DIR_OFF
+    is untouched - so the strip truncates at the append boundary and
+    restores the original header fields. Fail-closed: flags must be 1
+    and every MTP entry must live at or beyond the cut."""
+    size = pack.stat().st_size
+    with pack.open("rb") as file:
+        raw = file.read(G5NSP_HEADER_BYTES)
+    if len(raw) != G5NSP_HEADER_BYTES:
+        print(f"FAIL {pack}: short header", file=sys.stderr)
+        return 1
+    fields = list(struct.unpack_from("<20I", raw, 0))
+    magic, version, flags, entry_count = fields[0], fields[1], fields[5], fields[6]
+    dir_off, file_bytes = struct.unpack_from("<QQ", raw, 80)
+    if magic != G5NSP_MAGIC or version != 1:
+        print(f"FAIL {pack}: not a v1 g5nsp pack (magic={magic:#x} ver={version})", file=sys.stderr)
+        return 1
+    if flags == 0:
+        print(f"PASS {pack}: flags=0, no MTP ({entry_count} entries) - nothing to strip")
+        return 0
+    if entry_count * G5NSP_ENTRY_BYTES > size:
+        print(f"FAIL {pack}: entry count {entry_count} overruns the file", file=sys.stderr)
+        return 1
+    with pack.open("rb") as file:
+        file.seek(dir_off)
+        raw_dir = file.read(entry_count * G5NSP_ENTRY_BYTES)
+    kept, dropped, cut = 0, 0, size
+    for i in range(entry_count):
+        block = raw_dir[i * G5NSP_ENTRY_BYTES:(i + 1) * G5NSP_ENTRY_BYTES]
+        kind, layer = struct.unpack_from("<2I", block, 0)
+        payload_off, payload_bytes, scale_off, scale_bytes = struct.unpack_from("<4Q", block, 32)
+        if layer == G5NSP_MTP_LAYER:
+            dropped += 1
+            for off, length in ((payload_off, payload_bytes), (scale_off, scale_bytes)):
+                if length:
+                    cut = min(cut, off)
+        else:
+            kept += 1
+    if dropped == 0:
+        print(f"FAIL {pack}: flags=1 but no sentinel-layer entries found", file=sys.stderr)
+        return 1
+    # Fail-closed tail check: every kept byte must precede the MTP append.
+    with pack.open("rb") as file:
+        file.seek(dir_off)
+        for i in range(entry_count):
+            block = raw_dir[i * G5NSP_ENTRY_BYTES:(i + 1) * G5NSP_ENTRY_BYTES]
+            kind, layer = struct.unpack_from("<2I", block, 0)
+            payload_off, payload_bytes, scale_off, scale_bytes = struct.unpack_from("<4Q", block, 32)
+            if layer != G5NSP_MTP_LAYER:
+                for off, length in ((payload_off, payload_bytes), (scale_off, scale_bytes)):
+                    if length and off + length > cut:
+                        print(f"FAIL {pack}: kept entry kind={kind} crosses the MTP boundary", file=sys.stderr)
+                        return 1
+    print(f"STRIP {pack}: {entry_count} -> {kept} entries, {size - cut} bytes ({(size - cut) / 2**30:.2f} GiB)")
+    if args.dry_run:
+        return 0
+
+    if not chattr(pack, "-i") and is_immutable(pack):
+        print(f"FAIL {pack}: immutable and cannot clear the flag (need root)", file=sys.stderr)
+        return 2
+    with pack.open("r+b") as file:
+        file.truncate(cut)
+        fields[5] = 0
+        fields[6] = kept
+        file.seek(0)
+        file.write(struct.pack("<20I", *fields))
+        file.seek(80)
+        file.write(struct.pack("<QQ", G5NSP_DIR_OFF, cut))
+        file.flush()
+        os.fsync(file.fileno())
+    digest = sha256_chunked(pack)
+    prior = read_receipt(receipt).get("output_sha256")
+    update_receipt(receipt, digest, kept_end=cut, dropped=dropped,
+                   reclaim=size - cut, prior=prior, locked=None)
+    locked = chattr(pack, "+i")
+    update_receipt(receipt, digest, kept_end=cut, dropped=dropped,
+                   reclaim=size - cut, prior=prior, locked=locked)
+    print(f"DONE {pack}: sha {digest[:16]}... locked={locked}")
+    return 0 if locked else 3
+
+
+def compact_g5nsp(pack: Path, args) -> int:
+    """Rewrite an MTP-inline g5nsp pack keeping only non-MTP regions.
+    New layout: [264B header, flags=0][kept directory at 512][kept byte
+    regions 256-aligned, offsets rewritten]. The module reads
+    directory_offset from the header, so the location is free."""
+    import os as _os
+    size = pack.stat().st_size
+    with pack.open("rb") as file:
+        raw = file.read(G5NSP_HEADER_BYTES)
+    fields = list(struct.unpack_from("<20I", raw, 0))
+    entry_count = fields[6]
+    dir_off, file_bytes = struct.unpack_from("<QQ", raw, 80)
+    with pack.open("rb") as file:
+        file.seek(dir_off)
+        raw_dir = file.read(entry_count * G5NSP_ENTRY_BYTES)
+    kept_entries, regions = [], []
+    spans = []
+    for i in range(entry_count):
+        block = raw_dir[i * G5NSP_ENTRY_BYTES:(i + 1) * G5NSP_ENTRY_BYTES]
+        kind, layer = struct.unpack_from("<2I", block, 0)
+        po, pb, so, sb = struct.unpack_from("<4Q", block, 32)
+        if pb:
+            spans.append((po, po + pb, i, "payload"))
+        if sb:
+            spans.append((so, so + sb, i, "scale"))
+    spans.sort()
+    for (start, end, i, which) in spans:
+        block = raw_dir[i * G5NSP_ENTRY_BYTES:(i + 1) * G5NSP_ENTRY_BYTES]
+        kind, layer = struct.unpack_from("<2I", block, 0)
+        if layer == G5NSP_MTP_LAYER:
+            continue
+        kept_entries.append((start, end, i, which))
+    keep_bytes = sum(end - start for (s, e, i, w) in kept_entries)
+    if args.dry_run:
+        print(f"COMPACT {pack}: {len(kept_entries)} kept regions, {keep_bytes} bytes ({keep_bytes / 2**30:.2f} GiB) [dry]")
+        return 0
+    tmp = Path(str(pack) + ".compact.tmp")
+    if not chattr(pack, "-i") and is_immutable(pack):
+        print(f"FAIL {pack}: immutable and cannot clear the flag (need root)", file=sys.stderr)
+        return 2
+    header_len = G5NSP_HEADER_BYTES
+    dir_len = len(kept_entries) * G5NSP_ENTRY_BYTES
+    payload_base = ((header_len + dir_len + 255) // 256) * 256
+    cursor = payload_base
+    new_offsets = {}
+    with pack.open("rb") as src, tmp.open("wb") as dst:
+        dst.truncate(payload_base + keep_bytes)
+        for (start, end, i, which) in kept_entries:
+            length = end - start
+            new_offsets[(i, which)] = cursor + 0
+            sent_total = 0
+            pos = start
+            while sent_total < length:
+                sent = _os.sendfile(dst.fileno(), src.fileno(), pos, length - sent_total)
+                if sent == 0:
+                    print(f"FAIL {pack}: sendfile stalled at {pos}", file=sys.stderr)
+                    return 1
+                pos += sent
+                sent_total += sent
+            cursor += length
+        fields[5] = 0
+        fields[6] = len(kept_entries)
+        dst.seek(0)
+        dst.write(struct.pack("<20I", *fields))
+        dst.seek(80)
+        dst.write(struct.pack("<QQ", header_len + dir_len, cursor))
+        # preserve the provenance blobs that follow the u64 pair
+        dst.write(raw[96:G5NSP_HEADER_BYTES])
+        dst.seek(header_len)
+        for (start, end, i, which) in kept_entries:
+            dst.write(raw_dir[i * G5NSP_ENTRY_BYTES:(i + 1) * G5NSP_ENTRY_BYTES])
+        # rewrite the offsets into the directory
+        for idx, (start, end, i, which) in enumerate(kept_entries):
+            dst.seek(header_len + idx * G5NSP_ENTRY_BYTES + 32)
+            po, pb, so, sb = struct.unpack_from("<4Q", raw_dir[i * G5NSP_ENTRY_BYTES:(i + 1) * G5NSP_ENTRY_BYTES], 32)
+            new_po = new_offsets.get((i, "payload"), 0) if pb else 0
+            new_so = new_offsets.get((i, "scale"), 0) if sb else 0
+            dst.write(struct.pack("<4Q", new_po, pb, new_so, sb))
+        dst.flush()
+        _os.fsync(dst.fileno())
+    digest = sha256_chunked(tmp)
+    prior = read_receipt(receipt).get("output_sha256")
+    _os.replace(tmp, pack)
+    reclaim = size - cursor
+    update_receipt(receipt, digest, kept_end=cursor, dropped=entry_count - len(kept_entries),
+                   reclaim=reclaim, prior=prior, locked=None)
+    locked = chattr(pack, "+i")
+    update_receipt(receipt, digest, kept_end=cursor, dropped=entry_count - len(kept_entries),
+                   reclaim=reclaim, prior=prior, locked=locked)
+    print(f"DONE {pack}: compacted {size} -> {cursor} bytes "
+          f"({reclaim / 2**30:.2f} GiB reclaimed), sha {digest[:16]}... locked={locked}")
+    return 0 if locked else 3
+
+
 def compact_pack(pack: Path, family: dict, entries, dropped, kept, kept_end,
                  u32s, u64s, receipt: Path, args) -> int:
     """Rewrite the file keeping only non-MTP byte regions. Regions tile
@@ -268,14 +453,19 @@ def compact_pack(pack: Path, family: dict, entries, dropped, kept, kept_end,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--pack", type=Path, required=True)
-    parser.add_argument("--family", choices=sorted(FAMILIES), default="qwen4_flash")
+    parser.add_argument("--family", choices=sorted(FAMILIES) + ["g5nsp"], default="qwen4_flash")
     parser.add_argument("--compact", action="store_true",
                         help="rewrite the pack keeping only non-MTP regions (for layouts where MTP is not the file tail)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    family = FAMILIES[args.family]
     pack: Path = args.pack
     receipt: Path = Path(str(pack) + ".receipt.json")
+    if args.family == "g5nsp":
+        result = strip_g5nsp(pack, args)
+        if result == 1 and args.compact:
+            return compact_g5nsp(pack, args)
+        return result
+    family = FAMILIES[args.family]
 
     actual_bytes = pack.stat().st_size
     with pack.open("rb") as file:
