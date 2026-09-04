@@ -41,6 +41,15 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RECLAIM_RESULT 8u
 #define SPARK_WEIGHTD_IPC_KIND_EXPORT 9u
 #define SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT 10u
+#define SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY 11u
+#define SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_RESULT 12u
+#define SPARK_WEIGHTD_IPC_KIND_ENSURE 13u
+#define SPARK_WEIGHTD_IPC_KIND_ENSURE_RESULT 14u
+
+#define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
+#define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
+#define SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC UINT32_C(0x58504557)
+#define SPARK_WEIGHTD_EXPERT_MANIFEST_VERSION 1u
 
 #define SPARK_WEIGHTD_EXPORT_BATCH_MAX 64u
 _Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
@@ -159,6 +168,48 @@ typedef struct SparkWeightdIpcExportResult
     uint32_t reserved0;
 } SparkWeightdIpcExportResult;
 
+typedef struct SparkWeightdIpcAttachLazy
+{
+    SparkWeightdIpcHeader header;
+    SparkWeightdIdentity identity;
+    char pack_path[SPARK_WEIGHTD_PATH_BYTES];
+    uint64_t expert_pool_bytes;
+} SparkWeightdIpcAttachLazy;
+
+typedef struct SparkWeightdIpcAttachLazyResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint64_t device_handle;
+    uint64_t arena_bytes;
+    uint64_t resident_bytes;
+    uint64_t expert_pool_bytes;
+    uint32_t status;
+    uint32_t refcount;
+    uint32_t arena_count;
+    uint32_t expert_count;
+} SparkWeightdIpcAttachLazyResult;
+
+typedef struct SparkWeightdIpcEnsure
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint32_t layer;
+    uint32_t expert;
+} SparkWeightdIpcEnsure;
+
+typedef struct SparkWeightdIpcEnsureResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint64_t device_offset;
+    uint64_t expert_bytes;
+    uint64_t resident_bytes;
+    uint64_t load_ns;
+    uint32_t status;
+    uint32_t loaded;
+} SparkWeightdIpcEnsureResult;
+
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
 #define SPARK_WEIGHTD_IPC_HELLO_BYTES ((uint32_t)sizeof(SparkWeightdIpcHello))
 #define SPARK_WEIGHTD_IPC_HELLO_ACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcHelloAck))
@@ -170,6 +221,10 @@ typedef struct SparkWeightdIpcExportResult
 #define SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaimResult))
 #define SPARK_WEIGHTD_IPC_EXPORT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExport))
 #define SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExportResult))
+#define SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES ((uint32_t)sizeof(SparkWeightdIpcAttachLazy))
+#define SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcAttachLazyResult))
+#define SPARK_WEIGHTD_IPC_ENSURE_BYTES ((uint32_t)sizeof(SparkWeightdIpcEnsure))
+#define SPARK_WEIGHTD_IPC_ENSURE_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEnsureResult))
 
 SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity);
 
@@ -249,6 +304,37 @@ typedef struct SparkWeightdReclaimResult
     uint32_t arena_count;
 } SparkWeightdReclaimResult;
 
+typedef struct SparkWeightdLazyAttachRequest
+{
+    SparkWeightdIdentity identity;
+    char pack_path[SPARK_WEIGHTD_PATH_BYTES];
+    uint64_t expert_pool_bytes;
+} SparkWeightdLazyAttachRequest;
+
+typedef struct SparkWeightdLazyAttachResult
+{
+    SparkStatus status;
+    uint64_t arena_generation;
+    uint64_t device_handle;
+    uint64_t arena_bytes;
+    uint64_t resident_bytes;
+    uint64_t expert_pool_bytes;
+    uint32_t refcount;
+    uint32_t arena_count;
+    uint32_t expert_count;
+} SparkWeightdLazyAttachResult;
+
+typedef struct SparkWeightdEnsureResult
+{
+    SparkStatus status;
+    uint64_t arena_generation;
+    uint64_t device_offset;
+    uint64_t expert_bytes;
+    uint64_t resident_bytes;
+    uint64_t load_ns;
+    uint32_t loaded;
+} SparkWeightdEnsureResult;
+
 SparkStatus SparkWeightdClientConnect(const char *socket_path,
     SparkWeightdClient **client,
     SparkWeightdHelloResult *hello_out);
@@ -256,6 +342,18 @@ SparkStatus SparkWeightdClientConnect(const char *socket_path,
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
     const SparkWeightdAttachRequest *request,
     SparkWeightdAttachResult *result,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
+    const SparkWeightdLazyAttachRequest *request,
+    SparkWeightdLazyAttachResult *result,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientEnsure(SparkWeightdClient *client,
+    uint64_t arena_generation,
+    uint32_t layer,
+    uint32_t expert,
+    SparkWeightdEnsureResult *result,
     uint64_t timeout_nanoseconds);
 
 typedef struct SparkWeightdExportBatch
