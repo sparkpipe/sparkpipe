@@ -281,6 +281,21 @@ typedef SparkStatus (*SparkHiddenTransportGetPollDescriptorsFunction)(
     uint32_t descriptor_capacity,
     uint32_t *descriptor_count_out);
 
+typedef SparkStatus (*SparkHiddenTransportSendFixedFunction)(
+    void *transport_state,
+    const void *local_buffer,
+    uint64_t bytes,
+    uint32_t sequence);
+typedef SparkStatus (*SparkHiddenTransportSetFixedRemoteFunction)(
+    void *transport_state,
+    uint64_t remote_address,
+    uint64_t remote_bytes,
+    uint32_t remote_rkey);
+typedef SparkStatus (*SparkHiddenTransportSetFixedLocalFunction)(
+    void *transport_state,
+    void *local_buffer,
+    uint64_t local_bytes);
+
 typedef struct SparkHiddenTransportInterface
 {
     uint32_t abi_version;
@@ -310,6 +325,9 @@ typedef struct SparkHiddenTransportInterface
     SparkHiddenTransportSendPersistentFunction send_persistent;
     SparkHiddenTransportReleasePersistentReceiveFunction
         release_persistent_receive;
+    SparkHiddenTransportSendFixedFunction send_fixed;
+    SparkHiddenTransportSetFixedRemoteFunction set_fixed_remote;
+    SparkHiddenTransportSetFixedLocalFunction set_fixed_local;
 } SparkHiddenTransportInterface;
 
 typedef const SparkHiddenTransportInterface *(*SparkHiddenTransportGetInterfaceFunction)(

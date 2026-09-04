@@ -5734,5 +5734,8 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
         SparkHiddenSparkHostRdmaSendPersistent;
     transport_interface.release_persistent_receive =
         SparkHiddenSparkHostRdmaReleasePersistentReceive;
+    transport_interface.send_fixed = SparkHiddenSparkHostRdmaSendFixed;
+    transport_interface.set_fixed_remote = SparkHiddenSparkHostRdmaSetFixedRemote;
+    transport_interface.set_fixed_local = SparkHiddenSparkHostRdmaSetFixedLocal;
     return &transport_interface;
 }
