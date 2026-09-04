@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260904T020926945Z-62156-b2aaeb919ae9",
+  "runId": "20260904T020926945Z-62156-b2aaeb919ae9",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "9db351d2e15d11dd02dbc66905ea2b9f8cb73dec",
+  "diffHash": "04c4aa4ce3663479b84ecdc01b376d34049e159d9d48ef411dda591a78efe0a9",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T020926945Z-62156-b2aaeb919ae9.json",
+  "events": [
+    {
+      "eventId": "hook-8ab2242ec1e97267035c2a4b7f815d5c",
+      "findingId": "mimosa-d3e38f3512597c78ed9e627a",
+      "type": "finding_observed",
+      "at": "2026-09-04T02:09:26.945Z",
+      "identity": {
+        "projectRelativeFile": "tools/stagepack_mtp_strip.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "92245379eaa071641bfce79021c9cb327f135a7924f53c0343004337f3fcba90",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 100,
+      "endLine": 100,
+      "reasonCode": "observe",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "92245379eaa071641bfce79021c9cb327f135a7924f53c0343004337f3fcba90"
+      },
+      "sequence": 0
+    }
+  ],
+  "observedFindingIds": [
+    "mimosa-d3e38f3512597c78ed9e627a"
+  ],
+  "verifiedFiles": [
+    {
+      "file": "tools/mtp_strip_sweep.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tools/stagepack_mtp_strip.py",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tools/mtp_strip_fleet.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tools/mtp_strip_wave2.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tools/mtp_strip_dsv4.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-04T02:09:27.205Z"
+}

@@ -108,9 +108,10 @@ static int CompareBf16(const char *leg, const void *device_bf16, const float *re
 		// kernel's f32 warp-reassociation adds a little more slack.
 		if ( relative > 0.02 && absolute > 1e-3 )
 		{
-			if ( failures < 4u )
-				fprintf(stderr,"SMOKE %s row %u: got %.6f want %.6f (rel %.4f)\n",
-					leg,index,value,want,relative);
+			if ( failures < 6u )
+				fprintf(stderr,"SMOKE %s idx %u: got %.6f want %.6f (rel %.4f) ratio %.4f\n",
+					leg,index,value,want,relative,
+					fabs((double)want) > 1e-9 ? (double)value / (double)want : 0.0);
 			failures++;
 		}
 		if ( relative > worst_relative )

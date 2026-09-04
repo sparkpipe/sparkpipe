@@ -18,6 +18,7 @@
 #include "sparkpipe/spark_kv_page_store.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_row_layout.h"
+#include "sparkpipe/spark_speculation_policy.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_weightd_attach.h"
@@ -3625,25 +3626,36 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 	{
 		SparkDsv4AsyncCompletion *async;
 		uint32_t slot_index = (uint32_t)(slot - state->slots);
-		uint32_t lane_index,accepted,layer;
+		uint32_t lane_index,accepted,layer,fallback_token_id;
 		async = &state->completions[slot_index];
 		lane_index = async->lane_indices[0];
 		accepted = 0u;
+		fallback_token_id = slot->host_output_token_ids[0];
 		if ( continuation->dspark_verify != 0u )
 		{
+			SparkSpeculationPolicyVerifyResult verify_result;
+			memset(&verify_result,0,sizeof(verify_result));
+			verify_result.committed_token_count = 1u;
+			verify_result.fallback_token_id = fallback_token_id;
 			if ( slot->dspark_verify_accept != 0u )
+				status = SparkSpeculationPolicyResolveVerifierTokens(
+					slot->dspark_host_draft_tokens,
+					SPARK_DSV4_MODEL_DSPARK_SPEC_STEP,
+					slot->host_output_token_ids,
+					SPARK_DSV4_MODEL_DSPARK_SPEC_STEP + 1u,
+					SPARK_DSV4_MODEL_VOCAB_COUNT,&verify_result);
+			if ( status != SPARK_STATUS_OK )
 			{
-				for (accepted = 0u;
-					accepted < SPARK_DSV4_MODEL_DSPARK_SPEC_STEP; accepted++)
-					if ( slot->host_output_token_ids[accepted] !=
-						slot->dspark_host_draft_tokens[accepted] )
-						break;
+				SparkDsv4ModuleFinishContinuationTerminal(continuation,status);
+				return;
 			}
+			accepted = verify_result.accepted_draft_token_count;
+			fallback_token_id = verify_result.fallback_token_id;
 			fprintf(stderr,"dspark_accept tp_rank=%u lane=%u accepted=%u rows=%u chain=%u\n",state->tp_rank,lane_index,accepted,continuation->rows,continuation->chain_step_count);
-			async->completion.accepted_token_count = 1u + accepted;
-			async->completion.tokens_per_sequence = 1u + accepted;
-			async->tokens_per_sequence = 1u + accepted;
-			async->emitted_token_count = 1u + accepted;
+			async->completion.accepted_token_count = verify_result.committed_token_count;
+			async->completion.tokens_per_sequence = verify_result.committed_token_count;
+			async->tokens_per_sequence = verify_result.committed_token_count;
+			async->emitted_token_count = verify_result.committed_token_count;
 			async->lane_next_positions[0] += accepted;
 			async->cache_lanes[0].context_token_count += accepted;
 			if ( accepted != 0u )
@@ -3713,7 +3725,7 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 			if ( error == cudaSuccess )
 			{
 				state->dspark_lane_anchor[lane_index] =
-					slot->host_output_token_ids[accepted];
+					fallback_token_id;
 				state->dspark_lane_position[lane_index] =
 					async->lane_next_positions[0] - 1u;
 				state->dspark_lane_ready[lane_index] = 1u;

@@ -4242,7 +4242,7 @@ static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, c
     payload = (const uint8_t *)payload_base + ((uint64_t)expert * payload_expert_stride_bytes);
     scale = (const uint8_t *)scale_base + ((uint64_t)expert * scale_expert_stride_bytes);
     const float *weight_global = weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 ?
-        (const float *)(scale + scale_expert_stride_bytes - 8u) : (const float *)0;
+        (const float *)(scale + scale_expert_stride_bytes - 4u) : (const float *)0;
     row_map = grouped_rows != 0 ? grouped_rows + offset : 0;
     output = (void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u));
     current_buffer = 0u;
@@ -4514,9 +4514,10 @@ static __global__ void SparkLmGroupedScalarLinearKernel(uint32_t weight_format, 
 					else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 						accumulator = SparkLmDotRowFp8F32<128u>(shared_input,group_payload,(const float *)group_scale,neuron,input_dimension,lane);
 					else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
-						/* weight_scale_2 rides at the expert segment tail
-						 * (after the plane + the input_scale F32). */
-						accumulator = SparkLmDotRowNvfp4<16u>(shared_input,group_payload,group_scale,(const float *)(group_scale + scale_group_stride_bytes - 8u),neuron,input_dimension,lane);
+						/* weight_scale_2 rides at the expert segment tail:
+						 * [plane][input_scale][weight_scale_2] - the LAST
+						 * 4 bytes, not -8 (that is the input scale). */
+						accumulator = SparkLmDotRowNvfp4<16u>(shared_input,group_payload,group_scale,(const float *)(group_scale + scale_group_stride_bytes - 4u),neuron,input_dimension,lane);
 					else
 						accumulator = SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,group_payload,group_scale,neuron,input_dimension,lane);
 					accumulator = SparkLmWarpReduceSum(accumulator);

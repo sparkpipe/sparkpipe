@@ -31,7 +31,7 @@ if [[ "${1:-}" == "start" ]]; then
   i=0
   for host in "${HOSTS[@]}"; do
     rt=/home/$host/sparkdata/$RUNTIME_NAME
-    ssh -o BatchMode=yes $host "cd $rt && export LD_LIBRARY_PATH=$rt/lib:\$LD_LIBRARY_PATH $NCCL_ENV SPARKPIPE_RELEASE_GENERATION=$GENERATION SPARKPIPE_RELEASE_GIT_COMMIT=$COMMIT SPARKPIPE_RELEASE_ID=qwen38-tp4-rank$i SPARK_QWEN38_27B_STAGE_MTP=1 SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS=8 SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT=2 && setsid -f bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index $i >/tmp/qwen38-tp4-rank$i.log 2>&1 </dev/null" &
+    ssh -o BatchMode=yes $host "cd $rt && export LD_LIBRARY_PATH=$rt/lib:\$LD_LIBRARY_PATH $NCCL_ENV SPARKPIPE_RELEASE_GENERATION=$GENERATION SPARKPIPE_RELEASE_GIT_COMMIT=$COMMIT SPARKPIPE_RELEASE_ID=qwen38-tp4-rank$i SPARK_QWEN38_27B_STAGE_MTP=1 SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS=8 SPARK_QWEN38_27B_SPECULATORS=0x1 && setsid -f bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index $i >/tmp/qwen38-tp4-rank$i.log 2>&1 </dev/null" &
     i=$((i+1))
   done
   wait

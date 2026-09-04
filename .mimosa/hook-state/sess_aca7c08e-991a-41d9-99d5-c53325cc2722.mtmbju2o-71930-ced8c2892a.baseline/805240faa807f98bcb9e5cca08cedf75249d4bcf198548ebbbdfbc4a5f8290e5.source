@@ -574,6 +574,9 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(void *adapter_state)
 	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
 		state->driver.interface->destroy(state->driver_instance);
 	SparkUnloadModelDriver(&state->driver);
+#ifdef SPARK_QWEN38_SERVING_ADAPTER_UNBIND_FAMILY
+	SPARK_QWEN38_SERVING_ADAPTER_UNBIND_FAMILY(state);
+#endif
 	if ( state->device_block_indices != 0 )
 		(void)cudaFree(state->device_block_indices);
 	if ( state->device_block_counts != 0 )
