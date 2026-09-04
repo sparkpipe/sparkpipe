@@ -96,8 +96,12 @@ def chattr(path: Path, flag: str) -> bool:
     ring needs CAP_LINUX_IMMUTABLE, so unprivileged runs no-op on -i of
     an unprotected file but fail +i — callers must treat False as "the
     relock did not happen"."""
+    # Argument-list exec (shell=False, the default): nothing is parsed
+    # by a shell, and "--" ends option parsing so a --pack path that
+    # starts with "-" can never be read as a chattr flag.
     for prefix in ([], ["sudo"]):
-        result = subprocess.run(prefix + ["chattr", flag, str(path)],
+        result = subprocess.run(prefix + ["chattr", flag, "--", str(path)],
+                                shell=False,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if result.returncode == 0:
             return True
