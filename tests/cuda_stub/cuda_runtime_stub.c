@@ -879,6 +879,8 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     size_t descriptor_count)
 {
     cuda_stub_vmm_reservation *reservation;
+    CUdeviceptr span_start;
+    uint64_t offset;
     if (descriptors == 0 || descriptor_count != (size_t)1u ||
         descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
         (descriptors[0].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u)
@@ -886,12 +888,19 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
         return CUDA_ERROR_INVALID_VALUE;
     }
     reservation = cuda_stub_vmm_reservation_for_va(pointer);
-    if (reservation != 0 && reservation->bytes == (uint64_t)bytes)
+    if (reservation == 0 || bytes == 0u)
     {
-        reservation->granted_access = (unsigned int)descriptors[0].flags;
-        return CUDA_SUCCESS;
+        return CUDA_ERROR_INVALID_VALUE;
     }
-    return CUDA_ERROR_INVALID_VALUE;
+    span_start = (CUdeviceptr)(reservation + 1);
+    offset = pointer - span_start;
+    if (offset > reservation->bytes ||
+        (uint64_t)bytes > reservation->bytes - offset)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    reservation->granted_access = (unsigned int)descriptors[0].flags;
+    return CUDA_SUCCESS;
 }
 
 CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
