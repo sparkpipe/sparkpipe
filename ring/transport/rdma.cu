@@ -2785,13 +2785,30 @@ static SparkStatus SparkHiddenSparkHostRdmaApplySendCompletion(
         work_completion->wr_id);
     if (send_index >= SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT ||
         lane_index >= state->lane_count)
+    {
+        fprintf(stderr,
+            "hidden_spark_rdma_send_wc_reject route=%s idx=%u lane=%u lanes=%u reason=range\n",
+                state->endpoint.route_name,send_index,lane_index,
+                state->lane_count);
         return SPARK_STATUS_IO_ERROR;
+    }
     send = &state->inflight_sends[send_index];
     lane_mask = 1u << lane_index;
     if (send->active == 0u ||
         (send->posted_lane_mask & lane_mask) == 0u ||
         (send->completed_lane_mask & lane_mask) != 0u)
+    {
+        fprintf(stderr,
+            "hidden_spark_rdma_send_wc_reject route=%s idx=%u lane=%u active=%u posted=%u completed=%u reason=guard\n",
+                state->endpoint.route_name,send_index,lane_index,
+                send->active,send->posted_lane_mask,
+                send->completed_lane_mask);
         return SPARK_STATUS_IO_ERROR;
+    }
+    fprintf(stderr,
+            "hidden_spark_rdma_send_wc route=%s idx=%u lane=%u wc_status=%u\n",
+            state->endpoint.route_name,send_index,lane_index,
+            (uint32_t)work_completion->status);
     status = SparkHiddenSparkHostRdmaRetireSendLane(
         state,send,lane_index);
     if (status != SPARK_STATUS_OK)

@@ -2693,6 +2693,11 @@ static void SparkTpDeviceCollectiveBuildSend(
                     SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND &&
                 implementation->fixed_slots_enabled != 0u)
             {
+                fprintf(stderr,
+                    "BSEND rank=%u ord=%llu res=%u route=%u\n",
+                    implementation->collective->tp_rank,
+                    (unsigned long long)operation->ordinal,resource_index,
+                    route_index);
                 status = SparkHiddenTransportSendFixed(
                     implementation->send_sessions[route_index],
                     send_packet.hidden_bf16,

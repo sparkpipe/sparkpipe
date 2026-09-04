@@ -409,6 +409,7 @@ int main(int argc, char **argv)
             if (bench_now_ns() - wait_started > 5000000000ull)
             {
                 printf("warmup completion timeout at %llu\n", (unsigned long long)ordinal);
+                SparkTpDeviceCollectiveDumpOperations(&collective);
                 return 1;
             }
             usleep(1000u);
