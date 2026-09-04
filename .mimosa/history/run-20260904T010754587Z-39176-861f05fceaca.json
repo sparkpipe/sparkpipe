@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260904T010754587Z-39176-861f05fceaca",
+  "runStatus": "inconclusive",
+  "errors": [
+    "scan:tools/qwen4_flash_stagepack.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/qwen4_flash_pack_verify.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:model-families/qwen4_flash/include/sparkpipe/spark_qwen4_flash_model.h: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "b507e3925225fdd57b9899872ab1a885d1f53458",
+  "diffHash": "5c143806b2212fe7eb11620247b974b10751973588d4d889b6fce625fc800d12",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-04T01:07:54.587Z",
+  "timing": {
+    "startedAt": "2026-09-04T01:07:52.275Z",
+    "completedAt": "2026-09-04T01:07:54.587Z",
+    "durationMs": 2312
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "scanner_failed": 4,
+      "project_check_failed": 4
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T010754587Z-39176-861f05fceaca.json"
+}

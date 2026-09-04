@@ -371,7 +371,7 @@ class TensorRef:
             self.slice_start, self.slice_rows = 0, 0
 
 
-def expected_tensor_count(first_layer: int, layer_count: int) -> int:
+def expected_tensor_count(first_layer: int, layer_count: int, include_mtp: bool = True) -> int:
     full_below = lambda n: n // ATTENTION_PERIOD
     full = full_below(first_layer + layer_count) - full_below(first_layer)
     gdn = layer_count - full
@@ -382,10 +382,14 @@ def expected_tensor_count(first_layer: int, layer_count: int) -> int:
         tensors += 1
     if first_layer + layer_count == LAYER_COUNT:
         tensors += 2 + 4 + 4 + 25 + (1 if first_layer != 0 else 0)
+        if not include_mtp:
+            # The MTP tail rides last: 6 MTP-scoped globals + the MTP
+            # layer's 25 every-layer/attention kinds.
+            tensors -= 6 + 25
     return tensors
 
 
-def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
+def build_inventory(first_layer: int, layer_count: int, include_mtp: bool = True) -> list[TensorRef]:
     if layer_count == 0 or first_layer + layer_count > LAYER_COUNT:
         raise PackFailure(f"invalid slice {first_layer}+{layer_count} of {LAYER_COUNT}")
     refs: list[TensorRef] = []
@@ -402,14 +406,19 @@ def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
         if first_layer != 0:
             refs.append(TensorRef(KIND_EMBEDDING, GLOBAL_LAYER, GLOBAL_TENSORS[KIND_EMBEDDING]))
         for kind in (KIND_FINAL_NORM, KIND_MIXER_DOWN, KIND_MIXER_UP,
-                     KIND_LM_HEAD, KIND_MTP_FC, KIND_MTP_EMBED_NORM,
-                     KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM,
-                     KIND_MTP_MIXER_DOWN, KIND_MTP_MIXER_UP):
+                     KIND_LM_HEAD):
             refs.append(TensorRef(kind, GLOBAL_LAYER, GLOBAL_TENSORS[kind]))
-        for kind in EVERY_LAYER_KINDS + ATTN_LAYER_KINDS:
-            refs.append(TensorRef(kind, MTP_LAYER, layer_tensor_name(kind, MTP_LAYER))
+        if include_mtp:
+            # The MTP block rides at the tail: the six MTP-scoped globals
+            # then the MTP layer's every-layer/attention kinds.
+            for kind in (KIND_MTP_FC, KIND_MTP_EMBED_NORM,
+                         KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM,
+                         KIND_MTP_MIXER_DOWN, KIND_MTP_MIXER_UP):
+                refs.append(TensorRef(kind, GLOBAL_LAYER, GLOBAL_TENSORS[kind]))
+            for kind in EVERY_LAYER_KINDS + ATTN_LAYER_KINDS:
+                refs.append(TensorRef(kind, MTP_LAYER, layer_tensor_name(kind, MTP_LAYER))
 )
-    expected = expected_tensor_count(first_layer, layer_count)
+    expected = expected_tensor_count(first_layer, layer_count, include_mtp)
     if len(refs) != expected:
         raise PackFailure(f"inventory {len(refs)} tensors, format expects {expected}")
     return refs
@@ -1037,9 +1046,10 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
     """nvfp4-official arm: gather the rank's SPLIT per-expert U8-packed
     e2m1 tensors into the fused expert-major pack layout, verbatim bytes
     + verbatim F8_E4M3 per-16 scale planes + the per-expert F32 globals.
-    Wire segment per tensor: [rows x cols/16 e4m3 plane][input_scale
-    F32 x experts][weight_scale_2 F32 x experts]. Two-pass (payloads,
-    then scales+globals) so nothing accumulates in RAM. Repackage-only."""
+    Wire layout per tensor: per-expert segments [rows_e x cols/16 e4m3
+    plane][input_scale F32][weight_scale_2 F32] expert-major, so the
+    kernels stride experts by plane+8 bytes and read the weight global
+    at segment end - 4. Repackage-only."""
     expert_start, expert_count = getattr(ref, "expert_slice", (0, EXPERT_COUNT))
     rows_per_expert = ref.rows // expert_count
     split_name = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
@@ -1049,7 +1059,7 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
     base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + split_suffix)
     scale_suffix = split_name + ".weight_scale"
     scale_base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + scale_suffix)
-    payload_fds, scale_fds = [], []
+    payload_fds = []
     try:
         for e in range(expert_start, expert_start + expert_count):
             shard, meta, off = source.resolve(base.replace("{e}", str(e)))
@@ -1064,29 +1074,25 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
             f.close()
     s_rows = rows_per_expert
     s_cols = ref.columns // 16
+    # Per-expert segment order: the expert's e4m3 plane rows, then ITS
+    # OWN input_scale, then ITS weight_scale_2 — the kernels stride
+    # experts by (plane + 8 bytes) and read the weight global at
+    # segment end - 4. The globals VARY per expert (measured: 227
+    # distinct weight_scale_2 across 512 experts on one layer).
     try:
         for e in range(expert_start, expert_start + expert_count):
             s_shard, _, s_off = source.resolve(
                 base.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale")
-            sf = (source.root / s_shard).open("rb")
-            scale_fds.append((sf, s_off))
-        for sf, s_off in scale_fds:
-            pump_read(sf.fileno(), s_off, s_rows * s_cols, out)
-        # Per-expert F32 globals appended expert-major after the full
-        # plane: input_scale, then weight_scale_2 (segment end - 4).
-        # The globals VARY per expert (measured: 227 distinct
-        # weight_scale_2 across 512 experts on one layer) — carry every
-        # expert's own pair, never a shared copy.
-        for suffix in (".input_scale", ".weight_scale_2"):
-            for e in range(expert_start, expert_start + expert_count):
+            with (source.root / s_shard).open("rb") as sf:
+                pump_read(sf.fileno(), s_off, s_rows * s_cols, out)
+            for suffix in (".input_scale", ".weight_scale_2"):
                 g_shard, _, g_off = source.resolve(
                     base.replace("{e}", str(e))[:-len(".weight")] + suffix)
                 with (source.root / g_shard).open("rb") as gf:
                     gf.seek(g_off)
                     out.write(gf.read(4))
     finally:
-        for sf, _ in scale_fds:
-            sf.close()
+        pass
 
 def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
     """fp8-official arm: gather the rank's SPLIT per-expert F8_E4M3
@@ -1208,13 +1214,13 @@ def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: s
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             receipt: dict, dry_run: bool, tp_degree: int, tp_rank: int,
-            expert_format: str) -> dict:
+            expert_format: str, include_mtp: bool = True) -> dict:
     import numpy as np  # noqa: F401  (quantization paths import lazily)
     source_cls = {"fp8-official": Fp8OfficialSource,
                   "nvfp4-official": Nvfp4OfficialSource}.get(expert_format, SafetensorsSource)
     source = source_cls(checkpoint)
     source.check_config()
-    inventory = build_inventory(first_layer, layer_count)
+    inventory = build_inventory(first_layer, layer_count, include_mtp)
     # Shape-validate the FULL refs against the checkpoint first and stash
     # each payload offset on the ref (shard_ref mutates in place, so the
     # attribute survives the narrowing); the TP narrowing below only
@@ -1276,7 +1282,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         GDN_KEY_HEADS, GDN_VALUE_HEADS, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
         GDN_CONV_KERNEL, ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM,
         ATTN_ROPE_DIM, EXPERT_COUNT, EXPERTS_PER_TOKEN, EXPERT_INTERMEDIATE,
-        VOCAB, MXFP4_GROUP, MTP_LAYERS,
+        VOCAB, MXFP4_GROUP, MTP_LAYERS if include_mtp else 0,
         HEADER_BYTES, file_bytes)
     entries = b"".join(
         ENTRY_STRUCT.pack(
@@ -1359,6 +1365,8 @@ def main() -> int:
     parser.add_argument("--tp-rank", type=int, default=0)
     parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128", "bf16", "fp8-official", "nvfp4-official"), default="fp8-f32b128",
                         help="fp8-official = the official fp8 release's split experts pass through verbatim (repackage-only); nvfp4-official = the official nvfp4 release's split U8-packed experts + e4m3 scale planes verbatim")
+    parser.add_argument("--no-mtp", action="store_true",
+                        help="drop the MTP tail (mtp_layer_count=0): speculation lives on the speculator system, stagepacks carry only what the serving rank loads")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -1387,7 +1395,8 @@ def main() -> int:
     }
     result = convert(args.checkpoint, args.output or Path("/dev/null"),
                      args.first_layer, args.layer_count, receipt, args.dry_run,
-                     args.tp_degree, args.tp_rank, args.expert_format)
+                     args.tp_degree, args.tp_rank, args.expert_format,
+                     include_mtp=not args.no_mtp)
     if not args.dry_run:
         receipt_path = args.receipt or Path(str(args.output) + ".receipt.json")
         write_receipt(result, receipt_path, suffix=None)
