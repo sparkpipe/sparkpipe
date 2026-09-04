@@ -4143,7 +4143,7 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
                 output_dimension,
                 4u,
                 0u,
-                tile_weight[next_buffer], body_weight_global);
+                tile_weight[next_buffer]);
         }
         __syncthreads();
 
@@ -4183,7 +4183,7 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
                 output_dimension,
                 0u,
                 1u,
-                tile_weight[next_buffer], body_weight_global);
+                tile_weight[next_buffer]);
         }
         __syncthreads();
         current_buffer = next_buffer;

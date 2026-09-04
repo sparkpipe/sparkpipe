@@ -319,6 +319,10 @@ class SafetensorsSource(_BaseSafetensorsSource):
         if g_meta["dtype"] != "F32" or g_meta["shape"] not in ([], [1]):
             raise PackFailure(f"{stem}.weight_global_scale: {g_meta['dtype']} {g_meta['shape']}, expected F32 scalar")
         ref.weight_format = WEIGHT_NVFP4_PACKED
+        # The copiers resolve ref.name against the index: point it at
+        # the packed tensor (the plain .weight name does not exist in
+        # this release).
+        ref.name = stem + ".weight_packed"
         ref.scale_name = stem + ".weight_scale"
         ref.nvfp4_global_name = stem + ".weight_global_scale"
         return shard, meta, offset
