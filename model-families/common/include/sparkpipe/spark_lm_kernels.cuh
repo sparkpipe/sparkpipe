@@ -4089,7 +4089,7 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
         0u,
         input_dimension,
         output_dimension,
-        tile_weight[0u], body_weight_global);
+        tile_weight[0u]);
     for (m = 0u; m < SPARK_LM_MLOOP_GROUP; ++m)
         nvcuda::wmma::fill_fragment(frag_accum[m],0.0f);
     __syncthreads();
