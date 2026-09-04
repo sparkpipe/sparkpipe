@@ -1005,15 +1005,19 @@ static __global__ void SparkLmBatchedLinearKernel(uint32_t weight_format, const 
 					SparkLmBatchedLinearApply2<MAX_ROWS>(shared_input,(run_local << 2u) + 2u,values.x * scale_value,values.y * scale_value,row_count,accum);
 				}
 			}
-			else
+			else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
 			{
-				uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 3u,scale_row = (uint64_t)neuron * (input_dimension / GROUP_SIZE);
+				/* e2m1 x per-16 e4m3 plane x the F32 weight global at
+				 * the segment tail (plane + 4); the dense 27B pack is
+				 * one segment per tensor. */
+				uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 3u,scale_row = (uint64_t)neuron * (input_dimension / 16u);
+				const float *weight_global = (const float *)((const uint8_t *)weight_scale + ((uint64_t)output_dimension * (input_dimension / 16u)) + 4u);
 				uint32_t local_runs = chunk_width >> 3u,pair;
 				for (run_local = lane; run_local < local_runs; run_local += SPARK_LM_WARP_LANES)
 				{
 					run_global = (chunk_base >> 3u) + run_local;
 					packed = __ldg(((const uint32_t *)weight_payload) + run_row + run_global);
-					scale_value = SparkLmDecodeE8m0(((const uint8_t *)weight_scale)[scale_row + ((run_global << 3u) / GROUP_SIZE)]);
+					scale_value = SparkLmDecodeE4m3(((const uint8_t *)weight_scale)[scale_row + ((run_global << 3u) / 16u)]) * __ldg(weight_global);
 					SparkLmDecodeE2m1x8Half2(packed,decoded);
 					#pragma unroll
 					for (pair = 0u; pair < 4u; pair++)
@@ -1211,6 +1215,10 @@ static __global__ void SparkLmGatherLinearKernel(uint32_t weight_format, const v
 		accumulator = SparkLmDotRowFp8<GROUP_SIZE>(shared_input,weight_payload,(const uint8_t *)weight_scale,neuron,input_dimension,lane);
 	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		accumulator = SparkLmDotRowFp8F32<128u>(shared_input,weight_payload,(const float *)weight_scale,neuron,input_dimension,lane);
+	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
+		/* dense nvfp4: one segment [plane][global F32]; the global sits
+		 * at output_dimension * (input_dimension / 16) + 4. */
+		accumulator = SparkLmDotRowNvfp4<16u>(shared_input,weight_payload,(const uint8_t *)weight_scale,(const float *)((const uint8_t *)weight_scale + ((uint64_t)output_dimension * (input_dimension / 16u)) + 4u),neuron,input_dimension,lane);
 	else
 		accumulator = SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,weight_payload,(const uint8_t *)weight_scale,neuron,input_dimension,lane);
 	accumulator = SparkLmWarpReduceSum(accumulator);
@@ -3729,6 +3737,10 @@ static __device__ void SparkLmExpertTileBodyAllWarps(
     uint32_t slot_base,
     uint32_t neuron_base)
 {
+    const float *body_weight_global = weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 ?
+        (const float *)((const uint8_t *)weight_scale +
+            ((uint64_t)output_dimension * (input_dimension / 16u)) + 4u) :
+        (const float *)0;
     __shared__ __nv_bfloat16 tile_input[
         SPARK_LM_TILE * SPARK_LM_TILE_K];
     __shared__ __nv_bfloat16 tile_weight[
@@ -3780,7 +3792,8 @@ static __device__ void SparkLmExpertTileBodyAllWarps(
             k_base,
             input_dimension,
             output_dimension,
-            tile_weight);
+            tile_weight,
+            body_weight_global);
         __syncthreads();
         #pragma unroll
         for (k_step = 0u;
@@ -3843,6 +3856,10 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
     uint32_t slot_base,
     uint32_t neuron_base)
 {
+    const float *body_weight_global = weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 ?
+        (const float *)((const uint8_t *)weight_scale +
+            ((uint64_t)output_dimension * (input_dimension / 16u)) + 4u) :
+        (const float *)0;
     __shared__ __nv_bfloat16 tile_input[2u][
         SPARK_LM_TILE * SPARK_LM_TILE_K];
     __shared__ __nv_bfloat16 tile_weight[2u][
@@ -3892,7 +3909,8 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
         0u,
         input_dimension,
         output_dimension,
-        tile_weight[current_buffer]);
+        tile_weight[current_buffer],
+        body_weight_global);
     nvcuda::wmma::fill_fragment(frag_accum, 0.0f);
     __syncthreads();
 
@@ -3943,7 +3961,7 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
                 output_dimension,
                 4u,
                 0u,
-                tile_weight[next_buffer]);
+                tile_weight[next_buffer], body_weight_global);
         }
         __syncthreads();
 
@@ -3983,7 +4001,7 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
                 output_dimension,
                 0u,
                 1u,
-                tile_weight[next_buffer]);
+                tile_weight[next_buffer], body_weight_global);
         }
         __syncthreads();
         current_buffer = next_buffer;
@@ -4071,7 +4089,7 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
         0u,
         input_dimension,
         output_dimension,
-        tile_weight[0u]);
+        tile_weight[0u], body_weight_global);
     for (m = 0u; m < SPARK_LM_MLOOP_GROUP; ++m)
         nvcuda::wmma::fill_fragment(frag_accum[m],0.0f);
     __syncthreads();
@@ -4125,7 +4143,7 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
                 output_dimension,
                 4u,
                 0u,
-                tile_weight[next_buffer]);
+                tile_weight[next_buffer], body_weight_global);
         }
         __syncthreads();
 
@@ -4165,7 +4183,7 @@ static __global__ void SparkLmExpertTileMloopKernel(const void *weight_payload, 
                 output_dimension,
                 0u,
                 1u,
-                tile_weight[next_buffer]);
+                tile_weight[next_buffer], body_weight_global);
         }
         __syncthreads();
         current_buffer = next_buffer;
@@ -5016,9 +5034,14 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 
 static inline cudaError_t SparkLmValidateLinearContract(uint32_t weight_format, uint32_t row_count, uint32_t input_dimension)
 {
-	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
+	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 && weight_format != SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
 	{
 		fprintf(stderr,"spark_lm_kernels: linear dispatch got weight_format %u, which no decoder branch handles\n",weight_format);
+		return(cudaErrorInvalidValue);
+	}
+	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 && (input_dimension % 16u) != 0u )
+	{
+		fprintf(stderr,"spark_lm_kernels: nvfp4 linear needs input_dimension %% 16 == 0\n");
 		return(cudaErrorInvalidValue);
 	}
 	if ( row_count >= SPARK_LM_TILE && (input_dimension % SPARK_LM_TILE_K) != 0u )

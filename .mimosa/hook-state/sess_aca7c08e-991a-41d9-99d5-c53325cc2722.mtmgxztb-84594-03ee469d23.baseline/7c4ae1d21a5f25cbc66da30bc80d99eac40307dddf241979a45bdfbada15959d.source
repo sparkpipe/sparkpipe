@@ -65,6 +65,8 @@ PAYLOAD_ALIGNMENT = 256
 WEIGHT_BF16 = 0
 WEIGHT_F32 = 1
 WEIGHT_FP8_E4M3_F32B128 = 5
+WEIGHT_NVFP4_PACKED = 8
+NVFP4_GROUP = 16
 FP8_SCALE_GROUP = 128  # FP8 per-128x128-block F32 scale (kernel SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128)
 
 HIDDEN = 5120
@@ -298,6 +300,29 @@ class SafetensorsSource(_BaseSafetensorsSource):
                 if layer_type != want:
                     raise PackFailure(f"config layer_types[{layer}]={layer_type!r}, expected {want!r}")
 
+    def check_shape_nvfp4a16(self, ref: TensorRef):
+        """The nvfp4a16 release: main-layer FFN projections arrive as
+        fused per-proj U8-packed e2m1 tensors with per-row x per-16
+        e4m3 scale planes and ONE F32 weight_global_scale per tensor -
+        weight-only quantization for the BF16-activation (a16) spine.
+        The pack segment = [plane rows x cols/16][global F32]."""
+        proj = {KIND_FFN_GATE: "gate_proj", KIND_FFN_UP: "up_proj",
+                KIND_FFN_DOWN: "down_proj"}[ref.kind]
+        stem = ref.name[:-len(".weight")]
+        shard, meta, offset = self.resolve(stem + ".weight_packed")
+        if meta["dtype"] != "U8" or meta["shape"] != [ref.rows, ref.columns // 2]:
+            raise PackFailure(f"{stem}.weight_packed: {meta['dtype']} {meta['shape']}, expected U8 [{ref.rows},{ref.columns // 2}]")
+        s_meta = self.resolve(stem + ".weight_scale")[1]
+        if s_meta["dtype"] != "F8_E4M3" or s_meta["shape"] != [ref.rows, ref.columns // 16]:
+            raise PackFailure(f"{stem}.weight_scale: {s_meta['dtype']} {s_meta['shape']}, expected F8_E4M3 [{ref.rows},{ref.columns // 16}]")
+        g_meta = self.resolve(stem + ".weight_global_scale")[1]
+        if g_meta["dtype"] != "F32" or g_meta["shape"] not in ([], [1]):
+            raise PackFailure(f"{stem}.weight_global_scale: {g_meta['dtype']} {g_meta['shape']}, expected F32 scalar")
+        ref.weight_format = WEIGHT_NVFP4_PACKED
+        ref.scale_name = stem + ".weight_scale"
+        ref.nvfp4_global_name = stem + ".weight_global_scale"
+        return shard, meta, offset
+
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
         # DTYPE-DRIVEN: read the tensor's actual dtype and select FP8 only when
         # it is F8_E4M3; every other tensor stays its natural BF16/F32 format
@@ -351,6 +376,18 @@ def f32_to_bf16_u16(value: float) -> int:
 # layout fuses several shard classes into one tensor. Replicated tensors
 # (norms, conv, gates, beta/decay, MTP) are stored whole.
 # ---------------------------------------------------------------------------
+
+class Nvfp4A16Source(SafetensorsSource):
+    """The qwen3.8-27b-nvfp4a16-bf16-spine release: the main-layer FFN
+    projections are weight-only NVFP4 (U8-packed e2m1 + per-16 e4m3
+    planes + one F32 weight_global_scale each); everything else - and
+    the MTP block - stays plain BF16."""
+
+    def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
+        if ref.kind in (KIND_FFN_GATE, KIND_FFN_UP, KIND_FFN_DOWN) and ref.layer != MTP_LAYER:
+            return self.check_shape_nvfp4a16(ref)
+        return super().check_shape(ref)
+
 
 class TpSlice:
     """A contiguous window of a row-major [rows, columns] tensor."""
@@ -460,6 +497,21 @@ def write_batch(out, source_path, offset, byte_count, mode):
 def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, plan, out) -> None:
     """Stream one tensor's payload (optionally TP-sliced), upcasting BF16 to
     F32 where the pack says, folding +1 into the standard-norm weights."""
+    if ref.weight_format == WEIGHT_NVFP4_PACKED:
+        # The U8-packed tensor: rows unpacked, cols 2 values/byte.
+        path = source.root / source.weight_map[ref.name]
+        row_bytes = ref.columns // 2
+        if plan is None:
+            write_batch(out, path, offset, ref.rows * row_bytes, 0)
+            return
+        if plan.col_count == ref.columns:
+            for row in range(plan.row_off, plan.row_off + plan.row_count):
+                write_batch(out, path, offset + row * row_bytes, row_bytes, 0)
+            return
+        for row in range(plan.row_off, plan.row_off + plan.row_count):
+            write_batch(out, path, offset + row * row_bytes + plan.col_off // 2,
+                        plan.col_count // 2, 0)
+        return
     path = source.root / source.weight_map[ref.name]
     mode = 0 if ref.weight_format == WEIGHT_FP8_E4M3_F32B128 else (
         2 if ref.weight_format == WEIGHT_F32 else (
@@ -488,6 +540,26 @@ def copy_tensor(source: SafetensorsSource, ref: TensorRef, offset: int, plan, ou
 def copy_scale(source: SafetensorsSource, ref: TensorRef, plan, out) -> None:
     """Stream the FP8 weight_scale_inv (BF16 per 128x128 block), TP-sliced to
     mirror the weight row/col window (windows are 128-aligned)."""
+    if ref.weight_format == WEIGHT_NVFP4_PACKED:
+        # The e4m3 per-16 plane rows (+ the down proj's column window),
+        # then the F32 weight global as the segment tail.
+        path = source.root / source.weight_map[ref.scale_name]
+        _, _, scale_base = source.resolve(ref.scale_name)
+        plane_cols = ref.columns // 16
+        g_shard, _, g_off = source.resolve(ref.nvfp4_global_name)
+        if plan is None:
+            write_batch(out, path, scale_base, ref.rows * plane_cols, 0)
+        elif plan.col_count == ref.columns:
+            for row in range(plan.row_off, plan.row_off + plan.row_count):
+                write_batch(out, path, scale_base + row * plane_cols, plane_cols, 0)
+        else:
+            for row in range(ref.rows):
+                write_batch(out, path, scale_base + row * plane_cols + plan.col_off // 16,
+                            plan.col_count // 16, 0)
+        with open(source.root / g_shard, "rb") as gf:
+            gf.seek(g_off)
+            out.write(gf.read(4))
+        return
     path = source.root / source.weight_map[ref.scale_name]
     _, _, scale_base = source.resolve(ref.scale_name)
     scale_rows = ref.rows // FP8_SCALE_GROUP
@@ -517,8 +589,12 @@ def copy_scale(source: SafetensorsSource, ref: TensorRef, plan, out) -> None:
 
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
-            receipt: dict, dry_run: bool, tp_degree: int = 1, tp_rank: int = 0) -> dict:
-    source = SafetensorsSource(checkpoint)
+            receipt: dict, dry_run: bool, tp_degree: int = 1, tp_rank: int = 0,
+            ffn_format: str = "bf16") -> dict:
+    if ffn_format == "nvfp4a16":
+        source = Nvfp4A16Source(checkpoint)
+    else:
+        source = SafetensorsSource(checkpoint)
     source.check_config()
     refs = build_inventory(first_layer, layer_count)
     plans = []
@@ -532,6 +608,12 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             payload_bytes = packed_rows * packed_cols * 1  # F8_E4M3
             scale_offset = align(payload_offset + payload_bytes)
             scale_bytes = (packed_rows // FP8_SCALE_GROUP) * (packed_cols // FP8_SCALE_GROUP) * F32_BYTES
+        elif ref.weight_format == WEIGHT_NVFP4_PACKED:
+            # U8-packed e2m1: 2 values/byte; the scale segment = the
+            # per-16 e4m3 plane + the F32 weight global (tail - 4).
+            payload_bytes = packed_rows * (packed_cols // 2)
+            scale_offset = align(payload_offset + payload_bytes)
+            scale_bytes = packed_rows * (packed_cols // 16) + 4
         else:
             element_bytes = BF16_BYTES if ref.weight_format == WEIGHT_BF16 else F32_BYTES
             payload_bytes = packed_rows * packed_cols * element_bytes
@@ -553,7 +635,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     entries = b"".join(
         ENTRY_STRUCT.pack(ref.kind, ref.layer, ref.weight_format,
                           packed_shape(ref, plan)[0], packed_shape(ref, plan)[1],
-                          FP8_SCALE_GROUP if ref.weight_format == WEIGHT_FP8_E4M3_F32B128 else 0,
+                          NVFP4_GROUP if ref.weight_format == WEIGHT_NVFP4_PACKED else (FP8_SCALE_GROUP if ref.weight_format == WEIGHT_FP8_E4M3_F32B128 else 0),
                           payload_base + payload_offset,
                           payload_bytes,
                           payload_base + scale_offset if scale_bytes else 0,
@@ -660,6 +742,7 @@ def verify(pack_path: Path) -> dict:
              payload_offset, payload_bytes, scale_offset, scale_bytes) = entry
             expected_rows, expected_columns, expected_format = kind_shape(kind)
             is_fp8 = weight_format == WEIGHT_FP8_E4M3_F32B128
+            is_nvfp4 = weight_format == WEIGHT_NVFP4_PACKED
             if tp_degree > 1:
                 class _Ref:
                     pass
@@ -671,7 +754,7 @@ def verify(pack_path: Path) -> dict:
             if (rows, columns) != (expected_rows, expected_columns):
                 raise PackFailure(f"entry {index} kind {kind}: shape mismatch")
             if kind in FP8_KINDS:
-                if weight_format not in (expected_format, WEIGHT_FP8_E4M3_F32B128):
+                if weight_format not in (expected_format, WEIGHT_FP8_E4M3_F32B128, WEIGHT_NVFP4_PACKED):
                     raise PackFailure(f"entry {index} kind {kind}: format mismatch")
             elif weight_format != expected_format:
                 raise PackFailure(f"entry {index} kind {kind}: format mismatch")
@@ -698,11 +781,20 @@ def verify(pack_path: Path) -> dict:
                 if scale_group != FP8_SCALE_GROUP or scale_offset == 0 or scale_bytes != expected_scale_bytes:
                     raise PackFailure(f"entry {index}: FP8 scale metadata mismatch")
                 element_bytes = 1
+            elif is_nvfp4:
+                if scale_group != NVFP4_GROUP or scale_offset == 0:
+                    raise PackFailure(f"entry {index}: nvfp4 scale metadata mismatch")
+                expected_scale_bytes = rows * (columns // 16) + 4
+                if scale_bytes != expected_scale_bytes:
+                    raise PackFailure(f"entry {index}: nvfp4 scale byte count mismatch")
+                element_bytes = 0  # packed: counted as rows * (columns // 2) below
             else:
                 element_bytes = BF16_BYTES if weight_format == WEIGHT_BF16 else F32_BYTES
                 if scale_group != 0 or scale_offset != 0 or scale_bytes != 0:
                     raise PackFailure(f"entry {index}: BF16/F32 tensors carry no scales")
-            if payload_bytes != rows * columns * element_bytes:
+            expected_payload = (rows * (columns // 2) if is_nvfp4
+                                else rows * columns * element_bytes)
+            if payload_bytes != expected_payload:
                 raise PackFailure(f"entry {index}: payload byte count mismatch")
             cursor = (scale_offset + scale_bytes) if is_fp8 else (payload_offset + payload_bytes)
         if align(cursor) != align(file_bytes):
@@ -727,6 +819,10 @@ def main() -> int:
                         help="tensor-parallel degree; shards the pack for --tp-rank")
     parser.add_argument("--tp-rank", type=int, default=0,
                         help="this rank's shard (0 .. tp-degree-1)")
+    parser.add_argument("--ffn-format", choices=("bf16", "nvfp4a16"), default="bf16",
+                        help="nvfp4a16 = the main-layer FFN projections from the "
+                             "nvfp4a16-bf16-spine release on the NVFP4 wire "
+                             "(weight-only, BF16 activations); default bf16")
     args = parser.parse_args()
     if args.tp_degree < 1 or args.tp_rank < 0 or args.tp_rank >= args.tp_degree:
         parser.error("--tp-rank must satisfy 0 <= tp-rank < tp-degree")
@@ -764,12 +860,13 @@ def main() -> int:
     receipt = {
         "kind": "sparkpipe.qwen38_27b.stagepack-receipt.v1",
         "tool": "tools/qwen38_27b_stagepack.py",
+        "ffn_format": args.ffn_format,
         "checkpoint": str(args.checkpoint),
         "contract": {"path": str(args.contract),
                      "sha256": sha256_file(args.contract) if args.contract.is_file() else None},
         "recipe": None,
         "stage_index": args.stage_index,
-        "weight_formats": {"projections": "bf16", "gdn_a_log_dt_bias": "f32"},
+        "weight_formats": {"ffn": args.ffn_format, "projections": "bf16", "gdn_a_log_dt_bias": "f32"},
     }
     if args.recipe is not None:
         receipt["recipe"] = {"path": str(args.recipe),
@@ -777,7 +874,8 @@ def main() -> int:
                              "content_hash": recipe.get("content_hash")}
     result = convert(args.checkpoint, args.output or Path("/dev/null"),
                      first_layer, layer_count, receipt, args.dry_run,
-                     args.tp_degree, args.tp_rank)
+                     args.tp_degree, args.tp_rank,
+                     ffn_format=args.ffn_format)
     if not args.dry_run:
         receipt_path = args.receipt or Path(str(args.output) + ".receipt.json")
         write_receipt(result, receipt_path, suffix=None)

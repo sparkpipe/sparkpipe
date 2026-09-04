@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260904T042853009Z-64868-45159a087d92",
+  "runId": "20260904T042853009Z-64868-45159a087d92",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "0e9d298a4645dc45ca478dd8700b27a7fea91ff6",
+  "diffHash": "ea7a17536c617e96d0266e7012464532a1f1e1149c42e260c99c6a5c31f4983d",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T042853009Z-64868-45159a087d92.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "tools/nvfp4_tp8_place.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tools/nvfp4_tp8_audit.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-04T04:28:53.266Z"
+}
