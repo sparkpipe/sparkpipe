@@ -107,6 +107,7 @@ static uint32_t SparkQwen38_27bServingSpecFirstDraftPolicy(void)
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK 1u
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2 2u
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_NONE 3u
+#define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE 4u
 
 static uint32_t SparkQwen38_27bServingBlockDraftMethod(uint32_t spec_method)
 {
@@ -277,6 +278,8 @@ typedef struct SparkQwen38_27bServingState
 	uint32_t lane_block_counts[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_context_tokens[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkMemoryBuffer gather_scratch;
+	SparkMemoryBuffer committed_token_history;
+	uint64_t lane_committed_counts[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkQwen38_27bServingTransportShim shim;
 	uint32_t dflash2_drafts_valid;
 	uint64_t dflash2_draft_sequence_id;
@@ -476,8 +479,9 @@ static SparkStatus SparkQwen38_27bServingResolveSpeculationMethods(
 	}
 	if ( (enabled_sources & SPARK_QWEN38_27B_SERVING_REMOTE_METHOD_SOURCES) != 0u )
 	{
-		fprintf(stderr,"qwen38_27b_serving %s=0x%x selects remote drafting but this adapter does not track host-side committed token ids for the draft bridge\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,enabled_sources);
-		return(SPARK_STATUS_UNSUPPORTED);
+		*spec_method_out = SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE;
+		*speculation_enabled_out = 1u;
+		return(SPARK_STATUS_OK);
 	}
 	if ( local_sources != 0u && (local_sources & (local_sources - 1u)) != 0u )
 	{
@@ -521,6 +525,11 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	status = SparkQwen38_27bServingResolveSpeculationMethods(enabled_sources,&state->spec_method,&state->speculation_enabled);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( state->spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE && state->speculative_draft_count > SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u )
+	{
+		fprintf(stderr,"qwen38_27b_serving remote drafting needs one verify row for the committed bonus: speculative_draft_count must be <= %u\n",(unsigned)(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u));
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
 	memset(&seam_configuration,0,sizeof(seam_configuration));
 	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
 	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
@@ -593,7 +602,7 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 	if ( state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u )
 	{
 		SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS",SparkQwen38_27bServingBlockDraftMethod(state->spec_method) ? 16u : SPARK_QWEN38_27B_SERVING_GDN_SNAPSHOT_SLOTS);
-		if ( !SparkQwen38_27bServingBlockDraftMethod(state->spec_method) )
+		if ( state->spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_MTP )
 			SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_MTP","1");
 		else
 			SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_MTP","0");
@@ -766,6 +775,33 @@ static void SparkQwen38_27bServingBlockRelease(SparkQwen38_27bServingState *stat
 		((uint32_t *)state->free_blocks.pointer)[state->free_block_count++] = block;
 }
 
+static void SparkQwen38_27bServingRecordCommittedToken(
+	SparkQwen38_27bServingState *state,
+	uint32_t slot,
+	uint64_t position,
+	uint32_t token_id)
+{
+	uint32_t *history;
+	if ( slot >= state->resident_sequence_capacity || position >= state->max_sequence_positions )
+	{
+		fprintf(stderr,"qwen38_27b_committed_history overflow slot=%u position=%llu capacity=%u\n",slot,(unsigned long long)position,state->max_sequence_positions);
+		return;
+	}
+	history = (uint32_t *)state->committed_token_history.pointer + (uint64_t)slot * state->max_sequence_positions;
+	history[position] = token_id;
+	if ( position == state->lane_committed_counts[slot] )
+		state->lane_committed_counts[slot] = position + 1u;
+}
+
+static void SparkQwen38_27bServingRecordSubmissionTokens(
+	SparkQwen38_27bServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t row;
+	for (row=0u; row<submission->row_count; row++)
+		SparkQwen38_27bServingRecordCommittedToken(state,submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot,submission->row_positions[row],submission->token_ids[row]);
+}
+
 static void SparkQwen38_27bServingReleaseLane(
 	SparkQwen38_27bServingState *state,
 	uint32_t slot)
@@ -781,6 +817,7 @@ static void SparkQwen38_27bServingReleaseLane(
 	state->lane_prefix_blocks[slot] = 0u;
 	state->lane_block_counts[slot] = 0u;
 	state->lane_context_tokens[slot] = 0u;
+	state->lane_committed_counts[slot] = 0u;
 	state->lane_publish_armed[slot] = 0u;
 	state->lane_restore_armed[slot] = 0u;
 }
@@ -967,16 +1004,25 @@ static void SparkQwen38_27bServingCommitSubmission(
 		slot = submission->lanes[lane].resident_sequence_slot;
 		if ( pending->spec_active != 0u )
 		{
-			uint32_t last_row;
+			uint32_t last_row,step;
 			last_row = pending->last_row_by_lane[lane];
 			if ( submission->row_positions[last_row] + pending->spec_tokens_per_sequence > state->lane_context_tokens[slot] )
 				state->lane_context_tokens[slot] = submission->row_positions[last_row] + pending->spec_tokens_per_sequence;
+			for (step=0u; step<pending->spec_tokens_per_sequence; step++)
+				SparkQwen38_27bServingRecordCommittedToken(state,slot,submission->row_positions[last_row] + 1u + step,pending->spec[lane].committed_ids[step]);
 		}
 		else
 		{
+			uint64_t end_position;
+			end_position = 0u;
 			for (row=0u; row<submission->row_count; row++)
 				if ( submission->row_lane_indices[row] == lane && submission->row_positions[row] + 1u > state->lane_context_tokens[slot] )
 					state->lane_context_tokens[slot] = submission->row_positions[row] + 1u;
+			for (row=0u; row<submission->row_count; row++)
+				if ( submission->row_lane_indices[row] == lane && submission->row_positions[row] + 1u > end_position )
+					end_position = submission->row_positions[row] + 1u;
+			if ( SparkQwen38_27bServingOwnsFinalHead(state) != 0u && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u )
+				SparkQwen38_27bServingRecordCommittedToken(state,slot,end_position,pending->output_token_ids[lane]);
 		}
 	}
 }
@@ -1449,7 +1495,32 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 		spec->sequence_id = sequence;
 		spec->snapshot_index = lane;
 		spec->draft_token_count = draft_count;
-		if ( SparkQwen38_27bServingBlockDraftMethod(spec_method) )
+		if ( spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE )
+		{
+			uint32_t remote_count;
+			remote_count = 0u;
+			status = SparkQwen38_27bServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,0u,0,0,0,1u);
+			if ( status != SPARK_STATUS_OK )
+				fprintf(stderr, "qwen38_27b_spec_diag decode_frame_failed lane=%u status=%d\n", lane, (int)status);
+			if ( status == SPARK_STATUS_OK )
+			{
+				spec->committed_ids[0] = pending->frame_output_ids[0];
+				spec->draft_ids[0] = spec->committed_ids[0];
+				status = SparkSpeculationSeamDraftRemoteChain(state->speculation_seam,submission->request_id,sequence,position,token,
+					(const uint32_t *)state->committed_token_history.pointer + (uint64_t)slot * state->max_sequence_positions,
+					(uint32_t)state->lane_committed_counts[slot],0,0u,draft_count,
+					spec->draft_ids + 1u,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u,&remote_count);
+				if ( status == SPARK_STATUS_OK )
+				{
+					draft_count = remote_count + 1u;
+					spec->draft_token_count = draft_count;
+					spec->engine_staged = 1u;
+				}
+				else
+					fprintf(stderr, "qwen38_27b_spec_diag remote_draft_failed lane=%u status=%d\n", lane, (int)status);
+			}
+		}
+		else if ( SparkQwen38_27bServingBlockDraftMethod(spec_method) )
 		{
 			const char *fold_env = getenv("SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD");
 			uint32_t fold_mode = fold_env != 0 && fold_env[0] != '0' ? (uint32_t)strtoul(fold_env,0,0) : 0u;
@@ -1492,9 +1563,9 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			mtp_draft.row_token_ids = pending->frame_token_ids;
 			status = SparkQwen38_27bServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER,&mtp_draft,0,0,1u + draft_count);
 		}
-		if ( status != SPARK_STATUS_OK )
+		if ( status != SPARK_STATUS_OK && spec_method != SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE )
 			fprintf(stderr, "qwen38_27b_spec_diag decode_frame_failed lane=%u status=%d\n", lane, (int)status);
-		if ( status == SPARK_STATUS_OK && fold_active == 0u )
+		if ( status == SPARK_STATUS_OK && fold_active == 0u && spec_method != SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE )
 		{
 			spec->committed_ids[0] = pending->frame_output_ids[0];
 			if ( SparkQwen38_27bServingBlockDraftMethod(spec_method) )
@@ -1513,7 +1584,7 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			if ( spec->first_draft_miss != 0u )
 				fprintf(stderr, "qwen38_27b_spec first_draft_miss lane=%u C0=%u draft0=%u policy=%s\n", lane, spec->committed_ids[0], spec->draft_ids[0], first_draft_policy == SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT ? "strict" : "recover");
 		}
-		if ( status == SPARK_STATUS_OK && spec->chain_dead == 0u )
+		if ( status == SPARK_STATUS_OK && spec->chain_dead == 0u && spec_method != SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE )
 		{
 			status = SparkSpeculationSeamStageLocalDraft(state->speculation_seam,submission->request_id,spec->sequence_id,spec->base_position,spec->draft_ids + 1u,draft_count - 1u);
 			if ( status == SPARK_STATUS_OK )
@@ -1839,6 +1910,8 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 	}
 	speculate = 0u;
 	status = SparkQwen38_27bServingCoverSubmission(state,submission);
+	if ( status == SPARK_STATUS_OK )
+		SparkQwen38_27bServingRecordSubmissionTokens(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && submission->active_sequence_count == 1u )
 	{
 		status = SparkQwen38_27bServingExtendSpeculativeCoverage(state,submission);
@@ -1930,6 +2003,7 @@ static void SparkQwen38_27bServingDestroy(void *adapter_state)
 	SparkMemoryBufferFree(&state->host_block_indices);
 	SparkMemoryBufferFree(&state->block_refs);
 	SparkMemoryBufferFree(&state->free_blocks);
+	SparkMemoryBufferFree(&state->committed_token_history);
 	SparkSpeculationSeamDestroy(state->speculation_seam);
 	free(state->bridge_host);
 	free(state);
@@ -2009,6 +2083,9 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,(uint64_t)frame_rows * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES) != SPARK_STATUS_OK )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	if ( SparkMemoryBufferAllocate(&state->committed_token_history,
+		SPARK_MEMORY_SPACE_HOST_COHERENT,(uint64_t)state->resident_sequence_capacity * state->max_sequence_positions * sizeof(uint32_t)) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( state->stage_attn_layer_count != 0u )
 	{
 		if ( SparkMemoryBufferAllocate(&state->device_block_indices,
