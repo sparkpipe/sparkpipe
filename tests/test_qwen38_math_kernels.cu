@@ -2,7 +2,7 @@
 #include <cmath>
 #include <cstring>
 
-#include "spark_qwen38_resident_decode_stage_cuda.cu"
+#include "spark_qwen38_max_resident_decode_stage_cuda.cu"
 
 static int failures = 0;
 
