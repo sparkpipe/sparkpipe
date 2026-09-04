@@ -10,6 +10,9 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <stdarg.h>
+#include <time.h>
+#include <fcntl.h>
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_json.h"
@@ -30,6 +33,7 @@
 typedef struct ApiRequest
 {
 	uint64_t id;
+	uint64_t started_ms;
 	uint32_t *prompt_tokens;
 	uint32_t prompt_count;
 	uint32_t max_tokens;
@@ -67,6 +71,36 @@ static SparkTokenizerSidecar Sidecar;
 static int HaveSidecar;
 static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
 static uint32_t EngineStopTokenCount;
+static char ApiBootTag[32];
+static volatile uint32_t ApiSessionsAccepted;
+
+static void api_logf(const char *format, ...)
+{
+	va_list args;
+	fprintf(stderr, "model_api[%s] ", ApiBootTag);
+	va_start(args, format);
+	vfprintf(stderr, format, args);
+	va_end(args);
+	fputc('\n', stderr);
+	fflush(stderr);
+}
+
+static uint64_t api_now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static void api_term_signal(int signal_number)
+{
+	const char line[] = "model_api api_exit reason=signal\n";
+	ssize_t written;
+	(void)signal_number;
+	written = write(2, line, sizeof(line) - 1u);
+	(void)written;
+	_exit(0);
+}
 
 
 static void api_event(void *ctx, const SparkModelBatchEvent *ev)
@@ -614,6 +648,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 	}
 	pthread_mutex_init(&req->mutex, 0);
 	pthread_cond_init(&req->cond, 0);
+	req->started_ms = api_now_ms();
 	req->stop_tokens = request_stops;
 	req->stop_token_count = request_stop_count;
 	pthread_mutex_lock(&S.queue_mutex);
@@ -731,6 +766,10 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 			response_len += 13u;
 			resp_text[response_len] = '\0';
 			send_response(fd, 200, resp_text);
+			api_logf("request_done fd=%d id=%llu status=%u output_tokens=%u ms=%llu",
+				fd, (unsigned long long)req->id, (unsigned)req->status,
+				req->output_token_count,
+				(unsigned long long)(api_now_ms() - req->started_ms));
 		}
 		else
 		{
@@ -753,8 +792,12 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 			(void)snprintf(resp, req->tokens_json_len + 128,
 				"{\"object\":\"text_completion\",\"tokens\":[%s],\"status\":0}",
 				req->tokens_json);
-			send_response(fd, 200, resp);
-			free(resp);
+				send_response(fd, 200, resp);
+				api_logf("request_done fd=%d id=%llu status=%u output_tokens=%u ms=%llu",
+					fd, (unsigned long long)req->id, (unsigned)req->status,
+					req->output_token_count,
+					(unsigned long long)(api_now_ms() - req->started_ms));
+				free(resp);
 		}
 		else
 			send_response(fd, 500, "{\"error\":\"oom\"}");
@@ -868,6 +911,20 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--port N]\n", argv[0]);
 		return 1;
 	}
+	(void)snprintf(ApiBootTag, sizeof(ApiBootTag), "%d", (int)getpid());
+	{
+		const char *log_path = getenv("SPARK_MODEL_API_LOG");
+		if (log_path != 0 && log_path[0] != '\0')
+		{
+			int log_fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			if (log_fd >= 0)
+			{
+				(void)dup2(log_fd, 2);
+				(void)close(log_fd);
+			}
+		}
+	}
+	api_logf("api_start pid=%d deployment=%s runtime_root=%s", (int)getpid(), dep_path, root);
 	SparkModelResidentDeploymentReset(&dep);
 	if (SparkModelResidentDeploymentLoad(dep_path, &dep) != SPARK_STATUS_OK)
 	{
@@ -940,12 +997,37 @@ int main(int argc, char **argv)
 	else
 		fprintf(stderr, "model_api: no tokenizer in deployment; text prompts "
 			"will be rejected (prompt_token_ids accepted)\n");
-	if (SparkModelBatchEngineConnect(&cfg, &S.engine) != SPARK_STATUS_OK)
 	{
-		fprintf(stderr, "model_api: engine connect failed (daemon up?)\n");
-		return 1;
+		uint64_t connect_started_ms = api_now_ms();
+		uint64_t connect_deadline_ms = 120000u;
+		const char *deadline_env = getenv("SPARK_MODEL_API_CONNECT_DEADLINE_MS");
+		unsigned connect_attempt = 0;
+		SparkStatus connect_status;
+		if (deadline_env != 0 && deadline_env[0] != '\0')
+			connect_deadline_ms = (uint64_t)strtoull(deadline_env, 0, 10);
+		for (;;)
+		{
+			connect_attempt++;
+			api_logf("engine_connect attempt=%u elapsed_ms=%llu", connect_attempt,
+				(unsigned long long)(api_now_ms() - connect_started_ms));
+			connect_status = SparkModelBatchEngineConnect(&cfg, &S.engine);
+			if (connect_status == SPARK_STATUS_OK)
+				break;
+			api_logf("engine_connect_failed attempt=%u status=%u", connect_attempt,
+				(unsigned)connect_status);
+			if (api_now_ms() - connect_started_ms >= connect_deadline_ms)
+			{
+				api_logf("api_exit reason=engine_connect_deadline attempts=%u", connect_attempt);
+				return 1;
+			}
+			sleep(1);
+		}
+		api_logf("engine_connected attempts=%u elapsed_ms=%llu", connect_attempt,
+			(unsigned long long)(api_now_ms() - connect_started_ms));
 	}
 	signal(SIGPIPE, SIG_IGN);
+	signal(SIGTERM, api_term_signal);
+	signal(SIGINT, api_term_signal);
 	pthread_mutex_init(&S.queue_mutex, 0);
 	S.running = 1;
 	pthread_create(&worker, 0, api_worker, 0);
@@ -965,13 +1047,19 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
-	fprintf(stderr, "model_api ready port=%s (single session, worker-driven)\n", port_s);
+	api_logf("model_api ready port=%s boot_pid=%d sessions=%s (single session, worker-driven)",
+		port_s, (int)getpid(), "queued-on-engine");
 	for (;;)
 	{
 		int cfd = accept(srv, 0, 0);
 		pthread_t t;
 		if (cfd < 0)
 			continue;
+		ApiSessionsAccepted++;
+		api_logf("session_accepted n=%u fd=%d queued_behind=%llu served=%llu",
+			ApiSessionsAccepted, cfd,
+			(unsigned long long)(S.next_id - S.served),
+			(unsigned long long)S.served);
 		if (pthread_create(&t, 0, api_connection, (void *)(intptr_t)cfd) == 0)
 			pthread_detach(t);
 		else

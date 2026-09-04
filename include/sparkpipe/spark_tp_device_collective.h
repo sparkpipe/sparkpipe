@@ -12,7 +12,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 13u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
-#define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 6u
+#define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 30u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT 3u
 #define SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_MAX_PEERS \
@@ -123,6 +123,28 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineBf16Function)(
     uint32_t hidden_dimension,
     void *cuda_stream);
 
+typedef SparkStatus (*SparkTpDeviceCollectiveCombineF32SeedFunction)(
+    void *combine_context,
+    void *destination_f32_device,
+    const void *source_a_bf16_device,
+    const void *source_b_bf16_device,
+    uint32_t element_count,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkTpDeviceCollectiveCombineF32AddFunction)(
+    void *combine_context,
+    void *destination_f32_device,
+    const void *source_bf16_device,
+    uint32_t element_count,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkTpDeviceCollectiveRoundF32Function)(
+    void *combine_context,
+    void *destination_bf16_device,
+    const void *source_f32_device,
+    uint32_t element_count,
+    void *cuda_stream);
+
 typedef SparkStatus (*SparkTpDeviceCollectiveCombineRelayBf16Function)(
     void *combine_context,
     void *destination_device,
@@ -211,6 +233,9 @@ typedef struct SparkTpDeviceCollectiveConfig
     SparkTpDeviceCollectiveCombineTp4Bf16Function
         combine_tp4_bf16_function;
     SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
+    SparkTpDeviceCollectiveCombineF32SeedFunction combine_f32_seed_function;
+    SparkTpDeviceCollectiveCombineF32AddFunction combine_f32_add_function;
+    SparkTpDeviceCollectiveRoundF32Function round_f32_function;
     void *combine_context;
     const SparkTpDeviceCollectiveDebugHooks *debug_hooks;
 } SparkTpDeviceCollectiveConfig;
@@ -241,9 +266,12 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     SparkTpDeviceCollective *collective_out);
 
 SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
-	uint32_t backend_kind,
-	const char *backend_module_path,
-	uint32_t *memory_mode_out);
+    uint32_t backend_kind,
+    const char *backend_module_path,
+    uint32_t *memory_mode_out);
+
+void SparkTpDeviceCollectiveDumpOperations(
+    const SparkTpDeviceCollective *collective);
 
 SparkStatus SparkTpDeviceCollectiveCreditStepCount(
 	uint32_t backend_kind,

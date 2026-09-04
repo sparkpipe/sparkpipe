@@ -34,6 +34,7 @@ int main(int argument_count, char **arguments)
 {
     const char *socket_path = "/tmp/spark_weightd.sock";
     uint64_t device_bytes_max = SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT;
+    uint64_t kv_reserve_bytes = 0ull;
     int ceiling_set_by_flag = 0;
     SparkWeightdServerConfig config;
     SparkWeightdServer *server = 0;
@@ -65,6 +66,20 @@ int main(int argument_count, char **arguments)
             ceiling_set_by_flag = 1;
             index++;
         }
+        else if (strcmp(arguments[index], "--kv-reserve-bytes") == 0 &&
+            index + 1 < argument_count)
+        {
+            char *parse_end = 0;
+            kv_reserve_bytes = strtoull(arguments[index + 1], &parse_end, 10);
+            if (parse_end == arguments[index + 1] || *parse_end != '\0')
+            {
+                fprintf(stderr, "weightd: bad --kv-reserve-bytes '%s'\n",
+                    arguments[index + 1]);
+                SparkWeightdUsage(arguments[0]);
+                return 2;
+            }
+            index++;
+        }
         else if (strcmp(arguments[index], "--help") == 0)
         {
             SparkWeightdUsage(arguments[0]);
@@ -80,6 +95,7 @@ int main(int argument_count, char **arguments)
     {
         const char *env_socket = getenv("SPARK_WEIGHTD_SOCKET");
         const char *env_ceiling = getenv("SPARK_WEIGHTD_DEVICE_BYTES_MAX");
+        const char *env_reserve = getenv("SPARK_WEIGHTD_KV_RESERVE_BYTES");
         if (env_socket != 0 && env_socket[0] != '\0')
         {
             socket_path = env_socket;
@@ -100,11 +116,33 @@ int main(int argument_count, char **arguments)
                 device_bytes_max = parsed;
             }
         }
+        if (env_reserve != 0 && env_reserve[0] != '\0')
+        {
+            char *parse_end = 0;
+            uint64_t parsed = strtoull(env_reserve, &parse_end, 10);
+            if (parse_end == env_reserve || *parse_end != '\0')
+            {
+                fprintf(stderr, "weightd: bad SPARK_WEIGHTD_KV_RESERVE_BYTES '%s'\n",
+                    env_reserve);
+                return 2;
+            }
+            kv_reserve_bytes = parsed;
+        }
+    }
+
+    if (kv_reserve_bytes >= device_bytes_max)
+    {
+        fprintf(stderr,
+            "weightd: kv reserve %llu leaves no arena room under ceiling %llu\n",
+            (unsigned long long)kv_reserve_bytes,
+            (unsigned long long)device_bytes_max);
+        return 2;
     }
 
     memset(&config, 0, sizeof(config));
     config.socket_path = socket_path;
     config.device_bytes_max = device_bytes_max;
+    config.kv_reserve_bytes = kv_reserve_bytes;
 
     signal(SIGINT, SparkWeightdSignal);
     signal(SIGTERM, SparkWeightdSignal);
