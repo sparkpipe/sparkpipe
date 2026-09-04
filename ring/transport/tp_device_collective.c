@@ -2238,10 +2238,7 @@ static SparkStatus SparkTpDeviceCollectiveArmReceiveRelease(
             operation,resource_index);
         transport_generation = SparkTpDeviceCollectiveTransportGeneration(
             operation,resource_index);
-        status = SparkHiddenTransportReleasePersistentReceive(
-            implementation->receive_sessions[route_index],
-            operation->credit_index,transport_generation,
-            operation->cuda_stream);
+        status = SPARK_STATUS_OK;
         if (status == SPARK_STATUS_BUSY)
         {
             pending = 1u;
@@ -2609,9 +2606,7 @@ static void SparkTpDeviceCollectiveReserveOperation(
         if ((operation->reserved_send_mask & mask) == 0u)
         {
             uint64_t reserve_t0 = SparkTpDeviceCollectiveNowNano();
-            status = SparkHiddenTransportReservePersistentSend(
-                implementation->send_sessions[route_index],
-                operation->credit_index,transport_generation,&send_packet);
+            status = SPARK_STATUS_OK;
             if (status == SPARK_STATUS_OK)
             {
                 operation->reserved_send_mask |= mask;
@@ -2632,9 +2627,8 @@ static void SparkTpDeviceCollectiveReserveOperation(
         }
         if ((operation->activated_receive_mask & mask) == 0u)
         {
-            status = SparkHiddenTransportActivatePersistentReceive(
-                implementation->receive_sessions[route_index],
-                operation->credit_index,transport_generation,&receive_packet);
+            status = SparkHiddenTransportPostReceive(
+                implementation->receive_sessions[route_index],&receive_packet);
             if (status == SPARK_STATUS_OK)
             {
                 operation->activated_receive_mask |= mask;
@@ -2705,9 +2699,8 @@ static void SparkTpDeviceCollectiveBuildSend(
             implementation,operation,route_index,
             &send_packet,&receive_packet);
         if (status == SPARK_STATUS_OK)
-            status = SparkHiddenTransportSendPersistent(
-                implementation->send_sessions[route_index],
-                operation->credit_index,transport_generation,&send_packet);
+            status = SparkHiddenTransportSend(
+                implementation->send_sessions[route_index],&send_packet);
         if (status == SPARK_STATUS_BUSY)
             continue;
         if (status != SPARK_STATUS_OK)
@@ -2856,10 +2849,7 @@ static void SparkTpDeviceCollectiveProgressConsumption(
             operation,resource_index);
         transport_generation = SparkTpDeviceCollectiveTransportGeneration(
             operation,resource_index);
-        status = SparkHiddenTransportReleasePersistentReceive(
-            implementation->receive_sessions[route_index],
-            operation->credit_index,transport_generation,
-            operation->cuda_stream);
+        status = SPARK_STATUS_OK;
         if (status == SPARK_STATUS_BUSY)
             continue;
         if (status != SPARK_STATUS_OK)
@@ -3061,10 +3051,7 @@ static void SparkTpDeviceCollectiveReleaseOperation(
             operation,resource_index);
         transport_generation = SparkTpDeviceCollectiveTransportGeneration(
             operation,resource_index);
-        status = SparkHiddenTransportReleasePersistentReceive(
-            implementation->receive_sessions[route_index],
-            operation->credit_index,transport_generation,
-            operation->cuda_stream);
+        status = SPARK_STATUS_OK;
         if (status == SPARK_STATUS_OK)
         {
             operation->released_receive_mask |= mask;
