@@ -1,15 +1,3 @@
-// K3 serial-TP16 replay, per-half TP plan (docs/serial_tp_replay.md +
-// docs/SERIAL_TP16_K3_PER_LAYER_PLAN.md): the runner's StepHalf runs ONE
-// layer-half per rank with the FULL hidden + FULL AttnRes partial replicated
-// in and the rank's CONTRIBUTION (the un-folded input-sharded projection
-// output) copied out. The harness sweeps the 16 ranks per half, host-sums the
-// contributions (rank-order fp32 + RNE), and folds the sum into the partial.
-// 8 halves for the 4-layer slice: 2 per layer (phase 0 = attention,
-// phase 1 = MLP).
-//
-// The 16 runners are PRE-LOADED (K3 has recurrent KDA state and a cross-layer
-// AttnRes bank that must persist across halves), so the harness's load/free
-// hooks are no-ops and shard_device_bytes reports 0.
 
 #include <cstdio>
 #include <cstdlib>
@@ -22,8 +10,6 @@
 #include "inference/llms/kimi_k3/layer.cuh"
 #include "serial_tp_replay.h"
 
-/* The w1 gate|up partial is FULL-width (2 * intermediate) per packed row, so
- * the gate|up all-reduce between the w1 half and the SiTU rest is this wide. */
 static const uint64_t GATE_UP_ELEMENTS =
 	(uint64_t)K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
 
@@ -246,9 +232,6 @@ int main(int argc, char **argv)
 
 	for ( uint32_t layer = 0u; layer < 4u; ++layer )
 	{
-		/* Dense layer 0 has no gate|up all-reduce; MoE layers run phase 0
-		 * (attention), phase 1 (w1 gate|up partial) and phase 2 (the SiTU->
-		 * routed_up->shared rest). */
 		const uint32_t phases = (layer < K3_FIRST_ROUTED_LAYER) ? 2u : 3u;
 		for ( uint32_t phase = 0u; phase < phases; ++phase )
 		{
@@ -257,8 +240,6 @@ int main(int argc, char **argv)
 			const uint64_t elements =
 				(phase == 1u && layer >= K3_FIRST_ROUTED_LAYER)
 					? GATE_UP_ELEMENTS : (uint64_t)K3_HIDDEN;
-			/* Phase 2 feeds the all-reduced gate|up; every other phase feeds the
-			 * replicated AttnRes partial (the retrieval's read). */
 			if ( phase == 2u )
 				cudaMemcpy(ctx.d_partial, full_gate_up.data(),
 					GATE_UP_ELEMENTS * 2u, cudaMemcpyHostToDevice);
@@ -280,8 +261,6 @@ int main(int argc, char **argv)
 				contribution.data());
 			if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
 			{
-				/* The gate|up all-reduce: its sum feeds SiTU in phase 2, it does
-				 * not fold into the AttnRes partial. */
 				memcpy(full_gate_up.data(), contribution.data(),
 					(size_t)GATE_UP_ELEMENTS * 2u);
 				printf("  L%uP%u gate_up[0..2] = %.6g %.6g %.6g\n", layer, phase,

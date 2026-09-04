@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260903T195303889Z-98136-b055e3ee05ba",
+  "runId": "20260903T195303889Z-98136-b055e3ee05ba",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "fdc08afe62da490972ae65279257f23d3bc2a61b",
+  "diffHash": "47e8497f3c4e318ff26321c91e014130fb82beef1b5f9fd7e3c9a39e180971d2",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260903T195303889Z-98136-b055e3ee05ba.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "tools/qwen4_flash_stagepack.py",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-03T19:53:04.149Z"
+}

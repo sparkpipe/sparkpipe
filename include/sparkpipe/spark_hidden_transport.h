@@ -341,10 +341,6 @@ typedef struct SparkHiddenTransportDynamicLibrary
     SparkHiddenTransportInterface transport_interface;
 } SparkHiddenTransportDynamicLibrary;
 
-/* Submission and completion are separate ownership events. A successful
- * post_receive/send accepts the packet and promises one later completion.
- * SPARK_STATUS_BUSY asks the caller to retry the same packet and must not
- * produce a completion for that attempt. */
 
 SparkStatus SparkHiddenTransportValidateEndpoint(
     const SparkHiddenTransportEndpoint *endpoint);

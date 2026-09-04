@@ -1,0 +1,276 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260902T053751819Z-27773-2bd7a4295620",
+  "runId": "20260902T053751819Z-27773-2bd7a4295620",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "bash_discovery_truncated",
+        "stage": "bash-discovery",
+        "target": "tests/host_cuda/shim/runtime/launch.h",
+        "detail": "changed-file discovery exceeded 80 files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "candidate_limit_exceeded",
+        "stage": "candidate-select",
+        "target": "tests/test_dequant.c",
+        "detail": "60 changed reviewable file(s) were not scanned because the limit is 20",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/dsv4_loader_bench.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/generate_dsv4_contracts.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/perf_r5_validate_timing.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen36_stagepack_rans.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_tp4_bench.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_tp4_e2e.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/spark_kv_backing_test.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/sparkpipe_registrar.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/weightdctl.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "text/tokenizer.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "text/tokenizer_sidecar.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/reference.h",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/serial_tp_replay.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/serial_tp_replay.h",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/test_cache.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/test_continuous_batch.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "bash-discovery",
+        "target": "tests/host_cuda/shim/runtime/launch.h",
+        "detail": "bash_discovery_truncated: changed-file discovery exceeded 80 files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "tests/test_dequant.c",
+        "detail": "candidate_limit_exceeded: 60 changed reviewable file(s) were not scanned because the limit is 20",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/dsv4_loader_bench.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/generate_dsv4_contracts.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/perf_r5_validate_timing.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen36_stagepack_rans.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_tp4_bench.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_tp4_e2e.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/spark_kv_backing_test.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/sparkpipe_registrar.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/weightdctl.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "text/tokenizer.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "text/tokenizer_sidecar.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/reference.h",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/serial_tp_replay.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/serial_tp_replay.h",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/test_cache.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/test_continuous_batch.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "5101cbdd09a51ad12d745278a697ce0f4cd51455",
+  "diffHash": "acb116d7bed0a1b16507a54e2b28c3f0545b80f03a1b152ba50e38baa96e41fd",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260902T053751819Z-27773-2bd7a4295620.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-09-02T05:37:52.072Z"
+}

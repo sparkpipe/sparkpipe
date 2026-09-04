@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260903T075550216Z-74929-0e2828645f84",
+  "runStatus": "inconclusive",
+  "errors": [
+    "baseline-read:tools/install_spark_ssh_failover.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:tools/rtx5090_spec_node.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:tools/spark_ssh_proxy.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:tests/test_rtx5090_spec_node.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:tests/test_spark_ssh_failover.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "scan:tools/install_spark_ssh_failover.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/rtx5090_spec_node.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/spark_ssh_proxy.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/test_rtx5090_spec_node.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/test_spark_ssh_failover.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "4b013f29d738c568f144bb78a9cf7ed918322de0",
+  "diffHash": "a4ffd815b22874a7372fd6cdcea88b55a3729f58f606f9c6957befe6eff0f188",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-03T07:55:50.216Z",
+  "timing": {
+    "startedAt": "2026-09-03T07:55:47.923Z",
+    "completedAt": "2026-09-03T07:55:50.216Z",
+    "durationMs": 2293
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "baseline_snapshot_unreadable": 5,
+      "scanner_failed": 5,
+      "project_check_failed": 10
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260903T075550216Z-74929-0e2828645f84.json"
+}

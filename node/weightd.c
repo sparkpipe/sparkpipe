@@ -1,22 +1,3 @@
-/* spark_weightd — the weight-residency daemon process
- * (docs/WEIGHTD_DESIGN.md W2a skeleton).
- *
- * One daemon per node owns the weight arenas; serving processes attach by
- * content identity and never load pack bytes themselves. The process is
- * deliberately thin: argument parse, signal flags, the shared server's
- * Run loop, and a clean teardown (close every connection — refcounts drop
- * — free every arena, unlink the socket). TERM is THE shutdown path: the
- * loop's poll quantum bounds how late the stop flag is seen, so the fleet
- * TERM-first protocol applies to this daemon by construction.
- *
- *   spark_weightd --socket /tmp/spark_weightd.sock \
- *       [--device-bytes-max <bytes>]   # default: the 110 GiB device law
- *
- * The ready line (stdout, flushed) is the launch gate:
- *   spark_weightd ready unix=<path> ceiling=<bytes>
- * TERM completion prints:
- *   spark_weightd stopped arenas=<n> bytes=<n>
- * to stderr and exits 0. */
 
 #include <signal.h>
 #include <stdint.h>
@@ -130,8 +111,6 @@ int main(int argument_count, char **arguments)
                     env_ceiling);
                 return 2;
             }
-            /* the flag wins over the environment; environment wins over the
-             * law's default — the law itself is never raised by either */
             if (!ceiling_set_by_flag)
             {
                 device_bytes_max = parsed;

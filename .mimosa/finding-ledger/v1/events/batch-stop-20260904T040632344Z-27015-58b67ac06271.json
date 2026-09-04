@@ -1,0 +1,108 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260904T040632344Z-27015-58b67ac06271",
+  "runId": "20260904T040632344Z-27015-58b67ac06271",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_audit.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_fleet.sh",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_dsv4.sh",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_sweep.sh",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen4_flash_pack_verify.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/stagepack_mtp_strip.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_audit.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_fleet.sh",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_dsv4.sh",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_sweep.sh",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen4_flash_pack_verify.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/stagepack_mtp_strip.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "cef165246c8199a67dd969b77dab7a17e0abf070",
+  "diffHash": "85160d09d962d7599cb757179e9e90b81828002f7deda4d197ca6ac21df456db",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T040632344Z-27015-58b67ac06271.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-09-04T04:06:32.584Z"
+}

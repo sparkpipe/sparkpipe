@@ -6,6 +6,7 @@ MODULE_ENTRY_PREFIX := SparkQwen4FlashResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_qwen4_flash_resident_decode_stage_module.c
 MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen4_flash_resident_decode_stage_cuda.cu
 MODULE_ADDITIONAL_HOST_SOURCES = \
+	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
 	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
 	$(REPOSITORY_ROOT)/model-families/qwen4_flash/src/spark_qwen4_flash_work_control.c \
@@ -24,6 +25,7 @@ QWEN4_FLASH_MODEL_REVISION := f5d08274bafd880402bd16f5e3e6c514136ec06c
 QWEN4_FLASH_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/qwen4_flash_authoritative.json | awk '{print $$1}')
 MODULE_COMPILE_FLAGS := \
 	-DSPARK_QWEN4_FLASH_MODULE_BUILD=1 \
+	-DSPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT=$(MTP_LAYER_COUNT)u \
 	-DQWEN4_FLASH_MODEL_REVISION=\"$(QWEN4_FLASH_MODEL_REVISION)\" \
 	-DQWEN4_FLASH_CONTRACT_SHA256=\"$(QWEN4_FLASH_CONTRACT_SHA256)\"
 MODULE_INCLUDE_FLAGS = \

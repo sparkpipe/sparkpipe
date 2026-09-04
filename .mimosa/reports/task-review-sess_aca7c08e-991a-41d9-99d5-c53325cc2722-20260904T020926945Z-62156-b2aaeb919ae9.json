@@ -1,0 +1,215 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260904T020926945Z-62156-b2aaeb919ae9",
+  "run_status": "completed",
+  "errors": [],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "complete",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 835,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 5
+    },
+    "change_tracking": {
+      "touched_observed": 5,
+      "touched_retained": 5,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 5,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 5,
+      "selected_files": 5,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 5,
+      "scanned_files": 5,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 1,
+      "detailed_findings": 1,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {},
+    "reasons": [],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-04T02:09:26.945Z",
+  "session_id": "sess_aca7c08e-991a-41d9-99d5-c53325cc2722",
+  "target": ".",
+  "revision": "9db351d2e15d11dd02dbc66905ea2b9f8cb73dec",
+  "rules_version": "unavailable",
+  "diff_hash": "04c4aa4ce3663479b84ecdc01b376d34049e159d9d48ef411dda591a78efe0a9",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 5,
+    "changed_files": [
+      {
+        "file": "tools/mtp_strip_dsv4.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 20
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "52d0b87bc55419f9b47d6d2c6563967c7ab91e866f6ed0280e52eec0d5d6ab04"
+      },
+      {
+        "file": "tools/mtp_strip_fleet.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 24
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "10b53a52a069aa407d39737e1b3ffd468e12b7f170cea239f0054b4f128873cd"
+      },
+      {
+        "file": "tools/mtp_strip_sweep.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 6
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "4ae63308b13091809002615a319c44b7a8750d9f00c567cf8872470044ac2959"
+      },
+      {
+        "file": "tools/mtp_strip_wave2.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 20
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "8a2341dbfcde7eecf23fa6b5dc9120bd3ffd99c89c064cc28d6cddaec9e03af1"
+      },
+      {
+        "file": "tools/stagepack_mtp_strip.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 375
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "407aa9861f7445caeceee734bb112e5c8cdff55daa7d4cd2a271716f19a176e2"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-04T02:09:25.472Z",
+    "completed_at": "2026-09-04T02:09:26.945Z",
+    "duration_ms": 1473,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "complete",
+    "latencyMs": 1473,
+    "peakMemoryBytes": 224313344,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 5,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 1,
+  "rewake_finding_count": 1,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [
+    {
+      "finding_id": "mimosa-d3e38f3512597c78ed9e627a",
+      "file": "tools/stagepack_mtp_strip.py",
+      "line": 100,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "blocked",
+      "decision": "stop_rewake",
+      "at": "2026-09-04T02:09:26.945Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "92245379eaa071641bfce79021c9cb327f135a7924f53c0343004337f3fcba90",
+        "runtime_oracle": false
+      }
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "mimosa-d3e38f3512597c78ed9e627a",
+      "file": "tools/stagepack_mtp_strip.py",
+      "line": 100,
+      "end_line": 100,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "blocked",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "tools/stagepack_mtp_strip.py",
+          "line": 100,
+          "evidence_hash": "92245379eaa071641bfce79021c9cb327f135a7924f53c0343004337f3fcba90",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": true
+    }
+  ],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T020926945Z-62156-b2aaeb919ae9.json",
+    "latest_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722.json",
+    "history_summary": ".mimosa/history/run-20260904T020926945Z-62156-b2aaeb919ae9.json"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260904T075128730Z-55052-31fba46b948d",
+  "runId": "20260904T075128730Z-55052-31fba46b948d",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "f7050da965846048e6c6c7130dee7542738d8557",
+  "diffHash": "49ba5935f43819f816895b740f4331f0a4ca66380d5f57f5ea1d7b9c2fd039b4",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T075128730Z-55052-31fba46b948d.json",
+  "events": [],
+  "observedFindingIds": [
+    "mimosa-03cab37e1c0cf8ee3660bcc7"
+  ],
+  "verifiedFiles": [
+    {
+      "file": "tools/mtp_strip_g5.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tools/mtp_strip_g5_tp8.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tools/stagepack_mtp_strip.py",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-04T07:51:28.974Z"
+}

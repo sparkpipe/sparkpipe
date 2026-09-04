@@ -3,11 +3,6 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 
-/*
- * Model-neutral row compaction for heads and other sparse row consumers.
- * Source and destination maps are selected on the host; these kernels only
- * move rows and publish compact scalar results without model policy.
- */
 
 static __global__ void SparkGatherBf16RowsKernel(
 	const uint16_t *__restrict__ source_bf16,

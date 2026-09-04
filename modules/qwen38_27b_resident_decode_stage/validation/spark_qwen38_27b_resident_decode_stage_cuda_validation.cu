@@ -10,34 +10,11 @@
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
-/*
- * Qwen 3.6 resident decode stage, hardware validation (sm_121a).
- *
- * Two tiers, one binary. The KERNEL tier runs the module's CUDA kernels on
- * synthetic inputs and compares against fp32 CPU oracles - the same
- * formulas validation/spark_qwen38_27b_reference.c pins against modeling_qwen3_5,
- * restated here so this translation unit stays self-contained under nvcc.
- * The MODULE tier loads a stage pack through the module's own
- * Initialize/Execute (the pack path comes from SPARK_QWEN38_27B_STAGE_* exactly
- * as production), drives a prefill-then-decode flow on two lanes with a
- * capture transport standing in for the ring, and checks determinism across
- * a fresh instance plus decode-vs-prefill cross-path agreement. Synthetic
- * packs exercise geometry; the real stage-0 pack runs the same checks on
- * the model's own weights.
- *
- * Every comparison prints its numbers; the thresholds are the guard, the
- * numbers are the evidence.
- */
 
 #define SPARK_QWEN38_27B_VALIDATION_ROWS 4u
 #define SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS 8u
 #define SPARK_QWEN38_27B_VALIDATION_CHUNK_TOKENS 128u
 #define SPARK_QWEN38_27B_VALIDATION_ATTN_TOKENS 5u
-/* KV table lanes must match the module's max_active_sequence_count
- * (the module validates lane_count == its own max). Use the firmware
- * header's build-time value, not a hardcoded 8 — this was the B16
- * validation failure: the module at B16 expected lane_count=16 but
- * the validator always supplied 8. */
 #ifndef SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES
 #define SPARK_QWEN38_27B_STAGE_MAX_ACTIVE_SEQUENCES 8u
 #endif
@@ -74,7 +51,7 @@ static uint16_t SparkQwen38_27bValBf16(float value)
 {
 	uint32_t bits;
 	memcpy(&bits,&value,sizeof(bits));
-	bits += 0x8000u; /* round to nearest even on the truncate */
+	bits += 0x8000u;
 	return((uint16_t)(bits >> 16u));
 }
 
@@ -86,8 +63,6 @@ static float SparkQwen38_27bValFromBf16(uint16_t value)
 	return(converted);
 }
 
-/* Fill a host buffer with random values, returned both as the bf16 they
- * become on device and as the exact upcast the oracle must see. */
 static void SparkQwen38_27bValFillBf16(uint16_t *packed, float *exact, uint64_t count, float scale)
 {
 	uint64_t index;
@@ -156,7 +131,6 @@ static int SparkQwen38_27bValReport(const char *check, const SparkQwen38_27bValM
 	return(0);
 }
 
-/* -- fp32 CPU oracles: the reference.c formulas, restated ---------------- */
 
 static float SparkQwen38_27bValSilu(float value)
 {
@@ -237,8 +211,6 @@ static void SparkQwen38_27bValRmsNorm(const float *input, const float *weight, f
 		output[element] = input[element] * inverse * weight[element];
 }
 
-/* One kv head's group of query heads against its cache, fused [query|gate]
- * input, sigmoid on the output - reference.c's SparkQwen38_27bRefAttention. */
 static void SparkQwen38_27bValAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t tokens, float epsilon)
 {
 	float qh[SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION],scores[SPARK_QWEN38_27B_VALIDATION_ATTN_TOKENS],probability;
@@ -276,31 +248,30 @@ static void SparkQwen38_27bValAttention(const float *q_fused, const float *k_cac
 	}
 }
 
-/* -- shared device fixture ----------------------------------------------- */
 
 typedef struct SparkQwen38_27bValDevice
 {
 	SparkQwen38_27bGdnLayerWeights gdn_weights;
 	SparkQwen38_27bAttnLayerWeights attn_weights;
 	SparkQwen38_27bGdnStatePool pool;
-	uint16_t *conv_weight;      /* CONV x 4 */
-	float *a_log;               /* HEADS */
-	float *dt_bias;             /* HEADS */
-	uint16_t *gdn_norm_weight;  /* DV */
-	uint16_t *q_norm_weight;    /* ATTN_HEAD_DIM */
+	uint16_t *conv_weight;
+	float *a_log;
+	float *dt_bias;
+	uint16_t *gdn_norm_weight;
+	uint16_t *q_norm_weight;
 	uint16_t *k_norm_weight;
-	float *state;               /* 2 lanes x HEADS x DK x DV */
-	uint16_t *conv_tail;        /* 2 lanes x CONV x 3 */
-	uint32_t *cold;             /* 2 */
-	uint32_t *lane_indices;     /* 2 */
-	uint16_t *qkv;              /* tokens x CONV */
-	uint16_t *conv_out;         /* tokens x CONV */
-	uint16_t *core_out;         /* tokens x GDN_VALUE_DIM */
-	uint16_t *z_bf16;           /* tokens x GDN_VALUE_DIM */
-	uint16_t *gated_out;        /* tokens x GDN_VALUE_DIM */
-	uint16_t *ba_bf16;          /* tokens x HEADS x 2 (decay|beta halves) */
-	float *log_decay;           /* tokens x HEADS */
-	float *beta;                /* tokens x HEADS */
+	float *state;
+	uint16_t *conv_tail;
+	uint32_t *cold;
+	uint32_t *lane_indices;
+	uint16_t *qkv;
+	uint16_t *conv_out;
+	uint16_t *core_out;
+	uint16_t *z_bf16;
+	uint16_t *gated_out;
+	uint16_t *ba_bf16;
+	float *log_decay;
+	float *beta;
 	float *chunk_qn;
 	float *chunk_kn;
 	float *chunk_cum_g;
@@ -345,8 +316,6 @@ static int SparkQwen38_27bValDeviceSetup(SparkQwen38_27bValDevice *device)
 	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_kg,vector_floats * sizeof(float));
 	if (error != cudaSuccess)
 		return(SparkQwen38_27bValCuda(error,"device_alloc"));
-	/* One GDN layer per lane, two lanes: the pool strides the launchers
-	 * read, mirroring the module's AllocatePools at layer_count 1. */
 	device->pool.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
 	device->pool.lane_capacity = 2u;
 	device->pool.gdn_layer_count = 1u;
@@ -366,7 +335,6 @@ static int SparkQwen38_27bValDeviceSetup(SparkQwen38_27bValDevice *device)
 	return(0);
 }
 
-/* -- kernel tier ---------------------------------------------------------- */
 
 static int SparkQwen38_27bValCheckDecayBeta(SparkQwen38_27bValDevice *device)
 {
@@ -391,8 +359,6 @@ static int SparkQwen38_27bValCheckDecayBeta(SparkQwen38_27bValDevice *device)
 	error = cudaMemcpy(device->ba_bf16,host_ba,sizeof(host_ba),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->a_log,host_a,sizeof(host_a),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->dt_bias,host_bias,sizeof(host_bias),cudaMemcpyHostToDevice);
-	/* decay_pre and beta_pre are separate rows x HEADS buffers; ba_bf16
-	 * holds them back to back. */
 	if (error == cudaSuccess)
 		error = SparkQwen38_27bLaunchDecayBeta(cudaStreamPerThread,device->ba_bf16,device->ba_bf16 + SPARK_QWEN38_27B_VALIDATION_ROWS * SPARK_QWEN38_27B_HEADS,&device->gdn_weights,device->log_decay,device->beta,SPARK_QWEN38_27B_VALIDATION_ROWS);
 	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
@@ -415,8 +381,6 @@ static int SparkQwen38_27bValCheckDecayBeta(SparkQwen38_27bValDevice *device)
 	return(SparkQwen38_27bValReport("write_gate",&metrics,1e-5,0.99999999));
 }
 
-/* One decode conv step per row over two sequential tokens, checking the tail
- * carry against the single-channel oracle run on every channel. */
 static int SparkQwen38_27bValCheckConv(SparkQwen38_27bValDevice *device)
 {
 	uint16_t *host_qkv,*host_out;
@@ -424,8 +388,6 @@ static int SparkQwen38_27bValCheckConv(SparkQwen38_27bValDevice *device)
 	uint32_t token,row;
 	uint32_t cold[2] = {1u,1u};
 	uint32_t lanes[2] = {0u,1u};
-	/* Two sequential decode tokens for each of the two lanes: the launches
-	 * and the oracle both walk this [token][lane][channel] frame. */
 	const uint64_t frame_elements = (uint64_t)SPARK_QWEN38_27B_VALIDATION_ROWS * SPARK_QWEN38_27B_CONV;
 	uint64_t channel;
 	cudaError_t error;
@@ -457,8 +419,6 @@ static int SparkQwen38_27bValCheckConv(SparkQwen38_27bValDevice *device)
 				cold[0] = 0u; cold[1] = 0u;
 				error = cudaMemcpy(device->cold,cold,sizeof(cold),cudaMemcpyHostToDevice);
 			}
-			/* One token per launch, one row per lane: the launcher consumes
-			 * row r's qkv row, so slide the window by handing it row r. */
 			if (error == cudaSuccess)
 				error = SparkQwen38_27bLaunchConvUpdate(cudaStreamPerThread,device->qkv + (uint64_t)token * 2u * SPARK_QWEN38_27B_CONV,&device->gdn_weights,device->conv_out + (uint64_t)token * 2u * SPARK_QWEN38_27B_CONV,&device->pool,device->lane_indices,2u,0u);
 			if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
@@ -470,8 +430,6 @@ static int SparkQwen38_27bValCheckConv(SparkQwen38_27bValDevice *device)
 		for (row = 0u; row < 2u; row++)
 			for (channel = 0u; channel < SPARK_QWEN38_27B_CONV; channel++)
 			{
-				/* The oracle conv, one channel, fed the two tokens in order
-				 * with the tail carried between them. */
 				float input[2],output[2],tail[3];
 				uint64_t base = ((uint64_t)row * SPARK_QWEN38_27B_CONV) + channel;
 				input[0] = exact[base];
@@ -510,8 +468,6 @@ static int SparkQwen38_27bValCheckConv(SparkQwen38_27bValDevice *device)
 	return(SparkQwen38_27bValReport("conv_update",&metrics,5e-3,0.99999));
 }
 
-/* One GDN recurrence step per row: row 0 cold, row 1 warm with a random
- * resident state, compared against the per-head oracle recurrence. */
 static int SparkQwen38_27bValCheckGdnStep(SparkQwen38_27bValDevice *device)
 {
 	uint64_t state_elements = (uint64_t)SPARK_QWEN38_27B_HEADS * SPARK_QWEN38_27B_DK * SPARK_QWEN38_27B_DV;
@@ -534,7 +490,7 @@ static int SparkQwen38_27bValCheckGdnStep(SparkQwen38_27bValDevice *device)
 	{
 		uint64_t index;
 		for (index = 0u; index < state_elements; index++)
-			state_host[state_elements + index] = SparkQwen38_27bValUniform(0.25f); /* lane 1 warm */
+			state_host[state_elements + index] = SparkQwen38_27bValUniform(0.25f);
 		memcpy(state_reference,state_host,2ull * state_elements * sizeof(float));
 	}
 	{
@@ -558,7 +514,6 @@ static int SparkQwen38_27bValCheckGdnStep(SparkQwen38_27bValDevice *device)
 		if (error == cudaSuccess) error = cudaMemcpy(state_host,device->state,2ull * state_elements * sizeof(float),cudaMemcpyDeviceToHost);
 		if (SparkQwen38_27bValCuda(error,"gdn_step") != 0)
 			return(1);
-		/* Oracle: per (row, value head), key head h/3, one token. */
 		for (row = 0u; row < 2u; row++)
 			for (head = 0u; head < SPARK_QWEN38_27B_HEADS; head++)
 			{
@@ -602,8 +557,8 @@ static int SparkQwen38_27bValCheckGatedNorm(SparkQwen38_27bValDevice *device)
 	if (packed == 0 || exact == 0 || expected == 0 || actual == 0 || norm_packed == 0 || norm_exact == 0)
 		return(SparkQwen38_27bValFail("gated_norm","host_alloc"));
 	SparkQwen38_27bValRandomState = 51u;
-	SparkQwen38_27bValFillBf16(packed,exact,elements,1.0f);              /* core */
-	SparkQwen38_27bValFillBf16(packed + elements,exact + elements,elements,1.0f); /* z */
+	SparkQwen38_27bValFillBf16(packed,exact,elements,1.0f);
+	SparkQwen38_27bValFillBf16(packed + elements,exact + elements,elements,1.0f);
 	SparkQwen38_27bValFillBf16(norm_packed,norm_exact,SPARK_QWEN38_27B_DV,0.5f);
 	error = cudaMemcpy(device->core_out,packed,elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->z_bf16,packed + elements,elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
@@ -633,8 +588,6 @@ static int SparkQwen38_27bValCheckGatedNorm(SparkQwen38_27bValDevice *device)
 	return(SparkQwen38_27bValReport("gated_norm",&metrics,5e-3,0.99999));
 }
 
-/* Five tokens through AttnPrepare into a one-block paged cache, then one
- * decode of the newest position, against the per-kv-head oracle. */
 static int SparkQwen38_27bValCheckAttention(SparkQwen38_27bValDevice *device)
 {
 	const uint32_t tokens = SPARK_QWEN38_27B_VALIDATION_ATTN_TOKENS;
@@ -679,7 +632,7 @@ static int SparkQwen38_27bValCheckAttention(SparkQwen38_27bValDevice *device)
 	SparkQwen38_27bValFillBf16(norm_packed + SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION,k_norm_exact,SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION,0.5f);
 	for (token = 0u; token < tokens; token++)
 	{
-		slot_mapping[token] = token;       /* block 0, slots 0..tokens-1 */
+		slot_mapping[token] = token;
 		positions[token] = token;
 	}
 	error = cudaMalloc(&kv_cache,cache_elements * sizeof(uint16_t));
@@ -705,8 +658,6 @@ static int SparkQwen38_27bValCheckAttention(SparkQwen38_27bValDevice *device)
 	if (error == cudaSuccess) error = cudaMemcpy(device_context,context,sizeof(context),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->q_norm_weight,norm_packed,SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->k_norm_weight,norm_packed + SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION,SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	/* The cache layout: one layer, one block. layer stride == block stride
-	 * at cache_layer_count 1, mirroring AllocatePools. */
 	if (error == cudaSuccess)
 		error = SparkQwen38_27bLaunchAttnPrepare(cudaStreamPerThread,device_q,device_k,device_v,&device->attn_weights,kv_cache,device_slots,device_positions,tokens,0u,cache_elements,cache_elements,SPARK_QWEN38_27B_MODEL_RMS_NORM_EPSILON);
 	memset(&table,0,sizeof(table));
@@ -726,8 +677,6 @@ static int SparkQwen38_27bValCheckAttention(SparkQwen38_27bValDevice *device)
 	if (error == cudaSuccess) error = cudaMemcpy(out_packed,device_out,SPARK_QWEN38_27B_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),cudaMemcpyDeviceToHost);
 	if (SparkQwen38_27bValCuda(error,"attn_decode") != 0)
 		return(1);
-	/* Oracle: normalize + rope the cached K at its position, then one
-	 * RefAttention call per kv head over the newest fused query row. */
 	{
 		float *k_cache = (float *)calloc((uint64_t)tokens * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION,sizeof(float));
 		float *v_cache = (float *)calloc((uint64_t)tokens * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION,sizeof(float));
@@ -767,8 +716,6 @@ static int SparkQwen38_27bValCheckAttention(SparkQwen38_27bValDevice *device)
 	return(SparkQwen38_27bValReport("attn_decode",&metrics,5e-3,0.99999));
 }
 
-/* 128 tokens (two chunks) through the chunk kernels on one lane, state and
- * per-token outputs against the recurrence oracle on the same inputs. */
 static int SparkQwen38_27bValCheckGdnChunk(SparkQwen38_27bValDevice *device)
 {
 	const uint32_t tokens = SPARK_QWEN38_27B_VALIDATION_CHUNK_TOKENS;
@@ -802,8 +749,6 @@ static int SparkQwen38_27bValCheckGdnChunk(SparkQwen38_27bValDevice *device)
 	if (error == cudaSuccess) error = cudaMemcpy(device->qkv,conv_packed,conv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->log_decay,log_decay,(uint64_t)tokens * SPARK_QWEN38_27B_HEADS * sizeof(float),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->beta,beta,(uint64_t)tokens * SPARK_QWEN38_27B_HEADS * sizeof(float),cudaMemcpyHostToDevice);
-	/* The launcher walks ONE chunk per call (token_count <= GDN_CHUNK_TOKENS);
-	 * the module loops it over the frame, so do the same here. */
 	for (uint32_t base = 0u; base < tokens && error == cudaSuccess; base += SPARK_QWEN38_27B_MODEL_GDN_CHUNK_TOKENS)
 		error = SparkQwen38_27bLaunchGdnChunk(cudaStreamPerThread,
 			device->qkv + ((uint64_t)base * SPARK_QWEN38_27B_CONV),
@@ -842,9 +787,6 @@ static int SparkQwen38_27bValCheckGdnChunk(SparkQwen38_27bValDevice *device)
 			expected + ((uint64_t)head * tokens * SPARK_QWEN38_27B_DV),tokens);
 		free(q_head); free(k_head); free(v_head); free(g_head); free(b_head);
 	}
-	/* The recurrence oracle writes each head's outputs into its own
-	 * tokens x dv slab; the kernel's core_out is [token][head][dv] -
-	 * re-map before comparing. */
 	{
 		float *expected_ordered = (float *)calloc(out_elements,sizeof(float));
 		if (expected_ordered == 0)
@@ -867,12 +809,9 @@ static int SparkQwen38_27bValCheckGdnChunk(SparkQwen38_27bValDevice *device)
 	return(SparkQwen38_27bValReport("gdn_chunk_state",&metrics,2e-2,0.999));
 }
 
-/* -- module tier ---------------------------------------------------------- */
 
 typedef struct SparkQwen38_27bValCapture
 {
-	/* A prefill frame sends token_count rows, so the capture must hold the
-	 * larger of the prefill width and the decode row count. */
 	uint16_t hidden[SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION];
 	uint32_t sends;
 } SparkQwen38_27bValCapture;
@@ -893,7 +832,6 @@ static SparkStatus SparkQwen38_27bValCaptureSend(SparkHiddenTransportSession *se
 typedef struct SparkQwen38_27bValModule
 {
 	void *state;
-	/* Prefill frames carry PREFILL_TOKENS ids; decode uses only ROWS lanes. */
 	uint32_t token_ids[SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS];
 	uint32_t output_token_ids[SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS];
 	uint32_t head_stage;
@@ -922,9 +860,6 @@ static int SparkQwen38_27bValModuleInitialize(SparkQwen38_27bValModule *module)
 	uint32_t lane;
 	cudaError_t error;
 	memset(module,0,sizeof(*module));
-	/* head_stage: the stage owns the final head iff it is the whole-stack
-	 * last stage (STAGE_COUNT == 1), independent of TP_DEGREE (TP1
-	 * full-width is whole-stack and owns the head). */
 	stage_count_text = getenv("SPARK_QWEN38_27B_STAGE_COUNT");
 	module->head_stage = stage_count_text != 0 && strcmp(stage_count_text,"1") == 0 ? 1u : 0u;
 	for (lane = 0u; lane < SPARK_QWEN38_27B_VALIDATION_KV_LANES; lane++)
@@ -973,8 +908,6 @@ static int SparkQwen38_27bValModuleInitialize(SparkQwen38_27bValModule *module)
 	return(0);
 }
 
-/* flags select decode vs prefill; rows and the lane/position/sequence arrays
- * are already staged on the module struct. */
 static int SparkQwen38_27bValModuleExecute(SparkQwen38_27bValModule *module, uint32_t prefill, uint32_t rows, uint32_t lane, uint32_t draft_count, const SparkQwen38_27bMtpDraftView *draft_view)
 {
 	SparkStatus status;
@@ -1056,11 +989,6 @@ static int SparkQwen38_27bValCheckFinite(const char *check, const uint16_t *hidd
 	return(0);
 }
 
-/* MTP draft chain qualification (A1 step 2): continue lane 0 with a decode
- * at position 9 and draft the next two tokens via MTP_DRAFT_AFTER, then check
- * the draft ids are in-vocab. There is no CPU-oracle MTP reference, so
- * in-vocab is the feasible qualification here; determinism is covered by the
- * module_determinism check above (bit-exact fresh-instance re-execution). */
 static int SparkQwen38_27bValCheckMtpDraft(SparkQwen38_27bValModule *module)
 {
 	SparkQwen38_27bMtpDraftView draft_view;
@@ -1088,10 +1016,6 @@ static int SparkQwen38_27bValCheckMtpDraft(SparkQwen38_27bValModule *module)
 	return(0);
 }
 
-/* The module flow: prefill 8 tokens on lane 0, decode position 8 on lane 0;
- * prefill the same 8 on lane 1 plus a 1-token warm prefill at position 8.
- * The decode path (recurrent step) and the warm-prefill path (chunk walk)
- * must land on the same hidden. Returns bit-exactness separately. */
 static int SparkQwen38_27bValCheckModule(void)
 {
 	SparkQwen38_27bValModule module;
@@ -1107,8 +1031,6 @@ static int SparkQwen38_27bValCheckModule(void)
 	SparkStatus status;
 	if (SparkQwen38_27bValModuleInitialize(&module) != 0)
 		return(1);
-	/* Admission and snapshot smoke: a decode admit must accept, and the
-	 * snapshot must succeed. Run before the frames so pipeline slots are free. */
 	memset(&admission,0,sizeof(admission));
 	admission.descriptor_bytes = sizeof(admission);
 	admission.program_id = 1u;
@@ -1136,7 +1058,6 @@ static int SparkQwen38_27bValCheckModule(void)
 		return(SparkQwen38_27bValFail("module_prefill",module.head_stage != 0u ? "unexpected_hidden_send" : "no_hidden_send"));
 	if (module.head_stage == 0u && SparkQwen38_27bValCheckFinite("module_prefill",module.capture.hidden,SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS) != 0)
 		return(1);
-	/* Decode position 8 on lane 0, token chosen arbitrarily but fixed. */
 	module.token_ids[0] = 4242u;
 	module.lanes[0] = 0u;
 	module.positions[0] = SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS;
@@ -1151,8 +1072,6 @@ static int SparkQwen38_27bValCheckModule(void)
 	}
 	else
 		decode_token = module.output_token_ids[0];
-	/* Lane 1: same 8 tokens as a fresh sequence, then a warm 1-token
-	 * prefill at position 8 - the chunk-walk twin of lane 0's decode. */
 	for (index = 0u; index < SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS; index++)
 		module.token_ids[index] = 1000u + (index * 37u) % 200000u;
 	module.positions[0] = 0u;
@@ -1187,11 +1106,6 @@ static int SparkQwen38_27bValCheckModule(void)
 		if (decode_token != prefill_token)
 			return(SparkQwen38_27bValFail("module_decode_vs_prefill","token_mismatch"));
 	}
-	/* Determinism: a fresh instance must reproduce lane 0's decode hidden
-	 * bit for bit. Two whole-stack TP1 instances (pack + lane state) exceed
-	 * the GB10 CUDA window, so the MTP check runs on the live instance and
-	 * the first instance is destroyed before the rerun initializes; the
-	 * comparison targets were captured into module-independent arrays. */
 	if (module.head_stage != 0u && SparkQwen38_27bValCheckMtpDraft(&module) != 0)
 		return(1);
 	SparkQwen38_27bResidentDecodeStageDestroy(module.state);

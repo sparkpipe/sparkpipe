@@ -13,10 +13,6 @@
 
 static uint32_t cuda_capture_depth;
 
-/* Fault-injection and allocation-ledger hooks. The stub prefixes every live
- * allocation with a header so tests can (a) assert zero outstanding
- * allocations after a destroy path and (b) fail the Nth allocation-family
- * call to exercise partial-initialization cleanup. */
 #define CUDA_STUB_ALLOC_MAGIC UINT32_C(0x53545542)
 #define CUDA_STUB_MAX_TRACKED 4096
 
@@ -29,13 +25,9 @@ typedef struct cuda_stub_alloc_header
 static void *cuda_stub_tracked[CUDA_STUB_MAX_TRACKED];
 static uint32_t cuda_stub_tracked_count;
 static uint32_t cuda_stub_alloc_calls;
-static int32_t cuda_stub_fail_alloc_at = -1; /* 1-based call index, -1 = off */
+static int32_t cuda_stub_fail_alloc_at = -1;
 static uint32_t cuda_stub_host_map_calls;
 static int32_t cuda_stub_fail_host_map_at = -1;
-/* W3: the daemon thread's cuMem* calls (export walks this ledger) and the
- * consumer's (import inserts) overlap in-process, exactly as two driver
- * calls from two threads overlap on the real GPU - the driver serializes
- * its internals, so the stub serializes its ledger. */
 static pthread_mutex_t cuda_stub_ledger_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void cuda_stub_ledger_lock(void)
@@ -443,6 +435,34 @@ const char *cudaGetErrorString(cudaError_t error)
     return error == cudaSuccess ? "cudaSuccess" : "cudaTestError";
 }
 
+#define SPARK_CUDA_STUB_TOTAL_MEMORY_BYTES (128ull * 1024ull * 1024ull * 1024ull)
+
+cudaError_t cudaMemGetInfo(size_t *free_bytes, size_t *total_bytes)
+{
+    if (free_bytes == 0 || total_bytes == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    *total_bytes = (size_t)SPARK_CUDA_STUB_TOTAL_MEMORY_BYTES;
+    *free_bytes = (size_t)SPARK_CUDA_STUB_TOTAL_MEMORY_BYTES;
+    return cudaSuccess;
+}
+
+cudaError_t cudaEventElapsedTime(
+    float *milliseconds,
+    cudaEvent_t start,
+    cudaEvent_t end)
+{
+    (void)start;
+    (void)end;
+    if (milliseconds == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    *milliseconds = 0.0f;
+    return cudaSuccess;
+}
+
 cudaError_t cudaGetDevice(int *device)
 {
     if (device == 0)
@@ -453,19 +473,9 @@ cudaError_t cudaGetDevice(int *device)
     return cudaSuccess;
 }
 
-/* ------------------------------ cuMem* VMM ------------------------------ */
 
-/* The VMM stand-in models the real physical/virtual split closely enough to
- * catch daemon lifecycle bugs: a physical chunk is a small tracked record
- * (cuMemCreate), a virtual reservation is a tracked real allocation sized to
- * the full span so mapped reads and writes touch real bytes (cuMemAddress-
- * Reserve), and cuMemMap/cuMemUnmap enforce exact (pointer, bytes) pairs per
- * chunk with cuMemRelease/cuMemAddressFree refusing while anything is still
- * mapped - the same orderings the real driver enforces. Both records go
- * through the shared tracked allocator, so the tests' zero-outstanding-
- * allocations check covers the VMM path too. */
 
-#define CUDA_STUB_VMM_MAGIC UINT32_C(0x564D4D31) /* "VMM1" */
+#define CUDA_STUB_VMM_MAGIC UINT32_C(0x564D4D31)
 #define CUDA_STUB_VMM_MAPPED_MAX 128
 
 typedef struct cuda_stub_vmm_phys
@@ -474,11 +484,6 @@ typedef struct cuda_stub_vmm_phys
     uint32_t mapped_count;
     uint64_t bytes;
     CUmemAllocationProp prop;
-    /* W3 fd tier: an IMPORTED physical chunk owns a host image of the bytes
-     * its shareable fd carried (heap pages cannot alias across that fd the
-     * way device pages do); cuMemMap of such a chunk reveals the image at
-     * the mapping. Chunks created here keep image == 0: their content lives
-     * at the (single) mapped span exactly as in W2b. */
     uint8_t *image;
 } cuda_stub_vmm_phys;
 
@@ -488,10 +493,6 @@ typedef struct cuda_stub_vmm_reservation
     uint32_t mapped_count;
     uint64_t bytes;
     uint64_t mapped_bytes;
-    /* the access grant cuMemSetAccess last applied over the whole span
-       (CU_MEM_ACCESS_FLAGS_PROT_NONE while ungranted). The real driver
-       enforces this in its page tables; the stub enforces it in the
-       cuda_stub_vmm_probe_write receipt probe below. */
     unsigned int granted_access;
     struct
     {
@@ -515,13 +516,6 @@ static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_at(
     return reservation->magic == CUDA_STUB_VMM_MAGIC ? reservation : 0;
 }
 
-/* The reservation containing a mapped virtual address: the VA handed out is
- * the tail of the tracked allocation (struct end), so walk the tracked
- * headers and match struct+1. W3 fix: the match is CONTAINMENT, not equality
- * - an arena maps chunk 2 at base+chunk_bytes, and a multi-chunk span is
- * one reservation (W2b's tests never exceeded one 2 MiB chunk, so the old
- * exact-start match stood untested; the real driver maps anywhere inside
- * the reserved span). */
 static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_for_va(
     CUdeviceptr pointer)
 {
@@ -556,27 +550,12 @@ CUresult cuMemGetAllocationGranularity(size_t *granularity,
     }
     *granularity = option == CU_MEM_ALLOC_GRANULARITY_MINIMUM
         ? (size_t)65536
-        : (size_t)(2ull * 1024ull * 1024ull); /* the 2 MiB page law */
+        : (size_t)(2ull * 1024ull * 1024ull);
     return CUDA_SUCCESS;
 }
 
-/* ------------------- W3 fd tier: shareable-handle export/import -------------------
- *
- * The stub models a shareable handle as what it is on the real OS: a POSIX
- * file descriptor whose referent outlives the exporter and crosses processes
- * by SCM_RIGHTS alone. Export writes the chunk's committed bytes into a
- * freshly created ANONYMOUS regular file - mkstemp (mode 0600), immediate
- * unlink, FD_CLOEXEC - so the bytes exist only behind the fd: no path to
- * follow (the fd-world O_NOFOLLOW analog), no group/other access (the KV
- * backing's owner-only discipline), no leak across exec. Import validates
- * the fd (live, owner-only mode, magic header, exact byte count), material-
- * izes a fresh local physical record, and copies the bytes into its image;
- * the caller's fd is its own from there and close() is the caller's duty.
- * The one fidelity trade vs the GPU: pages are copied at export, not
- * aliased - sound here because arena bytes are frozen at cold load, and it
- * is exactly what the spark-gated GPU receipt re-proves aliased. */
 
-#define CUDA_STUB_SHARE_MAGIC UINT32_C(0x53505846) /* "SPXF" */
+#define CUDA_STUB_SHARE_MAGIC UINT32_C(0x53505846)
 #define CUDA_STUB_SHARE_VERSION 1u
 
 typedef struct cuda_stub_share_header
@@ -586,8 +565,6 @@ typedef struct cuda_stub_share_header
     uint64_t bytes;
 } cuda_stub_share_header;
 
-/* Locate the one live mapping of a created chunk: its committed bytes live
- * at that mapped VA (the W2b model). */
 static int cuda_stub_vmm_single_mapping(const cuda_stub_vmm_phys *phys,
     CUdeviceptr *pointer_out)
 {
@@ -641,8 +618,6 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    /* the exportable-property discipline: the chunk must have been created
-     * with the POSIX-fd handle type requested (the daemon's prop carries it) */
     if ((phys->prop.requestedHandleTypes &
             CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) == 0u)
     {
@@ -650,7 +625,7 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     }
     if (phys->image == 0 && !cuda_stub_vmm_single_mapping(phys, &mapped_at))
     {
-        return CUDA_ERROR_INVALID_VALUE; /* nothing committed to export */
+        return CUDA_ERROR_INVALID_VALUE;
     }
     tmp_dir = getenv("TMPDIR");
     if (tmp_dir == 0 || tmp_dir[0] == '\0')
@@ -670,7 +645,7 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
         free(template_path);
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
-    (void)unlink(template_path); /* anonymous from here: fd-only referent */
+    (void)unlink(template_path);
     free(template_path);
     (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     if (ftruncate(fd, (off_t)(sizeof(header) + phys->bytes)) != 0)
@@ -737,18 +712,11 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    /* osHandle carries the POSIX fd BY VALUE - the real driver contract
-     * (cuda.h: "Shareable Handle representing the memory allocation";
-     * the value IS the fd integer). Modeling a dereference here hid a
-     * real-hardware import failure (reason=import_handle on every import)
-     * until the first GPU receipt ran - cell-runner 2026-08-29. */
     fd = (int)(uintptr_t)shareable_handle;
     if (fd < 0 || fcntl(fd, F_GETFD) < 0 || fstat(fd, &status) != 0)
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    /* OS-level access scoping on the received fd: owner-only, exactly the
-     * discipline the exporter created it with (no group/other bits) */
     if ((status.st_mode & 077) != 0 ||
         (uint64_t)status.st_size < (uint64_t)sizeof(header))
     {
@@ -830,8 +798,6 @@ CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    /* one tracked allocation per physical chunk; the alloc-call family fault
-     * index (cudaMalloc + cudaHostAlloc + cuMemCreate) injects here too */
     if (cuda_stub_alloc((void **)&phys, sizeof(*phys)) != cudaSuccess)
     {
         return CUDA_ERROR_OUT_OF_MEMORY;
@@ -900,9 +866,6 @@ CUresult cuMemMap(CUdeviceptr pointer,
     reservation->mapped_count++;
     reservation->mapped_bytes += (uint64_t)bytes;
     phys->mapped_count++;
-    /* an imported chunk's bytes arrive with the map (the stub's stand-in for
-     * physical aliasing); created chunks keep the W2b behavior where the
-     * mapping's span itself is the storage */
     if (phys->image != 0)
     {
         memcpy((void *)(uintptr_t)pointer, phys->image, bytes);
@@ -916,6 +879,8 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     size_t descriptor_count)
 {
     cuda_stub_vmm_reservation *reservation;
+    CUdeviceptr span_start;
+    uint64_t offset;
     if (descriptors == 0 || descriptor_count != (size_t)1u ||
         descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
         (descriptors[0].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u)
@@ -923,25 +888,21 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
         return CUDA_ERROR_INVALID_VALUE;
     }
     reservation = cuda_stub_vmm_reservation_for_va(pointer);
-    if (reservation != 0 && reservation->bytes == (uint64_t)bytes)
+    if (reservation == 0 || bytes == 0u)
     {
-        /* record the grant: the probe (below) enforces it the way the real
-           driver's page tables do */
-        reservation->granted_access = (unsigned int)descriptors[0].flags;
-        return CUDA_SUCCESS;
+        return CUDA_ERROR_INVALID_VALUE;
     }
-    return CUDA_ERROR_INVALID_VALUE;
+    span_start = (CUdeviceptr)(reservation + 1);
+    offset = pointer - span_start;
+    if (offset > reservation->bytes ||
+        (uint64_t)bytes > reservation->bytes - offset)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    reservation->granted_access = (unsigned int)descriptors[0].flags;
+    return CUDA_SUCCESS;
 }
 
-/* Test-only receipt probe (NOT CUDA API): model a DEVICE WRITE through a
- * mapped VA the way the real driver enforces it in hardware - a store
- * against a span whose granted access lacks WRITE is refused and touches
- * nothing. This is the enforcement half of the W3 scribble-probe receipt:
- * the production consumer leg grants CU_MEM_ACCESS_FLAGS_PROT_READWRITE
- * today, so a probe through a real ImportMap mapping LANDS; the staged
- * one-constant flip to CU_MEM_ACCESS_FLAGS_PROT_READ (runtime/spark_
- * weightd_attach.c) is what turns the same probe into a refusal, and this
- * stub path is the host proof that the flip will actually bite. */
 CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
     const void *bytes,
     size_t count)
@@ -959,11 +920,11 @@ CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
     if (offset > reservation->bytes ||
         (uint64_t)count > reservation->bytes - offset)
     {
-        return CUDA_ERROR_INVALID_VALUE; /* outside the reserved span */
+        return CUDA_ERROR_INVALID_VALUE;
     }
     if (reservation->granted_access != CU_MEM_ACCESS_FLAGS_PROT_READWRITE)
     {
-        return CUDA_ERROR_INVALID_VALUE; /* write refused: RO or ungranted */
+        return CUDA_ERROR_INVALID_VALUE;
     }
     memcpy((void *)(uintptr_t)pointer, bytes, count);
     return CUDA_SUCCESS;
@@ -977,10 +938,6 @@ CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
     uint32_t removed = 0u;
     if (reservation != 0)
     {
-        /* driver range semantics: one unmap may cover several per-chunk
-         * mappings (the daemon maps chunk by chunk and tears the span down
-         * whole); every mapping fully inside the range goes, a partial
-         * overlap is refused, and an unmapped range is an error */
         for (mapping_index = 0u; mapping_index < reservation->mapped_count;
             mapping_index++)
         {
@@ -995,12 +952,12 @@ CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
                     reservation->mappings[reservation->mapped_count - 1u];
                 reservation->mapped_count--;
                 removed++;
-                mapping_index--; /* the swapped-in entry must be checked too */
+                mapping_index--;
             }
             else if (mapped_at < pointer + (uint64_t)bytes &&
                 pointer < mapped_at + mapped_bytes)
             {
-                return CUDA_ERROR_INVALID_VALUE; /* partial overlap */
+                return CUDA_ERROR_INVALID_VALUE;
             }
         }
     }
@@ -1018,11 +975,11 @@ CUresult cuMemRelease(CUmemGenericAllocationHandle handle)
     }
     if (phys->mapped_count != 0u)
     {
-        return CUDA_ERROR_INVALID_VALUE; /* still mapped somewhere */
+        return CUDA_ERROR_INVALID_VALUE;
     }
     if (phys->image != 0)
     {
-        (void)cuda_stub_free(phys->image); /* the imported byte image */
+        (void)cuda_stub_free(phys->image);
         phys->image = 0;
     }
     return cuda_stub_free(phys);
@@ -1034,13 +991,13 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
         cuda_stub_vmm_reservation_for_va(pointer);
     (void)bytes;
     if (reservation == 0 ||
-        (CUdeviceptr)(reservation + 1) != pointer) /* the exact span base */
+        (CUdeviceptr)(reservation + 1) != pointer)
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
     if (reservation->mapped_count != 0u)
     {
-        return CUDA_ERROR_INVALID_VALUE; /* mappings still live */
+        return CUDA_ERROR_INVALID_VALUE;
     }
     return cuda_stub_free(reservation);
 }

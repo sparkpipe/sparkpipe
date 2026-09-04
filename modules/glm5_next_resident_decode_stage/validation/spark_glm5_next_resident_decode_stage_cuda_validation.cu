@@ -10,65 +10,14 @@
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
 
-/*
- * glm5_next (GLM 5.3 Flash) resident decode stage, hardware validation
- * (sm_121a).
- *
- * A retained-receipt numerical gate driven entirely through the module's
- * own exported launchers (SparkGlm5NextLaunchCudaWaveBegin /
- * LayerAttention / LayerMlp) exactly as the wave runner drives them,
- * compared against an fp32 CPU oracle that restates the shared-kernel
- * formulas here, self-contained under nvcc and sharing no code with what
- * it validates.
- *
- * Tier 1 - the KDA layer with its dense MLP (layer 0): a four-token
- * causal walk through the mHC attention site (mix -> sinkhorn -> collapse
- * -> KDA sublayer -> post), the mHC FFN site and the dense MLP, plus a
- * bit-exact determinism re-walk. Covers: the fused q|k|v|beta GEMM +
- * split, the three BF16 short convolutions with SWISH, the qk L2 norm,
- * the LOW-RANK decay (fused decay|gate-down + two up projections) through
- * the bounded-decay formula, the delta-rule recurrence with fp32 state,
- * RMSNorm + sigmoid output gate, o_proj, and both mHC sites.
- *
- * Tier 2a - the DSA layer with routed experts (layer 3): the same walk
- * through the rope-0 MLA site (nope-only absorbed scoring, pure-512
- * latent cache, NO rope anywhere) and the MoE: fp32 router GEMM, sigmoid
- * top-8 with the correction bias selecting but not weighing, the
- * renormalised mixture at scale 2.5, eight routed-expert forwards through
- * the compiled package codec (dequant restated losslessly - the fixture
- * writes only exactly representable codes), and the shared expert.
- *
- * Tier 2b - the kpool indexer at context > INDEX_TOP_K: the fixture
- * pre-populates the packed indexer cache ([k|gate|1.0] rows) so the
- * per-channel softmax pool keys are host-known; the pool selection
- * (512 of context/4 complete pools) is checked as a set against the
- * oracle's prediction and the expanded 2051-wide list element-wise,
- * sentinel semantics included.
- *
- * DEVIATION, recorded: the reference clamps the dense/shared SwiGLU at
- * swiglu_limit 10.0; the shared LmSiluMulKernel (this family and dsv4's)
- * does not clamp. Fixtures keep |gate|,|up| << 10 so the tiers are exact
- * either way; the deviation is a property of the shipped kernel, shared
- * with the dsv4 family, and only binds for activations beyond 10.
- *
- * Every comparison prints its numbers; the thresholds are the guard, the
- * numbers are the evidence. The pure oracle/codec/selection math below is
- * EXECUTED on every host by tests/test_glm5_next_cuda_validator_tier2_
- * oracle.py through the SPARK_GLM5_NEXT_VALIDATOR_ORACLE_SELFTEST entry
- * at the bottom of this file, so the fixture shaping and oracle formulas
- * ship runtime-tested.
- */
 
 #define SPARK_GLM5_NEXT_VALIDATION_TOKENS 4u
 #define SPARK_GLM5_NEXT_VALIDATION_LANES 1u
 #define SPARK_GLM5_NEXT_VALIDATION_EMBED_ROWS 8u
 
-/* Glm5NextKv / Glm5NextIndexKv geometry (source/cuda/config.h +
- * layer.cuh): block-major pools, 64-token pages, DSA-layer strides. */
 #define SPARK_GLM5_NEXT_VALIDATION_PAGES 34u
 #define SPARK_GLM5_NEXT_VALIDATION_KV_ACCESS_WORDS 6u
 
-/* -- tier 2b: the kpool indexer --------------------------------------------- */
 #define SPARK_GLM5_NEXT_VALIDATION_DSA_CONTEXT 2064u
 #define SPARK_GLM5_NEXT_VALIDATION_POOLS \
 	(SPARK_GLM5_NEXT_VALIDATION_DSA_CONTEXT / 4u)
@@ -80,7 +29,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 
-/* Host-mirrored geometry (config.h at tp_degree 1). */
 #define SPARK_GLM5_NEXT_VHIDDEN SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM5_NEXT_VKDA_HEADS SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT
 #define SPARK_GLM5_NEXT_VKDA_DIM SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION
@@ -114,7 +62,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWa
 #define SPARK_GLM5_NEXT_VINDEX_TOPK SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K
 #define SPARK_GLM5_NEXT_VINDEX_WIDTH SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH
 
-/* -- fixtures ---------------------------------------------------------------- */
 static uint32_t SparkGlm5NextValRandomState;
 
 static uint32_t SparkGlm5NextValNext(void)
@@ -127,7 +74,6 @@ static uint32_t SparkGlm5NextValNext(void)
 	return(value);
 }
 
-/* Round to nearest even: the LmFloatToBf16 contract (dtype.cuh). */
 static uint16_t SparkGlm5NextValBf16(float value)
 {
 	uint32_t bits;
@@ -150,9 +96,6 @@ static void SparkGlm5NextValFill(uint16_t *packed,float *exact,uint64_t count,fl
 	uint64_t index;
 	for (index = 0u; index < count; index++)
 	{
-		/* Zero-mean grids (glm52's F3 lesson): a positive-mean expert grid
-		 * turns the top-8 mixture into a quadratic amplifier of chain
-		 * noise. */
 		float value = (((float)(int32_t)(SparkGlm5NextValNext() & 0xffffu) -
 			32768.0f) / 32768.0f) * scale;
 		exact[index] = value;
@@ -211,7 +154,6 @@ static int SparkGlm5NextValReport(const char *check,const SparkGlm5NextValMetric
 	return(ok ? 0 : 1);
 }
 
-/* -- package expert codec, host mirror (glm52's FIXED addressing) ------------- */
 #define SPARK_GLM5_NEXT_VAL_CODEC_INT6 2u
 #define SPARK_GLM5_NEXT_VAL_CODEC_INT7 3u
 #define SPARK_GLM5_NEXT_VAL_CODEC_INT8 4u
@@ -255,7 +197,6 @@ static uint32_t SparkGlm5NextValCodecUsesSignedIntGrid(uint32_t codec)
 		codec == SPARK_GLM5_NEXT_VAL_CODEC_INT8 ? 1u : 0u);
 }
 
-/* E4M3 decode, host form of the hardware conversion for every finite code. */
 static float SparkGlm5NextValE4m3Decode(uint8_t code)
 {
 	int32_t sign = (code & 0x80u) != 0u ? -1 : 1;
@@ -266,7 +207,6 @@ static float SparkGlm5NextValE4m3Decode(uint8_t code)
 		return((float)sign * ((float)mantissa * (1.0f / 512.0f)));
 	if ( exponent == 15u && mantissa == 7u )
 		return((float)sign * NAN);
-	/* bias 7: (1 + m/8) * 2^(e-7), min normal e=1 -> 2^-6. */
 	value = (1.0f + ((float)mantissa) * 0.125f) *
 		(float)(1u << (int32_t)(exponent - 7u < 31u ? exponent - 7u : 0u));
 	if ( exponent < 7u )
@@ -275,7 +215,6 @@ static float SparkGlm5NextValE4m3Decode(uint8_t code)
 	return((float)sign * value);
 }
 
-/* E2M1 nibble: magnitudes {0,.5,1,1.5,2,3,4,6}, bit 3 is the sign. */
 static float SparkGlm5NextValE2m1Decode(uint8_t nibble)
 {
 	static const float magnitudes[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
@@ -283,9 +222,6 @@ static float SparkGlm5NextValE2m1Decode(uint8_t nibble)
 	return((nibble & 8u) != 0u ? -magnitude : magnitude);
 }
 
-/* codec addressing helpers: compiled in BOTH modes (the selftest and
- * the GPU tiers both dequant expert slabs). */
-/* Signed integer grid bounds. */
 static int32_t SparkGlm5NextValCodecCodeMinimum(uint32_t codec)
 {
 	return(codec == SPARK_GLM5_NEXT_VAL_CODEC_INT6 ? -31 :
@@ -300,7 +236,6 @@ static int32_t SparkGlm5NextValCodecCodeMaximum(uint32_t codec)
 		codec == SPARK_GLM5_NEXT_VAL_CODEC_INT8 ? 127 : 0);
 }
 
-/* Scale plane geometry: per-expert blocks of scale-group columns. */
 static uint64_t SparkGlm5NextValScaleBlocksPerExpert(uint32_t codec,uint32_t rows,uint32_t columns)
 {
 	uint32_t group = SparkGlm5NextValCodecScaleGroup(codec);
@@ -314,7 +249,6 @@ static uint64_t SparkGlm5NextValScaleBytesPerExpert(uint32_t codec,uint32_t rows
 
 static uint64_t SparkGlm5NextValScaleBufferBytes(uint32_t codec,uint32_t expert_count,uint32_t rows,uint32_t columns)
 {
-	/* FP8 e4m3 [128,128] f32 scales; nvfp4 carries per-expert globals. */
 	uint64_t per = SparkGlm5NextValScaleBytesPerExpert(codec,rows,columns);
 	return(codec == SPARK_GLM5_NEXT_VAL_CODEC_NVFP4
 		? (uint64_t)expert_count * (per + sizeof(float))
@@ -339,16 +273,11 @@ static uint64_t SparkGlm5NextValPayloadBytesPerExpert(uint32_t codec,uint32_t ro
 	return((uint64_t)rows * SparkGlm5NextValPayloadRowBytes(codec,columns));
 }
 
-/* THE glm52 F3 FIX, inherited: expert-major slab offset in the payload
- * buffer - the mirror of the kernel's weight tensor map and the pack
- * layout. Before the fix only the scale index carried the expert
- * dimension and every oracle forward decoded slab 0. */
 static uint64_t SparkGlm5NextValPayloadExpertOffset(uint32_t codec,uint32_t expert,uint32_t rows,uint32_t columns)
 {
 	return((uint64_t)expert * SparkGlm5NextValPayloadBytesPerExpert(codec,rows,columns));
 }
 
-/* Read one stored code at (row, column) of an expert's payload slab. */
 static uint8_t SparkGlm5NextValPayloadCode(const uint8_t *payload,uint32_t codec,uint32_t row,uint32_t column,uint32_t columns)
 {
 	uint64_t row_bytes = SparkGlm5NextValPayloadRowBytes(codec,columns);
@@ -359,20 +288,17 @@ static uint8_t SparkGlm5NextValPayloadCode(const uint8_t *payload,uint32_t codec
 }
 
 
-/* -- oracle formulas --------------------------------------------------------- */
 
 static float SparkGlm5NextValSigmoid(float value)
 {
 	return(1.0f / (1.0f + expf(-value)));
 }
 
-/* LmBoundedDecay restated: exp(lb * sigmoid(exp(A_log) * (logit + bias))). */
 static float SparkGlm5NextValBoundedDecay(float logit,float bias,float head_log_scale,float lower_bound)
 {
 	return(expf(lower_bound * SparkGlm5NextValSigmoid(expf(head_log_scale) * (logit + bias))));
 }
 
-/* RMS norm (plain, weight applied). */
 static void SparkGlm5NextValRmsNorm(float *row,const float *weight,uint32_t dimension,float epsilon)
 {
 	float sum = 0.0f;
@@ -384,17 +310,6 @@ static void SparkGlm5NextValRmsNorm(float *row,const float *weight,uint32_t dime
 		row[index] = row[index] * inverse * weight[index];
 }
 
-/* mHC site math, the reference restated:
- *   mix_h   = fn_h . (streams / rms(streams))          (unweighted norm
- *                                                        over the FLAT row)
- *   pre_h   = sigmoid(mix_h*s0 + b_h) + eps
- *   post_h  = 2*sigmoid(mix_{H+h}*s1 + b_{H+h})
- *   comb    = softmax(mix_{2H..}*s2 + b_{2H..}) + eps, one column norm,
- *             then 19 alternating row/col normalisations (sinkhorn 20)
- *   collapse= sum_h pre_h * stream_h
- *   streams_new[s] = post_s*out + sum_r comb[r][s]*snapshot_r
- * All in fp32; the DEVICE runs the same formulas in bf16 storage and
- * fp32 arithmetic - the oracle's inputs are the bf16-rounded values. */
 static void SparkGlm5NextValHcSite(const float *streams,const float *fn,const float *base,const float *scale,
 	float epsilon,uint32_t hc,uint32_t dimension,float *mixes_out,
 	float *pre_out,float *post_out,float *comb_out,float *collapsed,float *snapshot)
@@ -420,7 +335,6 @@ static void SparkGlm5NextValHcSite(const float *streams,const float *fn,const fl
 		pre_out[h] = SparkGlm5NextValSigmoid(mixes_out[h] * scale[0] + base[h]) + epsilon;
 		post_out[h] = 2.0f * SparkGlm5NextValSigmoid(mixes_out[hc + h] * scale[1] + base[hc + h]);
 	}
-	/* comb: softmax over rows, then column norm once, then (row,col) x19. */
 	for (i = 0u; i < hc; i++)
 	{
 		float maximum = -3.0e38f, total = 0.0f;
@@ -492,21 +406,19 @@ static void SparkGlm5NextValHcPost(const float *out,const float *snapshot,const 
 		}
 }
 
-/* KDA forward for one token (decode step), state carried in [heads][k][v]
- * fp32. Inputs are the ALREADY-bf16-rounded fixture values. */
 static void SparkGlm5NextValKdaToken(
-	const float *collapsed_in,       /* [hidden] the HC-collapsed input */
-	const float *attn_norm_weight,   /* [hidden] plain-norm weight (ones fixture) */
-	const float *qkv_beta,           /* [q|k|v|beta fused rows, hidden] */
-	const float *conv_q, const float *conv_k, const float *conv_v, /* [dim, kernel] */
-	const float *decay_down_gate,    /* [2*low_rank, hidden] fused */
-	const float *decay_up,           /* [dim, low_rank] */
-	const float *gate_up,            /* [dim, low_rank] */
+	const float *collapsed_in,
+	const float *attn_norm_weight,
+	const float *qkv_beta,
+	const float *conv_q, const float *conv_k, const float *conv_v,
+	const float *decay_down_gate,
+	const float *decay_up,
+	const float *gate_up,
 	const float *dt_bias, const float *a_log,
-	const float *out_norm, const float *out_weight, /* [hidden, dim] */
-	uint16_t *q_window, uint16_t *k_window, uint16_t *v_window, /* [dim, kernel] bf16 */
-	float *state,                    /* [heads][k][v] */
-	float *output)                   /* [hidden] */
+	const float *out_norm, const float *out_weight,
+	uint16_t *q_window, uint16_t *k_window, uint16_t *v_window,
+	float *state,
+	float *output)
 {
 	const uint32_t heads = SPARK_GLM5_NEXT_VKDA_HEADS;
 	const uint32_t dim_per_head = SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION;
@@ -519,10 +431,6 @@ static void SparkGlm5NextValKdaToken(
 	float core[SPARK_GLM5_NEXT_VKDA_DIM];
 	uint32_t index, head, channel;
 
-	/* THE PLAIN NORM FIRST (the module's first launch): the collapsed
-	 * input is ~1e-4-scale; the norm amplifies it to O(1) before the
-	 * projections. Skipping this was the oracle's step-0 bug - every
-	 * projection came out ~1000x small. */
 	float collapsed[SPARK_GLM5_NEXT_VHIDDEN];
 	{
 		float total = 0.0f, inv;
@@ -532,7 +440,6 @@ static void SparkGlm5NextValKdaToken(
 		for (index = 0u; index < SPARK_GLM5_NEXT_VHIDDEN; index++)
 			collapsed[index] = collapsed_in[index] * inv * attn_norm_weight[index];
 	}
-	/* Projections from the fused tensor. */
 	for (index = 0u; index < qk; index++)
 	{
 		float sum = 0.0f;
@@ -561,7 +468,6 @@ static void SparkGlm5NextValKdaToken(
 			sum += qkv_beta[(2u * qk + qk + head) * SPARK_GLM5_NEXT_VHIDDEN + j] * collapsed[j];
 		beta[head] = SparkGlm5NextValSigmoid(sum);
 	}
-	/* Short convolutions with SWISH, each over its own bf16 window. */
 	for (index = 0u; index < qk; index++)
 	{
 		float taps[8];
@@ -601,7 +507,6 @@ static void SparkGlm5NextValKdaToken(
 		total = total * SparkGlm5NextValSigmoid(total);
 		v[index] = total;
 	}
-	/* qk L2 norm per head. */
 	for (head = 0u; head < heads; head++)
 	{
 		float *qh = q + head * dim_per_head;
@@ -616,8 +521,6 @@ static void SparkGlm5NextValKdaToken(
 		nk = 1.0f / sqrtf(nk + (nk > 0.0f ? 0.0f : 1.0f));
 		(void)nq; (void)nk;
 	}
-	/* The kernel's per-head L2 uses RMS-style epsilon; restate exactly:
-	 * LmL2NormalisePerHeadKernel scales by 1/sqrt(sum(x^2) + eps). */
 	for (head = 0u; head < heads; head++)
 	{
 		float *qh = q + head * dim_per_head;
@@ -636,7 +539,6 @@ static void SparkGlm5NextValKdaToken(
 			kh[channel] *= nk;
 		}
 	}
-	/* Low-rank decay and gate. */
 	for (index = 0u; index < SPARK_GLM5_NEXT_VKDA_LOW_RANK; index++)
 	{
 		float sum = 0.0f;
@@ -666,11 +568,6 @@ static void SparkGlm5NextValKdaToken(
 			sum += gate_up[(uint64_t)index * SPARK_GLM5_NEXT_VKDA_LOW_RANK + j] * gate_latent[j];
 		gate[index] = sum;
 	}
-	/* Delta rule, the KERNEL's exact form: predicted = S_decayed^T (k . a)
-	 * per value element; S = Diag(a) S + beta (v - predicted) k^T; the
-	 * output reads the UPDATED state: o = S^T q. (The gross form
-	 * (I - beta k k^T) Diag(a) S + beta k v^T is algebraically equal; the
-	 * kernel's delta form is what runs, and what an oracle must restate.) */
 	for (head = 0u; head < heads; head++)
 	{
 		const float *qh = q + head * dim_per_head;
@@ -679,7 +576,6 @@ static void SparkGlm5NextValKdaToken(
 		const float *ah = retention + head * dim_per_head;
 		float *sh = state + (uint64_t)head * dim_per_head * dim_per_head;
 		float predicted[SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION];
-		/* decay first, exactly as the kernel's fold. */
 		for (uint32_t key = 0u; key < dim_per_head; key++)
 			for (uint32_t value = 0u; value < dim_per_head; value++)
 				sh[(uint64_t)key * dim_per_head + value] *= ah[key];
@@ -705,7 +601,6 @@ static void SparkGlm5NextValKdaToken(
 			core[head * dim_per_head + value] = dot;
 		}
 	}
-	/* RMSNormGated: per-head fp32 norm + weight, then * sigmoid(gate). */
 	for (head = 0u; head < heads; head++)
 	{
 		float *row = core + head * dim_per_head;
@@ -717,7 +612,6 @@ static void SparkGlm5NextValKdaToken(
 			row[channel] = row[channel] * inverse * out_norm[channel] *
 				SparkGlm5NextValSigmoid(gate[head * dim_per_head + channel]);
 	}
-	/* o_proj. */
 	for (index = 0u; index < SPARK_GLM5_NEXT_VHIDDEN; index++)
 	{
 		float sum = 0.0f;
@@ -727,16 +621,15 @@ static void SparkGlm5NextValKdaToken(
 	}
 }
 
-/* rope-0 MLA forward for one token (decode), absorbed form. */
 static void SparkGlm5NextValMlaToken(
 	const float *collapsed,
 	const float *q_a, const float *q_a_norm, const float *q_b,
 	const float *kv_a, const float *kv_a_norm,
 	const float *kv_b_key, const float *kv_b_value, const float *o_proj,
-	const float *latents,               /* [context][latent] prior tokens */
+	const float *latents,
 	uint32_t context,
-	float *latent_out,                  /* [latent] this token's cache row */
-	float *output)                      /* [hidden] */
+	float *latent_out,
+	float *output)
 {
 	const uint32_t heads = SPARK_GLM5_NEXT_VHEADS;
 	const uint32_t latent = SPARK_GLM5_NEXT_VLATENT;
@@ -746,8 +639,6 @@ static void SparkGlm5NextValMlaToken(
 	float q_rows[SPARK_GLM5_NEXT_VQ_B_ROWS];
 	float scale = 1.0f / 256.0f;
 	(void)scale;
-	/* q_a_layernorm is a plain RMS norm at 1e-5 (mla lora norms take the
-	 * model epsilon; glm5_next passes rms_norm_eps everywhere). */
 	uint32_t index;
 	for (index = 0u; index < SPARK_GLM5_NEXT_VQUERY_A; index++)
 	{
@@ -764,7 +655,6 @@ static void SparkGlm5NextValMlaToken(
 			sum += q_b[(uint64_t)index * SPARK_GLM5_NEXT_VQUERY_A + j] * q_lora[j];
 		q_rows[index] = sum;
 	}
-	/* kv_a -> normed latent row. */
 	for (index = 0u; index < latent; index++)
 	{
 		float sum = 0.0f;
@@ -773,17 +663,14 @@ static void SparkGlm5NextValMlaToken(
 		latent_out[index] = sum;
 	}
 	SparkGlm5NextValRmsNorm(latent_out,kv_a_norm,latent,1e-5f);
-	/* Per head: absorb q_nope into the latent (kv_b_key is stored
-	 * TRANSPOSED per head: [latent][nope]), softmax over context+1, read
-	 * back through kv_b_value ([vdim][latent] per head). */
 	{
 		float values[SPARK_GLM5_NEXT_VATTN_COLS];
 		float scores[512];
 		for (uint32_t head = 0u; head < heads; head++)
 		{
 			const float *qh = q_rows + head * nope;
-			const float *key_t = kv_b_key + (uint64_t)head * latent * nope; /* [latent][nope] */
-			const float *value_w = kv_b_value + (uint64_t)head * vdim * latent; /* [vdim][latent] */
+			const float *key_t = kv_b_key + (uint64_t)head * latent * nope;
+			const float *value_w = kv_b_value + (uint64_t)head * vdim * latent;
 			float q_absorbed[512];
 			uint32_t position;
 			for (index = 0u; index < latent; index++)
@@ -801,7 +688,7 @@ static void SparkGlm5NextValMlaToken(
 					float dot = 0.0f;
 					for (index = 0u; index < latent; index++)
 						dot += q_absorbed[index] * row[index];
-					scores[position] = dot * 0.0625f; /* 256 ** -0.5 */
+					scores[position] = dot * 0.0625f;
 					if (scores[position] > maximum)
 						maximum = scores[position];
 				}
@@ -832,8 +719,6 @@ static void SparkGlm5NextValMlaToken(
 	}
 }
 
-/* Router (sigmoid + noaux_tc at n_group 1 = plain top-8 with the frozen
- * bias selecting) and the renormalised mixture. */
 static void SparkGlm5NextValRouter(const float *router,const float *correction,const float *hidden,
 	uint32_t *selected,float *weights)
 {
@@ -869,7 +754,6 @@ static void SparkGlm5NextValRouter(const float *router,const float *correction,c
 	}
 }
 
-/* -- tier drivers ------------------------------------------------------------ */
 
 typedef struct SparkGlm5NextValMatrix
 {
@@ -922,11 +806,6 @@ static void *SparkGlm5NextValAllocZeroed(uint64_t bytes)
 	return(pointer);
 }
 
-/* -- host-executable oracle selftest (tier 2, no GPU) ------------------------
- * Compiled in BOTH modes: the host gate runs it via
- * tests/test_glm5_next_cuda_validator_tier2_oracle.py (cuda_stub, no
- * toolkit), and the GPU binary runs it before any tier driver so the
- * formulas are proven on the validating host itself. */
 static int SparkGlm5NextValSelftestAssert(int condition,const char *what)
 {
 	if (!condition)
@@ -940,7 +819,6 @@ static int SparkGlm5NextValSelftestAssert(int condition,const char *what)
 static int SparkGlm5NextValOracleSelftest(void)
 {
 	int failures = 0;
-	/* 1. Bounded decay: the reference forget gate. */
 	failures += SparkGlm5NextValSelftestAssert(
 		fabsf(SparkGlm5NextValBoundedDecay(0.0f,0.0f,0.0f,-5.0f) -
 			expf(-5.0f * 0.5f)) < 1e-6f,"bounded decay at zero");
@@ -952,7 +830,6 @@ static int SparkGlm5NextValOracleSelftest(void)
 		failures += SparkGlm5NextValSelftestAssert(value > 0.0f && value <= 1.0f,
 			"bounded decay range (0,1]");
 	}
-	/* 2. Expert-major payload addressing (the glm52 F3 fix, inherited). */
 	{
 		uint64_t slab = SparkGlm5NextValPayloadBytesPerExpert(SPARK_GLM5_NEXT_VAL_CODEC_FP8,64u,128u);
 		failures += SparkGlm5NextValSelftestAssert(slab == 64u * 128u,
@@ -965,14 +842,13 @@ static int SparkGlm5NextValOracleSelftest(void)
 			7u * SparkGlm5NextValScaleBytesPerExpert(SPARK_GLM5_NEXT_VAL_CODEC_FP8,64u,128u),
 			"expert-major scale offset");
 	}
-	/* 3. fp8 e4m3 decode round trip on exactly representable codes. */
 	{
 		uint8_t code;
 		int ok = 1;
 		for (code = 0u; code < 255u; code++)
 		{
 			if ((code & 0x7fu) == 0x7fu)
-				continue; /* NaN encodings */
+				continue;
 			float decoded = SparkGlm5NextValE4m3Decode(code);
 			if (!(decoded == decoded))
 				ok = 0;
@@ -982,7 +858,6 @@ static int SparkGlm5NextValOracleSelftest(void)
 			SparkGlm5NextValE4m3Decode(0x38u) == 1.0f &&
 			SparkGlm5NextValE4m3Decode(0xb8u) == -1.0f,"e4m3 decode values");
 	}
-	/* 4. mHC: pre/post ranges and doubly-stochastic comb. */
 	{
 		float streams[SPARK_GLM5_NEXT_VHC * 4];
 		float fn[SPARK_GLM5_NEXT_VHC_MIX * 16];
@@ -1017,13 +892,11 @@ static int SparkGlm5NextValOracleSelftest(void)
 				"comb column sums to 1 (doubly stochastic)");
 		}
 	}
-	/* 5. kpool expansion: tail placement + sentinel semantics. */
 	{
 		uint32_t selected_pools[2] = {0u,1u};
-		uint32_t context = 4u * 5u + 2u; /* 5 complete pools, tail 2 */
+		uint32_t context = 4u * 5u + 2u;
 		uint32_t sequence = 0u, width = 11u;
 		uint32_t list[11];
-		/* Restate Glm5NextPoolExpandKernel inline. */
 		uint32_t index;
 		uint32_t select = 2u;
 		for (index = 0u; index < width; index++)
@@ -1050,15 +923,12 @@ static int SparkGlm5NextValOracleSelftest(void)
 		failures += SparkGlm5NextValSelftestAssert(list[10] == 0xFFFFFFFFu,"empty tail slot sentinel");
 		(void)sequence;
 	}
-	/* 6. KDA split section offsets (pack V2 contract). */
 	{
 		uint32_t heads = 64u, dim = 128u;
 		uint32_t qk = heads * dim;
 		failures += SparkGlm5NextValSelftestAssert(
 			2u * qk + qk + heads == 3u * qk + heads,"fused q|k|v|beta row count");
 	}
-	/* 7. Execute the KDA token oracle end to end (one token, real
-	 * geometry): output finite and non-degenerate. */
 	{
 		static float collapsed[SPARK_GLM5_NEXT_VHIDDEN];
 		static float qkv_beta[(3u * SPARK_GLM5_NEXT_VKDA_DIM + SPARK_GLM5_NEXT_VKDA_HEADS) * SPARK_GLM5_NEXT_VHIDDEN];
@@ -1113,7 +983,6 @@ static int SparkGlm5NextValOracleSelftest(void)
 		failures += SparkGlm5NextValSelftestAssert(finite,"kda oracle output finite");
 		failures += SparkGlm5NextValSelftestAssert(magnitude > 0.0f,"kda oracle output non-zero");
 	}
-	/* 8. Execute the rope-0 MLA oracle for one token at context 3. */
 	{
 		static float collapsed[SPARK_GLM5_NEXT_VHIDDEN];
 		static float q_a[SPARK_GLM5_NEXT_VQUERY_A * SPARK_GLM5_NEXT_VHIDDEN];
@@ -1162,8 +1031,6 @@ static int SparkGlm5NextValOracleSelftest(void)
 		failures += SparkGlm5NextValSelftestAssert(finite,"mla oracle output finite");
 		failures += SparkGlm5NextValSelftestAssert(magnitude > 0.0f,"mla oracle output non-zero");
 	}
-	/* 9. Router: top-8 of 288, weights sum to the routed scale after
-	 * renormalisation (up to the 1e-20 guard). */
 	{
 		static float router[(uint64_t)SPARK_GLM5_NEXT_VEXPERTS * SPARK_GLM5_NEXT_VHIDDEN];
 		static float correction[SPARK_GLM5_NEXT_VEXPERTS];
@@ -1199,9 +1066,6 @@ static int SparkGlm5NextValOracleSelftest(void)
 
 #ifndef SPARK_GLM5_NEXT_VALIDATOR_ORACLE_SELFTEST
 
-/* -- device fixture (tiers 1 and 2a) ---------------------------------------- */
-
-#define SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS 8u
 
 typedef struct SparkGlm5NextValFixture
 {
@@ -1211,20 +1075,16 @@ typedef struct SparkGlm5NextValFixture
 	cudaStream_t stream;
 	uint32_t multiprocessors;
 	SparkGlm5NextValMatrix attn_norm,mlp_norm;
-	/* KDA tensors (the pack-V2 fused forms). */
 	SparkGlm5NextValMatrix kda_qkv_beta,kda_decay_gate_down,kda_decay_up,kda_gate_up;
 	SparkGlm5NextValMatrix kda_q_conv,kda_k_conv,kda_v_conv,kda_out;
 	float *kda_out_norm_dev;
 	float kda_out_norm_host[SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION];
 	float *kda_dt_bias;      float kda_dt_bias_host[SPARK_GLM5_NEXT_VKDA_DIM];
 	float *kda_a_log;        float kda_a_log_host[SPARK_GLM5_NEXT_VKDA_HEADS];
-	/* MLA tensors. */
 	SparkGlm5NextValMatrix q_a,q_a_norm,q_b,kv_a,kv_a_norm,kv_b_key,kv_b_value,attn_output;
-	/* Indexer kpool compressor: ape is F32 in the pack. */
 	SparkGlm5NextValMatrix index_q,index_k,index_head,index_norm_weight,index_norm_bias,index_compress_gate;
 	float *index_compress_ape_dev;
 	float index_compress_ape_host[SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL * SPARK_GLM5_NEXT_VDSA_DIM];
-	/* HC tensors (fn/base/scale), stored F32 exactly as the pack does. */
 	float *hc_attn_fn_dev,*hc_attn_base_dev,*hc_attn_scale_dev;
 	float *hc_ffn_fn_dev,*hc_ffn_base_dev,*hc_ffn_scale_dev;
 	float hc_attn_fn_host[SPARK_GLM5_NEXT_VHC_MIX * SPARK_GLM5_NEXT_VHC_FLAT];
@@ -1233,10 +1093,8 @@ typedef struct SparkGlm5NextValFixture
 	float hc_ffn_fn_host[SPARK_GLM5_NEXT_VHC_MIX * SPARK_GLM5_NEXT_VHC_FLAT];
 	float hc_ffn_base_host[SPARK_GLM5_NEXT_VHC_MIX];
 	float hc_ffn_scale_host[3u];
-	/* MLP tensors. */
 	SparkGlm5NextValMatrix dense_gate_up,dense_down,router,shared_gate_up,shared_down;
 	float *router_correction; float router_correction_host[SPARK_GLM5_NEXT_VEXPERTS];
-	/* Scratch and caches (8 rows of everything, 1 lane). */
 	uint16_t *streams,*residual,*normed,*q_compressed,*q_bf16,*kv_slot;
 	uint16_t *query_latent,*attention_latent,*attention_value,*attention_out;
 	uint16_t *gate_up,*intermediate,*expert_out,*shared_out;
@@ -1255,15 +1113,10 @@ typedef struct SparkGlm5NextValFixture
 	uint8_t *kv_cache,*index_cache,*kda_state_pools,*kda_window_pools;
 	uint16_t *boundary_input;
 	uint16_t boundary_host_rows[8u * SPARK_GLM5_NEXT_VHIDDEN];
-	uint32_t host_resident_slots_stage[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
-	uint32_t host_positions_stage[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
-	uint32_t host_token_ids_stage[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
+	uint32_t host_resident_slots_stage[1u];
+	uint32_t host_positions_stage[1u];
+	uint32_t host_token_ids_stage[1u];
 	uint32_t *kda_state_index;
-	/* Run structure (identity: one run per row) so the tiers exercise the
-	 * run-aware kernel path exactly as serving does. */
-	uint32_t *run_begin,*run_state_index;
-	uint32_t host_run_begin[2u];
-	uint32_t host_run_state_index[1u];
 	uint32_t host_page_table[SPARK_GLM5_NEXT_VALIDATION_PAGES];
 	uint32_t host_kv_ordinals[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint32_t host_index_ordinals[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
@@ -1316,41 +1169,36 @@ static int SparkGlm5NextValFixtureBuild(SparkGlm5NextValFixture *fixture)
 static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 {
 	uint32_t state_bytes = SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER;
-	fixture->streams = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * 16u * sizeof(uint16_t));
-	fixture->residual = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
-	fixture->normed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
-	fixture->q_compressed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQUERY_A * 16u * sizeof(uint16_t));
-	fixture->q_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQ_B_ROWS * 16u * sizeof(uint16_t));
-	/* kv_slot serves BOTH paths: the MLA latent row (512) AND the KDA
-	 * key row (KDA_DIM = 8192) - allocate the KDA width or the split's
-	 * key copy overflows into the neighbouring allocations (the exact
-	 * defect the step-0 probe ran down: the "k" readback returned q's
-	 * bytes from the adjacent buffer). */
-	fixture->kv_slot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 16u * sizeof(uint16_t));
-	fixture->query_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 16u * sizeof(uint16_t));
-	fixture->attention_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 16u * sizeof(uint16_t));
-	fixture->attention_value = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VATTN_COLS * 16u * sizeof(uint16_t));
-	fixture->attention_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
-	fixture->gate_up = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VGATE_UP_ROWS * 16u * sizeof(uint16_t));
-	fixture->intermediate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDENSE_INTER * 16u * sizeof(uint16_t));
+	fixture->streams = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * 8u * sizeof(uint16_t));
+	fixture->residual = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
+	fixture->normed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
+	fixture->q_compressed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQUERY_A * 8u * sizeof(uint16_t));
+	fixture->q_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VQ_B_ROWS * 8u * sizeof(uint16_t));
+	fixture->kv_slot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 8u * sizeof(uint16_t));
+	fixture->query_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 8u * sizeof(uint16_t));
+	fixture->attention_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * 8u * sizeof(uint16_t));
+	fixture->attention_value = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VATTN_COLS * 8u * sizeof(uint16_t));
+	fixture->attention_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
+	fixture->gate_up = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VGATE_UP_ROWS * 8u * sizeof(uint16_t));
+	fixture->intermediate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDENSE_INTER * 8u * sizeof(uint16_t));
 	fixture->expert_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)8u * SPARK_GLM5_NEXT_VTOP_K * SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t));
 	fixture->shared_out = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)8u * SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t));
-	fixture->fused_qkvb = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)(3u * SPARK_GLM5_NEXT_VKDA_DIM + SPARK_GLM5_NEXT_VKDA_HEADS) * 16u * sizeof(uint16_t));
-	fixture->fused_decay_gate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)2u * SPARK_GLM5_NEXT_VKDA_LOW_RANK * 16u * sizeof(uint16_t));
-	fixture->decay_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_LOW_RANK * 16u * sizeof(uint16_t));
-	fixture->gate_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_LOW_RANK * 16u * sizeof(uint16_t));
-	fixture->kda_beta_logit = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_HEADS * 16u * sizeof(uint16_t));
-	fixture->kda_gate_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 16u * sizeof(uint16_t));
-	fixture->kda_decay_logit = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 16u * sizeof(uint16_t));
-	fixture->kda_output = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
-	fixture->hc_collapsed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
-	fixture->hc_snapshot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * 16u * sizeof(uint16_t));
-	fixture->hc_mean = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 16u * sizeof(uint16_t));
-	fixture->index_query = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_QUERY_DIM * 16u * sizeof(uint16_t));
-	fixture->index_key = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_DIM * 16u * sizeof(uint16_t));
-	fixture->index_gate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_DIM * 16u * sizeof(uint16_t));
-	fixture->index_packed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VINDEX_PACKED * 16u * sizeof(uint16_t));
-	fixture->index_head_buf = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_HEADS * 16u * sizeof(uint16_t));
+	fixture->fused_qkvb = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)(3u * SPARK_GLM5_NEXT_VKDA_DIM + SPARK_GLM5_NEXT_VKDA_HEADS) * 8u * sizeof(uint16_t));
+	fixture->fused_decay_gate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)2u * SPARK_GLM5_NEXT_VKDA_LOW_RANK * 8u * sizeof(uint16_t));
+	fixture->decay_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_LOW_RANK * 8u * sizeof(uint16_t));
+	fixture->gate_latent = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_LOW_RANK * 8u * sizeof(uint16_t));
+	fixture->kda_beta_logit = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_HEADS * 8u * sizeof(uint16_t));
+	fixture->kda_gate_bf16 = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 8u * sizeof(uint16_t));
+	fixture->kda_decay_logit = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * 8u * sizeof(uint16_t));
+	fixture->kda_output = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
+	fixture->hc_collapsed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
+	fixture->hc_snapshot = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * 8u * sizeof(uint16_t));
+	fixture->hc_mean = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VHIDDEN * 8u * sizeof(uint16_t));
+	fixture->index_query = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_QUERY_DIM * 8u * sizeof(uint16_t));
+	fixture->index_key = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_DIM * 8u * sizeof(uint16_t));
+	fixture->index_gate = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_DIM * 8u * sizeof(uint16_t));
+	fixture->index_packed = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VINDEX_PACKED * 8u * sizeof(uint16_t));
+	fixture->index_head_buf = (uint16_t *)SparkGlm5NextValAllocZeroed((uint64_t)SPARK_GLM5_NEXT_VDSA_HEADS * 8u * sizeof(uint16_t));
 	fixture->selected_pools = (uint32_t *)SparkGlm5NextValAllocZeroed((uint64_t)8u * 512u * sizeof(uint32_t));
 	fixture->selected_positions = (uint32_t *)SparkGlm5NextValAllocZeroed((uint64_t)8u * SPARK_GLM5_NEXT_VINDEX_WIDTH * sizeof(uint32_t));
 	fixture->hc_mixes = (float *)SparkGlm5NextValAllocZeroed((uint64_t)8u * SPARK_GLM5_NEXT_VHC_MIX * sizeof(float));
@@ -1380,8 +1228,6 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 	if (fixture->streams == 0 || fixture->attention_out == 0 || fixture->kda_output == 0 ||
 		fixture->hc_mixes == 0 || fixture->kda_retention == 0 || fixture->kv_access_error == 0)
 		return(SparkGlm5NextValFail("fixture","scratch_alloc"));
-	/* HC weights: deterministic f32 grids, uploaded as the pack stores
-	 * them (the mix kernel reads f32 rows directly). */
 	{
 		uint64_t i;
 		for (i = 0u; i < (uint64_t)SPARK_GLM5_NEXT_VHC_MIX * SPARK_GLM5_NEXT_VHC_FLAT; i++)
@@ -1417,8 +1263,6 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 			cudaMemcpy(fixture->hc_ffn_scale_dev,fixture->hc_ffn_scale_host,sizeof(fixture->hc_ffn_scale_host),cudaMemcpyHostToDevice) != cudaSuccess)
 			return(SparkGlm5NextValFail("fixture","hc_upload"));
 	}
-	/* Boundary input: 8 deterministic hidden rows; the wave's Begin
-	 * expands row (boundary_row_offset) into every HC stream. */
 	{
 		uint32_t row,element;
 		for (row = 0u; row < 8u; row++)
@@ -1430,16 +1274,9 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 			cudaMemcpy(fixture->boundary_input,fixture->boundary_host_rows,sizeof(fixture->boundary_host_rows),cudaMemcpyHostToDevice) != cudaSuccess)
 			return(SparkGlm5NextValFail("fixture","boundary_input"));
 	}
-	/* Pools: one KDA layer's state + windows, one DSA layer's latent and
-	 * packed indexer pools at page capacity. */
 	fixture->kda_state_pools = (uint8_t *)SparkGlm5NextValAllocZeroed(state_bytes);
 	fixture->kda_window_pools = (uint8_t *)SparkGlm5NextValAllocZeroed(SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER);
 	fixture->kda_state_index = (uint32_t *)SparkGlm5NextValAllocZeroed(sizeof(uint32_t));
-	fixture->run_begin = (uint32_t *)SparkGlm5NextValAllocZeroed(2u * sizeof(uint32_t));
-	fixture->run_state_index = (uint32_t *)SparkGlm5NextValAllocZeroed(sizeof(uint32_t));
-	fixture->host_run_begin[0] = 0u;
-	fixture->host_run_begin[1] = 1u;
-	fixture->host_run_state_index[0] = 0u;
 	fixture->kv_cache = (uint8_t *)SparkGlm5NextValAllocZeroed(
 		(uint64_t)SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
 	fixture->index_cache = (uint8_t *)SparkGlm5NextValAllocZeroed(
@@ -1450,12 +1287,9 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 		for (index = 0u; index < SPARK_GLM5_NEXT_VALIDATION_PAGES; index++)
 			fixture->host_page_table[index] = index;
 		if (cudaMemcpy(fixture->page_table,fixture->host_page_table,sizeof(fixture->host_page_table),cudaMemcpyHostToDevice) != cudaSuccess ||
-			cudaMemcpy(fixture->kda_state_index,&zero,sizeof(zero),cudaMemcpyHostToDevice) != cudaSuccess ||
-			cudaMemcpy(fixture->run_begin,fixture->host_run_begin,sizeof(fixture->host_run_begin),cudaMemcpyHostToDevice) != cudaSuccess ||
-			cudaMemcpy(fixture->run_state_index,fixture->host_run_state_index,sizeof(fixture->host_run_state_index),cudaMemcpyHostToDevice) != cudaSuccess)
+			cudaMemcpy(fixture->kda_state_index,&zero,sizeof(zero),cudaMemcpyHostToDevice) != cudaSuccess)
 			return(SparkGlm5NextValFail("fixture","page_table"));
 	}
-	/* o_norm: f32 ones (pack convention F32). */
 	{
 		uint32_t index;
 		for (index = 0u; index < SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION; index++)
@@ -1465,7 +1299,6 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 			cudaMemcpy(fixture->kda_out_norm_dev,fixture->kda_out_norm_host,sizeof(fixture->kda_out_norm_host),cudaMemcpyHostToDevice) != cudaSuccess)
 			return(SparkGlm5NextValFail("fixture","out_norm"));
 	}
-	/* dt_bias / A_log / router correction (f32, host-known). */
 	{
 		uint32_t index;
 		for (index = 0u; index < SPARK_GLM5_NEXT_VKDA_DIM; index++)
@@ -1494,14 +1327,10 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 	if (cudaStreamCreate(&fixture->stream) != cudaSuccess)
 		return(SparkGlm5NextValFail("fixture","stream"));
 	fixture->slot.stream = fixture->stream;
-	fixture->slot.run_begin = fixture->run_begin;
-	fixture->slot.run_state_index = fixture->run_state_index;
 	fixture->multiprocessors = 16u;
 	return(0);
 }
 
-/* Bind the fixture into the production wave exactly as BindLayer does for
- * a TP1 rank's single local layer at the requested weight layer. */
 static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t layer,uint32_t token,uint32_t position)
 {
 	SparkGlm5NextCudaWave *wave = &fixture->wave;
@@ -1628,7 +1457,6 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	wave->row_count = 1u;
 	wave->maximum_context = position + 1u;
 	wave->resident_sequence_capacity = 1u;
-	wave->execution_row_capacity = 8u; /* fixture scratch width */
 	wave->max_sequence_positions = SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u;
 	wave->pages_per_sequence = SPARK_GLM5_NEXT_VALIDATION_PAGES;
 	wave->owns_embedding = 0u;
@@ -1659,14 +1487,8 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 		wave->kda_window_layer_stride_bytes = window_bytes;
 	}
 	wave->kda_state_index = fixture->kda_state_index;
-	wave->run_count = 1u;
-	wave->sequence_row_begin = fixture->run_begin;
-	wave->run_state_index = fixture->run_state_index;
-	wave->host_sequence_row_begin = fixture->host_run_begin;
-	wave->host_run_state_index = fixture->host_run_state_index;
 	wave->page_table = fixture->page_table;
 	wave->multiprocessor_count = fixture->multiprocessors;
-	/* Host staging arrays for the metadata copies (Begin reads these). */
 	fixture->host_resident_slots_stage[0] = 0u;
 	fixture->host_positions_stage[0] = position;
 	fixture->host_token_ids_stage[0] = token;
@@ -1675,323 +1497,6 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	wave->host_token_ids = fixture->host_token_ids_stage;
 }
 
-
-/* Tier 3/4 support: an N-row single-run wave of one sequence (chunked
- * prefill shape). Mirrors SparkGlm5NextValBuildWave with rows>1, positions
- * 0..rows-1, one run, context = rows. */
-
-static void SparkGlm5NextValBuildRunWave(SparkGlm5NextValFixture *fixture,uint32_t layer,const uint32_t *tokens,uint32_t rows)
-{
-	SparkGlm5NextCudaWave *wave = &fixture->wave;
-	uint32_t token_words[8u],position_words[8u];
-	uint32_t row;
-	/* The single-row builder binds weights, pools, caches, slot and every
-	 * wave field; keep that wholesale and override ONLY the row, run and
-	 * context shape (the chunked-prefill form: one run over all rows). */
-	SparkGlm5NextValBuildWave(fixture,layer,tokens[0],0u);
-	wave->row_count = rows;
-	wave->maximum_context = rows;
-	wave->boundary_row_offset = 0u;
-	(void)cudaMemcpy(fixture->context_lengths,&rows,sizeof(rows),cudaMemcpyHostToDevice);
-	for (row = 0u; row < 8u; row++)
-	{
-		token_words[row] = row < rows ? tokens[row] : 0u;
-		position_words[row] = row < rows ? row : 0u;
-		fixture->host_resident_slots_stage[row] = 0u;
-		fixture->host_positions_stage[row] = row < rows ? row : 0u;
-		fixture->host_token_ids_stage[row] = row < rows ? tokens[row] : 0u;
-	}
-	(void)cudaMemcpy(fixture->token_ids,token_words,sizeof(token_words),cudaMemcpyHostToDevice);
-	(void)cudaMemcpy(fixture->positions,position_words,sizeof(position_words),cudaMemcpyHostToDevice);
-	fixture->host_run_begin[0] = 0u;
-	fixture->host_run_begin[1] = rows;
-	fixture->host_run_state_index[0] = 0u;
-}
-
-/* One wave; include_mlp=0 stops after AttentionPost (the fixture carries
- * no MoE weight set - the routed leg is not fixture-shaped). */
-static int SparkGlm5NextValRunWaveOnce(SparkGlm5NextValFixture *fixture,uint32_t layer,const char *label,uint32_t include_mlp)
-{
-	int32_t status;
-	status = SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave);
-	if (status != 0)
-	{
-		fprintf(stderr,"glm5_next_validation %s begin status=%d cuda=%s\n",label,status,cudaGetErrorString(cudaGetLastError()));
-		return(SparkGlm5NextValFail(label,"begin"));
-	}
-	status = SparkGlm5NextLaunchCudaLayerAttention(&fixture->wave,0u);
-	if (status != 0)
-	{
-		fprintf(stderr,"glm5_next_validation %s attention status=%d cuda=%s\n",label,status,cudaGetErrorString(cudaGetLastError()));
-		return(SparkGlm5NextValFail(label,"attention"));
-	}
-	status = SparkGlm5NextLaunchCudaLayerAttentionPost(&fixture->wave,0u);
-	if (status != 0)
-		return(SparkGlm5NextValFail(label,"attention_post"));
-	if (include_mlp != 0u)
-	{
-		status = SparkGlm5NextLaunchCudaLayerMlp(&fixture->wave,0u);
-		if (status != 0)
-		{
-			fprintf(stderr,"glm5_next_validation %s mlp status=%d cuda=%s\n",label,status,cudaGetErrorString(cudaGetLastError()));
-			return(SparkGlm5NextValFail(label,"mlp"));
-		}
-		status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,0u);
-		if (status != 0)
-			return(SparkGlm5NextValFail(label,"mlp_post"));
-	}
-	if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
-		return(SparkGlm5NextValFail(label,"sync"));
-	return(0);
-}
-
-/* The chunked-prefill contract: one N-row run wave == N sequential one-row
- * waves, bit for bit, through a full layer (KDA or DSA). */
-static int SparkGlm5NextValRunTierRun(SparkGlm5NextValFixture *fixture,uint32_t layer,const char *label,uint32_t include_mlp,uint32_t run_rows)
-{
-	static const uint32_t tokens[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS] = {1u,3u,2u,6u,5u,7u,4u,8u};
-	static uint16_t sequential[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT];
-	static uint16_t run_mode[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT];
-	uint32_t step;
-	/* Sequential reference: fresh state, one row per wave. */
-	if (cudaMemset(fixture->kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
-		cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
-		return(SparkGlm5NextValFail(label,"state_reset"));
-	for (step = 0u; step < run_rows; step++)
-	{
-		SparkGlm5NextValBuildWave(fixture,layer,tokens[step],step);
-		if (SparkGlm5NextValRunWaveOnce(fixture,layer,label,include_mlp) != 0)
-			return(1);
-		if (cudaMemcpy(sequential + (uint64_t)step * SPARK_GLM5_NEXT_VHC_FLAT,fixture->streams,
-			(uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"seq_copy"));
-	}
-	/* Run mode: fresh state, ONE 8-row run wave. Stage-wise capture: the
-	 * attention output BEFORE the HC placement isolates attention-side
-	 * divergence from placement-side. */
-	static uint16_t run_attention_out[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN];
-	static uint16_t seq_attention_out[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN];
-	static uint16_t run_query_latent[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
-	static uint16_t run_attention_latent[SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
-	static uint8_t run_kv_cache[SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES];
-	static uint8_t seq_kv_cache[SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES];
-	static uint16_t run_kv_slot[4096u];
-	static uint16_t seq_kv_slot[4096u];
-	static uint16_t seq_attention_latent[SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
-	static uint16_t seq_query_latent[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT];
-	static uint32_t positions_p1[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
-	static uint32_t positions_p2[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
-	static uint32_t ctx_p1[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
-	static uint32_t ctx_p2[SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS];
-	if (include_mlp == 0u)
-	{
-		/* sequential: re-walk capturing attention_out per row */
-		if (cudaMemset(fixture->kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
-			cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"state_reset_att"));
-		for (step = 0u; step < SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS; step++)
-		{
-			int32_t st;
-			SparkGlm5NextValBuildWave(fixture,layer,tokens[step],step);
-			st = SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave);
-			if (st == 0)
-				st = SparkGlm5NextLaunchCudaLayerAttention(&fixture->wave,0u);
-			if (st != 0)
-				return(SparkGlm5NextValFail(label,"seq_att"));
-			if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
-				return(SparkGlm5NextValFail(label,"seq_att_sync"));
-			if (cudaMemcpy(seq_attention_out + (uint64_t)step * SPARK_GLM5_NEXT_VHIDDEN,fixture->attention_out,
-				(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-				return(SparkGlm5NextValFail(label,"seq_att_copy"));
-			if (step == 0u && cudaMemcpy(seq_kv_cache,fixture->kv_cache,
-				SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
-				return(SparkGlm5NextValFail(label,"seq_kvc_copy"));
-			if (step == 0u && cudaMemcpy(seq_kv_slot,fixture->kv_slot,
-				4096u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-				return(SparkGlm5NextValFail(label,"seq_kvs_copy"));
-			if (step == 0u && cudaMemcpy(seq_attention_latent,fixture->attention_latent,
-				(uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-				return(SparkGlm5NextValFail(label,"seq_al_copy"));
-			if (step == 0u && cudaMemcpy(seq_query_latent,fixture->query_latent,
-				(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-				return(SparkGlm5NextValFail(label,"seq_ql_copy"));
-		}
-	}
-	if (cudaMemset(fixture->kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
-		cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
-		return(SparkGlm5NextValFail(label,"state_reset2"));
-	SparkGlm5NextValBuildRunWave(fixture,layer,tokens,run_rows);
-	if (include_mlp == 0u)
-	{
-		int32_t st = SparkGlm5NextLaunchCudaWaveBegin(&fixture->wave);
-		if (st == 0)
-			st = SparkGlm5NextLaunchCudaLayerAttention(&fixture->wave,0u);
-		if (st != 0)
-			return(SparkGlm5NextValFail(label,"run_att"));
-		if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"run_att_sync"));
-		if (cudaMemcpy(run_attention_out,fixture->attention_out,
-			(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"run_att_copy"));
-		if (cudaMemcpy(run_kv_cache,fixture->kv_cache,
-			SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"run_kvc_copy"));
-		if (cudaMemcpy(run_kv_slot,fixture->kv_slot,
-			4096u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"run_kvs_copy"));
-		if (cudaMemcpy(run_attention_latent,fixture->attention_latent,
-			(uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"run_al_copy"));
-		if (cudaMemcpy(run_query_latent,fixture->query_latent,
-			(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"run_ql_copy"));
-		/* Capture pass-1 metadata BEFORE the second identical wave so the
-		 * two passes are actually comparable (not two reads of the same state). */
-		if (cudaMemcpy(positions_p1,fixture->positions,
-			SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
-			cudaMemcpy(ctx_p1,fixture->context_lengths,
-			SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"meta_p1_copy"));
-	}
-	if (SparkGlm5NextValRunWaveOnce(fixture,layer,label,include_mlp) != 0)
-		return(1);
-	if (include_mlp == 0u)
-	{
-		static uint8_t second_kv_cache[SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES];
-		uint64_t d;
-		if (cudaMemcpy(second_kv_cache,fixture->kv_cache,
-			SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES,cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"second_kvc_copy"));
-		static uint16_t second_kv_slot[4096u];
-		uint32_t kv_slot_diffs = 0u;
-		if (cudaMemcpy(positions_p2,fixture->positions,
-			SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
-			cudaMemcpy(ctx_p2,fixture->context_lengths,
-			SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"meta_p2_copy"));
-		if (cudaMemcpy(second_kv_slot,fixture->kv_slot,
-			512u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-			return(SparkGlm5NextValFail(label,"second_kvs_copy"));
-		for (d = 0u; d < 512u; d++)
-			if (second_kv_slot[d] != run_kv_slot[d])
-				kv_slot_diffs++;
-		for (d = 0u; d < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; d++)
-			if (second_kv_cache[d] != run_kv_cache[d])
-			{
-				fprintf(stderr,"glm5_next_validation %s RUN WAVE NONDETERMINISTIC: pass1 vs pass2 cache byte %llu: %02x vs %02x (kv_slot diffs: %u/512; positions p1 [%u %u %u %u] p2 [%u %u %u %u]; ctx p1 [%u %u] p2 [%u %u])\n",
-					label,(unsigned long long)d,(unsigned)run_kv_cache[d],(unsigned)second_kv_cache[d],kv_slot_diffs,
-					positions_p1[0],positions_p1[1],positions_p1[2],positions_p1[3],
-					positions_p2[0],positions_p2[1],positions_p2[2],positions_p2[3],
-					ctx_p1[0],ctx_p1[1],ctx_p2[0],ctx_p2[1]);
-				break;
-			}
-	}
-	if (cudaMemcpy(run_mode,fixture->streams,
-		(uint64_t)SPARK_GLM5_NEXT_VALIDATION_RUN_TOKENS * SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-		return(SparkGlm5NextValFail(label,"run_copy"));
-	if (include_mlp == 0u)
-	{
-		uint32_t row;
-		uint64_t i;
-		/* Row 0 only: the sequential capture stages one row's buffers. */
-		for (row = 0u; row < 1u; row++)
-			for (i = 0u; i < (uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT; i++)
-				if (seq_query_latent[i] != run_query_latent[i])
-				{
-					fprintf(stderr,"glm5_next_validation %s QUERY_LATENT diverges at row %u element %llu: seq %04x run %04x\n",
-						label,row,(unsigned long long)i,(unsigned)seq_query_latent[i],(unsigned)run_query_latent[i]);
-					return(SparkGlm5NextValFail(label,"run_equivalence_query"));
-				}
-		for (i = 0u; i < 512u; i++) /* row 0's latent slice */
-			if (seq_kv_slot[i] != run_kv_slot[i])
-			{
-				fprintf(stderr,"glm5_next_validation %s KV_SLOT (pre-store projection) diverges at element %llu: seq %04x run %04x\n",
-					label,(unsigned long long)i,(unsigned)seq_kv_slot[i],(unsigned)run_kv_slot[i]);
-				return(SparkGlm5NextValFail(label,"run_equivalence_kvslot"));
-			}
-		{
-			uint64_t divergent = 0u;
-			uint64_t first_div = ~0ull;
-			uint64_t last_div = 0u;
-			for (i = 0u; i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
-				if (seq_kv_cache[i] != run_kv_cache[i])
-				{
-					if (first_div == ~0ull)
-						first_div = i;
-					last_div = i;
-					divergent++;
-				}
-			if (divergent != 0u)
-			{
-				uint64_t start = first_div > 16u ? first_div - 16u : 0u;
-				/* Cross-row contamination check: does the divergent band
-				 * match the NEXT row's kv_slot bytes? */
-				{
-					static uint16_t seq_kv_slot_row1[512];
-					uint64_t d;
-					uint32_t matches_row1 = 0u;
-					if (cudaMemcpy(seq_kv_slot_row1,fixture->kv_slot + 512u,
-						512u * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)
-						return(SparkGlm5NextValFail(label,"row1_copy"));
-					for (d = first_div / 2u; d <= last_div / 2u; d++)
-						if (run_kv_cache[d * 2u] == (uint8_t)(seq_kv_slot_row1[d] & 0xFFu) &&
-							run_kv_cache[d * 2u + 1u] == (uint8_t)(seq_kv_slot_row1[d] >> 8))
-							matches_row1++;
-					fprintf(stderr,"  cross-check: divergent band vs CURRENT kv_slot row1: %u/%llu elements match\n",
-						matches_row1,
-						(unsigned long long)((last_div / 2u) - (first_div / 2u) + 1u));
-				}
-				fprintf(stderr,"glm5_next_validation %s KV_CACHE position 0: %llu divergent bytes in [%llu..%llu]\n",
-					label,(unsigned long long)divergent,(unsigned long long)first_div,(unsigned long long)last_div);
-				fprintf(stderr,"  seq bytes %llu..: ",(unsigned long long)start);
-				for (i = start; i < start + 48u && i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
-					fprintf(stderr,"%02x",(unsigned)seq_kv_cache[i]);
-				fprintf(stderr,"\n  run bytes %llu..: ",(unsigned long long)start);
-				for (i = start; i < start + 48u && i < SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES; i++)
-					fprintf(stderr,"%02x",(unsigned)run_kv_cache[i]);
-				fprintf(stderr,"\n");
-				return(SparkGlm5NextValFail(label,"run_equivalence_kvcache"));
-			}
-		}
-		for (i = 0u; i < (uint64_t)SPARK_GLM5_NEXT_VHEADS * SPARK_GLM5_NEXT_VLATENT; i++)
-			if (seq_attention_latent[i] != run_attention_latent[i])
-			{
-				fprintf(stderr,"glm5_next_validation %s ATTENTION_LATENT (pre-o_proj) diverges at element %llu: seq %04x run %04x\n",
-					label,(unsigned long long)i,(unsigned)seq_attention_latent[i],(unsigned)run_attention_latent[i]);
-				return(SparkGlm5NextValFail(label,"run_equivalence_latent"));
-			}
-		for (row = 0u; row < run_rows; row++)
-			for (i = 0u; i < SPARK_GLM5_NEXT_VHIDDEN; i++)
-				if (seq_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i] !=
-					run_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i])
-				{
-					fprintf(stderr,"glm5_next_validation %s ATTENTION_OUT diverges at row %u element %llu: seq %04x run %04x\n",
-						label,row,(unsigned long long)i,
-						(unsigned)seq_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i],
-						(unsigned)run_attention_out[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + i]);
-					return(SparkGlm5NextValFail(label,"run_equivalence_attention"));
-				}
-	}
-	{
-		uint32_t row;
-		uint64_t i;
-		for (row = 0u; row < run_rows; row++)
-			for (i = 0u; i < SPARK_GLM5_NEXT_VHC_FLAT; i++)
-				if (sequential[(uint64_t)row * SPARK_GLM5_NEXT_VHC_FLAT + i] !=
-					run_mode[(uint64_t)row * SPARK_GLM5_NEXT_VHC_FLAT + i])
-				{
-					fprintf(stderr,"glm5_next_validation %s DIVERGES at row %u element %llu: seq %04x run %04x\n",
-						label,row,(unsigned long long)i,
-						(unsigned)sequential[(uint64_t)row * SPARK_GLM5_NEXT_VHC_FLAT + i],
-						(unsigned)run_mode[(uint64_t)row * SPARK_GLM5_NEXT_VHC_FLAT + i]);
-					return(SparkGlm5NextValFail(label,"run_equivalence"));
-				}
-	}
-	printf("PASS %s run-of-8 == 8 sequential rows (bit-exact)\n",label);
-	return(0);
-}
-
-/* Tier 1: layer 0 (KDA + dense) through both mHC sites, 4-token walk. */
 static int SparkGlm5NextValRunTier1(SparkGlm5NextValFixture *fixture,uint32_t pass,uint16_t *streams_out)
 {
 	static const uint32_t tokens[SPARK_GLM5_NEXT_VALIDATION_TOKENS] = {1u,3u,2u,6u};
@@ -2013,7 +1518,6 @@ static int SparkGlm5NextValRunTier1(SparkGlm5NextValFixture *fixture,uint32_t pa
 				status,step,pass,cudaGetErrorString(cudaGetLastError()));
 			return(SparkGlm5NextValFail("tier1_attention","status"));
 		}
-		/* mirror the serving chain: reduce (no-op at TP1) then place once */
 		status = SparkGlm5NextLaunchCudaLayerAttentionPost(&fixture->wave,0u);
 		if (status != 0)
 			return(SparkGlm5NextValFail("tier1_attention_post","status"));
@@ -2050,10 +1554,6 @@ static int SparkGlm5NextValRunTier1AttentionStep0(SparkGlm5NextValFixture *fixtu
 	return(0);
 }
 
-/* Isolation walk: attention site only, comparing the KDA sublayer output
- * (the full-width rank partial in attention_out_bf16, BEFORE the HC post
- * step) and the collapsed input per step. This is the debugging probe that localises a streams mismatch to
- * the sublayer or the HC site. */
 static int SparkGlm5NextValRunTier1AttentionOnly(SparkGlm5NextValFixture *fixture,uint16_t *sublayer_out)
 {
 	static const uint32_t tokens[SPARK_GLM5_NEXT_VALIDATION_TOKENS] = {1u,3u,2u,6u};
@@ -2075,16 +1575,11 @@ static int SparkGlm5NextValRunTier1AttentionOnly(SparkGlm5NextValFixture *fixtur
 	return(0);
 }
 
-/* Tier 2a (attention site, this landing): layer 3's rope-0 MLA through
- * the mHC attention site. The MoE leg and the kpool pool-selection tier
- * land with the pack bring-up; no numerical claim is made for them here
- * beyond the determinism re-walk. */
 static int SparkGlm5NextValRunTier2aAttention(SparkGlm5NextValFixture *fixture,uint32_t pass,uint16_t *streams_out)
 {
 	static const uint32_t tokens[SPARK_GLM5_NEXT_VALIDATION_TOKENS] = {2u,5u,1u,4u};
 	uint32_t step;
 	int32_t status;
-	/* Null audit: the exact fields the MLA site demands, once. */
 	SparkGlm5NextValBuildWave(fixture,3u,tokens[0],0u);
 	{
 		const SparkGlm5NextLayerWeights *w = &fixture->weights;
@@ -2142,7 +1637,6 @@ static int SparkGlm5NextValRunTier2aAttention(SparkGlm5NextValFixture *fixture,u
 	return(0);
 }
 
-/* Determinism: fresh pools, two identical walks, byte-identical streams. */
 static int SparkGlm5NextValCheckDeterminism(SparkGlm5NextValFixture *fixture,int (*driver)(SparkGlm5NextValFixture*,uint32_t,uint16_t*),const char *label)
 {
 	uint16_t *first = (uint16_t *)malloc((uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t));
@@ -2181,7 +1675,6 @@ static int SparkGlm5NextValCheckDeterminism(SparkGlm5NextValFixture *fixture,int
 	}
 }
 
-/* -- the oracle walk: the same four tokens through the CPU oracle ------- */
 
 typedef struct SparkGlm5NextValOracleWalk
 {
@@ -2192,7 +1685,6 @@ typedef struct SparkGlm5NextValOracleWalk
 	float state[(uint64_t)SPARK_GLM5_NEXT_VKDA_HEADS * 128u * 128u];
 } SparkGlm5NextValOracleWalk;
 
-/* One full layer-0 token: HC attn + KDA + post, HC ffn + dense MLP + post. */
 static void SparkGlm5NextValOracleTier1Token(SparkGlm5NextValOracleWalk *walk,const SparkGlm5NextValFixture *fixture,uint32_t position)
 {
 	float mixes[SPARK_GLM5_NEXT_VHC_MIX],pre[SPARK_GLM5_NEXT_VHC],post[SPARK_GLM5_NEXT_VHC];
@@ -2223,8 +1715,6 @@ static void SparkGlm5NextValOracleTier1Token(SparkGlm5NextValOracleWalk *walk,co
 		normed[index] = collapsed[index];
 	SparkGlm5NextValRmsNorm(normed,fixture->mlp_norm.host,SPARK_GLM5_NEXT_VHIDDEN,1e-5f);
 	{
-		/* Dense MLP: fused [up | gate], silu-mul with the gate at the
-		 * second half (the kernel's gate_first=false contract). */
 		static float gate_up[SPARK_GLM5_NEXT_VGATE_UP_ROWS];
 		float intermediate[SPARK_GLM5_NEXT_VDENSE_INTER];
 		for (index = 0u; index < SPARK_GLM5_NEXT_VGATE_UP_ROWS; index++)
@@ -2275,10 +1765,6 @@ int main(int argc,char **argv)
 	if (SparkGlm5NextValFixtureComplete(&fixture) != 0)
 		return(1);
 
-	/* Isolation probe: the attention site only, four tokens; compare the
-	 * LAST step's KDA sublayer output and HC-collapsed input against the
-	 * oracle's same step - localises a streams mismatch to the sublayer
-	 * vs the HC site. */
 	{
 		float mixes[SPARK_GLM5_NEXT_VHC_MIX],pre[SPARK_GLM5_NEXT_VHC],post[SPARK_GLM5_NEXT_VHC];
 		float comb[SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHC];
@@ -2293,7 +1779,6 @@ int main(int argc,char **argv)
 		if (cudaMemset(fixture.kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
 			cudaMemset(fixture.kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
 			return(SparkGlm5NextValFail("probe","state_reset"));
-		/* STEP 0 ONLY: no recurrence history, a direct stage probe. */
 		if (SparkGlm5NextValRunTier1AttentionStep0(&fixture) != 0)
 			return(1);
 		memset(&walk,0,sizeof(walk));
@@ -2337,8 +1822,6 @@ int main(int argc,char **argv)
 		(void)SparkGlm5NextValReport("probe0 kda sublayer",&probe_metrics,0.05,0.995);
 		printf("probe0 device sublayer[0..3] %f %f %f %f\n",
 			device_sublayer[0],device_sublayer[1],device_sublayer[2],device_sublayer[3]);
-		/* Per-tensor probes: post-norm q (first head), retention (first
-		 * head), beta - narrowing a sublayer mismatch to one stage. */
 		{
 			float retention_probe[128];
 			float write_gate_probe[SPARK_GLM5_NEXT_VKDA_HEADS];
@@ -2372,7 +1855,6 @@ int main(int argc,char **argv)
 						gate_probe[0],gate_probe[1],gate_probe[2],gate_probe[3],
 						v_probe[0],v_probe[1],v_probe[2],v_probe[3]);
 				}
-				/* the o_proj INPUT: post norm+gate y, first head */
 				{
 					uint16_t y_read[8];
 					if (cudaMemcpy(y_read,fixture.kv_slot,8u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
@@ -2380,10 +1862,6 @@ int main(int argc,char **argv)
 							SparkGlm5NextValFromBf16(y_read[0]),SparkGlm5NextValFromBf16(y_read[1]),
 							SparkGlm5NextValFromBf16(y_read[2]),SparkGlm5NextValFromBf16(y_read[3]));
 				}
-				/* THE O_PROJ GEMM TEST: recompute o_proj on the HOST from
-				 * the DEVICE's own y and the fixture weight, and compare
-				 * against the device's sublayer. Isolates the GEMM from
-				 * everything upstream (already verified equal). */
 				{
 					static uint16_t y_all[SPARK_GLM5_NEXT_VKDA_DIM];
 					static float recomputed[SPARK_GLM5_NEXT_VHIDDEN];
@@ -2418,8 +1896,6 @@ int main(int argc,char **argv)
 		}
 	}
 
-	/* Tier 1: KDA + dense through both mHC sites, four tokens, vs the
-	 * oracle walk, then a bit-exact re-walk. */
 	if (cudaMemset(fixture.kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
 		cudaMemset(fixture.kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess)
 		return(SparkGlm5NextValFail("tier1","state_reset"));
@@ -2441,23 +1917,9 @@ int main(int argc,char **argv)
 	failures += SparkGlm5NextValReport("tier1 kda+dense+hc streams",&metrics,0.02,0.999);
 	failures += SparkGlm5NextValCheckDeterminism(&fixture,SparkGlm5NextValRunTier1,"tier1 determinism");
 
-	/* Tier 2a (attention site): rope-0 MLA + mHC determinism this
-	 * landing; the oracle comparison and the MoE leg are the pack
-	 * bring-up increment. */
 	if (SparkGlm5NextValRunTier2aAttention(&fixture,0u,device_streams) != 0)
 		return(1);
 	failures += SparkGlm5NextValCheckDeterminism(&fixture,SparkGlm5NextValRunTier2aAttention,"tier2a determinism");
-
-	/* Tier 3/4: the chunked-prefill contract at both layer classes. */
-	if (SparkGlm5NextValRunTierRun(&fixture,0u,"tier3 kda run-of-8",1u,8u) != 0)
-		return(1);
-	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4a dsa run-of-1 (attention)",0u,1u) != 0)
-		return(1);
-	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4b dsa run-of-2 (attention)",0u,2u) != 0)
-		return(1);
-	if (SparkGlm5NextValRunTierRun(&fixture,3u,"tier4c dsa run-of-8 (attention)",0u,8u) != 0)
-		return(1);
-
 
 	printf("glm5_next validator: %s (%d failures)\n",
 		failures == 0 ? "PASS" : "FAIL",failures);

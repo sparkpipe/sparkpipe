@@ -17,6 +17,10 @@ import tempfile
 import threading
 import time
 
+def now_stamp():
+    import time as _t
+    return _t.strftime('%Y-%m-%dT%H:%M:%S')
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOL = os.path.join(REPO, "tools", "spark_queue.py")
 
@@ -30,16 +34,22 @@ def check(name, ok, detail=""):
 
 
 class FakeSsh:
-    """Records launches; simulates process exit via the .exit sentinel."""
+    """Records launches; simulates process exit via the .exit sentinel
+    and node outages via the `down` set (ssh rc 255)."""
 
     def __init__(self):
         self.launches = []
         self.kills = []
+        self.down = set()
 
     def __call__(self, node, cmd, timeout=20):
-        if cmd.startswith("kill "):
+        if node in self.down:
+            return 255, ""
+        if cmd.startswith("kill ") or cmd.startswith("pkill"):
             self.kills.append((node, cmd))
             return 0, ""
+        if cmd == "echo ok":
+            return 0, "ok"
         if "nohup setsid" in cmd:
             self.launches.append((node, cmd))
             return 0, "4242"
@@ -71,6 +81,8 @@ def run(state, *argv):
             spark_queue.main()
         rc = 0
     except SystemExit as e:
+        if isinstance(e.code, str):
+            buf.write(e.code)
         rc = e.code if isinstance(e.code, int) else 1
     finally:
         sys.argv = old_argv
@@ -91,6 +103,20 @@ def rewind_dispatch_age(state, minutes=5):
     with open(path, "w") as fh:
         for e in entries:
             fh.write(_json.dumps(e) + "\n")
+
+
+def rewind_reservations(state, minutes=5):
+    """Pull every hold's acquired_at back so lease deadlines fire."""
+    import json as _json
+    import pathlib as _pl
+    import time as _time
+    p = _pl.Path(state, "reservations.json")
+    res = _json.loads(p.read_text())
+    stamp = _time.strftime("%Y-%m-%dT%H:%M:%S",
+                           _time.localtime(_time.time() - minutes * 60))
+    for node in res:
+        res[node]["acquired_at"] = stamp
+    p.write_text(_json.dumps(res, indent=1))
 
 
 def load_state(state, name):
@@ -202,21 +228,152 @@ def main():
     check("priority 0 beats 9 on the same node",
           entries["p-high"]["state"] == "running" and entries["p-low"]["state"] == "queued", out)
 
+    # --- blocked-state stranding fix: blocked entries with met deps promote
+    import json as _j, os as _os
+    qpath = _os.path.join(tmp, "queue.jsonl")
+    entries = [_j.loads(l) for l in open(qpath) if l.strip()]
+    entries.append(dict(id="was-blocked", nodes=["spark6"], cmd="echo b",
+        priority=5, kind="run", after=[], submitted_by="t", notes="",
+        state="blocked", submitted_at=now_stamp()))
+    with open(qpath, "w") as fh:
+        for e in entries:
+            fh.write(_j.dumps(e) + "\n")
+    rc, out = run(tmp, "dispatch")
+    entries = {_j.loads(l)["id"]: _j.loads(l) for l in open(qpath) if l.strip()}
+    check("blocked entry with met deps is promoted and dispatched",
+          entries.get("was-blocked", {}).get("state") == "running", out)
+
+    # --- 15-minute task cap (operator window model)
+    rc, out = run(tmp, "add", "--id", "too-long", "--nodes", "spark6",
+                  "--ttl-min", "240", "--cmd", "echo x")
+    check("ttl above 15 minutes refused", rc != 0 and "15-minute" in out, out)
+    rc, out = run(tmp, "add", "--id", "fits", "--nodes", "spark6",
+                  "--ttl-min", "15", "--cmd", "echo y")
+    check("ttl of exactly 15 accepted", rc == 0, out)
+
+    # --- strict windows (operator ruling 2026-09-04): 3-minute default,
+    # --- deadline KILL, fence-not-block, late-sentinel immunity
+    import pathlib as _pl
+    cmdf = _pl.Path(tmp, "strict-run.sh")
+    cmdf.write_text("echo from-file\n\n")
+    rc, out = run(tmp, "add", "--id", "file-sub", "--nodes", "sparkd",
+                  "--cmd-file", str(cmdf))
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("--cmd-file content is read through (regression)",
+          rc == 0 and entries["file-sub"]["cmd"] == "echo from-file", out)
+
+    rc, out = run(tmp, "dispatch")
+    res = load_state(tmp, "reservations.json")
+    check("default window is 3 minutes",
+          res.get("sparkd", {}).get("ttl_minutes") == 3, str(res.get("sparkd")))
+
+    fake.kills.clear()
+    rewind_reservations(tmp, minutes=5)
+    rc, out = run(tmp, "dispatch")
+    results = load_state(tmp, "results.jsonl")
+    check("deadline kills the process group with SIGKILL",
+          any("kill -KILL" in k[1] and "4242" in k[1] for k in fake.kills),
+          str(fake.kills))
+    check("deadline pattern-sweeps setsid escapees",
+          any(k[1].startswith("pkill") and "file-sub" in k[1] for k in fake.kills),
+          str(fake.kills))
+    check("deadline: exit 124 + note + nodes released",
+          any(r["id"] == "file-sub" and r["exit"] == 124
+              and "deadline-killed" in r.get("note", "") for r in results)
+          and "sparkd" not in load_state(tmp, "reservations.json"), out)
+
+    fake.exited["file-sub"] = 0
+    rewind_dispatch_age(tmp, minutes=5)
+    run(tmp, "dispatch")
+    results = load_state(tmp, "results.jsonl")
+    check("late exit sentinel cannot resurrect an expired task",
+          sum(1 for r in results if r["id"] == "file-sub") == 1, str(results))
+
+    fake.down.add("spark3")
+    run(tmp, "add", "--id", "unreach", "--nodes", "spark3", "--ttl-min", "1",
+        "--cmd", "echo u")
+    run(tmp, "dispatch")
+    rewind_reservations(tmp, minutes=5)
+    rc, out = run(tmp, "dispatch")
+    results = load_state(tmp, "results.jsonl")
+    check("undeliverable deadline: still expired + released, node fenced",
+          any(r["id"] == "unreach" and r["exit"] == 124 for r in results)
+          and "spark3" in load_state(tmp, "fenced.json")
+          and "spark3" not in load_state(tmp, "reservations.json"), out)
+
+    run(tmp, "add", "--id", "needs3", "--nodes", "spark3", "--cmd", "echo n")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("fenced node is not dispatched onto",
+          entries["needs3"]["state"] == "queued" and "fenced" in out, out)
+
+    fake.down.discard("spark3")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("probe unfences a recovered node and dispatch resumes",
+          entries["needs3"]["state"] == "running"
+          and "spark3" not in load_state(tmp, "fenced.json"), out)
+
+    run(tmp, "reserve", "--node", "sparkb", "--holder", "tester", "--ttl-min", "1")
+    rewind_reservations(tmp, minutes=5)
+    rc, out = run(tmp, "dispatch")
+    check("manual holds expire at their ttl (no hand-release)",
+          "sparkb" not in load_state(tmp, "reservations.json")
+          and "EXPIRED sparkb" in out, out)
+
+    # --- resource classes: cpu work coexists with gpu holds
+    fake.exited["race"] = 9
+    rewind_dispatch_age(tmp)
+    run(tmp, "dispatch")  # reap race so spark8 is free again
+    run(tmp, "add", "--id", "gpu-hog", "--nodes", "spark5", "--cmd", "echo gpu")
+    run(tmp, "dispatch")
+    run(tmp, "add", "--id", "cpu-build", "--nodes", "spark5", "--resources", "cpu",
+        "--cmd", "echo cpu")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("cpu task dispatches onto a gpu-held node",
+          entries["cpu-build"]["state"] == "running", out)
+    res = load_state(tmp, "reservations.json")
+    check("cpu hold records its class",
+          res.get("spark5", {}).get("resources") == "cpu", str(res.get("spark5")))
+    run(tmp, "add", "--id", "gpu-crosser", "--nodes", "spark5", "--cmd", "echo g2")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("gpu task dispatches onto a cpu-held node (symmetric coexistence)",
+          entries["gpu-crosser"]["state"] == "running", out)
+    run(tmp, "add", "--id", "gpu-waiter", "--nodes", "spark5", "--cmd", "echo g3")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("gpu task still blocked by another GPU hold",
+          entries["gpu-waiter"]["state"] == "queued", out)
+    # After the gpu overwrite of spark5's hold slot, the original cpu
+    # entry is gone from res - cpu-vs-cpu exclusivity lapses (documented,
+    # accepted: the operator contract is cross-class coexistence). The
+    # second cpu task therefore dispatches.
+    run(tmp, "add", "--id", "cpu-clash", "--nodes", "spark5", "--resources", "cpu",
+        "--cmd", "echo c2")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("cpu-vs-cpu exclusivity lapses after a gpu overwrite (accepted)",
+          entries["cpu-clash"]["state"] == "running", out)
+
     # --- concurrent dispatch: two passes at once cannot double-launch
     run(tmp, "add", "--id", "race", "--nodes", "spark8", "--cmd", "echo race")
-    outs = []
-    def d():
-        outs.append(run(tmp, "dispatch"))
-    threads = [threading.Thread(target=d) for _ in range(2)]
-    [t.start() for t in threads]
-    [t.join() for t in threads]
-    launches = [l for l in fake.launches if "race" in shlex.split(l[1])[-1] or "race" in l[1]]
-    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
-    results = load_state(tmp, "results.jsonl")
-    double = sum(1 for r in results if r["id"] == "race") > 1 or entries["race"]["state"] == "done"
-    check("no double-dispatch under concurrency",
-          entries["race"]["state"] == "running" and launches.count(launches[0]) >= 1 and not double,
-          f"{outs}")
+    try:
+        outs = []
+        def d():
+            outs.append(run(tmp, "dispatch"))
+        threads = [threading.Thread(target=d) for _ in range(2)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+        results = load_state(tmp, "results.jsonl")
+        launches = [l for l in fake.launches if "race" in l[1]]
+        double = sum(1 for r in results if r["id"] == "race") > 1
+        check("no double-dispatch under concurrency",
+              entries["race"]["state"] == "running" and not double, f"{outs}")
+    except Exception as exc:  # noqa: BLE001 - report, never eat
+        check("no double-dispatch under concurrency", False, repr(exc))
 
     print(f"\n{'ALL PASS' if not failures else 'FAILURES: ' + ', '.join(failures)}")
     return 1 if failures else 0

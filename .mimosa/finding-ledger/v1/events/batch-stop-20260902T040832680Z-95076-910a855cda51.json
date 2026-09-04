@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260902T040832680Z-95076-910a855cda51",
+  "runId": "20260902T040832680Z-95076-910a855cda51",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "fc862b5b2f9dea006dac9d120a5195438ba9a85f",
+  "diffHash": "8fcc7b2ad1fd96673123d937e2105afb1f7dcd41f3a712ab99a376e325cbc203",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260902T040832680Z-95076-910a855cda51.json",
+  "events": [],
+  "observedFindingIds": [
+    "mimosa-cd0b16479db3e5b4704e8fb6",
+    "mimosa-72c04b0fc24307d39d5dc8e0",
+    "mimosa-4890175b16806a67f8883871"
+  ],
+  "verifiedFiles": [
+    {
+      "file": "tools/glm52_hash_diff.py",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-02T04:08:32.948Z"
+}

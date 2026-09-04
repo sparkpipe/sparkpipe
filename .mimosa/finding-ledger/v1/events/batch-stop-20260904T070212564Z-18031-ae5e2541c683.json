@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260904T070212564Z-18031-ae5e2541c683",
+  "runId": "20260904T070212564Z-18031-ae5e2541c683",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "7525b9b7778a6858cd94ae656a884413724f9a8d",
+  "diffHash": "9adc992fb0406a70c0cb28210eafef726dcf6c81ee6f326eb3ce1cd0ac3a6eb1",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T070212564Z-18031-ae5e2541c683.json",
+  "events": [],
+  "observedFindingIds": [
+    "mimosa-f7fe7ed5995be5f51ca61f09"
+  ],
+  "verifiedFiles": [
+    {
+      "file": "tools/stagepack_mtp_strip.py",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-04T07:02:12.809Z"
+}

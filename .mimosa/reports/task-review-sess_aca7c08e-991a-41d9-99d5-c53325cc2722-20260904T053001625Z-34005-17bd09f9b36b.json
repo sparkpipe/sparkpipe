@@ -1,0 +1,255 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260904T053001625Z-34005-17bd09f9b36b",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "scan",
+      "target": "tools/qwen38_27b_stagepack.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 841,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 4
+    },
+    "change_tracking": {
+      "touched_observed": 0,
+      "touched_retained": 0,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 4,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 4,
+      "selected_files": 4,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 4,
+      "scanned_files": 0,
+      "skipped_files": 0,
+      "failed_files": 4,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "scanner_failed": 4,
+      "project_check_failed": 4
+    },
+    "reasons": [
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_27b_stagepack.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen38_27b_stagepack.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-04T05:30:01.625Z",
+  "session_id": "sess_aca7c08e-991a-41d9-99d5-c53325cc2722",
+  "target": ".",
+  "revision": "45e3c40087a25705222d3c585c775ede6cb0c562",
+  "rules_version": "unavailable",
+  "diff_hash": "c1aa8edf426fe9936da4ab2f0eaf01aa20fb2964d2712d74d4678ea7929b9339",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 4,
+    "changed_files": [
+      {
+        "file": "modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h",
+        "ranges": [
+          {
+            "start": 47,
+            "end": 47
+          }
+        ],
+        "before_hash": "9e5ac5c3cc37780b01764366c59b8b42b560067958d1d71b2903841a3c39dbab",
+        "after_hash": "bd9d8a865a8d5cb5ad73fa55ab3350a1e9c6ba66ee3b306b924f8d590cc5e759"
+      },
+      {
+        "file": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c",
+        "ranges": [
+          {
+            "start": 487,
+            "end": 487
+          },
+          {
+            "start": 492,
+            "end": 492
+          }
+        ],
+        "before_hash": "6d8509d1f4f47128d3bc00f18920718417b425adc3581aa4f86dbab2fdee6139",
+        "after_hash": "3f2085f008828cfd3a3627a5471873ee300246f0b99bcdb6183d24ff8ee38941"
+      },
+      {
+        "file": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h",
+        "ranges": [
+          {
+            "start": 315,
+            "end": 315
+          },
+          {
+            "start": 452,
+            "end": 453
+          },
+          {
+            "start": 467,
+            "end": 470
+          }
+        ],
+        "before_hash": "0c366c9498042c894f99f54ad51ef9d29367299453c8a4ec28ab7b0b95880925",
+        "after_hash": "c46547c9a8c15f8edaa4117698c97d133cbdfc3ddc62337201d539912aeaa2ec"
+      },
+      {
+        "file": "tools/qwen38_27b_stagepack.py",
+        "ranges": [
+          {
+            "start": 322,
+            "end": 325
+          },
+          {
+            "start": 803,
+            "end": 803
+          }
+        ],
+        "before_hash": "fab1fc192e60c3ef60487532b1c948a0130f87c32f367b96d2a1be2f8fc5d96d",
+        "after_hash": "940b148ff3e836ace322dc840848d38d6d6c7672762d39518959f178ca4fc95f"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-04T05:29:59.326Z",
+    "completed_at": "2026-09-04T05:30:01.625Z",
+    "duration_ms": 2299,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 2299,
+    "peakMemoryBytes": 132988928,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 0,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T053001625Z-34005-17bd09f9b36b.json",
+    "latest_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722.json",
+    "history_summary": ".mimosa/history/run-20260904T053001625Z-34005-17bd09f9b36b.json"
+  }
+}

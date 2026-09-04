@@ -9,3 +9,4 @@ tools/devcycle/drivers/
 .codex/
 .tshome/
 .lane_cache/
+deployment/rtx5090_speculation/*.local.json

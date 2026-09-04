@@ -1,0 +1,365 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260903T075550216Z-74929-0e2828645f84",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "baseline-read",
+      "target": "tools/install_spark_ssh_failover.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "tools/rtx5090_spec_node.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "tools/spark_ssh_proxy.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "tests/test_rtx5090_spec_node.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "tests/test_spark_ssh_failover.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/install_spark_ssh_failover.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/rtx5090_spec_node.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/spark_ssh_proxy.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tests/test_rtx5090_spec_node.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tests/test_spark_ssh_failover.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 822,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 0
+    },
+    "change_tracking": {
+      "touched_observed": 0,
+      "touched_retained": 0,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 5,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 5,
+      "selected_files": 5,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 5,
+      "scanned_files": 0,
+      "skipped_files": 0,
+      "failed_files": 5,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "baseline_snapshot_unreadable": 5,
+      "scanner_failed": 5,
+      "project_check_failed": 10
+    },
+    "reasons": [
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "tools/install_spark_ssh_failover.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "tools/rtx5090_spec_node.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "tools/spark_ssh_proxy.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "tests/test_rtx5090_spec_node.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "tests/test_spark_ssh_failover.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/install_spark_ssh_failover.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/rtx5090_spec_node.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/spark_ssh_proxy.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/test_rtx5090_spec_node.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tests/test_spark_ssh_failover.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "tools/install_spark_ssh_failover.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "tools/rtx5090_spec_node.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "tools/spark_ssh_proxy.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "tests/test_rtx5090_spec_node.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "tests/test_spark_ssh_failover.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/install_spark_ssh_failover.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/rtx5090_spec_node.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/spark_ssh_proxy.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/test_rtx5090_spec_node.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tests/test_spark_ssh_failover.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-03T07:55:50.216Z",
+  "session_id": "sess_aca7c08e-991a-41d9-99d5-c53325cc2722",
+  "target": ".",
+  "revision": "4b013f29d738c568f144bb78a9cf7ed918322de0",
+  "rules_version": "unavailable",
+  "diff_hash": "a4ffd815b22874a7372fd6cdcea88b55a3729f58f606f9c6957befe6eff0f188",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 5,
+    "changed_files": [
+      {
+        "file": "tests/test_rtx5090_spec_node.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 88
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "763b3ffad2cfe786ad801a77f0cf4748009b09eae87dfc6e5fc7027b5cd324ea"
+      },
+      {
+        "file": "tests/test_spark_ssh_failover.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 223
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "fe531155ffb38914551d1bb1768e62dca9645c8a1968432af5aaa968c9246b27"
+      },
+      {
+        "file": "tools/install_spark_ssh_failover.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 211
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "432d969b90d1d6cd2a0cccdb96387d74009f454ce1463a01b224f6d0893d825a"
+      },
+      {
+        "file": "tools/rtx5090_spec_node.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 317
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "b31964c60dc4ebc38480347ee03e9daa6acbe095df1f05a4276d2ae6a97952a3"
+      },
+      {
+        "file": "tools/spark_ssh_proxy.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 481
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "42a454e9706f068c8db7c5e3e06e16f34a43a90cc0d76f046a150d68837445dd"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-03T07:55:47.923Z",
+    "completed_at": "2026-09-03T07:55:50.216Z",
+    "duration_ms": 2293,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 2293,
+    "peakMemoryBytes": 132923392,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 0,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260903T075550216Z-74929-0e2828645f84.json",
+    "latest_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722.json",
+    "history_summary": ".mimosa/history/run-20260903T075550216Z-74929-0e2828645f84.json"
+  }
+}

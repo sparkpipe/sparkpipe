@@ -17,6 +17,9 @@ SPARKPIPE_CORE_SOURCES := \
     src/spark_sha256.c \
     src/spark_ck128.c \
     src/spark_admission.c \
+    src/spark_speculation_policy.c \
+    src/spark_speculation_seam.c \
+    ring/transport/draft_bridge.c \
     runtime/filesystem.c \
     runtime/json.c
 
@@ -28,6 +31,7 @@ SPARKPIPE_COMPILER_SOURCES := \
 SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
     src/spark_orchestrator.c \
+    runtime/stagepack_format.c \
     runtime/runtime_completion.c \
     runtime/model_runtime.c \
 	runtime/model_serving_adapter.c \
@@ -73,8 +77,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
 
 SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c \
-	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c \
-	src/spark_speculation_policy.c
+	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c
 
 SPARKPIPE_QWEN38_27B_SOURCES := \
     model-families/qwen38_27b/src/spark_qwen38_27b_work_control.c

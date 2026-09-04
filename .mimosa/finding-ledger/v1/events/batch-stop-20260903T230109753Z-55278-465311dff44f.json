@@ -1,0 +1,109 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260903T230109753Z-55278-465311dff44f",
+  "runId": "20260903T230109753Z-55278-465311dff44f",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "tests/test_draft_bridge.c",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "ring/transport/draft_bridge.c",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "include/sparkpipe/spark_draft_bridge.h",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "tests/test_draft_bridge.c",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "ring/transport/draft_bridge.c",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "include/sparkpipe/spark_draft_bridge.h",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "b9b1cc29d674a9ff6e3e8c5e2154376253270964",
+  "diffHash": "d04d1076ad0c52b6defc7f4090feb7d9555d68e9972344ddba142c15a12ad208",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260903T230109753Z-55278-465311dff44f.json",
+  "events": [
+    {
+      "eventId": "hook-3a3568da98731d7f96a4c1264ba1b6de",
+      "findingId": "mimosa-1292e81681c4089657036a7b",
+      "type": "finding_observed",
+      "at": "2026-09-03T23:01:09.753Z",
+      "identity": {
+        "projectRelativeFile": "tests/test_draft_bridge.c",
+        "ruleId": "security",
+        "codeEvidenceHash": "10795e5fa381edfbaef48a049c58777f5f72f92ca612fd8d44f95de44e3dfea7",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 56,
+      "endLine": 56,
+      "reasonCode": "observe",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "10795e5fa381edfbaef48a049c58777f5f72f92ca612fd8d44f95de44e3dfea7"
+      },
+      "sequence": 0
+    }
+  ],
+  "observedFindingIds": [
+    "mimosa-1292e81681c4089657036a7b"
+  ],
+  "verifiedFiles": [
+    {
+      "file": "tests/test_draft_bridge.c",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "ring/transport/draft_bridge.c",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "include/sparkpipe/spark_draft_bridge.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-03T23:01:10.019Z"
+}

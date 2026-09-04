@@ -1,0 +1,319 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260904T040632344Z-27015-58b67ac06271",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "scan",
+      "target": "tools/mtp_strip_audit.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/mtp_strip_fleet.sh",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/mtp_strip_dsv4.sh",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/mtp_strip_sweep.sh",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/qwen4_flash_pack_verify.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": "tools/stagepack_mtp_strip.py",
+      "reason": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 839,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 6
+    },
+    "change_tracking": {
+      "touched_observed": 4,
+      "touched_retained": 4,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 6,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 6,
+      "selected_files": 6,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 6,
+      "scanned_files": 0,
+      "skipped_files": 0,
+      "failed_files": 6,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "scanner_failed": 6,
+      "project_check_failed": 6
+    },
+    "reasons": [
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_audit.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_fleet.sh",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_dsv4.sh",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_sweep.sh",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/qwen4_flash_pack_verify.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "tools/stagepack_mtp_strip.py",
+        "detail": "spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_audit.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_fleet.sh",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_dsv4.sh",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/mtp_strip_sweep.sh",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/qwen4_flash_pack_verify.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "tools/stagepack_mtp_strip.py",
+        "detail": "scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-04T04:06:32.344Z",
+  "session_id": "sess_aca7c08e-991a-41d9-99d5-c53325cc2722",
+  "target": ".",
+  "revision": "cef165246c8199a67dd969b77dab7a17e0abf070",
+  "rules_version": "unavailable",
+  "diff_hash": "85160d09d962d7599cb757179e9e90b81828002f7deda4d197ca6ac21df456db",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 6,
+    "changed_files": [
+      {
+        "file": "tools/mtp_strip_audit.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 73
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "ae62abe16a170f6c8e0943623095ac47227facef3a5778a5d05c46a495b73397"
+      },
+      {
+        "file": "tools/mtp_strip_dsv4.sh",
+        "ranges": [
+          {
+            "start": 5,
+            "end": 5
+          }
+        ],
+        "before_hash": "cc8117c2caf6d6d3cd70caa80b79580468fdf78b08eade162c09e3a6082cd177",
+        "after_hash": "c60c3baf1405d423d3560c90ec7affe96fdd312c5de8dbb0d929b24de7f87539"
+      },
+      {
+        "file": "tools/mtp_strip_fleet.sh",
+        "ranges": [
+          {
+            "start": 6,
+            "end": 6
+          }
+        ],
+        "before_hash": "10b53a52a069aa407d39737e1b3ffd468e12b7f170cea239f0054b4f128873cd",
+        "after_hash": "b008617e27e786e192ad57d90c2aba67f7d6b292abfb144d8fede8d965753810"
+      },
+      {
+        "file": "tools/mtp_strip_sweep.sh",
+        "ranges": [
+          {
+            "start": 3,
+            "end": 3
+          }
+        ],
+        "before_hash": "4ae63308b13091809002615a319c44b7a8750d9f00c567cf8872470044ac2959",
+        "after_hash": "bc6995b7ed7e7991e3b24229079303b7ef130805e0aa8ffd73c1b5ba704b7a8f"
+      },
+      {
+        "file": "tools/qwen4_flash_pack_verify.py",
+        "ranges": [
+          {
+            "start": 222,
+            "end": 231
+          },
+          {
+            "start": 265,
+            "end": 266
+          },
+          {
+            "start": 269,
+            "end": 269
+          }
+        ],
+        "before_hash": "70670856768652a0de92292b1bb1fdd999acd6a3ba48cf59f2d37959776702b5",
+        "after_hash": "6fcd9345dfca8258260da3857bb4436c0ab55ad6dacdefa70131c22428424694"
+      },
+      {
+        "file": "tools/stagepack_mtp_strip.py",
+        "ranges": [
+          {
+            "start": 205,
+            "end": 216
+          },
+          {
+            "start": 311,
+            "end": 330
+          },
+          {
+            "start": 332,
+            "end": 333
+          },
+          {
+            "start": 335,
+            "end": 336
+          }
+        ],
+        "before_hash": "283e9915ebeeecd98796baa5b1fbf6605ba379d3d78e1ebd31e549e832bb4f28",
+        "after_hash": "c0b2b449fcfa870215a2350415cb27e6a85941ad8aff82e8adedb6fd9ca25d01"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-04T04:06:30.051Z",
+    "completed_at": "2026-09-04T04:06:32.344Z",
+    "duration_ms": 2293,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 2293,
+    "peakMemoryBytes": 133251072,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 0,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T040632344Z-27015-58b67ac06271.json",
+    "latest_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722.json",
+    "history_summary": ".mimosa/history/run-20260904T040632344Z-27015-58b67ac06271.json"
+  }
+}

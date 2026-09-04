@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260902T195539438Z-25118-59160de7d430",
+  "runStatus": "inconclusive",
+  "errors": [
+    "scan:tools/qwen38_stagepack.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/qwen38_max_tp4pp4_stagepacks.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "0922d825d6011b57d63d4580869b53623dc94b96",
+  "diffHash": "ae660e1e2128f7fabf988cc7f07bb07ce9fcff8c3c2beada8122cb33f26faee3",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-02T19:55:39.438Z",
+  "timing": {
+    "startedAt": "2026-09-02T19:55:37.157Z",
+    "completedAt": "2026-09-02T19:55:39.438Z",
+    "durationMs": 2281
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "scanner_failed": 2,
+      "project_check_failed": 2
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260902T195539438Z-25118-59160de7d430.json"
+}

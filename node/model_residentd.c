@@ -203,10 +203,6 @@ typedef struct SparkModelResidentdRuntime
 	uint32_t next_adapter_route;
 	uint32_t committed_fifo_head;
 	uint32_t committed_fifo_tail;
-	/* p1d2 step-loop receipt (BUG_LEDGER PATTERN B): adapter ops per
-	 * Progress pass. The old one-op-per-pass bound shows up as max 1;
-	 * adapter-contract admission drains the committed FIFO and the max
-	 * follows the ready depth. Printed at exit for the host oracle. */
 	uint64_t progress_pass_count;
 	uint64_t adapter_op_count;
 	uint32_t adapter_op_max_per_pass;
@@ -473,10 +469,6 @@ static SparkStatus SparkModelResidentdOpenTcpListenSocket(
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
 	hints.ai_flags = AI_NUMERICSERV;
-	/* Same F1 transient as the client side: one resolver miss under
-	 * simultaneous wave load took a random rank down as
-	 * ROUTE_NOT_FOUND. Bounded retry absorbs it; real failures stay
-	 * loud. */
 	addresses = 0;
 	{
 		uint32_t resolve_attempt;
@@ -762,12 +754,6 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 	for (lane=0u; lane<route->submission.active_sequence_count; lane++)
 	{
 		slot = route->submission.lanes[lane].resident_sequence_slot;
-		/* active_owner == 0 is an ALREADY-RELEASED slot (the adapter's
-		 * prefetch-abort resolution may have released it first) - skip
-		 * it; only a slot owned by ANOTHER route is corruption. The old
-		 * != owner check made the second release of a legal double
-		 * cleanup a client-fatal INTERNAL_ERROR (the B>=24 knee-sweep
-		 * FAILURE_DEACTIVATE_ROUTE receipts). */
 		if ( slot >= runtime->runtime_limits.resident_sequence_capacity )
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		if ( runtime->sequence_slots[slot].active_owner != owner &&
@@ -797,20 +783,6 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	next_sequence_position = lane->context_token_count;
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
-		/* The lease must land on the position the engine actually advanced
-		 * to: the completion's EMITTED count, and BOTH sides must compute
-		 * it the same way. The batch side (c8f76e5) advances by
-		 * completion.tokens_per_sequence (falling back to the admitted
-		 * chain width), and the module reports tokens_per_sequence = the
-		 * emitted count on both paths: a speculative verify override
-		 * sets it to 1 + accepted, and the no-spec resident chain keeps
-		 * it at the chain width. Reading accepted_token_count here
-		 * advanced the daemon lease by 1 (the continuation's
-		 * new_token_count) while
-		 * the client advanced by 8 - every no-spec continuation then
-		 * failed the lease schema gate and the request terminated after
-		 * one chain. Mirror the client: tokens_per_sequence first,
-		 * accepted only when the completion carries none. */
 		uint32_t completed_tokens = route->completion.tokens_per_sequence;
 		if ( completed_tokens == 0u )
 			completed_tokens = route->submission.tokens_per_sequence;
@@ -822,14 +794,7 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 			if ( status != SPARK_STATUS_OK )
 				return(status);
 		}
-		/* A decode that emitted zero tokens (degenerate completion) holds
-		 * the lease at the lane's current context instead of failing the
-		 * route and the daemon with it. */
 	}
-	/* The lease must be fenced by the CURRENT client generation, not the
-		 * route's (captured at reservation): the ASYNC verify completion can
-		 * land after a reconnect, which would leave the route's generation
-		 * stale and reject the next continuation. */
 	return(SparkModelContinuationLeaseEstablish(&slot->lease,
 		runtime->client.generation,route->submission.control_generation,
 		next_sequence_position,lane->step_generation));
@@ -968,11 +933,6 @@ static SparkStatus SparkModelResidentdQueueRawLocked(
 	return(SPARK_STATUS_OK);
 }
 
-/*
- * A transport timeout is client-visible immediately, but the route and its
- * boundary allocation stay quarantined until transport reports a terminal
- * completion. The one-shot PP API has no safe cancellation/reclaim contract.
- */
 static SparkStatus SparkModelResidentdQueueDeadlineCompletionLocked(
 	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route)
@@ -1373,15 +1333,6 @@ static void SparkModelResidentdCloseClientLocked(
 	if ( live_lease != 0u && SparkModelResidentdStop == 0 )
 		SparkModelResidentdFailLocked(runtime,SPARK_STATUS_IO_ERROR,
 			SPARK_MODEL_RESIDENTD_FAILURE_CLIENT_LEASE_DISCONNECT,0);
-	/* Session-death slot unbind (the fragility fix): a client that dies
-	 * mid-request (timeouts, kills, crashes - every harness does it) never
-	 * sends its RELEASE submissions, and bound slots then reject every new
-	 * client's claims under the REQUIRES_RELEASE contract (INVALID_ARGUMENT,
-	 * one poisoned slot per dead request - measured as "all cells fail
-	 * until daemon restart"). The daemon is single-client: when the session
-	 * ends, ALL lane bindings belong to it. Clear them so the next client
-	 * starts clean. Prefix-cache block pins are refcounted separately and
-	 * are unaffected. */
 	if ( runtime->sequence_slots != 0 )
 		for (index=0u; index<runtime->runtime_limits.resident_sequence_capacity;
 			index++)
@@ -1451,13 +1402,6 @@ static void SparkModelResidentdCloseClient(SparkModelResidentdRuntime *runtime)
 					runtime,route);
 				if ( cleanup_status != SPARK_STATUS_OK )
 				{
-					/* The route was ALREADY being discarded - a cleanup
-					 * failure must fence it (orphan for later reclaim)
-					 * and log loudly, not kill the client that asked for
-					 * the abort. The old client-fatal path turned a
-					 * bookkeeping disagreement with the adapter's own
-					 * abort cleanup into terminal INTERNAL_ERROR for
-					 * every connected client (knee-sweep B=24/48). */
 					fprintf(stderr,"model_residentd deactivate_after_abort "
 						"failed status=%d route=%u - fencing route\n",
 						(int)cleanup_status,route->slot_index);
@@ -1695,9 +1639,6 @@ static SparkStatus SparkModelResidentdBindRoute(
 	route->message_bytes = message_bytes;
 	status = SparkModelResidentIpcDecodeSubmission(slot->message,message_bytes,&route->submission);
 	if ( status == SPARK_STATUS_OK )
-		/* R5 hoist: (descriptor, limits) validated once at configure
-		 * (SparkModelResidentdBuildRuntime); per-submission checks and
-		 * statuses unchanged. */
 		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&route->submission);
 	hidden_bytes = status == SPARK_STATUS_OK &&
 		((runtime->rank_plan.flags &
@@ -1769,10 +1710,6 @@ static SparkStatus SparkModelResidentdProcessHello(
 	if ( status == SPARK_STATUS_OK && queue_status == SPARK_STATUS_OK )
 	{
 		runtime->client.hello_complete = 1u;
-		/* A new client session starts a fresh submission sequence: keep the
-		 * old session's watermark and a reconnecting client's ids 1,2,...
-		 * look stale (INVALID_ARGUMENT on every submit - the incident
-		 * where a second benchmark process interleaved with a live one) */
 		runtime->client.last_submission_id = 0u;
 	}
 	else
@@ -1814,7 +1751,6 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		status = SparkModelResidentIpcValidateDirectSubmitDescriptor(
 			runtime->adapter_library.adapter_interface.descriptor);
 	if ( status == SPARK_STATUS_OK )
-		/* R5 hoist: configure-time (descriptor, limits) validation. */
 		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&submission);
 	if ( status == SPARK_STATUS_OK && submission.submission_id <= runtime->client.last_submission_id )
 		status = submission.submission_id == runtime->client.last_submission_id ? SPARK_STATUS_DUPLICATE : SPARK_STATUS_INVALID_ARGUMENT;
@@ -1965,7 +1901,6 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,
 		&submission);
 	if ( status == SPARK_STATUS_OK )
-		/* R5 hoist: configure-time (descriptor, limits) validation. */
 		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
 			runtime->adapter_library.adapter_interface.descriptor,
 			&runtime->runtime_limits,&submission);
@@ -2479,20 +2414,6 @@ static SparkStatus SparkModelResidentdPostTransport(
 	return(status);
 }
 
-/*
- * P1/D2 step-loop admission budget (BUG_LEDGER PATTERN B, PERF_PROGRAM
- * P1): the adapter's own contract decides how many adapter operations a
- * Progress pass may issue. An ASYNC_COMPLETION submit returns without
- * holding the CPU, so the pass drains the committed FIFO and stops only
- * on the adapter's own backpressure (refused = submit returned BUSY —
- * the max_inflight_submission_count the descriptor already declares).
- * A sync submit blocks until the frame completes; the serial bound
- * keeps the historical one-op-per-pass interleave so transport service
- * is never starved behind a blocked submit (the pre-port families).
- * Either way the NON-adapter route work (transport posting, completion
- * finishing) keeps advancing for the whole ring — the old loop aborted
- * the entire scan after the first adapter op.
- */
 typedef struct SparkModelResidentdAdapterBudget
 {
 	uint32_t allowed;
@@ -2570,9 +2491,6 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			}
 			if ( status != SPARK_STATUS_OK )
 			{
-				/* A refused route is a per-route outcome, not a daemon
-				 * failure: queue a failed completion for the client and let
-				 * the route drain through the normal completion path. */
 				pthread_mutex_lock(&runtime->mutex);
 				if ( route->active != 0u && route->state ==
 					SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER )
@@ -2638,8 +2556,6 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 	status = SPARK_STATUS_OK;
 	memset(&budget,0,sizeof(budget));
 	budget.allowed = allow_adapter;
-	/* Serial bound only for adapters whose submit BLOCKS (no async
-	 * completion); async adapters run until they refuse (BUSY). */
 	budget.serial = (runtime->adapter_library.adapter_interface.descriptor->
 		capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION) != 0u ?
@@ -2661,14 +2577,6 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runtime)
 {
 	SparkStatus status;
-	/* ADMIT FIRST. ProgressRoutes(allow_adapter=1) submits the next
-	 * decode-draft (adapter.submit = spec phase one). The adapter's progress
-	 * scan (spec phase two of the prior submission) runs AFTER admission so
-	 * the driver can run verify(N) + decode-draft(N+1) concurrently under
-	 * max_inflight_submission_count, instead of serializing phase two ahead
-	 * of the next admission. The committed-fifo head ordering and the
-	 * continuation-lease chain are untouched: they live in the submit and
-	 * completion paths, not in this scan order. */
 	status = SparkModelResidentdProgressRoutes(runtime,0u);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd progress stage=routes-pre status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
@@ -2765,12 +2673,6 @@ static SparkStatus SparkModelResidentdBuildPollFds(
 	fds[0].events = runtime->client.fd < 0 ? POLLIN : 0;
 	fds[1].fd = runtime->client.fd;
 	fds[1].events = runtime->client.fd >= 0 && runtime->client.close_after_output == 0u ? POLLIN : 0;
-	/* Request POLLOUT only while output is genuinely pending. Requesting it
-	 * unconditionally makes poll() return immediately on a writable socket,
-	 * turning this loop into a 100%-CPU busy-spin for the whole GPU decode and
-	 * starving the driver's completion callback (both IPC round-trips). The
-	 * queued ACK is still flushed here: ReadClient queues it and the run loop
-	 * calls WriteClient in the same iteration (submission_processed path). */
 	if ( runtime->client.fd >= 0 && runtime->client.close_after_output == 0u && runtime->client.output_count != 0u )
 		fds[1].events |= POLLOUT;
 	pthread_mutex_unlock(&runtime->mutex);
@@ -2876,20 +2778,6 @@ int main(int argument_count,char **arguments)
 	}
 	signal(SIGINT,SparkModelResidentdSignal);
 	signal(SIGTERM,SparkModelResidentdSignal);
-	/* Structural weightd residency (docs/WEIGHTD_DESIGN.md): the residentd
-	 * OWNS the daemon lifecycle so every family deployment inherits pack
-	 * residency with zero per-module wiring. When the load seam requests
-	 * an attach (SPARK_WEIGHTD_SOCKET names a socket) and no daemon is
-	 * listening, fork/exec the staged weightd binary from the runtime
-	 * root's bin/ and wait briefly for its socket. Failure to start is a
-	 * loud line, never fatal: the seam's contract falls back to the
-	 * direct pack load. */
-	/* The weightd residency tier (the one-minute debug cycle): when the
-	 * deployment carries the optional weightd{} object, the helper in
-	 * node/weightd_spawn.c owns the whole W2b env contract (publish,
-	 * sidecar digest, daemon spawn) - model_residentd.c itself stays
-	 * environment-free (the architecture gate's rule). All families
-	 * inherit: config in, warm arena out, no per-module anything. */
 	if ( deployment.weightd_socket_path != 0 &&
 		deployment.weightd_socket_path[0] != '\0' )
 	{
@@ -2908,7 +2796,6 @@ int main(int argument_count,char **arguments)
 		status = SparkModelResidentdRun(&runtime);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr,"model_residentd run=%s status=%u rank=%u stage=%u reason=%u submission=%llu kind=%u route_state=%u\n",SparkStatusToString(status),(uint32_t)status,runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,runtime.failed_reason,(unsigned long long)runtime.failed_submission_id,runtime.failed_work_kind,runtime.failed_route_state);
-		/* p1d2 step-loop receipt: adapter ops per Progress pass. */
 		fprintf(stderr,"model_residentd_exit rank=%u stage=%u passes=%llu adapter_ops=%llu max_ops_per_pass=%u\n",runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,(unsigned long long)runtime.progress_pass_count,(unsigned long long)runtime.adapter_op_count,runtime.adapter_op_max_per_pass);
 	}
 	else

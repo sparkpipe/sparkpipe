@@ -9,9 +9,6 @@
 
 #define SPARK_GLM5_NEXT_CUDA_THREADS 256u
 
-/* The boundary carries ONE hidden row per token; the HC streams surface
- * initialises every stream to that row (the reference expands the
- * embedding across streams - a stage boundary is the same expansion). */
 __global__ static void SparkGlm5NextBoundaryLoadKernel(
 	const uint16_t *boundary,
 	uint16_t *streams,
@@ -28,8 +25,6 @@ __global__ static void SparkGlm5NextBoundaryLoadKernel(
 		streams[((row * (uint64_t)GLM5_NEXT_HC + stream) * GLM5_NEXT_HIDDEN) + element] = boundary[source + element];
 }
 
-/* The store side of the same contract: the stream MEAN is the one hidden
- * row the boundary carries. */
 __global__ static void SparkGlm5NextBoundaryStoreKernel(
 	const uint16_t *streams,
 	uint16_t *boundary,
@@ -49,8 +44,6 @@ __global__ static void SparkGlm5NextBoundaryStoreKernel(
 	boundary[destination + element] = LmFloatToBf16(value / (float)GLM5_NEXT_HC);
 }
 
-/* Every HC stream initialises to the token's embedding row (the
- * reference: inputs_embeds.unsqueeze(2).expand(-1, -1, hc_mult, -1)). */
 __global__ static void SparkGlm5NextEmbeddingKernel(
 	const uint32_t *token_ids,
 	const uint16_t *embedding,
@@ -84,19 +77,10 @@ __global__ static void SparkGlm5NextWaveMetadataKernel(
 {
 	uint32_t row;
 	row = blockIdx.x * blockDim.x + threadIdx.x;
-	/* One thread computes the deterministic per-slot maximum so rows sharing
-	 * a resident slot (a chunked-prefill run) get a stable context bound.
-	 * The previous multi-writer race wrote values 1..rows in arbitrary order
-	 * and made attention output nondeterministic. */
-	if ( blockIdx.x == 0u && threadIdx.x == 0u )
+	if ( row < row_count )
+		context_lengths[resident_slots[row]] = positions[row] + 1u;
+	if ( row == 0u )
 	{
-		for ( row = 0u; row < row_count; ++row )
-		{
-			uint32_t slot = resident_slots[row];
-			uint32_t len = positions[row] + 1u;
-			if ( len > context_lengths[slot] )
-				context_lengths[slot] = len;
-		}
 		dense_row_offset[0] = 0u;
 		dense_row_offset[1] = row_count;
 	}
@@ -107,10 +91,6 @@ static int32_t SparkGlm5NextCudaStatus(cudaError_t status)
 	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-/* Cross-rank head argmax: pack (score, token) into one u64 per row so the
- * TP collective can reduce-max it. The score's float bits are order-mapped
- * (negative-safe); the token is inverted so equal scores keep the LOWEST
- * token id, and the rank's vocab offset is folded in at pack time. */
 static __device__ __forceinline__ uint32_t SparkGlm5NextOrderedHeadScore(float score)
 {
 	uint32_t bits;
@@ -147,9 +127,6 @@ static __global__ void SparkGlm5NextHeadMaxlocUnpackKernel(
 
 static __device__ __forceinline__ float2 SparkGlm5NextLoadBf16Pair(const void *base,uint64_t element)
 {
-	/* Little-endian pair layout: x occupies the LOW 16 bits, y the HIGH.
-	 * The bits are REINTERPRETED (int_as_float), never integer-converted:
-	 * BF16 lives in the top 16 bits of the float's bit pattern. */
 	uint32_t packed = ((const uint32_t *)base)[element];
 	float2 pair;
 	pair.x = __int_as_float((int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
@@ -226,13 +203,6 @@ extern "C" cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64
 	return(cudaPeekAtLastError());
 }
 
-/* Zero every KDA layer's state + conv-window slot for rows at position 0
- * (fresh sequences; see the call in StageWaveMetadata). grid.x walks the
- * KDA layer ordinals, grid.y the wave rows; a row past position 0 (every
- * decode wave) early-outs. Slot geometry mirrors the kernels that read
- * these pools: state at kda_state_index[slot] * STATE_BYTES_PER_LAYER per
- * layer slab (LmDeltaRuleKernel), windows at kda_state_index[slot] *
- * channels * KERNEL bf16 taps per layer (LmCausalConvKernel). */
 __global__ static void SparkGlm5NextKdaResetKernel(
 	uint8_t *state_pools, uint64_t state_layer_stride, uint64_t state_slot_bytes,
 	uint8_t *q_windows, uint8_t *k_windows, uint8_t *v_windows,
@@ -269,12 +239,6 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 	error = cudaMemcpyAsync(slot->resident_slots,wave->host_resident_slots,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(slot->positions,wave->host_positions,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-	if ( error == cudaSuccess && wave->run_count != 0u )
-	{
-		error = cudaMemcpyAsync(slot->run_begin,wave->host_sequence_row_begin,((uint64_t)wave->run_count + 1u) * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-		if ( error == cudaSuccess )
-			error = cudaMemcpyAsync(slot->run_state_index,wave->host_run_state_index,(uint64_t)wave->run_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-	}
 	if ( error == cudaSuccess && wave->owns_embedding != 0u )
 		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
@@ -282,14 +246,6 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 		SparkGlm5NextWaveMetadataKernel<<<(wave->row_count + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
-	/* STATE RESET ON SLOT RE-ACQUIRE (closeout item 2, glm5-dsa lane): a
-	 * row at position 0 is a FRESH sequence, and the KDA recurrence must
-	 * start from zero - the fp32 state and the three conv windows carry
-	 * the PREVIOUS request's tail otherwise, so every second request on a
-	 * resident slot differs from the first (only served:0 firsts were
-	 * canonical). Zeroing is a no-op for rows past position 0 (decode
-	 * waves), and KV pages / context_lengths already self-heal per slot.
-	 * Runs on the slot stream before any layer work of this wave. */
 	if ( error == cudaSuccess && wave->kda_state_pools != 0 &&
 		wave->kda_layer_count != 0u )
 	{
@@ -300,10 +256,7 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 			wave->kda_window_layer_stride_bytes,
 			(uint64_t)(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree) * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_CONV_KERNEL * 2u,
 			(uint64_t)(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree) * GLM5_NEXT_KDA_VALUE_DIM * GLM5_NEXT_KDA_CONV_KERNEL * 2u,
-			/* slot-keyed: the row's resident slot IS the pool key (same
-			 * space as run_state_index); multi-row runs touch their slot
-			 * once (only the position-0 row resets). */
-			slot->resident_slots,slot->positions,wave->kda_layer_count,wave->row_count);
+			wave->kda_state_index,slot->positions,wave->kda_layer_count,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	return(SparkGlm5NextCudaStatus(error));
@@ -348,14 +301,10 @@ static void SparkGlm5NextBuildKvView(
 	view->access_error = (LmKvAccessError *)wave->slot->kv_access_error;
 }
 
-/* The DSA ordinal of a weight layer: only the 11 sparse layers carry an
- * MLA KV pool; KDA layers never touch it. */
 static uint32_t index_ordinal_of(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t layer)
 {
 	(void)wave;
 	(void)local_layer;
-	/* DSA layers are 3, 7, ..., 43: ordinal = (layer - 3) / 4 + 1 counted
-	 * from 0 for layers before the first DSA layer. */
 	if ( layer < 3u || layer >= SPARK_GLM5_NEXT_MODEL_LAYER_COUNT ||
 	     SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer) )
 		return(UINT32_MAX);
@@ -398,10 +347,6 @@ static void SparkGlm5NextBindLayer(
 	buffers->q_b_weight = weight->q_b_bf16;
 	buffers->kv_a_weight = weight->kv_a_bf16;
 	buffers->kv_a_norm_weight = weight->kv_a_norm_bf16;
-	/* kv_b is replicated across ranks, but each rank computes only its own
-	 * attn_heads local query heads, and the per-head projection kernels index
-	 * the weight by LOCAL head id. Offset both per-head tensors to this
-	 * rank's head slice (global head tp_rank*attn_heads). */
 	{
 		uint64_t head_offset = (uint64_t)wave->tp_rank * buffers->attn_heads;
 		uint64_t key_head_stride = (uint64_t)GLM5_NEXT_LATENT * GLM5_NEXT_QK_NOPE_DIM;
@@ -431,10 +376,6 @@ static void SparkGlm5NextBindLayer(
 	buffers->expert_w2_scale = weight->expert_down_scale;
 	buffers->shared_gate_up_weight = weight->shared_gate_up_bf16;
 	buffers->shared_down_weight = weight->shared_down_bf16;
-	/* KDA: the rank's slice of the row-sharded tensors (the pack stores
-	 * per-rank shards; the per-head kernels index LOCAL head ids, so the
-	 * rank's head offset is already applied by the pack). The conv and
-	 * bias tensors arrive pre-sliced the same way. */
 	buffers->kda_qkv_beta_weight = weight->kda_qkv_beta_bf16;
 	buffers->kda_decay_gate_down_weight = weight->kda_decay_gate_down_bf16;
 	buffers->kda_decay_up_weight = weight->kda_decay_up_bf16;
@@ -446,14 +387,12 @@ static void SparkGlm5NextBindLayer(
 	buffers->kda_head_log_scale = (const float *)weight->kda_head_log_scale_f32;
 	buffers->kda_out_norm_weight = weight->kda_out_norm_bf16;
 	buffers->kda_out_weight = weight->kda_out_bf16;
-	/* Hyper-connections (F32 in the pack, replicated). */
 	buffers->hc_attn_fn = (const float *)weight->hc_attn_fn_f32;
 	buffers->hc_attn_base = (const float *)weight->hc_attn_base_f32;
 	buffers->hc_attn_scale = (const float *)weight->hc_attn_scale_f32;
 	buffers->hc_ffn_fn = (const float *)weight->hc_ffn_fn_f32;
 	buffers->hc_ffn_base = (const float *)weight->hc_ffn_base_f32;
 	buffers->hc_ffn_scale = (const float *)weight->hc_ffn_scale_f32;
-	/* Scratch surfaces. hidden_bf16 IS the HC streams surface. */
 	buffers->hidden_bf16 = slot->hidden_bf16;
 	buffers->residual_bf16 = slot->residual_bf16;
 	buffers->normed_bf16 = slot->normed_bf16;
@@ -496,11 +435,7 @@ static void SparkGlm5NextBindLayer(
 	buffers->positions = slot->positions;
 	buffers->row_positions = slot->positions;
 	buffers->selected_positions = slot->selected_positions;
-	/* The MLA decode kernel consumes the kpool-expanded width but its
-	 * shape gate demands the SELECT width constant; long contexts only
-	 * (this gate arm is context > SELECT). */
 	buffers->selected_position_count = GLM5_NEXT_DSA_SELECTED;
-	/* KDA scratch + state (indexed by KDA ordinal, not layer index). */
 	buffers->fused_qkvb_bf16 = slot->fused_qkvb_bf16;
 	buffers->fused_decay_gate_bf16 = slot->fused_decay_gate_bf16;
 	buffers->kda_decay_latent_bf16 = slot->kda_decay_latent_bf16;
@@ -511,8 +446,8 @@ static void SparkGlm5NextBindLayer(
 	buffers->kda_output_bf16 = slot->kda_output_bf16;
 	buffers->kda_retention = slot->kda_retention;
 	buffers->kda_write_gate = slot->kda_write_gate;
-	buffers->kda_state_index = wave->run_state_index;
-	buffers->sequence_row_begin = wave->sequence_row_begin;
+	buffers->kda_state_index = wave->kda_state_index;
+	buffers->sequence_row_begin = 0;
 	kda_ordinal = wave->kda_ordinal_by_local_layer[local_layer];
 	if ( kda_ordinal != UINT32_MAX )
 	{
@@ -522,7 +457,6 @@ static void SparkGlm5NextBindLayer(
 		buffers->kda_k_window = (uint16_t *)(wave->kda_k_window_pool + (uint64_t)kda_ordinal * wave->kda_window_layer_stride_bytes);
 		buffers->kda_v_window = (uint16_t *)(wave->kda_v_window_pool + (uint64_t)kda_ordinal * wave->kda_window_layer_stride_bytes);
 	}
-	/* HC scratch. */
 	buffers->hc_mixes_f32 = slot->hc_mixes_f32;
 	buffers->hc_pre_f32 = slot->hc_pre_f32;
 	buffers->hc_post_f32 = slot->hc_post_f32;
@@ -540,7 +474,6 @@ static void SparkGlm5NextBindLayer(
 	}
 }
 
-/* One attention site: HC wrap + the layer-kind sublayer. */
 static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave);
 
 static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
@@ -565,11 +498,7 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	}
 	if ( SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer) )
 	{
-		/* Decode: one row per sequence, null run begins. The KDA out-GEMM
-		 * already lands its full-width rank partial in attention_out_bf16;
-		 * the HC placement runs AFTER the chain's reduce - see
-		 * SparkGlm5NextLaunchCudaLayerAttentionPost. */
-		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->run_count,1u,wave->multiprocessor_count,stream));
+		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->row_count,1u,wave->multiprocessor_count,stream));
 	}
 	status = Glm5NextLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -577,8 +506,6 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	if ( wave->tp_rank == 0u && getenv("SPARK_GLM5_NEXT_PROBE") != 0 )
 		fprintf(stderr,"G5N-PROBE attn L%u dsa_partial bf16sum %llu\n",(unsigned)layer,
 			(unsigned long long)Glm5NextProbeBf16Sum(stream,(const uint16_t *)buffers.attention_out_bf16,256u));
-	/* MLA already writes its full-width rank partial into attention_out_bf16;
-	 * the HC placement runs after the chain's reduce, not here. */
 	return(LM_LAUNCH_OK);
 }
 
@@ -610,19 +537,9 @@ static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32
 		fprintf(stderr,"G5N-PROBE kda L%u mlp_partial_f %.6g %.6g %.6g %.6g\n",
 			(unsigned)buffers.layer_index,(double)probe_m[0],(double)probe_m[1],(double)probe_m[2],(double)probe_m[3]);
 	}
-	/* dense/MoE wrote the full-width rank partial into attention_out_bf16;
-	 * the HC placement runs after the chain's reduce - see
-	 * SparkGlm5NextLaunchCudaLayerMlpPost. */
 	return(LM_LAUNCH_OK);
 }
 
-/* HC placement for one sublayer, run on the REDUCED output. The placement
- * mixes the residual snapshot and the sublayer output into the streams; it
- * must see the SUMMED rank partial exactly once per sublayer. Running it
- * before the reduce made every rank add the replicated snapshot term and
- * the wide reduce then multiplied the residual streams by tp_degree every
- * layer - the layer-17 attention death (values reached 1e18, the attention
- * RMSNorm overflowed, every downstream stage emitted exact zeros). */
 static int32_t SparkGlm5NextRunLayerHcPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
@@ -632,11 +549,6 @@ static int32_t SparkGlm5NextRunLayerHcPost(const SparkGlm5NextCudaWave *wave,uin
 		return(LM_LAUNCH_ERR_SHAPE);
 	stream = (cudaStream_t)wave->slot->stream;
 	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
-	/* G5N-PROBE (diag only): the REDUCED attention_out must be bit-identical
-	 * on every rank - each rank receives the same summed partials. A
-	 * cross-rank checksum divergence convicts the collective path; agreement
-	 * convicts the per-rank partial math. Unlike the other probes this one
-	 * prints on EVERY rank, gated on the same diag env. */
 	if ( getenv("SPARK_GLM5_NEXT_PROBE") != 0 )
 	{
 		float probe_p[4];
@@ -695,7 +607,6 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 		Glm5NextLayerBuffers buffers;
 		uint32_t rank_offset;
 		SparkGlm5NextBindLayer(wave,wave->layer_count - 1u,&buffers);
-		/* The head collapse is the UNWEIGHTED stream mean. */
 		Glm5NextHcHeadMeanKernel<<<wave->row_count,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->hidden_bf16,slot->hc_mean_bf16,wave->row_count,GLM5_NEXT_HC,GLM5_NEXT_HIDDEN);
 		error = cudaPeekAtLastError();
 		if ( error != cudaSuccess )
@@ -709,8 +620,6 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 				(double)probe_m[0],(double)probe_m[1],(double)probe_m[2],(double)probe_m[3],
 				(double)pb_f[0],(double)pb_f[1],(double)pb_f[2],(double)pb_f[3]);
 		}
-		/* G5N-VEC (glm5-attractor lane): the head input, full width, one dump
-		 * per wave while the cap holds - the oracle's lm_head arbitration. */
 		if ( wave->tp_rank == 0u && getenv("SPARK_GLM5_NEXT_PROBE_VEC") != 0 )
 		{
 			static uint32_t head_vec_wave = 0u;
@@ -726,10 +635,6 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 			}
 		}
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		/* R1: B1 decode takes the certified-FP8 screened head (shadow
-		 * built at load; the norm inside is the same fused kernel, the
-		 * rescore is exact BF16 over the certified candidate set). The
-		 * full-vocab rescore stays for multi-row waves. */
 		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 )
 			status = Glm5NextHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
 		else
@@ -755,11 +660,7 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 
 static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave)
 {
-	/* Rows are bounded by the slot's EXECUTION capacity (multi-row prefill
-	 * waves carry up to execution_row_capacity rows of any lane mix); the
-	 * old bound was resident_sequence_capacity - the decode-era assumption
-	 * rows==lanes, which capped prefill waves at 16. */
-	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || (wave->execution_row_capacity != 0u && wave->row_count > wave->execution_row_capacity) || (wave->execution_row_capacity == 0u && wave->row_count > wave->resident_sequence_capacity) || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
+	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || wave->row_count > wave->resident_sequence_capacity || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(LM_LAUNCH_OK);
 }

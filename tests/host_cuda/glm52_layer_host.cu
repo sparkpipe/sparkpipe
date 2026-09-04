@@ -1,21 +1,3 @@
-// Run the real GLM 5.2 layer on a CPU: one attention, one MoE, one dense MLP
-// in both gate/up forms and the head - the code that ships, end to end, two
-// rows.
-//
-// The glm5_2 driver had no harness at all: the per-kernel tests cover kernels,
-// and the python contracts read the launch sites, but nothing EXECUTED the
-// layer. That is how the join-assembled KV slot and the head's dropped
-// residual could sit in the tree unobserved - both live between the kernels,
-// which is exactly the span only a layer harness sees. k3_slice_host found six
-// defects in that span for K3; this is the same instrument for GLM.
-//
-// The GEMM is the recorder - output 0.125 * call index, constant across rows,
-// honouring the output row stride and column offset - so the whole stream is
-// closed-form arithmetic the checker recomputes: the norm chain, the rope
-// rotations, the slot layout written directly by the kv projections, the
-// attention softmax over four positions, the indirect routed-row read, and
-// the final norm over hidden + residual. Everything else is the shipping
-// kernel.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -39,8 +21,6 @@ float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 #include "runtime/gemm.cuh"
 std::vector<LmRecordedGemm> lm_recorded_gemms;
 
-// kv.cuh guards its store kernel on __CUDACC__; scope the macro to that one
-// include exactly as k3_slice_host.cu does, so dtype.cuh never sees it.
 #define __CUDACC__ 1
 #include "inference/kernels/kv.cuh"
 #undef __CUDACC__
@@ -59,9 +39,6 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 #define HEAD_VOCAB 128u
 #define QK_SCALE 0.05f
 
-// The dead outputs of the retired join path stay null on purpose: a regression
-// that routes the kv projections through them again crashes the recorder here
-// instead of silently re-adding the launch on hardware.
 static uint16_t hidden[ROWS * GLM52_HIDDEN];
 static uint16_t residual[ROWS * GLM52_HIDDEN];
 static uint16_t normed[ROWS * GLM52_HIDDEN];
@@ -107,8 +84,6 @@ static uint16_t mlp_norm_w[GLM52_HIDDEN];
 static uint16_t head_norm_w[GLM52_HIDDEN];
 static uint16_t head_weight[HEAD_VOCAB * GLM52_HIDDEN];
 
-// Distinct addresses, never read: the recorder logs the pointer, so each
-// weight must be its own buffer for the gemm log to name it.
 static uint16_t w_q_a[8], w_q_b[8], w_kv_a[8];
 static uint16_t w_kv_b_key[GLM52_ATTN_HEADS * GLM52_LATENT * GLM52_QK_NOPE_DIM];
 static uint16_t w_kv_b_value[GLM52_ATTN_HEADS * GLM52_VALUE_DIM * GLM52_LATENT];
@@ -256,8 +231,6 @@ int main(void)
     FillNormWeight(head_norm_w, GLM52_HIDDEN);
     FillRandom(head_weight, (uint64_t)HEAD_VOCAB * GLM52_HIDDEN);
 
-    // Three cached positions per sequence, filled before the step; the step
-    // stores position 3 and attends over all four.
     for (row = 0u; row < SEQUENCES; ++row)
     {
         uint32_t position, element;
@@ -298,10 +271,6 @@ int main(void)
     buffers.router_correction_bias = router_correction_bias;
     buffers.expert_w1_weight = w_e1;
     buffers.expert_w2_weight = w_e2;
-    /* The bf16 expert pack carries no scale plane; a non-null pointer
-     * would build an invalid scale tensor and fail the launch. The codec
-     * ids are enum constants, so this is a folded runtime check - a
-     * preprocessor #if would see both names as 0. */
     if (EXPERT_CODEC == SPARK_WEIGHT_CODEC_BF16)
     {
         buffers.expert_w1_scale = 0;
@@ -368,11 +337,6 @@ int main(void)
             (row * Glm52Kv::kPageBytes) + (POSITION * Glm52Kv::kSlotBytes));
         Emit("slot", slot, GLM52_LATENT_ROW);
     }
-    // The layer's attention decode runs at GLM52_ATTN_THREADS, which the shim
-    // floors at 64: on the host it writes only every sixty-fourth output
-    // element from a partially-staged query. The recorder erases that output
-    // before anything reads it, so the harness checks the kernel's math at a
-    // small geometry below instead, where one thread covers everything.
     {
         using TestKv = LmKvLatent<16u, 8u, 8u, 64u>;
         static uint8_t test_pool[TestKv::kPageBytes];
@@ -418,19 +382,6 @@ int main(void)
                 test_sequence, test_context, 0, 0u, 2u, 0.5f, test_out, 0)));
         Emit("smallattn", test_out, 2u * 8u);
 
-        // R3 flash-decode receipts at the same tiny geometry, where one
-        // thread covers everything and the single-pass output above is the
-        // ground truth:
-        //  1. one live position through TWO partitions (the second empty) -
-        //     the combine multiplies by exp(0) = 1 and adds zeros, so the
-        //     bytes must equal the single-pass kernel bit for bit;
-        //  2. the launcher below the threshold must reproduce the single-pass
-        //     launch bit for byte;
-        //  3. the launcher above the threshold (16 partitions over three
-        //     positions) must be deterministic across runs, and its bytes are
-        //     emitted for the python oracle comparison - the multi-partition
-        //     combine is the same softmax up to where the rescale multiplies
-        //     round, so it matches within tolerance, not bitwise.
         {
             static float split_partials[2u * 16u * (8u + 2u)];
             static uint16_t split_out[2u * 8u];
@@ -441,7 +392,6 @@ int main(void)
             uint32_t split_flags[2];
             int exact, deterministic;
 
-            // The one-position single-pass reference for receipt (1).
             LM_HOST_LAUNCH(
                 dim3(1u, 2u),
                 (LmLatentAttentionDecodeKernel<TestKv, 1u, 8u, 8u>(
@@ -449,7 +399,6 @@ int main(void)
                     test_sequence, &context1, 0, 0u, 2u, 0.5f, base_one,
                     0)));
 
-            // (1) context 1, partitions 2: partition 1 is an empty tail.
             memset(split_partials, 0, sizeof(split_partials));
             LM_HOST_LAUNCH(
                 dim3(1u, 2u, 2u),
@@ -463,7 +412,6 @@ int main(void)
                     split_partials, split_out, 2u, 2u)));
             exact = memcmp(split_out, base_one, sizeof(split_out)) == 0;
 
-            // (2) the launcher, threshold 0: the single-pass launch itself.
             if (LmLatentAttentionDecodeSplitLaunch<
                     TestKv, 1u, 8u, 8u>(
                     test_query_latent, test_query_rope, test_cache,
@@ -478,7 +426,6 @@ int main(void)
                 exact = 0;
             }
 
-            // (3) the launcher, threshold 1: the split+combine path, twice.
             if (LmLatentAttentionDecodeSplitLaunch<
                     TestKv, 1u, 8u, 8u>(
                     test_query_latent, test_query_rope, test_cache,
@@ -526,9 +473,6 @@ int main(void)
         GLM52_EXPERT_INTERMEDIATE, 173u);
     Emit("hidden2", hidden, ROWS * GLM52_HIDDEN);
 
-    // The dense MLP twice: once with one contiguous gate/up tensor, once with
-    // two tensors. The poison fill turns a half-written gate_up into a failure
-    // rather than a stale read.
     buffers.dense_gate_weight = w_q_a;
     buffers.dense_up_weight = w_q_b;
     buffers.dense_down_weight = w_down;

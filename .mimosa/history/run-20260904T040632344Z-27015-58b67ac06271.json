@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260904T040632344Z-27015-58b67ac06271",
+  "runStatus": "inconclusive",
+  "errors": [
+    "scan:tools/mtp_strip_audit.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/mtp_strip_fleet.sh: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/mtp_strip_dsv4.sh: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/mtp_strip_sweep.sh: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/qwen4_flash_pack_verify.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/stagepack_mtp_strip.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "cef165246c8199a67dd969b77dab7a17e0abf070",
+  "diffHash": "85160d09d962d7599cb757179e9e90b81828002f7deda4d197ca6ac21df456db",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-04T04:06:32.344Z",
+  "timing": {
+    "startedAt": "2026-09-04T04:06:30.051Z",
+    "completedAt": "2026-09-04T04:06:32.344Z",
+    "durationMs": 2293
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "scanner_failed": 6,
+      "project_check_failed": 6
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T040632344Z-27015-58b67ac06271.json"
+}

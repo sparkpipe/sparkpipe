@@ -32,7 +32,7 @@ Usage:
   spark_queue.py status ID           one entry incl. log tail
   spark_queue.py done ID [--exit N]  mark done (gates, manual completions)
   spark_queue.py cancel ID
-  spark_queue.py reserve --node sparkX --holder lane-y [--ttl-min 360]
+  spark_queue.py reserve --node sparkX --holder lane-y [--ttl-min 3]
   spark_queue.py release --node sparkX | --id ID
   spark_queue.py schedule            ONE dispatch pass (the sweep calls this
                                      every 30m; safe to run manually too)
@@ -45,6 +45,7 @@ import argparse
 import json
 from datetime import datetime
 import os
+import pathlib
 import shlex
 import subprocess
 import sys
@@ -63,6 +64,7 @@ RESERV = os.path.join(STATE, "reservations.json")
 RESULTS = os.path.join(STATE, "results.jsonl")
 LOGDIR = os.path.join(STATE, "logs")
 LOCK = os.path.join(STATE, ".lock")
+FENCED = os.path.join(STATE, "fenced.json")
 # one-time migrations: absorb prior state locations into the DEFAULT home
 # only - an explicit SPARK_QUEUE_STATE override (tests, scratch queues)
 # must start EMPTY, never inheriting production state.
@@ -76,9 +78,20 @@ if "SPARK_QUEUE_STATE" not in os.environ:
                     shutil.copy2(src, os.path.join(STATE, name))
 # NOTE: task-side sentinel files (exit/pid/log) stay in the NODE's /tmp -
 # they are transient by design; only this host-side state is durable.
+# Operator ruling 2026-09-04: reservations are STRICT WINDOWS - default
+# 3 minutes, 15 max. At the deadline the reservation is released and the
+# task's processes are KILLED (group SIGKILL + pattern sweep); a node the
+# kill cannot reach is FENCED (skipped by dispatch, probed every pass),
+# never allowed to block the next task. Weights stay resident across
+# windows (weightd lazy experts), so a window is pure test time; pulling
+# extra experts spends your own window.
+MAX_TTL_MINUTES = 15.0
+DEFAULT_TTL_MINUTES = 3.0
+
 DENY = ("reboot", "shutdown", "poweroff", "init 0", "init 6",
         "kill -9", "kill -KILL", "SIGKILL", "rm -rf")
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+SSH_UNREACHED = (255, 124)
 
 
 def now():
@@ -162,6 +175,41 @@ def pid_alive(node, pid):
     return rc == 0
 
 
+def load_fenced():
+    p = pathlib.Path(FENCED)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except (ValueError, OSError):
+        return {}
+
+
+def save_fenced(fenced):
+    p = pathlib.Path(FENCED)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(fenced, indent=1, sort_keys=True))
+    tmp.replace(p)
+
+
+def fence(node, reason):
+    fenced = load_fenced()
+    fenced[node] = dict(reason=reason, at=now())
+    save_fenced(fenced)
+
+
+def unfence_pass():
+    fenced = load_fenced()
+    before = set(fenced)
+    for node in list(fenced):
+        rc, out = ssh(node, "echo ok", timeout=8)
+        if rc == 0 and out == "ok":
+            del fenced[node]
+            print(f"unfenced {node} (probe ok)")
+    if set(fenced) != before:
+        save_fenced(fenced)
+
+
 def expire_stale(res):
     """Release reservations whose pid is dead OR whose TTL passed.
 
@@ -208,6 +256,12 @@ def cmd_doctor(args):
     res = load_reservations()
     holds = ", ".join(f"{n}={r['id']}" for n, r in sorted(res.items())) or "(none)"
     ok("node holds", holds)
+    fenced = load_fenced()
+    if fenced:
+        bad("fenced nodes", ", ".join(
+            f"{n} ({v['reason']}, since {v['at']})" for n, v in sorted(fenced.items())))
+    else:
+        ok("fenced nodes", "(none)")
     try:
         out = subprocess.run(["pgrep", "-f", "spark_queue.py dispatch"],
             capture_output=True, text=True, timeout=5)
@@ -232,11 +286,14 @@ def cmd_doctor(args):
     sys.exit(1 if any(not g for _, g, _ in checks) else 0)
 
 def cmd_add(args):
-    if getattr(args, "cmd_file", None):
+    if getattr(args, "cmd_file", None) is not None:
         if args.cmd:
             sys.exit("--cmd and --cmd-file are mutually exclusive")
-        with open(args.cmd_file) as fh:
-            args.cmd = fh.read()
+        args.cmd = args.cmd_file.read_text().rstrip("\n")
+    if args.ttl_min is not None and args.ttl_min > MAX_TTL_MINUTES:
+        sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute "
+                 f"task cap - batch several tests into the window (one cmd or "
+                 f"after= chains) and re-submit the remainder as a new task")
     with acquire_lock():
         check_denied(args.cmd or "")
         entries = load_queue()
@@ -246,6 +303,7 @@ def cmd_add(args):
         if args.id in ids:
             sys.exit(f"id '{args.id}' already exists")
         entry = dict(id=args.id, nodes=args.nodes.split(","),
+            resources=args.resources,
             ttl_minutes=args.ttl_min,
             cmd=args.cmd or "", cwd=args.cwd or "$HOME",
             priority=args.priority, kind=args.kind, class_=args.klass,
@@ -270,6 +328,7 @@ def cmd_list(args):
     for e in entries:
         hold = ",".join(n for n in e["nodes"] if n in res and res[n].get("id") == e["id"])
         print(f"{e['state']:8} {e.get('priority',5)} {e['id']:24} "
+              f"[{e.get('resources','gpu')}]"
               f"[{','.join(e['nodes'])}] hold={hold or '-'} "
               f"after={e.get('after') or '-'} {e.get('notes','')[:60]}")
     if not entries:
@@ -332,8 +391,22 @@ def pick_runnable(entries, results_ids):
     return best
 
 
-def nodes_free(nodes, res):
-    return all(n not in res for n in nodes)
+def nodes_free(nodes, res, resources="gpu", fenced=None):
+    # Resource classes are SYMMETRIC (operator ruling 2026-09-01): cpu
+    # work and gpu work coexist on the same node; only a hold of the
+    # SAME class blocks. A gpu task blocked by a cpu hold (pack builds
+    # freezing the whole gpu queue) was the one-sided original and is
+    # wrong. When both classes hold one node the later hold OVERWRITES
+    # the earlier - cpu-vs-cpu exclusivity then lapses for the
+    # overwritten entry, which is accepted: the operator contract is
+    # only cross-class coexistence.
+    blocking = resources
+    for n in nodes:
+        if fenced and n in fenced:
+            return False
+        if n in res and res[n].get("resources", "gpu") == blocking:
+            return False
+    return True
 
 
 def cmd_dispatch(args):
@@ -347,29 +420,45 @@ def cmd_dispatch(args):
         res = load_reservations()
         results_ids = {json.loads(l)["id"] for l in open(RESULTS) \
             if l.strip()} if os.path.exists(RESULTS) else set()
-        # reap: any running task whose remote pid is gone and exit file says done
+        unfence_pass()
         for e in [x for x in entries if x.get("state") == "running"]:
             n0 = e["nodes"][0]
-            # TTL FIRST: a running task past its ttl_minutes expires even
-            # with a live pid (hung or pid-recycled processes used to hold
-            # nodes forever). The process is never killed - it just stops
-            # locking the queue.
-            tttl = float(e.get("ttl_minutes", 0) or 0)
+            ttl_src = e.get("ttl_minutes")
+            if ttl_src is None:
+                ttl_src = res.get(n0, {}).get("ttl_minutes")
+            tttl = float(ttl_src or 0)
             tacq = res.get(n0, {}).get("acquired_at")
             if tttl and tacq:
                 tage = (time.time() - time.mktime(time.strptime(
                     tacq, "%Y-%m-%dT%H:%M:%S"))) / 60.0
                 if tage > tttl:
+                    reached = kill_remote_task(e, res, force=True)
                     e["state"] = "done"
-                    append_result(e, 124, f"ttl-expired at {tage:.0f}m "
-                                   f"(limit {tttl:.0f}m; pid left running)")
+                    append_result(e, 124, f"deadline-killed at {tage:.0f}m "
+                                   f"(limit {tttl:.0f}m; kill_delivered={reached})")
                     for n in e["nodes"]:
                         if res.get(n, {}).get("id") == e["id"]:
                             del res[n]
+                    if not reached:
+                        fence(n0, f"deadline kill undeliverable: {e['id']}")
                     print(f"expired {e['id']} ttl={tttl:.0f}m age={tage:.0f}m "
-                          f"(nodes released)")
+                          f"killed={reached} (nodes released)")
                     continue
             continue
+        for node in list(res):
+            r = res[node]
+            httl = float(r.get("ttl_minutes", 0) or 0)
+            if not httl:
+                continue
+            try:
+                age = (time.time() - time.mktime(time.strptime(
+                    r.get("acquired_at", now()), "%Y-%m-%dT%H:%M:%S"))) / 60.0
+            except ValueError:
+                continue
+            if age > httl:
+                del res[node]
+                print(f"EXPIRED {node} hold for {r.get('id', '?')} "
+                      f"(ttl {httl:.0f}m at age {age:.0f}m)")
         # Exit-file polls BATCHED PER NODE and age-gated: each poll is an
         # ssh under the global lock, and N running tasks on N nodes with a
         # dead one used to hold the lock for N x timeout - every other
@@ -423,6 +512,13 @@ def cmd_dispatch(args):
                     continue
             fresh.append(e)
         entries = fresh
+        # blocked -> queued when dependencies are done (the legacy schedule
+        # path marks deps-unmet entries blocked; dispatch previously never
+        # promoted them back, stranding them forever - a p0 task stranded
+        # this way let a p5 task dispatch ahead of it, 2026-09-01)
+        for e in entries:
+            if e.get("state") == "blocked" and                all(a in results_ids for a in e.get("after", [])):
+                e["state"] = "queued"
         candidates = [e for e in entries if e.get("state") == "queued"
                       and e.get("cmd")
                       and not any(a not in results_ids for a in e.get("after", []))]
@@ -439,13 +535,18 @@ def cmd_dispatch(args):
             return 0 if age_min > 120.0 else e["priority"]
         candidates.sort(key=lambda e: (eff_priority(e), e["submitted_at"]))
         task = None
+        fenced = load_fenced()
         for cand in candidates:
-            if not nodes_free(cand["nodes"], res):
-                print(f"blocked: {cand['id']} nodes busy")
+            rc = cand.get("resources", "gpu")
+            if not nodes_free(cand["nodes"], res, rc, fenced):
+                why = "nodes fenced" if any(n in fenced for n in cand["nodes"]) \
+                    else "nodes busy"
+                print(f"blocked: {cand['id']} {why}")
                 continue
             held_by = next((o for o in candidates
                 if o["id"] != cand["id"] and eff_priority(o) < eff_priority(cand)
                 and cand["id"] not in o.get("after", [])
+                and rc == "gpu" and o.get("resources", "gpu") == "gpu"
                 and set(cand["nodes"]).intersection(o["nodes"])), None)
             if held_by is not None:
                 print(f"held: {cand['id']} — priority barrier for "
@@ -457,11 +558,11 @@ def cmd_dispatch(args):
             rewrite_queue(entries); save_reservations(res)
             print("nothing dispatched this pass")
             return
-        ttl = float(task.get("ttl_minutes") or args.ttl)
+        ttl = min(float(task.get("ttl_minutes") or args.ttl), MAX_TTL_MINUTES)
         for n in task["nodes"]:
             res[n] = dict(id=task["id"], holder=f"task:{task['id']}",
                 acquired_at=now(), ttl_minutes=ttl,
-                pid=None)
+                resources=task.get("resources", "gpu"), pid=None)
         n0 = task["nodes"][0]
         inner = ("echo $$ > /tmp/sparkqueue-" + task['id'] + ".pid; "
                  + task['cmd']
@@ -478,9 +579,13 @@ def cmd_dispatch(args):
         print(f"dispatched {task['id']} nodes={','.join(task['nodes'])} pid={pid}")
 
 
-def kill_remote_task(entry, res):
-    """TERM the remote process of a running task (best effort) so cancel/
-    done cannot orphan a live process on a node we are about to release.
+def kill_remote_task(entry, res, force=False):
+    """Kill the remote process of a running task so cancel/done/deadline
+    cannot orphan a live process on a node we are about to release.
+    force (the strict-deadline path) escalates to SIGKILL and adds a
+    pattern sweep for setsid escapees. Returns True when the node was
+    REACHED (the command ran) - a delivered-but-no-such-pid kill still
+    counts as reached; only ssh failure (255) / timeout (124) do not.
     The queue's own cleanup - the denylist governs submitted commands."""
     n0 = entry["nodes"][0]
     pid = res.get(n0, {}).get("pid")
@@ -488,12 +593,18 @@ def kill_remote_task(entry, res):
         _, pid_txt = ssh(n0,
             f"cat /tmp/sparkqueue-{entry['id']}.pid 2>/dev/null", timeout=10)
         pid = pid_txt.strip() if pid_txt.strip().isdigit() else None
+    cmds = []
     if pid:
-        # The wrapper is setsid'd: TERM the PROCESS GROUP or children
-        # (sleep, benchmarks) survive the wrapper's death as orphans.
-        rc, _ = ssh(n0, f"kill -- -{pid} {pid} 2>/dev/null", timeout=10)
-        return rc == 0
-    return False
+        sig = "-KILL " if force else ""
+        cmds.append(f"kill {sig}-- -{pid} {pid} 2>/dev/null")
+    if force:
+        cmds.append(f"pkill -KILL -f sparkqueue-{entry['id']} 2>/dev/null; true")
+    reached = False
+    for c in cmds:
+        rc, _ = ssh(n0, c, timeout=10)
+        if rc not in SSH_UNREACHED:
+            reached = True
+    return reached
 
 def cmd_cancel(args):
     with acquire_lock():
@@ -516,12 +627,15 @@ def cmd_cancel(args):
 
 
 def cmd_reserve(args):
+    if args.ttl_min > MAX_TTL_MINUTES:
+        sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute cap")
     with acquire_lock():
         res = load_reservations()
         if args.node in res:
             sys.exit(f"{args.node} already reserved: {res[args.node]}")
         res[args.node] = dict(id=f"manual:{args.holder}", holder=args.holder,
-            acquired_at=now(), ttl_minutes=args.ttl_min)
+            acquired_at=now(), ttl_minutes=args.ttl_min,
+            resources=getattr(args, "resources", "gpu") or "gpu")
         save_reservations(res)
         print(f"reserved {args.node} for {args.holder} ttl={args.ttl_min}m")
 
@@ -631,8 +745,13 @@ def main():
     a.add_argument("--id", required=True)
     a.add_argument("--nodes", required=True, help="comma list, e.g. spark3")
     a.add_argument("--cmd")
-    a.add_argument("--cmd-file", help="read the command from this file "
+    a.add_argument("--cmd-file", type=pathlib.Path, help="read the command from this file "
         "(avoids nested-quoting footguns for long scripts)")
+    a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"],
+        help="gpu (default): exclusive node claim. cpu: disk/CPU-only work - "
+             "coexists with gpu tasks and gpu holds on the same nodes "
+             "(pack builds, sha sweeps, log pulls); still exclusive "
+             "against OTHER cpu tasks on the same nodes.")
     a.add_argument("--cwd")
     a.add_argument("--priority", type=int, default=5)
     a.add_argument("--kind", default="run", choices=["run", "gate", "note"])
@@ -642,7 +761,8 @@ def main():
     a.add_argument("--notes", default="")
     a.add_argument("--ttl-min", type=float, default=None,
         help="expected duration minutes; the dispatch lease holds exactly "
-             "this long (default 15 if undeclared)")
+             "this long (dispatch default 3, hard cap 15; at the deadline "
+             "the task is KILLED and the nodes released)")
     a.set_defaults(fn=cmd_add)
     a = sub.add_parser("list")
     a.add_argument("--all", action="store_true")
@@ -655,9 +775,10 @@ def main():
     a.add_argument("--exit", type=int, default=0)
     a.set_defaults(fn=cmd_done)
     a = sub.add_parser("dispatch")
-    a.add_argument("--ttl", type=int, default=15,
+    a.add_argument("--ttl", type=int, default=int(DEFAULT_TTL_MINUTES),
         help="lease minutes held for the TASK (not the lane); a task's "
-             "own --ttl at submit time overrides this default")
+             "own --ttl at submit time overrides this default; at the "
+             "deadline the task is KILLED, not merely released")
     a.set_defaults(fn=cmd_dispatch)
     a = sub.add_parser("cancel")
     a.add_argument("--id", required=True)
@@ -665,7 +786,8 @@ def main():
     a = sub.add_parser("reserve")
     a.add_argument("--node", required=True)
     a.add_argument("--holder", required=True)
-    a.add_argument("--ttl-min", type=float, default=360.0)
+    a.add_argument("--ttl-min", type=float, default=DEFAULT_TTL_MINUTES)
+    a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"])
     a.set_defaults(fn=cmd_reserve)
     a = sub.add_parser("release")
     a.add_argument("--node")

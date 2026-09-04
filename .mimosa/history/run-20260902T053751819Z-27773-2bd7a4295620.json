@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260902T053751819Z-27773-2bd7a4295620",
+  "runStatus": "inconclusive",
+  "errors": [
+    "bash-discovery:tests/host_cuda/shim/runtime/launch.h: bash_discovery_truncated: changed-file discovery exceeded 80 files",
+    "candidate-select:tests/test_dequant.c: candidate_limit_exceeded: 60 changed reviewable file(s) were not scanned because the limit is 20",
+    "scan:tools/dsv4_loader_bench.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/generate_dsv4_contracts.py: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/perf_r5_validate_timing.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/qwen36_stagepack_rans.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/qwen38_tp4_bench.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/qwen38_tp4_e2e.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/spark_kv_backing_test.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/sparkpipe_registrar.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tools/weightdctl.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:text/tokenizer.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:text/tokenizer_sidecar.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/reference.h: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/serial_tp_replay.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/serial_tp_replay.h: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/test_cache.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT",
+    "scan:tests/test_continuous_batch.c: scanner_failed: spawnSync /Users/mac/.hermes/node/bin/node ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "5101cbdd09a51ad12d745278a697ce0f4cd51455",
+  "diffHash": "acb116d7bed0a1b16507a54e2b28c3f0545b80f03a1b152ba50e38baa96e41fd",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-02T05:37:51.819Z",
+  "timing": {
+    "startedAt": "2026-09-02T05:37:49.522Z",
+    "completedAt": "2026-09-02T05:37:51.819Z",
+    "durationMs": 2297
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "bash_discovery_truncated": 1,
+      "candidate_limit_exceeded": 1,
+      "scanner_failed": 16,
+      "project_check_failed": 18
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260902T053751819Z-27773-2bd7a4295620.json"
+}
