@@ -375,18 +375,27 @@ int main(int argc, char **argv)
         submission.completion_context = 0;
         {
             uint64_t retry_started = bench_now_ns();
-            for (;;)
+            uint64_t target = ordinal | 1u;
+            uint64_t sub;
+            for (sub = ordinal; sub <= target; sub++)
             {
-                status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
-                if (status == SPARK_STATUS_OK)
-                    break;
-                if (status != SPARK_STATUS_BUSY ||
-                    bench_now_ns() - retry_started > 600000000000ull)
+                submission.ordinal = sub;
+                submission.slot_index = (uint32_t)(sub % BENCH_CREDITS);
+                submission.local_device = payload[sub % 64u];
+                submission.full_device = payload[sub % 64u];
+                for (;;)
                 {
-                    printf("warmup submit %llu -> %u t=%.1fs\n", (unsigned long long)ordinal, (unsigned)status,(bench_now_ns()-retry_started)/1e9);
-                    return 1;
+                    status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
+                    if (status == SPARK_STATUS_OK)
+                        break;
+                    if (status != SPARK_STATUS_BUSY ||
+                        bench_now_ns() - retry_started > 600000000000ull)
+                    {
+                        printf("warmup submit %llu -> %u t=%.1fs\n", (unsigned long long)sub, (unsigned)status,(bench_now_ns()-retry_started)/1e9);
+                        return 1;
+                    }
+                    usleep(50u);
                 }
-                usleep(50u);
             }
         }
         if (cudaStreamSynchronize(stream) != cudaSuccess)

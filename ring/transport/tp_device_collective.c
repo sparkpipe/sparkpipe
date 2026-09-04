@@ -71,6 +71,7 @@ typedef struct SparkTpDeviceCollectiveOperation
     uint32_t credit_index;
     uint32_t active_sequence_count;
     uint32_t current_step;
+    uint32_t lane_id;
     uint32_t algorithm_kind;
     uint32_t direct_peer_count;
     uint32_t operation_kind;
@@ -1576,13 +1577,12 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRingSendPack(
 static void SparkTpDeviceCollectiveLiteralRingBeginPhase(
     SparkTpDeviceCollectiveOperation *operation)
 {
-    uint32_t lane;
     operation->current_step += 1u;
     operation->consumption_enqueued = 0u;
-    for (lane = 0u; lane < 2u; lane++)
     {
-        uint32_t mask = 1u << SparkTpDeviceCollectiveLiteralRingRoute(
-            operation->current_step,lane);
+        uint32_t mask =
+            1u << SparkTpDeviceCollectiveLiteralRingRoute(
+                operation->current_step,operation->lane_id);
         operation->reserved_send_mask &= ~mask;
         operation->sent_mask &= ~mask;
         operation->send_complete_mask &= ~mask;
@@ -1610,7 +1610,9 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueLiteralRingSendPack(
     uint32_t chunk;
     uint32_t route;
 
-    for (lane_index = 0u; lane_index < 2u; lane_index++)
+    for (lane_index = operation->lane_id;
+         lane_index < 1u + operation->lane_id;
+         lane_index++)
     {
         chunk = SparkTpDeviceCollectiveLiteralRingSendChunk(
             implementation->collective,phase_index,lane_index);
@@ -1650,7 +1652,9 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueLiteralRingConsumption(
     uint32_t phase;
 
     phase = operation->current_step;
-    for (lane_index = 0u; lane_index < 2u; lane_index++)
+    for (lane_index = operation->lane_id;
+         lane_index < 1u + operation->lane_id;
+         lane_index++)
     {
         chunk = SparkTpDeviceCollectiveLiteralRingReceiveChunk(
             implementation->collective,phase,lane_index);
