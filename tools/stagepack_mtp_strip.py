@@ -42,6 +42,7 @@ MTP_LAYER = 0xFFFFFFFE
 # entries with the sentinel layer).
 FAMILIES = {
     "qwen4_flash": {
+        "magic": 0x50533451, "header_bytes": 120,
         "u32_count": 26, "count_index": 4, "mtp_index": 25,
         "u64_count_index": 0,   # u64[0] = directory_offset
         "entry_bytes": 56,      # <6I4Q: kind,layer,fmt,group + off/bytes x2
@@ -60,6 +61,7 @@ FAMILIES = {
     # header. A v2-aware family may only be registered from the real v2
     # field map.
     "dsv4": {
+        "magic": 0x34565344, "header_bytes": 80,
         "u32_count": 16, "count_index": 8, "mtp_index": 15,
         "u64_count_index": 0,   # u64[0] = directory offset (header size)
         "entry_bytes": 40,
@@ -282,6 +284,12 @@ def main() -> int:
         print(f"FAIL {pack}: short header", file=sys.stderr)
         return 1
     u32s = list(struct.unpack_from(f"<{family['u32_count']}I", raw, 0))
+    # FORMAT FINGERPRINT: refuse any pack whose magic or header size
+    # does not match the family's v1 layout (the v2 128B-header formats
+    # must never reach a v1 mutation path - the incident class).
+    if u32s[0] != family["magic"] or u32s[2] != family["header_bytes"]:
+        print(f"FAIL {pack}: format fingerprint mismatch (magic={u32s[0]:#x} header_bytes={u32s[2]}); not a v1 {args.family} pack", file=sys.stderr)
+        return 1
     tensor_count = u32s[family["count_index"]]
     u64s = list(struct.unpack_from("<2Q", raw, family["u32_count"] * 4))
     directory_offset = u64s[family["u64_count_index"]]
