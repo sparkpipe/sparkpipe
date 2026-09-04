@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260904T025933917Z-21672-c37e5e1a478f",
+  "runId": "20260904T025933917Z-21672-c37e5e1a478f",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "3fe19cf2e2bd9198591358153d122f2ecae3c44e",
+  "diffHash": "f1fdd396484c0b7ac435bec3dfe2d1120a9a05e3823ddac4a4ea704fa34c0d6e",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T025933917Z-21672-c37e5e1a478f.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tools/mtp_strip_dsv4.sh",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-04T02:59:34.189Z"
+}

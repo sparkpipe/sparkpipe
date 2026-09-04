@@ -1674,7 +1674,12 @@ static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state
 		error = SparkQwen4FlashLaunchMoeRoute(stream,slot->moe_indices_u32,rows,SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION,slot->moe_group_offset_u32,slot->moe_inverse_u32,slot->moe_grouped_rows_u32,slot->moe_tile_prefix_w1_u32,slot->moe_tile_prefix_w2_u32);
 	if ( error == cudaSuccess )
 	{
-		if ( rows >= SPARK_QWEN4_FLASH_MODULE_MOE_TILE_ROWS )
+		/* The tile-Mloop prefill kernel is not qualified for the nvfp4
+		 * wire yet (the smoke gate flags mixed-fragment accumulation);
+		 * nvfp4 ranks serve through the proven grouped-scalar path at
+		 * every batch size until it passes the same gate. */
+		uint32_t nvfp4_experts = weights->experts_w1.weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED;
+		if ( rows >= SPARK_QWEN4_FLASH_MODULE_MOE_TILE_ROWS && nvfp4_experts == 0u )
 		{
 			error = SparkQwen4FlashLaunchGroupedExpertTileLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_gate_packed_bf16,rows,state->tp_degree,state->tp_rank,route_group_base);
 			if ( error == cudaSuccess )

@@ -10,7 +10,7 @@ for n in $NODES; do
       for f in $HOME/sparkdata/dsv4_pro.tp16/packs/rank*.spstage; do
         [ -f "$f" ] || continue
         case "$f" in *receipt*|*sha*) continue ;; esac
-        sudo python3 "$HOME/sparkpipe/tools/stagepack_mtp_strip.py" --pack "$f" --family dsv4
+        sudo python3 "$HOME/sparkpipe/tools/stagepack_mtp_strip.py" --pack "$f" --family dsv4 --compact
       done' >> "/tmp/mtp_strip_dsv4_$n.log" 2>&1
     echo "$n finished rc=$?" >> /tmp/mtp_strip_dsv4_fleet.log
   ) &

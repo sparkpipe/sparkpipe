@@ -1,14 +1,14 @@
 {
   "schemaVersion": "mimosa-hook-status/v1",
-  "recordedAt": "2026-09-04T02:47:51.975Z",
+  "recordedAt": "2026-09-04T03:01:03.053Z",
   "sessionId": "sess_aca7c08e-991a-41d9-99d5-c53325cc2722",
   "event": "PostToolUse",
-  "toolName": "Edit",
-  "file": "tools/mtp_strip_dsv4.sh",
+  "toolName": "Write",
+  "file": "tools/mtp_strip_audit.py",
   "outcome": "clear",
   "coverage": "complete",
   "findingCount": 0,
-  "durationMs": 6,
+  "durationMs": 5,
   "hostState": "hook_complete",
   "reportHint": ".mimosa/reports/"
 }

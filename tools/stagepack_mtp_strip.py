@@ -300,14 +300,32 @@ def main() -> int:
     dropped = [e for e in entries if is_mtp(e, family)]
     kept = [e for e in entries if not is_mtp(e, family)]
     if not dropped:
-        if u32s[family["mtp_index"]] == 0 and old_marker_not_in_receipt(receipt):
-            # A prior run mutated this pack but died before the receipt
-            # and the relock (the chattr-permission class). Finish it.
-            print(f"FIXUP {pack}: already stripped; completing receipt + relock")
+        needs_field_zero = u32s[family["mtp_index"]] != 0
+        if needs_field_zero or (u32s[family["mtp_index"]] == 0 and old_marker_not_in_receipt(receipt)):
+            # Two no-truncate cases: a vintage pack whose header says
+            # mtp=1 but which carries no MTP entries (zero the field),
+            # or a pack a prior run mutated but whose receipt/relock
+            # never completed. Both re-sha (the header bytes change)
+            # and relock.
+            print(f"NORMALIZE {pack}: no MTP entries ({tensor_count} tensors); "
+                  + ("zeroing the mtp_layer_count header field" if needs_field_zero else "completing receipt + relock"))
+            if not chattr(pack, "-i") and is_immutable(pack):
+                print(f"FAIL {pack}: immutable and cannot clear the flag (need root)", file=sys.stderr)
+                return 2
+            prior = read_receipt(receipt).get("output_sha256")
+            if needs_field_zero:
+                with pack.open("r+b") as file:
+                    u32s[family["mtp_index"]] = 0
+                    file.seek(0)
+                    file.write(struct.pack(f"<{family['u32_count']}I", *u32s))
+                    file.flush()
+                    os.fsync(file.fileno())
             digest = sha256_chunked(pack)
-            update_receipt(receipt, digest, kept_end=None, dropped=len(dropped),
-                           reclaim=None, prior=None, locked=None)
+            update_receipt(receipt, digest, kept_end=file_bytes,
+                           dropped=0, reclaim=0, prior=prior, locked=None)
             locked = chattr(pack, "+i")
+            update_receipt(receipt, digest, kept_end=file_bytes,
+                           dropped=0, reclaim=0, prior=prior, locked=locked)
             print(f"DONE {pack}: sha {digest[:16]}... locked={locked}")
             return 0 if locked else 3
         print(f"PASS {pack}: no MTP entries ({tensor_count} tensors) - nothing to strip")
