@@ -469,11 +469,13 @@ SparkTopologySwitchState SparkTopologySwitchAdvance(
 			break;
 		sw->state = SPARK_TOPOLOGY_SWITCH_CHECKPOINT;
 		sw->phase_cursor = 0u;
+		[[fallthrough]];
 	case SPARK_TOPOLOGY_SWITCH_CHECKPOINT:
 		if ( TopologySwitchCheckpointRun(sw) == 0u )
 			break;
 		sw->state = SPARK_TOPOLOGY_SWITCH_SWAP;
 		sw->swap_started = 0u;
+		[[fallthrough]];
 	case SPARK_TOPOLOGY_SWITCH_SWAP:
 		if ( sw->swap_started == 0u )
 		{
@@ -499,6 +501,7 @@ SparkTopologySwitchState SparkTopologySwitchAdvance(
 		}
 		sw->state = SPARK_TOPOLOGY_SWITCH_RESUME;
 		sw->phase_cursor = 0u;
+		[[fallthrough]];
 	case SPARK_TOPOLOGY_SWITCH_RESUME:
 	{
 		TopologySwitchSequence *sequences = TopologySwitchSequences(sw);
