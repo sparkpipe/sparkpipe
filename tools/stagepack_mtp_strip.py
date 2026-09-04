@@ -53,6 +53,12 @@ FAMILIES = {
     # entries (<6I2Q) WITHOUT size fields - offsets are monotonic, so
     # the tail check runs on offsets alone. MTP = the three draft
     # layers at 0xFFFFFFFB.. and the mtp.* globals (kinds 41..49).
+    # NOTE: the qwen38_max TP4PP4 packs are the max lane's V2 format
+    # (128-byte tp-aware header, tools/qwen38_max_tp4pp4_stagepacks.py
+    # over tools/qwen38_stagepack.py) — they are NOT strip targets under
+    # the v1 layout assumptions, and a v1 normalize run corrupts their
+    # header. A v2-aware family may only be registered from the real v2
+    # field map.
     "dsv4": {
         "u32_count": 16, "count_index": 8, "mtp_index": 15,
         "u64_count_index": 0,   # u64[0] = directory offset (header size)

@@ -562,7 +562,12 @@ def copy_scale(source: SafetensorsSource, ref: TensorRef, plan, out) -> None:
                             plan.col_count // 16, 0)
         with open(source.root / g_shard, "rb") as gf:
             gf.seek(g_off)
-            out.write(gf.read(4))
+            raw_global = struct.unpack("<f", gf.read(4))[0]
+        # This release defines W = e2m1 x e4m3 / weight_global_scale
+        # (measured: the stored 11584.0 yields textbook |w| ~ 0.009 only
+        # under the divide reading). The pack canonicalizes to the
+        # kernels' multiply convention by storing the reciprocal.
+        out.write(struct.pack("<f", 1.0 / raw_global))
         return
     path = source.root / source.weight_map[ref.scale_name]
     _, _, scale_base = source.resolve(ref.scale_name)
