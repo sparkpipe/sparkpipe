@@ -1,10 +1,10 @@
 {
   "schemaVersion": "mimosa-hook-status/v1",
-  "recordedAt": "2026-09-04T03:01:03.053Z",
+  "recordedAt": "2026-09-04T03:18:32.525Z",
   "sessionId": "sess_aca7c08e-991a-41d9-99d5-c53325cc2722",
   "event": "PostToolUse",
-  "toolName": "Write",
-  "file": "tools/mtp_strip_audit.py",
+  "toolName": "Edit",
+  "file": "tools/mtp_strip_sweep.sh",
   "outcome": "clear",
   "coverage": "complete",
   "findingCount": 0,
