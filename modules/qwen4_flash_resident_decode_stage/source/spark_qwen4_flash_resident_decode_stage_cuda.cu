@@ -2439,7 +2439,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
 		(view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
 			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 &&
-			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED) ||
 		view->weight_payload == 0 ||
 		(view->weight_scale_e8m0 == 0 && view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
 		(source_row_map == 0 && source_row_count == 0u) ||
@@ -2462,6 +2463,17 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 		payload_stride *= 2u;
 		scale_stride = 0u;
 		lm_format = SPARK_LM_WEIGHT_FORMAT_BF16;
+	}
+	else if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
+	{
+		/* e2m1 payloads pack 2 values/byte; the expert scale segment is
+		 * the per-16 e4m3 plane + the two F32 globals (input_scale,
+		 * weight_scale_2) that the kernel reads from the segment tail. */
+		if ( (view->input_dimension % 128u) != 0u )
+			return(cudaErrorInvalidValue);
+		payload_stride = rows_per_expert * ((uint64_t)view->input_dimension / 2u);
+		scale_stride = rows_per_expert * ((uint64_t)view->input_dimension / 16u) + 8u;
+		lm_format = SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1;
 	}
 	else
 	{
@@ -2511,7 +2523,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 	if ( view == 0 || input_bf16 == 0 || group_row_offset == 0 || output_bf16 == 0 ||
 		(view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
 			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 &&
-			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+			view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED) ||
 		view->input_dimension % 64u != 0u ||
 		view->weight_payload == 0 ||
 		(view->weight_scale_e8m0 == 0 && view->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16) ||
@@ -2526,6 +2539,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 	payload_stride = rows_per_expert * view->input_dimension;
 	if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
 		payload_stride *= 2u;
+	if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
+		payload_stride = rows_per_expert * ((uint64_t)view->input_dimension / 2u);
 	m_blocks = (source_row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	n_tiles = (uint32_t)(rows_per_expert / SPARK_LM_TILE_N);
 	(void)m_blocks;
@@ -2559,12 +2574,13 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertTileLinear(
 			view->input_dimension,(uint32_t)rows_per_expert,
 			experts_per_rank));
 	}
-	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * ((rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u));
+	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * (view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED ? (rows_per_expert * ((uint64_t)view->input_dimension / 16u) + 8u) : ((rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u)));
 	return(SparkLmHostLaunchGroupedExpertTileMloop(
 		stream,
-		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
+		view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED ? (uint32_t)SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 : (uint32_t)SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
 		payload,scale,
-		payload_stride,(rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u,
+		payload_stride,
+		view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED ? (rows_per_expert * ((uint64_t)view->input_dimension / 16u) + 8u) : ((rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u),
 		input_bf16,source_row_map,offsets,output_bf16,
 		view->input_dimension,(uint32_t)rows_per_expert,
 		experts_per_rank));

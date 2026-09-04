@@ -1308,7 +1308,9 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             before = temp.tell()
             if ref.kind == KIND_MTP_FC:
                 copy_mtp_fc(source, ref, temp)
-            elif expert_format == "fp8-official" and ref.kind == KIND_PLE_NGRAM:
+            elif expert_format in ("fp8-official", "nvfp4-official") and ref.kind == KIND_PLE_NGRAM:
+                # Both official quantized releases ship the table as 128
+                # F8_E4M3 shards; widen the rank's span onto the BF16 wire.
                 copy_ngram_f8_widen(source, ref, tp_degree, tp_rank, temp)
             elif expert_format == "nvfp4-official" and ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN) and ref.layer != MTP_LAYER:
                 copy_nvfp4_official_experts(source, ref, temp)
