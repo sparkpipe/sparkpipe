@@ -161,7 +161,7 @@ G5NSP_ENTRY_BYTES = 64        # <IIIIIIIIQQQQ>
 G5NSP_MTP_LAYER = 45          # the model has layers 0..44; 45 = the MTP sentinel
 
 
-def strip_g5nsp(pack: Path, args) -> int:
+def strip_g5nsp(pack: Path, receipt: Path, args) -> int:
     """glm5_next MTP-upgraded packs (g5_add_mtp layout): the upgrade
     appended the MTP payloads and a superseding directory at the tail
     and patched flags/entry_count/directory_offset/file_bytes. The
@@ -182,6 +182,18 @@ def strip_g5nsp(pack: Path, args) -> int:
         print(f"FAIL {pack}: not a v1 g5nsp pack (magic={magic:#x} ver={version})", file=sys.stderr)
         return 1
     if flags == 0:
+        if old_marker_not_in_receipt(receipt) and os.path.getsize(pack) != file_bytes:
+            # A prior run mutated this pack but died before its receipt
+            # and relock (the interrupted-wave class). Finish it.
+            print(f"FIXUP {pack}: already stripped; completing receipt + relock")
+            digest = sha256_chunked(pack)
+            update_receipt(receipt, digest, kept_end=file_bytes, dropped=0,
+                           reclaim=None, prior=None, locked=None)
+            locked = chattr(pack, "+i")
+            update_receipt(receipt, digest, kept_end=file_bytes, dropped=0,
+                           reclaim=None, prior=None, locked=locked)
+            print(f"DONE {pack}: sha {digest[:16]}... locked={locked}")
+            return 0 if locked else 3
         print(f"PASS {pack}: flags=0, no MTP ({entry_count} entries) - nothing to strip")
         return 0
     if entry_count * G5NSP_ENTRY_BYTES > size:
@@ -245,7 +257,7 @@ def strip_g5nsp(pack: Path, args) -> int:
     return 0 if locked else 3
 
 
-def compact_g5nsp(pack: Path, args) -> int:
+def compact_g5nsp(pack: Path, receipt: Path, args) -> int:
     """Rewrite an MTP-inline g5nsp pack keeping only non-MTP regions.
     New layout: [264B header, flags=0][kept directory at 512][kept byte
     regions 256-aligned, offsets rewritten]. The module reads
@@ -461,9 +473,9 @@ def main() -> int:
     pack: Path = args.pack
     receipt: Path = Path(str(pack) + ".receipt.json")
     if args.family == "g5nsp":
-        result = strip_g5nsp(pack, args)
+        result = strip_g5nsp(pack, receipt, args)
         if result == 1 and args.compact:
-            return compact_g5nsp(pack, args)
+            return compact_g5nsp(pack, receipt, args)
         return result
     family = FAMILIES[args.family]
 

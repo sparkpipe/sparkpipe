@@ -38,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="safetensors checkpoint directory")
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--expert-codec", choices=("fp8", "nvfp4"), default="nvfp4")
+    parser.add_argument("--only-ranks", type=int, nargs="*", default=None,
+                        help="rebuild only these world ranks (default: all 16)")
     parser.add_argument("--dry-run", action="store_true",
                         help="plan only: no packs are written")
     args = parser.parse_args(argv)
@@ -48,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     args.output_directory.mkdir(parents=True, exist_ok=True)
     ranks = []
     for world_rank in range(PP_STAGES * TP_DEGREE):
+        if args.only_ranks is not None and world_rank not in args.only_ranks:
+            continue
         pp_stage, tp_rank = divmod(world_rank, TP_DEGREE)
         first_layer = pp_stage * STAGE_LAYERS
         layer_count = STAGE_LAYERS
