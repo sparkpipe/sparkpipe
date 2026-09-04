@@ -73,7 +73,7 @@ def read_pack_header(pack: Path) -> dict:
     return dict(zip(names, fields))
 
 
-def expected_header_geometry(first_layer: int, layer_count: int, tensor_count: int) -> dict:
+def expected_header_geometry(first_layer: int, layer_count: int, tensor_count: int, include_mtp: bool = True) -> dict:
     return {
         "magic": MAGIC, "format_version": FORMAT_VERSION,
         "header_bytes": HEADER_BYTES, "directory_entry_bytes": ENTRY_BYTES,
@@ -90,7 +90,7 @@ def expected_header_geometry(first_layer: int, layer_count: int, tensor_count: i
         "routed_expert_count": EXPERT_COUNT, "experts_per_token": EXPERTS_PER_TOKEN,
         "expert_intermediate_dimension": EXPERT_INTERMEDIATE,
         "output_vocab_count": VOCAB, "mxfp4_group_size": MXFP4_GROUP,
-        "mtp_layer_count": MTP_LAYERS,
+        "mtp_layer_count": MTP_LAYERS if include_mtp else 0,
     }
 
 
@@ -265,15 +265,13 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                         continue
                     want_plane_rows = source_bytes(source, stem + ".weight_scale")
                     plane_row_bytes = rows_per_expert * plane_cols
-                    plane_base = probe * plane_row_bytes
-                    if scales[plane_base:plane_base + plane_row_bytes] != want_plane_rows:
+                    seg_base = probe * (plane_row_bytes + 8)
+                    if scales[seg_base:seg_base + plane_row_bytes] != want_plane_rows:
                         problems.append(f"kind={kind} layer={layer} expert {e_abs} e4m3 plane mismatch")
-                    plane_total = entry["rows"] * plane_cols
-                    g_base = plane_total + probe * 8
                     want_input = source_bytes(source, stem + ".input_scale")
                     want_weight = source_bytes(source, stem + ".weight_scale_2")
-                    if scales[g_base:g_base + 4] != want_input or \
-                            scales[g_base + 4:g_base + 8] != want_weight:
+                    if scales[seg_base + plane_row_bytes:seg_base + plane_row_bytes + 4] != want_input or \
+                            scales[seg_base + plane_row_bytes + 4:seg_base + plane_row_bytes + 8] != want_weight:
                         problems.append(f"kind={kind} layer={layer} expert {e_abs} global scales mismatch")
                 continue
             if entry["weight_format"] in (WEIGHT_BF16, WEIGHT_F32):
@@ -489,7 +487,7 @@ def main() -> int:
         print(f"FAIL file_bytes header={header['file_bytes']} actual={pack_bytes}", file=sys.stderr)
         return 1
     geometry = expected_header_geometry(header["first_layer_index"], header["layer_count"],
-                                        header["tensor_count"])
+                                        header["tensor_count"], include_mtp=not args.no_mtp)
     problems = [f"header {key}={header[key]} expected {expected}"
                 for key, expected in geometry.items() if header[key] != expected]
     if problems:

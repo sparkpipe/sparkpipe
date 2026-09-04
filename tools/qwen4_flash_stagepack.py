@@ -1046,9 +1046,10 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
     """nvfp4-official arm: gather the rank's SPLIT per-expert U8-packed
     e2m1 tensors into the fused expert-major pack layout, verbatim bytes
     + verbatim F8_E4M3 per-16 scale planes + the per-expert F32 globals.
-    Wire segment per tensor: [rows x cols/16 e4m3 plane][input_scale
-    F32 x experts][weight_scale_2 F32 x experts]. Two-pass (payloads,
-    then scales+globals) so nothing accumulates in RAM. Repackage-only."""
+    Wire layout per tensor: per-expert segments [rows_e x cols/16 e4m3
+    plane][input_scale F32][weight_scale_2 F32] expert-major, so the
+    kernels stride experts by plane+8 bytes and read the weight global
+    at segment end - 4. Repackage-only."""
     expert_start, expert_count = getattr(ref, "expert_slice", (0, EXPERT_COUNT))
     rows_per_expert = ref.rows // expert_count
     split_name = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
@@ -1058,7 +1059,7 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
     base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + split_suffix)
     scale_suffix = split_name + ".weight_scale"
     scale_base = ref.name.replace("mlp.experts." + fused, "mlp.experts.{e}." + scale_suffix)
-    payload_fds, scale_fds = [], []
+    payload_fds = []
     try:
         for e in range(expert_start, expert_start + expert_count):
             shard, meta, off = source.resolve(base.replace("{e}", str(e)))
@@ -1073,29 +1074,25 @@ def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
             f.close()
     s_rows = rows_per_expert
     s_cols = ref.columns // 16
+    # Per-expert segment order: the expert's e4m3 plane rows, then ITS
+    # OWN input_scale, then ITS weight_scale_2 — the kernels stride
+    # experts by (plane + 8 bytes) and read the weight global at
+    # segment end - 4. The globals VARY per expert (measured: 227
+    # distinct weight_scale_2 across 512 experts on one layer).
     try:
         for e in range(expert_start, expert_start + expert_count):
             s_shard, _, s_off = source.resolve(
                 base.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale")
-            sf = (source.root / s_shard).open("rb")
-            scale_fds.append((sf, s_off))
-        for sf, s_off in scale_fds:
-            pump_read(sf.fileno(), s_off, s_rows * s_cols, out)
-        # Per-expert F32 globals appended expert-major after the full
-        # plane: input_scale, then weight_scale_2 (segment end - 4).
-        # The globals VARY per expert (measured: 227 distinct
-        # weight_scale_2 across 512 experts on one layer) — carry every
-        # expert's own pair, never a shared copy.
-        for suffix in (".input_scale", ".weight_scale_2"):
-            for e in range(expert_start, expert_start + expert_count):
+            with (source.root / s_shard).open("rb") as sf:
+                pump_read(sf.fileno(), s_off, s_rows * s_cols, out)
+            for suffix in (".input_scale", ".weight_scale_2"):
                 g_shard, _, g_off = source.resolve(
                     base.replace("{e}", str(e))[:-len(".weight")] + suffix)
                 with (source.root / g_shard).open("rb") as gf:
                     gf.seek(g_off)
                     out.write(gf.read(4))
     finally:
-        for sf, _ in scale_fds:
-            sf.close()
+        pass
 
 def copy_fp8_official_experts(source, ref: TensorRef, out) -> None:
     """fp8-official arm: gather the rank's SPLIT per-expert F8_E4M3
