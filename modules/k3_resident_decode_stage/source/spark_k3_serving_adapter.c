@@ -10,8 +10,16 @@
 #include "sparkpipe/spark_memory_buffer.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_speculation_provider.h"
+#include "sparkpipe/spark_speculation_seam.h"
 
 #include "spark_k3_dspark_format.h"
+
+#define SPARK_K3_SEAM_DRAFT_TIME_BUDGET_MS 20u
+#define SPARK_K3_SEAM_DRAFT_MAX_DEPTH 16u
+#define SPARK_K3_SEAM_DRAFT_MAX_NODE_COUNT 64u
+#define SPARK_K3_SEAM_CONNECT_TIMEOUT_MS 1000u
+#define SPARK_K3_SEAM_IO_TIMEOUT_MS 30000u
+#define SPARK_K3_SEAM_TARGET_MODEL "moonshotai/Kimi-K3-MXFP4"
 
 typedef struct SparkK3ServingState
 {
@@ -40,6 +48,7 @@ typedef struct SparkK3ServingState
 	uint32_t drafter_pack_bound;
 	char speculation_refusal[SPARK_K3_DSPARK_MAX_REFUSAL_BYTES];
 	SparkSpeculationProvider provider;
+	SparkSpeculationSeam *speculation_seam;
 } SparkK3ServingState;
 
 static uint32_t K3ServingJsonU32(SparkJsonDocument *doc, int32_t root,
@@ -333,6 +342,69 @@ static const SparkSpeculationProviderDescriptor K3DsparkProviderDescriptor =
 	.environment_schema_count = 3u
 };
 
+static SparkStatus K3ServingInitializeSpeculationSeam(SparkK3ServingState *state)
+{
+	SparkSpeculationSeamConfiguration seam_config;
+	SparkStatus status;
+	if ( getenv("SPARK_K3_SERVING_SPECULATE") != 0 )
+	{
+		fprintf(stderr, "k3_serving SPARK_K3_SERVING_SPECULATE is retired: "
+			"use SPARK_K3_SPECULATORS (speculation source mask) instead\n");
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	memset(&seam_config, 0, sizeof(seam_config));
+	seam_config.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
+	seam_config.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
+	seam_config.available_source_mask = 0u;
+	seam_config.default_speculative_token_count =
+		SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT;
+	seam_config.lane_count = state->runner_config.max_active_sequence_count;
+	seam_config.max_committed_token_count =
+		state->runner_config.kv_pages_per_sequence * K3_KV_PAGE_SLOTS;
+	seam_config.max_tap_row_count = 0u;
+	seam_config.draft_time_budget_ms = SPARK_K3_SEAM_DRAFT_TIME_BUDGET_MS;
+	seam_config.draft_max_depth = SPARK_K3_SEAM_DRAFT_MAX_DEPTH;
+	seam_config.draft_max_node_count = SPARK_K3_SEAM_DRAFT_MAX_NODE_COUNT;
+	seam_config.connect_timeout_ms = SPARK_K3_SEAM_CONNECT_TIMEOUT_MS;
+	seam_config.io_timeout_ms = SPARK_K3_SEAM_IO_TIMEOUT_MS;
+	seam_config.control_value = getenv("SPARK_K3_SPECULATORS");
+	memcpy(seam_config.target_model, SPARK_K3_SEAM_TARGET_MODEL,
+		sizeof(SPARK_K3_SEAM_TARGET_MODEL));
+	seam_config.model_contract.abi_version = SPARK_SPECULATION_ABI_VERSION;
+	seam_config.model_contract.descriptor_bytes =
+		SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+	seam_config.model_contract.verifier_hidden_dtype =
+		SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
+	seam_config.model_contract.draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
+	seam_config.model_contract.draft_layer_count = SPARK_K3_DSPARK_LAYER_COUNT;
+	seam_config.model_contract.block_size = SPARK_K3_DSPARK_BLOCK_SIZE;
+	seam_config.model_contract.hidden_dimension = K3_HIDDEN;
+	seam_config.model_contract.intermediate_dimension =
+		SPARK_K3_DSPARK_FFN_INTERMEDIATE;
+	seam_config.model_contract.attention_head_count =
+		SPARK_K3_DSPARK_ATTN_QUERY_HEADS;
+	seam_config.model_contract.kv_head_count = SPARK_K3_DSPARK_ATTN_KV_HEADS;
+	seam_config.model_contract.head_dimension =
+		SPARK_K3_DSPARK_ATTN_HEAD_DIMENSION;
+	seam_config.model_contract.vocab_size = K3_VOCAB;
+	seam_config.model_contract.draft_vocab_size = SPARK_K3_DSPARK_VOCAB;
+	seam_config.model_contract.markov_rank = SPARK_K3_DSPARK_MARKOV_RANK;
+	seam_config.model_contract.maximum_speculative_token_count =
+		SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT;
+	seam_config.model_contract.verifier_accept_k = 1u;
+	seam_config.model_contract.enable_confidence_head = 1u;
+	seam_config.model_contract.confidence_head_with_markov = 1u;
+	status = SparkSpeculationSeamInitialize(&seam_config,
+		&state->speculation_seam);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "k3_serving speculation seam init failed: status=%d\n",
+			(int)status);
+		return(status);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus K3ServingBindSpeculationProvider(SparkK3ServingState *state)
 {
 	const char *speculate = getenv("SPARK_K3_SERVING_SPECULATE");
@@ -425,6 +497,9 @@ static SparkStatus K3ServingInitialize(
 	status = SparkK3StageRunnerInitialize(&state->runner, &state->runner_config);
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status; }
+	status = K3ServingInitializeSpeculationSeam(state);
+	if ( status != SPARK_STATUS_OK )
+		{ K3ServingDestroy(state); return status; }
 	status = K3ServingBindSpeculationProvider(state);
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status; }
@@ -437,6 +512,7 @@ static void K3ServingDestroy(void *adapter_state)
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
 	if ( state == 0 )
 		return;
+	SparkSpeculationSeamDestroy(state->speculation_seam);
 	SparkK3StageRunnerDestroy(&state->runner);
 	SparkMemoryBufferFree(&state->positions_host);
 	SparkMemoryBufferFree(&state->context_host);

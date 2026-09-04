@@ -18,6 +18,8 @@ SPARKPIPE_CORE_SOURCES := \
     src/spark_ck128.c \
     src/spark_admission.c \
     src/spark_speculation_policy.c \
+    src/spark_speculation_seam.c \
+    ring/transport/draft_bridge.c \
     runtime/filesystem.c \
     runtime/json.c
 
