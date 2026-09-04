@@ -34,16 +34,22 @@ def check(name, ok, detail=""):
 
 
 class FakeSsh:
-    """Records launches; simulates process exit via the .exit sentinel."""
+    """Records launches; simulates process exit via the .exit sentinel
+    and node outages via the `down` set (ssh rc 255)."""
 
     def __init__(self):
         self.launches = []
         self.kills = []
+        self.down = set()
 
     def __call__(self, node, cmd, timeout=20):
-        if cmd.startswith("kill "):
+        if node in self.down:
+            return 255, ""
+        if cmd.startswith("kill ") or cmd.startswith("pkill"):
             self.kills.append((node, cmd))
             return 0, ""
+        if cmd == "echo ok":
+            return 0, "ok"
         if "nohup setsid" in cmd:
             self.launches.append((node, cmd))
             return 0, "4242"
@@ -97,6 +103,20 @@ def rewind_dispatch_age(state, minutes=5):
     with open(path, "w") as fh:
         for e in entries:
             fh.write(_json.dumps(e) + "\n")
+
+
+def rewind_reservations(state, minutes=5):
+    """Pull every hold's acquired_at back so lease deadlines fire."""
+    import json as _json
+    import pathlib as _pl
+    import time as _time
+    p = _pl.Path(state, "reservations.json")
+    res = _json.loads(p.read_text())
+    stamp = _time.strftime("%Y-%m-%dT%H:%M:%S",
+                           _time.localtime(_time.time() - minutes * 60))
+    for node in res:
+        res[node]["acquired_at"] = stamp
+    p.write_text(_json.dumps(res, indent=1))
 
 
 def load_state(state, name):
@@ -230,6 +250,76 @@ def main():
     rc, out = run(tmp, "add", "--id", "fits", "--nodes", "spark6",
                   "--ttl-min", "15", "--cmd", "echo y")
     check("ttl of exactly 15 accepted", rc == 0, out)
+
+    # --- strict windows (operator ruling 2026-09-04): 3-minute default,
+    # --- deadline KILL, fence-not-block, late-sentinel immunity
+    import pathlib as _pl
+    cmdf = _pl.Path(tmp, "strict-run.sh")
+    cmdf.write_text("echo from-file")
+    rc, out = run(tmp, "add", "--id", "file-sub", "--nodes", "sparkd",
+                  "--cmd-file", str(cmdf))
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("--cmd-file content is read through (regression)",
+          rc == 0 and entries["file-sub"]["cmd"] == "echo from-file", out)
+
+    rc, out = run(tmp, "dispatch")
+    res = load_state(tmp, "reservations.json")
+    check("default window is 3 minutes",
+          res.get("sparkd", {}).get("ttl_minutes") == 3, str(res.get("sparkd")))
+
+    fake.kills.clear()
+    rewind_reservations(tmp, minutes=5)
+    rc, out = run(tmp, "dispatch")
+    results = load_state(tmp, "results.jsonl")
+    check("deadline kills the process group with SIGKILL",
+          any("kill -KILL" in k[1] and "4242" in k[1] for k in fake.kills),
+          str(fake.kills))
+    check("deadline pattern-sweeps setsid escapees",
+          any(k[1].startswith("pkill") and "file-sub" in k[1] for k in fake.kills),
+          str(fake.kills))
+    check("deadline: exit 124 + note + nodes released",
+          any(r["id"] == "file-sub" and r["exit"] == 124
+              and "deadline-killed" in r.get("note", "") for r in results)
+          and "sparkd" not in load_state(tmp, "reservations.json"), out)
+
+    fake.exited["file-sub"] = 0
+    rewind_dispatch_age(tmp, minutes=5)
+    run(tmp, "dispatch")
+    results = load_state(tmp, "results.jsonl")
+    check("late exit sentinel cannot resurrect an expired task",
+          sum(1 for r in results if r["id"] == "file-sub") == 1, str(results))
+
+    fake.down.add("spark3")
+    run(tmp, "add", "--id", "unreach", "--nodes", "spark3", "--ttl-min", "1",
+        "--cmd", "echo u")
+    run(tmp, "dispatch")
+    rewind_reservations(tmp, minutes=5)
+    rc, out = run(tmp, "dispatch")
+    results = load_state(tmp, "results.jsonl")
+    check("undeliverable deadline: still expired + released, node fenced",
+          any(r["id"] == "unreach" and r["exit"] == 124 for r in results)
+          and "spark3" in load_state(tmp, "fenced.json")
+          and "spark3" not in load_state(tmp, "reservations.json"), out)
+
+    run(tmp, "add", "--id", "needs3", "--nodes", "spark3", "--cmd", "echo n")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("fenced node is not dispatched onto",
+          entries["needs3"]["state"] == "queued" and "fenced" in out, out)
+
+    fake.down.discard("spark3")
+    rc, out = run(tmp, "dispatch")
+    entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}
+    check("probe unfences a recovered node and dispatch resumes",
+          entries["needs3"]["state"] == "running"
+          and "spark3" not in load_state(tmp, "fenced.json"), out)
+
+    run(tmp, "reserve", "--node", "sparkb", "--holder", "tester", "--ttl-min", "1")
+    rewind_reservations(tmp, minutes=5)
+    rc, out = run(tmp, "dispatch")
+    check("manual holds expire at their ttl (no hand-release)",
+          "sparkb" not in load_state(tmp, "reservations.json")
+          and "EXPIRED sparkb" in out, out)
 
     # --- resource classes: cpu work coexists with gpu holds
     fake.exited["race"] = 9
