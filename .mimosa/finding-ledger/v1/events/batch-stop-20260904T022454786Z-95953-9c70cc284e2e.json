@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260904T022454786Z-95953-9c70cc284e2e",
+  "runId": "20260904T022454786Z-95953-9c70cc284e2e",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "d1b4771f48a8f13a4b34f4000474d1759a85e4c3",
+  "diffHash": "72f0f8682481c354059ab28c9fa49d4b3cdf47daa7004ad77493d966da475cd1",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a0e4fdc9afd8156215149a0596b5c9f4c4e3ea8d260d5d8d475c0451cd202199",
+  "reportRef": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T022454786Z-95953-9c70cc284e2e.json",
+  "events": [],
+  "observedFindingIds": [
+    "mimosa-0a4367c0c50bab7adebf5fc6"
+  ],
+  "verifiedFiles": [
+    {
+      "file": "tests/test_speculation_seam.c",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/spark_speculation_seam.c",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "include/sparkpipe/spark_speculation_seam.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-04T02:24:55.037Z"
+}

@@ -91,7 +91,7 @@ static float *DequantNvfp4Host(const uint8_t *payload, const uint8_t *segment,
 	return(matrix);
 }
 
-static int CompareBf16(const char *leg, const void *device_bf16, const float *reference, uint32_t count)
+static int CompareBf16(const char *leg, const void *device_bf16, const float *reference, uint32_t count, uint32_t row_stride)
 {
 	__nv_bfloat16 *got = (__nv_bfloat16 *)malloc((uint64_t)count * 2u);
 	uint32_t index;
@@ -117,10 +117,51 @@ static int CompareBf16(const char *leg, const void *device_bf16, const float *re
 		if ( relative > worst_relative )
 			worst_relative = relative;
 	}
+	if ( strcmp(leg,"tile W3") == 0 )
+	{
+		for (index = 0u; index < 5u; index++)
+		{
+			float value = __bfloat162float(got[index]);
+			uint32_t best = 0u;
+			double best_diff = 1e30;
+			for (uint32_t scan = 0u; scan < count; scan++)
+			{
+				double diff = fabs((double)value - (double)reference[scan]);
+				if ( diff < best_diff ) { best_diff = diff; best = scan; }
+			}
+			printf("SMOKE %s got[%u]=%.4f -> nearest reference[(row=%u,neuron=%u)]=%.4f (diff %.4g)\n",
+				leg,index,value,best / row_stride,best % row_stride,
+				reference[best],best_diff);
+		}
+		for (uint32_t r = 0u; r < 3u; r++)
+		{
+			printf("SMOKE %s row%u want:",leg,r);
+			for (index = 0; index < 8u; index++)
+				printf(" %.4f",reference[(uint64_t)r * row_stride + index]);
+			printf("\n");
+		}
+		printf("SMOKE %s row0 got :",leg);
+		for (index = 0; index < 8u; index++)
+			printf(" %.4f",__bfloat162float(got[index]));
+		printf("\n");
+	}
 	printf("SMOKE %s: %u values, %u outside tolerance, worst rel %.5f\n",
 		leg,count,failures,worst_relative);
 	free(got);
 	return(failures != 0);
+}
+
+static __global__ void DebugDecodeRow(const uint8_t *payload, const uint8_t *segment, uint32_t plane_bytes, float weight_global, uint16_t *out_bf16)
+{
+	__shared__ __nv_bfloat16 tile[64];
+	// mirror ProducerHalf: decode 32 k-values at stage_k, neuron 0
+	if ( threadIdx.x == 0u )
+	{
+		SparkLmTileDecodeRun<16u>(SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1, payload, segment,
+			0u, 0u, 2560u, ( __nv_bfloat16 *)tile, (const float *)(segment + plane_bytes + 4u));
+		for (uint32_t i = 0u; i < 64u; i++)
+			out_bf16[i] = __bfloat16_as_ushort(tile[i]);
+	}
 }
 
 int main(int argc, char **argv)
@@ -344,10 +385,44 @@ int main(int argc, char **argv)
 		else
 		{
 			cudaDeviceSynchronize();
-			failures += CompareBf16("scalar W1",w1_out_dev,reference_w1,(uint32_t)rows * intermediate);
+			failures += CompareBf16("scalar W1",w1_out_dev,reference_w1,(uint32_t)rows * intermediate,intermediate);
 		}
 		cudaFree(go);
 		cudaFree(tp);
+	}
+	// LEG 1b: decode-only check of the tile path's weight decode.
+	{
+		uint16_t *dev_out;
+		uint16_t host_out[64];
+		uint32_t rows_per_expert = w1.rows / group_count;
+		uint64_t seg = w1.scale_bytes / group_count;
+		uint8_t *seg_host = (uint8_t *)malloc(seg);
+		{
+			FILE *file = fopen(pack_path,"rb");
+			fseek(file,(long)(w1.scale_offset + 5u * seg),SEEK_SET);
+			if ( fread(seg_host,1,seg,file) != seg ) { printf("SMOKE leg1b seg read fail\n"); return 2; }
+			fclose(file);
+		}
+		uint8_t *dev_seg;
+		cudaMalloc(&dev_out,64u * 2u);
+		cudaMalloc(&dev_seg,seg);
+		cudaMemcpy(dev_seg,seg_host,seg,cudaMemcpyHostToDevice);
+		float wg;
+		memcpy(&wg,seg_host + (uint64_t)rows_per_expert * (w1.columns / 16u) + 4u,4u);
+		DebugDecodeRow<<<1u,32u>>>((const uint8_t *)payload_dev + 5u * (rows_per_expert * (w1.columns / 2u)),dev_seg,
+			(uint32_t)rows_per_expert * (w1.columns / 16u),wg,dev_out);
+		cudaDeviceSynchronize();
+		cudaMemcpy(host_out,dev_out,64u * 2u,cudaMemcpyDeviceToHost);
+		printf("SMOKE leg1b decode row0 k0-15 (device|host):");
+		for (i = 0u; i < 16u; i++)
+		{
+			float d = __bfloat162float(__ushort_as_bfloat16(host_out[i]));
+			printf(" %.4f|%.4f",d,w1_matrix[i]);
+		}
+		printf("\n");
+		cudaFree(dev_out);
+		cudaFree(dev_seg);
+		free(seg_host);
 	}
 	// LEG 2: the tile Mloop path, W3 (up), same routing.
 	{
@@ -369,7 +444,7 @@ int main(int argc, char **argv)
 		else
 		{
 			cudaDeviceSynchronize();
-			failures += CompareBf16("tile W3",w3_out_dev,reference_w3,(uint32_t)rows * intermediate);
+			failures += CompareBf16("tile W3",w3_out_dev,reference_w3,(uint32_t)rows * intermediate,intermediate);
 		}
 	}
 	// LEG 3: the tile Mloop path, DOWN (input = reference activations).
@@ -397,7 +472,7 @@ int main(int argc, char **argv)
 		else
 		{
 			cudaDeviceSynchronize();
-			failures += CompareBf16("tile DOWN",down_out_dev,reference_down,(uint32_t)rows * hidden);
+			failures += CompareBf16("tile DOWN",down_out_dev,reference_down,(uint32_t)rows * hidden,hidden);
 		}
 	}
 	printf("SMOKE %s\n",failures == 0 ? "PASS" : "FAIL");
