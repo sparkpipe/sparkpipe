@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_qwen38_max_serving_adapter.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_speculation_provider.h"
+#include "sparkpipe/spark_speculation_seam.h"
 
 #ifndef QWEN38_MODEL_REVISION
 #error "QWEN38_MODEL_REVISION must name the exact source snapshot revision"
@@ -45,6 +46,16 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
+#define SPARK_QWEN38_MAX_SERVING_SEAM_SPECULATORS_ENV \
+	"SPARK_QWEN38_MAX_SPECULATORS"
+#define SPARK_QWEN38_MAX_SERVING_SEAM_AVAILABLE_SOURCES 0u
+#define SPARK_QWEN38_MAX_SERVING_SEAM_DRAFT_BUDGET_MS 20u
+#define SPARK_QWEN38_MAX_SERVING_SEAM_DRAFT_MAX_DEPTH 16u
+#define SPARK_QWEN38_MAX_SERVING_SEAM_DRAFT_MAX_NODES 64u
+#define SPARK_QWEN38_MAX_SERVING_SEAM_CONNECT_TIMEOUT_MS 1000u
+#define SPARK_QWEN38_MAX_SERVING_SEAM_IO_TIMEOUT_MS 30000u
+#define SPARK_QWEN38_MAX_SERVING_SEAM_MAX_COMMITTED_TOKENS \
+	(SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT + 2u)
 
 #define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkQwen38Max##name
 #define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkQwen38Max##name
@@ -59,7 +70,9 @@
 	SPARK_QWEN38_MAX_SERVING_STAGE_COUNT
 #define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) (state)->stage_index
 #define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) \
-	SparkQwen38MaxServingBindMtpProvider(state)
+	SparkQwen38MaxServingBindFamily(state)
+#define SPARK_QWEN38_SERVING_ADAPTER_UNBIND_FAMILY(state) \
+	SparkQwen38MaxServingUnbindFamily(state)
 
 typedef struct SparkQwen38MaxServingPending
 {
@@ -133,6 +146,7 @@ typedef struct SparkQwen38MaxServingState
 	SparkQwen38MaxServingPending pending[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkSpeculationProvider provider;
 	uint32_t provider_bound;
+	SparkSpeculationSeam *seam;
 } SparkQwen38MaxServingState;
 
 
@@ -245,6 +259,86 @@ static SparkStatus SparkQwen38MaxServingBindMtpProvider(
 		return(status);
 	state->provider_bound = 1u;
 	return(SPARK_STATUS_OK);
+}
+
+static void SparkQwen38MaxServingWriteSeamModelContract(
+	SparkSpeculationModelContract *model_contract)
+{
+	memset(model_contract,0,sizeof(*model_contract));
+	model_contract->abi_version = SPARK_SPECULATION_ABI_VERSION;
+	model_contract->descriptor_bytes =
+		SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+	model_contract->verifier_hidden_dtype =
+		SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
+	model_contract->draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
+	model_contract->draft_layer_count = SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT;
+	model_contract->block_size =
+		SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	model_contract->hidden_dimension = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
+	model_contract->intermediate_dimension =
+		SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
+	model_contract->attention_head_count =
+		SPARK_QWEN38_MAX_MODEL_ATTENTION_HEAD_COUNT;
+	model_contract->kv_head_count = SPARK_QWEN38_MAX_MODEL_KV_HEAD_COUNT;
+	model_contract->head_dimension = SPARK_QWEN38_MAX_MODEL_HEAD_DIMENSION;
+	model_contract->vocab_size = SPARK_QWEN38_MAX_MODEL_VOCAB_COUNT;
+	model_contract->draft_vocab_size = SPARK_QWEN38_MAX_MODEL_VOCAB_COUNT;
+	model_contract->maximum_speculative_token_count =
+		SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT;
+	model_contract->verifier_accept_k = 1u;
+}
+
+static SparkStatus SparkQwen38MaxServingBindSpeculationSeam(
+	SparkQwen38MaxServingState *state)
+{
+	SparkSpeculationSeamConfiguration configuration;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
+	configuration.available_source_mask =
+		SPARK_QWEN38_MAX_SERVING_SEAM_AVAILABLE_SOURCES;
+	configuration.default_speculative_token_count =
+		SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT;
+	configuration.lane_count =
+		SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	configuration.max_committed_token_count =
+		SPARK_QWEN38_MAX_SERVING_SEAM_MAX_COMMITTED_TOKENS;
+	configuration.max_tap_row_count = 0u;
+	configuration.draft_time_budget_ms =
+		SPARK_QWEN38_MAX_SERVING_SEAM_DRAFT_BUDGET_MS;
+	configuration.draft_max_depth =
+		SPARK_QWEN38_MAX_SERVING_SEAM_DRAFT_MAX_DEPTH;
+	configuration.draft_max_node_count =
+		SPARK_QWEN38_MAX_SERVING_SEAM_DRAFT_MAX_NODES;
+	configuration.connect_timeout_ms =
+		SPARK_QWEN38_MAX_SERVING_SEAM_CONNECT_TIMEOUT_MS;
+	configuration.io_timeout_ms =
+		SPARK_QWEN38_MAX_SERVING_SEAM_IO_TIMEOUT_MS;
+	configuration.control_value =
+		getenv(SPARK_QWEN38_MAX_SERVING_SEAM_SPECULATORS_ENV);
+	configuration.bridge_host = 0;
+	configuration.bridge_port = 0u;
+	memcpy(configuration.target_model,SPARK_QWEN38_MAX_SERVING_MODEL_ID,
+		sizeof(SPARK_QWEN38_MAX_SERVING_MODEL_ID));
+	SparkQwen38MaxServingWriteSeamModelContract(&configuration.model_contract);
+	return(SparkSpeculationSeamInitialize(&configuration,&state->seam));
+}
+
+static SparkStatus SparkQwen38MaxServingBindFamily(
+	SparkQwen38MaxServingState *state)
+{
+	SparkStatus status;
+	status = SparkQwen38MaxServingBindMtpProvider(state);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkQwen38MaxServingBindSpeculationSeam(state));
+}
+
+static void SparkQwen38MaxServingUnbindFamily(
+	SparkQwen38MaxServingState *state)
+{
+	SparkSpeculationSeamDestroy(state->seam);
+	state->seam = 0;
 }
 
 static const SparkModelServingAdapterDescriptor SparkQwen38MaxServingDescriptor =

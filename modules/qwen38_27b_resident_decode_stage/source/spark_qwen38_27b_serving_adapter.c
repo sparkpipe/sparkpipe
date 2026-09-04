@@ -25,6 +25,7 @@ static double clock_gettime_mono_ns(void)
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_qwen38_27b_serving_adapter.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
+#include "sparkpipe/spark_speculation_seam.h"
 
 #ifndef QWEN38_27B_MODEL_REVISION
 #error "QWEN38_27B_MODEL_REVISION must name the exact source snapshot revision"
@@ -64,20 +65,32 @@ static double clock_gettime_mono_ns(void)
 
 #define SPARK_QWEN38_27B_SERVING_SPECULATE_ENV "SPARK_QWEN38_27B_SERVING_SPECULATE"
 #define SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_ENV "SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT"
-#define SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT \
-	SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS
+#define SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV "SPARK_QWEN38_27B_SPECULATORS"
+#define SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT 2u
+#define SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_TIME_BUDGET_MS 20u
+#define SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_DEPTH 16u
+#define SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_NODE_COUNT 64u
+#define SPARK_QWEN38_27B_SERVING_SEAM_CONNECT_TIMEOUT_MS 1000u
+#define SPARK_QWEN38_27B_SERVING_SEAM_IO_TIMEOUT_MS 30000u
+#define SPARK_QWEN38_27B_SERVING_AVAILABLE_SOURCES \
+	(SPARK_SPECULATION_SEAM_SOURCE_MTP | \
+	 SPARK_SPECULATION_SEAM_SOURCE_DSPARK | \
+	 SPARK_SPECULATION_SEAM_SOURCE_DFLASH2 | \
+	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM | \
+	 SPARK_SPECULATION_SEAM_SOURCE_SUFFIX | \
+	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM3)
+#define SPARK_QWEN38_27B_SERVING_LOCAL_METHOD_SOURCES \
+	(SPARK_SPECULATION_SEAM_SOURCE_MTP | \
+	 SPARK_SPECULATION_SEAM_SOURCE_DSPARK | \
+	 SPARK_SPECULATION_SEAM_SOURCE_DFLASH2)
+#define SPARK_QWEN38_27B_SERVING_REMOTE_METHOD_SOURCES \
+	(SPARK_SPECULATION_SEAM_SOURCE_NGRAM | \
+	 SPARK_SPECULATION_SEAM_SOURCE_SUFFIX | \
+	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM3)
 
 static uint32_t SparkQwen38_27bServingSpeculativeDraftCount(void)
 {
-	const char *value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_ENV);
-	uint32_t count = 2u;
-	if ( value != 0 )
-	{
-		uint32_t parsed = (uint32_t)strtoul(value,0,0);
-		if ( parsed >= 1u && parsed <= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS )
-			count = parsed;
-	}
-	return(count);
+	return(SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT);
 }
 #define SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_ENV "SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY"
 #define SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_RECOVER 0u
@@ -94,15 +107,7 @@ static uint32_t SparkQwen38_27bServingSpecFirstDraftPolicy(void)
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_MTP 0u
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK 1u
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2 2u
-static uint32_t SparkQwen38_27bServingSpecMethod(void)
-{
-	const char *value = getenv(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_ENV);
-	if ( value != 0 && strcmp(value,"dspark") == 0 )
-		return(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK);
-	if ( value != 0 && strcmp(value,"dflash2") == 0 )
-		return(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2);
-	return(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_MTP);
-}
+#define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_NONE 3u
 
 static uint32_t SparkQwen38_27bServingBlockDraftMethod(uint32_t spec_method)
 {
@@ -131,6 +136,16 @@ static const char *const SparkQwen38_27bServingConfigurationMembers[] =
 	"max_sequence_positions"
 };
 
+static const char *const SparkQwen38_27bServingConfigurationMembersBridge[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"draft_bridge_host",
+	"draft_bridge_port"
+};
+
 typedef struct SparkQwen38_27bServingSpecState
 {
 	uint32_t resident_slot;
@@ -141,6 +156,7 @@ typedef struct SparkQwen38_27bServingSpecState
 	uint32_t accepted_count;
 	uint32_t chain_dead;
 	uint32_t first_draft_miss;
+	uint32_t engine_staged;
 	uint32_t draft_ids[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t emitted_ids[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t committed_ids[SPARK_QWEN38_27B_SERVING_MAX_COMMITTED_TOKENS];
@@ -217,6 +233,10 @@ typedef struct SparkQwen38_27bServingState
 	uint32_t kv_block_count;
 	uint32_t quiescing;
 	uint32_t spec_method;
+	uint32_t speculation_enabled;
+	SparkSpeculationSeam *speculation_seam;
+	char *bridge_host;
+	uint32_t bridge_port;
 	uint64_t orphan_completion_count;
 	SparkModelServingRuntimeLimits runtime_limits;
 	SparkQwen38_27bKvBlockTableView block_table;
@@ -306,6 +326,7 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 {
 	SparkJsonDocument document;
 	int32_t root,token;
+	int32_t bridge_host_token,bridge_port_token;
 	uint32_t schema_version;
 	char *relative_stage_pack_path;
 	SparkStatus status;
@@ -315,8 +336,17 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	bridge_host_token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_host") : -1;
+	bridge_port_token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_port") : -1;
+	if ( status == SPARK_STATUS_OK && (bridge_host_token < 0) != (bridge_port_token < 0) )
+	{
+		fprintf(stderr,"qwen38_27b_serving draft_bridge_host and draft_bridge_port must both be present or both absent\n");
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,SparkQwen38_27bServingConfigurationMembers,(uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembers) / sizeof(SparkQwen38_27bServingConfigurationMembers[0])));
+		status = SparkJsonValidateObjectMembersExact(&document,root,
+			bridge_host_token >= 0 ? SparkQwen38_27bServingConfigurationMembersBridge : SparkQwen38_27bServingConfigurationMembers,
+			(uint32_t)((bridge_host_token >= 0 ? sizeof(SparkQwen38_27bServingConfigurationMembersBridge) : sizeof(SparkQwen38_27bServingConfigurationMembers)) / sizeof(SparkQwen38_27bServingConfigurationMembers[0])));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_QWEN38_27B_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
@@ -329,6 +359,12 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
+	if ( status == SPARK_STATUS_OK && bridge_host_token >= 0 )
+	{
+		status = SparkJsonCopyString(&document,bridge_host_token,&state->bridge_host);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkJsonGetUInt32(&document,bridge_port_token,&state->bridge_port);
+	}
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
@@ -351,11 +387,121 @@ static uint32_t SparkQwen38_27bServingFirstLayer(uint32_t stage_index)
 
 static uint32_t SparkQwen38_27bServingOwnsFinalHead(const SparkQwen38_27bServingState *state);
 
-static uint32_t SparkQwen38_27bServingSpeculationEnabled(void)
+static SparkStatus SparkQwen38_27bServingRejectRetiredSpeculationEnvironment(void)
 {
-	const char *value;
-	value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATE_ENV);
-	return(value != 0 && value[0] != '\0' && strcmp(value,"0") != 0 ? 1u : 0u);
+	if ( getenv(SPARK_QWEN38_27B_SERVING_SPECULATE_ENV) != 0 )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s is retired: use %s (speculation source mask) instead\n",SPARK_QWEN38_27B_SERVING_SPECULATE_ENV,SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( getenv(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_ENV) != 0 )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s is retired: use %s (speculation source mask) instead\n",SPARK_QWEN38_27B_SERVING_SPEC_METHOD_ENV,SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( getenv(SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_ENV) != 0 )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s is retired: use %s (speculation source mask) instead\n",SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_ENV,SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen38_27bServingResolveSpeculationMethods(
+	uint32_t enabled_sources,
+	uint32_t *spec_method_out,
+	uint32_t *speculation_enabled_out)
+{
+	uint32_t local_sources;
+	local_sources = enabled_sources & SPARK_QWEN38_27B_SERVING_LOCAL_METHOD_SOURCES;
+	if ( (enabled_sources & SPARK_QWEN38_27B_SERVING_REMOTE_METHOD_SOURCES) != 0u && local_sources != 0u )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s=0x%x selects remote sources together with a local method: not supported\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,enabled_sources);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( (enabled_sources & SPARK_QWEN38_27B_SERVING_REMOTE_METHOD_SOURCES) != 0u )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s=0x%x selects remote drafting but this adapter does not track host-side committed token ids for the draft bridge\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,enabled_sources);
+		return(SPARK_STATUS_UNSUPPORTED);
+	}
+	if ( local_sources != 0u && (local_sources & (local_sources - 1u)) != 0u )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s=0x%x selects more than one local speculation method\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,enabled_sources);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	*spec_method_out = (local_sources & SPARK_SPECULATION_SEAM_SOURCE_DSPARK) != 0u ? SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK :
+		(local_sources & SPARK_SPECULATION_SEAM_SOURCE_DFLASH2) != 0u ? SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2 :
+		(local_sources & SPARK_SPECULATION_SEAM_SOURCE_MTP) != 0u ? SPARK_QWEN38_27B_SERVING_SPEC_METHOD_MTP :
+		SPARK_QWEN38_27B_SERVING_SPEC_METHOD_NONE;
+	*speculation_enabled_out = local_sources != 0u ? 1u : 0u;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
+	SparkQwen38_27bServingState *state)
+{
+	SparkSpeculationSeamConfiguration seam_configuration;
+	const char *control_value;
+	uint32_t available_sources;
+	uint32_t enabled_sources;
+	SparkStatus status;
+	status = SparkQwen38_27bServingRejectRetiredSpeculationEnvironment();
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	available_sources = SPARK_QWEN38_27B_SERVING_AVAILABLE_SOURCES;
+	if ( state->bridge_host == 0 )
+		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
+	control_value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
+	if ( control_value == 0 )
+		control_value = "0";
+	status = SparkSpeculationSeamParseControl(control_value,available_sources,&enabled_sources);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s control value rejected: status=%d available=0x%x\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,(int)status,available_sources);
+		return(status);
+	}
+	status = SparkQwen38_27bServingResolveSpeculationMethods(enabled_sources,&state->spec_method,&state->speculation_enabled);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&seam_configuration,0,sizeof(seam_configuration));
+	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
+	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
+	seam_configuration.available_source_mask = available_sources;
+	seam_configuration.default_speculative_token_count = SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT;
+	seam_configuration.lane_count = state->max_active_sequence_count;
+	seam_configuration.max_committed_token_count = state->max_sequence_positions;
+	seam_configuration.max_tap_row_count = 0u;
+	seam_configuration.draft_time_budget_ms = SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_TIME_BUDGET_MS;
+	seam_configuration.draft_max_depth = SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_DEPTH;
+	seam_configuration.draft_max_node_count = SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_NODE_COUNT;
+	seam_configuration.connect_timeout_ms = SPARK_QWEN38_27B_SERVING_SEAM_CONNECT_TIMEOUT_MS;
+	seam_configuration.io_timeout_ms = SPARK_QWEN38_27B_SERVING_SEAM_IO_TIMEOUT_MS;
+	seam_configuration.control_value = control_value;
+	seam_configuration.bridge_host = state->bridge_host;
+	seam_configuration.bridge_port = state->bridge_port;
+	memcpy(seam_configuration.target_model,SPARK_QWEN38_27B_SERVING_MODEL_ID,sizeof(SPARK_QWEN38_27B_SERVING_MODEL_ID));
+	seam_configuration.model_contract.abi_version = SPARK_SPECULATION_ABI_VERSION;
+	seam_configuration.model_contract.descriptor_bytes = SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+	seam_configuration.model_contract.verifier_hidden_dtype = SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
+	seam_configuration.model_contract.draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
+	seam_configuration.model_contract.draft_layer_count = SPARK_QWEN38_27B_MODEL_MTP_LAYER_COUNT;
+	seam_configuration.model_contract.block_size = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+	seam_configuration.model_contract.hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
+	seam_configuration.model_contract.intermediate_dimension = SPARK_QWEN38_27B_MODEL_FFN_INTERMEDIATE_DIMENSION;
+	seam_configuration.model_contract.attention_head_count = SPARK_QWEN38_27B_MODEL_ATTENTION_HEAD_COUNT;
+	seam_configuration.model_contract.kv_head_count = SPARK_QWEN38_27B_MODEL_KV_HEAD_COUNT;
+	seam_configuration.model_contract.head_dimension = SPARK_QWEN38_27B_MODEL_HEAD_DIMENSION;
+	seam_configuration.model_contract.vocab_size = SPARK_QWEN38_27B_MODEL_VOCAB_COUNT;
+	seam_configuration.model_contract.draft_vocab_size = SPARK_QWEN38_27B_MODEL_VOCAB_COUNT;
+	seam_configuration.model_contract.maximum_speculative_token_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS;
+	seam_configuration.model_contract.verifier_accept_k = 1u;
+	status = SparkSpeculationSeamInitialize(&seam_configuration,&state->speculation_seam);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"qwen38_27b_serving speculation seam init failed: status=%d\n",(int)status);
+		return(status);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bServingSetEnvironment(
@@ -385,10 +531,10 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS",state->max_input_row_count);
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_PIPELINE_SLOTS",state->pipeline_slot_count);
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_KV_BLOCKS",state->kv_block_count);
-	if ( SparkQwen38_27bServingSpeculationEnabled() != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u )
+	if ( state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u )
 	{
-		SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS",SparkQwen38_27bServingBlockDraftMethod(SparkQwen38_27bServingSpecMethod()) ? 16u : SPARK_QWEN38_27B_SERVING_GDN_SNAPSHOT_SLOTS);
-		if ( !SparkQwen38_27bServingBlockDraftMethod(SparkQwen38_27bServingSpecMethod()) )
+		SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS",SparkQwen38_27bServingBlockDraftMethod(state->spec_method) ? 16u : SPARK_QWEN38_27B_SERVING_GDN_SNAPSHOT_SLOTS);
+		if ( !SparkQwen38_27bServingBlockDraftMethod(state->spec_method) )
 			SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_MTP","1");
 		else
 			SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_MTP","0");
@@ -398,7 +544,7 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 		SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_MTP","0");
 		SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS","0");
 	}
-	if ( SparkQwen38_27bServingSpeculationEnabled() != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && SparkQwen38_27bServingBlockDraftMethod(SparkQwen38_27bServingSpecMethod()) != 0u )
+	if ( state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && SparkQwen38_27bServingBlockDraftMethod(state->spec_method) != 0u )
 	{
 		const char *drafter_pack = getenv("SPARK_QWEN38_27B_DSPARK_PACK_PATH");
 		if ( drafter_pack == 0 || drafter_pack[0] == '\0' )
@@ -1209,6 +1355,7 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 	SparkQwen38_27bMtpDraftView mtp_draft;
 	SparkQwen38_27bDsparkDraftView dspark_draft;
 	SparkQwen38_27bGdnSnapshotView gdn_snapshot;
+	SparkSpeculationPolicyVerifyResult verify_result;
 	uint32_t lane,draft;
 	uint32_t draft_count;
 	uint32_t min_accepted;
@@ -1309,6 +1456,14 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 		}
 		if ( status == SPARK_STATUS_OK && spec->chain_dead == 0u )
 		{
+			status = SparkSpeculationSeamStageLocalDraft(state->speculation_seam,submission->request_id,spec->sequence_id,spec->base_position,spec->draft_ids + 1u,draft_count - 1u);
+			if ( status == SPARK_STATUS_OK )
+				spec->engine_staged = 1u;
+			else
+				fprintf(stderr, "qwen38_27b_spec_diag stage_local_draft_failed lane=%u status=%d\n", lane, (int)status);
+		}
+		if ( status == SPARK_STATUS_OK && spec->chain_dead == 0u )
+		{
 			memset(&gdn_snapshot,0,sizeof(gdn_snapshot));
 			gdn_snapshot.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 			gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
@@ -1357,9 +1512,23 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 				spec->first_draft_miss = 0u;
 				spec->chain_dead = 0u;
 			}
-			spec->accepted_count = 0u;
-			while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
-				spec->accepted_count++;
+			if ( spec->chain_dead == 0u )
+			{
+				status = SparkSpeculationSeamAcceptChain(state->speculation_seam,spec->sequence_id,spec->emitted_ids,draft_count,&verify_result);
+				if ( status == SPARK_STATUS_OK )
+				{
+					spec->accepted_count = verify_result.accepted_draft_token_count;
+					spec->engine_staged = 0u;
+				}
+				else
+					fprintf(stderr, "qwen38_27b_spec_diag accept_chain_failed lane=%u status=%d\n", lane, (int)status);
+			}
+			else
+			{
+				spec->accepted_count = 0u;
+				while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
+					spec->accepted_count++;
+			}
 			if ( fold_active != 0u )
 				pending->spec_fold = fold_active;
 			fprintf(stderr, "qwen38_27b_spec_diag t=%.6f C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
@@ -1499,6 +1668,10 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			}
 		}
 	}
+	if ( status != SPARK_STATUS_OK )
+		for (lane=0u; lane<submission->active_sequence_count; lane++)
+			if ( pending->spec[lane].engine_staged != 0u )
+				(void)SparkSpeculationSeamCancelSequence(state->speculation_seam,pending->spec[lane].sequence_id);
 	return(status);
 }
 
@@ -1596,7 +1769,10 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 		uint32_t lane;
 		state->dflash2_fold_armed = 0u;
 		for (lane=0u; lane<submission->active_sequence_count; lane++)
+		{
+			(void)SparkSpeculationSeamCancelSequence(state->speculation_seam,submission->lanes[lane].sequence_id);
 			SparkQwen38_27bServingReleaseLane(state,submission->lanes[lane].resident_sequence_slot);
+		}
 		pending->common.active_sequence_count = 0u;
 		pending->residency = submission->residency;
 		SparkQwen38_27bServingComplete(state,pending,SPARK_STATUS_OK);
@@ -1604,7 +1780,7 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 	}
 	speculate = 0u;
 	status = SparkQwen38_27bServingCoverSubmission(state,submission);
-	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && SparkQwen38_27bServingSpeculationEnabled() != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && submission->active_sequence_count == 1u )
+	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && submission->active_sequence_count == 1u )
 	{
 		status = SparkQwen38_27bServingExtendSpeculativeCoverage(state,submission);
 		if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
@@ -1695,6 +1871,8 @@ static void SparkQwen38_27bServingDestroy(void *adapter_state)
 	SparkMemoryBufferFree(&state->host_block_indices);
 	SparkMemoryBufferFree(&state->block_refs);
 	SparkMemoryBufferFree(&state->free_blocks);
+	SparkSpeculationSeamDestroy(state->speculation_seam);
+	free(state->bridge_host);
 	free(state);
 }
 
@@ -1824,7 +2002,6 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
 	state->shim.execution_stream = configuration->execution_stream;
-	state->spec_method = SparkQwen38_27bServingSpecMethod();
 	status = SparkQwen38_27bServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_QWEN38_27B_SERVING_MAX_SEQUENCE_POSITIONS_CAP) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -1836,6 +2013,8 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 		status = SparkQwen38_27bServingAllocatePools(state);
 		state->shim.input_scratch = state->gather_scratch.pointer;
 	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38_27bServingInitializeSpeculationSeam(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38_27bServingSetEnvironment(state);
 	if ( status == SPARK_STATUS_OK )
