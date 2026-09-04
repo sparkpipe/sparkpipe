@@ -957,10 +957,17 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaSetFixedRemote(
+    void *transport_state,
+    uint64_t remote_address,
+    uint64_t remote_bytes,
+    uint32_t remote_rkey);
+
 static SparkStatus SparkHiddenSparkHostRdmaExchangeCompatibilityHello(
     SparkHiddenSparkHostRdmaState *state)
 {
     SparkHiddenTransportRdmaV4Identity identity;
+    SparkStatus status;
     int written;
 
     if (state == 0 || state->control_fd < 0 || state->source_rank < 0 ||
@@ -995,6 +1002,15 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeCompatibilityHello(
     identity.memory_mode = state->memory_mode;
     identity.capability_flags = state->endpoint.capability_flags;
     identity.max_packet_bytes = state->endpoint.max_packet_bytes;
+    if (state->fixed_local != 0 && state->fixed_local_lkey != 0u &&
+        state->cached_regions[0].memory_region != 0)
+    {
+        identity.fixed_buffer_address = (uint64_t)state->fixed_local;
+        identity.fixed_buffer_bytes =
+            state->cached_regions[0].memory_region->length;
+        identity.fixed_buffer_rkey =
+            state->cached_regions[0].memory_region->rkey;
+    }
     identity.route_identifier = state->endpoint.route_identifier;
     written = snprintf(identity.transport_module_id,
         sizeof(identity.transport_module_id),"%s",
@@ -1014,8 +1030,22 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeCompatibilityHello(
         state->sink_host);
     if (written < 0 || (uint32_t)written >= sizeof(identity.sink_host))
         return SPARK_STATUS_CAPACITY_EXCEEDED;
-    return SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(
-        state->control_fd,state->open_deadline_ns,&identity);
+    {
+        SparkHiddenTransportRdmaV4Identity peer_identity;
+        status = SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(
+            state->control_fd,state->open_deadline_ns,&identity,
+            &peer_identity);
+        if (status == SPARK_STATUS_OK &&
+            peer_identity.fixed_buffer_address != 0u &&
+            peer_identity.fixed_buffer_rkey != 0u)
+        {
+            (void)SparkHiddenSparkHostRdmaSetFixedRemote(state,
+                peer_identity.fixed_buffer_address,
+                peer_identity.fixed_buffer_bytes,
+                peer_identity.fixed_buffer_rkey);
+        }
+        return status;
+    }
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaDeviceRateGbps(
