@@ -202,10 +202,18 @@ def compact_pack(pack: Path, family: dict, entries, dropped, kept, kept_end,
             length = end - start
             rec = records_by_entry.setdefault(id(e), dict(e))
             rec[key] = cursor + (rec[key] - start)
-            sent = _os.sendfile(dst.fileno(), src.fileno(), start, length)
-            if sent != length:
-                print(f"FAIL {pack}: short region copy at {start}", file=sys.stderr)
-                return 1
+            # sendfile may transfer fewer bytes than asked (the 2GB
+            # short-send class); drive it to completion.
+            sent_total = 0
+            pos = start
+            while sent_total < length:
+                sent = _os.sendfile(dst.fileno(), src.fileno(), pos,
+                                    length - sent_total)
+                if sent == 0:
+                    print(f"FAIL {pack}: sendfile stalled at {pos} (+{sent_total} of {length})", file=sys.stderr)
+                    return 1
+                pos += sent
+                sent_total += sent
             cursor += length
         new_records = list(records_by_entry.values())
         u32s = list(u32s)
