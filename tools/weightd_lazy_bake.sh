@@ -24,27 +24,26 @@ touch "$OUT"
 
 ARMS=(
     hy4.fp8.safetensors
-    qwen4_flash.tp4
-    qwenflash.tp8
-    qwenflash.tp8.fp8
-    qwenflash.tp8.nvfp4
-    qwenflash.tp4pp4
-    qwenflash.tp4pp4.fp8
-    dsv4flash.tp16
-    dsv4flash.tp4pp4
-    dsv4_pro.tp16
-    dsv4_pro.tp4pp4
-    glm5_next.tp16
-    glm5_next.tp4pp4
-    glm5_next.tp8.fp8
-    glm5_next.bf16.tp16
+    glm53flash.bf16.tp16
+    glm53flash.fp8.tp8
+    glm53flash.fp8.tp4pp4
+    qwen3flash.bf16.tp4
+    qwen3flash.bf16.tp8
+    qwen3flash.bf16.tp4pp4
+    qwen3flash.fp8.tp8
+    qwen3flash.fp8.tp4pp4
+    qwen3flash.nvfp4.tp8
+    dsv4flash.fp8.tp16
+    dsv4flash.fp8.tp4pp4
+    dsv4pro.fp8.tp16
+    dsv4pro.fp8.tp4pp4
+    qwen27b.bf16.tp4pp4
+    qwen27b.nvfp4a16.tp4pp4
+    qwen27b.nvfp4a16.tp4
     glm53full.bf16.tp4pp4
     glm53full.fp8.tp4pp4
     glm53full.nvfp4.tp4pp4
     k3.mxfp4.tp4pp4
-    qwen27b.tp4pp4
-    qwen38_27b.tp4pp4
-    qwen38-27b.nvfp4a16.tp4
 )
 
 log() { printf '%s\n' "$*" | tee -a "$OUT"; }
