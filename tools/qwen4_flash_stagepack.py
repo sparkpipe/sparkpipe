@@ -371,7 +371,7 @@ class TensorRef:
             self.slice_start, self.slice_rows = 0, 0
 
 
-def expected_tensor_count(first_layer: int, layer_count: int) -> int:
+def expected_tensor_count(first_layer: int, layer_count: int, include_mtp: bool = True) -> int:
     full_below = lambda n: n // ATTENTION_PERIOD
     full = full_below(first_layer + layer_count) - full_below(first_layer)
     gdn = layer_count - full
@@ -382,10 +382,14 @@ def expected_tensor_count(first_layer: int, layer_count: int) -> int:
         tensors += 1
     if first_layer + layer_count == LAYER_COUNT:
         tensors += 2 + 4 + 4 + 25 + (1 if first_layer != 0 else 0)
+        if not include_mtp:
+            # The MTP tail rides last: 6 MTP-scoped globals + the MTP
+            # layer's 25 every-layer/attention kinds.
+            tensors -= 6 + 25
     return tensors
 
 
-def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
+def build_inventory(first_layer: int, layer_count: int, include_mtp: bool = True) -> list[TensorRef]:
     if layer_count == 0 or first_layer + layer_count > LAYER_COUNT:
         raise PackFailure(f"invalid slice {first_layer}+{layer_count} of {LAYER_COUNT}")
     refs: list[TensorRef] = []
@@ -402,14 +406,19 @@ def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
         if first_layer != 0:
             refs.append(TensorRef(KIND_EMBEDDING, GLOBAL_LAYER, GLOBAL_TENSORS[KIND_EMBEDDING]))
         for kind in (KIND_FINAL_NORM, KIND_MIXER_DOWN, KIND_MIXER_UP,
-                     KIND_LM_HEAD, KIND_MTP_FC, KIND_MTP_EMBED_NORM,
-                     KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM,
-                     KIND_MTP_MIXER_DOWN, KIND_MTP_MIXER_UP):
+                     KIND_LM_HEAD):
             refs.append(TensorRef(kind, GLOBAL_LAYER, GLOBAL_TENSORS[kind]))
-        for kind in EVERY_LAYER_KINDS + ATTN_LAYER_KINDS:
-            refs.append(TensorRef(kind, MTP_LAYER, layer_tensor_name(kind, MTP_LAYER))
+        if include_mtp:
+            # The MTP block rides at the tail: the six MTP-scoped globals
+            # then the MTP layer's every-layer/attention kinds.
+            for kind in (KIND_MTP_FC, KIND_MTP_EMBED_NORM,
+                         KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM,
+                         KIND_MTP_MIXER_DOWN, KIND_MTP_MIXER_UP):
+                refs.append(TensorRef(kind, GLOBAL_LAYER, GLOBAL_TENSORS[kind]))
+            for kind in EVERY_LAYER_KINDS + ATTN_LAYER_KINDS:
+                refs.append(TensorRef(kind, MTP_LAYER, layer_tensor_name(kind, MTP_LAYER))
 )
-    expected = expected_tensor_count(first_layer, layer_count)
+    expected = expected_tensor_count(first_layer, layer_count, include_mtp)
     if len(refs) != expected:
         raise PackFailure(f"inventory {len(refs)} tensors, format expects {expected}")
     return refs
@@ -1208,13 +1217,13 @@ def quantize_experts(source: SafetensorsSource, ref: TensorRef, expert_format: s
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             receipt: dict, dry_run: bool, tp_degree: int, tp_rank: int,
-            expert_format: str) -> dict:
+            expert_format: str, include_mtp: bool = True) -> dict:
     import numpy as np  # noqa: F401  (quantization paths import lazily)
     source_cls = {"fp8-official": Fp8OfficialSource,
                   "nvfp4-official": Nvfp4OfficialSource}.get(expert_format, SafetensorsSource)
     source = source_cls(checkpoint)
     source.check_config()
-    inventory = build_inventory(first_layer, layer_count)
+    inventory = build_inventory(first_layer, layer_count, include_mtp)
     # Shape-validate the FULL refs against the checkpoint first and stash
     # each payload offset on the ref (shard_ref mutates in place, so the
     # attribute survives the narrowing); the TP narrowing below only
@@ -1276,7 +1285,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
         GDN_KEY_HEADS, GDN_VALUE_HEADS, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
         GDN_CONV_KERNEL, ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM,
         ATTN_ROPE_DIM, EXPERT_COUNT, EXPERTS_PER_TOKEN, EXPERT_INTERMEDIATE,
-        VOCAB, MXFP4_GROUP, MTP_LAYERS,
+        VOCAB, MXFP4_GROUP, MTP_LAYERS if include_mtp else 0,
         HEADER_BYTES, file_bytes)
     entries = b"".join(
         ENTRY_STRUCT.pack(
@@ -1359,6 +1368,8 @@ def main() -> int:
     parser.add_argument("--tp-rank", type=int, default=0)
     parser.add_argument("--expert-format", choices=("fp8-f32b128", "fp8-e8m0b128", "bf16", "fp8-official", "nvfp4-official"), default="fp8-f32b128",
                         help="fp8-official = the official fp8 release's split experts pass through verbatim (repackage-only); nvfp4-official = the official nvfp4 release's split U8-packed experts + e4m3 scale planes verbatim")
+    parser.add_argument("--no-mtp", action="store_true",
+                        help="drop the MTP tail (mtp_layer_count=0): speculation lives on the speculator system, stagepacks carry only what the serving rank loads")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -1387,7 +1398,8 @@ def main() -> int:
     }
     result = convert(args.checkpoint, args.output or Path("/dev/null"),
                      args.first_layer, args.layer_count, receipt, args.dry_run,
-                     args.tp_degree, args.tp_rank, args.expert_format)
+                     args.tp_degree, args.tp_rank, args.expert_format,
+                     include_mtp=not args.no_mtp)
     if not args.dry_run:
         receipt_path = args.receipt or Path(str(args.output) + ".receipt.json")
         write_receipt(result, receipt_path, suffix=None)

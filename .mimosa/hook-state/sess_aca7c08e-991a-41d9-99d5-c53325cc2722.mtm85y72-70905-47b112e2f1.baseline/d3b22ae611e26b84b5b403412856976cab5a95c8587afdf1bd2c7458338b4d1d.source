@@ -1,11 +1,4 @@
-<<<<<<< HEAD
-/* Pin the model-neutral speculation-policy core: exact byte layouts of the
- * neutral descriptors (32-wide draft arrays, 8-wide aux layer table), the
- * GLM52 alias identity, structural (not hard-equality) contract validation,
- * and chain acceptance parity. */
 #include <stddef.h>
-=======
->>>>>>> origin/main
 #include <stdint.h>
 #include <string.h>
 
@@ -54,10 +47,6 @@ int main(void)
 	status = SparkGlm52DsparkValidateModelContract(&contract);
 	if ( status != SPARK_STATUS_OK )
 		return 2;
-<<<<<<< HEAD
-
-	/* Structural validation: a K3-shaped contract (different dims, vocab,
-	 * budget) must validate; nothing hard-compares to GLM52 constants. */
 	contract.hidden_dimension = 7168u;
 	contract.intermediate_dimension = 14336u;
 	contract.attention_head_count = 64u;
@@ -68,7 +57,6 @@ int main(void)
 	contract.maximum_speculative_token_count = 8u;
 	if ( SparkGlm52DsparkValidateModelContract(&contract) != SPARK_STATUS_OK )
 		return 3;
-	/* Budget beyond the global array bound fails loudly. */
 	contract.maximum_speculative_token_count =
 		SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT + 1u;
 	if ( SparkGlm52DsparkValidateModelContract(&contract) !=
@@ -88,10 +76,6 @@ int main(void)
 	if ( SparkGlm52DsparkValidateModelContract(&contract) !=
 		SPARK_STATUS_INVALID_ARGUMENT )
 		return 7;
-
-	/* Greedy accept over the draft: 11,12 match, then divergence. */
-=======
->>>>>>> origin/main
 	memset(&verify_result, 0, sizeof(verify_result));
 	status = SparkGlm52DsparkResolveVerifierTokens(draft_tokens, 4u,
 		verifier_tokens, 5u, 163840u, &verify_result);
@@ -103,7 +87,6 @@ int main(void)
 		return 10;
 	if ( verify_result.fallback_token_id != 99u )
 		return 11;
-	/* Token ids at or above the contract vocab fail loudly. */
 	verifier_tokens[0] = 163840u;
 	status = SparkGlm52DsparkResolveVerifierTokens(draft_tokens, 4u,
 		verifier_tokens, 5u, 163840u, &verify_result);

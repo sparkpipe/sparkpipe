@@ -110,12 +110,13 @@ def read_entries(pack: Path, header: dict) -> list[dict]:
 
 
 def verify_directory(header: dict, entries: list[dict], tp_degree: int, tp_rank: int,
-                     pack_bytes: int) -> list[str]:
+                     pack_bytes: int, include_mtp: bool = True) -> list[str]:
     problems: list[str] = []
     expected_refs = {("kind", r.kind, "layer", r.layer): r
                      for r in (shard_ref(ref, tp_degree, tp_rank)
                                for ref in build_inventory(header["first_layer_index"],
-                                                          header["layer_count"]))}
+                                                          header["layer_count"],
+                                                          include_mtp))}
     seen = {}
     for entry in entries:
         key = ("kind", entry["tensor_kind"], "layer", entry["layer_index"])
@@ -478,6 +479,8 @@ def main() -> int:
     parser.add_argument("--tp-rank", type=int, default=0)
     parser.add_argument("--sample", type=int, default=8)
     parser.add_argument("--fp8-relative-l2", type=float, default=0.2)
+    parser.add_argument("--no-mtp", action="store_true",
+                        help="the pack was built --no-mtp (MTP tail absent)")
     args = parser.parse_args()
 
     header = read_pack_header(args.pack)
@@ -494,7 +497,7 @@ def main() -> int:
             print(f"FAIL {problem}", file=sys.stderr)
         return 1
     entries = read_entries(args.pack, header)
-    problems = verify_directory(header, entries, args.tp_degree, args.tp_rank, pack_bytes)
+    problems = verify_directory(header, entries, args.tp_degree, args.tp_rank, pack_bytes, include_mtp=not args.no_mtp)
     if problems:
         for problem in problems:
             print(f"FAIL {problem}", file=sys.stderr)
