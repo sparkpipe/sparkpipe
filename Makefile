@@ -227,6 +227,7 @@ TEST_NAMES := \
 	    test_hidden_transport \
 	    test_hidden_transport_rdma_control \
 	    test_draft_bridge \
+	    test_speculation_seam \
     test_fabric_topology \
     test_memlink \
     test_release \
@@ -471,6 +472,7 @@ MODEL_COMMON_LINK_TARGETS := \
     build/sparkpipe_nextcp \
     build/test_hidden_transport \
     build/test_draft_bridge \
+    build/test_speculation_seam \
     build/test_memlink \
     build/test_kv_store \
     build/test_kv_mooncake \
@@ -871,6 +873,9 @@ build/test_hidden_transport_rdma_control: tests/test_hidden_transport_rdma_contr
 
 build/test_draft_bridge: tests/test_draft_bridge.c ring/transport/draft_bridge.c include/sparkpipe/spark_draft_bridge.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_draft_bridge.c ring/transport/draft_bridge.c $(LDFLAGS) $(LDLIBS) -lpthread -o $@
+
+build/test_speculation_seam: tests/test_speculation_seam.c ring/transport/draft_bridge.c include/sparkpipe/spark_speculation_seam.h include/sparkpipe/spark_draft_bridge.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_seam.c ring/transport/draft_bridge.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
 build/test_memlink: tests/test_memlink.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

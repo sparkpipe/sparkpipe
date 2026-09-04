@@ -44,7 +44,6 @@ typedef struct SparkDraftBridgeConfig
     uint32_t descriptor_bytes;
     const char *host;
     uint32_t port;
-    uint32_t speculator_mask;
     char target_model[SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES];
     uint32_t tap_row_bytes;
     uint32_t max_committed_tokens;
@@ -81,6 +80,7 @@ void SparkDraftBridgeDestroy(
     SparkDraftBridge *bridge);
 SparkStatus SparkDraftBridgeProposeTree(
     SparkDraftBridge *bridge,
+    uint32_t speculator_mask,
     uint64_t sequence_id,
     uint64_t generation,
     uint64_t position,

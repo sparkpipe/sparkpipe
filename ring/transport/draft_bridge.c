@@ -37,7 +37,6 @@ struct SparkDraftBridge
     uint64_t request_buffer_bytes;
     uint64_t response_buffer_bytes;
     uint32_t port;
-    uint32_t speculator_mask;
     uint32_t tap_row_bytes;
     uint32_t max_committed_tokens;
     uint32_t max_tap_rows;
@@ -391,13 +390,15 @@ SparkStatus SparkDraftBridgeValidateConfig(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (config->tap_row_bytes == 0u ||
-        config->max_committed_tokens == 0u ||
-        config->max_tap_rows == 0u ||
+    if (config->max_committed_tokens == 0u ||
         config->max_nodes == 0u ||
         config->max_nodes > SPARK_DRAFT_BRIDGE_MAX_TREE_NODES ||
         config->connect_timeout_ms == 0u ||
         config->io_timeout_ms == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((config->tap_row_bytes == 0u) != (config->max_tap_rows == 0u))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -435,7 +436,6 @@ SparkStatus SparkDraftBridgeInitialize(
         config->target_model,
         SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES);
     bridge->port = config->port;
-    bridge->speculator_mask = config->speculator_mask;
     bridge->tap_row_bytes = config->tap_row_bytes;
     bridge->max_committed_tokens = config->max_committed_tokens;
     bridge->max_tap_rows = config->max_tap_rows;
@@ -487,6 +487,7 @@ void SparkDraftBridgeDestroy(
 
 SparkStatus SparkDraftBridgeProposeTree(
     SparkDraftBridge *bridge,
+    uint32_t speculator_mask,
     uint64_t sequence_id,
     uint64_t generation,
     uint64_t position,
@@ -527,6 +528,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     }
     if (committed_token_count == 0u ||
         node_capacity == 0u ||
+        speculator_mask == 0u ||
         (uint64_t)committed_token_count != position + 1u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -534,6 +536,10 @@ SparkStatus SparkDraftBridgeProposeTree(
     if (committed_token_count > bridge->max_committed_tokens ||
         tap_row_count > bridge->max_tap_rows ||
         node_capacity > bridge->max_nodes)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (tap_row_count != 0u && bridge->tap_row_bytes == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -574,7 +580,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     cursor += SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES;
     SparkDraftBridgePutU32Le(cursor, SPARK_DRAFT_BRIDGE_PROTOCOL_VERSION);
     cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, bridge->speculator_mask);
+    SparkDraftBridgePutU32Le(cursor, speculator_mask);
     cursor += sizeof(uint32_t);
     memcpy(
         cursor,
