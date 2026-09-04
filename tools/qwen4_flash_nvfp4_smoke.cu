@@ -332,7 +332,7 @@ int main(int argc, char **argv)
 		cudaMemcpy(tp,group_tile_prefix,66u * 4u,cudaMemcpyHostToDevice);
 		error = SparkLmHostLaunchGroupedScalarLinear<32u>(0,
 			SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1,
-			payload_dev,scale_dev,payload_stride,scale_stride,
+			payload_dev,(const uint8_t *)scale_dev,payload_stride,scale_stride,
 			input_dev,0,rows,go,tp,w1_out_dev,group_count,w1.columns,
 			rows_per_expert,1u);
 		if ( error != cudaSuccess )
