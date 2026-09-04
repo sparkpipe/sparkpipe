@@ -240,6 +240,7 @@ typedef struct SparkWeightdServerConfig
 {
     const char *socket_path;
     uint64_t device_bytes_max;
+    uint64_t kv_reserve_bytes;
 } SparkWeightdServerConfig;
 
 typedef struct SparkWeightdServer SparkWeightdServer;

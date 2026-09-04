@@ -1,6 +1,8 @@
 #include "sparkpipe/spark_hidden_transport.h"
 
 #include <dlfcn.h>
+#include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -903,6 +905,36 @@ SparkStatus SparkHiddenTransportPersistentRemoteCreditReady(
     }
     return session->transport_interface.persistent_remote_credit_ready(
         session->transport_state,credit_index);
+}
+
+SparkStatus SparkHiddenTransportSetFixedLocal(
+    SparkHiddenTransportSession *session,
+    void *local_buffer,
+    uint64_t local_bytes)
+{
+    if (session == 0 || local_buffer == 0 ||
+        session->transport_interface.set_fixed_local == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return session->transport_interface.set_fixed_local(
+        session->transport_state,local_buffer,local_bytes);
+}
+
+SparkStatus SparkHiddenTransportSendFixed(
+    SparkHiddenTransportSession *session,
+    const void *local_buffer,
+    uint64_t bytes,
+    uint32_t sequence)
+{
+    if (session == 0 || local_buffer == 0 ||
+        session->transport_interface.send_fixed == 0)
+    {
+        
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return session->transport_interface.send_fixed(
+        session->transport_state,local_buffer,bytes,sequence);
 }
 
 SparkStatus SparkHiddenTransportReservePersistentSend(

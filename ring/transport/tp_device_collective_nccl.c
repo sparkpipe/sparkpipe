@@ -26,6 +26,10 @@
 #define SPARK_TP_NCCL_BOOTSTRAP_MAGIC 0x53504e43u
 #define SPARK_TP_NCCL_BOOTSTRAP_ABI_VERSION 1u
 #define SPARK_TP_NCCL_CONNECT_RETRY_NANO 2000000L
+/* NCCL encodes versions as MMmmpp: 2.28.9 -> 22809, 2.21.0 -> 22100.
+ * The 23000 literal rejected EVERY modern NCCL (22809 < 23000) - the
+ * backend could never load any library. 2.21.0 is the oldest with
+ * the surface the backend uses. */
 #define SPARK_TP_NCCL_MINIMUM_VERSION 22100
 #define SPARK_TP_NCCL_SUCCESS 0
 #define SPARK_TP_NCCL_IN_PROGRESS 7
@@ -37,6 +41,23 @@
 typedef int32_t SparkTpNcclResult;
 typedef struct SparkTpNcclComm *SparkTpNcclCommHandle;
 
+/* Continuation trampoline: the NCCL backend completes submissions inline
+ * ("stream-order continuation" - the callback enqueues dependent work on
+ * the same stream). A submission whose chain advances through every
+ * collective nests one frame-set per collective; a 1024-row prefill wave
+ * chains ~15k completions and overflows the 8MB stack (core receipt:
+ * 15,636 frames, SIGSEGV inside cuLaunchKernel's frame push). The guard
+ * below defers completions that arrive while another completion is
+ * already running on this thread; the outermost submit drains the ring
+ * ITERATIVELY - FIFO order is preserved, stack depth stays O(1 chain
+ * segment), and the semantics are unchanged (everything still completes
+ * before Submit returns).
+ *
+ * One process-wide ring: a chain continuation may submit to a sibling
+ * collective instance (the module's narrow + HC-wide twins), so the
+ * drain must cover both. The residentd drives all of this from one
+ * thread; the ring mutex keeps that an implementation detail, not a
+ * contract. */
 #define SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY 65536u
 
 typedef struct SparkTpNcclPendingCompletion
@@ -95,6 +116,8 @@ static void SparkTpNcclDeliverCompletion(
 		if ( SparkTpNcclPendingCompletionCount >= SPARK_TP_NCCL_PENDING_COMPLETION_CAPACITY )
 		{
 			(void)pthread_mutex_unlock(&SparkTpNcclPendingCompletionMutex);
+			/* Fail loudly rather than silently reorder or nest: a
+			 * submission chain this deep cannot be served. */
 			fprintf(stderr,"sparkpipe_tp_collective backend=nccl pending-completion ring exhausted\n");
 			abort();
 		}
@@ -519,10 +542,43 @@ static SparkStatus SparkTpNcclValidateResponse(const SparkTpDeviceCollectiveConf
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkTpNcclLog(const char *format, ...)
+{
+	va_list arguments;
+	va_start(arguments,format);
+	(void)vfprintf(stderr,format,arguments);
+	(void)fputc('\n',stderr);
+	(void)fflush(stderr);
+	va_end(arguments);
+}
+
+static void SparkTpNcclReportMask(const char *label,uint32_t mask,
+	uint32_t degree)
+{
+	uint32_t rank,first;
+	char buffer[256];
+	size_t offset;
+	offset = 0;
+	first = 1u;
+	for (rank=0u; rank<degree && offset + 8u < sizeof(buffer); rank++)
+	{
+		if ( (mask & (1u << rank)) == 0u )
+			continue;
+		offset += (size_t)snprintf(buffer + offset,sizeof(buffer) - offset,
+			"%s%u",first ? "" : ",",rank);
+		first = 0u;
+	}
+	buffer[offset] = '\0';
+	SparkTpNcclLog("%s ranks=[%s]",label,buffer);
+}
+
 static SparkStatus SparkTpNcclServeUniqueId(const SparkTpDeviceCollectiveConfig *config,const SparkTpNcclUniqueId *unique_id,uint64_t deadline_milli)
 {
 	SparkTpNcclBootstrapHello hello;
 	SparkTpNcclBootstrapResponse response;
+	uint64_t absolute_cap_milli;
+	uint64_t idle_window_milli;
+	uint64_t idle_deadline_milli;
 	uint32_t accepted,rank,seen_mask;
 	int32_t listen_socket,peer_socket;
 	SparkStatus status;
@@ -530,27 +586,83 @@ static SparkStatus SparkTpNcclServeUniqueId(const SparkTpDeviceCollectiveConfig 
 	rank = 0u;
 	status = SparkTpNcclListen((uint16_t)config->control_port_base,
 		&listen_socket);
-	seen_mask = 1u;
-	for (accepted=1u; status==SPARK_STATUS_OK && accepted<config->tp_degree;
-		accepted++)
+	if ( status != SPARK_STATUS_OK )
 	{
-		peer_socket = -1;
-		status = SparkTpNcclAcceptUntil(listen_socket,deadline_milli,&peer_socket);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkTpNcclReceiveAll(peer_socket,&hello,sizeof(hello),
-				deadline_milli);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkTpNcclValidateHello(config,&hello,seen_mask,&rank);
-		SparkTpNcclBuildResponse(config,unique_id,status,&response);
-		if ( peer_socket >= 0 )
+		SparkTpNcclLog("tp-nccl rank0 listen FAILED port=%u status=%d",
+			(uint32_t)config->control_port_base,(int32_t)status);
+		return(status);
+	}
+	absolute_cap_milli = deadline_milli +
+		(deadline_milli - SparkTpNcclNowMilli());
+	idle_window_milli = deadline_milli - SparkTpNcclNowMilli();
+	seen_mask = 1u;
+	SparkTpNcclLog("tp-nccl rank0 listening port=%u degree=%u peers=%u",
+		(uint32_t)config->control_port_base,config->tp_degree,
+		config->tp_degree - 1u);
+	idle_deadline_milli = deadline_milli;
+	for (accepted=1u; accepted<config->tp_degree; )
+	{
+		uint64_t peer_deadline_milli;
+		uint64_t now_milli;
+		SparkStatus peer_status;
+		now_milli = SparkTpNcclNowMilli();
+		if ( now_milli == UINT64_MAX )
 		{
-			if ( SparkTpNcclSendAll(peer_socket,&response,sizeof(response),
-				deadline_milli) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
-				status = SPARK_STATUS_IO_ERROR;
-			(void)close(peer_socket);
+			status = SPARK_STATUS_INTERNAL_ERROR;
+			break;
 		}
-		if ( status == SPARK_STATUS_OK )
+		if ( now_milli >= idle_deadline_milli )
+		{
+			SparkTpNcclReportMask("tp-nccl rank0 mesh INCOMPLETE joined",
+				seen_mask,config->tp_degree);
+			SparkTpNcclReportMask("tp-nccl rank0 mesh INCOMPLETE missing",
+				~seen_mask,config->tp_degree);
+			status = SPARK_STATUS_IO_ERROR;
+			break;
+		}
+		peer_socket = -1;
+		peer_status = SparkTpNcclAcceptUntil(listen_socket,
+			idle_deadline_milli,&peer_socket);
+		if ( peer_status != SPARK_STATUS_OK )
+		{
+			SparkTpNcclReportMask("tp-nccl rank0 mesh INCOMPLETE joined",
+				seen_mask,config->tp_degree);
+			SparkTpNcclReportMask("tp-nccl rank0 mesh INCOMPLETE missing",
+				~seen_mask,config->tp_degree);
+			status = SPARK_STATUS_IO_ERROR;
+			break;
+		}
+		peer_deadline_milli = SparkTpNcclNowMilli() + 10000u;
+		peer_status = SparkTpNcclReceiveAll(peer_socket,&hello,sizeof(hello),
+			peer_deadline_milli);
+		if ( peer_status == SPARK_STATUS_OK )
+			peer_status = SparkTpNcclValidateHello(config,&hello,seen_mask,
+				&rank);
+		SparkTpNcclBuildResponse(config,unique_id,peer_status,&response);
+		if ( SparkTpNcclSendAll(peer_socket,&response,sizeof(response),
+			peer_deadline_milli) != SPARK_STATUS_OK &&
+			peer_status == SPARK_STATUS_OK )
+			peer_status = SPARK_STATUS_IO_ERROR;
+		(void)close(peer_socket);
+		if ( peer_status == SPARK_STATUS_OK )
+		{
 			seen_mask |= 1u << rank;
+			accepted++;
+			now_milli = SparkTpNcclNowMilli();
+			idle_deadline_milli = now_milli + idle_window_milli <
+				absolute_cap_milli ? now_milli + idle_window_milli :
+				absolute_cap_milli;
+			SparkTpNcclLog("tp-nccl rank0 peer rank=%u joined (%u/%u peers)",
+				rank,accepted - 1u,config->tp_degree - 1u);
+			if ( accepted == config->tp_degree )
+				SparkTpNcclLog("tp-nccl rank0 mesh COMPLETE peers=%u",
+					config->tp_degree - 1u);
+		}
+		else
+		{
+			SparkTpNcclLog("tp-nccl rank0 peer exchange failed status=%d"
+				" (peer will retry)",(int32_t)peer_status);
+		}
 	}
 	if ( listen_socket >= 0 )
 		(void)close(listen_socket);
@@ -561,22 +673,57 @@ static SparkStatus SparkTpNcclFetchUniqueId(const SparkTpDeviceCollectiveConfig 
 {
 	SparkTpNcclBootstrapHello hello;
 	SparkTpNcclBootstrapResponse response;
+	uint64_t last_note_milli;
 	int32_t socket_descriptor;
 	SparkStatus status;
-	socket_descriptor = -1;
-	status = SparkTpNcclConnectUntil(config->rank_hosts[0],
-		(uint16_t)config->control_port_base,deadline_milli,&socket_descriptor);
 	SparkTpNcclBuildHello(config,&hello);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkTpNcclSendAll(socket_descriptor,&hello,sizeof(hello),
-			deadline_milli);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkTpNcclReceiveAll(socket_descriptor,&response,
-			sizeof(response),deadline_milli);
-	if ( socket_descriptor >= 0 )
-		(void)close(socket_descriptor);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkTpNcclValidateResponse(config,&response,unique_id);
+	status = SPARK_STATUS_IO_ERROR;
+	last_note_milli = 0u;
+	for (;;)
+	{
+		uint64_t now_milli;
+		socket_descriptor = -1;
+		status = SparkTpNcclConnectUntil(config->rank_hosts[0],
+			(uint16_t)config->control_port_base,deadline_milli,
+			&socket_descriptor);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkTpNcclSendAll(socket_descriptor,&hello,sizeof(hello),
+				deadline_milli);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkTpNcclReceiveAll(socket_descriptor,&response,
+				sizeof(response),deadline_milli);
+		if ( socket_descriptor >= 0 )
+			(void)close(socket_descriptor);
+		if ( status == SPARK_STATUS_OK )
+		{
+			status = SparkTpNcclValidateResponse(config,&response,unique_id);
+			if ( status == SPARK_STATUS_OK )
+			{
+				SparkTpNcclLog("tp-nccl rank=%u joined mesh via rank0 %s:%u",
+					config->tp_rank,config->rank_hosts[0],
+					(uint32_t)config->control_port_base);
+				return(SPARK_STATUS_OK);
+			}
+			SparkTpNcclLog("tp-nccl rank=%u rejected by rank0 status=%d",
+				config->tp_rank,(int32_t)status);
+			return(status);
+		}
+		now_milli = SparkTpNcclNowMilli();
+		if ( now_milli == UINT64_MAX || now_milli >= deadline_milli )
+			break;
+		if ( now_milli - last_note_milli >= 10000u )
+		{
+			last_note_milli = now_milli;
+			SparkTpNcclLog("tp-nccl rank=%u waiting for rank0 %s:%u"
+				" (%llus left)",config->tp_rank,config->rank_hosts[0],
+				(uint32_t)config->control_port_base,
+				(unsigned long long)((deadline_milli - now_milli) / 1000u));
+		}
+		SparkTpNcclRetryPause();
+	}
+	SparkTpNcclLog("tp-nccl rank=%u deadline hit, rank0 %s:%u never answered",
+		config->tp_rank,config->rank_hosts[0],
+		(uint32_t)config->control_port_base);
 	return(status);
 }
 
@@ -858,6 +1005,10 @@ static SparkStatus SparkTpNcclSubmitAllReduce(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	memset(&completion,0,sizeof(completion));
+	/* The callback is a stream-order continuation: the reduction is enqueued,
+	 * and the callback may enqueue dependent work on the same stream. The
+	 * delivery trampoline keeps that continuation OFF this stack frame when
+	 * it would nest (see SparkTpNcclDeliverCompletion). */
 	SparkTpNcclDeliverCompletion(submission->completion_function,
 		submission->completion_context,&completion,
 		collective->credit_count,submission->ordinal,
