@@ -182,10 +182,57 @@ def strip_g5nsp(pack: Path, receipt: Path, args) -> int:
         print(f"FAIL {pack}: not a v1 g5nsp pack (magic={magic:#x} ver={version})", file=sys.stderr)
         return 1
     if flags == 0:
-        if old_marker_not_in_receipt(receipt) and os.path.getsize(pack) != file_bytes:
-            # A prior run mutated this pack but died before its receipt
-            # and relock (the interrupted-wave class). Finish it.
-            print(f"FIXUP {pack}: already stripped; completing receipt + relock")
+        if dir_off != G5NSP_HEADER_BYTES or file_bytes != size:
+            # A compact run's header is present but inconsistent with
+            # the file: either the declared directory_offset is past the
+            # directory itself, or an external writer (a mirror rsync)
+            # restored/extended the file after the compact. Repair = the
+            # directory at header_len must parse and every kept region
+            # must end within the declared file_bytes; then the tail is
+            # orphaned and truncates away.
+            print(f"REPAIR {pack}: dir_off={dir_off} file_bytes={file_bytes} actual={size}")
+            if dir_off != G5NSP_HEADER_BYTES:
+                print(f"FAIL {pack}: unsupported dir_off {dir_off} for repair", file=sys.stderr)
+                return 1
+            with pack.open("rb") as file:
+                file.seek(dir_off)
+                raw_dir = file.read(entry_count * G5NSP_ENTRY_BYTES)
+            if len(raw_dir) != entry_count * G5NSP_ENTRY_BYTES:
+                print(f"FAIL {pack}: short directory at {dir_off}", file=sys.stderr)
+                return 1
+            max_end = 0
+            for i in range(entry_count):
+                block = raw_dir[i * G5NSP_ENTRY_BYTES:(i + 1) * G5NSP_ENTRY_BYTES]
+                kind, layer = struct.unpack_from("<2I", block, 0)
+                po, pb, so, sb = struct.unpack_from("<4Q", block, 32)
+                for off, length in ((po, pb), (so, sb)):
+                    if length and off + length > max_end:
+                        max_end = off + length
+            if max_end > file_bytes:
+                print(f"FAIL {pack}: directory regions reach {max_end} > declared {file_bytes}; the file state is not repairable by truncation", file=sys.stderr)
+                return 1
+            if not chattr(pack, "-i") and is_immutable(pack):
+                print(f"FAIL {pack}: immutable and cannot clear the flag (need root)", file=sys.stderr)
+                return 2
+            with pack.open("r+b") as file:
+                file.truncate(file_bytes)
+                file.flush()
+                os.fsync(file.fileno())
+            digest = sha256_chunked(pack)
+            prior = read_receipt(receipt).get("output_sha256")
+            update_receipt(receipt, digest, kept_end=file_bytes, dropped=0,
+                           reclaim=size - file_bytes, prior=prior, locked=None)
+            locked = chattr(pack, "+i")
+            update_receipt(receipt, digest, kept_end=file_bytes, dropped=0,
+                           reclaim=size - file_bytes, prior=prior, locked=locked)
+            print(f"DONE {pack}: truncated to {file_bytes} ({(size - file_bytes) / 2**30:.2f} GiB reclaimed), sha {digest[:16]}... locked={locked}")
+            return 0 if locked else 3
+        if old_marker_not_in_receipt(receipt):
+            # Either a prior run mutated this pack and died before its
+            # receipt and relock, or it was built MTP-less and never
+            # got a marked receipt. Both end the same way: verify the
+            # bytes, write the receipt, close the ring.
+            print(f"FIXUP {pack}: flags=0; completing receipt + relock")
             digest = sha256_chunked(pack)
             update_receipt(receipt, digest, kept_end=file_bytes, dropped=0,
                            reclaim=None, prior=None, locked=None)
@@ -306,7 +353,9 @@ def compact_g5nsp(pack: Path, receipt: Path, args) -> int:
         dst.truncate(payload_base + keep_bytes)
         for (start, end, i, which) in kept_entries:
             length = end - start
-            new_offsets[(i, which)] = cursor + 0
+            # 256-align each region start (the format's alignment rule)
+            cursor = (cursor + 255) & ~(256 - 1)
+            new_offsets[(i, which)] = cursor
             sent_total = 0
             pos = start
             while sent_total < length:
@@ -322,7 +371,8 @@ def compact_g5nsp(pack: Path, receipt: Path, args) -> int:
         dst.seek(0)
         dst.write(struct.pack("<20I", *fields))
         dst.seek(80)
-        dst.write(struct.pack("<QQ", header_len + dir_len, cursor))
+        # the directory is written at header_len; declare THAT.
+        dst.write(struct.pack("<QQ", header_len, cursor))
         # preserve the provenance blobs that follow the u64 pair
         dst.write(raw[96:G5NSP_HEADER_BYTES])
         dst.seek(header_len)
@@ -466,6 +516,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--pack", type=Path, required=True)
     parser.add_argument("--family", choices=sorted(FAMILIES) + ["g5nsp"], default="qwen4_flash")
+    parser.add_argument("--force-compact-g5", action="store_true",
+                        help="re-compact a g5nsp pack even when flags=0 (re-offsets regions onto 256 boundaries)")
     parser.add_argument("--compact", action="store_true",
                         help="rewrite the pack keeping only non-MTP regions (for layouts where MTP is not the file tail)")
     parser.add_argument("--dry-run", action="store_true")
@@ -473,6 +525,8 @@ def main() -> int:
     pack: Path = args.pack
     receipt: Path = Path(str(pack) + ".receipt.json")
     if args.family == "g5nsp":
+        if getattr(args, "force_compact_g5", False):
+            return compact_g5nsp(pack, receipt, args)
         result = strip_g5nsp(pack, receipt, args)
         if result == 1 and args.compact:
             return compact_g5nsp(pack, receipt, args)
