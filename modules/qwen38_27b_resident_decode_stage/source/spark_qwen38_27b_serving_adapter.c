@@ -88,10 +88,9 @@ static double clock_gettime_mono_ns(void)
 	 SPARK_SPECULATION_SEAM_SOURCE_SUFFIX | \
 	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM3)
 
-static uint32_t SparkQwen38_27bServingSpeculativeDraftCount(void)
-{
-	return(SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT);
-}
+typedef struct SparkQwen38_27bServingState SparkQwen38_27bServingState;
+
+static uint32_t SparkQwen38_27bServingSpeculativeDraftCount(const SparkQwen38_27bServingState *state);
 #define SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_ENV "SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY"
 #define SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_RECOVER 0u
 #define SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT 1u
@@ -113,16 +112,7 @@ static uint32_t SparkQwen38_27bServingBlockDraftMethod(uint32_t spec_method)
 {
 	return(spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK || spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2);
 }
-static uint32_t SparkQwen38_27bServingActiveDraftCount(uint32_t spec_method)
-{
-	if ( !SparkQwen38_27bServingBlockDraftMethod(spec_method) )
-		return(SparkQwen38_27bServingSpeculativeDraftCount());
-	{
-		uint32_t block = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
-		uint32_t cap = SparkQwen38_27bServingSpeculativeDraftCount();
-		return(cap < block ? cap : block);
-	}
-}
+static uint32_t SparkQwen38_27bServingActiveDraftCount(const SparkQwen38_27bServingState *state,uint32_t spec_method);
 #define SPARK_QWEN38_27B_SERVING_GDN_SNAPSHOT_SLOTS \
 	SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS
 #define SPARK_QWEN38_27B_SERVING_MAX_COMMITTED_TOKENS \
@@ -136,6 +126,15 @@ static const char *const SparkQwen38_27bServingConfigurationMembers[] =
 	"max_sequence_positions"
 };
 
+static const char *const SparkQwen38_27bServingConfigurationMembersDraft[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"speculative_draft_count"
+};
+
 static const char *const SparkQwen38_27bServingConfigurationMembersBridge[] =
 {
 	"schema_version",
@@ -144,6 +143,17 @@ static const char *const SparkQwen38_27bServingConfigurationMembersBridge[] =
 	"max_sequence_positions",
 	"draft_bridge_host",
 	"draft_bridge_port"
+};
+
+static const char *const SparkQwen38_27bServingConfigurationMembersBridgeDraft[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"draft_bridge_host",
+	"draft_bridge_port",
+	"speculative_draft_count"
 };
 
 typedef struct SparkQwen38_27bServingSpecState
@@ -234,6 +244,7 @@ typedef struct SparkQwen38_27bServingState
 	uint32_t quiescing;
 	uint32_t spec_method;
 	uint32_t speculation_enabled;
+	uint32_t speculative_draft_count;
 	SparkSpeculationSeam *speculation_seam;
 	char *bridge_host;
 	uint32_t bridge_port;
@@ -277,6 +288,22 @@ typedef struct SparkQwen38_27bServingState
 	uint32_t dflash2_draft_matrix[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS * (SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u)];
 	SparkQwen38_27bServingPending pending[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkQwen38_27bServingState;
+
+static uint32_t SparkQwen38_27bServingSpeculativeDraftCount(const SparkQwen38_27bServingState *state)
+{
+	return(state->speculative_draft_count);
+}
+
+static uint32_t SparkQwen38_27bServingActiveDraftCount(const SparkQwen38_27bServingState *state,uint32_t spec_method)
+{
+	if ( !SparkQwen38_27bServingBlockDraftMethod(spec_method) )
+		return(SparkQwen38_27bServingSpeculativeDraftCount(state));
+	{
+		uint32_t block = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+		uint32_t cap = SparkQwen38_27bServingSpeculativeDraftCount(state);
+		return(cap < block ? cap : block);
+	}
+}
 
 static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor =
 {
@@ -326,7 +353,7 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 {
 	SparkJsonDocument document;
 	int32_t root,token;
-	int32_t bridge_host_token,bridge_port_token;
+	int32_t bridge_host_token,bridge_port_token,draft_count_token;
 	uint32_t schema_version;
 	char *relative_stage_pack_path;
 	SparkStatus status;
@@ -338,15 +365,43 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	bridge_host_token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_host") : -1;
 	bridge_port_token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_port") : -1;
+	draft_count_token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"speculative_draft_count") : -1;
 	if ( status == SPARK_STATUS_OK && (bridge_host_token < 0) != (bridge_port_token < 0) )
 	{
 		fprintf(stderr,"qwen38_27b_serving draft_bridge_host and draft_bridge_port must both be present or both absent\n");
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,
-			bridge_host_token >= 0 ? SparkQwen38_27bServingConfigurationMembersBridge : SparkQwen38_27bServingConfigurationMembers,
-			(uint32_t)((bridge_host_token >= 0 ? sizeof(SparkQwen38_27bServingConfigurationMembersBridge) : sizeof(SparkQwen38_27bServingConfigurationMembers)) / sizeof(SparkQwen38_27bServingConfigurationMembers[0])));
+	{
+		const char *const *members = SparkQwen38_27bServingConfigurationMembers;
+		uint32_t member_count = (uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembers) / sizeof(SparkQwen38_27bServingConfigurationMembers[0]));
+		if ( bridge_host_token >= 0 && draft_count_token >= 0 )
+		{
+			members = SparkQwen38_27bServingConfigurationMembersBridgeDraft;
+			member_count = (uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembersBridgeDraft) / sizeof(SparkQwen38_27bServingConfigurationMembersBridgeDraft[0]));
+		}
+		else if ( bridge_host_token >= 0 )
+		{
+			members = SparkQwen38_27bServingConfigurationMembersBridge;
+			member_count = (uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembersBridge) / sizeof(SparkQwen38_27bServingConfigurationMembersBridge[0]));
+		}
+		else if ( draft_count_token >= 0 )
+		{
+			members = SparkQwen38_27bServingConfigurationMembersDraft;
+			member_count = (uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembersDraft) / sizeof(SparkQwen38_27bServingConfigurationMembersDraft[0]));
+		}
+		status = SparkJsonValidateObjectMembersExact(&document,root,members,member_count);
+	}
+	state->speculative_draft_count = SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT;
+	if ( status == SPARK_STATUS_OK && draft_count_token >= 0 )
+	{
+		status = SparkJsonGetUInt32(&document,draft_count_token,&state->speculative_draft_count);
+		if ( status == SPARK_STATUS_OK && ( state->speculative_draft_count == 0u || state->speculative_draft_count > SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS ) )
+		{
+			fprintf(stderr,"qwen38_27b_serving speculative_draft_count must be 1..%u\n",(unsigned)SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS);
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		}
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_QWEN38_27B_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
@@ -467,7 +522,7 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
 	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
 	seam_configuration.available_source_mask = available_sources;
-	seam_configuration.default_speculative_token_count = SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT;
+	seam_configuration.default_speculative_token_count = state->speculative_draft_count;
 	seam_configuration.lane_count = state->max_active_sequence_count;
 	seam_configuration.max_committed_token_count = state->max_sequence_positions;
 	seam_configuration.max_tap_row_count = 0u;
@@ -964,7 +1019,7 @@ static SparkStatus SparkQwen38_27bServingExtendSpeculativeCoverage(
 		for (row=0u; row<submission->row_count; row++)
 			if ( submission->row_lane_indices[row] == lane )
 				position = submission->row_positions[row];
-		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state->spec_method) + 2u;
+		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state,state->spec_method) + 2u;
 		required = (end_position + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 		if ( required > state->blocks_per_lane )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -983,7 +1038,7 @@ static SparkStatus SparkQwen38_27bServingExtendSpeculativeCoverage(
 		for (row=0u; row<submission->row_count; row++)
 			if ( submission->row_lane_indices[row] == lane )
 				position = submission->row_positions[row];
-		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state->spec_method) + 2u;
+		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state,state->spec_method) + 2u;
 		status = SparkQwen38_27bServingCoverLane(state,slot,end_position);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
@@ -1364,7 +1419,7 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 	uint32_t verify_tokens[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	SparkStatus status;
 	spec_method = state->spec_method;
-	draft_count = SparkQwen38_27bServingActiveDraftCount(state->spec_method);
+	draft_count = SparkQwen38_27bServingActiveDraftCount(state,state->spec_method);
 	first_draft_policy = SparkQwen38_27bServingSpecFirstDraftPolicy();
 	pending->spec_active = 1u;
 	pending->spec_first_draft_miss = 0u;

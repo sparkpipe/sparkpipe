@@ -267,7 +267,7 @@ GPU and heavy remote work is scheduled through the run queue
   coordinator/agent can take over mid-bring-up.
 - The DFlash2 launch environment is MANDATORY for spec runs (missing it
   produces degenerate output - this cost us a day):
-  SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPEC_METHOD=dflash2 DRAFT_COUNT=8
+  SPARK_QWEN38_27B_SPECULATORS=0x4 (DFLASH2) + speculative_draft_count=8 in the adapter JSON
   DSPARK_PACK_PATH=<drafter> DFLASH2_STATE_SELECT=1 BONUS_FOLD=2
   DFLASH2_BLOCK_KV=0 DFLASH2_WINDOW=2048 DFLASH2_CTX_CACHE=1
 - **CEPH TOPOLOGY + STORAGE-RISK RULE (full map in the infra advisory):
