@@ -40,7 +40,7 @@ static void TestRouterSoftmax(void)
 	cudaMalloc(&device_weights,3u * sizeof(float));
 	cudaMalloc(&device_indices,3u * sizeof(uint32_t));
 	cudaMemcpy(device_logits,logits,sizeof(logits),cudaMemcpyHostToDevice);
-	CHECK(SparkQwen38LaunchGateSelect(0,device_logits,0,1u,8u,3u,1.0f,device_indices,device_weights) == cudaSuccess,"gate_select_launch");
+	CHECK(SparkQwen38MaxLaunchGateSelect(0,device_logits,0,1u,8u,3u,1.0f,device_indices,device_weights) == cudaSuccess,"gate_select_launch");
 	cudaMemcpy(indices,device_indices,sizeof(indices),cudaMemcpyDeviceToHost);
 	cudaMemcpy(weights,device_weights,sizeof(weights),cudaMemcpyDeviceToHost);
 	CHECK(indices[0] == 2u && indices[1] == 6u && indices[2] == 0u,"gate_select_topk_indices");
@@ -76,7 +76,7 @@ static void TestSharedGate(void)
 	cudaMemcpy(device_input,input,sizeof(input),cudaMemcpyHostToDevice);
 	cudaMemcpy(device_weight,weight,sizeof(weight),cudaMemcpyHostToDevice);
 	cudaMemcpy(device_accum,accum,sizeof(accum),cudaMemcpyHostToDevice);
-	CHECK(SparkQwen38LaunchSharedGate(0,device_accum,device_weight,device_input,1u,4u) == cudaSuccess,"shared_gate_launch");
+	CHECK(SparkQwen38MaxLaunchSharedGate(0,device_accum,device_weight,device_input,1u,4u) == cudaSuccess,"shared_gate_launch");
 	cudaMemcpy(result,device_accum,sizeof(result),cudaMemcpyDeviceToHost);
 	for (index = 0u; index < 4u; index++)
 		CHECK(fabsf(HostBf16ToFloat(result[index]) - (gate * HostBf16ToFloat(accum[index]))) < 1.0e-2f,"shared_gate_scalar_product");
@@ -104,7 +104,7 @@ static void TestPairReduceOverwrite(void)
 	cudaMemcpy(device_seed,seed,sizeof(seed),cudaMemcpyHostToDevice);
 	cudaMemcpy(device_inverse,inverse,sizeof(inverse),cudaMemcpyHostToDevice);
 	cudaMemcpy(device_weights,weights,sizeof(weights),cudaMemcpyHostToDevice);
-	CHECK(SparkQwen38LaunchMoePairReduceOverwrite(0,device_slot,device_inverse,device_weights,device_seed,1u,4u) == cudaSuccess,"pair_reduce_overwrite_launch");
+	CHECK(SparkQwen38MaxLaunchMoePairReduceOverwrite(0,device_slot,device_inverse,device_weights,device_seed,1u,4u) == cudaSuccess,"pair_reduce_overwrite_launch");
 	cudaMemcpy(result,device_seed,sizeof(result),cudaMemcpyDeviceToHost);
 	for (index = 0u; index < 4u; index++)
 	{
