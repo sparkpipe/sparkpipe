@@ -859,10 +859,38 @@ static SparkStatus SparkTpDeviceCollectiveBuildEndpoint(
     endpoint->source_rank_index = source_rank;
     endpoint->sink_rank_index = sink_rank;
     endpoint->control_port_base = port_base;
-    endpoint->source_host = SparkTpDeviceCollectiveRankHost(
-        config,step_index,source_rank);
-    endpoint->sink_host = SparkTpDeviceCollectiveRankHost(
-        config,step_index,sink_rank);
+    if (SparkTpDeviceCollectiveLiteralRingEnabled(
+            config->algorithm_mask == 0u ?
+                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING :
+                config->algorithm_mask,config->tp_degree) != 0u)
+    {
+        uint32_t parity_rail =
+            (source_rank ^ sink_rank) == 1u &&
+            (source_rank < sink_rank ?
+                (source_rank & 1u) == 0u : (sink_rank & 1u) == 0u) ?
+            0u : 1u;
+        if (parity_rail < config->rail_count)
+        {
+            endpoint->source_host =
+                config->rail_rank_hosts[parity_rail][source_rank];
+            endpoint->sink_host =
+                config->rail_rank_hosts[parity_rail][sink_rank];
+        }
+        else
+        {
+            endpoint->source_host = SparkTpDeviceCollectiveRankHost(
+                config,step_index,source_rank);
+            endpoint->sink_host = SparkTpDeviceCollectiveRankHost(
+                config,step_index,sink_rank);
+        }
+    }
+    else
+    {
+        endpoint->source_host = SparkTpDeviceCollectiveRankHost(
+            config,step_index,source_rank);
+        endpoint->sink_host = SparkTpDeviceCollectiveRankHost(
+            config,step_index,sink_rank);
+    }
     endpoint->route_identifier = config->collective_identifier;
     if (SparkHiddenTransportConfigureEndpointOpenTimeout(endpoint,
             config->connect_timeout_milli) != SPARK_STATUS_OK)
