@@ -2592,8 +2592,7 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
         SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_SHIFT) &
         SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_MASK;
     receive_credit_index = completion_receive_index;
-    if (receive_index >= SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT ||
-        (work_completion->wr_id &
+    if ((work_completion->wr_id &
             SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE) == 0u ||
         receive_credit_index >=
             SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT)
@@ -2619,7 +2618,8 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
             SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
         completion.status = SPARK_STATUS_OK;
         completion.sequence_id = (uint64_t)(fixed_sequence >> 8u) + 1u;
-        completion.token_index = fixed_sequence & 3u;
+        completion.token_index =
+            (((fixed_sequence >> 2u) & 31u) << 2u) | (fixed_sequence & 3u);
         completion.transfer_bytes = 0u;
         completion.service_time_ns = 0u;
         if (state->debug_enabled != 0u)
@@ -2647,7 +2647,9 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
     if ((immediate &
             SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_RETURN_FLAG) != 0u)
     {
-        if (state->is_sender == 0u || work_completion->opcode != IBV_WC_RECV)
+        if (state->is_sender == 0u || work_completion->opcode != IBV_WC_RECV ||
+            receive_index >=
+                SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
             return SPARK_STATUS_IO_ERROR;
         remote_receive = &state->remote_receives[receive_index];
         if (remote_receive->active == 0u ||
@@ -2671,7 +2673,9 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
     }
     if (state->is_sender != 0u ||
         (work_completion->opcode != IBV_WC_RECV_RDMA_WITH_IMM &&
-         work_completion->opcode != IBV_WC_RECV))
+         work_completion->opcode != IBV_WC_RECV) ||
+        receive_index >=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT)
         return SPARK_STATUS_IO_ERROR;
     receive = &state->pending_receives[receive_index];
     if (receive->complete != 0u ||
@@ -5739,7 +5743,8 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     send->posted_wr_counts[lane_index] = 2u;
     send->start_time_ns = SparkHiddenSparkHostRdmaMonotonicNs();
     send->packet_snapshot.sequence_id = (sequence >> 8u) + 1u;
-    send->packet_snapshot.token_index = sequence & 3u;
+    send->packet_snapshot.token_index =
+        (((sequence >> 2u) & 31u) << 2u) | (sequence & 3u);
     send->packet_snapshot.active_sequence_count = 1u;
     send->packet_snapshot.hidden_bf16 = local_buffer;
     send->packet_snapshot.bytes_per_sequence = (uint32_t)bytes;

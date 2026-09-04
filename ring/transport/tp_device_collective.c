@@ -132,6 +132,10 @@ typedef struct SparkTpDeviceCollectiveImplementation
         [SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     SparkTpDeviceCollectiveOperation operations[
         SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
+    SparkHiddenTransportCompletion early_completions[
+        SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT][4u];
+    uint32_t early_completion_counts[
+        SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     SparkTpDeviceCollectiveDebugHooks debug_hooks;
     SparkTpDeviceCollectiveCombineBf16Function combine_bf16_function;
     SparkTpDeviceCollectiveCombineRelayBf16Function
@@ -1586,8 +1590,10 @@ static void SparkTpDeviceCollectiveLiteralRingBeginPhase(
     operation->consumption_enqueued = 0u;
     {
         uint32_t mask =
-            1u << SparkTpDeviceCollectiveLiteralRingRoute(
-                operation->current_step,operation->lane_id);
+            (1u << SparkTpDeviceCollectiveLiteralRingRoute(
+                 operation->current_step,0u)) |
+            (1u << SparkTpDeviceCollectiveLiteralRingRoute(
+                 operation->current_step,1u));
         operation->reserved_send_mask &= ~mask;
         operation->sent_mask &= ~mask;
         operation->send_complete_mask &= ~mask;
@@ -2315,8 +2321,8 @@ static uint32_t SparkTpDeviceCollectiveCompletionTokenIsValid(
         return token_index < operation->direct_peer_count;
     if (operation->algorithm_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND)
-        return token_index < 2u *
-            (implementation->collective->tp_degree - 1u);
+        return (token_index >> 2u) == operation->current_step &&
+            (token_index & 3u) < 4u;
     if (operation->algorithm_kind !=
         SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_KIND)
         return token_index < implementation->collective->step_count;
@@ -2346,7 +2352,7 @@ static void SparkTpDeviceCollectiveRouteCompletion(
     {
         return;
     }
-    if (completion->sequence_id == 0u || completion->token_index >= 32u)
+    if (completion->sequence_id == 0u || completion->token_index >= 128u)
     {
         if (implementation->profile_enabled != 0u)
         {
@@ -2373,6 +2379,33 @@ static void SparkTpDeviceCollectiveRouteCompletion(
         SparkTpDeviceCollectiveCompletionTokenIsValid(
             implementation,operation,(uint32_t)completion->token_index) == 0u)
     {
+        uint32_t observed_generation =
+            SparkTpDeviceCollectiveStateGeneration(state_word);
+        uint32_t observed_phase =
+            SparkTpDeviceCollectiveStatePhase(state_word);
+        uint32_t completion_phase =
+            operation->algorithm_kind ==
+                SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND ?
+            (uint32_t)(completion->token_index >> 2u) : 0u;
+        if (completion->status == SPARK_STATUS_OK &&
+            (observed_phase == SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE ||
+                observed_generation < generation ||
+                (observed_generation == generation &&
+                    completion_phase > operation->current_step)))
+        {
+            if (implementation->early_completion_counts[credit_index] < 4u)
+            {
+                implementation->early_completions[credit_index]
+                    [implementation->early_completion_counts[credit_index]++] =
+                        *completion;
+            }
+            return;
+        }
+        if (completion->status == SPARK_STATUS_OK &&
+            (observed_generation > generation ||
+                (observed_generation == generation &&
+                    completion_phase < operation->current_step)))
+            return;
         if (implementation->profile_enabled != 0u)
         {
             fprintf(stderr,
@@ -2381,17 +2414,21 @@ static void SparkTpDeviceCollectiveRouteCompletion(
                 (unsigned long long)completion->token_index,
                 receive_completion,(uint32_t)completion->status,credit_index,
                 (unsigned long long)generation,
-                (unsigned long long)SparkTpDeviceCollectiveStateGeneration(
-                    state_word),SparkTpDeviceCollectiveStatePhase(state_word),
+                (unsigned long long)observed_generation,observed_phase,
                 operation->algorithm_kind,operation->current_step);
         }
         SparkTpDeviceCollectiveLatchFailure(
             implementation,SPARK_STATUS_VALIDATION_FAILED);
         return;
     }
-    step_index = (uint32_t)completion->token_index;
-    profile_phase = SparkTpDeviceCollectiveProfilePhase(
-        operation,step_index);
+    step_index = operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND ?
+        (uint32_t)(completion->token_index & 3u) :
+        (uint32_t)completion->token_index;
+    profile_phase = operation->algorithm_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND ?
+        (uint32_t)(completion->token_index >> 2u) :
+        SparkTpDeviceCollectiveProfilePhase(operation,step_index);
     if (completion->status != SPARK_STATUS_OK)
     {
         (void)SparkTpDeviceCollectiveMarkOperationFailure(
@@ -3204,6 +3241,36 @@ static uint32_t SparkTpDeviceCollectiveOperationsAreDrained(
     return 1u;
 }
 
+static void SparkTpDeviceCollectiveReplayEarlyCompletions(
+    SparkTpDeviceCollectiveImplementation *implementation)
+{
+    uint32_t credit_index;
+    uint32_t entry_index;
+
+    for (credit_index = 0u;
+         credit_index < implementation->collective->credit_count;
+         ++credit_index)
+    {
+        for (entry_index = 0u;
+             entry_index < implementation->early_completion_counts[
+                 credit_index];)
+        {
+            SparkHiddenTransportCompletion completion =
+                implementation->early_completions[credit_index][entry_index];
+            implementation->early_completions[credit_index][entry_index] =
+                implementation->early_completions[credit_index]
+                    [implementation->early_completion_counts[credit_index] -
+                        1u];
+            implementation->early_completion_counts[credit_index] -= 1u;
+            SparkTpDeviceCollectiveRouteCompletion(
+                implementation,&completion,1u);
+            if (implementation->early_completion_counts[credit_index] ==
+                    entry_index)
+                break;
+        }
+    }
+}
+
 static void *SparkTpDeviceCollectiveProgressMain(void *context)
 {
     SparkTpDeviceCollectiveImplementation *implementation;
@@ -3213,6 +3280,7 @@ static void *SparkTpDeviceCollectiveProgressMain(void *context)
     for (;;)
     {
         SparkTpDeviceCollectivePollTransport(implementation);
+        SparkTpDeviceCollectiveReplayEarlyCompletions(implementation);
         for (credit_index = 0u;
              credit_index < implementation->collective->credit_count;
              ++credit_index)
