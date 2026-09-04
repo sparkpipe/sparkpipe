@@ -96,6 +96,7 @@
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_SHIFT \
     SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_BITS
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_RETURN_FLAG 0x80000000u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_FIXED_FLAG 0x40000000u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_GENERATION_MASK \
     ((1u << (31u - SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_CREDIT_BITS)) - 1u)
 
@@ -2597,6 +2598,31 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
         state,(uint32_t)receive_credit_index);
     if (status != SPARK_STATUS_OK)
         return status;
+    if ((immediate &
+            SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_FIXED_FLAG) != 0u)
+    {
+        SparkHiddenTransportCompletion completion;
+        uint32_t fixed_sequence = immediate &
+            ~SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_FIXED_FLAG &
+            ~SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_RETURN_FLAG;
+        if (state->is_sender != 0u)
+            return SPARK_STATUS_IO_ERROR;
+        if (SparkHiddenTransportCompletionQueueIsFull(
+                &state->completion_queue) != 0u)
+            return SPARK_STATUS_BUSY;
+        memset(&completion,0,sizeof(completion));
+        completion.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+        completion.descriptor_bytes =
+            SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
+        completion.status = SPARK_STATUS_OK;
+        completion.sequence_id = (uint64_t)fixed_sequence + 1u;
+        completion.token_index = fixed_sequence;
+        completion.transfer_bytes = 0u;
+        completion.service_time_ns = 0u;
+        SparkHiddenSparkHostRdmaSignalEvent(state);
+        return SparkHiddenTransportCompletionQueuePush(
+            &state->completion_queue,&completion);
+    }
     if ((immediate &
             SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_RETURN_FLAG) != 0u)
     {
@@ -5643,7 +5669,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     scatter_entries[0].addr = (uintptr_t)local_buffer;
     scatter_entries[0].length = (uint32_t)bytes;
     scatter_entries[0].lkey = state->fixed_local_lkey;
-    immediate = sequence;
+    immediate = sequence | SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_FIXED_FLAG;
     memset(work_requests,0,sizeof(work_requests));
     work_requests[0].wr_id = (uint64_t)(send - state->inflight_sends);
     work_requests[0].opcode = IBV_WR_RDMA_WRITE;

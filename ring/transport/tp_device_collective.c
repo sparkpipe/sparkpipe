@@ -2699,8 +2699,28 @@ static void SparkTpDeviceCollectiveBuildSend(
             implementation,operation,route_index,
             &send_packet,&receive_packet);
         if (status == SPARK_STATUS_OK)
-            status = SparkHiddenTransportSend(
-                implementation->send_sessions[route_index],&send_packet);
+        {
+            if (operation->algorithm_kind ==
+                    SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND &&
+                implementation->transport_library.transport_interface
+                    .send_fixed != 0)
+            {
+                status =
+                    implementation->transport_library.transport_interface
+                        .send_fixed(
+                    implementation->send_sessions[route_index],
+                    send_packet.hidden_bf16,
+                    (uint64_t)send_packet.active_sequence_count *
+                        send_packet.bytes_per_sequence,
+                    (uint32_t)operation->ordinal);
+            }
+            else
+            {
+                status = SparkHiddenTransportSend(
+                    implementation->send_sessions[route_index],
+                    &send_packet);
+            }
+        }
         if (status == SPARK_STATUS_BUSY)
             continue;
         if (status != SPARK_STATUS_OK)
