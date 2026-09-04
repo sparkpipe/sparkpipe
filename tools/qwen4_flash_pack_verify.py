@@ -219,8 +219,16 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
     candidates = [entry for entry in entries
                   if entry["weight_format"] in (WEIGHT_BF16, WEIGHT_F32, WEIGHT_I64, WEIGHT_NVFP4_PACKED)
                   or entry["weight_format"] in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128)]
-    stride = max(1, len(candidates) // sample_count)
-    sampled = candidates[::stride][:sample_count]
+    # Guarantee wire-8 coverage: a uniform stride can skip the expert
+    # entries entirely, and they are exactly the samples that matter.
+    wire8 = [entry for entry in candidates if entry["weight_format"] == WEIGHT_NVFP4_PACKED]
+    others = [entry for entry in candidates if entry["weight_format"] != WEIGHT_NVFP4_PACKED]
+    general_count = max(1, sample_count - min(3, len(wire8)))
+    stride = max(1, len(others) // general_count)
+    sampled = others[::stride][:general_count]
+    if wire8:
+        wstride = max(1, len(wire8) // min(3, len(wire8)))
+        sampled += wire8[::wstride][:3]
     with pack.open("rb") as file:
         for entry in sampled:
             kind, layer = entry["tensor_kind"], entry["layer_index"]
@@ -254,9 +262,11 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                     continue
                 for probe in (0, expert_count // 2, expert_count - 1):
                     e_abs = expert_start + probe
+                    # MoE inventory names carry no .weight suffix; the
+                    # split source tensors do.
                     stem = ref.name.replace(
                         "mlp.experts." + fused,
-                        f"mlp.experts.{e_abs}." + proj)[:-len(".weight")]
+                        f"mlp.experts.{e_abs}." + proj)
                     want_payload_rows = source_bytes(source, stem + ".weight")
                     row_bytes = rows_per_expert * (entry["columns"] // 2)
                     seg_row_base = probe * row_bytes
