@@ -101,6 +101,14 @@ SparkStatus SparkSpeculationSeamCancelSequence(
 	SparkSpeculationSeam *seam,
 	uint64_t sequence_id);
 
+SparkStatus SparkSpeculationSeamStageLocalDraft(
+	SparkSpeculationSeam *seam,
+	uint64_t request_id,
+	uint64_t sequence_id,
+	uint64_t position,
+	const uint32_t *draft_token_ids,
+	uint32_t draft_token_count);
+
 #ifdef __cplusplus
 }
 #endif

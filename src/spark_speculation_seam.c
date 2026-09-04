@@ -536,6 +536,7 @@ SparkStatus SparkSpeculationSeamDraftRemoteChain(
     SparkSpeculationSeamLane *lane;
     uint64_t tap_generation;
     uint32_t lane_index;
+    uint32_t lane_claimed;
     SparkStatus status;
 
     if (seam == 0 ||
@@ -567,6 +568,7 @@ SparkStatus SparkSpeculationSeamDraftRemoteChain(
     }
 
     lane_index = SparkSpeculationSeamFindLane(seam, sequence_id);
+    lane_claimed = 0u;
     if (lane_index == SPARK_SPECULATION_SEAM_NO_SELECTION)
     {
         for (lane_index = 0u; lane_index < seam->lane_count; ++lane_index)
@@ -581,8 +583,13 @@ SparkStatus SparkSpeculationSeamDraftRemoteChain(
         {
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         }
-        sequence_state = &seam->sequence_states[lane_index];
-        sequence_state->sequence_id = sequence_id;
+        seam->sequence_states[lane_index].sequence_id = sequence_id;
+        lane_claimed = 1u;
+    }
+    sequence_state = &seam->sequence_states[lane_index];
+    if ((sequence_state->flags &
+            SPARK_SPECULATION_SEQUENCE_STATE_FLAG_TAPS_READY) == 0u)
+    {
         status = SparkSpeculationPolicyMarkVerifierTapsReady(
             seam->speculator,
             request_id,
@@ -591,14 +598,16 @@ SparkStatus SparkSpeculationSeamDraftRemoteChain(
             &tap_generation);
         if (status != SPARK_STATUS_OK)
         {
-            sequence_state->sequence_id =
-                SPARK_SPECULATION_SEAM_EMPTY_SEQUENCE_ID;
+            if (lane_claimed != 0u)
+            {
+                sequence_state->sequence_id =
+                    SPARK_SPECULATION_SEAM_EMPTY_SEQUENCE_ID;
+            }
             return status;
         }
     }
     else
     {
-        sequence_state = &seam->sequence_states[lane_index];
         tap_generation = sequence_state->tap_generation;
     }
 
@@ -734,5 +743,94 @@ SparkStatus SparkSpeculationSeamCancelSequence(
         SPARK_SPECULATION_SEAM_EMPTY_SEQUENCE_ID;
     seam->sequence_states[lane_index].sequence_id =
         SPARK_SPECULATION_SEAM_EMPTY_SEQUENCE_ID;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkSpeculationSeamStageLocalDraft(
+    SparkSpeculationSeam *seam,
+    uint64_t request_id,
+    uint64_t sequence_id,
+    uint64_t position,
+    const uint32_t *draft_token_ids,
+    uint32_t draft_token_count)
+{
+    SparkSpeculationSpeculator *speculator;
+    SparkSpeculationSequenceState *sequence_state;
+    uint32_t lane_index;
+    uint32_t token_index;
+
+    if (seam == 0 || draft_token_ids == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    speculator = seam->speculator;
+    if (sequence_id == 0u ||
+        sequence_id == SPARK_SPECULATION_SEAM_EMPTY_SEQUENCE_ID ||
+        draft_token_count == 0u ||
+        draft_token_count >
+            speculator->model_contract.maximum_speculative_token_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (token_index = 0u; token_index < draft_token_count; ++token_index)
+    {
+        if (draft_token_ids[token_index] >=
+            speculator->model_contract.vocab_size)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+
+    lane_index = SparkSpeculationSeamFindLane(seam, sequence_id);
+    if (lane_index == SPARK_SPECULATION_SEAM_NO_SELECTION)
+    {
+        for (lane_index = 0u; lane_index < seam->lane_count; ++lane_index)
+        {
+            if (seam->sequence_states[lane_index].sequence_id ==
+                SPARK_SPECULATION_SEAM_EMPTY_SEQUENCE_ID)
+            {
+                break;
+            }
+        }
+        if (lane_index == seam->lane_count)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+    }
+    sequence_state = &seam->sequence_states[lane_index];
+    if ((sequence_state->flags &
+            SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY) != 0u)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+
+    sequence_state->flags =
+        SPARK_SPECULATION_SEQUENCE_STATE_FLAG_VALID |
+        SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY;
+    sequence_state->draft_token_count = draft_token_count;
+    sequence_state->request_id = request_id;
+    sequence_state->sequence_id = sequence_id;
+    sequence_state->sequence_position = position;
+    sequence_state->draft_generation = speculator->next_draft_generation;
+    speculator->next_draft_generation += 1u;
+    if (speculator->next_draft_generation == 0u)
+    {
+        speculator->next_draft_generation = 1u;
+    }
+    for (token_index = 0u;
+         token_index < SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT;
+         ++token_index)
+    {
+        if (token_index < draft_token_count)
+        {
+            sequence_state->draft_token_ids[token_index] =
+                draft_token_ids[token_index];
+        }
+        else
+        {
+            sequence_state->draft_token_ids[token_index] = 0u;
+        }
+        sequence_state->draft_confidence_milli[token_index] = 0u;
+    }
     return SPARK_STATUS_OK;
 }

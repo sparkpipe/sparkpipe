@@ -1269,6 +1269,415 @@ static uint32_t TestSeamTapSourceWithoutTapsUnsupported(void)
     return 0u;
 }
 
+static uint32_t TestSeamLocalDraftAcceptPaths(void)
+{
+    static const uint32_t local_chain[3u] = { 201u, 202u, 203u };
+    static const uint32_t verifier_mid[3u] = { 201u, 202u, 777u };
+    static const uint32_t verifier_full[4u] = { 201u, 202u, 203u, 444u };
+    static const uint32_t verifier_reject[3u] = { 999u, 998u, 997u };
+    SparkSpeculationSeamConfiguration configuration;
+    SparkSpeculationPolicyVerifyResult verify_result;
+    SparkSpeculationSpeculator *speculator;
+    SparkSpeculationSeam *seam;
+
+    TestSeamWriteConfiguration(
+        &configuration,
+        SPARK_SPECULATION_SEAM_SOURCE_MTP |
+            SPARK_SPECULATION_SEAM_SOURCE_DSPARK,
+        0u,
+        0u,
+        0u);
+    configuration.bridge_host = 0;
+    seam = 0;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+    speculator = SparkSpeculationSeamSpeculator(seam);
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            101u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            3u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_mid,
+            3u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.proposed_token_count == 3u);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 2u);
+    SPARK_TEST_SEAM_CHECK(verify_result.committed_token_count == 3u);
+    SPARK_TEST_SEAM_CHECK(verify_result.fallback_token_id == 777u);
+    SPARK_TEST_SEAM_CHECK(
+        (verify_result.flags &
+            SPARK_SPECULATION_VERIFY_RESULT_FLAG_REJECTED) != 0u);
+    SPARK_TEST_SEAM_CHECK(speculator->verify_dispatch_count == 1u);
+    SPARK_TEST_SEAM_CHECK(speculator->accepted_draft_token_count == 2u);
+    SPARK_TEST_SEAM_CHECK(speculator->rejected_token_count == 1u);
+    SPARK_TEST_SEAM_CHECK(speculator->committed_token_count == 3u);
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            102u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            5u,
+            local_chain,
+            3u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_full,
+            4u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 3u);
+    SPARK_TEST_SEAM_CHECK(verify_result.committed_token_count == 4u);
+    SPARK_TEST_SEAM_CHECK(verify_result.fallback_token_id == 444u);
+    SPARK_TEST_SEAM_CHECK(
+        (verify_result.flags &
+            SPARK_SPECULATION_VERIFY_RESULT_FLAG_ACCEPTED_ALL) != 0u);
+    SPARK_TEST_SEAM_CHECK(speculator->verify_dispatch_count == 2u);
+    SPARK_TEST_SEAM_CHECK(speculator->accepted_draft_token_count == 5u);
+    SPARK_TEST_SEAM_CHECK(speculator->committed_token_count == 7u);
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            103u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            6u,
+            local_chain,
+            3u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_reject,
+            3u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 0u);
+    SPARK_TEST_SEAM_CHECK(verify_result.committed_token_count == 1u);
+    SPARK_TEST_SEAM_CHECK(verify_result.fallback_token_id == 999u);
+    SPARK_TEST_SEAM_CHECK(
+        (verify_result.flags &
+            SPARK_SPECULATION_VERIFY_RESULT_FLAG_REJECTED) != 0u);
+    SPARK_TEST_SEAM_CHECK(speculator->verify_dispatch_count == 3u);
+    SPARK_TEST_SEAM_CHECK(speculator->accepted_draft_token_count == 5u);
+    SPARK_TEST_SEAM_CHECK(speculator->rejected_token_count == 4u);
+    SPARK_TEST_SEAM_CHECK(speculator->committed_token_count == 8u);
+    SPARK_TEST_SEAM_CHECK(speculator->draft_request_count == 0u);
+    SPARK_TEST_SEAM_CHECK(speculator->draft_success_count == 0u);
+
+    SparkSpeculationSeamDestroy(seam);
+    return 0u;
+}
+
+static uint32_t TestSeamLocalDraftDoubleStageBusy(void)
+{
+    static const uint32_t local_chain[2u] = { 201u, 202u };
+    static const uint32_t verifier_full[3u] = { 201u, 202u, 333u };
+    static const uint32_t verifier_single[2u] = { 201u, 555u };
+    SparkSpeculationSeamConfiguration configuration;
+    SparkSpeculationPolicyVerifyResult verify_result;
+    SparkSpeculationSeam *seam;
+
+    TestSeamWriteConfiguration(
+        &configuration,
+        SPARK_SPECULATION_SEAM_SOURCE_MTP |
+            SPARK_SPECULATION_SEAM_SOURCE_DSPARK,
+        0u,
+        0u,
+        0u);
+    configuration.bridge_host = 0;
+    seam = 0;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            111u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            2u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            112u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            2u) == SPARK_STATUS_BUSY);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_full,
+            3u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 2u);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            113u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            4u,
+            local_chain,
+            1u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_single,
+            2u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.proposed_token_count == 1u);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 1u);
+    SPARK_TEST_SEAM_CHECK(verify_result.fallback_token_id == 555u);
+
+    SparkSpeculationSeamDestroy(seam);
+    return 0u;
+}
+
+static uint32_t TestSeamLocalDraftBadTokenRejected(void)
+{
+    static const uint32_t local_chain[2u] = { 201u, 202u };
+    static const uint32_t bad_chain[2u] =
+        { 201u, SPARK_TEST_SEAM_VOCAB_SIZE };
+    static const uint32_t verifier_full[3u] = { 201u, 202u, 333u };
+    SparkSpeculationSeamConfiguration configuration;
+    SparkSpeculationPolicyVerifyResult verify_result;
+    SparkSpeculationSeam *seam;
+
+    TestSeamWriteConfiguration(
+        &configuration,
+        SPARK_SPECULATION_SEAM_SOURCE_MTP |
+            SPARK_SPECULATION_SEAM_SOURCE_DSPARK,
+        0u,
+        0u,
+        0u);
+    configuration.bridge_host = 0;
+    seam = 0;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            121u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            bad_chain,
+            2u) == SPARK_STATUS_INVALID_ARGUMENT);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            122u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            0u) == SPARK_STATUS_INVALID_ARGUMENT);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            123u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            SPARK_TEST_SEAM_MAX_SPECULATIVE + 1u) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            124u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            0,
+            2u) == SPARK_STATUS_INVALID_ARGUMENT);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            0,
+            125u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            2u) == SPARK_STATUS_INVALID_ARGUMENT);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_full,
+            3u,
+            &verify_result) == SPARK_STATUS_NOT_FOUND);
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            126u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            2u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_full,
+            3u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 2u);
+
+    SparkSpeculationSeamDestroy(seam);
+    return 0u;
+}
+
+static uint32_t TestSeamLocalThenRemoteSameLane(void)
+{
+    static const uint32_t modes[] = { SPARK_TEST_SEAM_MODE_DEEP_TREE };
+    static const uint32_t local_chain[2u] = { 201u, 202u };
+    static const uint32_t verifier_mid[2u] = { 201u, 999u };
+    static const uint32_t verifier_remote[4u] = { 901u, 902u, 903u, 444u };
+    SparkSpeculationSeamConfiguration configuration;
+    SparkSpeculationPolicyVerifyResult verify_result;
+    SparkSpeculationSeam *seam;
+    TestSeamStub stub;
+    uint32_t draft_ids[SPARK_TEST_SEAM_DRAFT_CAPACITY];
+    uint32_t draft_count;
+
+    SPARK_TEST_SEAM_CHECK(TestSeamStubStart(&stub, modes, 1u) == 0u);
+    TestSeamWriteConfiguration(
+        &configuration,
+        SPARK_SPECULATION_SEAM_SOURCE_NGRAM |
+            SPARK_SPECULATION_SEAM_SOURCE_SUFFIX,
+        stub.port,
+        0u,
+        0u);
+    seam = 0;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            131u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            2u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_mid,
+            2u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 1u);
+    SPARK_TEST_SEAM_CHECK(
+        (verify_result.flags &
+            SPARK_SPECULATION_VERIFY_RESULT_FLAG_REJECTED) != 0u);
+
+    draft_count = 0u;
+    SPARK_TEST_SEAM_CHECK(
+        TestSeamDraftStandard(seam, 132u, 0u, draft_ids, &draft_count) ==
+        SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(TestSeamCheckDeepChain(draft_ids, draft_count) == 0u);
+    SPARK_TEST_SEAM_CHECK(stub.last_generation == 1u);
+    SPARK_TEST_SEAM_CHECK(
+        stub.last_speculator_mask ==
+        (SPARK_SPECULATION_SEAM_SOURCE_NGRAM |
+            SPARK_SPECULATION_SEAM_SOURCE_SUFFIX));
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_remote,
+            4u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 3u);
+    SPARK_TEST_SEAM_CHECK(
+        (verify_result.flags &
+            SPARK_SPECULATION_VERIFY_RESULT_FLAG_ACCEPTED_ALL) != 0u);
+
+    SparkSpeculationSeamDestroy(seam);
+    TestSeamStubStop(&stub);
+    SPARK_TEST_SEAM_CHECK(stub.failed == 0u);
+    SPARK_TEST_SEAM_CHECK(stub.exchanges_completed == 1u);
+    return 0u;
+}
+
+static uint32_t TestSeamLocalStageAfterCancel(void)
+{
+    static const uint32_t local_chain[2u] = { 201u, 202u };
+    static const uint32_t verifier_full[3u] = { 201u, 202u, 333u };
+    SparkSpeculationSeamConfiguration configuration;
+    SparkSpeculationPolicyVerifyResult verify_result;
+    SparkSpeculationSeam *seam;
+
+    TestSeamWriteConfiguration(
+        &configuration,
+        SPARK_SPECULATION_SEAM_SOURCE_MTP |
+            SPARK_SPECULATION_SEAM_SOURCE_DSPARK,
+        0u,
+        0u,
+        0u);
+    configuration.bridge_host = 0;
+    seam = 0;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            141u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            2u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamCancelSequence(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_full,
+            3u,
+            &verify_result) == SPARK_STATUS_NOT_FOUND);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamStageLocalDraft(
+            seam,
+            142u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            local_chain,
+            2u) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamAcceptChain(
+            seam,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            verifier_full,
+            3u,
+            &verify_result) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(verify_result.accepted_draft_token_count == 2u);
+    SPARK_TEST_SEAM_CHECK(verify_result.fallback_token_id == 333u);
+
+    SparkSpeculationSeamDestroy(seam);
+    return 0u;
+}
+
 static uint32_t TestSeamRunCase(
     const char *name,
     uint32_t (*case_fn)(void))
@@ -1324,6 +1733,21 @@ int main(void)
     failures += TestSeamRunCase(
         "tap_source_without_taps_unsupported",
         TestSeamTapSourceWithoutTapsUnsupported);
+    failures += TestSeamRunCase(
+        "local_draft_accept_paths",
+        TestSeamLocalDraftAcceptPaths);
+    failures += TestSeamRunCase(
+        "local_draft_double_stage_busy",
+        TestSeamLocalDraftDoubleStageBusy);
+    failures += TestSeamRunCase(
+        "local_draft_bad_token_rejected",
+        TestSeamLocalDraftBadTokenRejected);
+    failures += TestSeamRunCase(
+        "local_then_remote_same_lane",
+        TestSeamLocalThenRemoteSameLane);
+    failures += TestSeamRunCase(
+        "local_stage_after_cancel",
+        TestSeamLocalStageAfterCancel);
     if (failures != 0u)
     {
         fprintf(stderr, "FAILURES %u\n", (unsigned)failures);
