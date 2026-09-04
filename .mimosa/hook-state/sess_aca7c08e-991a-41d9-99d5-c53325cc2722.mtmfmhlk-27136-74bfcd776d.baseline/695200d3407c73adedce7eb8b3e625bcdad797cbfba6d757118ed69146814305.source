@@ -3,7 +3,7 @@
 # all nodes EXCEPT sparka/spark1-4 (those are running the nvfp4 -f
 # builds; their strip runs after, one IO-heavy job per node).
 set -u
-NODES="spark0 spark5 spark6 spark7 spark8 spark9 sparkb sparkc sparkd sparde sparkf"
+NODES="spark0 spark5 spark6 spark7 spark8 spark9 sparkb sparkc sparkd sparke sparkf"
 for n in $NODES; do
   (
     timeout 5400 ssh -o ConnectTimeout=10 "$n" '

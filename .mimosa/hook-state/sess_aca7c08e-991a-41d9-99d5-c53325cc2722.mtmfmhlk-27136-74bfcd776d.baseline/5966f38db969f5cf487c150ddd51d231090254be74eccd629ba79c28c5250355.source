@@ -2,7 +2,7 @@
 # Strip the MTP draft blocks from the placed dsv4-pro TP16 rank packs.
 # One pack per node; sudo for the chattr ring.
 set -u
-NODES="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparde sparkf"
+NODES="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 for n in $NODES; do
   (
     timeout 3600 ssh -o ConnectTimeout=10 "$n" '
