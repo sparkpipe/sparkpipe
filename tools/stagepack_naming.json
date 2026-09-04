@@ -1,0 +1,30 @@
+{
+  "canonical_rule": "<model>.<quant>.<topo>; packs under ~/sparkdata/<arm>/packs/; file <arm>.rank<h>.sp with h a single hex digit 0-9a-f matching the spark node letter",
+  "models": ["glm53flash", "glm53full", "dsv4flash", "dsv4pro", "qwen3flash", "qwen27b", "qwenmax", "k3", "hy4"],
+  "quants": ["bf16", "fp8", "nvfp4", "nvfp4a16", "mxfp4", "iq1m"],
+  "topologies": ["tp4", "tp8", "tp16", "tp4pp4"],
+  "legacy_map": {
+    "hy4-fp8-packs/model-fp8-tp16-rank-NN.safetensors": "hy4.fp8.tp16",
+    "qwen4_flash.tp4": "qwen3flash.QUANT?.tp4",
+    "qwenflash.tp8": "qwen3flash.QUANT?.tp8",
+    "qwenflash.tp8.fp8": "qwen3flash.fp8.tp8",
+    "qwenflash.tp8.nvfp4": "qwen3flash.nvfp4.tp8",
+    "qwenflash.tp4pp4": "qwen3flash.QUANT?.tp4pp4",
+    "qwenflash.tp4pp4.fp8": "qwen3flash.fp8.tp4pp4",
+    "dsv4flash.tp16": "dsv4flash.QUANT?.tp16",
+    "dsv4flash.tp4pp4": "dsv4flash.QUANT?.tp4pp4",
+    "dsv4_pro.tp16": "dsv4pro.QUANT?.tp16",
+    "dsv4_pro.tp4pp4": "dsv4pro.QUANT?.tp4pp4",
+    "glm5_next.tp16": "glm53flash.QUANT?.tp16",
+    "glm5_next.tp4pp4": "glm53flash.QUANT?.tp4pp4",
+    "glm5_next.tp8.fp8": "glm53flash.fp8.tp8",
+    "glm5_next.bf16.tp16": "glm53flash.bf16.tp16",
+    "glm53full.bf16.tp4pp4": "glm53full.bf16.tp4pp4",
+    "glm53full.fp8.tp4pp4": "glm53full.fp8.tp4pp4",
+    "glm53full.nvfp4.tp4pp4": "glm53full.nvfp4.tp4pp4",
+    "k3.mxfp4.tp4pp4": "k3.mxfp4.tp4pp4",
+    "qwen27b.tp4pp4": "qwen27b.QUANT?.tp4pp4",
+    "qwen38_27b.tp4pp4": "qwen27b.QUANT?.tp4pp4",
+    "qwen38-27b.nvfp4a16.tp4": "qwen27b.nvfp4a16.tp4"
+  }
+}
