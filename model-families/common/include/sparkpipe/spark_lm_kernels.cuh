@@ -623,7 +623,7 @@ static __device__ __forceinline__ float SparkLmDotRowNvfp4(const float *shared_i
 }
 
 template <uint32_t GROUP_SIZE>
-static __device__ __forceinline__ void SparkLmDotRowNvfp4Pair(const float *shared_input, const void *first_payload, const uint8_t *first_scale, const float *first_global_f32, const void *second_payload, const uint8_t *second_scale, const float *second_global_f32, uint32_t neuron, uint32_t input_dimension, uint32_t lane, float *first_total, float *second_total)
+static __device__ __forceinline__ void SparkLmDotRowNvfp4Pair(const float *shared_input, const void *first_payload, const uint8_t *first_scale_plane, const float *first_global_f32, const void *second_payload, const uint8_t *second_scale_plane, const float *second_global_f32, uint32_t neuron, uint32_t input_dimension, uint32_t lane, float *first_total, float *second_total)
 {
 	uint64_t run_row = ((uint64_t)neuron * input_dimension) >> 3u,scale_row = (uint64_t)neuron * (input_dimension / GROUP_SIZE);
 	uint32_t run_count = input_dimension >> 3u,run,pair,first_packed,second_packed,first_decoded[4],second_decoded[4];
@@ -635,8 +635,8 @@ static __device__ __forceinline__ void SparkLmDotRowNvfp4Pair(const float *share
 	{
 		first_packed = __ldg(((const uint32_t *)first_payload) + run_row + run);
 		second_packed = __ldg(((const uint32_t *)second_payload) + run_row + run);
-		first_scale = SparkLmDecodeE4m3(first_scale[scale_row + ((run << 3u) / GROUP_SIZE)]) * __ldg(first_global_f32);
-		second_scale = SparkLmDecodeE4m3(second_scale[scale_row + ((run << 3u) / GROUP_SIZE)]) * __ldg(second_global_f32);
+		first_scale = SparkLmDecodeE4m3(first_scale_plane[scale_row + ((run << 3u) / GROUP_SIZE)]) * __ldg(first_global_f32);
+		second_scale = SparkLmDecodeE4m3(second_scale_plane[scale_row + ((run << 3u) / GROUP_SIZE)]) * __ldg(second_global_f32);
 		SparkLmDecodeE2m1x8Half2(first_packed,first_decoded);
 		SparkLmDecodeE2m1x8Half2(second_packed,second_decoded);
 		#pragma unroll
