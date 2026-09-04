@@ -270,6 +270,7 @@ TEST_NAMES := \
     test_weightd_attach \
     test_stage_module_weightd \
     test_weightd_map \
+    test_weightd_expert \
     test_module_library \
     test_speculation_provider_slot \
     test_driver_compiler \
@@ -1055,6 +1056,9 @@ build/test_stage_module_weightd: tests/test_stage_module_weightd.c runtime/stage
 # forked consumer process for the cross-process receipt. Stub-pinned like
 # its W2 siblings.
 build/test_weightd_map: tests/test_weightd_map.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+build/test_weightd_expert: tests/test_weightd_expert.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(TEST_VALIDATOR_CHANGED) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
