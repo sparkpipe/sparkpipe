@@ -255,7 +255,7 @@ def main():
     # --- deadline KILL, fence-not-block, late-sentinel immunity
     import pathlib as _pl
     cmdf = _pl.Path(tmp, "strict-run.sh")
-    cmdf.write_text("echo from-file")
+    cmdf.write_text("echo from-file\n\n")
     rc, out = run(tmp, "add", "--id", "file-sub", "--nodes", "sparkd",
                   "--cmd-file", str(cmdf))
     entries = {e["id"]: e for e in load_state(tmp, "queue.jsonl")}

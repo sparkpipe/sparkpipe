@@ -289,7 +289,7 @@ def cmd_add(args):
     if getattr(args, "cmd_file", None) is not None:
         if args.cmd:
             sys.exit("--cmd and --cmd-file are mutually exclusive")
-        args.cmd = args.cmd_file.read_text()
+        args.cmd = args.cmd_file.read_text().rstrip("\n")
     if args.ttl_min is not None and args.ttl_min > MAX_TTL_MINUTES:
         sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute "
                  f"task cap - batch several tests into the window (one cmd or "
