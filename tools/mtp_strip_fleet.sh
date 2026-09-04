@@ -14,7 +14,7 @@ for n in $NODES; do
         "$HOME/qf_rank4/"*.pack ; do
         [ -f "$f" ] || continue
         case "$f" in *receipt*) continue ;; esac
-        sudo python3 "$HOME/sparkpipe/tools/stagepack_mtp_strip.py" --pack "$f" --family qwen4_flash
+        sudo python3 "$HOME/sparkpipe/tools/stagepack_mtp_strip.py" --pack "$f" --family qwen4_flash --compact
       done' >> "/tmp/mtp_strip_$n.log" 2>&1
     echo "$n finished rc=$?" >> /tmp/mtp_strip_fleet.log
   ) &

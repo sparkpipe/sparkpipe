@@ -149,9 +149,6 @@ def compact_pack(pack: Path, family: dict, entries, dropped, kept, kept_end,
     no sizes; the next start bounds each region). Kept regions are
     re-emitted 256-aligned with the directory rewritten to match."""
     import os as _os
-    if family["entry_bytes"] != 40:
-        print(f"FAIL {pack}: compact is implemented for the 40-byte offset-only entry layout", file=sys.stderr)
-        return 1
     entry_bytes = family["entry_bytes"]
     original_size = pack.stat().st_size
 
@@ -159,14 +156,27 @@ def compact_pack(pack: Path, family: dict, entries, dropped, kept, kept_end,
         present = [c for c in (e["payload_off"], e["scale_off"]) if c]
         return min(present) if present else 0
 
-    all_sorted = sorted(entries, key=start_of)
-    bounds = []
-    for i, e in enumerate(all_sorted):
-        start = start_of(e)
-        end = start_of(all_sorted[i + 1]) if i + 1 < len(all_sorted) else original_size
-        bounds.append((start, end, e))
-    kept_regions = [(s, t, e) for (s, t, e) in bounds if not is_mtp(e, family)]
-    keep_bytes = sum(t - s for (s, t, _) in kept_regions if t > s)
+    # Tile the payload area at EVERY entry boundary (payload start,
+    # scale start) so interleaved layouts split cleanly; each region is
+    # owned by the entry that references its start offset.
+    by_offset = {}
+    for e in entries:
+        if e["payload_off"]:
+            by_offset[e["payload_off"]] = (e, "payload_off")
+        if e["scale_off"]:
+            by_offset[e["scale_off"]] = (e, "scale_off")
+    edges = sorted(by_offset) + [original_size]
+    kept_regions = []
+    for i in range(len(edges) - 1):
+        start, end = edges[i], edges[i + 1]
+        owner = by_offset.get(start)
+        if owner is None:
+            continue
+        e, key = owner
+        if is_mtp(e, family):
+            continue
+        kept_regions.append((start, end, e, key))
+    keep_bytes = sum(t - s for (s, t, _, _) in kept_regions if t > s)
     if args.dry_run:
         print(f"COMPACT {pack}: {len(kept_regions)} kept regions, {keep_bytes} bytes ({keep_bytes / 2**30:.2f} GiB) [dry]")
         return 0
@@ -181,20 +191,19 @@ def compact_pack(pack: Path, family: dict, entries, dropped, kept, kept_end,
     new_records = []
     with pack.open("rb") as src, tmp.open("wb") as dst:
         dst.truncate(payload_base + keep_bytes)
-        for (start, end, e) in kept_regions:
+        records_by_entry = {}
+        for (start, end, e, key) in kept_regions:
             if end <= start:
                 continue
             length = end - start
-            rec = dict(e)
-            for key in ("payload_off", "scale_off"):
-                if rec[key]:
-                    rec[key] = cursor + (rec[key] - start)
-            new_records.append(rec)
+            rec = records_by_entry.setdefault(id(e), dict(e))
+            rec[key] = cursor + (rec[key] - start)
             sent = _os.sendfile(dst.fileno(), src.fileno(), start, length)
             if sent != length:
                 print(f"FAIL {pack}: short region copy at {start}", file=sys.stderr)
                 return 1
             cursor += length
+        new_records = list(records_by_entry.values())
         u32s = list(u32s)
         u32s[family["count_index"]] = len(new_records)
         u32s[family["mtp_index"]] = 0
@@ -207,10 +216,19 @@ def compact_pack(pack: Path, family: dict, entries, dropped, kept, kept_end,
         dst.write(struct.pack("<2Q", *u64s))
         dst.seek(header_len)
         for rec in new_records:
-            dst.write(struct.pack("<4I", rec["kind"], rec["layer"],
-                                  rec["format"], rec["rows"]))
-            dst.write(struct.pack("<2I", rec["columns"], 0))
-            dst.write(struct.pack("<2Q", rec["payload_off"], rec["scale_off"]))
+            if entry_bytes == 56:
+                dst.write(struct.pack("<6I", rec["kind"], rec["layer"],
+                                      rec["format"], rec["rows"],
+                                      rec["columns"], 0))
+                dst.write(struct.pack("<4Q", rec["payload_off"],
+                                      rec["payload_bytes"],
+                                      rec["scale_off"], rec["scale_bytes"]))
+            else:
+                dst.write(struct.pack("<4I", rec["kind"], rec["layer"],
+                                      rec["format"], rec["rows"]))
+                dst.write(struct.pack("<2I", rec["columns"], 0))
+                dst.write(struct.pack("<2Q", rec["payload_off"],
+                                      rec["scale_off"]))
         dst.flush()
         _os.fsync(dst.fileno())
     digest = sha256_chunked(tmp)
@@ -268,10 +286,13 @@ def main() -> int:
                         "scale_off": scale_off, "scale_bytes": 0})
     if family["entry_bytes"] == 56:
         # the flash layout carries explicit sizes; use them for the
-        # tail check (the dsv4 layout relies on monotonic offsets)
+        # tail check (the dsv4 layout relies on monotonic offsets).
+        # <6I4Q: payload_off@24 payload_bytes@32 scale_off@40
+        # scale_bytes@48.
         for i, e in enumerate(entries):
             block = raw_dir[i * entry_bytes:(i + 1) * entry_bytes]
-            e["payload_bytes"], e["scale_bytes"] = struct.unpack_from("<2Q", block, 32)
+            e["payload_bytes"] = struct.unpack_from("<Q", block, 32)[0]
+            e["scale_bytes"] = struct.unpack_from("<Q", block, 48)[0]
     dropped = [e for e in entries if is_mtp(e, family)]
     kept = [e for e in entries if not is_mtp(e, family)]
     if not dropped:
