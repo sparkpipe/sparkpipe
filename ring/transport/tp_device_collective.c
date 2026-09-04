@@ -1611,8 +1611,8 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueLiteralRingSendPack(
     uint32_t chunk;
     uint32_t route;
 
-    for (lane_index = operation->lane_id;
-         lane_index < 1u + operation->lane_id;
+    for (lane_index = 0u;
+         lane_index < 2u;
          lane_index++)
     {
         chunk = SparkTpDeviceCollectiveLiteralRingSendChunk(
@@ -1653,8 +1653,8 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueLiteralRingConsumption(
     uint32_t phase;
 
     phase = operation->current_step;
-    for (lane_index = operation->lane_id;
-         lane_index < 1u + operation->lane_id;
+    for (lane_index = 0u;
+         lane_index < 2u;
          lane_index++)
     {
         chunk = SparkTpDeviceCollectiveLiteralRingReceiveChunk(
@@ -2081,7 +2081,14 @@ static SparkStatus SparkTpDeviceCollectiveMarkOperationFailure(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    
+    fprintf(stderr,
+        "OP-FAIL rank=%u ordinal=%llu step=%u status=%u phase=%u\n",
+        implementation->collective->tp_rank,
+        (unsigned long long)operation->ordinal,operation->current_step,
+        (uint32_t)status,
+        (uint32_t)SparkTpDeviceCollectiveStatePhase(atomic_load_explicit(
+            &operation->lifecycle,memory_order_acquire)));
+
     hook_called = 0u;
     observed_state = atomic_load_explicit(
         &operation->lifecycle,memory_order_acquire);
@@ -2138,6 +2145,9 @@ static void SparkTpDeviceCollectiveLatchFailure(
     {
         return;
     }
+    fprintf(stderr,
+        "LATCH rank=%u status=%u\n",
+        implementation->collective->tp_rank,(unsigned)status);
     atomic_store_explicit(&implementation->admission_open,0u,
         memory_order_release);
     expected_status = SPARK_STATUS_OK;
@@ -3434,6 +3444,13 @@ void SparkTpDeviceCollectiveDumpOperations(
         return;
     implementation = (SparkTpDeviceCollectiveImplementation *)
         collective->implementation;
+    fprintf(stderr,
+        "IMPL-STATE fixed=%u credits=%u routes=%u sfn=%p\n",
+        implementation->fixed_slots_enabled,
+        implementation->collective->credit_count,
+        implementation->route_count,
+        (void *)(uintptr_t)implementation->transport_library
+            .transport_interface.send_fixed);
     for (credit_index = 0u;
          credit_index < implementation->collective->credit_count;
          ++credit_index)

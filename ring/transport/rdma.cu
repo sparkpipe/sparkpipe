@@ -276,6 +276,8 @@ typedef struct SparkHiddenSparkHostRdmaState
     SparkHiddenSparkHostRdmaMemoryRegionDescriptor fixed_remote;
     void *fixed_local;
     uint32_t fixed_local_lkey;
+    SparkHiddenTransportCompletion fixed_overflow[4u];
+    uint32_t fixed_overflow_count;
     uint32_t control_port_base;
     uint32_t open_timeout_milli;
     uint64_t open_deadline_ns;
@@ -2611,9 +2613,6 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
             ~SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_RETURN_FLAG;
         if (state->is_sender != 0u)
             return SPARK_STATUS_IO_ERROR;
-        if (SparkHiddenTransportCompletionQueueIsFull(
-                &state->completion_queue) != 0u)
-            return SPARK_STATUS_BUSY;
         memset(&completion,0,sizeof(completion));
         completion.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
         completion.descriptor_bytes =
@@ -2623,6 +2622,24 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
         completion.token_index = fixed_sequence & 3u;
         completion.transfer_bytes = 0u;
         completion.service_time_ns = 0u;
+        if (state->debug_enabled != 0u)
+        {
+            fprintf(stderr,
+                "hidden_spark_rdma_fixed_recv route=%s seq=%u phase=%u slot=%u\n",
+                state->endpoint.route_name,fixed_sequence,
+                (fixed_sequence >> 2u) & 31u,(fixed_sequence >> 2u) & 7u);
+        }
+        if (SparkHiddenTransportCompletionQueueIsFull(
+                &state->completion_queue) != 0u)
+        {
+            if (state->fixed_overflow_count >=
+                (sizeof(state->fixed_overflow) /
+                    sizeof(state->fixed_overflow[0])))
+                return SPARK_STATUS_BUSY;
+            state->fixed_overflow[state->fixed_overflow_count++] = completion;
+            SparkHiddenSparkHostRdmaSignalEvent(state);
+            return SPARK_STATUS_OK;
+        }
         SparkHiddenSparkHostRdmaSignalEvent(state);
         return SparkHiddenTransportCompletionQueuePush(
             &state->completion_queue,&completion);
@@ -2993,10 +3010,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueue(
     SparkHiddenSparkHostRdmaState *state,
     uint32_t lane_index)
 {
-    /* NET-004: drain the CQ in batches instead of one ibv_poll_cq call
-     * per completion; per-WC call overhead dominated the pump loop for
-     * small doorbell packets (vLLM/FlashInfer poll their CQs the same
-     * way). A short final batch means the queue is empty. */
     struct ibv_wc work_completions[
         SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT];
     SparkStatus status;
@@ -3007,7 +3020,7 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueue(
     {
         memset(work_completions, 0, sizeof(work_completions));
         result = ibv_poll_cq(state->lanes[lane_index].completion_queue,
-            (int)SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT,
+            1,
             work_completions);
         if (result < 0)
         {
@@ -3050,6 +3063,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueues(
     for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
     {
         status = SparkHiddenSparkHostRdmaPollCompletionQueue(state, lane_index);
+        if (status == SPARK_STATUS_BUSY)
+            continue;
         if (status != SPARK_STATUS_OK)
             return status;
     }
@@ -3059,6 +3074,23 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueues(
 static SparkStatus SparkHiddenSparkHostRdmaPumpDoorbells(
     SparkHiddenSparkHostRdmaState *state)
 {
+    while (state != 0 && state->fixed_overflow_count != 0u)
+    {
+        SparkStatus push_status;
+        if (SparkHiddenTransportCompletionQueueIsFull(
+                &state->completion_queue) != 0u)
+            break;
+        push_status = SparkHiddenTransportCompletionQueuePush(
+            &state->completion_queue,
+            &state->fixed_overflow[0]);
+        if (push_status != SPARK_STATUS_OK)
+            return push_status;
+        state->fixed_overflow_count -= 1u;
+        memmove(&state->fixed_overflow[0],&state->fixed_overflow[1],
+            (size_t)state->fixed_overflow_count *
+                sizeof(state->fixed_overflow[0]));
+        SparkHiddenSparkHostRdmaSignalEvent(state);
+    }
     return SparkHiddenSparkHostRdmaPollCompletionQueues(state);
 }
 
@@ -5196,13 +5228,15 @@ static SparkStatus SparkHiddenSparkHostRdmaPoll(
     status = SparkHiddenSparkHostRdmaPumpDoorbells(state);
     if (status != SPARK_STATUS_OK)
     {
-        
+        fprintf(stderr,"POLL9 route=%s stage=doorbells status=%u\n",
+            state->endpoint.route_name,(unsigned)status);
         return status;
     }
     status = SparkHiddenSparkHostRdmaRetireCompletedSends(state);
     if (status != SPARK_STATUS_OK)
     {
-        
+        fprintf(stderr,"POLL9 route=%s stage=retire_sends status=%u\n",
+            state->endpoint.route_name,(unsigned)status);
         return status;
     }
     status = SparkHiddenSparkHostRdmaRetireCompletedReceives(state);
@@ -5682,7 +5716,8 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     }
     region_lkey = state->cached_regions[region_index].memory_region->lkey;
     slot = (sequence >> 2u) & SPARK_HIDDEN_SPARK_FIXED_MASK;
-    lane_index = slot & 1u;
+    lane_index = state->lane_count != 0u ?
+        slot % state->lane_count : 0u;
     if (state->outstanding_send_wr_counts[lane_index] >=
             SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_SEND_WR_PER_LANE)
     {
@@ -5701,7 +5736,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     send->hidden_region_index = region_index;
     send->sideband_region_index = SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
     send->posted_lane_mask = 1u << lane_index;
-    send->posted_wr_counts[lane_index] = 1u;
+    send->posted_wr_counts[lane_index] = 2u;
     send->start_time_ns = SparkHiddenSparkHostRdmaMonotonicNs();
     send->packet_snapshot.sequence_id = (sequence >> 8u) + 1u;
     send->packet_snapshot.token_index = sequence & 3u;
@@ -5741,7 +5776,14 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
         memset(send,0,sizeof(*send));
         return SPARK_STATUS_IO_ERROR;
     }
-    state->outstanding_send_wr_counts[lane_index] += 1u;
+    state->outstanding_send_wr_counts[lane_index] += 2u;
+    if (state->debug_enabled != 0u)
+    {
+        fprintf(stderr,
+            "hidden_spark_rdma_fixed_send route=%s seq=%u phase=%u route_bits=%u\n",
+            state->endpoint.route_name,sequence,
+            (sequence >> 2u) & 31u,sequence & 3u);
+    }
     return SPARK_STATUS_OK;
 }
 

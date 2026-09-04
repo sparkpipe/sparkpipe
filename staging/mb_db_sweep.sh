@@ -34,13 +34,24 @@ run_one() {
     local AVAL=rd
     [ "$ALGO" = "d2a" ] && AVAL=d2a
     [ "$ALGO" = "ring" ] && AVAL=ring
-    log "db_run rows=$ROWS mode=$MODE iters=$ITERS algo=$ALGO"
+    PB=$(( 57340 + (RANDOM % 20) * 64 ))
+    log "db_run rows=$ROWS mode=$MODE iters=$ITERS algo=$ALGO port=$PB"
     teardown
     for r in $(seq 0 15); do
         h=$(printf "spark%x" "$r")
-        timeout 10 ssh -o BatchMode=yes -o ConnectTimeout=4 "$h" \
-            "rm -f /tmp/mb_db_r${r}.log; systemd-run --user --collect --unit=mbdb-$STAMP-$r --working-directory=\$HOME --setenv=BENCH_ALGO=$AVAL --setenv=MB_PROFILE=1 --setenv=BENCH_CREDITS=${BENCH_CREDITS:-64} --setenv=MB_LANES=${MB_LANES:-1} bash \$HOME/mb_db.sh $r $ITERS $ROWS $MODE" \
-            >>"$LOG" 2>&1 &
+        (
+        for attempt in 1 2 3; do
+            timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 "$h" \
+                "rm -f /tmp/mb_db_r${r}.log; systemd-run --user --collect --unit=mbdb-$STAMP-$r --working-directory=\$HOME --setenv=BENCH_ALGO=$AVAL --setenv=MB_PROFILE=1 --setenv=BENCH_CREDITS=${BENCH_CREDITS:-64} --setenv=MB_LANES=${MB_LANES:-1} --setenv=MB_RDMA_DEBUG=${MB_RDMA_DEBUG:-0} --setenv=BENCH_PORT_BASE=$PB bash \$HOME/mb_db.sh $r $ITERS $ROWS $MODE" \
+                >>"$LOG" 2>&1 && break
+            sleep 2
+        done
+        for attempt in 1 2 3 4 5; do
+            sleep 2
+            timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=6 "$h" "test -f /tmp/mb_db_r${r}.log" >/dev/null 2>&1 && break
+            sleep 2
+        done
+        ) &
         while [ $(jobs -r | wc -l) -ge 4 ]; do wait -n; done
     done
     wait

@@ -13,7 +13,8 @@
 #include <arpa/inet.h>
 
 #define BENCH_HIDDEN 4096u
-#define BENCH_PORT_BASE 57340u
+#define BENCH_PORT_BASE_DEFAULT 57340u
+static uint32_t BENCH_PORT_BASE = BENCH_PORT_BASE_DEFAULT;
 #define BENCH_IDENTIFIER 0x444f4f52424f4f01ull
 static uint32_t BENCH_CREDITS = 64u;
 
@@ -170,6 +171,13 @@ int main(int argc, char **argv)
             BENCH_CREDITS = (uint32_t)strtoul(credits_env,0,10);
         if (BENCH_CREDITS == 0u || BENCH_CREDITS > 64u)
             BENCH_CREDITS = 64u;
+        const char *port_env = getenv("BENCH_PORT_BASE");
+        if (port_env != 0 && port_env[0] >= '0' && port_env[0] <= '9')
+        {
+            uint32_t candidate = (uint32_t)strtoul(port_env,0,10);
+            if (candidate >= 20000u && candidate <= 60000u)
+                BENCH_PORT_BASE = candidate;
+        }
     }
     printf("BENCH-BUILD %s %s credits=%u\n", __DATE__, __TIME__, BENCH_CREDITS);
     if (argc < 6)
