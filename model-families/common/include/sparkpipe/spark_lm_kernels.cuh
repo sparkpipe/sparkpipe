@@ -802,7 +802,8 @@ static __device__ __forceinline__ float SparkLmDotLinearRow(
 	const void *weight_scale,
 	uint32_t neuron,
 	uint32_t input_dimension,
-	uint32_t lane)
+	uint32_t lane,
+	const float *weight_global_f32 = 0)
 {
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
 		return(SparkLmDotRowBf16(shared_input,weight_payload,neuron,
@@ -816,6 +817,11 @@ static __device__ __forceinline__ float SparkLmDotLinearRow(
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 )
 		return(SparkLmDotRowFp8E8m0(shared_input,weight_payload,
 			(const uint8_t *)weight_scale,neuron,input_dimension,lane));
+	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
+		/* dense nvfp4: the F32 weight global is the segment tail. */
+		return(SparkLmDotRowNvfp4<16u>(shared_input,weight_payload,
+			(const uint8_t *)weight_scale,weight_global_f32,neuron,
+			input_dimension,lane));
 	return(SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,weight_payload,
 		(const uint8_t *)weight_scale,neuron,input_dimension,lane));
 }
@@ -850,7 +856,11 @@ static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *w
 	if ( neuron < output_dimension )
 	{
 		accumulator = SparkLmDotLinearRow<GROUP_SIZE>(weight_format,
-			shared_input,weight_payload,weight_scale,neuron,input_dimension,lane);
+			shared_input,weight_payload,weight_scale,neuron,input_dimension,lane,
+			weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 ?
+			(const float *)((const uint8_t *)weight_scale +
+				((uint64_t)output_dimension * (input_dimension / 16u))) :
+			(const float *)0);
 		accumulator = SparkLmWarpReduceSum(accumulator);
 		if ( lane == 0u )
 			SparkLmFloatToBf16(output_bf16,
@@ -5109,6 +5119,13 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		return(cudaGetLastError());
 	}
 	dim3 tile_grid(m_blocks,n_tiles);
+	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
+	{
+		SPARK_LM_LAUNCH((
+		SparkLmExpertTileKernel<16u,ACTIVATION_CODEC><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension)
+		));
+		return(cudaGetLastError());
+	}
 	SPARK_LM_LAUNCH((
 	SparkLmExpertTileKernel<GROUP_SIZE,ACTIVATION_CODEC><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension)
 	));
