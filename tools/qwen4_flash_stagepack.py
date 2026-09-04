@@ -654,6 +654,16 @@ class Nvfp4OfficialCheckShapeMixin:
     instead of the fused name."""
 
     def check_shape(self, ref: TensorRef) -> tuple[str, dict, int]:
+        if ref.layer == MTP_LAYER and ref.kind in (
+                KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN, KIND_MOE_GATE):
+            # The release leaves mtp.* unquantized (fused BF16 names):
+            # carry the MTP MoE on the BF16 wire rather than the routed
+            # experts' nvfp4 treatment (which excludes MTP by design).
+            shard, meta, offset = self.resolve(ref.name)
+            if meta["dtype"] != "BF16":
+                raise PackFailure(f"{ref.name}: {meta['dtype']}, expected BF16 (mtp.* is unquantized in this release)")
+            ref.weight_format = WEIGHT_BF16
+            return shard, meta, offset
         if ref.kind in (KIND_MOE_W1, KIND_MOE_W3, KIND_MOE_DOWN) and ref.layer != MTP_LAYER:
             proj = {KIND_MOE_W1: "gate_proj", KIND_MOE_W3: "up_proj",
                     KIND_MOE_DOWN: "down_proj"}[ref.kind]
