@@ -283,9 +283,12 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     SparkTpDeviceCollective *collective_out);
 
 SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
-	uint32_t backend_kind,
-	const char *backend_module_path,
-	uint32_t *memory_mode_out);
+    uint32_t backend_kind,
+    const char *backend_module_path,
+    uint32_t *memory_mode_out);
+
+void SparkTpDeviceCollectiveDumpOperations(
+    const SparkTpDeviceCollective *collective);
 
 SparkStatus SparkTpDeviceCollectiveCreditStepCount(
 	uint32_t backend_kind,

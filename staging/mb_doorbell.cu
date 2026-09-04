@@ -247,8 +247,8 @@ int main(int argc, char **argv)
     config.credit_count = BENCH_CREDITS;
     config.local_hidden_dimension = BENCH_HIDDEN;
     config.max_active_sequence_count = rows;
-    config.connect_timeout_milli = 45000u;
-    config.operation_timeout_milli = 900000u;
+    config.connect_timeout_milli = 60000u;
+    config.operation_timeout_milli = 5000u;
     config.control_port_base = BENCH_PORT_BASE;
     config.collective_identifier = BENCH_IDENTIFIER;
     config.backend_module_path = transport_path;
@@ -375,27 +375,19 @@ int main(int argc, char **argv)
         submission.completion_context = 0;
         {
             uint64_t retry_started = bench_now_ns();
-            uint64_t target = ordinal | 1u;
-            uint64_t sub;
-            for (sub = ordinal; sub <= target; sub++)
+            for (;;)
             {
-                submission.ordinal = sub;
-                submission.slot_index = (uint32_t)(sub % BENCH_CREDITS);
-                submission.local_device = payload[sub % 64u];
-                submission.full_device = payload[sub % 64u];
-                for (;;)
+                status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
+                if (status == SPARK_STATUS_OK)
+                    break;
+                if (status != SPARK_STATUS_BUSY ||
+                    bench_now_ns() - retry_started > 5000000000ull)
                 {
-                    status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
-                    if (status == SPARK_STATUS_OK)
-                        break;
-                    if (status != SPARK_STATUS_BUSY ||
-                        bench_now_ns() - retry_started > 600000000000ull)
-                    {
-                        printf("warmup submit %llu -> %u t=%.1fs\n", (unsigned long long)sub, (unsigned)status,(bench_now_ns()-retry_started)/1e9);
-                        return 1;
-                    }
-                    usleep(50u);
+                    printf("warmup submit %llu -> %u t=%.1fs\n", (unsigned long long)ordinal, (unsigned)status,(bench_now_ns()-retry_started)/1e9);
+                    SparkTpDeviceCollectiveDumpOperations(&collective);
+                    return 1;
                 }
+                usleep(50u);
             }
         }
         if (cudaStreamSynchronize(stream) != cudaSuccess)
@@ -406,7 +398,7 @@ int main(int argc, char **argv)
         while (__sync_fetch_and_add(&bench_completions, 0) <=
             (int64_t)ordinal)
         {
-            if (bench_now_ns() - wait_started > 30000000000ull)
+            if (bench_now_ns() - wait_started > 5000000000ull)
             {
                 printf("warmup completion timeout at %llu\n", (unsigned long long)ordinal);
                 return 1;
@@ -438,7 +430,7 @@ int main(int argc, char **argv)
             status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
             if (status == SPARK_STATUS_OK)
                 break;
-            if (status != SPARK_STATUS_BUSY || ++retry > 100000)
+            if (status != SPARK_STATUS_BUSY || ++retry > 100)
             {
                 printf("submit %llu -> %u\n", (unsigned long long)ordinal, (unsigned)status);
                 return 1;
@@ -455,7 +447,7 @@ int main(int argc, char **argv)
             while (__sync_fetch_and_add(&bench_completions, 0) <=
                 (int64_t)(ordinal - 20u + 20u))
             {
-                if (bench_now_ns() - started_ns > 880000000000ull)
+                if (bench_now_ns() - started_ns > 60000000000ull)
                 {
                     printf("completion timeout at %llu\n", (unsigned long long)ordinal);
                     return 1;

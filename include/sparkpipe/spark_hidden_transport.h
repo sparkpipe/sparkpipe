@@ -403,6 +403,15 @@ SparkStatus SparkHiddenTransportRegisterPersistentReceive(
 SparkStatus SparkHiddenTransportPersistentRemoteCreditReady(
     SparkHiddenTransportSession *session,
     uint32_t credit_index);
+SparkStatus SparkHiddenTransportSetFixedLocal(
+    SparkHiddenTransportSession *session,
+    void *local_buffer,
+    uint64_t local_bytes);
+SparkStatus SparkHiddenTransportSendFixed(
+    SparkHiddenTransportSession *session,
+    const void *local_buffer,
+    uint64_t bytes,
+    uint32_t sequence);
 SparkStatus SparkHiddenTransportReservePersistentSend(
     SparkHiddenTransportSession *session,
     uint32_t credit_index,

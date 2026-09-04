@@ -25,7 +25,7 @@ teardown() {
     local h
     for h in $ALL; do
         timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=4 "$h" \
-            "systemctl --user stop 'mbdb-*' 2>/dev/null; true" >/dev/null 2>&1
+            "systemctl --user stop 'mbdb-*' 2>/dev/null; pkill -TERM -f mb_doorbell 2>/dev/null; sleep 1; pkill -TERM -f mb_doorbell 2>/dev/null; true" >/dev/null 2>&1
     done
 }
 
