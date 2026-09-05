@@ -299,7 +299,7 @@ int main(int argc, char **argv)
     printf("doorbell rank=%u memory_mode=%u routes=%u connect_ms=%u\n", rank, memory_mode, route_count, config.connect_timeout_milli);
 
     credit_bytes = rows * BENCH_HIDDEN * 2u;
-    total_bytes = route_count * BENCH_CREDITS * credit_bytes;
+    total_bytes = route_count * BENCH_CREDITS * (credit_bytes + 8u);
     if (cudaHostAlloc(&host_send, total_bytes, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
         cudaHostAlloc(&host_receive, total_bytes, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess)
     {
@@ -327,7 +327,7 @@ int main(int argc, char **argv)
             bindings[binding_count].flags = SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS;
             bindings[binding_count].reserved0 = 0u;
             binding_count++;
-            offset += credit_bytes;
+            offset += credit_bytes + 8u;
         }
     }
     config.credit_bindings = bindings;
