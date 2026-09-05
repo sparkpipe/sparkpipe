@@ -381,7 +381,7 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		}
 	}
 	{
-		char *cl = strstr(buf, "Content-Length:");
+		char *cl = strcasestr(buf, "content-length:");
 		if (cl != 0)
 			content_length = (uint32_t)strtoul(cl + 15, 0, 10);
 	}
