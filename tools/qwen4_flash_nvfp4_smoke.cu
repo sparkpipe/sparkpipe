@@ -152,7 +152,6 @@ static int CompareBf16(const char *leg, const void *device_bf16, const float *re
 	// elements on otherwise-correct output. The module validator's
 	// aggregate contract (rel L2 <= 5e-2, cosine >= 0.999) is the
 	// acceptance standard for these legs.
-	if ( strcmp(leg,"scalar W1") != 0 )
 	{
 		double sq_diff = 0.0,sq_ref = 0.0,dot = 0.0,norm_got = 0.0;
 		for (index = 0; index < count; index++)
