@@ -754,15 +754,15 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		}
 		if (decode_status == SPARK_STATUS_OK)
 		{
-			memcpy(resp_text, "{\"object\":\"text_completion\",\"tokens\":[", 38u);
-			response_len = 38u;
-			memcpy(resp_text + response_len, req->tokens_json, req->tokens_json_len);
-			response_len += req->tokens_json_len;
-			memcpy(resp_text + response_len, "],\"text\":\"", 10u);
-			response_len += 10u;
+			memcpy(resp_text, "{\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"", 58u);
+			response_len = 58u;
 			memcpy(resp_text + response_len, escaped, escaped_len);
 			response_len += escaped_len;
-			memcpy(resp_text + response_len, "\",\"status\":0}", 13u);
+			memcpy(resp_text + response_len, "\"}],\"tokens\":[", 14u);
+			response_len += 14u;
+			memcpy(resp_text + response_len, req->tokens_json, req->tokens_json_len);
+			response_len += req->tokens_json_len;
+			memcpy(resp_text + response_len, "],\"status\":0}", 13u);
 			response_len += 13u;
 			resp_text[response_len] = '\0';
 			send_response(fd, 200, resp_text);
