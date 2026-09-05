@@ -862,7 +862,7 @@ static SparkStatus SparkTpDeviceCollectiveTreePack(
             tree_bit_route(used,bit)][operation->credit_index];
         status = SparkTpDeviceCollectivePackSendRows(
             collective,binding,operation->full_device,local_bytes,local_bytes,
-            local_bytes,operation->active_sequence_count,
+            local_bytes,1u,
             operation->cuda_stream);
         if (status != SPARK_STATUS_OK)
             return status;
@@ -940,7 +940,7 @@ static void SparkTpDeviceCollectiveTreeOperation(
         {
             SparkStatus status = SparkTpDeviceCollectiveCopyRows(
                 operation->full_device,local_bytes,binding->receive_device,
-                local_bytes,local_bytes,operation->active_sequence_count,
+                local_bytes,local_bytes,1u,
                 cudaMemcpyDeviceToDevice,operation->cuda_stream);
             if (status != SPARK_STATUS_OK)
             {
@@ -1506,8 +1506,8 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
         uint64_t local_bytes =
             SparkTpDeviceCollectiveOperationBytes(collective,operation);
         status = SparkTpDeviceCollectiveCopyRows(operation->full_device,
-            local_bytes,operation->local_device,local_bytes,local_bytes,
-            operation->active_sequence_count,cudaMemcpyDeviceToDevice,
+            local_bytes,operation->local_device,local_bytes,local_bytes,1u,
+            cudaMemcpyDeviceToDevice,
             operation->cuda_stream);
     }
     if (status == SPARK_STATUS_OK)

@@ -2836,10 +2836,6 @@ static SparkStatus SparkHiddenSparkHostRdmaApplySendCompletion(
                 send->completed_lane_mask);
         return SPARK_STATUS_IO_ERROR;
     }
-    fprintf(stderr,
-            "hidden_spark_rdma_send_wc route=%s idx=%u lane=%u wc_status=%u\n",
-            state->endpoint.route_name,send_index,lane_index,
-            (uint32_t)work_completion->status);
     status = SparkHiddenSparkHostRdmaRetireSendLane(
         state,send,lane_index);
     if (status != SPARK_STATUS_OK)
@@ -3290,11 +3286,7 @@ static SparkStatus SparkHiddenSparkHostRdmaBuildCompletion(
     uint64_t service_time_ns)
 {
     SparkStatus queue_status;
-    fprintf(stderr,
-        "PUSH-PKT route=%s seq=%llu token=%llu status=%u\n",
-        state->endpoint.route_name,
-        (unsigned long long)packet->sequence_id,
-        (unsigned long long)packet->token_index,(unsigned)status);
+
     queue_status = SparkHiddenTransportCompletionQueuePushPacket(
         &state->completion_queue,packet,status,service_time_ns);
     if (queue_status == SPARK_STATUS_OK)
@@ -5712,12 +5704,6 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     uint32_t region_index;
     uint32_t region_lkey;
 
-    fprintf(stderr,
-        "SFX-ENTER route=%s buf=%p bytes=%llu seq=%u\n",
-        transport_state != 0 ?
-            ((SparkHiddenSparkHostRdmaState *)transport_state)
-                ->endpoint.route_name : "?",
-        local_buffer,(unsigned long long)bytes,sequence);
     state = (SparkHiddenSparkHostRdmaState *)transport_state;
     if (state == 0 || local_buffer == 0 || state->is_sender == 0u ||
         bytes == 0u)
