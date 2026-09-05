@@ -60,6 +60,9 @@ static uint64_t now_us(void)
     return (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000ull;
 }
 
+static uint16_t f32_to_bf16(float f);
+static float bf16_to_f32(uint16_t b);
+
 static uint16_t pattern_val(int r, int i)
 {
     return (uint16_t)((uint32_t)(r * 251 + (i % 241) + 1) & 0x3fffu);
@@ -68,10 +71,10 @@ static uint16_t pattern_val(int r, int i)
 static uint16_t expected_sum(int i)
 {
     int r;
-    uint32_t total = 0;
+    float total = 0.0f;
     for (r = 0; r < degree_g; ++r)
-        total += pattern_val(r, i);
-    return (uint16_t)(total & 0xffffu);
+        total += bf16_to_f32(f32_to_bf16((float)pattern_val(r, i)));
+    return f32_to_bf16(total);
 }
 
 static int broker_round(uint32_t rank, uint32_t degree, uint32_t port,
@@ -304,7 +307,7 @@ static int poll_fold(uint32_t gen, uint32_t slot, uint64_t timeout_ns)
                 }
             }
             if ((bits_g[slot] & (1u << (uint32_t)peer)) == 0u &&
-                *(volatile uint64_t *)(peers[peer].landing + PAYLOAD) ==
+                *(volatile uint64_t *)(peers[peer].landing + PAYLOAD) >=
                     (uint64_t)gen)
             {
                 const uint16_t *src =
@@ -371,7 +374,7 @@ int main(int argc, char **argv)
     {
         uint16_t *dst = (uint16_t *)send_buf_g;
         for (i = 0; i < ELEMS; ++i)
-            dst[i] = pattern_val(rank_g, i);
+            dst[i] = f32_to_bf16((float)pattern_val(rank_g, i));
     }
     memset(my_entry, 0, sizeof(my_entry));
     for (peer = 0; peer < degree_g; ++peer)
@@ -444,8 +447,9 @@ int main(int argc, char **argv)
                 if (out[i] != expected_sum(i))
                 {
                     fprintf(stderr,
-                        "rank %d VERIFY FAIL iter=%d elem=%d got=%u expect=%u own=%u L1=%u L2=%u L3=%u\n",
-                        rank_g, iter, i, (unsigned)out[i],
+                        "rank %d VERIFY FAIL iter=%d elem=%d acc=%f accbits=%08x outbits=%04x expect=%u own=%u L1=%u L2=%u L3=%u\n",
+                        rank_g, iter, i, acc[i],
+                        *(uint32_t *)(void *)&acc[i], (unsigned)out[i],
                         (unsigned)expected_sum(i),
                         (unsigned)pattern_val(rank_g, i),
                         degree_g > 1 && 1 != rank_g ? (unsigned)((const uint16_t *)peers[1].landing)[i] : 0u,
