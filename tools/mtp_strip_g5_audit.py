@@ -19,17 +19,37 @@ DIR_OFF = 512
 ENTRY_BYTES = 64
 
 patterns = [
-    "/home/*/sparkdata/glm5_next.tp16/packs/*.g5nsp",
-    "/home/*/sparkdata/glm5_next.tp4pp4/packs/*.g5nsp",
-    "/home/*/sparkdata/glm5_next.tp8.fp8/packs/*.g5nsp",
-    "/home/*/sparkdata/glm5_next.bf16.tp16/packs/*.g5nsp",
+    # canonical arms (the 2026-09-05 rename); packs may sit at the arm root
+    # (legacy spark0 layout) or under packs/, named either the legacy
+    # glm5_next_stage.* form or the canonical <arm>.rank<h>.sp form
+    "/home/*/sparkdata/glm53flash.bf16.tp16/*",
+    "/home/*/sparkdata/glm53flash.bf16.tp16/packs/*",
+    "/home/*/sparkdata/glm53flash.fp8.tp4pp4/*",
+    "/home/*/sparkdata/glm53flash.fp8.tp4pp4/packs/*",
+    "/home/*/sparkdata/glm53flash.fp8.tp8/*",
+    "/home/*/sparkdata/glm53flash.fp8.tp8/packs/*",
+    "/home/*/sparkdata/glm53flash.fp8.tp16/packs/*",
+    "/home/*/sparkdata/glm53flash.nvfp4.tp16/packs/*",
 ]
+
+# real packs (both naming generations) carry "rank" in the name; arm-dir
+# runtime debris (logs, json, bin/...) does not, and sidecar suffixes are
+# skipped explicitly so a corrupted PACK still fails the magic check
+SKIP_SUFFIXES = (".receipt.json", ".packer-receipt.json", ".compact.tmp",
+                 ".sha256", ".ck128", ".experts", ".mtp.receipt",
+                 ".symlinkfix.receipt")
 
 failures = 0
 checked = 0
+seen = set()
 for pattern in patterns:
     for pack in sorted(glob.glob(pattern)):
-        if pack.endswith((".receipt.json", ".compact.tmp")):
+        if not os.path.isfile(pack) or pack in seen:
+            continue
+        seen.add(pack)
+        if "rank" not in os.path.basename(pack):
+            continue
+        if pack.endswith(SKIP_SUFFIXES):
             continue
         checked += 1
         problems = []
