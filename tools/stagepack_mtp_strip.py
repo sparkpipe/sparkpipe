@@ -385,18 +385,26 @@ def compact_g5nsp(pack: Path, receipt: Path, args) -> int:
             new_po = new_offsets.get((i, "payload"), 0) if pb else 0
             new_so = new_offsets.get((i, "scale"), 0) if sb else 0
             dst.write(struct.pack("<4Q", new_po, pb, new_so, sb))
+        # the file ends where the last byte landed, which can be short of
+        # the aligned cursor if the tail region carries no trailing
+        # padding - file_bytes must equal the real size or every strict
+        # validator (audit, pack_verify, module) rejects the pack
+        dst.seek(0, _os.SEEK_END)
+        actual_size = dst.tell()
+        dst.seek(88)
+        dst.write(struct.pack("<Q", actual_size))
         dst.flush()
         _os.fsync(dst.fileno())
     digest = sha256_chunked(tmp)
     prior = read_receipt(receipt).get("output_sha256")
     _os.replace(tmp, pack)
-    reclaim = size - cursor
-    update_receipt(receipt, digest, kept_end=cursor, dropped=entry_count - len(kept_entries),
+    reclaim = size - _os.path.getsize(pack)
+    update_receipt(receipt, digest, kept_end=_os.path.getsize(pack), dropped=entry_count - len(kept_entries),
                    reclaim=reclaim, prior=prior, locked=None)
     locked = chattr(pack, "+i")
-    update_receipt(receipt, digest, kept_end=cursor, dropped=entry_count - len(kept_entries),
+    update_receipt(receipt, digest, kept_end=_os.path.getsize(pack), dropped=entry_count - len(kept_entries),
                    reclaim=reclaim, prior=prior, locked=locked)
-    print(f"DONE {pack}: compacted {size} -> {cursor} bytes "
+    print(f"DONE {pack}: compacted {size} -> {_os.path.getsize(pack)} bytes "
           f"({reclaim / 2**30:.2f} GiB reclaimed), sha {digest[:16]}... locked={locked}")
     return 0 if locked else 3
 
