@@ -5,15 +5,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ENTRY_BYTES 128
-#define JOIN_BYTES (4 + ENTRY_BYTES)
+#define ENTRY_MAX 1024
+#define TABLE_MAX (16 * ENTRY_MAX)
+
+static int entry_bytes = 128;
 
 int main(int argc, char **argv)
 {
     nng_socket sock;
     int degree = 16;
     int port = 58399;
-    uint8_t table[16 * ENTRY_BYTES];
+    uint8_t table[TABLE_MAX];
     int have[16];
     int i;
     int total = 0;
@@ -25,6 +27,10 @@ int main(int argc, char **argv)
         degree = atoi(argv[1]);
         port = atoi(argv[2]);
     }
+    if (argc >= 4)
+        entry_bytes = atoi(argv[3]);
+    if (entry_bytes != 128 && entry_bytes != 1024)
+        return 2;
     if (degree != 4 && degree != 8 && degree != 16)
         return 2;
     memset(have, 0, sizeof(have));
@@ -53,13 +59,13 @@ int main(int argc, char **argv)
         }
         while ((rv = nng_recv(sock, &msg, &sz, NNG_FLAG_ALLOC)) == 0)
         {
-            if (sz == JOIN_BYTES && msg != 0)
+            if (sz == (size_t)(4 + entry_bytes) && msg != 0)
             {
                 memcpy(&rank, msg, sizeof(rank));
                 if (rank >= 0 && rank < degree && have[rank] == 0)
                 {
-                    memcpy(table + (size_t)rank * ENTRY_BYTES, msg + 4,
-                        ENTRY_BYTES);
+                    memcpy(table + (size_t)rank * (size_t)entry_bytes,
+                        msg + 4, (size_t)entry_bytes);
                     have[rank] = 1;
                     ++total;
                     printf("BROKER rank %d joined (%d/%d)\n", rank, total,
@@ -76,7 +82,8 @@ int main(int argc, char **argv)
     }
     for (i = 0; i < 3; ++i)
     {
-        if ((rv = nng_send(sock, table, (size_t)degree * ENTRY_BYTES, 0)) != 0)
+        if ((rv = nng_send(sock, table,
+                (size_t)degree * (size_t)entry_bytes, 0)) != 0)
         {
             fprintf(stderr, "broker table send: %s\n", nng_strerror(rv));
             return 1;
