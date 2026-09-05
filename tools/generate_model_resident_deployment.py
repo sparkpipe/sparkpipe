@@ -21,7 +21,9 @@ ROOT_KEYS = {
     "transport",
     "runtime_limits",
     "topology",
+    "tokenizer",
 }
+TOKENIZER_KEYS = {"path"}
 ADAPTER_KEYS = {"shared_object_path"}
 DRIVER_KEYS = {"shared_object_path", "program_name"}
 TRANSPORT_KEYS = {"shared_object_path", "mode", "control_port_base"}
@@ -319,7 +321,7 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
                  for node in nodes]
     if len(set(endpoints)) != len(endpoints):
         raise DeploymentError("rendered control endpoints must be unique")
-    return {
+    deployment = {
         "schema_version": 2,
         "coordinator_rank_index": coordinator,
         "adapter": copy.deepcopy(specification["adapter"]),
@@ -328,6 +330,15 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
         "runtime_limits": copy.deepcopy(specification["runtime_limits"]),
         "nodes": nodes,
     }
+    tokenizer = specification.get("tokenizer")
+    if tokenizer is not None:
+        exact_object(tokenizer, TOKENIZER_KEYS, "tokenizer")
+        deployment["tokenizer"] = {
+            "path": normalized_path(text_value(
+                tokenizer["path"], "tokenizer.path"), True,
+                "tokenizer.path"),
+        }
+    return deployment
 
 
 def load_specification(path: Path) -> dict[str, Any]:
