@@ -5643,7 +5643,7 @@ static void SparkHiddenSparkHostRdmaDestroy(void *transport_state)
 }
 
 
-#define SPARK_HIDDEN_SPARK_FIXED_DEPTH 8u
+#define SPARK_HIDDEN_SPARK_FIXED_DEPTH 16u
 #define SPARK_HIDDEN_SPARK_FIXED_MASK (SPARK_HIDDEN_SPARK_FIXED_DEPTH - 1u)
 
 static SparkStatus SparkHiddenSparkHostRdmaSendFixed(

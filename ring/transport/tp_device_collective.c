@@ -3335,7 +3335,7 @@ static SparkStatus SparkTpDeviceCollectiveRegisterFixedSlots(
         implementation->fixed_receive_base[step_index] =
             binding->receive_transport;
         implementation->fixed_slot_stride[step_index] =
-            credit_span_bytes / 8u;
+            credit_span_bytes / 16u;
         status = SparkHiddenTransportSetFixedLocal(
             implementation->receive_sessions[step_index],
             binding->receive_transport,credit_span_bytes);
