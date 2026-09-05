@@ -2513,7 +2513,8 @@ static void SparkTpDeviceCollectivePollTransport(
          step_index < implementation->route_count;
          ++step_index)
     {
-        if ((active_route_mask & (1u << step_index)) == 0u)
+        if (implementation->fixed_slots_enabled == 0u &&
+            (active_route_mask & (1u << step_index)) == 0u)
             continue;
         SparkTpDeviceCollectivePollSession(
             implementation,implementation->send_sessions[step_index],0u);
