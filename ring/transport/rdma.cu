@@ -799,12 +799,12 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
     if (state->is_sender == 0u)
     {
         state->listen_fd = SparkHiddenSparkHostRdmaListen(
-            state->control_port_base + (uint32_t)state->sink_rank);
+            state->control_port_base);
         if (state->listen_fd < 0)
         {
             fprintf(stderr,
                 "hidden_spark_rdma_control_listen_failed port=%u route=%s errno=%d\n",
-                state->control_port_base + (uint32_t)state->sink_rank,
+                state->control_port_base,
                 state->endpoint.route_name,errno);
             return SPARK_STATUS_ROUTE_NOT_FOUND;
         }
@@ -819,7 +819,7 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
                 fprintf(stderr,
                     "hidden_spark_rdma_open_timeout route=%s role=receiver port=%u waited_ms=%u\n",
                     state->endpoint.route_name,
-                    state->control_port_base + (uint32_t)state->sink_rank,
+                    state->control_port_base,
                     state->open_timeout_milli);
                 return SPARK_STATUS_BUSY;
             }
@@ -856,7 +856,7 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
         snprintf(port_text, sizeof(port_text), "%u",
-            state->control_port_base + (uint32_t)state->sink_rank);
+            state->control_port_base);
         result = 0;
         status = SparkHiddenSparkHostRdmaResolveHostDeadline(host,port_text,
             &hints,state->open_deadline_ns,&result);
@@ -938,7 +938,7 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
                 "hidden_spark_rdma_open_timeout route=%s role=sender host=%s port=%u waited_ms=%u\n",
                 state->endpoint.route_name,
                 host,
-                state->control_port_base + (uint32_t)state->sink_rank,
+                state->control_port_base,
                 state->open_timeout_milli);
             return SPARK_STATUS_BUSY;
         }
@@ -976,8 +976,7 @@ static SparkStatus SparkHiddenSparkHostRdmaExchangeCompatibilityHello(
         (uint32_t)state->sink_rank : (uint32_t)state->source_rank;
     identity.source_rank = (uint32_t)state->source_rank;
     identity.sink_rank = (uint32_t)state->sink_rank;
-    identity.control_port = state->control_port_base +
-        (uint32_t)state->sink_rank;
+    identity.control_port = state->control_port_base;
     identity.hidden_dimension = state->endpoint.hidden_dimension;
     identity.bytes_per_sequence = state->endpoint.bytes_per_sequence;
     identity.max_active_sequence_count =
@@ -5441,7 +5440,7 @@ static SparkStatus SparkHiddenSparkHostRdmaConfigureRoute(
         endpoint->source_rank_index > (uint32_t)INT32_MAX ||
         endpoint->sink_rank_index > (uint32_t)INT32_MAX ||
         endpoint->control_port_base == 0u ||
-        endpoint->control_port_base > 65535u - endpoint->sink_rank_index)
+        endpoint->control_port_base > 65535u)
         return SPARK_STATUS_INVALID_ARGUMENT;
     state->local_rank = (int32_t)endpoint->local_rank_index;
     state->source_rank = (int32_t)endpoint->source_rank_index;
@@ -5692,7 +5691,7 @@ static void SparkHiddenSparkHostRdmaDestroy(void *transport_state)
 }
 
 
-#define SPARK_HIDDEN_SPARK_FIXED_DEPTH 16u
+#define SPARK_HIDDEN_SPARK_FIXED_DEPTH 8u
 #define SPARK_HIDDEN_SPARK_FIXED_MASK (SPARK_HIDDEN_SPARK_FIXED_DEPTH - 1u)
 
 static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
@@ -5739,7 +5738,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     region_lkey = state->cached_regions[region_index].memory_region->lkey;
-    slot = (sequence >> 2u) & SPARK_HIDDEN_SPARK_FIXED_MASK;
+    slot = (sequence >> 8u) & SPARK_HIDDEN_SPARK_FIXED_MASK;
     lane_index = state->lane_count != 0u ?
         slot % state->lane_count : 0u;
     if (state->outstanding_send_wr_counts[lane_index] >=
@@ -5769,9 +5768,10 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
         (((sequence >> 2u) & 31u) << 2u) | (sequence & 3u);
     send->packet_snapshot.active_sequence_count = 1u;
     send->packet_snapshot.hidden_bf16 = local_buffer;
-    send->packet_snapshot.bytes_per_sequence = (uint32_t)bytes;
+    send->packet_snapshot.bytes_per_sequence =
+        (uint32_t)(bytes > 8u ? bytes - 8u : bytes);
     send->packet_snapshot.hidden_dimension =
-        (uint32_t)(bytes / 2u);
+        (uint32_t)(bytes > 8u ? (bytes - 8u) / 2u : bytes / 2u);
     scatter_entries[0].addr = (uintptr_t)local_buffer;
     scatter_entries[0].length = (uint32_t)bytes;
     scatter_entries[0].lkey = region_lkey;

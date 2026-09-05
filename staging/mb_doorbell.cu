@@ -210,31 +210,26 @@ int main(int argc, char **argv)
     topology.rank_count = degree;
     {
         const char *algo = getenv("BENCH_ALGO");
-        if (algo != 0 && algo[0] == 'd')
-            topology.algorithm_mask =
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL |
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-        else if (algo != 0 && algo[0] == 'r')
-            topology.algorithm_mask =
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING |
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-        else
-            topology.algorithm_mask =
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+        topology.algorithm_mask =
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE |
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+        topology.direct_all_to_all_max_payload_bytes = 0u;
+        topology.split_ring_min_payload_bytes = 0u;
+        (void)algo;
     }
     topology.rail_count = 2u;
     {
-        const char *algo = getenv("BENCH_ALGO");
-        topology.direct_all_to_all_max_payload_bytes =
-            algo != 0 && algo[0] == 'd' ? 262144u : 0u;
-        topology.split_ring_min_payload_bytes = algo != 0 && algo[0] == 'r' ? 1u : 0u;
-    }
-    {
-        const char *algo = getenv("BENCH_ALGO");
-        uint32_t first_rail = algo != 0 && algo[0] == 'r' ? 1u : 0u;
-        topology.step_rail_indices[0] = first_rail;
+        topology.step_rail_indices[0] = 0u;
         for (step = 1u; step < SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS; step++)
             topology.step_rail_indices[step] = 1u;
+    }
+    for (index = 0u; index < degree; index++)
+    {
+        uint32_t peer;
+        for (peer = 0u; peer < degree; peer++)
+            if (peer != index)
+                topology.session_ports[index][peer] =
+                    (uint16_t)(BENCH_PORT_BASE + index * 16u + peer);
     }
     for (index = 0u; index < degree; index++)
     {
