@@ -3362,7 +3362,7 @@ static SparkStatus SparkTpDeviceCollectiveRegisterFixedSlots(
                 return status;
         }
         if (ready_count == implementation->route_count)
-            return SPARK_STATUS_OK;
+            break;
         if (SparkTpDeviceCollectiveNowMilli() >= deadline_milli)
             return SPARK_STATUS_IO_ERROR;
         descriptor_count = 0u;
@@ -3394,6 +3394,62 @@ static SparkStatus SparkTpDeviceCollectiveRegisterFixedSlots(
         if (poll_result < 0 && errno != EINTR)
             return SPARK_STATUS_IO_ERROR;
     }
+    for (step_index = 0u; step_index < implementation->route_count;
+         ++step_index)
+    {
+        uint8_t *probe_buffer =
+            (uint8_t *)implementation->fixed_receive_base[step_index];
+        SparkHiddenTransportCompletion completion;
+        uint64_t probe_deadline =
+            SparkTpDeviceCollectiveNowMilli() + timeout_milli;
+        uint32_t attempt;
+        int echoed = 0;
+        for (attempt = 0u; attempt < 16u && echoed == 0; ++attempt)
+        {
+            uint64_t attempt_deadline =
+                SparkTpDeviceCollectiveNowMilli() + 1000u;
+            status = SparkHiddenTransportSendFixed(
+                implementation->send_sessions[step_index],
+                probe_buffer,8u,0x20000000u | (uint32_t)attempt);
+            if (status != SPARK_STATUS_OK)
+            {
+                fprintf(stderr,
+                    "PROBE-SEND-FAIL rank=%u step=%u status=%u\n",
+                    implementation->collective->tp_rank,step_index,
+                    (unsigned)status);
+                return status;
+            }
+            for (;;)
+            {
+                status = SparkHiddenTransportPoll(
+                    implementation->send_sessions[step_index],&completion);
+                if (status != SPARK_STATUS_OK)
+                    return status;
+                if (completion.status == SPARK_STATUS_BUSY)
+                {
+                    if (SparkTpDeviceCollectiveNowMilli() >= attempt_deadline ||
+                        SparkTpDeviceCollectiveNowMilli() >= probe_deadline)
+                        break;
+                    sched_yield();
+                    continue;
+                }
+                if (completion.token_index == 127u)
+                {
+                    echoed = 1;
+                    break;
+                }
+            }
+        }
+        if (echoed == 0)
+        {
+            fprintf(stderr, "PROBE-ECHO-TIMEOUT rank=%u step=%u\n",
+                implementation->collective->tp_rank,step_index);
+            return SPARK_STATUS_IO_ERROR;
+        }
+        fprintf(stderr, "PROBE-OK rank=%u step=%u\n",
+            implementation->collective->tp_rank,step_index);
+    }
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkTpDeviceCollectiveRegisterCredits(

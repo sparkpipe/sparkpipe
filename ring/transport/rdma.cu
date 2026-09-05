@@ -1628,15 +1628,12 @@ static SparkStatus SparkHiddenSparkHostRdmaModifyQueuePairToReady(
     attributes.path_mtu = (enum ibv_mtu)path_mtu;
     attributes.dest_qp_num = lane->remote_info.qp_number;
     fprintf(stderr,
-        "QP-WIRE route=%s local_qp=%u dest_qp=%u dest_psn=%u gid=%02x%02x:%02x%02x:%02x%02x:%02x%02x\n",
+        "QP-WIRE route=%s local_qp=%u local_psn=%u dest_qp=%u dest_psn=%u\n",
         state->endpoint.route_name,
         lane->queue_pair->qp_num,
+        lane->local_info.packet_sequence_number,
         lane->remote_info.qp_number,
-        lane->remote_info.packet_sequence_number,
-        remote_gid.raw[12],remote_gid.raw[13],remote_gid.raw[14],
-        remote_gid.raw[15],
-        lane->remote_info.gid[12],lane->remote_info.gid[13],
-        lane->remote_info.gid[14],lane->remote_info.gid[15]);
+        lane->remote_info.packet_sequence_number);
     attributes.rq_psn = lane->remote_info.packet_sequence_number;
     attributes.max_dest_rd_atomic = 1;
     attributes.min_rnr_timer = 12;
@@ -2591,6 +2588,34 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
             ~SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_RETURN_FLAG;
         if (state->is_sender != 0u)
             return SPARK_STATUS_IO_ERROR;
+        if ((immediate & 0x20000000u) != 0u)
+        {
+            struct ibv_send_wr echo_wr;
+            struct ibv_send_wr *bad = 0;
+            memset(&echo_wr,0,sizeof(echo_wr));
+            echo_wr.wr_id = 0x21ull;
+            echo_wr.opcode = IBV_WR_SEND_WITH_IMM;
+            echo_wr.send_flags = IBV_SEND_SIGNALED;
+            echo_wr.imm_data = htonl(immediate | 0x10000000u);
+            if (ibv_post_send(state->lanes[0].queue_pair,&echo_wr,&bad) != 0)
+                return SPARK_STATUS_IO_ERROR;
+            return SPARK_STATUS_OK;
+        }
+        if ((immediate & 0x10000000u) != 0u)
+        {
+            memset(&completion,0,sizeof(completion));
+            completion.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+            completion.descriptor_bytes =
+                SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
+            completion.status = SPARK_STATUS_OK;
+            completion.sequence_id = 1u;
+            completion.token_index = 127u;
+            completion.transfer_bytes = 0u;
+            completion.service_time_ns = 0u;
+            SparkHiddenSparkHostRdmaSignalEvent(state);
+            return SparkHiddenTransportCompletionQueuePush(
+                &state->completion_queue,&completion);
+        }
         memset(&completion,0,sizeof(completion));
         completion.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
         completion.descriptor_bytes =
@@ -2984,6 +3009,8 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyWorkCompletion(
             work_completion->wc_flags & IBV_WC_WITH_IMM ?
                 ntohl(work_completion->imm_data) : 0u);
     }
+    if (work_completion->wr_id == 0x21ull)
+        return SPARK_STATUS_OK;
     if ((work_completion->wr_id &
             SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE) != 0u)
     {
