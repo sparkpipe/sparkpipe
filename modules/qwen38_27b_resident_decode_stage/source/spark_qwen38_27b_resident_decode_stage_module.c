@@ -1090,7 +1090,10 @@ static SparkStatus SparkQwen38_27bModuleRunGdnLayer(SparkQwen38_27bModuleState *
 		else if ( prefill != 0 && slot->verify_frame != 0u && state->snapshot_state_f32 != 0 && state->dflash2_state_select != 0u && state->gdn_snapshot_slot_count >= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + 8u )
 			error = SparkQwen38_27bModuleRunGdnCoreReplaySnap(state,slot,weights,prefill->lane_index,rows,ordinal);
 		else
-			error = prefill != 0 ? SparkQwen38_27bModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen38_27bModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
+			/* a single-token prefill IS a decode step: routing it through the
+			 * chunk pipeline changes the rounding and breaks decode-vs-prefill
+			 * token equality (the GdnChunk formulation differs from GdnStep) */
+		error = (prefill != 0 && rows > 1u) ? SparkQwen38_27bModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen38_27bModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
 	}
 	if ( error != cudaSuccess && rows >= 32u )
 		fprintf(stderr, "%s gdn_core_failed rows=%u err=%d\n", SPARK_QWEN38_27B_MODULE_TAG, rows, (int)error);
