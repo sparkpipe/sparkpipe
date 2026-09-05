@@ -34,7 +34,7 @@ patterns = [
 
 # real packs (both naming generations) start with the family prefixes;
 # arm-dir debris (residentd.log.rankN-flake-*, logs, json) does not
-PACK_PREFIXES = ("glm53flash.", "glm5_next_stage.")
+PACK_PREFIXES = ("glm53flash.", "glm5_next_stage.", "glm5.tp4pp4.")
 SKIP_SUFFIXES = (".receipt.json", ".packer-receipt.json", ".compact.tmp",
                  ".sha256", ".ck128", ".experts", ".mtp.receipt",
                  ".symlinkfix.receipt")
