@@ -32,6 +32,7 @@ extern cudaError_t cudaEventQuery(cudaEvent_t event);
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_CHUNK_COUNT 8u
 #define SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_ROUTE_COUNT 4u
 
+#define SPARK_TP_DEVICE_COLLECTIVE_NONCE_TAIL_BYTES 8u
 static uint32_t SparkTpDeviceCollectiveLiteralRingEnabled(
     uint32_t algorithm_mask,
     uint32_t tp_degree)
@@ -2718,7 +2719,7 @@ static void SparkTpDeviceCollectiveBuildSend(
                 status = SparkHiddenTransportSendFixed(
                     implementation->send_sessions[route_index],
                     send_packet.hidden_bf16,
-                    payload_bytes + 8u,
+                    payload_bytes + SPARK_TP_DEVICE_COLLECTIVE_NONCE_TAIL_BYTES,
                     (uint32_t)(((operation->ordinal << 8u) |
                         ((uint64_t)profile_phase << 2u)) | route_index));
             }
