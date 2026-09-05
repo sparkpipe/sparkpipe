@@ -19,6 +19,10 @@ rename lands (stagepack dev task: one mv script + receipt re-issue).
 
     arm      = <model>.<quant>.<topo>
     quant    = bf16 | fp8 | nvfp4 | nvfp4a16 | mxfp4 | iq1m
+               bf16 means ALL-BF16 (native bf16 experts); a mixed
+               bf16-spine + fp8-expert package is named fp8 - never
+               carry one quant's data under another quant's name
+               (operator ruling 2026-09-05, glm53flash bf16.tp16 era)
     topo     = tp4 | tp8 | tp16 | tp4pp4
     layout   = ~/sparkdata/<arm>/packs/
     pack     = <arm>.rank<h>.sp      (h single hex digit 0-9a-f: rank h
