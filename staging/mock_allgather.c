@@ -63,6 +63,30 @@ static uint64_t now_us(void)
 static uint16_t f32_to_bf16(float f);
 static float bf16_to_f32(uint16_t b);
 
+static uint32_t group_of(uint32_t rank)
+{
+    return rank / 4u;
+}
+
+static uint32_t is_rep(uint32_t rank)
+{
+    return (rank % 4u) == 0u ? 1u : 0u;
+}
+
+static uint32_t local_peer(uint32_t rank, uint32_t k)
+{
+    uint32_t base = group_of(rank) * 4u;
+    uint32_t offset = (rank - base + 1u + k) % 4u;
+    return base + offset;
+}
+
+static uint32_t cross_peer(uint32_t rep, uint32_t k)
+{
+    uint32_t g = group_of(rep);
+    uint32_t og = (g + 1u + k) % 4u;
+    return og * 4u;
+}
+
 static uint16_t pattern_val(int r, int i)
 {
     return (uint16_t)((uint32_t)(r * 251 + (i % 241) + 1) & 0x3fffu);
