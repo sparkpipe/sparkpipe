@@ -2591,13 +2591,10 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion(
             (((fixed_sequence >> 2u) & 31u) << 2u) | (fixed_sequence & 3u);
         completion.transfer_bytes = 0u;
         completion.service_time_ns = 0u;
-        if (state->debug_enabled != 0u)
-        {
-            fprintf(stderr,
-                "hidden_spark_rdma_fixed_recv route=%s seq=%u phase=%u slot=%u\n",
-                state->endpoint.route_name,fixed_sequence,
-                (fixed_sequence >> 2u) & 31u,(fixed_sequence >> 2u) & 7u);
-        }
+        fprintf(stderr,
+            "hidden_spark_rdma_fixed_recv route=%s seq=%u phase=%u slot=%u\n",
+            state->endpoint.route_name,fixed_sequence,
+            (fixed_sequence >> 2u) & 31u,(fixed_sequence >> 2u) & 7u);
         if (SparkHiddenTransportCompletionQueueIsFull(
                 &state->completion_queue) != 0u)
         {
@@ -3245,6 +3242,11 @@ static SparkStatus SparkHiddenSparkHostRdmaBuildCompletion(
     uint64_t service_time_ns)
 {
     SparkStatus queue_status;
+    fprintf(stderr,
+        "PUSH-PKT route=%s seq=%llu token=%llu status=%u\n",
+        state->endpoint.route_name,
+        (unsigned long long)packet->sequence_id,
+        (unsigned long long)packet->token_index,(unsigned)status);
     queue_status = SparkHiddenTransportCompletionQueuePushPacket(
         &state->completion_queue,packet,status,service_time_ns);
     if (queue_status == SPARK_STATUS_OK)

@@ -240,8 +240,13 @@ int main(int argc, char **argv)
     {
         snprintf(topology.rank_hosts[index], SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,
             "%s", rail_switch[index]);
-        snprintf(topology.rail_rank_hosts[0][index],
-            SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES, "%s", rail_direct[index]);
+        {
+            const char *rail0_env = getenv("BENCH_RAIL0");
+            snprintf(topology.rail_rank_hosts[0][index],
+                SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES, "%s",
+                rail0_env != 0 && rail0_env[0] == 'd' ?
+                    rail_direct[index] : rail_switch[index]);
+        }
         snprintf(topology.rail_rank_hosts[1][index],
             SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES, "%s", rail_switch[index]);
     }

@@ -2407,6 +2407,13 @@ static void SparkTpDeviceCollectiveRouteCompletion(
         (void)SparkTpDeviceCollectiveMarkOperationFailure(
             implementation,operation,generation,completion->status);
     }
+    fprintf(stderr,
+        "RCV-ROUTE rank=%u recv=%u seq=%llu tok=%llu step=%u op_step=%u ord=%llu\n",
+        implementation->collective->tp_rank,receive_completion,
+        (unsigned long long)completion->sequence_id,
+        (unsigned long long)completion->token_index,step_index,
+        operation->current_step,
+        (unsigned long long)operation->ordinal);
     if (receive_completion != 0u)
     {
         operation->receive_complete_mask |= 1u << step_index;
@@ -2447,7 +2454,7 @@ static void SparkTpDeviceCollectivePollSession(
         status = SparkHiddenTransportPoll(session,&completion);
         if (status != SPARK_STATUS_OK)
         {
-            
+
             SparkTpDeviceCollectiveLatchFailure(implementation,status);
             return;
         }
@@ -2455,6 +2462,14 @@ static void SparkTpDeviceCollectivePollSession(
         {
             return;
         }
+        fprintf(stderr,
+            "POP rank=%u dir=%s session=%p seq=%llu tok=%llu status=%u\n",
+            implementation->collective->tp_rank,
+            receive_completion != 0u ? "RECV" : "SEND",
+            (void *)session,
+            (unsigned long long)completion.sequence_id,
+            (unsigned long long)completion.token_index,
+            (unsigned)completion.status);
         SparkTpDeviceCollectiveRouteCompletion(
             implementation,&completion,receive_completion);
     }
