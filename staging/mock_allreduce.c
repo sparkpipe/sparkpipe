@@ -14,15 +14,14 @@
 #include <unistd.h>
 
 static int degree_g = 16;
+static int chunk_elems_g = 256;
+static uint32_t chunk_bytes_g = 512;
 static int broker_port_g = 58399;
 #define GID_INDEX 3
 #define ELEMS 4096
-#define CHUNKS 16
-#define CHUNK_ELEMS (ELEMS / CHUNKS)
-#define CHUNK_BYTES (CHUNK_ELEMS * 2)
 #define ACC_BYTES (ELEMS * 2)
 #define LANDING_OFF ACC_BYTES
-#define TOTAL_BYTES (ACC_BYTES + 16 * CHUNK_BYTES)
+#define TOTAL_BYTES (ACC_BYTES + 16 * 2048)
 #define ITERATIONS 50
 #define WEIGHT_MS 25.0
 #define COLLECTIVES_PER_TOKEN 90.0
@@ -315,10 +314,10 @@ static void send_chunk(link_qp *q, uint32_t chunk_index, uint32_t imm,
     struct ibv_send_wr wr[2];
     struct ibv_sge sge;
     struct ibv_send_wr *bad = 0;
-    uint64_t local_off = (uint64_t)chunk_index * CHUNK_BYTES;
+    uint64_t local_off = (uint64_t)chunk_index * chunk_bytes_g;
     memset(&sge, 0, sizeof(sge));
     sge.addr = (uintptr_t)(q->buf + local_off);
-    sge.length = CHUNK_BYTES;
+    sge.length = chunk_bytes_g;
     sge.lkey = q->mr->lkey;
     memset(wr, 0, sizeof(wr));
     wr[0].wr_id = 0x11;
@@ -327,7 +326,7 @@ static void send_chunk(link_qp *q, uint32_t chunk_index, uint32_t imm,
     wr[0].num_sge = 1;
     wr[0].wr.rdma.remote_addr = q->remote.buf_addr +
         (to_landing != 0 ? (uint64_t)LANDING_OFF +
-            (uint64_t)(imm & 15u) * CHUNK_BYTES : local_off);
+            (uint64_t)(imm & 15u) * chunk_bytes_g : local_off);
     wr[0].wr.rdma.rkey = q->remote.rkey;
     wr[1].wr_id = 0x11;
     wr[1].opcode = IBV_WR_SEND_WITH_IMM;
@@ -425,6 +424,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "degree must be 4, 8 or 16\n");
         return 2;
     }
+    chunk_elems_g = ELEMS / degree_g;
+    chunk_bytes_g = (uint32_t)chunk_elems_g * 2;
     rank_g = parse_rank(argv[1]);
     if (rank_g < 0)
     {
@@ -461,31 +462,32 @@ int main(int argc, char **argv)
         {
             uint32_t imm = (uint32_t)iter * 64u + (uint32_t)p;
             const uint16_t *src = (const uint16_t *)(qp_prev.buf +
-                LANDING_OFF + (size_t)(imm & 15u) * CHUNK_BYTES);
+                LANDING_OFF + (size_t)(imm & 15u) * chunk_bytes_g);
             uint32_t send_index = (uint32_t)((rank_g - p + degree_g) % degree_g);
             uint32_t recv_index =
                 (uint32_t)((rank_g - p - 1 + degree_g) % degree_g);
-            uint16_t *dst = acc + (size_t)recv_index * CHUNK_ELEMS;
+            uint16_t *dst = acc + (size_t)recv_index * chunk_elems_g;
             send_chunk(&qp_next, send_index, imm, 1);
             if (wait_doorbell(&qp_prev, imm))
                 return 1;
             drain_send_cq(&qp_next);
-            for (i = 0; i < CHUNK_ELEMS; ++i)
+            for (i = 0; i < chunk_elems_g; ++i)
                 dst[i] = (uint16_t)(dst[i] + src[i]);
         }
         for (p = 0; p < degree_g - 1; ++p)
         {
-            uint32_t imm = (uint32_t)iter * 64u + 15u + (uint32_t)p;
+            uint32_t imm = (uint32_t)iter * 64u +
+                (uint32_t)(degree_g - 1) + (uint32_t)p;
             const uint16_t *src = (const uint16_t *)(qp_prev.buf +
-                LANDING_OFF + (size_t)(imm & 15u) * CHUNK_BYTES);
+                LANDING_OFF + (size_t)(imm & 15u) * chunk_bytes_g);
             uint32_t send_index = (uint32_t)((rank_g + 1 - p + degree_g) % degree_g);
             uint32_t recv_index = (uint32_t)((rank_g - p + degree_g) % degree_g);
-            uint16_t *dst = acc + (size_t)recv_index * CHUNK_ELEMS;
+            uint16_t *dst = acc + (size_t)recv_index * chunk_elems_g;
             send_chunk(&qp_next, send_index, imm, 1);
             if (wait_doorbell(&qp_prev, imm))
                 return 1;
             drain_send_cq(&qp_next);
-            memcpy(dst, src, CHUNK_BYTES);
+            memcpy(dst, src, chunk_bytes_g);
         }
         us = now_us() - t0;
         total_us += us;
