@@ -1627,6 +1627,16 @@ static SparkStatus SparkHiddenSparkHostRdmaModifyQueuePairToReady(
     attributes.qp_state = IBV_QPS_RTR;
     attributes.path_mtu = (enum ibv_mtu)path_mtu;
     attributes.dest_qp_num = lane->remote_info.qp_number;
+    fprintf(stderr,
+        "QP-WIRE route=%s local_qp=%u dest_qp=%u dest_psn=%u gid=%02x%02x:%02x%02x:%02x%02x:%02x%02x\n",
+        state->endpoint.route_name,
+        lane->queue_pair->qp_num,
+        lane->remote_info.qp_number,
+        lane->remote_info.packet_sequence_number,
+        remote_gid.raw[12],remote_gid.raw[13],remote_gid.raw[14],
+        remote_gid.raw[15],
+        lane->remote_info.gid[12],lane->remote_info.gid[13],
+        lane->remote_info.gid[14],lane->remote_info.gid[15]);
     attributes.rq_psn = lane->remote_info.packet_sequence_number;
     attributes.max_dest_rd_atomic = 1;
     attributes.min_rnr_timer = 12;
