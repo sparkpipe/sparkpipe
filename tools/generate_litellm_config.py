@@ -39,7 +39,7 @@ def load_registry(path):
     return models
 
 
-def build_config(models):
+def build_config(models, database_url=None, master_key=False):
     model_list = []
     for name, base in models:
         base = base.rstrip("/")
@@ -53,17 +53,22 @@ def build_config(models):
                 "api_key": "os.environ/SPARK_API_KEY",
             },
         })
-    return {
+    general = {}
+    if database_url:
+        general["database_url"] = database_url
+    if master_key:
+        general["master_key"] = "os.environ/SPARK_LITELLM_MASTER_KEY"
+    config = {
         "model_list": model_list,
         "litellm_settings": {
             "drop_params": True,
             "num_retries": 1,
             "request_timeout": 600,
         },
-        "general_settings": {
-            "master_key": "os.environ/SPARK_LITELLM_MASTER_KEY",
-        },
     }
+    if general:
+        config["general_settings"] = general
+    return config
 
 
 def emit(config, out_text):
@@ -80,6 +85,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--registry")
     parser.add_argument("--pair", action="append", default=[])
+    parser.add_argument("--database-url",
+                        help="postgresql:// connection string for LiteLLM's "
+                             "virtual keys / spend tracking (optional)")
+    parser.add_argument("--master-key", action="store_true",
+                        help="require SPARK_LITELLM_MASTER_KEY bearer auth "
+                             "(default: no passwords, per operator ruling)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     models = []
@@ -92,7 +103,7 @@ def main():
         models.append((name, base))
     if not models:
         raise SystemExit("no models: pass --registry and/or --pair")
-    emit(build_config(models), args.out)
+    emit(build_config(models, args.database_url, args.master_key), args.out)
     return 0
 
 

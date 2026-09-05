@@ -45,7 +45,41 @@ carries the same routing; the local proof used completion-shaped mocks.
 
        python3 tools/model_api_smoke.py --endpoint http://<host>:4000
 
-## Notes
+## Postgres, installed directly (no docker)
+
+The proxy runs config-only with no database. To enable the DB-backed
+features (virtual keys, spend tracking in the admin UI) install
+PostgreSQL directly:
+
+    brew install postgresql@16                                    # mac
+    /opt/homebrew/opt/postgresql@16/bin/pg_ctl \
+        -D /opt/homebrew/var/postgresql@16 start                  # no brew-services needed
+    /opt/homebrew/opt/postgresql@16/bin/createdb litellm
+
+(sparks: `sudo apt install postgresql` then `createdb litellm`.)
+
+Generate the proxy config with the database URL:
+
+    python3 tools/generate_litellm_config.py \
+      --pair glm53flash.bf16.tp16=http://spark0:8433 \
+      --database-url postgresql://mac@localhost:5432/litellm \
+      --out /tmp/litellm_fleet.yaml
+
+One-time client bootstrap inside the repo venv (litellm ships a prisma
+schema; the client must be generated and the schema pushed once):
+
+    cd ~/sparkpipe/litellm-venv/lib/python3.13/site-packages/litellm/proxy
+    PATH=~/sparkpipe/litellm-venv/bin:$PATH \
+      DATABASE_URL=postgresql://mac@localhost:5432/litellm \
+      prisma generate
+    PATH=~/sparkpipe/litellm-venv/bin:$PATH \
+      DATABASE_URL=postgresql://mac@localhost:5432/litellm \
+      prisma db push
+
+Then run the proxy with `DATABASE_URL` exported alongside
+`SPARK_LITELLM_MASTER_KEY`. Verified end-to-end this way: page 200,
+name-routed completions, and a spend-log row written per request into
+`LiteLLM_SpendLogs`.
 
 - The generated `litellm_params` use the `openai/` provider with
   `api_base` pointing at each model API's `/v1` — our API speaks the

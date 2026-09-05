@@ -42,14 +42,7 @@ def request(parts, method, path, payload, timeout):
     return response.status, data
 
 
-def smoke_endpoint(parts, prompt, max_tokens, timeout):
-    status, data = request(parts, "GET", "/v1/models", None, timeout)
-    if status != 200:
-        return False, f"/v1/models status {status}"
-    models = json.loads(data)
-    model_id = (models.get("data") or [{}])[0].get("id", "")
-    if not model_id:
-        return False, "/v1/models has no model id"
+def smoke_model(parts, model_id, prompt, max_tokens, timeout):
     payload = {"model": model_id, "prompt": prompt,
                "max_tokens": max_tokens, "temperature": 0.0}
     texts = []
@@ -65,7 +58,23 @@ def smoke_endpoint(parts, prompt, max_tokens, timeout):
         texts.append(choices[0]["text"])
     if texts[0] != texts[1]:
         return False, f"nondeterministic: {texts[0][:40]!r} vs {texts[1][:40]!r}"
-    return True, f"model={model_id} tokens={max_tokens} text={texts[0][:40]!r}"
+    return True, f"tokens={max_tokens} text={texts[0][:40]!r}"
+
+
+def smoke_endpoint(parts, prompt, max_tokens, timeout):
+    status, data = request(parts, "GET", "/v1/models", None, timeout)
+    if status != 200:
+        return [], f"/v1/models status {status}"
+    models = json.loads(data)
+    entries = models.get("data") or []
+    model_ids = [entry.get("id") for entry in entries if entry.get("id")]
+    if not model_ids:
+        return [], "/v1/models has no model ids"
+    results = []
+    for model_id in model_ids:
+        ok, detail = smoke_model(parts, model_id, prompt, max_tokens, timeout)
+        results.append((model_id, ok, detail))
+    return results, None
 
 
 def main():
@@ -80,14 +89,19 @@ def main():
     for endpoint in args.endpoint:
         parts = parse_endpoint(endpoint)
         try:
-            ok, detail = smoke_endpoint(parts, args.prompt, args.max_tokens,
-                                        args.timeout)
+            results, error = smoke_endpoint(parts, args.prompt, args.max_tokens,
+                                            args.timeout)
         except Exception as error:
-            ok, detail = False, repr(error)
-        verdict = "PASS" if ok else "FAIL"
-        print(f"{verdict} {endpoint} {detail}")
-        if not ok:
+            results, error = [], repr(error)
+        if error is not None:
+            print(f"FAIL {endpoint} {error}")
             failures += 1
+            continue
+        for model_id, ok, detail in results:
+            verdict = "PASS" if ok else "FAIL"
+            print(f"{verdict} {endpoint} model={model_id} {detail}")
+            if not ok:
+                failures += 1
     print(f"model_api_smoke endpoints={len(args.endpoint)} failures={failures}")
     return 1 if failures else 0
 
