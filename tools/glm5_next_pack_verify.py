@@ -39,7 +39,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from glm5_next_resident_stagepack import (  # noqa: E402
     ALIGNMENT, ENTRY_BYTES, FORMAT_VERSION, GLOBAL_LAYER, HEADER_BYTES, MAGIC,
-    LAYERS, Packer, SCALE_F32, SCALE_NONE, SourceReader,
+    LAYERS, Packer, SCALE_F32, SCALE_NONE, SCALE_UE4M3_F32_GLOBAL, CODEC_NVFP4,
+    SourceReader,
     K_DENSE_GATE_UP, K_EMBEDDING, K_EXPERT_UP_GATE, K_KDA_DECAY_GATE_DOWN,
     K_KDA_QKV_BETA, K_LM_HEAD, K_Q_B, K_SHARED_GATE_UP,
     PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT,
@@ -160,10 +161,29 @@ def main() -> int:
             want = (e["group_count"] * e["rows"] * (e["columns"] // 128) * 4)
             if e["payload_type"] == PAYLOAD_PACKED_WEIGHT and e["scale_bytes"] != want:
                 fail(f"entry {i}: scale_bytes {e['scale_bytes']} != {want}")
+        if e.get("weight_codec") == CODEC_NVFP4:
+            # UE4M3_F32_GLOBAL: EXPERTS F32 globals first, then expert-major
+            # planes ([rows, cols//16] per expert); payload = packed e2m1
+            # ([rows, cols//2] per expert).
+            if e["payload_type"] != PAYLOAD_PACKED_WEIGHT:
+                fail(f"entry {i}: nvfp4 on payload_type {e['payload_type']}")
+            if e["scale_encoding"] != SCALE_UE4M3_F32_GLOBAL:
+                fail(f"entry {i}: nvfp4 scale_encoding {e['scale_encoding']} "
+                     f"!= {SCALE_UE4M3_F32_GLOBAL}")
+            want_payload = e["group_count"] * e["rows"] * (e["columns"] // 2)
+            want_scale = (e["group_count"] * 4
+                          + e["group_count"] * e["rows"] * (e["columns"] // 16))
+            if e["payload_bytes"] != want_payload:
+                fail(f"entry {i} kind={e['kind']} layer={e['layer']:#x}: "
+                     f"payload {e['payload_bytes']} != group*rows*cols/2 {want_payload}")
+            if e["scale_bytes"] != want_scale:
+                fail(f"entry {i} kind={e['kind']} layer={e['layer']:#x}: "
+                     f"scale_bytes {e['scale_bytes']} != globals+planes {want_scale}")
         if not e["payload_bytes"]:
             fail(f"entry {i} kind={e['kind']} layer={e['layer']:#x}: "
                  f"EMPTY payload (the 4758e68 fused-slice signature)")
-        if e["payload_type"] in (PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT):
+        if (e["payload_type"] in (PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT)
+                and e.get("weight_codec") != CODEC_NVFP4):
             # kv_b entries carry group_count=MLA_HEADS; experts carry
             # group_count=EXPERTS — the payload is always group*rows*cols*dsz.
             want = e["group_count"] * e["rows"] * e["columns"] * dsz
