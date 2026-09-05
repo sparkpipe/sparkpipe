@@ -181,7 +181,7 @@ static void open_qp(link_qp *q)
     init.recv_cq = q->cq;
     init.qp_type = IBV_QPT_RC;
     init.cap.max_send_wr = 32;
-    init.cap.max_recv_wr = 32;
+    init.cap.max_recv_wr = 64;
     init.cap.max_send_sge = 1;
     init.cap.max_recv_sge = 1;
     q->qp = ibv_create_qp(q->pd, &init);
@@ -448,7 +448,7 @@ int main(int argc, char **argv)
         sizeof(wire_info));
     bring_rts(&qp_next);
     bring_rts(&qp_prev);
-    for (i = 0; i < 4; ++i)
+    for (i = 0; i < 32; ++i)
         post_recv(&qp_prev);
     acc = (uint16_t *)qp_next.buf;
     for (iter = 0; iter < ITERATIONS; ++iter)
