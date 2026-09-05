@@ -13,9 +13,10 @@ for r in $(seq 0 15); do
 done
 wait
 sleep 30
-for r in 0 1 2 15; do
+for r in $(seq 0 15); do
     h=$(printf "spark%x" "$r")
+    echo -n "r$r: "
     timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" \
-        "head -3 /tmp/ma_run_$P.log 2>/dev/null" 2>/dev/null
+        "grep -oE 'expect=[0-9a-f]+' /tmp/ma_run_$P.log 2>/dev/null | tail -1; grep -c ALLREDUCE /tmp/ma_run_$P.log 2>/dev/null | tr -d '\n'; echo \" ok\"" 2>/dev/null
     sleep 1
 done

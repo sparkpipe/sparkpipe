@@ -295,6 +295,11 @@ static void drain_send_cq(link_qp *q)
                 post_recv(q);
                 return;
             }
+            if (wc.wr_id == 0x21ull)
+            {
+                post_recv(q);
+                continue;
+            }
             if (wc.status != IBV_WC_SUCCESS)
                 fprintf(stderr, "fixed_ring: send wc %u (%s)\n",
                     wc.status, ibv_wc_status_str(wc.status));
@@ -372,6 +377,10 @@ static int probe_pair(SparkFixedRing *ring)
                     ntohl(wc.imm_data) == want)
                     return 0;
             }
+            else if (n > 0 && wc.wr_id == 0x21ull)
+            {
+                post_recv(&ring->qp_next);
+            }
             n = ibv_poll_cq(ring->qp_prev.cq, 1, &wc);
             if (n > 0 && (wc.wr_id & 0x9000000000000000ull) != 0ull)
             {
@@ -388,6 +397,11 @@ static int probe_pair(SparkFixedRing *ring)
                     echo.send_flags = IBV_SEND_SIGNALED;
                     echo.imm_data = htonl(imm | 0x10000000u);
                     (void)ibv_post_send(ring->qp_prev.qp, &echo, &bad);
+                }
+                else if (wc.status == IBV_WC_SUCCESS)
+                {
+                    fprintf(stderr,
+                        "PROBE-DROP-IMM=%08x\n", imm);
                 }
             }
             if (now_us() > deadline)
