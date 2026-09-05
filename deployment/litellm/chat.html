@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sparkpipe chat</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; background: #f5f5f7; }
+  #top { padding: 10px 16px; background: #1d1d1f; color: #f5f5f7; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  #top label { font-size: 12px; color: #a1a1a6; }
+  #top input, #top select { background: #2d2d2f; color: #f5f5f7; border: 1px solid #48484a; border-radius: 6px; padding: 5px 8px; font-size: 13px; }
+  #endpoint { width: 230px; } #token { width: 150px; }
+  #chat { max-width: 860px; margin: 0 auto; padding: 18px 14px 90px; }
+  .msg { margin: 10px 0; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
+  .user { background: #0071e3; color: white; margin-left: 18%; }
+  .assistant { background: white; color: #1d1d1f; margin-right: 18%; border: 1px solid #e8e8ed; }
+  .error { background: #ffebe9; color: #b3261e; border: 1px solid #f7c6c2; }
+  .hint { color: #a1a1a6; font-size: 12px; text-align: center; }
+  #bar { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(245,245,247,.92); border-top: 1px solid #e8e8ed; padding: 10px; display: flex; gap: 8px; justify-content: center; }
+  #prompt { width: min(680px, 78vw); padding: 10px 12px; border: 1px solid #d2d2d7; border-radius: 10px; font-size: 14px; }
+  #send { padding: 10px 18px; background: #0071e3; color: white; border: 0; border-radius: 10px; font-size: 14px; cursor: pointer; }
+  #send:disabled { background: #a1a1a6; }
+</style>
+</head>
+<body>
+<div id="top">
+  <b>sparkpipe chat</b>
+  <label>endpoint <input id="endpoint" value="http://127.0.0.1:4000"></label>
+  <label>key <input id="token" value="sk-sparkpipe"></label>
+  <label>model <select id="model"></select></label>
+  <label>max&nbsp;tokens <input id="maxtok" value="64" style="width:56px"></label>
+</div>
+<div id="chat"><div class="hint">messages POST to {endpoint}/v1/chat/completions through the LiteLLM proxy</div></div>
+<div id="bar">
+  <input id="prompt" placeholder="Type a message and press Enter" autocomplete="off">
+  <button id="send">Send</button>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const history = [];
+function bubble(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = text;
+  $("chat").appendChild(div);
+  window.scrollTo(0, document.body.scrollHeight);
+  return div;
+}
+function headers() {
+  const h = { "Content-Type": "application/json" };
+  if ($("token").value) h["Authorization"] = "Bearer " + $("token").value;
+  return h;
+}
+async function loadModels() {
+  try {
+    const r = await fetch($("endpoint").value.replace(/\/$/, "") + "/v1/models", { headers: headers() });
+    const doc = await r.json();
+    const sel = $("model");
+    sel.innerHTML = "";
+    for (const m of (doc.data || [])) {
+      const o = document.createElement("option");
+      o.value = o.textContent = m.id;
+      sel.appendChild(o);
+    }
+  } catch (e) {
+    bubble("error", "model list failed: " + e);
+  }
+}
+async function send() {
+  const text = $("prompt").value.trim();
+  if (!text) return;
+  $("prompt").value = "";
+  $("send").disabled = true;
+  bubble("user", text);
+  history.push({ role: "user", content: text });
+  const wait = bubble("assistant", "…");
+  try {
+    const r = await fetch($("endpoint").value.replace(/\/$/, "") + "/v1/chat/completions", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({
+        model: $("model").value,
+        messages: history.slice(),
+        max_tokens: parseInt($("maxtok").value || "64", 10),
+        temperature: 0,
+      }),
+    });
+    const doc = await r.json();
+    if (!r.ok) throw new Error(JSON.stringify(doc).slice(0, 300));
+    const choice = (doc.choices && doc.choices[0]) || {};
+    const reply = choice.message && choice.message.content
+      || choice.text || JSON.stringify(doc).slice(0, 300);
+    wait.textContent = reply;
+    history.push({ role: "assistant", content: reply });
+  } catch (e) {
+    wait.className = "msg error";
+    wait.textContent = String(e);
+  }
+  $("send").disabled = false;
+  $("prompt").focus();
+}
+$("send").onclick = send;
+$("prompt").onkeydown = (e) => { if (e.key === "Enter") send(); };
+$("endpoint").onchange = loadModels;
+loadModels();
+</script>
+</body>
+</html>
