@@ -1106,8 +1106,15 @@ static int SparkQwen38_27bValCheckModule(void)
 		if (decode_token != prefill_token)
 			return(SparkQwen38_27bValFail("module_decode_vs_prefill","token_mismatch"));
 	}
-	if (module.head_stage != 0u && SparkQwen38_27bValCheckMtpDraft(&module) != 0)
-		return(1);
+	/* MTP-free packs (the fleet standard) carry no draft block: the
+	 * speculation check only applies when the configuration has MTP */
+	{
+		const char *mtp_env = getenv("SPARK_QWEN38_27B_STAGE_MTP");
+		if (module.head_stage != 0u &&
+			(mtp_env == 0 || mtp_env[0] != '0') &&
+			SparkQwen38_27bValCheckMtpDraft(&module) != 0)
+			return(1);
+	}
 	SparkQwen38_27bResidentDecodeStageDestroy(module.state);
 	cudaFree(module.device_blocks);
 	cudaFree(module.device_counts);

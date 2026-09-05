@@ -32,9 +32,10 @@ patterns = [
     "/home/*/sparkdata/glm53flash.nvfp4.tp16/packs/*",
 ]
 
-# real packs (both naming generations) start with the family prefixes;
-# arm-dir debris (residentd.log.rankN-flake-*, logs, json) does not
-PACK_PREFIXES = ("glm53flash.", "glm5_next_stage.", "glm5.tp4pp4.")
+# real packs across the g5 naming generations start with the family
+# prefixes ("glm5_next." also prefixes "glm5_next_stage.*"); arm-dir
+# debris (residentd.log.rankN-flake-*, logs, json) does not
+PACK_PREFIXES = ("glm53flash.", "glm5_next.")
 SKIP_SUFFIXES = (".receipt.json", ".packer-receipt.json", ".compact.tmp",
                  ".sha256", ".ck128", ".experts", ".mtp.receipt",
                  ".symlinkfix.receipt")
