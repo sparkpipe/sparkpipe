@@ -2709,16 +2709,16 @@ static void SparkTpDeviceCollectiveBuildSend(
                     SPARK_TP_DEVICE_COLLECTIVE_LITERAL_RING_KIND &&
                 implementation->fixed_slots_enabled != 0u)
             {
-                fprintf(stderr,
-                    "BSEND rank=%u ord=%llu res=%u route=%u\n",
-                    implementation->collective->tp_rank,
-                    (unsigned long long)operation->ordinal,resource_index,
-                    route_index);
+                uint64_t payload_bytes =
+                    (uint64_t)send_packet.active_sequence_count *
+                    send_packet.bytes_per_sequence;
+                *(volatile uint64_t *)
+                    ((uint8_t *)send_packet.hidden_bf16 + payload_bytes) =
+                    operation->ordinal + 1u;
                 status = SparkHiddenTransportSendFixed(
                     implementation->send_sessions[route_index],
                     send_packet.hidden_bf16,
-                    (uint64_t)send_packet.active_sequence_count *
-                        send_packet.bytes_per_sequence,
+                    payload_bytes + 8u,
                     (uint32_t)(((operation->ordinal << 8u) |
                         ((uint64_t)profile_phase << 2u)) | route_index));
             }
@@ -3399,55 +3399,8 @@ static SparkStatus SparkTpDeviceCollectiveRegisterFixedSlots(
     {
         uint8_t *probe_buffer =
             (uint8_t *)implementation->fixed_receive_base[step_index];
-        SparkHiddenTransportCompletion completion;
-        uint64_t probe_deadline =
-            SparkTpDeviceCollectiveNowMilli() + timeout_milli;
-        uint32_t attempt;
-        int echoed = 0;
-        for (attempt = 0u; attempt < 16u && echoed == 0; ++attempt)
-        {
-            uint64_t attempt_deadline =
-                SparkTpDeviceCollectiveNowMilli() + 1000u;
-            status = SparkHiddenTransportSendFixed(
-                implementation->send_sessions[step_index],
-                probe_buffer,8u,0x20000000u | (uint32_t)attempt);
-            if (status != SPARK_STATUS_OK)
-            {
-                fprintf(stderr,
-                    "PROBE-SEND-FAIL rank=%u step=%u status=%u\n",
-                    implementation->collective->tp_rank,step_index,
-                    (unsigned)status);
-                return status;
-            }
-            for (;;)
-            {
-                status = SparkHiddenTransportPoll(
-                    implementation->send_sessions[step_index],&completion);
-                if (status != SPARK_STATUS_OK)
-                    return status;
-                if (completion.status == SPARK_STATUS_BUSY)
-                {
-                    if (SparkTpDeviceCollectiveNowMilli() >= attempt_deadline ||
-                        SparkTpDeviceCollectiveNowMilli() >= probe_deadline)
-                        break;
-                    sched_yield();
-                    continue;
-                }
-                if (completion.token_index == 127u)
-                {
-                    echoed = 1;
-                    break;
-                }
-            }
-        }
-        if (echoed == 0)
-        {
-            fprintf(stderr, "PROBE-ECHO-TIMEOUT rank=%u step=%u\n",
-                implementation->collective->tp_rank,step_index);
-            return SPARK_STATUS_IO_ERROR;
-        }
-        fprintf(stderr, "PROBE-OK rank=%u step=%u\n",
-            implementation->collective->tp_rank,step_index);
+        (void)probe_buffer;
+        (void)timeout_milli;
     }
     return SPARK_STATUS_OK;
 }
