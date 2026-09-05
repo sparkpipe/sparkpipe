@@ -2972,6 +2972,18 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyWorkCompletion(
     SparkHiddenSparkHostRdmaState *state,
     const struct ibv_wc *work_completion)
 {
+    if (strncmp(state->endpoint.route_name,
+            "tp-device.444f4f52424f4f01.0.", 30u) == 0)
+    {
+        fprintf(stderr,
+            "WC route=%s wr_id=%016llx opcode=%u status=%u imm=%08x\n",
+            state->endpoint.route_name,
+            (unsigned long long)work_completion->wr_id,
+            (uint32_t)work_completion->opcode,
+            (uint32_t)work_completion->status,
+            work_completion->wc_flags & IBV_WC_WITH_IMM ?
+                ntohl(work_completion->imm_data) : 0u);
+    }
     if ((work_completion->wr_id &
             SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE) != 0u)
     {
