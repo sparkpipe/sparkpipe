@@ -5708,7 +5708,6 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     struct ibv_send_wr *bad_work_request;
     struct ibv_sge scatter_entries[1];
     SparkStatus status;
-    uint32_t immediate;
     uint32_t lane_index;
     uint32_t slot;
     uint32_t region_index;
@@ -5763,7 +5762,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     send->hidden_region_index = region_index;
     send->sideband_region_index = SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
     send->posted_lane_mask = 1u << lane_index;
-    send->posted_wr_counts[lane_index] = 2u;
+    send->posted_wr_counts[lane_index] = 1u;
     send->start_time_ns = SparkHiddenSparkHostRdmaMonotonicNs();
     send->packet_snapshot.sequence_id = (sequence >> 8u) + 1u;
     send->packet_snapshot.token_index =
@@ -5776,7 +5775,6 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     scatter_entries[0].addr = (uintptr_t)local_buffer;
     scatter_entries[0].length = (uint32_t)bytes;
     scatter_entries[0].lkey = region_lkey;
-    immediate = sequence | SPARK_HIDDEN_SPARK_HOST_RDMA_DOORBELL_FIXED_FLAG;
     memset(work_requests,0,sizeof(work_requests));
     work_requests[0].wr_id = SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_SEND |
         ((uint64_t)(send - state->inflight_sends) <<
@@ -5784,19 +5782,12 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     work_requests[0].opcode = IBV_WR_RDMA_WRITE;
     work_requests[0].sg_list = scatter_entries;
     work_requests[0].num_sge = 1;
-    work_requests[0].send_flags = 0;
+    work_requests[0].send_flags = IBV_SEND_SIGNALED;
     work_requests[0].wr.rdma.remote_addr = state->fixed_remote.address +
         (uint64_t)slot * (state->fixed_remote.bytes /
             SPARK_HIDDEN_SPARK_FIXED_DEPTH);
     work_requests[0].wr.rdma.rkey = state->fixed_remote.rkey;
-    work_requests[1].wr_id = work_requests[0].wr_id;
-    work_requests[1].opcode = IBV_WR_SEND_WITH_IMM;
-    work_requests[1].sg_list = scatter_entries;
-    work_requests[1].num_sge = 0;
-    work_requests[1].send_flags = IBV_SEND_SIGNALED;
-    work_requests[1].imm_data = htonl(immediate);
-    work_requests[0].next = &work_requests[1];
-    work_requests[1].next = 0;
+    work_requests[0].next = 0;
     if (ibv_post_send(state->lanes[lane_index].queue_pair,
             work_requests,&bad_work_request) != 0)
     {
@@ -5804,14 +5795,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
         memset(send,0,sizeof(*send));
         return SPARK_STATUS_IO_ERROR;
     }
-    state->outstanding_send_wr_counts[lane_index] += 2u;
-    if (state->debug_enabled != 0u)
-    {
-        fprintf(stderr,
-            "hidden_spark_rdma_fixed_send route=%s seq=%u phase=%u route_bits=%u\n",
-            state->endpoint.route_name,sequence,
-            (sequence >> 2u) & 31u,sequence & 3u);
-    }
+    state->outstanding_send_wr_counts[lane_index] += 1u;
     return SPARK_STATUS_OK;
 }
 
