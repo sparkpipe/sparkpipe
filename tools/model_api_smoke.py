@@ -6,7 +6,7 @@ receipt). Endpoints are internal fleet addresses by design; the URL
 must still be well-formed http(s) with an explicit host.
 
   model_api_smoke --endpoint http://spark0:8433 [--endpoint ...] \
-      [--prompt text] [--max-tokens 8] [--timeout 120]
+      [--prompt text] [--max-tokens 8] [--timeout 120] [--token bearer]
 
 Exit 0 only if every endpoint passes.
 """
@@ -26,7 +26,7 @@ def parse_endpoint(text):
     return parts
 
 
-def request(parts, method, path, payload, timeout):
+def request(parts, method, path, payload, timeout, token=None):
     if parts.scheme == "https":
         conn = http.client.HTTPSConnection(parts.hostname, parts.port or 443,
                                            timeout=timeout)
@@ -35,6 +35,8 @@ def request(parts, method, path, payload, timeout):
                                           timeout=timeout)
     body = json.dumps(payload) if payload is not None else None
     headers = {"Content-Type": "application/json"} if body else {}
+    if token:
+        headers["Authorization"] = "Bearer " + token
     conn.request(method, path, body=body, headers=headers)
     response = conn.getresponse()
     data = response.read()
@@ -42,13 +44,13 @@ def request(parts, method, path, payload, timeout):
     return response.status, data
 
 
-def smoke_model(parts, model_id, prompt, max_tokens, timeout):
+def smoke_model(parts, model_id, prompt, max_tokens, timeout, token=None):
     payload = {"model": model_id, "prompt": prompt,
                "max_tokens": max_tokens, "temperature": 0.0}
     texts = []
     for attempt in (1, 2):
         status, data = request(parts, "POST", "/v1/completions", payload,
-                               timeout)
+                               timeout, token)
         if status != 200:
             return False, f"completion {attempt} status {status}: {data[:120]!r}"
         document = json.loads(data)
@@ -61,8 +63,8 @@ def smoke_model(parts, model_id, prompt, max_tokens, timeout):
     return True, f"tokens={max_tokens} text={texts[0][:40]!r}"
 
 
-def smoke_endpoint(parts, prompt, max_tokens, timeout):
-    status, data = request(parts, "GET", "/v1/models", None, timeout)
+def smoke_endpoint(parts, prompt, max_tokens, timeout, token=None):
+    status, data = request(parts, "GET", "/v1/models", None, timeout, token)
     if status != 200:
         return [], f"/v1/models status {status}"
     models = json.loads(data)
@@ -72,7 +74,8 @@ def smoke_endpoint(parts, prompt, max_tokens, timeout):
         return [], "/v1/models has no model ids"
     results = []
     for model_id in model_ids:
-        ok, detail = smoke_model(parts, model_id, prompt, max_tokens, timeout)
+        ok, detail = smoke_model(parts, model_id, prompt, max_tokens, timeout,
+                                 token)
         results.append((model_id, ok, detail))
     return results, None
 
@@ -83,6 +86,8 @@ def main():
     parser.add_argument("--prompt", default="The quick brown fox")
     parser.add_argument("--max-tokens", type=int, default=8)
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--token", default=None,
+                        help="bearer token when the endpoint requires auth")
     args = parser.parse_args()
 
     failures = 0
@@ -90,7 +95,7 @@ def main():
         parts = parse_endpoint(endpoint)
         try:
             results, error = smoke_endpoint(parts, args.prompt, args.max_tokens,
-                                            args.timeout)
+                                            args.timeout, args.token)
         except Exception as error:
             results, error = [], repr(error)
         if error is not None:
