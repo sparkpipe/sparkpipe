@@ -32,9 +32,9 @@ patterns = [
     "/home/*/sparkdata/glm53flash.nvfp4.tp16/packs/*",
 ]
 
-# real packs (both naming generations) carry "rank" in the name; arm-dir
-# runtime debris (logs, json, bin/...) does not, and sidecar suffixes are
-# skipped explicitly so a corrupted PACK still fails the magic check
+# real packs (both naming generations) start with the family prefixes;
+# arm-dir debris (residentd.log.rankN-flake-*, logs, json) does not
+PACK_PREFIXES = ("glm53flash.", "glm5_next_stage.")
 SKIP_SUFFIXES = (".receipt.json", ".packer-receipt.json", ".compact.tmp",
                  ".sha256", ".ck128", ".experts", ".mtp.receipt",
                  ".symlinkfix.receipt")
@@ -42,34 +42,46 @@ SKIP_SUFFIXES = (".receipt.json", ".packer-receipt.json", ".compact.tmp",
 failures = 0
 checked = 0
 seen = set()
+sys.stdout.reconfigure(line_buffering=True)
 for pattern in patterns:
     for pack in sorted(glob.glob(pattern)):
         if not os.path.isfile(pack) or pack in seen:
             continue
         seen.add(pack)
-        if "rank" not in os.path.basename(pack):
+        base = os.path.basename(pack)
+        if not base.startswith(PACK_PREFIXES):
             continue
         if pack.endswith(SKIP_SUFFIXES):
             continue
         checked += 1
         problems = []
-        with open(pack, "rb") as f:
-            raw = f.read(264)
-        fields = struct.unpack_from("<20I", raw, 0)
-        magic, version, flags = fields[0], fields[1], fields[5]
-        count = fields[6]
-        dir_off, file_bytes = struct.unpack_from("<QQ", raw, 80)
+        try:
+            with open(pack, "rb") as f:
+                raw = f.read(264)
+            fields = struct.unpack_from("<20I", raw, 0)
+            magic, version, flags = fields[0], fields[1], fields[5]
+            count = fields[6]
+            dir_off, file_bytes = struct.unpack_from("<QQ", raw, 80)
+        except Exception as error:
+            failures += 1
+            print(f"FAIL {pack}: header unreadable: {error}")
+            continue
         if magic != MAGIC or version != 1:
             problems.append(f"magic/ver {magic:#x}/{version}")
         if flags != 0:
             problems.append(f"flags={flags}")
         if file_bytes != os.path.getsize(pack):
             problems.append("file_bytes mismatch")
-        with open(pack, "rb") as f:
-            f.seek(dir_off)
-            raw_dir = f.read(count * ENTRY_BYTES)
+        try:
+            with open(pack, "rb") as f:
+                f.seek(dir_off)
+                raw_dir = f.read(count * ENTRY_BYTES)
+        except Exception as error:
+            problems.append(f"directory unreadable at {dir_off}: {error}")
+            raw_dir = b""
         if len(raw_dir) != count * ENTRY_BYTES:
-            problems.append("short directory")
+            if "directory unreadable" not in " ".join(problems):
+                problems.append("short directory")
         else:
             for i in range(count):
                 block = raw_dir[i * ENTRY_BYTES:(i + 1) * ENTRY_BYTES]
@@ -91,14 +103,21 @@ for pattern in patterns:
                 except (AttributeError, OSError):
                     pass
         sha = digest.hexdigest()
-        try:
-            receipt = json.load(open(receipt_path))
+        receipt = None
+        for candidate in (receipt_path, pack + ".g5nsp.receipt.json"):
+            try:
+                receipt = json.load(open(candidate))
+                break
+            except Exception:
+                continue
+        if receipt is None:
+            problems.append(f"receipt unreadable: no .receipt.json or "
+                            f".g5nsp.receipt.json beside pack")
+        else:
             if receipt.get("mtp") not in ("stripped", "none"):
                 problems.append("receipt not marked")
             if receipt.get("output_sha256") != sha:
                 problems.append("receipt sha mismatch")
-        except Exception as error:
-            problems.append(f"receipt unreadable: {error}")
         attrs = subprocess.run(["lsattr", pack], stdout=subprocess.PIPE,
                                text=True).stdout.split()
         if not attrs or "i" not in attrs[0]:
