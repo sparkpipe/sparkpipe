@@ -503,7 +503,8 @@ static void send_tokenizer_unavailable(int fd)
 		"\"code\":\"tokenizer_unavailable\"}}");
 }
 
-static void handle_completion(int fd, char *body, uint32_t body_len)
+static void handle_completion(int fd, char *body, uint32_t body_len,
+	int chat_format)
 {
 	SparkJsonDocument doc;
 	int32_t root, mt;
@@ -538,6 +539,64 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 				return;
 			}
 			prompt_text_bytes = (uint32_t)strlen(prompt_text);
+		}
+	}
+	if (prompt_text == 0 && prompt == 0 && root >= 0)
+	{
+		int32_t messages = SparkJsonFindObjectMember(&doc, root, "messages");
+		size_t chat_cap = 4096u;
+		size_t chat_len = 0u;
+		uint32_t message_index;
+		uint32_t message_count = 0u;
+		char *chat_text;
+		if (messages >= 0 &&
+			SparkJsonTokenIsType(&doc, messages, SPARK_JSON_TOKEN_ARRAY))
+			message_count = SparkJsonGetArrayElementCount(&doc, messages);
+		chat_text = message_count > 0u ? malloc(chat_cap) : 0;
+		for (message_index = 0u;
+			chat_text != 0 && message_index < message_count;
+			++message_index)
+		{
+			int32_t entry = SparkJsonGetArrayElement(&doc, messages, message_index);
+			int32_t content;
+			char *piece = 0;
+			size_t piece_bytes;
+			size_t need;
+			if (entry < 0 ||
+				!SparkJsonTokenIsType(&doc, entry, SPARK_JSON_TOKEN_OBJECT))
+				continue;
+			content = SparkJsonFindObjectMember(&doc, entry, "content");
+			if (content < 0 ||
+				!SparkJsonTokenIsType(&doc, content, SPARK_JSON_TOKEN_STRING) ||
+				SparkJsonCopyString(&doc, content, &piece) != SPARK_STATUS_OK)
+				continue;
+			piece_bytes = strlen(piece);
+			need = chat_len + piece_bytes + 2u;
+			if (need > chat_cap)
+			{
+				char *grown;
+				while (need > chat_cap)
+					chat_cap *= 2u;
+				grown = realloc(chat_text, chat_cap);
+				if (grown == 0)
+				{
+					free(piece);
+					free(chat_text);
+					chat_text = 0;
+					break;
+				}
+				chat_text = grown;
+			}
+			memcpy(chat_text + chat_len, piece, piece_bytes);
+			chat_len += piece_bytes;
+			chat_text[chat_len++] = '\n';
+			free(piece);
+		}
+		if (chat_text != 0)
+		{
+			chat_text[chat_len] = '\0';
+			prompt_text = chat_text;
+			prompt_text_bytes = (uint32_t)chat_len;
 		}
 	}
 	if (root >= 0)
@@ -737,7 +796,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		text_buffer = malloc((size_t)text_capacity);
 		escaped_cap = (size_t)text_capacity * 6u + 8u;
 		escaped = malloc(escaped_cap);
-		response_cap = (size_t)req->tokens_json_len + escaped_cap + 96u;
+		response_cap = (size_t)req->tokens_json_len + escaped_cap + 160u;
 		resp_text = malloc(response_cap);
 		if (text_buffer != 0 && escaped != 0 && resp_text != 0)
 			decode_status = SparkTokenizerSidecarDecodeText(&Sidecar,
@@ -754,12 +813,28 @@ static void handle_completion(int fd, char *body, uint32_t body_len)
 		}
 		if (decode_status == SPARK_STATUS_OK)
 		{
-			memcpy(resp_text, "{\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"", 58u);
-			response_len = 58u;
+			if (chat_format)
+			{
+				memcpy(resp_text, "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"", 91u);
+				response_len = 91u;
+			}
+			else
+			{
+				memcpy(resp_text, "{\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"", 58u);
+				response_len = 58u;
+			}
 			memcpy(resp_text + response_len, escaped, escaped_len);
 			response_len += escaped_len;
-			memcpy(resp_text + response_len, "\"}],\"tokens\":[", 14u);
-			response_len += 14u;
+			if (chat_format)
+			{
+				memcpy(resp_text + response_len, "\"}}],\"tokens\":[", 15u);
+				response_len += 15u;
+			}
+			else
+			{
+				memcpy(resp_text + response_len, "\"}],\"tokens\":[", 14u);
+				response_len += 14u;
+			}
 			memcpy(resp_text + response_len, req->tokens_json, req->tokens_json_len);
 			response_len += req->tokens_json_len;
 			memcpy(resp_text + response_len, "],\"status\":0}", 13u);
@@ -882,7 +957,8 @@ static void *api_connection(void *arg)
 	else if (strcmp(method, "POST") == 0 &&
 		(strcmp(path, "/v1/completions") == 0 ||
 		 strcmp(path, "/v1/chat/completions") == 0))
-		handle_completion(fd, body, body_len);
+		handle_completion(fd, body, body_len,
+			strcmp(path, "/v1/chat/completions") == 0);
 	else
 		send_response(fd, 404, "{\"error\":\"not found\"}");
 	free(body_base);
