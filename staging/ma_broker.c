@@ -2,37 +2,46 @@
 #include <nng/protocol/survey0/survey.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#define DEGREE 16
 #define ENTRY_BYTES 128
 #define JOIN_BYTES (4 + ENTRY_BYTES)
-#define TABLE_BYTES (DEGREE * ENTRY_BYTES)
 
-int main(void)
+int main(int argc, char **argv)
 {
     nng_socket sock;
-    uint8_t table[TABLE_BYTES];
-    int have[DEGREE];
+    int degree = 16;
+    int port = 58399;
+    uint8_t table[16 * ENTRY_BYTES];
+    int have[16];
     int i;
     int total = 0;
     int rv;
+    char url[48];
     setvbuf(stdout, 0, _IOLBF, 0);
+    if (argc >= 3)
+    {
+        degree = atoi(argv[1]);
+        port = atoi(argv[2]);
+    }
+    if (degree != 4 && degree != 8 && degree != 16)
+        return 2;
     memset(have, 0, sizeof(have));
+    snprintf(url, sizeof(url), "tcp://0.0.0.0:%d", port);
     if ((rv = nng_surveyor0_open(&sock)) != 0)
     {
         fprintf(stderr, "broker open: %s\n", nng_strerror(rv));
         return 1;
     }
     nng_socket_set_ms(sock, NNG_OPT_RECVTIMEO, 8000);
-    nng_socket_set_ms(sock, NNG_OPT_SURVEYTIME, 9000);
-    if ((rv = nng_listen(sock, "tcp://0.0.0.0:58399", NULL, 0)) != 0)
+    if ((rv = nng_listen(sock, url, NULL, 0)) != 0)
     {
         fprintf(stderr, "broker listen: %s\n", nng_strerror(rv));
         return 1;
     }
-    printf("BROKER nng surveyor listening\n");
-    while (total < DEGREE)
+    printf("BROKER nng surveyor degree=%d port=%d listening\n", degree, port);
+    while (total < degree)
     {
         uint8_t *msg = 0;
         size_t sz = 0;
@@ -47,26 +56,27 @@ int main(void)
             if (sz == JOIN_BYTES && msg != 0)
             {
                 memcpy(&rank, msg, sizeof(rank));
-                if (rank >= 0 && rank < DEGREE && have[rank] == 0)
+                if (rank >= 0 && rank < degree && have[rank] == 0)
                 {
                     memcpy(table + (size_t)rank * ENTRY_BYTES, msg + 4,
                         ENTRY_BYTES);
                     have[rank] = 1;
                     ++total;
-                    printf("BROKER rank %d joined (%d/16)\n", rank, total);
+                    printf("BROKER rank %d joined (%d/%d)\n", rank, total,
+                        degree);
                 }
             }
             nng_free(msg, sz);
             msg = 0;
-            if (total == DEGREE)
+            if (total == degree)
                 break;
         }
-        if (total < DEGREE)
+        if (total < degree)
             nng_msleep(1000);
     }
     for (i = 0; i < 3; ++i)
     {
-        if ((rv = nng_send(sock, table, TABLE_BYTES, 0)) != 0)
+        if ((rv = nng_send(sock, table, (size_t)degree * ENTRY_BYTES, 0)) != 0)
         {
             fprintf(stderr, "broker table send: %s\n", nng_strerror(rv));
             return 1;

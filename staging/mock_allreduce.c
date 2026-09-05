@@ -1,6 +1,6 @@
 #include <infiniband/verbs.h>
 #include <nng/nng.h>
-#include <nng/protocol/pair1/pair.h>
+#include <nng/protocol/survey0/respond.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -13,7 +13,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define DEGREE 16
+static int degree_g = 16;
+static int broker_port_g = 58399;
 #define GID_INDEX 3
 #define ELEMS 4096
 #define CHUNKS 16
@@ -68,7 +69,7 @@ static uint64_t now_us(void)
 static int parse_rank(const char *text)
 {
     long value = strtol(text, 0, 10);
-    if (value < 0 || value >= DEGREE)
+    if (value < 0 || value >= degree_g)
         return -1;
     return (int)value;
 }
@@ -81,40 +82,69 @@ static int broker_exchange(const uint8_t *my_entry, uint8_t *table_out)
     uint8_t *msg = 0;
     size_t sz = 0;
     int rv;
-    if ((rv = nng_pair1_open_poly(&sock)) != 0)
+    if ((rv = nng_respondent0_open(&sock)) != 0)
     {
         fprintf(stderr, "rank %d: nng open: %s\n", rank_g, nng_strerror(rv));
         return -1;
     }
     nng_socket_set_ms(sock, NNG_OPT_RECVTIMEO, 240000);
-    if ((rv = nng_dial(sock, "tcp://10.10.100.19:58399", NULL,
-            NNG_FLAG_NONBLOCK)) != 0)
     {
-        fprintf(stderr, "rank %d: nng dial: %s\n", rank_g, nng_strerror(rv));
-        return -1;
+        char url[48];
+        snprintf(url, sizeof(url), "tcp://10.10.100.19:%d", broker_port_g);
+        if ((rv = nng_dial(sock, url, NULL, NNG_FLAG_NONBLOCK)) != 0)
+        {
+            fprintf(stderr, "rank %d: nng dial: %s\n", rank_g,
+                nng_strerror(rv));
+            return -1;
+        }
+    }
+    for (;;)
+    {
+        if ((rv = nng_recv(sock, &msg, &sz, NNG_FLAG_ALLOC)) != 0)
+        {
+            fprintf(stderr, "rank %d: nng survey recv: %s\n", rank_g,
+                nng_strerror(rv));
+            return -1;
+        }
+        if (sz == 4u)
+        {
+            nng_free(msg, sz);
+            break;
+        }
+        if (sz == (size_t)(degree_g * ENTRY_BYTES))
+        {
+            memcpy(table_out, msg, (size_t)degree_g * ENTRY_BYTES);
+            nng_free(msg, sz);
+            nng_close(sock);
+            return 0;
+        }
+        nng_free(msg, sz);
     }
     rank32 = (int32_t)rank_g;
     memcpy(join, &rank32, sizeof(rank32));
     memcpy(join + 4, my_entry, ENTRY_BYTES);
-    nng_msleep((uint32_t)rank_g * 100u);
     if ((rv = nng_send(sock, join, sizeof(join), 0)) != 0)
     {
         fprintf(stderr, "rank %d: nng send: %s\n", rank_g, nng_strerror(rv));
         return -1;
     }
-    if ((rv = nng_recv(sock, &msg, &sz, NNG_FLAG_ALLOC)) != 0 || sz !=
-            (size_t)(DEGREE * ENTRY_BYTES))
+    for (;;)
     {
-        fprintf(stderr, "rank %d: nng recv: %s sz=%zu\n", rank_g,
-            rv != 0 ? nng_strerror(rv) : "bad-size", sz);
-        if (msg != 0)
+        if ((rv = nng_recv(sock, &msg, &sz, NNG_FLAG_ALLOC)) != 0)
+        {
+            fprintf(stderr, "rank %d: nng table recv: %s\n", rank_g,
+                nng_strerror(rv));
+            return -1;
+        }
+        if (sz == (size_t)(degree_g * ENTRY_BYTES))
+        {
+            memcpy(table_out, msg, (size_t)degree_g * ENTRY_BYTES);
             nng_free(msg, sz);
-        return -1;
+            nng_close(sock);
+            return 0;
+        }
+        nng_free(msg, sz);
     }
-    memcpy(table_out, msg, DEGREE * ENTRY_BYTES);
-    nng_free(msg, sz);
-    nng_close(sock);
-    return 0;
 }
 
 static void open_qp(link_qp *q)
@@ -359,7 +389,7 @@ static uint16_t expected_sum(int i)
 {
     int r;
     uint32_t total = 0;
-    for (r = 0; r < DEGREE; ++r)
+    for (r = 0; r < degree_g; ++r)
         total += pattern_val(r, i);
     return (uint16_t)(total & 0xffffu);
 }
@@ -369,7 +399,7 @@ int main(int argc, char **argv)
     int next;
     int prev;
     uint8_t my_entry[ENTRY_BYTES];
-    uint8_t table[DEGREE * ENTRY_BYTES];
+    uint8_t table[16 * ENTRY_BYTES];
     uint16_t *acc;
     const uint16_t *landing;
     int i;
@@ -382,9 +412,16 @@ int main(int argc, char **argv)
     double token_serial_us;
     double b1_tok_s;
     double overlap_ceiling;
-    if (argc < 2)
+    if (argc < 5)
     {
-        fprintf(stderr, "usage: mock_allreduce rank\n");
+        fprintf(stderr, "usage: mock_allreduce rank degree start broker_port\n");
+        return 2;
+    }
+    degree_g = atoi(argv[2]);
+    broker_port_g = atoi(argv[4]);
+    if (degree_g != 4 && degree_g != 8 && degree_g != 16)
+    {
+        fprintf(stderr, "degree must be 4, 8 or 16\n");
         return 2;
     }
     rank_g = parse_rank(argv[1]);
@@ -394,8 +431,8 @@ int main(int argc, char **argv)
         return 2;
     }
     setvbuf(stdout, 0, _IOLBF, 0);
-    next = (rank_g + 1) % DEGREE;
-    prev = (rank_g + DEGREE - 1) % DEGREE;
+    next = (rank_g + 1) % degree_g;
+    prev = (rank_g + degree_g - 1) % degree_g;
     open_qp(&qp_next);
     open_qp(&qp_prev);
     memset(my_entry, 0, sizeof(my_entry));
@@ -420,11 +457,11 @@ int main(int argc, char **argv)
         for (i = 0; i < ELEMS; ++i)
             acc[i] = pattern_val(rank_g, i);
         t0 = now_us();
-        for (p = 0; p < DEGREE - 1; ++p)
+        for (p = 0; p < degree_g - 1; ++p)
         {
-            uint32_t send_index = (uint32_t)((rank_g - p + DEGREE) % DEGREE);
+            uint32_t send_index = (uint32_t)((rank_g - p + degree_g) % degree_g);
             uint32_t recv_index =
-                (uint32_t)((rank_g - p - 1 + DEGREE) % DEGREE);
+                (uint32_t)((rank_g - p - 1 + degree_g) % degree_g);
             uint16_t *dst = acc + (size_t)recv_index * CHUNK_ELEMS;
             send_chunk(&qp_next, send_index,
                 (uint32_t)iter * 64u + (uint32_t)p, 1);
@@ -434,13 +471,13 @@ int main(int argc, char **argv)
             for (i = 0; i < CHUNK_ELEMS; ++i)
                 dst[i] = (uint16_t)(dst[i] + landing[i]);
         }
-        for (p = 0; p < DEGREE - 1; ++p)
+        for (p = 0; p < degree_g - 1; ++p)
         {
-            uint32_t send_index = (uint32_t)((rank_g + 1 + p) % DEGREE);
-            uint32_t recv_index = (uint32_t)((rank_g + p) % DEGREE);
+            uint32_t send_index = (uint32_t)((rank_g + 1 + p) % degree_g);
+            uint32_t recv_index = (uint32_t)((rank_g + p) % degree_g);
             uint16_t *dst = acc + (size_t)recv_index * CHUNK_ELEMS;
             send_chunk(&qp_next, send_index,
-                (uint32_t)iter * 64u + 15u + (uint32_t)p, 0);
+                (uint32_t)iter * 64u + 15u + (uint32_t)p, 1);
             if (wait_doorbell(&qp_prev,
                     (uint32_t)iter * 64u + 15u + (uint32_t)p))
                 return 1;
