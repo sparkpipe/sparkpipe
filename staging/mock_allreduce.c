@@ -22,7 +22,7 @@ static int broker_port_g = 58399;
 #define CHUNK_BYTES (CHUNK_ELEMS * 2)
 #define ACC_BYTES (ELEMS * 2)
 #define LANDING_OFF ACC_BYTES
-#define TOTAL_BYTES (ACC_BYTES + 2 * CHUNK_BYTES)
+#define TOTAL_BYTES (ACC_BYTES + 16 * CHUNK_BYTES)
 #define ITERATIONS 50
 #define WEIGHT_MS 25.0
 #define COLLECTIVES_PER_TOKEN 90.0
@@ -327,7 +327,7 @@ static void send_chunk(link_qp *q, uint32_t chunk_index, uint32_t imm,
     wr[0].num_sge = 1;
     wr[0].wr.rdma.remote_addr = q->remote.buf_addr +
         (to_landing != 0 ? (uint64_t)LANDING_OFF +
-            (uint64_t)(imm & 1u) * CHUNK_BYTES : local_off);
+            (uint64_t)(imm & 15u) * CHUNK_BYTES : local_off);
     wr[0].wr.rdma.rkey = q->remote.rkey;
     wr[1].wr_id = 0x11;
     wr[1].opcode = IBV_WR_SEND_WITH_IMM;
@@ -461,7 +461,7 @@ int main(int argc, char **argv)
         {
             uint32_t imm = (uint32_t)iter * 64u + (uint32_t)p;
             const uint16_t *src = (const uint16_t *)(qp_prev.buf +
-                LANDING_OFF + (size_t)(imm & 1u) * CHUNK_BYTES);
+                LANDING_OFF + (size_t)(imm & 15u) * CHUNK_BYTES);
             uint32_t send_index = (uint32_t)((rank_g - p + degree_g) % degree_g);
             uint32_t recv_index =
                 (uint32_t)((rank_g - p - 1 + degree_g) % degree_g);
@@ -477,9 +477,9 @@ int main(int argc, char **argv)
         {
             uint32_t imm = (uint32_t)iter * 64u + 15u + (uint32_t)p;
             const uint16_t *src = (const uint16_t *)(qp_prev.buf +
-                LANDING_OFF + (size_t)(imm & 1u) * CHUNK_BYTES);
-            uint32_t send_index = (uint32_t)((rank_g + 1 + p) % degree_g);
-            uint32_t recv_index = (uint32_t)((rank_g + p) % degree_g);
+                LANDING_OFF + (size_t)(imm & 15u) * CHUNK_BYTES);
+            uint32_t send_index = (uint32_t)((rank_g + 1 - p + degree_g) % degree_g);
+            uint32_t recv_index = (uint32_t)((rank_g - p + degree_g) % degree_g);
             uint16_t *dst = acc + (size_t)recv_index * CHUNK_ELEMS;
             send_chunk(&qp_next, send_index, imm, 1);
             if (wait_doorbell(&qp_prev, imm))
