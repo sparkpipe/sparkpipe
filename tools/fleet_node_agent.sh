@@ -49,11 +49,6 @@ unload_root() {
     for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
         [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -TERM "$p"
     done
-    for p in $(pgrep -f "sparkpipe_weightd"); do
-        c=$(readlink /proc/$p/cwd 2>/dev/null)
-        [ "$c" = "$rr" ] || case "$(tr "\0" " " < /proc/$p/cmdline 2>/dev/null)" in
-            *"$rr"*) kill -TERM "$p" ;; esac
-    done
     for t in $(seq 1 30); do
         gone=1
         for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
@@ -99,10 +94,25 @@ sync_root() {
     [ -n "$out" ] && { echo "$(date +%T) $name changed; restarting"; restart_root "$name"; }
 }
 
+ensure_weightd() {
+    pgrep -f "sparkpipe_weightd" >/dev/null && return 0
+    local w=""
+    local r
+    IFS=, read -ra RA <<< "$ROOTS"
+    for r in "${RA[@]}"; do
+        [ -x "$HOME/sparkdata/$r/bin/sparkpipe_weightd" ] && w="$HOME/sparkdata/$r/bin/sparkpipe_weightd" && break
+    done
+    [ -n "$w" ] || return 0
+    echo "$(date +%T) weightd: starting $w"
+    setsid nohup "$w" --socket /tmp/spark_weightd.sock > "$HOME/weightd.log" 2>&1 < /dev/null &
+}
+
 echo "$$" > "$PID_FILE"
 echo "agent: rank=$RANK roots=$ROOTS ref=$REF_BASE hub=$HUB"
 report
+ensure_weightd
 while true; do
+    ensure_weightd
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do sync_root "$r"; done
     sleep 5
