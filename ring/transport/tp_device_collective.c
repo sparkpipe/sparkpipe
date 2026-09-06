@@ -957,16 +957,11 @@ static void SparkTpDeviceCollectiveTreeOperation(
                 continue;
         }
         operation->arrived |= mask;
-        memcpy(implementation->fold_stage[tree_bit_route(used,bit)] +
-            (uint64_t)operation->credit_index * implementation->fold_pitch,
-            binding->receive_transport,(size_t)local_bytes);
         if (stage + 1u == TREE_STAGES)
         {
             SparkStatus status = SparkTpDeviceCollectiveCopyRows(
                 operation->full_device,local_bytes,
-                implementation->fold_stage[tree_bit_route(used,bit)] +
-                    (uint64_t)operation->credit_index *
-                        implementation->fold_pitch,
+                binding->receive_device,
                 local_bytes,local_bytes,1u,
                 cudaMemcpyDeviceToDevice,operation->cuda_stream);
             if (status != SPARK_STATUS_OK)
@@ -979,15 +974,12 @@ static void SparkTpDeviceCollectiveTreeOperation(
         else
         {
             SparkStatus status;
-            const void *fresh = implementation->fold_stage[
-                tree_bit_route(used,bit)] +
-                (uint64_t)operation->credit_index * implementation->fold_pitch;
             if (operation->operation_kind ==
                 SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
                 status = implementation->combine_u64_max_function(
                     implementation->combine_context,
                     (uint64_t *)operation->full_device,
-                    (const uint64_t *)fresh,
+                    (const uint64_t *)binding->receive_device,
                     operation->active_sequence_count,operation->cuda_stream);
             else
                 status = implementation->combine_bf16_function(
