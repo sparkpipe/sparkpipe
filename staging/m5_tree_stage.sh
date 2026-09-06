@@ -3,7 +3,7 @@
 # allreduce (local g5mesh-src, root glm53flash.bf16.tp16). Steps follow
 # tools/glm53_m5_stage.sh but run on spark5 from the already-built tree.
 set -uo pipefail
-SRC="$HOME/g5mesh-src"
+SRC="${G5_TREE_SRC:-$HOME/g5mesh-src}"
 RR="$HOME/sparkdata/glm53flash.bf16.tp16"
 ALL="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 cd "$SRC" || { echo NO-SRC; exit 1; }

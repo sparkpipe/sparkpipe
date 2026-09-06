@@ -4,6 +4,7 @@
 #include "tp_device_collective_nccl.h"
 
 #include <cuda_runtime_api.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <poll.h>
@@ -1824,7 +1825,13 @@ SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
         SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
         &transport_library);
     if (status != SPARK_STATUS_OK)
+    {
+        const char *dl_reason = dlerror();
+        fprintf(stderr,"TREE-PROBE-DSO-FAIL path=%s status=%u dlerror=%s\n",
+            backend_module_path,(uint32_t)status,
+            dl_reason != 0 ? dl_reason : "none");
         return status;
+    }
     if ((transport_library.transport_interface.capability_flags &
             SPARK_HIDDEN_TRANSPORT_CAP_GPUDIRECT_RDMA) != 0u)
         *memory_mode_out = SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE;
@@ -1919,6 +1926,9 @@ SparkStatus SparkTpDeviceCollectiveCreate(
                 &implementation->consumer_events[credit_index],
                 cudaEventDisableTiming) != cudaSuccess)
         {
+            fprintf(stderr,"TREE-EVENT-FAIL rank=%u credit=%u cuda=%s\n",
+                collective_out->tp_rank,credit_index,
+                cudaGetErrorString(cudaGetLastError()));
             status = SPARK_STATUS_DRIVER_LOAD_ERROR;
             goto fail_create;
         }
@@ -1951,6 +1961,11 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         &implementation->transport_library);
     if (status != SPARK_STATUS_OK)
     {
+        const char *dl_reason = dlerror();
+        fprintf(stderr,"TREE-DSO-FAIL rank=%u path=%s status=%u dlerror=%s\n",
+            config->tp_rank,
+            config->backend_module_path != 0 ? config->backend_module_path : "null",
+            (uint32_t)status,dl_reason != 0 ? dl_reason : "none");
         goto fail_create;
     }
     if ((implementation->transport_library.transport_interface

@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -505,7 +506,11 @@ static SparkStatus SparkGlm5NextPackLoad(
 	SparkStatus status;
 	file = fopen(path,"rb");
 	if ( file == 0 )
+	{
+		fprintf(stderr,"TREE-PACK-OPEN path=%s errno=%u(%s)\n",
+			path != 0 ? path : "null",errno,strerror(errno));
 		return(SPARK_STATUS_NOT_FOUND);
+	}
 	memset(&header,0,sizeof(header));
 	memset(entries,0,sizeof(entries));
 	status = SparkGlm5NextPackFileSize(file,&file_bytes);
@@ -2473,18 +2478,34 @@ static SparkStatus SparkGlm5NextInitializeState(
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->ledger.module_tag = SPARK_GLM5_NEXT_MODULE_TAG;
 	status = SparkGlm5NextModuleConfigure(state,configuration,host_services,&pack_path);
+	if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP configure rc=%u\n",(uint32_t)status);
 	if ( status == SPARK_STATUS_OK && SparkGlm5NextConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextPackLoad(state,pack_path);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP packload rc=%u\n",(uint32_t)status);
+	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextAllocateCaches(state);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP caches rc=%u\n",(uint32_t)status);
+	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextAllocateSlots(state);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP slots rc=%u\n",(uint32_t)status);
+	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextModuleInitializeTpCollective(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP collective rc=%u\n",(uint32_t)status);
+	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextBuildHeadShadow(state);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP shadow rc=%u\n",(uint32_t)status);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm5NextReleaseSlotHost(state);
@@ -2518,13 +2539,21 @@ SparkStatus SparkGlm5NextResidentDecodeStageInitialize(
 {
 	SparkGlm5NextModuleState *state;
 	SparkStatus status;
+	fprintf(stderr,"TREE-MOD-INIT enter\n");
 	status = SparkFirmwareModuleValidateInitialization(configuration,host_services,module_state);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"TREE-MOD-INIT validate rc=%u\n",(uint32_t)status);
 		return(status);
+	}
 	state = 0;
 	status = SparkGlm5NextInitializeState(configuration,host_services,&state);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"TREE-MOD-INIT state rc=%u\n",(uint32_t)status);
 		return(status);
+	}
+	fprintf(stderr,"TREE-MOD-INIT ok\n");
 	*module_state = state;
 	return(SPARK_STATUS_OK);
 }

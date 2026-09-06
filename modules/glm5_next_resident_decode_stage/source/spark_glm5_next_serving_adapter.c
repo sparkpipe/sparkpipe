@@ -766,7 +766,11 @@ static SparkStatus SparkGlm5NextServingLoadDriver(
 	SparkLoadedModelDriverReset(&state->driver);
 	status = SparkLoadModelDriver(configuration->driver_shared_object_path,configuration->node_target,&state->driver,error_buffer,sizeof(error_buffer));
 	if ( status != SPARK_STATUS_OK )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadDriverFailed rc=%d path=%s err=%s\n",
+			(int)status,configuration->driver_shared_object_path,error_buffer);
 		return(status);
+	}
 	descriptor = state->driver.interface->descriptor;
 	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM5_NEXT_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET) != 0 )
 	{

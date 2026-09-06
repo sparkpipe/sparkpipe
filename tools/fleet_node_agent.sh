@@ -16,32 +16,61 @@ HOST=$(hostname)
 RANK=$((16#${HOST#spark}))
 PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"          # local copy of the report
+LAST_REPORT=""
+LAST_START=0
 mkdir -p "$VIEW"
 
 sha16() { [ -f "$1" ] && sha256sum < "$1" | cut -c1-16 || echo none; }
+
+root_state() {
+    local rr="$HOME/sparkdata/$1"
+    if pgrep -f "bin/sparkpipe_model_residentd" >/dev/null && \
+       [ "$(readlink /proc/$(pgrep -f 'bin/sparkpipe_model_residentd' | head -1)/cwd 2>/dev/null)" = "$rr" ]; then
+        local last
+        last=$(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)
+        case "$last" in
+            *"model_residentd ready"*) echo "ready" ;;
+            *) echo "starting: $last" ;;
+        esac
+    else
+        echo "down"
+    fi
+}
 
 report() {
     {
         printf '{"host":"%s","time":"%s"' "$HOST" "$(date -Is)"
         printf ',"weightd":"%s"' "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)"
-        local r first=1
+        local r first=1 states=""
         IFS=, read -ra RA <<< "$ROOTS"
         for r in "${RA[@]}"; do
             local rr="$HOME/sparkdata/$r"
             [ -d "$rr" ] || continue
-            printf '%s"%s":{"residentd":"%s","driver":"%s","adapter":"%s","transport":"%s"}' \
+            local st; st=$(root_state "$r")
+            states="$states$r=$st;"
+            printf '%s"%s":{"state":"%s","residentd":"%s","driver":"%s"}' \
                 "$([ $first = 1 ] && echo ,roots:{ || echo ,)" "$r" \
+                "${st//\"/\\\"}" \
                 "$(sha16 "$rr/bin/sparkpipe_model_residentd")" \
-                "$(sha16 "$rr/stages/stage_000/model_driver.so")" \
-                "$(sha16 "$rr/lib/model_serving_adapter.so")" \
-                "$(sha16 "$rr/lib/hidden_transport.so")"
+                "$(sha16 "$rr/stages/stage_000/model_driver.so")"
             first=0
         done
         [ $first = 0 ] && printf '}'
         printf '}\n'
     } > "$VIEW/$HOST.json"
+    LAST_REPORT="$states"
     scp -q -o BatchMode=yes -o ConnectTimeout=4 "$VIEW/$HOST.json" \
         "$HUB:current/" 2>/dev/null || true
+}
+
+report_if_changed() {
+    local r states=""
+    IFS=, read -ra RA <<< "$ROOTS"
+    for r in "${RA[@]}"; do
+        [ -d "$HOME/sparkdata/$r" ] || continue
+        states="$states$r=$(root_state "$r");"
+    done
+    [ "$states" != "$LAST_REPORT" ] && report
 }
 
 unload_root() {
@@ -86,9 +115,11 @@ sync_root() {
     local ref="$REF_BASE/$name"
     local root="$HOME/sparkdata/$name"
     mkdir -p "$root"
-    for p in lib bin stages config model_resident.json model_package.json; do
+    local sleep_offset=$((RANK % 8))
+    sleep "$sleep_offset"
+    for p in lib bin stages config model_resident.json; do
         local o
-        o=$(rsync -a --out-format=%n "$ref/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log") \
+        o=$(rsync -a --checksum --exclude=stage.json --out-format=%n "$ref/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log") \
             && [ -n "$o" ] && out=1
     done
     [ -n "$out" ] && { echo "$(date +%T) $name changed; restarting"; restart_root "$name"; }
@@ -113,10 +144,23 @@ echo "$$" > "$PID_FILE"
 echo "agent: rank=$RANK roots=$ROOTS ref=$REF_BASE hub=$HUB"
 report
 sync_weightd
+ensure_root() {
+    local name="$1"
+    local st; st=$(root_state "$name")
+    [ "$st" = "down" ] || return 0
+    local now=$(date +%s)
+    [ $((now - LAST_START)) -lt 15 ] && return 0
+    LAST_START=$now
+    echo "$(date +%T) $name: down; starting"
+    restart_root "$name"
+}
+
 while true; do
     sync_weightd
     ensure_weightd
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do sync_root "$r"; done
+    for r in "${RA[@]}"; do ensure_root "$r"; done
+    report_if_changed
     sleep 5
 done
