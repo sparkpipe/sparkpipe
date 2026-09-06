@@ -22,7 +22,7 @@ HOSTS = [h for h in os.environ.get(
     ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
 TP = len(HOSTS)
 RUNTIME_ROOT = os.environ.get("GLM5_NEXT_RUNTIME_ROOT",
-                              "/home/{host}/sparkdata/glm5_next.tp16")
+                              "/home/{host}/sparkdata/glm53flash.bf16.tp16")
 CONTROL_BASE = int(os.environ.get("GLM5_NEXT_CONTROL_BASE", "19560"))
 COLLECTIVE_BASE = int(os.environ.get("GLM5_NEXT_COLLECTIVE_BASE", "63640"))
 TRANSPORT_BASE = int(os.environ.get("GLM5_NEXT_TRANSPORT_BASE", "60710"))
@@ -31,6 +31,7 @@ COLLECTIVE_SESSION_BASE = int(os.environ.get(
 COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
     "GLM5_NEXT_SESSION_HC_BASE", "62500"))
 COLLECTIVE_ID = 9911223344556679
+BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "nccl")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
@@ -65,6 +66,7 @@ TP_COLLECTIVE = {
     # hidden_transport only (stripped below for nccl: that backend
     # validates the BASE member set - no algorithms/rails/d2a).
     "split_ring_min_payload_bytes": 0,
+    "direct_all_to_all_max_payload_bytes": 0,
     # The schema REQUIRES exactly 2 rails (MAX_RAIL_COUNT=2) and 3
     # step_rail_indices (SPLIT_RING_ROUTE_COUNT=3) - glm52's template.
     # The async op INVALID_ARGUMENT discriminator is done differently:
@@ -109,7 +111,7 @@ def stage_config(rank: int) -> dict:
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": "fp8",
-        "stage_pack_path": "packs/glm5_next_stage.tp16.rank%d.g5nsp" % rank,
+        "stage_pack_path": "packs/glm53flash.bf16-official.tp16.rank%d.sp" % rank,
         "max_sequence_positions": 32768,
         # 1024-row prefill chunks (the module's SPARK_BATCH_BUCKET width):
         # the engine chunks prompts to runtime_limits.max_input_rows, and
@@ -148,7 +150,7 @@ def resident_deployment() -> dict:
             "node_target": NODE_TARGET,
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
-            "kv_backing_directory": "/home/%s/kvcache/glm5_next.tp16" % host,
+            "kv_backing_directory": "/home/%s/kvcache/glm53flash.bf16.tp16" % host,
             "kv_backing_maximum_bytes": 8589934592,
             "control_endpoint": {
                 "kind": "tcp",
@@ -161,7 +163,7 @@ def resident_deployment() -> dict:
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {
-            "shared_object_path": "lib/model_driver.so",
+            "shared_object_path": "stages/stage_000/model_driver.so",
             "program_name": "resident_decode",
         },
         "transport": {

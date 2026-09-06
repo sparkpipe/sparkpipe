@@ -62,7 +62,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ ${#HOSTS[@]} -gt 0 ]] || HOSTS=("${ALL_HOSTS[@]}")
 
-runtime_root() { echo "/home/$1/sparkdata/glm5_next.tp16"; }
+runtime_root() { echo "/home/$1/sparkdata/${G5_WAVE_ROOT:-glm5_next.tp16}"; }
 
 ssh_run() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$1" "$2"; }
 
