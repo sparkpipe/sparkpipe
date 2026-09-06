@@ -1212,6 +1212,11 @@ static SparkStatus SparkHiddenTransportPersistentRingPostReceive(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     state = (SparkHiddenTransportPersistentRingState *)transport_state;
+    fprintf(stderr,
+        "STUB-POST state=%p seq=%llu tok=%llu\n",
+        transport_state,
+        (unsigned long long)packet->sequence_id,
+        (unsigned long long)packet->token_index);
     status = SparkHiddenTransportPersistentRingPushCompletion(
         state,
         packet,
@@ -1234,6 +1239,11 @@ static SparkStatus SparkHiddenTransportPersistentRingSend(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    fprintf(stderr,
+        "STUB-SEND state=%p seq=%llu tok=%llu\n",
+        transport_state,
+        (unsigned long long)packet->sequence_id,
+        (unsigned long long)packet->token_index);
     state = (SparkHiddenTransportPersistentRingState *)transport_state;
     status = SparkHiddenTransportPersistentRingPushCompletion(
         state,

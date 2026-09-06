@@ -80,6 +80,9 @@ typedef struct SparkGlm5NextResidentDecodeStageNodeContext
 	uint32_t tp_operation_timeout_milli;
 	uint32_t tp_collective_control_port_base;
 	SparkTpDeviceCollectiveTopology tp_collective_topology;
+	uint16_t tp_collective_session_ports_hc[
+		SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
+		[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
 	const char *tp_collective_backend_module_path;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;

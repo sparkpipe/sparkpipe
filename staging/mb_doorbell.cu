@@ -210,38 +210,38 @@ int main(int argc, char **argv)
     topology.rank_count = degree;
     {
         const char *algo = getenv("BENCH_ALGO");
-        if (algo != 0 && algo[0] == 'd')
-            topology.algorithm_mask =
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL |
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-        else if (algo != 0 && algo[0] == 'r')
-            topology.algorithm_mask =
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING |
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-        else
-            topology.algorithm_mask =
-                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+        topology.algorithm_mask =
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE |
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+        topology.direct_all_to_all_max_payload_bytes = 0u;
+        topology.split_ring_min_payload_bytes = 0u;
+        (void)algo;
     }
     topology.rail_count = 2u;
     {
-        const char *algo = getenv("BENCH_ALGO");
-        topology.direct_all_to_all_max_payload_bytes =
-            algo != 0 && algo[0] == 'd' ? 262144u : 0u;
-        topology.split_ring_min_payload_bytes = algo != 0 && algo[0] == 'r' ? 1u : 0u;
-    }
-    {
-        const char *algo = getenv("BENCH_ALGO");
-        uint32_t first_rail = algo != 0 && algo[0] == 'r' ? 1u : 0u;
-        topology.step_rail_indices[0] = first_rail;
+        topology.step_rail_indices[0] = 0u;
         for (step = 1u; step < SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS; step++)
             topology.step_rail_indices[step] = 1u;
     }
     for (index = 0u; index < degree; index++)
     {
+        uint32_t peer;
+        for (peer = 0u; peer < degree; peer++)
+            if (peer != index)
+                topology.session_ports[index][peer] =
+                    (uint16_t)(BENCH_PORT_BASE + index * 16u + peer);
+    }
+    for (index = 0u; index < degree; index++)
+    {
         snprintf(topology.rank_hosts[index], SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,
             "%s", rail_switch[index]);
-        snprintf(topology.rail_rank_hosts[0][index],
-            SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES, "%s", rail_direct[index]);
+        {
+            const char *rail0_env = getenv("BENCH_RAIL0");
+            snprintf(topology.rail_rank_hosts[0][index],
+                SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES, "%s",
+                rail0_env != 0 && rail0_env[0] == 'd' ?
+                    rail_direct[index] : rail_switch[index]);
+        }
         snprintf(topology.rail_rank_hosts[1][index],
             SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES, "%s", rail_switch[index]);
     }
@@ -294,7 +294,7 @@ int main(int argc, char **argv)
     printf("doorbell rank=%u memory_mode=%u routes=%u connect_ms=%u\n", rank, memory_mode, route_count, config.connect_timeout_milli);
 
     credit_bytes = rows * BENCH_HIDDEN * 2u;
-    total_bytes = route_count * BENCH_CREDITS * credit_bytes;
+    total_bytes = route_count * BENCH_CREDITS * (credit_bytes + 8u);
     if (cudaHostAlloc(&host_send, total_bytes, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
         cudaHostAlloc(&host_receive, total_bytes, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess)
     {
@@ -322,7 +322,7 @@ int main(int argc, char **argv)
             bindings[binding_count].flags = SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS;
             bindings[binding_count].reserved0 = 0u;
             binding_count++;
-            offset += credit_bytes;
+            offset += credit_bytes + 8u;
         }
     }
     config.credit_bindings = bindings;
@@ -409,6 +409,7 @@ int main(int argc, char **argv)
             if (bench_now_ns() - wait_started > 5000000000ull)
             {
                 printf("warmup completion timeout at %llu\n", (unsigned long long)ordinal);
+                SparkTpDeviceCollectiveDumpOperations(&collective);
                 return 1;
             }
             usleep(1000u);
