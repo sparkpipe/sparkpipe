@@ -488,11 +488,14 @@ int main(int argc, char **argv)
     {
         uint64_t *u64_payload;
         uint64_t *u64_host;
+        void *u64_host_alias = 0;
         uint32_t words = rows;
         uint32_t wi;
         int bad64 = 0;
-        if (cudaMallocManaged((void **)&u64_payload,
-                (size_t)words * sizeof(uint64_t)) != cudaSuccess ||
+        if (cudaHostAlloc(&u64_host_alias, (size_t)words * sizeof(uint64_t),
+                cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
+            cudaHostGetDevicePointer((void **)&u64_payload, u64_host_alias,
+                0u) != cudaSuccess ||
             (u64_host = (uint64_t *)malloc(words * sizeof(uint64_t))) == 0)
         {
             printf("u64 alloc failed\n");
@@ -506,8 +509,13 @@ int main(int argc, char **argv)
             {
                 uint64_t v = ((uint64_t)(rank + 1u) << 32u) |
                     (uint64_t)(rank * 1000u + (ordinal - first));
+                if (cudaStreamSynchronize(stream) != cudaSuccess)
+                {
+                    printf("u64 pre-write sync failed\n");
+                    return 1;
+                }
                 for (wi = 0u; wi < words; wi++)
-                    u64_payload[wi] = v;
+                    ((uint64_t *)u64_host_alias)[wi] = v;
                 memset(&submission, 0, sizeof(submission));
                 submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
                 submission.descriptor_bytes = sizeof(submission);
@@ -550,6 +558,11 @@ int main(int argc, char **argv)
                 }
             }
             uint64_t want = ((uint64_t)16u << 32u) | (uint64_t)(15u * 1000u + 7u);
+            if (cudaStreamSynchronize(stream) != cudaSuccess)
+            {
+                printf("u64 verify sync failed\n");
+                return 1;
+            }
             if (cudaMemcpy(u64_host, u64_payload, words * sizeof(uint64_t),
                     cudaMemcpyDeviceToHost) != cudaSuccess)
             {
