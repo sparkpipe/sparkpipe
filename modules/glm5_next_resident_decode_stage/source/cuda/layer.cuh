@@ -1167,8 +1167,6 @@ static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
     return((int)vec_pass);
 }
 
-<<<<<<< HEAD
-=======
 static int32_t Glm5NextKdaReplayRecord(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -1220,7 +1218,6 @@ static int32_t Glm5NextKdaReplayRecord(
  * LmOutputGateKernel, which multiplies by sigmoid(gate) - RMSNormGated's
  * "sigmoid" activation, same order.
  */
->>>>>>> cde1067... glm5_next: MTP chain speculation (opt-in, off by default, B1, TP1-gated)
 static int32_t Glm5NextLayerKda(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
