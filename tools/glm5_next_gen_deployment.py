@@ -32,6 +32,9 @@ COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
     "GLM5_NEXT_SESSION_HC_BASE", "62500"))
 COLLECTIVE_ID = 9911223344556679
 BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "nccl")
+PACK_TEMPLATE = os.environ.get(
+    "GLM5_NEXT_PACK_TEMPLATE",
+    "packs/glm53flash.bf16-official.tp16.rank%d.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
@@ -111,7 +114,7 @@ def stage_config(rank: int) -> dict:
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": "fp8",
-        "stage_pack_path": "packs/glm53flash.bf16-official.tp16.rank%d.sp" % rank,
+        "stage_pack_path": PACK_TEMPLATE % rank,
         "max_sequence_positions": 32768,
         # 1024-row prefill chunks (the module's SPARK_BATCH_BUCKET width):
         # the engine chunks prompts to runtime_limits.max_input_rows, and

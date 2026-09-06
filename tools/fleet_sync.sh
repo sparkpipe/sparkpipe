@@ -1,37 +1,42 @@
 #!/usr/bin/env bash
-# fleet_sync.sh — keep every node's runtime root in sync with a reference
-# directory. The reference IS the manifest: build into it, the loop
-# converges the fleet within one sleep. Syncs only the software subtrees;
-# logs, packs and kvcache in the roots are untouched.
+# fleet_sync.sh — install/start/stop the per-node pull loops on every spark.
+# Each node pulls the reference tree itself (parallel, no fan-out) and
+# restarts its own daemons when a pull changes anything. The reference is
+# the manifest: build into it, the fleet converges within one sleep.
 #
-# usage: tools/fleet_sync.sh REFERENCE_ROOT RUNTIME_ROOT_NAME [once]
+# usage: tools/fleet_sync.sh REFERENCE ROOT_NAME [start|stop|status]
 set -uo pipefail
-REF="${1:?reference root}"
-NAME="${2:?runtime root name (under ~/sparkdata/)}"
-MODE="${3:-loop}"
+REF="${1:?reference tree}"
+NAME="${2:?runtime root name}"
+CMD="${3:-start}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
        spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
-RSYNC="rsync -a --info=name0"
-PARTS=(lib bin stages config model_resident.json model_package.json)
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 
-sync_once() {
-    local h p
+case "$CMD" in
+start)
     for h in "${HOSTS[@]}"; do
-        for p in "${PARTS[@]}"; do
-            [ -e "$REF/$p" ] || continue
-            $RSYNC "$REF/$p" "$h:sparkdata/$NAME/" &
-        done
+        scp -q "$HERE/fleet_node_sync.sh" "$h:~/fleet_node_sync.sh" &
     done
     wait
-}
-
-if [ "$MODE" = once ]; then
-    sync_once
-    echo "synced once"
-    exit 0
-fi
-echo "sync loop: $REF -> sparkdata/$NAME on ${#HOSTS[@]} hosts (ctrl-c to stop)"
-while true; do
-    sync_once
-    sleep 5
-done
+    for h in "${HOSTS[@]}"; do
+        $SSH "$h" "chmod +x ~/fleet_node_sync.sh; pkill -f fleet_node_sync.sh.*$NAME 2>/dev/null; setsid nohup ~/fleet_node_sync.sh '$REF' '$NAME' > ~/fleet_node_sync.log 2>&1 < /dev/null &" &
+    done
+    wait
+    echo "pull loops running on ${#HOSTS[@]} hosts (ref=$REF)"
+    ;;
+stop)
+    for h in "${HOSTS[@]}"; do
+        $SSH "$h" "pkill -f fleet_node_sync.sh.*$NAME; true" &
+    done
+    wait
+    echo "pull loops stopped"
+    ;;
+status)
+    for h in "${HOSTS[@]}"; do
+        n=$($SSH "$h" "pgrep -fc 'fleet_node_sync.sh $REF $NAME' 2>/dev/null" || true)
+        echo "$h: ${n:-0}"
+    done
+    ;;
+esac
