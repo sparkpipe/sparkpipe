@@ -957,11 +957,23 @@ static void SparkTpDeviceCollectiveTreeOperation(
                 continue;
         }
         operation->arrived |= mask;
+        if (operation->operation_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+            memcpy(implementation->fold_stage[tree_bit_route(used,bit)] +
+                (uint64_t)operation->credit_index * implementation->fold_pitch,
+                binding->receive_transport,(size_t)local_bytes);
         if (stage + 1u == TREE_STAGES)
         {
+            const void *down_src = binding->receive_device;
+            if (operation->operation_kind ==
+                SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+                down_src = implementation->fold_stage[
+                    tree_bit_route(used,bit)] +
+                    (uint64_t)operation->credit_index *
+                        implementation->fold_pitch;
             SparkStatus status = SparkTpDeviceCollectiveCopyRows(
                 operation->full_device,local_bytes,
-                binding->receive_device,
+                down_src,
                 local_bytes,local_bytes,1u,
                 cudaMemcpyDeviceToDevice,operation->cuda_stream);
             if (status != SPARK_STATUS_OK)
@@ -977,20 +989,17 @@ static void SparkTpDeviceCollectiveTreeOperation(
             if (operation->operation_kind ==
                 SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
             {
-                if (operation->ordinal >= 268u)
-                    fprintf(stderr,
-                        "TREE-U64FOLD rank=%u ord=%llu stage=%u bit=%u src=%llx dst=%llx n=%u\n",
-                        collective->tp_rank,
-                        (unsigned long long)operation->ordinal,stage,bit,
-                        (unsigned long long)*(volatile uint64_t *)
-                            binding->receive_device,
-                        (unsigned long long)*(volatile uint64_t *)
-                            operation->full_device,
-                        operation->active_sequence_count);
+                const void *u64_src = binding->receive_device;
+                if (operation->operation_kind ==
+                    SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+                    u64_src = implementation->fold_stage[
+                        tree_bit_route(used,bit)] +
+                        (uint64_t)operation->credit_index *
+                            implementation->fold_pitch;
                 status = implementation->combine_u64_max_function(
                     implementation->combine_context,
                     (uint64_t *)operation->full_device,
-                    (const uint64_t *)binding->receive_device,
+                    (const uint64_t *)u64_src,
                     operation->active_sequence_count,operation->cuda_stream);
             }
             else
