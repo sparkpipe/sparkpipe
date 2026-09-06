@@ -23,14 +23,14 @@ start)
     done
     wait
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "mkdir -p current; chmod +x ~/fleet_node_agent.sh; pkill -f fleet_node_agent.sh 2>/dev/null; setsid nohup ~/fleet_node_agent.sh '$REF' '$ROOTS' '$HUB' > ~/fleet_agent.log 2>&1 < /dev/null &" &
+        $SSH "$h" "mkdir -p current ~/.config/systemd/user; chmod +x ~/fleet_node_agent.sh; [ -f ~/.fleet_agent.pid ] && kill \$(cat ~/.fleet_agent.pid) 2>/dev/null; printf '[Unit]\nDescription=fleet release agent\nAfter=network-online.target\n\n[Service]\nExecStart=%s/fleet_node_agent.sh %s %s %s\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n' \"\$HOME\" '$REF' '$ROOTS' '$HUB' > ~/.config/systemd/user/fleet-agent.service; systemctl --user daemon-reload; systemctl --user enable --now fleet-agent.service" &
     done
     wait
     echo "release agents running on ${#HOSTS[@]} hosts -> $REF (view: $HUB:current/)"
     ;;
 stop)
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "pkill -f fleet_node_agent.sh; true" &
+        $SSH "$h" "[ -f ~/.fleet_agent.pid ] && kill \$(cat ~/.fleet_agent.pid) 2>/dev/null; true" &
     done
     wait
     echo "agents stopped"

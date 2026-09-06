@@ -18,7 +18,7 @@ PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"          # local copy of the report
 mkdir -p "$VIEW"
 
-sha16() { sha256sum < "$1" 2>/dev/null | cut -c1-16; }
+sha16() { [ -f "$1" ] && sha256sum < "$1" | cut -c1-16 || echo none; }
 
 report() {
     {
@@ -44,13 +44,40 @@ report() {
         "$HUB:current/" 2>/dev/null || true
 }
 
-restart_root() {
-    local name="$1" rr="$HOME/sparkdata/$1" p
+unload_root() {
+    local rr="$HOME/sparkdata/$1" p t gone
     for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
         [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -TERM "$p"
     done
-    sleep 1
+    for p in $(pgrep -f "sparkpipe_weightd"); do
+        c=$(readlink /proc/$p/cwd 2>/dev/null)
+        [ "$c" = "$rr" ] || case "$(tr "\0" " " < /proc/$p/cmdline 2>/dev/null)" in
+            *"$rr"*) kill -TERM "$p" ;; esac
+    done
+    for t in $(seq 1 30); do
+        gone=1
+        for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+            [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && gone=0
+        done
+        [ "$gone" = 1 ] && break
+        sleep 1
+    done
+    [ "$gone" = 1 ] || { echo "$(date +%T) $1: prior residentd not exited; NOT starting new" >&2; return 1; }
+    local pack_gb=$(du -sBG "$rr/packs" 2>/dev/null | cut -dG -f1)
+    pack_gb=${pack_gb:-0}
+    for t in $(seq 1 30); do
+        local avail=$(awk "/MemAvailable/ {print int(\$2/1048576)}" /proc/meminfo)
+        [ "$avail" -ge $((pack_gb + 8)) ] && return 0
+        sleep 2
+    done
+    echo "$(date +%T) $1: MemAvailable never reached $((pack_gb + 8))GB; NOT starting new" >&2
+    return 1
+}
+
+restart_root() {
+    local name="$1" rr="$HOME/sparkdata/$1"
     cd "$rr" || return 1
+    unload_root "$name" || return 1
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     mv residentd.log residentd.log.prev 2>/dev/null
     LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
@@ -61,14 +88,12 @@ restart_root() {
 
 sync_root() {
     local name="$1" out="" p
-    REF="$REF_BASE/$name"
-    [ -d "$REF" ] || return 0
-    ROOT="$HOME/sparkdata/$name"
-    mkdir -p "$ROOT"
+    local ref="$REF_BASE/$name"
+    local root="$HOME/sparkdata/$name"
+    mkdir -p "$root"
     for p in lib bin stages config model_resident.json model_package.json; do
-        [ -e "$REF/$p" ] || continue
         local o
-        o=$(rsync -a --out-format=%n "$REF/$p" "$ROOT/" 2>/dev/null) \
+        o=$(rsync -a --out-format=%n "$ref/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log") \
             && [ -n "$o" ] && out=1
     done
     [ -n "$out" ] && { echo "$(date +%T) $name changed; restarting"; restart_root "$name"; }
