@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# glm53_serve.sh — efficient fleet relaunch. The daemons are
-# load-order-independent (background accepts, retrying connects) and every
-# listener sets SO_REUSEADDR: no registrar phase, no TIME_WAIT sleeps, no
-# blind ready windows. TERM in parallel -> same-second launch ->
+# fleet_serve.sh — relaunch a resident deployment on the fleet. The daemons
+# are load-order-independent (background accepts, retrying connects) and
+# listeners set SO_REUSEADDR: TERM in parallel -> same-second launch ->
 # ready-or-error poll that fails in seconds -> api.
 #
-# usage: tools/glm53_serve.sh [stop|start|api|full]   (default full)
+# usage: tools/fleet_serve.sh RUNTIME_ROOT_NAME [stop|start|api|full]
+#        (default full; api host spark0 port 8433 unless G5_API_HOST/PORT)
 set -uo pipefail
-ROOT_NAME="${G5_WAVE_ROOT:-glm53flash.bf16.tp16}"
+NAME="${1:?runtime root name (under ~/sparkdata/)}"
+CMD="${2:-full}"
 API_HOST="${G5_API_HOST:-spark0}"
 API_PORT="${G5_API_PORT:-8433}"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
        spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 
-rr() { echo "/home/$1/sparkdata/$ROOT_NAME"; }
+rr() { echo "/home/$1/sparkdata/$NAME"; }
 
 stop() {
     local h
@@ -40,7 +41,7 @@ start() {
             line=$($SSH "$h" "tail -1 '$(rr "$h")'/residentd.log 2>/dev/null" 2>/dev/null || true)
             case "$line" in
                 *"model_residentd ready"*) ready=$((ready+1)) ;;
-                *usage*|*error*|*failed*) err="$err [$h] $line" ;;
+                *usage*|*error*|*failed*|*Mismatch*) err="$err [$h] $line" ;;
             esac
         done
         if [ -n "$err" ]; then
@@ -64,7 +65,7 @@ api() {
     echo
 }
 
-case "${1:-full}" in
+case "$CMD" in
     stop) stop ;;
     start) start ;;
     api) api ;;

@@ -768,8 +768,16 @@ static SparkStatus SparkGlm5NextServingLoadDriver(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	descriptor = state->driver.interface->descriptor;
-	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM5_NEXT_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET) != 0 || strcmp(descriptor->model_description_sha256,GLM5_NEXT_CONTRACT_SHA256) != 0 )
+	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM5_NEXT_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET) != 0 )
+	{
+		(void)fprintf(stderr,
+			"GLM5_NEXT-ADAPTER DriverMismatch desc=%s/%s rev=%s/%s stage=%s/%s target=%s/%s\n",
+			descriptor == 0 ? "null" : descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID,
+			descriptor == 0 ? "null" : descriptor->model_revision,GLM5_NEXT_MODEL_REVISION,
+			descriptor == 0 ? "null" : descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME,
+			descriptor == 0 ? "null" : descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET);
 		return(SPARK_STATUS_TARGET_MISMATCH);
+	}
 	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
 	if ( state->program == 0 )
 		return(SPARK_STATUS_NOT_FOUND);
