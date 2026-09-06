@@ -33,9 +33,6 @@ static int SparkGlm5NextProbeEnabled(void)
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
 #error "GLM5_NEXT_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
 #endif
-#ifndef GLM5_NEXT_CONTRACT_SHA256
-#error "GLM5_NEXT_CONTRACT_SHA256 must identify the exact model package contract"
-#endif
 
 #define SPARK_GLM5_NEXT_MODULE_TAG "glm5_next_stage"
 #define SPARK_GLM5_NEXT_STAGEPACK_MAX_TENSOR_COUNT 2048u
@@ -177,35 +174,6 @@ struct SparkGlm5NextModuleState
 	atomic_ullong tp_next_ordinal_hc;
 };
 
-static uint32_t SparkGlm5NextBytesAreZero(const uint8_t *bytes,uint32_t count)
-{
-	uint32_t index;
-	if ( bytes == 0 )
-		return(1u);
-	for (index=0u; index<count; index++)
-		if ( bytes[index] != 0u )
-			return(0u);
-	return(1u);
-}
-
-static int32_t SparkGlm5NextContractHash(uint8_t hash[SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES])
-{
-	const char *text;
-	uint32_t index,high,low;
-	text = GLM5_NEXT_CONTRACT_SHA256;
-	if ( strlen(text) != 2u * SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES )
-		return(-1);
-	for (index=0u; index<SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES; index++)
-	{
-		high = text[2u * index] >= '0' && text[2u * index] <= '9' ? (uint32_t)(text[2u * index] - '0') : text[2u * index] >= 'a' && text[2u * index] <= 'f' ? (uint32_t)(text[2u * index] - 'a' + 10) : UINT32_MAX;
-		low = text[2u * index + 1u] >= '0' && text[2u * index + 1u] <= '9' ? (uint32_t)(text[2u * index + 1u] - '0') : text[2u * index + 1u] >= 'a' && text[2u * index + 1u] <= 'f' ? (uint32_t)(text[2u * index + 1u] - 'a' + 10) : UINT32_MAX;
-		if ( high > 15u || low > 15u )
-			return(-2);
-		hash[index] = (uint8_t)((high << 4u) | low);
-	}
-	return(0);
-}
-
 static SparkStatus SparkGlm5NextModuleConfigure(
 	SparkGlm5NextModuleState *state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -224,8 +192,6 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 		return(SPARK_STATUS_UNSUPPORTED);
 	if ( context->tp_degree != 1u && (SPARK_GLM5_NEXT_MODEL_HEAD_COUNT % context->tp_degree != 0u || SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT % context->tp_degree != 0u || SPARK_GLM5_NEXT_MODEL_DENSE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u || SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
 	state->stage_index = context->stage_index;
 	state->first_layer_index = context->first_layer_index;
 	state->layer_count = context->layer_count;
@@ -270,7 +236,6 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 	const SparkGlm5NextStagePackHeader *header,
 	uint64_t file_bytes)
 {
-	uint8_t contract_sha256[SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES];
 	uint64_t directory_bytes,directory_end;
 	if ( state == 0 || header == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -284,8 +249,13 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
-	if ( SparkGlm5NextContractHash(contract_sha256) < 0 || header->model_revision[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 || memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)) != 0 || SparkGlm5NextBytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)) != 0u || SparkGlm5NextBytesAreZero(header->pack_recipe_sha256,sizeof(header->pack_recipe_sha256)) != 0u )
+	if ( header->model_revision[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 )
+	{
+		(void)fprintf(stderr,
+			"GLM5_NEXT-MODULE PackIdentityMismatch pack_rev=%s state_rev=%s\n",
+			header->model_revision,state->model_revision);
 		return(SPARK_STATUS_HASH_MISMATCH);
+	}
 	if ( header->file_bytes != file_bytes || header->directory_offset < header->header_bytes || header->directory_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || header->tensor_count > UINT64_MAX / header->directory_entry_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;
@@ -550,6 +520,12 @@ static SparkStatus SparkGlm5NextPackLoad(
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
 	{
 		status = SparkGlm5NextPackValidateEntryGeometry(state,&header,&entries[index],&shape);
+		if ( status != SPARK_STATUS_OK )
+			(void)fprintf(stderr,
+				"GLM5_NEXT-MODULE EntryMismatch index=%u layer=%u kind=%u rows=%u cols=%u codec=%u payload=%llu\n",
+				index,entries[index].layer_index,entries[index].tensor_kind,
+				entries[index].rows,entries[index].columns,entries[index].weight_codec,
+				(unsigned long long)entries[index].payload_bytes);
 		if ( status == SPARK_STATUS_OK )
 			SparkGlm5NextPackMarkSeen(state,&entries[index]);
 	}
@@ -1493,6 +1469,8 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration_hc);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	memcpy(configuration_hc.session_ports,context->tp_collective_session_ports_hc,
+		sizeof(configuration_hc.session_ports));
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
 		configuration.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
@@ -1517,7 +1495,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
+		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
 		if ( credit_bytes == 0u || total_bytes > UINT64_MAX - credit_bytes * configuration.credit_count )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		total_bytes += credit_bytes * configuration.credit_count;
@@ -1558,7 +1536,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
+		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
 		for (credit=0u; credit<configuration.credit_count; credit++)
 		{
 			SparkTpDeviceCollectiveCreditBinding *binding;
@@ -1596,7 +1574,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	{
 		uint32_t hc_credit_count = configuration_hc.credit_count;
 		uint64_t hc_credit_bytes = (uint64_t)configuration_hc.max_active_sequence_count *
-			configuration_hc.local_hidden_dimension * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
+			configuration_hc.local_hidden_dimension * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
 		uint64_t hc_total;
 		void *hc_mapped_send,*hc_mapped_receive;
 		hc_total = 0u;
