@@ -952,7 +952,7 @@ static void SparkTpDeviceCollectiveTreeOperation(
             if (local_bytes > nonce_at)
                 nonce_at = local_bytes;
             if (*(volatile uint64_t *)
-                    ((uint8_t *)binding->receive_transport + nonce_at) <
+                    ((uint8_t *)binding->receive_transport + nonce_at) !=
                 operation->ordinal + 1u)
                 continue;
         }
