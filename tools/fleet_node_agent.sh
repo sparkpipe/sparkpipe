@@ -98,10 +98,12 @@ unload_root() {
     return 1
 }
 
-restart_root() {
-    local name="$1" rr="$HOME/sparkdata/$1"
+start_root() {
+    local name="$1" rr="$HOME/sparkdata/$1" p
+    for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
+    done
     cd "$rr" || return 1
-    unload_root "$name" || return 1
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     mv residentd.log residentd.log.prev 2>/dev/null
     LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
@@ -110,19 +112,43 @@ restart_root() {
     report
 }
 
+restart_root() {
+    local name="$1"
+    cd "$HOME/sparkdata/$1" || return 1
+    unload_root "$name" || return 1
+    start_root "$name"
+}
+
+FLEET_SIZE=16
+
 sync_root() {
-    local name="$1" out="" p
-    local ref="$REF_BASE/$name"
+    local name="$1" p
+    local refhost="${REF_BASE%%:*}"
+    local refdir="${REF_BASE#*:}/$name"
     local root="$HOME/sparkdata/$name"
     mkdir -p "$root"
     local sleep_offset=$((RANK % 8))
     sleep "$sleep_offset"
     for p in lib bin stages config model_resident.json; do
-        local o
-        o=$(rsync -a --checksum --exclude=stage.json --out-format=%n "$ref/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log") \
-            && [ -n "$o" ] && out=1
+        rsync -a --checksum --omit-dir-times --exclude=stage.json "$REF_BASE/$name/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log" || true
     done
-    [ -n "$out" ] && { echo "$(date +%T) $name changed; restarting"; restart_root "$name"; }
+    local upd
+    upd=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$refhost" "test -f '$refdir/UPDATE' && cat '$refdir/UPDATE'") || return 0
+    if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
+        unload_root "$name" || return 0
+        ssh -o BatchMode=yes "$refhost" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
+        upd=$(printf '%s\ndown:%s\n' "$upd" "$HOST")
+    fi
+    [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -ge "$FLEET_SIZE" ] || return 0
+    if ! printf '%s\n' "$upd" | grep -qx "up:$HOST"; then
+        start_root "$name" || return 0
+        ssh -o BatchMode=yes "$refhost" "echo up:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
+        upd=$(printf '%s\nup:%s\n' "$upd" "$HOST")
+    fi
+    [ "$(printf '%s\n' "$upd" | grep -c '^up:')" -ge "$FLEET_SIZE" ] || return 0
+    local c
+    c=$(ssh -o BatchMode=yes "$refhost" "ls '$refdir' 2>/dev/null | sed -n 's/^UPDATE\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1")
+    ssh -o BatchMode=yes "$refhost" "mv '$refdir/UPDATE' '$refdir/UPDATE.$(( ${c:-0} + 1 ))'" 2>/dev/null || true
 }
 
 sync_weightd() {

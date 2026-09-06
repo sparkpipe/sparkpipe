@@ -1,7 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
-#include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,12 +27,14 @@ static int SparkGlm5NextProbeEnabled(void)
 #include "sparkpipe/spark_glm5_next_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_head_screen.h"
-#include "sparkpipe/spark_speculation_policy.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
 #include "spark_glm5_next_stagepack_format.h"
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
 #error "GLM5_NEXT_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
+#endif
+#ifndef GLM5_NEXT_CONTRACT_SHA256
+#error "GLM5_NEXT_CONTRACT_SHA256 must identify the exact model package contract"
 #endif
 
 #define SPARK_GLM5_NEXT_MODULE_TAG "glm5_next_stage"
@@ -70,9 +71,6 @@ typedef struct SparkGlm5NextAsyncCompletion
 	uint64_t lane_sequence_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t *output_token_destination;
-	uint32_t burst_token_count;
-	uint64_t mtp_cache_extra;
-	uint32_t mtp_draft_tokens[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
 	SparkModelDriverCompletion completion;
 } SparkGlm5NextAsyncCompletion;
 
@@ -118,15 +116,6 @@ struct SparkGlm5NextModuleState
 	uint64_t global_seen;
 	uint64_t mtp_seen;
 	uint32_t pack_has_mtp;
-	SparkGlm5NextLayerWeights mtp_layer;
-	const void *mtp_eh_proj_bf16;
-	const void *mtp_enorm_bf16;
-	const void *mtp_hnorm_bf16;
-	const void *mtp_shared_norm_bf16;
-	uint32_t mtp_enabled;
-	uint16_t *mtp_lane_hidden_bf16;
-	uint8_t *mtp_lane_armed;
-	uint64_t kda_replay_layer_bytes;
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
@@ -188,6 +177,7 @@ struct SparkGlm5NextModuleState
 	atomic_ullong tp_next_ordinal_hc;
 };
 
+
 static SparkStatus SparkGlm5NextModuleConfigure(
 	SparkGlm5NextModuleState *state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -200,12 +190,14 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	context = (const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context;
 	if ( context->abi_version != SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( context->stage_count != SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm5NextResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM5_NEXT_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM5_NEXT_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || context->decode_split_context_threshold > context->max_sequence_positions || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || (context->flags & ~SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS) != 0u || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
+	if ( context->stage_count != SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm5NextResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM5_NEXT_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM5_NEXT_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || context->decode_split_context_threshold > context->max_sequence_positions || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_UNSUPPORTED);
 	if ( context->tp_degree != 1u && (SPARK_GLM5_NEXT_MODEL_HEAD_COUNT % context->tp_degree != 0u || SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT % context->tp_degree != 0u || SPARK_GLM5_NEXT_MODEL_DENSE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u || SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
+		return(SPARK_STATUS_SCHEMA_ERROR);
 	state->stage_index = context->stage_index;
 	state->first_layer_index = context->first_layer_index;
 	state->layer_count = context->layer_count;
@@ -222,7 +214,6 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	state->execution_row_capacity = context->execution_row_capacity;
 	state->owns_embedding = context->stage_index == 0u ? 1u : 0u;
 	state->owns_final_head = context->stage_index + 1u == context->stage_count ? 1u : 0u;
-	state->mtp_enabled = (context->flags & SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP) != 0u ? 1u : 0u;
 	state->execution_stream = host_services->execution_stream;
 	(void)snprintf(state->model_revision,sizeof(state->model_revision),"%s",context->model_revision);
 	*pack_path = context->stage_pack_path;
@@ -264,13 +255,6 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
-	if ( header->model_revision[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 )
-	{
-		(void)fprintf(stderr,
-			"GLM5_NEXT-MODULE PackIdentityMismatch pack_rev=%s state_rev=%s\n",
-			header->model_revision,state->model_revision);
-		return(SPARK_STATUS_HASH_MISMATCH);
-	}
 	if ( header->file_bytes != file_bytes || header->directory_offset < header->header_bytes || header->directory_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || header->tensor_count > UINT64_MAX / header->directory_entry_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;
@@ -373,7 +357,6 @@ static void SparkGlm5NextPackMarkSeen(
 }
 
 static SparkStatus SparkGlm5NextPackAssignLayer(
-	SparkGlm5NextModuleState *state,
 	SparkGlm5NextLayerWeights *weights,
 	uint32_t tensor_kind,
 	const void *payload,
@@ -423,10 +406,12 @@ static SparkStatus SparkGlm5NextPackAssignLayer(
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_SCALE: weights->hc_ffn_scale_f32 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_INDEX_COMPRESS_APE: weights->index_compress_ape_f32 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_INDEX_COMPRESS_GATE: weights->index_compress_gate_bf16 = payload; break;
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_EH_PROJ: state->mtp_eh_proj_bf16 = payload; break;
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_ENORM: state->mtp_enorm_bf16 = payload; break;
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_HNORM: state->mtp_hnorm_bf16 = payload; break;
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_SHARED_NORM: state->mtp_shared_norm_bf16 = payload; break;	default: return(SPARK_STATUS_SCHEMA_ERROR);
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_EH_PROJ:
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_ENORM:
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_HNORM:
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_MTP_SHARED_NORM:
+		break;
+	default: return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -437,10 +422,8 @@ static SparkStatus SparkGlm5NextPackAssign(
 	const void *payload,
 	const void *scale)
 {
-	if ( entry->layer_index == SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
-		return(SparkGlm5NextPackAssignLayer(state,&state->mtp_layer,entry->tensor_kind,payload,scale));
 	if ( entry->layer_index != SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER )
-		return(SparkGlm5NextPackAssignLayer(state,&state->layers[entry->layer_index - state->first_layer_index],entry->tensor_kind,payload,scale));
+		return(SparkGlm5NextPackAssignLayer(&state->layers[entry->layer_index - state->first_layer_index],entry->tensor_kind,payload,scale));
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
@@ -521,11 +504,7 @@ static SparkStatus SparkGlm5NextPackLoad(
 	SparkStatus status;
 	file = fopen(path,"rb");
 	if ( file == 0 )
-	{
-		fprintf(stderr,"TREE-PACK-OPEN path=%s errno=%u(%s)\n",
-			path != 0 ? path : "null",errno,strerror(errno));
 		return(SPARK_STATUS_NOT_FOUND);
-	}
 	memset(&header,0,sizeof(header));
 	memset(entries,0,sizeof(entries));
 	status = SparkGlm5NextPackFileSize(file,&file_bytes);
@@ -540,12 +519,6 @@ static SparkStatus SparkGlm5NextPackLoad(
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
 	{
 		status = SparkGlm5NextPackValidateEntryGeometry(state,&header,&entries[index],&shape);
-		if ( status != SPARK_STATUS_OK )
-			(void)fprintf(stderr,
-				"GLM5_NEXT-MODULE EntryMismatch index=%u layer=%u kind=%u rows=%u cols=%u codec=%u payload=%llu\n",
-				index,entries[index].layer_index,entries[index].tensor_kind,
-				entries[index].rows,entries[index].columns,entries[index].weight_codec,
-				(unsigned long long)entries[index].payload_bytes);
 		if ( status == SPARK_STATUS_OK )
 			SparkGlm5NextPackMarkSeen(state,&entries[index]);
 	}
@@ -554,7 +527,8 @@ static SparkStatus SparkGlm5NextPackLoad(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextPackValidateInventory(state);
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
-		status = SparkGlm5NextPackLoadEntry(state,file,&entries[index]);
+		if ( entries[index].layer_index != SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
+			status = SparkGlm5NextPackLoadEntry(state,file,&entries[index]);
 	if ( fclose(file) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	return(status);
@@ -746,66 +720,6 @@ static SparkStatus SparkGlm5NextAllocateSlots(SparkGlm5NextModuleState *state)
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotHidden(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotMlp(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotHead(state,&state->slots[index]);
-	}
-	return(status);
-}
-
-static SparkStatus SparkGlm5NextAllocateMtp(SparkGlm5NextModuleState *state)
-{
-	SparkGlm5NextKdaReplayLayout layout;
-	uint64_t kv_pool_bytes,index_pool_bytes,replay_bytes,steps_bytes,conv_bytes;
-	uint32_t index,rank_heads,step;
-	SparkStatus status;
-	if ( state->mtp_enabled == 0u )
-		return(SPARK_STATUS_OK);
-	if ( state->execution_row_capacity < SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	rank_heads = SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / state->tp_degree;
-	layout = SparkGlm5NextKdaReplayLayoutFor(rank_heads,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u);
-	state->kda_replay_layer_bytes = layout.layer_bytes;
-	kv_pool_bytes = (uint64_t)SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES;
-	index_pool_bytes = (uint64_t)SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u * SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
-	replay_bytes = layout.layer_bytes * state->kda_layer_count;
-	steps_bytes = (uint64_t)state->kda_layer_count * (SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u) * SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES;
-	conv_bytes = (uint64_t)(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u) * rank_heads * SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
-	state->mtp_lane_armed = (uint8_t *)calloc(state->resident_sequence_capacity,1u);
-	if ( state->mtp_lane_armed == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkGlm5NextAllocateBytes(state,state->resident_sequence_capacity,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,sizeof(uint16_t),(void **)&state->mtp_lane_hidden_bf16);
-	for (index=0u; status==SPARK_STATUS_OK && index<state->pipeline_slot_count; index++)
-	{
-		SparkGlm5NextExecutionSlot *slot = &state->slots[index];
-		status = SparkGlm5NextAllocateRows(state,1u,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->mtp_hidden_bf16);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,1u,2u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->mtp_concat_bf16);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,kv_pool_bytes,1u,(void **)&slot->mtp_kv_pool);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,index_pool_bytes,1u,(void **)&slot->mtp_index_pool);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,sizeof(uint32_t),1u,(void **)&slot->mtp_positions);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,sizeof(uint32_t),1u,(void **)&slot->mtp_context);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_page_table);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_sequence);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_committed);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,steps_bytes,1u,&slot->mtp_replay_steps);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,conv_bytes,1u,(void **)&slot->mtp_conv_scratch);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,replay_bytes,1u,(void **)&slot->kda_replay_pool);
-		if ( status != SPARK_STATUS_OK )
-			break;
-		{
-			uint32_t meta[2u * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
-			cudaError_t error;
-			for ( step = 0u; step < SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH; ++step )
-			{
-				meta[step] = step;
-				meta[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + step] = step + 1u;
-			}
-			error = cudaMemcpy(slot->mtp_positions,meta,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH * sizeof(uint32_t),cudaMemcpyHostToDevice);
-			if ( error == cudaSuccess )
-				error = cudaMemcpy(slot->mtp_context,meta + SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH * sizeof(uint32_t),cudaMemcpyHostToDevice);
-			if ( error == cudaSuccess )
-				error = cudaMemset(slot->mtp_page_table,0,sizeof(uint32_t));
-			if ( error == cudaSuccess )
-				error = cudaMemset(slot->mtp_sequence,0,sizeof(uint32_t));
-			status = SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"mtp_meta_init");
-		}
 	}
 	return(status);
 }
@@ -1081,6 +995,12 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 			status = SparkKvPageCachePrepareLane(&state->kv_page_cache,lane,state->kv_lane_logical_pages + (uint64_t)lane->resident_sequence_slot * state->pages_per_sequence,state->pages_per_sequence,&state->kv_lane_page_count[lane->resident_sequence_slot]);
 			if ( status != SPARK_STATUS_OK )
 			{
+				fprintf(stderr,"G5N-DBG admit: PrepareLane -> %d lane ctx %llu pos %llu flags %llu pub %llu pre %llu\n",
+					(int)status,(unsigned long long)lane->context_token_count,
+					(unsigned long long)lane->sequence_position,
+					(unsigned long long)lane->flags,
+					(unsigned long long)lane->publish_token_count,
+					(unsigned long long)lane->prefix_token_count);
 				return(status);
 			}
 		}
@@ -1094,6 +1014,12 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 			state->kv_lane_mutation_flags[lane->resident_sequence_slot] = mutation_flags;
 			if ( status != SPARK_STATUS_OK )
 			{
+				fprintf(stderr,"G5N-DBG admit: BeginTxn -> %d lane ctx %llu pos %llu flags %llu pub %llu pre %llu\n",
+					(int)status,(unsigned long long)lane->context_token_count,
+					(unsigned long long)lane->sequence_position,
+					(unsigned long long)lane->flags,
+					(unsigned long long)lane->publish_token_count,
+					(unsigned long long)lane->prefix_token_count);
 				return(status);
 			}
 		}
@@ -1254,10 +1180,6 @@ static SparkStatus SparkGlm5NextValidateFrameBuffers(
 	buffer = &frame->buffers[0];
 	if ( buffer->flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || buffer->address == 0 || buffer->bytes < (uint64_t)row_count * sizeof(uint32_t) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( state->mtp_enabled != 0u && row_count == 1u &&
-		(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u &&
-		buffer->bytes < (uint64_t)(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u) * sizeof(uint32_t) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1336,12 +1258,10 @@ typedef struct SparkGlm5NextTpChain
 	uint32_t stage;
 	uint32_t next_layer;
 	uint32_t active;
-	uint32_t spec_verify;
 } SparkGlm5NextTpChain;
 
 static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status);
 static void CUDART_CB SparkGlm5NextCompleteAsync(void *context);
-static void CUDART_CB SparkGlm5NextMtpResolveHost(void *context);
 static SparkStatus SparkGlm5NextEnqueueAsyncCompletion(
 	SparkGlm5NextModuleState *state,
 	SparkGlm5NextExecutionSlot *slot,
@@ -1369,15 +1289,6 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->tp_degree = state->tp_degree;
 	wave->tp_rank = state->tp_rank;
 	wave->row_count = chain->wave_rows;
-	wave->commit = chain->spec_verify != 0u ? 0u : 1u;
-	wave->mtp_verify = chain->spec_verify;
-	wave->mtp_draft_depth = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
-	wave->mtp_layer_weights = state->pack_has_mtp != 0u ? &state->mtp_layer : 0;
-	wave->mtp_eh_proj_bf16 = state->mtp_eh_proj_bf16;
-	wave->mtp_enorm_bf16 = state->mtp_enorm_bf16;
-	wave->mtp_hnorm_bf16 = state->mtp_hnorm_bf16;
-	wave->mtp_shared_norm_bf16 = state->mtp_shared_norm_bf16;
-	wave->kda_replay_layer_bytes = state->kda_replay_layer_bytes;
 	wave->maximum_context = maximum_context;
 	wave->resident_sequence_capacity = state->resident_sequence_capacity;
 	wave->max_sequence_positions = state->max_sequence_positions;
@@ -1760,6 +1671,12 @@ static void SparkGlm5NextModuleTpCompletion(
 	chain = (SparkGlm5NextTpChain *)context;
 	if ( chain == 0 || chain->active == 0u || completion == 0 )
 		return;
+	fprintf(stderr,"G5N-DBG tp completion: status %u ordinal %llu slot %u rows %llu stage %u layer %u\n",
+		(unsigned)completion->status,
+		(unsigned long long)completion->ordinal,
+		(unsigned)completion->slot_index,
+		(unsigned long long)0u,
+		(unsigned)chain->stage,(unsigned)chain->next_layer);
 	SparkGlm5NextTpChainAdvance(chain,completion->status);
 }
 
@@ -1798,7 +1715,7 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 				for ( probe_qi = 0u; probe_qi < 256u; probe_qi++ )
 					probe_qs += probe_pre[probe_qi];
 			}
-/*DBG*/
+			fprintf(stderr,"G5N-PROBE layer %u pre-wide-submit hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_qs);
 		}
 	}
 	else
@@ -1823,9 +1740,12 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		SparkStatus submit_status;
 		submit_status = SparkTpDeviceCollectiveSubmitBf16(collective,&submission);
 		if ( submit_status != SPARK_STATUS_OK )
-			return(submit_status);
+			fprintf(stderr,"G5N-DBG reduce submit -> %d (rows %u slot %u dev %p stream %p maxact %u)\n",
+				(int)submit_status,(unsigned)chain->wave_rows,(unsigned)chain->slot_index,
+				device_bf16,chain->slot->stream,
+				(unsigned)state->tp_device_collective.max_active_sequence_count);
+		return(submit_status);
 	}
-	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
@@ -1857,150 +1777,13 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	return(SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission));
 }
 
-static void SparkGlm5NextBuildMtpDraftWave(
-	const SparkGlm5NextModuleState *state,
-	SparkGlm5NextExecutionSlot *slot,
-	SparkGlm5NextCudaWave *wave)
-{
-	memset(wave,0,sizeof(*wave));
-	wave->tp_degree = state->tp_degree;
-	wave->tp_rank = state->tp_rank;
-	wave->owns_final_head = state->owns_final_head;
-	wave->multiprocessor_count = state->multiprocessor_count;
-	wave->embedding_bf16 = state->embedding_bf16;
-	wave->lm_head_bf16 = state->lm_head_bf16;
-	wave->mtp_layer_weights = &state->mtp_layer;
-	wave->mtp_eh_proj_bf16 = state->mtp_eh_proj_bf16;
-	wave->mtp_enorm_bf16 = state->mtp_enorm_bf16;
-	wave->mtp_hnorm_bf16 = state->mtp_hnorm_bf16;
-	wave->mtp_shared_norm_bf16 = state->mtp_shared_norm_bf16;
-	wave->mtp_draft_depth = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
-	wave->slot = slot;
-}
-
-static SparkStatus SparkGlm5NextMtpDriveDraft(
-	SparkGlm5NextModuleState *state,
-	SparkModelDriverFrame *frame,
-	const SparkGlm5NextResidentDecodeStageBatchView *batch,
-	SparkGlm5NextExecutionSlot *slot,
-	SparkGlm5NextTpChain *chain)
-{
-	SparkGlm5NextAsyncCompletion *async;
-	SparkGlm5NextCudaWave draft_wave;
-	uint32_t lane,step;
-	uint64_t position;
-	if ( state->mtp_enabled == 0u ||
-		(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ||
-		batch->row_count != 1u || batch->active_sequence_count != 1u ||
-		batch->token_ids == 0 || state->owns_embedding == 0u || state->owns_final_head == 0u )
-		return(SPARK_STATUS_OK);
-	lane = batch->row_resident_slots[0];
-	position = batch->row_positions[0];
-	if ( lane >= state->resident_sequence_capacity ||
-		state->mtp_lane_armed[lane] == 0u ||
-		position + SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u > state->max_sequence_positions )
-		return(SPARK_STATUS_OK);
-	async = &state->completions[chain->slot_index];
-	SparkGlm5NextBuildMtpDraftWave(state,slot,&draft_wave);
-	if ( SparkGlm5NextLaunchCudaMtpDraft(&draft_wave,0,
-		state->mtp_lane_hidden_bf16 + (uint64_t)lane * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
-		batch->token_ids[0],async->mtp_draft_tokens) != 0 )
-		return(SPARK_STATUS_INTERNAL_ERROR);
-	for ( step = 1u; step <= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH; ++step )
-	{
-		slot->host_token_ids[step] = async->mtp_draft_tokens[step - 1u];
-		slot->host_positions[step] = (uint32_t)(position + step);
-		slot->host_resident_slots[step] = lane;
-	}
-	chain->wave_rows = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u;
-	chain->next_wave_row = chain->wave_rows;
-	chain->spec_verify = 1u;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkGlm5NextMtpStashHidden(
-	SparkGlm5NextModuleState *state,
-	const SparkGlm5NextTpChain *chain)
-{
-	cudaError_t error;
-	uint32_t row,lane;
-	for ( row = 0u; row < chain->wave_rows; ++row )
-	{
-		lane = chain->slot->host_resident_slots[chain->first_row + row];
-		if ( row + 1u < chain->wave_rows &&
-			chain->slot->host_resident_slots[chain->first_row + row + 1u] == lane )
-			continue;
-		error = cudaMemcpyAsync(
-			state->mtp_lane_hidden_bf16 + (uint64_t)lane * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
-			chain->slot->hc_mean_bf16 + (uint64_t)row * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
-			(uint64_t)SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),
-			cudaMemcpyDeviceToDevice,(cudaStream_t)chain->slot->stream);
-		if ( error != cudaSuccess )
-			return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"mtp_stash"));
-		state->mtp_lane_armed[lane] = 1u;
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static void CUDART_CB SparkGlm5NextMtpResolveHost(void *context)
-{
-	SparkGlm5NextTpChain *chain;
-	SparkGlm5NextModuleState *state;
-	SparkGlm5NextExecutionSlot *slot;
-	SparkGlm5NextAsyncCompletion *async;
-	SparkSpeculationPolicyVerifyResult result;
-	SparkStatus status;
-	cudaError_t error;
-	uint32_t lane;
-	int32_t launch;
-	chain = (SparkGlm5NextTpChain *)context;
-	if ( chain == 0 || chain->active == 0u )
-		return;
-	state = chain->state;
-	slot = chain->slot;
-	async = &state->completions[chain->slot_index];
-	lane = async->lane_indices[0];
-	status = SparkSpeculationPolicyResolveVerifierTokens(
-		async->mtp_draft_tokens,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,
-		slot->host_output_token_ids,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u,
-		SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,&result);
-	if ( status == SPARK_STATUS_OK &&
-		result.committed_token_count != result.accepted_draft_token_count + 1u )
-		status = SPARK_STATUS_INTERNAL_ERROR;
-	error = cudaSuccess;
-	launch = 0;
-	if ( status == SPARK_STATUS_OK )
-	{
-		async->completion.accepted_token_count = result.committed_token_count;
-		async->completion.tokens_per_sequence = result.committed_token_count;
-		async->burst_token_count = result.committed_token_count;
-		async->lane_next_positions[0] += result.accepted_draft_token_count;
-		async->mtp_cache_extra = result.accepted_draft_token_count;
-		error = cudaMemcpyAsync(
-			state->mtp_lane_hidden_bf16 + (uint64_t)lane * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
-			slot->hc_mean_bf16 + (uint64_t)result.accepted_draft_token_count * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
-			(uint64_t)SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),
-			cudaMemcpyDeviceToDevice,(cudaStream_t)slot->stream);
-		if ( error == cudaSuccess )
-			launch = SparkGlm5NextLaunchCudaMtpCommit(&chain->wave,result.committed_token_count);
-	}
-	if ( status != SPARK_STATUS_OK || error != cudaSuccess || launch != 0 )
-		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-	if ( SparkGlm5NextEnqueueAsyncCompletion(state,slot,chain->slot_index) != SPARK_STATUS_OK )
-	{
-		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-		SparkGlm5NextCompleteAsync(async);
-	}
-	chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_FINISH;
-	chain->active = 0u;
-	free(chain);
-}
-
 static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus status)
 {
 	SparkGlm5NextModuleState *state;
 	SparkGlm5NextAsyncCompletion *async;
 	state = chain->state;
+	fprintf(stderr,"G5N-DBG chainfail: stage %u next_layer %u rows %u status %d\n",
+		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
 	(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
 	async = &state->completions[chain->slot_index];
 	async->completion.status = status;
@@ -2053,6 +1836,12 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 				for ( probe_i = 0u; probe_i < 256u; probe_i++ )
 					probe_sum += probe_hidden[probe_i];
 			}
+			fprintf(stderr,"G5N-PROBE layer %u rows %u hidden row0 [0,1024) bf16sum %llu first8 %u %u %u %u %u %u %u %u\n",
+				(unsigned)chain->next_layer,
+				(unsigned)chain->wave_rows,
+				(unsigned long long)probe_sum,
+				(unsigned)probe_hidden[0],(unsigned)probe_hidden[1],(unsigned)probe_hidden[2],(unsigned)probe_hidden[3],
+				(unsigned)probe_hidden[4],(unsigned)probe_hidden[5],(unsigned)probe_hidden[6],(unsigned)probe_hidden[7]);
 			(void)error;
 		}
 		if ( SparkGlm5NextLaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
@@ -2080,7 +1869,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 					probe_sum += probe_attn[probe_i];
 			}
 			(void)error;
-/*DBG*/
+			fprintf(stderr,"G5N-PROBE layer %u attn_out [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_sum);
 		}
 		if ( SparkGlm5NextLaunchCudaLayerAttentionPost(&chain->wave,chain->next_layer) != 0 )
 		{
@@ -2105,7 +1894,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 					probe_ms += probe_mlp0[probe_mi];
 			}
 			(void)error;
-/*DBG*/
+			fprintf(stderr,"G5N-PROBE layer %u mlp-entry hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ms);
 		}
 		if ( SparkGlm5NextLaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
 		{
@@ -2137,7 +1926,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 					probe_ps += probe_post[probe_pi];
 			}
 			(void)error;
-/*DBG*/
+			fprintf(stderr,"G5N-PROBE layer %u post-mlp hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ps);
 		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
@@ -2183,26 +1972,11 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 				error = cudaMemcpy(&probe_token,chain->slot->output_token,sizeof(probe_token),cudaMemcpyDeviceToHost);
 			if ( error == cudaSuccess )
 				error = cudaMemcpy(&probe_maxloc,chain->slot->head_maxloc_u64,sizeof(probe_maxloc),cudaMemcpyDeviceToHost);
+			fprintf(stderr,"G5N-PROBE head score %.6f token %u maxloc %llx rank %u/%u\n",
+				(double)probe_score,(unsigned)probe_token,
+				(unsigned long long)probe_maxloc,
+				state->tp_rank,state->tp_degree);
 			(void)error;
-		}
-		if ( chain->spec_verify != 0u )
-		{
-			error = cudaLaunchHostFunc((cudaStream_t)chain->slot->stream,SparkGlm5NextMtpResolveHost,chain);
-			if ( error != cudaSuccess )
-			{
-				SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
-				return;
-			}
-			return;
-		}
-		if ( state->mtp_enabled != 0u && state->owns_final_head != 0u )
-		{
-			launch_status = SparkGlm5NextMtpStashHidden(state,chain);
-			if ( launch_status != SPARK_STATUS_OK )
-			{
-				SparkGlm5NextTpChainFail(chain,launch_status);
-				return;
-			}
 		}
 		if ( chain->next_wave_row < chain->batch->row_count )
 		{
@@ -2310,30 +2084,50 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 	slot = &state->slots[async->slot_index];
 	if ( slot->host_kv_access_error[0] != 0u )
 	{
+		fprintf(stderr,"G5N-DBG complete: kv_access_error code %u kind %u row %u seq %u pos %u page %u (slot %u status_in %u)\n",
+			(unsigned)slot->host_kv_access_error[0],(unsigned)slot->host_kv_access_error[1],
+			(unsigned)slot->host_kv_access_error[2],(unsigned)slot->host_kv_access_error[3],
+			(unsigned)slot->host_kv_access_error[4],(unsigned)slot->host_kv_access_error[5],
+			(unsigned)async->slot_index,(unsigned)async->completion.status);
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 	}
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )
-			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)(async->burst_token_count != 0u ? async->burst_token_count : async->row_count) * sizeof(uint32_t));
+			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)async->row_count * sizeof(uint32_t));
 		for (lane=0u; lane<async->lane_count; lane++)
 		{
 			SparkStatus complete_status;
 			const SparkModelDriverCacheLane *remembered;
+			const SparkKvPageCacheSequence *sequence;
 			resident = async->lane_indices[lane];
 			atomic_store_explicit(&state->lane_bound[resident],async->lane_bound[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
 			remembered = &state->kv_lane_cache_lanes[resident];
+			sequence = &state->kv_page_cache.sequences[resident];
 			if ( remembered->sequence_id != 0u &&
 				remembered->sequence_id == async->lane_sequence_ids[lane] )
 			{
-				SparkModelDriverCacheLane adjusted;
-				adjusted = *remembered;
-				adjusted.context_token_count += async->mtp_cache_extra;
-				complete_status = SparkKvPageCacheCompleteLane(&state->kv_page_cache,&adjusted);
+				complete_status = SparkKvPageCacheCompleteLane(&state->kv_page_cache,remembered);
 				if ( complete_status != SPARK_STATUS_OK )
 				{
+					fprintf(stderr,"G5N-DBG complete: CompleteLane resident %u -> %d | lane seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx | cache seq %llu next %llu mut %u | block %u async(pos %llu rows %u lanes %u bound %llu nextpos %llu)\n",
+						(unsigned)resident,(int)complete_status,
+						(unsigned long long)remembered->sequence_id,
+						(unsigned long long)remembered->sequence_position,
+						(unsigned long long)remembered->context_token_count,
+						(unsigned long long)remembered->prefix_token_count,
+						(unsigned long long)remembered->publish_token_count,
+						(unsigned long long)remembered->flags,
+						(unsigned long long)sequence->sequence_id,
+						(unsigned long long)sequence->next_token_position,
+						(unsigned)sequence->mutable_logical_page_index,
+						(unsigned)state->kv_page_cache.kv_cache_arena->block_token_count,
+						(unsigned long long)async->completion.sequence_position,
+						(unsigned)async->row_count,(unsigned)async->lane_count,
+						(unsigned long long)async->lane_bound[lane],
+						(unsigned long long)async->lane_next_positions[lane]);
 					async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 				}
 			}
@@ -2354,15 +2148,19 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 				rollback_status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,remembered,state->kv_lane_mutation_flags[resident]);
 				if ( rollback_status != SPARK_STATUS_OK )
 				{
+					fprintf(stderr,"G5N-DBG complete: RollbackLane resident %u -> %d (status_in %u)\n",
+						(unsigned)resident,(int)rollback_status,(unsigned)async->completion.status);
 					async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 				}
 			}
 			atomic_store_explicit(&state->lane_bound[resident],0u,memory_order_release);
-			if ( state->mtp_lane_armed != 0 )
-				state->mtp_lane_armed[resident] = 0u;
 		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	}
+	fprintf(stderr,"G5N-DBG complete: exit slot %u status %u pos %llu rows %u lanes %u\n",
+		(unsigned)async->slot_index,(unsigned)async->completion.status,
+		(unsigned long long)async->completion.sequence_position,
+		(unsigned)async->row_count,(unsigned)async->lane_count);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
@@ -2407,13 +2205,32 @@ static SparkStatus SparkGlm5NextExecuteBatch(
 	SparkStatus status;
 	cudaError_t error;
 	batch = context->batch;
+	fprintf(stderr,"G5N-DBG execute: frame req %llu seq %llu pos %llu new %u slots %u rows %u act %u flags %llx frame_lanes %u\n",
+		(unsigned long long)frame->request_id,(unsigned long long)frame->sequence_id,
+		(unsigned long long)frame->sequence_position,(unsigned)frame->new_token_count,
+		(unsigned)frame->active_slot_count,(unsigned)batch->row_count,
+		(unsigned)batch->active_sequence_count,
+		(unsigned long long)frame->flags,
+		(unsigned)frame->cache_lane_count);
 	if ( SparkGlm5NextProbeEnabled() && batch->token_ids != 0 )
 	{
 		uint32_t probe_row;
-/*DBG*/
+		fprintf(stderr,"G5N-PROBE batch token_ids rows %u:",batch->row_count);
 		for ( probe_row = 0u; probe_row < batch->row_count && probe_row < 8u; probe_row++ )
 			fprintf(stderr," %u",batch->token_ids[probe_row]);
 		fprintf(stderr,"\n");
+	}
+	if ( frame->cache_lane_count != 0u )
+	{
+		const SparkModelDriverCacheLane *frame_lane = &frame->cache_lanes[0];
+		fprintf(stderr,"G5N-DBG execute: frame_lane[0] slot %u seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx\n",
+			(unsigned)frame_lane->resident_sequence_slot,
+			(unsigned long long)frame_lane->sequence_id,
+			(unsigned long long)frame_lane->sequence_position,
+			(unsigned long long)frame_lane->context_token_count,
+			(unsigned long long)frame_lane->prefix_token_count,
+			(unsigned long long)frame_lane->publish_token_count,
+			(unsigned long long)frame_lane->flags);
 	}
 	continuity.state = state;
 	continuity.batch = batch;
@@ -2472,18 +2289,6 @@ static SparkStatus SparkGlm5NextExecuteBatch(
 	chain->next_wave_row = wave_rows;
 	chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
-	chain->spec_verify = 0u;
-	status = SparkGlm5NextMtpDriveDraft(state,frame,batch,slot,chain);
-	if ( status != SPARK_STATUS_OK )
-	{
-		(void)cudaStreamSynchronize((cudaStream_t)slot->stream);
-		SparkGlm5NextInvalidateClaimedLanes(state,batch->row_resident_slots,batch->active_sequence_count);
-		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
-		free(chain);
-		SparkStageModuleSlotRelease(state->slot_states,slot_index);
-		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-		return(status);
-	}
 	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 	return(SPARK_STATUS_OK);
 }
@@ -2500,7 +2305,7 @@ SparkStatus SparkGlm5NextResidentDecodeStageExecute(
 	status = SparkGlm5NextValidateFrame(state,frame,&context);
 	if ( status != SPARK_STATUS_OK )
 	{
-/*DBG*/
+		fprintf(stderr,"G5N-DBG execute: ValidateFrame -> %d\n",(int)status);
 		if ( state != 0 )
 			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
 		return(status);
@@ -2547,10 +2352,19 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	table.predicate_context = state;
 	table.cost = SparkGlm5NextAdmissionCost;
 	table.cost_context = state;
+	fprintf(stderr,"G5N-DBG admit-entry: prog %u slots %u new %u pos %llu flags %llx lanes %u admflags %u avail %u\n",
+		(unsigned)request->program_id,(unsigned)request->active_slot_count,
+		(unsigned)request->new_token_count,
+		(unsigned long long)request->sequence_position,
+		(unsigned long long)request->frame_flags,
+		(unsigned)request->cache_lane_count,
+		(unsigned)request->admission_flags,(unsigned)available);
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( decision->accepted == 0u )
+		fprintf(stderr,"G5N-DBG admit: shape-rejected reason %u\n",
+			(unsigned)decision->rejection_reason);
 	if ( decision->accepted == 0u )
 		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
 	return(status);
@@ -2602,7 +2416,6 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm5NextReleaseSlotHost(state);
 	SparkStageModuleLedgerRelease(&state->ledger);
-	free(state->mtp_lane_armed);
 	free(state->kda_state_index_host);
 	free(state->kv_blocks);
 	free(state->kv_resident_slot_logical_block_indices);
@@ -2653,45 +2466,18 @@ static SparkStatus SparkGlm5NextInitializeState(
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->ledger.module_tag = SPARK_GLM5_NEXT_MODULE_TAG;
 	status = SparkGlm5NextModuleConfigure(state,configuration,host_services,&pack_path);
-	if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP configure rc=%u\n",(uint32_t)status);
 	if ( status == SPARK_STATUS_OK && SparkGlm5NextConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
-	{
 		status = SparkGlm5NextPackLoad(state,pack_path);
-		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP packload rc=%u\n",(uint32_t)status);
-		if ( status == SPARK_STATUS_OK && state->mtp_enabled != 0u && state->pack_has_mtp == 0u )
-		{
-/*DBG*/
-			status = SPARK_STATUS_SCHEMA_ERROR;
-		}
-		if ( status == SPARK_STATUS_OK && state->mtp_enabled != 0u && state->tp_degree != 1u )
-		{
-/*DBG*/
-			status = SPARK_STATUS_UNSUPPORTED;
-		}
-	}
 	if ( status == SPARK_STATUS_OK )
-	{
 		status = SparkGlm5NextAllocateCaches(state);
-		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP caches rc=%u\n",(uint32_t)status);
-	}
 	if ( status == SPARK_STATUS_OK )
-	{
 		status = SparkGlm5NextAllocateSlots(state);
-		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP slots rc=%u\n",(uint32_t)status);
-	}
 	if ( status == SPARK_STATUS_OK )
-	{
-		status = SparkGlm5NextAllocateMtp(state);
-	if ( status == SPARK_STATUS_OK )		status = SparkGlm5NextModuleInitializeTpCollective(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);
-		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP collective rc=%u\n",(uint32_t)status);
-	}
+		status = SparkGlm5NextModuleInitializeTpCollective(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);
 	if ( status == SPARK_STATUS_OK )
-	{
 		status = SparkGlm5NextBuildHeadShadow(state);
-		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP shadow rc=%u\n",(uint32_t)status);
-	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm5NextReleaseSlotHost(state);
@@ -2725,21 +2511,13 @@ SparkStatus SparkGlm5NextResidentDecodeStageInitialize(
 {
 	SparkGlm5NextModuleState *state;
 	SparkStatus status;
-	fprintf(stderr,"TREE-MOD-INIT enter\n");
 	status = SparkFirmwareModuleValidateInitialization(configuration,host_services,module_state);
 	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"TREE-MOD-INIT validate rc=%u\n",(uint32_t)status);
 		return(status);
-	}
 	state = 0;
 	status = SparkGlm5NextInitializeState(configuration,host_services,&state);
 	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"TREE-MOD-INIT state rc=%u\n",(uint32_t)status);
 		return(status);
-	}
-	fprintf(stderr,"TREE-MOD-INIT ok\n");
 	*module_state = state;
 	return(SPARK_STATUS_OK);
 }
