@@ -74,7 +74,8 @@ MODULE_INCLUDE_FLAGS := \
 	-I../../modules/glm5_next_resident_decode_stage/source \
 	-I../..
 
-STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/glm5_next_stage.$(EXPERT_CODEC).g5nsp
+SPARKDATA_PACK_ROOT ?= $(HOME)/sparkdata/glm53flash.$(EXPERT_CODEC).tp16/packs
+STAGE_PACK_PATH ?= $(firstword $(wildcard $(SPARKDATA_PACK_ROOT)/glm53flash.$(EXPERT_CODEC).tp16.rank0.sp $(SPARKDATA_PACK_ROOT)/*.sp))
 STAGE_INDEX ?= 0
 MAX_ACTIVE_SEQUENCES ?= 64
 MAX_SEQUENCE_POSITIONS ?= 32768
