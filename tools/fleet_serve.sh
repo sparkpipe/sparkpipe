@@ -20,10 +20,20 @@ rr() { echo "/home/$1/sparkdata/$NAME"; }
 stop() {
     local h
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "rr='$(rr "$h")'; for p in \$(pgrep -f 'bin/sparkpipe_model_(residentd|api)'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -TERM \$p; done; true" &
+        $SSH "$h" "rr='$(rr "$h")'; for p in \$(pgrep -f 'bin/sparkpipe_model_(residentd|api)'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -TERM \$p; done; sleep 1; for p in \$(pgrep -f 'bin/sparkpipe_model_(residentd|api)'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -KILL \$p; done; true" &
     done
     wait
-    echo "stopped"
+    local t busy
+    for t in $(seq 1 30); do
+        busy=0
+        for h in "${HOSTS[@]}"; do
+            n=$($SSH "$h" "pgrep -x sparkpipe_model | wc -l" 2>/dev/null)
+            [ "${n:-0}" -gt 0 ] && busy=1
+        done
+        [ "$busy" = 0 ] && break
+        sleep 2
+    done
+    echo "stopped (drained ${t}x2s)"
 }
 
 start() {
@@ -33,7 +43,7 @@ start() {
         i=$((i+1))
     done
     wait
-    deadline=$((SECONDS + 120))
+    deadline=$((SECONDS + 300))
     while (( SECONDS < deadline )); do
         ready=0
         err=""
@@ -65,9 +75,23 @@ api() {
     echo
 }
 
+sync() {
+    local h p REF="${FLEET_REF:-rtx5090:release}"
+    local HUBHOST="${REF%%:*}" HUBPATH="${REF#*:}"
+    for h in "${HOSTS[@]}"; do
+        for p in lib bin stages config model_resident.json; do
+            { ssh -o BatchMode=yes "$HUBHOST" "tar -C '$HUBPATH/$NAME' -cf - '$p' --exclude=stage.json" \
+              | ssh -o BatchMode=yes "$h" "tar -C ~/sparkdata/$NAME -xf -"; } &
+        done
+    done
+    wait
+    echo "synced from $REF"
+}
+
 case "$CMD" in
     stop) stop ;;
     start) start ;;
+    sync) sync ;;
     api) api ;;
-    full|*) stop && start && api ;;
+    full|*) sync && "$0" "$NAME" start && api ;;
 esac

@@ -246,6 +246,13 @@ static void SparkModelResidentdSignal(int32_t signal_number)
 {
 	(void)signal_number;
 	SparkModelResidentdStop = 1;
+	alarm(60u);
+}
+
+static void SparkModelResidentdAlarm(int32_t signal_number)
+{
+	(void)signal_number;
+	_exit(1);
 }
 
 static SparkStatus SparkModelResidentdParseUnsigned(
@@ -2778,6 +2785,7 @@ int main(int argument_count,char **arguments)
 	}
 	signal(SIGINT,SparkModelResidentdSignal);
 	signal(SIGTERM,SparkModelResidentdSignal);
+	signal(SIGALRM,SparkModelResidentdAlarm);
 	if ( deployment.weightd_socket_path != 0 &&
 		deployment.weightd_socket_path[0] != '\0' )
 	{
@@ -2799,8 +2807,12 @@ int main(int argument_count,char **arguments)
 		fprintf(stderr,"model_residentd_exit rank=%u stage=%u passes=%llu adapter_ops=%llu max_ops_per_pass=%u\n",runtime.rank_plan.rank_index,runtime.rank_plan.stage_index,(unsigned long long)runtime.progress_pass_count,(unsigned long long)runtime.adapter_op_count,runtime.adapter_op_max_per_pass);
 	}
 	else
+	{
+		alarm(60u);
 		fprintf(stderr,"model_residentd initialize=%s status=%u phase=%s rank=%u stage=%u\n",SparkStatusToString(status),(uint32_t)status,runtime.initialize_phase != 0 ? runtime.initialize_phase : "reset",configuration.rank_index,configuration.stage_index);
+	}
 	SparkModelResidentdDestroy(&runtime,&configuration);
+	alarm(0u);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	return(status == SPARK_STATUS_OK ? 0 : 1);
 }

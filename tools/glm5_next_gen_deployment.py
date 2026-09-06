@@ -56,7 +56,7 @@ TP_COLLECTIVE = {
     "algorithms": ["tree"],
     "collective_identifier": COLLECTIVE_ID,
     "listen_port": COLLECTIVE_BASE,
-    "connect_timeout_milli": 600000,
+    "connect_timeout_milli": 120000,
     "operation_timeout_milli": 30000,
     "peer_hosts": list(HOSTS),
     "peer_ports": [COLLECTIVE_BASE + r for r in range(TP)],

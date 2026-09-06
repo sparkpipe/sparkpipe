@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -505,7 +506,11 @@ static SparkStatus SparkGlm5NextPackLoad(
 	SparkStatus status;
 	file = fopen(path,"rb");
 	if ( file == 0 )
+	{
+		fprintf(stderr,"TREE-PACK-OPEN path=%s errno=%u(%s)\n",
+			path != 0 ? path : "null",errno,strerror(errno));
 		return(SPARK_STATUS_NOT_FOUND);
+	}
 	memset(&header,0,sizeof(header));
 	memset(entries,0,sizeof(entries));
 	status = SparkGlm5NextPackFileSize(file,&file_bytes);

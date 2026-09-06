@@ -483,6 +483,93 @@ int main(int argc, char **argv)
             }
         }
     }
+
+    if (getenv("BENCH_U64") != 0)
+    {
+        uint64_t *u64_payload;
+        uint64_t *u64_host;
+        uint32_t words = rows;
+        uint32_t wi;
+        int bad64 = 0;
+        if (cudaMallocManaged((void **)&u64_payload,
+                (size_t)words * sizeof(uint64_t)) != cudaSuccess ||
+            (u64_host = (uint64_t *)malloc(words * sizeof(uint64_t))) == 0)
+        {
+            printf("u64 alloc failed\n");
+            return 1;
+        }
+        __sync_fetch_and_add(&bench_completions, 0);
+        {
+            int64_t base = __sync_fetch_and_add(&bench_completions, 0);
+            uint64_t first = 68u + iters;
+            for (ordinal = first; ordinal < first + 8u; ordinal++)
+            {
+                uint64_t v = ((uint64_t)(rank + 1u) << 32u) |
+                    (uint64_t)(rank * 1000u + (ordinal - first));
+                for (wi = 0u; wi < words; wi++)
+                    u64_payload[wi] = v;
+                memset(&submission, 0, sizeof(submission));
+                submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+                submission.descriptor_bytes = sizeof(submission);
+                submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
+                submission.active_sequence_count = words;
+                submission.flags = 0u;
+                submission.ordinal = ordinal;
+                submission.local_device = u64_payload;
+                submission.full_device = u64_payload;
+                submission.cuda_stream = stream;
+                submission.completion_function = bench_completion;
+                submission.completion_context = 0;
+                retry = 0;
+                for (;;)
+                {
+                    status = SparkTpDeviceCollectiveSubmitU64Max(&collective, &submission);
+                    if (status == SPARK_STATUS_OK)
+                        break;
+                    if (status != SPARK_STATUS_BUSY || ++retry > 200)
+                    {
+                        printf("u64 submit %llu -> %u\n", (unsigned long long)ordinal, (unsigned)status);
+                        return 1;
+                    }
+                    usleep(1000u);
+                }
+                if (cudaStreamSynchronize(stream) != cudaSuccess)
+                {
+                    printf("u64 sync failed\n");
+                    return 1;
+                }
+                while (__sync_fetch_and_add(&bench_completions, 0) <= base + (int64_t)(ordinal - first))
+                {
+                    if (bench_now_ns() - started_ns > 120000000000ull)
+                    {
+                        printf("u64 completion timeout at %llu\n", (unsigned long long)ordinal);
+                        SparkTpDeviceCollectiveDumpOperations(&collective);
+                        return 1;
+                    }
+                    usleep(50u);
+                }
+            }
+            uint64_t want = ((uint64_t)16u << 32u) | (uint64_t)(15u * 1000u + 7u);
+            if (cudaMemcpy(u64_host, u64_payload, words * sizeof(uint64_t),
+                    cudaMemcpyDeviceToHost) != cudaSuccess)
+            {
+                printf("u64 verify copy failed\n");
+                return 1;
+            }
+            for (wi = 0u; wi < words; wi++)
+                if (u64_host[wi] != want)
+                {
+                    if (bad64 < 4)
+                        printf("u64 word %u = %llx (want high32=16) ", wi,
+                            (unsigned long long)u64_host[wi]);
+                    bad64++;
+                }
+        }
+        printf("u64max rank=%u words=%u bad=%u %s\n", rank, words, bad64,
+            bad64 != 0 ? "U64-CORRUPT" : "U64-OK");
+        if (bad64 != 0)
+            return 4;
+    }
     elapsed_us = (double)(bench_now_ns() - started_ns) / 1000.0;
 
     if (cudaMemcpy(verify_host, payload[(19u + iters) % 64u], (size_t)rows * BENCH_HIDDEN * 2u,
