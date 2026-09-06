@@ -26,6 +26,10 @@ RUNTIME_ROOT = os.environ.get("GLM5_NEXT_RUNTIME_ROOT",
 CONTROL_BASE = int(os.environ.get("GLM5_NEXT_CONTROL_BASE", "19560"))
 COLLECTIVE_BASE = int(os.environ.get("GLM5_NEXT_COLLECTIVE_BASE", "63640"))
 TRANSPORT_BASE = int(os.environ.get("GLM5_NEXT_TRANSPORT_BASE", "60710"))
+COLLECTIVE_SESSION_BASE = int(os.environ.get(
+    "GLM5_NEXT_SESSION_BASE", "61500"))
+COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
+    "GLM5_NEXT_SESSION_HC_BASE", "62500"))
 COLLECTIVE_ID = 9911223344556679
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
@@ -39,7 +43,13 @@ TP_COLLECTIVE = {
     # has two RoCE ports; unpinned NCCL picks the wrong one):
     # NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA=rocep1s0f1
     # NCCL_IB_GID_INDEX=3 - the wave exports them.
-    "backend": "nccl",
+    # GLM5_NEXT_BACKEND=hidden_transport selects the tree allreduce
+    # (algorithms [tree], explicit session port tables).
+    "backend": BACKEND,
+    "backend_module_path":
+        "lib/hidden_transport.so" if BACKEND == "hidden_transport"
+        else "lib/libnccl.so.2",
+    "algorithms": ["tree"],
     # the nccl backend dlopens libnccl.so.2 through backend_module_path
     # (SparkTpNcclLoadLibrary); the lib ships in the runtime root lib/
     "backend_module_path": "lib/libnccl.so.2",
@@ -65,13 +75,23 @@ TP_COLLECTIVE = {
     # all peers on rail 1 - [0,0,0] is the split-ring legacy shape and
     # the collective's multi-route check REJECTS it when d2a is on)
     "step_rail_indices": [0] + [1] * (TP - 1),
+    # explicit per-session control ports, [source][sink] - the tree
+    # collective reads them verbatim (no derived ports); hc gets its own
+    # table so the second collective never binds the same listeners.
+    "session_ports": [
+        [COLLECTIVE_SESSION_BASE + a * TP + b if a != b else 0
+         for b in range(TP)] for a in range(TP)],
+    "session_ports_hc": [
+        [COLLECTIVE_SESSION_HC_BASE + a * TP + b if a != b else 0
+         for b in range(TP)] for a in range(TP)],
 }
 
 
 if TP_COLLECTIVE["backend"] == "nccl":
     for _nccl_extra in ("algorithms", "direct_all_to_all_max_payload_bytes",
                         "split_ring_min_payload_bytes", "rail_peer_hosts",
-                        "step_rail_indices"):
+                        "step_rail_indices", "session_ports",
+                        "session_ports_hc"):
         TP_COLLECTIVE.pop(_nccl_extra, None)
 
 

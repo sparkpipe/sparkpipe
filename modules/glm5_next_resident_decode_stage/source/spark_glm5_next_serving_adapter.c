@@ -193,6 +193,8 @@ static SparkStatus SparkGlm5NextServingLoadTpAlgorithms(
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
 		else if ( SparkJsonStringEquals(document,element,"direct_all_to_all") )
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
+		else if ( SparkJsonStringEquals(document,element,"tree") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
@@ -204,6 +206,13 @@ static SparkStatus SparkGlm5NextServingLoadTpAlgorithms(
 	}
 	else if ( count == 2u && mask == (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
 		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) )
+	{
+	}
+	else if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE )
+	{
+	}
+	else if ( count == 2u && mask == (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE |
+		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING) )
 	{
 	}
 	else
@@ -287,6 +296,46 @@ static SparkStatus SparkGlm5NextServingLoadTpRailHosts(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm5NextServingLoadSessionPorts(
+	const SparkJsonDocument *document,
+	int32_t object,
+	const char *name,
+	uint16_t table[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
+		[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE],
+	uint32_t tp_degree)
+{
+	int32_t token,element,cell;
+	uint32_t row,column,port,count;
+	SparkStatus status;
+	token = SparkGlm5NextServingJsonMember(document,object,name);
+	if ( token < 0 ||
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = SparkJsonGetArrayElementCount(document,token);
+	if ( count != tp_degree )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (row=0u; row<count; row++)
+	{
+		element = SparkJsonGetArrayElement(document,token,row);
+		if ( element < 0 ||
+			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) ||
+			SparkJsonGetArrayElementCount(document,element) != tp_degree )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		for (column=0u; column<count; column++)
+		{
+			cell = SparkJsonGetArrayElement(document,element,column);
+			status = cell < 0 ? SPARK_STATUS_SCHEMA_ERROR :
+				SparkJsonGetUInt32(document,cell,&port);
+			if ( status != SPARK_STATUS_OK || port > UINT16_MAX ||
+				(row == column ? port != 0u : port == 0u) )
+				return(status == SPARK_STATUS_OK ?
+					SPARK_STATUS_SCHEMA_ERROR : status);
+			table[row][column] = (uint16_t)port;
+		}
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextServingValidateTpCollectiveMembers(
 	const SparkJsonDocument *document,
 	int32_t object,
@@ -305,7 +354,7 @@ static SparkStatus SparkGlm5NextServingValidateTpCollectiveMembers(
 		"peer_hosts","peer_ports","algorithms",
 		"direct_all_to_all_max_payload_bytes",
 		"split_ring_min_payload_bytes","rail_peer_hosts",
-		"step_rail_indices"
+		"step_rail_indices","session_ports","session_ports_hc"
 	};
 	const char *const *members;
 	uint32_t member_count;
@@ -429,6 +478,14 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 	{
 		status = SparkGlm5NextServingLoadTpAlgorithms(document,object,
 			&state->tp_collective_topology);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextServingLoadSessionPorts(document,object,
+				"session_ports",state->tp_collective_topology.session_ports,
+				tp_degree);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextServingLoadSessionPorts(document,object,
+				"session_ports_hc",state->node_context.
+					tp_collective_session_ports_hc,tp_degree);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm5NextServingJsonUnsigned(document,object,
 				"direct_all_to_all_max_payload_bytes",

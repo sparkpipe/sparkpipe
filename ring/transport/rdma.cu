@@ -5253,7 +5253,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPoll(
     status = SparkHiddenSparkHostRdmaRetireCompletedReceives(state);
     if (status != SPARK_STATUS_OK)
     {
-        
+        fprintf(stderr,"POLL9 route=%s stage=retire_receives status=%u\n",
+            state->endpoint.route_name,(unsigned)status);
         return status;
     }
     return SparkHiddenTransportCompletionQueuePop(

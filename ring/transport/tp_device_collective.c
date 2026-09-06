@@ -22,9 +22,10 @@ extern cudaError_t cudaEventQuery(cudaEvent_t event);
 #define SPARK_TP_DEVICE_COLLECTIVE_FAILURE_STATUS_MASK 0xfe00ull
 #define SPARK_TP_DEVICE_COLLECTIVE_GENERATION_SHIFT 16u
 
-#define NONCE_BYTES 8u
+#define NONCE_BYTES SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES
 #define TREE_STAGES 4u
 #define TREE_FIXED_SLOTS 8u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
 
 static uint32_t tree_peer(uint32_t rank,uint32_t bit)
 {
@@ -85,6 +86,7 @@ typedef struct SparkTpDeviceCollectiveOperation
     uint32_t slot_index;
     uint32_t credit_index;
     uint32_t active_sequence_count;
+    uint32_t operation_kind;
     uint32_t stage;
     uint32_t arrived;
     uint32_t packed;
@@ -118,6 +120,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
         SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     SparkTpDeviceCollectiveDebugHooks debug_hooks;
     SparkTpDeviceCollectiveCombineBf16Function combine_bf16_function;
+    SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
     void *combine_context;
     cudaEvent_t consumer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaEvent_t producer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
@@ -835,6 +838,9 @@ static uint64_t SparkTpDeviceCollectiveOperationBytes(
     const SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveOperation *operation)
 {
+    if (operation->operation_kind ==
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+        return (uint64_t)operation->active_sequence_count * sizeof(uint64_t);
     return (uint64_t)operation->active_sequence_count *
         collective->local_hidden_dimension *
         SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
@@ -951,10 +957,19 @@ static void SparkTpDeviceCollectiveTreeOperation(
         }
         else
         {
-            SparkStatus status = implementation->combine_bf16_function(
-                implementation->combine_context,operation->full_device,
-                binding->receive_device,operation->active_sequence_count,
-                collective->local_hidden_dimension,operation->cuda_stream);
+            SparkStatus status;
+            if (operation->operation_kind ==
+                SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+                status = implementation->combine_u64_max_function(
+                    implementation->combine_context,
+                    (uint64_t *)operation->full_device,
+                    (const uint64_t *)binding->receive_device,
+                    operation->active_sequence_count,operation->cuda_stream);
+            else
+                status = implementation->combine_bf16_function(
+                    implementation->combine_context,operation->full_device,
+                    binding->receive_device,operation->active_sequence_count,
+                    collective->local_hidden_dimension,operation->cuda_stream);
             if (status != SPARK_STATUS_OK)
             {
                 SparkTpDeviceCollectiveMarkOperationFailure(implementation,
@@ -1417,7 +1432,8 @@ static SparkStatus SparkTpDeviceCollectiveRegisterFixedSlots(
 
 static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
     SparkTpDeviceCollective *collective,
-    const SparkTpDeviceCollectiveSubmission *submission)
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind)
 {
     SparkTpDeviceCollectiveImplementation *implementation;
     SparkTpDeviceCollectiveOperation *operation;
@@ -1443,6 +1459,10 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    if (operation_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 &&
+        implementation->combine_u64_max_function == 0)
+        return SPARK_STATUS_UNSUPPORTED;
     if (implementation->combine_bf16_function == 0)
         return SPARK_STATUS_UNSUPPORTED;
     if (atomic_load_explicit(&implementation->admission_open,
@@ -1486,6 +1506,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
     operation->slot_index = submission->slot_index;
     operation->credit_index = credit_index;
     operation->active_sequence_count = submission->active_sequence_count;
+    operation->operation_kind = operation_kind;
     operation->stage = 0u;
     operation->arrived = 0u;
     operation->packed = 0u;
@@ -1536,17 +1557,22 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
 
 static SparkStatus SparkTpDeviceCollectiveSubmitHidden(
     SparkTpDeviceCollective *collective,
-    const SparkTpDeviceCollectiveSubmission *submission)
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind)
 {
-    return SparkTpDeviceCollectiveSubmitHiddenInner(collective,submission);
-}SparkStatus SparkTpDeviceCollectiveSubmitBf16(
+    return SparkTpDeviceCollectiveSubmitHiddenInner(collective,submission,
+        operation_kind);
+}
+
+SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission)
 {
     if (collective != 0 && collective->backend_kind ==
         SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
         return SparkTpDeviceCollectiveNcclSubmitBf16(collective,submission);
-    return SparkTpDeviceCollectiveSubmitHidden(collective,submission);
+    return SparkTpDeviceCollectiveSubmitHidden(collective,submission,
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 }
 
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
@@ -1559,7 +1585,8 @@ SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     }
     if (collective->backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
         return SparkTpDeviceCollectiveNcclSubmitU64Max(collective,submission);
-    return SPARK_STATUS_UNSUPPORTED;
+    return SparkTpDeviceCollectiveSubmitHidden(collective,submission,
+        SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64);
 }
 
 SparkStatus SparkTpDeviceCollectiveRequestFailure(
@@ -1870,6 +1897,8 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     implementation->registration_cuda_stream =
         config->registration_cuda_stream;
     implementation->combine_bf16_function = config->combine_bf16_function;
+    implementation->combine_u64_max_function =
+        config->combine_u64_max_function;
     implementation->combine_context = config->combine_context;
     if (config->debug_hooks != 0)
     {
