@@ -976,11 +976,23 @@ static void SparkTpDeviceCollectiveTreeOperation(
             SparkStatus status;
             if (operation->operation_kind ==
                 SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+            {
+                if (operation->ordinal >= 268u)
+                    fprintf(stderr,
+                        "TREE-U64FOLD rank=%u ord=%llu stage=%u bit=%u src=%llx dst=%llx n=%u\n",
+                        collective->tp_rank,
+                        (unsigned long long)operation->ordinal,stage,bit,
+                        (unsigned long long)*(volatile uint64_t *)
+                            binding->receive_device,
+                        (unsigned long long)*(volatile uint64_t *)
+                            operation->full_device,
+                        operation->active_sequence_count);
                 status = implementation->combine_u64_max_function(
                     implementation->combine_context,
                     (uint64_t *)operation->full_device,
                     (const uint64_t *)binding->receive_device,
                     operation->active_sequence_count,operation->cuda_stream);
+            }
             else
                 status = implementation->combine_bf16_function(
                     implementation->combine_context,operation->full_device,
