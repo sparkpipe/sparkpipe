@@ -145,7 +145,7 @@ def resident_deployment() -> dict:
     for rank, host in enumerate(HOSTS):
         nodes.append({
             "rank_index": rank,
-            "stage_index": 0,
+            "stage_index": rank,
             "runtime_root": RUNTIME_ROOT.format(host=host),
             "node_target": NODE_TARGET,
             "transport_host": host,
