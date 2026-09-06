@@ -338,6 +338,8 @@ struct Glm5NextLayerBuffers
     uint16_t *kda_decay_logit_bf16;
     float *kda_retention;
     float *kda_write_gate;
+    uint8_t *kda_replay_layer;
+    uint32_t kda_replay_steps;
 
     const void *hc_attn_fn;
     const void *hc_attn_base;
@@ -1165,6 +1167,60 @@ static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
     return((int)vec_pass);
 }
 
+<<<<<<< HEAD
+=======
+static int32_t Glm5NextKdaReplayRecord(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t rank_heads,
+    uint32_t committed_inputs,
+    cudaStream_t stream)
+{
+    SparkGlm5NextKdaReplayLayout layout;
+    uint32_t rank_qk = rank_heads * GLM5_NEXT_KDA_KEY_DIM;
+    uint32_t rank_v = rank_heads * GLM5_NEXT_KDA_VALUE_DIM;
+    cudaError_t error;
+    if (buffers->kda_replay_layer == 0)
+        return LM_LAUNCH_OK;
+    if (rows == 0u || rows > buffers->kda_replay_steps)
+        return LM_LAUNCH_ERR_SHAPE;
+    layout = SparkGlm5NextKdaReplayLayoutFor(rank_heads, buffers->kda_replay_steps);
+    if (committed_inputs == 0u)
+    {
+        error = cudaMemcpyAsync(buffers->kda_replay_layer + layout.pre_q_offset, buffers->q_bf16, (uint64_t)rows * rank_qk * 2u, cudaMemcpyDeviceToDevice, stream);
+        if (error == cudaSuccess)
+            error = cudaMemcpyAsync(buffers->kda_replay_layer + layout.pre_k_offset, buffers->kv_slot_bf16, (uint64_t)rows * rank_qk * 2u, cudaMemcpyDeviceToDevice, stream);
+        if (error == cudaSuccess)
+            error = cudaMemcpyAsync(buffers->kda_replay_layer + layout.pre_v_offset, buffers->gate_up_bf16, (uint64_t)rows * rank_v * 2u, cudaMemcpyDeviceToDevice, stream);
+    }
+    else
+    {
+        error = cudaMemcpyAsync(buffers->kda_replay_layer + layout.key_offset, buffers->kv_slot_bf16, (uint64_t)rows * rank_qk * 2u, cudaMemcpyDeviceToDevice, stream);
+        if (error == cudaSuccess)
+            error = cudaMemcpyAsync(buffers->kda_replay_layer + layout.value_offset, buffers->gate_up_bf16, (uint64_t)rows * rank_v * 2u, cudaMemcpyDeviceToDevice, stream);
+        if (error == cudaSuccess)
+            error = cudaMemcpyAsync(buffers->kda_replay_layer + layout.retention_offset, buffers->kda_retention, (uint64_t)rows * rank_qk * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+        if (error == cudaSuccess)
+            error = cudaMemcpyAsync(buffers->kda_replay_layer + layout.write_gate_offset, buffers->kda_write_gate, (uint64_t)rows * rank_heads * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    }
+    return error == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+/* KDA linear attention, 34 of 45 layers - k3's launch chain with the
+ * glm5_next deltas:
+ *
+ *     q, k = L2Norm(Swish(ShortConv(W x)))        (checkpoint convs are BF16;
+ *     v    = Swish(ShortConv(W x))                 LmScalarToFloat reads them)
+ *     a    = exp(-5.0 * sigmoid(exp(A_log_h) * (Wf_up(Wf_down(x)) + dt_bias)))
+ *     S    = (I - beta k k^T) Diag(a) S + beta k v^T,  beta = sigmoid(b_proj x)
+ *     y    = W_o[ sigmoid(Wg_up(Wg_down(x))) * RMSNorm(S^T q) ]
+ *
+ * The decay mapping is LmBoundedDecay EXACTLY (verified against the
+ * reference forget gate); the gated norm is the shared RMSNorm followed by
+ * LmOutputGateKernel, which multiplies by sigmoid(gate) - RMSNormGated's
+ * "sigmoid" activation, same order.
+ */
+>>>>>>> cde1067... glm5_next: MTP chain speculation (opt-in, off by default, B1, TP1-gated)
 static int32_t Glm5NextLayerKda(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -1310,6 +1366,9 @@ static int32_t Glm5NextLayerKda(
         buffers->kda_decay_latent_bf16,
         buffers->kda_gate_latent_bf16,
         rows);
+    status = Glm5NextKdaReplayRecord(buffers, rows, rank_heads, 0u, stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
 
     if ( Glm5NextKdaProbeActive(buffers) )
     {
@@ -1526,6 +1585,9 @@ static int32_t Glm5NextLayerKda(
         1u,
         sequences,
         commit);
+    status = Glm5NextKdaReplayRecord(buffers, rows, rank_heads, 1u, stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
     if ( Glm5NextKdaProbeActive(buffers) )
     {
         GLM5_NEXT_KDA_PROBE(stream,"delta_out_raw",buffers->attention_out_bf16,256u);

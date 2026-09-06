@@ -122,12 +122,7 @@ cudaError_t cudaHostGetDevicePointer(
     void *host_pointer,
     unsigned int flags);
 const char *cudaGetErrorString(cudaError_t error);
-cudaError_t cudaMemGetInfo(size_t *free_bytes, size_t *total_bytes);
-cudaError_t cudaEventElapsedTime(
-    float *milliseconds,
-    cudaEvent_t start,
-    cudaEvent_t end);
-
+cudaError_t cudaGetLastError(void);
 #include <stdint.h>
 
 void spark_stub_cuda_reset_faults(void);
