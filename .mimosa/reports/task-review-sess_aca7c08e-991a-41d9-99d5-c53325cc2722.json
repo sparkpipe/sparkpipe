@@ -1,66 +1,625 @@
 {
   "schema_version": "mimosa-task-review/v2",
-  "run_id": "20260904T075128730Z-55052-31fba46b948d",
-  "run_status": "completed",
-  "errors": [],
+  "run_id": "20260904T222813641Z-42875-eec0e56ce4bb",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "candidate-select",
+      "target": "staging/mb_root.sh",
+      "reason": "candidate_limit_exceeded: 34 changed reviewable file(s) were not scanned because the limit is 20"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/burst_fanout6.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/ck128_selftest.c",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/ck128_stamp.c",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/ck128_stamp.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/deploy_fresh_driver.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/fleet_weightd_task.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/fleet_weightd_task2.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/fleet_weightd_task3.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/fleet_weightd_task4.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/fleet_weightd_task5.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/fleet_weightd_task6.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/flip_deploy.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/flip_tp_backend.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/flip_validate.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/iface_probe.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/mb_db.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/mb_db_redeploy.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/mb_db_sweep.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/mb_doorbell.c",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "staging/mb_peer.sh",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    }
+  ],
   "coverage": {
     "schema_version": "mimosa-hook-coverage/v1",
-    "status": "complete",
+    "status": "partial",
     "scope": "hook_observed_diff",
     "baseline": {
       "complete": true,
-      "captured_files": 845,
+      "captured_files": 857,
       "candidate_limit": 5000,
       "truncated": false,
       "enumeration_error_count": 0,
       "snapshot_error_count": 0,
-      "compensated_target_count": 3
+      "compensated_target_count": 12
     },
     "change_tracking": {
-      "touched_observed": 2,
-      "touched_retained": 2,
+      "touched_observed": 0,
+      "touched_retained": 0,
       "truncated": false,
       "bash_mutation": true,
-      "bash_discovered": 3,
+      "bash_discovered": 54,
       "bash_discovery_limit": 80,
       "bash_discovery_truncated": false
     },
     "candidates": {
-      "eligible_files": 3,
-      "selected_files": 3,
+      "eligible_files": 54,
+      "selected_files": 20,
       "limit": 20,
-      "truncated": false
+      "truncated": true
     },
     "scanning": {
-      "required_files": 3,
-      "scanned_files": 3,
+      "required_files": 20,
+      "scanned_files": 20,
       "skipped_files": 0,
       "failed_files": 0,
       "project_checks_required": 0,
       "project_checks_completed": 0
     },
     "notification": {
-      "eligible_findings": 0,
-      "detailed_findings": 0,
+      "eligible_findings": 2,
+      "detailed_findings": 2,
       "detail_limit": 3,
       "truncated": false
     },
-    "reason_counts": {},
-    "reasons": [],
+    "reason_counts": {
+      "candidate_limit_exceeded": 1,
+      "baseline_snapshot_unreadable": 20,
+      "project_check_failed": 21
+    },
+    "reasons": [
+      {
+        "code": "candidate_limit_exceeded",
+        "stage": "candidate-select",
+        "target": "staging/mb_root.sh",
+        "detail": "34 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/burst_fanout6.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/ck128_selftest.c",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/ck128_stamp.c",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/ck128_stamp.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/deploy_fresh_driver.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task2.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task3.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task4.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task5.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task6.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/flip_deploy.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/flip_tp_backend.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/flip_validate.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/iface_probe.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/mb_db.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/mb_db_redeploy.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/mb_db_sweep.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/mb_doorbell.c",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "staging/mb_peer.sh",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "staging/mb_root.sh",
+        "detail": "candidate_limit_exceeded: 34 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/burst_fanout6.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/ck128_selftest.c",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/ck128_stamp.c",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/ck128_stamp.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/deploy_fresh_driver.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task2.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task3.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task4.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task5.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/fleet_weightd_task6.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/flip_deploy.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/flip_tp_backend.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/flip_validate.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/iface_probe.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/mb_db.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/mb_db_redeploy.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/mb_db_sweep.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/mb_doorbell.c",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "staging/mb_peer.sh",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      }
+    ],
     "reasons_truncated": false
   },
-  "generated_at": "2026-09-04T07:51:28.730Z",
+  "generated_at": "2026-09-04T22:28:13.641Z",
   "session_id": "sess_aca7c08e-991a-41d9-99d5-c53325cc2722",
   "target": ".",
-  "revision": "f7050da965846048e6c6c7130dee7542738d8557",
+  "revision": "da0d00d06e922679d7d39302d2dddd59c7771527",
   "rules_version": "unavailable",
-  "diff_hash": "49ba5935f43819f816895b740f4331f0a4ca66380d5f57f5ea1d7b9c2fd039b4",
+  "diff_hash": "83e30a64ab12616e788616e2d170eff53d79a2938801c3572830c8d8b8c7bf82",
   "diff": {
     "algorithm": "sha256",
-    "changed_file_count": 3,
+    "changed_file_count": 20,
     "changed_files": [
       {
-        "file": "tools/mtp_strip_g5_tp8.sh",
+        "file": "staging/burst_fanout6.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 69
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "fd913ad03de009a52ef66cea4fce792c5bb921ba2a1d0a5874bf338705c7af33"
+      },
+      {
+        "file": "staging/ck128_selftest.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 43
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "00bba0e9a4d023c9910e9987f64c26fb40d85acfebbb4bf2ebd5bb2e90094ecb"
+      },
+      {
+        "file": "staging/ck128_stamp.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 42
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "4b90046a56a7cdf96ec79eabc2fad4bb95efa24144a7e690608babc2f0cf5972"
+      },
+      {
+        "file": "staging/ck128_stamp.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 119
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "c3617779b9c6b83ce4a5ad7102d1fe4515b67643b09e245eb892a5335696ec15"
+      },
+      {
+        "file": "staging/deploy_fresh_driver.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 47
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "fc4509dd6f6f93f5a08bbeeca9d0639be1f000de2a2985c98c700b85a8e8e13c"
+      },
+      {
+        "file": "staging/fleet_weightd_task.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 140
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "9bcfac36c8999f4ca12c0bfa73ee4dbf418052b8c627559804e8bdd6ace3c1bd"
+      },
+      {
+        "file": "staging/fleet_weightd_task2.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 114
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "f50098e96e361658ac862530cef090ab07d54ba5679ea156c3da67cfdd393bf2"
+      },
+      {
+        "file": "staging/fleet_weightd_task3.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 118
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "70639b505d1539b03fd3d19e70d50f2f37e13d8e3e58bb4295fcd75316ad762c"
+      },
+      {
+        "file": "staging/fleet_weightd_task4.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 93
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "1743f19610b938e67fec788bd8fb64ac14ab0c8b3eeb96174a9cb6aed0808015"
+      },
+      {
+        "file": "staging/fleet_weightd_task5.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 134
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "bd5611835014b776ccf49f9bd2b439230206c05211fff8d804d3aa170dd38f2b"
+      },
+      {
+        "file": "staging/fleet_weightd_task6.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 109
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "95b06d2f6a17cb778d473387a2f43abdbf903c62e7ebcf5bb1d90c044828fb20"
+      },
+      {
+        "file": "staging/flip_deploy.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 52
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "51d3be655590e7780541f67fc07fc91b707d45e6b61241a0799c61c9d35f932a"
+      },
+      {
+        "file": "staging/flip_tp_backend.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 31
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "54754980b48181c4a71d7588d6125164ca9ee1a140ebd930da382b1cb09fef51"
+      },
+      {
+        "file": "staging/flip_validate.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 23
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "da01f1fb3d22468c288b63d3cc7723cdf2a58b906fd6080a727df4b536449318"
+      },
+      {
+        "file": "staging/iface_probe.py",
         "ranges": [
           {
             "start": 1,
@@ -68,44 +627,69 @@
           }
         ],
         "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "after_hash": "092dd174e087b7145fb8b4085ff8f2a4743553f20a4a049e3e4c90a3b5a5dfbf"
+        "after_hash": "e8ea78dae12cc7905382d109c8b7636482115378a0a3cc9dd0ce8c17e811d059"
       },
       {
-        "file": "tools/mtp_strip_g5.sh",
+        "file": "staging/mb_db_redeploy.sh",
         "ranges": [
           {
             "start": 1,
-            "end": 22
+            "end": 21
           }
         ],
         "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "after_hash": "1d664f20c4576f403272f494a5f9da85e9e94cf208b1d897611c88b3ca234c57"
+        "after_hash": "65710a0aad3204061fed745ec7dfe4fcb49c829547324ec252261770266b2d1c"
       },
       {
-        "file": "tools/stagepack_mtp_strip.py",
+        "file": "staging/mb_db_sweep.sh",
         "ranges": [
           {
-            "start": 157,
-            "end": 341
-          },
-          {
-            "start": 456,
-            "end": 456
-          },
-          {
-            "start": 463,
-            "end": 468
+            "start": 1,
+            "end": 90
           }
         ],
-        "before_hash": "9bae0d5c50cf70a2ca1e3b8be9be055a92ac61fc225a15c52a78bcfc456b627c",
-        "after_hash": "8c2b448c7c8dc6f0b35c72462f09538a054ef25bbf001acdd1a2c71f12b596ff"
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "324843ccae65fe46adc96c820a719c2a34fc6143842aade7174070d9551682e6"
+      },
+      {
+        "file": "staging/mb_db.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 11
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "fb5ed1699f22c79b2dbdac85633a31104486f01f5260e2a8b769495127b62385"
+      },
+      {
+        "file": "staging/mb_doorbell.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 30
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "a7f2f10985dbac811986163330ced45fb5d6789efdbde76b0dc5b4592814bedb"
+      },
+      {
+        "file": "staging/mb_peer.sh",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 11
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "a57ccde7592030d03f057f0248f7b43c37b9b9a714119eac6af8ee6670b51ccc"
       }
     ]
   },
   "timing": {
-    "started_at": "2026-09-04T07:51:26.547Z",
-    "completed_at": "2026-09-04T07:51:28.730Z",
-    "duration_ms": 2183,
+    "started_at": "2026-09-04T22:28:12.187Z",
+    "completed_at": "2026-09-04T22:28:13.641Z",
+    "duration_ms": 1454,
     "measurement": "hook_wall_clock"
   },
   "tokens": {
@@ -119,11 +703,11 @@
     "schemaVersion": "mimosa-gate-telemetry/v1",
     "profile": "gate",
     "operation": "Stop",
-    "outcome": "complete",
-    "latencyMs": 2183,
-    "peakMemoryBytes": 214695936,
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 1454,
+    "peakMemoryBytes": 227753984,
     "memoryMeasurement": "max-observed-process-rss",
-    "scannedFiles": 3,
+    "scannedFiles": 20,
     "cache": {
       "hits": 0,
       "misses": 0,
@@ -138,18 +722,108 @@
       "measurement": "known-zero"
     }
   },
-  "finding_count": 0,
-  "rewake_finding_count": 0,
+  "finding_count": 2,
+  "rewake_finding_count": 2,
   "evidence_boundary": {
     "scan": "candidate",
     "static_fix_verification": "observed_static_only",
     "runtime_verification": "not_performed"
   },
-  "finding_events": [],
-  "findings": [],
+  "finding_events": [
+    {
+      "finding_id": "mimosa-267a16b4513db534ab2a9bfd",
+      "file": "staging/ck128_stamp.py",
+      "line": 102,
+      "severity": "high",
+      "category": "路径穿越",
+      "status": "blocked",
+      "decision": "stop_rewake",
+      "at": "2026-09-04T22:28:13.641Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "e1f4045ae533957bcf260ca068e5241c25123c686188626575cfafe605c6761d",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-e5fbdee702b786ce089017fe",
+      "file": "staging/ck128_stamp.py",
+      "line": 112,
+      "severity": "high",
+      "category": "路径穿越",
+      "status": "blocked",
+      "decision": "stop_rewake",
+      "at": "2026-09-04T22:28:13.641Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "17abcbbbfb36030c4eb7797e1b7a8027be283b66a10af2bf3b7aeeeb5e30ae03",
+        "runtime_oracle": false
+      }
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "mimosa-267a16b4513db534ab2a9bfd",
+      "file": "staging/ck128_stamp.py",
+      "line": 102,
+      "end_line": 102,
+      "severity": "high",
+      "category": "路径穿越",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "blocked",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "staging/ck128_stamp.py",
+          "line": 102,
+          "evidence_hash": "e1f4045ae533957bcf260ca068e5241c25123c686188626575cfafe605c6761d",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": true
+    },
+    {
+      "finding_id": "mimosa-e5fbdee702b786ce089017fe",
+      "file": "staging/ck128_stamp.py",
+      "line": 112,
+      "end_line": 112,
+      "severity": "high",
+      "category": "路径穿越",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "blocked",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "staging/ck128_stamp.py",
+          "line": 112,
+          "evidence_hash": "17abcbbbfb36030c4eb7797e1b7a8027be283b66a10af2bf3b7aeeeb5e30ae03",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": true
+    }
+  ],
   "artifacts": {
-    "immutable_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T075128730Z-55052-31fba46b948d.json",
+    "immutable_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722-20260904T222813641Z-42875-eec0e56ce4bb.json",
     "latest_report": ".mimosa/reports/task-review-sess_aca7c08e-991a-41d9-99d5-c53325cc2722.json",
-    "history_summary": ".mimosa/history/run-20260904T075128730Z-55052-31fba46b948d.json"
+    "history_summary": ".mimosa/history/run-20260904T222813641Z-42875-eec0e56ce4bb.json"
   }
 }

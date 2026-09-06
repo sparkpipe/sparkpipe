@@ -4334,7 +4334,10 @@ static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, c
                 for (m = 0u; m < chunk_m; ++m)
                 {
                     row_limit = count - (chunk_base + (m * SPARK_LM_TILE));
-                    for (entry = threadIdx.x; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += blockDim.x)
+                    /* the staging warps are 4-7 (threads 128-255): index the
+                     * tile from the producer-local thread id or rows 0-1 of
+                     * every staged input tile are never written */
+                    for (entry = threadIdx.x - 128u; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += 128u)
                     {
                         row = (entry / SPARK_LM_TILE_K) + (m * SPARK_LM_TILE);
                         k_step = entry % SPARK_LM_TILE_K;

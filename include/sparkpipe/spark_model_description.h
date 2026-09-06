@@ -72,6 +72,7 @@ typedef struct SparkModelDescription
     uint32_t schema_version;
     char *model_id;
     char *model_revision;
+    char *tokenizer_asset_path;
     char *metadata_json;
     uint32_t metadata_json_bytes;
     SparkModelStageDescription *stages;

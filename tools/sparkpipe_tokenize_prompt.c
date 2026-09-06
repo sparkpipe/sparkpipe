@@ -72,6 +72,7 @@ static SparkStatus SparkTokenizePromptParseArguments(
     const char **save_compiled_path_out,
     const char **prompt_text_out,
     const char **prompt_file_path_out,
+    const char **decode_ids_out,
     const char **output_path_out,
     uint32_t *encode_flags_out)
 {
@@ -79,8 +80,8 @@ static SparkStatus SparkTokenizePromptParseArguments(
 
     if (tokenizer_json_path_out == 0 || tokenizer_compiled_path_out == 0 ||
         save_compiled_path_out == 0 || prompt_text_out == 0 ||
-        prompt_file_path_out == 0 || output_path_out == 0 ||
-        encode_flags_out == 0)
+        prompt_file_path_out == 0 || decode_ids_out == 0 ||
+        output_path_out == 0 || encode_flags_out == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -90,6 +91,7 @@ static SparkStatus SparkTokenizePromptParseArguments(
     *save_compiled_path_out = 0;
     *prompt_text_out = 0;
     *prompt_file_path_out = 0;
+    *decode_ids_out = 0;
     *output_path_out = 0;
     *encode_flags_out = 0u;
 
@@ -123,6 +125,11 @@ static SparkStatus SparkTokenizePromptParseArguments(
         {
             *prompt_file_path_out = argv[++argument_index];
         }
+        else if (strcmp(argv[argument_index], "--decode-ids") == 0 &&
+            argument_index + 1 < argc)
+        {
+            *decode_ids_out = argv[++argument_index];
+        }
         else if (strcmp(argv[argument_index], "--output") == 0 &&
             argument_index + 1 < argc)
         {
@@ -147,8 +154,12 @@ static SparkStatus SparkTokenizePromptParseArguments(
         }
     }
 
-    if (((*tokenizer_json_path_out == 0) == (*tokenizer_compiled_path_out == 0)) ||
+    if (*decode_ids_out == 0 &&
         ((*prompt_text_out == 0) == (*prompt_file_path_out == 0)))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((*tokenizer_json_path_out == 0) == (*tokenizer_compiled_path_out == 0))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -164,6 +175,7 @@ int main(
     const char *save_compiled_path;
     const char *prompt_text;
     const char *prompt_file_path;
+    const char *decode_ids;
     const char *output_path;
     char *owned_prompt_text;
     uint32_t prompt_text_bytes;
@@ -183,6 +195,7 @@ int main(
         &save_compiled_path,
         &prompt_text,
         &prompt_file_path,
+        &decode_ids,
         &output_path,
         &encode_flags);
     if (status != SPARK_STATUS_OK)
@@ -203,7 +216,7 @@ int main(
         }
         prompt_text = owned_prompt_text;
     }
-    else
+    else if (prompt_text != 0)
     {
         size_t prompt_text_length;
 
@@ -214,6 +227,10 @@ int main(
             return 1;
         }
         prompt_text_bytes = (uint32_t)prompt_text_length;
+    }
+    else
+    {
+        prompt_text_bytes = 0u;
     }
 
     token_ids = (uint32_t *)malloc(
@@ -262,6 +279,60 @@ int main(
             "sparkpipe_tokenize_prompt_error=tokenizer_load_failed status=%s\n",
             SparkStatusToString(status));
         return 1;
+    }
+
+    if (decode_ids != 0)
+    {
+        uint32_t parsed_ids[4096u];
+        uint32_t parsed_count = 0u;
+        const char *cursor = decode_ids;
+        static char decode_out[65536u];
+        uint32_t decode_bytes = 0u;
+        while (*cursor != '\0' && parsed_count < 4096u)
+        {
+            char *end;
+            long value = strtol(cursor, &end, 10);
+            if (end == cursor)
+                break;
+            parsed_ids[parsed_count++] = (uint32_t)value;
+            cursor = end;
+            while (*cursor == ',' || *cursor == ' ')
+                ++cursor;
+        }
+        status = SparkTokenizerDecodeTokenIds(&tokenizer,
+            parsed_ids, parsed_count, 0u, decode_out,
+            sizeof(decode_out) - 1u, &decode_bytes);
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkTokenizerDestroy(&tokenizer);
+            free(token_ids);
+            free(owned_prompt_text);
+            fprintf(stderr,
+                "sparkpipe_tokenize_prompt_error=decode_failed status=%s\n",
+                SparkStatusToString(status));
+            return 1;
+        }
+        if (output_path != 0)
+        {
+            FILE *out = fopen(output_path, "wb");
+            if (out == 0 || fwrite(decode_out, 1u, decode_bytes, out) !=
+                    decode_bytes || fclose(out) != 0)
+            {
+                SparkTokenizerDestroy(&tokenizer);
+                free(token_ids);
+                free(owned_prompt_text);
+                fprintf(stderr, "sparkpipe_tokenize_prompt_error=write_failed\n");
+                return 1;
+            }
+        }
+        else
+        {
+            fwrite(decode_out, 1u, decode_bytes, stdout);
+        }
+        SparkTokenizerDestroy(&tokenizer);
+        free(token_ids);
+        free(owned_prompt_text);
+        return 0;
     }
 
     memset(&encoding, 0, sizeof(encoding));

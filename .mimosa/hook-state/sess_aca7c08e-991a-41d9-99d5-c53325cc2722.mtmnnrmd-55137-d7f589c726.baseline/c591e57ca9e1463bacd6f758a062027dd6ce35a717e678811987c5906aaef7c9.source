@@ -1,3 +1,0 @@
-#pragma once
-#define GLM5_NEXT_LAYER_THREADS 256u
-#define GLM5_NEXT_ATTN_THREADS 256u

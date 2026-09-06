@@ -1154,7 +1154,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
         return;
     }
 
-    SparkWeightdServerReclaimCold(server, 0ull);
+    SparkWeightdServerReclaimCold(server, request->expert_pool_bytes);
     if (server->arena_count >= SPARK_WEIGHTD_ARENA_COUNT_MAX)
     {
         free(entries);

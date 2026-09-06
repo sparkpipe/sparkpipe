@@ -1414,29 +1414,42 @@ CEILING = 234369
 # +10: per-collective ordinals (the nccl backend enforces a strict
 # per-communicator sequence; the shared counter failed the HC twin's
 # first submit with VALIDATION_FAILED - the wave-1 hardware receipt).
-# 236911 -> 237317: glm5_next serving fixes (MTP load-and-ignore pack
-# validation, trailing-directory layout contract, NCCL completion
-# trampoline), weightd warm-path identity publish, wave-tool env
-# passthrough, spark-queue multi-dev hardening (+ durable state, batched
-# age-gated reaper, doctor), hermetic queue gate, runbook + consult doc.
-# 237333 -> 237359: qwen38_max TP16-ready attention kernels (KV-head
-# replication past the kv head count). 237359 -> 237363: symmetric resource
-# classes. lane/spec-unified: the speculation policy core becomes
-# model-neutral and tree-capable (runtime contract descriptor + structural
-# validation; parent-array tree resolve with the chain as the degenerate
-# case; GLM52 default-fill moves to the GLM52 backend). Main purge history:
-# 237353 -> 237543 (dsv4pro verifier/ranks, queue blocked-state promotion,
-# qwen38_max attention launcher guard) then the comment purge. Merged;
-# ceiling re-pinned from MEASURED reality after the conflict resolution.
-# weightd fast-load merge (glm53): +1101 measured over the stale pin
-# (src/spark_ck128.c + header, tools/ck128_stamp.c, the single-pass
-# 64 MiB staging loader in runtime/spark_weightd.c, weightdctl
-# reclaim/timeout/identity-parity, and the scanner-remediation helpers
-# in k3_pack/qwen4_flash_deploy_v4/qwen4_flash_fetch_fp8/
-# ga_cold_manifest/test_batch_variants). Re-pinned 219352 -> 220453
-# from the merged tree's measured count on spark5.
-CEILING = 220453
-
+# 236911 -> 237708: the multi-row lane (experimental, not merged): MTP
+# load-and-ignore + trailing-directory validation in the glm5_next module,
+# the NCCL completion trampoline (stack-overflow fix), the multi-row run
+# plumbing + causal indexer bounds + validator tier3/4 instruments
+# (kimidev bisect in flight), and the spark-queue multi-dev hardening
+# (+69: the 8-dev scale pass - durable state home, batched age-gated
+# reaper, doctor).
+# lane/spec-unified: the speculation policy core becomes model-neutral and
+# tree-capable. The SPARK_DSPARK_TARGET_* build-time shape switch and the
+# hardcoded-GLM52 hard-equality validation are replaced by a runtime contract
+# descriptor with structural validation (shorter than the chain it replaces),
+# and acceptance gains a parent-array tree resolve with the chain kept as the
+# degenerate tree (one shared code path, no second engine). The GLM52 default
+# contract fill moves to the GLM52 backend as a real function.
+# Merged the spec-unified core into the glm5_next multi-row lane; per the
+# ratchet rule the ceiling is re-pinned from MEASURED reality after the
+# conflict resolution, never carried forward.
+# glm5_next MTP chain speculation (lane/glm5next-spec): the layer-45 draft
+# forward (eh_proj over [hnorm|enorm], DSA+MoE via the shared layer kernels),
+# the commit=0 verify wave with per-KDA-layer ReplaySSM recording, the
+# fold/conv-recommit driver, the policy-core resolve wiring, and the
+# adapter's burst emission. +686 measured on this lane.
+CEILING = 238773
+# kimi-k3 prefill run port (+73 tracked): the K3 serving adapter derives the
+# KDA run prefix (consecutive same-slot rows = one sequential recurrence run;
+# a multi-row prefill span stops being T independent 1-row hits on one state
+# slot) + per-run state slots; the runner dispatch gains sequence_row_begin
+# (the step-input contract the kernels already implement) and honors
+# active_sequence_count. Decode with distinct-slot rows is runs-of-one -
+# bit-identical by the kernels' run-of-one contract, now EXECUTED on the
+# host (build/test_k3_run_equivalence, tests/-excluded harness): S1 a
+# multi-row run == sequential calls, S2 an explicit runs-of-one prefix ==
+# the NULL-prefix decode reading, S3 a mixed 3-run wave == sequential,
+# S4 the conv window carry. +11 tracked: the Makefile rule + GNU-C++
+# probe. Measured exact: 237507 on main 201ff6c + this stack.
+CEILING = 237507
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
