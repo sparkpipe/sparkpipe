@@ -94,24 +94,27 @@ sync_root() {
     [ -n "$out" ] && { echo "$(date +%T) $name changed; restarting"; restart_root "$name"; }
 }
 
+sync_weightd() {
+    local home="$HOME/sparkdata/weightd"
+    mkdir -p "$home"
+    rsync -a "$REF_BASE/weightd/" "$home/" 2>>"$HOME/fleet_agent_rsync.log"
+}
+
 ensure_weightd() {
     pgrep -f "sparkpipe_weightd" >/dev/null && return 0
-    local w=""
-    local r
-    IFS=, read -ra RA <<< "$ROOTS"
-    for r in "${RA[@]}"; do
-        [ -x "$HOME/sparkdata/$r/bin/sparkpipe_weightd" ] && w="$HOME/sparkdata/$r/bin/sparkpipe_weightd" && break
-    done
-    [ -n "$w" ] || return 0
-    echo "$(date +%T) weightd: starting $w"
-    setsid nohup "$w" --socket /tmp/spark_weightd.sock > "$HOME/weightd.log" 2>&1 < /dev/null &
+    local home="$HOME/sparkdata/weightd"
+    [ -x "$home/sparkpipe_weightd" ] || return 0
+    echo "$(date +%T) weightd: starting"
+    setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
+        > "$HOME/weightd.log" 2>&1 < /dev/null &
 }
 
 echo "$$" > "$PID_FILE"
 echo "agent: rank=$RANK roots=$ROOTS ref=$REF_BASE hub=$HUB"
 report
-ensure_weightd
+sync_weightd
 while true; do
+    sync_weightd
     ensure_weightd
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do sync_root "$r"; done
