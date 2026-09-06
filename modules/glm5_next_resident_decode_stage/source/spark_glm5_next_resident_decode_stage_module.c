@@ -2473,18 +2473,34 @@ static SparkStatus SparkGlm5NextInitializeState(
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->ledger.module_tag = SPARK_GLM5_NEXT_MODULE_TAG;
 	status = SparkGlm5NextModuleConfigure(state,configuration,host_services,&pack_path);
+	if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP configure rc=%u\n",(uint32_t)status);
 	if ( status == SPARK_STATUS_OK && SparkGlm5NextConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextPackLoad(state,pack_path);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP packload rc=%u\n",(uint32_t)status);
+	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextAllocateCaches(state);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP caches rc=%u\n",(uint32_t)status);
+	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextAllocateSlots(state);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP slots rc=%u\n",(uint32_t)status);
+	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextModuleInitializeTpCollective(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP collective rc=%u\n",(uint32_t)status);
+	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkGlm5NextBuildHeadShadow(state);
+		if ( status != SPARK_STATUS_OK ) fprintf(stderr,"TREE-STEP shadow rc=%u\n",(uint32_t)status);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm5NextReleaseSlotHost(state);
@@ -2518,13 +2534,21 @@ SparkStatus SparkGlm5NextResidentDecodeStageInitialize(
 {
 	SparkGlm5NextModuleState *state;
 	SparkStatus status;
+	fprintf(stderr,"TREE-MOD-INIT enter\n");
 	status = SparkFirmwareModuleValidateInitialization(configuration,host_services,module_state);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"TREE-MOD-INIT validate rc=%u\n",(uint32_t)status);
 		return(status);
+	}
 	state = 0;
 	status = SparkGlm5NextInitializeState(configuration,host_services,&state);
 	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"TREE-MOD-INIT state rc=%u\n",(uint32_t)status);
 		return(status);
+	}
+	fprintf(stderr,"TREE-MOD-INIT ok\n");
 	*module_state = state;
 	return(SPARK_STATUS_OK);
 }

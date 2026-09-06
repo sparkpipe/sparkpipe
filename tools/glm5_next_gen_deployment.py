@@ -54,9 +54,6 @@ TP_COLLECTIVE = {
         "lib/hidden_transport.so" if BACKEND == "hidden_transport"
         else "lib/libnccl.so.2",
     "algorithms": ["tree"],
-    # the nccl backend dlopens libnccl.so.2 through backend_module_path
-    # (SparkTpNcclLoadLibrary); the lib ships in the runtime root lib/
-    "backend_module_path": "lib/libnccl.so.2",
     "collective_identifier": COLLECTIVE_ID,
     "listen_port": COLLECTIVE_BASE,
     "connect_timeout_milli": 600000,
