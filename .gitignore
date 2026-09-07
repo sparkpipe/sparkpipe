@@ -12,3 +12,5 @@ tools/devcycle/drivers/
 deployment/rtx5090_speculation/*.local.json
 .mimosa/
 staging/
+tools/fleet/lanes/*.log
+tools/fleet/lanes/*.state.md
