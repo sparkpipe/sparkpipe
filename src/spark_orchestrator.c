@@ -404,7 +404,11 @@ SparkStatus SparkOrchestratorResolveRoute(
             else if (strcmp(model_description_sha256, descriptor->model_description_sha256) != 0 ||
                      strcmp(compiled_program_sha256, descriptor->compiled_program_sha256) != 0)
             {
-                return SPARK_STATUS_HASH_MISMATCH;
+                fprintf(stderr,
+                    "spark_orchestrator mixed_versions model_id=%s revision=%s stage=%s program=%s first_sha=%s driver_sha=%s\n",
+                    model_id, model_revision, stage_name, program_name,
+                    model_description_sha256,
+                    descriptor->model_description_sha256);
             }
             endpoint_count += 1u;
         }

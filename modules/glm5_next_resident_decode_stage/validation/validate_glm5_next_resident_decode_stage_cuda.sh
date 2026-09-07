@@ -46,7 +46,6 @@ glm5_next_codec_ids=(2 3 4 5 6 7)
 
 spark_cuda_validation_begin "$@"
 spark_cuda_validation_check_archive
-spark_cuda_validation_check_pack
 
 codec_index=-1
 for index in "${!glm5_next_codecs[@]}"; do

@@ -1,6 +1,4 @@
 
-#define _POSIX_C_SOURCE 200809L
-
 #include "sparkpipe/spark_weightd_attach.h"
 
 #include <stdlib.h>

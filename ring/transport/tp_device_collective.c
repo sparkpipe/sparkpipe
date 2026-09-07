@@ -1,9 +1,8 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "tp_device_collective_nccl.h"
 
 #include <cuda_runtime_api.h>
+#include <cuda.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
@@ -136,6 +135,10 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint32_t route_count;
     uint32_t binding_route_count;
     uint32_t fixed_slots_enabled;
+    uint64_t nonce_offset;
+    uint64_t fold_pitch;
+    void *fold_stage_host;
+    void *fold_stage[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
     SparkTpDeviceCollective *collective;
 } SparkTpDeviceCollectiveImplementation;
 
@@ -901,14 +904,17 @@ static void SparkTpDeviceCollectiveTreeSend(
         &implementation->bindings[route][operation->credit_index];
     uint64_t payload_bytes = SparkTpDeviceCollectiveOperationBytes(
         implementation->collective,operation);
+    uint64_t nonce_at = implementation->nonce_offset;
     SparkStatus status;
 
+    if (payload_bytes > nonce_at)
+        nonce_at = payload_bytes;
     *(volatile uint64_t *)((uint8_t *)binding->send_transport +
-        payload_bytes) = operation->ordinal + 1u;
+        nonce_at) = operation->ordinal + 1u;
     status = SparkHiddenTransportSendFixed(
         implementation->send_sessions[route],
         binding->send_transport,
-        payload_bytes + NONCE_BYTES,
+        nonce_at + NONCE_BYTES,
         (uint32_t)((operation->ordinal << 8u) | route));
     if (status != SPARK_STATUS_OK)
         SparkTpDeviceCollectiveLatchFailure(implementation,status);
@@ -939,14 +945,33 @@ static void SparkTpDeviceCollectiveTreeOperation(
             continue;
         binding = &implementation->bindings[
             tree_bit_route(used,bit)][operation->credit_index];
-        if (*(volatile uint64_t *)((uint8_t *)binding->receive_transport +
-                local_bytes) < operation->ordinal + 1u)
-            continue;
+        {
+            uint64_t nonce_at = implementation->nonce_offset;
+            if (local_bytes > nonce_at)
+                nonce_at = local_bytes;
+            if (*(volatile uint64_t *)
+                    ((uint8_t *)binding->receive_transport + nonce_at) !=
+                operation->ordinal + 1u)
+                continue;
+        }
         operation->arrived |= mask;
+        if (operation->operation_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+            memcpy(implementation->fold_stage[tree_bit_route(used,bit)] +
+                (uint64_t)operation->credit_index * implementation->fold_pitch,
+                binding->receive_transport,(size_t)local_bytes);
         if (stage + 1u == TREE_STAGES)
         {
+            const void *down_src = binding->receive_device;
+            if (operation->operation_kind ==
+                SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+                down_src = implementation->fold_stage[
+                    tree_bit_route(used,bit)] +
+                    (uint64_t)operation->credit_index *
+                        implementation->fold_pitch;
             SparkStatus status = SparkTpDeviceCollectiveCopyRows(
-                operation->full_device,local_bytes,binding->receive_device,
+                operation->full_device,local_bytes,
+                down_src,
                 local_bytes,local_bytes,1u,
                 cudaMemcpyDeviceToDevice,operation->cuda_stream);
             if (status != SPARK_STATUS_OK)
@@ -961,11 +986,20 @@ static void SparkTpDeviceCollectiveTreeOperation(
             SparkStatus status;
             if (operation->operation_kind ==
                 SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+            {
+                const void *u64_src = binding->receive_device;
+                if (operation->operation_kind ==
+                    SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
+                    u64_src = implementation->fold_stage[
+                        tree_bit_route(used,bit)] +
+                        (uint64_t)operation->credit_index *
+                            implementation->fold_pitch;
                 status = implementation->combine_u64_max_function(
                     implementation->combine_context,
                     (uint64_t *)operation->full_device,
-                    (const uint64_t *)binding->receive_device,
+                    (const uint64_t *)u64_src,
                     operation->active_sequence_count,operation->cuda_stream);
+            }
             else
                 status = implementation->combine_bf16_function(
                     implementation->combine_context,operation->full_device,
@@ -973,6 +1007,10 @@ static void SparkTpDeviceCollectiveTreeOperation(
                     collective->local_hidden_dimension,operation->cuda_stream);
             if (status != SPARK_STATUS_OK)
             {
+                fprintf(stderr,"TREE-FOLD-FAIL rank=%u ord=%llu stage=%u status=%u cuda=%s\n",
+                    collective->tp_rank,
+                    (unsigned long long)operation->ordinal,stage,
+                    (uint32_t)status,cudaGetErrorString(cudaGetLastError()));
                 SparkTpDeviceCollectiveMarkOperationFailure(implementation,
                     operation,operation->generation,status);
                 return;
@@ -991,6 +1029,10 @@ static void SparkTpDeviceCollectiveTreeOperation(
                 (cudaStream_t)operation->cuda_stream));
         if (status != SPARK_STATUS_OK)
         {
+            fprintf(stderr,"TREE-PACK-FAIL rank=%u ord=%llu stage=%u status=%u cuda=%s\n",
+                collective->tp_rank,
+                (unsigned long long)operation->ordinal,stage,
+                (uint32_t)status,cudaGetErrorString(cudaGetLastError()));
             SparkTpDeviceCollectiveMarkOperationFailure(implementation,
                 operation,operation->generation,status);
             return;
@@ -2002,6 +2044,32 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         goto fail_create;
     }
     implementation->fixed_slots_enabled = 1u;
+    implementation->nonce_offset = (uint64_t)config->local_hidden_dimension *
+        SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT *
+        config->max_active_sequence_count;
+    {
+        uint64_t pitch = implementation->nonce_offset + NONCE_BYTES;
+        size_t bytes = (size_t)pitch *
+            SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS *
+            implementation->collective->credit_count;
+        uint32_t route_index;
+
+        implementation->fold_pitch = pitch;
+        if (cudaHostAlloc(&implementation->fold_stage_host,bytes,
+                cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess)
+        {
+            for (route_index = 0u;
+                 route_index < SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS;
+                 route_index++)
+                if (cudaHostGetDevicePointer(
+                        &implementation->fold_stage[route_index],
+                        (uint8_t *)implementation->fold_stage_host +
+                            (size_t)pitch *
+                            implementation->collective->credit_count *
+                            route_index,0u) != cudaSuccess)
+                    implementation->fold_stage[route_index] = 0;
+        }
+    }
     status = SparkTpDeviceCollectiveRegisterFixedSlots(implementation,
         config->connect_timeout_milli);
     if (status != SPARK_STATUS_OK)
@@ -2021,6 +2089,8 @@ fail_create:
     SparkTpDeviceCollectiveCloseSessions(implementation);
     SparkHiddenTransportUnloadInterface(&implementation->transport_library);
     SparkTpDeviceCollectiveDestroyEvents(implementation);
+    if (implementation->fold_stage_host != 0)
+        (void)cudaFreeHost(implementation->fold_stage_host);
     free(implementation);
     collective_out->implementation = 0;
     return status;
@@ -2071,6 +2141,8 @@ void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
     SparkTpDeviceCollectiveCloseSessions(implementation);
     SparkHiddenTransportUnloadInterface(&implementation->transport_library);
     SparkTpDeviceCollectiveDestroyEvents(implementation);
+    if (implementation->fold_stage_host != 0)
+        (void)cudaFreeHost(implementation->fold_stage_host);
     free(implementation);
     memset(collective,0,sizeof(*collective));
 }

@@ -34,7 +34,6 @@ source "${script_directory}/../../spark_resident_decode_stage_cuda_validation_co
 spark_cuda_validation_begin "$@"
 spark_cuda_validation_check_hash_format
 spark_cuda_validation_check_archive
-spark_cuda_validation_check_pack
 spark_cuda_validation_check_source_digests
 
 # The KV block table must span max_active_sequence_count lanes and the

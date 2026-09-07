@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "sparkpipe/spark_model_resident_client.h"
 
 #include <errno.h>

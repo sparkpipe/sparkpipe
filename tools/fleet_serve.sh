@@ -20,14 +20,14 @@ rr() { echo "/home/$1/sparkdata/$NAME"; }
 stop() {
     local h
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "rr='$(rr "$h")'; for p in \$(pgrep -f 'bin/sparkpipe_model_(residentd|api)'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -TERM \$p; done; sleep 1; for p in \$(pgrep -f 'bin/sparkpipe_model_(residentd|api)'); do c=\$(readlink /proc/\$p/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -KILL \$p; done; true" &
+        $SSH "$h" "rr='$(rr "$h")'; for l in \$(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model | sed 's|.*/proc/\\([0-9]*\\)/exe.*|\\1|'); do c=\$(readlink /proc/\$l/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -TERM \$l; done; sleep 1; for l in \$(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model | sed 's|.*/proc/\\([0-9]*\\)/exe.*|\\1|'); do c=\$(readlink /proc/\$l/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && kill -KILL \$l; done; true" &
     done
     wait
     local t busy
     for t in $(seq 1 30); do
         busy=0
         for h in "${HOSTS[@]}"; do
-            n=$($SSH "$h" "pgrep -x sparkpipe_model | wc -l" 2>/dev/null)
+            n=$($SSH "$h" "ls -l /proc/[0-9]*/exe 2>/dev/null | grep -c sparkpipe_model" 2>/dev/null)
             [ "${n:-0}" -gt 0 ] && busy=1
         done
         [ "$busy" = 0 ] && break

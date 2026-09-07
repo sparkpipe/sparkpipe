@@ -98,10 +98,12 @@ unload_root() {
     return 1
 }
 
-restart_root() {
-    local name="$1" rr="$HOME/sparkdata/$1"
+start_root() {
+    local name="$1" rr="$HOME/sparkdata/$1" p
+    for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
+    done
     cd "$rr" || return 1
-    unload_root "$name" || return 1
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     mv residentd.log residentd.log.prev 2>/dev/null
     LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
@@ -110,25 +112,61 @@ restart_root() {
     report
 }
 
+restart_root() {
+    local name="$1"
+    cd "$HOME/sparkdata/$1" || return 1
+    unload_root "$name" || return 1
+    start_root "$name"
+}
+
+FLEET_SIZE=16
+HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
+
+hub_has() {
+    $HUBSSH "${REF_BASE%%:*}" "test -f '${REF_BASE#*:}/$1' && echo yes" 2>/dev/null || true
+}
+
 sync_root() {
-    local name="$1" out="" p
-    local ref="$REF_BASE/$name"
+    local name="$1" p upd
+    local refhost="${REF_BASE%%:*}"
+    local refdir="${REF_BASE#*:}/$name"
     local root="$HOME/sparkdata/$name"
     mkdir -p "$root"
-    local sleep_offset=$((RANK % 8))
-    sleep "$sleep_offset"
+    local exists
+    exists=$(hub_has "$name/UPDATE")
+    if [ "$exists" != yes ] && [ -x "$root/bin/sparkpipe_model_residentd" ]; then
+        return 0
+    fi
     for p in lib bin stages config model_resident.json; do
-        local o
-        o=$(rsync -a --checksum --exclude=stage.json --out-format=%n "$ref/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log") \
-            && [ -n "$o" ] && out=1
+        rsync -a -e "$HUBSSH" --checksum --omit-dir-times --exclude=stage.json "$REF_BASE/$name/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log" || true
     done
-    [ -n "$out" ] && { echo "$(date +%T) $name changed; restarting"; restart_root "$name"; }
+    [ "$exists" = yes ] || return 0
+    upd=$($HUBSSH "$refhost" "cat '$refdir/UPDATE'") || upd=""
+    if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
+        unload_root "$name" || return 0
+        $HUBSSH "$refhost" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
+        upd=$(printf '%s\ndown:%s\n' "$upd" "$HOST")
+    fi
+    [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -ge "$FLEET_SIZE" ] || return 0
+    if ! printf '%s\n' "$upd" | grep -qx "up:$HOST"; then
+        start_root "$name" || return 0
+        $HUBSSH "$refhost" "echo up:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
+        upd=$(printf '%s\nup:%s\n' "$upd" "$HOST")
+    fi
+    [ "$(printf '%s\n' "$upd" | grep -c '^up:')" -ge "$FLEET_SIZE" ] || return 0
+    local c
+    c=$($HUBSSH "$refhost" "ls '$refdir' 2>/dev/null | sed -n 's/^UPDATE\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1")
+    $HUBSSH "$refhost" "mv '$refdir/UPDATE' '$refdir/UPDATE.$(( ${c:-0} + 1 ))'" 2>/dev/null || true
 }
 
 sync_weightd() {
     local home="$HOME/sparkdata/weightd"
     mkdir -p "$home"
-    rsync -a "$REF_BASE/weightd/" "$home/" 2>>"$HOME/fleet_agent_rsync.log"
+    if [ -x "$home/sparkpipe_weightd" ] && [ "$(hub_has weightd/UPDATE)" != yes ]; then
+        return 0
+    fi
+    rsync -a -e "$HUBSSH" --checksum "$REF_BASE/weightd/" "$home/" 2>>"$HOME/fleet_agent_rsync.log" || true
+    $HUBSSH "${REF_BASE%%:*}" "mv '${REF_BASE#*:}/weightd/UPDATE' '${REF_BASE#*:}/weightd/UPDATE.$(date +%s)'" 2>/dev/null || true
 }
 
 ensure_weightd() {
