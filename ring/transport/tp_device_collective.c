@@ -93,6 +93,10 @@ typedef struct SparkTpDeviceCollectiveOperation
     uint64_t ordinal;
     uint64_t generation;
     uint64_t deadline_milli;
+    uint64_t trace_submit_ns;
+    uint64_t trace_arrival_ns[4u];
+    uint64_t trace_terminal_ns;
+    uint64_t trace_callback_ns;
     const void *local_device;
     void *full_device;
     void *cuda_stream;
@@ -124,7 +128,11 @@ typedef struct SparkTpDeviceCollectiveImplementation
     void *combine_context;
     cudaEvent_t consumer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaEvent_t producer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
+    cudaEvent_t pack_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
+    cudaEvent_t result_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaStream_t operation_streams[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
+    uint64_t trace_count;
+    uint32_t trace_enabled;
     void *op_done_flags;
     void *op_done_staging;
     void *registration_cuda_stream;
@@ -176,6 +184,16 @@ static uint64_t SparkTpDeviceCollectiveNowMilli(void)
     }
     return ((uint64_t)current_time.tv_sec * 1000u) +
         ((uint64_t)current_time.tv_nsec / 1000000u);
+}
+
+static uint64_t SparkTpDeviceCollectiveNowNsTrace(void)
+{
+    struct timespec current_time;
+
+    if (clock_gettime(CLOCK_MONOTONIC,&current_time) != 0)
+        return 0u;
+    return ((uint64_t)current_time.tv_sec * 1000000000u) +
+        (uint64_t)current_time.tv_nsec;
 }
 
 static uint64_t SparkTpDeviceCollectiveStateWord(
@@ -587,6 +605,18 @@ static void SparkTpDeviceCollectiveDestroyEvents(
                 implementation->producer_events[credit_index]);
             implementation->producer_events[credit_index] = 0;
         }
+        if (implementation->pack_events[credit_index] != 0)
+        {
+            (void)cudaEventDestroy(
+                implementation->pack_events[credit_index]);
+            implementation->pack_events[credit_index] = 0;
+        }
+        if (implementation->result_events[credit_index] != 0)
+        {
+            (void)cudaEventDestroy(
+                implementation->result_events[credit_index]);
+            implementation->result_events[credit_index] = 0;
+        }
         if (implementation->operation_streams[credit_index] != 0)
         {
             (void)cudaStreamDestroy(
@@ -961,6 +991,10 @@ static void SparkTpDeviceCollectiveTreeOperation(
                 continue;
         }
         operation->arrived |= mask;
+        if (implementation->trace_enabled != 0u &&
+            operation->trace_arrival_ns[stage] == 0u)
+            operation->trace_arrival_ns[stage] =
+                SparkTpDeviceCollectiveNowNsTrace();
         if (operation->operation_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64)
             memcpy(implementation->fold_stage[tree_bit_route(used,bit)] +
@@ -1036,6 +1070,10 @@ static void SparkTpDeviceCollectiveTreeOperation(
             status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
                 implementation->consumer_events[operation->credit_index],
                 implementation->operation_streams[operation->credit_index]));
+        if (status == SPARK_STATUS_OK && implementation->trace_enabled != 0u)
+            status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
+                implementation->pack_events[operation->credit_index],
+                implementation->operation_streams[operation->credit_index]));
         if (status != SPARK_STATUS_OK)
         {
             fprintf(stderr,"TREE-PACK-FAIL rank=%u ord=%llu stage=%u status=%u cuda=%s\n",
@@ -1073,6 +1111,15 @@ static void SparkTpDeviceCollectiveTreeOperation(
             flag_error = cudaEventRecord(
                 implementation->consumer_events[operation->credit_index],
                 implementation->operation_streams[operation->credit_index]);
+        if (flag_error == cudaSuccess && implementation->trace_enabled != 0u)
+        {
+            flag_error = cudaEventRecord(
+                implementation->result_events[operation->credit_index],
+                implementation->operation_streams[operation->credit_index]);
+            if (flag_error == cudaSuccess)
+                operation->trace_terminal_ns =
+                    SparkTpDeviceCollectiveNowNsTrace();
+        }
         if (flag_error != cudaSuccess)
         {
             fprintf(stderr,"TREE-FLAG-ENQ-FAIL rank=%u ord=%llu cuda=%s\n",
@@ -1396,6 +1443,41 @@ static void SparkTpDeviceCollectivePublishCompletion(
     completion.credit_index = operation->credit_index;
     completion.ordinal = operation->ordinal;
     completion.generation = operation->generation;
+    if (implementation->trace_enabled != 0u &&
+        operation->trace_submit_ns != 0u)
+    {
+        float pack_us = -1.0f;
+        float tree_us = -1.0f;
+        operation->trace_callback_ns = SparkTpDeviceCollectiveNowNsTrace();
+        if (cudaEventElapsedTime(&pack_us,
+                implementation->producer_events[operation->credit_index],
+                implementation->pack_events[operation->credit_index]) !=
+                cudaSuccess)
+            pack_us = -1.0f;
+        if (cudaEventElapsedTime(&tree_us,
+                implementation->pack_events[operation->credit_index],
+                implementation->result_events[operation->credit_index]) !=
+                cudaSuccess)
+            tree_us = -1.0f;
+        fprintf(stderr,
+            "TTRACE rank=%u ord=%llu sub=%llu a0=%llu a1=%llu a2=%llu a3=%llu term=%llu cb=%llu pack_us=%.1f tree_us=%.1f\n",
+            implementation->collective->tp_rank,
+            (unsigned long long)operation->ordinal,
+            (unsigned long long)operation->trace_submit_ns,
+            (unsigned long long)(operation->trace_arrival_ns[0u] -
+                operation->trace_submit_ns),
+            (unsigned long long)(operation->trace_arrival_ns[1u] -
+                operation->trace_submit_ns),
+            (unsigned long long)(operation->trace_arrival_ns[2u] -
+                operation->trace_submit_ns),
+            (unsigned long long)(operation->trace_arrival_ns[3u] -
+                operation->trace_submit_ns),
+            (unsigned long long)(operation->trace_terminal_ns -
+                operation->trace_submit_ns),
+            (unsigned long long)(operation->trace_callback_ns -
+                operation->trace_submit_ns),
+            (double)pack_us,(double)tree_us);
+    }
     operation->completion_function(operation->completion_context,&completion);
     (void)SparkTpDeviceCollectiveTransitionPhase(operation,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_CALLBACK_CLAIMED,
@@ -1712,6 +1794,13 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
     operation->continuation_cuda_stream = submission->cuda_stream;
     operation->completion_function = submission->completion_function;
     operation->completion_context = submission->completion_context;
+    operation->trace_submit_ns = SparkTpDeviceCollectiveNowNsTrace();
+    operation->trace_arrival_ns[0u] = 0u;
+    operation->trace_arrival_ns[1u] = 0u;
+    operation->trace_arrival_ns[2u] = 0u;
+    operation->trace_arrival_ns[3u] = 0u;
+    operation->trace_terminal_ns = 0u;
+    operation->trace_callback_ns = 0u;
     status = now_milli == 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
     if (status == SPARK_STATUS_OK &&
         cudaEventQuery(
@@ -2138,6 +2227,8 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         implementation->debug_hooks = *config->debug_hooks;
     }
     atomic_init(&implementation->admission_open,1u);
+    implementation->trace_enabled =
+        getenv("SPARK_TREE_TRACE") != 0 ? 1u : 0u;
     atomic_init(&implementation->shutdown_requested,0u);
     atomic_init(&implementation->shutdown_deadline_milli,UINT64_MAX);
     atomic_init(&implementation->failure_status,SPARK_STATUS_OK);
@@ -2167,6 +2258,19 @@ SparkStatus SparkTpDeviceCollectiveCreate(
             fprintf(stderr,"TREE-STREAM-FAIL rank=%u credit=%u cuda=%s\n",
                 collective_out->tp_rank,credit_index,
                 cudaGetErrorString(cudaGetLastError()));
+            status = SPARK_STATUS_DRIVER_LOAD_ERROR;
+            goto fail_create;
+        }
+        if (implementation->trace_enabled != 0u &&
+            (cudaEventCreateWithFlags(
+                    &implementation->pack_events[credit_index],
+                    cudaEventDisableTiming) != cudaSuccess ||
+             cudaEventCreateWithFlags(
+                    &implementation->result_events[credit_index],
+                    cudaEventDisableTiming) != cudaSuccess))
+        {
+            fprintf(stderr,"TREE-TRACE-EVENT-FAIL rank=%u credit=%u\n",
+                collective_out->tp_rank,credit_index);
             status = SPARK_STATUS_DRIVER_LOAD_ERROR;
             goto fail_create;
         }
