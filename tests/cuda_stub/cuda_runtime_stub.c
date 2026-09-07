@@ -436,7 +436,8 @@ const char *cudaGetErrorString(cudaError_t error)
 }
 
 cudaError_t cudaGetLastError(void)
-{    return cudaSuccess;
+{
+    return cudaSuccess;
 }
 
 cudaError_t cudaGetDevice(int *device)
