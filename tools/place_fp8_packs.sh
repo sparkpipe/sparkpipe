@@ -5,12 +5,17 @@ place_once() {
   node=$2
   p="model-fp8-tp16-rank-$r.safetensors"
   if [ "$node" = "sparkc" ]; then
-    mkdir -p ~/sparkdata/hy4.fp8.tp16/packs/rank-$r || return 1
-    cp -f "$p" ~/sparkdata/hy4.fp8.tp16/packs/rank-$r/ || return 1
-  else
-    ssh "$node" "mkdir -p ~/sparkdata/hy4.fp8.tp16/packs/rank-$r" || return 1
-    scp -q "$p" "$node":sparkdata/hy4.fp8.tp16/packs/rank-$r/ || return 1
+    mkdir -p "$HOME/sparkdata/hy4.fp8.tp16/packs/rank-$r" || return 1
+    cp -f "$p" "$HOME/sparkdata/hy4.fp8.tp16/packs/rank-$r/" || return 1
+    cp -f "manifest-rank-$r.json" "$p.sha256" \
+      "$HOME/sparkdata/hy4.fp8.tp16/packs/rank-$r/" || return 1
+    cd "$HOME/sparkdata/hy4.fp8.tp16/packs/rank-$r" || return 1
+    sha256sum -c "$p.sha256" || return 1
+    cd ~/hy4-fp8-packs || exit 1
+    return 0
   fi
+  ssh "$node" "mkdir -p ~/sparkdata/hy4.fp8.tp16/packs/rank-$r" || return 1
+  scp -q "$p" "$node":sparkdata/hy4.fp8.tp16/packs/rank-$r/ || return 1
   scp -q "manifest-rank-$r.json" "$p.sha256" \
     "$node":sparkdata/hy4.fp8.tp16/packs/rank-$r/ || return 1
   ssh "$node" "cd ~/sparkdata/hy4.fp8.tp16/packs/rank-$r && \
