@@ -63,7 +63,7 @@ start() {
         return 1
     fi
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "cd '$(rr "$h")' && ln -sf stage_$(printf %02d $i).json config/stage.json && mv residentd.log residentd.log.prev 2>/dev/null; LD_LIBRARY_PATH='$(rr "$h")'/lib nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $i > residentd.log 2>&1 < /dev/null &" &
+        $SSH "$h" "cd '$(rr "$h")' && ln -sf stage_$(printf %02d $i).json config/stage.json && mv residentd.log residentd.log.prev 2>/dev/null; LD_LIBRARY_PATH='$(rr "$h")'/lib SPARK_GLM5_NEXT_MTP='${SPARK_GLM5_NEXT_MTP:-1}' SPARK_TP_D2A_TIMING='${SPARK_TP_D2A_TIMING:-0}' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $i > residentd.log 2>&1 < /dev/null &" &
         i=$((i+1))
     done
     wait
@@ -93,7 +93,7 @@ start() {
 }
 
 api() {
-    $SSH "$API_HOST" "cd '$(rr "$API_HOST")' && setsid nohup ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root '$(rr "$API_HOST")' --port $API_PORT > api.log 2>&1 < /dev/null &"
+    $SSH "$API_HOST" "cd '$(rr "$API_HOST")' && SPARK_GLM5_NEXT_MTP='${SPARK_GLM5_NEXT_MTP:-1}' setsid nohup ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root '$(rr "$API_HOST")' --port $API_PORT > api.log 2>&1 < /dev/null &"
     sleep 1
     curl -s --max-time 3 "http://$API_HOST:$API_PORT/health" || true
     echo
@@ -103,12 +103,12 @@ sync() {
     local h p REF="${FLEET_REF:-rtx5090:release}"
     local HUBHOST="${REF%%:*}" HUBPATH="${REF#*:}"
     for h in "${HOSTS[@]}"; do
-        for p in lib bin stages config model_resident.json; do
-            { ssh -o BatchMode=yes "$HUBHOST" "tar -C '$HUBPATH/$NAME' -cf - '$p' --exclude=stage.json" \
-              | ssh -o BatchMode=yes "$h" "tar -C ~/sparkdata/$NAME -xf -"; } &
-        done
+        if ! { ssh -o BatchMode=yes "$HUBHOST" "tar -C '$HUBPATH/$NAME' --exclude=stage.json -cf - lib bin stages config model_resident.json" \
+              | ssh -o BatchMode=yes "$h" "tar -C ~/sparkdata/$NAME -xf -"; }; then
+            echo "SYNC-FAILED on $h" >&2
+            return 1
+        fi
     done
-    wait
     echo "synced from $REF"
 }
 
