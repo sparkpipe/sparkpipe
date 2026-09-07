@@ -13,9 +13,9 @@ HUB_REF="${HUB_REF:-rtx5090:release}"
 FIRMWARE="examples/model_descriptions/${FAMILY}_${CODEC}_firmware.json"
 
 cd "$TREE"
-git fetch -q "$REMOTE" "${G5_SOURCE_BRANCH:-lane/glm53-tree-2}"
+git fetch -q "$REMOTE" "${G5_SOURCE_BRANCH:-$BRANCH}"
 if ! git cat-file -e "$BRANCH^{commit}" 2>/dev/null; then
-    BRANCH="${G5_SOURCE_BRANCH:-lane/glm53-tree-2}"
+    BRANCH="${G5_SOURCE_BRANCH:-$BRANCH}"
 fi
 git reset -q --hard "$BRANCH"
 git clean -q -fd build "modules/$FAMILY" 2>/dev/null || true
@@ -26,7 +26,9 @@ export PATH="/usr/local/cuda/bin:$PATH"
 SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 
 echo "== host build"
-make -q build/sparkpipe_model_compile || make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api
+rm -f build/sparkpipe_model_compile build/libhidden_transport_spark_host_rdma_verbs.so
+make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/libhidden_transport_spark_host_rdma_verbs.so
+strings build/libhidden_transport_spark_host_rdma_verbs.so | grep -q QP-WIRE || { echo "DSO stale"; exit 1; }
 
 echo "== park local agent + daemon (validator needs the GPU; UPDATE restores the fleet)"
 systemctl --user stop fleet-agent 2>/dev/null || true
@@ -56,9 +58,11 @@ build/sparkpipe_model_compile \
     --cc-arg -ldl --cc-arg -pthread 2>&1 | tail -1
 
 echo "== install into hub reference"
-ssh -o BatchMode=yes "${HUB_REF%%:*}" "mkdir -p '${HUB_REF#*:}/$ROOT_NAME/stages/stage_000'"
+ssh -o BatchMode=yes "${HUB_REF%%:*}" "mkdir -p '${HUB_REF#*:}/$ROOT_NAME/stages/stage_000' '${HUB_REF#*:}/$ROOT_NAME/lib'"
 rsync -c "$HOME/sparkdata/out/stages/stage_000/model_driver.so" \
     "${HUB_REF}/$ROOT_NAME/stages/stage_000/model_driver.so"
-ssh -o BatchMode=yes "${HUB_REF%%:*}" "touch '${HUB_REF#*:}/$ROOT_NAME/UPDATE'"
+rsync -c build/libhidden_transport_spark_host_rdma_verbs.so \
+    "${HUB_REF}/$ROOT_NAME/lib/hidden_transport.so"
+ssh -o BatchMode=yes "${HUB_REF%%:*}" "rm -f /srv/qpn/*.rec; touch '${HUB_REF#*:}/$ROOT_NAME/UPDATE'"
 systemctl --user start fleet-agent 2>/dev/null || true
 echo "released $REV"
