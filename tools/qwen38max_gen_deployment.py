@@ -16,11 +16,7 @@ SPARK_WEIGHTD_SOCKET, and the module's region loader then serves every
 pages in on demand (only routed experts materialize), eager H2D only as
 the documented fallback. Pack placement MUST write the digest sidecar
 beside each rank pack (sha256sum <pack> > <pack>.sha256); weightd
-resolves pack identity from it. This is the FIRMWARE acceptance split:
-byte-exact verification (pack verifier + GPU acceptance harness) runs
-ONCE at install; residentd's load path does no byte verification and
-no hashing - it trusts the sidecar digest and keeps only the cheap
-per-entry struct tripwires.
+resolves pack identity from it.
 
 Output: ONE json object mapping relative paths to file contents on
 stdout - qwen38max-tp16-deploy/<host>/config/{qwen38_stage,
