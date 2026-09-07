@@ -146,6 +146,7 @@ typedef struct SparkHiddenSparkHostRdmaQueuePairWireInfo
 
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR \
     "/mnt/qpn"
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_TTL_SECONDS 120u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_MAGIC \
     UINT64_C(0x5245454e44565a53)
 
@@ -487,6 +488,14 @@ static SparkStatus SparkHiddenSparkHostRdmaReadPeerRecord(
         record->lane_count != state->lane_count ||
         record->lanes[0].qp_number == 0u)
         return SPARK_STATUS_BUSY;
+    {
+        struct stat file_status;
+        if (fstatat(AT_FDCWD,path,&file_status,0) != 0 ||
+            (uint64_t)file_status.st_mtime +
+                SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_TTL_SECONDS <
+            (uint64_t)time(0))
+            return SPARK_STATUS_BUSY;
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -5096,6 +5105,15 @@ static SparkStatus SparkHiddenSparkHostRdmaGetPollDescriptors(
 
 static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *state)
 {
+    {
+        char path[384];
+        if (state != 0 && state->boot_id != 0u)
+        {
+            SparkHiddenSparkHostRdmaRendezvousPath(state,
+                (uint32_t)state->local_rank,path,sizeof(path));
+            (void)unlink(path);
+        }
+    }
     uint32_t lane_index;
     uint32_t receive_index;
 
