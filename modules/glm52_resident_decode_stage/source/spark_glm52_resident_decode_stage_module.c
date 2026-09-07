@@ -1067,6 +1067,7 @@ static SparkStatus SparkGlm52ValidateFrame(
 }
 
 #define SPARK_GLM52_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
+#define SPARK_GLM52_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES 65536u
 
 typedef enum SparkGlm52ChainStage
 {
@@ -1198,7 +1199,7 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 {
 	SparkTpDeviceCollectiveConfig configuration;
 	uint64_t credit_bytes,offset,total_bytes;
-	uint32_t credit,hidden,memory_mode,route,route_count;
+	uint32_t credit,hidden,memory_mode,route,route_count,d2a_route_count,tree_route_count;
 	void *mapped_receive,*mapped_send;
 	cudaError_t error;
 	SparkStatus status;
@@ -1229,6 +1230,9 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 		configuration.combine_bf16_function = SparkGlm52ModuleCombineBf16;
 		configuration.combine_u64_max_function = SparkGlm52ModuleCombineU64Max;
 		configuration.combine_context = state;
+		configuration.algorithm_mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
+		configuration.direct_all_to_all_max_payload_bytes =
+			SPARK_GLM52_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES;
 	}
 	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.control_port_base == 0u || configuration.collective_identifier == 0u || configuration.backend_module_path == 0 || configuration.local_host == 0 || configuration.backend_module_path[0] == '\0' || configuration.local_host[0] == '\0' )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1240,11 +1244,13 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	status = SparkTpDeviceCollectiveCreditBindingRouteCount(&configuration,&route_count);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	d2a_route_count = (configuration.algorithm_mask & SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) != 0u && configuration.direct_all_to_all_max_payload_bytes != 0u ? SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_MAX_PEERS : 0u;
+	tree_route_count = route_count - d2a_route_count;
 	total_bytes = 0u;
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
+		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
 		if ( credit_bytes == 0u || total_bytes > UINT64_MAX - credit_bytes * configuration.credit_count )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		total_bytes += credit_bytes * configuration.credit_count;
@@ -1285,20 +1291,20 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
+		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
 		for (credit=0u; credit<configuration.credit_count; credit++)
 		{
 			SparkTpDeviceCollectiveCreditBinding *binding;
 			if ( state->tp_credit_binding_count >= SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT )
 				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 			binding = &state->tp_credit_bindings[state->tp_credit_binding_count++];
-			binding->step_index = route;
+			binding->step_index = route < tree_route_count ? route : route - tree_route_count;
 			binding->credit_index = credit;
 			binding->send_device = (uint8_t *)state->tp_credit_send_bf16 + offset;
 			binding->receive_device = (uint8_t *)state->tp_credit_receive_bf16 + offset;
 			binding->send_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_host_credit_send_bf16 + offset : binding->send_device;
 			binding->receive_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_host_credit_receive_bf16 + offset : binding->receive_device;
-			binding->flags = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS : 0u;
+			binding->flags = (memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (SPARK_TP_DEVICE_COLLECTIVE_BINDING_SEND_MAPPED_ALIAS | SPARK_TP_DEVICE_COLLECTIVE_BINDING_RECEIVE_MAPPED_ALIAS) : 0u) | (route < tree_route_count ? 0u : SPARK_TP_DEVICE_COLLECTIVE_BINDING_DIRECT_ALL_TO_ALL);
 			binding->reserved0 = 0u;
 			offset += credit_bytes;
 		}
