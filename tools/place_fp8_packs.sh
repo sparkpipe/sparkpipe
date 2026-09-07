@@ -29,7 +29,7 @@ place() {
     return 2
   fi
   attempt=0
-  while [ $attempt -lt 4 ]; do
+  while [ $attempt -lt 8 ]; do
     if place_once "$r" "$node"; then
       touch "pl_${r}.done"
       echo "$r -> $node placed $(date +%H:%M) attempt $attempt" >> placement.log
@@ -37,9 +37,9 @@ place() {
     fi
     attempt=$((attempt + 1))
     echo "$r -> $node attempt $attempt failed, retrying" >> placement.log
-    sleep 30
+    sleep 45
   done
-  echo "$r -> $node FAILED after 4 attempts" >> placement.log
+  echo "$r -> $node FAILED after 8 attempts" >> placement.log
   return 1
 }
 place 00 spark0 || exit 1
