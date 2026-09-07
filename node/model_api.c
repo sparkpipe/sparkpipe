@@ -102,6 +102,41 @@ static void api_term_signal(int signal_number)
 	_exit(0);
 }
 
+static void api_request_destroy(ApiRequest *req)
+{
+	pthread_mutex_destroy(&req->mutex);
+	pthread_cond_destroy(&req->cond);
+	free(req->stop_tokens);
+	free(req->prompt_tokens);
+	free(req->output_token_ids);
+	free(req);
+}
+
+static void api_queue_unlink(ApiRequest *req)
+{
+	ApiRequest **pp = &S.queue_head;
+	while (*pp != 0)
+	{
+		if (*pp == req)
+		{
+			*pp = req->next;
+			if (S.queue_tail == req)
+			{
+				ApiRequest *pred = S.queue_head;
+				S.queue_tail = 0;
+				while (pred != 0)
+				{
+					S.queue_tail = pred;
+					pred = pred->next;
+				}
+			}
+			req->next = 0;
+			return;
+		}
+		pp = &(*pp)->next;
+	}
+}
+
 
 static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 {
@@ -195,25 +230,20 @@ static void *api_worker(void *arg)
 			uint32_t i;
 			pthread_mutex_lock(&S.queue_mutex);
 			{
-				ApiRequest **pp = &S.queue_head;
-				while (*pp != 0)
+				ApiRequest *victim = S.queue_head;
+				while (victim != 0)
 				{
-					ApiRequest *victim = *pp;
 					if (victim->orphaned && !victim->inflight)
 					{
-						*pp = victim->next;
-						if (S.queue_tail == victim)
-							S.queue_tail = 0;
+						ApiRequest *next = victim->next;
+						api_queue_unlink(victim);
 						pthread_mutex_unlock(&S.queue_mutex);
-						pthread_mutex_destroy(&victim->mutex);
-						pthread_cond_destroy(&victim->cond);
-						free(victim->stop_tokens);
-						free(victim->prompt_tokens);
-						free(victim);
+						api_request_destroy(victim);
 						pthread_mutex_lock(&S.queue_mutex);
+						victim = next;
 						continue;
 					}
-					pp = &victim->next;
+					victim = victim->next;
 				}
 			}
 			for (r = S.queue_head; r != 0 && pending_count < API_MAX_INFLIGHT; r = r->next)
@@ -334,11 +364,16 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 	size_t total = 0, header_end = 0;
 	uint32_t content_length = 0;
 	ssize_t n;
+	if (buf == 0)
+		return 0;
 	while (total < buf_cap - 1)
 	{
 		n = recv(fd, buf + total, buf_cap - 1 - total, 0);
 		if (n <= 0)
+		{
+			free(buf);
 			return 0;
+		}
 		total += (size_t)n;
 		buf[total] = '\0';
 		{
@@ -723,35 +758,26 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	pthread_mutex_unlock(&S.queue_mutex);
 	while (!req->done && S.running)
 	{
-		struct pollfd disconnect_probe;
-		int poll_status;
-		disconnect_probe.fd = fd;
-		disconnect_probe.events = POLLIN;
-		poll_status = poll(&disconnect_probe, 1, 250);
-		if (poll_status > 0 && (disconnect_probe.revents & (POLLHUP | POLLERR)) != 0)
-			break;
-		if (poll_status > 0 && (disconnect_probe.revents & POLLIN) != 0)
 		{
 			char probe;
 			ssize_t received = recv(fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
 			if (received == 0)
 				break;
+			if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+				break;
 		}
-		if (!req->done)
 		{
+			struct timespec api_wait_until;
+			clock_gettime(CLOCK_REALTIME, &api_wait_until);
+			api_wait_until.tv_nsec += 250000000L;
+			if (api_wait_until.tv_nsec >= 1000000000L)
+			{
+				api_wait_until.tv_sec += 1u;
+				api_wait_until.tv_nsec -= 1000000000L;
+			}
 			pthread_mutex_lock(&req->mutex);
 			if (!req->done)
-				{
-					struct timespec api_wait_until;
-					clock_gettime(CLOCK_REALTIME, &api_wait_until);
-					api_wait_until.tv_nsec += 250000000L;
-					if (api_wait_until.tv_nsec >= 1000000000L)
-					{
-						api_wait_until.tv_sec += 1u;
-						api_wait_until.tv_nsec -= 1000000000L;
-					}
-					pthread_cond_timedwait(&req->cond, &req->mutex, &api_wait_until);
-				}
+				pthread_cond_timedwait(&req->cond, &req->mutex, &api_wait_until);
 			pthread_mutex_unlock(&req->mutex);
 		}
 	}
@@ -893,26 +919,10 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		pthread_mutex_unlock(&S.queue_mutex);
 		return;
 	}
-	{
-		ApiRequest **pp = &S.queue_head;
-		while (*pp != 0)
-		{
-			if (*pp == req)
-			{
-				*pp = req->next;
-				if (S.queue_tail == req)
-					S.queue_tail = 0;
-				break;
-			}
-			pp = &(*pp)->next;
-		}
-	}
+	api_queue_unlink(req);
 	pthread_mutex_unlock(&S.queue_mutex);
-	pthread_mutex_destroy(&req->mutex);
-	pthread_cond_destroy(&req->cond);
-	free(req->stop_tokens);
-	free(req->prompt_tokens);
-	free(req);
+	api_request_destroy(req);
+	return;
 }
 
 static void *api_connection(void *arg)

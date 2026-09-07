@@ -2702,7 +2702,8 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 				{
 					if ( cudaGraphLaunch(slot->graph_exec,(cudaStream_t)slot->cuda_stream) == cudaSuccess )
 					{
-						if ( cudaStreamSynchronize((cudaStream_t)slot->cuda_stream) == cudaSuccess )
+						status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)slot->cuda_stream),"graph_replay_sync");
+						if ( status == SPARK_STATUS_OK )
 						{
 							replayed = 1;
 							state->graph_frames_replayed++;
@@ -2711,14 +2712,20 @@ static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *sta
 							state->graphs_broken = 1u;
 					}
 					else
+					{
 						state->graphs_broken = 1u;
+						status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaErrorLaunchFailure,"graph_replay_launch");
+					}
 				}
 				else if ( slot->graph_warm != 0u )
 				{
 					if ( cudaStreamBeginCapture((cudaStream_t)slot->cuda_stream,cudaStreamCaptureModeRelaxed) == cudaSuccess )
 						capturing = 1;
 					else
+					{
 						state->graphs_broken = 1u;
+						status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaErrorLaunchFailure,"graph_capture_begin");
+					}
 				}
 			}
 			else
