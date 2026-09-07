@@ -24,10 +24,8 @@
  *   exact guarantee the tenant-scribble protection and the determinism
  *   receipts ride on. */
 
-#define _POSIX_C_SOURCE 200809L
 #if defined(__APPLE__)
-/* st_mtimespec lives behind the Darwin extensions, which _POSIX_C_SOURCE
- * alone turns off */
+/* st_mtimespec lives behind the Darwin extensions */
 #define _DARWIN_C_SOURCE 1
 #endif
 
