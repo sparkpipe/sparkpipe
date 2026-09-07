@@ -128,7 +128,16 @@ int main(int argc,char **argv)
     done_ns = (uint64_t *)calloc(ops,sizeof(uint64_t));
     if (submit_ns == 0 || done_ns == 0)
         return 1;
-    cudaStreamCreate(&compute_stream);
+    {
+        cudaError_t stream_error = cudaStreamCreate(&compute_stream);
+        if (stream_error != cudaSuccess)
+        {
+            fprintf(stderr,"stream create failed: %s
+",
+                cudaGetErrorString(stream_error));
+            return 1;
+        }
+    }
     cudaMalloc(&send_stage,(size_t)hidden * rows * 2u + 64u);
     cudaMalloc(&receive_stage,(size_t)hidden * rows * 2u + 64u);
     pthread_barrier_init(&barrier,0,(unsigned)tp_degree);
