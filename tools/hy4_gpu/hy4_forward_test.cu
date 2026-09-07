@@ -575,8 +575,24 @@ int main(int argc, char** argv) {
                 s += parts[i];
                 if (!isfinite(parts[i])) bad = 1;
             }
-            fprintf(stderr, "post-attn L%d t0: sum %.6f nan=%d\n", il, s,
-                    bad);
+            float st3[3], ac3[3];
+            float asum = 0.f;
+            float post_probe[4];
+            std::vector<float> aparts(nb);
+            cudaMemcpy(post_probe, d_post_all, 16, cudaMemcpyDeviceToHost);
+            cudaMemcpy(st3, d_streams_all, 12, cudaMemcpyDeviceToHost);
+            k_sum<<<nb, 256>>>(d_acc_all, d_red, N_EMBD);
+            cudaMemcpy(aparts.data(), d_red, nb * 4,
+                       cudaMemcpyDeviceToHost);
+            for (int i = 0; i < nb; ++i) asum += aparts[i];
+            cudaMemcpy(ac3, d_acc_all, 12, cudaMemcpyDeviceToHost);
+            fprintf(stderr,
+                    "post-attn L%d t0: sum %.6f nan=%d first3 %.6f %.6f "
+                    "%.6f | acc sum %.6f first3 %.6f %.6f %.6f | post %.4f "
+                    "%.4f %.4f %.4f\n",
+                    il, s, bad, st3[0], st3[1], st3[2], asum, ac3[0], ac3[1],
+                    ac3[2], post_probe[0], post_probe[1], post_probe[2],
+                    post_probe[3]);
             fflush(stderr);
         }
 
@@ -664,6 +680,7 @@ int main(int argc, char** argv) {
                 for (int k = 0; k < N_USED; ++k)
                     ww[t * N_USED + k] = ww[t * N_USED + k] / wsum * 2.827;
             }
+            cudaMemset(d_branch, 0, (size_t)T * N_EMBD * 4);
             for (int s = 0; s < n_slots; ++s) {
                 int found_e = -1;
                 for (int t = 0; t < T && found_e < 0; ++t)
