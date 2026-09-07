@@ -85,5 +85,14 @@ int main(void)
 		"/home/sparkc/kvcache/dsv4_flash/pp13.bf16") == 0);
 	assert(node->kv_backing_maximum_bytes == UINT64_C(274877906944));
 	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.tokenizer_asset_path != 0);
+	assert(deployment.tokenizer_vocabulary_size == 129280u);
+	assert(deployment.tokenizer_asset_sha256 != 0);
+	assert(strlen(deployment.tokenizer_asset_sha256) == 64u);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_path_only.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_bad_sha.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_zero_vocab.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	return(0);
 }
