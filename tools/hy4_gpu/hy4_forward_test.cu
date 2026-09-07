@@ -798,16 +798,23 @@ int main(int argc, char** argv) {
         }
         if (il % 10 == 0)
             printf("layer %d done\n", il), fflush(stdout);
-        if (il == 1) {
-            std::vector<float> slab((size_t)HC * N_EMBD);
-            cudaMemcpy(slab.data(), d_streams_all,
-                       (size_t)HC * N_EMBD * 4, cudaMemcpyDeviceToHost);
-            const char* dp = getenv("HY4_DUMP1");
-            if (dp) {
-                FILE* df = fopen(dp, "wb");
-                if (df) {
-                    fwrite(slab.data(), 4, (size_t)HC * N_EMBD, df);
-                    fclose(df);
+        if (il == 1 || il == 2 || il == 20 || il == 60) {
+            const char* pfx = getenv("HY4_DUMP_PFX");
+            if (pfx) {
+                for (int tk = 0; tk < T; tk += 3) {
+                    std::vector<float> slab((size_t)HC * N_EMBD);
+                    cudaMemcpy(slab.data(),
+                               d_streams_all + (size_t)tk * HC * N_EMBD,
+                               (size_t)HC * N_EMBD * 4,
+                               cudaMemcpyDeviceToHost);
+                    char path[600];
+                    snprintf(path, sizeof(path), "%s_L%d_t%d", pfx, il,
+                             tk);
+                    FILE* df = fopen(path, "wb");
+                    if (df) {
+                        fwrite(slab.data(), 4, (size_t)HC * N_EMBD, df);
+                        fclose(df);
+                    }
                 }
             }
         }
