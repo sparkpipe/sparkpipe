@@ -1,9 +1,3 @@
-// CUDA dispatch for the K3 resident decode stage. See the header for the
-// ownership layout; this file is the only K3 serving-tier code that touches
-// CUDA allocation and launch. The weight table is a mechanical copy of
-// slice.cuh's K3LayerWeights fields onto the binder's name tables, and the
-// pool carve mirrors tests/host_cuda/k3_slice_host.cu exactly, so the drift
-// gate in tests/ holds the two allocators together.
 
 #include <cstddef>
 #include <cstdio>
@@ -59,9 +53,6 @@ static const struct SparkK3WeightBind
 };
 #undef WF
 
-/* The names a layer of each kind MUST resolve. The binder's per-kind tables
- * are the single source of truth for what the pack carries; this list is the
- * same set, grouped, and a hole in it fails the bind loudly. */
 static const char *const k3_required_every[] =
 {
 	"attn_norm_weight", "mlp_norm_weight",
@@ -100,10 +91,6 @@ static int32_t k3_require(const SparkK3Pack *pack, const SparkK3BoundLayer *boun
 	return SPARK_K3_DISPATCH_OK;
 }
 
-/* A rank pack (53 GB) registers in one call; the full-model pack (393 GB)
- * exceeds the driver's single-call registration budget, so the mapping
- * registers in whole chunks. The chunk stride must tile the mapping exactly
- * or the destroy-side unregister loop cannot reverse it. */
 #define SPARK_K3_REGISTER_CHUNK_BYTES (48ull << 30)
 
 int32_t SparkK3DispatchRegisterPack(SparkK3Pack *pack)
@@ -144,8 +131,6 @@ void SparkK3DispatchUnregisterPack(SparkK3Pack *pack)
 	}
 }
 
-/* One aligned carve out of the scratch blob. 16-byte alignment keeps every
- * uint16/float/uint32 array happy. */
 static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
 {
 	*offset = (*offset + 15u) & ~(size_t)15u;
@@ -174,7 +159,6 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->kv_page_bytes = kv_page_bytes;
 	d->device = device;
 
-	/* Recurrent pools, per the host-test carve the slice strides against. */
 	const uint64_t qk_window = (uint64_t)K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL;
 	const uint64_t v_window = (uint64_t)K3_KDA_V_DIM * K3_KDA_CONV_KERNEL;
 	const uint64_t state_bytes = (uint64_t)d->kda_count * sequences * K3_KDA_STATE_SLOT_BYTES;
@@ -186,25 +170,15 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		cudaMalloc(&d->kda_v_window_pool, v_bytes) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 	cudaMemset(d->kda_state_pool, 0, state_bytes);
-	/* The convolution windows start all-zero too: the first position's tap
-	 * history is nothing, and cudaMalloc garbage would make the fresh-run
-	 * output depend on allocator history. */
 	cudaMemset(d->kda_q_window_pool, 0, qk_bytes);
 	cudaMemset(d->kda_k_window_pool, 0, qk_bytes);
 	cudaMemset(d->kda_v_window_pool, 0, v_bytes);
 
-	/* MLA caches: the view structs are HOST memory (K3BindLayerState copies
-	 * one by value into the buffers on the host); the pools, page tables
-	 * and error slots they point at are device memory. */
 	uint64_t kv_total = (uint64_t)d->mla_count * kv_pages_per_view * kv_page_bytes;
 	if ( cudaMalloc(&d->kv_pool, kv_total) != cudaSuccess ||
 		cudaMalloc(&d->page_table, (size_t)d->mla_count * kv_pages_per_view * 4u) != cudaSuccess ||
 		cudaMalloc(&d->access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-	/* THE CACHE STARTS ALL-ZERO: a read of a position nobody wrote must be
-	 * deterministic (and the reference's first token attends over nothing),
-	 * and cudaMalloc's garbage would otherwise make every fresh run a
-	 * different model. The serving tier overwrites pages as it publishes. */
 	cudaMemset(d->kv_pool, 0, kv_total);
 	cudaMemset(d->access_error, 0, (size_t)d->mla_count * sizeof(LmKvAccessError));
 	d->mla_cache = new LmKvView[d->mla_count];
@@ -219,13 +193,6 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		d->mla_cache[i].access_error = d->access_error + i;
 	}
 
-	/* THE LAUNCH STRUCTS ARE HOST MEMORY. K3LaunchSlice runs its per-layer
-	 * loop ON THE HOST (K3BindLayer/K3BindLayerState mutate the buffers
-	 * struct between launches and only the individual pointer FIELDS are
-	 * passed to kernels as arguments), so weights, slice_state and buffers
-	 * are plain host structs whose members are device pointers. A
-	 * device-allocated copy of any of them would be dereferenced by host
-	 * code and fault. */
 	d->weights = new K3LayerWeights[d->layer_count];
 	memset(d->weights, 0, (size_t)d->layer_count * sizeof(K3LayerWeights));
 	d->slice_state = new K3SliceState;
@@ -243,38 +210,33 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	st->sequences = sequences;
 	st->kda_state_bf16 = 0u;
 
-	/* Scratch blob, carved per the host test's static arrays. */
 	size_t off = 0u;
 	d->scratch_bytes = 0u;
-	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;            /* hidden */
-	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;            /* normed */
+	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;
 	d->scratch_bytes += (size_t)max_rows * K3_KDA_QKVB_FUSED_ROWS * 2u;
 	d->scratch_bytes += (size_t)max_rows * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_KEY_DIM * 2u;       /* gate_latent */
-	d->scratch_bytes += (size_t)max_rows * K3_MLA_Q_DIM * 2u;         /* query */
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_QK_DIM * 2u;        /* key */
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_V_DIM * 2u;         /* value */
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_V_DIM * 2u;         /* gate */
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_QK_DIM * 2u;        /* decay_logit */
+	d->scratch_bytes += (size_t)max_rows * K3_KDA_KEY_DIM * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_MLA_Q_DIM * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_KDA_QK_DIM * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_KDA_V_DIM * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_KDA_V_DIM * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_KDA_QK_DIM * 2u;
 	d->scratch_bytes += (size_t)d->routes_capacity * K3_ROUTED_EXPERT_HIDDEN * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_MLA_KV_A_DIM * 2u;      /* kv_slot */
-	d->scratch_bytes += (size_t)max_rows * K3_MLA_LATENT_OUT_DIM * 2u;/* attention_out */
-	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;            /* shared_out */
+	d->scratch_bytes += (size_t)max_rows * K3_MLA_KV_A_DIM * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_MLA_LATENT_OUT_DIM * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;
 	d->scratch_bytes += (size_t)K3_ATTNRES_MAX_SOURCES * max_rows * K3_HIDDEN * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;            /* partial */
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * 2u;         /* beta_logit */
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * 4u;         /* write_gate */
+	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * 2u;
+	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * 4u;
 	d->scratch_bytes += (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u * 2u;
 	d->scratch_bytes += (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u;
 	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u;
-	d->scratch_bytes += (size_t)max_rows * K3_EXPERTS * 4u;           /* router_logits */
+	d->scratch_bytes += (size_t)max_rows * K3_EXPERTS * 4u;
 	d->scratch_bytes += 256u;
 	if ( cudaMalloc(&d->scratch, d->scratch_bytes) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-	/* The whole scratch starts zeroed: the AttnRes bank's unwritten slots,
-	 * the first partial, and every stream buffer a layer reads before it
-	 * writes must be deterministic, and a fresh run must not depend on
-	 * allocator history. */
 	cudaMemset(d->scratch, 0, d->scratch_bytes);
 	K3LayerBuffers *b = d->buffers_host;
 	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);
@@ -370,11 +332,6 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	}
 	if ( status == SPARK_K3_DISPATCH_OK )
 	{
-		/* THE RANK-SLICED DIMENSIONS. The layer calls default to the
-		 * full-model constants; the rank pack's tensors carry the rank's
-		 * shapes, so each sliced projection's in/out dimension comes from
-		 * the manifest here (zero keeps the constant, which is the host
-		 * harnesses' contract). */
 		char dim_name[96];
 		uint32_t base = d->first_layer;
 		SparkK3PackEntry dim_entry;
@@ -395,13 +352,9 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		K3_FILL_RANK(base + 3u, "mla_out_weight", &d->buffers->mla_out_input, 1);
 		K3_FILL_RANK(base + 1u, "routed_down_weight", &d->buffers->routed_down_rows, 0);
 		K3_FILL_RANK(base + 1u, "routed_up_weight", &d->buffers->routed_up_input, 1);
-		/* the w1's shape is [experts, out, k]: the OUTPUT is slot 1, not the
-		 * expert count in slot 0 (that fill made the up-GEMM's output width
-		 * the expert count, and the equivalence gate caught it) */
 		K3_FILL_RANK(base + 1u, "expert_w1_weight", &d->buffers->expert_w1_output, 1);
 		K3_FILL_RANK(base + 1u, "shared_w1_weight", &d->buffers->shared_w1_rows, 0);
 		K3_FILL_RANK(base + 1u, "shared_w2_weight", &d->buffers->shared_w2_input, 1);
-		/* the w2's k extent is the third shape slot ([experts, out, k]) */
 		snprintf(dim_name, sizeof(dim_name), "model.layers.%u.expert_w2_weight", base + 1u);
 		if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 &&
 			dim_entry.shape_count >= 3u )
@@ -416,7 +369,6 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		if ( d->buffers->mla_gate_rows != 0u )
 			d->buffers->mla_heads_rank = d->buffers->mla_gate_rows / K3_V_HEAD_DIM;
 #undef K3_FILL_RANK
-		/* Model-level fields the slice loop never sets. */
 		SparkK3PackEntry entry;
 		if ( SparkK3PackLoadEntry(pack, "model.attnres_out_weight", &entry) == 0 )
 			d->buffers_host->attnres_out_weight = SparkK3PackPayload(pack, &entry);
@@ -432,8 +384,6 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 				break;
 			}
 		}
-		/* The launch structs are host memory (see Create); the bound table
-		 * copies straight over and the loop reads it on the host. */
 		memcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights));
 	}
 	delete[] host;
@@ -468,9 +418,6 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->head_candidate_token = in->head_candidate_token;
 	b->output_token = in->output_token;
 	b->output_score = in->output_score;
-	/* The host struct IS the launch struct: the slice loop mutates it on the
-	 * host between launches and the kernels receive individual pointer
-	 * fields as arguments, so there is no device copy of it. */
 	return(K3StageSlice(d->weights, d->slice_state, d->buffers, d->first_layer,
 		d->layer_count, rows, sequences, commit, packed_rows, context,
 		multiprocessors, (void *)stream));

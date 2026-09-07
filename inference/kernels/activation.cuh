@@ -71,12 +71,6 @@ static __device__ void LmActivationStageFp8Qdq(
 		source_row = source_row_map != 0 ? source_row_map[packed_row] : packed_row;
 		if ( source_row >= source_row_count )
 		{
-			// ROUTE-MAP CORRUPTION IS A FRAME FAILURE, NOT A CONTEXT
-			// FAILURE (frame_error.cuh): record the first bad row and skip
-			// this row's staging. These are plain shared stores with no
-			// mbarrier accounting, so a skip cannot hang the tile; the row's
-			// output is dead regardless and the driver fails the frame when
-			// it reads the slot. The context lives.
 			LmFrameErrorReport(frame_error,
 				(uint32_t)LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE,
 				0u,packed_row,source_row,row_base,source_row_count);

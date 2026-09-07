@@ -16,6 +16,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/spark_weightd_attach.c \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
+	../../src/spark_ck128.c \
 	../../src/spark_admission.c \
 	source/spark_dsv4_stage_runner.c \
 	source/spark_dsv4_paged_cache.c \

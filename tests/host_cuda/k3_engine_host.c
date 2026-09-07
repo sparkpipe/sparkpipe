@@ -1,16 +1,3 @@
-// The engine, driven: two requests through admission, chunked prefill, mixed
-// prefill+decode steps, EOS, and slot reuse by a third. Prints every plan so
-// the python gate can hold the scheduler to its contract - the same contract
-// the slice kernels enforce on their side: rows sorted by sequence, positions
-// ascending in a run, context_length counting every stored row.
-//
-// A second scenario drives the serving bugs of the main-8 audit on the same
-// (now idle) engine: a one-token prompt (K3-006), more sequential submits
-// than the record capacity (K3-007), out-of-bounds / duplicated / stale
-// commits that must fail closed (K3-008), and a draft whose accepted middle
-// token is EOS (K3-009). A third scenario puts three requests on a
-// three-slot two-row engine so full decode lanes would starve the third
-// request's prefill without the fairness pass (K3-010).
 
 #include <stdio.h>
 #include "inference/llms/kimi_k3/engine.h"
@@ -64,15 +51,9 @@ int main(void)
 		return 1;
 	printf("submit a %lld\n", (long long)K3EngineSubmit(&engine, prompt_a, 5u, 6u, out_a));
 	printf("submit b %lld\n", (long long)K3EngineSubmit(&engine, prompt_b, 3u, 4u, out_b));
-	// The third arrives before any slot frees: it must queue, then take the
-	// first slot a finished request abandons.
 	printf("submit c %lld\n", (long long)K3EngineSubmit(&engine, prompt_c, 2u, 2u, out_c));
 	for (index = 0u; index < 12u; ++index)
 	{
-		// After request a's first sampled token, hand it a three-token draft:
-		// the next plan must be a verify-only step - one run of four rows at
-		// ascending positions, logits at the run's head - and its resolution
-		// (two accepted plus the bonus) must land exactly three tokens.
 		if ( index == 3u )
 		{
 			static uint32_t draft[3] = { 201u, 202u, 203u };
@@ -96,8 +77,6 @@ int main(void)
 			{
 				accepted[s] = 2u;
 				bonus[s] = next++;
-				// The bonus token occupies the first rejected position and
-				// was never forwarded; the next decode row re-runs it there.
 				printf("verify_next %llu %u\n",
 					(unsigned long long)step.request_id[s],
 					step.position[step.sequence_row_begin[s]] + 1u + accepted[s]);
@@ -111,8 +90,6 @@ int main(void)
 			sampled[s] = 0u;
 			if ( step.logits_row[s] == K3_ENGINE_NO_LOGITS )
 				continue;
-			// Request b's second token is EOS, ending it under budget; the
-			// rest count up so the transcript shows who sampled what.
 			sampled[s] = (step.request_id[s] == 2u
 				&& engine.requests[engine.slot_request[step.slot[s]]].generated == 1u)
 				? 7u : next++;
@@ -124,11 +101,7 @@ int main(void)
 	printf("out_b %u %u\n", out_b[0], out_b[1]);
 	printf("out_c %u %u\n", out_c[0], out_c[1]);
 
-	// --- The serving-bug scenarios, on the same engine now idle. -----------
 	printf("scenario serving_bugs\n");
-	// K3-006: a one-token prompt opens straight in DECODE - one row at
-	// position 0 with context 1 and logits on the row, never a zero-row
-	// prefill chunk whose context arithmetic underflowed to UINT32_MAX.
 	{
 		static uint32_t prompt_d[1] = { 41u };
 		static uint32_t out_d[2];
@@ -149,9 +122,6 @@ int main(void)
 			return 9;
 		printf("out_d %u %u\n", out_d[0], out_d[1]);
 	}
-	// K3-007: four requests finished above on a four-record engine. Four
-	// more must submit - proof the finished records came back to FREE - and
-	// the fifth must see the capacity wall.
 	{
 		static uint32_t prompt_e[2] = { 81u, 82u };
 		static uint32_t prompt_f[2] = { 91u, 92u };
@@ -169,9 +139,6 @@ int main(void)
 		if ( id_e < 0 || id_f < 0 || id_g < 0 || id_h < 0
 			|| id_i != K3_ENGINE_ERR_CAPACITY )
 			return 10;
-		// K3-009: e decodes with a draft whose middle accepted token is EOS.
-		// The output must stop at that EOS - the draft past it and the bonus
-		// belong to a sequence that is already over.
 		rows = K3EnginePlanStep(&engine, &step);
 		if ( rows <= 0 )
 			return 11;
@@ -202,9 +169,6 @@ int main(void)
 				return 15;
 			printf("out_e %u %u %u %u\n", out_e[0], out_e[1], out_e[2], out_e[3]);
 		}
-		// K3-008: three bad commits must fail closed without moving the
-		// machine - a duplicate of an already-committed step, a slot poked
-		// out of bounds, and a step a newer plan has made stale.
 		rows = K3EnginePlanStep(&engine, &step);
 		if ( rows <= 0 )
 			return 16;
@@ -228,7 +192,6 @@ int main(void)
 			step.slot[0] = SLOTS;
 			printf("commit_oob %d\n", K3EngineCommitStep(&engine, &step, sampled, 7u));
 			step.slot[0] = saved;
-			// Snapshot this step, then plan over it: the snapshot is stale.
 			stale = step;
 			memcpy(st_token, token, sizeof(st_token));
 			memcpy(st_position, position, sizeof(st_position));
@@ -250,14 +213,12 @@ int main(void)
 			if ( rows <= 0 )
 				return 19;
 			printf("commit_stale %d\n", K3EngineCommitStep(&engine, &stale, sampled, 7u));
-			// The machine is unharmed: the current step still commits.
 			PrintStep(5u, &step);
 			for (s = 0u; s < step.sequences; ++s)
 				sampled[s] = 620u + s;
 			if ( K3EngineCommitStep(&engine, &step, sampled, 7u) != K3_ENGINE_OK )
 				return 20;
 		}
-		// Drain f, g and h so the transcript ends on an idle engine.
 		for (index = 6u; index < 24u; ++index)
 		{
 			rows = K3EnginePlanStep(&engine, &step);
@@ -284,10 +245,6 @@ int main(void)
 		printf("out_h %u %u\n", out_h[0], out_h[1]);
 	}
 
-	// --- K3-010: full decode lanes cannot starve prefill. ------------------
-	// Three slots but a two-row budget: once j and k decode, their rows fill
-	// every pass, and l's prefill would never advance without the fairness
-	// pass. l has a six-token prompt so its prefill needs several chunks.
 	printf("scenario fairness\n");
 	{
 		static struct K3Engine engine2;

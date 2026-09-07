@@ -1,27 +1,3 @@
-// TMA tensor-map geometry for the first-party grouped GEMM.
-//
-// No first-party code in this tree has ever called cuTensorMapEncodeTiled.
-// CUTLASS built its descriptors internally, so the existing seams pass raw
-// pointers and the descriptor concept never surfaced. It surfaces now, because
-// spark_lm_group_gemm.cuh stages tiles with cp.async.bulk.tensor, which is
-// addressed by tensor coordinates against a descriptor rather than by a pointer.
-//
-// This header computes the geometry. The driver call itself lives in the host
-// launcher; splitting them is what lets the arithmetic be tested with no CUDA
-// runtime, which is the part that is easy to get silently wrong.
-//
-// THE ONE AGREEMENT THAT MATTERS. The descriptor encodes a swizzle mode and the
-// kernel applies a matching xor when computing fragment addresses. The span is
-// a function of the staged box row width, not the global row pitch - see LmSwizzleSpanFor in
-// kernels/mma.cuh, which this must agree with. If they
-// disagree the kernel reads real data from the wrong place and produces
-// plausible wrong numbers with no error anywhere. A 32-, 64-, or 128-byte box uses the matching hardware swizzle and the
-// fragment path derives the same span from its staged row pitch.
-//
-// NVFP4 IS DESCRIBED AS BYTES. There is no 4-bit CUtensorMapDataType, so a
-// 4-bit tensor of K columns is described as UINT8 with K/2 columns and every
-// K-axis extent is halved. Getting this wrong yields a descriptor that encodes
-// cleanly and transfers half or twice the intended data.
 
 #ifndef LM_TENSOR_MAP_H
 #define LM_TENSOR_MAP_H
@@ -40,7 +16,6 @@
 #define LM_TM_BITS_INT6 6u
 #define LM_TM_BITS_NVFP4 4u
 
-// Unique negative codes so a rejection names its own site.
 #define LM_TM_OK 0
 #define LM_TM_ERR_NULL (-1)
 #define LM_TM_ERR_BITS (-2)
@@ -72,15 +47,11 @@ typedef struct LmTensorMapplan
 }
 LmTensorMapPlan;
 
-// Element count to bytes. Its own function because it is the conversion NVFP4
-// makes easy to get wrong, and it should exist exactly once.
 static uint64_t LmTensorMapBytes(uint64_t elements, uint32_t element_bits)
 {
 	return((elements * (uint64_t)element_bits) / 8u);
 }
 
-// Build the descriptor geometry. Every rejection below is a case that would
-// otherwise encode cleanly and move the wrong bytes at runtime.
 static uint32_t LmTensorMapBoxSwizzleBytes(uint32_t box_column_bytes)
 {
     if (box_column_bytes == 128u)
@@ -147,19 +118,12 @@ static int32_t LmTensorMapPlanBuild(
     {
         return LM_TM_ERR_ROW_SWIZZLE;
     }
-    // SWIZZLE_NONE is deliberate only for the interleaved 32-element
-    // k-tile's 16-byte cell rows (the consumer reads them linearly); every
-    // other box keeps a hardware swizzle span or the INT6/7 exemption.
     if (swizzle_bytes == 0u && request->element_bits != LM_TM_BITS_INT6 &&
         request->element_bits != LM_TM_BITS_INT7 &&
         box_column_bytes != 16u)
     {
         return LM_TM_ERR_BOX_ALIGN;
     }
-    // A tile may be taller than the logical tensor. TMA bounds-checks global
-    // coordinates and zero-fills those rows, which is required for ragged M
-    // tails smaller than the selected GEMM tile. K remains a model-shape
-    // contract and must fit completely.
     if ((uint64_t)box_column_bytes > column_bytes)
     {
         return LM_TM_ERR_BOX_EXCEEDS;

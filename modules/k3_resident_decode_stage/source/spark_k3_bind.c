@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/* One common prefix for every per-layer pack name. */
 #define K3_LAYER_PREFIX "model.layers."
 
 static SparkStatus SparkK3BindResolve(SparkK3Pack *pack,
@@ -25,7 +24,6 @@ static SparkStatus SparkK3BindResolve(SparkK3Pack *pack,
 	do { SparkStatus bind_status = SparkK3BindResolve((pack), (bound), (name)); \
 		if ( bind_status != SPARK_STATUS_OK ) return(bind_status); } while (0)
 
-/* Every-layer tensors, in the pack's emission order. */
 static SparkStatus SparkK3BindEveryLayer(SparkK3Pack *pack,
 	SparkK3BoundLayer *bound)
 {
@@ -92,10 +90,6 @@ SparkStatus SparkK3BindLayer(SparkK3Pack *pack, uint32_t layer_index,
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	memset(bound, 0, sizeof(*bound));
 	bound->layer_index = layer_index;
-	/* SparkK3LayerIsMla, not the bare period-4 test: layer 92 is the
-	 * trailing MLA exception and the modulo alone calls it GDN (the
-	 * layer-92 kind-drift bug - every other classifier carries the
-	 * exception; this site drifted from them). */
 	bound->layer_is_gdn = !SparkK3LayerIsMla(layer_index);
 	bound->layer_is_dense = (layer_index == 0u);
 	status = SparkK3BindEveryLayer(pack, bound);

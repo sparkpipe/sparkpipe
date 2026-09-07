@@ -1,10 +1,3 @@
-/*
- * Shared SparkFirmwareModule lifecycle implementation. See
- * include/sparkpipe/spark_stage_module_lifecycle.h for the contract and the
- * paste this replaces (one lifecycle per family, five copies at extraction
- * time). The per-family hooks own everything model-specific; this file owns
- * the ABI shell around them and nothing else.
- */
 
 #include <stdlib.h>
 

@@ -1,11 +1,4 @@
 #pragma once
-/* The certified-FP8 head launchers, isolated for host-harness consumers
- * (the full spark_lm_kernels.cuh pulls PTX asm the host compiler cannot
- * parse). Device builds get the REAL definitions: under __CUDACC__ this
- * header includes the full kernels header and adds nothing. Host-harness
- * builds get inline no-op bodies - parse + link coverage only, never
- * invoked (the certified path only runs under nvcc, gated by the
- * payload!=0 runtime check). */
 #if defined(__CUDACC__)
 #include "sparkpipe/spark_lm_kernels.cuh"
 #else

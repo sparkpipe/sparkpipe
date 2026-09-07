@@ -1,23 +1,3 @@
-// Run a whole Qwen 3.6 layer - attention, recurrent and MLP - on a CPU and
-// check where its data went.
-//
-// gqa_host proves the two GQA kernels compute the right numbers. This proves
-// the DRIVER wires them: that the fused projection reaches the convolution,
-// the convolved row reaches the split, the split reaches the cache slot in the
-// contracted [K|V] layout, the delta rule's 48 value-head states all advance
-// inside the pool, and nothing writes past either pool. Those are the defects
-// this driver actually had - a cache stored from a buffer nothing wrote, an
-// attention kernel of the wrong class, a state slot half the kernel's stride,
-// and a convolution over one of the three tensors the reference convolves -
-// and every one of them passes a per-kernel test.
-//
-// The GEMM is the recorder reached through the include path: it writes a
-// known constant per call, so every downstream tensor holds a computable
-// value, and it logs shapes so the projections' widths are checked rather
-// than assumed. Every other kernel is the one that ships.
-//
-// Two sequences everywhere: one sequence makes every slot index the identity
-// and cannot see cross-sequence addressing.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -42,9 +22,6 @@ float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 #include "runtime/gemm.cuh"
 std::vector<LmRecordedGemm> lm_recorded_gemms;
 
-// One thread, so every kernel the layer launches runs the whole of its work
-// loop in order - the schedule the shim guarantees the house loop shape is
-// valid under. layer.cuh's default is 256 for the device.
 #define QWEN38_27B_LAYER_THREADS 1u
 #include "inference/llms/qwen_3_6/layer.cuh"
 
@@ -109,9 +86,6 @@ int main(void)
 		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17u));
 	for (index = 0u; index < QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL; ++index)
 		conv_weight[index] = LmFloatToBf16(0.25f);
-	// The gate mapping's per-head tensors: log-scale zero and bias zero, so
-	// the retention is exp(-softplus(logit)) and beta sigmoid(logit) of
-	// whatever the GEMM recorder wrote - values python computes closed-form.
 	for (index = 0u; index < QWEN38_27B_GDN_VALUE_HEADS; ++index)
 	{
 		a_log[index] = 0.0f;
@@ -123,17 +97,11 @@ int main(void)
 		ROWS * QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL * sizeof(uint16_t));
 	memset(conv_window + ROWS * QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL,
 		CANARY_BYTE, CANARY_BYTES);
-	// A poisoned cache: bf16 0xFFFF is NaN, so a store that does not happen is
-	// visible in the slot check rather than hiding behind zeroed memory.
 	memset(kv_pool, 0xff, sizeof(kv_pool));
 	state_index[0] = 0u; state_index[1] = 1u;
 	sequence_of_row[0] = 0u; sequence_of_row[1] = 1u;
 	context_length[0] = 1u; context_length[1] = 1u;
-	// Position zero: rope is the identity there, so the slot check compares
-	// the projection's values rather than their rotation.
 	positions[0] = 0u; positions[1] = 0u;
-	// The pages are swapped, so addressing by sequence rather than by the
-	// table stores into the other sequence's slot.
 	page_table[0] = 1u; page_table[1] = 0u;
 	dense_offsets[0] = 0u; dense_offsets[1] = ROWS; dense_offsets[2] = ROWS * 2u;
 
@@ -161,7 +129,6 @@ int main(void)
 	b.context_length = context_length; b.positions = positions;
 	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
 
-	// -- full attention layer -------------------------------------------------
 	lm_recorded_gemms.clear();
 	if ( Qwen38_27bLayerAttention<LmBf16Format,Qwen38_27bFullKv>(&b,ROWS,1u,1u,0) != LM_LAUNCH_OK )
 	{
@@ -173,8 +140,6 @@ int main(void)
 		printf("attn_gemm in %u out %u\n",
 			lm_recorded_gemms[index].input_dimension,
 			lm_recorded_gemms[index].output_dimension);
-	// The slot of sequence 0, position 0: K then V, the projection's 0.125
-	// throughout, anything else poisoned or a layout slip.
 	expected = LmBf16ToFloat(LmFloatToBf16(0.125f));
 	{
 		const uint16_t *slot = (const uint16_t *)(kv_pool
@@ -188,9 +153,6 @@ int main(void)
 		}
 		printf("slot_kv_maxdiff %.9g\n", (double)maxdiff);
 	}
-	// The layer's own artifacts, attended again directly: the output gemm
-	// recorder overwrote attention_out, so the attention result is recomputed
-	// from the cache the layer filled and the query the split left behind.
 	{
 		static uint16_t direct_out[ROWS * QWEN38_27B_Q_DIM];
 		LM_HOST_LAUNCH(dim3(ROWS,QWEN38_27B_ATTN_HEADS),
@@ -206,12 +168,9 @@ int main(void)
 		}
 		printf("attn_maxdiff %.9g\n", (double)maxdiff);
 	}
-	// The gate half of the fused query projection, de-interleaved: the GEMM
-	// recorder's constant throughout, anything else a split-layout slip.
 	printf("attn_gate_c0 %.9g\n", (double)LmBf16ToFloat(attn_gate[0]));
 	printf("attn_query_c0 %.9g\n", (double)LmBf16ToFloat(query[0]));
 
-	// -- recurrent layer ------------------------------------------------------
 	lm_recorded_gemms.clear();
 	if ( Qwen38_27bLayerLinear<LmBf16Format>(&b,ROWS,1u,0) != LM_LAUNCH_OK )
 	{
@@ -223,16 +182,9 @@ int main(void)
 		printf("gdn_gemm in %u out %u\n",
 			lm_recorded_gemms[index].input_dimension,
 			lm_recorded_gemms[index].output_dimension);
-	// The convolved key as the reference's input: python computes the state
-	// from exactly this value, so swish and bf16 rounding appear once.
 	printf("conv_c0 %.9g\n", (double)LmBf16ToFloat(key[0]));
-	// The produced gates, sequence 0 head 0: beta is sigmoid of the beta
-	// GEMM's recorded output, the retention exp(-softplus(decay logit)) with
-	// the harness's zeroed A_log and dt_bias. Python holds the closed forms.
 	printf("gdn_beta %.9g\n", (double)write_gate[0]);
 	printf("gdn_retention %.9g\n", (double)forget_gate[0]);
-	// Head 0 and head 47 of sequence 0's state: the first and last of the 48
-	// value-head slices. A 16-slice recurrence leaves head 47 at zero.
 	{
 		const float *state = (const float *)state_pool;
 		for (head = 0u; head < QWEN38_27B_GDN_VALUE_HEADS; head += (QWEN38_27B_GDN_VALUE_HEADS - 1u))
@@ -240,9 +192,6 @@ int main(void)
 				printf("state_h%u %.9g\n", head,
 					(double)state[(head * QWEN38_27B_GDN_KEY_DIM * QWEN38_27B_GDN_VALUE_DIM) + index]);
 	}
-	// The committed window: all 10240 channels of both sequences must hold
-	// the admitted token at the last tap. A conv over the key's 2048 channels
-	// leaves the value channels' window at zero.
 	{
 		float lowest = 1e30f,highest = -1e30f;
 		for (index = 0u;
@@ -260,10 +209,6 @@ int main(void)
 	printf("canary_window %u\n", CanaryIntact(
 		(uint8_t *)(conv_window + ROWS * QWEN38_27B_GDN_QKV_DIM * QWEN38_27B_GDN_CONV_KERNEL)));
 
-	// -- head expansion, with values that discriminate ------------------------
-	// Uniform projections cannot see a wrong group mapping: every head is the
-	// same number. Give head h the value h + 1 and check each expanded head
-	// against source head h / 3.
 	{
 		uint32_t mismatch = 0u,h,g;
 		for (h = 0u; h < QWEN38_27B_GDN_KEY_HEADS; ++h)
@@ -284,7 +229,6 @@ int main(void)
 		printf("expand_mismatch %u\n", mismatch);
 	}
 
-	// -- dense MLP --------------------------------------------------------------
 	lm_recorded_gemms.clear();
 	if ( Qwen38_27bLayerDenseMlp<LmBf16Format>(&b,ROWS,1u,0) != LM_LAUNCH_OK )
 	{

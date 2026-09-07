@@ -30,21 +30,9 @@ extern "C" {
 #define SPARK_KV_CACHE_NO_BLOCK 0xffffffffu
 #define SPARK_KV_CACHE_NO_RESIDENT_SLOT 0xffffffffu
 
-/* C5 (docs/JIT_KV_RESPONSE.md): the resident-eviction victim policy. LRU is
- * the default and the historical behavior byte for byte. REUSE_VALUE is the
- * pager's park policy for the multi-turn workload: a block's reuse value is
- * its restored-again history (a block restored twice came back on purpose -
- * it is hot), its dirtiness (a clean block is cheap to drop - parking it
- * costs no write, and endurance is a line item), and only then recency. */
 #define SPARK_KV_CACHE_EVICTION_POLICY_LRU 0u
 #define SPARK_KV_CACHE_EVICTION_POLICY_REUSE_VALUE 1u
 
-/* The reuse-value keepness arithmetic's exactness domain (see
- * SparkKvCacheReuseValueKeepness in cache/kv_cache.c): ages are clamped to
- * 2^54 residency epochs and restore histories to 2^16, so the int64_t
- * keepness can never overflow and the weights order exactly:
- * restore history (2^40 per restore) dominates the dirty bonus (2^20),
- * which dominates any clamped age. */
 #define SPARK_KV_CACHE_REUSE_VALUE_RESTORE_WEIGHT (1ULL << 40)
 #define SPARK_KV_CACHE_REUSE_VALUE_DIRTY_BONUS (1ULL << 20)
 #define SPARK_KV_CACHE_REUSE_VALUE_AGE_CLAMP (1ULL << 54)
@@ -350,12 +338,6 @@ typedef struct SparkKvCacheBlock
     uint32_t resident_slot_index;
     uint32_t residency_reference_count;
     uint32_t free_next;
-    /* C5 reuse-value history (was reserved0, same struct size): times this
-     * block was restored from its backing copy - the restored-again count.
-     * Incremented by SparkKvCacheArenaMarkParkedBlockResident on each fresh
-     * re-attachment, cleared when the block is recycled. A block the
-     * workload keeps restoring is hot under the REUSE_VALUE victim policy;
-     * the LRU policy never reads it. */
     uint32_t restore_count;
     uint64_t generation;
     uint64_t last_used_epoch;
@@ -450,15 +432,8 @@ typedef struct SparkKvCacheArena
     void *evict_context;
     uint32_t free_logical_block_head;
     uint32_t next_resident_slot_scan;
-    /* C5: the victim policy the two resident-eviction selectors apply
-     * (SPARK_KV_CACHE_EVICTION_POLICY_*). Set at configuration; 0 = LRU, the
-     * historical behavior. The pager's park policy knob lands here. */
     uint32_t eviction_policy;
     atomic_uint unassigned_resident_block_count;
-    /* B1 write-back degradation counter (was padding): times an eviction
-     * write-back failed with an IO-class status and the block was DEGRADED
-     * (dropped, recompute-on-demand) instead of stalling admission.
-     * Saturates at UINT32_MAX. Same struct size as the reserved field. */
     uint32_t write_back_degraded_block_count;
     uint64_t epoch;
     uint64_t allocated_block_count;
@@ -485,11 +460,6 @@ SparkStatus SparkKvCacheArenaInitialize(
     SparkKvCacheArena *arena,
     const SparkKvCacheConfiguration *configuration);
 
-/*
- * Admission may atomically own resident capacity before assigning it to
- * logical blocks. Consumers must either consume that ownership immediately
- * before creating exact block reservations, or release it on abort.
- */
 SparkStatus SparkKvCacheArenaReserveUnassignedResidentBlocks(
     SparkKvCacheArena *arena,
     uint32_t block_count);
@@ -534,31 +504,10 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
 
-/*
- * The JIT-KV restore half: re-attach a PARKED block (ALLOCATED, non-resident,
- * BACKING_VALID - the state residency eviction leaves) after the pager has
- * restored its bytes from the backing tier. Makes room by evicting the LRU
- * resident victim through the arena's evict function, assigns the resident
- * slot, keeps BACKING_VALID and keeps DIRTY clear. Refuses blocks that were
- * never parked: blanks go through SparkKvCacheArenaMarkBlockResident, whose
- * BACKING_VALID refusal this function is the counterpart of.
- */
 SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
 
-/*
- * The parkability predicate: ONE definition of the resident-eviction
- * selector's structural exclusions (SparkKvCacheArenaSelectResidentEviction-
- * Victim). A block may park only when it is allocated and resident and
- * neither residency protection applies - a residency reference (the active
- * set's pin) or a residency reservation makes it structurally unparkable,
- * exactly as it makes the block unselectable as a victim. The pager's
- * admission pool count and every model adapter's parkability decision call
- * THIS, so a deployment's "which blocks may park" can never disagree with
- * what the selector may evict. Per-call protection lists (prefetch plans)
- * are not block state and stay with their callers.
- */
 uint32_t SparkKvCacheArenaBlockIsParkable(
     const SparkKvCacheArena *arena,
     uint32_t logical_block_index);

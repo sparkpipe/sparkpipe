@@ -1,6 +1,3 @@
-// NVFP4 routed-MoE workspace layout, checked without CUDA.
-// The failure guarded against: two regions overlapping, which corrupts data
-// with no allocation error anywhere.
 #include "runtime/workspace.h"
 #include <stdio.h>
 #include <string.h>
@@ -90,8 +87,6 @@ int main(void){
 	}
 	ck(1,"every selected (TILE_M, stages) pair fits in shared memory");
 	{
-		/* the regression: TILE_M=128 with the four stages that were hardcoded
-		   needs 131136 bytes and the launch fails outright. */
 		ck(LmWorkspaceselect_tile_m(64u)==64u,
 		   "64 is the tile ceiling; B1024 is the supported maximum");
 		ck(LmWorkspaceselect_tile_m(4096u)==64u,
@@ -103,7 +98,6 @@ int main(void){
 		   "the freed shared memory buys at least a second CTA per SM");
 	}
 	{
-		/* the regression this guards: TILE_M pinned at 16 doubles B1024 */
 		memset(&shape,0,sizeof shape);
 		shape.tokens=1024; shape.top_k=8; shape.expert_count=256;
 		shape.hidden_dimension=6144; shape.intermediate_dimension=2048;
@@ -119,8 +113,6 @@ int main(void){
 	printf("\nworkspace requirement versus what B12x reserves\n");
 	{
 		uint64_t need = LmWorkspacebytes_for_max_batch(1024u,8u,256u,6144u,2048u);
-		/* B12x: top_k ids + top_k weights + top_k*hidden output bf16, batch
-		   independent, because the kernel is fused and materialises nothing. */
 		uint64_t b12x = 8u*4u + 8u*4u + (uint64_t)8u*6144u*2u;
 		printf("    first-party unfused, B1024 max : %8.2f MB\n", need/1048576.0);
 		printf("    B12x fused                     : %8.2f KB\n", b12x/1024.0);

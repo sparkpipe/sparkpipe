@@ -1,8 +1,3 @@
-// Sidebands: what crosses a rank boundary besides the hidden state.
-//
-// All of it is arithmetic and a header, so all of it is checkable on a host. The
-// properties below are the ones the three harvested functions got right or
-// wrong, and each failure is quiet rather than loud.
 #include "ring/sideband.h"
 #include <stdio.h>
 #include <string.h>

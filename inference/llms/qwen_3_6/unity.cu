@@ -1,13 +1,3 @@
-// Qwen 3.6. The whole model, one translation unit.
-//
-// Gated DeltaNet on 48 of 64 layers, full attention on 16. The same two-pool
-// shape K3 has, reached from a different vendor - which is the argument that
-// this is an architecture class and not one company's choice, and the reason
-// kernels/kv.cuh parameterises growth rather than special-casing it.
-//
-// The GDN state carries a short causal convolution window alongside the
-// delta-rule matrix. Both are per-sequence, neither grows, so both live in one
-// non-growing slot and the pool does not need to know which is which.
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
@@ -36,21 +26,12 @@ template __global__ void LmFusedResidualRmsNormKernel<QWEN38_27B_THREADS,uint16_
 template __global__ void LmSiluMulKernel<QWEN38_27B_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmRopePerHeadKernel<QWEN38_27B_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
 template __global__ void LmSplitQkvKernel<QWEN38_27B_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
-// The gated attention path: the query|gate de-interleave and the output gate.
 template __global__ void LmSplitQueryGateKernel<QWEN38_27B_THREADS>(const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmOutputGateKernel<QWEN38_27B_THREADS>(uint16_t *, const uint16_t *, uint32_t);
-// The linear layers. 48 of 64, with a fixed state instead of a growing cache.
-//
-// The state and the convolution window share one non-growing slot, which is why
-// QWEN38_27B_GDN_STATE_BYTES is their sum and kernels/kv.cuh sizes the pool from it.
 template __global__ void LmDeltaRuleKernel<QWEN38_27B_THREADS, QWEN38_27B_GDN_KEY_DIM, QWEN38_27B_GDN_VALUE_DIM>(uint8_t *, uint32_t, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t);
-// The GDN gate producer: beta and decay logits to retention factors and
-// write strengths, per value head.
 template __global__ void LmGdnGateKernel<QWEN38_27B_THREADS, QWEN38_27B_GDN_KEY_DIM>(const uint16_t *, const uint16_t *, const float *, const float *, float *, float *, uint32_t, uint32_t);
 template __global__ void LmCausalConvKernel<QWEN38_27B_THREADS, QWEN38_27B_GDN_CONV_KERNEL, LM_CONV_SWISH,uint16_t>(uint16_t *, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmExpandHeadsKernel<QWEN38_27B_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t);
-// Per-head KV: the pack store and the GQA decode, not the MLA latent pair -
-// the latent kernel cannot express a value that is not a prefix of the key.
 template __global__ void LmGqaKvStoreKernel<Qwen38_27bFullKv, QWEN38_27B_THREADS, QWEN38_27B_KV_HEADS, QWEN38_27B_HEAD_DIM, QWEN38_27B_HEAD_DIM>(LmKvView, const uint16_t *, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t);
 template __global__ void LmGqaAttentionDecodeKernel<Qwen38_27bFullKv, QWEN38_27B_THREADS, QWEN38_27B_KV_HEADS, QWEN38_27B_HEAD_DIM, QWEN38_27B_HEAD_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 template __global__ void LmHeadCandidateKernel<QWEN38_27B_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
@@ -90,11 +71,6 @@ extern "C" int32_t Qwen38_27bGemmBf16(
             stream);
 }
 
-// -- entry points ---------------------------------------------------------------
-//
-// Two layer kinds, chosen by the host from the layer index through
-// QWEN38_27B_LAYER_IS_LINEAR. Separate entry points rather than a flag: the state
-// pool and the KV pool are different geometries, and that belongs in the type.
 
 extern "C" int32_t Qwen38_27bLayerLinearBf16(const Qwen38_27bLayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
 {

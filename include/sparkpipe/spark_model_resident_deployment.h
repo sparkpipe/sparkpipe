@@ -43,15 +43,7 @@ typedef struct SparkModelResidentDeployment
 	char *transport_shared_object_path;
 	char *transport_mode;
 	uint32_t transport_control_port_base;
-	/* Optional tokenizer sidecar asset, relative to the serving host's
-	 * runtime root (a tokenizer directory shipped beside the pack). NULL =
-	 * the deployment has no tokenizer: text prompts are rejected loudly at
-	 * the API edge and token-id requests are unaffected. */
 	char *tokenizer_asset_path;
-	/* Optional weightd residency (the one-minute debug cycle): the socket
-	 * the residentd ensures a daemon on, and the pack content digest the
-	 * W2b attach contract keys arenas by. NULL socket = residency off
-	 * (the module seam's direct-load fallback). */
 	char *weightd_socket_path;
 	uint32_t reserved[4];
 	SparkModelResidentDeploymentNode nodes[

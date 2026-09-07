@@ -19,14 +19,6 @@ typedef struct TestModelServingPrepared
 	uint64_t step_generation;
 } TestModelServingPrepared;
 
-/*
- * Opt-in async-completion fidelity (p1d2 step-loop oracle): with
- * "hold_completion_steps" set in the adapter configuration JSON, submit
- * ENQUEUES the built completion and each progress() step countdown
- * releases the held completions, oldest first — the dsv4-shaped
- * contract the descriptor already declares. The default (absent or
- * zero) keeps the historical inline completion byte-for-byte.
- */
 typedef struct TestModelServingHeld
 {
 	uint32_t active;
@@ -306,8 +298,6 @@ static SparkStatus TestModelServingSubmit(
 	state->completed_count++;
 	if ( state->hold_completion_steps != 0u )
 	{
-		/* Async-completion fidelity: enqueue instead of completing
-		 * inline; progress() releases after the configured countdown. */
 		uint32_t held_tail;
 		if ( state->held_count == TEST_MODEL_SERVING_HOLD_CAPACITY )
 			return(SPARK_STATUS_BUSY);
@@ -415,9 +405,6 @@ static SparkStatus TestModelServingProgress(
 	if ( state->hold_completion_steps == 0u || state->held_count == 0u )
 		return(SPARK_STATUS_OK);
 	released = 0u;
-	/* One progress step ticks every held completion's countdown; the
-	 * released prefix is the zeroed OLDEST entries, so completion order
-	 * stays submission order. */
 	for (scan=0u; scan<state->held_count; scan++)
 	{
 		TestModelServingHeld *held;

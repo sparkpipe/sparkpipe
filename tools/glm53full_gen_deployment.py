@@ -52,6 +52,9 @@ RUNTIME_ROOT_TEMPLATE = os.environ.get(
     "/home/{host}/sparkdata/glm53full.{codec}.tp16")
 
 
+COLLECTIVE_SESSION_BASE = int(os.environ.get(
+    "GLM53FULL_SESSION_BASE", "63500"))
+
 def tp_collective(collective_base):
     return {
         "backend": "hidden_transport",
@@ -62,11 +65,10 @@ def tp_collective(collective_base):
         "operation_timeout_milli": 30000,
         "peer_hosts": list(HOSTS),
         "peer_ports": [collective_base + r for r in range(TP)],
-        "algorithms": ["recursive_doubling"],
-        "direct_all_to_all_max_payload_bytes": 0,
-        "split_ring_min_payload_bytes": 0,
-        "rail_peer_hosts": [list(HOSTS), list(HOSTS)],
-        "step_rail_indices": [0, 0, 1],
+        "algorithms": ["tree"],
+        "session_ports": [
+            [COLLECTIVE_SESSION_BASE + a * TP + b if a != b else 0
+             for b in range(TP)] for a in range(TP)],
     }
 
 

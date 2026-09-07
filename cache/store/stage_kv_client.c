@@ -47,9 +47,6 @@ SparkStatus SparkStageKvClientOpen(SparkStageKvClient *client, const char *modul
 	return(SPARK_STATUS_OK);
 }
 
-// <family>/<model_fp>/<layout_fp>/r<rank>/s<sequence>/b<block> - the same
-// binding scheme used by every tier: a model or layout change can never
-// consume old KV, and rank scoping keeps stages from crossing streams.
 int32_t SparkStageKvClientFormatKey(char *key, uint32_t key_capacity, uint64_t model_fingerprint, uint64_t cache_layout_fingerprint, uint32_t rank_index, uint64_t sequence_id, uint32_t logical_block)
 {
 	int written = snprintf(key,key_capacity,"kv/%016llx/%016llx/r%u/s%llu/b%u",(unsigned long long)model_fingerprint,(unsigned long long)cache_layout_fingerprint,rank_index,(unsigned long long)sequence_id,logical_block);

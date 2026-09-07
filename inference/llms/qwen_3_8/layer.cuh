@@ -1,16 +1,4 @@
 #pragma once
-// Qwen 3.8 Max, one layer: gated DeltaNet or gated full attention, followed
-// by a routed MoE on EVERY layer (512 experts, top-10, one shared expert).
-//
-// Three of every four layers are gated DeltaNet (recurrent state, no growing
-// cache); the fourth is full attention over a paged KV cache. The host picks
-// by layer index through QWEN38_LAYER_IS_LINEAR. The MLP half is the same
-// MoE everywhere, so there is one Qwen38LayerMoe and no dense-MLP branch.
-//
-// Expert precision: the vendor FP8 checkpoint (block-128 E4M3 payload + F32
-// scales) maps one-to-one onto LmFp8 (kScaleGroup 128) with
-// LmScaleTensorBlockF32 scales; the BF16 spine uses LmBf16Format everywhere.
-// config.h carries the audit against the pinned checkpoint.
 #include "runtime/gemm.cuh"
 #include "runtime/launch.h"
 #include "inference/kernels/norm.cuh"
@@ -25,15 +13,11 @@
 #include "inference/llms/qwen_3_8/config.h"
 #include "inference/kernels/kv.cuh"
 
-// The two pools this model needs. Qwen's value width equals its key width,
-// so LmKvHeads prices the GQA slot correctly; the assert pins the
-// coincidence, same as qwen_3_6.
 using Qwen38FullKv = LmKvHeads<QWEN38_KV_BITS, QWEN38_KV_HEADS, QWEN38_HEAD_DIM, QWEN38_KV_PAGE_SLOTS>;
 
 static_assert(Qwen38FullKv::kSlotBytes == QWEN38_KV_HEADS * (QWEN38_HEAD_DIM + QWEN38_HEAD_DIM) * 2u,
 	"the GQA slot is [K: heads x head_dim][V: heads x value_dim] bf16");
 
-// Overridable for the CPU harness, like qwen_3_6.
 #ifndef QWEN38_LAYER_THREADS
 #define QWEN38_LAYER_THREADS 256u
 #endif
@@ -42,16 +26,11 @@ static_assert(Qwen38FullKv::kSlotBytes == QWEN38_KV_HEADS * (QWEN38_HEAD_DIM + Q
 #define QWEN38_LAYER_WARPS 8u
 #define QWEN38_HEAD_TILE 1024u
 
-// Full attention widths: 64 query heads over 4 KV heads, and the fused
-// projection is query|gate + key + value (the output gate doubles the query
-// section, config.h's QWEN38_QKV_DIM).
 #define QWEN38_Q_DIM (QWEN38_ATTN_HEADS * QWEN38_HEAD_DIM)
 #define QWEN38_KV_DIM (QWEN38_KV_HEADS * QWEN38_HEAD_DIM)
 #define QWEN38_ATTN_QG_DIM (2u * QWEN38_Q_DIM)
 #define QWEN38_ATTN_QKV_DIM (QWEN38_ATTN_QG_DIM + (2u * QWEN38_KV_DIM))
 
-// Gated DeltaNet widths: 128 value heads over 16 key heads is eight value
-// heads sharing each key head - the ratio the delta rule kernel takes.
 #define QWEN38_GDN_QK_DIM (QWEN38_GDN_KEY_HEADS * QWEN38_GDN_KEY_DIM)
 #define QWEN38_GDN_V_DIM (QWEN38_GDN_VALUE_HEADS * QWEN38_GDN_VALUE_DIM)
 #define QWEN38_GDN_QKV_DIM ((2u * QWEN38_GDN_QK_DIM) + QWEN38_GDN_V_DIM)
@@ -64,28 +43,11 @@ static_assert(QWEN38_ATTN_QKV_DIM == QWEN38_QKV_DIM,
 static_assert(QWEN38_ATTN_OUTPUT_GATE == 1u,
 	"the layer applies the attention output gate; an ungated config is a different model");
 
-// The state pool, one slot per sequence. fp32, and the width is pinned so a
-// bf16-state variant cannot arrive as this constant flipped silently.
 using Qwen38GdnState = LmKvState<QWEN38_GDN_STATE_BYTES>;
 static_assert(QWEN38_GDN_STATE_ELEMENT_BYTES == sizeof(float),
 	"LmDeltaRuleKernel addresses the state pool as float; a narrower slot is out of bounds");
 
-// ---------------------------------------------------------------------------
-// Three qwen38-specific kernels, kept in the family rather than
-// inference/kernels because no other model needs them:
-//   1. Qwen38HeadRmsNormKernel - per-head RMSNorm on the attention query and
-//      key projections (the checkpoint's q_norm / k_norm weights).
-//   2. Qwen38GatedHeadNormKernel - the GDN output's gated head norm:
-//      RMSNorm per value head, times weight, times silu(z) from in_proj_z.
-//   3. Qwen38SharedExpertAddKernel - shared_out += hidden, then
-//      hidden = sigmoid(shared_expert_gate) * shared_out per channel.
-// Each mirrors a kernel in the resident module
-// (SparkQwen38AttnPrepareKernel / SparkQwen38GatedNormKernel /
-// SparkQwen38SharedGateKernel + residual add) so the two stacks cannot drift.
-// ---------------------------------------------------------------------------
 
-// Per-head RMSNorm over head_dim columns, times per-head weight. One block
-// per (row, head); the weight is indexed by the intra-head column.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void Qwen38HeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim, float epsilon)
@@ -94,8 +56,6 @@ void Qwen38HeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint
 	uint32_t row = blockIdx.y,head = blockIdx.x,column = threadIdx.x;
 	uint64_t index = ((uint64_t)row * head_count * head_dim) + ((uint64_t)head * head_dim) + column;
 	float value,variance;
-	/* Threads past the head width return below; zero the scratch first so
-	 * the block sum's second stage reads defined values for every warp. */
 	if ( threadIdx.x < THREADS / LM_WARP_LANES )
 		reduce_scratch[threadIdx.x] = 0.0f;
 	__syncthreads();
@@ -107,8 +67,6 @@ void Qwen38HeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint
 	output_bf16[index] = LmFloatToBf16(value);
 }
 
-// Gated head norm for the GDN output: per (row, value head), RMSNorm the
-// 128-wide slice, times weight, times silu(z).
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void Qwen38GatedHeadNormKernel(const uint16_t *__restrict__ core_bf16, const uint16_t *__restrict__ z_bf16, const uint16_t *__restrict__ norm_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim, float epsilon)
@@ -129,11 +87,6 @@ void Qwen38GatedHeadNormKernel(const uint16_t *__restrict__ core_bf16, const uin
 	output_bf16[index] = LmFloatToBf16(value);
 }
 
-// hidden = routed + sigmoid(dot(normed, gate_weight)) * shared. The
-// checkpoint's shared_expert_gate is Linear(hidden, 1): one scalar per row
-// derived from the MoE's normed input, then broadcast over the shared
-// expert's down-projection - NOT sigmoid(weight[d]) per channel. Keeping
-// add+gate in one kernel means the product never round-trips.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void Qwen38SharedExpertAddKernel(const uint16_t *__restrict__ routed_bf16, const uint16_t *__restrict__ shared_bf16, const uint16_t *__restrict__ gate_weight_bf16, const uint16_t *__restrict__ gate_input_bf16, uint16_t *__restrict__ hidden_out_bf16, uint32_t row_count, uint32_t dimension)
@@ -163,10 +116,6 @@ void Qwen38SharedExpertAddKernel(const uint16_t *__restrict__ routed_bf16, const
 struct Qwen38LayerBuffers
 {
 	const void *attn_norm_weight;
-	// Full-attention layers: fused qkv (query|gate + key + value) and the
-	// output projection, per-head q/k norm weights. Linear layers: the GDN
-	// in and out projections, the conv, and the gate producers. A layer
-	// carries one pair or the other, never both - QWEN38_LAYER_KIND decides.
 	const void *qkv_weight;
 	const void *qkv_scale;
 	const void *output_weight;
@@ -179,8 +128,6 @@ struct Qwen38LayerBuffers
 	const void *gdn_out_weight;
 	const void *gdn_out_scale;
 	const void *gdn_norm_weight;
-	// The GDN gate producers: z (the gated head norm's gate), beta and decay
-	// are 128-row projections; A_log and dt_bias the per-head fp32 tensors.
 	const void *gdn_z_weight;
 	const void *gdn_z_scale;
 	const void *gdn_beta_weight;
@@ -190,11 +137,6 @@ struct Qwen38LayerBuffers
 	const float *gdn_a_log;
 	const float *gdn_dt_bias;
 	const void *mlp_norm_weight;
-	// The MoE: router gate (BF16 [experts, hidden]), the routed expert tables
-	// (expert-major stacked FP8_E4M3 with block-128 F32 scales; w1 is the
-	// fused gate|up, 2 x intermediate per expert), and the shared expert
-	// (BF16, fused gate|up at 2 x intermediate, down at hidden) with its
-	// learned per-channel sigmoid gate.
 	const void *router_weight;
 	const void *router_scale;
 	const void *expert_w1_weight;
@@ -222,9 +164,6 @@ struct Qwen38LayerBuffers
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 
-	// The recurrent half: state pool + conv window in one slot, q and k
-	// expanded from 16 key heads to the 128 value heads, the z/beta/decay
-	// logit scratches, and the produced gates.
 	uint8_t *gdn_state_pool;
 	uint16_t *gdn_conv_window;
 	uint16_t *gdn_query_expanded_bf16;
@@ -238,9 +177,6 @@ struct Qwen38LayerBuffers
 	uint16_t *gdn_core_bf16;
 	uint16_t *gdn_gated_bf16;
 
-	// The MoE: router logits, top-k indices/weights, the route build's five
-	// tables, the packed gate|up and down buffers, and the shared expert
-	// scratches.
 	float *router_logits;
 	uint32_t *route_expert;
 	float *route_weight;
@@ -321,10 +257,6 @@ static LmScaleTensor Qwen38WeightScale(
             Format::kScaleGroup);
 }
 
-// The routed experts' scale plane: one block-128 F32 scale per 128x128
-// payload block, stacked expert-major - the vendor weight_scale_inv layout
-// verbatim. group_count is the expert count, output_dimension the STACKED
-// rows (per-expert rows x experts).
 static LmScaleTensor Qwen38ExpertScale(
     const void *scale_data,
     uint32_t group_count,
@@ -340,8 +272,6 @@ static LmScaleTensor Qwen38ExpertScale(
         128u);
 }
 
-// Full attention, one layer in four: per-head q/k RMSNorm, partial RoPE,
-// paged GQA decode, output gate, output projection.
 template<class Format, class Geometry>
 static int32_t Qwen38LayerAttention(const Qwen38LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
 {
@@ -373,9 +303,6 @@ static int32_t Qwen38LayerAttention(const Qwen38LayerBuffers *b, uint32_t rows, 
 		b->fused_qkv_bf16,layout,b->query_gate_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
 	LM_LAUNCH((LmSplitQueryGateKernel<QWEN38_LAYER_THREADS>), rows, QWEN38_LAYER_THREADS, 0, stream,
 		b->query_gate_bf16,b->query_bf16,b->attn_gate_bf16,QWEN38_ATTN_HEADS,QWEN38_HEAD_DIM,rows);
-	// Per-head RMSNorm on the query and key projections, then partial RoPE
-	// on the last 64 dims of each head (the suffix convention the module
-	// shares; tests/test_rope_pairing.py pins it).
 	LM_LAUNCH((Qwen38HeadRmsNormKernel<QWEN38_LAYER_THREADS>), dim3(QWEN38_ATTN_HEADS,rows), QWEN38_HEAD_DIM, 0, stream,
 		b->query_bf16,(const uint16_t *)b->query_norm_weight,b->query_bf16,rows,QWEN38_ATTN_HEADS,QWEN38_HEAD_DIM,QWEN38_RMS_EPSILON);
 	LM_LAUNCH((Qwen38HeadRmsNormKernel<QWEN38_LAYER_THREADS>), dim3(QWEN38_KV_HEADS,rows), QWEN38_HEAD_DIM, 0, stream,
@@ -401,9 +328,6 @@ static int32_t Qwen38LayerAttention(const Qwen38LayerBuffers *b, uint32_t rows, 
 		QWEN38_Q_DIM,QWEN38_HIDDEN,sms,false,stream));
 }
 
-// Gated DeltaNet, three layers in four. Same shape as qwen_3_6's linear
-// path (fixed state, short conv, delta rule, gate producers) at 16 QK over
-// 128 value heads, plus the qwen38 gated head norm on the recurrence output.
 template<class Format>
 static int32_t Qwen38LayerLinear(const Qwen38LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
@@ -426,10 +350,6 @@ static int32_t Qwen38LayerLinear(const Qwen38LayerBuffers *b, uint32_t rows, uin
 		QWEN38_HIDDEN,QWEN38_GDN_QKV_DIM,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// z, beta and decay: three 128-row projections of the same normed input
-	// (the checkpoint's in_proj_z / in_proj_b / in_proj_a), and
-	// LmGdnGateKernel turns the beta/decay logits into the retention factors
-	// and write strengths the delta rule consumes.
 	gemm.scale_b = Qwen38WeightScale<Format>(
 		b->gdn_z_scale,QWEN38_GDN_VALUE_HEADS,QWEN38_HIDDEN);
 	gemm.output_bf16 = b->gdn_z_logit_bf16;
@@ -461,14 +381,10 @@ static int32_t Qwen38LayerLinear(const Qwen38LayerBuffers *b, uint32_t rows, uin
 	layout.value_dimension = QWEN38_GDN_V_DIM;
 	layout.rope_dimension = 0u;
 	layout.head_dimension = QWEN38_GDN_KEY_DIM;
-	// Short causal conv over the fused q|k|v row before the split, SWISH
-	// (the reference's ShortConvolution activation; the module's conv
-	// matches, and qwen_3_6's file settles the same question for its clone).
 	LM_LAUNCH((LmCausalConvKernel<QWEN38_LAYER_THREADS,QWEN38_GDN_CONV_KERNEL,LM_CONV_SWISH,uint16_t>), dim3(rows,(QWEN38_GDN_QKV_DIM + QWEN38_LAYER_THREADS - 1u) / QWEN38_LAYER_THREADS), QWEN38_LAYER_THREADS, 0, stream,
 		b->gdn_conv_window,b->gdn_state_index,0,0,b->fused_qkv_bf16, (const uint16_t *)b->gdn_conv_weight,b->fused_qkv_bf16,QWEN38_GDN_QKV_DIM,rows,1u);
 	LM_LAUNCH((LmSplitQkvKernel<QWEN38_LAYER_THREADS>), rows, QWEN38_LAYER_THREADS, 0, stream,
 		b->fused_qkv_bf16,layout,b->query_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
-	// q and k repeat from 16 key heads to 128 value heads (8 ways).
 	LM_LAUNCH((LmExpandHeadsKernel<QWEN38_LAYER_THREADS>), rows, QWEN38_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->gdn_query_expanded_bf16,QWEN38_GDN_KEY_HEADS,QWEN38_GDN_KEY_DIM,QWEN38_GDN_VALUE_PER_KEY,rows);
 	LM_LAUNCH((LmExpandHeadsKernel<QWEN38_LAYER_THREADS>), rows, QWEN38_LAYER_THREADS, 0, stream,
@@ -478,14 +394,8 @@ static int32_t Qwen38LayerLinear(const Qwen38LayerBuffers *b, uint32_t rows, uin
 		(uint32_t)(QWEN38_GDN_KEY_DIM * QWEN38_GDN_VALUE_DIM * sizeof(float)));
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// One state per value head (128), gates per value head; the output is
-	// the full 16384 the gated head norm and output projection read.
 	LM_LAUNCH((LmDeltaRuleKernel<QWEN38_LAYER_THREADS,QWEN38_GDN_KEY_DIM,QWEN38_GDN_VALUE_DIM>), dim3(rows,QWEN38_GDN_VALUE_HEADS), QWEN38_LAYER_THREADS, (uint32_t)(QWEN38_GDN_KEY_DIM * QWEN38_GDN_VALUE_DIM * sizeof(float)), stream,
 		b->gdn_state_pool,QWEN38_GDN_STATE_BYTES,b->gdn_state_index,0,0,b->gdn_query_expanded_bf16,b->gdn_key_expanded_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->gdn_core_bf16, QWEN38_GDN_VALUE_HEADS,1u,rows,1u);
-	// Gated head norm: per value head RMSNorm, times weight, times silu(z).
-	// Launched at the full CTA width (256 threads): the kernel's block sum
-	// reduces THREADS lanes, and launching at the 128-wide head would leave
-	// the upper half of the reduction reading unwritten scratch.
 	LM_LAUNCH((Qwen38GatedHeadNormKernel<QWEN38_LAYER_THREADS>), dim3(QWEN38_GDN_VALUE_HEADS,rows), QWEN38_LAYER_THREADS, 0, stream,
 		b->gdn_core_bf16,b->gdn_z_logit_bf16,(const uint16_t *)b->gdn_norm_weight,b->gdn_gated_bf16,rows,QWEN38_GDN_VALUE_HEADS,QWEN38_GDN_VALUE_DIM,QWEN38_RMS_EPSILON);
 	activation = Qwen38PrepareInput<Format>(
@@ -498,13 +408,6 @@ static int32_t Qwen38LayerLinear(const Qwen38LayerBuffers *b, uint32_t rows, uin
 		QWEN38_GDN_V_DIM,QWEN38_HIDDEN,sms,false,stream));
 }
 
-// The routed MoE + shared expert, every layer's FFN side. Router: plain
-// BF16 gate projection to f32 logits, row softmax, then top-10 renormalised
-// over the selected experts (the Qwen3_5MoeTopKRouter form). Experts: FP8_E4M3 block-128, w1 fused
-// gate|up (4096 per expert), silu-mul, w2 (8192 per expert), then the
-// weighted pair reduce into hidden (which starts as a copy of the
-// attention-side output). Shared expert: fused gate|up, silu-mul, down,
-// then the learned per-channel sigmoid gate adds it to hidden.
 template<class Format>
 static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
@@ -527,10 +430,6 @@ static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32
 		QWEN38_HIDDEN,QWEN38_EXPERTS,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// Qwen3_5MoeTopKRouter: softmax over the full logit row, then top-k,
-	// then renormalize over the selected experts. The softmax is monotone,
-	// so the selection is unchanged; the weights become probabilities
-	// instead of raw logits divided by their (possibly negative) sum.
 	LM_LAUNCH((LmHeadSoftmaxKernel<QWEN38_LAYER_THREADS>), rows, QWEN38_LAYER_THREADS, (QWEN38_LAYER_THREADS / LM_WARP_LANES) * sizeof(float), stream,
 		b->router_logits,rows,QWEN38_EXPERTS,1.0f);
 	LM_LAUNCH((LmTopkSmallKernel<QWEN38_LAYER_THREADS,QWEN38_TOP_K,true,1u,1u,LM_TOPK_SCORE_IDENTITY>), rows, QWEN38_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
@@ -543,9 +442,6 @@ static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32
 		stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// Routed w1: BF16 activations gathered through route_source_token
-	// (indirect A, no packed activation tensor), FP8 expert weights with
-	// block-128 F32 scales.
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = Qwen38ExpertScale(
@@ -565,10 +461,8 @@ static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32
 		QWEN38_HIDDEN,sms,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// silu(gate) * up over the packed fused rows (gate first).
 	LM_LAUNCH((LmSiluMulKernel<QWEN38_LAYER_THREADS>), packed_rows, QWEN38_LAYER_THREADS, 0, stream,
 		b->packed_gate_up_bf16,b->packed_intermediate_bf16,QWEN38_EXPERT_INTERMEDIATE,true);
-	// Routed w2: packed activations (already expert-major), FP8 weights.
 	gemm.source_row_map = 0;
 	gemm.source_row_count = 0u;
 	gemm.scale_b = Qwen38ExpertScale(
@@ -583,24 +477,12 @@ static int32_t Qwen38LayerMoe(const Qwen38LayerBuffers *b, uint32_t rows, uint32
 		QWEN38_EXPERT_INTERMEDIATE,sms,true,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// hidden starts as the attention-side output; the weighted pair reduce
-	// ADDS the routed experts into it.
-	/* The kernel indexes row=blockIdx.y, element=blockIdx.x*THREADS+tid —
-	 * a 1-D grid of `rows` blocks copies only rows[0..rows) x elements
-	 * [0..THREADS) of each row (one thread-block-width slice of hidden).
-	 * dim3(elements_per_row, rows) covers the tensor. (IR-6 from the
-	 * hygiene lane; the same kernel's k3 call sites are the verified
-	 * pattern.) */
 	LM_LAUNCH((LmCopyRowsKernel<QWEN38_LAYER_THREADS>),
 		dim3((QWEN38_HIDDEN + QWEN38_LAYER_THREADS - 1u) / QWEN38_LAYER_THREADS,rows),
 		QWEN38_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,b->hidden_bf16,rows,QWEN38_HIDDEN);
 	LM_LAUNCH((LmMoeFinalizeKernel<QWEN38_LAYER_THREADS>), dim3((QWEN38_HIDDEN + QWEN38_LAYER_THREADS - 1u) / QWEN38_LAYER_THREADS,rows), QWEN38_LAYER_THREADS, 0, stream,
 		b->packed_down_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16, rows,QWEN38_TOP_K,QWEN38_HIDDEN);
-	// Shared expert at full width on the same normed input: fused gate|up
-	// (pack-time fuse of the checkpoint's shared_expert.gate_proj and
-	// up_proj), silu-mul, down, then the learned scalar sigmoid gate
-	// (Linear(hidden,1) on the normed input) adds it into hidden.
 	gemm.scale_b = Qwen38WeightScale<Format>(
 		b->shared_gate_up_scale,QWEN38_EXPERT_INTERMEDIATE * 2u,QWEN38_HIDDEN);
 	gemm.output_bf16 = b->gate_up_bf16;

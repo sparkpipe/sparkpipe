@@ -86,11 +86,6 @@ typedef struct SparkModelDriverCacheIdentity
     uint8_t sha256[32];
 } SparkModelDriverCacheIdentity;
 
-/*
- * Model-neutral cache intent. Admission prepares or verifies the requested
- * mappings; model drivers alone translate them into physical page layouts.
- * A prepare admission is idempotent and must not publish or release state.
- */
 typedef struct SparkModelDriverCacheLane
 {
     uint64_t sequence_id;

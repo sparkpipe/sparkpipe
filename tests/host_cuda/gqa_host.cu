@@ -1,27 +1,3 @@
-// Run the GQA store and decode kernels on a CPU.
-//
-// The two kernels in inference/kernels/gqa.cuh exist because qwen_3_6 and
-// mimo_2_5 were launched through the MLA latent pair: their stores read a
-// buffer nothing wrote, and the latent kernel returned the key's prefix as
-// the value. Per-kernel review can miss that class of defect - the kernels
-// were each fine; the wiring was not - so this harness runs the exact pair,
-// store then attend, and scores the output against an independent reference.
-//
-// TWO SEQUENCES, INTERLEAVED PAGES, same reason as mla_host: with one sequence
-// every mapping is the identity and a kernel that ignores the page table
-// passes. Sequence 0 gets pages 0 and 2, sequence 1 pages 1 and 3.
-//
-// FOUR QUERY HEADS OVER TWO KV HEADS. A head count equal to the KV count
-// cannot tell GQA grouping from one-KV-head-per-query-head: every mapping is
-// the identity. With the ratio at two, query heads 0,1 must read KV head 0
-// and 2,3 KV head 1, and the reference disagrees otherwise.
-//
-// VALUE NARROWER THAN KEY, 4 against 8, because that is MiMo 2.5's shape
-// (128 against 192) and the shape LmKvHeads priced wrong: the store and the
-// decode must agree on where the value region starts or the value read lands
-// inside the next head's key.
-//
-// Every header is included unmodified.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -103,8 +79,6 @@ int main(void)
 	}
 	for (index = 0u; index < SEQUENCES * HEADS * HEAD_DIM; ++index)
 		query[index] = LmFloatToBf16(NextRandom());
-	// The window attends over the last WINDOW positions of each row, which is
-	// what mimo_2_5's sliding-window branch passes as selected_positions.
 	for (sequence = 0u; sequence < SEQUENCES; ++sequence)
 		for (index = 0u; index < WINDOW; ++index)
 			window_positions[(sequence * WINDOW) + index] =

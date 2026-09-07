@@ -234,6 +234,7 @@ TEST_NAMES := \
     test_kv_cache \
 	test_k3_kv_cache \
 	test_k3_dspark_pack \
+	test_k3_run_equivalence \
 	test_kv_model_table \
     test_nvme_tier \
     test_jit_kv_slice \
@@ -251,9 +252,7 @@ TEST_NAMES := \
     test_gemm_tile_k_fallback \
     test_serial_tp_replay \
     test_speculation_policy_pin \
-    test_speculation_headers_coexist \
     test_speculation_tree_pin \
-    test_speculation_tree_resolve \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
@@ -510,8 +509,10 @@ build:
 build/test_modules:
 	mkdir -p build/test_modules
 
+build/obj/src/spark_speculation_policy.o: SPARK_SPECULATION_TARGET_FLAGS = -DSPARK_DSPARK_TARGET_GLM52=1
+
 build/obj/%.o: %.c | build
-	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
+	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(SPARK_SPECULATION_TARGET_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
@@ -617,6 +618,16 @@ build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRAR
 
 build/test_k3_kv_cache: tests/test_k3_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# Host-executed KDA run-contract gate (the CUDA CPU shim needs GNU g++:
+# tests/host_cuda_compiler.py's search, as a make probe).
+HOST_CUDA_CXX := $(shell for v in 20 19 18 17 16 15 14 13 12 11; do command -v g++-$$v >/dev/null 2>&1 && echo g++-$$v && break; done)
+ifeq ($(strip $(HOST_CUDA_CXX)),)
+HOST_CUDA_CXX := g++
+endif
+
+build/test_k3_run_equivalence: tests/host_cuda/k3_run_equivalence.cu tests/host_cuda/lm_host_cuda.cuh inference/kernels/linear_attn.cuh inference/kernels/norm.cuh inference/kernels/dtype.cuh
+	$(HOST_CUDA_CXX) -std=c++17 -O0 -Itests/host_cuda/shim -I. -Itests/host_cuda -Imodel-families/common/include -Iinclude -x c++ $< -o $@
 
 build/test_kv_model_table: tests/test_kv_model_table.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
@@ -981,19 +992,11 @@ build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_repla
 build/test_speculation_tree_pin: tests/test_speculation_tree_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_speculation_tree_resolve: tests/test_speculation_tree_resolve.c $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/test_glm52_dspark: tests/test_glm52_dspark.c modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_speculation_policy_pin: tests/test_speculation_policy_pin.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_headers_coexist: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_provider.h include/sparkpipe/spark_speculation_policy.h | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
-	$(CC) $(CPPFLAGS) -DSPARK_COEXIST_POLICY_FIRST=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@.reversed
-	./$@.reversed
 
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

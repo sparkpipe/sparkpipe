@@ -18,6 +18,16 @@ Outputs into --output DIR:
 import argparse
 import json
 import os
+import pathlib
+
+
+def _contained(base, leaf):
+    root = os.path.realpath(base)
+    path = os.path.realpath(os.path.join(base, leaf))
+    if not (path == root or path.startswith(root + os.sep)):
+        raise ValueError(f"path escapes output dir: {leaf}")
+    return path
+
 
 REVISION = "f5d08274bafd880402bd16f5e3e6c514136ec06c"
 PACKS = "../packs_v4"
@@ -28,8 +38,8 @@ CHAIN = [
     (8, "spark8"), (9, "spark9"), (10, "sparka"), (11, "sparkb"),    # stage 2
     (12, "sparkc"), (13, "sparkd"), (14, "sparke"), (15, "sparkf"),  # stage 3
 ]
-TP_PORT_BASE = 66840      # module TP collective (PP transport base is 66640)
-PP_TRANSPORT_PORT_BASE = 66640
+TP_PORT_BASE = 64500      # module TP collective (PP transport base is 66640)
+PP_TRANSPORT_PORT_BASE = 64000
 CONTROL_PORT_BASE = 18180
 
 
@@ -71,9 +81,8 @@ def main():
             "max_sequence_positions": args.max_sequence_positions,
             "tp_degree": 4,
         }
-        with open(os.path.join(args.output, "config", f"adapter-r{rank}.json"), "w") as handle:
-            json.dump(config, handle, indent=1)
-            handle.write("\n")
+        pathlib.Path(_contained(args.output, os.path.join("config", f"adapter-r{rank}.json"))).write_text(
+            json.dumps(config, indent=1) + "\n")
         table.append({
             "rank": rank, "host": host, "chain_position": position,
             "pp_stage": pp, "tp_rank": tp, "pack": pack,
@@ -95,7 +104,7 @@ def main():
                       "mode": "host-rdma",
                       "control_port_base": PP_TRANSPORT_PORT_BASE},
         "runtime_limits": {
-            "max_inflight_submissions": 4,
+            "max_inflight_submissions": 1,
             "max_active_sequences": 8,
             "max_input_rows": 8,
             "resident_sequence_capacity": 8,
@@ -104,12 +113,10 @@ def main():
         },
         "nodes": nodes,
     }
-    with open(os.path.join(args.output, "deployment.json"), "w") as handle:
-        json.dump(deployment, handle, indent=1)
-        handle.write("\n")
-    with open(os.path.join(args.output, "launch_table.json"), "w") as handle:
-        json.dump(table, handle, indent=1)
-        handle.write("\n")
+    pathlib.Path(_contained(args.output, "deployment.json")).write_text(
+        json.dumps(deployment, indent=1) + "\n")
+    pathlib.Path(_contained(args.output, "launch_table.json")).write_text(
+        json.dumps(table, indent=1) + "\n")
     print(f"qwen4_flash_deploy_v4 wrote deployment.json + {len(table)} configs + launch_table.json "
           f"to {args.output} (stage rotation: s0=spark4-7 s1=spark0-3 s2=spark8-b s3=sparkc-f)")
 

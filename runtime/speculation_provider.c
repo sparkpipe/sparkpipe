@@ -1,9 +1,3 @@
-/*
- * Speculation-provider slot: the one validation point for the interface.
- * See include/sparkpipe/spark_speculation_provider.h; the two binding
- * shapes (module-provider, embedded-provider) are proven by
- * tests/test_speculation_provider_slot.c.
- */
 
 #include <string.h>
 

@@ -1,16 +1,5 @@
 #pragma once
 
-#include "sparkpipe/spark_model_serving_adapter.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "sparkpipe/spark_serving_adapter_decl_common.h"
 
 #define SPARK_DSV4_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION 3u
-
-const SparkModelServingAdapterInterface *
-SparkModelServingAdapterGetInterface(void);
-
-#ifdef __cplusplus
-}
-#endif

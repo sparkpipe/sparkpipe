@@ -1,9 +1,3 @@
-/* weightd spawn (docs/WEIGHTD_DESIGN.md): the residentd owns the daemon
- * lifecycle so every deployment inherits pack residency structurally.
- * This file deliberately carries the W2b env contract (kill-switch
- * parity with SPARK_STAGE_MODULE_LOAD_PIPELINE=0) so model_residentd.c
- * itself stays free of environment fallbacks (the production
- * fail-closed rule the selection-contract gate pins). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,11 +13,6 @@
 #include "sparkpipe/spark_model_resident_endpoint.h"
 #include "sparkpipe/spark_weightd.h"
 
-/* The per-node pack digest (the W2b identity key): the packs are
- * rank-sharded so the digest CANNOT live in the shared deployment json -
- * it travels WITH the pack as <pack>.sha256 beside it in the packs dir
- * (written once at pack placement). One .g5nsp per runtime root today;
- * more than one is ambiguous and declines (fallback, never wrong bytes). */
 static const char *SparkWeightdSpawnResolvePackDigest(
 	const char *runtime_root)
 {
@@ -47,7 +36,7 @@ static const char *SparkWeightdSpawnResolvePackDigest(
 			if ( candidate != 0 )
 			{
 				(void)closedir(directory);
-				return 0; /* ambiguous: multiple sidecars */
+				return 0;
 			}
 			candidate = (const char *)entry->d_name;
 		}
@@ -85,8 +74,6 @@ void SparkModelResidentdEnsureWeightd(
 	char binary_path[512];
 	pid_t child;
 
-	/* the deployment's weightd{} socket is the authority here; the env
-	 * (published below) is for the module seam's attach contract */
 	if ( socket_path_argument == 0 || socket_path_argument[0] == '\0' )
 		return;
 	socket_path = socket_path_argument;
@@ -94,12 +81,6 @@ void SparkModelResidentdEnsureWeightd(
 	(void)setenv("SPARK_WEIGHTD_SOCKET",socket_path,1);
 	if ( strlen(socket_path) >= sizeof(address.sun_path) )
 		return;
-	/* publish the identity BEFORE any attach can run (the module seam
-	 * loads after this helper returns). This must happen on BOTH paths:
-	 * the already-up early return below is the WARM dev-cycle case, and
-	 * skipping the publish there leaves the attach seam without an
-	 * identity (fallback reason=no_identity -> direct load every restart,
-	 * which silently defeats the residency daemon entirely). */
 	{
 		const char *digest = SparkWeightdSpawnResolvePackDigest(runtime_root);
 		if ( digest != 0 )
@@ -108,7 +89,6 @@ void SparkModelResidentdEnsureWeightd(
 			fprintf(stderr,"model_residentd weightd-no-digest-sidecar "
 				"root=%s (seam falls back to direct load)\n",runtime_root);
 	}
-	/* already up? the common case after the first launch */
 	probe_fd = socket(AF_UNIX,SOCK_STREAM,0);
 	if ( probe_fd >= 0 )
 	{
@@ -139,8 +119,6 @@ void SparkModelResidentdEnsureWeightd(
 		(void)execv(binary_path,argv);
 		_exit(127);
 	}
-	/* wait for the socket (the daemon binds before serving; cold loads
-	 * happen on the first attach, inside the seam's own deadline) */
 	for ( attempts = 0; attempts < 100; attempts++ )
 	{
 		probe_fd = socket(AF_UNIX,SOCK_STREAM,0);

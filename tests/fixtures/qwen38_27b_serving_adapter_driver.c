@@ -1,14 +1,3 @@
-/*
- * Fixture driver for the qwen38_27b serving adapter test. Emulates the compiled
- * model_driver.so shape: descriptor/flags/profile the adapter pins, create
- * reading the strict process environment the adapter must set (the qwen38_27b
- * module's real configuration channel), submit_return completion, and the
- * head stage's token emission. TP4: every rank owns the embedding and the
- * head, so a frame carries token ids in (buffer 0) and head tokens out
- * (buffer 1) with no hidden transport. kv_token_capacity doubles as the
- * observation channel for the KV pool size the adapter derived (blocks x
- * block tokens).
- */
 
 #include <stdlib.h>
 #include <string.h>
@@ -27,8 +16,6 @@
 #error "QWEN38_27B_CONTRACT_SHA256 must match the adapter build"
 #endif
 
-/* TP4: the adapter sets a single module stage (SPARK_QWEN38_27B_STAGE_COUNT=1,
- * STAGE_INDEX=0) on every rank. */
 #define TEST_QWEN38_27B_DRIVER_STAGE_COUNT 1u
 #define TEST_QWEN38_27B_DRIVER_CAPTURE_ROWS 16u
 
@@ -108,8 +95,6 @@ static SparkStatus TestQwen38_27bServingDriverCreate(
 	const char *pack_path;
 	if ( SparkModelDriverCreateRequestIsValid(request) == 0u || driver_instance == 0 || request->execution_stream == 0 || request->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* The adapter configures the module through the strict environment and
-	 * passes no node context; both are pinned here. */
 	if ( request->node_context != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	pack_path = getenv("SPARK_QWEN38_27B_STAGE_PACK_PATH");
@@ -186,9 +171,6 @@ static SparkStatus TestQwen38_27bServingDriverSubmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE) == 0u || context->kv_block_table == 0 || context->kv_block_table->physical_block_indices == 0 || context->kv_block_table->host_physical_block_indices == 0 || context->kv_block_table->host_lane_physical_block_counts == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* TP4: every rank owns the embedding and the head, so a frame carries the
-	 * token ids in (buffer 0) and the head tokens out (buffer 1) with no
-	 * hidden transport. */
 	if ( (context->flags & (SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT | SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT)) != 0u || context->hidden_input_post_receive_function != 0 || context->hidden_output_send_function != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->buffer_count != 2u || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_READ || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)rows * sizeof(uint32_t) )

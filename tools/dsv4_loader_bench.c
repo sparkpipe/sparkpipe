@@ -1,14 +1,3 @@
-/* W1 loader lane bench (docs/WEIGHTD_DESIGN.md L1+L2).
- * Walks a real dsv4 stage pack exactly the way SparkDsv4ModuleLoadPack
- * does - header, directory, then payload+scale per entry - and times the
- * load through (a) the synchronous region loader and (b) the pack-wide
- * pipelined loader, on the same process invocation with the file's page
- * cache dropped between passes (posix_fadvise DONTNEED). --sha times the
- * whole-file content digest both ways; the digest MUST come out
- * identical, which the bench asserts.
- *
- * usage: dsv4_loader_bench <pack-path> [--load|--sha|--all]
- */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
@@ -42,7 +31,6 @@ static void SparkBenchDropPageCache(FILE *file)
         (void)posix_fadvise(fileno(file), 0, 0, POSIX_FADV_DONTNEED);
     }
 #else
-    /* no posix_fadvise on this host (mac dry runs): cache stays warm */
     (void)file;
 #endif
 }
@@ -206,8 +194,6 @@ static void SparkBenchSha(const char *path)
     setenv("SPARK_SHA256_FILE_PIPELINE", "1", 1);
 }
 
-/* whole-file digest on an arbitrary path (no pack parsing): the L2
- * timing harness for any large file on the measurement host */
 static int SparkBenchRawSha(const char *path)
 {
     struct timespec start;
@@ -318,7 +304,6 @@ int main(int argument_count, char **arguments)
         double pipelined_seconds;
         memset(&ledger, 0, sizeof(ledger));
         ledger.module_tag = BENCH_TAG;
-        /* the kill switch pins the dispatcher to the synchronous path */
         setenv("SPARK_STAGE_MODULE_LOAD_PIPELINE", "0", 1);
         sequential_seconds = SparkBenchLoadSequential(
             &ledger, file, &header, directory);

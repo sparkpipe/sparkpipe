@@ -46,6 +46,24 @@ def main() -> int:
     assert len(spec["topology"]["rank_hosts"]) == 16
     assert spec["topology"]["stage_indices"] == list(range(16))
 
+    # TP16 sibling: single 61-layer stage, same capacity law, unique
+    # transport identity (3*layers+1 graph law: 49=3*16+1, 46=3*15+1).
+    tp16 = json.loads((ROOT / "examples" / "deployments"
+                       / "dsv4_pro_tp16_stage.json").read_text(encoding="utf-8"))
+    assert tp16["model_revision"] == stage["model_revision"]
+    assert tp16["max_sequence_positions"] == 33024
+    assert tp16["stage_pack_path"] == "packs/dsv4_pro_tp16_stage.spstage"
+    assert tp16["cuda_graph_count_by_pp_stage"] == [3 * 61 + 1]
+    tpc = tp16["tp_collective"]
+    assert tpc["collective_identifier"] == 134217734
+    assert tpc["collective_identifier"] != tp["collective_identifier"]
+    assert tpc["listen_port"] == 67620
+    assert tpc["peer_ports"] == list(range(67620, 67636))
+    assert len(tpc["peer_hosts"]) == 16
+    assert tpc["algorithms"] == tp["algorithms"]
+    assert tpc["rail_peer_hosts"] == tp["rail_peer_hosts"]
+    assert tpc["step_rail_indices"] == tp["step_rail_indices"]
+
     print("PASS dsv4_pro exact-32K stage capacity (33024 >= 32768 + 256)")
     return 0
 

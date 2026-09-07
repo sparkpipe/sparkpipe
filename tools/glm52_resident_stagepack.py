@@ -229,6 +229,7 @@ class Fp8SourceReader:
 
     def meta(self, name: str) -> Tuple[str, Tuple[int, ...], str]:
         """(checkpoint dtype string, shape, shard) from header only."""
+        name = self._map_name(name)
         shard = self.weight_map.get(name)
         if shard is None:
             raise PackFailure(f"missing tensor in index: {name}")
@@ -238,8 +239,21 @@ class Fp8SourceReader:
             raise PackFailure(f"tensor {name} not in shard {shard}")
         return entry["dtype"], tuple(entry["shape"]), shard
 
+    def _map_name(self, name: str) -> str:
+        """Map the packer's canonical tensor name to the checkpoint's
+        actual name. The glm-5.3-flash checkpoint (2026-09 revision) uses
+        model.language_model.<rest> instead of model.<rest>."""
+        if name in self.weight_map:
+            return name
+        if name.startswith("model."):
+            alt = "model.language_model." + name[len("model."):]
+            if alt in self.weight_map:
+                return alt
+        return name
+
     def raw(self, name: str) -> np.ndarray:
         """This tensor's payload bytes as a uint8 view (zero-copy memmap slice)."""
+        name = self._map_name(name)
         shard = self.weight_map.get(name)
         if shard is None:
             raise PackFailure(f"missing tensor in index: {name}")

@@ -28,12 +28,6 @@ extern "C" {
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_TOKEN_COUNT 256u
 #define SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT UINT32_MAX
 
-/*
- * Mark the final prefill row for a lane as token-producing. Intermediate
- * prefill chunks leave this clear; every active decode lane sets it. The
- * completion remains lane-indexed; consumers ignore the zero placeholder for
- * unmarked prefill lanes.
- */
 #define SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN UINT32_C(0x00000001)
 #define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX UINT32_C(0x00000002)
 #define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH UINT32_C(0x00000004)
@@ -127,11 +121,8 @@ typedef struct SparkModelServingAdapterDescriptor
 	uint32_t stage_layer_counts[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
 	uint32_t boundary_sideband_kinds[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
 	uint32_t boundary_sideband_bytes_per_sequence[SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT];
-	/* Target-owned scheduler floor; zero means every nonempty submission is efficient. */
 	uint32_t minimum_efficient_submission_row_count;
-	/* Zero disables content-addressed prefix reuse for this adapter. */
 	uint32_t cache_block_token_count;
-	/* Zero for linear PP and pure TP; TP group width for hybrid TP x PP. */
 	uint32_t parallel_group_size;
 } SparkModelServingAdapterDescriptor;
 
@@ -143,10 +134,6 @@ typedef struct SparkModelServingRuntimeLimits
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
-	/*
-	 * Model-neutral page budgets. The runtime and scheduler own these limits;
-	 * a JIT-KV driver only maps each page into its model-specific byte layout.
-	 */
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
 	uint32_t reserved[4];
@@ -294,15 +281,6 @@ typedef void (*SparkModelServingAdapterDestroyFunction)(void *adapter_state);
 typedef SparkStatus (*SparkModelServingAdapterValidateSubmissionFunction)(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission);
-/*
- * validate_submission is side-effect free. During distributed PREPARE the
- * resident calls optional prefetch after validation and before reserving the
- * route. Prefetch must be idempotent by sequence/cache identity: OK means the
- * work is ready or queued, while BUSY asks the coordinator to retry under
- * pressure. Resident-owned hidden boundary pointers are intentionally absent
- * until every rank commits. Submit may return BUSY while queued cache work
- * finishes; the resident retries it without exposing that wait to the caller.
- */
 typedef SparkStatus (*SparkModelServingAdapterSubmitFunction)(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission);
@@ -310,11 +288,6 @@ typedef SparkStatus (*SparkModelServingAdapterPrefetchFunction)(
 	void *adapter_state,
 	const SparkModelServingSubmission *submissions,
 	uint32_t submission_count);
-/*
- * Resolve a successful prepared-cache admission exactly once. COMMIT makes
- * the prepared ownership visible to submit; ABORT releases it. A terminal
- * resolution must not return BUSY or PENDING.
- */
 typedef SparkStatus (*SparkModelServingAdapterResolvePrefetchFunction)(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission,
@@ -322,12 +295,6 @@ typedef SparkStatus (*SparkModelServingAdapterResolvePrefetchFunction)(
 typedef SparkStatus (*SparkModelServingAdapterProgressFunction)(
 	void *adapter_state,
 	uint32_t maximum_step_count);
-/*
- * Quiesce permanently closes admission for this adapter instance. It returns
- * OK only when no completion callback or model work can still reference
- * adapter-owned state. BUSY/PENDING asks the resident to progress and poll
- * again before the absolute CLOCK_MONOTONIC deadline.
- */
 typedef SparkStatus (*SparkModelServingAdapterQuiesceFunction)(
 	void *adapter_state,
 	uint64_t deadline_time_ns);

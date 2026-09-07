@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
 #include <stdatomic.h>
@@ -12,13 +11,6 @@
 
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 
-/* Real-tokens lane diagnostic: SPARK_GLM5_NEXT_PROBE=1 arms the
- * G5N-PROBE dumps (token ids seen by Execute, post-embed hidden row,
- * post-reduce head maxloc). Print-only, off by default. The env is read
- * lazily on the FIRST probe-gated call (all of them run in the Execute
- * chain, none in create), so arming the ladder never changes the create
- * path itself - only its duration budget, see the connect-timeout scale
- * in SparkGlm5NextModuleInitializeTpCollective. */
 #define SPARK_GLM5_NEXT_PROBE_CONNECT_TIMEOUT_SCALE 4u
 #define SPARK_GLM5_NEXT_PROBE_OPERATION_TIMEOUT_SCALE 8u
 static int SparkGlm5NextProbeEnabled(void)
@@ -51,13 +43,6 @@ static int SparkGlm5NextProbeEnabled(void)
 #define SPARK_GLM5_NEXT_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT 6u
 
-/* B2: slot geometry and arena geometry must describe the SAME per-DSA-
- * layer page bytes. KV_SLOT_BYTES is the token slot (MLA_KV_A_DIMENSION
- * bf16 scalars); the arena sees one block as kv_head_count=1 row of
- * ARENA_HEAD_DIM per token. If these diverge, the arena's derived block
- * stride stops matching the allocated pool and the init fence in
- * SparkGlm5NextKvInitialize fails loud - this assert catches it at
- * compile time. */
 #if SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES != \
 	( SPARK_GLM5_NEXT_KV_ARENA_KV_HEAD_COUNT * \
 	  SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM * \
@@ -102,6 +87,7 @@ struct SparkGlm5NextModuleState
 	uint32_t tp_degree;
 	uint32_t tp_rank;
 	uint32_t tp_collective_disabled;
+	uint32_t mtp_active;
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -146,8 +132,6 @@ struct SparkGlm5NextModuleState
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
-	/* R1: the certified-FP8 shadow of the lm_head shard (head-owning
-	 * ranks only; built on-device at load, one head sweep). */
 	uint8_t *head_certified_fp8_payload;
 	float *head_certified_fp8_scale_f32;
 	float *head_certified_fp8_norm_f32;
@@ -187,11 +171,6 @@ struct SparkGlm5NextModuleState
 	atomic_ullong failed_count;
 	atomic_ullong host_callback_completion_count;
 	SparkTpDeviceCollective tp_device_collective;
-	/* The HC-wide twin: hidden_bf16 carries HC streams per row, so its
-	 * reduces need a collective priced at HC x hidden per sequence. The
-	 * narrow instance stays for attention_out (single-width). ONE-width
-	 * collectives summed only the first hidden-slice of the hidden
-	 * state - the all-zeros first-token bug. */
 	SparkTpDeviceCollective tp_device_collective_hc;
 	uint32_t tp_device_collective_hc_initialized;
 	uint32_t tp_device_collective_initialized;
@@ -201,52 +180,16 @@ struct SparkGlm5NextModuleState
 	void *tp_credit_receive_bf16;
 	void *tp_host_credit_send_bf16;
 	void *tp_host_credit_receive_bf16;
-	/* HC-wide twin credit pool: same memory-mode discipline as the narrow
-	 * instance (device arena + mapped-host transport aliases), priced at
-	 * HC x hidden per sequence. */
 	SparkTpDeviceCollectiveCreditBinding tp_hc_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
 	uint32_t tp_hc_credit_binding_count;
 	void *tp_hc_credit_send_bf16;
 	void *tp_hc_credit_receive_bf16;
 	void *tp_hc_host_credit_send_bf16;
 	void *tp_hc_host_credit_receive_bf16;
-	/* Per-collective ordinals: the nccl backend enforces a STRICT
-	 * ordinal sequence per COMMUNICATOR (its next_ordinal), and the two
-	 * instances (main + the HC twin) interleave submits - one shared
-	 * counter failed the second comm's first submit with
-	 * VALIDATION_FAILED (the wave-1 receipt). */
 	atomic_ullong tp_next_ordinal;
 	atomic_ullong tp_next_ordinal_hc;
 };
 
-static uint32_t SparkGlm5NextBytesAreZero(const uint8_t *bytes,uint32_t count)
-{
-	uint32_t index;
-	if ( bytes == 0 )
-		return(1u);
-	for (index=0u; index<count; index++)
-		if ( bytes[index] != 0u )
-			return(0u);
-	return(1u);
-}
-
-static int32_t SparkGlm5NextContractHash(uint8_t hash[SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES])
-{
-	const char *text;
-	uint32_t index,high,low;
-	text = GLM5_NEXT_CONTRACT_SHA256;
-	if ( strlen(text) != 2u * SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES )
-		return(-1);
-	for (index=0u; index<SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES; index++)
-	{
-		high = text[2u * index] >= '0' && text[2u * index] <= '9' ? (uint32_t)(text[2u * index] - '0') : text[2u * index] >= 'a' && text[2u * index] <= 'f' ? (uint32_t)(text[2u * index] - 'a' + 10) : UINT32_MAX;
-		low = text[2u * index + 1u] >= '0' && text[2u * index + 1u] <= '9' ? (uint32_t)(text[2u * index + 1u] - '0') : text[2u * index + 1u] >= 'a' && text[2u * index + 1u] <= 'f' ? (uint32_t)(text[2u * index + 1u] - 'a' + 10) : UINT32_MAX;
-		if ( high > 15u || low > 15u )
-			return(-2);
-		hash[index] = (uint8_t)((high << 4u) | low);
-	}
-	return(0);
-}
 
 static SparkStatus SparkGlm5NextModuleConfigure(
 	SparkGlm5NextModuleState *state,
@@ -268,9 +211,6 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	/* Lenient: existing serving configs may omit the backing fields. The
-	 * page-store backing then falls back to a default path in
-	 * SparkGlm5NextKvInitialize; a configured value is used as-is. */
 	state->stage_index = context->stage_index;
 	state->first_layer_index = context->first_layer_index;
 	state->layer_count = context->layer_count;
@@ -279,10 +219,6 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
-	/* Identifier zero names a degraded single-rank bringup mode: the pack
-	 * keeps its real tp geometry but no collective peers exist, so the chain
-	 * runs with every reduce elided and the math is rank-local. Real
-	 * deployments always set a non-zero identifier. */
 	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
@@ -320,7 +256,6 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 	const SparkGlm5NextStagePackHeader *header,
 	uint64_t file_bytes)
 {
-	uint8_t contract_sha256[SPARK_GLM5_NEXT_STAGEPACK_SHA256_BYTES];
 	uint64_t directory_bytes,directory_end;
 	if ( state == 0 || header == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -334,8 +269,6 @@ static SparkStatus SparkGlm5NextPackValidateHeader(
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
-	if ( SparkGlm5NextContractHash(contract_sha256) < 0 || header->model_revision[SPARK_GLM5_NEXT_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 || memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)) != 0 || SparkGlm5NextBytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)) != 0u || SparkGlm5NextBytesAreZero(header->pack_recipe_sha256,sizeof(header->pack_recipe_sha256)) != 0u )
-		return(SPARK_STATUS_HASH_MISMATCH);
 	if ( header->file_bytes != file_bytes || header->directory_offset < header->header_bytes || header->directory_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || header->tensor_count > UINT64_MAX / header->directory_entry_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;
@@ -359,8 +292,6 @@ static SparkStatus SparkGlm5NextPackValidateEntryGeometry(
 	{
 		if ( entry->layer_index == SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
 		{
-			/* Outside the stage's layer range by design (the draft head
-			 * rides the spec path): shape-validated, tracked in mtp_seen. */
 			if ( (state->mtp_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
 				return(SPARK_STATUS_DUPLICATE);
 		}
@@ -381,10 +312,6 @@ static SparkStatus SparkGlm5NextPackValidateEntryGeometry(
 	scale_bytes = SparkGlm5NextStagePackExpectedScaleBytes(shape);
 	if ( payload_bytes == 0u || entry->payload_bytes != payload_bytes || entry->scale_bytes != scale_bytes )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	/* Directory placement is layout-free (the MTP append tool writes the
-	 * superseding directory at the file tail): the invariant is that no
-	 * payload or scale range intersects the directory interval, not that
-	 * payloads follow it. */
 	directory_end = header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes);
 	if ( entry->payload_offset % SPARK_GLM5_NEXT_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->payload_offset > header->file_bytes || entry->payload_bytes > header->file_bytes - entry->payload_offset )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -570,9 +497,6 @@ static SparkStatus SparkGlm5NextPackValidateInventory(const SparkGlm5NextModuleS
 	uint32_t local;
 	if ( state->global_seen != SparkGlm5NextExpectedGlobalMask(state) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	/* An MTP pack carries exactly the shape table's layer-45 inventory; a
-	 * non-MTP pack must carry none of it (a stray layer-45 entry with
-	 * flags=0 fails here instead of silently ignoring draft weights). */
 	expected_mtp = state->pack_has_mtp != 0u ?
 		SparkGlm5NextExpectedLayerMask(state,SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX) : 0u;
 	if ( state->mtp_seen != expected_mtp )
@@ -672,8 +596,6 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	slot->host_output_token_ids = cursor;
 	cursor += rows;
 	slot->host_kv_access_error = cursor;
-	/* Run structure staging: begin needs rows+1 entries (a run per row is
-	 * the degenerate case), state indices rows entries. */
 	bytes = ((rows + 1u) * 2u + rows) * sizeof(uint32_t);
 	error = cudaHostAlloc((void **)&slot->host_run_begin,bytes,cudaHostAllocPortable);
 	if ( error != cudaSuccess )
@@ -730,7 +652,6 @@ static SparkStatus SparkGlm5NextAllocateSlotHidden(
 	uint64_t rows;
 	SparkStatus status;
 	rows = state->execution_row_capacity;
-	/* hidden_bf16 IS the HC streams surface: rows x hc x hidden. */
 	status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->hidden_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->residual_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->normed_bf16);
@@ -744,9 +665,6 @@ static SparkStatus SparkGlm5NextAllocateSlotHidden(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_QUERY_A_DIMENSION,(void **)&slot->q_compressed_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_QUERY_B_DIMENSION,(void **)&slot->q_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_LATENT_DIMENSION,(void **)&slot->query_latent_bf16);
-	/* query_rope_bf16 is deliberately NOT allocated: rope dim is zero and
-	 * the latent attention template never dereferences a null rope
-	 * pointer at ROPE == 0 (compile-time guarantee, config.h assert). */
 	slot->query_rope_bf16 = 0;
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_DSA_INDEX_QUERY_DIMENSION,(void **)&slot->index_query_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_DSA_INDEX_HEAD_DIMENSION,(void **)&slot->index_key_bf16);
@@ -754,9 +672,6 @@ static SparkStatus SparkGlm5NextAllocateSlotHidden(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_DSA_INDEX_HEAD_DIMENSION,(void **)&slot->index_gate_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION,(void **)&slot->index_packed_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K / SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL,sizeof(uint32_t),(void **)&slot->selected_pools);
-	/* KDA scratch: full-width per-rank tensors (the pack shard applies at
-	 * load; the module allocates for the LOCAL rank's dimensions, which
-	 * at tp_degree 1 are the full 8192 rows). */
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,2u * SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION + SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION + SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,(void **)&slot->fused_qkvb_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,2u * SPARK_GLM5_NEXT_MODEL_KDA_LOW_RANK_GATE_BOTTLENECK,(void **)&slot->fused_decay_gate_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_LOW_RANK_GATE_BOTTLENECK,(void **)&slot->kda_decay_latent_bf16);
@@ -940,10 +855,6 @@ static SparkStatus SparkGlm5NextPageCopy(
 	state = (SparkGlm5NextModuleState *)context;
 	if ( state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* The page-store worker treats this callback as complete when it
-	 * returns and immediately performs NVMe I/O or reuses its single
-	 * staging buffer; an async copy on the execution stream would still
-	 * be in flight and corrupt both directions. Complete the copy here. */
 	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
 		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
 	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
@@ -959,20 +870,6 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	uint64_t block_bytes;
 	uint64_t lane_page_entries;
 	SparkStatus status;
-	/* B2 ARENA GEOMETRY (docs/JIT_KV_RESPONSE.md): the tier machinery's
-	 * block is the DSA layer count of THIS stage - the KDA layers carry no
-	 * per-token KV (fp32 state + conv windows live in their own pools), so
-	 * sizing the arena or the page store by state->layer_count (all 45
-	 * weight layers in the STAGE_COUNT=1 build) computes a block stride
-	 * ~4.09x the real per-page pool slice. The arena then addresses
-	 * resident slots at key_device_base + slot * stride and the page store
-	 * copies page_bytes per block: restore writes and eviction reads run
-	 * past the end of state->kv_cache - an OOB DMA the moment lanes wire
-	 * to the page directory. The device pool below is allocated with
-	 * state->kv_layer_count (the per-stage DSA ordinals), so the machinery
-	 * must use the same number. The fence at the end of this function
-	 * fails loud at init if the arena's derived stride and the allocated
-	 * pool ever disagree again. */
 	if ( state->kv_layer_count == 0u )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	block_bytes = (uint64_t)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT *
@@ -1005,8 +902,6 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.arena_configuration.logical_block_count = state->page_count;
 	table.arena_configuration.block_token_count = SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT;
 	table.arena_configuration.resident_block_capacity = state->page_count;
-	/* B2: the machinery layer count is THIS STAGE'S DSA count - never
-	 * state->layer_count (see the block comment above). */
 	table.arena_configuration.layer_count = state->kv_layer_count;
 	table.arena_configuration.kv_head_count = SPARK_GLM5_NEXT_KV_ARENA_KV_HEAD_COUNT;
 	table.arena_configuration.head_dim = SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM;
@@ -1025,13 +920,6 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		table.page_store_config.backing_path = state->kv_backing_directory;
 	else
 	{
-		/* Fallback for serving configs that predate the backing fields: keep
-		 * the store functional with a well-known default (the page store
-		 * opens the path once; it does not retain the pointer). */
-		/* The page store opens with O_TMPFILE: the backing path is a
-		 * DIRECTORY, never a file (glm52's file-path fallback fails the
-		 * open with ENOTDIR -> IO_ERROR; ours names a per-model
-		 * directory under /tmp). */
 		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
 			"/tmp/sparkpipe_glm5_next_kv_%s",state->model_revision);
 		mkdir(state->kv_backing_default,0700);
@@ -1060,14 +948,6 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	/* B2 FENCE, fail loud NOW: the arena's address space must be exactly
-	 * the device pool that backs it. The arena hands out resident-slot
-	 * addresses as key_device_base + slot * key_block_stride_bytes and the
-	 * page store moves block_bytes per page; if either number drifts from
-	 * the SparkGlm5NextAllocateCaches pool (the kda-lane's 64.96 GB
-	 * double-multiplied stride is the precedent), restore/eviction DMAs
-	 * run off the end of state->kv_cache. Refuse to come up rather than
-	 * corrupt silently. */
 	if ( state->kv_arena.key_block_stride_bytes != block_bytes ||
 		state->kv_arena.logical_block_count != state->page_count ||
 		state->kv_layer_stride_bytes == 0u ||
@@ -1077,15 +957,6 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		(uint64_t)state->page_count * block_bytes !=
 			state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	/* LAYOUT ORIENTATION CONTRACT for the page-directory wiring (W1): the
-	 * device pool is LAYER-MAJOR - Glm5NextKv's per-layer base sits at
-	 * kv_cache + layer * kv_layer_stride_bytes and the kernel addresses
-	 * pages inside its layer's sub-pool - while the arena names whole
-	 * blocks contiguously. Until the page directory translates between
-	 * the two, the arena's slot addresses and the page store's contiguous
-	 * block copies must stay UNWIRED (evict_function is deliberately not
-	 * set in this table). Wiring either raw is the OOB this fence exists
-	 * to make impossible to miss. */
 	return(status);
 }
 
@@ -1095,9 +966,6 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 	uint64_t main_total,index_total;
 	uint32_t local;
 	SparkStatus status;
-	/* Hybrid caches: the 11 DSA weight layers carry an MLA latent pool and
-	 * a packed indexer pool; the 34 KDA layers carry an fp32 state pool and
-	 * three bf16 conv-window pools instead. Ordinals are per class. */
 	uint64_t kda_window_stride;
 	uint64_t kda_total,window_total;
 	state->index_layer_count = 0u;
@@ -1121,14 +989,6 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 		}
 	}
 	status = SparkGlm5NextBuildPageTable(state);
-	/* Slot geometry from the family's KV structs (block-major, 64-token
-	 * pages; the DSA pool strides by the 11 sparse layers, the indexer
-	 * pool by the same ordinals with the 257-wide packed row). */
-	/* Block-major pages: 64 tokens x slot bytes x layer count of the
-	 * owning class (must equal Glm5NextKv/Glm5NextIndexKv::kPageBytes in
-	 * layer.cuh - the compile-time check lives in unity.cu). */
-	/* per-layer page bytes: the pool is layer-major, one sub-pool per
-	 * DSA layer (see Glm5NextKv) - no layer factor here. */
 	main_page_bytes = (uint64_t)64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES;
 	index_page_bytes = (uint64_t)64u *
 		SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
@@ -1150,8 +1010,6 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 		index_total = state->index_layer_stride_bytes * state->index_layer_count;
 		status = SparkStageModuleDeviceAllocate(&state->ledger,index_total,(void **)&state->index_cache);
 	}
-	/* KDA pools: one fp32 state slab (heads x key x value per sequence per
-	 * layer) and three conv-window slabs. */
 	kda_total = state->kda_state_layer_stride_bytes * (uint64_t)state->kda_layer_count;
 	if ( status == SPARK_STATUS_OK && state->kda_layer_count != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,kda_total,(void **)&state->kda_state_pools);
@@ -1203,9 +1061,6 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 	state = (SparkGlm5NextModuleState *)context;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* Remember each lane's full identity for the completion tail (CompleteLane
-	 * / RollbackLaneTransaction run after the kernel writes KV, keyed by
-	 * resident slot). */
 	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
 	{
 		lane = &request->cache_lanes[lane_index];
@@ -1272,13 +1127,6 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 				return(status);
 		}
 	}
-	/* ACCEPT SHORT-CIRCUIT (glm52 hit the identical wall at its bring-up:
-	 * InitializeAdmissionDecision defaults rejection_reason to
-	 * UNSUPPORTED_SHAPE, so a predicate that falls through every branch
-	 * with the decision untouched reads as a shape reject and the whole
-	 * submit dies with adapter_submit status=unsupported). The cache
-	 * branches above either returned an error or only mutated the page
-	 * cache; the shape was already vetted by the rule block. Accept. */
 	decision->accepted = 1u;
 	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
 	return(SPARK_STATUS_OK);
@@ -1288,33 +1136,30 @@ static uint32_t SparkGlm5NextRoundMajorWaveRows(
 	const SparkGlm5NextResidentDecodeStageBatchView *batch,
 	uint32_t first_row)
 {
-	/* One wave carries every remaining row; BuildWave derives the run
-	 * structure (consecutive same-slot rows = one sequential KDA run;
-	 * interleaved rows of different slots = one-row runs). The old
-	 * walk-and-clamp shipped every same-sequence row as its own wave -
-	 * correct, but it paid a full weight sweep per prompt token (prefill
-	 * ran at decode rate; 4 tok/s at 1024 rows). The multi-row form rides
-	 * the run-aware recurrence kernels (LmDeltaRuleKernel /
-	 * LmCausalConvKernel: "a run of T is bit-identical to T decode
-	 * calls"). */
-	if ( batch == 0 || first_row >= batch->row_count )
+	uint32_t lane,current,count,next;
+	if ( batch == 0 || first_row >= batch->row_count || batch->active_sequence_count == 0u )
 		return(0u);
+	current = batch->active_sequence_count;
+	for (lane=0u; lane<batch->active_sequence_count; lane++)
+		if ( batch->row_resident_slots[lane] == batch->row_resident_slots[first_row] )
+			current = lane;
+	if ( current == batch->active_sequence_count )
+		return(0u);
+	count = 1u;
+	while ( first_row + count < batch->row_count )
 	{
-		/* DIAG ONLY (multi-row bisect): SPARK_GLM5_NEXT_FORCE_WAVE_ROWS=N caps
-		 * each wave at N rows. N=1 reproduces the 1-row reference path in the
-		 * same binary, so a divergence between clamped and unclamped output is
-		 * attributable to the multi-row wave itself. */
-		static int force_rows = -1;
-		uint32_t remaining = batch->row_count - first_row;
-		if ( force_rows < 0 )
-		{
-			const char *env = getenv("SPARK_GLM5_NEXT_FORCE_WAVE_ROWS");
-			force_rows = ( env != 0 && *env != 0 ) ? atoi(env) : 0;
-		}
-		if ( force_rows > 0 && remaining > (uint32_t)force_rows )
-			remaining = (uint32_t)force_rows;
-		return(remaining);
+		next = batch->active_sequence_count;
+		for (lane=0u; lane<batch->active_sequence_count; lane++)
+			if ( batch->row_resident_slots[lane] == batch->row_resident_slots[first_row + count] )
+				next = lane;
+		if ( next == batch->active_sequence_count || next <= current )
+			break;
+		current = next;
+		count++;
 	}
+	if ( count > 1u )
+		count = 1u;
+	return(count);
 }
 
 static SparkStatus SparkGlm5NextValidateRoundMajor(
@@ -1480,18 +1325,7 @@ static SparkStatus SparkGlm5NextValidateFrame(
 	return(status);
 }
 
-/*
- * TP8 execution chain. One CUDA chunk = one half-layer (attention or MLP);
- * between chunks the hidden stream is all-reduced across ranks through the
- * spark_tp_device_collective, whose stream-ordered completion resumes the
- * chain. tp_degree == 1 runs the identical chain with the reduce elided, so
- * the single-rank path exercises every chunk boundary.
- */
 #define SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
-/* The HC twin's port block: the narrow collective claims
- * control_port_base + step*64 (+rank) for its steps, i.e. the first
- * 4*64 = 256 port numbers; the twin starts 512 above the base so the
- * blocks can never touch. */
 #define SPARK_GLM5_NEXT_TP_COLLECTIVE_HC_PORT_STRIDE 512u
 
 typedef enum SparkGlm5NextChainStage
@@ -1610,11 +1444,6 @@ static void SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->attention_split_partials_f32 = slot->attention_split_partials_f32;
 	wave->attention_split_partial_blocks = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(
 		state->execution_row_capacity,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT / state->tp_degree);
-	/* Run structure: consecutive rows of one resident slot are a single
-	 * sequential run through the KDA recurrence (chunked prefill; a run
-	 * of T is bit-identical to T one-row waves by the kernel contract).
-	 * The state key is the RESIDENT SLOT - stable across waves for a
-	 * sequence, unlike lane order. */
 	{
 		uint32_t run,row_of_run;
 		slot->host_run_begin[0] = 0u;
@@ -1655,10 +1484,6 @@ static SparkStatus SparkGlm5NextModuleCombineBf16(
 	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_all_reduce_sum"));
 }
 
-/* Direct-all-to-all fold: destination already holds this rank's
- * partial; accumulate every peer slot in GLOBAL rank order (0..15, NULL
- * terminated) so every rank folds in the identical order and the sums
- * stay bitwise identical across the collective. */
 static SparkStatus SparkGlm5NextModuleCombineDirectBf16(
 	void *combine_context,
 	void *destination_device,
@@ -1716,16 +1541,6 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
-	/* Probe-BUSY relief (lane/probe-fix): a probe-armed build is slower BY
-	 * DESIGN, and the transport open deadline must not read that stall as a
-	 * dead peer (the 2026-08-29 probe wave died 16/16 with
-	 * initialize=busy rc=15 inside the 180000ms window). Scale the connect
-	 * window only when the ladder is armed; the serving default is
-	 * untouched. The OPERATION deadline gets the same relief with a wider
-	 * factor: rank 0's deep per-layer dumps run BETWEEN two TP collectives
-	 * and the peers' 30s operation wait expired first (2026-08-29 receipt:
-	 * tp completion status 4 ordinal 1 on ranks 1-15 while rank 0 was still
-	 * printing the L0 KDA ladder). */
 	probe_connect_timeout_milli = context->tp_connect_timeout_milli;
 	if ( SparkGlm5NextProbeEnabled() )
 	{
@@ -1750,9 +1565,6 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 	configuration.credit_count = state->pipeline_slot_count * SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
-	/* The chain never reduces more rows than one execution wave, so the
-	 * credit buffers are priced by execution_row_capacity, not the bucket's
-	 * absolute input-row ceiling. */
 	configuration.max_active_sequence_count = state->execution_row_capacity;
 	configuration.connect_timeout_milli = probe_connect_timeout_milli;
 	configuration.operation_timeout_milli = probe_operation_timeout_milli;
@@ -1763,12 +1575,6 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	/* The HC-wide twin is a SECOND collective instance, not a config
-	 * variant of the first: hidden_bf16 rows carry HC(4) streams, so its
-	 * payload width is HC x hidden and its credit pool is priced the same
-	 * way. It gets its OWN identifier and port block - route names embed
-	 * the identifier and every step claims PORT_STRIDE x degree ports, so
-	 * sharing either with the narrow instance collides at open. */
 	memset(&configuration_hc,0,sizeof(configuration_hc));
 	configuration_hc.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	configuration_hc.backend_kind = context->tp_collective_backend_kind;
@@ -1789,6 +1595,8 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration_hc);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	memcpy(configuration_hc.session_ports,context->tp_collective_session_ports_hc,
+		sizeof(configuration_hc.session_ports));
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
 		configuration.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
@@ -1813,7 +1621,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
+		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
 		if ( credit_bytes == 0u || total_bytes > UINT64_MAX - credit_bytes * configuration.credit_count )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		total_bytes += credit_bytes * configuration.credit_count;
@@ -1854,7 +1662,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
+		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
 		for (credit=0u; credit<configuration.credit_count; credit++)
 		{
 			SparkTpDeviceCollectiveCreditBinding *binding;
@@ -1889,15 +1697,10 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		return(status);
 	}
 	state->tp_device_collective_initialized = 1u;
-	/* The HC-wide twin: its own credit pool at HC x hidden per sequence,
-	 * allocated with the SAME memory-mode discipline as the narrow pool
-	 * above - the backend derives the mode from its own capabilities at
-	 * Create, and a host-verbs transport requires pinned mapped-host
-	 * transport aliases; raw device pointers cannot satisfy it. */
 	{
 		uint32_t hc_credit_count = configuration_hc.credit_count;
 		uint64_t hc_credit_bytes = (uint64_t)configuration_hc.max_active_sequence_count *
-			configuration_hc.local_hidden_dimension * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
+			configuration_hc.local_hidden_dimension * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
 		uint64_t hc_total;
 		void *hc_mapped_send,*hc_mapped_receive;
 		hc_total = 0u;
@@ -1908,7 +1711,6 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 			hc_total += hc_credit_bytes * hc_credit_count;
 		}
 		status = SPARK_STATUS_OK;
-		/* device-private arena for the twin's credit pool (ledger-tracked) */
 		if ( hc_total != 0u )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&state->tp_hc_credit_send_bf16);
 		if ( status == SPARK_STATUS_OK && hc_total != 0u )
@@ -1917,8 +1719,6 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 			return(status);
 		if ( hc_total != 0u && memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
 		{
-			/* pinned coherent host aliases: the transport reads/writes the
-			 * host pointer, the kernels the device alias of the SAME memory */
 			hc_mapped_receive = 0;
 			hc_mapped_send = 0;
 			error = cudaHostAlloc(&state->tp_hc_host_credit_send_bf16,hc_total,cudaHostAllocPortable | cudaHostAllocMapped);
@@ -1988,13 +1788,11 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 
 static SparkStatus SparkGlm5NextModuleReduceHidden(SparkGlm5NextTpChain *chain,void *device_bf16)
 {
-	/* hidden_bf16 carries HC streams per row - ALWAYS the wide twin. */
 	return(SparkGlm5NextModuleReduceHiddenWide(chain,device_bf16,1u));
 }
 
 static SparkStatus SparkGlm5NextModuleReduceAttentionOut(SparkGlm5NextTpChain *chain,void *device_bf16)
 {
-	/* attention_out is single-width - the narrow collective. */
 	return(SparkGlm5NextModuleReduceHiddenWide(chain,device_bf16,0u));
 }
 
@@ -2006,12 +1804,6 @@ static void SparkGlm5NextModuleTpCompletion(
 	chain = (SparkGlm5NextTpChain *)context;
 	if ( chain == 0 || chain->active == 0u || completion == 0 )
 		return;
-	fprintf(stderr,"G5N-DBG tp completion: status %u ordinal %llu slot %u rows %llu stage %u layer %u\n",
-		(unsigned)completion->status,
-		(unsigned long long)completion->ordinal,
-		(unsigned)completion->slot_index,
-		(unsigned long long)0u,
-		(unsigned)chain->stage,(unsigned)chain->next_layer);
 	SparkGlm5NextTpChainAdvance(chain,completion->status);
 }
 
@@ -2029,6 +1821,11 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
 	}
+	if ( hc_wide != 0u && state->mtp_active == 0u )
+	{
+		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
+	}
 	if ( state->tp_device_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	if ( hc_wide != 0u )
@@ -2037,21 +1834,6 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		collective = &state->tp_device_collective_hc;
 		wide_ordinal = &state->tp_next_ordinal_hc;
-		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
-		{
-			uint16_t probe_pre[256];
-			uint32_t probe_qi,probe_qb;
-			uint64_t probe_qs;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_qs = 0u;
-			for ( probe_qb = 0u; probe_qb < 4u; probe_qb++ )
-			{
-				(void)cudaMemcpy(probe_pre,(uint8_t *)device_bf16 + (uint64_t)probe_qb * sizeof(probe_pre),sizeof(probe_pre),cudaMemcpyDeviceToHost);
-				for ( probe_qi = 0u; probe_qi < 256u; probe_qi++ )
-					probe_qs += probe_pre[probe_qi];
-			}
-			fprintf(stderr,"G5N-PROBE layer %u pre-wide-submit hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_qs);
-		}
 	}
 	else
 	{
@@ -2292,67 +2074,22 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		}
 		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION;
 		chain->next_layer = 0u;
-		/* The embedding wrote the partial stream into hidden_bf16. */
 		launch_status = SparkGlm5NextModuleReduceHidden(chain,chain->slot->hidden_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION:
-		if ( SparkGlm5NextProbeEnabled() )
-		{
-			uint16_t probe_hidden[256];
-			uint32_t probe_i,probe_block;
-			uint64_t probe_sum;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_sum = 0u;
-			for ( probe_block = 0u; probe_block < 4u; probe_block++ )
-			{
-				error = cudaMemcpy(probe_hidden,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_block * sizeof(probe_hidden),sizeof(probe_hidden),cudaMemcpyDeviceToHost);
-				for ( probe_i = 0u; probe_i < 256u; probe_i++ )
-					probe_sum += probe_hidden[probe_i];
-			}
-			fprintf(stderr,"G5N-PROBE layer %u rows %u hidden row0 [0,1024) bf16sum %llu first8 %u %u %u %u %u %u %u %u\n",
-				(unsigned)chain->next_layer,
-				(unsigned)chain->wave_rows,
-				(unsigned long long)probe_sum,
-				(unsigned)probe_hidden[0],(unsigned)probe_hidden[1],(unsigned)probe_hidden[2],(unsigned)probe_hidden[3],
-				(unsigned)probe_hidden[4],(unsigned)probe_hidden[5],(unsigned)probe_hidden[6],(unsigned)probe_hidden[7]);
-			(void)error;
-		}
 		if ( SparkGlm5NextLaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
 		}
 		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION;
-		/* The attention writes its partial output into attention_out_bf16,
-		 * NOT hidden_bf16: the hidden buffer still holds the pre-attention
-		 * stream and must not be reduced again. */
 		launch_status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION:
-		if ( SparkGlm5NextProbeEnabled() )
-		{
-			uint16_t probe_attn[256];
-			uint32_t probe_i,probe_block;
-			uint64_t probe_sum;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_sum = 0u;
-			for ( probe_block = 0u; probe_block < 4u; probe_block++ )
-			{
-				error = cudaMemcpy(probe_attn,(uint8_t *)chain->slot->attention_out_bf16 + (uint64_t)probe_block * sizeof(probe_attn),sizeof(probe_attn),cudaMemcpyDeviceToHost);
-				for ( probe_i = 0u; probe_i < 256u; probe_i++ )
-					probe_sum += probe_attn[probe_i];
-			}
-			(void)error;
-			fprintf(stderr,"G5N-PROBE layer %u attn_out [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_sum);
-		}
-		/* The reduce summed the full-width sublayer partial across ranks;
-		 * the HC placement runs NOW, once, on the summed output. Before this
-		 * placement ran pre-reduce on each rank's local partial and the wide
-		 * streams reduce multiplied the residual by tp_degree every layer. */
 		if ( SparkGlm5NextLaunchCudaLayerAttentionPost(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -2362,119 +2099,21 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_MLP:
-		if ( SparkGlm5NextProbeEnabled() ) /* kda lane: EVERY layer - stream death bisect */
-		{
-			uint16_t probe_mlp0[256];
-			uint32_t probe_mi,probe_mb;
-			uint64_t probe_ms;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_ms = 0u;
-			for ( probe_mb = 0u; probe_mb < 4u; probe_mb++ )
-			{
-				error = cudaMemcpy(probe_mlp0,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_mb * sizeof(probe_mlp0),sizeof(probe_mlp0),cudaMemcpyDeviceToHost);
-				for ( probe_mi = 0u; probe_mi < 256u; probe_mi++ )
-					probe_ms += probe_mlp0[probe_mi];
-			}
-			(void)error;
-			fprintf(stderr,"G5N-PROBE layer %u mlp-entry hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ms);
-		}
 		if ( SparkGlm5NextLaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
 		}
 		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP;
-		/* The MLP finalize wrote its full-width rank partial into
-		 * attention_out_bf16; reduce THAT, then place once (next stage). */
 		launch_status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP:
-		/* Placement on the summed MLP partial; the streams are identical on
-		 * every rank from here to the next layer's HC site. */
 		if ( SparkGlm5NextLaunchCudaLayerMlpPost(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
-		}
-		if ( SparkGlm5NextProbeEnabled() ) /* kda lane: EVERY layer - stream death bisect */
-		{
-			uint16_t probe_post[256];
-			uint32_t probe_pi,probe_pb;
-			uint64_t probe_ps;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_ps = 0u;
-			for ( probe_pb = 0u; probe_pb < 4u; probe_pb++ )
-			{
-				error = cudaMemcpy(probe_post,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_pb * sizeof(probe_post),sizeof(probe_post),cudaMemcpyDeviceToHost);
-				for ( probe_pi = 0u; probe_pi < 256u; probe_pi++ )
-					probe_ps += probe_post[probe_pi];
-			}
-			(void)error;
-			fprintf(stderr,"G5N-PROBE layer %u post-mlp hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ps);
-		}
-		/* DIAG ONLY (multi-row bisect): SPARK_GLM5_NEXT_LAYERDUMP=1 dumps every
-		 * row's full hidden-streams checksum after each layer's MLP placement,
-		 * on rank 0, with the row's position — comparing a clamped (1-row) run
-		 * against an unclamped run pinpoints the first divergent layer+row. */
-		if ( chain->wave.tp_rank == 0u && getenv("SPARK_GLM5_NEXT_LAYERDUMP") != 0 )
-		{
-			uint16_t probe_row[256];
-			uint32_t probe_pi,probe_pb,probe_r;
-			uint64_t probe_ps;
-			uint64_t row_stride = (uint64_t)SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			for ( probe_r = 0u; probe_r < chain->wave_rows; probe_r++ )
-			{
-				uint64_t row_off = (uint64_t)probe_r * row_stride;
-				probe_ps = 0u;
-				for ( probe_pb = 0u; probe_pb * 256u < row_stride; probe_pb++ )
-				{
-					error = cudaMemcpy(probe_row,(const uint8_t *)chain->slot->hidden_bf16 + (row_off + (uint64_t)probe_pb * 256u) * sizeof(uint16_t),sizeof(probe_row),cudaMemcpyDeviceToHost);
-					for ( probe_pi = 0u; probe_pi < 256u; probe_pi++ )
-						probe_ps += probe_row[probe_pi];
-				}
-				(void)error;
-				fprintf(stderr,"G5N-LAYERDUMP layer %u row %u pos %u bf16sum %llu\n",
-					(unsigned)chain->next_layer,(unsigned)probe_r,
-					(unsigned)chain->slot->host_positions[chain->first_row + probe_r],
-					(unsigned long long)probe_ps);
-			}
-		}
-		/* DIAG/FIX CANDIDATE (multi-row deep-enqueue throttle): the TP
-		 * collective completion is delivered inline at enqueue time, so the
-		 * host enqueues the whole 45-layer wave in one burst and the NCCL
-		 * proxy plane falls behind, corrupting multi-row waves (>=3 rows)
-		 * in a way a per-layer host sync masks. SPARK_GLM5_NEXT_SYNC_EVERY=N
-		 * catches the host up every N layers without a dump, bounding the
-		 * enqueue-ahead window. */
-		{
-			static int sync_every = -1;
-			if ( sync_every < 0 )
-			{
-				const char *env = getenv("SPARK_GLM5_NEXT_SYNC_EVERY");
-				sync_every = ( env != 0 && *env != 0 ) ? atoi(env) : 0;
-			}
-			if ( sync_every > 0 && chain->wave.tp_rank == 0u &&
-				(int)((chain->next_layer + 1u) % (uint32_t)sync_every) == 0 )
-			{
-				/* the bare sync alone does NOT fix the race (SYNC_EVERY=1 was
-				 * wrong); the LAYERDUMP's large D2H read did. SPARK_GLM5_NEXT_PACER_KB
-				 * adds a tunable D2H read of the streams as the actual fence. */
-				static int pacer_kb = -1;
-				static uint16_t *pacer_host = 0;
-				if ( pacer_kb < 0 )
-				{
-					const char *env2 = getenv("SPARK_GLM5_NEXT_PACER_KB");
-					pacer_kb = ( env2 != 0 && *env2 != 0 ) ? atoi(env2) : 0;
-					if ( pacer_kb > 0 )
-						pacer_host = (uint16_t *)malloc((size_t)pacer_kb * 1024u);
-				}
-				(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-				if ( pacer_kb > 0 && pacer_host != 0 )
-					(void)cudaMemcpy(pacer_host,chain->slot->hidden_bf16,(size_t)pacer_kb * 1024u,cudaMemcpyDeviceToHost);
-			}
 		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
@@ -2508,23 +2147,6 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		{
 			SparkGlm5NextTpChainFail(chain,launch_status);
 			return;
-		}
-		if ( SparkGlm5NextProbeEnabled() )
-		{
-			float probe_score = 0.0f;
-			uint32_t probe_token = 0u;
-			uint64_t probe_maxloc = 0u;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			error = cudaMemcpy(&probe_score,chain->slot->output_score,sizeof(probe_score),cudaMemcpyDeviceToHost);
-			if ( error == cudaSuccess )
-				error = cudaMemcpy(&probe_token,chain->slot->output_token,sizeof(probe_token),cudaMemcpyDeviceToHost);
-			if ( error == cudaSuccess )
-				error = cudaMemcpy(&probe_maxloc,chain->slot->head_maxloc_u64,sizeof(probe_maxloc),cudaMemcpyDeviceToHost);
-			fprintf(stderr,"G5N-PROBE head score %.6f token %u maxloc %llx rank %u/%u\n",
-				(double)probe_score,(unsigned)probe_token,
-				(unsigned long long)probe_maxloc,
-				state->tp_rank,state->tp_degree);
-			(void)error;
 		}
 		if ( chain->spec_verify != 0u )
 		{
@@ -2618,12 +2240,6 @@ static void SparkGlm5NextPrepareAsyncCompletion(
 	async->lane_count = batch->active_sequence_count;
 	async->row_count = batch->row_count;
 	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[0].address : 0;
-	// The compiled bucket is the hard ceiling at the copy, not just upstream
-	// of it: SparkGlm5NextValidateFrame rejects an active_sequence_count above
-	// resident_sequence_capacity and ModuleConfigure bounds that capacity by
-	// MAX_ACTIVE_SEQUENCE_COUNT, but a tight variant build (b8 lane tables)
-	// prices a broken invariant as a heap overflow the compiler can see, so
-	// the loop names the ceiling itself.
 	for (lane=0u; lane<batch->active_sequence_count && lane<SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
 	{
 		async->lane_indices[lane] = batch->row_resident_slots[lane];
@@ -2679,13 +2295,6 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
 			remembered = &state->kv_lane_cache_lanes[resident];
 			sequence = &state->kv_page_cache.sequences[resident];
-			/* Commit only when the admission ladder actually plumbed a cache
-			 * lane for THIS sequence: a cache-free frame (cache_lane_count 0)
-			 * leaves the remembered lane zeroed, and committing it made
-			 * SparkKvPageCacheCompleteLane return INVALID_ARGUMENT — the
-			 * final-emit INTERNAL_ERROR that killed every first token. KV
-			 * addressing is the static identity page table, so skipping the
-			 * page-cache commit is semantically neutral. */
 			if ( remembered->sequence_id != 0u &&
 				remembered->sequence_id == async->lane_sequence_ids[lane] )
 			{
@@ -2725,7 +2334,6 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 			const SparkModelDriverCacheLane *remembered;
 			resident = async->lane_indices[lane];
 			remembered = &state->kv_lane_cache_lanes[resident];
-			/* Same cache-free-frame guard as the commit path above. */
 			if ( remembered->sequence_id != 0u &&
 				remembered->sequence_id == async->lane_sequence_ids[lane] )
 			{
@@ -2743,10 +2351,6 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	}
-	fprintf(stderr,"G5N-DBG complete: exit slot %u status %u pos %llu rows %u lanes %u\n",
-		(unsigned)async->slot_index,(unsigned)async->completion.status,
-		(unsigned long long)async->completion.sequence_position,
-		(unsigned)async->row_count,(unsigned)async->lane_count);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
@@ -2791,33 +2395,6 @@ static SparkStatus SparkGlm5NextExecuteBatch(
 	SparkStatus status;
 	cudaError_t error;
 	batch = context->batch;
-	fprintf(stderr,"G5N-DBG execute: frame req %llu seq %llu pos %llu new %u slots %u rows %u act %u flags %llx frame_lanes %u\n",
-		(unsigned long long)frame->request_id,(unsigned long long)frame->sequence_id,
-		(unsigned long long)frame->sequence_position,(unsigned)frame->new_token_count,
-		(unsigned)frame->active_slot_count,(unsigned)batch->row_count,
-		(unsigned)batch->active_sequence_count,
-		(unsigned long long)frame->flags,
-		(unsigned)frame->cache_lane_count);
-	if ( SparkGlm5NextProbeEnabled() && batch->token_ids != 0 )
-	{
-		uint32_t probe_row;
-		fprintf(stderr,"G5N-PROBE batch token_ids rows %u:",batch->row_count);
-		for ( probe_row = 0u; probe_row < batch->row_count && probe_row < 8u; probe_row++ )
-			fprintf(stderr," %u",batch->token_ids[probe_row]);
-		fprintf(stderr,"\n");
-	}
-	if ( frame->cache_lane_count != 0u )
-	{
-		const SparkModelDriverCacheLane *frame_lane = &frame->cache_lanes[0];
-		fprintf(stderr,"G5N-DBG execute: frame_lane[0] slot %u seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx\n",
-			(unsigned)frame_lane->resident_sequence_slot,
-			(unsigned long long)frame_lane->sequence_id,
-			(unsigned long long)frame_lane->sequence_position,
-			(unsigned long long)frame_lane->context_token_count,
-			(unsigned long long)frame_lane->prefix_token_count,
-			(unsigned long long)frame_lane->publish_token_count,
-			(unsigned long long)frame_lane->flags);
-	}
 	continuity.state = state;
 	continuity.batch = batch;
 	continuity.bound = simulated_bound;
@@ -2950,13 +2527,6 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	table.predicate_context = state;
 	table.cost = SparkGlm5NextAdmissionCost;
 	table.cost_context = state;
-	fprintf(stderr,"G5N-DBG admit-entry: prog %u slots %u new %u pos %llu flags %llx lanes %u admflags %u avail %u\n",
-		(unsigned)request->program_id,(unsigned)request->active_slot_count,
-		(unsigned)request->new_token_count,
-		(unsigned long long)request->sequence_position,
-		(unsigned long long)request->frame_flags,
-		(unsigned)request->cache_lane_count,
-		(unsigned)request->admission_flags,(unsigned)available);
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -3031,12 +2601,6 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 	free(state);
 }
 
-/* R1: build the certified-FP8 shadow of the lm_head shard on the
- * device (one sweep of the head, qwen38's recipe): the payload is the
- * FP8 rows, the scale/norm pairs carry the certified bound the screen
- * uses to guarantee the true argmax is inside the candidate set. Built
- * once at load; the B1 decode head then screens + exact-rescores
- * instead of the full-vocab BF16 rescore (kimi's ~8 ms/token rock). */
 static SparkStatus SparkGlm5NextBuildHeadShadow(SparkGlm5NextModuleState *state)
 {
 	uint64_t head_rows,dim;

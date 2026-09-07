@@ -38,6 +38,9 @@ typedef struct SparkHiddenTransportRdmaV4Identity
     uint32_t reserved;
     uint64_t max_packet_bytes;
     uint64_t route_identifier;
+    uint64_t fixed_buffer_address;
+    uint64_t fixed_buffer_bytes;
+    uint32_t fixed_buffer_rkey;
     char transport_module_id[
         SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_MODULE_ID_BYTES];
     char route_name[SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_ROUTE_NAME_BYTES];
@@ -65,7 +68,8 @@ SparkStatus SparkHiddenTransportRdmaV4ValidatePeerIdentity(
 SparkStatus SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(
     int fd,
     uint64_t deadline_ns,
-    const SparkHiddenTransportRdmaV4Identity *local_identity);
+    const SparkHiddenTransportRdmaV4Identity *local_identity,
+    SparkHiddenTransportRdmaV4Identity *peer_identity_out);
 
 #ifdef __cplusplus
 }

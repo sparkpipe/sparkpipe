@@ -41,17 +41,10 @@ static void Expect(int32_t condition, const char *label)
     }
 }
 
-// THE FAIL-FRAME RECEIPT (BUG_LEDGER: trap-on-corruption, sparse-attn
-// bounds). Corruption lands in the per-frame error record, the kernel
-// returns a bounded result, and nothing traps. These probes run the real
-// kernel bodies on the CPU harness; the same injections under a live CUDA
-// context - where the old code emitted PTX trap and killed the whole GPU
-// context - run on spark5 as tools/hardware/spark_frame_error_probe.cu.
 int main(void)
 {
     static LmFrameError frame_error;
 
-    // -- the protocol: first reporter wins, reset clears --------------------
     LmFrameErrorReset(&frame_error);
     Expect(frame_error.error_code == LM_FRAME_ERROR_NONE,
         "a reset record reads no error");
@@ -70,7 +63,6 @@ int main(void)
     Expect(frame_error.error_code == LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE,
         "reporting into an unwired slot is a no-op, not a fault");
 
-    // -- a wild sparse position records and returns, never addresses --------
     static uint8_t pool[ProbeKv::kPageBytes];
     static uint32_t page_table[1] = {0u};
     static uint16_t latent_query[16u];
@@ -87,8 +79,6 @@ int main(void)
         "KV view with its frame error slot constructs");
     for (uint32_t index = 0u; index < 16u; ++index)
         latent_query[index] = LmFloatToBf16(0.25f);
-    // The cache slot for (sequence 0, position 0) holds the same constant,
-    // so the single-position attention output is exactly the value.
     for (uint32_t index = 0u; index < ProbeKv::kPageBytes / sizeof(uint16_t); ++index)
         ((uint16_t *)pool)[index] = LmFloatToBf16(0.25f);
     memset(latent_output, 0, sizeof(latent_output));
@@ -109,9 +99,6 @@ int main(void)
     Expect(access_error.row == 0u && access_error.page == 64u,
         "the record carries the row and the violating page for diagnosis");
 
-    // The in-range position still attended: the same kernel, a good
-    // selection, produces the single-position softmax the reference
-    // computes - the failure path did not poison the good path.
     static uint32_t good_positions[1] = {0u};
     static uint16_t attended[12u];
     LmKvAccessErrorReset(&access_error);

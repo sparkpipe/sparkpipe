@@ -1,26 +1,3 @@
-// The JIT-KV family wiring, end to end on a host (docs/JIT_KV_DESIGN.md
-// step 2, docs/JIT_KV_RESPONSE.md W1 + C2): the decode stage module's
-// KV_BLOCKS_SAVE_OUT / KV_BLOCKS_RESTORE_IN frame ops behind the pager's
-// module seam, the deployment parkability condition over the arena
-// selector's shared predicate, and the C2 dispatch gate - a parked block's
-// dispatch waits for restore completion.
-//
-// The proofs:
-//   1. the frame ops run the real park/rewind loop (TERM copies against
-//      host-mapped device planes), staging exactly the op codes and plane
-//      byte counts the design names, bit-exact through the seam;
-//   2. the device-plane backend is spark-gated: without the spark-side
-//      module receipt the copy is STAGED and refused UNSUPPORTED - loud,
-//      nothing run, staging untouched, nothing degraded; with the receipt
-//      the staged op reaches the frame-submit seam;
-//   3. parkability is ONE predicate: the deployment's active set is
-//      protected exactly as the selector protects it, admission's parkable
-//      pool is the same count, and a parked-but-still-listed-active block
-//      fails the deployment condition until its lane re-pins it;
-//   4. C2: dispatch answers READY only on a verified resident block,
-//      QUEUES (healthily, repeatedly) while the tier is saturated, and
-//      answers RECOMPUTE for a degraded block - never a wedge, never a
-//      dispatch on partial state.
 #include "spark_dsv4_jit_kv.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -134,11 +111,6 @@ static SparkStatus WireCancelRead(void *context,uint64_t ticket)
 	return(SPARK_STATUS_NOT_FOUND);
 }
 
-/* Host stand-in for the frame-context submission of the spark-gated
-   backend: the staged descriptor is recorded, and the SAME byte movement
-   runs against the host mappings, because under the stub the device plane
-   IS host memory. The real device-plane copy executes only behind the
-   module receipt on a spark; nothing here claims to be it. */
 typedef struct WireSpark
 {
 	uint64_t submissions;
@@ -223,7 +195,6 @@ static SparkStatus WireBackingWrite(
 	return(SPARK_STATUS_OK);
 }
 
-/* The budget law, asserted after every state change in every scenario. */
 static void WireCheckBudget(WireFixture *fixture,const char *where)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -351,9 +322,6 @@ static SparkStatus WireOpen(
 	return(SparkKvPagerInitialize(&fixture->pager,pager_configuration));
 }
 
-/* Admit + fill one block: commit the reservation immediately before the
-   block becomes resident, acquire, mark residency, write the planes
-   through the block view, dirty. */
 static int32_t WireFillBlock(WireFixture *fixture,uint32_t block_index)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -426,8 +394,6 @@ static int32_t WirePlanesMatchGolden(WireFixture *fixture,uint32_t block_index)
 			WIRE_VALUE_BYTES) == 0;
 }
 
-/* Same fold as the pager: digest bytes -> the tier's bucket key, so the
-   test can pin exactly the records the pager parked. */
 static uint64_t WireFoldDigest(const uint8_t *digest)
 {
 	uint64_t hash = 0u;
@@ -459,10 +425,6 @@ static int32_t WireDispatchOffer(
 	return(1);
 }
 
-/* The dispatch queue's re-offer: C2's QUEUED means "restore not complete
-   yet" (a transient tier BUSY inside the gate); the dispatcher offers the
-   work item again. Bounded, and every non-READY answer must be QUEUED -
-   never a drop, never a wedge, never a dispatch on partial state. */
 static int32_t WireDispatchUntilReady(
 	WireFixture *fixture,
 	uint32_t block_index,
@@ -534,7 +496,6 @@ int main(void)
 		expect(SparkDsv4KvFramesInitialize(&fixture.frames,&configuration) ==
 			SPARK_STATUS_INVALID_ARGUMENT,
 			"a zero key stride is refused");
-		/* the view fence: the seam validates the pager's block view */
 		memset(&view,0,sizeof(view));
 		view.abi_version = SPARK_KV_PAGER_ABI_VERSION;
 		view.descriptor_bytes = SPARK_KV_PAGER_BLOCK_VIEW_DESCRIPTOR_BYTES;

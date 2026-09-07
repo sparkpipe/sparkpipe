@@ -1,23 +1,3 @@
-/* Shared KV work-control implementation (DRY wave 1).
- *
- * The qwen38_max / qwen38_27b / qwen4_flash work-control sources were one
- * 337-line body pasted three times, differing ONLY in the family prefix.
- * This header is that body, parameterized by three family macros the
- * includer defines first (the family header keeps the typed API — that is
- * the DRY law working):
- *
- *   SPARK_WORK_CONTROL_FN(name)    exported function names
- *   SPARK_WORK_CONTROL_TYPE(name)  the four plan/lane/state struct names
- *   SPARK_WORK_CONTROL_CONST(name) the batch-state and priority constants
- *
- * Each family's src/<family>_work_control.c includes this header exactly
- * once; the functions are family-prefixed exported symbols, so there is no
- * cross-family link collision. Behavior is proven identical per family by
- * the existing unit tests (tests/test_qwen38_work_control.cpp,
- * tests/test_qwen38_27b_work_control.cpp) plus a prefix-normalized diff
- * against each replaced original (receipts in
- * docs/AGENT_LANE_BRIEFS/reports/dry-wave1-*.md).
- */
 #ifndef SPARKPIPE_SPARK_WORK_CONTROL_COMMON_H
 #define SPARKPIPE_SPARK_WORK_CONTROL_COMMON_H
 
@@ -357,4 +337,4 @@ SparkStatus SPARK_WORK_CONTROL_FN(Acknowledge)(
 	return(SPARK_STATUS_OK);
 }
 
-#endif /* SPARKPIPE_SPARK_WORK_CONTROL_COMMON_H */
+#endif

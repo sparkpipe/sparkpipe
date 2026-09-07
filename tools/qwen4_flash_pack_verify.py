@@ -50,6 +50,8 @@ from qwen4_flash_stagepack import (  # noqa: E402
 )
 from spark_pack_common import PackFailure, align_up  # noqa: E402
 
+WEIGHT_NVFP4_PACKED = 8
+
 REPLICATED_NOTE = "replicated"
 
 
@@ -71,7 +73,7 @@ def read_pack_header(pack: Path) -> dict:
     return dict(zip(names, fields))
 
 
-def expected_header_geometry(first_layer: int, layer_count: int, tensor_count: int) -> dict:
+def expected_header_geometry(first_layer: int, layer_count: int, tensor_count: int, include_mtp: bool = True) -> dict:
     return {
         "magic": MAGIC, "format_version": FORMAT_VERSION,
         "header_bytes": HEADER_BYTES, "directory_entry_bytes": ENTRY_BYTES,
@@ -88,7 +90,7 @@ def expected_header_geometry(first_layer: int, layer_count: int, tensor_count: i
         "routed_expert_count": EXPERT_COUNT, "experts_per_token": EXPERTS_PER_TOKEN,
         "expert_intermediate_dimension": EXPERT_INTERMEDIATE,
         "output_vocab_count": VOCAB, "mxfp4_group_size": MXFP4_GROUP,
-        "mtp_layer_count": MTP_LAYERS,
+        "mtp_layer_count": MTP_LAYERS if include_mtp else 0,
     }
 
 
@@ -108,12 +110,13 @@ def read_entries(pack: Path, header: dict) -> list[dict]:
 
 
 def verify_directory(header: dict, entries: list[dict], tp_degree: int, tp_rank: int,
-                     pack_bytes: int) -> list[str]:
+                     pack_bytes: int, include_mtp: bool = True) -> list[str]:
     problems: list[str] = []
     expected_refs = {("kind", r.kind, "layer", r.layer): r
                      for r in (shard_ref(ref, tp_degree, tp_rank)
                                for ref in build_inventory(header["first_layer_index"],
-                                                          header["layer_count"]))}
+                                                          header["layer_count"],
+                                                          include_mtp))}
     seen = {}
     for entry in entries:
         key = ("kind", entry["tensor_kind"], "layer", entry["layer_index"])
@@ -130,9 +133,30 @@ def verify_directory(header: dict, entries: list[dict], tp_degree: int, tp_rank:
                 f"[{entry['rows']},{entry['columns']}] != tp-planned [{ref.rows},{ref.columns}]")
         natural = kind_shape(entry["tensor_kind"])[2]
         wire_format = entry["weight_format"]
-        if natural in (WEIGHT_FP8_F32B128,) and wire_format not in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128, WEIGHT_BF16):
+        if natural in (WEIGHT_FP8_F32B128,) and wire_format not in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128, WEIGHT_BF16, WEIGHT_NVFP4_PACKED):
             problems.append(f"kind={entry['tensor_kind']} illegal expert format {wire_format}")
-        if wire_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
+        if wire_format == WEIGHT_NVFP4_PACKED:
+            # NVFP4 wire: U8-packed e2m1 payloads (2 values/byte) +
+            # per-expert segment [rows x cols/16 e4m3 plane][input_scale
+            # F32][weight_scale_2 F32]. Expert count derives from the
+            # fused geometry (gate/up columns == hidden; down columns ==
+            # intermediate) — mirror the module's ScaleBytes rule.
+            want_payload = entry["rows"] * (entry["columns"] // 2)
+            if entry["columns"] == HIDDEN:
+                rows_per_expert = EXPERT_INTERMEDIATE
+            elif entry["columns"] == EXPERT_INTERMEDIATE:
+                rows_per_expert = HIDDEN
+            else:
+                problems.append(f"kind={entry['tensor_kind']} nvfp4 columns {entry['columns']} matches neither hidden nor intermediate")
+                continue
+            if rows_per_expert == 0 or entry["rows"] % rows_per_expert != 0:
+                problems.append(f"kind={entry['tensor_kind']} nvfp4 rows {entry['rows']} not expert-tiled by {rows_per_expert}")
+                continue
+            experts = entry["rows"] // rows_per_expert
+            want_scale = entry["rows"] * (entry["columns"] // 16) + experts * 8
+            if entry["scale_group_size"] != 16:
+                problems.append(f"kind={entry['tensor_kind']} scale group {entry['scale_group_size']} != 16")
+        elif wire_format in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128):
             want_payload = entry["rows"] * entry["columns"]
             # F32B128: f32 per 128x128 tile; E8M0B128: exponent byte per
             # (row, 128-column block) - the module kernel's per-row MX plane.
@@ -193,10 +217,18 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
     import numpy as np
     problems: list[str] = []
     candidates = [entry for entry in entries
-                  if entry["weight_format"] in (WEIGHT_BF16, WEIGHT_F32, WEIGHT_I64)
+                  if entry["weight_format"] in (WEIGHT_BF16, WEIGHT_F32, WEIGHT_I64, WEIGHT_NVFP4_PACKED)
                   or entry["weight_format"] in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128)]
-    stride = max(1, len(candidates) // sample_count)
-    sampled = candidates[::stride][:sample_count]
+    # Guarantee wire-8 coverage: a uniform stride can skip the expert
+    # entries entirely, and they are exactly the samples that matter.
+    wire8 = [entry for entry in candidates if entry["weight_format"] == WEIGHT_NVFP4_PACKED]
+    others = [entry for entry in candidates if entry["weight_format"] != WEIGHT_NVFP4_PACKED]
+    general_count = max(1, sample_count - min(3, len(wire8)))
+    stride = max(1, len(others) // general_count)
+    sampled = others[::stride][:general_count]
+    if wire8:
+        wstride = max(1, len(wire8) // min(3, len(wire8)))
+        sampled += wire8[::wstride][:3]
     with pack.open("rb") as file:
         for entry in sampled:
             kind, layer = entry["tensor_kind"], entry["layer_index"]
@@ -214,6 +246,44 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
                 scales = file.read(entry["scale_bytes"])
             else:
                 scales = b""
+            if entry["weight_format"] == WEIGHT_NVFP4_PACKED:
+                # Repackage-only arm: the gate is BYTE-EXACT. Spot
+                # experts: the pack segment must equal the release's
+                # own packed weight bytes, e4m3 plane rows, and the
+                # per-expert F32 globals (input, weight_scale_2).
+                import numpy as np
+                expert_start, expert_count = getattr(ref, "expert_slice", (0, EXPERT_COUNT))
+                rows_per_expert = entry["rows"] // expert_count
+                plane_cols = entry["columns"] // 16
+                proj = {6: "gate_proj", 7: "up_proj", 8: "down_proj"}.get(kind)
+                fused = "gate_up_proj" if kind in (6, 7) else "down_proj"
+                if proj is None:
+                    problems.append(f"kind={kind} unexpected nvfp4 kind")
+                    continue
+                for probe in (0, expert_count // 2, expert_count - 1):
+                    e_abs = expert_start + probe
+                    # MoE inventory names carry no .weight suffix; the
+                    # split source tensors do.
+                    stem = ref.name.replace(
+                        "mlp.experts." + fused,
+                        f"mlp.experts.{e_abs}." + proj)
+                    want_payload_rows = source_bytes(source, stem + ".weight")
+                    row_bytes = rows_per_expert * (entry["columns"] // 2)
+                    seg_row_base = probe * row_bytes
+                    if payload[seg_row_base:seg_row_base + row_bytes] != want_payload_rows:
+                        problems.append(f"kind={kind} layer={layer} expert {e_abs} packed payload mismatch")
+                        continue
+                    want_plane_rows = source_bytes(source, stem + ".weight_scale")
+                    plane_row_bytes = rows_per_expert * plane_cols
+                    seg_base = probe * (plane_row_bytes + 8)
+                    if scales[seg_base:seg_base + plane_row_bytes] != want_plane_rows:
+                        problems.append(f"kind={kind} layer={layer} expert {e_abs} e4m3 plane mismatch")
+                    want_input = source_bytes(source, stem + ".input_scale")
+                    want_weight = source_bytes(source, stem + ".weight_scale_2")
+                    if scales[seg_base + plane_row_bytes:seg_base + plane_row_bytes + 4] != want_input or \
+                            scales[seg_base + plane_row_bytes + 4:seg_base + plane_row_bytes + 8] != want_weight:
+                        problems.append(f"kind={kind} layer={layer} expert {e_abs} global scales mismatch")
+                continue
             if entry["weight_format"] in (WEIGHT_BF16, WEIGHT_F32):
                 # Expected bytes from the checkpoint, honoring slices.
                 row_slice = getattr(ref, "row_slice", None)
@@ -373,6 +443,26 @@ def source_vector(source: SafetensorsSource, name: str):
     return source_matrix(source, name).reshape(-1)
 
 
+def source_bytes(source: SafetensorsSource, name: str) -> bytes:
+    """The tensor's raw bytes, sized from its own safetensors header."""
+    shard, meta, offset = source.resolve(name)
+    elements = 1
+    for extent in meta["shape"]:
+        elements *= extent
+    dtype_bytes = {"U8": 1, "F8_E4M3": 1, "BF16": 2, "F32": 4}.get(meta["dtype"])
+    if dtype_bytes is None:
+        raise PackFailure(f"{name}: unsupported byte-trace dtype {meta['dtype']}")
+    want = elements * dtype_bytes
+    if meta["shape"] in ([], [1]):
+        want = dtype_bytes
+    with (source.root / shard).open("rb") as file:
+        file.seek(offset)
+        raw = file.read(want)
+    if len(raw) != want:
+        raise ValueError(f"short read on {name}: {len(raw)} of {want} bytes")
+    return raw
+
+
 def expert_source_matrix(source: SafetensorsSource, ref, kind: int, layer: int):
     """The rank's expert slab as f32, widened from bf16 bits (u16 views must
     be widened, never .astype'd - that would reinterpret the bits as ints)."""
@@ -397,6 +487,8 @@ def main() -> int:
     parser.add_argument("--tp-rank", type=int, default=0)
     parser.add_argument("--sample", type=int, default=8)
     parser.add_argument("--fp8-relative-l2", type=float, default=0.2)
+    parser.add_argument("--no-mtp", action="store_true",
+                        help="the pack was built --no-mtp (MTP tail absent)")
     args = parser.parse_args()
 
     header = read_pack_header(args.pack)
@@ -405,7 +497,7 @@ def main() -> int:
         print(f"FAIL file_bytes header={header['file_bytes']} actual={pack_bytes}", file=sys.stderr)
         return 1
     geometry = expected_header_geometry(header["first_layer_index"], header["layer_count"],
-                                        header["tensor_count"])
+                                        header["tensor_count"], include_mtp=not args.no_mtp)
     problems = [f"header {key}={header[key]} expected {expected}"
                 for key, expected in geometry.items() if header[key] != expected]
     if problems:
@@ -413,7 +505,7 @@ def main() -> int:
             print(f"FAIL {problem}", file=sys.stderr)
         return 1
     entries = read_entries(args.pack, header)
-    problems = verify_directory(header, entries, args.tp_degree, args.tp_rank, pack_bytes)
+    problems = verify_directory(header, entries, args.tp_degree, args.tp_rank, pack_bytes, include_mtp=not args.no_mtp)
     if problems:
         for problem in problems:
             print(f"FAIL {problem}", file=sys.stderr)

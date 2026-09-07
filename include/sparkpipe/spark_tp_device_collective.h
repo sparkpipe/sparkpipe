@@ -11,14 +11,10 @@ extern "C" {
 
 #define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 13u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
-/* Step rows double as direct-all-to-all peer routes: tp_degree-1 peers
- * need tp_degree-1 rows (recursive doubling needs log2(tp_degree)). */
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
-#define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 6u
+#define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 30u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_INDEX 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT 3u
-/* Capacity bound; the runtime peer count is tp_degree-1 (see
- * binding_route_count), set at collective creation. */
 #define SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_MAX_PEERS \
     (SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE - 1u)
 #define SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT \
@@ -30,6 +26,7 @@ extern "C" {
      SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT)
 #define SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES 96u
 #define SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES 64u
+#define SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES 8u
 #define SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST 1u
@@ -41,10 +38,12 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL 0x00000004u
+#define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE 0x00000008u
 #define SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS \
     (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING | \
      SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING | \
-     SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL)
+     SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL | \
+     SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE)
 #define SPARK_TP_DEVICE_COLLECTIVE_BINDING_SEND_MAPPED_ALIAS 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_BINDING_RECEIVE_MAPPED_ALIAS 0x00000002u
 #define SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS \
@@ -70,8 +69,6 @@ typedef struct SparkTpDeviceCollectiveCreditBinding
 {
     uint32_t step_index;
     uint32_t credit_index;
-    /* Kernels use device buffers; transports may use distinct host
-     * mirrors. */
     void *send_device;
     void *receive_device;
     void *send_transport;
@@ -101,16 +98,7 @@ typedef struct SparkTpDeviceCollectiveSubmission
     uint32_t descriptor_bytes;
     uint32_t slot_index;
     uint32_t active_sequence_count;
-    /* A stream-ordered callback may enqueue dependent work on cuda_stream.
-     * It must not read full_device from the host before synchronizing. */
     uint32_t flags;
-    /* The per-submission element count. Zero keeps the collective's fixed
-     * frame (active_sequence_count x local_hidden_dimension); a non-zero
-     * value narrows THIS submission to that many BF16 elements - the routed-MoE
-     * phase-0 hook all-reduces one 7168-element segment while the frame
-     * holds three, and shipping the full frame tripled its bytes. Only the
-     * NCCL backend honours the override (its per-call count is free); the
-     * hidden-transport tier keeps the pre-registered frame. */
     uint32_t reserved0;
     uint64_t ordinal;
     const void *local_device;
@@ -138,6 +126,28 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineBf16Function)(
     uint32_t hidden_dimension,
     void *cuda_stream);
 
+typedef SparkStatus (*SparkTpDeviceCollectiveCombineF32SeedFunction)(
+    void *combine_context,
+    void *destination_f32_device,
+    const void *source_a_bf16_device,
+    const void *source_b_bf16_device,
+    uint32_t element_count,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkTpDeviceCollectiveCombineF32AddFunction)(
+    void *combine_context,
+    void *destination_f32_device,
+    const void *source_bf16_device,
+    uint32_t element_count,
+    void *cuda_stream);
+
+typedef SparkStatus (*SparkTpDeviceCollectiveRoundF32Function)(
+    void *combine_context,
+    void *destination_bf16_device,
+    const void *source_f32_device,
+    uint32_t element_count,
+    void *cuda_stream);
+
 typedef SparkStatus (*SparkTpDeviceCollectiveCombineRelayBf16Function)(
     void *combine_context,
     void *destination_device,
@@ -147,8 +157,6 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineRelayBf16Function)(
     uint32_t hidden_dimension,
     void *cuda_stream);
 
-/* rank_devices is ordered by TP rank. The callback must reproduce the
- * recursive TP4 BF16 tree: round(0+1), round(2+3), then round(local+remote). */
 typedef SparkStatus (*SparkTpDeviceCollectiveCombineTp4Bf16Function)(
     void *combine_context,
     void *destination_device,
@@ -185,6 +193,8 @@ typedef struct SparkTpDeviceCollectiveTopology
     uint32_t split_ring_min_payload_bytes;
     uint32_t step_rail_indices[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
     uint32_t reserved0;
+    uint16_t session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
+        [SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
     char rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
         [SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
     char rail_rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT]
@@ -213,6 +223,8 @@ typedef struct SparkTpDeviceCollectiveConfig
     uint32_t direct_all_to_all_max_payload_bytes;
     uint32_t split_ring_min_payload_bytes;
     uint32_t step_rail_indices[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint16_t session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
+        [SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
     uint64_t collective_identifier;
 	const char *backend_module_path;
     const char *local_host;
@@ -228,6 +240,9 @@ typedef struct SparkTpDeviceCollectiveConfig
     SparkTpDeviceCollectiveCombineTp4Bf16Function
         combine_tp4_bf16_function;
     SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max_function;
+    SparkTpDeviceCollectiveCombineF32SeedFunction combine_f32_seed_function;
+    SparkTpDeviceCollectiveCombineF32AddFunction combine_f32_add_function;
+    SparkTpDeviceCollectiveRoundF32Function round_f32_function;
     void *combine_context;
     const SparkTpDeviceCollectiveDebugHooks *debug_hooks;
 } SparkTpDeviceCollectiveConfig;
@@ -258,9 +273,12 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     SparkTpDeviceCollective *collective_out);
 
 SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
-	uint32_t backend_kind,
-	const char *backend_module_path,
-	uint32_t *memory_mode_out);
+    uint32_t backend_kind,
+    const char *backend_module_path,
+    uint32_t *memory_mode_out);
+
+void SparkTpDeviceCollectiveDumpOperations(
+    const SparkTpDeviceCollective *collective);
 
 SparkStatus SparkTpDeviceCollectiveCreditStepCount(
 	uint32_t backend_kind,

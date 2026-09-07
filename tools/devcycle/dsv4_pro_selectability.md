@@ -13,9 +13,10 @@ from it in spark_dsv4_serving_adapter.c:
 | Topology flag | Adapter id (pro) | Geometry | Status |
 | --- | --- | --- | --- |
 | 404 | spark.dsv4.pro.serving-adapter.tp4-pp4.v1 | TP4 x PP4, 16 ranks, 16/15/15/15 layers | DEPLOYED (current) |
-| 16 | spark.dsv4.pro.serving-adapter.tp16.v1 | TP16, 16 ranks, full model per rank | id added, untested |
-| 4 | spark.dsv4.pro.serving-adapter.tp4.v1 | TP4, 4 ranks, full model per rank | id added, untested |
 | 404 (B1) | tp4-pp4 id | bucket-1 variant | builds exist |
+
+Topologies 16 and 4 are flash-only; a pro build with either flag is a
+compile-time #error in spark_dsv4_serving_adapter.c.
 
 The root Makefile builds the pro adapter targets per topology
 (DSV4_PRO_TP4_PP4_SERVING_TOPOLOGY_FLAGS etc.). The pack side is already

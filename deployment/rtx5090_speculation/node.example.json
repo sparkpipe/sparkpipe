@@ -1,0 +1,65 @@
+{
+  "format": "ds4-auxiliary-node-v1",
+  "node_id": "spec0",
+  "hostname": "rtx5090",
+  "role": "speculation",
+  "spark_rank": null,
+  "operator": {
+    "user": "gpu-user",
+    "management_host": "192.0.2.4",
+    "tailscale_host": "gpu-node.example.invalid"
+  },
+  "management": {
+    "wired": {
+      "interface": "wired0",
+      "address_mode": "dhcp",
+      "route_metric": 100
+    },
+    "wifi": {
+      "interface": "wifi0",
+      "ssid": "REPLACE_WITH_SITE_SSID",
+      "address_mode": "dhcp",
+      "route_metric": 300
+    }
+  },
+  "recovery_ssh": {
+    "user": "recovery",
+    "port": 22022
+  },
+  "gpu": {
+    "model": "NVIDIA GeForce RTX 5090",
+    "driver_flavor": "open",
+    "compute_capability": "12.0"
+  },
+  "storage": {
+    "drafters_path": "/srv/drafters",
+    "filesystem": "ext4",
+    "minimum_available_gib": 600
+  },
+  "hostname_aliases": {
+    "lan_address": "192.0.2.4",
+    "sparkf_address": "198.51.100.2",
+    "spark_nodes": [
+      "spark0", "spark1", "spark2", "spark3", "spark4", "spark5",
+      "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb",
+      "sparkc", "sparkd", "sparke", "sparkf"
+    ]
+  },
+  "private_link": {
+    "mtu": 9000,
+    "rtx5090": {
+      "interface": "direct0",
+      "address": "198.51.100.2/30"
+    },
+    "sparkf": {
+      "interface": "direct1",
+      "address": "198.51.100.1/30",
+      "ssh_target": "fleet-user@203.0.113.25",
+      "ssh_bastion": "fleet-bastion"
+    }
+  },
+  "runtime": {
+    "state": "infrastructure_only",
+    "transport": "not_implemented"
+  }
+}

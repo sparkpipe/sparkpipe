@@ -257,9 +257,6 @@ static uint32_t SparkPrefixCacheEntryIndex(
 }
 
 
-/* SHA-256 over a block's token IDs — the identity check the chain
- * hashes cannot provide (they are lookup keys, not collision-proof
- * content binds). */
 static void SparkPrefixCacheDigestBlock(
     const uint32_t *token_ids,
     uint32_t token_count,
@@ -1444,10 +1441,6 @@ typedef struct SparkPrefixCacheWalk
     uint32_t matched_block_count;
 } SparkPrefixCacheWalk;
 
-// Step the cached prefix chain one block at a time, returning the matched entry
-// or null at the end of the chain, and touching recency as it goes. The three
-// probes below differ only in what they do per block, so the chain hashing and
-// lookup live here once rather than in each of them.
 static SparkPrefixCacheEntry *SparkPrefixCacheWalkNext(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
@@ -2630,11 +2623,6 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
             }
             if (binding->token_count < required_block_token_count)
             {
-                /*
-                 * Only the final, private, live-only prompt block may grow in
-                 * place.  Growing a shared partial block would corrupt a fork
-                 * and requires an explicit KV copy-on-write backend.
-                 */
                 if ((entry->flags &
                         SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) == 0u ||
                     entry->reference_count != 1u || short_binding != 0)
@@ -2668,10 +2656,6 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
             block_hash,
             operation_epoch);
         { uint8_t live_digest[SPARK_SHA256_DIGEST_BYTES];
-        /* LIVE_ONLY placeholders are created before their tokens exist
-         * and are reachable via their SEQUENCE BINDING, not cross-
-         * sequence hash reuse — the collision class this digest guards
-         * cannot reach them. Zeroed; the compare skips LIVE_ONLY. */
         memset(live_digest, 0, sizeof(live_digest));
         status = SparkPrefixCacheInstallEntry(
             cache,

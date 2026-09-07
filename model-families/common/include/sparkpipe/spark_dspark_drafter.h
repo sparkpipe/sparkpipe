@@ -1,22 +1,5 @@
 #pragma once
 
-/* Neutral DSpark drafter constants.
- *
- * One draft backend, many drafter shapes. The target is selected at package
- * compile time with exactly one of SPARK_DSPARK_TARGET_GLM52 /
- * SPARK_DSPARK_TARGET_K3 / SPARK_DSPARK_TARGET_DSV4_PRO_0813; every
- * shape-dependent value resolves through this header. The GLM52 table aliases
- * the measured model constants, so the existing GLM52 path is byte-identical;
- * tests/test_dspark_drafter_pin.c pins that case against the measured
- * literals. K3's table comes from inference/llms/kimi_k3/dspark.h (the
- * drafter config read from the released DSparkDraftModel checkpoint);
- * DSV4 Pro 0813's table comes from the GA contract (3 packed draft layers,
- * markov 512, noise token 128799) - fields its drafter does not declare yet
- * are zero with a comment.
- *
- * The dispatch-policy structs and the shape-independent policy constants are
- * neutral (spark_speculation_policy.h); the SPARK_DSPARK_* names below alias
- * them so the adopting models compile unchanged. */
 #include <stdint.h>
 
 #include "sparkpipe/spark_speculation_policy.h"
@@ -42,10 +25,6 @@
 #define SPARK_DSPARK_MAX_ANCHORS SPARK_GLM52_MODEL_DSPARK_MAX_ANCHORS
 #elif defined(SPARK_DSPARK_TARGET_K3)
 #include "sparkpipe/spark_k3_model.h"
-/* Kimi K3 drafter, read from the released DSparkDraftModel config.json
- * (inference/llms/kimi_k3/dspark.h): block 7, 8 verify positions, aux
- * {7,23,51,67,83}, 5 draft layers, 64 query heads over 16 KV heads, head
- * dim 64, intermediate 14336, markov 256, mask token 163824, rope 10000. */
 #define SPARK_DSPARK_HIDDEN_DIMENSION SPARK_K3_MODEL_HIDDEN_DIMENSION
 #define SPARK_DSPARK_MAXIMUM_CONTEXT_TOKENS SPARK_K3_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_DSPARK_FULL_VOCAB_SIZE SPARK_K3_MODEL_OUTPUT_VOCAB_COUNT
@@ -65,12 +44,6 @@
 #define SPARK_DSPARK_MAX_ANCHORS 1024u
 #elif defined(SPARK_DSPARK_TARGET_DSV4_PRO_0813)
 #include "sparkpipe/spark_dsv4_pro_model.h"
-/* DSV4 Pro GA 0813 drafter (model_contracts/dsv4_pro_authoritative.json
- * dspark block): 3 draft layers at taps {58,59,60}, block 5, markov 512,
- * noise token 128799. Draft shapes pinned from the GA 0813 rank pack
- * (spark0 dsv4_pro_tp4_pp4_stage.spstage): the mtp.0/1/2 draft layers are
- * full-width mHC blocks - 128 attn heads x 512 head-dim, 1 KV head (MLA),
- * 3072 expert intermediate, 384 experts (identical to the main layer). */
 #define SPARK_DSPARK_HIDDEN_DIMENSION SPARK_DSV4_PRO_HIDDEN_DIMENSION
 #define SPARK_DSPARK_MAXIMUM_CONTEXT_TOKENS SPARK_DSV4_PRO_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_DSPARK_FULL_VOCAB_SIZE SPARK_DSV4_PRO_VOCAB_COUNT
@@ -92,11 +65,7 @@
 #error "select a DSpark drafter target: define SPARK_DSPARK_TARGET_GLM52, SPARK_DSPARK_TARGET_K3, or SPARK_DSPARK_TARGET_DSV4_PRO_0813"
 #endif
 
-/* Shape-independent constants (one drafter ABI), aliased to the neutral
- * dispatch-policy core; only DEFAULT_MAX_VERIFY_TOKENS stays target-shaped. */
 #define SPARK_DSPARK_ABI_VERSION SPARK_SPECULATION_ABI_VERSION
-/* Request priority at or above this value selects the realtime confidence
- * floor. */
 #define SPARK_DSPARK_POLICY_REALTIME_PRIORITY_THRESHOLD \
     SPARK_SPECULATION_POLICY_REALTIME_PRIORITY_THRESHOLD
 #define SPARK_DSPARK_CONFIDENCE_MILLI_ONE SPARK_SPECULATION_CONFIDENCE_MILLI_ONE

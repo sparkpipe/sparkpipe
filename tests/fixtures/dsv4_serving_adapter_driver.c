@@ -41,7 +41,6 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
 #endif
 
-/* Prepared-cache state is intentionally owned by the driver fixture. */
 #define TEST_DSV4_SERVING_CACHE_ADMISSION_FREE 0u
 #define TEST_DSV4_SERVING_CACHE_ADMISSION_PREPARED 1u
 #define TEST_DSV4_SERVING_CACHE_ADMISSION_COMMITTED 2u
@@ -496,8 +495,6 @@ static SparkStatus TestDsv4ServingDriverSnapshot(
 	snapshot->available_dispatch_slot_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
 	snapshot->submitted_count = driver->submitted_count;
 	snapshot->completed_count = driver->completed_count;
-	/* Observation channel for the adapter test's graph opt-in assertions:
-	 * kv_token_capacity is otherwise unused by this fixture. */
 	snapshot->kv_token_capacity = driver->cuda_graph_count;
 	return(SPARK_STATUS_OK);
 }

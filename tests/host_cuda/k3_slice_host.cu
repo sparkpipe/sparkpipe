@@ -1,21 +1,3 @@
-// Run the real K3 slice loop on a CPU: fourteen layers, two rows, the AttnRes
-// stream carried between them by the code that ships.
-//
-// The per-layer harness proved every kernel and one whole layer; the wiring
-// audit then found five defects in the LOOP - retrieval joined to a residual,
-// a dead MLP-side retrieval, a partial that missed the attention output, a
-// partial that never reset, a missing output retrieval - and one more in the
-// state binding, where every KDA layer shared one slot and every MLA layer one
-// cache. All of them live between layers, which is exactly the span no other
-// harness executes.
-//
-// Layers 0..13 cover both block boundaries (0 and 12), three MLA layers
-// (3, 7, 11), the dense layer 0 and the MoE everywhere else. The GEMM is the
-// recorder - output 0.125 * call index, constant across rows - so the whole
-// partial/bank trajectory is closed-form arithmetic the checker recomputes.
-// Everything else is the shipping kernel. The slice is called one layer at a
-// time so the stream can be observed between layers; the loop-carried state
-// lives in the buffers and pools, so the sequencing is identical to one call.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -39,8 +21,6 @@ float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 #include "runtime/gemm.cuh"
 std::vector<LmRecordedGemm> lm_recorded_gemms;
 
-// kv.cuh guards its store kernel on __CUDACC__; scope the macro to that one
-// include exactly as k3_layer_host.cu does, so dtype.cuh never sees it.
 #define __CUDACC__ 1
 #include "inference/kernels/kv.cuh"
 #undef __CUDACC__
@@ -73,10 +53,6 @@ static uint16_t query[ROWS * K3_MLA_Q_DIM], key[ROWS * K3_KDA_QK_DIM];
 static uint16_t value[ROWS * K3_KDA_V_DIM], gate[ROWS * K3_KDA_V_DIM];
 static uint16_t decay_logit[ROWS * K3_KDA_QK_DIM];
 static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
-// The pack-V2 wide scratches the two fused GEMMs land in, plus the gate
-// bottleneck's hold across the delta rule. The recorder never reads weight
-// CONTENT - pointer identity is what proves the bind propagated the fused
-// tensors - so the two weight stand-ins are one row each.
 static uint16_t fused_qkvb[ROWS * K3_KDA_QKVB_FUSED_ROWS];
 static uint16_t fused_decay_gate[ROWS * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS];
 static uint16_t gate_latent[ROWS * K3_KDA_KEY_DIM];
@@ -148,9 +124,6 @@ static const char *GemmName(const void *output)
 		: "other";
 }
 
-// The weight a recorded GEMM consumed, named the same way. The two fused KDA
-// tensors are the pack-V2 bind contract; a KDA layer recording any other
-// weight against normed_bf16 is the six-launch block come back.
 static const char *WeightName(const void *weight)
 {
 	return weight == (const void *)qkvb_weight ? "qkvb"
@@ -208,10 +181,6 @@ int main(void)
 		w->mla_q_norm_weight = ones_weight; w->mla_kv_a_norm_weight = ones_weight;
 		w->kda_out_norm_weight = ones_f32;
 		w->kda_qkv_beta_weight = qkvb_weight;
-		/* PACK V2 gate reconciliation (commit 55cd2f9): the fused
-		 * decay|gate_down tensor became the standalone 128-wide
-		 * kda_decay_down_weight plus the checkpoint's full-rank
-		 * kda_gate_weight (docs/K3_GATE_RECONCILIATION.md). */
 		w->kda_decay_down_weight = decay_gate_weight;
 		w->kda_gate_weight = decay_gate_weight;
 		w->kda_q_conv_weight = conv_weight; w->kda_k_conv_weight = conv_weight;
@@ -251,12 +220,6 @@ int main(void)
 	Emit("embedding", hidden, ROWS * K3_HIDDEN);
 	Emit("attnw", attn_query_weight, K3_HIDDEN);
 	Emit("mlpw", mlp_query_weight, K3_HIDDEN);
-	// VERIFY THEN FOLD MUST LAND WHERE COMMIT WOULD HAVE. Layer 0 is KDA: run
-	// its two rows as one COMMITTED run of one row (the truth), then from zero
-	// state run both rows with commit off - slabs filling, state untouched -
-	// and fold accepted = 1. The folded state, and all three conv windows,
-	// must equal the truth byte for byte; the kda gate already proved the
-	// kernels equivalent, so any difference here is the plumbing lying.
 	{
 		static uint16_t rq[2u * K3_KDA_QK_DIM], rk[2u * K3_KDA_QK_DIM];
 		static uint16_t rv[2u * K3_KDA_V_DIM];
@@ -268,11 +231,6 @@ int main(void)
 		static uint32_t vbegin[2] = { 0u, 0u }, vcount[1] = { 1u };
 		static uint16_t hidden_saved[2u * K3_HIDDEN];
 		uint32_t mismatch = 0u; uint64_t byte;
-		// The recorder derives every GEMM's output from the global call index,
-		// so the truth run and the verify run must count from the same zero or
-		// they are different models by construction. And the slice advances the
-		// stream through hidden, which the main loop below treats as the
-		// embedding - saved here, restored on the way out.
 		memcpy(hidden_saved, hidden, sizeof(hidden_saved));
 		lm_recorded_gemms.clear();
 		state.verify_rows = 2u;

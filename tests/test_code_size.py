@@ -1437,7 +1437,26 @@ CEILING = 234369
 # fold/conv-recommit driver, the policy-core resolve wiring, and the
 # adapter's burst emission. +686 measured on this lane.
 CEILING = 238773
-
+# kimi-k3 prefill run port (+73 tracked): the K3 serving adapter derives the
+# KDA run prefix (consecutive same-slot rows = one sequential recurrence run;
+# a multi-row prefill span stops being T independent 1-row hits on one state
+# slot) + per-run state slots; the runner dispatch gains sequence_row_begin
+# (the step-input contract the kernels already implement) and honors
+# active_sequence_count. Decode with distinct-slot rows is runs-of-one -
+# bit-identical by the kernels' run-of-one contract, now EXECUTED on the
+# host (build/test_k3_run_equivalence, tests/-excluded harness): S1 a
+# multi-row run == sequential calls, S2 an explicit runs-of-one prefix ==
+# the NULL-prefix decode reading, S3 a mixed 3-run wave == sequential,
+# S4 the conv window carry. +11 tracked: the Makefile rule + GNU-C++
+# probe. Measured exact: 237507 on main 201ff6c + this stack.
+CEILING = 237507
+# glm5next-spec merge onto main 2ab9ec6 (lane/glm5next-spec landing): the
+# MTP chain speculation path (draft/verify/accept/fold, wave commit flag,
+# layer-45 weight load, controllability) re-applied onto the multi-row
+# module lineage; diag knobs (FORCE_WAVE_ROWS, LAYERDUMP, SYNC_EVERY,
+# PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
+# Re-pinned from measured reality per the ratchet rule.
+CEILING = 233150
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

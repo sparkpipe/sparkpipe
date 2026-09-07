@@ -235,7 +235,8 @@ SparkStatus SparkHiddenTransportRdmaV4ValidatePeerIdentity(
 SparkStatus SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(
     int fd,
     uint64_t deadline_ns,
-    const SparkHiddenTransportRdmaV4Identity *local_identity)
+    const SparkHiddenTransportRdmaV4Identity *local_identity,
+    SparkHiddenTransportRdmaV4Identity *peer_identity_out)
 {
     SparkHiddenTransportRdmaV4Identity peer_identity;
     SparkStatus status;
@@ -252,5 +253,7 @@ SparkStatus SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(
     if (status == SPARK_STATUS_OK)
         status = SparkHiddenTransportRdmaV4ValidatePeerIdentity(
             local_identity,&peer_identity);
+    if (status == SPARK_STATUS_OK && peer_identity_out != 0)
+        *peer_identity_out = peer_identity;
     return status;
 }

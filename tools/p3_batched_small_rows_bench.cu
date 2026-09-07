@@ -1,54 +1,3 @@
-/* P3 BATCHED SMALL-ROWS BENCH (2026-08-28) - PERF_PROGRAM item 3.
- * The knee-sweep's small-B "r-law" is a dispatch issue: the shared gate
- * routed every row_count < 16 to the scalar GEMV whose grid streams the
- * weight set once PER ROW, so B2/B4 aggregate stayed in the B1 rate class
- * (the measured 27B FP8 B1==B2==8.31 flat spot). SparkLmBatchedLinearKernel
- * streams the weights ONCE for the row group.
- *
- * This bench times the SHIPPED kernels (not variants) on the 27B decode
- * weight class - K=5120 -> N=17408, the 89 MB FP8 E8M0B128 verify shape -
- * carved into an arena sized like the 29.9 GB family pack, so one "step"
- * streams the working set once and aggregate tok/s = B / step_time maps
- * directly onto decode throughput.
- *
- *   scalar route  : SparkLmLinearKernel, grid.x = rows (the OLD B2..B15
- *                   behavior; identical to the production B1 route at B=1)
- *   batched route : SparkLmBatchedLinearKernel, one weight stream
- *
- * Win condition: batched aggregate B2/B1 > 1.5x (a per-row route cannot
- * exceed 1.0x by construction: B rows cost B streams).
- *
- * MEASURED LEDGER (2026-08-29, spark5, GB10, CUDA 13.0, GPU idle,
- * fleet_status: spark5 free):
- *   route           B  ms/step   GB/s   agg tok/s  vs B1
- *   scalar-per-row  1   130.7   228.4      7.65    1.00x
- *   scalar-per-row  2   128.6   232.1     15.55    2.03x
- *   scalar-per-row  4   155.6   191.8     25.70    3.36x
- *   scalar-per-row  8   271.0   110.2     29.52    3.86x
- *   batched-once    1   130.3   229.2      7.68    1.00x
- *   batched-once    2   169.8   175.8     11.78    1.53x
- *   batched-once    4   202.3   147.6     19.77    2.58x
- *   batched-once    8   271.5   110.0     29.47    3.84x
- *   exactness: batched == per-row scalar, B=4, 69632 neurons bit-exact.
- * CONCLUSION (negative as a route change): the per-row scalar route's
- * concurrent row streams OVERLAP in GB10's memory system (B2 costs ~0ms
- * over B1), so the one-pass batched kernel - paying the shared-staging
- * round trip, the same scalar-beats-tile gap the tile path measured at
- * M=9 - is BEHIND through B4 and equal at B8. The knee-sweep premise
- * "B1==B2==8.31" was a misread of its CSV (8.31 is the B1 row; B2 measured
- * 16.63 = 2.00x, matching the scalar 2.03x here). Verdict: keep the
- * scalar route for rows < 16; SparkLmBatchedLinearKernel stays compiled,
- * oracle-proven, and available for a bandwidth profile where per-row
- * overlap does not absorb the rows.
- *
- * Also spot-checks exactness on the first matrix: batched vs per-row scalar
- * (bit-compare), because the host oracle proves it and this confirms the
- * device build agrees.
- *
- * Build: nvcc -O3 -arch=sm_121a -I<repo> -I<repo>/include \
- *        -I<repo>/model-families/common/include \
- *        -o /tmp/p3bench tools/p3_batched_small_rows_bench.cu
- */
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,7 +13,6 @@ static double now_s(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &
 #define MAX_ROWS 8u
 #define WARMUP_STEPS 1u
 #define TIMED_STEPS 3u
-/* ~29.9 GB family working set carved into 89 MB matrices. */
 #define ARENA_BYTES_TARGET 29900000000ull
 
 static uint32_t bench_seed = 0x1234567u;
@@ -93,8 +41,6 @@ int main(void)
 	CHECK(cudaMalloc((void **)&output_scalar,(uint64_t)MAX_ROWS * N_DIM * sizeof(uint16_t)));
 	CHECK(cudaMalloc((void **)&output_batched,(uint64_t)MAX_ROWS * N_DIM * sizeof(uint16_t)));
 
-	/* Host-fill the first matrix + input with a pattern, then let the GPU
-	 * replicate the first matrix across the arena (one-time cost, untimed). */
 	{
 		uint8_t *host_matrix = (uint8_t *)malloc(matrix_bytes);
 		uint16_t *host_input = (uint16_t *)malloc((uint64_t)MAX_ROWS * K_DIM * sizeof(uint16_t));
@@ -118,9 +64,6 @@ int main(void)
 		CHECK(cudaMemcpy(arena,host_matrix,matrix_bytes,cudaMemcpyHostToDevice));
 		CHECK(cudaMemcpy(input,host_input,(uint64_t)MAX_ROWS * K_DIM * sizeof(uint16_t),cudaMemcpyHostToDevice));
 		CHECK(cudaMemcpy(scales,host_scales,scale_bytes,cudaMemcpyHostToDevice));
-		/* Replicate matrix 0 across the arena (the kernels only stream the
-		 * bytes; every matrix holding the same pattern is fine and the
-		 * copy is one-time, untimed). */
 		for (index = matrix_bytes; index < arena_bytes; index += matrix_bytes)
 			CHECK(cudaMemcpy((uint8_t *)arena + index,arena,matrix_bytes,cudaMemcpyDeviceToDevice));
 		free(host_matrix);
@@ -180,7 +123,6 @@ int main(void)
 		}
 	}
 
-	/* Exactness spot check on matrix 0: per-row scalar vs batched at B=4. */
 	{
 		const void *weights = arena;
 		uint32_t row;

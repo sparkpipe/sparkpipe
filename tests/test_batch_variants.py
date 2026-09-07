@@ -24,6 +24,7 @@ What fails here:
     by compiling and running a host probe per bucket, no CUDA involved
 """
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -392,11 +393,16 @@ def check_selection_contract():
     # the mxfp4 spelling, the one the mxfp4 model description publishes.
     codec_flag = '-DGLM52_EXPERT_CODEC_NAME="mxfp4"'
     with tempfile.TemporaryDirectory() as scratch:
+        def _scratch(name):
+            base = os.path.realpath(scratch)
+            path = os.path.realpath(os.path.join(scratch, name))
+            if not (path == base or path.startswith(base + os.sep)):
+                raise ValueError(f"path escapes scratch dir: {name}")
+            return path
         for bucket in BUCKETS:
-            source_path = os.path.join(scratch, f"probe_b{bucket}.c")
-            binary_path = os.path.join(scratch, f"probe_b{bucket}")
-            with open(source_path, "w") as handle:
-                handle.write(probe_source(bucket))
+            source_path = _scratch(f"probe_b{bucket}.c")
+            binary_path = _scratch(f"probe_b{bucket}")
+            pathlib.Path(source_path).write_text(probe_source(bucket))
             compile_command = [
                 compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
                 f"-DSPARK_BATCH_BUCKET={bucket}u", codec_flag,
@@ -416,13 +422,12 @@ def check_selection_contract():
 
         # DSV4 has no implicit bucket.  Its root and module Makefiles name
         # B1024 explicitly, while every generated variant supplies its rung.
-        default_source = os.path.join(scratch, "probe_default.c")
-        with open(default_source, "w") as handle:
-            handle.write(
-                '#include "sparkpipe/spark_dsv4_model.h"\n'
-                '#include "sparkpipe/spark_dsv4_batch_tuning.h"\n'
-                'int main(void) { return(0); }\n'
-            )
+        default_source = _scratch("probe_default.c")
+        pathlib.Path(default_source).write_text(
+            '#include "sparkpipe/spark_dsv4_model.h"\n'
+            '#include "sparkpipe/spark_dsv4_batch_tuning.h"\n'
+            'int main(void) { return(0); }\n'
+        )
         built = subprocess.run(
             [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", codec_flag,
              *include_flags, default_source, "-o", os.devnull],
@@ -433,9 +438,8 @@ def check_selection_contract():
 
         # A bucket outside the set must not compile at all: the variant list
         # is closed, so a typo'd bucket is a build error, not a silent tune.
-        rogue_source = os.path.join(scratch, "probe_rogue.c")
-        with open(rogue_source, "w") as handle:
-            handle.write(probe_source(8))
+        rogue_source = _scratch("probe_rogue.c")
+        pathlib.Path(rogue_source).write_text(probe_source(8))
         built = subprocess.run(
             [compiler, "-std=c11", f"-DSPARK_BATCH_BUCKET=3u", codec_flag,
              *include_flags, rogue_source, "-o", os.devnull],

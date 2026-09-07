@@ -1,23 +1,3 @@
-/* W2 weightd lane (docs/WEIGHTD_DESIGN.md W2a) host tests — cuda-stub only,
- * no GPU, no reservations. Proves the skeleton's binding contracts:
- *
- * 1. IDENTITY SHARING: two attaches of one identity from two serving
- *    connections land on ONE arena (refcount 2, arena_count 1, warm
- *    attach reports loaded_from_pack=0), a connection that dies without
- *    detaching drops its refcount (consumer-death path), and a reclaimed
- *    identity re-attaches by loading again.
- * 2. NO-2x UPDATE LAW: with a ceiling that cannot hold two live arenas,
- *    an attach that would need the second copy fails closed with
- *    CAPACITY_EXCEEDED and allocates nothing while the old arena serves;
- *    the stop-attach-start sequence (detach to cold, attach new — the
- *    daemon reclaims the cold arena to make room) completes with the
- *    resident peak never exceeding ONE arena.
- * 3. FAIL-CLOSED: wrong digest, wrong size claim, missing pack, wire
- *    garbage, attach-before-hello, and a dead daemon all refuse without
- *    handing out a handle.
- * 4. TERM PATH: the real daemon binary exits 0 on SIGTERM (never SIGKILL),
- *    unlinks its socket, prints the stopped line, and a client left
- *    holding the connection fails closed afterwards. */
 
 #include <assert.h>
 #include <poll.h>
@@ -38,7 +18,7 @@
 #include "sparkpipe/spark_weightd.h"
 
 #define SPARK_TEST_ARENA_BYTES (1024ull * 1024ull)
-#define SPARK_TEST_CEILING_BYTES (1536ull * 1024ull) /* 1.5 arenas: two live never fit */
+#define SPARK_TEST_CEILING_BYTES (1536ull * 1024ull)
 #define SPARK_TEST_TIMEOUT_NS 10000000000ull
 #define SPARK_TEST_NO_SUCH_GENERATION UINT64_C(0xDEADBEEF0000)
 
@@ -79,14 +59,12 @@ static void SparkTestStartServer(SparkTestServerThread *thread_context,
 static void SparkTestStopServer(SparkTestServerThread *thread_context,
     pthread_t thread_handle)
 {
-    /* atomic store: the server loop loads the flag atomically (the same
-     * flag contract the daemon's signal handler uses) */
     __atomic_store_n(&thread_context->stop, 1, __ATOMIC_SEQ_CST);
     assert(pthread_join(thread_handle, 0) == 0);
     assert(thread_context->run_status == SPARK_STATUS_OK);
     SparkWeightdServerDestroy(thread_context->server);
     thread_context->server = 0;
-    assert(spark_stub_cuda_outstanding_allocs() == 0u); /* nothing leaked */
+    assert(spark_stub_cuda_outstanding_allocs() == 0u);
 }
 
 static uint32_t SparkTestNextRandom(uint32_t *state)
@@ -103,9 +81,6 @@ static void SparkTestCopyBounded(char *destination, size_t capacity,
     memcpy(destination, source, length + 1u);
 }
 
-/* Deterministic pack: LCG(seed) payload — content-addressed by
- * construction, the digest comes from the W1 lane's (8x, FEAT_SHA2)
- * SparkSha256File. */
 static void SparkTestWritePack(const char *path, uint32_t seed,
     uint64_t bytes, char hex[SPARK_SHA256_HEX_BYTES])
 {
@@ -190,7 +165,6 @@ static void SparkTestAttach(SparkWeightdClient *client,
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
 }
 
-/* ------------------------------ 1. identity ------------------------------ */
 
 static void SparkTestIdentityCanonicalization(void)
 {
@@ -204,9 +178,6 @@ static void SparkTestIdentityCanonicalization(void)
         4096ull, digest);
     SparkTestMakeIdentity(&left, "model", "rev1", 4u, 0xAull, digest, 4096ull);
     SparkTestMakeIdentity(&right, "model", "rev1", 4u, 0xAull, digest, 4096ull);
-    /* dirty padding and dirty reserved fields must collapse onto the
-     * canonical form: content-addressing cannot depend on the sender's
-     * zero hygiene */
     for (index = 10u; index < SPARK_WEIGHTD_ID_BYTES; index++)
     {
         right.model[index] = (char)(0x80u + index);
@@ -217,7 +188,6 @@ static void SparkTestIdentityCanonicalization(void)
     assert(SparkWeightdIdentityEqual(&left, &right));
     assert(memcmp(&left, &right, sizeof(left)) == 0);
 
-    /* a different topology or revision is a different identity, full stop */
     SparkTestMakeIdentity(&broken, "model", "rev1", 16u, 0xAull, digest,
         4096ull);
     assert(!SparkWeightdIdentityEqual(&left, &broken));
@@ -225,7 +195,6 @@ static void SparkTestIdentityCanonicalization(void)
         4096ull);
     assert(!SparkWeightdIdentityEqual(&left, &broken));
 
-    /* fail-closed identities (built by hand: the helper asserts validity) */
     SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
     broken.abi_version = 0u;
     assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -233,16 +202,15 @@ static void SparkTestIdentityCanonicalization(void)
     broken.arena_bytes = 0ull;
     assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_INVALID_ARGUMENT);
     SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
-    broken.pack_sha256[10] = 'g'; /* not hex */
+    broken.pack_sha256[10] = 'g';
     assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_INVALID_ARGUMENT);
     SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
-    memset(broken.model, 'x', SPARK_WEIGHTD_ID_BYTES); /* unterminated */
+    memset(broken.model, 'x', SPARK_WEIGHTD_ID_BYTES);
     assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_INVALID_ARGUMENT);
     (void)remove("/tmp/spark_weightd_test_canon.bin");
     printf("identity canonicalization green\n");
 }
 
-/* ------------------------------ 2. sharing + death ------------------------------ */
 
 static void SparkTestSharedRefcountAndConsumerDeath(void)
 {
@@ -269,7 +237,6 @@ static void SparkTestSharedRefcountAndConsumerDeath(void)
     SparkTestStartServer(&thread_context, &thread_handle, socket_path,
         SPARK_TEST_CEILING_BYTES);
 
-    /* first serving process: cold load */
     SparkTestConnect(&client_a, socket_path, SPARK_TEST_CEILING_BYTES);
     SparkTestAttach(client_a, &request, &result);
     assert(result.status == SPARK_STATUS_OK);
@@ -281,25 +248,20 @@ static void SparkTestSharedRefcountAndConsumerDeath(void)
     generation = result.arena_generation;
     handle = result.device_handle;
 
-    /* second serving process, SAME identity: the point of the daemon */
     SparkTestConnect(&client_b, socket_path, 0ull);
     SparkTestAttach(client_b, &request, &result);
     assert(result.status == SPARK_STATUS_OK);
-    assert(result.loaded_from_pack == 0u); /* warm: no reload */
-    assert(result.refcount == 2u);         /* two holders, ... */
-    assert(result.arena_count == 1u);      /* ... ONE arena */
+    assert(result.loaded_from_pack == 0u);
+    assert(result.refcount == 2u);
+    assert(result.arena_count == 1u);
     assert(result.resident_bytes == SPARK_TEST_ARENA_BYTES);
     assert(result.arena_generation == generation);
     assert(result.device_handle == handle);
 
-    /* a second claim on one connection is a protocol error, refused
-     * without touching the shared refcount */
     SparkTestAttach(client_b, &request, &result);
     assert(result.status == SPARK_STATUS_DUPLICATE);
     assert(result.arena_count == 1u);
 
-    /* consumer death WITHOUT detach: the refcount drops when the server
-     * discovers the dead socket */
     SparkWeightdClientClose(client_b);
     client_b = 0;
     for (;;)
@@ -309,9 +271,8 @@ static void SparkTestSharedRefcountAndConsumerDeath(void)
         SparkTestAttach(client_c, &request, &result);
         if (result.status == SPARK_STATUS_OK && result.refcount == 2u)
         {
-            break; /* A + C on the ONE arena: the death was reaped */
+            break;
         }
-        /* B's death not reaped yet: back out and retry */
         assert(result.status == SPARK_STATUS_OK);
         assert(result.refcount == 3u);
         assert(SparkWeightdClientDetach(client_c, result.arena_generation,
@@ -321,16 +282,14 @@ static void SparkTestSharedRefcountAndConsumerDeath(void)
         client_c = 0;
         assert(nanosleep(&pause, 0) == 0);
     }
-    assert(result.loaded_from_pack == 0u); /* still warm: no reload */
+    assert(result.loaded_from_pack == 0u);
     assert(result.arena_count == 1u);
     assert(result.arena_generation == generation);
 
-    /* detach of a generation this connection never held: refused */
     assert(SparkWeightdClientDetach(client_a, SPARK_TEST_NO_SUCH_GENERATION,
         &detach, SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(detach.status == SPARK_STATUS_NOT_FOUND);
 
-    /* explicit detach: refcounts walk down, the arena stays resident cold */
     assert(SparkWeightdClientDetach(client_a, generation, &detach,
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(detach.status == SPARK_STATUS_OK);
@@ -339,9 +298,8 @@ static void SparkTestSharedRefcountAndConsumerDeath(void)
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(detach.status == SPARK_STATUS_OK);
     assert(detach.refcount == 0u);
-    assert(detach.arena_count == 1u); /* cold but resident (warm-redeploy win) */
+    assert(detach.arena_count == 1u);
 
-    /* explicit reclaim drops the cold arena */
     {
         SparkWeightdReclaimResult reclaim;
         memset(&reclaim, 0, sizeof(reclaim));
@@ -361,7 +319,6 @@ static void SparkTestSharedRefcountAndConsumerDeath(void)
     printf("identity sharing + consumer-death refcount green\n");
 }
 
-/* ------------------------------ 3. NO-2x law ------------------------------ */
 
 static void SparkTestStopAttachStartNeverHoldsTwoArenas(void)
 {
@@ -393,9 +350,6 @@ static void SparkTestStopAttachStartNeverHoldsTwoArenas(void)
     SparkTestMakeRequest(&request_a, &identity_a, pack_a);
     SparkTestMakeRequest(&request_b, &identity_b, pack_b);
 
-    /* the ceiling cannot hold both arenas live: exactly the operator's
-     * NO-2x budget, in miniature and enforced by the same code path as the
-     * 110 GiB device law */
     SparkTestStartServer(&thread_context, &thread_handle, socket_path,
         SPARK_TEST_CEILING_BYTES);
     SparkTestConnect(&serving, socket_path, 0ull);
@@ -404,25 +358,18 @@ static void SparkTestStopAttachStartNeverHoldsTwoArenas(void)
     assert(result.loaded_from_pack == 1u);
     generation_a = result.arena_generation;
 
-    /* THE LAW: attach the new identity while the old still serves ->
-     * fail closed, nothing allocated, the old arena untouched */
     SparkTestConnect(&updater, socket_path, 0ull);
     SparkTestAttach(updater, &request_b, &result);
     assert(result.status == SPARK_STATUS_CAPACITY_EXCEEDED);
     assert(result.arena_count == 1u);
     assert(result.resident_bytes == SPARK_TEST_ARENA_BYTES);
 
-    /* the refused attempt left the serving process intact: a second
-     * connection gets the WARM attach (the same-connection re-attach is a
-     * DUPLICATE by protocol — one map per process) */
     SparkTestAttach(updater, &request_a, &result);
     assert(result.status == SPARK_STATUS_OK);
     assert(result.loaded_from_pack == 0u);
     assert(result.refcount == 2u);
     assert(result.arena_generation == generation_a);
 
-    /* STOP: the holders detach; the arena goes cold, stays resident
-     * (this is what makes code redeploys sub-second) */
     assert(SparkWeightdClientDetach(serving, generation_a, &detach,
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(detach.status == SPARK_STATUS_OK);
@@ -433,32 +380,25 @@ static void SparkTestStopAttachStartNeverHoldsTwoArenas(void)
     assert(detach.refcount == 0u);
     assert(detach.arena_count == 1u);
 
-    /* START: attach the new identity — the daemon reclaims the COLD old
-     * arena to make room and loads the new one. Peak residency across the
-     * whole update: exactly one arena. */
     SparkTestAttach(updater, &request_b, &result);
     assert(result.status == SPARK_STATUS_OK);
     assert(result.loaded_from_pack == 1u);
     assert(result.refcount == 1u);
-    assert(result.arena_count == 1u); /* the old arena is GONE ... */
-    assert(result.resident_bytes == SPARK_TEST_ARENA_BYTES); /* ... peak 1x */
+    assert(result.arena_count == 1u);
+    assert(result.resident_bytes == SPARK_TEST_ARENA_BYTES);
     assert(result.arena_generation != generation_a);
 
-    /* the serving process adopts the new identity warm — the redeploy path */
     SparkTestAttach(serving, &request_b, &result);
     assert(result.status == SPARK_STATUS_OK);
     assert(result.loaded_from_pack == 0u);
     assert(result.refcount == 2u);
 
-    /* and now the boot is on the other foot: the OLD identity cannot come
-     * back while the NEW one serves (same law, other direction) */
     SparkTestConnect(&probe, socket_path, 0ull);
     SparkTestAttach(probe, &request_a, &result);
     assert(result.status == SPARK_STATUS_CAPACITY_EXCEEDED);
     assert(result.arena_count == 1u);
     assert(result.resident_bytes == SPARK_TEST_ARENA_BYTES);
 
-    /* the refused old attach did not disturb the serving new arena */
     SparkTestAttach(probe, &request_b, &result);
     assert(result.status == SPARK_STATUS_OK);
     assert(result.loaded_from_pack == 0u);
@@ -474,7 +414,6 @@ static void SparkTestStopAttachStartNeverHoldsTwoArenas(void)
     printf("stop-attach-start update holds ONE arena peak green\n");
 }
 
-/* ------------------------------ 4. fail-closed ------------------------------ */
 
 static void SparkTestExpectConnectionClosed(const char *socket_path,
     const void *frame,
@@ -498,7 +437,7 @@ static void SparkTestExpectConnectionClosed(const char *socket_path,
     poll_fd.events = POLLIN;
     poll_fd.revents = 0;
     assert(poll(&poll_fd, 1u, 5000) > 0);
-    assert(read(fd, buffer, sizeof(buffer)) == 0); /* clean EOF, no answer */
+    assert(read(fd, buffer, sizeof(buffer)) == 0);
     (void)close(fd);
 }
 
@@ -523,12 +462,10 @@ static void SparkTestFailClosedPaths(void)
         0x77ull, digest, 65536ull);
     SparkTestMakeRequest(&request, &identity, pack_path);
 
-    /* wrong content claimed: the digest gate is the marketplace */
     SparkTestMakeIdentity(&wrong_digest, "weightd-test", "closed-rev", 4u,
         0x77ull,
         "0000000000000000000000000000000000000000000000000000000000000000",
         65536ull);
-    /* wrong size claimed: geometry lies are refused before any allocation */
     SparkTestMakeIdentity(&wrong_size, "weightd-test", "closed-rev", 4u,
         0x77ull, digest, 65537ull);
 
@@ -544,7 +481,6 @@ static void SparkTestFailClosedPaths(void)
     assert(detach.status == SPARK_STATUS_OK);
     assert(detach.refcount == 0u);
     {
-        /* drop the cold arena so the failure probes below start empty */
         SparkWeightdReclaimResult reclaim;
         memset(&reclaim, 0, sizeof(reclaim));
         assert(SparkWeightdClientReclaim(client, &reclaim,
@@ -553,15 +489,13 @@ static void SparkTestFailClosedPaths(void)
         assert(reclaim.arena_count == 0u);
     }
 
-    /* digest mismatch: fail closed, nothing resident */
     {
         SparkWeightdAttachRequest bad_request;
         SparkTestMakeRequest(&bad_request, &wrong_digest, pack_path);
         SparkTestAttach(client, &bad_request, &result);
         assert(result.status == SPARK_STATUS_HASH_MISMATCH);
-        assert(result.arena_count == 0u); /* nothing was allocated */
+        assert(result.arena_count == 0u);
     }
-    /* size mismatch */
     {
         SparkWeightdAttachRequest bad_request;
         SparkTestMakeRequest(&bad_request, &wrong_size, pack_path);
@@ -569,7 +503,6 @@ static void SparkTestFailClosedPaths(void)
         assert(result.status == SPARK_STATUS_INVALID_ARGUMENT);
         assert(result.arena_count == 0u);
     }
-    /* missing pack */
     {
         SparkWeightdAttachRequest missing_request;
         SparkTestMakeRequest(&missing_request, &identity,
@@ -578,7 +511,6 @@ static void SparkTestFailClosedPaths(void)
         assert(result.status == SPARK_STATUS_IO_ERROR);
         assert(result.arena_count == 0u);
     }
-    /* malformed identity (unterminated model string): refused client-side */
     {
         SparkWeightdAttachRequest bad_request;
         SparkTestMakeRequest(&bad_request, &identity, pack_path);
@@ -589,13 +521,11 @@ static void SparkTestFailClosedPaths(void)
 
     SparkWeightdClientClose(client);
 
-    /* wire garbage: the connection dies, never the server */
     {
         uint8_t junk[32];
         memset(junk, 0xEE, sizeof(junk));
         SparkTestExpectConnectionClosed(socket_path, junk, sizeof(junk));
     }
-    /* a valid frame of an unknown later kind: same fate (no HELLO yet) */
     {
         SparkWeightdIpcAttach wire;
         memset(&wire, 0, sizeof(wire));
@@ -608,16 +538,14 @@ static void SparkTestFailClosedPaths(void)
         SparkTestExpectConnectionClosed(socket_path, &wire, sizeof(wire));
     }
 
-    /* a client left holding a dead daemon fails closed on its next call */
     {
         SparkWeightdClient *doomed = 0;
         SparkTestConnect(&doomed, socket_path, 0ull);
         SparkTestStopServer(&thread_context, thread_handle);
         assert(SparkWeightdClientAttach(doomed, &request, &result,
-            2000000000ull) != SPARK_STATUS_OK); /* refused, never a handle */
+            2000000000ull) != SPARK_STATUS_OK);
         SparkWeightdClientClose(doomed);
     }
-    /* reconnecting to the now-dead daemon fails at the front door */
     {
         SparkWeightdClient *ghost = 0;
         assert(SparkWeightdClientConnect(socket_path, &ghost, 0) ==
@@ -629,7 +557,6 @@ static void SparkTestFailClosedPaths(void)
     printf("fail-closed paths green\n");
 }
 
-/* ------------------------------ 5. the daemon process ------------------------------ */
 
 static int SparkTestWaitReady(int pipe_fd, char *line, size_t line_capacity)
 {
@@ -692,8 +619,6 @@ static void SparkTestDaemonProcessTermPath(void)
     assert(daemon_pid >= 0);
     if (daemon_pid == 0)
     {
-        /* child: become the daemon (the pid the parent captured AT SPAWN
-         * is the only thing it will ever signal — the process-hygiene rule) */
         char ceiling_text[32];
         snprintf(ceiling_text, sizeof(ceiling_text), "%llu",
             (unsigned long long)(2ull * SPARK_TEST_ARENA_BYTES));
@@ -716,14 +641,12 @@ static void SparkTestDaemonProcessTermPath(void)
     assert(strstr(ready_line, "unix=") != 0);
     assert(strstr(ready_line, "ceiling=2097152") != 0);
 
-    /* a real cross-process serving attach through the real daemon */
     SparkTestConnect(&client, socket_path, 2ull * SPARK_TEST_ARENA_BYTES);
     SparkTestAttach(client, &request, &result);
     assert(result.status == SPARK_STATUS_OK);
     assert(result.loaded_from_pack == 1u);
     assert(result.refcount == 1u);
 
-    /* TERM: the only shutdown path. Exit code 0, socket unlinked. */
     assert(kill(daemon_pid, SIGTERM) == 0);
     waited_ms = 0ull;
     while (waited_ms < 10000ull)
@@ -743,13 +666,12 @@ static void SparkTestDaemonProcessTermPath(void)
         }
         waited_ms += 20ull;
     }
-    assert(daemon_exit == 0); /* TERM = clean stop, by construction */
+    assert(daemon_exit == 0);
     {
         struct stat socket_stat;
-        assert(stat(socket_path, &socket_stat) != 0); /* socket unlinked */
+        assert(stat(socket_path, &socket_stat) != 0);
     }
     {
-        /* the graceful-stop receipt is on the daemon's stderr */
         FILE *err_file = fopen(stderr_path, "r");
         char err_text[512];
         size_t err_bytes;
@@ -761,8 +683,6 @@ static void SparkTestDaemonProcessTermPath(void)
         assert(strstr(err_text, "arenas=1") != 0);
         assert(strstr(err_text, "bytes=1048576") != 0);
     }
-    /* the crash contract from the consumer side: the surviving client's
-     * next call fails closed against the REAL dead daemon */
     assert(SparkWeightdClientAttach(client, &request, &result,
         2000000000ull) != SPARK_STATUS_OK);
     SparkWeightdClientClose(client);
@@ -774,8 +694,6 @@ static void SparkTestDaemonProcessTermPath(void)
 
 int main(void)
 {
-    /* this process is a weightd CLIENT in several tests: writes into a
-     * dead daemon's socket must surface as EPIPE statuses, not SIGPIPE */
     (void)signal(SIGPIPE, SIG_IGN);
     SparkTestIdentityCanonicalization();
     SparkTestSharedRefcountAndConsumerDeath();

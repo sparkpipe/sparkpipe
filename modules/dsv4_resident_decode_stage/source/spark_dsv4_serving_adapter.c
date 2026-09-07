@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
+#include "sparkpipe/spark_speculation_seam.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 
 #if SPARK_DSV4_SERVING_TOPOLOGY == 404
@@ -42,10 +43,6 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
-/* Stage-major (pp_stage * TP degree + tp_rank): each pipeline stage's four
- * TP replicas carry the same layer count and the per-stage counts sum to
- * the model's layer count. Pro is 61 = 16+15+15+15; Flash-0731 is
- * 43 = 11+11+11+10. */
 #ifdef SPARK_DSV4_PRO_BUILD
 #define SPARK_DSV4_SERVING_STAGE_LAYERS \
 	{16u,16u,16u,16u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u,15u}
@@ -56,12 +53,10 @@
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 4u
 #elif SPARK_DSV4_SERVING_TOPOLOGY == 16
 #if defined(SPARK_DSV4_PRO_BUILD)
-#define SPARK_DSV4_SERVING_ADAPTER_ID \
-	"spark.dsv4.pro.serving-adapter.tp16.v1"
-#else
+#error "SPARK_DSV4_SERVING_TOPOLOGY 16 is flash-only; pro ships 404"
+#endif
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp16.v1"
-#endif
 #define SPARK_DSV4_SERVING_STAGE_COUNT 16u
 #define SPARK_DSV4_SERVING_TP_DEGREE 16u
 #define SPARK_DSV4_SERVING_PP_STAGE_COUNT 1u
@@ -89,12 +84,10 @@
 #define SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX 16u
 #elif SPARK_DSV4_SERVING_TOPOLOGY == 4
 #if defined(SPARK_DSV4_PRO_BUILD)
-#define SPARK_DSV4_SERVING_ADAPTER_ID \
-	"spark.dsv4.pro.serving-adapter.tp4.v1"
-#else
+#error "SPARK_DSV4_SERVING_TOPOLOGY 4 is flash-only; pro ships 404"
+#endif
 #define SPARK_DSV4_SERVING_ADAPTER_ID \
 	"spark.dsv4.flash-0731.serving-adapter.tp4.v1"
-#endif
 #define SPARK_DSV4_SERVING_STAGE_COUNT 4u
 #define SPARK_DSV4_SERVING_TP_DEGREE 4u
 #define SPARK_DSV4_SERVING_PP_STAGE_COUNT 1u
@@ -192,8 +185,29 @@
 	 SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * \
 	 SPARK_DSV4_SERVING_CHAIN_DEPTH : \
 	 SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT)
+#define SPARK_DSV4_SERVING_SPECULATION_AVAILABLE_SOURCES \
+	(SPARK_SPECULATION_SEAM_SOURCE_DSPARK | \
+	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM | \
+	 SPARK_SPECULATION_SEAM_SOURCE_SUFFIX | \
+	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM3)
+#define SPARK_DSV4_SERVING_SPECULATION_DRAFT_BUDGET_MS 20u
+#define SPARK_DSV4_SERVING_SPECULATION_DRAFT_MAX_DEPTH 16u
+#define SPARK_DSV4_SERVING_SPECULATION_DRAFT_MAX_NODES 64u
+#define SPARK_DSV4_SERVING_SPECULATION_CONNECT_TIMEOUT_MS 1000u
+#define SPARK_DSV4_SERVING_SPECULATION_IO_TIMEOUT_MS 30000u
+#define SPARK_DSV4_SERVING_DRAFT_BRIDGE_HOST_BYTES 256u
+#define SPARK_DSV4_SERVING_SPECULATORS_ENV "SPARK_DSV4_SPECULATORS"
+#define SPARK_DSV4_SERVING_DSPARK_ENV_LEGACY "SPARK_DSV4_DSPARK"
+#if defined(SPARK_DSV4_PRO_BUILD)
+#define SPARK_DSV4_SERVING_SEAM_TARGET_MODEL "deepseek-ai/DeepSeek-V4-Pro"
+#else
+#define SPARK_DSV4_SERVING_SEAM_TARGET_MODEL "deepseek-ai/DeepSeek-V4-Flash"
+#endif
 
-/* Optional members stay last so the exact-member check can clip them. */
+_Static_assert(sizeof(SPARK_DSV4_SERVING_SEAM_TARGET_MODEL) <=
+	SPARK_SPECULATION_SEAM_TARGET_MODEL_BYTES,
+	"dsv4 seam target model exceeds the seam target_model capacity");
+
 static const char *const SparkDsv4ServingConfigurationMembersBase[] =
 {
 	"schema_version",
@@ -221,10 +235,42 @@ static const char *const SparkDsv4ServingConfigurationMembersTp[] =
 	"tp_collective"
 };
 
+static const char *const SparkDsv4ServingConfigurationMembersBaseBridge[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"draft_bridge_host",
+	"draft_bridge_port"
+};
+
+static const char *const SparkDsv4ServingConfigurationMembersPpBridge[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"cuda_graph_count",
+	"draft_bridge_host",
+	"draft_bridge_port"
+};
+
+static const char *const SparkDsv4ServingConfigurationMembersTpBridge[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"cuda_graph_count_by_pp_stage",
+	"tp_collective",
+	"draft_bridge_host",
+	"draft_bridge_port"
+};
+
 typedef struct SparkDsv4ServingPending
 {
 	struct SparkDsv4ServingAdapterState *owner;
-	/* The shared submission view (the serving-adapter template fills it). */
 	SparkServingAdapterPendingCommon common;
 	uint32_t emit_count;
 	uint32_t cache_lane_count;
@@ -238,9 +284,7 @@ typedef struct SparkDsv4ServingPending
 
 typedef struct SparkDsv4ServingAdapterState
 {
-	/* This state's own allocation, typed (memory-M1): freed through the
-	 * handle so the space the state lives in is named, not assumed. */
-	SparkMemoryBuffer allocation; /* HOST_COHERENT, this state */
+	SparkMemoryBuffer allocation;
 	SparkLoadedModelDriver driver;
 	void *driver_instance;
 	const SparkModelDriverProgramDescriptor *program;
@@ -265,6 +309,10 @@ typedef struct SparkDsv4ServingAdapterState
 	SparkTpDeviceCollectiveTopology tp_collective_topology;
 	char tp_collective_backend_path[SPARK_INTERNAL_PATH_BYTES];
 	uint32_t tp_collective_control_port_base;
+	SparkSpeculationSeam *speculation_seam;
+	uint32_t speculation_enabled_mask;
+	uint32_t draft_bridge_port;
+	char draft_bridge_host[SPARK_DSV4_SERVING_DRAFT_BRIDGE_HOST_BYTES];
 	uint32_t quiescing;
 	SparkModelServingRuntimeLimits runtime_limits;
 	uint64_t orphan_completion_count;
@@ -328,10 +376,6 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 		SPARK_DSV4_SERVING_TP_DEGREE : 0u
 };
 
-/* The tp_collective parse is the serving-adapter template's; the family
- * policy is the rail-fabric flavor: the full known algorithm set, ordered
- * non-zero payload thresholds, peer arrays staged per pipeline stage, and
- * contiguous peer ports (the overflow-guarded base derivation). */
 static const SparkTpCollectiveConfigPolicy SparkDsv4ServingTpCollectivePolicy =
 {
 	.peer_count = SPARK_DSV4_SERVING_STAGE_COUNT,
@@ -418,9 +462,12 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	int32_t root,token;
 	const char *const *members;
 	uint32_t schema_version,member_count,has_cuda_graphs,has_tp_collective;
+	uint32_t has_draft_bridge_host,has_draft_bridge_port;
 	char *relative_stage_pack_path;
+	char *draft_bridge_host;
 	SparkStatus status;
 	relative_stage_pack_path = 0;
+	draft_bridge_host = 0;
 	SparkJsonDocumentReset(&document);
 	status = SparkJsonLoadFile(path,&document);
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
@@ -429,18 +476,29 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	has_cuda_graphs = SparkServingAdapterTemplateJsonMember(&document,root,
 		"cuda_graph_count") >= 0 ? 1u : 0u;
 	has_tp_collective = SparkServingAdapterTemplateJsonMember(&document,root,"tp_collective") >= 0 ? 1u : 0u;
+	has_draft_bridge_host = SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_host") >= 0 ? 1u : 0u;
+	has_draft_bridge_port = SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_port") >= 0 ? 1u : 0u;
+	if ( has_draft_bridge_host != has_draft_bridge_port )
+		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 	{
-		members = SparkDsv4ServingConfigurationMembersTp;
-		member_count = (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersTp) /
-			sizeof(SparkDsv4ServingConfigurationMembersTp[0]));
+		members = has_draft_bridge_host != 0u ? SparkDsv4ServingConfigurationMembersTpBridge : SparkDsv4ServingConfigurationMembersTp;
+		member_count = has_draft_bridge_host != 0u ? (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersTpBridge) / sizeof(SparkDsv4ServingConfigurationMembersTpBridge[0])) : (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersTp) / sizeof(SparkDsv4ServingConfigurationMembersTp[0]));
 		if ( has_tp_collective == 0u )
 			status = SPARK_STATUS_SCHEMA_ERROR;
 	}
 	else
 	{
-		members = has_cuda_graphs != 0u ? SparkDsv4ServingConfigurationMembersPp : SparkDsv4ServingConfigurationMembersBase;
-		member_count = has_cuda_graphs != 0u ? (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersPp) / sizeof(SparkDsv4ServingConfigurationMembersPp[0])) : (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersBase) / sizeof(SparkDsv4ServingConfigurationMembersBase[0]));
+		if ( has_draft_bridge_host != 0u )
+		{
+			members = has_cuda_graphs != 0u ? SparkDsv4ServingConfigurationMembersPpBridge : SparkDsv4ServingConfigurationMembersBaseBridge;
+			member_count = has_cuda_graphs != 0u ? (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersPpBridge) / sizeof(SparkDsv4ServingConfigurationMembersPpBridge[0])) : (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersBaseBridge) / sizeof(SparkDsv4ServingConfigurationMembersBaseBridge[0]));
+		}
+		else
+		{
+			members = has_cuda_graphs != 0u ? SparkDsv4ServingConfigurationMembersPp : SparkDsv4ServingConfigurationMembersBase;
+			member_count = has_cuda_graphs != 0u ? (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersPp) / sizeof(SparkDsv4ServingConfigurationMembersPp[0])) : (uint32_t)(sizeof(SparkDsv4ServingConfigurationMembersBase) / sizeof(SparkDsv4ServingConfigurationMembersBase[0]));
+		}
 		if ( has_tp_collective != 0u )
 			status = SPARK_STATUS_SCHEMA_ERROR;
 	}
@@ -475,10 +533,26 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK && SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u )
 		status = SparkDsv4ServingLoadTpCollective(&document,root,runtime_root,
 			state);
+	if ( status == SPARK_STATUS_OK && has_draft_bridge_host != 0u )
+	{
+		token = SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_host");
+		if ( token < 0 || !SparkJsonTokenIsType(&document,token,SPARK_JSON_TOKEN_STRING) )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkJsonCopyString(&document,token,&draft_bridge_host);
+		if ( status == SPARK_STATUS_OK && strlen(draft_bridge_host) + 1u > sizeof(state->draft_bridge_host) )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		if ( status == SPARK_STATUS_OK )
+		{
+			memcpy(state->draft_bridge_host,draft_bridge_host,strlen(draft_bridge_host) + 1u);
+			status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"draft_bridge_port",&state->draft_bridge_port);
+		}
+	}
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
+	free(draft_bridge_host);
 	return(status);
 }
 
@@ -531,9 +605,6 @@ static SparkStatus SparkDsv4ServingReservePending(
 	if ( pending_out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*pending_out = 0;
-	/* The common reservation spine is the serving-adapter template's; the
-	 * cache lanes and emit rows below are this family's frame shape, and a
-	 * failed fill leaves the slot free (the template never marks active). */
 	pending = (SparkDsv4ServingPending *)SparkServingAdapterTemplateReservePending(
 		state->pending,sizeof(*pending),
 		(uint32_t)offsetof(SparkDsv4ServingPending,common),
@@ -603,11 +674,6 @@ static void SparkDsv4ServingDriverCompletion(
 	if ( matches != 0u )
 		completion.residency = driver_completion->residency;
 	completion.accepted_token_count = driver_completion->accepted_token_count;
-	/* DSpark verify (DECODE) frames emit 1..tokens_per_sequence tokens
-	 * depending on acceptance; the module's completion carries the actual
-	 * count. PREFILL/RELEASE completions carry tokens_per_sequence == 0u by
-	 * contract and must NOT be fenced by this gate (a RELEASE would otherwise
-	 * be rejected as SCHEMA_ERROR). */
 	if ( matches != 0u &&
 		pending->common.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE &&
 		(driver_completion->tokens_per_sequence == 0u ||
@@ -670,12 +736,12 @@ static void SparkDsv4ServingDestroy(void *adapter_state)
 	}
 	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
 		state->driver.interface->destroy(state->driver_instance);
+	SparkSpeculationSeamDestroy(state->speculation_seam);
+	state->speculation_seam = 0;
 	SparkUnloadModelDriver(&state->driver);
 	SparkMemoryBufferFree(&state->allocation);
 }
 
-/* The program's runtime-limits contract, family policy on the shared spine:
- * a shared approximation would change accept/reject on real descriptors. */
 static SparkStatus SparkDsv4ServingAcceptsProgram(
 	const SparkModelDriverProgramDescriptor *program,
 	void *accept_context)
@@ -697,7 +763,7 @@ static SparkStatus SparkDsv4ServingLoadDriver(
 	request.contract.driver_model_id = SPARK_DSV4_SERVING_DRIVER_MODEL_ID;
 	request.contract.driver_model_revision = SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION;
 	request.contract.driver_stage_name = SPARK_DSV4_SERVING_DRIVER_STAGE_NAME;
-	request.contract.driver_target = 0; /* this family does not pin the target */
+	request.contract.driver_target = 0;
 	request.contract.model_description_sha256 = SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256;
 	request.node_context = &state->node_context;
 	request.completion_context = state;
@@ -786,12 +852,90 @@ static void SparkDsv4ServingInitializeState(
 	state->wake_context = configuration->wake_context;
 }
 
-/* Same contract the module's former env read implemented: exactly "1"
- * arms the path; unset or any other value leaves it off. */
-static uint32_t SparkDsv4ServingDsparkEnvEnabled(void)
+static void SparkDsv4ServingSpeculationModelContract(
+	SparkSpeculationModelContract *model_contract)
 {
-	const char *value = getenv("SPARK_DSV4_DSPARK");
-	return(value != 0 && value[0] == '1' && value[1] == '\0') ? 1u : 0u;
+	uint32_t layer;
+	memset(model_contract,0,sizeof(*model_contract));
+	model_contract->abi_version = SPARK_SPECULATION_ABI_VERSION;
+	model_contract->descriptor_bytes =
+		SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+	model_contract->verifier_hidden_dtype =
+		SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
+	model_contract->draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
+	model_contract->draft_layer_count = SPARK_DSV4_MODEL_MTP_LAYER_COUNT;
+	model_contract->block_size = SPARK_DSV4_MODEL_DSPARK_BLOCK_SIZE;
+	model_contract->hidden_dimension = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
+	model_contract->intermediate_dimension =
+		SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
+	model_contract->attention_head_count =
+		SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT;
+	model_contract->kv_head_count = SPARK_DSV4_MODEL_ATTN_KV_HEAD_COUNT;
+	model_contract->head_dimension = SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION;
+	model_contract->vocab_size = SPARK_DSV4_MODEL_VOCAB_COUNT;
+	model_contract->draft_vocab_size = SPARK_DSV4_MODEL_VOCAB_COUNT;
+	model_contract->markov_rank = SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK;
+	model_contract->maximum_speculative_token_count =
+		SPARK_DSV4_MODEL_DSPARK_SPEC_STEP;
+	model_contract->verifier_accept_k = 1u;
+	model_contract->aux_layer_count = SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT;
+	for (layer = 0u; layer < SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_COUNT; layer++)
+		model_contract->aux_layer_ids[layer] =
+			SPARK_DSV4_MODEL_DSPARK_TARGET_LAYER_FIRST + layer;
+}
+
+static SparkStatus SparkDsv4ServingInitializeSpeculation(
+	SparkDsv4ServingAdapterState *state,
+	uint32_t max_sequence_positions)
+{
+	SparkSpeculationSeamConfiguration configuration;
+	SparkStatus status;
+	if ( getenv(SPARK_DSV4_SERVING_DSPARK_ENV_LEGACY) != 0 )
+	{
+		fprintf(stderr,"dsv4_adapter %s is retired: use %s (speculation source mask) instead\n",SPARK_DSV4_SERVING_DSPARK_ENV_LEGACY,SPARK_DSV4_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
+	configuration.available_source_mask =
+		SPARK_DSV4_SERVING_SPECULATION_AVAILABLE_SOURCES;
+	if ( state->draft_bridge_host[0] == '\0' )
+		configuration.available_source_mask &=
+			~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
+	configuration.default_source_mask = configuration.available_source_mask;
+	configuration.default_speculative_token_count =
+		SPARK_DSV4_MODEL_DSPARK_SPEC_STEP;
+	configuration.lane_count = state->max_active_sequence_count;
+	configuration.max_committed_token_count = max_sequence_positions;
+	configuration.max_tap_row_count = 0u;
+	configuration.draft_time_budget_ms =
+		SPARK_DSV4_SERVING_SPECULATION_DRAFT_BUDGET_MS;
+	configuration.draft_max_depth =
+		SPARK_DSV4_SERVING_SPECULATION_DRAFT_MAX_DEPTH;
+	configuration.draft_max_node_count =
+		SPARK_DSV4_SERVING_SPECULATION_DRAFT_MAX_NODES;
+	configuration.connect_timeout_ms =
+		SPARK_DSV4_SERVING_SPECULATION_CONNECT_TIMEOUT_MS;
+	configuration.io_timeout_ms =
+		SPARK_DSV4_SERVING_SPECULATION_IO_TIMEOUT_MS;
+	configuration.control_value = getenv(SPARK_DSV4_SERVING_SPECULATORS_ENV);
+	configuration.bridge_host = state->draft_bridge_host[0] != '\0' ?
+		state->draft_bridge_host : 0;
+	configuration.bridge_port = state->draft_bridge_port;
+	memcpy(configuration.target_model,SPARK_DSV4_SERVING_SEAM_TARGET_MODEL,
+		sizeof(SPARK_DSV4_SERVING_SEAM_TARGET_MODEL));
+	SparkDsv4ServingSpeculationModelContract(&configuration.model_contract);
+	status = SparkSpeculationSeamInitialize(&configuration,
+		&state->speculation_seam);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"dsv4_adapter speculation_seam_init status=%s stage=%u\n",SparkStatusToString(status),state->stage_index);
+		return(status);
+	}
+	state->speculation_enabled_mask =
+		SparkSpeculationSeamEnabledSources(state->speculation_seam);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkDsv4ServingInitializeNodeContext(
@@ -806,13 +950,7 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 	state->node_context.flags = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TENSOR_PARALLEL : 0u;
 	if ( SPARK_DSV4_SERVING_HYBRID != 0u )
 		state->node_context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIPELINE_PARALLEL;
-	/* DSpark is deployment-opt-in: SPARK_DSV4_DSPARK=1 arms the speculative
-	 * path (draft drive, verify expansion, taps, acceptance). The adapter
-	 * translates the launch environment into the typed node-context flag —
-	 * the compute module is environment-free by architecture. Anything
-	 * else, including an unset environment, leaves the no-spec path free
-	 * of the draft machinery's host work. */
-	if ( SparkDsv4ServingDsparkEnvEnabled() != 0u )
+	if ( (state->speculation_enabled_mask & SPARK_SPECULATION_SEAM_SOURCE_DSPARK) != 0u )
 		state->node_context.flags |= SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_DSPARK;
 	state->node_context.stage_count = SPARK_DSV4_SERVING_HYBRID != 0u ? SPARK_DSV4_SERVING_PP_STAGE_COUNT : SPARK_DSV4_SERVING_STAGE_COUNT;
 	state->node_context.stage_index = SPARK_DSV4_SERVING_HYBRID != 0u ? SparkDsv4ServingPpStageIndex(state->stage_index) : state->stage_index;
@@ -883,7 +1021,6 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 			state->node_context.tp_collective_identifier ^= (uint64_t)state->node_context.pp_stage_index << 32u;
 		}
 	}
-	/* Zero keeps the eager decode path; the deployment opts into capture. */
 	state->node_context.cuda_graph_count = cuda_graph_count;
 	state->node_context.stage_pack_path = state->stage_pack_path;
 	return(SPARK_STATUS_OK);
@@ -907,17 +1044,18 @@ static SparkStatus SparkDsv4ServingInitialize(
 	status = SparkMemoryBufferAllocate(&state_buffer,
 		SPARK_MEMORY_SPACE_HOST_COHERENT,sizeof(SparkDsv4ServingAdapterState));
 	if ( status == SPARK_STATUS_OK )
-		memset(state_buffer.pointer,0,sizeof(SparkDsv4ServingAdapterState)); /* calloc semantics */
+		memset(state_buffer.pointer,0,sizeof(SparkDsv4ServingAdapterState));
 	if ( status != SPARK_STATUS_OK )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state = (SparkDsv4ServingAdapterState *)state_buffer.pointer;
 	state->allocation = state_buffer;
 	SparkDsv4ServingInitializeState(state,configuration);
 	status = SparkDsv4ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&cuda_graph_count);
-	/* The peer-port contiguity (with its overflow guard) is the template's
-	 * contiguous-peer-ports policy now, checked inside the parse. */
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions < SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO || max_sequence_positions > SPARK_DSV4_MODEL_MAX_POSITIONS) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ServingInitializeSpeculation(state,
+			max_sequence_positions);
 	if ( status == SPARK_STATUS_OK )
 	{
 		status = SparkDsv4ServingInitializeNodeContext(state,
@@ -946,7 +1084,6 @@ static SparkStatus SparkDsv4ServingValidateSubmissionBase(
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(&SparkDsv4ServingDescriptor,&state->runtime_limits,submission);
-	/* R5 hoist: the adapter validated (descriptor, limits) at configure; per-submission checks unchanged. */
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )

@@ -6,23 +6,8 @@
 #include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
 
-/*
- * Qwen 3.8 Max stage pack: a single file holding every tensor one pipeline
- * STAGE makes resident, plus the geometry the tensors were produced for.
- * The header restates the model geometry and the layer slice; every field is
- * compared against the compiled constants at load and a mismatch is a hard
- * failure with the offending field named. Same discipline as the qwen38_27b pack.
- *
- * Layout: [header][directory: tensor_count entries][payload bytes].
- * All offsets are absolute file offsets. A tensor's payload is contiguous;
- * MXFP4 tensors append their E8M0 scale plane immediately after the payload.
- *
- * Routed experts are flattened: w1/w3 are [expert_count * intermediate, H]
- * and w2 is [expert_count * H, intermediate]. The checkpoint's fused
- * gate_up_proj is split at pack time into w1 (rows 0..I) and w3 (rows I..2I).
- */
 
-#define SPARK_QWEN38_MAX_STAGEPACK_MAGIC 0x50533851u /* 'Q8SP' little endian */
+#define SPARK_QWEN38_MAX_STAGEPACK_MAGIC 0x50533851u
 #define SPARK_QWEN38_MAX_STAGEPACK_FORMAT_VERSION 1u
 #define SPARK_QWEN38_MAX_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_QWEN38_MAX_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
@@ -33,25 +18,6 @@ typedef enum SparkQwen38MaxStagePackTensorKind
 	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_EMBEDDING = 0,
 	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_FINAL_NORM = 1,
 	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_LM_HEAD = 2,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM = 3,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM = 4,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE = 5,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1 = 6,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3 = 7,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN = 8,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE = 9,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_UP = 10,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_DOWN = 11,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT = 12,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_QKV = 13,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_GATE = 14,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA = 15,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY = 16,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_OUTPUT = 17,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_CONV_WEIGHT = 18,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_A_LOG = 19,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DT_BIAS = 20,
-	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_NORM = 21,
 	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_QUERY = 22,
 	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_KEY = 23,
 	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTN_VALUE = 24,
@@ -65,10 +31,30 @@ typedef enum SparkQwen38MaxStagePackTensorKind
 	SPARK_QWEN38_MAX_STAGEPACK_TENSOR_KIND_COUNT = 32
 } SparkQwen38MaxStagePackTensorKind;
 
-#define SPARK_QWEN38_MAX_STAGEPACK_CLASS_GLOBAL 0u
-#define SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER 1u
-#define SPARK_QWEN38_MAX_STAGEPACK_CLASS_GDN_LAYER 2u
-#define SPARK_QWEN38_MAX_STAGEPACK_CLASS_ATTN_LAYER 3u
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM SPARK_STAGEPACK_TENSOR_ATTENTION_NORM
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM SPARK_STAGEPACK_TENSOR_MLP_NORM
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE SPARK_STAGEPACK_TENSOR_MOE_GATE
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1 SPARK_STAGEPACK_TENSOR_MOE_W1
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3 SPARK_STAGEPACK_TENSOR_MOE_W3
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN SPARK_STAGEPACK_TENSOR_MOE_DOWN
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_UP SPARK_STAGEPACK_TENSOR_MOE_SHARED_UP
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_DOWN SPARK_STAGEPACK_TENSOR_MOE_SHARED_DOWN
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_QKV SPARK_STAGEPACK_TENSOR_GDN_QKV
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_GATE SPARK_STAGEPACK_TENSOR_GDN_GATE
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA SPARK_STAGEPACK_TENSOR_GDN_BETA
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY SPARK_STAGEPACK_TENSOR_GDN_DECAY
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_OUTPUT SPARK_STAGEPACK_TENSOR_GDN_OUTPUT
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_CONV_WEIGHT SPARK_STAGEPACK_TENSOR_GDN_CONV_WEIGHT
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_A_LOG SPARK_STAGEPACK_TENSOR_GDN_A_LOG
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DT_BIAS SPARK_STAGEPACK_TENSOR_GDN_DT_BIAS
+#define SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_NORM SPARK_STAGEPACK_TENSOR_GDN_NORM
+
+#define SPARK_QWEN38_MAX_STAGEPACK_CLASS_GLOBAL SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL
+#define SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER
+#define SPARK_QWEN38_MAX_STAGEPACK_CLASS_GDN_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GDN_LAYER
+#define SPARK_QWEN38_MAX_STAGEPACK_CLASS_ATTN_LAYER SPARK_STAGEPACK_FORMAT_LAYER_CLASS_ATTN_LAYER
 
 typedef struct SparkQwen38MaxStagePackHeader
 {
@@ -116,17 +102,11 @@ typedef struct SparkQwen38MaxStagePackEntry
 	uint64_t scale_bytes;
 } SparkQwen38MaxStagePackEntry;
 
-/*
- * Fixed wire sizes: the structs are ordered so natural alignment produces no
- * padding on the LP64 targets this module builds for; the asserts make that a
- * compile error rather than a silent format drift.
- */
 #define SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES 120u
 #define SPARK_QWEN38_MAX_STAGEPACK_ENTRY_BYTES 56u
 _Static_assert(sizeof(SparkQwen38MaxStagePackHeader) == SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES,"qwen38 stage pack header must be 120 wire bytes");
 _Static_assert(sizeof(SparkQwen38MaxStagePackEntry) == SPARK_QWEN38_MAX_STAGEPACK_ENTRY_BYTES,"qwen38 stage pack directory entry must be 56 wire bytes");
 
-// Model-geometry compile-time proofs.
 _Static_assert(SPARK_QWEN38_MAX_MODEL_GDN_LAYER_COUNT + SPARK_QWEN38_MAX_MODEL_FULL_ATTENTION_LAYER_COUNT == SPARK_QWEN38_MAX_MODEL_LAYER_COUNT,"qwen38 layer split must cover the stack");
 _Static_assert((SPARK_QWEN38_MAX_MODEL_LAYER_COUNT % SPARK_QWEN38_MAX_MODEL_ATTENTION_PERIOD) == 0u,"qwen38 layer count must be whole periods");
 _Static_assert(SPARK_QWEN38_MAX_MODEL_GDN_LAYER_COUNT == (SPARK_QWEN38_MAX_MODEL_LAYER_COUNT / SPARK_QWEN38_MAX_MODEL_ATTENTION_PERIOD) * (SPARK_QWEN38_MAX_MODEL_ATTENTION_PERIOD - 1u),"qwen38 gdn count must match the 3:1 period");
@@ -147,13 +127,6 @@ static inline uint32_t SparkQwen38MaxStagePackFullAttentionLayersBelow(uint32_t 
 	return(layer_count / SPARK_QWEN38_MAX_MODEL_ATTENTION_PERIOD);
 }
 
-/*
- * The tensor inventory of a slice, computed, never declared: ten tensors on
- * every layer (two norms and the eight MoE tensors), nine more on a GDN
- * layer, six more on a full-attention layer, the embedding on stage zero and
- * the final norm, LM head, four MTP globals, sixteen MTP layer tensors and
- * (multi-stage only) a second embedding copy on the last stage.
- */
 static inline uint32_t SparkQwen38MaxStagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {
 	uint32_t full = SparkQwen38MaxStagePackFullAttentionLayersBelow(first_layer_index + layer_count) - SparkQwen38MaxStagePackFullAttentionLayersBelow(first_layer_index);
@@ -198,9 +171,6 @@ static inline void SparkQwen38MaxStagePackExpectedGeometry(SparkQwen38MaxStagePa
 	header->file_bytes = 0u;
 }
 
-/* Field-by-field comparison; returns 0 on match, nonzero on any drift.
- * The comparison is the library's; the layout proof is this family's
- * compile-time admission ticket to it. */
 SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(SparkQwen38MaxStagePackHeader);
 static inline int32_t SparkQwen38MaxStagePackHeaderMatches(const SparkQwen38MaxStagePackHeader *file_header, const SparkQwen38MaxStagePackHeader *expected)
 {
@@ -209,19 +179,11 @@ static inline int32_t SparkQwen38MaxStagePackHeaderMatches(const SparkQwen38MaxS
 		(const SparkStagePackHeaderCommon *)expected));
 }
 
-/* The shape algebra and header comparison are the stagepack format
- * library's; this family states its geometry as data and keeps only the
- * tensors that are genuinely its own. The static asserts pin the family's
- * ABI codes to the shared ones so neither side can drift silently. */
 typedef SparkStagePackTensorShape SparkQwen38MaxStagePackTensorShape;
 
 _Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"qwen38 bf16 weight code must match the shared format");
 _Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"qwen38 f32 weight code must match the shared format");
 _Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 == SPARK_STAGEPACK_FORMAT_WEIGHT_FP8_E4M3_F32B128,"qwen38 fp8 weight code must match the shared format");
-_Static_assert(SPARK_QWEN38_MAX_STAGEPACK_CLASS_GLOBAL == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL,"qwen38 global class must match the shared format");
-_Static_assert(SPARK_QWEN38_MAX_STAGEPACK_CLASS_EVERY_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER,"qwen38 every-layer class must match the shared format");
-_Static_assert(SPARK_QWEN38_MAX_STAGEPACK_CLASS_GDN_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GDN_LAYER,"qwen38 gdn class must match the shared format");
-_Static_assert(SPARK_QWEN38_MAX_STAGEPACK_CLASS_ATTN_LAYER == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_ATTN_LAYER,"qwen38 attn class must match the shared format");
 
 static const SparkStagePackGeometryTable SparkQwen38MaxStagePackGeometry =
 {
@@ -235,11 +197,6 @@ static const SparkStagePackGeometryTable SparkQwen38MaxStagePackGeometry =
 	.gdn_head_value_dimension = SPARK_QWEN38_MAX_MODEL_GDN_HEAD_VALUE_DIMENSION,
 	.gdn_conv_kernel = SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL
 };
-
-static inline void SparkQwen38MaxStagePackShapeInit(SparkQwen38MaxStagePackTensorShape *shape)
-{
-	SparkStagePackShapeInit(shape);
-}
 
 static inline int32_t SparkQwen38MaxStagePackShapeGlobal(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
 {
@@ -268,20 +225,6 @@ static inline int32_t SparkQwen38MaxStagePackShapeGlobal(uint32_t tensor_kind, S
 	default:
 		return(-1);
 	}
-}
-
-static inline int32_t SparkQwen38MaxStagePackShapeEveryLayer(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
-{
-	/* The whole every-layer inventory of this family is the shared axis. */
-	return(SparkStagePackShapeEveryLayerCommon(tensor_kind,
-		&SparkQwen38MaxStagePackGeometry,shape));
-}
-
-static inline int32_t SparkQwen38MaxStagePackShapeGdn(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
-{
-	/* The whole GDN inventory of this family is the shared axis. */
-	return(SparkStagePackShapeGdnCommon(tensor_kind,
-		&SparkQwen38MaxStagePackGeometry,shape));
 }
 
 static inline int32_t SparkQwen38MaxStagePackShapeAttn(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
@@ -314,28 +257,21 @@ static inline int32_t SparkQwen38MaxStagePackShapeAttn(uint32_t tensor_kind, Spa
 
 static inline int32_t SparkQwen38MaxStagePackTensorShapeOf(uint32_t tensor_kind, SparkQwen38MaxStagePackTensorShape *shape)
 {
-	SparkQwen38MaxStagePackShapeInit(shape);
+	SparkStagePackShapeInit(shape);
 	if ( SparkQwen38MaxStagePackShapeGlobal(tensor_kind,shape) == 0 )
 		return(0);
-	SparkQwen38MaxStagePackShapeInit(shape);
-	if ( SparkQwen38MaxStagePackShapeEveryLayer(tensor_kind,shape) == 0 )
+	SparkStagePackShapeInit(shape);
+	if ( SparkStagePackShapeEveryLayerCommon(tensor_kind,&SparkQwen38MaxStagePackGeometry,shape) == 0 )
 		return(0);
-	SparkQwen38MaxStagePackShapeInit(shape);
-	if ( SparkQwen38MaxStagePackShapeGdn(tensor_kind,shape) == 0 )
+	SparkStagePackShapeInit(shape);
+	if ( SparkStagePackShapeGdnCommon(tensor_kind,&SparkQwen38MaxStagePackGeometry,shape) == 0 )
 		return(0);
-	SparkQwen38MaxStagePackShapeInit(shape);
+	SparkStagePackShapeInit(shape);
 	if ( SparkQwen38MaxStagePackShapeAttn(tensor_kind,shape) == 0 )
 		return(0);
 	return(-1);
 }
 
-/*
- * Kind resolved against a concrete layer: a global kind must carry the global
- * layer marker, a per-layer kind must sit inside the total layer space, and
- * the GDN/attention classes must agree with the hybrid layer map. The MTP
- * decoder is geometry-identical to a full-attention layer, so its sixteen
- * layer-shaped tensors REUSE the per-layer kinds at the reserved MTP marker.
- */
 static inline int32_t SparkQwen38MaxStagePackResolvedShape(uint32_t tensor_kind, uint32_t layer_index, uint32_t is_global, SparkQwen38MaxStagePackTensorShape *shape)
 {
 	if ( SparkQwen38MaxStagePackTensorShapeOf(tensor_kind,shape) < 0 )

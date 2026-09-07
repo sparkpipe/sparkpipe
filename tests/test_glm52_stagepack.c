@@ -66,8 +66,6 @@ static void SparkTestShapeContract(void)
 		SPARK_WEIGHT_CODEC_BF16,
 		1u,
 		&shape) == 0);
-	/* The bf16 expert arm: native-precision experts carry the BF16
-	 * payload and NO scale plane (the glm53full bf16 pack contract). */
 	assert(shape.payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_BF16);
 	assert(shape.weight_codec == SPARK_WEIGHT_CODEC_BF16);
 	assert(shape.scale_encoding == SPARK_WEIGHT_SCALE_ENCODING_NONE);

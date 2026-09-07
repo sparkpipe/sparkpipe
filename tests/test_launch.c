@@ -1,10 +1,3 @@
-// Launch planning, checked on a host.
-//
-// Everything the launcher decides except the four CUDA calls is arithmetic:
-// which tile height a token bucket needs, how much dynamic shared that carves,
-// which swizzle span the row pitch admits, and how wide the persistent grid is.
-// All four have been wrong at some point in this rewrite and all four are
-// checkable without a GPU.
 #include "runtime/launch.h"
 #include <stdio.h>
 #include <string.h>
@@ -54,8 +47,6 @@ int main(void)
 		m_tiles = (peak + plan.tile_m - 1u) / plan.tile_m;
 		printf("    B%-5u peak rows %-4u -> TILE_M %-3u  M tiles %u  shared %6u B  span %uB\n",
 			buckets[i], peak, plan.tile_m, m_tiles, plan.shared_bytes, plan.swizzle_span);
-		/* A second M tile means every weight tile is fetched twice, on the
-		   stream that is 96 percent of decode traffic. */
 		if (m_tiles > 1u && buckets[i] <= 1024u)
 		{
 			printf("      WEIGHT RE-READ at a supported bucket\n");

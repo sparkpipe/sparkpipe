@@ -10,32 +10,10 @@
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
-/*
- * Qwen 3.8 Max resident decode stage, hardware validation (sm_121a).
- *
- * Ported from the qwen38_27b harness (the family's proven template) at the
- * Max geometry, plus the two checks this module's production path adds: the
- * MXFP4-E2M1 routed-expert kernels against an exact dequant oracle, and the
- * rank-local TP4 kernel geometry at rank 0 (whole-head GDN shard + the
- * 128-expert MXFP4 shard), the collective-free half of the TP story - the
- * cross-rank half gates at the fleet window.
- *
- * The MODULE tier loads a stage pack through the module's own
- * Initialize/Execute (the pack path comes from SPARK_QWEN38_MAX_STAGE_*
- * exactly as production), drives decode frames, and checks determinism
- * across a fresh instance. The module is decode-only (prefill frames fail
- * closed by design; the chunk kernels are validated at the KERNEL tier
- * against the recurrence oracle instead) and Admit/Snapshot are fail-closed
- * stubs, which this harness asserts rather than assumes.
- *
- * Every comparison prints its numbers; the thresholds are the guard, the
- * numbers are the evidence.
- */
 
 #define SPARK_QWEN38_MAX_VALIDATION_ROWS 4u
 #define SPARK_QWEN38_MAX_VALIDATION_ATTN_TOKENS 5u
 #define SPARK_QWEN38_MAX_VALIDATION_CHUNK_TOKENS 64u
-/* Five rows: an admitted B1 decode shape (1/5/7/8/16/32/64/1024). */
 #define SPARK_QWEN38_MAX_VALIDATION_MOE_ROWS 5u
 #ifndef SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES
 #define SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES 8u
@@ -90,10 +68,6 @@ static uint16_t SparkQwen38MaxValBf16(float value)
 {
 	uint32_t bits;
 	memcpy(&bits,&value,sizeof(bits));
-	/* Round to nearest even, matching __float2bfloat16: the 27b template's
-	 * truncating converter is fine for inputs both sides read back, but the
-	 * MoE oracle quantizes OUTPUTS with it, where truncation vs rounding is
-	 * a 2x-ulp systematic bias. */
 	bits += 0x7fffu + ((bits >> 16) & 1u);
 	return((uint16_t)(bits >> 16));
 }
@@ -182,7 +156,6 @@ static int SparkQwen38MaxValReport(const char *check, const SparkQwen38MaxValMet
 	return(0);
 }
 
-/* -- fp32 CPU oracles (the 27b reference.c formulas at Max geometry) ------- */
 
 static float SparkQwen38MaxValSilu(float value)
 {
@@ -263,8 +236,6 @@ static void SparkQwen38MaxValRmsNorm(const float *input, const float *weight, fl
 		output[element] = input[element] * inverse * weight[element];
 }
 
-/* One kv head's group of query heads against its cache, fused [query|gate]
- * input, sigmoid gate on the output - the pinned modeling_qwen3_5 form. */
 static void SparkQwen38MaxValAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t tokens, float epsilon)
 {
 	float qh[SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION],scores[SPARK_QWEN38_MAX_VALIDATION_ATTN_TOKENS],probability;
@@ -302,9 +273,6 @@ static void SparkQwen38MaxValAttention(const float *q_fused, const float *k_cach
 	}
 }
 
-/* MXFP4-E2M1 dequant, bit-identical to SparkLmDecodeE2m1 x SparkLmDecodeE8m0:
- * magnitude table indexed by the low three nibble bits, sign in bit 3, one
- * scale byte per 32 elements at scale[row * (columns/32) + k/32]. */
 static float SparkQwen38MaxValDecodeE2m1(uint32_t nibble)
 {
 	static const float magnitude[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
@@ -324,8 +292,6 @@ static float SparkQwen38MaxValDequantMxfp4(const uint8_t *payload, const uint8_t
 	return(SparkQwen38MaxValDecodeE2m1(nibble) * SparkQwen38MaxValDecodeE8m0(scales[(row * (uint64_t)(columns / SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE)) + (column / SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE)]));
 }
 
-/* E4M3 grid round-to-nearest-even (cvt.rn.satfinite semantics: values past
- * the finite max clamp to 448, subnormals step at 2^-9). */
 static float SparkQwen38MaxValE4m3Quantize(float value)
 {
 	float sign = value < 0.0f ? -1.0f : 1.0f,magnitude = fabsf(value),grid;
@@ -352,10 +318,6 @@ static float SparkQwen38MaxValE4m3Quantize(float value)
 	return(sign * grid);
 }
 
-/* The B1 kernels' activation codec: one UE8M0 scale per 128-element block
- * (scale = 2^ceil(log2(amax/448))), each element quantized to E4M3 on that
- * scale and decoded back to float. Replicated exactly so the oracle and the
- * kernel consume identical activations. */
 static void SparkQwen38MaxValQdq128(float *row, uint32_t width)
 {
 	uint32_t base;
@@ -378,31 +340,30 @@ static float SparkQwen38MaxValBf16Round(float value)
 	return(SparkQwen38MaxValFromBf16(SparkQwen38MaxValBf16(value)));
 }
 
-/* -- shared device fixture ------------------------------------------------- */
 
 typedef struct SparkQwen38MaxValDevice
 {
 	SparkQwen38MaxGdnLayerWeights gdn_weights;
 	SparkQwen38MaxAttnLayerWeights attn_weights;
 	SparkQwen38MaxGdnStatePool pool;
-	uint16_t *conv_weight;      /* CONV x 4 */
-	float *a_log;               /* HEADS */
-	float *dt_bias;             /* HEADS */
-	uint16_t *gdn_norm_weight;  /* DV */
-	uint16_t *q_norm_weight;    /* ATTN_HEAD_DIM */
+	uint16_t *conv_weight;
+	float *a_log;
+	float *dt_bias;
+	uint16_t *gdn_norm_weight;
+	uint16_t *q_norm_weight;
 	uint16_t *k_norm_weight;
-	float *state;               /* 2 lanes x HEADS x DK x DV */
-	uint16_t *conv_tail;        /* 2 lanes x CONV x 3 */
-	uint32_t *cold;             /* 2 */
-	uint32_t *lane_indices;     /* 2 */
-	uint16_t *qkv;              /* tokens x CONV */
-	uint16_t *conv_out;         /* tokens x CONV */
-	uint16_t *core_out;         /* tokens x GDN_VALUE_DIM */
-	uint16_t *z_bf16;           /* tokens x GDN_VALUE_DIM */
-	uint16_t *gated_out;        /* tokens x GDN_VALUE_DIM */
-	uint16_t *ba_bf16;          /* tokens x HEADS x 2 (decay|beta halves) */
-	float *log_decay;           /* tokens x HEADS */
-	float *beta;                /* tokens x HEADS */
+	float *state;
+	uint16_t *conv_tail;
+	uint32_t *cold;
+	uint32_t *lane_indices;
+	uint16_t *qkv;
+	uint16_t *conv_out;
+	uint16_t *core_out;
+	uint16_t *z_bf16;
+	uint16_t *gated_out;
+	uint16_t *ba_bf16;
+	float *log_decay;
+	float *beta;
 	float *chunk_qn;
 	float *chunk_kn;
 	float *chunk_cum_g;
@@ -447,8 +408,6 @@ static int SparkQwen38MaxValDeviceSetup(SparkQwen38MaxValDevice *device)
 	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_kg,vector_floats * sizeof(float));
 	if (error != cudaSuccess)
 		return(SparkQwen38MaxValCuda(error,"device_alloc"));
-	/* One GDN layer per lane, two lanes: the pool strides the launchers
-	 * read, mirroring the module's AllocatePools at layer_count 1, tp 1. */
 	device->pool.abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
 	device->pool.lane_capacity = 2u;
 	device->pool.gdn_layer_count = 1u;
@@ -468,7 +427,6 @@ static int SparkQwen38MaxValDeviceSetup(SparkQwen38MaxValDevice *device)
 	return(0);
 }
 
-/* -- kernel tier ----------------------------------------------------------- */
 
 static int SparkQwen38MaxValCheckDecayBeta(SparkQwen38MaxValDevice *device)
 {
@@ -493,8 +451,6 @@ static int SparkQwen38MaxValCheckDecayBeta(SparkQwen38MaxValDevice *device)
 	error = cudaMemcpy(device->ba_bf16,host_ba,sizeof(host_ba),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->a_log,host_a,sizeof(host_a),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->dt_bias,host_bias,sizeof(host_bias),cudaMemcpyHostToDevice);
-	/* decay_pre and beta_pre are separate rows x HEADS buffers; ba_bf16
-	 * holds them back to back. */
 	if (error == cudaSuccess)
 		error = SparkQwen38MaxLaunchDecayBeta(cudaStreamPerThread,device->ba_bf16,device->ba_bf16 + SPARK_QWEN38_MAX_VALIDATION_ROWS * SPARK_QWEN38_MAX_VAL_HEADS,&device->gdn_weights,device->log_decay,device->beta,SPARK_QWEN38_MAX_VALIDATION_ROWS,1u);
 	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
@@ -517,9 +473,6 @@ static int SparkQwen38MaxValCheckDecayBeta(SparkQwen38MaxValDevice *device)
 	return(SparkQwen38MaxValReport("write_gate",&metrics,1e-5,0.99999999));
 }
 
-/* One GDN recurrence step per row: row 0 cold, row 1 warm with a random
- * resident state, compared against the per-head oracle recurrence. The GVA
- * ratio is 8:1 at this geometry (key head = value head / 8). */
 static int SparkQwen38MaxValCheckGdnStep(SparkQwen38MaxValDevice *device)
 {
 	uint64_t state_elements = (uint64_t)SPARK_QWEN38_MAX_VAL_HEADS * SPARK_QWEN38_MAX_VAL_DK * SPARK_QWEN38_MAX_VAL_DV;
@@ -539,8 +492,6 @@ static int SparkQwen38MaxValCheckGdnStep(SparkQwen38MaxValDevice *device)
 		return(SparkQwen38MaxValFail("gdn_step","host_alloc"));
 	SparkQwen38MaxValRandomState = 37u;
 	SparkQwen38MaxValFillBf16(host_conv,exact,2ull * SPARK_QWEN38_MAX_VAL_CONV,1.0f);
-	/* The kernel reads bf16-rounded projections; the oracle must too, or
-	 * the comparison measures bf16 storage noise, not the recurrence. */
 	{
 		uint64_t index;
 		for (index = 0u; index < 2ull * SPARK_QWEN38_MAX_VAL_CONV; index++)
@@ -549,7 +500,7 @@ static int SparkQwen38MaxValCheckGdnStep(SparkQwen38MaxValDevice *device)
 	{
 		uint64_t index;
 		for (index = 0u; index < state_elements; index++)
-			state_host[state_elements + index] = SparkQwen38MaxValUniform(0.25f); /* lane 1 warm */
+			state_host[state_elements + index] = SparkQwen38MaxValUniform(0.25f);
 		memcpy(state_reference,state_host,2ull * state_elements * sizeof(float));
 	}
 	{
@@ -609,9 +560,6 @@ static int SparkQwen38MaxValCheckGdnStep(SparkQwen38MaxValDevice *device)
 	return(SparkQwen38MaxValReport("gdn_step_state",&metrics,1e-3,0.999999));
 }
 
-/* The rank-local TP4 GDN step: rank 0 owns value heads [0,32) with key
- * heads [0,4), conv channels q512|k512|v4096. Same oracle over the rank's
- * head slice - the whole-head cut must be invisible to the math. */
 static int SparkQwen38MaxValCheckGdnStepTp4(void)
 {
 	const uint32_t tp = 4u,local_heads = SPARK_QWEN38_MAX_VAL_HEADS / tp;
@@ -635,7 +583,6 @@ static int SparkQwen38MaxValCheckGdnStepTp4(void)
 		return(SparkQwen38MaxValFail("gdn_step_tp4","host_alloc"));
 	if (SparkQwen38MaxValDeviceSetup(&device) != 0)
 		return(1);
-	/* Rebind the pool and weight pointers to rank-local widths. */
 	device.pool.state_layer_stride_elements = state_elements;
 	device.pool.state_lane_stride_elements = state_elements;
 	device.pool.conv_tail_layer_stride_elements = (uint64_t)local_conv * (SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL - 1u);
@@ -689,9 +636,6 @@ static int SparkQwen38MaxValCheckGdnStepTp4(void)
 	}
 	SparkQwen38MaxValMeasure(&metrics,actual,oracle_out,(uint64_t)local_heads * SPARK_QWEN38_MAX_VAL_DV);
 	{
-		/* Free the fixture's allocations: the setup helper has no teardown,
-		 * so release the big ones explicitly to keep the tier's footprint
-		 * bounded for the checks that follow. */
 		void *marks[] = {device.conv_weight,device.a_log,device.dt_bias,device.gdn_norm_weight,device.q_norm_weight,device.k_norm_weight,device.state,device.conv_tail,device.cold,device.lane_indices,device.qkv,device.conv_out,device.core_out,device.z_bf16,device.gated_out,device.ba_bf16,device.log_decay,device.beta,device.chunk_qn,device.chunk_kn,device.chunk_cum_g,device.chunk_decay,device.chunk_attn,device.chunk_w,device.chunk_kg};
 		uint32_t mark;
 		for (mark = 0u; mark < sizeof(marks) / sizeof(marks[0]); mark++)
@@ -717,11 +661,9 @@ static int SparkQwen38MaxValCheckGatedNorm(SparkQwen38MaxValDevice *device)
 	if (packed == 0 || exact == 0 || expected == 0 || actual == 0 || norm_packed == 0 || norm_exact == 0)
 		return(SparkQwen38MaxValFail("gated_norm","host_alloc"));
 	SparkQwen38MaxValRandomState = 51u;
-	SparkQwen38MaxValFillBf16(packed,exact,elements,1.0f);              /* core */
-	SparkQwen38MaxValFillBf16(packed + elements,exact + elements,elements,1.0f); /* z */
+	SparkQwen38MaxValFillBf16(packed,exact,elements,1.0f);
+	SparkQwen38MaxValFillBf16(packed + elements,exact + elements,elements,1.0f);
 	SparkQwen38MaxValFillBf16(norm_packed,norm_exact,SPARK_QWEN38_MAX_VAL_DV,0.5f);
-	/* Round-trip the oracle inputs through bf16: the kernel reads the
-	 * packed values, and the comparison must isolate the kernel's math. */
 	{
 		uint64_t index;
 		for (index = 0u; index < elements * 2u; index++)
@@ -763,15 +705,9 @@ static int SparkQwen38MaxValCheckGatedNorm(SparkQwen38MaxValDevice *device)
 		}
 	SparkQwen38MaxValMeasure(&metrics,actual,expected,elements);
 	free(packed); free(exact); free(expected); free(actual); free(norm_packed); free(norm_exact);
-	/* The gated norm's output is bf16 (like the GDN step's), so five nines is
-	 * the family's established bound for this check - qwen38_27b and
-	 * qwen4_flash both measure cosine ~0.9999986 here on passing runs. */
 	return(SparkQwen38MaxValReport("gated_norm",&metrics,2e-3,0.99999));
 }
 
-/* Attention prepare + decode against the fused-gate GQA oracle: one row,
- * all 64 heads over one kv head group each, 5-token context from the
- * module's own cache write. */
 static int SparkQwen38MaxValCheckAttention(SparkQwen38MaxValDevice *device)
 {
 	const uint32_t tokens = SPARK_QWEN38_MAX_VALIDATION_ATTN_TOKENS;
@@ -827,8 +763,6 @@ static int SparkQwen38MaxValCheckAttention(SparkQwen38MaxValDevice *device)
 	context_lengths[0] = tokens;
 	lane_indices[0] = 0u;
 	(void)lane_indices;
-	/* Stage the kv cache through five consecutive single-row prepares at
-	 * positions 0..4, exactly how the decode path fills it. */
 	void *kv_cache = 0;
 	error = cudaMalloc(&kv_cache,cache_elements * sizeof(uint16_t));
 	if (error == cudaSuccess) error = cudaMemset(kv_cache,0,cache_elements * sizeof(uint16_t));
@@ -840,9 +774,6 @@ static int SparkQwen38MaxValCheckAttention(SparkQwen38MaxValDevice *device)
 			uint64_t pos[1];
 			slots[0] = token;
 			pos[0] = token;
-			/* Prepare normalizes and rope's the query IN PLACE, so each
-			 * staging iteration must start from the pristine projection -
-			 * only the final pass's query survives to the decode. */
 			error = cudaMemcpy(device->qkv,q_packed,2ull * SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
 			if (error == cudaSuccess)
 				error = SparkQwen38MaxLaunchAttnPrepare(cudaStreamPerThread,device->qkv,device->core_out,device->gated_out,&device->attn_weights,kv_cache,slots,pos,1u,0u,token_elements,cache_elements,SPARK_QWEN38_MAX_MODEL_RMS_NORM_EPSILON,1u,0u);
@@ -887,8 +818,6 @@ static int SparkQwen38MaxValCheckAttention(SparkQwen38MaxValDevice *device)
 		free(q_packed); free(q_exact); free(k_packed); free(k_exact); free(v_packed); free(qn_packed); free(qn_exact); free(kn_packed); free(kn_exact); free(cache); free(head_out); free(expected); free(actual);
 		return(1);
 	}
-	/* Oracle: per kv head, its group of query heads attends over the staged
-	 * cache rows; the fused gate is the sigmoid of the query half. */
 	{
 		uint32_t kv_head;
 		for (kv_head = 0u; kv_head < kv_heads; kv_head++)
@@ -922,9 +851,6 @@ static int SparkQwen38MaxValCheckAttention(SparkQwen38MaxValDevice *device)
 	return(SparkQwen38MaxValReport("attn_decode",&metrics,5e-3,0.99999));
 }
 
-/* The chunked prefill core vs the recurrence oracle over 64 tokens, one
- * lane, warm start: the module's prefill formulation, proven at the kernel
- * tier (the module refuses prefill frames by design). */
 static int SparkQwen38MaxValCheckGdnChunk(SparkQwen38MaxValDevice *device)
 {
 	const uint32_t tokens = SPARK_QWEN38_MAX_VALIDATION_CHUNK_TOKENS;
@@ -982,7 +908,6 @@ static int SparkQwen38MaxValCheckGdnChunk(SparkQwen38MaxValDevice *device)
 	{
 		uint32_t key_head = head / SPARK_QWEN38_MAX_VAL_GVA;
 		uint32_t token;
-		/* The oracle consumes per-token q/k/v slices for this head. */
 		float *q = (float *)calloc((uint64_t)tokens * SPARK_QWEN38_MAX_VAL_DK,sizeof(float));
 		float *k = (float *)calloc((uint64_t)tokens * SPARK_QWEN38_MAX_VAL_DK,sizeof(float));
 		float *v = (float *)calloc((uint64_t)tokens * SPARK_QWEN38_MAX_VAL_DV,sizeof(float));
@@ -1012,8 +937,6 @@ static int SparkQwen38MaxValCheckGdnChunk(SparkQwen38MaxValDevice *device)
 		for (index = 0u; index < (uint64_t)tokens * heads * SPARK_QWEN38_MAX_VAL_DV; index++)
 			actual[index] = SparkQwen38MaxValFromBf16(core_packed[index]);
 	}
-	/* The chunk output layout is [token][head][dv] on device but the oracle
-	 * walked [head][token][dv]; repack the oracle for the comparison. */
 	{
 		float *repacked = (float *)calloc((uint64_t)tokens * heads * SPARK_QWEN38_MAX_VAL_DV,sizeof(float));
 		uint32_t token;
@@ -1035,7 +958,6 @@ static int SparkQwen38MaxValCheckGdnChunk(SparkQwen38MaxValDevice *device)
 	return(SparkQwen38MaxValReport("gdn_chunk_state",&metrics,1e-3,0.999999));
 }
 
-/* -- module tier ----------------------------------------------------------- */
 
 typedef struct SparkQwen38MaxValCapture
 {
@@ -1082,9 +1004,6 @@ static int SparkQwen38MaxValModuleInitialize(SparkQwen38MaxValModule *module)
 	uint32_t lane;
 	cudaError_t error;
 	memset(module,0,sizeof(*module));
-	/* head_stage: the module owns the final head iff it is the whole-stack
-	 * last stage (STAGE_COUNT == 1). TP_DEGREE 1 is the whole-stack tier
-	 * here; a tp>1 module tier needs the collective (fleet window). */
 	stage_count_text = getenv("SPARK_QWEN38_MAX_STAGE_COUNT");
 	module->head_stage = stage_count_text != 0 && strcmp(stage_count_text,"1") == 0 ? 1u : 0u;
 	for (lane = 0u; lane < SPARK_QWEN38_MAX_VALIDATION_KV_LANES; lane++)
@@ -1201,8 +1120,6 @@ static int SparkQwen38MaxValCheckModule(void)
 	SparkStatus status;
 	if (SparkQwen38MaxValModuleInitialize(&module) != 0)
 		return(1);
-	/* Admission and snapshot are fail-closed stubs on this module by
-	 * design; assert they refuse cleanly rather than pretend to accept. */
 	memset(&admission,0,sizeof(admission));
 	admission.descriptor_bytes = sizeof(admission);
 	admission.program_id = 1u;
@@ -1239,8 +1156,6 @@ static int SparkQwen38MaxValCheckModule(void)
 			return(SparkQwen38MaxValFail("module_decode","out_of_vocab"));
 		printf("qwen38_max_validation check=module_decode token=%u in_vocab=1\n",decode_token);
 	}
-	/* Determinism: a fresh instance must reproduce the first lane's hidden
-	 * (or token) bit for bit. */
 	SparkQwen38MaxResidentDecodeStageDestroy(module.state);
 	cudaFree(module.device_blocks);
 	cudaFree(module.device_counts);
@@ -1272,13 +1187,6 @@ static int SparkQwen38MaxValCheckModule(void)
 	return(0);
 }
 
-/* The routed-expert MXFP4 path against an exact dequant oracle: route four
- * rows through ten experts each on the rank-0 shard of a tp4 view (128 of
- * 512 experts), run the B1 W13-activation and W2 kernels plus the pair
- * reduce, and compare the mixture with a per-expert fp32 CPU evaluation of
- * the SAME quantized bytes. This is the production codec's kernel gate (it
- * replaces the dropped FP8-vs-MXFP4 parity experiment: there is no FP8 twin
- * of the AMD weights, and the oracle is the stronger check anyway). */
 static int SparkQwen38MaxValCheckMoeMxfp4(SparkQwen38MaxValDevice *device)
 {
 	const uint32_t tp = 4u,experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp;
@@ -1325,9 +1233,6 @@ static int SparkQwen38MaxValCheckMoeMxfp4(SparkQwen38MaxValDevice *device)
 		for (index = 0u; index < (uint64_t)rows * hidden; index++)
 			input_exact[index] = SparkQwen38MaxValFromBf16(host_input[index]);
 	}
-	/* Deterministic random-looking bytes: a 64 KiB xorshift block tiled over
-	 * the payloads; scale codes pinned near unity. The oracle dequantizes
-	 * the exact same bytes, so any bytes are valid weights. */
 	{
 		static uint8_t block[65536];
 		uint32_t state = 0x1234567u,index;
@@ -1339,8 +1244,6 @@ static int SparkQwen38MaxValCheckMoeMxfp4(SparkQwen38MaxValDevice *device)
 			state ^= state << 5;
 			block[index] = (uint8_t)(state >> 24);
 		}
-		/* Even payload bytes become nibble pairs with both halves populated;
-		 * keep every byte nonzero so the weights exercise the full grid. */
 		for (index = 0u; index < 65536u; index += 2u)
 			block[index] = (uint8_t)(120u + (block[index] & 7u));
 		{
@@ -1365,8 +1268,6 @@ static int SparkQwen38MaxValCheckMoeMxfp4(SparkQwen38MaxValDevice *device)
 		memset(w3_scales,123u,(size_t)w13_scale_bytes);
 		memset(w2_scales,125u,(size_t)w2_scale_bytes);
 	}
-	/* Route every row through ten DISTINCT rank-0 experts (the shard owns
-	 * experts [0,128); global ids below stay inside it). */
 	for (row = 0u; row < rows; row++)
 		for (slot = 0u; slot < topk; slot++)
 		{
@@ -1441,10 +1342,6 @@ static int SparkQwen38MaxValCheckMoeMxfp4(SparkQwen38MaxValDevice *device)
 		free(host_input); free(input_exact); free(w1_payload); free(w1_scales); free(w3_payload); free(w3_scales); free(w2_payload); free(w2_scales); free(route_expert); free(route_weights); free(expected); free(actual); free(host_delta);
 		return(1);
 	}
-	/* Oracle: the B1 pipeline exactly as the kernels execute it - the
-	 * activation row is FP8-E4M3/UE8M0 quantize-dequantized per 128-block
-	 * before W13 and again before W2, the gate/up dots are bf16-rounded
-	 * then limit-clamped, and every inter-stage store is bf16. */
 	for (row = 0u; row < rows; row++)
 	{
 		float *x = (float *)calloc(hidden,sizeof(float));
@@ -1470,8 +1367,6 @@ static int SparkQwen38MaxValCheckMoeMxfp4(SparkQwen38MaxValDevice *device)
 				uint32_t column;
 				for (column = 0u; column < hidden; column++)
 				{
-					/* fmaf: the kernel's dot rounds each product into the
-					 * accumulation once, matching cvt/mma semantics. */
 					gate = fmaf(SparkQwen38MaxValDequantMxfp4(w1_payload,w1_scales,w13_row,hidden,column),x[column],gate);
 					up = fmaf(SparkQwen38MaxValDequantMxfp4(w3_payload,w3_scales,w13_row,hidden,column),x[column],up);
 				}

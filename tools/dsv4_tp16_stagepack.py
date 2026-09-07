@@ -61,6 +61,22 @@ MODEL_GEOMETRY = {
         "experts": 384,
         "expert_width": 3072,
     },
+    # HYV4ForCausalLM (hy4-preview-fp8-official, modelopt MXFP8): 78 DSA
+    # layers, MLA kv_lora 512 / q_lora 2048, 64x64 query + 8 KV heads,
+    # DSA indexer 32x128 top-2048, MoE 256 experts x 2048 (top-8),
+    # vocab 120832 untied, fp32 lm_head, 1 nextn MTP layer.
+    # NOTE (coordinator, pre-validation): dims derived from config.json —
+    # the dry-run vs source tensor inventory MUST pass before any build.
+    "hy4": {
+        "layers": 78,
+        "version": 4,
+        "mtp": True,
+        "hidden": 6144,
+        "query_dim": 65536,
+        "output_groups": 16,
+        "experts": 256,
+        "expert_width": 2048,
+    },
 }
 MTP_LAYER_FIRST = 0xFFFFFFFB
 MTP_LAYER_COUNT_MAX = 3

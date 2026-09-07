@@ -1,9 +1,3 @@
-// Single-spark decode step against a REAL rank pack: stage 0, TP 1, one
-// token. Runs the runner's embed -> slice with the pack's actual weights and
-// checks the hidden output is finite, nonzero, and deterministic across two
-// steps. The numerical reference comparison belongs to the fleet test; this
-// gate proves the full serving path launches and the recurrent state
-// restores exactly.
 
 #include <cstdio>
 #include <cstdlib>
@@ -68,8 +62,6 @@ int main(int argc, char **argv)
 	config.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	config.descriptor_bytes = (uint32_t)sizeof(config);
 	config.stage_index = 0u;
-	/* --pp1 derives the slice bounds from the pack manifest (the TP16
-	 * placement's mode); the default keeps the PP4 stage tables. */
 	int pp1 = 0;
 	for ( int i = 2; i < argc; ++i )
 		if ( strcmp(argv[i], "--pp1") == 0 )
@@ -83,9 +75,6 @@ int main(int argc, char **argv)
 	config.kv_pages_per_sequence = 2u;
 	config.kv_page_bytes = K3GlobalKv::kPageBytes;
 	config.rank_pack_path = argv[1];
-	/* --tp4 <rank>: the real TP4 runner with the HOST-tier collective over
-	 * 127.0.0.1 peers - four local processes all-reduce exactly as the
-	 * deployment does, offline (single spark, no ring). */
 	SparkTpCollectiveConfig collective;
 	SparkTpCollectivePeer peers[4];
 	int tp4 = 0;
@@ -103,15 +92,10 @@ int main(int argc, char **argv)
 		collective.abi_version = SPARK_TP_COLLECTIVE_ABI_VERSION;
 		collective.tp_degree = 4u;
 		collective.tp_rank = config.tp_rank;
-		/* uint16 port field: 65620 would truncate to 84 - the localhost
-		 * gate uses 61620, the fleet block that actually fits */
 		collective.listen_port = (uint16_t)(61620u + config.tp_rank);
 		collective.connect_timeout_milli = 8000u;
 		collective.operation_timeout_milli = 30000u;
 		collective.collective_identifier = 1u;
-		/* the peers are STEP-ordered: step s pairs with tp_rank ^ (1 << s),
-		 * and the slots past step_count must stay zero (the validator
-		 * rejects them) */
 		for ( int step = 0; step < 2; ++step )
 		{
 			uint32_t partner = config.tp_rank ^ (1u << (uint32_t)step);
@@ -121,18 +105,12 @@ int main(int argc, char **argv)
 		}
 		memcpy(collective.peers, peers, sizeof(peers));
 		config.tp_collective = &collective;
-		config.layer_collective_override = 0; /* the runner's real TP hook */
+		config.layer_collective_override = 0;
 	}
-	/* A real (non-legacy) stream: the legacy default stream cannot capture,
-	 * and the graph path is what this gate now exercises (step 2 replays
-	 * the captured slice). */
 	cudaStream_t runner_stream = 0;
 	cudaStreamCreate(&runner_stream);
 	config.execution_stream = runner_stream;
 	config.flags |= SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;
-	/* tp4 keeps the runner's real TP hook; the pp1 equivalence legs keep
-	 * it too (it no-ops at tp_degree 1 except the env-gated dumps); the
-	 * plain gate keeps the diagnostic no-op. */
 	config.layer_collective_override = (tp4 || pp1) ? 0 : NoopHook;
 	int multiprocessors = 0;
 	cudaDeviceGetAttribute(&multiprocessors, cudaDevAttrMultiProcessorCount, 0);
@@ -193,10 +171,6 @@ int main(int argc, char **argv)
 	cudaEventCreate(&e_slice);
 	cudaEventRecord(begin, runner_stream);
 	cudaEventRecord(e_embed, runner_stream);
-	/* the submit's embedding phase ends when the slice's first kernels
-	 * queue - approximate by recording right after the embed completes on
-	 * the stream via the runner's own ordering; measure the whole submit
-	 * and the warm-step slice by difference */
 	cudaEventRecord(e_slice, runner_stream);
 	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
 	cudaEventRecord(end, runner_stream);
@@ -224,30 +198,14 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	/* Determinism: a FRESH runner with the same input must reproduce step
-	 * 1 byte for byte. (Running the same runner twice legitimately differs:
-	 * the recurrent state advances and the cache fills.) */
-	/* Step 2 runs through the graph path: the runner captured the slice on
-	 * this submit (step 1 warmed it) and replays the executable. The
-	 * recurrent state (the KDA conv windows) legitimately advances between
-	 * submits, so step 2's output CANNOT be compared against step 1 - the
-	 * capture fidelity gate is the REPLAY-replay comparison (step 3 vs
-	 * step 2 below), and the direct path's determinism is the fresh-run
-	 * check. */
 	cudaEventRecord(begin, runner_stream);
 	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
 	cudaEventRecord(end, runner_stream);
 	cudaEventSynchronize(end);
 	cudaEventElapsedTime(&millis, begin, end);
 	printf("step 2: %.3f ms (graph capture+replay)\n", (double)millis);
-	/* keep the step-2 output as the capture-replay reference */
 	cudaMemcpy(h_hidden_graph, d_hidden, (uint64_t)K3_HIDDEN * 2u,
 		cudaMemcpyDeviceToHost);
-	/* Step 3: a pure replay (the graph exists) - the steady-state decode
-	 * cost. The recurrent state advances per submit, so neither the step-2
-	 * nor the step-3 output is bit-comparable against an earlier step; the
-	 * capture-fidelity check below compares the graph's step-2 against a
-	 * DIRECT step-2 at the SAME state (a no-capture runner). */
 	cudaEventRecord(begin, runner_stream);
 	status = SparkK3StageRunnerSubmit(&runner, &dispatch);
 	cudaEventRecord(end, runner_stream);
@@ -271,12 +229,6 @@ int main(int argc, char **argv)
 	uint32_t mismatches = 0u;
 	for ( uint32_t i = 0u; i < K3_HIDDEN; ++i )
 	{
-		/* THE TAIL VARIANCE IS FIXED: the KDA o_proj ran its GEMM in place
-		 * (output = attention_out = its own A), so a second-wave tile's A
-		 * reads raced the first-wave stores. The o_proj now lands in
-		 * hidden_bf16 (layer.cuh) and every column must match to 4 ULP,
-		 * head and tail alike - the old 64-ULP tail exemption masked exactly
-		 * this race and is gone. */
 		uint32_t a = h_hidden[i], b = h_hidden_second[i];
 		uint32_t diff = a > b ? a - b : b - a;
 		uint32_t limit = 4u;
@@ -289,9 +241,6 @@ int main(int argc, char **argv)
 	}
 	printf("fresh-run vs step 1: %u mismatches beyond 4 ULP\n", mismatches);
 
-	/* CAPTURE FIDELITY: a no-capture runner's DIRECT step 2 runs at the same
-	 * recurrent state as the main runner's captured step 2 (both are the
-	 * second submit on a fresh runner) - the graph must reproduce it. */
 	SparkK3StageRunner direct_runner;
 	SparkK3StageRunnerConfiguration direct_config = config;
 	direct_config.flags &= ~SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;

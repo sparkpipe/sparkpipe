@@ -133,8 +133,8 @@ cd /home/spark2/sparkdata/qwen38.fp8.tp1
 : > /tmp/qwen38.log
 export LD_LIBRARY_PATH=$PWD/lib:${LD_LIBRARY_PATH:-}
 export SPARK_QWEN38_27B_PROFILE=1                                  # optional: phase counters
-export SPARK_QWEN38_27B_SERVING_SPECULATE=1 SPARK_QWEN38_27B_SERVING_SPEC_METHOD=dflash2
-export SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT=8          # k=8 = all drafter mask slots
+export SPARK_QWEN38_27B_SPECULATORS=0x4                           # DFLASH2 source bit
+# speculative_draft_count goes in the adapter JSON (8 = all drafter mask slots)
 export SPARK_QWEN38_27B_DSPARK_PACK_PATH=/home/spark2/sparkdata/qwen38-dflash2-drafter.qwen36sp  # file kept its pre-rename name; format unchanged (magic Q6SP v3)
 export SPARK_QWEN38_27B_DFLASH2_STATE_SELECT=1 SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD=2
 export SPARK_QWEN38_27B_DFLASH2_BLOCK_KV=0                          # MUST be 0 (see handoff: E 4.81 vs 5.66)

@@ -14,7 +14,6 @@ extern "C" {
 #define SPARK_DSV4_PARALLEL_SHAPE_MAX_PP_DEGREE 16u
 #define SPARK_DSV4_PARALLEL_SHAPE_MAX_WORLD_SIZE 16u
 
-/* A physical rank is pp_stage_index * tp_degree + tp_rank. */
 typedef struct SparkDsv4TpShapeDescriptor
 {
 	uint32_t abi_version;
@@ -45,14 +44,6 @@ typedef struct SparkDsv4TpNodeConfig
 	uint64_t configuration_hash;
 } SparkDsv4TpNodeConfig;
 
-/*
- * Derive every dimension that a rank-sharded DSV4 kernel must agree on.
- * Current supported TP shapes are powers of two through TP16. TP1-TP8 assign
- * whole attention output groups to ranks. TP16 assigns one group to each rank
- * pair and splits that group's input columns; every rank still emits a full
- * hidden partial for the device all-reduce. PP stages own contiguous balanced
- * layer slices. Every shape fails closed unless all splits divide exactly.
- */
 SparkStatus SparkDsv4TpDeriveNodeConfig(
 	const SparkDsv4TpShapeDescriptor *shape,
 	SparkDsv4TpNodeConfig *config_out);

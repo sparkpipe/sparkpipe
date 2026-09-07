@@ -10,34 +10,11 @@
 #include "sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
-/*
- * Qwen 3.6 resident decode stage, hardware validation (sm_121a).
- *
- * Two tiers, one binary. The KERNEL tier runs the module's CUDA kernels on
- * synthetic inputs and compares against fp32 CPU oracles - the same
- * formulas validation/spark_qwen4_flash_reference.c pins against modeling_qwen4_exp,
- * restated here so this translation unit stays self-contained under nvcc.
- * The MODULE tier loads a stage pack through the module's own
- * Initialize/Execute (the pack path comes from SPARK_QWEN4_FLASH_STAGE_* exactly
- * as production), drives a prefill-then-decode flow on two lanes with a
- * capture transport standing in for the ring, and checks determinism across
- * a fresh instance plus decode-vs-prefill cross-path agreement. Synthetic
- * packs exercise geometry; the real stage-0 pack runs the same checks on
- * the model's own weights.
- *
- * Every comparison prints its numbers; the thresholds are the guard, the
- * numbers are the evidence.
- */
 
 #define SPARK_QWEN4_FLASH_VALIDATION_ROWS 4u
 #define SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS 8u
 #define SPARK_QWEN4_FLASH_VALIDATION_CHUNK_TOKENS 128u
 #define SPARK_QWEN4_FLASH_VALIDATION_ATTN_TOKENS 5u
-/* KV table lanes must match the module's max_active_sequence_count
- * (the module validates lane_count == its own max). Use the firmware
- * header's build-time value, not a hardcoded 8 — this was the B16
- * validation failure: the module at B16 expected lane_count=16 but
- * the validator always supplied 8. */
 #ifndef SPARK_QWEN4_FLASH_STAGE_MAX_ACTIVE_SEQUENCES
 #define SPARK_QWEN4_FLASH_STAGE_MAX_ACTIVE_SEQUENCES 8u
 #endif
@@ -85,7 +62,7 @@ static uint16_t SparkQwen4FlashValBf16(float value)
 {
 	uint32_t bits;
 	memcpy(&bits,&value,sizeof(bits));
-	bits += 0x8000u; /* round to nearest even on the truncate */
+	bits += 0x8000u;
 	return((uint16_t)(bits >> 16u));
 }
 
@@ -97,8 +74,6 @@ static float SparkQwen4FlashValFromBf16(uint16_t value)
 	return(converted);
 }
 
-/* Fill a host buffer with random values, returned both as the bf16 they
- * become on device and as the exact upcast the oracle must see. */
 static void SparkQwen4FlashValFillBf16(uint16_t *packed, float *exact, uint64_t count, float scale)
 {
 	uint64_t index;
@@ -167,7 +142,6 @@ static int SparkQwen4FlashValReport(const char *check, const SparkQwen4FlashValM
 	return(0);
 }
 
-/* -- fp32 CPU oracles: the reference.c formulas, restated ---------------- */
 
 static float SparkQwen4FlashValSilu(float value)
 {
@@ -248,8 +222,6 @@ static void SparkQwen4FlashValRmsNorm(const float *input, const float *weight, f
 		output[element] = input[element] * inverse * weight[element];
 }
 
-/* One kv head's group of query heads against its cache, fused [query|gate]
- * input, sigmoid on the output - reference.c's SparkQwen4FlashRefAttention. */
 static void SparkQwen4FlashValAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t tokens, float epsilon)
 {
 	float qh[SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION],scores[SPARK_QWEN4_FLASH_VALIDATION_ATTN_TOKENS],probability;
@@ -287,31 +259,30 @@ static void SparkQwen4FlashValAttention(const float *q_fused, const float *k_cac
 	}
 }
 
-/* -- shared device fixture ----------------------------------------------- */
 
 typedef struct SparkQwen4FlashValDevice
 {
 	SparkQwen4FlashGdnLayerWeights gdn_weights;
 	SparkQwen4FlashAttnLayerWeights attn_weights;
 	SparkQwen4FlashGdnStatePool pool;
-	uint16_t *conv_weight;      /* CONV x 4 */
-	float *a_log;               /* HEADS */
-	float *dt_bias;             /* HEADS */
-	uint16_t *gdn_norm_weight;  /* DV */
-	uint16_t *q_norm_weight;    /* ATTN_HEAD_DIM */
+	uint16_t *conv_weight;
+	float *a_log;
+	float *dt_bias;
+	uint16_t *gdn_norm_weight;
+	uint16_t *q_norm_weight;
 	uint16_t *k_norm_weight;
-	float *state;               /* 2 lanes x HEADS x DK x DV */
-	uint16_t *conv_tail;        /* 2 lanes x CONV x 3 */
-	uint32_t *cold;             /* 2 */
-	uint32_t *lane_indices;     /* 2 */
-	uint16_t *qkv;              /* tokens x CONV */
-	uint16_t *conv_out;         /* tokens x CONV */
-	uint16_t *core_out;         /* tokens x GDN_VALUE_DIM */
-	uint16_t *z_bf16;           /* tokens x GDN_VALUE_DIM */
-	uint16_t *gated_out;        /* tokens x GDN_VALUE_DIM */
-	uint16_t *ba_bf16;          /* tokens x HEADS x 2 (decay|beta halves) */
-	float *log_decay;           /* tokens x HEADS */
-	float *beta;                /* tokens x HEADS */
+	float *state;
+	uint16_t *conv_tail;
+	uint32_t *cold;
+	uint32_t *lane_indices;
+	uint16_t *qkv;
+	uint16_t *conv_out;
+	uint16_t *core_out;
+	uint16_t *z_bf16;
+	uint16_t *gated_out;
+	uint16_t *ba_bf16;
+	float *log_decay;
+	float *beta;
 	float *chunk_qn;
 	float *chunk_kn;
 	float *chunk_cum_g;
@@ -356,8 +327,6 @@ static int SparkQwen4FlashValDeviceSetup(SparkQwen4FlashValDevice *device)
 	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_kg,vector_floats * sizeof(float));
 	if (error != cudaSuccess)
 		return(SparkQwen4FlashValCuda(error,"device_alloc"));
-	/* One GDN layer per lane, two lanes: the pool strides the launchers
-	 * read, mirroring the module's AllocatePools at layer_count 1. */
 	device->pool.abi_version = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
 	device->pool.lane_capacity = 2u;
 	device->pool.gdn_layer_count = 1u;
@@ -377,7 +346,6 @@ static int SparkQwen4FlashValDeviceSetup(SparkQwen4FlashValDevice *device)
 	return(0);
 }
 
-/* -- kernel tier ---------------------------------------------------------- */
 
 static int SparkQwen4FlashValCheckDecayBeta(SparkQwen4FlashValDevice *device)
 {
@@ -402,8 +370,6 @@ static int SparkQwen4FlashValCheckDecayBeta(SparkQwen4FlashValDevice *device)
 	error = cudaMemcpy(device->ba_bf16,host_ba,sizeof(host_ba),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->a_log,host_a,sizeof(host_a),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->dt_bias,host_bias,sizeof(host_bias),cudaMemcpyHostToDevice);
-	/* decay_pre and beta_pre are separate rows x HEADS buffers; ba_bf16
-	 * holds them back to back. */
 	if (error == cudaSuccess)
 		error = SparkQwen4FlashLaunchDecayBeta(cudaStreamPerThread,device->ba_bf16,device->ba_bf16 + SPARK_QWEN4_FLASH_VALIDATION_ROWS * SPARK_QWEN4_FLASH_HEADS,&device->gdn_weights,device->log_decay,device->beta,SPARK_QWEN4_FLASH_VALIDATION_ROWS,1u);
 	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
@@ -426,8 +392,6 @@ static int SparkQwen4FlashValCheckDecayBeta(SparkQwen4FlashValDevice *device)
 	return(SparkQwen4FlashValReport("write_gate",&metrics,1e-5,0.99999999));
 }
 
-/* One decode conv step per row over two sequential tokens, checking the tail
- * carry against the single-channel oracle run on every channel. */
 static int SparkQwen4FlashValCheckConv(SparkQwen4FlashValDevice *device)
 {
 	uint16_t *host_qkv,*host_out;
@@ -435,8 +399,6 @@ static int SparkQwen4FlashValCheckConv(SparkQwen4FlashValDevice *device)
 	uint32_t token,row;
 	uint32_t cold[2] = {1u,1u};
 	uint32_t lanes[2] = {0u,1u};
-	/* Two sequential decode tokens for each of the two lanes: the launches
-	 * and the oracle both walk this [token][lane][channel] frame. */
 	const uint64_t frame_elements = (uint64_t)SPARK_QWEN4_FLASH_VALIDATION_ROWS * SPARK_QWEN4_FLASH_CONV;
 	uint64_t channel;
 	cudaError_t error;
@@ -468,8 +430,6 @@ static int SparkQwen4FlashValCheckConv(SparkQwen4FlashValDevice *device)
 				cold[0] = 0u; cold[1] = 0u;
 				error = cudaMemcpy(device->cold,cold,sizeof(cold),cudaMemcpyHostToDevice);
 			}
-			/* One token per launch, one row per lane: the launcher consumes
-			 * row r's qkv row, so slide the window by handing it row r. */
 			if (error == cudaSuccess)
 				error = SparkQwen4FlashLaunchConvUpdate(cudaStreamPerThread,device->qkv + (uint64_t)token * 2u * SPARK_QWEN4_FLASH_CONV,&device->gdn_weights,device->conv_out + (uint64_t)token * 2u * SPARK_QWEN4_FLASH_CONV,&device->pool,device->lane_indices,2u,0u,1u);
 			if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
@@ -481,8 +441,6 @@ static int SparkQwen4FlashValCheckConv(SparkQwen4FlashValDevice *device)
 		for (row = 0u; row < 2u; row++)
 			for (channel = 0u; channel < SPARK_QWEN4_FLASH_CONV; channel++)
 			{
-				/* The oracle conv, one channel, fed the two tokens in order
-				 * with the tail carried between them. */
 				float input[2],output[2],tail[3];
 				uint64_t base = ((uint64_t)row * SPARK_QWEN4_FLASH_CONV) + channel;
 				input[0] = exact[base];
@@ -521,8 +479,6 @@ static int SparkQwen4FlashValCheckConv(SparkQwen4FlashValDevice *device)
 	return(SparkQwen4FlashValReport("conv_update",&metrics,5e-3,0.99999));
 }
 
-/* One GDN recurrence step per row: row 0 cold, row 1 warm with a random
- * resident state, compared against the per-head oracle recurrence. */
 static int SparkQwen4FlashValCheckGdnStep(SparkQwen4FlashValDevice *device)
 {
 	uint64_t state_elements = (uint64_t)SPARK_QWEN4_FLASH_HEADS * SPARK_QWEN4_FLASH_DK * SPARK_QWEN4_FLASH_DV;
@@ -545,7 +501,7 @@ static int SparkQwen4FlashValCheckGdnStep(SparkQwen4FlashValDevice *device)
 	{
 		uint64_t index;
 		for (index = 0u; index < state_elements; index++)
-			state_host[state_elements + index] = SparkQwen4FlashValUniform(0.25f); /* lane 1 warm */
+			state_host[state_elements + index] = SparkQwen4FlashValUniform(0.25f);
 		memcpy(state_reference,state_host,2ull * state_elements * sizeof(float));
 	}
 	{
@@ -569,7 +525,6 @@ static int SparkQwen4FlashValCheckGdnStep(SparkQwen4FlashValDevice *device)
 		if (error == cudaSuccess) error = cudaMemcpy(state_host,device->state,2ull * state_elements * sizeof(float),cudaMemcpyDeviceToHost);
 		if (SparkQwen4FlashValCuda(error,"gdn_step") != 0)
 			return(1);
-		/* Oracle: per (row, value head), key head h/3, one token. */
 		for (row = 0u; row < 2u; row++)
 			for (head = 0u; head < SPARK_QWEN4_FLASH_HEADS; head++)
 			{
@@ -613,8 +568,8 @@ static int SparkQwen4FlashValCheckGatedNorm(SparkQwen4FlashValDevice *device)
 	if (packed == 0 || exact == 0 || expected == 0 || actual == 0 || norm_packed == 0 || norm_exact == 0)
 		return(SparkQwen4FlashValFail("gated_norm","host_alloc"));
 	SparkQwen4FlashValRandomState = 51u;
-	SparkQwen4FlashValFillBf16(packed,exact,elements,1.0f);              /* core */
-	SparkQwen4FlashValFillBf16(packed + elements,exact + elements,elements,1.0f); /* z */
+	SparkQwen4FlashValFillBf16(packed,exact,elements,1.0f);
+	SparkQwen4FlashValFillBf16(packed + elements,exact + elements,elements,1.0f);
 	SparkQwen4FlashValFillBf16(norm_packed,norm_exact,SPARK_QWEN4_FLASH_DV,0.5f);
 	error = cudaMemcpy(device->core_out,packed,elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->z_bf16,packed + elements,elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
@@ -644,8 +599,6 @@ static int SparkQwen4FlashValCheckGatedNorm(SparkQwen4FlashValDevice *device)
 	return(SparkQwen4FlashValReport("gated_norm",&metrics,5e-3,0.99999));
 }
 
-/* Five tokens through AttnPrepare into a one-block paged cache, then one
- * decode of the newest position, against the per-kv-head oracle. */
 static int SparkQwen4FlashValCheckAttention(SparkQwen4FlashValDevice *device)
 {
 	const uint32_t tokens = SPARK_QWEN4_FLASH_VALIDATION_ATTN_TOKENS;
@@ -690,7 +643,7 @@ static int SparkQwen4FlashValCheckAttention(SparkQwen4FlashValDevice *device)
 	SparkQwen4FlashValFillBf16(norm_packed + SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION,k_norm_exact,SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION,0.5f);
 	for (token = 0u; token < tokens; token++)
 	{
-		slot_mapping[token] = token;       /* block 0, slots 0..tokens-1 */
+		slot_mapping[token] = token;
 		positions[token] = token;
 	}
 	error = cudaMalloc(&kv_cache,cache_elements * sizeof(uint16_t));
@@ -716,8 +669,6 @@ static int SparkQwen4FlashValCheckAttention(SparkQwen4FlashValDevice *device)
 	if (error == cudaSuccess) error = cudaMemcpy(device_context,context,sizeof(context),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->q_norm_weight,norm_packed,SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->k_norm_weight,norm_packed + SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION,SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	/* The cache layout: one layer, one block. layer stride == block stride
-	 * at cache_layer_count 1, mirroring AllocatePools. */
 	if (error == cudaSuccess)
 		error = SparkQwen4FlashLaunchAttnPrepare(cudaStreamPerThread,device_q,device_k,device_v,&device->attn_weights,kv_cache,device_slots,device_positions,tokens,0u,cache_elements,cache_elements,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON,1u,0u);
 	memset(&table,0,sizeof(table));
@@ -737,8 +688,6 @@ static int SparkQwen4FlashValCheckAttention(SparkQwen4FlashValDevice *device)
 	if (error == cudaSuccess) error = cudaMemcpy(out_packed,device_out,SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),cudaMemcpyDeviceToHost);
 	if (SparkQwen4FlashValCuda(error,"attn_decode") != 0)
 		return(1);
-	/* Oracle: normalize + rope the cached K at its position, then one
-	 * RefAttention call per kv head over the newest fused query row. */
 	{
 		float *k_cache = (float *)calloc((uint64_t)tokens * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION,sizeof(float));
 		float *v_cache = (float *)calloc((uint64_t)tokens * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION,sizeof(float));
@@ -778,8 +727,6 @@ static int SparkQwen4FlashValCheckAttention(SparkQwen4FlashValDevice *device)
 	return(SparkQwen4FlashValReport("attn_decode",&metrics,5e-3,0.99999));
 }
 
-/* 128 tokens (two chunks) through the chunk kernels on one lane, state and
- * per-token outputs against the recurrence oracle on the same inputs. */
 static int SparkQwen4FlashValCheckGdnChunk(SparkQwen4FlashValDevice *device)
 {
 	const uint32_t tokens = SPARK_QWEN4_FLASH_VALIDATION_CHUNK_TOKENS;
@@ -813,8 +760,6 @@ static int SparkQwen4FlashValCheckGdnChunk(SparkQwen4FlashValDevice *device)
 	if (error == cudaSuccess) error = cudaMemcpy(device->qkv,conv_packed,conv_elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->log_decay,log_decay,(uint64_t)tokens * SPARK_QWEN4_FLASH_HEADS * sizeof(float),cudaMemcpyHostToDevice);
 	if (error == cudaSuccess) error = cudaMemcpy(device->beta,beta,(uint64_t)tokens * SPARK_QWEN4_FLASH_HEADS * sizeof(float),cudaMemcpyHostToDevice);
-	/* The launcher walks ONE chunk per call (token_count <= GDN_CHUNK_TOKENS);
-	 * the module loops it over the frame, so do the same here. */
 	for (uint32_t base = 0u; base < tokens && error == cudaSuccess; base += SPARK_QWEN4_FLASH_MODEL_GDN_CHUNK_TOKENS)
 		error = SparkQwen4FlashLaunchGdnChunk(cudaStreamPerThread,
 			device->qkv + ((uint64_t)base * SPARK_QWEN4_FLASH_CONV),
@@ -853,9 +798,6 @@ static int SparkQwen4FlashValCheckGdnChunk(SparkQwen4FlashValDevice *device)
 			expected + ((uint64_t)head * tokens * SPARK_QWEN4_FLASH_DV),tokens);
 		free(q_head); free(k_head); free(v_head); free(g_head); free(b_head);
 	}
-	/* The recurrence oracle writes each head's outputs into its own
-	 * tokens x dv slab; the kernel's core_out is [token][head][dv] -
-	 * re-map before comparing. */
 	{
 		float *expected_ordered = (float *)calloc(out_elements,sizeof(float));
 		if (expected_ordered == 0)
@@ -878,12 +820,9 @@ static int SparkQwen4FlashValCheckGdnChunk(SparkQwen4FlashValDevice *device)
 	return(SparkQwen4FlashValReport("gdn_chunk_state",&metrics,2e-2,0.999));
 }
 
-/* -- module tier ---------------------------------------------------------- */
 
 typedef struct SparkQwen4FlashValCapture
 {
-	/* A prefill frame sends token_count rows, so the capture must hold the
-	 * larger of the prefill width and the decode row count. */
 	uint16_t hidden[SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
 	uint32_t sends;
 } SparkQwen4FlashValCapture;
@@ -904,7 +843,6 @@ static SparkStatus SparkQwen4FlashValCaptureSend(SparkHiddenTransportSession *se
 typedef struct SparkQwen4FlashValModule
 {
 	void *state;
-	/* Prefill frames carry PREFILL_TOKENS ids; decode uses only ROWS lanes. */
 	uint32_t token_ids[SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS];
 	uint32_t output_token_ids[SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS];
 	uint32_t head_stage;
@@ -933,9 +871,6 @@ static int SparkQwen4FlashValModuleInitialize(SparkQwen4FlashValModule *module)
 	uint32_t lane;
 	cudaError_t error;
 	memset(module,0,sizeof(*module));
-	/* head_stage: the stage owns the final head iff it is the whole-stack
-	 * last stage (STAGE_COUNT == 1), independent of TP_DEGREE (TP1
-	 * full-width is whole-stack and owns the head). */
 	stage_count_text = getenv("SPARK_QWEN4_FLASH_STAGE_COUNT");
 	module->head_stage = stage_count_text != 0 && strcmp(stage_count_text,"1") == 0 ? 1u : 0u;
 	for (lane = 0u; lane < SPARK_QWEN4_FLASH_VALIDATION_KV_LANES; lane++)
@@ -984,8 +919,6 @@ static int SparkQwen4FlashValModuleInitialize(SparkQwen4FlashValModule *module)
 	return(0);
 }
 
-/* flags select decode vs prefill; rows and the lane/position/sequence arrays
- * are already staged on the module struct. */
 static int SparkQwen4FlashValModuleExecute(SparkQwen4FlashValModule *module, uint32_t prefill, uint32_t rows, uint32_t lane, uint32_t draft_count, const SparkQwen4FlashMtpDraftView *draft_view)
 {
 	SparkStatus status;
@@ -1067,11 +1000,6 @@ static int SparkQwen4FlashValCheckFinite(const char *check, const uint16_t *hidd
 	return(0);
 }
 
-/* MTP draft chain qualification (A1 step 2): continue lane 0 with a decode
- * at position 9 and draft the next two tokens via MTP_DRAFT_AFTER, then check
- * the draft ids are in-vocab. There is no CPU-oracle MTP reference, so
- * in-vocab is the feasible qualification here; determinism is covered by the
- * module_determinism check above (bit-exact fresh-instance re-execution). */
 static int SparkQwen4FlashValCheckMtpDraft(SparkQwen4FlashValModule *module)
 {
 	SparkQwen4FlashMtpDraftView draft_view;
@@ -1099,10 +1027,6 @@ static int SparkQwen4FlashValCheckMtpDraft(SparkQwen4FlashValModule *module)
 	return(0);
 }
 
-/* The module flow: prefill 8 tokens on lane 0, decode position 8 on lane 0;
- * prefill the same 8 on lane 1 plus a 1-token warm prefill at position 8.
- * The decode path (recurrent step) and the warm-prefill path (chunk walk)
- * must land on the same hidden. Returns bit-exactness separately. */
 static int SparkQwen4FlashValCheckModule(void)
 {
 	SparkQwen4FlashValModule module;
@@ -1118,8 +1042,6 @@ static int SparkQwen4FlashValCheckModule(void)
 	SparkStatus status;
 	if (SparkQwen4FlashValModuleInitialize(&module) != 0)
 		return(1);
-	/* Admission and snapshot smoke: a decode admit must accept, and the
-	 * snapshot must succeed. Run before the frames so pipeline slots are free. */
 	memset(&admission,0,sizeof(admission));
 	admission.descriptor_bytes = sizeof(admission);
 	admission.program_id = 1u;
@@ -1147,7 +1069,6 @@ static int SparkQwen4FlashValCheckModule(void)
 		return(SparkQwen4FlashValFail("module_prefill",module.head_stage != 0u ? "unexpected_hidden_send" : "no_hidden_send"));
 	if (module.head_stage == 0u && SparkQwen4FlashValCheckFinite("module_prefill",module.capture.hidden,SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS) != 0)
 		return(1);
-	/* Decode position 8 on lane 0, token chosen arbitrarily but fixed. */
 	module.token_ids[0] = 4242u;
 	module.lanes[0] = 0u;
 	module.positions[0] = SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS;
@@ -1162,8 +1083,6 @@ static int SparkQwen4FlashValCheckModule(void)
 	}
 	else
 		decode_token = module.output_token_ids[0];
-	/* Lane 1: same 8 tokens as a fresh sequence, then a warm 1-token
-	 * prefill at position 8 - the chunk-walk twin of lane 0's decode. */
 	for (index = 0u; index < SPARK_QWEN4_FLASH_VALIDATION_PREFILL_TOKENS; index++)
 		module.token_ids[index] = 1000u + (index * 37u) % 200000u;
 	module.positions[0] = 0u;
@@ -1197,10 +1116,6 @@ static int SparkQwen4FlashValCheckModule(void)
 		printf("qwen4_flash_validation check=module_decode_vs_prefill decode_token=%u prefill_token=%u bit_exact=%d\n",decode_token,prefill_token,decode_token == prefill_token ? 1 : 0);
 		if ( decode_token != prefill_token )
 		{
-			/* SPARK_QWEN4_FLASH_VALIDATION_TOKEN_PARITY=warn downgrades the
-			 * token flip to a printed warning so the remaining ladder (MTP
-			 * draft, determinism) still executes on a divergence - a
-			 * diagnostic mode for bisecting, never a pass. */
 			if ( getenv("SPARK_QWEN4_FLASH_VALIDATION_TOKEN_PARITY") != 0 &&
 				strcmp(getenv("SPARK_QWEN4_FLASH_VALIDATION_TOKEN_PARITY"),"warn") == 0 )
 				printf("qwen4_flash_validation check=module_decode_vs_prefill token_parity=warn (continuing per env)\n");
@@ -1208,11 +1123,6 @@ static int SparkQwen4FlashValCheckModule(void)
 				return(SparkQwen4FlashValFail("module_decode_vs_prefill","token_mismatch"));
 		}
 	}
-	/* Determinism: a fresh instance must reproduce lane 0's decode hidden
-	 * bit for bit. Two whole-stack TP1 instances (pack + lane state) exceed
-	 * the GB10 CUDA window, so the MTP check runs on the live instance and
-	 * the first instance is destroyed before the rerun initializes; the
-	 * comparison targets were captured into module-independent arrays. */
 	if (module.head_stage != 0u && SparkQwen4FlashValCheckMtpDraft(&module) != 0)
 		return(1);
 	SparkQwen4FlashResidentDecodeStageDestroy(module.state);
@@ -1254,7 +1164,6 @@ static int SparkQwen4FlashValCheckModule(void)
 	return(0);
 }
 
-/* -- v2 semantics oracle: hc residual (Qwen4ExpTextGatedResidual) ---------- */
 
 static void SparkQwen4FlashValHcGroupNorm(const float *streams, const float *weight, float *normed, uint32_t rows)
 {
@@ -1270,7 +1179,7 @@ static void SparkQwen4FlashValHcGroupNorm(const float *streams, const float *wei
 static int SparkQwen4FlashValCheckHcResidual(void)
 {
 	const uint32_t rows = 4u;
-	const uint64_t stream_count = (uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH; /* 40960 */
+	const uint64_t stream_count = (uint64_t)rows * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH;
 	uint16_t *streams_bf16 = 0,*normed_bf16 = 0,*up_bf16 = 0,*lowrank_bf16 = 0,*inject_bf16 = 0,*mixed_bf16 = 0,*delta_bf16 = 0,*weight_bf16 = 0,*down_bf16 = 0,*up_weight_bf16 = 0,*inject_weight_bf16 = 0;
 	static uint16_t host_streams[4u * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
 	static uint16_t host_out[4u * SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH];
@@ -1322,8 +1231,6 @@ static int SparkQwen4FlashValCheckHcResidual(void)
 	if (error != cudaSuccess)
 		return(SparkQwen4FlashValCuda(error,"hc_alloc"));
 	{
-		/* Heap staging: the widest upload is 3.3M bf16 (6.5MB), far past
-		 * any safe stack frame. */
 		uint16_t *staging = (uint16_t *)malloc((size_t)SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION * 2u);
 		if ( staging == 0 )
 			return(SparkQwen4FlashValFail("hc_residual","staging_alloc"));
@@ -1385,8 +1292,6 @@ static int SparkQwen4FlashValCheckHcResidual(void)
 	cudaFree(streams_bf16); cudaFree(normed_bf16); cudaFree(up_bf16); cudaFree(lowrank_bf16);
 	cudaFree(inject_bf16); cudaFree(mixed_bf16); cudaFree(delta_bf16); cudaFree(weight_bf16);
 	cudaFree(down_bf16); cudaFree(up_weight_bf16); cudaFree(inject_weight_bf16);
-	/* CPU oracle: the reference chain in f32 (weights exact; the kernel's
-	 * bf16 staging is the only rounding difference). */
 	SparkQwen4FlashValHcGroupNorm(streams,weight,normed,rows);
 	for (row = 0u; row < rows; row++)
 	{
@@ -1427,13 +1332,7 @@ static int SparkQwen4FlashValCheckHcResidual(void)
 	return(SparkQwen4FlashValReport("hc_residual",&metrics,5e-2,0.999));
 }
 
-/* -- v2 semantics oracle: indexer selection (Qwen4ExpTextQSAIndexer) ------- */
 
-/* Feeds TOKENS keys one per prepare call (the module's per-token flow),
- * scores + selects at the final position, and compares the u8 mask against
- * the CPU port: f32-mean pooled keys rounded to bf16, RMSNorm(128), partial
- * RoPE at the block start, relu per-head dots summed over heads / sqrt(128),
- * top budget/ratio blocks by (score, smaller-block) plus the tail. */
 #define SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS 2100u
 static int SparkQwen4FlashValCheckIndexer(void)
 {
@@ -1484,8 +1383,6 @@ static int SparkQwen4FlashValCheckIndexer(void)
 	if (error == cudaSuccess) error = cudaMalloc((void **)&scores_u32,(uint64_t)blocks * sizeof(uint32_t));
 	if (error != cudaSuccess)
 		return(SparkQwen4FlashValCuda(error,"indexer_alloc"));
-	/* qk uploads move per token below (the projection output differs per
-	 * position in any real frame). */
 	{
 		uint16_t staging[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
 		for (uint32_t index = 0; index < SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION && error == cudaSuccess; index++)
@@ -1498,8 +1395,6 @@ static int SparkQwen4FlashValCheckIndexer(void)
 	memset(&weights,0,sizeof(weights));
 	weights.q_norm_weight_bf16 = q_norm_bf16;
 	weights.k_norm_weight_bf16 = k_norm_bf16;
-	/* Per-token prepare: keys land at their slot; the completing token of
-	 * each block pools. The final call also leaves the rotated queries. */
 	cudaMemset(pooled_cache,0xab,(uint64_t)blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION * 2u);
 	for (uint32_t token = 0u; token < tokens && error == cudaSuccess; token++)
 	{
@@ -1524,8 +1419,6 @@ static int SparkQwen4FlashValCheckIndexer(void)
 			if (error == cudaSuccess) error = cudaMemcpy(device_counts,block_counts,sizeof(block_counts),cudaMemcpyHostToDevice);
 			if (error == cudaSuccess) error = cudaMemcpy(device_lane,lane_indices,sizeof(lane_indices),cudaMemcpyHostToDevice);
 			if (error == cudaSuccess) error = cudaMemcpy(device_context,context,sizeof(context),cudaMemcpyHostToDevice);
-			/* The table must carry DEVICE pointers - the kernels dereference
-			 * the lane block counts directly. */
 			table.physical_block_indices = device_blocks;
 			table.lane_physical_block_counts = device_counts;
 			if (error == cudaSuccess) error = SparkQwen4FlashLaunchIndexerSelect(cudaStreamPerThread,query_bf16,pooled_cache,&table,device_lane,device_context,mask_u8,scores_u32,1u,tokens,blocks);
@@ -1542,8 +1435,6 @@ static int SparkQwen4FlashValCheckIndexer(void)
 		return(1);
 	cudaFree(qk_bf16); cudaFree(query_bf16); cudaFree(raw_cache); cudaFree(pooled_cache);
 	cudaFree(q_norm_bf16); cudaFree(k_norm_bf16); cudaFree(slot_mapping); cudaFree(row_positions); cudaFree(mask_u8); cudaFree(scores_u32);
-	/* CPU port: every token's key (same RMSNorm), pooled per block with the
-	 * bf16-rounded f32 mean, rope at the block start; the final query. */
 	for (uint32_t token = 0u; token < tokens; token++)
 	{
 		float key[SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION];
@@ -1590,7 +1481,6 @@ static int SparkQwen4FlashValCheckIndexer(void)
 			query_host[(uint64_t)head * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION + element] = SparkQwen4FlashValFromBf16(SparkQwen4FlashValBf16(qh[element]));
 	}
 	{
-		/* Scores and top-k with the (score, smaller-block) rule. */
 		for (uint32_t block = 0u; block < blocks; block++)
 		{
 			float total = 0.0f;
@@ -1607,7 +1497,6 @@ static int SparkQwen4FlashValCheckIndexer(void)
 			mask_reference[token] = 0.0f;
 		for (uint32_t token = blocks * SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO; token < tokens; token++)
 			mask_reference[token] = 1.0f;
-		/* Select top-k: repeatedly take the max (score, smaller index wins). */
 		static uint8_t taken[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS / 4u];
 		memset(taken,0,sizeof(taken));
 		for (uint32_t pick = 0u; pick < block_topk; pick++)
@@ -1624,18 +1513,10 @@ static int SparkQwen4FlashValCheckIndexer(void)
 					mask_reference[(uint64_t)block * SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO + tap] = 1.0f;
 	}
 	{
-		/* Exact mask equality is precision-limited AT the selection boundary:
-		 * kernel and oracle scores differ by bf16 accumulation noise, so a
-		 * block whose score sits within epsilon of the k-th score may land
-		 * on either side. Mismatches are therefore accepted only for blocks
-		 * whose oracle score is within 2e-3 of the oracle k-th score (the
-		 * module itself is deterministic: identical inputs produce
-		 * identical masks, which the decode-vs-prefill gate proves). */
 		uint64_t mismatches = 0,boundary = 0;
 		float kth_score = -3.0e38f;
 		for (uint32_t pick = 0u,seen = 0u; pick < blocks; pick++)
 		{
-			/* k-th largest oracle score by selection scan. */
 		}
 		{
 			static uint8_t ranked[SPARK_QWEN4_FLASH_VALIDATION_INDEXER_TOKENS / 4u];
@@ -1669,14 +1550,7 @@ static int SparkQwen4FlashValCheckIndexer(void)
 	return(0);
 }
 
-/* -- v2 semantics oracle: PLE n-gram block (Qwen4ExpTextNGramEmbedding +
- * Qwen4ExpTextPLELayer) ---------------------------------------------- */
 
-/* Small head vocab primes so the whole table fits in a test buffer; the
- * hash math (i64 wrap multiply + XOR, torch.remainder sign, EOS-segmented
- * shifts) is exactly the checkpoint-scale math. The gather must be
- * BIT-EXACT (ids are integers; rows are bf16 copies). The gate + dilated
- * conv chain compares at the family's bf16 cosine thresholds. */
 #define SPARK_QWEN4_FLASH_VALIDATION_PLE_ROWS 4u
 static int SparkQwen4FlashValCheckPle(void)
 {
@@ -1689,8 +1563,6 @@ static int SparkQwen4FlashValCheckPle(void)
 	int64_t multipliers[3] = {(int64_t)0x2545f4914f6cdd1dull,(int64_t)-0x9e3779b97f4a7c15ll,(int64_t)0xbf58476d1ce4e5b9ull};
 	uint32_t histories[rows * 3u];
 	uint32_t current[rows];
-	/* Row 1 carries an EOS in the carried context (segment reset); row 3 is
-	 * cold (both context slots EOS by module convention). */
 	histories[0] = 11u; histories[1] = 12u;
 	histories[3] = SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID; histories[4] = 7u;
 	histories[6] = 3u; histories[7] = SPARK_QWEN4_FLASH_MODEL_EOS_TOKEN_ID;
@@ -1739,9 +1611,6 @@ static int SparkQwen4FlashValCheckPle(void)
 	if (SparkQwen4FlashValCuda(error,"ple_hash") != 0)
 		return(1);
 	cudaFree(table_bf16); cudaFree(history_u32); cudaFree(multipliers_dev); cudaFree(vocabs_dev); cudaFree(offsets_dev);
-	/* CPU hash: per head, n-gram order 2 (heads 0..7) mixes 2 shifted
-	 * tokens, order 3 (heads 8..15) mixes 3; EOS segmentation over the
-	 * 3-token window; u64 wrapping multiply; non-negative remainder. */
 	for (uint32_t row = 0u; row < rows; row++)
 	{
 		const uint32_t *window = histories + (row * 3u);

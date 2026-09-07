@@ -111,16 +111,6 @@ typedef struct SparkModelBatchEngineView
 #define SPARK_MODEL_BATCH_ENGINE_VIEW_BYTES \
 	((uint32_t)sizeof(SparkModelBatchEngineView))
 
-/*
- * One event-loop thread owns submit/cancel/progress/shutdown/destroy. Event
- * callbacks may submit new requests, but must not recursively progress,
- * shutdown, or destroy the engine. Request token storage and all dispatch
- * workspaces are allocated once during connect; no request or dispatch
- * allocation occurs on the hot path. BeginShutdown closes admission and marks
- * every live request for cancellation. The owner must continue Progress until
- * live_request_count and inflight_submission_count are zero; Destroy returns
- * BUSY instead of abandoning model-owned resident state before then.
- */
 SparkStatus SparkModelBatchEngineConnect(
 	const SparkModelBatchEngineConfiguration *configuration,
 	SparkModelBatchEngine **engine_out);
@@ -138,11 +128,6 @@ SparkStatus SparkModelBatchEngineProgress(
 SparkStatus SparkModelBatchEngineCloseAdmission(
 	SparkModelBatchEngine *engine);
 
-/* Reopen admission for continuous serving: the engine auto-closes
- * admission when the last tracked request reaches terminal (designed
- * for one-shot batch tools). Serving processes call this before each
- * new Submit to keep the admission window open. Also clears any
- * sticky failure from a prior request. */
 SparkStatus SparkModelBatchEngineReopenAdmission(
 	SparkModelBatchEngine *engine);
 SparkStatus SparkModelBatchEngineBeginShutdown(

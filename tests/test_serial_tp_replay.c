@@ -1,13 +1,3 @@
-/* Pin and self-test the model-neutral serial-TP replay harness.
- *
- * Host paths only: bf16 conversion, the four collective emulations, the
- * budget-checked serial sweep, and the golden compare are all exercised here
- * with no CUDA. A caller wires the CUDA side through its module API and the
- * TP_STANDALONE-style collective no-op (see docs/serial_tp_replay.md); this
- * test proves the host half the caller builds on.
- *
- * Returns 0 on pass, non-zero on the first failure.
- */
 #include "serial_tp_replay.h"
 
 #include <stdio.h>
@@ -16,7 +6,6 @@
 
 #define PIN(expr) _Static_assert((expr), #expr)
 
-/* ABI + budget pins */
 PIN(SPARK_SERIAL_TP_REPLAY_ABI_VERSION == 1u);
 PIN(SPARK_SERIAL_TP_REPLAY_DEFAULT_DEVICE_BUDGET_BYTES == (108ull << 30));
 PIN(SPARK_SERIAL_TP_COLLECTIVE_ALL_REDUCE_SUM_BF16 == 0u);
@@ -27,7 +16,6 @@ PIN(SPARK_SERIAL_TP_COLLECTIVE_IDENTITY == 3u);
 static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
 
-/* bf16 round-trip through fp32 must be exact for bf16-representable values. */
 static void test_bf16_roundtrip(void)
 {
 	uint16_t code;
@@ -42,12 +30,11 @@ static void test_bf16_roundtrip(void)
 			return;
 		}
 	}
-	CHECK(spark_serial_tp_bf16_to_f32(0x3f80) == 1.0f);          /* 1.0 */
-	CHECK(spark_serial_tp_bf16_to_f32(0x4000) == 2.0f);          /* 2.0 */
-	CHECK(spark_serial_tp_bf16_to_f32(0xc000) == -2.0f);         /* -2.0 */
+	CHECK(spark_serial_tp_bf16_to_f32(0x3f80) == 1.0f);
+	CHECK(spark_serial_tp_bf16_to_f32(0x4000) == 2.0f);
+	CHECK(spark_serial_tp_bf16_to_f32(0xc000) == -2.0f);
 }
 
-/* all-reduce sum: rank r contributes (r+1) * value; sum = tp*(tp+1)/2 * value. */
 static void test_all_reduce_sum(void)
 {
 	enum { TP = 4, N = 8 };
@@ -63,7 +50,6 @@ static void test_all_reduce_sum(void)
 			(float)(TP * (TP + 1u) / 2u) * (float)(i + 1u));
 }
 
-/* reduce-scatter: rank r gets the r-th slice summed over all ranks. */
 static void test_reduce_scatter(void)
 {
 	enum { TP = 4, N = 8 };
@@ -72,13 +58,11 @@ static void test_reduce_scatter(void)
 	for (r = 0u; r < TP; ++r)
 		for (i = 0u; i < N; ++i)
 			partials[(r * N) + i] = spark_serial_tp_f32_to_bf16((float)(i + 1u));
-	/* every rank contributes the same [1..8]; rank 1's slice is elements 2,3 */
 	spark_serial_tp_reduce_scatter_bf16(partials, TP, N, 1u, out);
 	CHECK(spark_serial_tp_bf16_to_f32(out[0]) == 3.0f * (float)TP);
 	CHECK(spark_serial_tp_bf16_to_f32(out[1]) == 4.0f * (float)TP);
 }
 
-/* u64 maxloc: max value and the lowest rank achieving it. */
 static void test_u64_maxloc(void)
 {
 	enum { TP = 3, N = 4 };
@@ -94,12 +78,11 @@ static void test_u64_maxloc(void)
 	CHECK(values[3] == 9ull && ranks[3] == 1u);
 }
 
-/* ---- fake 2-rank row-parallel stage driving the sweep + compare ---- */
 struct FakeStage
 {
-	uint32_t rank;              /* rank passed to run_rank */
-	uint32_t call_count;        /* ranks run so far */
-	uint32_t fail_on_rank;      /* UINT32_MAX = never */
+	uint32_t rank;
+	uint32_t call_count;
+	uint32_t fail_on_rank;
 	uint64_t shard_bytes;
 	int load_fail;
 	int run_fail;
@@ -137,7 +120,6 @@ static int fake_run(uint32_t rank, const uint16_t *input_bf16,
 	s->call_count++;
 	if (s->run_fail || rank == s->fail_on_rank)
 		return -1;
-	/* partial[i] = input[i] * (rank + 1) */
 	for (i = 0u; i < partial_elements; ++i)
 	{
 		float v = input_bf16 != 0
@@ -158,7 +140,7 @@ static void test_sweep_and_compare(void)
 	uint64_t i;
 
 	memset(&s, 0, sizeof(s));
-	s.shard_bytes = 1u << 30;       /* 1 GiB fake shard */
+	s.shard_bytes = 1u << 30;
 	s.fail_on_rank = 0xffffffffu;
 	hooks.load_shard = fake_load;
 	hooks.free_shard = fake_free;
@@ -171,12 +153,10 @@ static void test_sweep_and_compare(void)
 	for (i = 0u; i < N; ++i)
 		input[i] = spark_serial_tp_f32_to_bf16((float)(i + 1u));
 
-	/* first sweep from input: partials[r][i] = input[i] * (r+1) */
 	CHECK(spark_serial_tp_sweep(TP, N, input, N, partials, &hooks, &s, &budget) == 0);
 	CHECK(s.call_count == TP);
 	CHECK(budget.held_bytes == 0u);
 	CHECK(budget.peak_held_bytes == s.shard_bytes);
-	/* all-reduce: input[i] * (1 + 2) = 3 * input[i] */
 	spark_serial_tp_all_reduce_sum_bf16(partials, TP, N, reduced);
 	for (i = 0u; i < N; ++i)
 	{
@@ -186,10 +166,9 @@ static void test_sweep_and_compare(void)
 	}
 	CHECK(spark_serial_tp_compare_exact(reduced, N, golden) == 0);
 
-	/* budget overflow: a shard larger than the cap is rejected */
 	budget.held_bytes = 0u;
 	budget.peak_held_bytes = 0u;
-	budget.cap_bytes = 1u << 20;    /* 1 MiB < 1 GiB shard */
+	budget.cap_bytes = 1u << 20;
 	CHECK(spark_serial_tp_sweep(TP, N, input, N, partials, &hooks, &s, &budget) == -3);
 	CHECK(budget.held_bytes == 0u);
 }

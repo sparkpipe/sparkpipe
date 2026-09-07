@@ -177,9 +177,6 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
         stream);
 }
 
-// INTERLEAVED_B recorder shims: the pack V2 interleaved launchers record the
-// same way as the plain weight-only launchers (the host layer gate only
-// inspects dataflow, not the staged cell grid), at the interleaved TILE_K.
 template<
     class WeightFormat,
     uint32_t TILE_N,
@@ -277,8 +274,6 @@ static int32_t LmGemmLaunch(
             stream);
 }
 
-// GEMM-008 mirror: the shape-based TILE_K fallback records the selected tile
-// so host tests can pin the dispatch without a CUDA toolchain.
 template<class Format, uint32_t TILE_N, uint32_t STAGES, uint32_t WARPS>
 static int32_t LmGemmLaunchTileK(
     LmGemmArguments *args,

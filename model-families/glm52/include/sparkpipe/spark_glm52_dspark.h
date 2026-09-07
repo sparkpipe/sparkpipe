@@ -9,11 +9,6 @@
 extern "C" {
 #endif
 
-/* GLM 5.2 DSpark ABI surface. The drafter constants are neutral
- * (spark_dspark_drafter.h); the dispatch-policy structs and core now live
- * under include/sparkpipe/spark_speculation_policy.h; this header keeps
- * the GLM52 target selection, the legacy constant/type/function aliases,
- * and the GLM52-specific hidden-tap-plan structs. */
 #define SPARK_DSPARK_TARGET_GLM52 1
 #include "sparkpipe/spark_dspark_drafter.h"
 #include "sparkpipe/spark_speculation_policy.h"
@@ -55,8 +50,6 @@ extern "C" {
 #define SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_REJECTED SPARK_DSPARK_VERIFY_RESULT_FLAG_REJECTED
 #define SPARK_GLM52_DSPARK_VERIFY_RESULT_KNOWN_FLAGS SPARK_DSPARK_VERIFY_RESULT_KNOWN_FLAGS
 
-/* Descriptor bytes over the legacy type aliases (the neutral header owns the
- * layouts now; these macros keep the legacy names compiling). */
 #define SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkSpeculatorConfiguration))
 #define SPARK_GLM52_DSPARK_DESCRIPTOR_BYTES \
@@ -75,7 +68,6 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52DsparkHiddenTapPlan))
 
 
-/* Legacy type aliases over the neutral policy structs. */
 typedef SparkSpeculationModelContract SparkGlm52DsparkModelContract;
 typedef SparkSpeculationPolicyDraftRequest SparkGlm52DsparkDraftRequest;
 typedef SparkSpeculationPolicyDraftResult SparkGlm52DsparkDraftResult;
@@ -85,9 +77,6 @@ typedef SparkSpeculationConfiguration SparkGlm52DsparkSpeculatorConfiguration;
 typedef SparkSpeculationSpeculator SparkGlm52DsparkSpeculator;
 typedef SparkSpeculationDraftFunction SparkGlm52DsparkDraftFunction;
 
-/* Legacy function aliases over the neutral policy core. The GLM52 default
- * model contract is GLM52-shaped, so it is a real function here, implemented
- * next to the hidden tap plan in the draft-backend module. */
 SparkStatus SparkGlm52DsparkBuildDefaultModelContract(
     SparkGlm52DsparkModelContract *model_contract);
 

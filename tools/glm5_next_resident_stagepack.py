@@ -22,9 +22,14 @@ client holds a stale negative cache after the metadata incident).
 
 Usage (per rank; or --tp-all for the 16-rank set in one process, sharing
 the dequant cache):
-  python3 tools/glm5_next_resident_stagepack.py --spark <host-passed-at-runtime> \
+  python3 tools/glm5_next_resident_stagepack.py \
       --source /mnt/model-warm/glm-5.3-flash --output-dir build/stagepacks \
-      --tp-all 16 --expert-codec fp8
+      --tp-all 16
+
+The expert codec is source-driven: BF16 sources pass through verbatim,
+FP8-native sources package fp8 payload + f32 scales, and nvfp4 releases
+(redhatai GLM-5.3-Flash-NVFP4: *_packed/*_scale/*_global_scale) package
+packed e2m1 + UE4M3 planes + F32 globals verbatim - never quantized.
 """
 from __future__ import annotations
 
@@ -56,8 +61,10 @@ PAYLOAD_PACKED_WEIGHT = 4
 CODEC_BF16 = 1
 CODEC_NONE = 0
 CODEC_FP8 = 5
+CODEC_NVFP4 = 6
 SCALE_NONE = 0
 SCALE_F32 = 1
+SCALE_UE4M3_F32_GLOBAL = 4
 
 # Tensor kinds (mirror the format header enum; asserted at the bottom).
 K_EMBEDDING, K_FINAL_NORM, K_LM_HEAD = 0, 1, 2
@@ -197,6 +204,14 @@ class SourceReader:
         rows, cols = shape
         if dtype == "BF16":
             matrix = self.raw(name).view(np.uint16).reshape(rows, cols)
+        elif dtype == "F32":
+            # the pack format pins BF16 here (the kernels read bf16 convs);
+            # the nvfp4 release stores convs F32 - round-to-nearest-even
+            # downcast, bit-exact for any value that was bf16-originated
+            u32 = self.raw(name).view(np.uint32).reshape(rows, cols)
+            rounding = (u32 >> np.uint32(16)) & np.uint32(1)
+            return ((u32 + np.uint32(0x7FFF) + rounding)
+                    >> np.uint32(16)).astype(np.uint16)
         elif dtype == "F8_E4M3":
             scale_name = name + "_scale_inv"
             _dt, scale_shape, _ = self.meta(scale_name)
@@ -253,6 +268,40 @@ class SourceReader:
         scale = self.raw(scale_name).view(np.float32).reshape(scale_shape)
         expanded = np.repeat(scale, 128, axis=0)
         return np.ascontiguousarray(expanded[r0:r1, c0 // 128:c1 // 128]).tobytes()
+
+    # -- nvfp4 (community redhatai/modelopt release; VERBATIM passthrough) --
+
+    def nvfp4_payload(self, name: str, r0: int, r1: int, c0: int, c1: int) -> bytes:
+        """Packed e2m1 bytes for [r0:r1, c0:c1] ELEMENTS from <name>_packed.
+
+        The source stores two 4-bit codes per uint8 ([rows, cols//2], even
+        element in the low nibble); column slices must be nibble aligned,
+        which the expert sharding guarantees (whole 128-col k-tiles)."""
+        packed = name + "_packed"
+        dtype, shape, _ = self.meta(packed)
+        if dtype != "U8" or len(shape) != 2:
+            raise PackFailure(f"{packed}: expected 2-D U8 (packed e2m1), got {dtype} {shape}")
+        if c0 % 2 != 0 or c1 % 2 != 0:
+            raise PackFailure(f"{packed}: nvfp4 column slice [{c0}:{c1}] not nibble aligned")
+        codes = self.raw(packed).reshape(shape[0], shape[1])
+        return np.ascontiguousarray(codes[r0:r1, c0 // 2:c1 // 2]).tobytes()
+
+    def nvfp4_block_scale(self, name: str, r0: int, r1: int, c0: int, c1: int) -> bytes:
+        """UE4M3 block-scale bytes from <name>_scale ([rows, cols//16])."""
+        plane = name + "_scale"
+        dtype, shape, _ = self.meta(plane)
+        if dtype != "F8_E4M3" or len(shape) != 2:
+            raise PackFailure(f"{plane}: expected 2-D F8_E4M3, got {dtype} {shape}")
+        scales = self.raw(plane).reshape(shape[0], shape[1])
+        return np.ascontiguousarray(scales[r0:r1, c0 // 16:c1 // 16]).tobytes()
+
+    def nvfp4_weight_global(self, name: str) -> bytes:
+        """The per-tensor F32 weight global scale from <name>_global_scale."""
+        global_name = name + "_global_scale"
+        dtype, shape, _ = self.meta(global_name)
+        if dtype != "F32" or tuple(shape) not in ((), (1,)):
+            raise PackFailure(f"{global_name}: expected scalar F32, got {dtype} {shape}")
+        return to_bytes(self.raw(global_name).view(np.float32))
 
     def close(self) -> None:
         self._mmaps.clear()
@@ -415,9 +464,10 @@ class Packer:
         self.plan.append(PlanItem(entry, produce))
 
     def add_kda_conv(self, kind: int, layer: int, name: str):
-        """[dim, 1, kernel] bf16 -> packed [dim, kernel], rows-sharded."""
+        """[dim, 1, kernel] bf16 (f32 in the nvfp4 release; spine_bf16
+        downcasts) -> packed [dim, kernel], rows-sharded."""
         dtype, shape, _ = self.s.meta(name)
-        if dtype != "BF16" or shape[1] != 1:
+        if dtype not in ("BF16", "F32") or shape[1] != 1:
             raise PackFailure(f"{name}: conv shape {shape} dtype {dtype}")
         rows, kernel = shape[0], shape[2]
         s0 = s1 = 0
@@ -571,6 +621,78 @@ class Packer:
             (n for n in self.s.weight_map
              if ".mlp.experts.0.up_proj.weight" in n), None)
         experts_bf16 = probe_name is not None and self.s.meta(probe_name)[0] == "BF16"
+        probe_packed = next(
+            (n for n in self.s.weight_map
+             if ".mlp.experts.0.up_proj.weight_packed" in n), None)
+        experts_nvfp4 = (probe_packed is not None
+                         and self.s.meta(probe_packed)[0] == "U8")
+        source = self.s
+        if experts_nvfp4:
+            # community nvfp4 release (redhatai/modelopt): packed e2m1 +
+            # UE4M3 per-16 planes + one F32 weight global per expert, ALL
+            # byte-verbatim (the packer never quantizes). Scale region =
+            # EXPERTS F32 globals first (up/gate share-checked per expert),
+            # then expert-major UE4M3 planes - the layout
+            # LmWeightCodecScaleTensor hands the MoE GEMMs (UE4M3_F32_GLOBAL).
+            w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT,
+                       CODEC_NVFP4, SCALE_UE4M3_F32_GLOBAL, EXPERTS,
+                       w1_out_rows, w1_cols)
+            w2 = Entry(K_EXPERT_DOWN, layer, PAYLOAD_PACKED_WEIGHT,
+                       CODEC_NVFP4, SCALE_UE4M3_F32_GLOBAL, EXPERTS,
+                       w2_rows, w2_out_cols)
+            w1.payload_bytes = EXPERTS * w1_out_rows * (w1_cols // 2)
+            w1.scale_bytes = EXPERTS * 4 + EXPERTS * w1_out_rows * (w1_cols // 16)
+            w2.payload_bytes = EXPERTS * w2_rows * (w2_out_cols // 2)
+            w2.scale_bytes = EXPERTS * 4 + EXPERTS * w2_rows * (w2_out_cols // 16)
+
+            def w1_slices():
+                # same stacked up|gate row-slice rule as the fp8 path: a
+                # rank's slice intersects exactly one half of the stack
+                up_rows = EXPERT_INTER
+                for expert in range(EXPERTS):
+                    up = f"{prefix}.{expert}.up_proj.weight"
+                    gate = f"{prefix}.{expert}.gate_proj.weight"
+                    for name, base in ((up, 0), (gate, up_rows)):
+                        lo = max(w1_r0, base) - base
+                        hi = min(w1_r1, base + up_rows) - base
+                        if hi > lo:
+                            yield name, lo, hi
+
+            def produce_w1() -> Iterator[bytes]:
+                for name, lo, hi in w1_slices():
+                    yield source.nvfp4_payload(name, lo, hi, w1_c0, w1_c1)
+
+            def produce_w1_scale() -> Iterator[bytes]:
+                for expert in range(EXPERTS):
+                    up_g = source.nvfp4_weight_global(
+                        f"{prefix}.{expert}.up_proj.weight")
+                    gate_g = source.nvfp4_weight_global(
+                        f"{prefix}.{expert}.gate_proj.weight")
+                    if up_g != gate_g:
+                        raise PackFailure(
+                            f"layer {layer} expert {expert}: up/gate "
+                            "weight_global_scale disagree; the fused-entry "
+                            "global would be inexact")
+                    yield up_g
+                for name, lo, hi in w1_slices():
+                    yield source.nvfp4_block_scale(name, lo, hi, w1_c0, w1_c1)
+
+            def produce_w2() -> Iterator[bytes]:
+                for expert in range(EXPERTS):
+                    down = f"{prefix}.{expert}.down_proj.weight"
+                    yield source.nvfp4_payload(down, w2_r0, w2_r1, w2_c0, w2_c1)
+
+            def produce_w2_scale() -> Iterator[bytes]:
+                for expert in range(EXPERTS):
+                    down = f"{prefix}.{expert}.down_proj.weight"
+                    yield source.nvfp4_weight_global(down)
+                for expert in range(EXPERTS):
+                    down = f"{prefix}.{expert}.down_proj.weight"
+                    yield source.nvfp4_block_scale(down, w2_r0, w2_r1, w2_c0, w2_c1)
+
+            self.plan.append(PlanItem(w1, produce_w1, produce_w1_scale))
+            self.plan.append(PlanItem(w2, produce_w2, produce_w2_scale))
+            return
         codec = CODEC_BF16 if experts_bf16 else self.expert_codec
         w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT, codec,
                    SCALE_NONE if experts_bf16 else SCALE_F32, EXPERTS, w1_out_rows, w1_cols)

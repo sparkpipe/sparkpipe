@@ -1,19 +1,3 @@
-/* Flash decode qualification cells (single-node, sm_121a) — main@e83851f.
- *
- * Cell A - R1 screened head: at B1 the certified-FP8 path must emit the
- *          SAME (token, score) as the full-vocab head (the certified
- *          bound guarantees the argmax is inside the candidate set; the
- *          rescore is exact BF16). Deployment shard (vocab/16) and full
- *          vocab, 3 seeds, plus per-call timing.
- * Cell B - R3 split-K attention at flash geometry (Glm5NextKv paged pool,
- *          LATENT 512 / ROPE 0, 4 heads/rank at TP16, 256 threads): the
- *          below-threshold launch must be byte-identical to the direct
- *          single-pass kernel; the above-threshold split+combine must be
- *          deterministic and match within bf16 rounding tolerance.
- *          8K and 32K positions, plus timing.
- *
- * Exit 0 only if every property holds. Receipts print as CELL lines.
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,10 +7,8 @@
 
 #include "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu"
 
-/* the model header's vocab (the contract's output_vocab_count) - the
- * memory-contract gate forbids the literal here */
 #define FULL_VOCAB SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT
-#define ATTN_HEADS 4u          /* per-rank at TP16: the 4-CTA grid */
+#define ATTN_HEADS 4u
 #define QK_SCALE 0.0625f
 
 static cudaError_t s_last;
@@ -49,7 +31,6 @@ static void fill_bf16(uint16_t *device, uint64_t n, unsigned seed)
     free(host);
 }
 
-/* ---------- Cell A: certified-FP8 head vs full-vocab head ---------- */
 
 static int cell_head(uint32_t vocab, unsigned seed)
 {
@@ -148,7 +129,6 @@ static int cell_head(uint32_t vocab, unsigned seed)
     return fail ? 1 : 0;
 }
 
-/* ---------- Cell B: split-K attention vs single-pass, flash geometry ---------- */
 
 static int cell_attn(uint32_t positions)
 {
@@ -185,7 +165,6 @@ static int cell_attn(uint32_t positions)
     CU(cudaMalloc(&out_again, (uint64_t)heads * latent * sizeof(uint16_t)));
     CU(cudaMalloc(&partials, partial_floats * sizeof(float)));
 
-    /* identity page table: sequence 0's page i lives at pool page i */
     {
         uint32_t *host_pages = (uint32_t *)malloc(pages * sizeof(uint32_t));
         for (uint64_t i = 0; i < pages; i++) host_pages[i] = (uint32_t)i;
@@ -209,8 +188,6 @@ static int cell_attn(uint32_t positions)
 
     CU(cudaEventCreate(&t0)); CU(cudaEventCreate(&t1));
 
-    /* reference: the direct single-pass kernel (the below-threshold path
-     * launches this same kernel) */
     LmLatentAttentionDecodeKernel<Kv, threads, latent, rope>
         <<<dim3(rows, heads), threads, 0, stream>>>
         (q_lat, q_rope, cache, seqof, ctx, 0, 0u, heads, QK_SCALE, out_base, pos);
@@ -224,13 +201,11 @@ static int cell_attn(uint32_t positions)
     CU(cudaEventRecord(t1, stream)); CU(cudaEventSynchronize(t1));
     CU(cudaEventElapsedTime(&ms_base, t0, t1)); ms_base /= 10.0f;
 
-    /* below threshold (0): must be BYTE-identical to the direct launch */
     CU((LmLatentAttentionDecodeSplitLaunch<Kv, threads, latent, rope>(
         q_lat, q_rope, cache, seqof, ctx, 0, 0u, heads, QK_SCALE, out_off,
         pos, rows, positions, 0u, partials, (uint32_t)partial_floats, 48u, stream)));
     CU(cudaStreamSynchronize(stream));
 
-    /* above threshold (1): split+combine, twice (determinism), timed */
     CU((LmLatentAttentionDecodeSplitLaunch<Kv, threads, latent, rope>(
         q_lat, q_rope, cache, seqof, ctx, 0, 0u, heads, QK_SCALE, out_split,
         pos, rows, positions, 1u, partials, (uint32_t)partial_floats, 48u, stream)));

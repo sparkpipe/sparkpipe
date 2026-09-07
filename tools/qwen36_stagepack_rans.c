@@ -1,22 +1,3 @@
-/*
- * qwen38_27b_stagepack_rans: post-process a qwen38_27b stage pack, re-encoding the
- * large linear BF16 tensors as lossless rANS streams in 64x128 tile order.
- *
- * Wire format of a compressed tensor payload (all little endian):
- *   u32 ndirect                          (direct entries; entry ndirect = escape)
- *   u32 entries[3 * (ndirect + 1)]       (sym u16 | f u16 | C u32 per entry)
- *   u32 id_bits
- *   u16 id_table[1 << id_bits]           (rid -> symbol value)
- *   u32 chunk_count                      (== (rows/64) * (cols/128))
- *   u32 chunk_offsets[chunk_count]       (relative to payload base)
- *   chunks: each = u32 states[32], u16 lens[32], then the 32 lane byte
- *           streams concatenated (lane i at sum(lens[0..i-1])), 4B padded.
- *
- * Codec: per-tensor rANS, M = 8192 (l = 13), 8-bit renorm with the 2^23
- * bound, 32 substreams x 256 values per 8192-value tile.  The escape
- * symbol (0xFFFF in the entry table) is followed by 2 bytes of raw symbol
- * id in the lane stream.
- */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,10 +23,10 @@ typedef struct
 {
 	uint32_t ndirect;
 	uint32_t id_bits;
-	uint32_t *entries;    /* 3 x u32 x (ndirect+1): sym | f | C */
-	uint16_t *id_table;   /* 1 << id_bits */
-	int32_t *entry_of;    /* 65536: symbol -> entry index, -1 = escape */
-	int32_t *rid_of;      /* 65536: symbol -> rid, -1 = direct */
+	uint32_t *entries;
+	uint16_t *id_table;
+	int32_t *entry_of;
+	int32_t *rid_of;
 	uint32_t f_esc, c_esc;
 } RansEnc;
 
@@ -145,9 +126,6 @@ typedef struct { uint8_t *data; uint64_t size; } Buffer;
 
 static uint32_t rans_encode_lane(RansEnc *e, const uint16_t *sub, uint8_t *lane, uint32_t lane_cap, uint32_t *out_len)
 {
-	/* Canonical rANS: renorm-out (x >= 2^18*f) BEFORE the inverse step; the
-	 * stream = the emissions written BACKWARD (p decrements).  Escapes emit
-	 * [rid hi][rid lo] first so they land right after the code bytes. */
 	uint8_t *p = lane + lane_cap;
 	uint64_t x = RANS_BOUND;
 	uint32_t j;
@@ -251,17 +229,15 @@ static int compressible_kind(uint32_t kind)
 {
 	switch (kind)
 	{
-	/* NOTE: FFN_GATE/FFN_UP ride the fused gate+up kernel whose shared
-	 * budget cannot host two per-tensor tables yet; they stay raw. */
-	case 7:  /* FFN_DOWN */
-	case 8:  /* GDN_QKV */
-	case 9:  /* GDN_GATE */
-	case 12: /* GDN_OUTPUT */
-	case 17: /* ATTN_QUERY */
-	case 18: /* ATTN_KEY */
-	case 19: /* ATTN_VALUE */
-	case 20: /* ATTN_OUTPUT */
-	case 23: /* MTP_FC */
+	case 7:
+	case 8:
+	case 9:
+	case 12:
+	case 17:
+	case 18:
+	case 19:
+	case 20:
+	case 23:
 		return 1;
 	default:
 		return 0;
@@ -338,8 +314,6 @@ int main(int argc, char **argv)
 		entries[i].scale_offset = *(uint64_t *)(e + 40);
 		entries[i].scale_bytes = *(uint64_t *)(e + 48);
 	}
-	/* streaming rewrite: the header + the directory (patched at the end),
-	 * then the payloads written sequentially from the mmap'd input. */
 	of = fopen(argv[2], "wb");
 	if (!of)
 		die("cannot create output");
@@ -388,7 +362,7 @@ int main(int argc, char **argv)
 			out_size = next + comp.size;
 			en->payload_offset = next;
 			en->payload_bytes = comp.size;
-			en->weight_format = 4u; /* BF16_RANS */
+			en->weight_format = 4u;
 			compressed_count++;
 			free(tiled);
 			free(comp.data);
@@ -408,7 +382,6 @@ int main(int argc, char **argv)
 		out_size = next + en->payload_bytes;
 		en->payload_offset = next;
 	}
-	/* the directory + the header patch */
 	if (fseek(of, (long)directory_offset, SEEK_SET) != 0)
 		die("seek directory failed");
 	for (i = 0; i < tensor_count; i++)

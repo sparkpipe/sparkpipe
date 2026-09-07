@@ -1,14 +1,3 @@
-// Run the head's chunked top-k on a CPU.
-//
-// The argmax pair already executes in every layer harness; the top-k path is
-// new and its failure modes are exactly the kind that compile: a suppression
-// that forgets a taken token emits it twice, a ragged final tile reads past
-// the vocabulary, a tie broken by arrival order is not the tie the argmax
-// commit breaks by token id. This runs the kernels at THREADS == 1 - the
-// sequential schedule a correct kernel must also be valid under - and the
-// python driver scores them against a float32 reference, ties included.
-//
-// head.cuh is included unmodified.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -18,8 +7,6 @@ LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 
 #include "inference/kernels/dtype.cuh"
 
-// One lane per warp, as in every harness: the block reductions must degenerate
-// correctly at one thread, which 32 lanes per warp does not.
 #include "inference/kernels/mma.cuh"
 #undef LM_WARP_LANES
 #define LM_WARP_LANES LM_HOST_WARP_LANES
@@ -31,8 +18,6 @@ LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 #define TOPK 3u
 #define ROWS 2u
 #define HIDDEN 16u
-// 23 tokens over an 8-wide tile: the last tile is ragged, which is where a
-// boundary slip in the candidate kernel lives.
 #define VOCAB 23u
 #define TILES 3u
 #define RESTRICTED 9u
@@ -59,8 +44,6 @@ int main(void)
 	static uint32_t candidate_token[ROWS * TILES * TOPK];
 	static uint32_t token_out[ROWS * TOPK];
 	static float score_out[ROWS * TOPK];
-	// A restricted set that is NOT sorted and does not cover the vocabulary's
-	// best: the selection must follow the ids, not the row order.
 	static const uint32_t restricted[RESTRICTED] =
 		{ 20u, 3u, 14u, 1u, 22u, 7u, 9u, 0u, 17u };
 	uint32_t row, index;
@@ -70,10 +53,6 @@ int main(void)
 		normed[index] = LmFloatToBf16(NextRandom());
 	for (index = 0u; index < VOCAB * HIDDEN; ++index)
 		weight[index] = LmFloatToBf16(NextRandom() * 0.5f);
-	// Two engineered ties AT THE TOP, in different tiles: tokens 4 and 13
-	// share token 2's weight row, so the shortlist starts with three equal
-	// scores and the order must be 2, 4, 13 - the lower token id, not
-	// whichever tile emitted first.
 	for (index = 0u; index < HIDDEN; ++index)
 	{
 		weight[4u * HIDDEN + index] = weight[2u * HIDDEN + index];

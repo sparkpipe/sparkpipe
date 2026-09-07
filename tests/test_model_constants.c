@@ -1,7 +1,6 @@
 #include "modules/glm52_resident_decode_stage/source/cuda/config.h"
 #include <stdio.h>
 int main(void){
-  /* every derived value cross-checked against the old header's constants */
   int fail=0;
   #define CK(a,b,l) do{ if((a)!=(b)){printf("  FAIL %s: %u != %u\n",l,(unsigned)(a),(unsigned)(b));fail++;} else printf("  ok   %s = %u\n",l,(unsigned)(a)); }while(0)
   CK(GLM52_ROUTED_LAYERS,75u,"routed layers");

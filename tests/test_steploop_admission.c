@@ -27,24 +27,7 @@
 #define TEST_MODEL_RESIDENT_TRANSPORT_PATH ""
 #endif
 
-/*
- * P1/D2 step-loop oracle (BUG_LEDGER PATTERN B): the serving loop must
- * feed an ASYNC_COMPLETION adapter at the adapter's own backpressure
- * (submit returns BUSY), not one frame per resident Progress pass.
- *
- * The batch below is sized so every request is dispatched in ONE engine
- * Progress (all frames ready simultaneously). Under the serialized
- * one-submit-per-pass bound the completions trickle at one per resident
- * wakeup (10 ms poll cap), so the drain needs many client round trips.
- * With adapter-contract admission the committed FIFO drains in one
- * resident pass and the drain needs only the protocol's own round
- * trips. The ceiling below pins the post-fix drain; the report carries
- * the pre-fix floor receipt that proves the bound discriminates.
- */
 #define TEST_STEPLOOP_RANK_COUNT 3u
-/* The fixture adapter's descriptor caps max_inflight_submission_count
- * at 4, and runtime limits must not exceed it — the batch is exactly
- * one full inflight window so every frame is ready simultaneously. */
 #define TEST_STEPLOOP_REQUEST_COUNT 4u
 #define TEST_STEPLOOP_DRAIN_CALL_CEILING 24u
 
@@ -117,9 +100,6 @@ static pid_t TestSteploopStartResident(
 	return(child);
 }
 
-/* The step-loop receipt: the resident prints its adapter-ops-per-pass
- * maximum at exit. The serialized bound pins it to 1; adapter-contract
- * admission must show a drained FIFO (>= 2 in one pass). */
 static uint32_t TestSteploopMaxOpsPerPass(
 	const char *stderr_path,
 	uint32_t rank)
@@ -226,9 +206,6 @@ static void TestSteploopWriteDeployment(
 	fixture.transport_shared_object_path = TEST_MODEL_RESIDENT_TRANSPORT_PATH;
 	fixture.transport_mode = "host-rdma";
 	fixture.node_target = "test.steploop.serving.target";
-	/* Hold mode: submit enqueues, completions release on adapter
-	 * progress — the async shape the fixture descriptor declares. The
-	 * admission rate of the resident loop is then the only variable. */
 	fixture.adapter_configuration_path = "tests/fixtures/model_serving_adapter_config_hold.json";
 	fixture.runtime_roots = runtime_roots;
 	fixture.transport_hosts = TestSteploopTransportHosts;
@@ -236,12 +213,6 @@ static void TestSteploopWriteDeployment(
 	fixture.control_endpoints = endpoints;
 	fixture.runtime_limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	fixture.runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
-	/* The whole batch must fit the inflight window in ONE dispatch: this
-	 * is what makes the resident-side admission rate the observable. */
-	/* The whole batch must fit the inflight window in ONE dispatch, and
-	 * one lane per frame (max_active_sequence_count=1, the B1 serving
-	 * pattern) so the four requests are FOUR routes on the resident —
-	 * a committed FIFO deeper than one is the observable. */
 	fixture.runtime_limits.max_inflight_submission_count = TEST_STEPLOOP_REQUEST_COUNT;
 	fixture.runtime_limits.max_active_sequence_count = 1u;
 	fixture.runtime_limits.max_input_row_count = 32u;
@@ -341,10 +312,6 @@ int main(void)
 	}
 	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
 
-	/* The oracle: one dispatching Progress, then count the client round
-	 * trips until every request reaches terminal (informational — the
-	 * protocol's own round trips dominate), and the resident's receipt
-	 * of adapter ops per Progress pass, which is the pinned invariant. */
 	delay.tv_sec = 0;
 	delay.tv_nsec = 1000000;
 	assert(SparkModelBatchEngineProgress(engine,TEST_STEPLOOP_REQUEST_COUNT) == SPARK_STATUS_OK);
@@ -362,7 +329,6 @@ int main(void)
 	assert(state.completed_count == TEST_STEPLOOP_REQUEST_COUNT);
 	assert(state.cancelled_count == 0u);
 	assert(state.error_count == 0u);
-	/* FIFO order survives the drain: oldest request emits first. */
 	for (index=0u; index<TEST_STEPLOOP_REQUEST_COUNT; index++)
 		assert(state.token_request_ids[index] == 5100u + index);
 
@@ -375,10 +341,6 @@ int main(void)
 		drain_calls,TEST_STEPLOOP_DRAIN_CALL_CEILING);
 
 	TestSteploopStopResidents(children,paths);
-	/* THE pinned invariant: under adapter-contract admission the first
-	 * stage sees a committed FIFO deeper than one and drains it in a
-	 * single Progress pass. The serialized one-op-per-pass bound
-	 * (pre-redesign behavior) measures exactly 1 here. */
 	for (index=0u; index<TEST_STEPLOOP_RANK_COUNT; index++)
 		assert(TestSteploopMaxOpsPerPass(stderr_paths[index],index) >= 2u);
 	SparkModelResidentDeploymentDestroy(&deployment);

@@ -24,12 +24,6 @@ static uint32_t SparkModelServingAdapterSha256IsValid(const char *sha256)
 	return(sha256[SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH] == '\0');
 }
 
-/* Descriptor validity rules as a predicate table (the complexity lane's
- * conjunction-soup conversion, 2026-08-28). One row per rule, evaluated in
- * the ORIGINAL if-chain order; every row returns SPARK_STATUS_OK to keep
- * walking or the failure status the original chain returned at that point.
- * The accept/reject set is proven identical by the before/after fuzz pair
- * (docs/AGENT_LANE_BRIEFS/reports/ccn-2026-08-28.md). */
 typedef SparkStatus (*SparkModelServingAdapterDescriptorCheck)(
 	const SparkModelServingAdapterDescriptor *descriptor);
 
@@ -529,17 +523,6 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	return(SparkModelServingAdapterValidateRows(submission,submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE,runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
 }
 
-/*
- * Perf program 2 R5: identical checks to
- * SparkModelServingAdapterValidateRuntimeSubmission MINUS the re-validation
- * of the (descriptor, limits) pair. That pair is immutable for a component's
- * lifetime and is validated once at configure/connect time (pipeline client,
- * resident client, residentd, serving adapters); the per-submission field,
- * capacity, and row checks — the parts that can actually reject — are
- * unchanged, so every rejection keeps its exact status. The null-argument
- * results match ValidateRuntimeLimits's, keeping the failure surface
- * identical for miswired callers.
- */
 SparkStatus SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingRuntimeLimits *runtime_limits,
@@ -713,26 +696,15 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		return(has_tokens == 0u && tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
 	final_stage = descriptor->stage_count - 1u;
-	/* Pure parallel fanout (TP without PP) emits tokens from EVERY rank: each
-	 * rank runs the whole stack, so the non-final-stage token prohibition
-	 * applies only to transported pipelines. */
 	parallel = (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u ? 1u : 0u;
 	hybrid = (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
 	if ( stage_index != final_stage && (parallel == 0u || hybrid != 0u) )
 		return(has_tokens == 0u && completion->tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
-	/* Pure TP fanout: the TP-sharded adapters publish the token payload only
-	 * from the final stage (the other ranks carry status alone); a
-	 * status-only completion from a non-final rank is therefore legal. */
 	if ( stage_index != final_stage && has_tokens == 0u &&
 		completion->tokens_per_sequence == 0u )
 		return(SPARK_STATUS_OK);
-	/* Speculative completions: the submission carries the CHAIN width
-	 * (tokens_per_sequence), while the actual yield rides
-	 * accepted_token_count. Draft-chain verify emits 1..chain_width
-	 * tokens per sequence (partial acceptance), so the lower bound is 1;
-	 * the upper bound is the chain width plus the speculative allowance. */
 	if ( has_tokens != 0u &&
 		completion->tokens_per_sequence >= 1u &&
 		completion->tokens_per_sequence <= tokens_per_sequence + descriptor->max_speculative_token_count &&

@@ -108,16 +108,6 @@ static void SparkBatchPlaneEstimateBuild(
 	estimate->average_rows_per_active_expert = route_count /
 		estimate->active_experts;
 	tile_rows = SparkBatchPlaneGroupedTileRows(rows);
-	/*
-	 * A sealed batch is routed once, grouped by expert, and executed once per
-	 * active expert. The old estimator multiplied this sweep by a 128-token
-	 * replay/chunk wall. That multiplier is not part of the grouped-MoE path.
-	 *
-	 * For B <= 1024 the planner's 2x-mean tile is large enough for the expected
-	 * expert queue, so the normal estimate is one weight sweep. A skewed expert
-	 * that exceeds the tile can split, which is reported separately rather than
-	 * charged to every expert as a replay multiplier.
-	 */
 	estimate->expert_sweeps_per_active_expert = 1.0;
 	estimate->expert_bytes_per_batch =
 		(double)BP_LAYERS_PER_RANK * estimate->active_experts *

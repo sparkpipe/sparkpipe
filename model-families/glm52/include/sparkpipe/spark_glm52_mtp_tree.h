@@ -5,11 +5,6 @@
 #include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_status.h"
 
-/* GLM 5.2 MTP tree SHAPE. The tree machinery is model-neutral
- * (include/sparkpipe/spark_speculation_tree.h); this header pins the
- * shape constants and the node topology for GLM 5.2 and keeps the legacy
- * SPARK_MODEL_MTP_TREE_* names and SparkMtpTree* type names as aliases
- * for the existing consumers. */
 
 #define SPARK_SPECULATION_TREE_CANDIDATE_COUNT 5u
 #define SPARK_SPECULATION_TREE_VERIFIER_ROW_COUNT 6u
@@ -58,7 +53,6 @@
 
 #include "sparkpipe/spark_speculation_tree.h"
 
-/* Legacy names for the existing consumers. */
 #define SPARK_MODEL_MTP_TREE_CANDIDATE_COUNT SPARK_SPECULATION_TREE_CANDIDATE_COUNT
 #define SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT SPARK_SPECULATION_TREE_VERIFIER_ROW_COUNT
 #define SPARK_MODEL_MTP_TREE_EXECUTION_STEP_COUNT SPARK_SPECULATION_TREE_EXECUTION_STEP_COUNT

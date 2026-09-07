@@ -421,6 +421,7 @@ void SparkModelDescriptionDestroy(SparkModelDescription *description)
     free(description->stages);
     free(description->model_id);
     free(description->model_revision);
+    free(description->tokenizer_asset_path);
     free(description->metadata_json);
     SparkModelDescriptionReset(description);
 }
@@ -759,6 +760,7 @@ SparkStatus SparkLoadModelDescription(
     int32_t model_token_index;
     int32_t stages_token_index;
     int32_t metadata_token_index;
+    int32_t tokenizer_token_index;
     uint32_t stage_index;
     SparkStatus status;
 
@@ -809,6 +811,36 @@ SparkStatus SparkLoadModelDescription(
     if (status != SPARK_STATUS_OK)
     {
         goto fail;
+    }
+
+    tokenizer_token_index = SparkJsonFindObjectMember(&document, root_token_index, "tokenizer");
+    if (tokenizer_token_index >= 0)
+    {
+        int32_t path_token_index;
+
+        if (!SparkJsonTokenIsType(&document, tokenizer_token_index, SPARK_JSON_TOKEN_OBJECT))
+        {
+            SparkSetError(error_buffer, error_buffer_bytes, "tokenizer must be an object");
+            status = SPARK_STATUS_SCHEMA_ERROR;
+            goto fail;
+        }
+        path_token_index = SparkJsonFindObjectMember(&document, tokenizer_token_index, "path");
+        if (path_token_index >= 0)
+        {
+            if (!SparkJsonTokenIsType(&document, path_token_index, SPARK_JSON_TOKEN_STRING))
+            {
+                SparkSetError(error_buffer, error_buffer_bytes, "tokenizer path must be a string");
+                status = SPARK_STATUS_SCHEMA_ERROR;
+                goto fail;
+            }
+            status = SparkJsonCopyString(&document, path_token_index,
+                &description->tokenizer_asset_path);
+            if (status != SPARK_STATUS_OK)
+            {
+                SparkSetError(error_buffer, error_buffer_bytes, "cannot decode tokenizer path");
+                goto fail;
+            }
+        }
     }
 
     metadata_token_index = SparkJsonFindObjectMember(&document, root_token_index, "metadata");

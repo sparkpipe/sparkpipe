@@ -22,11 +22,19 @@ HOSTS = [h for h in os.environ.get(
     ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
 TP = len(HOSTS)
 RUNTIME_ROOT = os.environ.get("GLM5_NEXT_RUNTIME_ROOT",
-                              "/home/{host}/sparkdata/glm5_next.tp16")
+                              "/home/{host}/sparkdata/glm53flash.bf16.tp16")
 CONTROL_BASE = int(os.environ.get("GLM5_NEXT_CONTROL_BASE", "19560"))
 COLLECTIVE_BASE = int(os.environ.get("GLM5_NEXT_COLLECTIVE_BASE", "63640"))
 TRANSPORT_BASE = int(os.environ.get("GLM5_NEXT_TRANSPORT_BASE", "60710"))
+COLLECTIVE_SESSION_BASE = int(os.environ.get(
+    "GLM5_NEXT_SESSION_BASE", "61500"))
+COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
+    "GLM5_NEXT_SESSION_HC_BASE", "62500"))
 COLLECTIVE_ID = 9911223344556679
+BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "nccl")
+PACK_TEMPLATE = os.environ.get(
+    "GLM5_NEXT_PACK_TEMPLATE",
+    "packs/glm53flash.bf16-official.tp16.rank%d.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
@@ -39,13 +47,16 @@ TP_COLLECTIVE = {
     # has two RoCE ports; unpinned NCCL picks the wrong one):
     # NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA=rocep1s0f1
     # NCCL_IB_GID_INDEX=3 - the wave exports them.
-    "backend": "nccl",
-    # the nccl backend dlopens libnccl.so.2 through backend_module_path
-    # (SparkTpNcclLoadLibrary); the lib ships in the runtime root lib/
-    "backend_module_path": "lib/libnccl.so.2",
+    # GLM5_NEXT_BACKEND=hidden_transport selects the tree allreduce
+    # (algorithms [tree], explicit session port tables).
+    "backend": BACKEND,
+    "backend_module_path":
+        "lib/hidden_transport.so" if BACKEND == "hidden_transport"
+        else "lib/libnccl.so.2",
+    "algorithms": ["tree"],
     "collective_identifier": COLLECTIVE_ID,
     "listen_port": COLLECTIVE_BASE,
-    "connect_timeout_milli": 600000,
+    "connect_timeout_milli": 10000,
     "operation_timeout_milli": 30000,
     "peer_hosts": list(HOSTS),
     "peer_ports": [COLLECTIVE_BASE + r for r in range(TP)],
@@ -55,6 +66,7 @@ TP_COLLECTIVE = {
     # hidden_transport only (stripped below for nccl: that backend
     # validates the BASE member set - no algorithms/rails/d2a).
     "split_ring_min_payload_bytes": 0,
+    "direct_all_to_all_max_payload_bytes": 0,
     # The schema REQUIRES exactly 2 rails (MAX_RAIL_COUNT=2) and 3
     # step_rail_indices (SPLIT_RING_ROUTE_COUNT=3) - glm52's template.
     # The async op INVALID_ARGUMENT discriminator is done differently:
@@ -65,13 +77,23 @@ TP_COLLECTIVE = {
     # all peers on rail 1 - [0,0,0] is the split-ring legacy shape and
     # the collective's multi-route check REJECTS it when d2a is on)
     "step_rail_indices": [0] + [1] * (TP - 1),
+    # explicit per-session control ports, [source][sink] - the tree
+    # collective reads them verbatim (no derived ports); hc gets its own
+    # table so the second collective never binds the same listeners.
+    "session_ports": [
+        [COLLECTIVE_SESSION_BASE + a * TP + b if a != b else 0
+         for b in range(TP)] for a in range(TP)],
+    "session_ports_hc": [
+        [COLLECTIVE_SESSION_HC_BASE + a * TP + b if a != b else 0
+         for b in range(TP)] for a in range(TP)],
 }
 
 
 if TP_COLLECTIVE["backend"] == "nccl":
     for _nccl_extra in ("algorithms", "direct_all_to_all_max_payload_bytes",
                         "split_ring_min_payload_bytes", "rail_peer_hosts",
-                        "step_rail_indices"):
+                        "step_rail_indices", "session_ports",
+                        "session_ports_hc"):
         TP_COLLECTIVE.pop(_nccl_extra, None)
 
 
@@ -89,7 +111,7 @@ def stage_config(rank: int) -> dict:
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": "fp8",
-        "stage_pack_path": "packs/glm5_next_stage.tp16.rank%d.g5nsp" % rank,
+        "stage_pack_path": PACK_TEMPLATE % rank,
         "max_sequence_positions": 32768,
         # 1024-row prefill chunks (the module's SPARK_BATCH_BUCKET width):
         # the engine chunks prompts to runtime_limits.max_input_rows, and
@@ -128,7 +150,7 @@ def resident_deployment() -> dict:
             "node_target": NODE_TARGET,
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
-            "kv_backing_directory": "/home/%s/kvcache/glm5_next.tp16" % host,
+            "kv_backing_directory": "/home/%s/kvcache/glm53flash.bf16.tp16" % host,
             "kv_backing_maximum_bytes": 8589934592,
             "control_endpoint": {
                 "kind": "tcp",
@@ -141,7 +163,7 @@ def resident_deployment() -> dict:
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {
-            "shared_object_path": "lib/model_driver.so",
+            "shared_object_path": "stages/stage_000/model_driver.so",
             "program_name": "resident_decode",
         },
         "transport": {

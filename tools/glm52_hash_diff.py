@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import glob
 import os
+import pathlib
 import re
 import struct
 import sys
@@ -219,13 +220,21 @@ def selftest():
     rx_bad = rx.replace("aa", "ab")
     tx_bad = tx.replace("aa", "ab")
     d = tempfile.mkdtemp()
-    open(f"{d}/r0", "w").write(tx)
-    open(f"{d}/r1", "w").write(rx)
-    open(f"{d}/r1b", "w").write(rx_bad)
-    open(f"{d}/r0b", "w").write(tx_bad)
-    good = load_run([f"0:{d}/r0", f"1:{d}/r1"])
-    hop_bad = load_run([f"0:{d}/r0", f"1:{d}/r1b"])
-    tx_diverged = load_run([f"0:{d}/r0b", f"1:{d}/r1b"])
+    def _tmp(name):
+        # Normalize + validate: the resolved path must stay inside the
+        # selftest's own temp dir (rejects any ../ escape outright).
+        base = os.path.realpath(d)
+        path = os.path.realpath(os.path.join(d, name))
+        if not (path == base or path.startswith(base + os.sep)):
+            raise ValueError(f"path escapes temp dir: {name}")
+        return path
+    pathlib.Path(_tmp("r0")).write_text(tx)
+    pathlib.Path(_tmp("r1")).write_text(rx)
+    pathlib.Path(_tmp("r1b")).write_text(rx_bad)
+    pathlib.Path(_tmp("r0b")).write_text(tx_bad)
+    good = load_run([f"0:{_tmp('r0')}", f"1:{_tmp('r1')}"])
+    hop_bad = load_run([f"0:{_tmp('r0')}", f"1:{_tmp('r1b')}"])
+    tx_diverged = load_run([f"0:{_tmp('r0b')}", f"1:{_tmp('r1b')}"])
     assert hop_integrity("good", good) == 0
     assert hop_integrity("bad", hop_bad) == 1
     assert cross_diff(good, good) == 0
@@ -234,28 +243,28 @@ def selftest():
     zline = f"hidden_tcp_send_header seq=1 token=1 active=1 sideband_kind=0 sideband_bps=0 hidden_hash={zh} sideband_hash={zero_hash(0) if False else '0'*16} hidden_bytes=4 sideband_bytes=0 total=64\n"
     pline_rx = "hidden_tcp_deliver seq=1 token=2 active=1 sideband_kind=0 hidden_hash=00000000000000cc sideband_hash=0000000000000000 hidden_bytes=4 sideband_bytes=0\n"
     pline_tx = "hidden_tcp_send_header seq=1 token=2 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=00000000000000cc sideband_hash=0000000000000000 hidden_bytes=4 sideband_bytes=0 total=64\n"
-    open(f"{d}/rz", "w").write(zline + pline_rx + pline_tx)
-    zrun = load_run([f"5:{d}/rz"])
+    pathlib.Path(_tmp("rz")).write_text(zline + pline_rx + pline_tx)
+    zrun = load_run([f"5:{_tmp('rz')}"])
     assert chain_report(zrun) == 2
     ones = bytes([0x80, 0x3f] * 4)
     vals = bf16_to_f32_list(ones)
     assert all(abs(v - 1.0) < 1e-6 for v in vals), vals
     max_abs, rel_l2, cos = numeric_stats(vals, vals)
     assert max_abs == 0.0 and rel_l2 == 0.0 and abs(cos - 1.0) < 1e-9
-    reference_dir = f"{d}/reference"
-    candidate_dir = f"{d}/candidate"
+    reference_dir = _tmp("reference")
+    candidate_dir = _tmp("candidate")
     hidden_ones = bytes([0x80, 0x3f] * MODEL_CONTRACT["hidden_dimension"])
     os.mkdir(reference_dir)
     os.mkdir(candidate_dir)
-    open(f"{reference_dir}/after_layer_0.bf16", "wb").write(hidden_ones)
-    open(f"{candidate_dir}/token_0000_after_layer_0000.bf16", "wb").write(hidden_ones)
+    pathlib.Path(reference_dir, "after_layer_0.bf16").write_bytes(hidden_ones)
+    pathlib.Path(candidate_dir, "token_0000_after_layer_0000.bf16").write_bytes(hidden_ones)
     assert layer_numeric_report(reference_dir, candidate_dir) == 0
-    os.remove(f"{candidate_dir}/token_0000_after_layer_0000.bf16")
-    open(f"{candidate_dir}/after_layer_0.bf16", "wb").write(hidden_ones)
+    os.remove(_tmp(os.path.join("candidate", "token_0000_after_layer_0000.bf16")))
+    pathlib.Path(candidate_dir, "after_layer_0.bf16").write_bytes(hidden_ones)
     assert layer_numeric_report(reference_dir, candidate_dir) == 0
     phase_name = "token_0000_layer_0000_moe_output.bf16"
-    open(f"{reference_dir}/{phase_name}", "wb").write(hidden_ones)
-    open(f"{candidate_dir}/{phase_name}", "wb").write(hidden_ones)
+    pathlib.Path(reference_dir, phase_name).write_bytes(hidden_ones)
+    pathlib.Path(candidate_dir, phase_name).write_bytes(hidden_ones)
     assert phase_numeric_report(reference_dir, candidate_dir) == 0
     print("selftest_ok")
 

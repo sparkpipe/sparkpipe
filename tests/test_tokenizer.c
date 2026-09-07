@@ -577,10 +577,6 @@ static void SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk(void)
 
 static void SparkTestTokenizerWarmCacheSurvivesGrowthAndMatches(void)
 {
-    // A persistent workspace must keep its piece cache warm across encode calls
-    // and across symbol-buffer growth, and warm-cache output must stay identical
-    // to a fresh cold encode. Feed varying request sizes, including ones that
-    // force the buffers to grow, and compare every result against EncodeUtf8.
     static const char base[] =
         "the quick brown fox jumps over the lazy dog and the cat sat on the mat "
         "she said don't and he said can't while they walked to the market today "
@@ -637,9 +633,6 @@ static void SparkTestTokenizerWarmCacheSurvivesGrowthAndMatches(void)
 
 static void SparkTestTokenizerPieceCacheMatchesUncached(void)
 {
-    // The piece cache must produce byte-identical output to the uncached merge
-    // path. Encode a repetitive corpus both ways and compare token for token;
-    // the cache is exercised heavily by the repeats, the bypass by the flag.
     static const char corpus[] =
         "the quick brown fox the quick brown fox jumps over the lazy dog "
         "the the the quick quick brown fox jumps jumps over over the lazy lazy "
@@ -676,10 +669,6 @@ static void SparkTestTokenizerPieceCacheMatchesUncached(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
-/* GPT-4o/qwen pre-tokenizer mode: loading a tokenizer.json whose Split
- * pattern is the qwen regex must switch the splitter to qwen semantics
- * (single-digit \p{N}, prefix-absorbing letter runs), which the legacy GPT-2
- * run-splitter gets observably wrong. */
 #define SPARK_TEST_QWEN_TOKEN_UNKNOWN 0u
 #define SPARK_TEST_QWEN_TOKEN_1 10u
 #define SPARK_TEST_QWEN_TOKEN_2 11u
@@ -770,8 +759,6 @@ static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(void)
     assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &configuration) ==
         SPARK_STATUS_OK);
 
-    /* \p{N} is a single digit in the qwen pattern, so a digit run splits per
-     * digit and no merge fires; the legacy splitter would emit "123". */
     memset(token_ids, 0, sizeof(token_ids));
     SparkTokenizerEncodingReset(&encoding);
     encoding.token_capacity = 16u;
@@ -782,9 +769,6 @@ static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(void)
     assert(token_ids[1u] == SPARK_TEST_QWEN_TOKEN_2);
     assert(token_ids[2u] == SPARK_TEST_QWEN_TOKEN_3);
 
-    /* A letter run absorbs one leading non-letter non-digit prefix byte, so
-     * "[ab" is a single piece and merges to one token; the legacy splitter
-     * would emit "[" then "ab". */
     memset(token_ids, 0, sizeof(token_ids));
     SparkTokenizerEncodingReset(&encoding);
     encoding.token_capacity = 16u;

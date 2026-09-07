@@ -4,7 +4,6 @@
 
 #include "sparkpipe/spark_module_abi.h"
 
-/* Position zero is the slot-reuse boundary even when sequence IDs repeat. */
 static inline SparkStatus SparkDsv4AdvanceLaneContinuity(uint64_t sequence,uint64_t position,uint64_t *lane_sequence,uint64_t *lane_next_position,uint8_t *lane_touched,uint8_t *lane_requires_reset)
 {
 	if ( lane_sequence == 0 || lane_next_position == 0 || lane_touched == 0 || lane_requires_reset == 0 )

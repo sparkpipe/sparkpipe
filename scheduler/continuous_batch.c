@@ -1,8 +1,3 @@
-/* The step-boundary admission controller for continuous batching - the
- * engine-neutral half of the batch engine's serving completion (the
- * contract lives in sparkpipe/spark_continuous_batch.h; the refusal
- * discipline mirrors cache/kv_pager.c SparkKvPagerAdmit: name the refusal
- * before touching anything, keep the offer, never wedge, never drop). */
 #include "sparkpipe/spark_continuous_batch.h"
 
 #include <stdlib.h>
@@ -14,7 +9,7 @@ typedef struct SparkContinuousBatchQueueEntry
 	uint32_t prompt_row_count;
 	uint32_t output_token_budget;
 	uint64_t enqueue_boundary;
-	uint8_t oversize; /* can never fit the deployment: kept, never competes */
+	uint8_t oversize;
 	uint8_t reserved0;
 	uint16_t reserved1;
 }
@@ -25,10 +20,10 @@ typedef struct SparkContinuousBatchLane
 	uint64_t request_id;
 	uint32_t phase;
 	uint32_t remaining_rows;
-	uint32_t remaining_budget; /* output_token_budget */
+	uint32_t remaining_budget;
 	uint32_t generated_count;
 	uint64_t enqueue_boundary;
-	uint8_t retired;           /* engine reported terminal (seam path) */
+	uint8_t retired;
 	uint8_t admitted_via_aging;
 	uint16_t reserved0;
 }
@@ -43,10 +38,10 @@ struct SparkContinuousBatch
 	uint32_t lane_capacity;
 	uint32_t queue_count;
 	uint32_t resident_lane_count;
-	uint64_t boundary_index; /* completed boundaries; offers stamp it */
+	uint64_t boundary_index;
 	SparkContinuousBatchQueueEntry *queue;
 	SparkContinuousBatchLane *lanes;
-	uint32_t *scratch_rows;      /* the policy's plain-array views */
+	uint32_t *scratch_rows;
 	uint64_t *scratch_boundaries;
 	uint8_t *scratch_excluded;
 	SparkContinuousBatchStatistics statistics;
@@ -66,8 +61,6 @@ int32_t SparkContinuousBatchPolicyPick(
 		return(-1);
 	pick = -1;
 	aged = -1;
-	/* The starvation escape first: the oldest aged offer is the
-	 * boundary's priority pick (ties in arrival order). */
 	if ( starvation_bound != 0u )
 	{
 		for ( index = 0u; index < count; ++index )
@@ -82,8 +75,6 @@ int32_t SparkContinuousBatchPolicyPick(
 	}
 	if ( aged >= 0 )
 		return(aged);
-	/* Smallest-first: the cheapest demand joins first, ties in arrival
-	 * order (FIFO within a row class). */
 	for ( index = 0u; index < count; ++index )
 	{
 		if ( excluded != 0 && excluded[index] != 0u )
@@ -107,7 +98,6 @@ static uint32_t SparkContinuousBatchAllocateSlot(
 static uint32_t SparkContinuousBatchLaneLimit(
 	const SparkContinuousBatch *controller)
 {
-	/* The lane table is the deployment cap's own slice; both bind. */
 	return(controller->lane_capacity < controller->max_active_lanes ?
 		controller->lane_capacity : controller->max_active_lanes);
 }
@@ -122,12 +112,6 @@ static uint8_t SparkContinuousBatchOfferAged(
 		enqueue_boundary + (uint64_t)controller->starvation_bound);
 }
 
-/* The C1 arithmetic (the exact per-lane demand against the deployment's
- * row budget): the join is granted only when the post-join WORST-CASE
- * round - every resident lane decoding one row while the joined lane
- * runs its whole prompt as its prefill submission - still fits
- * max_input_rows, and a lane slot exists. Never overcommits; the
- * refusal names which budget overflowed. */
 static uint32_t SparkContinuousBatchJoinFits(
 	const SparkContinuousBatch *controller,
 	uint32_t prompt_row_count)
@@ -155,8 +139,6 @@ static void SparkContinuousBatchEnqueue(
 	entry->oversize = oversize;
 }
 
-/* The lane creation shared by both admission paths (the direct join of an
- * idle arrival and the boundary drain's queue pop). */
 static void SparkContinuousBatchCreateLane(
 	SparkContinuousBatch *controller,
 	uint64_t request_id,
@@ -183,8 +165,6 @@ static void SparkContinuousBatchCreateLane(
 	controller->statistics.admission_accepted += 1u;
 }
 
-/* Stable compaction: the queue's arrival order (and the tie-breaks that
- * read it) survives the admission. */
 static void SparkContinuousBatchAdmitFromQueue(
 	SparkContinuousBatch *controller,
 	uint32_t queue_index,
@@ -310,11 +290,6 @@ SparkStatus SparkContinuousBatchOffer(
 	else if ( reason == SPARK_CONTINUOUS_BATCH_QUEUE_NONE &&
 		eligible_ahead != controller->queue_count )
 		reason = SPARK_CONTINUOUS_BATCH_QUEUE_AHEAD;
-	/* The idle path: no eligible work queued ahead and the arithmetic
-	 * fits - the offer joins NOW (the between-steps join of L1), never
-	 * touching the queue (a FULL queue cannot block an idle join).
-	 * Otherwise it queues behind the line (arrivals never cut ahead of
-	 * queued work) or under its named refusal. */
 	if ( reason == SPARK_CONTINUOUS_BATCH_QUEUE_NONE )
 	{
 		SparkContinuousBatchCreateLane(controller,offer->request_id,
@@ -327,8 +302,6 @@ SparkStatus SparkContinuousBatchOffer(
 	}
 	if ( controller->queue_count == controller->queue_capacity )
 	{
-		/* The pager BUSY analog: name it, do NOT keep it, the caller
-		 * retries after a drain. */
 		decision.outcome = SPARK_CONTINUOUS_BATCH_QUEUED;
 		decision.queue_reason = SPARK_CONTINUOUS_BATCH_QUEUE_FULL;
 		controller->statistics.admission_queue_full += 1u;
@@ -400,18 +373,11 @@ SparkStatus SparkContinuousBatchStep(
 	memset(&report,0,sizeof(report));
 	report.abi_version = SPARK_CONTINUOUS_BATCH_ABI_VERSION;
 	report.descriptor_bytes = SPARK_CONTINUOUS_BATCH_STEP_REPORT_BYTES;
-	/* The decode reservation comes off the row budget first: every
-	 * decode lane steps every round (lane_count <= max_active_lanes <=
-	 * max_input_rows makes the reservation always payable), and chunked
-	 * prefill shares the leftover in slot order. */
 	decode_lanes = 0u;
 	for ( slot = 0u; slot < controller->lane_capacity; ++slot )
 		if ( controller->lanes[slot].phase == SPARK_CONTINUOUS_BATCH_LANE_DECODE )
 			decode_lanes += 1u;
 	prefill_budget = controller->max_input_rows - decode_lanes;
-	/* The spend is counted as it happens: one row per decode emission,
-	 * one row per prefill chunk - the reservation above only bounds the
-	 * prefill side, it is not itself a spend. */
 	report.rows_spent = 0u;
 	for ( slot = 0u; slot < controller->lane_capacity; ++slot )
 	{
@@ -421,9 +387,6 @@ SparkStatus SparkContinuousBatchStep(
 			continue;
 		if ( lane->retired != 0u )
 		{
-			/* The engine already reported terminal (the seam path):
-			 * the lane stops emitting at once; the slot frees at the
-			 * next boundary. */
 			lane->phase = SPARK_CONTINUOUS_BATCH_LANE_FINISHED;
 			report.finished_count += 1u;
 			continue;
@@ -440,7 +403,6 @@ SparkStatus SparkContinuousBatchStep(
 			lane->phase = SPARK_CONTINUOUS_BATCH_LANE_DECODE;
 			continue;
 		}
-		/* DECODE: the lane emits its next token - a COUNT, never an id. */
 		lane->generated_count += 1u;
 		events[report.event_count].request_id = lane->request_id;
 		events[report.event_count].slot = slot;
@@ -474,9 +436,6 @@ SparkStatus SparkContinuousBatchBoundary(
 	*released_count_out = 0u;
 	controller->boundary_index += 1u;
 	controller->statistics.boundary_count += 1u;
-	/* L3 first: FINISHED lanes (the step that just ran, or a seam-side
-	 * retirement) free their slots at THIS boundary, before any
-	 * admission looks at capacity. */
 	for ( slot = 0u; slot < controller->lane_capacity; ++slot )
 	{
 		if ( controller->lanes[slot].phase == SPARK_CONTINUOUS_BATCH_LANE_FREE )
@@ -489,13 +448,6 @@ SparkStatus SparkContinuousBatchBoundary(
 		controller->resident_lane_count -= 1u;
 		controller->statistics.slot_reclaims += 1u;
 	}
-	/* The boundary drain: the policy picks, the C1 arithmetic answers,
-	 * and the FIRST refusal ends the boundary. That one refusal is the
-	 * whole rule: the pick is the oldest aged offer (its refusal holds
-	 * younger offers out of this boundary - the reservation leg) or the
-	 * smallest offer (every other candidate demands at least as many
-	 * rows and the same lane slot, so nothing else can join either).
-	 * Oversize entries never compete - the policy excludes them. */
 	while ( *released_count_out < released_capacity &&
 		controller->queue_count != 0u )
 	{

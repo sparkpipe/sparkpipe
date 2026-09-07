@@ -4,57 +4,25 @@
 
 #include <string.h>
 
-// The mechanics behind the contract in spark_topology_switch.h. Three
-// tables carved from the caller's blob at init, the arena pattern: one
-// allocation, nothing afterwards:
-//
-//   SEQUENCES   one record per sequence the scheduler may have in flight.
-//               Fixed slots, no free list: slot index is identity while a
-//               sequence lives, and Track/Complete mark it used or free.
-//   BLOCK KEYS  max_blocks_per_sequence u64s per slot, so a sequence's tier
-//               keys are one contiguous run and a manifest is a memcpy away
-//               from serialised.
-//   MANIFEST    one staging buffer; manifests are written one at a time, so
-//               one buffer is not a bottleneck, it is the honest shape.
-//
-// WHY PHASES RETRY INSTEAD OF FAILING. Every phase's work is bounded
-// bookkeeping plus non-blocking vtable calls, and every vtable call can say
-// BUSY for reasons that resolve themselves (the tier's clock finding no
-// unpinned victim this pass, the swap stream not yet drained). A switch is
-// an operator action, not a request-path event: the right response to BUSY
-// is to finish the current decode step and try again, so Advance carries a
-// per-phase cursor and last_error instead of an abort path. There is no
-// CANCEL. Cancelling mid-swap would leave residency split between recipes,
-// which is the one state worse than either recipe alone; the protocol is
-// crash-only, and the manifest records on the tier are what a restarted rank
-// rebuilds from.
 
 #define TOPOLOGY_SWITCH_SEQUENCE_FREE 0u
 #define TOPOLOGY_SWITCH_SEQUENCE_ACTIVE 1u
 #define TOPOLOGY_SWITCH_SEQUENCE_AT_BOUNDARY 2u
 
-// Manifest keys live in the same tier as block keys, so they must not
-// collide with one: the domain constant is hashed into every manifest's
-// content side, which a token-run hash cannot produce by construction
-// (cache/cache.h hashes token ids; this hashes a fixed magic over a
-// sequence id).
 #define TOPOLOGY_SWITCH_MANIFEST_DOMAIN 0x9e3779b97f4a7c15ULL
 
-// Resume plans a sequence's blocks into the tier lookahead in chunks: the
-// needs array is stack, not heap, and a chunk this size keeps the stack
-// frame small without turning planning into a per-block call.
 #define TOPOLOGY_SWITCH_PLAN_CHUNK 16u
 
 typedef struct TopologySwitchSequence
 {
 	uint64_t sequence_id;
-	uint64_t recipe_id;          /* the recipe it was admitted under */
+	uint64_t recipe_id;
 	uint32_t position_tokens;
 	uint32_t block_count;
 	uint8_t state;
-	uint8_t resume_class;        /* SparkTopologySwitchResumeClass */
-	uint8_t pins_done;           /* block pins taken; write reservation may still retry */
-	uint8_t checkpointed;        /* pins down, manifest committed */
+	uint8_t resume_class;
+	uint8_t pins_done;
+	uint8_t checkpointed;
 	uint32_t reserved1;
 }
 TopologySwitchSequence;
@@ -84,16 +52,10 @@ uint64_t SparkTopologySwitchKvKey(
 	uint64_t kv_namespace,
 	uint64_t content_hash)
 {
-	// SparkHashBytes is order-sensitive FNV-1a (spark_status.h), so the
-	// namespace commits first and the content hash second - the same content
-	// under two models diverges, the same content under two strategies of
-	// one model does not, which is exactly the partition the tier needs.
 	uint64_t key = SparkHashBytes(kv_namespace,&content_hash,sizeof(content_hash));
-	return(key | 1u);   /* never zero; zero means unhashed on the tier */
+	return(key | 1u);
 }
 
-// A manifest's tier key: the sequence id behind the domain magic, inside
-// the same namespace as the blocks it names.
 static uint64_t TopologySwitchManifestKey(
 	uint64_t kv_namespace,
 	uint64_t sequence_id)
@@ -153,13 +115,9 @@ SparkStatus SparkTopologySwitchInitialize(
 		|| configuration->max_blocks_per_sequence == 0u
 		|| configuration->step_time_microseconds == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	// Zero bandwidth makes the budget silently zero-cost, which is the one
-	// estimate this module must never produce: refuse it at init instead.
 	if ( configuration->nvme_read_bytes_per_second == 0u
 		|| configuration->nvme_write_bytes_per_second == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	// A manifest that cannot hold its own block list is a checkpoint that
-	// truncates silently. Checked here, where the mistake is free.
 	manifest_capacity = 24u
 		+ (uint64_t)configuration->max_blocks_per_sequence * sizeof(uint64_t);
 	if ( manifest_capacity > configuration->manifest_block_bytes )
@@ -225,8 +183,6 @@ SparkStatus SparkTopologySwitchTrackSequence(
 	uint32_t index;
 	if ( sw == 0 || sequence_id == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	// Admission is the scheduler's gate; this is the backstop. A sequence
-	// tracked mid-switch would bind to the recipe being unloaded.
 	if ( sw->state != SPARK_TOPOLOGY_SWITCH_STEADY )
 		return(SPARK_STATUS_BUSY);
 	if ( recipe_id != sw->current_recipe.recipe_id )
@@ -271,8 +227,6 @@ SparkStatus SparkTopologySwitchSetSequenceKv(
 	if ( slot < 0 )
 		return(SPARK_STATUS_NOT_FOUND);
 	sequence = &TopologySwitchSequences(sw)[slot];
-	// After checkpoint the block set is frozen on the tier; updating it now
-	// would commit a manifest that names the wrong keys.
 	if ( sequence->checkpointed != 0u )
 		return(SPARK_STATUS_BUSY);
 	keys = TopologySwitchBlockKeysOf(sw,(uint32_t)slot);
@@ -310,8 +264,6 @@ SparkStatus SparkTopologySwitchSequenceComplete(
 	if ( slot < 0 )
 		return(SPARK_STATUS_NOT_FOUND);
 	sequence = &TopologySwitchSequences(sw)[slot];
-	// Checkpointed and now completing before resume: the pins came down at
-	// checkpoint and resume will skip this freed slot, so they drop here.
 	if ( sequence->pins_done != 0u )
 	{
 		const uint64_t *keys = TopologySwitchBlockKeysOf(sw,(uint32_t)slot);
@@ -337,8 +289,6 @@ SparkStatus SparkTopologySwitchBegin(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( sw->state != SPARK_TOPOLOGY_SWITCH_STEADY )
 		return(SPARK_STATUS_BUSY);
-	// A switch to the running recipe is a misconfiguration wearing a fast
-	// path's clothes; refuse it loudly.
 	if ( target->recipe_id == sw->current_recipe.recipe_id )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	sw->target_recipe = *target;
@@ -349,11 +299,6 @@ SparkStatus SparkTopologySwitchBegin(
 	return(SPARK_STATUS_OK);
 }
 
-// -- quiesce ---------------------------------------------------------------
-//
-// Every tracked sequence must report a token boundary (or complete). The
-// bound is one decode step: a step is atomic at the boundary by design, so
-// "stop issuing and let what is in flight land" can never wait longer.
 
 static uint32_t TopologySwitchQuiesceDrained(const SparkTopologySwitch *sw)
 {
@@ -365,13 +310,6 @@ static uint32_t TopologySwitchQuiesceDrained(const SparkTopologySwitch *sw)
 	return(1u);
 }
 
-// -- checkpoint --------------------------------------------------------------
-//
-// Per sequence: pin every block still on the tier (BEFORE any manifest
-// reserve, because ReserveWrite is the tier's only eviction path and an unpinned
-// block is fair game for it), count the absent ones, then write one
-// manifest. The manifest is the crash-recovery record: a restarted rank
-// finds it by key and rebuilds exactly this table.
 
 static SparkStatus TopologySwitchCheckpointOne(
 	SparkTopologySwitch *sw,
@@ -384,11 +322,6 @@ static SparkStatus TopologySwitchCheckpointOne(
 	uint64_t manifest_key,device_offset = 0u;
 	uint32_t index;
 	SparkStatus status;
-	// Pins first, reserves second: ReserveWrite is the tier's only eviction
-	// path, so an unpinned block named by a manifest is fair game for the
-	// manifest's own slot acquisition. pins_done makes the retry exact - a
-	// failed reservation retries the reservation, never the pins, because a double
-	// pin leaks one count that resume's single unpin never returns.
 	if ( sequence->pins_done == 0u )
 	{
 		for ( index = 0u; index < sequence->block_count; ++index )
@@ -396,9 +329,6 @@ static SparkStatus TopologySwitchCheckpointOne(
 			status = SparkNvmeTierPin(sw->configuration.tier,keys[index],0,1);
 			if ( status == SPARK_STATUS_NOT_FOUND )
 			{
-				// Never written back during serving. Counted, not repaired:
-				// the bytes live in device memory and the checkpoint is not
-				// a copy engine - resume will classify RECOMPUTE.
 				sw->statistics.tier_blocks_absent++;
 				continue;
 			}
@@ -409,7 +339,6 @@ static SparkStatus TopologySwitchCheckpointOne(
 		}
 		sequence->pins_done = 1u;
 	}
-	// Serialise: id, recipe, position, count, then the key run.
 	memset(manifest,0,sw->configuration.manifest_block_bytes);
 	memcpy(manifest,&sequence->sequence_id,sizeof(uint64_t));
 	memcpy(manifest + 8u,&sequence->recipe_id,sizeof(uint64_t));
@@ -419,8 +348,6 @@ static SparkStatus TopologySwitchCheckpointOne(
 	manifest_key = TopologySwitchManifestKey(
 		sw->configuration.kv_namespace,sequence->sequence_id);
 	{
-		/* B3: the tier's records carry the SHA-256 of their payload; the
-		 * switch wrote the manifest bytes, so it presents their digest. */
 		uint8_t manifest_digest[SPARK_NVME_TIER_DIGEST_BYTES];
 		SparkSha256Context digest_context;
 		SparkSha256Initialize(&digest_context);
@@ -470,9 +397,6 @@ static uint32_t TopologySwitchCheckpointRun(SparkTopologySwitch *sw)
 		status = TopologySwitchCheckpointOne(sw,slot);
 		if ( status != SPARK_STATUS_OK )
 		{
-			// Retry this sequence next Advance; the cursor does not advance
-			// past it, so nothing is skipped, and pins_done keeps the retry
-			// from double-pinning what the first attempt already pinned.
 			sw->phase_cursor--;
 			sw->last_error = status;
 			return(0u);
@@ -481,14 +405,6 @@ static uint32_t TopologySwitchCheckpointRun(SparkTopologySwitch *sw)
 	return(1u);
 }
 
-// -- resume ------------------------------------------------------------------
-//
-// Classification is per sequence and total: every pinned block still on the
-// tier is WARM and goes into the lookahead so the first steps fetch ahead;
-// one absent block makes the whole sequence RECOMPUTE, because resuming
-// decode from position N requires the whole prefix, not most of it. The
-// partial prefix is not wasted - the recompute's own demand path hits the
-// tier for whatever survived - but the skip-prefill win is all-or-nothing.
 
 static void TopologySwitchResumeOne(
 	SparkTopologySwitch *sw,
@@ -506,8 +422,6 @@ static void TopologySwitchResumeOne(
 		{
 			warm = 0u;
 		}
-		// The pin drops either way: its job was to protect the block between
-		// checkpoint and this moment, and this moment has arrived.
 		(void)SparkNvmeTierPin(sw->configuration.tier,keys[index],0,0);
 	}
 	if ( warm != 0u && sequence->block_count != 0u )
@@ -524,20 +438,11 @@ static void TopologySwitchResumeOne(
 			for ( fill = 0u; fill < count; ++fill )
 			{
 				needs[fill].content_hash = keys[base + fill];
-				// The sequence re-issues as soon as admissions open; its
-				// first layer needs block zero immediately, and layer i
-				// block i one step-ish later. One deadline for all is the
-				// honest version of "now".
 				needs[fill].need_by_step = step_now + 1u;
 				needs[fill].reserved0 = 0u;
-				/* Key-only planning: the switch classifies, it never hands
-				 * bytes over - landing still verifies against each record's
-				 * stored digest before anything becomes readable. */
 				memset(needs[fill].content_digest,0,
 					sizeof(needs[fill].content_digest));
 			}
-			// A plan failure costs prefetch, never correctness: the demand
-			// path is the fallback, so the result is deliberately unchecked.
 			(void)SparkNvmeTierPlanLookahead(
 				sw->configuration.tier,needs,count,step_now,0);
 		}
@@ -564,16 +469,13 @@ SparkTopologySwitchState SparkTopologySwitchAdvance(
 			break;
 		sw->state = SPARK_TOPOLOGY_SWITCH_CHECKPOINT;
 		sw->phase_cursor = 0u;
-		/* The drain's last boundary IS this step, and the checkpoint is
-		   bookkeeping, not I/O waits - same call, same step. */
-		/* fall through */
+		[[fallthrough]];
 	case SPARK_TOPOLOGY_SWITCH_CHECKPOINT:
 		if ( TopologySwitchCheckpointRun(sw) == 0u )
 			break;
 		sw->state = SPARK_TOPOLOGY_SWITCH_SWAP;
 		sw->swap_started = 0u;
-		/* Issuing the swap is one non-blocking vtable call. */
-		/* fall through */
+		[[fallthrough]];
 	case SPARK_TOPOLOGY_SWITCH_SWAP:
 		if ( sw->swap_started == 0u )
 		{
@@ -599,7 +501,7 @@ SparkTopologySwitchState SparkTopologySwitchAdvance(
 		}
 		sw->state = SPARK_TOPOLOGY_SWITCH_RESUME;
 		sw->phase_cursor = 0u;
-		/* fall through */
+		[[fallthrough]];
 	case SPARK_TOPOLOGY_SWITCH_RESUME:
 	{
 		TopologySwitchSequence *sequences = TopologySwitchSequences(sw);

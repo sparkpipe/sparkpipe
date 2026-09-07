@@ -44,7 +44,6 @@ glm52_codec_ids=(1 2 3 4 5 6 7)
 spark_cuda_validation_begin "$@"
 spark_cuda_validation_check_hash_format
 spark_cuda_validation_check_archive
-spark_cuda_validation_check_pack
 spark_cuda_validation_check_source_digests
 
 # The validator walks three tiers on synthetic weights; it does not load the

@@ -24,17 +24,6 @@
 
 #define SPARK_GLM5_NEXT_SERVING_ADAPTER_ID \
 	"spark.glm5_next.serving-adapter.tp8.expert_" GLM5_NEXT_EXPERT_CODEC_NAME ".v1"
-/* Deployment-facing geometry: 8 flat ranks, one per TP rank, single PP
- * stage. The residentd fans each submission out to every rank
- * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
- * adapter maps flat rank -> tp_rank and pins the firmware stage to 0. */
-/* glm5_next: TP16 whole-stack - every rank holds all 45 weight layers
- * (the deployment counts each rank as a stage; PARALLEL_FANOUT fans each
- * submission to all 16, exactly glm52's TP8 shape at 16). The MTP layer
- * rides the spec path. NOTE: HIDDEN_TRANSPORT must NOT be declared with
- * FANOUT unless HYBRID_TP_PP - the descriptor validator rejects that
- * combination (found at bring-up); the TP collective rides the node
- * context, not the adapter capability bits. */
 #define SPARK_GLM5_NEXT_SERVING_STAGE_COUNT 16u
 #define SPARK_GLM5_NEXT_SERVING_TP_DEGREE 16u
 #define SPARK_GLM5_NEXT_SERVING_STAGE_LAYERS \
@@ -216,15 +205,11 @@ static SparkStatus SparkGlm5NextServingLoadTpAlgorithms(
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
 		else if ( SparkJsonStringEquals(document,element,"direct_all_to_all") )
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
+		else if ( SparkJsonStringEquals(document,element,"tree") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	/* #760 semantics (the shared template's rule; this private copy had
-	 * the pre-d2a bound, which rejected the generator's
-	 * [recursive_doubling, direct_all_to_all] set at TP16 - the exact
-	 * SCHEMA_ERROR the engagement redeploy hit at adapter load):
-	 * single-algorithm builds run recursive_doubling or direct_all_to_all
-	 * alone; the pair composes. Split-ring stays out (tp4-only policy). */
 	if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
 	{
 	}
@@ -233,6 +218,13 @@ static SparkStatus SparkGlm5NextServingLoadTpAlgorithms(
 	}
 	else if ( count == 2u && mask == (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
 		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) )
+	{
+	}
+	else if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE )
+	{
+	}
+	else if ( count == 2u && mask == (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE |
+		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING) )
 	{
 	}
 	else
@@ -251,10 +243,6 @@ static SparkStatus SparkGlm5NextServingLoadTpStepRails(
 	uint32_t count,index,value;
 	SparkStatus status;
 	token = SparkGlm5NextServingJsonMember(document,object,"step_rail_indices");
-	/* Two legal shapes: the 3-entry split-ring routes (legacy) and the
-	 * tp_degree-entry d2a peer routes (the struct is sized MAX_STEPS).
-	 * The 3-only bound rejected the generator's d2a configs at load -
-	 * the engagement redeploy's root-cause SCHEMA_ERROR. */
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -320,6 +308,46 @@ static SparkStatus SparkGlm5NextServingLoadTpRailHosts(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm5NextServingLoadSessionPorts(
+	const SparkJsonDocument *document,
+	int32_t object,
+	const char *name,
+	uint16_t table[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
+		[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE],
+	uint32_t tp_degree)
+{
+	int32_t token,element,cell;
+	uint32_t row,column,port,count;
+	SparkStatus status;
+	token = SparkGlm5NextServingJsonMember(document,object,name);
+	if ( token < 0 ||
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = SparkJsonGetArrayElementCount(document,token);
+	if ( count != tp_degree )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (row=0u; row<count; row++)
+	{
+		element = SparkJsonGetArrayElement(document,token,row);
+		if ( element < 0 ||
+			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) ||
+			SparkJsonGetArrayElementCount(document,element) != tp_degree )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		for (column=0u; column<count; column++)
+		{
+			cell = SparkJsonGetArrayElement(document,element,column);
+			status = cell < 0 ? SPARK_STATUS_SCHEMA_ERROR :
+				SparkJsonGetUInt32(document,cell,&port);
+			if ( status != SPARK_STATUS_OK || port > UINT16_MAX ||
+				(row == column ? port != 0u : port == 0u) )
+				return(status == SPARK_STATUS_OK ?
+					SPARK_STATUS_SCHEMA_ERROR : status);
+			table[row][column] = (uint16_t)port;
+		}
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextServingValidateTpCollectiveMembers(
 	const SparkJsonDocument *document,
 	int32_t object,
@@ -338,7 +366,7 @@ static SparkStatus SparkGlm5NextServingValidateTpCollectiveMembers(
 		"peer_hosts","peer_ports","algorithms",
 		"direct_all_to_all_max_payload_bytes",
 		"split_ring_min_payload_bytes","rail_peer_hosts",
-		"step_rail_indices"
+		"step_rail_indices","session_ports","session_ports_hc"
 	};
 	const char *const *members;
 	uint32_t member_count;
@@ -404,8 +432,6 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt64(document,token,&collective_identifier);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	/* Identifier zero is the degraded single-rank bringup mode: the module
-	 * keeps the pack's tp geometry but runs with every reduce elided. */
 	state->tp_collective_identifier = collective_identifier;
 	status = SparkGlm5NextServingJsonUnsigned(document,object,"listen_port",&port);
 	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
@@ -465,6 +491,14 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 		status = SparkGlm5NextServingLoadTpAlgorithms(document,object,
 			&state->tp_collective_topology);
 		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextServingLoadSessionPorts(document,object,
+				"session_ports",state->tp_collective_topology.session_ports,
+				tp_degree);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextServingLoadSessionPorts(document,object,
+				"session_ports_hc",state->node_context.
+					tp_collective_session_ports_hc,tp_degree);
+		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm5NextServingJsonUnsigned(document,object,
 				"direct_all_to_all_max_payload_bytes",
 				&state->tp_collective_topology.direct_all_to_all_max_payload_bytes);
@@ -472,9 +506,6 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 			status = SparkGlm5NextServingJsonUnsigned(document,object,
 				"split_ring_min_payload_bytes",
 				&state->tp_collective_topology.split_ring_min_payload_bytes);
-		/* algorithm-specific thresholds are legal only when their
-		 * algorithm is in the mask (d2a carries an 80KB bound at TP16;
-		 * split-ring's threshold stays zero under this policy) */
 		if ( status == SPARK_STATUS_OK &&
 			(state->tp_collective_topology.algorithm_mask &
 				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) == 0u &&
@@ -674,23 +705,11 @@ static void SparkGlm5NextServingDriverCompletion(
 		state->orphan_completion_count++;
 	if ( completion.status != SPARK_STATUS_OK )
 	{
-		/* Wire contract (SparkModelServingAdapterValidateCompletion): a
-		 * non-OK completion must carry completion_flags == 0 and
-		 * accepted_token_count == 0, or the residentd rejects the STRUCT
-		 * with INVALID_ARGUMENT before reading the driver's true status
-		 * — masking the real failure as status 1/reason 2. */
 		completion.accepted_token_count = 0u;
 		completion.completion_flags = 0u;
 	}
 	if ( completion.status == SPARK_STATUS_OK )
 	{
-		/* Pure TP fanout (this adapter's only topology): every rank runs the
-		 * whole stack and the head reduce is a U64-max argmax reduction, so
-		 * every rank holds the SAME global token. The validator admits a
-		 * token payload from every stage of a parallel fanout, and the
-		 * client face is whichever rank the API connects to (rank 0), so
-		 * the old final-stage-only gate left that rank's clients with
-		 * status-only completions forever. */
 		uint32_t burst = driver_completion->tokens_per_sequence != 0u ?
 			driver_completion->tokens_per_sequence : 1u;
 		if ( burst > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u ||
@@ -777,7 +796,7 @@ static SparkStatus SparkGlm5NextServingLoadDriver(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	descriptor = state->driver.interface->descriptor;
-	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM5_NEXT_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET) != 0 || strcmp(descriptor->model_description_sha256,GLM5_NEXT_CONTRACT_SHA256) != 0 )
+	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM5_NEXT_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET) != 0 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
 	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
 	if ( state->program == 0 )
@@ -860,12 +879,6 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->mtp_enabled = (uint32_t)mtp_env;
 	}
 	status = SparkGlm5NextServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
-	/* execution_row_capacity bounds the per-submission ROW width (prefill
-	 * chunks carry many rows of ONE sequence), not the resident sequence
-	 * slots: bounding it by resident_sequence_capacity tied prefill width
-	 * to the GDN-state memory budget (150MB/lane class) and capped every
-	 * prompt at 16-token submissions - the measured 10 tok/s prefill. The
-	 * honest bound is the module's row firmware limit. */
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM5_NEXT_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SPARK_GLM5_NEXT_SERVING_TP_DEGREE) )
@@ -875,8 +888,6 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->node_context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 		state->node_context.descriptor_bytes = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
 		state->node_context.stage_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_STAGE_COUNT;
-		/* Firmware stage is always 0; the deployment's flat rank index is the
-		 * TP rank, cross-checked against the stage config below. */
 		state->node_context.stage_index = 0u;
 		state->node_context.first_layer_index = 0u;
 		state->node_context.layer_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
@@ -917,9 +928,6 @@ static SparkStatus SparkGlm5NextServingValidateBoundaries(
 {
 	uint64_t boundary_bytes;
 	boundary_bytes = (uint64_t)submission->row_count * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	/* Every TP8 fanout rank runs the full single-stage firmware: it owns the
-	 * embedding and the head, so it accepts no hidden boundaries and no DSA
-	 * sidebands. */
 	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	(void)boundary_bytes;

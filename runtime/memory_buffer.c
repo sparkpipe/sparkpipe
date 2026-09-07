@@ -1,10 +1,3 @@
-/*
- * Memory-M1 implementation: typed buffer handles + the space-aware copy.
- * See include/sparkpipe/spark_memory_buffer.h for the contract. The
- * device paths reach <cuda_runtime.h> the same way stage_module_common
- * does: the real header on GPU builds, the house stub on host builds,
- * so the space rules are enforced identically everywhere.
- */
 
 #include <stdlib.h>
 #include <string.h>
@@ -49,8 +42,6 @@ SparkStatus SparkMemoryBufferAllocate(
 	}
 	else
 	{
-		/* FILE_BACKED is the M2 surface (register/map_file): named in the
-		 * model, refusing here until it lands. */
 		return(SPARK_STATUS_UNSUPPORTED);
 	}
 	buffer->space = space;

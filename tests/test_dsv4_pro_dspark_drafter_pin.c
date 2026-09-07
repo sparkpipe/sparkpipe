@@ -1,9 +1,3 @@
-/* Pin the neutral DSpark drafter table for the DSV4 Pro 0813 target against
- * the contract-derived values (dsv4_pro_authoritative.json dspark block,
- * emitted by generate_dsv4_contracts.py and pinned from the GA rank-pack
- * mtp.0/1/2 weight shapes). If any of these break, the Pro drafter shape
- * changed and the DSpark draft-path receipts stop applying. Sources:
- * spark_dsv4_pro_model.h (generated) and spark_dspark_drafter.h (neutral). */
 #include <stdint.h>
 
 #define SPARK_DSPARK_TARGET_DSV4_PRO_0813

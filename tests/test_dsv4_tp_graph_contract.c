@@ -18,9 +18,6 @@ int main(void)
     assert(SparkDsv4ResidentDecodeStageNativeTpWidthSupported(8u) == 1u);
     assert(SparkDsv4ResidentDecodeStageNativeTpWidthSupported(1024u) == 1u);
     assert(SparkDsv4ResidentDecodeStageNativeTpWidthSupported(2u) == 0u);
-    /* Widths 16/32/64 became natively supported with the DSV4 devcycle
-     * fail-fast harness (commit 84efd5b, PR #649, 2026-08-16). The prior
-     * contract pinned here (64 unsupported) went stale on that commit. */
     assert(SparkDsv4ResidentDecodeStageNativeTpWidthSupported(16u) == 1u);
     assert(SparkDsv4ResidentDecodeStageNativeTpWidthSupported(32u) == 1u);
     assert(SparkDsv4ResidentDecodeStageNativeTpWidthSupported(64u) == 1u);

@@ -28,7 +28,7 @@
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: fwrite uses a direct size/count literal
 2 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memset uses a raw byte-width multiplier
-8 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferAllocate uses a raw byte-width multiplier
+6 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferAllocate uses a raw byte-width multiplier
 4 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferCopy uses a raw byte-width multiplier
 2 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: malloc uses a raw byte-width multiplier
 8 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier

@@ -2,7 +2,6 @@
 
 #include <string.h>
 
-/* bf16 is a 16-bit value; a host float is the bf16 bits in the high half. */
 float spark_serial_tp_bf16_to_f32(uint16_t b)
 {
 	uint32_t u = ((uint32_t)b) << 16;
@@ -15,7 +14,6 @@ uint16_t spark_serial_tp_f32_to_bf16(float f)
 {
 	uint32_t u;
 	memcpy(&u, &f, sizeof(u));
-	/* round-to-nearest-even on the low 16 bits being dropped */
 	uint32_t lsb = (u >> 16) & 1u;
 	uint32_t rounded = u + 0x7fffu + lsb;
 	return (uint16_t)(rounded >> 16);
@@ -46,7 +44,7 @@ int spark_serial_tp_sweep(
 		if (shard_bytes > budget->cap_bytes - budget->held_bytes)
 		{
 			(void)hooks->free_shard(rank, context);
-			return -3; /* budget overflow: shard does not fit the cap */
+			return -3;
 		}
 		budget->held_bytes += shard_bytes;
 		if (budget->held_bytes > budget->peak_held_bytes)
@@ -129,12 +127,12 @@ uint64_t spark_serial_tp_hash_elements(const void *data, uint64_t element_count,
 {
 	const uint8_t *bytes = (const uint8_t *)data;
 	uint64_t count = element_count * (uint64_t)element_bytes;
-	uint64_t hash = 1469598103934665603ull; /* FNV-1a offset basis */
+	uint64_t hash = 1469598103934665603ull;
 	uint64_t i;
 	for (i = 0u; i < count; ++i)
 	{
 		hash ^= bytes[i];
-		hash *= 1099511628211ull; /* FNV-1a prime */
+		hash *= 1099511628211ull;
 	}
 	return hash;
 }

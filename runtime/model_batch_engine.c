@@ -134,9 +134,6 @@ struct SparkModelBatchEngine
 	uint64_t next_submission_id;
 	uint64_t submitted_request_count;
 	uint64_t completed_request_count;
-	/* Batch-aggregate first-draft misses: the adapter extension reports
-	 * one count for the whole submission, so per-request attribution is
-	 * only possible for single-lane completions. */
 	uint32_t batch_first_draft_miss_count;
 	uint64_t cancelled_request_count;
 	uint64_t emitted_token_count;
@@ -552,9 +549,6 @@ static void SparkModelBatchFreeRequest(
 	if ( engine->cache_block_token_count != 0u )
 	{
 		status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
-		/* a failed cache release degrades that sequence's prefix reuse,
-		 * NOT the engine — closing admission here bricks the engine for
-		 * all future requests (a serving engine must stay admitted) */
 		(void)status;
 	}
 	SparkModelBatchReleaseResidentSlot(engine,request);
@@ -640,12 +634,6 @@ static void SparkModelBatchSetFailed(
 	SparkModelBatchEngine *engine,
 	SparkStatus status)
 {
-	/* ENGINE-level failure only: called from pipeline Progress when the
-	 * daemon connection itself is broken. Individual request failures
-	 * (daemon rejecting one submission) go through HandleRejected →
-	 * FailRequest per-request, NOT through this function. A serving
-	 * engine stays admitted unless the pipeline is actually dead —
-	 * one bad request must not brick the engine for all callers. */
 	if ( engine->failed_status == SPARK_STATUS_OK )
 		engine->failed_status = status;
 	engine->admission_open = 0u;
@@ -783,10 +771,6 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 		if ( completion->model_extension_kind == 0x5136u )
 		{
 			request->model_extension_kind = completion->model_extension_kind;
-			/* The adapter reports ONE aggregate miss count for the whole
-			 * submission; crediting it to every request fabricated a miss
-			 * on all B-1 peers. Attribute per-request only when the batch
-			 * has a single lane, and keep the aggregate at engine level. */
 			if ( submission->lane_count == 1u )
 				request->first_draft_miss_count += extension_miss;
 			else
@@ -891,8 +875,6 @@ static void SparkModelBatchCompletion(
 	if ( submission->admitted == 0u || status != SPARK_STATUS_OK )
 	{
 		status = submission->admitted == 0u ? (SparkStatus)submission->result_status : status;
-		/* per-request failure: don't SetFailed (that bricks the engine);
-		 * HandleRejected fails only the requests on this submission */
 		SparkModelBatchHandleRejected(engine,submission,status);
 	}
 	else if ( SparkModelBatchApplyCompletion(engine,submission,completion) != SPARK_STATUS_OK )
@@ -1537,12 +1519,6 @@ static uint32_t SparkModelBatchSelectRequestPass(
 				continue;
 			}
 		}
-		/* Prefill lane concentration (the B16 incident fix): the round
-		 * budget is CONSUMED by the lanes selected - a long-prompt lane
-		 * absorbs the whole budget (one full-width frame per submission
-		 * instead of N one-row frames, each a full weight pass); short
-		 * spans leave budget for more lanes in the same submission.
-		 * Single-request workloads are unchanged (one lane consumes it). */
 		engine->scratch_request_slots[selected++] = slot;
 		if ( prefill_span_budget != 0 )
 		{
@@ -1639,10 +1615,6 @@ static uint32_t SparkModelBatchAssignPrefillCounts(
 		remaining_prompt = SparkModelBatchPrefillSpan(engine,request);
 		total_remaining = remaining_prompt <= UINT32_MAX - total_remaining ? total_remaining + remaining_prompt : UINT32_MAX;
 	}
-	/* Continuous batching: the whole ready set gets the row budget up
-	 * front, capped only by max_prefill_rows. The old ladder planner
-	 * reserved floor rows to seed later fixed-size groups, holding ready
-	 * work back; the remainder now chunk-prefills on the next pass. */
 	row_budget = total_remaining < engine->max_prefill_rows ?
 		total_remaining : engine->max_prefill_rows;
 	if ( row_budget < lane_count )
@@ -1972,10 +1944,6 @@ static uint32_t SparkModelBatchChooseWorkKind(
 			available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_RELEASE]++;
 	}
 	memset(minimum_by_kind,0,sizeof(minimum_by_kind));
-	/* Continuous admission: no minimum-efficient floor. Every nonzero
-	 * ready set dispatches on the next Progress (the old B-ladder deferred
-	 * small queues until minimum_efficient_submission_row_count work was
-	 * pending or the request aged out - waiting to fill a fixed bucket). */
 	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 1u;
 	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 1u;
 	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_RELEASE] = 1u;
@@ -2050,12 +2018,6 @@ SparkStatus SparkModelBatchEngineProgress(
 		step++;
 		misses = 0u;
 	}
-	/* Write-through contract (p1d2 step-loop): the pipeline client flushes
-	 * every submission and decision to the wire when it is queued, so the
-	 * dispatch loop above already put this step's work on the wire — no
-	 * compensating flush Progress here (the old trailing call existed to
-	 * drain a queue that only Progress could send; that bubble class is
-	 * designed out at the client). This Progress is a pure drain. */
 	return(SPARK_STATUS_OK);
 }
 

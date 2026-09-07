@@ -1,6 +1,8 @@
 #include "sparkpipe/spark_hidden_transport.h"
 
 #include <dlfcn.h>
+#include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -905,6 +907,36 @@ SparkStatus SparkHiddenTransportPersistentRemoteCreditReady(
         session->transport_state,credit_index);
 }
 
+SparkStatus SparkHiddenTransportSetFixedLocal(
+    SparkHiddenTransportSession *session,
+    void *local_buffer,
+    uint64_t local_bytes)
+{
+    if (session == 0 || local_buffer == 0 ||
+        session->transport_interface.set_fixed_local == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return session->transport_interface.set_fixed_local(
+        session->transport_state,local_buffer,local_bytes);
+}
+
+SparkStatus SparkHiddenTransportSendFixed(
+    SparkHiddenTransportSession *session,
+    const void *local_buffer,
+    uint64_t bytes,
+    uint32_t sequence)
+{
+    if (session == 0 || local_buffer == 0 ||
+        session->transport_interface.send_fixed == 0)
+    {
+        
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return session->transport_interface.send_fixed(
+        session->transport_state,local_buffer,bytes,sequence);
+}
+
 SparkStatus SparkHiddenTransportReservePersistentSend(
     SparkHiddenTransportSession *session,
     uint32_t credit_index,
@@ -1180,6 +1212,11 @@ static SparkStatus SparkHiddenTransportPersistentRingPostReceive(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     state = (SparkHiddenTransportPersistentRingState *)transport_state;
+    fprintf(stderr,
+        "STUB-POST state=%p seq=%llu tok=%llu\n",
+        transport_state,
+        (unsigned long long)packet->sequence_id,
+        (unsigned long long)packet->token_index);
     status = SparkHiddenTransportPersistentRingPushCompletion(
         state,
         packet,
@@ -1202,6 +1239,11 @@ static SparkStatus SparkHiddenTransportPersistentRingSend(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    fprintf(stderr,
+        "STUB-SEND state=%p seq=%llu tok=%llu\n",
+        transport_state,
+        (unsigned long long)packet->sequence_id,
+        (unsigned long long)packet->token_index);
     state = (SparkHiddenTransportPersistentRingState *)transport_state;
     status = SparkHiddenTransportPersistentRingPushCompletion(
         state,

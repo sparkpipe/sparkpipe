@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
+#include "sparkpipe/spark_speculation_seam.h"
 
 #ifndef GLM52_EXPERT_WEIGHT_CODEC
 #error "GLM52_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -26,10 +27,6 @@
 
 #define SPARK_GLM52_SERVING_ADAPTER_ID \
 	"spark.glm52.serving-adapter.tp8.expert_" GLM52_EXPERT_CODEC_NAME ".v1"
-/* Deployment-facing geometry: 8 flat ranks, one per TP rank, single PP
- * stage. The residentd fans each submission out to every rank
- * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
- * adapter maps flat rank -> tp_rank and pins the firmware stage to 0. */
 #define SPARK_GLM52_SERVING_STAGE_COUNT 8u
 #define SPARK_GLM52_SERVING_TP_DEGREE 8u
 #define SPARK_GLM52_SERVING_STAGE_LAYERS \
@@ -53,6 +50,13 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL)
+#define SPARK_GLM52_SERVING_SPECULATORS_ENV "SPARK_GLM52_SPECULATORS"
+#define SPARK_GLM52_SERVING_SEAM_DRAFT_TIME_BUDGET_MS 20u
+#define SPARK_GLM52_SERVING_SEAM_DRAFT_MAX_DEPTH 16u
+#define SPARK_GLM52_SERVING_SEAM_DRAFT_MAX_NODE_COUNT 64u
+#define SPARK_GLM52_SERVING_SEAM_CONNECT_TIMEOUT_MS 1000u
+#define SPARK_GLM52_SERVING_SEAM_IO_TIMEOUT_MS 30000u
+#define SPARK_GLM52_SERVING_DRAFT_BRIDGE_HOST_BYTES 256u
 
 static const char *const SparkGlm52ServingConfigurationMembers[] =
 {
@@ -68,10 +72,25 @@ static const char *const SparkGlm52ServingConfigurationMembers[] =
 	"tp_collective"
 };
 
+static const char *const SparkGlm52ServingConfigurationMembersBridge[] =
+{
+	"schema_version",
+	"model_revision",
+	"expert_weight_codec",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"execution_row_capacity",
+	"decode_split_context_threshold",
+	"tp_degree",
+	"tp_rank",
+	"tp_collective",
+	"draft_bridge_host",
+	"draft_bridge_port"
+};
+
 typedef struct SparkGlm52ServingPending
 {
 	struct SparkGlm52ServingState *owner;
-	/* The shared submission view (the serving-adapter template fills it). */
 	SparkServingAdapterPendingCommon common;
 	uint32_t last_row_by_lane[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
@@ -109,6 +128,10 @@ typedef struct SparkGlm52ServingState
 	char tp_collective_backend_path[SPARK_INTERNAL_PATH_BYTES];
 	uint32_t tp_collective_control_port_base;
 	SparkModelServingRuntimeLimits runtime_limits;
+	SparkSpeculationSeam *speculation_seam;
+	char draft_bridge_host[SPARK_GLM52_SERVING_DRAFT_BRIDGE_HOST_BYTES];
+	uint32_t draft_bridge_port;
+	uint32_t draft_bridge_configured;
 	SparkModelDriverCacheLane prefetch_lanes[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkGlm52ServingPending pending[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkGlm52ServingState;
@@ -148,12 +171,6 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.boundary_sideband_bytes_per_sequence = {0u}
 };
 
-/* The tp_collective parse is the serving-adapter template's; the family
- * policy is glm52's TP8 flavor: recursive doubling alone with both
- * algorithm-specific thresholds zero, the degraded single-rank zero
- * identifier allowed, and contiguous peer ports deriving the control-port
- * base. The peer arrays stage against the configuration's tp_degree - the
- * parse runs before the tp_degree==8 cross-check, exactly as pasted. */
 static SparkStatus SparkGlm52ServingLoadTpCollective(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -167,7 +184,7 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	policy.peer_count = tp_degree;
 	policy.allow_zero_collective_identifier = 1u;
 	policy.require_contiguous_peer_ports = 1u;
-	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_RECURSIVE_DOUBLING_ONLY;
+	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED;
 	memset(&config,0,sizeof(config));
 	config.backend_module_path_buffer = state->tp_collective_backend_path;
@@ -201,17 +218,27 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 {
 	SparkJsonDocument document;
 	char *relative_stage_pack_path;
+	char *draft_bridge_host_value;
+	const char *const *members;
 	uint32_t schema_version;
+	uint32_t member_count,has_draft_bridge_host,has_draft_bridge_port;
 	int32_t root,token;
 	SparkStatus status;
 	relative_stage_pack_path = 0;
+	draft_bridge_host_value = 0;
 	SparkJsonDocumentReset(&document);
 	status = SparkJsonLoadFile(path,&document);
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	has_draft_bridge_host = SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_host") >= 0 ? 1u : 0u;
+	has_draft_bridge_port = SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_port") >= 0 ? 1u : 0u;
+	if ( status == SPARK_STATUS_OK && has_draft_bridge_host != has_draft_bridge_port )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	members = has_draft_bridge_host != 0u ? SparkGlm52ServingConfigurationMembersBridge : SparkGlm52ServingConfigurationMembers;
+	member_count = has_draft_bridge_host != 0u ? (uint32_t)(sizeof(SparkGlm52ServingConfigurationMembersBridge) / sizeof(SparkGlm52ServingConfigurationMembersBridge[0])) : (uint32_t)(sizeof(SparkGlm52ServingConfigurationMembers) / sizeof(SparkGlm52ServingConfigurationMembers[0]));
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,SparkGlm52ServingConfigurationMembers,(uint32_t)(sizeof(SparkGlm52ServingConfigurationMembers) / sizeof(SparkGlm52ServingConfigurationMembers[0])));
+		status = SparkJsonValidateObjectMembersExact(&document,root,members,member_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
@@ -237,13 +264,77 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"tp_rank",tp_rank);
 	if ( status == SPARK_STATUS_OK && (*tp_degree == 0u || *tp_rank >= *tp_degree) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK && has_draft_bridge_host != 0u )
+	{
+		token = SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_host");
+		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&draft_bridge_host_value);
+	}
+	if ( status == SPARK_STATUS_OK && has_draft_bridge_host != 0u )
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"draft_bridge_port",&state->draft_bridge_port);
+	if ( status == SPARK_STATUS_OK && draft_bridge_host_value != 0 )
+	{
+		if ( strlen(draft_bridge_host_value) + 1u > sizeof(state->draft_bridge_host) )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		else
+		{
+			memcpy(state->draft_bridge_host,draft_bridge_host_value,strlen(draft_bridge_host_value) + 1u);
+			state->draft_bridge_configured = 1u;
+		}
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ServingLoadTpCollective(&document,root,runtime_root,state,*tp_degree);
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
+	free(draft_bridge_host_value);
 	(void)fprintf(stderr,"GLM52-ADAPTER LoadConfiguration rc=%d\n",(int)status);
+	return(status);
+}
+
+static SparkStatus SparkGlm52ServingInitializeSpeculationSeam(
+	SparkGlm52ServingState *state,
+	uint32_t max_sequence_positions)
+{
+	SparkSpeculationSeamConfiguration seam_configuration;
+	SparkStatus status;
+	memset(&seam_configuration,0,sizeof(seam_configuration));
+	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
+	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
+	seam_configuration.available_source_mask = 0u;
+	seam_configuration.default_speculative_token_count = 0u;
+	seam_configuration.lane_count = state->max_active_sequence_count;
+	seam_configuration.max_committed_token_count = max_sequence_positions;
+	seam_configuration.max_tap_row_count = 0u;
+	seam_configuration.draft_time_budget_ms = SPARK_GLM52_SERVING_SEAM_DRAFT_TIME_BUDGET_MS;
+	seam_configuration.draft_max_depth = SPARK_GLM52_SERVING_SEAM_DRAFT_MAX_DEPTH;
+	seam_configuration.draft_max_node_count = SPARK_GLM52_SERVING_SEAM_DRAFT_MAX_NODE_COUNT;
+	seam_configuration.connect_timeout_ms = SPARK_GLM52_SERVING_SEAM_CONNECT_TIMEOUT_MS;
+	seam_configuration.io_timeout_ms = SPARK_GLM52_SERVING_SEAM_IO_TIMEOUT_MS;
+	seam_configuration.control_value = getenv(SPARK_GLM52_SERVING_SPECULATORS_ENV);
+	if ( state->draft_bridge_configured != 0u )
+	{
+		seam_configuration.bridge_host = state->draft_bridge_host;
+		seam_configuration.bridge_port = state->draft_bridge_port;
+	}
+	memcpy(seam_configuration.target_model,SPARK_GLM52_SERVING_MODEL_ID,sizeof(SPARK_GLM52_SERVING_MODEL_ID));
+	seam_configuration.model_contract.abi_version = SPARK_SPECULATION_ABI_VERSION;
+	seam_configuration.model_contract.descriptor_bytes = SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+	seam_configuration.model_contract.verifier_hidden_dtype = SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
+	seam_configuration.model_contract.draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
+	seam_configuration.model_contract.draft_layer_count = 1u;
+	seam_configuration.model_contract.block_size = 1u;
+	seam_configuration.model_contract.hidden_dimension = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
+	seam_configuration.model_contract.intermediate_dimension = SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION;
+	seam_configuration.model_contract.attention_head_count = SPARK_GLM52_MODEL_HEAD_COUNT;
+	seam_configuration.model_contract.kv_head_count = 1u;
+	seam_configuration.model_contract.head_dimension = SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION;
+	seam_configuration.model_contract.vocab_size = SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT;
+	seam_configuration.model_contract.draft_vocab_size = SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT;
+	seam_configuration.model_contract.maximum_speculative_token_count = 1u;
+	seam_configuration.model_contract.verifier_accept_k = 1u;
+	status = SparkSpeculationSeamInitialize(&seam_configuration,&state->speculation_seam);
+	(void)fprintf(stderr,"GLM52-ADAPTER SpeculationSeam rc=%d\n",(int)status);
 	return(status);
 }
 
@@ -297,9 +388,6 @@ static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 		return(0);
 	pending->owner = state;
 	pending->common.active = 1u;
-	/* glm52 stages resident slots per ROW: the TP8 fanout's row order is
-	 * the slot order (the family fill step; the template owns the common
-	 * view and last_row_by_lane). */
 	for (row=0u; row<submission->row_count; row++)
 		pending->resident_slots[row] =
 			submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot;
@@ -401,14 +489,10 @@ static void SparkGlm52ServingDestroy(void *adapter_state)
 	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
 		state->driver.interface->destroy(state->driver_instance);
 	SparkUnloadModelDriver(&state->driver);
+	SparkSpeculationSeamDestroy(state->speculation_seam);
 	free(state);
 }
 
-/* The program's flag/profile contract stays family policy on the shared
- * spine: SparkModelDriverProgramSupportsRuntimeLimits also checks the
- * profile's max_inflight and max_resident_sequences, which the pasted
- * inline conditions did not - a shared approximation would change
- * accept/reject behavior on real descriptors. */
 static SparkStatus SparkGlm52ServingAcceptsProgram(
 	const SparkModelDriverProgramDescriptor *program,
 	void *accept_context)
@@ -495,12 +579,12 @@ static SparkStatus SparkGlm52ServingInitialize(
 	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SPARK_GLM52_SERVING_TP_DEGREE) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52ServingInitializeSpeculationSeam(state,max_sequence_positions);
+	if ( status == SPARK_STATUS_OK )
 	{
 		state->node_context.abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 		state->node_context.descriptor_bytes = SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
 		state->node_context.stage_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT;
-		/* Firmware stage is always 0; the deployment's flat rank index is the
-		 * TP rank, cross-checked against the stage config below. */
 		state->node_context.stage_index = 0u;
 		state->node_context.first_layer_index = 0u;
 		state->node_context.layer_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
@@ -540,9 +624,6 @@ static SparkStatus SparkGlm52ServingValidateBoundaries(
 {
 	uint64_t boundary_bytes;
 	boundary_bytes = (uint64_t)submission->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	/* Every TP8 fanout rank runs the full single-stage firmware: it owns the
-	 * embedding and the head, so it accepts no hidden boundaries and no DSA
-	 * sidebands. */
 	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	(void)boundary_bytes;
@@ -645,14 +726,6 @@ static SparkStatus SparkGlm52ServingAdmit(
 		state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
-/* The module's KV page cache is driven through the admission ladder: PREPARE
- * maps the submission's lanes (resident calls this after validation, before
- * the route is reserved), COMMIT makes the prepared ownership visible once
- * the coordinator resolves, ABORT discards it, and the RELEASE frame flag
- * frees lanes through the module's own predicate. Without this wiring the
- * lanes reach SparkKvPageCacheCompleteLane never prepared and every request
- * completes INTERNAL_ERROR (first seen at B1 bring-up). Mirrors the dsv4
- * adapter's prefetch contract. */
 static SparkStatus SparkGlm52ServingPrefetch(
 	void *adapter_state,
 	const SparkModelServingSubmission *submissions,

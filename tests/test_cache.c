@@ -1,8 +1,3 @@
-// The KV cache: sharing, eviction, copy-on-write, JIT reservation.
-//
-// All of it is arithmetic and a block table, so all of it is checkable on a
-// host. The properties below are the ones that make a cache good rather than
-// merely correct, and each has a failure mode that is quiet rather than loud.
 #include "cache/cache.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,8 +12,6 @@ static void expect(int condition, const char *label)
 		++failures;
 }
 
-/* A resolver that places every block except the last acquired one, so the plan
-   has something to report as missing. */
 static uint32_t g_unresolvable = 0xffffffffu;
 static int32_t resolve_source(void *context, uint32_t block, uint32_t *source, uint64_t *offset)
 {
@@ -39,11 +32,10 @@ static LmCache *make_cache(uint32_t blocks, uint32_t reserve)
 	LmCachePartition partition;
 	memset(&partition, 0, sizeof(partition));
 	partition.block_tokens = 64u;
-	partition.slot_bytes = 1152u;                    /* GLM 5.2 latent */
+	partition.slot_bytes = 1152u;
 	partition.index_entries = blocks;
 	partition.jit_reserve_blocks = reserve;
 	partition.resident_limit = blocks / 4u ? blocks / 4u : 1u;
-	/* size total_bytes so exactly `blocks` blocks fit */
 	partition.total_bytes = ((uint64_t)blocks * (64u * 1152u + sizeof(LmCacheBlock)))
 		+ ((uint64_t)blocks * (sizeof(LmCacheIndexEntry) + sizeof(uint32_t)));
 	if (LmCacheInitialise(&cache, &partition, block_table, index_table, buckets) != LM_CACHE_OK)
@@ -57,7 +49,7 @@ int main(void)
 	{
 		LmCachePartition partition;
 		memset(&partition, 0, sizeof(partition));
-		partition.total_bytes = 1024ULL * 1024ULL * 1024ULL * 1024ULL;   /* 1 TB */
+		partition.total_bytes = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
 		partition.block_tokens = 64u;
 		partition.slot_bytes = 1152u;
 		partition.index_entries = 1u << 20;
@@ -68,7 +60,7 @@ int main(void)
 			(unsigned long long)(blocks * 64u),
 			(unsigned long long)(blocks * 64u / 8192u));
 		expect(blocks > 14000000ULL, "1 TB holds over 14 million blocks");
-		partition.slot_bytes = 6144u;                /* MiMo 2.5 SWA, no latent */
+		partition.slot_bytes = 6144u;
 		printf("      the same TB at MiMo 2.5's 6144-byte slot: %llu blocks\n",
 			(unsigned long long)LmCacheBlocksAvailable(&partition));
 	}
@@ -110,7 +102,6 @@ int main(void)
 			LmCachePublish(cache, block[index], hash);
 			LmCacheRelease(cache, block[index]);
 		}
-		/* touch block 0 repeatedly: oldest, but most reused */
 		{
 			uint64_t hash = cache->blocks[block[0]].content_hash;
 			uint32_t got;
@@ -157,7 +148,7 @@ int main(void)
 
 	printf("\nresidency is a second question and the pool cannot answer it\n");
 	{
-		LmCache *cache = make_cache(64u, 0u);   /* resident limit 16 */
+		LmCache *cache = make_cache(64u, 0u);
 		uint32_t block[20], index;
 		int32_t hit, fetch;
 		for (index = 0; index < 20u; ++index)
@@ -215,14 +206,13 @@ int main(void)
 		LmCachePrefetchPlan plan;
 		uint32_t want[6], index;
 		int32_t hit, fetch;
-		/* six blocks: two already resident, one named twice, one unresolvable */
 		for (index = 0; index < 4u; ++index)
 			LmCacheAcquire(cache, 0u, index, &want[index], &hit);
 		LmCacheMakeResident(cache, want[0], &fetch);
 		LmCacheMakeResident(cache, want[1], &fetch);
-		want[4] = want[2];                       /* duplicate */
+		want[4] = want[2];
 		want[5] = want[3];
-		g_unresolvable = want[3];               /* no source for this one */
+		g_unresolvable = want[3];
 		expect(LmCachePlanPrefetch(cache, want, 6u, resolve_source, cache, &plan) == LM_CACHE_OK,
 			"a plan is built");
 		printf("      %u to fetch, %u resident, %u duplicate, %u missing\n",
@@ -239,7 +229,6 @@ int main(void)
 		LmCacheProtectPlan(cache, &plan, 1);
 		expect(cache->blocks[plan.blocks[0].block].protected_from_eviction == 1u,
 			"the plan's blocks are protected BEFORE the fetches are issued");
-		/* pressure that would otherwise evict them */
 		for (index = 0; index < 40u; ++index)
 		{
 			uint32_t other;

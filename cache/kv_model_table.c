@@ -29,8 +29,6 @@ SparkStatus SparkKvModelTableValidate(const SparkKvModelTable *table)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    /* The page directory indexes logical pages: its entry table cannot exceed
-       the arena it names (mirrors SparkKvPageCacheConfigurationIsValid). */
     if (table->entry_capacity > table->arena_configuration.logical_block_count)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;

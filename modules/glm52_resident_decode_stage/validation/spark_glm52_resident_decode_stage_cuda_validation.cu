@@ -10,57 +10,9 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 
-/*
- * GLM 5.2 resident decode stage, hardware validation (sm_121a).
- *
- * A retained-receipt numerical gate driven entirely through the module's own
- * exported launchers (SparkGlm52LaunchCudaWaveBegin / LayerAttention /
- * LayerMlp) exactly as SparkGlm52TpChainAdvance drives them, compared against
- * an fp32 CPU oracle that restates the shared-kernel formulas here,
- * self-contained under nvcc and sharing no code with what it validates.
- *
- * Tier 1 - the dense layer: ONE dense layer's forward (attention chunk plus
- * dense MLP chunk) over a four-token causal walk, plus a bit-exact
- * determinism re-walk. This is the original validator body, unchanged.
- *
- * Tier 2a - the routed-expert layer: the same attention chunk feeding
- * Glm52LayerMoe at the first routed layer, covering the router GEMM (fp32
- * out), sigmoid top-k selection with the correction bias selecting but not
- * weighing, the renormalised mixture, eight routed-expert forwards through
- * the compiled package codec (dequant restated losslessly - the fixture
- * writes only exactly representable codes, so quantisation contributes zero
- * error and the comparison stays at the dense tier's thresholds), the
- * weighted finalize, and the shared expert. The routed selection is checked
- * as a set against the oracle, the mixture weights numerically, one packed
- * expert forward element-wise, and the whole leg re-run for bit-exact
- * determinism (value-equivalent under route-scatter races: every packed row
- * is the same pure function of its (token, expert) pair).
- *
- * Tier 2b - the DSA/indexer path at context > DSA_SELECTED: the fixture
- * pre-populates the index-key cache with synthetic POST-rope keys shaped so
- * the top-2048 scores sit in one radix bucket strictly above a low tail,
- * which makes the histogram/gather selection membership deterministic (the
- * kernel's own contract: ties within a bucket are indistinguishable at radix
- * resolution, so the fixture removes the ambiguity instead of assuming it).
- * Three positions carry real main-KV latents written by earlier production
- * steps so the selected-position attention is non-degenerate. Checks: the
- * selected set equals the oracle's prediction, attention output matches the
- * oracle attending the same set, and a re-run reproduces the selection set
- * exactly and the output within tight tolerance (summation-order noise only;
- * bit-exactness is deliberately not claimed for this leg - the gather's
- * emission order among equal-radix candidates is unsynchronized by design).
- *
- * Every comparison prints its numbers; the thresholds are the guard, the
- * numbers are the evidence. Not executable on this tree (no nvcc/sm_121a
- * here): the pure oracle/codec/selection math below is nonetheless EXECUTED
- * on every host by tests/test_glm52_cuda_validator_tier2_oracle.py through
- * the SPARK_GLM52_VALIDATOR_ORACLE_SELFTEST entry at the bottom of this
- * file, so the fixture shaping and oracle formulas ship runtime-tested.
- */
 
 #define SPARK_GLM52_VALIDATION_TOKENS 4u
 #define SPARK_GLM52_VALIDATION_LANES 1u
-/* Pages cover the DSA tier's context; the dense tiers use the first ones. */
 #define SPARK_GLM52_VALIDATION_EMBED_ROWS 8u
 
 #define SPARK_GLM52_VHIDDEN SPARK_GLM52_MODEL_HIDDEN_DIMENSION
@@ -74,7 +26,6 @@
 #define SPARK_GLM52_VATTN_COLS (SPARK_GLM52_VHEADS * SPARK_GLM52_VVALUE_DIM)
 #define SPARK_GLM52_VDENSE_INTER SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION
 #define SPARK_GLM52_VGATE_UP_ROWS (2u * SPARK_GLM52_VDENSE_INTER)
-/* Glm52Kv geometry (source/cuda/config.h + layer.cuh): block-major pool. */
 #define SPARK_GLM52_VKV_SLOT_ELEMENTS (SPARK_GLM52_VLATENT + SPARK_GLM52_VROPE)
 #define SPARK_GLM52_VKV_SLOT_BYTES (SPARK_GLM52_VKV_SLOT_ELEMENTS * 2u)
 #define SPARK_GLM52_VKV_PAGE_SLOTS 64u
@@ -82,19 +33,15 @@
 #define SPARK_GLM52_VKV_PAGE_BYTES (SPARK_GLM52_VKV_LAYER_BYTES * SPARK_GLM52_MODEL_LAYER_COUNT)
 #define SPARK_GLM52_VALIDATION_KV_ACCESS_WORDS 6u
 
-/* -- tier 2a: routed experts ------------------------------------------------ */
 #define SPARK_GLM52_VTOP_K SPARK_GLM52_MODEL_MOE_TOP_K
 #define SPARK_GLM52_VEXPERT_INTER SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION
 #define SPARK_GLM52_VW1_ROWS (2u * SPARK_GLM52_VEXPERT_INTER)
 #define SPARK_GLM52_VEXPERT_COLUMNS SPARK_GLM52_VHIDDEN
 #define SPARK_GLM52_VW2_ROWS SPARK_GLM52_VHIDDEN
 #define SPARK_GLM52_VW2_COLUMNS SPARK_GLM52_VEXPERT_INTER
-/* Slabs exist only for the experts the pinned bias can select; routing to
- * anything else is a checked failure before any numeric comparison runs. */
 #define SPARK_GLM52_VALIDATION_EXPERT_SLOTS SPARK_GLM52_VTOP_K
 #define SPARK_GLM52_VALIDATION_ROUTES 4u
 
-/* -- tier 2b: DSA/indexer --------------------------------------------------- */
 #define SPARK_GLM52_VALIDATION_DSA_POSITION 2064u
 #define SPARK_GLM52_VALIDATION_DSA_CONTEXT (SPARK_GLM52_VALIDATION_DSA_POSITION + 1u)
 #define SPARK_GLM52_VALIDATION_PAGES \
@@ -105,12 +52,10 @@
 #define SPARK_GLM52_VDSA_SELECTED SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT
 #define SPARK_GLM52_VINDEX_SLOT_BYTES ((SPARK_GLM52_VDSA_DIM * 2u))
 #define SPARK_GLM52_VINDEX_PAGE_BYTES (SPARK_GLM52_VINDEX_SLOT_BYTES * SPARK_GLM52_VKV_PAGE_SLOTS)
-/* Main-cache positions carrying real latents in the DSA tier. */
 #define SPARK_GLM52_VALIDATION_REAL_SLOTS 3u
 
 extern "C" int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
 
-/* -- fixtures -------------------------------------------------------------- */
 
 static uint32_t SparkGlm52ValRandomState;
 
@@ -120,7 +65,6 @@ static uint32_t SparkGlm52ValNext(void)
 	return(SparkGlm52ValRandomState >> 8u);
 }
 
-/* Round to nearest even: the LmFloatToBf16 contract (dtype.cuh). */
 static uint16_t SparkGlm52ValBf16(float value)
 {
 	uint32_t bits;
@@ -206,16 +150,6 @@ static int SparkGlm52ValReport(const char *check,const SparkGlm52ValMetrics *met
 	return(0);
 }
 
-/* -- package expert codec, host mirror -------------------------------------- */
-/*
- * The fixture writes only codes whose decode is EXACT (integer codes times a
- * power-of-two scale, or native-grid values), so the oracle's forward of the
- * pre-encode values equals the device's forward of the decoded weights up to
- * accumulation order. Dequant applies the bf16 rounding the format's
- * Fragment() performs (LmPackBf16Pair) - with these grids the product is
- * already representable, and the rounding is applied anyway so the mirror
- * cannot drift from the kernel if the grids ever widen.
- */
 
 #define SPARK_GLM52_VAL_CODEC_BF16 1u
 #define SPARK_GLM52_VAL_CODEC_INT6 2u
@@ -256,13 +190,10 @@ static uint32_t SparkGlm52ValCodecStoredBits(uint32_t codec)
 	return(4u);
 }
 
-/* LmInt6 kScaleGroup=32, Int7/Int8/Fp8 128, Nvfp4 16 (LM_MMA4_NVFP4_GROUP),
- * Mxfp4 32. Mirrors the format headers; a drift breaks the scale addressing
- * the oracle shares with LmScaleTensorBuild. */
 static uint32_t SparkGlm52ValCodecScaleGroup(uint32_t codec)
 {
 	if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
-		return(1u); /* no scale plane; keeps the group math defined */
+		return(1u);
 	if ( codec == SPARK_GLM52_VAL_CODEC_INT6 )
 		return(32u);
 	if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
@@ -278,7 +209,6 @@ static uint32_t SparkGlm52ValCodecUsesSignedIntGrid(uint32_t codec)
 		codec == SPARK_GLM52_VAL_CODEC_INT8);
 }
 
-/* E4M3 decode, host form of cvt.rn.f16x2.e4m3x2 for every finite code. */
 static float SparkGlm52ValE4m3Decode(uint8_t code)
 {
 	uint32_t sign = (uint32_t)(code >> 7u) & 1u;
@@ -294,7 +224,6 @@ static float SparkGlm52ValE4m3Decode(uint8_t code)
 	return(sign != 0u ? -value : value);
 }
 
-/* UE4M3 scale decode, dtype.cuh LmUe4m3ToFloat. */
 static float SparkGlm52ValUe4m3Decode(uint8_t code)
 {
 	uint32_t biased = (uint32_t)(code >> 3u) & 15u;
@@ -306,7 +235,6 @@ static float SparkGlm52ValUe4m3Decode(uint8_t code)
 	return(ldexpf(1.0f + ((float)mantissa / 8.0f),(int32_t)biased - 7));
 }
 
-/* UE8M0 scale decode: 2^(code-127), 0xff is the NaN encoding. */
 static float SparkGlm52ValUe8m0Decode(uint8_t code)
 {
 	if ( code == 0xffu )
@@ -314,7 +242,6 @@ static float SparkGlm52ValUe8m0Decode(uint8_t code)
 	return(ldexpf(1.0f,(int32_t)code - 127));
 }
 
-/* E2M1 nibble: magnitudes {0,.5,1,1.5,2,3,4,6}, bit 3 is the sign. */
 static float SparkGlm52ValE2m1Decode(uint8_t nibble)
 {
 	static const float magnitudes[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
@@ -323,8 +250,6 @@ static float SparkGlm52ValE2m1Decode(uint8_t nibble)
 }
 
 #ifdef SPARK_GLM52_VALIDATOR_ORACLE_SELFTEST
-/* Signed integer grid bounds: LmInt6/7/8 kMax with the symmetric floor the
- * Encode clamps to. Referenced only by the selftest's round trip. */
 static int32_t SparkGlm52ValCodecCodeMinimum(uint32_t codec)
 {
 	if ( codec == SPARK_GLM52_VAL_CODEC_INT6 )
@@ -344,9 +269,6 @@ static int32_t SparkGlm52ValCodecCodeMaximum(uint32_t codec)
 }
 #endif
 
-/* Scale plane geometry, LmWeightCodecScaleTensor + LmScaleTensorBuild with
- * row_group_size = 1: per (expert, row, column block). NVFP4 prefixes the
- * buffer with one f32 global per expert (BlockUe4m3F32Global). */
 static uint64_t SparkGlm52ValScaleBlocksPerExpert(uint32_t codec,uint32_t rows,uint32_t columns)
 {
 	uint64_t groups = ((uint64_t)columns + SparkGlm52ValCodecScaleGroup(codec) - 1u) /
@@ -365,7 +287,6 @@ static uint64_t SparkGlm52ValScaleBytesPerExpert(uint32_t codec,uint32_t rows,ui
 	return(SparkGlm52ValScaleBlocksPerExpert(codec,rows,columns) * sizeof(float));
 }
 
-/* NVFP4 carries the per-expert f32 globals ahead of every expert's blocks. */
 static uint64_t SparkGlm52ValScaleGlobalsBytes(uint32_t codec,uint32_t expert_count)
 {
 	return(codec == SPARK_GLM52_VAL_CODEC_NVFP4 ? (uint64_t)expert_count * sizeof(float) : 0u);
@@ -393,19 +314,11 @@ static uint64_t SparkGlm52ValPayloadBytesPerExpert(uint32_t codec,uint32_t rows,
 	return((uint64_t)rows * SparkGlm52ValPayloadRowBytes(codec,columns));
 }
 
-/* Expert-major slab offset in the payload buffer - the mirror of the kernel's
- * weight tensor map (LmGemmEncodeWeightMap: one TMA group per expert, group e
- * at e * slab bytes) and of the pack layout. The payload argument of the
- * dequant below is the BASE of the expert-major slab buffer; this offset is
- * what selects the expert's codes. */
 static uint64_t SparkGlm52ValPayloadExpertOffset(uint32_t codec,uint32_t expert,uint32_t rows,uint32_t columns)
 {
 	return((uint64_t)expert * SparkGlm52ValPayloadBytesPerExpert(codec,rows,columns));
 }
 
-/* Read one stored code at (row, column) of a payload slab. Bit packing is
- * LSB-first within each row for the sub-byte integer formats (LmInt6Raw /
- * LmInt7Raw); 4-bit packs even columns in the low nibble (LmNvfp4Pair). */
 static int32_t SparkGlm52ValReadCode(const uint8_t *slab,uint32_t codec,uint32_t row,uint32_t columns,uint32_t column)
 {
 	const uint8_t *row_base = slab + (uint64_t)row * SparkGlm52ValPayloadRowBytes(codec,columns);
@@ -419,7 +332,7 @@ static int32_t SparkGlm52ValReadCode(const uint8_t *slab,uint32_t codec,uint32_t
 		word |= (uint32_t)row_base[byte + 1u] << 8u;
 	code = (int32_t)((word >> shift) & ((1u << bits) - 1u));
 	if ( bits == 4u )
-		return(code); /* nibble handled by the caller through Decode */
+		return(code);
 	if ( codec == SPARK_GLM52_VAL_CODEC_INT6 )
 		return(((int32_t)(code << 26)) >> 26);
 	if ( codec == SPARK_GLM52_VAL_CODEC_INT7 )
@@ -427,8 +340,6 @@ static int32_t SparkGlm52ValReadCode(const uint8_t *slab,uint32_t codec,uint32_t
 	return((int8_t)code);
 }
 
-/* Per-(expert, row, column-block) scale index, LmScaleTensorIndex with
- * row_group_size = 1 and group-major slabs. */
 static uint64_t SparkGlm52ValScaleIndex(uint32_t codec,uint32_t rows,uint32_t columns,uint32_t expert,uint32_t row,uint32_t column)
 {
 	uint64_t groups = ((uint64_t)columns + SparkGlm52ValCodecScaleGroup(codec) - 1u) /
@@ -437,16 +348,6 @@ static uint64_t SparkGlm52ValScaleIndex(uint32_t codec,uint32_t rows,uint32_t co
 		(uint64_t)(column / SparkGlm52ValCodecScaleGroup(codec)));
 }
 
-/* Effective bf16 weight the MMA consumes for (expert, row, column):
- * decode x scale x (bf16 rounding from LmPackBf16Pair). payload is the BASE
- * of the expert-major slab buffer and scales the BASE of the full plane set:
- * BOTH are offset by the expert dimension here, exactly as the kernel's
- * weight tensor map (groups = expert count) and LmScaleTensorIndex address
- * them. The restore from origin/unified applied the expert offset to the
- * scale index only and decoded slab 0's codes for every expert - the
- * routed_expert_forward failure this file's selftest now pins. NVFP4
- * multiplies its per-expert f32 global into the block scale
- * (LmScaleTensorLoad). */
 static float SparkGlm52ValDequantWeight(const uint8_t *payload,const uint8_t *scales,uint32_t codec,uint32_t expert_count,
 	uint32_t expert,uint32_t row,uint32_t rows,uint32_t columns,uint32_t column)
 {
@@ -455,8 +356,6 @@ static float SparkGlm52ValDequantWeight(const uint8_t *payload,const uint8_t *sc
 	float raw,scale;
 	if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
 	{
-		/* Native-precision experts: the bf16 code IS the weight; there is
-		 * no scale plane and no second rounding. */
 		uint16_t bits;
 		memcpy(&bits,slab + ((uint64_t)row * columns + column) * sizeof(uint16_t),sizeof(bits));
 		return(SparkGlm52ValFromBf16(bits));
@@ -483,10 +382,7 @@ static float SparkGlm52ValDequantWeight(const uint8_t *payload,const uint8_t *sc
 	return(SparkGlm52ValFromBf16(SparkGlm52ValBf16(raw * scale)));
 }
 
-/* -- top-k selection, host mirror of LmTopkSmallKernel ----------------------- */
 
-/* Monotone unsigned image of a float (LmTopkKey): ordering by the key orders
- * by the value, for negatives included. */
 static uint32_t SparkGlm52ValTopkKey(float value)
 {
 	uint32_t bits;
@@ -499,17 +395,11 @@ static uint32_t SparkGlm52ValTopkBucket(float value)
 	return(SparkGlm52ValTopkKey(value) >> 24u);
 }
 
-/* Sigmoid selection scores; the device uses __expf, the oracle expf - the
- * fixture shapes selections with margins many orders above that difference. */
 static float SparkGlm52ValSigmoid(float value)
 {
 	return(1.0f / (1.0f + expf(-value)));
 }
 
-/* Reference top-k: descending key, ties by lower index. Returns the number
- * filled (always k when n >= k). The bitonic network's behaviour inside a
- * tie class differs from this rule; the fixture shapes every decision away
- * from tie classes, and the oracle asserts the margins that guarantee it. */
 static void SparkGlm52ValReferenceTopk(const float *scores,const float *bias,uint32_t n,uint32_t k,
 	uint32_t *out_indices,float *out_weights)
 {
@@ -550,18 +440,6 @@ static void SparkGlm52ValReferenceTopk(const float *scores,const float *bias,uin
 	}
 }
 
-/* -- DSA shaping ------------------------------------------------------------- */
-/*
- * Synthetic post-rope index keys for cached positions. Given the row's
- * index-query heads q[h][d] and learned head mixture w[h] (both produced by
- * the production chain the oracle restates), the score of cached position c
- * is qk_scale * sum_h w[h] * dot(q[h], k[c]) = qk_scale * dot(centroid, k[c])
- * with centroid = sum_h w[h] q[h]. Keys are built parallel to the centroid
- * so scores are positive, ranked, and radially separated: the top
- * DSA_SELECTED land inside one radix bucket, the tail far below it, which
- * makes LmTopkHistogram/Gather membership deterministic (its documented
- * contract leaves within-bucket-after-threshold choice open).
- */
 
 typedef struct SparkGlm52ValDsaShape
 {
@@ -581,9 +459,6 @@ static float SparkGlm52ValDot(const float *a,const float *b,uint32_t count)
 	return(total);
 }
 
-/* Fill keys[position][:dimension] so its predicted score lands at target.
- * key = (target / |centroid|_2^2) * centroid keeps dot(centroid,key)=target
- * exactly in exact arithmetic; bf16 storage perturbs it by ~1e-3 relative. */
 static void SparkGlm52ValShapeKey(uint16_t *key,const float *centroid,float target,float centroid_square_sum,uint32_t dimension)
 {
 	float alpha = target / centroid_square_sum;
@@ -601,12 +476,6 @@ static float SparkGlm52ValShapeScore(const uint16_t *key,const float *centroid,u
 	return(SparkGlm52ValDot(wide,centroid,dimension));
 }
 
-/* Build the whole shaped cache: ranks 0..selected-1 at positions
- * 0..selected-1 with scores marching down from top_target, tail positions
- * below floor_target. Verifies - from the ACTUAL bf16-stored keys - that
- * every top score sits in one radix bucket strictly above every tail score
- * and that the top bucket holds exactly the selected count, i.e. the
- * hardware selection is forced. Returns 0 when separable, 1 otherwise. */
 static int SparkGlm52ValShapeIndexCache(uint16_t *keys,uint32_t position_count,uint32_t selected,const float *centroid,
 	uint32_t dimension,float top_target,float floor_target,SparkGlm52ValDsaShape *shape)
 {
@@ -659,20 +528,19 @@ static int SparkGlm52ValShapeIndexCache(uint16_t *keys,uint32_t position_count,u
 	return(0);
 }
 
-/* -- device fixture --------------------------------------------------------- */
 
 typedef struct SparkGlm52ValMatrix
 {
 	uint16_t *device;
-	float *host;            /* exact fp32 upcast, rows x columns row-major */
+	float *host;
 	uint32_t rows;
 	uint32_t columns;
 } SparkGlm52ValMatrix;
 
 typedef struct SparkGlm52ValExpertTensors
 {
-	uint8_t *w1_payload;    /* host master: expert-major payload slabs */
-	uint8_t *w1_scales;     /* host master: scale planes (nvfp4 globals first) */
+	uint8_t *w1_payload;
+	uint8_t *w1_scales;
 	uint8_t *w2_payload;
 	uint8_t *w2_scales;
 	uint8_t *w1_device_payload;
@@ -693,8 +561,6 @@ typedef struct SparkGlm52ValFixture
 	SparkGlm52ValMatrix kv_b_key,kv_b_value,attn_output;
 	SparkGlm52ValMatrix post_attn_norm,dense_gate_up,dense_down;
 	SparkGlm52ValMatrix router,shared_gate_up,shared_down;
-	/* DSA indexer projections: host-known so the fp32 oracle (and the cache
-	 * shaping built on it) can state the production chain's exact inputs. */
 	SparkGlm52ValMatrix index_q,index_k,index_head,index_norm_weight,index_norm_bias;
 	SparkGlm52ValExpertTensors experts;
 	uint16_t *hidden,*residual,*normed,*q_compressed,*q_bf16,*query_rope;
@@ -720,8 +586,6 @@ typedef struct SparkGlm52ValFixture
 	uint32_t host_zero;
 	uint32_t host_position;
 	uint32_t host_token;
-	/* R3 flash-decode leg: nonzero engages the split decode attention for
-	 * the walks built after it is set; the partials workspace backs it. */
 	uint32_t split_threshold;
 	float *split_partials;
 } SparkGlm52ValFixture;
@@ -769,8 +633,6 @@ static void *SparkGlm52ValAllocZeroed(uint64_t bytes)
 	return(pointer);
 }
 
-/* Synthesize one expert's payload + scale planes. Only exactly representable
- * (code, power-of-two scale) pairs are emitted, so decode is lossless. */
 static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t *scales,uint32_t rows,uint32_t columns)
 {
 	uint32_t row,column;
@@ -785,21 +647,12 @@ static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t 
 			uint64_t bit = (uint64_t)column * SparkGlm52ValCodecStoredBits(codec);
 			if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
 			{
-				/* Sign-symmetric exact power-of-two magnitudes, zero mean
-				 * (see the int-grid note below) and exactly representable
-				 * in bf16, so the oracle's decode is lossless. */
 				static const float bf16_choices[7] = {0.0f,0.015625f,-0.015625f,0.03125f,-0.03125f,0.0625f,-0.0625f};
 				uint16_t bits = SparkGlm52ValBf16(bf16_choices[draw % 7u]);
 				memcpy(row_base + (uint64_t)column * sizeof(uint16_t),&bits,sizeof(bits));
 			}
 			else if ( SparkGlm52ValCodecUsesSignedIntGrid(codec) )
 			{
-				/* Zero-mean symmetric grids: a grid with a nonzero mean makes
-				 * the expert forward amplify the activation's ones-component
-				 * quadratically (gate/up ~ mean*S, silu(gate)*up ~ (mean*S)^2),
-				 * which magnifies the dense tier's normal 0.3-0.6% chain noise
-				 * token-dependently up to several percent and fails the
-				 * mixture check for reasons unrelated to any layout bug. */
 				static const int32_t int6_choices[7] = {-9,-4,-1,0,1,4,9};
 				static const int32_t int7_choices[7] = {-19,-7,-2,0,2,7,19};
 				static const int32_t int8_choices[7] = {-41,-17,-5,0,5,17,41};
@@ -814,16 +667,11 @@ static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t 
 			}
 			else if ( codec == SPARK_GLM52_VAL_CODEC_FP8 )
 			{
-				/* Finite E4M3 codes with three-bit mantissas, exact in bf16,
-				 * in sign-symmetric pairs (subnormal to 3.0) so the grid mean
-				 * is exactly zero - see the int-grid note above. */
 				static const uint8_t fp8_choices[11] = {0x00,0x08,0x88,0x2c,0xac,0x34,0xb4,0x3c,0xbc,0x44,0xc4};
 				row_base[column] = fp8_choices[draw % 11u];
 			}
 			else
 			{
-				/* Sign-symmetric E2M1 pairs, zero mean (see the int-grid
-				 * note above). */
 				static const uint8_t nibble_choices[7] = {0,1,3,4,9,11,12};
 				uint8_t nibble = nibble_choices[draw % 7u];
 				if ( (column & 1u) == 0u )
@@ -833,18 +681,15 @@ static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t 
 			}
 		}
 	}
-	/* Scales: powers of two (exact in every encoding). NVFP4's per-expert
-	 * f32 global lives ahead of all slabs and is written by the caller.
-	 * BF16 carries no scale plane - the block loop below must not run. */
 	if ( codec == SPARK_GLM52_VAL_CODEC_BF16 )
 		return;
 	if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
-		memset(scales,0x38,SparkGlm52ValScaleBytesPerExpert(codec,rows,columns)); /* 0x38 = 1.0 */
+		memset(scales,0x38,SparkGlm52ValScaleBytesPerExpert(codec,rows,columns));
 	else if ( codec == SPARK_GLM52_VAL_CODEC_MXFP4 )
-		memset(scales,127,SparkGlm52ValScaleBytesPerExpert(codec,rows,columns)); /* 2^0 */
+		memset(scales,127,SparkGlm52ValScaleBytesPerExpert(codec,rows,columns));
 	else
 	{
-		float scale = codec == SPARK_GLM52_VAL_CODEC_FP8 ? 1.0f : 0.015625f; /* 2^-6 */
+		float scale = codec == SPARK_GLM52_VAL_CODEC_FP8 ? 1.0f : 0.015625f;
 		uint64_t blocks = SparkGlm52ValScaleBlocksPerExpert(codec,rows,columns),index;
 		for (index = 0u; index < blocks; index++)
 			memcpy(scales + index * sizeof(float),&scale,sizeof(float));
@@ -856,7 +701,7 @@ static int SparkGlm52ValFixtureSetup(SparkGlm52ValFixture *fixture)
 	uint64_t pool_bytes,payload_bytes,scale_bytes;
 	uint32_t lane,pages;
 	memset(fixture,0,sizeof(*fixture));
-	fixture->host_index_ordinals[0] = 0u; /* the DSA tier's index cache ordinal */
+	fixture->host_index_ordinals[0] = 0u;
 	fixture->host_zero = 0u;
 	fixture->host_token = 0u;
 	fixture->host_position = 0u;
@@ -864,8 +709,6 @@ static int SparkGlm52ValFixtureSetup(SparkGlm52ValFixture *fixture)
 		return(SparkGlm52ValFail("fixture","stream_create"));
 	if ( SparkGlm52ConfigureCudaModule(&fixture->multiprocessors) != 0 )
 		return(SparkGlm52ValFail("configure","not_sm121"));
-	/* Dense layer 0 synthetic weights. The scales keep every intermediate
-	 * in an honest numeric range through six stacked projections. */
 	if ( SparkGlm52ValAllocMatrix(&fixture->embedding,SPARK_GLM52_VALIDATION_EMBED_ROWS,SPARK_GLM52_VHIDDEN,0,0.05f) != 0 ||
 		SparkGlm52ValAllocMatrix(&fixture->attn_norm,1u,SPARK_GLM52_VHIDDEN,1,0.0f) != 0 ||
 		SparkGlm52ValAllocMatrix(&fixture->q_a,SPARK_GLM52_VQUERY_A,SPARK_GLM52_VHIDDEN,0,0.02f) != 0 ||
@@ -888,10 +731,6 @@ static int SparkGlm52ValFixtureSetup(SparkGlm52ValFixture *fixture)
 		SparkGlm52ValAllocMatrix(&fixture->index_norm_weight,1u,SPARK_GLM52_VDSA_DIM,1,0.0f) != 0 ||
 		SparkGlm52ValAllocMatrix(&fixture->index_norm_bias,1u,SPARK_GLM52_VDSA_DIM,1,0.0f) != 0 )
 		return(1);
-	/* The index-key LayerNorm bias is zero here; the matrix form keeps the
-	 * oracle's restatement of LmLayerNormKernel honest (weight AND bias).
-	 * (The origin/unified restore left index_norm_bias unallocated; the
-	 * NULL-host memset segfaulted the validator before any tier ran.) */
 	memset(fixture->index_norm_bias.host,0,(uint64_t)SPARK_GLM52_VDSA_DIM * sizeof(float));
 	if ( cudaMemcpy(fixture->index_norm_bias.device,fixture->index_norm_bias.host,
 		(uint64_t)SPARK_GLM52_VDSA_DIM * sizeof(uint16_t),cudaMemcpyHostToDevice) != cudaSuccess )
@@ -905,9 +744,6 @@ static int SparkGlm52ValFixtureSetup(SparkGlm52ValFixture *fixture)
 	if ( fixture->experts.w1_payload == 0 || fixture->experts.w1_scales == 0 ||
 		fixture->experts.w1_device_payload == 0 || fixture->experts.w1_device_scale == 0 )
 		return(SparkGlm52ValFail("fixture","expert_alloc"));
-	/* The launcher prices scales for all 256 experts but reads only routed
-	 * ones; nvfp4's per-expert f32 globals therefore cover the full group
-	 * count while slabs exist for the pinned selection window. */
 	if ( SPARK_GLM52_VAL_CODEC == SPARK_GLM52_VAL_CODEC_NVFP4 )
 	{
 		float global_scale = 4.0f;
@@ -955,9 +791,6 @@ static int SparkGlm52ValFixtureSetup(SparkGlm52ValFixture *fixture)
 	}
 	if ( cudaMemcpy(fixture->experts.w2_device_scale,fixture->experts.w2_scales,scale_bytes,cudaMemcpyHostToDevice) != cudaSuccess )
 		return(SparkGlm52ValFail("fixture","expert_upload"));
-	/* The pinned selection: the correction bias selects experts 0..7 and is
-	 * weighed nowhere (LmTopkSmallKernel's documented select-vs-weigh split),
-	 * so the mixture weights stay unbiased sigmoids. */
 	for (lane = 0u; lane < 256u; lane++)
 		fixture->correction_host[lane] = lane < SPARK_GLM52_VALIDATION_EXPERT_SLOTS ? 4.0f : -4.0f;
 	fixture->correction_bias = (float *)SparkGlm52ValAllocZeroed(256u * sizeof(float));
@@ -1105,8 +938,6 @@ static int SparkGlm52ValResetStreams(SparkGlm52ValFixture *fixture)
 	return(0);
 }
 
-/* Bind the fixture into the production wave exactly as BindLayer does for a
- * whole-stack TP1 rank's local layer 0. */
 static void SparkGlm52ValBuildWave(SparkGlm52ValFixture *fixture,uint32_t first_layer_index,uint32_t token,uint32_t position)
 {
 	SparkGlm52CudaWave *wave = &fixture->wave;
@@ -1258,7 +1089,6 @@ static int SparkGlm52ValCheckAccessError(SparkGlm52ValFixture *fixture)
 	return(0);
 }
 
-/* -- fp32 CPU oracle -------------------------------------------------------- */
 
 #define SPARK_GLM52_VAL_CACHE_ENTRIES 8u
 
@@ -1284,12 +1114,9 @@ typedef struct SparkGlm52ValOracle
 	float attention_out[SPARK_GLM52_VHIDDEN];
 	float gate_up[SPARK_GLM52_VGATE_UP_ROWS];
 	float intermediate[SPARK_GLM52_VDENSE_INTER];
-	/* DSA tier extras. */
 	float index_query[SPARK_GLM52_VDSA_QUERY_DIM];
 	float index_key[SPARK_GLM52_VDSA_DIM];
 	float index_heads[SPARK_GLM52_VDSA_HEADS];
-	/* cached main-KV slots, sparse association: most positions read ZERO
-	 * (fresh pool), so only the written ones are stored. */
 	SparkGlm52ValCacheEntry cache[SPARK_GLM52_VAL_CACHE_ENTRIES];
 	uint32_t cache_count;
 } SparkGlm52ValOracle;
@@ -1306,7 +1133,7 @@ static void SparkGlm52ValCachePut(SparkGlm52ValOracle *oracle,uint32_t position,
 		}
 	}
 	if ( oracle->cache_count >= SPARK_GLM52_VAL_CACHE_ENTRIES )
-		return; /* the fixtures never exceed this */
+		return;
 	oracle->cache[oracle->cache_count].position = position;
 	memcpy(oracle->cache[oracle->cache_count].slot,slot,sizeof(oracle->cache[oracle->cache_count].slot));
 	oracle->cache_count++;
@@ -1321,7 +1148,6 @@ static const float *SparkGlm52ValCacheGet(const SparkGlm52ValOracle *oracle,uint
 	return(0);
 }
 
-/* C[r][o] = bf16(sum_k A[r][k] * W[o][k]); A/W already exact fp32 upcasts. */
 static void SparkGlm52ValGemmRow(const float *activation,const float *weights,float *output,uint32_t input_dimension,uint32_t output_dimension)
 {
 	uint32_t column,index;
@@ -1335,7 +1161,6 @@ static void SparkGlm52ValGemmRow(const float *activation,const float *weights,fl
 	}
 }
 
-/* Router GEMM writes fp32 accumulators (gemm.output_f32), unrounded. */
 static void SparkGlm52ValRouterGemm(const float *activation,const float *weights,float *output,uint32_t input_dimension,uint32_t output_dimension)
 {
 	uint32_t column,index;
@@ -1349,9 +1174,6 @@ static void SparkGlm52ValRouterGemm(const float *activation,const float *weights
 	}
 }
 
-/* Weight-only grouped GEMM row: A row comes through the route's source-row
- * map, B is the codec-decoded expert slab pair (payload/scale BASES, expert
- * selects both planes expert-major inside), output rounds to bf16. */
 static void SparkGlm52ValExpertGemmRow(const uint8_t *payload,const uint8_t *scales,
 	uint32_t expert,const float *activation,float *output,uint32_t rows,uint32_t input_dimension,uint32_t output_dimension)
 {
@@ -1381,7 +1203,6 @@ static void SparkGlm52ValRmsNorm(const float *input,const float *weight,float *o
 		output[index] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(input[index] * scale * weight[index]));
 }
 
-/* LmLayerNormKernel: mean/variance form with learned weight AND bias. */
 static void SparkGlm52ValLayerNorm(const float *input,const float *weight,const float *bias,float *output,uint32_t dimension,float epsilon)
 {
 	float total = 0.0f,squared = 0.0f,mean,variance,inverse;
@@ -1408,11 +1229,6 @@ static void SparkGlm52ValRotatePair(float *low,float *high,float angle)
 	*high = (a * sine) + (b * cosine);
 }
 
-/* Attention chunk through the current token's projections. When selected is
- * non-null the latent attention reads exactly those positions (sparse path);
- * otherwise it reads 0..position densely - the two production modes of
- * LmLatentAttentionDecodeKernel. Stores the token's roped latent row into
- * the oracle cache at its position, as the production store does. */
 static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const SparkGlm52ValFixture *fx,
 	uint32_t token,uint32_t position,const uint32_t *selected,uint32_t selected_count)
 {
@@ -1421,13 +1237,11 @@ static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const 
 	float maximum,running_sum;
 	uint32_t index,head,element,step,context;
 	const float *slot;
-	/* WaveBegin: embedding row into hidden, zero residual. */
 	for (index = 0u; index < SPARK_GLM52_VHIDDEN; index++)
 	{
 		oracle->hidden[index] = fx->embedding.host[((uint64_t)token * SPARK_GLM52_VHIDDEN) + index];
 		oracle->residual[index] = 0.0f;
 	}
-	/* Attention chunk. attn-norm: residual add fused, residual stored pre-scale. */
 	for (index = 0u; index < SPARK_GLM52_VHIDDEN; index++)
 	{
 		sum = oracle->hidden[index] + oracle->residual[index];
@@ -1439,9 +1253,6 @@ static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const 
 	SparkGlm52ValRmsNorm(oracle->q_compressed,fx->q_a_norm.host,oracle->q_compressed,SPARK_GLM52_VQUERY_A,SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
 	if ( selected != 0 )
 	{
-		/* Glm52LayerIndexer, full-indexer layer, context beyond the
-		 * selection width: index query/key/head projections, index-key
-		 * LayerNorm, per-head and flat rope, cache store, sparse scores. */
 		SparkGlm52ValGemmRow(oracle->q_compressed,fx->index_q.host,oracle->index_query,
 			SPARK_GLM52_VQUERY_A,SPARK_GLM52_VDSA_QUERY_DIM);
 		SparkGlm52ValGemmRow(oracle->normed,fx->index_k.host,oracle->index_key,
@@ -1474,9 +1285,7 @@ static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const 
 	}
 	SparkGlm52ValGemmRow(oracle->q_compressed,fx->q_b.host,oracle->q_row,SPARK_GLM52_VQUERY_A,SPARK_GLM52_VQ_ROWS);
 	SparkGlm52ValGemmRow(oracle->normed,fx->kv_a.host,oracle->kv_slot,SPARK_GLM52_VHIDDEN,SPARK_GLM52_VKV_SLOT_ELEMENTS);
-	/* kv_a-norm covers only the latent half of the 576-wide row. */
 	SparkGlm52ValRmsNorm(oracle->kv_slot,fx->kv_a_norm.host,oracle->kv_slot,SPARK_GLM52_VLATENT,SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
-	/* Query rope: extract [192..256) of every packed head, rotate, store. */
 	for (head = 0u; head < SPARK_GLM52_VHEADS; head++)
 		for (index = 0u; index < SPARK_GLM52_VROPE / 2u; index++)
 		{
@@ -1487,7 +1296,6 @@ static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const 
 			oracle->q_rope[(head * SPARK_GLM52_VROPE) + 2u * index] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(pair_low));
 			oracle->q_rope[(head * SPARK_GLM52_VROPE) + 2u * index + 1u] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(pair_high));
 		}
-	/* Key-side absorption: per-head W[512][192] over the RAW nope slice. */
 	for (head = 0u; head < SPARK_GLM52_VHEADS; head++)
 		for (element = 0u; element < SPARK_GLM52_VLATENT; element++)
 		{
@@ -1497,7 +1305,6 @@ static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const 
 					fx->kv_b_key.host[((uint64_t)head * SPARK_GLM52_VLATENT + element) * SPARK_GLM52_VQK_NOPE + index];
 			oracle->query_latent[(head * SPARK_GLM52_VLATENT) + element] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(sum));
 		}
-	/* Cache store: rope the latent row's tail IN PLACE, then copy. */
 	for (index = 0u; index < SPARK_GLM52_VROPE / 2u; index++)
 	{
 		pair_low = oracle->kv_slot[SPARK_GLM52_VLATENT + 2u * index];
@@ -1508,10 +1315,6 @@ static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const 
 		oracle->kv_slot[SPARK_GLM52_VLATENT + 2u * index + 1u] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(pair_high));
 	}
 	SparkGlm52ValCachePut(oracle,position,oracle->kv_slot);
-	/* Latent decode attention. Dense mode walks 0..position; sparse mode
-	 * walks the selection array exactly as the kernel does. Unstored cache
-	 * positions read ZERO: the pool starts zeroed and only produced slots
-	 * carry data - the fixture's declared memory model. */
 	context = selected != 0 ? selected_count : position + 1u;
 	for (head = 0u; head < SPARK_GLM52_VHEADS; head++)
 	{
@@ -1551,7 +1354,6 @@ static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const 
 				SparkGlm52ValFromBf16(SparkGlm52ValBf16(value / running_sum));
 		}
 	}
-	/* Value up-projection: per-head W[256][512]. */
 	for (head = 0u; head < SPARK_GLM52_VHEADS; head++)
 		for (element = 0u; element < SPARK_GLM52_VVALUE_DIM; element++)
 		{
@@ -1564,8 +1366,6 @@ static void SparkGlm52ValOracleAttentionChunk(SparkGlm52ValOracle *oracle,const 
 	SparkGlm52ValGemmRow(oracle->attention_value,fx->attn_output.host,oracle->attention_out,SPARK_GLM52_VATTN_COLS,SPARK_GLM52_VHIDDEN);
 }
 
-/* Dense MLP chunk (layers before first_routed): fused [up|gate], silu-mul,
- * down projection. hidden becomes the chunk output; residual stands. */
 static void SparkGlm52ValOracleDenseMlp(SparkGlm52ValOracle *oracle,const SparkGlm52ValFixture *fx)
 {
 	float sum;
@@ -1578,7 +1378,6 @@ static void SparkGlm52ValOracleDenseMlp(SparkGlm52ValOracle *oracle,const SparkG
 	}
 	SparkGlm52ValRmsNorm(oracle->hidden,fx->post_attn_norm.host,oracle->normed,SPARK_GLM52_VHIDDEN,SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
 	SparkGlm52ValGemmRow(oracle->normed,fx->dense_gate_up.host,oracle->gate_up,SPARK_GLM52_VHIDDEN,SPARK_GLM52_VGATE_UP_ROWS);
-	/* gate_first=false: up is the FIRST half, gate the SECOND. */
 	for (index = 0u; index < SPARK_GLM52_VDENSE_INTER; index++)
 	{
 		float gate = oracle->gate_up[SPARK_GLM52_VDENSE_INTER + index];
@@ -1588,9 +1387,6 @@ static void SparkGlm52ValOracleDenseMlp(SparkGlm52ValOracle *oracle,const SparkG
 	SparkGlm52ValGemmRow(oracle->intermediate,fx->dense_down.host,oracle->hidden,SPARK_GLM52_VDENSE_INTER,SPARK_GLM52_VHIDDEN);
 }
 
-/* Routed MLP chunk (Glm52LayerMoe): router, sigmoid top-k with the bias
- * selecting, renormalised mixture, per-route expert forwards, weighted
- * finalize overwriting hidden, shared expert summed in. */
 static void SparkGlm52ValOracleRoutedMlp(SparkGlm52ValOracle *oracle,const SparkGlm52ValFixture *fx,
 	uint32_t *out_selected,float *out_weights)
 {
@@ -1622,13 +1418,11 @@ static void SparkGlm52ValOracleRoutedMlp(SparkGlm52ValOracle *oracle,const Spark
 		}
 		SparkGlm52ValExpertGemmRow(fx->experts.w2_payload,fx->experts.w2_scales,expert,
 			oracle->intermediate,expert_row,SPARK_GLM52_VW2_ROWS,SPARK_GLM52_VW2_COLUMNS,SPARK_GLM52_VHIDDEN);
-		/* LmMoeFinalizeKernel: fp32 weighted sum of the bf16 packed rows. */
 		for (element = 0u; element < SPARK_GLM52_VHIDDEN; element++)
 			oracle->hidden[element] += out_weights[route] * expert_row[element];
 	}
 	for (element = 0u; element < SPARK_GLM52_VHIDDEN; element++)
 		oracle->hidden[element] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(oracle->hidden[element]));
-	/* Shared expert: same fused stack, added ungated. */
 	SparkGlm52ValGemmRow(oracle->normed,fx->shared_gate_up.host,oracle->gate_up,SPARK_GLM52_VHIDDEN,SPARK_GLM52_VW1_ROWS);
 	for (index = 0u; index < SPARK_GLM52_VEXPERT_INTER; index++)
 	{
@@ -1643,14 +1437,12 @@ static void SparkGlm52ValOracleRoutedMlp(SparkGlm52ValOracle *oracle,const Spark
 			oracle->attention_value[element]));
 }
 
-/* Full dense-layer token (tier 1). */
 static void SparkGlm52ValOracleToken(SparkGlm52ValOracle *oracle,const SparkGlm52ValFixture *fixture,uint32_t token,uint32_t position)
 {
 	SparkGlm52ValOracleAttentionChunk(oracle,fixture,token,position,0,0u);
 	SparkGlm52ValOracleDenseMlp(oracle,fixture);
 }
 
-/* -- tier drivers ------------------------------------------------------------ */
 
 static int SparkGlm52ValCompareStreams(SparkGlm52ValFixture *fixture,SparkGlm52ValOracle *oracle,
 	const char *label,int *result)
@@ -1705,11 +1497,6 @@ static int SparkGlm52ValCompareStreams(SparkGlm52ValFixture *fixture,SparkGlm52V
 
 #ifndef SPARK_GLM52_VALIDATOR_ORACLE_SELFTEST
 
-/* R3 flash-decode leg: the dense walk through the SPLIT decode attention
- * (threshold 1 engages it at every context; the partials workspace backs the
- * partitions). The oracle bounds still hold - the combine is the same softmax
- * up to where the rescale multiplies round - and the split walk re-runs
- * bit-exact, the determinism property the combine's fixed order exists for. */
 static int SparkGlm52ValRunSplitLeg(SparkGlm52ValFixture *fixture,const SparkGlm52ValOracle *oracle)
 {
 	SparkGlm52ValMetrics metrics;
@@ -1717,8 +1504,6 @@ static int SparkGlm52ValRunSplitLeg(SparkGlm52ValFixture *fixture,const SparkGlm
 	float actual[SPARK_GLM52_VHIDDEN],reference[SPARK_GLM52_VHIDDEN];
 	uint32_t index,split_mismatch = 0;
 	int local_result = 0;
-	/* the partials workspace lives only for this leg - the fixture setup
-	 * stays out of the split path's sizing business */
 	fixture->split_partials = (float *)SparkGlm52ValAllocZeroed(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BYTES(1u,
 		SPARK_GLM52_MODEL_HEAD_COUNT));
@@ -1754,7 +1539,6 @@ static int SparkGlm52ValRunSplitLeg(SparkGlm52ValFixture *fixture,const SparkGlm
 		if ( local_result == 0 )
 			local_result = SparkGlm52ValReport("split_forward_residual",&metrics,2e-2,0.999);
 	}
-	/* the split walk re-runs bit-exact: the combine's fixed order */
 	if ( local_result == 0 && ( SparkGlm52ValRunWalk(fixture) != 0 ||
 		cudaMemcpy(rerun_hidden,fixture->hidden,SPARK_GLM52_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
 		cudaMemcpy(rerun_residual,fixture->residual,SPARK_GLM52_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess ) )
@@ -1783,7 +1567,6 @@ static int SparkGlm52ValRunSplitLeg(SparkGlm52ValFixture *fixture,const SparkGlm
 	return(local_result);
 }
 
-/* Tier 1: the original dense-layer walk, unchanged. */
 static int SparkGlm52ValRunDenseTier(SparkGlm52ValFixture *fixture,int *result)
 {
 	SparkGlm52ValOracle oracle;
@@ -1830,9 +1613,6 @@ static int SparkGlm52ValRunDenseTier(SparkGlm52ValFixture *fixture,int *result)
 		SparkGlm52ValMeasure(&metrics,actual,reference,SPARK_GLM52_VHIDDEN);
 		if ( local_result == 0 )
 			local_result = SparkGlm52ValReport("layer_forward_residual",&metrics,2e-2,0.999);
-		/* Determinism: the identical walk on the identical fixture must
-		 * reproduce the committed streams bit for bit - the property every
-		 * replay/restore argument downstream borrows from the chain. */
 		if ( local_result == 0 )
 		{
 			if ( SparkGlm52ValRunWalk(fixture) != 0 )
@@ -1852,8 +1632,6 @@ static int SparkGlm52ValRunDenseTier(SparkGlm52ValFixture *fixture,int *result)
 			if ( mismatch != 0 )
 				local_result = SparkGlm52ValFail("determinism","repeat_walk_mismatch");
 		}
-		/* R3 flash-decode leg: the same walk through the split decode
-		 * attention - oracle bounds plus bit-exact re-walk. */
 		if ( local_result == 0 )
 			local_result = SparkGlm52ValRunSplitLeg(fixture,&oracle);
 	}
@@ -1864,8 +1642,6 @@ static int SparkGlm52ValRunDenseTier(SparkGlm52ValFixture *fixture,int *result)
 	return(local_result);
 }
 
-/* Tier 2a: the first routed layer - attention chunk, routed MoE chunk with
- * the compiled package codec, shared expert, plus selection determinism. */
 static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 {
 	SparkGlm52ValOracle oracle;
@@ -1884,9 +1660,6 @@ static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 	uint16_t *expert_row_zero = 0u;
 	if ( SparkGlm52ValResetStreams(fixture) != 0 )
 		return(1);
-	/* Walk two tokens through global layer GLM52_FIRST_ROUTED_LAYER. Each
-	 * wave is ONE row, so every step overwrites the route arrays and the
-	 * packed expert rows: capture this step's evidence before advancing. */
 	expert_row_zero = (uint16_t *)malloc(SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
 	if ( expert_row_zero == 0 )
 		return(SparkGlm52ValFail("routed_expert","host_alloc"));
@@ -1919,8 +1692,6 @@ static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 		}
 		if ( token == 0u )
 		{
-			/* Packed row of route 0 and its w2 output, before step two
-			 * reuses the buffers. */
 			if ( cudaMemcpy(&packed_row_zero,fixture->route_packed_row,sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
 				cudaMemcpy(expert_row_zero,fixture->expert_out + (uint64_t)packed_row_zero * SPARK_GLM52_VHIDDEN,
 				SPARK_GLM52_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
@@ -1946,8 +1717,6 @@ static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 			device_selected[token * 8u + 2u],device_selected[token * 8u + 3u],
 			device_selected[token * 8u + 4u],device_selected[token * 8u + 5u],
 			device_selected[token * 8u + 6u],device_selected[token * 8u + 7u]);
-		/* Set equality with the oracle's top-k. The bias pins experts 0..7
-		 * with sigmoid-margin many orders above the __expf/expf delta. */
 		for (route = 0u; route < SPARK_GLM52_VTOP_K; route++)
 		{
 			uint32_t found = 0u;
@@ -1976,10 +1745,6 @@ static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 	}
 	printf("glm52_validation check=routed_selection_set elements=%u exact=1 max_weight_delta=%.6g\n",
 		(unsigned)(2u * SPARK_GLM52_VTOP_K),maximum_weight_delta);
-	/* One routed expert's forward, element-wise: packed row of route 0 of
-	 * the first step, captured above. The oracle rebuild: RoutedMlp leaves
-	 * oracle.normed holding the token's mlp-normed activation, so the pinned
-	 * expert's forward recomputes from it directly. */
 	{
 		memset(&oracle,0,sizeof(oracle));
 		oracle.fixture = fixture;
@@ -2011,7 +1776,6 @@ static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 			return(status);
 		}
 	}
-	/* Whole-layer streams vs the oracle. */
 	memset(&oracle,0,sizeof(oracle));
 	oracle.fixture = fixture;
 	{
@@ -2026,8 +1790,6 @@ static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 	status = SparkGlm52ValCompareStreams(fixture,&oracle,"routed_layer_forward",&local_result);
 	if ( status != 0 )
 		return(status);
-	/* Determinism: the whole leg again; route scatter races are
-	 * value-transparent, so the committed streams must repeat bit for bit. */
 	if ( SparkGlm52ValResetStreams(fixture) != 0 )
 		return(1);
 	{
@@ -2094,7 +1856,6 @@ static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 				if ( first_selected[index] != second_selected[index] ||
 					memcmp(&first_weights[index],&second_weights[index],sizeof(float)) != 0 )
 					mismatch = 1u;
-			/* Compare the committed hidden stream bit for bit. */
 			{
 				uint16_t *second_hidden = (uint16_t *)malloc(SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
 				if ( second_hidden == 0 )
@@ -2128,13 +1889,11 @@ static int SparkGlm52ValRunRoutedTier(SparkGlm52ValFixture *fixture,int *result)
 	return(0);
 }
 
-/* Tier 2b: DSA/indexer at context beyond the selection width. */
 static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 {
 	SparkGlm52ValOracle oracle;
 	SparkGlm52ValDsaShape shape;
 	static const uint32_t real_positions[SPARK_GLM52_VALIDATION_REAL_SLOTS] = {0u,704u,1408u};
-	/* Embedding fixture holds eight rows: token ids stay inside it. */
 	static const uint32_t real_tokens[SPARK_GLM52_VALIDATION_REAL_SLOTS] = {2u,5u,3u};
 	uint32_t device_selected[SPARK_GLM52_VDSA_SELECTED];
 	uint32_t sorted_device[SPARK_GLM52_VDSA_SELECTED];
@@ -2147,8 +1906,6 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 	int status;
 	if ( SparkGlm52ValResetStreams(fixture) != 0 )
 		return(1);
-	/* Produce real main-KV latents at three spread positions through the
-	 * production chain (dense mode: context fits the selection width). */
 	for (slot = 0u; slot < SPARK_GLM52_VALIDATION_REAL_SLOTS; slot++)
 	{
 		SparkGlm52ValBuildWave(fixture,0u,real_tokens[slot],real_positions[slot]);
@@ -2160,9 +1917,6 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 	}
 	if ( SparkGlm52ValCheckAccessError(fixture) != 0 )
 		return(1);
-	/* The populated pool stands; only the streams are re-driven below. The
-	 * sparse step's oracle chain, up through the indexer outputs the cache
-	 * shaping consumes. */
 	memset(&oracle,0,sizeof(oracle));
 	oracle.fixture = fixture;
 	{
@@ -2208,29 +1962,22 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 			oracle.index_key[2u * index + 1u] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(pair_high));
 		}
 	}
-	/* Centroid of the roped index query under the learned head mixture. */
 	for (dimension = 0u; dimension < SPARK_GLM52_VDSA_DIM; dimension++)
 		centroid[dimension] = 0.0f;
 	for (head = 0u; head < SPARK_GLM52_VDSA_HEADS; head++)
 		for (dimension = 0u; dimension < SPARK_GLM52_VDSA_DIM; dimension++)
 			centroid[dimension] += oracle.index_heads[head] * oracle.index_query[(head * SPARK_GLM52_VDSA_DIM) + dimension];
-	/* Shape the cached index keys and verify the selection is FORCED. */
 	if ( SparkGlm52ValShapeIndexCache(fixture->index_keys_host,SPARK_GLM52_VALIDATION_DSA_CONTEXT,SPARK_GLM52_VDSA_SELECTED,
 		centroid,SPARK_GLM52_VDSA_DIM,100.0f,0.05f,&shape) != 0 )
 		return(SparkGlm52ValFail("dsa_shaping","not_separable"));
 	printf("glm52_validation check=dsa_shaping top_min=%.9g tail_max=%.9g bucket=%u\n",
 		shape.top_minimum,shape.tail_maximum,shape.top_bucket);
-	/* The sparse step's OWN key (the production store at its position) must
-	 * also land below the shaped top bucket, or it would join the selection
-	 * and the forced-set prediction would not hold. Fail loudly rather than
-	 * compare against a wrong oracle set. */
 	{
 		float own_score = SparkGlm52ValDot(oracle.index_key,centroid,SPARK_GLM52_VDSA_DIM) *
 			SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE / sqrtf((float)SPARK_GLM52_VDSA_HEADS);
 		if ( SparkGlm52ValTopkBucket(own_score) >= shape.top_bucket )
 			return(SparkGlm52ValFail("dsa_shaping","own_position_not_below_threshold"));
 	}
-	/* Upload the shaped keys into the index cache (slot-major pages). */
 	for (slot = 0u; slot < SPARK_GLM52_VALIDATION_DSA_CONTEXT; slot++)
 	{
 		uint64_t byte = ((uint64_t)slot / SPARK_GLM52_VKV_PAGE_SLOTS) * SPARK_GLM52_VINDEX_PAGE_BYTES +
@@ -2239,7 +1986,6 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 			SPARK_GLM52_VDSA_DIM * sizeof(uint16_t),cudaMemcpyHostToDevice) != cudaSuccess )
 			return(SparkGlm52ValFail("dsa_shaping","index_upload"));
 	}
-	/* The sparse production step: full-indexer layer 0, context 2065. */
 	SparkGlm52ValBuildWave(fixture,0u,7u,SPARK_GLM52_VALIDATION_DSA_POSITION);
 	if ( SparkGlm52LaunchCudaWaveBegin(&fixture->wave) != 0 )
 		return(SparkGlm52ValFail("dsa_wave_begin","status"));
@@ -2249,7 +1995,6 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 		return(SparkGlm52ValFail("dsa_walk","sync"));
 	if ( SparkGlm52ValCheckAccessError(fixture) != 0 )
 		return(1);
-	/* Selected set: sorted equality with the oracle's forced prediction. */
 	if ( cudaMemcpy(device_selected,fixture->selected_positions,SPARK_GLM52_VDSA_SELECTED * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess )
 		return(SparkGlm52ValFail("dsa_selection","readback"));
 	memcpy(sorted_device,device_selected,sizeof(sorted_device));
@@ -2274,7 +2019,6 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 	if ( memcmp(sorted_device,sorted_oracle,sizeof(sorted_device)) != 0 )
 		return(SparkGlm52ValFail("dsa_selection","set_mismatch"));
 	printf("glm52_validation check=dsa_selection elements=%u exact=1\n",(unsigned)SPARK_GLM52_VDSA_SELECTED);
-	/* Attention restricted to the selection vs the oracle attending it. */
 	attention_device = (uint16_t *)malloc(SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
 	if ( attention_device == 0 )
 		return(SparkGlm52ValFail("dsa_compare","host_alloc"));
@@ -2289,8 +2033,6 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 		float maximum,running_sum;
 		const float *slot_pointer;
 		uint32_t element,step;
-		/* Finish the oracle chain: q/kv projections, store at the sparse
-		 * position, attention over the selection. */
 		SparkGlm52ValGemmRow(oracle.q_compressed,fixture->q_b.host,oracle.q_row,SPARK_GLM52_VQUERY_A,SPARK_GLM52_VQ_ROWS);
 		SparkGlm52ValGemmRow(oracle.normed,fixture->kv_a.host,oracle.kv_slot,SPARK_GLM52_VHIDDEN,SPARK_GLM52_VKV_SLOT_ELEMENTS);
 		SparkGlm52ValRmsNorm(oracle.kv_slot,fixture->kv_a_norm.host,oracle.kv_slot,SPARK_GLM52_VLATENT,SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
@@ -2322,7 +2064,6 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 			oracle.kv_slot[SPARK_GLM52_VLATENT + 2u * index] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(pair_low));
 			oracle.kv_slot[SPARK_GLM52_VLATENT + 2u * index + 1u] = SparkGlm52ValFromBf16(SparkGlm52ValBf16(pair_high));
 		}
-		/* Real latents the populate steps left at three positions. */
 		for (slot = 0u; slot < SPARK_GLM52_VALIDATION_REAL_SLOTS; slot++)
 		{
 			SparkGlm52ValOracle populated;
@@ -2394,9 +2135,6 @@ static int SparkGlm52ValRunDsaTier(SparkGlm52ValFixture *fixture,int *result)
 			*result = status;
 		return(status);
 	}
-	/* Re-run: selection SET repeats exactly, output within summation-order
-	 * noise. Bit-exactness is deliberately not claimed here - the gather's
-	 * within-bucket emission order is unsynchronized by design. */
 	if ( SparkGlm52ValResetStreams(fixture) != 0 )
 	{
 		free(attention_device);
@@ -2517,13 +2255,8 @@ int main(int argc,char **argv)
 	return(result);
 }
 
-#else /* SPARK_GLM52_VALIDATOR_ORACLE_SELFTEST */
+#else
 
-/* Host-executed proof of every pure formula the tiers rely on: codec encode/
- * decode round trips, the monotone-key selection reference, the renormalised
- * mixture, and the DSA cache shaping's separability predicate. Compiled and
- * run by tests/test_glm52_cuda_validator_tier2_oracle.py on every host; no
- * CUDA symbol is touched in this build. */
 
 static int SparkGlm52ValSelftestCodecRoundTrip(void)
 {
@@ -2554,7 +2287,7 @@ static int SparkGlm52ValSelftestCodecRoundTrip(void)
 				pattern = (uint32_t)value & ((1u << bits) - 1u);
 			}
 			else if ( codec == SPARK_GLM52_VAL_CODEC_FP8 )
-				pattern = (uint8_t)((column * 13u + 0x08u) & 0x77u); /* finite region */
+				pattern = (uint8_t)((column * 13u + 0x08u) & 0x77u);
 			else
 				pattern = (column * 3u) & 15u;
 			for (lane = 0u; lane < bits; lane++)
@@ -2571,7 +2304,7 @@ static int SparkGlm52ValSelftestCodecRoundTrip(void)
 				float decoded = SparkGlm52ValE2m1Decode(nibble);
 				float signed_expected = (nibble & 8u) != 0u ? -expected[nibble & 7u] : expected[nibble & 7u];
 				if ( memcmp(&decoded,&signed_expected,sizeof(float)) != 0 )
-					failures++; /* E2M1 decode must be the exact table value */
+					failures++;
 			}
 			else if ( codec == SPARK_GLM52_VAL_CODEC_FP8 )
 			{
@@ -2587,11 +2320,10 @@ static int SparkGlm52ValSelftestCodecRoundTrip(void)
 				{
 					fprintf(stderr,"codec=%u column=%u read_back=%d grid=[%d,%d]\n",
 						codec,column,read_back,minimum,maximum);
-					failures++; /* sign extension must stay inside the grid */
+					failures++;
 				}
 			}
 		}
-		/* Scale addressing: last column's group must be the last index. */
 		{
 			uint64_t blocks = SparkGlm52ValScaleBlocksPerExpert(codec,3u,columns);
 			uint64_t last_index = SparkGlm52ValScaleIndex(codec,3u,columns,5u,2u,columns - 1u);
@@ -2612,15 +2344,6 @@ static int SparkGlm52ValSelftestCodecRoundTrip(void)
 		if ( failures != 0 )
 			return(1);
 	}
-	/* Dequant must address payload AND scales expert-major across the slab
-	 * buffers, exactly as the kernel's weight tensor map (one TMA group per
-	 * expert) and LmScaleTensorIndex do. Two slabs with independent random
-	 * contents decide the payload plane; a power-of-two scale patch of
-	 * expert 1's plane only decides the scale plane bit-exactly. The
-	 * origin/unified restore applied the expert offset to the scale index
-	 * only and decoded slab 0's codes for every expert - under that bug the
-	 * two experts' weights are IDENTICAL here (uniform fixture scales), so
-	 * this is the check that pins it. */
 	{
 		uint32_t codec;
 		for (codec = 2u; codec <= 7u; codec++)
@@ -2667,12 +2390,8 @@ static int SparkGlm52ValSelftestCodecRoundTrip(void)
 			{
 				fprintf(stderr,"codec=%u expert payload planes alias: %llu/%u positions differ\n",
 					codec,(unsigned long long)differing,rows * columns);
-				failures++; /* expert 1 decoded slab 0's codes */
+				failures++;
 			}
-			/* Patch ONLY expert 1's scale plane by an exact power of two
-			 * (1/4). The grids are exact, so the re-read must be the old
-			 * value scaled bit-exactly; a scale index that ignored the
-			 * expert leaves the weights unchanged. */
 			if ( codec == SPARK_GLM52_VAL_CODEC_NVFP4 )
 			{
 				float quarter_global = 1.0f;
@@ -2680,7 +2399,7 @@ static int SparkGlm52ValSelftestCodecRoundTrip(void)
 			}
 			else if ( codec == SPARK_GLM52_VAL_CODEC_MXFP4 )
 				memset(scales + SparkGlm52ValScaleExpertOffset(codec,256u,1u,rows,columns),125,
-					(size_t)plane_bytes); /* 2^-2 against 2^0 */
+					(size_t)plane_bytes);
 			else
 			{
 				float quarter_scale = codec == SPARK_GLM52_VAL_CODEC_FP8 ? 0.25f : 0.00390625f;
@@ -2719,7 +2438,6 @@ static int SparkGlm52ValSelftestSelection(void)
 	uint32_t indices[8];
 	float weights[8],reference[64];
 	uint32_t index,slot;
-	/* Distinct scores across a wide keyed range. */
 	for (index = 0u; index < 64u; index++)
 	{
 		scores[index] = -3.0f + 0.11f * (float)index;
@@ -2731,7 +2449,6 @@ static int SparkGlm52ValSelftestSelection(void)
 		float total = 0.0f;
 		for (slot = 0u; slot < 8u; slot++)
 		{
-			/* Every chosen slot must rank inside the top eight keyed scores. */
 			uint32_t rank = 0u,other;
 			for (other = 0u; other < 64u; other++)
 				if ( SparkGlm52ValTopkKey(reference[other]) > SparkGlm52ValTopkKey(reference[indices[slot]]) )
@@ -2740,13 +2457,9 @@ static int SparkGlm52ValSelftestSelection(void)
 				return(1);
 			total += weights[slot];
 		}
-		/* Renormalised mixture sums to ROUTED_SCALING_FACTOR. */
 		if ( fabs((double)total - (double)SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR) > 1.0e-3 )
 			return(1);
 	}
-	/* The bias selects but does not weigh: with a strong pro-tail bias the
-	 * chosen SET moves, while each emitted weight stays the UNBIASED sigmoid
-	 * of its own expert. */
 	{
 		float strong[64],chosen_weights[8];
 		uint32_t chosen[8];
@@ -2755,7 +2468,7 @@ static int SparkGlm52ValSelftestSelection(void)
 		SparkGlm52ValReferenceTopk(scores,strong,64u,8u,chosen,chosen_weights);
 		for (slot = 0u; slot < 8u; slot++)
 			if ( chosen[slot] < 32u )
-				return(1); /* selection followed the bias into the tail half */
+				return(1);
 		for (slot = 0u; slot < 8u; slot++)
 		{
 			double unbiased = (double)SparkGlm52ValSigmoid(scores[chosen[slot]]);
@@ -2788,7 +2501,7 @@ static int SparkGlm52ValSelftestShaping(void)
 		for (dimension = 0u; dimension < SPARK_GLM52_VDSA_DIM; dimension++)
 			centroid[dimension] = ((float)((int32_t)(SparkGlm52ValNext() & 0xffffu) - 32768) / 32768.0f) *
 				(trial == 2u ? 0.01f : 1.0f);
-		centroid[0] += 0.5f; /* keep the centroid non-degenerate */
+		centroid[0] += 0.5f;
 		if ( SparkGlm52ValShapeIndexCache(keys,SPARK_GLM52_VALIDATION_DSA_CONTEXT,SPARK_GLM52_VDSA_SELECTED,
 			centroid,SPARK_GLM52_VDSA_DIM,100.0f,0.05f,&shape) != 0 )
 		{
@@ -2838,4 +2551,4 @@ int main(int argc,char **argv)
 	return(failures == 0 ? 0 : 1);
 }
 
-#endif /* SPARK_GLM52_VALIDATOR_ORACLE_SELFTEST */
+#endif

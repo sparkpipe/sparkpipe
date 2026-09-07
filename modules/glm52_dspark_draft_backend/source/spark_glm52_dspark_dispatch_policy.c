@@ -1,6 +1,3 @@
-/* GLM 5.2 dispatch-policy remainder: the hidden tap plan (where to tap and
- * the PP stage geometry). The neutral core of the dispatch policy moved to
- * src/spark_speculation_policy.c; this file keeps only the model DNA. */
 #include "sparkpipe/spark_glm52_dspark.h"
 
 #include <string.h>

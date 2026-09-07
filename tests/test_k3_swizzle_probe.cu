@@ -1,7 +1,3 @@
-// Ground-truth probe for the TMA 64B swizzle: stage a 4-row x 64-byte box of
-// identity content (global byte i holds the value i) and dump the staged
-// bytes. staged[p] is therefore the GLOBAL byte index that landed at staged
-// position p - the hardware permutation, read directly.
 
 #include <stdio.h>
 #include <string.h>
@@ -43,9 +39,6 @@ __global__ void Rank3ProbeKernel(const CUtensorMap *map, uint8_t *dump)
     }
 }
 
-// Two-box BF16 activation staging replica: 4 rows of 128 BF16 (256 bytes),
-// box [64 elements = 128 bytes] loaded at x=0 into dst+0 and at x=128 into
-// dst+128. Global value A[r][k] = r*128 + k names every element's origin.
 __global__ void TwoBoxProbeKernel(const CUtensorMap *map, uint16_t *dump)
 {
     __shared__ __align__(128) uint16_t stage[4u * 128u];
@@ -73,8 +66,6 @@ int main(void)
     alignas(64) CUtensorMap map;
     LmTensorMapRequest request;
 
-    /* Value = (source_row % 4) * 64 + byte_within_row: recovers the source
-     * byte position and the source row plane (mod 4) from the staged dump. */
     for ( uint32_t r = 0u; r < PROBE_ROWS; ++r )
         for ( uint32_t b = 0u; b < 64u; ++b )
             h_global[r * 64u + b] = (uint8_t)(((r % 4u) * 64u) + b);
@@ -112,7 +103,6 @@ int main(void)
         printf("\n");
     }
 
-    /* --- rank-3 replica of the gate's weight box (z=0) --- */
     {
         uint8_t *d_w = 0, *d_d3 = 0;
         uint8_t h_w[2u * PROBE_ROWS * 64u], h_d3[PROBE_ROWS * 64u];
@@ -127,9 +117,6 @@ int main(void)
         cudaMemset(d_d3, 0, sizeof(h_d3));
         cudaMemcpy(d_w, h_w, sizeof(h_w), cudaMemcpyHostToDevice);
         {
-            /* the rank-3 tensor needs 272 rows; the source content covers
-             * rows 0..16 and the box reads 136 rows - the tail rows are
-             * garbage but the probe only prints rows 15..17 */
             (void)0;
         }
         memset(&wreq, 0, sizeof(wreq));
@@ -160,7 +147,6 @@ int main(void)
         }
     }
 
-    /* --- two-box BF16 activation staging replica --- */
     {
         uint16_t *d_a = 0, *d_d2 = 0;
         uint16_t h_a[4u * 128u], h_d2[4u * 128u];
@@ -175,10 +161,10 @@ int main(void)
         memset(&areq, 0, sizeof(areq));
         areq.global_address = d_a;
         areq.rows = 4u;
-        areq.columns = 256u;      /* BF16 elements: 512-byte rows */
+        areq.columns = 256u;
         areq.groups = 1u;
         areq.box_rows = 4u;
-        areq.box_columns = 64u;   /* 128-byte box */
+        areq.box_columns = 64u;
         areq.element_bits = 16u;
         status = LmGemmTensorMapCached(&amap, &areq);
         if ( status != LM_TM_ENCODE_OK ) { printf("amap encode %d\n", status); return 1; }

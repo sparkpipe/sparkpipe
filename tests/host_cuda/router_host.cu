@@ -1,11 +1,3 @@
-// Run the real MoE routing kernels on a CPU.
-//
-// This path had three defects found by reading KimiMoEGate: the bias folded
-// into the mixture weight, the bias a scalar where 896 are needed, and no
-// renormalisation. All three are corrected and none was ever executed. This
-// executes them.
-//
-// norm.cuh and topk.cuh are included unmodified.
 
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
@@ -20,10 +12,6 @@ float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 
 #include "inference/kernels/dtype.cuh"
 
-// One lane per warp, overridden here rather than defaulted in mma.cuh. LmBlockSum
-// computes warps = THREADS / LM_WARP_LANES; at one thread and 32 lanes that is
-// zero and the reduction returns zero for every row, which turned an RMS norm
-// into a 225x error until the harness disagreed with the reference.
 #include "inference/kernels/mma.cuh"
 #undef LM_WARP_LANES
 #define LM_WARP_LANES LM_HOST_WARP_LANES
@@ -65,8 +53,6 @@ int main(void)
 			printf("logit %.9g\n",
 				(double)LmBf16ToFloat(logits[(row * EXPERTS) + expert]));
 
-	// sigmoid, then select on score+bias and weigh on score, renormalised
-	// the sigmoid rides inside the selection now; scores is unused
 	(void)scores;
 	LM_HOST_LAUNCH(dim3(ROWS),
 		(LmTopkSmallKernel<THREADS, TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SIGMOID>(

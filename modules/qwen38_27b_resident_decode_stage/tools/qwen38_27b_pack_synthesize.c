@@ -1,24 +1,8 @@
-/* Large stage packs exceed 2 GB: 64-bit file offsets are required. */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
 #include "spark_qwen38_27b_stagepack_format.h"
 
-/*
- * Synthetic qwen38_27b stage pack writer, slice-aware.
- *
- * Emits every tensor one pipeline STAGE will demand, at the geometry the
- * module was compiled for, with reproducible pseudo-random contents: the
- * loader, the shape table, the slice arithmetic and the layer walk run end
- * to end against it. This file is the family configuration — stage-pack
- * types, the dense-FFN per-layer kind inventory, and the quantization
- * policy; the machinery is the shared generator core.
- *
- * Family facts (recorded, not re-derived): the shape resolver takes the
- * stage count (pinned 1u here, as pasted); quantization is
- * quantizable-gated (only shape.quantizable kinds go MXFP4, everything
- * else keeps its natural format); the MTP tail carries 4 globals.
- */
 
 #define SPARK_SYNTH_QWEN_TEMPLATE 1
 #define SPARK_SYNTH_TOOL_NAME "qwen38_27b_pack_synthesize"

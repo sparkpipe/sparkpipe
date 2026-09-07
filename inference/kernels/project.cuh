@@ -1,45 +1,11 @@
 #pragma once
 
-// Projection primitives. Low-rank with an intermediate norm, and its absorbed
-// form.
-//
-// This is a separate module from attention because the pattern outlives any one
-// model's attention. A projection that goes down to a low rank, normalises
-// there, and comes back up is how every MLA-family model compresses its query
-// and KV paths - the V2-through-V4 lineage, the GLM class, the KDA class - and the only thing
-// that differs between them is the ranks.
-//
-// TWO FORMS OF THE SAME PROJECTION, AND WHY BOTH EXIST.
-//
-// RAW: hidden -> down -> norm -> up -> per-head keys and values. This is what
-// the checkpoint contains and what the arithmetic says.
-//
-// ABSORBED: the up-projection is folded into the query and output weights at
-// pack time, so attention happens directly in the compressed space and per-head
-// K and V are never materialised. Four plain linears replace the two-stage path.
-//
-// The absorbed form is strictly better at decode and strictly worse at prefill,
-// which is why a model ships both sets of weights rather than choosing. At
-// decode one row attends over a whole cache, so not materialising per-head K and
-// V saves the dominant read. At prefill many rows share the cache, the
-// materialisation amortises, and the raw form's smaller GEMMs win.
-//
-// A model that ships only raw weights uses LmLowRankProject. One that ships
-// absorbed weights uses four LmGemmLaunch calls and needs nothing from this
-// file. GLM 5.2 ships both and selects at bind time, which is a property of the
-// checkpoint rather than a runtime mode.
 
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
 #include <stdint.h>
 
-// One side of a low-rank projection: the two weights and the norm between them.
-//
-// Quantisation is per-weight rather than per-projection because the down and up
-// matrices have very different shapes - hidden-by-rank against rank-by-output -
-// and a rank of 2048 against a hidden of 6144 means the down matrix is three
-// times the size. They earn different formats.
 struct LmLowRankWeights
 {
 	const void *down_weight;
@@ -53,11 +19,6 @@ struct LmLowRankWeights
 	float norm_epsilon;
 };
 
-// Scratch the projection needs: the compressed rows, and their quantised form.
-//
-// Sized by rank rather than by output, which is the point of the compression -
-// at GLM 5.2's 6144 hidden and 2048 rank this is a third of what a fused
-// projection would need, and the second GEMM reads it instead of the hidden.
 struct LmLowRankScratch
 {
 	uint8_t *input_codes;
@@ -69,16 +30,6 @@ struct LmLowRankScratch
 	uint32_t *dense_tile_prefix;
 };
 
-// hidden -> down -> norm -> up.
-//
-// The norm is INSIDE this primitive rather than the caller's business, because
-// it operates on the compressed representation and nothing outside sees that.
-// A caller that had to sequence it would need the rank, the scratch and the
-// epsilon, which is the whole argument list back again.
-//
-// The norm is a plain RMS norm with no residual: there is nothing to add at this
-// point, the compressed row is not a hidden state. Passing a residual here would
-// be adding a 2048-wide vector to something that is not the same tensor.
 template<class Format>
 static LmScaleTensor LmProjectionWeightScale(
     const void *scale_data,
@@ -149,7 +100,6 @@ static const void *LmProjectionPrepareInput(
     }
 }
 
-// hidden -> down -> norm -> up.
 template<class Format>
 static int32_t LmLowRankProject(
     const LmLowRankWeights *weights,
@@ -268,16 +218,6 @@ static int32_t LmLowRankProject(
             stream);
 }
 
-// The absorbed form: four plain projections from the hidden state.
-//
-// query-latent and kv-latent go into the compressed space directly; the two rope
-// projections produce the positional halves. There is no norm and no
-// intermediate, because the folding happened at pack time.
-//
-// Grouped as one call rather than four at the call site because the four share
-// an input and a row count, and because getting one of the four pointed at the
-// wrong weight is the kind of mistake a four-field struct prevents and four
-// separate calls invite.
 struct LmAbsorbedWeights
 {
 	const void *query_latent_weight;
@@ -433,39 +373,15 @@ static int32_t LmAbsorbedProject(
     return LM_LAUNCH_OK;
 }
 
-// -- fused QKV ------------------------------------------------------------------
-//
-// The other shape a model's attention projection takes: one GEMM producing
-// query, key and value concatenated per row, split afterwards.
-//
-// MiMo 2.5 does this where GLM 5.2 does four separate projections, and neither
-// is a variant of the other. A fused projection is one large GEMM with better
-// arithmetic intensity; four separate ones let each output have its own
-// quantisation and let a latent-absorbed model skip materialising K and V at
-// all. Which a model uses is in its checkpoint, not a choice at run time.
-//
-// The split is a copy rather than a view because the three parts go to different
-// places - query to RoPE and then attention, key and value into a cache slot -
-// and a view would make every consumer carry the row stride and the offset. One
-// copy of a decode row is 27 KB at MiMo 2.5's widths, which is nothing against
-// the projection that produced it.
 struct LmQkvLayout
 {
-	uint32_t query_dimension;      /* heads * qk_head_dim */
-	uint32_t key_dimension;        /* kv_heads * qk_head_dim */
-	uint32_t value_dimension;      /* kv_heads * v_head_dim */
-	uint32_t rope_dimension;       /* rotated suffix of each qk head */
-	uint32_t head_dimension;       /* qk dim per head, for locating the rope part */
+	uint32_t query_dimension;
+	uint32_t key_dimension;
+	uint32_t value_dimension;
+	uint32_t rope_dimension;
+	uint32_t head_dimension;
 };
 
-// Query, key and value out of a fused row.
-//
-// The value scale is applied here rather than after attention because it belongs
-// to the value tensor: MiMo 2.5 carries a 0.707 factor on V, and folding it into
-// the attention output instead is the same number only when the softmax weights
-// sum to one - which they do, but the equality stops holding the moment anything
-// masks a position after the softmax. Scaling the tensor it belongs to survives
-// that.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layout, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint32_t rows, float value_scale)
@@ -487,14 +403,6 @@ void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layou
 				* value_scale);
 }
 
-// Split a fused per-head query|gate row into its two halves.
-//
-// The GDN model's attention query projection carries the output gate INSIDE the
-// query section: each head's 2 * head_dimension rows are head_dimension of
-// query then head_dimension of gate (config.h, attn_output_gate). The query
-// half feeds RoPE and attention, the gate half LmOutputGateKernel after
-// attention, and both consumers want contiguous heads - which is why this is
-// a copy and not a stride, the same argument LmSplitQkvKernel carries.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ gate_bf16, uint32_t heads, uint32_t head_dimension, uint32_t rows)
@@ -515,12 +423,6 @@ void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *_
 	}
 }
 
-// RoPE over the rotated suffix of every head in a packed multi-head row.
-//
-// A fused query row is heads x head_dimension with the rope part at the end of
-// each head, not at the end of the row. Rotating the row's tail would rotate the
-// last head only and leave the other sixty-three unrotated - which produces
-// fluent text whose attention ignores position for all but one head.
 template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t heads, uint32_t head_dimension, uint32_t rope_dimension, float theta)
@@ -535,28 +437,6 @@ void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__res
 			position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
 }
 
-// Apply a per-head block-diagonal projection: out[h] = W[h] @ in[h].
-//
-// MLA's value absorption folds kv_b_value into the output projection. That is
-// algebraically clean and wrong twice over here.
-//
-// Wrong for correctness: the output gate is elementwise in v-space, and
-// elementwise gating does not commute with a per-head fold - Diag(g) W is not
-// W Diag(g'). The reference gates the attention output before o_proj, and no
-// checkpoint tensor exists for a latent-space gate: g_proj emits
-// heads * v_head_dim.
-//
-// Wrong for speed on GB10, which is what makes the choice easy rather than a
-// trade. docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md: 273 GB/s LPDDR5x unified at
-// eta_bw 0.80, and a calibrated 6.5 TFLOP/s on the linear path - 30 FLOP per
-// byte before compute can bind. Absorbing the value half inflates the MLA
-// output projection from heads*v_head to heads*kv_lora, 8.30 GB to 19.55 GB
-// across 24 layers, which costs 55 ms per token in weight reads to save the
-// 302 MFLOP this kernel performs, 46 us. Three orders of magnitude the wrong
-// way, on the one machine this runs on.
-//
-// So attention stays in the latent, this brings it back to v-space, and the
-// gate and output projection use the checkpoint's tensors unchanged.
 template<
 	uint32_t THREADS,
 	uint32_t IN_DIM,
@@ -580,9 +460,6 @@ void LmPerHeadProjectKernel(const uint16_t *__restrict__ input_bf16, const uint1
 	for (index = threadIdx.x; index < IN_DIM; index += THREADS)
 		shared_input[index] = LmBf16ToFloat(input_bf16[input_base + index]);
 	__syncthreads();
-	// The input is staged once and read OUT_DIM times from shared rather than
-	// IN_DIM * OUT_DIM times from memory. The weight read is the whole cost, as
-	// everything is on this machine.
 	for (index = threadIdx.x; index < OUT_DIM; index += THREADS)
 	{
 		float total = 0.0f;
@@ -594,9 +471,6 @@ void LmPerHeadProjectKernel(const uint16_t *__restrict__ input_bf16, const uint1
 	}
 }
 
-// Extract and rotate one positional slice from every packed query head.
-// Keeping this as one launch avoids materialising the no-PE slice: the key
-// projection above reads it in place through INPUT_HEAD_DIM/INPUT_OFFSET.
 template<
 	uint32_t THREADS,
 	LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>

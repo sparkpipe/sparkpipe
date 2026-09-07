@@ -19,7 +19,6 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: test_k3_module_init PACK\n");
 		return(2);
 	}
-	/* The 0-4 pack: slice 0+4. */
 	failures += expect(SparkK3ModuleInitialize(&state, argv[1], 0u, 4u)
 		== SPARK_STATUS_OK, "initialize slice 0+4");
 	failures += expect(state.bound_count == 4u, "4 layers bound");
@@ -32,7 +31,6 @@ int main(int argc, char **argv)
 	failures += expect(SparkK3BoundEntry(&state.bound[3], "mla_gate_weight") != 0,
 		"layer 3 mla gate bound");
 	SparkK3ModuleDestroy(&state);
-	/* A mismatched slice must refuse. */
 	failures += expect(SparkK3ModuleInitialize(&wrong_slice, argv[1], 0u, 3u)
 		!= SPARK_STATUS_OK, "mismatched slice refused");
 	SparkK3ModuleDestroy(&wrong_slice);

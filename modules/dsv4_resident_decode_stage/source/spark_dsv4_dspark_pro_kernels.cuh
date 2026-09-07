@@ -1,33 +1,9 @@
-/*
- * DSpark draft kernels - DSV4 Pro GA 0813.
- *
- * The Pro drafter is a 3-layer mHC block (mtp.0/1/2) at taps {58,59,60},
- * block 5, markov 512, noise token 128799 (dsv4_pro_authoritative.json
- * dspark block). Unlike Flash, the Pro draft runs REPLICATED full-width on
- * every rank (tools/dsv4_tp16_stagepack.py: MTP rows replicate in full, zero
- * draft collectives), so every kernel here is full-width and communication
- * free, mirroring spark_dsv4_dspark_kernels.cuh (the Flash drafter).
- *
- * Reference: inference/model.py DSparkBlock / DSparkAttention / DSparkMarkovHead.
- *
- * Guard: SPARK_DSV4_MODEL_MTP_LAYER_COUNT > 0 (the module compile flag set by
- * Makefile.pro). The two kernels below are the genuinely-new Pro pieces; the
- * draft attention, markov bias, and argmax reuse the Flash launchers
- * SparkDsv4LaunchDsparkAttention / SparkDsv4LaunchDsparkMarkovBiasAccum /
- * SparkDsv4LaunchDsparkArgmax with the Pro shapes (hidden 7168, markov 512,
- * block 5, window 128) once the draft heads/intermediate are pinned.
- */
 
 #if defined(SPARK_DSV4_MODEL_BUILD) && (SPARK_DSV4_MODEL_MTP_LAYER_COUNT > 0u)
 
-/*
- * Tap capture: for each of the 3 target layers (58,59,60) reduce the post-layer
- * hyper-connection output [stream_count x dimension] to its hc mean [dimension]
- * (reference: h.mean(dim=2)). Feeds main_proj = concat(taps) -> main_norm.
- */
 static __global__ void SparkDsv4DSparkMeanReductionKernel(
-	const uint16_t *taps_bf16,   /* [tap_count][stream_count][dimension] */
-	uint16_t *mean_bf16,         /* [tap_count][dimension] */
+	const uint16_t *taps_bf16,
+	uint16_t *mean_bf16,
 	uint32_t tap_count,uint32_t stream_count,uint32_t dimension)
 {
 	uint32_t element_index,tap,stream_index;
@@ -65,15 +41,9 @@ extern "C" cudaError_t SparkDsv4DSparkLaunchMeanReduction(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-/*
- * Rolling main-KV window write: store the main-stream KV row (kv_norm(wkv(main))
- * output, [dimension]) into this draft layer's window at slot (seq_pos %
- * window_tokens). The draft attention then attends the full 128-slot window
- * plus the causal draft KV. First-light: BF16, no rotary on the draft path.
- */
 static __global__ void SparkDsv4DSparkMainKvWriteKernel(
-	const uint16_t *kv_bf16,     /* [dimension] */
-	uint16_t *window_bf16,       /* [window_tokens][dimension] */
+	const uint16_t *kv_bf16,
+	uint16_t *window_bf16,
 	uint32_t dimension,uint32_t window_tokens,uint32_t seq_pos)
 {
 	uint32_t slot = seq_pos % window_tokens;
@@ -101,23 +71,16 @@ extern "C" cudaError_t SparkDsv4DSparkLaunchMainKvWrite(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-/*
- * Confidence head: sigmoid(dot([hidden|markov_embed], weight) + bias) over
- * (hidden + markov_rank) = 7168 + 512 = 7680 -> 1, per draft row. One warp
- * reduces the rank-length dot; rows are one block each (block = row).
- */
 static __global__ void SparkDsv4DSparkConfidenceKernel(
-	const uint16_t *features_bf16, /* [rows][dimension] */
-	const uint16_t *weight_bf16,   /* [dimension] */
-	float bias,float *conf_out)    /* [rows] */
+	const uint16_t *features_bf16,
+	const uint16_t *weight_bf16,
+	float bias,float *conf_out)
 {
 	__shared__ float warp_sums[SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES];
 	uint32_t dimension,row = blockIdx.x;
 	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
 	float local = 0.0f,reduced,logit;
-	/* dimension passed via a fixed Pro constant to keep the signature small:
-	 * hidden + markov_rank (7168 + 512). */
 	dimension = SPARK_DSV4_MODEL_HIDDEN_DIMENSION + SPARK_DSV4_MODEL_DSPARK_MARKOV_RANK;
 	for (uint32_t k = lane; k < dimension; k += SPARK_LM_WARP_LANES)
 		local = fmaf(SparkLmBf16ToFloat(features_bf16,
@@ -153,4 +116,4 @@ extern "C" cudaError_t SparkDsv4DSparkLaunchConfidence(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-#endif /* SPARK_DSV4_MODEL_BUILD && SPARK_DSV4_MODEL_MTP_LAYER_COUNT > 0 */
+#endif

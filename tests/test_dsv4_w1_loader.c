@@ -1,11 +1,3 @@
-/* W1 loader lane (docs/WEIGHTD_DESIGN.md L1+L2) host tests:
- * - the SHA-256 file digest is bit-identical whether the read pass runs
- *   sequential or read-pipelined (identity keys depend on that), and
- *   matches the streaming Initialize/Update/Finalize primitives and the
- *   published NIST vectors;
- * - the pipelined pack loader lands the exact bytes of every requested
- *   region at the exact device addresses, fails closed on a short pack,
- *   and its env kill switch restores the synchronous path. */
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -47,11 +39,6 @@ static void SparkTestSha256NistVectors(void)
         hex, "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
 }
 
-/* Long-message ground truth: the sha256 of the LCG(42) byte stream
- * (1,000,003 bytes, one byte per step), computed externally with python
- * hashlib. This pins the BULK block path of the selected transform -
- * portable or aarch64 FEAT_SHA2 - to an external authority, via two
- * different chunkings (one giant Update and 7-byte Updates). */
 static void SparkTestSha256LongMessageVector(void)
 {
     static const uint32_t stream_bytes = 1000003u;
@@ -71,7 +58,6 @@ static void SparkTestSha256LongMessageVector(void)
         stream[index] = (uint8_t)(state >> 24u);
     }
 
-    /* one giant Update: straight through the bulk transform */
     SparkSha256Initialize(&context);
     SparkSha256Update(&context, stream, (size_t)stream_bytes);
     SparkSha256Finalize(&context, digest);
@@ -79,7 +65,6 @@ static void SparkTestSha256LongMessageVector(void)
     SparkTestAssertHexEquals(
         hex, "e1c2b53ce00fca4ba820d0207d7bca19adbd4fdcd492188bd9015f2284bbe6fc");
 
-    /* awkward 7-byte Updates: every block boundary path */
     SparkSha256Initialize(&context);
     for (fed = 0u; fed < (size_t)stream_bytes; fed += 7u)
     {
@@ -114,7 +99,6 @@ static void SparkTestReferenceFileDigest(
     const char *path,
     char hex[SPARK_SHA256_HEX_BYTES])
 {
-    /* the primitive path is the sequential ground truth */
     FILE *file = fopen(path, "rb");
     SparkSha256Context context;
     uint8_t buffer[8192];
@@ -146,7 +130,6 @@ static void SparkTestSha256FileIdentityAcrossReadModes(const char *path)
     setenv("SPARK_SHA256_FILE_PIPELINE", "0", 1);
     assert(SparkSha256File(path, sequential_hex) == SPARK_STATUS_OK);
 
-    /* THE gate: identical digest value regardless of the read schedule */
     SparkTestAssertHexEquals(pipeline_hex, reference_hex);
     SparkTestAssertHexEquals(sequential_hex, reference_hex);
 
@@ -184,8 +167,6 @@ static void SparkTestSha256FileSizes(void)
 
 static void SparkTestSha256FileMultiBufferBoundaries(void)
 {
-    /* 4 MiB pipeline buffers: cover exactly-one-buffer, one-plus-one-byte,
-     * and a three-buffer file with an odd tail (cross-buffer handoffs) */
     static const uint64_t file_bytes[] = {
         4ull * 1024ull * 1024ull,
         4ull * 1024ull * 1024ull + 1ull,
@@ -279,7 +260,6 @@ static void SparkTestWriteLoaderPack(
 static void SparkTestLoaderPipelineLandsExactBytes(void)
 {
     const char *path = "/tmp/spark_w1_loader_pack.bin";
-    /* non-contiguous, unordered offsets: each chunk carries its own */
     static const SparkTestLoaderRegion regions[] = {
         {0ull, 1024ull * 1024ull, 11u},
         {2ull * 1024ull * 1024ull, 64ull * 1024ull, 22u},
@@ -327,7 +307,6 @@ static void SparkTestLoaderPipelineLandsExactBytes(void)
     }
     for (region = 0; region < region_count; region++)
     {
-        /* every byte landed at its exact device address */
         assert(memcmp(device_pointers[region],
             expected + regions[region].offset,
             (size_t)regions[region].bytes) == 0);
@@ -366,14 +345,12 @@ static void SparkTestLoaderPipelineFailsClosedOnShortPack(void)
     assert(SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
         0ull, 8ull, &pointer) == SPARK_STATUS_OK);
     assert(pointer != 0);
-    /* past end of file: the worker read fails, Finish reports it */
     assert(SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
         4096ull, 16ull, &pointer) == SPARK_STATUS_OK ||
         SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
             4096ull, 16ull, &pointer) == SPARK_STATUS_IO_ERROR);
     assert(SparkStageModuleLoadPipelineFinish(pipeline) ==
         SPARK_STATUS_IO_ERROR);
-    /* the pipeline is poisoned after a failure */
     assert(SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
         0ull, 4ull, &pointer) == SPARK_STATUS_IO_ERROR);
     SparkStageModuleLoadPipelineDestroy(pipeline);
@@ -395,7 +372,6 @@ static void SparkTestLoaderRegionDispatcherHonorsKillSwitch(void)
     memset(&ledger, 0, sizeof(ledger));
     ledger.module_tag = "w1_loader_test";
 
-    /* the kill switch flips the request predicate both ways */
     setenv("SPARK_STAGE_MODULE_LOAD_PIPELINE", "0", 1);
     assert(SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_BUSY);
     setenv("SPARK_STAGE_MODULE_LOAD_PIPELINE", "1", 1);
@@ -403,8 +379,6 @@ static void SparkTestLoaderRegionDispatcherHonorsKillSwitch(void)
     unsetenv("SPARK_STAGE_MODULE_LOAD_PIPELINE");
     assert(SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK);
 
-    /* with the kill switch set the dispatcher takes the synchronous
-     * path and still lands exact bytes */
     SparkTestWriteLoaderPack(path, &one, 1u);
     SparkTestFillPattern(expected, one.bytes, one.seed);
     file = fopen(path, "rb");

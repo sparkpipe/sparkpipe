@@ -1182,7 +1182,6 @@ static int SparkDsv4ValidationCompareReference(const char *path,const uint16_t *
 		SparkDsv4ValidationAccumulateReferenceRow(&metrics,actual + (uint64_t)row * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,reference + (uint64_t)row * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,row,&row_difference_l2[row],&row_reference_l2[row]);
 	metrics.relative_l2 = metrics.reference_l2 > 0.0 ? sqrt(metrics.difference_l2 / metrics.reference_l2) : INFINITY;
 	metrics.cosine = metrics.actual_l2 > 0.0 && metrics.reference_l2 > 0.0 ? metrics.dot / sqrt(metrics.actual_l2 * metrics.reference_l2) : 0.0;
-	// Keep low-energy rows from inflating the localized relative-error guard.
 	reference_row_floor = metrics.reference_l2 / SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT;
 	for (row=0u; row<SPARK_DSV4_VALIDATION_REFERENCE_ROW_COUNT; row++)
 	{

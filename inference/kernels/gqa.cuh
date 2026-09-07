@@ -1,35 +1,5 @@
 #pragma once
 
-// Per-head KV decode attention, for the models without latent compression.
-//
-// attn.cuh's decode kernels are MLA-shaped: a slot is one shared latent row and
-// the first LATENT elements double as the value, which is the whole trick of
-// latent absorption. The GDN model and MiMo 2.5 store per-head keys AND values, and
-// neither kernel can express that - the value is a different tensor at a
-// different offset, not a prefix of the key. Both drivers were launched through
-// LmAttentionDecodeKernel anyway: the GDN model attended every query head over the first
-// 256 elements of a 2048-element slot and wrote 192-wide outputs into a
-// 256-wide pipeline, mimo read 64 elements past each key head and wrote 12288
-// outputs into an 8192-wide pipeline. Fluent and wrong, with every shape check
-// passing, because the slot is opaque bytes and nothing knew the layout.
-//
-// THE SLOT LAYOUT IS A CONTRACT, stated here once: per (sequence, position),
-//
-//     [ key:   KV_HEADS x HEAD_DIM   bf16 ]
-//     [ value: KV_HEADS x VALUE_DIM  bf16 ]
-//
-// The store kernel below is the only writer and the decode kernel the only
-// reader, and the geometry's slot size is static_asserted against this sum at
-// both, so a driver that sizes its pool for another layout fails to compile
-// rather than reading past the key region. HEAD_DIM and VALUE_DIM differ on
-// MiMo 2.5 (192 key, 128 value), which is why they are separate parameters and
-// why LmKvHeads - which prices the value at the key's width - is not the
-// geometry such a model can use.
-//
-// The store takes the split kernel's two dense outputs rather than a pre-packed
-// image because LmKvStoreKernel's contract is stride-equals-slot, and the
-// split's K and V live at different row strides. Packing here is one launch,
-// the same count the broken call sites already paid.
 
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/norm.cuh"
@@ -38,11 +8,6 @@
 
 #define LM_KV_POSITION_UNUSED 0xffffffffu
 
-// Build the explicit position list consumed by the sliding-window path. The
-// list is produced on the device for every launch, from the exact sequence
-// lengths and row positions, so it cannot go stale when batches interleave.
-// Rows shorter than the configured window are padded with a sentinel that the
-// attention kernel skips without touching the page table.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmBuildSlidingWindowPositionsKernel(
@@ -75,15 +40,6 @@ void LmBuildSlidingWindowPositionsKernel(
 			: LM_KV_POSITION_UNUSED;
 }
 
-// Repeat every head GROUP times: out[head] = in[head / GROUP]. This is GQA
-// expansion materialised - the attention decode above gets the same sharing
-// for free through its head-to-KV-head mapping, but a consumer that indexes
-// heads densely, like the delta rule, needs the repeated tensor in memory.
-// The GDN model's GDN is the case: 16 key heads and 48 value heads, and the
-// recurrence holds one state per VALUE head with q and k repeated three ways,
-// which is the only form the reference (the next-generation modeling file, FLA's
-// gated delta rule) defines - a state per key head shared three ways is not
-// GDN, and it silently drops two of every three value heads.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmExpandHeadsKernel(const uint16_t *__restrict__ input_bf16, uint16_t *__restrict__ output_bf16, uint32_t source_heads, uint32_t head_dim, uint32_t group, uint32_t rows)
@@ -95,8 +51,6 @@ void LmExpandHeadsKernel(const uint16_t *__restrict__ input_bf16, uint16_t *__re
 				input_bf16[(((uint64_t)row * source_heads) + (head / group)) * head_dim + index];
 }
 
-// Pack one row's K and V into its slot, in the layout above. One block per
-// row; the two sources are the split kernel's dense [row][heads * dim] tensors.
 template<class Geometry, uint32_t THREADS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
 __global__ __launch_bounds__(THREADS, 1)
 void LmGqaKvStoreKernel(LmKvView view, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ position_of_row, uint32_t row_count)
@@ -109,9 +63,6 @@ void LmGqaKvStoreKernel(LmKvView view, const uint16_t *__restrict__ key_bf16, co
 		return;
 	slot = LmKvSlotMutableRequired<Geometry>(
 		view,sequence_of_row[row],position_of_row[row],row);
-	// Same rule as LmKvStoreKernel: an unmapped page is a scheduler failure, and
-	// skipping loses the token's key silently. There is nothing better to do
-	// here; the decode side treats the hole as absent.
 	if ( slot == 0 )
 		return;
 	for (index = threadIdx.x; index < KV_HEADS * (HEAD_DIM + VALUE_DIM); index += THREADS)
@@ -121,27 +72,10 @@ void LmGqaKvStoreKernel(LmKvView view, const uint16_t *__restrict__ key_bf16, co
 				+ (index - (KV_HEADS * HEAD_DIM))];
 }
 
-// One decode step of grouped-query attention, one block per (row, query head).
-//
-// The structure is LmAttentionDecodeKernel's - online softmax in a single pass
-// over the cache, so the cache is read once - with the two things a per-head
-// model adds: the query head maps to its KV head through the group ratio, and
-// the value comes from its own region of the slot at its own width.
-//
-// Sparse selection and the causal bound are the same arguments the latent
-// kernel takes, with the same meaning: a position list makes this the
-// sliding-window or sparse path, and row_position caps a prefill row at itself.
 template<class Geometry, uint32_t THREADS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
 __global__ __launch_bounds__(THREADS, 1)
 void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position)
 {
-	// THE ACCUMULATOR IS EXACTLY SIZED. The latent kernel this is shaped from
-	// holds eight slots and guards element < LATENT, which silently drops the
-	// tail of any latent wider than 8 * THREADS - its own comment tells that
-	// story. VALUE_DIM is a template argument here, so the array is the exact
-	// stride count: one slot per thread on device (256 values at 256 threads),
-	// and the whole head on the host harness's one-thread schedule, which is
-	// the only reason the full layer can be emulated at model width.
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_query[HEAD_DIM];
 	float accumulator[(VALUE_DIM + THREADS - 1u) / THREADS];
@@ -179,9 +113,6 @@ void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvVie
 			heads);
 		return;
 	}
-	// GQA: heads / KV_HEADS query heads share each KV head. The ratio is a
-	// runtime value because the query head count is, and it divides the block
-	// index once per block - nothing on the cache-read path.
 	kv_head = head / (heads / KV_HEADS);
 	query_base = ((uint64_t)row * heads + head) * HEAD_DIM;
 	for (index = 0u; index < (VALUE_DIM + THREADS - 1u) / THREADS; ++index)
@@ -199,8 +130,6 @@ void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvVie
 			continue;
 		const uint16_t *key,*value;
 		float score = 0.0f,scaled,previous;
-		// Causal: a prefill row must not see past itself. Skipping keeps the
-		// online softmax's running maximum honest, as in the latent kernel.
 		if ( row_position != 0 && position > row_position[row] )
 			continue;
 		slot = LmKvSlotRequired<Geometry>(
@@ -212,8 +141,6 @@ void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvVie
 		for (index = threadIdx.x; index < HEAD_DIM; index += THREADS)
 			score += shared_query[index] * LmBf16ToFloat(key[index]);
 		score = LmBlockSum<THREADS>(score,reduction) * qk_scale;
-		// Online softmax: rescale what is already accumulated rather than
-		// revisit the cache once the maximum is known.
 		previous = running_max;
 		running_max = fmaxf(running_max,score);
 		scaled = __expf(previous - running_max);

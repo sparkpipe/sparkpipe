@@ -1,6 +1,3 @@
-// Per-layer divergence probe over the EXACT serving path: the runner with a
-// diagnostic hook override dumps the hidden stream after every layer, so two
-// runs can be diffed to find the layer whose output first diverges.
 
 #include <cstdio>
 #include <cstring>
@@ -44,9 +41,6 @@ static void ProbeHook(void *context, void *stream_void, uint32_t layer,
 		printf("hook layer %u err=%d hidden[0..1]=%04x %04x\n", layer,
 			(int)herr, probe_vals[0], probe_vals[1]);
 	}
-	/* DEVICE-SIDE snapshot: a copy kernel queued behind the layer - no
-	 * host memory traffic, so the bare-run timing (and the race) survives
-	 * while the per-layer stream is captured. */
 	SnapKernel<<<(K3_HIDDEN + 255u) / 256u, 256u, 0, (cudaStream_t)stream_void>>>(
 		g_probe_buffers->hidden_bf16,
 		&g_snapshots_device[layer * K3_HIDDEN], K3_HIDDEN);
@@ -131,8 +125,6 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* Post-submit reference snap into the layer-1 slot: proves the kernel
-	 * and the buffer work outside the hook. */
 	SnapKernel<<<(K3_HIDDEN + 255u) / 256u, 256u, 0, (cudaStream_t)0>>>(
 		g_probe_buffers->hidden_bf16, &g_snapshots_device[1u * K3_HIDDEN], K3_HIDDEN);
 	cudaMemcpy(g_snapshots, g_snapshots_device,

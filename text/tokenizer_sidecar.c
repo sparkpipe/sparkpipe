@@ -4,11 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Format detection reads a small prefix: '{' -> HuggingFace tokenizer.json,
- * the compiled-file magic -> the compiled format, anything else -> tiktoken
- * ranks lines. The compiled magic is the format's little-endian uint64; the
- * comparison decodes the prefix as that integer so detection matches the
- * writer on any host byte order. */
 #define SPARK_TOKENIZER_SIDECAR_DETECT_BYTES 8u
 
 static uint32_t SparkTokenizerSidecarBytesLookLikeCompiledMagic(
@@ -16,7 +11,6 @@ static uint32_t SparkTokenizerSidecarBytesLookLikeCompiledMagic(
 {
     uint64_t magic = 0u;
     uint32_t index;
-    /* The format's magic is stored little-endian by the compiled writer. */
     for (index = 0u; index < SPARK_TOKENIZER_SIDECAR_DETECT_BYTES; ++index)
     {
         magic |= (uint64_t)bytes[index] << (8u * index);
@@ -77,8 +71,6 @@ static SparkStatus SparkTokenizerSidecarDetectFormat(
         *format_out = SPARK_TOKENIZER_SIDECAR_FORMAT_COMPILED;
         return SPARK_STATUS_OK;
     }
-    /* The tiktoken ranks family is line-based base64 text: not JSON, not the
-     * compiled magic. */
     *format_out = SPARK_TOKENIZER_SIDECAR_FORMAT_TIKTOKEN_RANKS;
     return SPARK_STATUS_OK;
 }
@@ -169,9 +161,6 @@ SparkStatus SparkTokenizerSidecarLoad(
         SparkTokenizerSidecarReset(sidecar);
         return status;
     }
-    /* Decode bound: the largest text of any single id. Added tokens decode
-     * as their raw text; vocabulary entries decode through the byte-level
-     * alphabet (one decoded byte per glyph byte). */
     maximum_token_text_bytes = 0u;
     for (token_id = 0u; token_id <= sidecar->tokenizer.maximum_token_id; ++token_id)
     {
@@ -250,9 +239,6 @@ SparkStatus SparkTokenizerSidecarDecodeText(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    /* Stop-token awareness: cut at the FIRST stop id. The generated stream
-     * keeps its token events; the text form just never renders past the
-     * stop, exactly as OpenAI-shaped clients expect. */
     effective_count = token_count;
     for (index = 0u; index < token_count && stop_token_count != 0u; ++index)
     {

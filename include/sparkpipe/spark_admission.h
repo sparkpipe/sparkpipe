@@ -13,12 +13,6 @@ extern "C" {
 
 #define SPARK_ADMISSION_ABI_VERSION 1u
 
-/*
- * Per-model policy. The table is model-neutral: every ceiling, slot rule, and
- * tail is a data field. Model-specific logic lives only in the optional
- * predicate and cost callbacks, whose implementations stay in the model
- * directories and may name their model.
- */
 typedef uint32_t SparkAdmissionPolicyFlags;
 #define SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT 0x00000001u
 #define SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS  0x00000002u
@@ -28,13 +22,11 @@ typedef uint32_t SparkAdmissionPolicyFlags;
      SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS | \
      SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG)
 
-/* Model-specific cost tail (staging/memcpy/service-time fields). */
 typedef void (*SparkAdmissionCostFunction)(
     void *context,
     const SparkModelDriverAdmissionRequest *request,
     SparkModelDriverAdmissionDecision *decision);
 
-/* Model-specific capacity/shape tail (for example JIT-KV prepare/commit/abort). */
 typedef SparkStatus (*SparkAdmissionPredicateFunction)(
     void *context,
     const SparkModelDriverAdmissionRequest *request,
@@ -42,19 +34,18 @@ typedef SparkStatus (*SparkAdmissionPredicateFunction)(
 
 typedef struct SparkAdmissionPolicyTable
 {
-    uint32_t abi_version;               /* SPARK_ADMISSION_ABI_VERSION */
-    uint32_t descriptor_bytes;          /* sizeof(table)               */
-    uint32_t max_active_sequence_count; /* active_slot_count ceiling; 0 = none  */
-    uint32_t max_input_row_count;       /* new_token_count ceiling;   0 = none  */
-    uint64_t max_sequence_positions;    /* KV sequence_position bound; 0 = none */
-    SparkAdmissionPolicyFlags flags;    /* prefill/decode slot rules            */
-    SparkAdmissionPredicateFunction predicate; /* NULL = shape/capacity accepted */
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t max_active_sequence_count;
+    uint32_t max_input_row_count;
+    uint64_t max_sequence_positions;
+    SparkAdmissionPolicyFlags flags;
+    SparkAdmissionPredicateFunction predicate;
     void *predicate_context;
-    SparkAdmissionCostFunction cost;           /* NULL = no cost fields          */
+    SparkAdmissionCostFunction cost;
     void *cost_context;
 } SparkAdmissionPolicyTable;
 
-/* --- builders --- */
 SparkStatus SparkAdmissionRequestFromSubmission(
     uint32_t program_id,
     const SparkModelServingSubmission *submission,
@@ -69,7 +60,6 @@ SparkStatus SparkAdmissionRequestFromFrame(
     uint32_t admission_flags,
     SparkModelDriverAdmissionRequest *request);
 
-/* --- evaluate/apply --- */
 SparkStatus SparkAdmissionEvaluate(
     const SparkModelDriverInterface *driver_interface,
     void *driver_instance,
@@ -83,7 +73,6 @@ SparkStatus SparkAdmissionEvaluateAndApply(
     SparkModelDriverFrame *frame,
     SparkModelDriverAdmissionDecision *decision);
 
-/* --- cost + merge --- */
 uint64_t SparkAdmissionDecisionCost(
     const SparkModelDriverAdmissionDecision *decision);
 
@@ -91,15 +80,6 @@ SparkStatus SparkAdmissionMergeDecision(
     SparkModelDriverAdmissionDecision *destination,
     const SparkModelDriverAdmissionDecision *source);
 
-/*
- * --- module-side table-driven gate ---
- * The common ladder each resident-decode stage admit repeats: descriptor/ABI
- * check, frame-flag whitelist, active/new-token ceilings, the two slot-rule
- * flags, the KV sequence-position bound, the optional predicate tail (which
- * runs before the BUSY check so a JIT-KV prepare or release short-circuits),
- * the BUSY check on a zero free-slot count, the optional cost tail, and
- * accept. Inlined so a module archive can call it without linking the core.
- */
 static inline SparkStatus SparkAdmissionEvaluateShape(
     const SparkAdmissionPolicyTable *table,
     uint32_t available_dispatch_slot_count,
@@ -177,8 +157,6 @@ static inline SparkStatus SparkAdmissionEvaluateShape(
         {
             return status;
         }
-        /* A predicate may accept (short-circuit) or reject by editing the
-         * decision; both are terminal for the ladder. */
         if (decision->accepted != 0u ||
             decision->rejection_reason != SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED)
         {

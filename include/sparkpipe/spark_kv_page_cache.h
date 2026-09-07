@@ -20,12 +20,6 @@ extern "C" {
 	(SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE | \
 	 SPARK_KV_PAGE_CACHE_MUTATION_ALLOCATED_MUTABLE)
 
-/*
- * Model-neutral logical page directory. It owns sequence-to-page bindings,
- * immutable prefix sharing, and logical-page lifetime. Model drivers choose
- * the arena block geometry and translate resident page slots into their own
- * physical KV payload layout.
- */
 
 typedef struct SparkKvPageCacheEntry
 {

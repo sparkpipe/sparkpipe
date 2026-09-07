@@ -3,10 +3,6 @@
 #include <stdint.h>
 
 #include "inference/llms/kimi_k3/config.h"
-// The block count and the retrieval-site count live only in the contract's
-// generated header; config.h carries the derived bank geometry. Shared
-// constants are spelled identically in both, because this file needs the two
-// in one translation unit.
 #include "inference/llms/kimi_k3/generated_config.h"
 
 #define K3_PIPELINE_SIDEBAND_ABI_VERSION 1u

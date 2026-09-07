@@ -1,17 +1,5 @@
 #pragma once
 
-/* Minimal CUDA driver-API VMM surface (tests/cuda_stub). Builds without
- * CUDA_HOME compile runtime/spark_weightd.c against this header plus the
- * matching implementations in cuda_runtime_stub.c; GPU builds include the
- * real <cuda.h> from CUDA_HOME instead. Only the cuMem* virtual-memory-
- * management family the weightd daemon uses is declared - the names and
- * enum values mirror the real driver API so the same source compiles
- * against both. The POSIX shareable-handle pair (cuMemExportToShareable-
- * Handle / cuMemImportFromShareableHandle over
- * CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) is the W3 fd tier: the stub
- * models an exported chunk as an ANONYMOUS owner-only (0600) regular file
- * whose fd crosses processes by SCM_RIGHTS only - never by path - so the
- * host tests exercise the exact fd-passing mechanics the GPU tier uses. */
 
 #include <stddef.h>
 
@@ -118,14 +106,6 @@ CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes);
 CUresult cuMemRelease(CUmemGenericAllocationHandle handle);
 CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes);
 
-/* Test-only receipt probe (stub implementation; no real-CUDA counterpart -
- * the GPU receipt scribbles through its own mapping instead). Models a
- * DEVICE WRITE through a mapped VA under the access cuMemSetAccess last
- * granted over that span: CUDA_SUCCESS and the bytes land when the grant
- * is CU_MEM_ACCESS_FLAGS_PROT_READWRITE; CUDA_ERROR_INVALID_VALUE and
- * NOTHING is touched when the grant is read-only or was never made. This
- * is the enforcement half of the W3 scribble-probe receipt for the staged
- * consumer-map PROT_READ flip. */
 CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
     const void *bytes,
     size_t count);

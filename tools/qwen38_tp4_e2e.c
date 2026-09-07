@@ -1,6 +1,3 @@
-/* qwen38 TP4 E2E driver: drives all four fanout residentds with identical
- * prepare+commit submissions, verifies per-rank token agreement and
- * compares the emitted sequence against the PP16 post-fix reference. */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 #include <inttypes.h>
@@ -110,7 +107,6 @@ static int DriveStep(SparkModelResidentClient **clients, RankCollect *collects, 
 			return(1);
 		}
 	}
-	/* Drain the prepare submit-results so the pendings read as prepared. */
 	{
 		uint64_t deadline = NowNanos() + 5000000000ull;
 		for (;;)
@@ -242,7 +238,6 @@ int main(int argc, char **argv)
 	submission.lane_count = 1u;
 	submission.tokens_per_sequence = 1u;
 	submission.lanes = &lane;
-	/* Prefill: 5 prompt rows, emits the first token. */
 	submission.submission_id = submission_id++;
 	submission.residency.word0 = submission.submission_id;
 	submission.residency.word1 = submission.submission_id ^ UINT64_C(0x535041524b504950);
@@ -272,9 +267,6 @@ int main(int argc, char **argv)
 	previous_token = emitted[0];
 	printf("token[%2u] = %u\n", 0u, emitted[0]);
 	fflush(stdout);
-	/* The decode walk advances by the completion's returned token count:
-	 * with speculation a completion carries the committed token plus the
-	 * accepted drafts, so one submission can advance several positions. */
 	step = 0u;
 	while ( step < DECODE_STEPS )
 	{

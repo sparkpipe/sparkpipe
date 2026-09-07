@@ -1,8 +1,3 @@
-/* Pin the neutral DSpark drafter table for the GLM52 target against the
- * measured literals the GLM52 path was qualified with. If any of these
- * break, the neutralization changed the GLM52 drafter shape and its B12x
- * receipts stop applying. Sources: spark_glm52_model.h (measured
- * configuration) and inference/llms/kimi_k3/dspark.h (cross-model table). */
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_dspark.h"

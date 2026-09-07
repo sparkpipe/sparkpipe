@@ -79,7 +79,8 @@ JSON
   "schema_version": 3,
   "model_revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1",
   "stage_pack_path": "${INCUMBENT}/packs/qwen38-fp8.tp1.qwen36sp",
-  "max_sequence_positions": 4096
+  "max_sequence_positions": 4096,
+  "speculative_draft_count": 8
 }
 JSON
 	run_remote "ls ${DEPLOY}/bin ${DEPLOY}/config && echo staged"
@@ -94,9 +95,7 @@ set -euo pipefail
 cd ${DEPLOY}
 : > /tmp/qwen38_dflash2_${SPARK_HOST}.log
 env LD_LIBRARY_PATH=\${PWD}/lib:\${LD_LIBRARY_PATH:-} \\
-  SPARK_QWEN38_27B_SERVING_SPECULATE=1 \\
-  SPARK_QWEN38_27B_SERVING_SPEC_METHOD=dflash2 \\
-  SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT=8 \\
+  SPARK_QWEN38_27B_SPECULATORS=0x4 \\
   SPARK_QWEN38_27B_DSPARK_PACK_PATH=${DRAFTER} \\
   SPARK_QWEN38_27B_DFLASH2_STATE_SELECT=1 \\
   SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD=2 \\

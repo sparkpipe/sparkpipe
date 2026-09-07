@@ -25,14 +25,6 @@ extern "C" {
 #define SPARK_TOKENIZER_BATCH_ENCODE_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkTokenizerBatchEncodeConfiguration))
 #define SPARK_TOKENIZER_BPE_MODEL_KIND_BYTE_LEVEL 1u
-// Pretoken cache: a byte-level BPE re-encodes the same short words millions of
-// times on natural text (word frequencies are Zipfian), so memoizing the token
-// sequence a piece produces converts the dominant merge-loop cost into a hash
-// lookup on repeats. The cache is thread-local in the workspace so there is no
-// contention. Pieces up to the inline byte bound are cached; longer pieces (rare
-// in BPE, which splits on whitespace and punctuation) bypass the cache and encode
-// directly. The slot count is a power of two for masking; the token pool holds
-// the cached id sequences and is bounded, with new inserts skipped once full.
 #define SPARK_TOKENIZER_PIECE_CACHE_INLINE_BYTES 32u
 #define SPARK_TOKENIZER_PIECE_CACHE_SLOT_COUNT 16384u
 #define SPARK_TOKENIZER_PIECE_CACHE_TOKEN_CAPACITY 262144u
@@ -101,9 +93,6 @@ typedef struct SparkTokenizerHuggingFaceJsonConfiguration
     uint32_t reserved1;
 } SparkTokenizerHuggingFaceJsonConfiguration;
 
-/* The tiktoken ranks format: one "base64(piece) rank" line per vocabulary
- * entry (the .model / .tiktoken asset family). Merge priority IS the rank of
- * the concatenated piece; no merges list exists. */
 typedef struct SparkTokenizerTiktokenRanksConfiguration
 {
     uint32_t abi_version;
@@ -195,12 +184,6 @@ typedef struct SparkTokenizer
     uint32_t unk_token_id;
     uint32_t maximum_token_id;
     uint32_t byte_level_use_regex;
-    /* ignore_merges: a pretokenized piece found wholly in the vocabulary
-     * encodes as that single token, bypassing the merge loop (the HF
-     * tokenizer.json model flag). rank_ordered_merges: merge priority is the
-     * vocabulary id of the concatenated piece (the tiktoken ranks rule), not
-     * a merges list. Both default to zero/false and are set only by the text
-     * asset loaders (the compiled file keeps its v2 field layout). */
     uint32_t ignore_merges;
     uint32_t rank_ordered_merges;
     char **token_text_by_id;

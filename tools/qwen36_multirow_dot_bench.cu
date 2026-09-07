@@ -1,39 +1,3 @@
-/* MULTI-ROW STREAMING DOT (2026-08-21) - the verify-frame FFN lever.
- * EXPERIMENT LEDGER (M=8 K=5120 N=17408, 89MB verify shape):
- *   naive fp32, runtime m-loop (local-mem spill)      111 GB/s (bug: slow)
- *   fp32 group-hoisted, unrolled m                    111.6
- *   x2 neurons/warp, A regs shared (reg pressure)      73.0
- *   D: 4-way group unroll, indep accumulator sets     160.3   <- best
- *   D: 8-way unroll (M<=10 reg trim)                  150.6
- *   warp-specialized cp.async (production WS)         176.8
- *   pure-read ceiling                                 266-276
- * CONCLUSION (negative): the M=1 scalar's 248 GB/s does NOT generalize to
- * M>=8 on plain __ldg streams - per-element work (M fma + M cvt + A loads)
- * saturates issue/LSU throughput before memory; breaking the FMA serial
- * chain (4-way unroll) buys 111->160 but register pressure caps further
- * unrolling, and the cp.async prefetch pipeline of the WS kernel still
- * hides latency better. The path past 176 stays what the staged-bench
- * ledger said: leaner cp.async/TMA staging, not scalar-style loads.
- * Numerics note: this kernel applies NO A quantization (like the M=1
- * production scalar); vs the native mma path expect ~1e-2 relative on
- * random data (kernel -11776 vs native -13696 at n0r0) - deterministic,
- * self-consistent, NOT bit-compatible with the mma grid.
- * Round profile: spec rounds are a FLAT ~222ms regardless of acceptance
- * (replays are cheap post-state-select); the floor is the verify frame
- * streaming the full weight set at the WS kernel's 176 GB/s. The M=1
- * scalar GEMV proves the memory system sustains 248 GB/s when weights are
- * read as plain streaming loads (no shared staging, no mma): at M=1 the
- * extra rows are free arithmetic. This bench generalizes that kernel to
- * M rows: one weight read feeds M accumulators.
- *   variant fp32 : per-element fmaf, scale applied per 128-group
- *                 (group-hoisted: 1 scale mult per group, not per element)
- *   variant hfma2: weights and A as half2, __hfma2 inner, fp32 at group end
- * Numerics: NOT bit-identical to the mma path (no A quantization, fp32
- * group sums) - same philosophy as the production M=1 scalar. Sanity =
- * max-abs-diff vs the library native kernel + determinism.
- * Build: nvcc -O3 -arch=sm_121a -I<repo>/include -I common/include \
- *        --extended-lambda -o /tmp/mrd tools/qwen38_27b_multirow_dot_bench.cu
- */
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +13,6 @@ static double now_s(void){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
 #define MRD_MAX_M 16u
 #define MRD_WARPS 8u
 
-/* REAL kernel: fp32 group-hoisted variant */
 static __global__ void MrdFp32Kernel(
 	const uint8_t *weight_payload,
 	const uint8_t *weight_scale_e8m0,
@@ -121,8 +84,6 @@ static __global__ void MrdFp32Kernel(
 }
 
 
-/* x2 variant: one warp feeds TWO neurons from shared A registers - halves
- * the A load/convert instruction stream per weight byte. */
 static __global__ void MrdFp32x2Kernel(
 	const uint8_t *weight_payload,
 	const uint8_t *weight_scale_e8m0,
@@ -192,8 +153,6 @@ static __global__ void MrdFp32x2Kernel(
 				acc1[m] = fmaf(wv1[3],a[m][3],acc1[m]);
 			}
 		}
-		/* scale the decoded weights once per group (2 loads + 8 muls per
-		 * group) - equivalent to the production scalar's per-element scaling */
 		const float sv0 = __uint_as_float((uint32_t)__ldg(weight_scale_e8m0 + (uint64_t)neuron0 * groups + g) << 23u);
 		const float sv1 = __uint_as_float((uint32_t)__ldg(weight_scale_e8m0 + (uint64_t)(neuron0 + 1u) * groups + g) << 23u);
 		#pragma unroll
@@ -223,8 +182,6 @@ static __global__ void MrdFp32x2Kernel(
 	}
 }
 
-/* variant D: 4-way group unroll with INDEPENDENT accumulator sets (breaks
- * the per-m FMA serial chain), vectorized A loads, group-hoisted scales */
 template <uint32_t UNROLL, uint32_t MRD_M>
 static __global__ void MrdFp32UnrollKernel(
 	const uint8_t *weight_payload,
@@ -363,8 +320,6 @@ int main(int argc, char **argv)
 	}
 	cudaStream_t stream;
 	CHECK(cudaStreamCreate(&stream));
-	/* reference: the library native path (mma + A quantization) - only at
-	 * certified row counts; a CPU dot reference covers the rest */
 	int have_native = SparkLmSm121NativeDecodeShape(M) != 0u || M == 8u;
 	CHECK(SparkLmHostLaunchSm121NativeLinear<SPARK_LM_SM121_NATIVE_WEIGHT_FP8>(
 		stream,payload,scale,payload_bytes,scale_bytes,in,K,0u,0u,
@@ -375,7 +330,6 @@ int main(int argc, char **argv)
 	MrdFp32Kernel<<<grid,MRD_WARPS * 32u,0,stream>>>(payload,scale,in,out,M,K,N);
 	CHECK(cudaGetLastError());
 	CHECK(cudaStreamSynchronize(stream));
-	/* tolerance compare */
 	{
 		uint16_t *hr = (uint16_t *)malloc((size_t)M * N * 2u);
 		uint16_t *ho = (uint16_t *)malloc((size_t)M * N * 2u);
@@ -394,8 +348,6 @@ int main(int argc, char **argv)
 		printf("fp32 variant max_rel_diff vs native = %.5f\n",max_rel);
 		free(hr); free(ho);
 	}
-	/* CPU ground truth: host dot for 4 neurons x all rows, same math
-	 * (raw e4m3 decode, group-hoisted scale, fp32) */
 	{
 		uint8_t *hp = (uint8_t *)malloc(payload_bytes);
 		uint8_t *hs = (uint8_t *)malloc(scale_bytes);
@@ -418,7 +370,6 @@ int main(int argc, char **argv)
 						uint8_t b = hp[(uint64_t)neuron * K + g * 128u + e];
 						__nv_bfloat16 raw = __ushort_as_bfloat16((unsigned short)0u);
 						(void)raw;
-						/* e4m3 decode: sign(1) exp(4) mantissa(3) */
 						int sign = (b & 0x80) ? -1 : 1;
 						int expo = (b >> 3) & 0xF;
 						int mant = b & 0x7;
@@ -470,7 +421,6 @@ int main(int argc, char **argv)
 		printf("CPU-check (4 neurons x %u rows): max_rel = %.6f\n",M,worst);
 		free(hp); free(hs); free(hi); free(ho);
 	}
-	/* x2 variant */
 	{
 		const uint32_t grid2 = (N + MRD_WARPS * 2u - 1u) / (MRD_WARPS * 2u);
 		MrdFp32x2Kernel<<<grid2,MRD_WARPS * 32u,0,stream>>>(payload,scale,in,out,M,K,N);
@@ -487,7 +437,6 @@ int main(int argc, char **argv)
 		double dt = now_s() - t0;
 		printf("x2   M=%u K=%u N=%u: %.1f GB/s (%.3f ms/iter)\n",M,K,N,bytes * iters / dt / 1e9,dt / iters * 1e3);
 	}
-	/* variant D: unrolled */
 	{
 		if ( M <= 10u )
 			MrdFp32UnrollKernel<8u,10u><<<grid,MRD_WARPS * 32u,0,stream>>>(payload,scale,in,out,M,K,N);

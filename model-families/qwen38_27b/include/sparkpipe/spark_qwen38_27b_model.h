@@ -1,6 +1,3 @@
-// Qwen 3.6's model geometry for the host tiers, mirroring the values in
-// inference/llms/qwen_3_6/config.h. The firmware config is the source
-// of truth; a conformance check holds the two in lockstep.
 #ifndef SPARKPIPE_SPARK_QWEN38_27B_MODEL_H
 #define SPARKPIPE_SPARK_QWEN38_27B_MODEL_H
 
@@ -13,11 +10,6 @@
 #define SPARK_QWEN38_27B_MODEL_GDN_KEY_HEAD_COUNT 16u
 #define SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT 48u
 
-// The resident decode stage module predates the shim above and speaks the
-// wider geometry vocabulary below. Every value is either a config.h constant
-// under its second name or derived from them; the two additions with no
-// config.h counterpart are MAXIMUM_CONTEXT_TOKENS (checkpoint config
-// max_position_embeddings) and GDN_CHUNK_TOKENS (the module's chunk width).
 #define SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT SPARK_QWEN38_27B_MODEL_VOCAB_COUNT
 #define SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS 262144u
 #define SPARK_QWEN38_27B_MODEL_RMS_NORM_EPSILON 1e-06f

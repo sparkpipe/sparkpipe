@@ -147,25 +147,19 @@ def verify_directory(header_fields, entries: Sequence[Tuple], expected: Mapping,
         previous_end = actual[6] + payload + scales
 
 
-def _checkpoint_slice(source, record, indices: Sequence[int], col_start: int,
-                      width: int) -> bytes:
-    """Expected payload+scale bytes for one entry, read from the checkpoint."""
+def _checkpoint_payload(source, record, indices: Sequence[int],
+                        col_start: int, width: int) -> bytes:
+    """Expected payload bytes for one entry, read from the checkpoint."""
     weight = record.weight_format
     out = bytearray()
     if record.stacked_fp4:
         rows_per = record.source_rows
-        block_width = (record.source_columns + FP4_BLOCK - 1) // FP4_BLOCK
-        start_block = col_start // FP4_BLOCK
-        width_blocks = (width + FP4_BLOCK - 1) // FP4_BLOCK
         stride = tp16.payload_bytes(weight, 1, record.source_columns)
         for stacked_row in indices:
             expert, row = divmod(stacked_row, rows_per)
             raw = source.read(record.source_names[expert])
             base = row * stride + col_start // 2
             out += raw[base:base + width // 2]
-            scales = source.read(record.scale_names[expert])
-            base = row * block_width + start_block
-            out += scales[base:base + width_blocks]
         return bytes(out)
     raw = source.read(record.source_names[0])
     stride = tp16.payload_bytes(weight, 1, record.source_columns)
@@ -178,15 +172,38 @@ def _checkpoint_slice(source, record, indices: Sequence[int], col_start: int,
             base = row * stride + col_start * element
             count = width * element
         out += raw[base:base + count]
+    return bytes(out)
+
+
+def _checkpoint_scales(source, record, indices: Sequence[int],
+                       col_start: int, width: int) -> bytes:
+    """Expected scale-section bytes for one entry (empty if unscaled)."""
+    weight = record.weight_format
+    if weight == tp16.WEIGHT_FP4 and record.stacked_fp4:
+        rows_per = record.source_rows
+        block_width = (record.source_columns + FP4_BLOCK - 1) // FP4_BLOCK
+        start_block = col_start // FP4_BLOCK
+        width_blocks = (width + FP4_BLOCK - 1) // FP4_BLOCK
+        out = bytearray()
+        # the scale section is all-scales in row order (copy_scales runs
+        # over every row after copy_payload finished) - never interleave
+        for stacked_row in indices:
+            expert, row = divmod(stacked_row, rows_per)
+            scales = source.read(record.scale_names[expert])
+            base = row * block_width + start_block
+            out += scales[base:base + width_blocks]
+        return bytes(out)
     if weight == tp16.WEIGHT_FP8:
         scales = source.read(record.scale_names[0])
         blocks = (record.source_columns + FP8_BLOCK - 1) // FP8_BLOCK
         start_block = col_start // FP8_BLOCK
         width_blocks = (width + FP8_BLOCK - 1) // FP8_BLOCK
+        out = bytearray()
         for row in indices:
             base = (row // FP8_BLOCK) * blocks + start_block
             out += scales[base:base + width_blocks]
-    return bytes(out)
+        return bytes(out)
+    return b""
 
 
 SAMPLE_PICKS = (
@@ -235,13 +252,23 @@ def sample_checkpoint(pack_path, expected: Mapping, source, rank: int,
                 indices = [idx for idx in indices
                            if idx // rows_per < limit_experts]
                 note = f"first {limit_experts} experts of {record.source_rows and len(record.source_names)}"
-            expected_bytes = _checkpoint_slice(
+            expected_payload = _checkpoint_payload(
+                source, record, indices, plan["col_start"], plan["columns"])
+            expected_scales = _checkpoint_scales(
                 source, record, indices, plan["col_start"], plan["columns"])
             pack.seek(plan["entry_offset"])
-            actual = pack.read(len(expected_bytes))
-            verdict = "OK" if actual == expected_bytes else "MISMATCH"
+            actual_payload = pack.read(len(expected_payload))
+            payload_ok = actual_payload == expected_payload
+            scales_ok = True
+            if expected_scales:
+                pack.seek(plan["scale_offset"])
+                scales_ok = pack.read(len(expected_scales)) == expected_scales
+            verdict = "OK" if payload_ok and scales_ok else "MISMATCH"
+            if verdict == "MISMATCH":
+                note = (note + "; " if note else "") + (
+                    "payload section" if not payload_ok else "scale section")
             entry = {"kind": kind, "layer": layer, "status": verdict,
-                     "bytes_compared": len(expected_bytes),
+                     "bytes_compared": len(expected_payload) + len(expected_scales),
                      "of_payload": payload_size}
             if note:
                 entry["note"] = note
@@ -279,10 +306,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         header_fields = HEADER.unpack(handle.read(HEADER.size))
         entries = [ENTRY.unpack(handle.read(ENTRY.size))
                    for _ in range(header_fields[8])]
-    by_key = {(entry[0], entry[1]): entry[6] for entry in entries}
+    by_key = {(entry[0], entry[1]): (entry[6], entry[7]) for entry in entries}
     for key, plan in expected.items():
         if key in by_key:
-            plan["entry_offset"] = by_key[key]
+            plan["entry_offset"], plan["scale_offset"] = by_key[key]
 
     verdict = {"pack": str(args.pack), "rank": args.rank,
                "layout": tp_stages_desc(args.tp_degree, args.pp_stages),

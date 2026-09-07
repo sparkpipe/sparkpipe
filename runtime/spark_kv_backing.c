@@ -66,8 +66,6 @@ SparkStatus SparkKvBackingResolvePath(char *path_out, size_t path_out_bytes,
 			uint32_t position;
 			if ( component[0] == '\0' )
 				return(SPARK_STATUS_INVALID_ARGUMENT);
-			/* Path-traversal and separator hygiene: a namespaced KV
-			 * store must never escape its deployment/tenant prefix. */
 			for ( position = 0u; component[position] != '\0'; position++ )
 			{
 				if ( component[position] == '/' ||
@@ -102,10 +100,6 @@ SparkStatus SparkKvBackingCreateNamespaces(const char *root_directory,
 		deployment_id == 0 || deployment_id[0] == '\0' ||
 		tenant_id == 0 || tenant_id[0] == '\0' )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* Every directory on the path is owner-only: a world-traversable
-	 * prefix would let other local tenants stat and brute-force names.
-	 * Pre-existing directories are TIGHTENED to 0700, the same migration
-	 * rule the slot file itself gets on open. */
 	if ( mkdir(root_directory,SPARK_KV_BACKING_DIRECTORY_MODE) != 0 )
 	{
 		if ( errno != EEXIST )
@@ -153,11 +147,6 @@ SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
 	if ( backing->slot_count == 0u || backing->slot_count >
 		SPARK_KV_BACKING_MAX_SLOT_COUNT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* B4 BACKING-STORE HYGIENE (docs/JIT_KV_RESPONSE.md): tenant KV at
-	 * rest is tenant-readable ONLY. Mode 0600 at creation, O_NOFOLLOW
-	 * against a symlink swap, and - because files created by earlier
-	 * builds were 0644 - fchmod on EVERY open migrates existing files'
-	 * permissions to 0600. */
 	descriptor = open(configuration->path,
 		O_RDWR | O_CREAT | O_NOFOLLOW
 #ifdef O_CLOEXEC
@@ -171,8 +160,6 @@ SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
 		close(descriptor);
 		return(SPARK_STATUS_IO_ERROR);
 	}
-	/* Advisory read-ahead hint only; POSIX_FADV_RANDOM does not exist on
-	 * Darwin, so the hint is skipped there (no behavior change on Linux). */
 #ifdef POSIX_FADV_RANDOM
 	(void)posix_fadvise(descriptor,0,0,POSIX_FADV_RANDOM);
 #endif
@@ -190,12 +177,8 @@ SparkStatus SparkKvBackingOpen(const SparkKvBackingConfiguration *configuration,
 		backing->file_descriptor = -1;
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	/* fresh files carry a header; an existing file with a mismatched
-	 * geometry is a configuration error (refuse, never mis-map slots) */
 	if ( pread(descriptor,&header,sizeof(header),0) == (ssize_t)sizeof(header) )
 	{
-		/* a freshly created sparse file reads back all-zero (the hole);
-		 * only a NONZERO wrong geometry is a mis-map risk */
 		uint32_t nonzero = 0u,i;
 		for ( i = 0u; i < sizeof(header.magic); i++ )
 			nonzero |= (uint32_t)(unsigned char)header.magic[i];
@@ -250,7 +233,7 @@ int64_t SparkKvBackingAllocate(SparkKvBacking *backing)
 			return((int64_t)candidate);
 		}
 	}
-	return(-1); /* horizon full: backpressure, never thrash */
+	return(-1);
 }
 
 void SparkKvBackingRelease(SparkKvBacking *backing, uint32_t slot)

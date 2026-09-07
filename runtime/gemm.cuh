@@ -158,10 +158,6 @@ static cudaError_t LmGemmLaunchTile(
     return cudaPeekAtLastError();
 }
 
-// GEMM-007: both encodes go through the request-keyed descriptor cache
-// (runtime/gemm_descriptor_cache.h). The request fully determines the
-// descriptor bytes, so a cache hit is what cuTensorMapEncodeTiled would have
-// returned and steady-state decode performs zero driver encodes per token.
 static int32_t LmGemmEncodeActivationMap(
     CUtensorMap *activation,
     const void *activation_bytes,
@@ -207,15 +203,6 @@ static int32_t LmGemmEncodeWeightMap(
     return LmGemmTensorMapCached(weight, &request);
 }
 
-// INTERLEAVED WEIGHT MAP - pack format mxfp4_ws_interleaved_v1. The B
-// operand is the 17-row cell grid, described as a rank-3 UINT8 byte tensor:
-// 64-byte rows, rows_per_expert = k_tiles * cells * 17 rows per expert, one
-// group per expert, box [64 bytes, 17 * (TILE_N/16) rows, 1], 64B swizzle.
-// The packer's interleave grid asserts this closes with
-// zero padding, and the kernel's produce coordinate
-// (k_tile * cells + neuron_base/16) * 17 is this layout's row index. The
-// 128-element pack k-tile is the grid's k unit, so the launcher passes
-// TILE_K == 128 for these operands.
 static int32_t LmGemmEncodeWeightMapInterleaved(
     CUtensorMap *weight,
     const void *weight_bytes,
@@ -228,9 +215,6 @@ static int32_t LmGemmEncodeWeightMapInterleaved(
     LmTensorMapRequest request;
     const uint32_t k_tiles = input_dimension / tile_k;
     const uint32_t cells = output_dimension / 16u;
-    // 128-element tiles stage 64-byte cell rows (64B swizzle); 32-element
-    // tiles stage 16-byte rows, which LmTensorMapBoxSwizzleBytes maps to
-    // SWIZZLE_NONE.
     const uint32_t cell_row_bytes = tile_k / 2u;
 
     memset(&request, 0, sizeof(request));
@@ -298,9 +282,6 @@ static int32_t LmGemmLaunchAsymmetric(
 		return(LM_LAUNCH_ERR_SHAPE);
 	if constexpr ( INTERLEAVED_B )
 	{
-		// The interleaved grid's k unit is the pack k-tile (128 or 32
-		// elements), and its cell is 16 neurons; a launch on any other shape
-		// would stage partial cells and misaddress every scale row.
 		if ( (TILE_K != 128u && TILE_K != 32u) || (TILE_N % 16u) != 0u ||
 			(input_dimension % TILE_K) != 0u || (output_dimension % 16u) != 0u )
 			return(LM_LAUNCH_ERR_SHAPE);
@@ -356,9 +337,6 @@ static int32_t LmGemmLaunchAsymmetric(
     }
     if constexpr ( !INTERLEAVED_B )
     {
-        // Interleaved B carries its scales IN the staged cell row, so no
-        // LmScaleTensor describes them - the far-plane validation applies
-        // only to the plain path, where a hole would decode wrong scales.
         status = LmGemmValidateScaleTensor<FormatB>(
             &args->scale_b,
             group_count,
@@ -396,9 +374,6 @@ static int32_t LmGemmLaunchAsymmetric(
     memset(&activation_map, 0, sizeof(activation_map));
 	if constexpr ( !INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE )
     {
-        // A TILE_K=128 BF16 row is 256 bytes, wider than any hardware
-        // swizzle: the interleaved direct path stages it as TWO 128-byte
-        // boxes (produce), so the map's box is half a row.
         status = LmGemmEncodeActivationMap(
             &activation_map,
             activation_bytes,
@@ -461,8 +436,6 @@ static int32_t LmGemmLaunchAsymmetric(
     activation_geometry.element_bits = FormatA::kStoredBits;
     if constexpr ( INTERLEAVED_B )
     {
-        // The staged B geometry IS the cell grid: 17 rows per 16 neurons,
-        // each row TILE_K/2 bytes of UINT8 (64 at TILE_K 128, 16 at 32).
         weight_geometry.rows = 17u * (TILE_N / 16u);
         weight_geometry.depth = TILE_K / 2u;
         weight_geometry.element_bits = 8u;
@@ -649,13 +622,6 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
 		input_dimension,output_dimension,multiprocessors,true,stream));
 }
 
-// INTERLEAVED B LAUNCHERS (pack format mxfp4_ws_interleaved_v1). TILE_K is
-// forced to the pack grid's 128-element k-tile - one staged box per k step,
-// scales riding the cell row - so these never pass through
-// LmGemmWeightOnlyLaunchMode's tile_k selection. The indirect variant is the
-// w1 path (un-gathered latent through the route map); the direct variant is
-// the w2 path, whose already-packed SiTU output stages as two 128-byte TMA
-// boxes per row (a 256-byte BF16 row has no single hardware swizzle).
 template<
 	class WeightFormat,
 	uint32_t TILE_N,
@@ -750,13 +716,6 @@ static int32_t LmGemmLaunch(
             stream);
 }
 
-// GEMM-008 shape-based TILE_K fallback for the symmetric (dense/unquantised)
-// GEMM. When the format's preferred K tile does not divide input_dimension but
-// 32 does, re-launch with TILE_K=32 - the non-interleaved BF16 path already
-// stages a 32-element tile (a 64-byte TMA-swizzleable row, inference/kernels/
-// gemm.cuh is TILE_K-generic). This is what unblocks TP-sliced dense/routed
-// projections (a 32-multiple input such as 224 = 7*32) that would otherwise
-// return LM_LAUNCH_ERR_SHAPE before producing partials.
 template<class Format, uint32_t TILE_N, uint32_t STAGES, uint32_t WARPS>
 static int32_t LmGemmLaunchTileK(
     LmGemmArguments *args,

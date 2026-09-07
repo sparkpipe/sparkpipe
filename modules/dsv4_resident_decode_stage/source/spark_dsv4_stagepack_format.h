@@ -5,35 +5,10 @@
 
 #include "sparkpipe/spark_weight_codec.h"
 
-/*
- * DeepSeek V4 stage pack format, one table for BOTH variants: this header
- * deliberately includes NO model header. A translation unit selects Flash
- * or Pro by including spark_dsv4_model.h or spark_dsv4_pro_model.h FIRST
- * (they share an include guard, so mixing is structurally impossible), or
- * the build passes -include for the variant; every shape below reads the
- * variant's macros. The variant identifier in the header is the layer
- * count itself - 43 and 61 cannot collide.
- *
- * Directory economics: the routed experts are STACKED - one tensor kind
- * carries all n_routed_experts of a projection (rows = experts x out), so
- * the directory stays O(layers), not O(layers x experts). Scales travel in
- * the entry beside their payload exactly as in the qwen38_27b format: fp8
- * weights carry one e8m0 byte per 128-column block per row, fp4 experts
- * one e8m0 byte per 32-column block per row. The hash router's tid2eid
- * table is a u32 tensor like any other. MTP kinds remain reserved for a
- * future native DSpark implementation. Flash GA baseline packs set
- * mtp_layer_count to zero and carry no mtp.* tensors; all three checkpoint
- * DSpark layers are excluded. The GA head pack therefore carries no old
- * MTP-only embedding copy; the embedding stays solely on stage zero.
- */
 
 #define SPARK_DSV4_STAGEPACK_MAGIC 0x34565344u
 #define SPARK_DSV4_STAGEPACK_FORMAT_VERSION 4u
 #define SPARK_DSV4_STAGEPACK_GLOBAL_LAYER UINT32_MAX
-/* Three DSpark draft layers (checkpoint namespace mtp.0..2, attached to main
- * layers 40-42). Encoded as layer indices MTP_LAYER_FIRST+stage so the
- * standard per-layer tensor kinds carry the draft transformer weights; the
- * MTP_* kinds below carry only the draft-only extras. */
 #define SPARK_DSV4_STAGEPACK_MTP_LAYER_FIRST (UINT32_MAX - 4u)
 #define SPARK_DSV4_STAGEPACK_MTP_LAYER_LAST (UINT32_MAX - 2u)
 #define SPARK_DSV4_STAGEPACK_MTP_LAYER_COUNT_MAX 3u
@@ -44,7 +19,6 @@
 #define SPARK_DSV4_STAGEPACK_WEIGHT_BF16 0u
 #define SPARK_DSV4_STAGEPACK_WEIGHT_F32 1u
 #define SPARK_DSV4_STAGEPACK_WEIGHT_U32 2u
-/* Keep these wire values identical to spark_lm_kernels.cuh. */
 #define SPARK_DSV4_STAGEPACK_WEIGHT_FP4_E2M1 3u
 #define SPARK_DSV4_STAGEPACK_WEIGHT_FP8_E4M3 4u
 
@@ -99,11 +73,6 @@ typedef enum SparkDsv4StagePackTensorKind
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_FN = 38,
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_BASE = 39,
 	SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE = 40,
-	/* Draft-stage extras (reference: inference/model.py DSparkBlock).
-	 * Stage 0 carries the target-hidden projection; stage 2 carries the
-	 * output norm, the 5-token hc head, the markov logits-bias head, and
-	 * the acceptance confidence head. The draft transformer tensors ride
-	 * the standard kinds above under layer MTP_LAYER_FIRST+stage. */
 	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_PROJ = 41,
 	SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_NORM = 42,
 	SPARK_DSV4_STAGEPACK_TENSOR_MTP_FINAL_NORM = 43,
@@ -169,9 +138,6 @@ static inline uint32_t SparkDsv4StagePackMtpStage(uint32_t layer_index)
 	return(layer_index - SPARK_DSV4_STAGEPACK_MTP_LAYER_FIRST);
 }
 
-// The MoE routing split, pinned: layers below HASH_ROUTED_LAYER_COUNT ship
-// the tid2eid lookup and NO balancer bias; all others the reverse. The MTP
-// layers sit past the hash range, so they score-route.
 static inline uint32_t SparkDsv4StagePackLayerIsHashRouted(uint32_t layer_index)
 {
 	return(SparkDsv4StagePackLayerIsMtp(layer_index) == 0u &&
@@ -185,9 +151,6 @@ static inline uint32_t SparkDsv4StagePackLayerKind(uint32_t layer_index)
 	return(SparkDsv4ModelLayerKind(layer_index));
 }
 
-// Shapes for kinds whose geometry is layer-independent. Kinds that vary
-// with the layer's attention kind (the compressor's overlap doubling) are
-// resolved in SparkDsv4StagePackResolvedShape against a concrete layer.
 static inline int32_t SparkDsv4StagePackShapeOfGlobal(uint32_t tensor_kind, SparkDsv4StagePackTensorShape *shape);
 
 static inline int32_t SparkDsv4StagePackShapeOfLayer(uint32_t tensor_kind, SparkDsv4StagePackTensorShape *shape)
@@ -268,15 +231,6 @@ static inline int32_t SparkDsv4StagePackShapeOfGlobal(uint32_t tensor_kind, Spar
 	}
 }
 
-/*
- * Kind resolved against a concrete layer. The compressor's APE/WKV/WGATE
- * widths depend on the layer's attention kind: the ratio-4 compressor
- * overlaps and doubles its channels, the ratio-128 one does not - so those
- * three kinds resolve here, everything else defers to the flat table. The
- * routing tensors split by the hash pin, the MTP marker admits every-layer
- * and compress-independent kinds only (its kind is SWA), and the classes
- * must agree with the variant's layer-kind map.
- */
 static inline int32_t SparkDsv4StagePackResolvedShape(uint32_t tensor_kind, uint32_t layer_index, uint32_t is_global, SparkDsv4StagePackTensorShape *shape)
 {
 	uint32_t kind = SparkDsv4StagePackLayerKind(layer_index),ratio,overlap;
@@ -326,8 +280,6 @@ static inline uint64_t SparkDsv4StagePackPayloadBytes(uint32_t weight_format, ui
 	return(elements * (uint64_t)SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES);
 }
 
-// e8m0 scales, one byte per block per row: fp8 weights block 128 columns,
-// fp4 experts block 32, everything else scale-free.
 static inline uint64_t SparkDsv4StagePackScaleBytes(uint32_t weight_format, uint32_t rows, uint32_t columns)
 {
 	if ( weight_format == SPARK_DSV4_STAGEPACK_WEIGHT_FP8_E4M3 )
@@ -337,10 +289,6 @@ static inline uint64_t SparkDsv4StagePackScaleBytes(uint32_t weight_format, uint
 	return(0u);
 }
 
-// Per-layer tensor population: 23 shared kinds (attention core, hc pair,
-// norms, gate weight, the three stacked expert projections, the shared
-// expert) plus exactly one routing tensor, plus the compressor quartet off
-// SWA, plus the indexer sextet on CSA only.
 static inline uint32_t SparkDsv4StagePackLayerTensorCount(uint32_t layer_index)
 {
 	uint32_t kind = SparkDsv4StagePackLayerKind(layer_index);
@@ -366,9 +314,6 @@ static inline uint32_t SparkDsv4StagePackExpectedTensorCountForOwnership(
 	if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
 	{
 		uint32_t stage;
-		/* DSpark draft: every rank's pack carries the full draft layers
-		 * (they ride the standard per-layer kinds under the MTP range)
-		 * plus the 9 draft-only extras, so every geometry admits them. */
 		for (stage = 0u; stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
 			tensors += SparkDsv4StagePackLayerTensorCount(SPARK_DSV4_STAGEPACK_MTP_LAYER(stage));
 		tensors += 9u;
@@ -413,8 +358,6 @@ static inline void SparkDsv4StagePackExpectedGeometry(SparkDsv4StagePackHeader *
 	header->directory_offset = SPARK_DSV4_STAGEPACK_HEADER_BYTES;
 }
 
-// Field-by-field comparison; each field owns a unique negative code so the
-// loader's refusal names exactly what disagreed.
 static inline int32_t SparkDsv4StagePackCompareGeometry(const SparkDsv4StagePackHeader *file_header, const SparkDsv4StagePackHeader *expected)
 {
 	if ( file_header->magic != expected->magic )

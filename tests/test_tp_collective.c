@@ -311,10 +311,6 @@ static void SparkTestTpcFill(
     }
 }
 
-/* Narrows a small whole value to BF16 bits. The test fill values are chosen
-   so every partial sum stays exactly representable in BF16 (odd parts below
-   256), so truncation and round-to-nearest-even agree and the expected
-   result can be computed without simulating the exchange tree. */
 static uint16_t SparkTestTpcBf16FromUint(uint32_t value)
 {
     float as_float;
@@ -761,10 +757,6 @@ static void SparkTestTpcRejectsMismatchedElementCounts(void)
     }
 }
 
-/* One rank on the F32 variant, the peer on the BF16 variant: the wire-kind
-   field in the operation header must turn the mismatch into a validation
-   failure instead of each rank decoding the other's payload at the wrong
-   element width. */
 static void SparkTestTpcRejectsMixedWireKinds(void)
 {
     pthread_t threads[2];

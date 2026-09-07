@@ -1,30 +1,3 @@
-/* PERF PROGRAM 2 - R1 RECEIPT BENCH (perf-r1 lane, 2026-08-28).
- *
- * The B1 head dispatch: spark_lm_kernels.cuh's
- * SparkLmHostLaunchHeadScreenedArgmaxWithScore short-circuits row_count==1
- * to the DIRECT full-vocabulary BF16 rescore
- * (SparkLmHostLaunchHeadDirectArgmaxWithScore) while the certified screened
- * head (SparkLmHostLaunchHeadCertifiedFp8B1WithScore: FP8 shadow scan with
- * round-up certified bounds + exact BF16 rescore of the candidate set) was
- * already validated for DSV4. The qwen38 27B module now routes B1 to the
- * certified path; this bench is the receipt:
- *
- *   route A (before): SparkLmHostLaunchHeadDirectArgmaxWithScore
- *                     - reads the whole BF16 head shard per token
- *   route B (after):  SparkLmHostLaunchHeadCertifiedFp8B1WithScore
- *                     - FP8 shadow scan (half the bytes) + exact rescore
- *                       of the certified candidate set
- *
- * Correctness gate (every timing trial): token id AND f32 score must match
- * route A bit-exact. Geometries: TP4 rank shard (62080x5120), full vocab.
- *
- * Build (spark5):
- *   nvcc -O3 -std=c++17 -gencode arch=compute_121a,code=sm_121a \
- *     -Imodel-families/common/include -Iinclude \
- *     tools/perf_r1_head_bench.cu -o /tmp/perf_r1_head_bench -lcudart
- * (no -use_fast_math: the certified bound arithmetic must not be
- * reassociated)
- */
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
@@ -37,12 +10,12 @@
 
 namespace {
 
-constexpr uint32_t kHidden = 5120u;         /* 27B hidden (%512==0, %32==0) */
-constexpr uint32_t kVocabFull = 248320u;    /* 27B output vocabulary */
-constexpr uint32_t kVocabShard = kVocabFull / 4u; /* TP4 rank shard */
-constexpr uint32_t kTrials = 64u;           /* parity trials per geometry */
+constexpr uint32_t kHidden = 5120u;
+constexpr uint32_t kVocabFull = 248320u;
+constexpr uint32_t kVocabShard = kVocabFull / 4u;
+constexpr uint32_t kTrials = 64u;
 constexpr uint32_t kWarmup = 8u;
-constexpr uint32_t kIters = 40u;            /* timed iterations per route */
+constexpr uint32_t kIters = 40u;
 
 __global__ void FillRandomBf16Kernel(uint16_t *values, uint64_t *state,
                                      uint32_t count)
@@ -55,7 +28,6 @@ __global__ void FillRandomBf16Kernel(uint16_t *values, uint64_t *state,
 	x ^= x >> 7u;
 	x ^= x << 17u;
 	state[index % 1024u] = x;
-	/* bf16 with ~3 decimal bits of mantissa kept: realistic spread */
 	uint32_t bits = 0x3f800000u | ((uint32_t)(x & 0xffffu) << 7u);
 	float unit = __uint_as_float(bits);
 	uint16_t bf16 = __bfloat16_as_ushort(__float2bfloat16(unit * 0.002f));
@@ -72,9 +44,6 @@ __global__ void FillSmallBf16Kernel(uint16_t *values, float scale,
 	values[index] = __bfloat16_as_ushort(__float2bfloat16(unit));
 }
 
-/* Dominant-argmax regime: hot rows make the winner's coarse score
- * dominate the spread, so the certified bound admits only its
- * neighborhood — the realistic decode distribution. */
 __global__ void ScaleRowsKernel(uint16_t *values, uint32_t hot_rows,
                                 uint32_t hidden_dimension, float factor)
 {
@@ -121,8 +90,6 @@ int RunGeometry(uint32_t candidate_count)
 	error = cudaMalloc(&fp8_payload, head_bytes);
 	error = cudaMalloc(&fp8_scale, groups * sizeof(float));
 	error = cudaMalloc(&fp8_norm, groups * sizeof(float));
-	/* direct route scratch: chunk partials + one u32 per row (the memset
-	 * target) - size like the module's head_logits scratch */
 	error = cudaMalloc(&direct_scratch,
 		((uint64_t)SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT * (sizeof(float) + sizeof(uint32_t))));
 	error = cudaMalloc(&certified_scratch,
@@ -131,7 +98,7 @@ int RunGeometry(uint32_t candidate_count)
 	error = cudaMalloc(&candidate_ids,
 		(uint64_t)candidate_count * sizeof(uint32_t));
 	error = cudaMalloc(&candidate_count_dev, sizeof(uint32_t));
-	error = cudaMalloc(&direct_ids, 2u * sizeof(uint32_t)); /* [0]=direct, [1]=certified */
+	error = cudaMalloc(&direct_ids, 2u * sizeof(uint32_t));
 	error = cudaMalloc(&direct_scores, sizeof(float));
 	error = cudaMalloc(&certified_scores, sizeof(float));
 	error = cudaMalloc(&rng_state, 1024u * sizeof(uint64_t));
@@ -139,10 +106,9 @@ int RunGeometry(uint32_t candidate_count)
 	error = cudaEventCreate(&stop);
 	if (error != cudaSuccess) { printf("alloc phase failed\n"); return 1; }
 
-	/* deterministic fill */
 	{
 		uint64_t host_state[1024];
-		std::mt19937_64 rng(0x50455246ull); /* "PERF" */
+		std::mt19937_64 rng(0x50455246ull);
 		for (uint32_t i = 0; i < 1024u; i++)
 			host_state[i] = rng();
 		cudaMemcpy(rng_state, host_state, sizeof(host_state),
@@ -152,20 +118,16 @@ int RunGeometry(uint32_t candidate_count)
 		head_bf16, rng_state, (uint32_t)head_elements);
 	cudaDeviceSynchronize();
 
-	/* certified shadow: exactly the module's config-time construction */
 	SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16, fp8_payload,
 		fp8_scale, fp8_norm, candidate_count, kHidden);
 	cudaDeviceSynchronize();
 
-	/* PARITY: kTrials random hiddens, both routes, bit-exact required */
 	for (uint32_t trial = 0; trial < kTrials; trial++)
 	{
 		FillRandomBf16Kernel<<<(kHidden + 255u) / 256u, 256u>>>(hidden_bf16,
 			rng_state, kHidden);
 		if (trial == kTrials - 1u)
 		{
-			/* adversarial near-tie trial: small-magnitude weights so many
-			 * candidates land within a few ULP of each other */
 			FillSmallBf16Kernel<<<(uint32_t)((head_elements + 255u) / 256u),
 				256u>>>(head_bf16, 1.0f / 4096.0f, (uint32_t)head_elements);
 			SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16,
@@ -209,7 +171,6 @@ int RunGeometry(uint32_t candidate_count)
 		}
 		if (trial == kTrials - 1u)
 		{
-			/* restore random weights after the adversarial trial */
 			FillRandomBf16Kernel<<<(uint32_t)((head_elements + 255u) / 256u),
 				256u>>>(head_bf16, rng_state, (uint32_t)head_elements);
 			SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16,
@@ -218,15 +179,12 @@ int RunGeometry(uint32_t candidate_count)
 		}
 	}
 
-	/* TIMING regime: 32 hot rows (see ScaleRowsKernel); the flat random
- * parity regime above is the degenerate all-admitted case. */
 	ScaleRowsKernel<<<(uint32_t)((32ull * kHidden + 255u) / 256u), 256u>>>(
 		head_bf16, 32u, kHidden, 64.0f);
 	SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head_bf16, fp8_payload,
 		fp8_scale, fp8_norm, candidate_count, kHidden);
 	cudaDeviceSynchronize();
 
-	/* TIMING */
 	float direct_ms[kIters];
 	float certified_ms[kIters];
 	for (uint32_t i = 0; i < kWarmup; i++)
@@ -297,7 +255,7 @@ int RunGeometry(uint32_t candidate_count)
 	return failures;
 }
 
-}  /* namespace */
+}
 
 int main()
 {

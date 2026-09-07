@@ -32,10 +32,6 @@
 typedef struct TestQwen38_27bServingState
 {
 	uint32_t completion_count;
-	/* A real stream: the adapter's transport shim issues stream-ordered
-	 * copies through the configuration's execution stream, and a CUDA host
-	 * dereferences the handle (the cuda stub ignores it, which is why a
-	 * forged handle only ever "worked" off-device). */
 	void *execution_stream;
 	SparkModelServingCompletion completion;
 } TestQwen38_27bServingState;
@@ -71,8 +67,6 @@ static void TestQwen38_27bServingConfiguration(
 	configuration->runtime_limits.max_active_sequence_count = 8u;
 	configuration->runtime_limits.max_input_row_count = 8u;
 	configuration->runtime_limits.resident_sequence_capacity = 8u;
-	/* The adapter declares JIT_KV, so the shared limits validator requires
-	 * kv_physical >= max_active and kv_logical >= resident capacity. */
 	configuration->runtime_limits.kv_logical_page_capacity = 64u;
 	configuration->runtime_limits.kv_physical_page_capacity = 64u;
 	configuration->runtime_root = runtime_root;
@@ -161,7 +155,6 @@ int main(void)
 	memset(&test_state,0,sizeof(test_state));
 	assert(cudaStreamCreate((cudaStream_t *)&test_state.execution_stream) == cudaSuccess);
 	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_QWEN38_27B_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE,&library) == SPARK_STATUS_OK);
-	/* TP4 descriptor: four whole-stack ranks, no hidden transport, MTP armed. */
 	assert(strcmp(library.adapter_interface.descriptor->adapter_id,"spark.qwen38_27b.serving-adapter.tp4.v1") == 0);
 	assert(strcmp(library.adapter_interface.descriptor->model_id,"Qwen/Qwen3.8-27B") == 0);
 	assert(library.adapter_interface.descriptor->stage_count == 4u);
@@ -175,8 +168,6 @@ int main(void)
 	assert(library.adapter_interface.descriptor->stage_layer_counts[4] == 0u);
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 
-	/* Head stage (every TP4 rank owns the embedding and the head): decode,
-	 * prefill, emit gating, validation refusals. */
 	TestQwen38_27bServingConfiguration(&configuration,3u,TEST_QWEN38_27B_SERVING_CONFIG_PATH,runtime_root,TEST_QWEN38_27B_SERVING_DRIVER_PATH,&test_state);
 	adapter_state = 0;
 	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
@@ -203,15 +194,12 @@ int main(void)
 	assert(test_state.completion.token_ids[0] == 4200u);
 	assert(test_state.completion.token_ids[1] == 4201u);
 	assert(test_state.completion.accepted_token_count == 2u);
-	/* The positions cap is the adapter configuration's 4096, not the module's. */
 	row_positions[0] = 4096u;
 	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	row_positions[0] = 0u;
-	/* Duplicate resident slots across lanes are refused. */
 	lanes[1].resident_sequence_slot = 7u;
 	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	lanes[1].resident_sequence_slot = 3u;
-	/* Head stage prefill: one frame per lane, one token per emitting lane. */
 	token_ids[0] = 21u;
 	token_ids[1] = 22u;
 	token_ids[2] = 23u;
@@ -251,7 +239,6 @@ int main(void)
 	assert(test_state.completion_count == 3u);
 	assert(test_state.completion.token_ids[0] == 4242u);
 	assert(test_state.completion.token_ids[1] == 0u);
-	/* Wave-major violations are refused in both validate and submit. */
 	row_lane_indices[0] = 0u;
 	row_lane_indices[1] = 0u;
 	row_lane_indices[2] = 1u;
@@ -265,20 +252,14 @@ int main(void)
 	row_lane_indices[2] = 0u;
 	row_lane_indices[3] = 1u;
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
-	/* One decode frame plus two frames per two-lane prefill submission. */
 	assert(snapshot.submitted_count == 5u);
 	assert(snapshot.completed_count == 5u);
-	/* 8 resident lanes x 64 blocks (4096 positions / 64) x 64 tokens. */
 	assert(snapshot.kv_token_capacity == 8u * 64u * 64u);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_BUSY);
 	assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_BUSY);
 	library.adapter_interface.destroy(adapter_state);
 
-	/* R2b regression: the prefill chunk width tracks max_input_row_count,
-	 * not max_active_sequence_count. With active=2 lanes but input_rows=4
-	 * rows, one lane's 4-row prefill is a single frame (pre-R2b split it
-	 * into two 2-row frames). The module env mirrors the limit. */
 	TestQwen38_27bServingConfiguration(&configuration,0u,TEST_QWEN38_27B_SERVING_CONFIG_PATH,runtime_root,TEST_QWEN38_27B_SERVING_DRIVER_PATH,&test_state);
 	configuration.runtime_limits.max_active_sequence_count = 2u;
 	configuration.runtime_limits.max_input_row_count = 4u;
@@ -346,14 +327,11 @@ int main(void)
 		submission.row_sequence_ids = row_sequence_ids;
 		assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
 		assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
-		/* 4 rows at chunk width 4 = exactly ONE prefill frame. */
 		assert(snapshot.submitted_count == frames_before + 1u);
 		assert(test_state.completion.token_ids[0] == 4242u);
 	}
 	library.adapter_interface.destroy(adapter_state);
 
-	/* Configuration refusals: stale schema, absolute pack path, positions
-	 * beyond the 8192 serving cap. */
 	TestQwen38_27bServingConfiguration(&configuration,3u,TEST_QWEN38_27B_SERVING_STALE_CONFIG_PATH,runtime_root,TEST_QWEN38_27B_SERVING_DRIVER_PATH,&test_state);
 	adapter_state = 0;
 	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_SCHEMA_ERROR);

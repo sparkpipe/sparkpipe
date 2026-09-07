@@ -1,18 +1,3 @@
-/* Host proof for the tokenizer sidecar (Phase 4, text-in/text-out).
- *
- * Coverage:
- *   1. Asset-format AUTO detection: HuggingFace tokenizer.json, the compiled
- *      format, tiktoken ranks.
- *   2. Encode/decode round trips: empty, ASCII, whitespace runs, digits,
- *      contractions, unicode (CJK, emoji, combining marks), special tokens.
- *   3. The digit-runs split variant (\p{N}{1,3}) vs the single-digit variant.
- *   4. Stop-token-aware decode: per-request stops survive the text edge.
- *   5. THE GROUND TRUTH: the 92 ds4_eval cases carry text+ids pairs
- *      (rendered prompts joined with the pre-tokenized fixture ids, generated
- *      with real tiktoken). Encode(text)==ids and decode(ids)==text for all
- *      92 against the real committed tokenizer asset. Skips with a notice
- *      when the asset is absent (same notice contract as hardware gates).
- */
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -27,8 +12,6 @@
 #define RANKS_PATH "build/test_tokenizer_sidecar_ranks.model"
 #define COMPILED_PATH "build/test_tokenizer_sidecar_compiled.tok"
 
-/* The real family assets: committed beside the ds4_eval fixtures they
- * ground-truth. */
 #define GT_TOKENIZER_PATH "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json"
 #define GT_FIXTURE_PATH "qualification/ds4_eval/quality-fixtures-glm5.3-flash.json"
 #define GT_CASES_PATH "qualification/ds4_eval/runs/kimi-k3-api-20260728/cases.json"
@@ -42,15 +25,7 @@ static void WriteFileOrDie(const char *path, const char *content)
     assert(fclose(file) == 0);
 }
 
-/* A tiny byte-level BPE in the real vocab convention: every byte's glyph is
- * a vocabulary entry (id = byte value), then multi-byte pieces at 300+:
- *  300 "Ġa" 301 "ab" 302 "Ġab" 303 "12" 304 "<|stop|>"(special) 305 "[role]".
- * Merges: "Ġ a"->300, "a b"->301, "1 2"->303. ignore_merges is selectable.
- * The digit pattern is a parameter so one fixture exercises each extended
- * splitter variant. */
 
-/* The GPT-2 byte<->glyph mapping: printable bytes map to themselves, every
- * other byte takes the next code point from 256 upward. */
 static uint32_t ByteGlyphCodePoint(uint8_t byte)
 {
     uint32_t shifted;
@@ -150,20 +125,11 @@ static void WriteHuggingFaceFixture(const char *path, uint32_t ignore_merges,
     assert(fclose(file) == 0);
 }
 
-/* Exact GLM family pattern variant strings (the loader recognizes these two
- * and only these two as extended splitters), JSON-escaped: each regex
- * backslash is a doubled backslash in the file so the decoded member value
- * carries the literal backslash sequences the loader compares. */
 #define DIGIT_RUNS_PATTERN \
     "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}{1,3}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+"
 #define SINGLE_DIGIT_PATTERN \
     "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?[\\\\p{L}\\\\p{M}]+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+"
 
-/* Ranks fixture: pieces are raw bytes, base64; merge priority = rank id.
- *   "!"=0x21 ->5, " "->0x20 ->4, "a"->6, "b"->7, "h"->8, "ab"->1, " ab"->2,
- *   "ah"->3, " bah"->9
- * Encoding " ab!": bytes ' '(4) 'a'(6) 'b'(7) '!'(5): pair (a,b)->"ab"=1 is
- * the lowest, merge; then (" ",ab)->" ab"=2, merge; "!" stays. Ids [2,5]. */
 static void WriteRanksFixture(void)
 {
     WriteFileOrDie(RANKS_PATH,
@@ -237,27 +203,21 @@ static void TestFormatDetectionAndRoundTrips(void)
     uint32_t decoded_bytes = 0;
     uint32_t stop_tokens[1];
 
-    /* HF json via AUTO ('{' prefix), digit-runs variant, ignore_merges on. */
     WriteHuggingFaceFixture(HF_DIGIT_RUNS_PATH, 1u, DIGIT_RUNS_PATTERN);
     LoadSidecarAuto(&sidecar, HF_DIGIT_RUNS_PATH);
     assert(sidecar.format == SPARK_TOKENIZER_SIDECAR_FORMAT_HUGGINGFACE_JSON);
     assert(sidecar.tokenizer.ignore_merges == 1u);
 
-    /* ignore_merges: a piece wholly in the vocabulary is one token. */
     EncodeText(&sidecar, " ab", ids, 64u, &count);
     assert(count == 1u && ids[0] == 302u);
 
-    /* Digit runs: "123" is ONE pretoken piece under \p{N}{1,3}; the piece
-     * BPEs to the "12" merge plus the trailing digit. */
     EncodeText(&sidecar, "x123", ids, 64u, &count);
     assert(count == 3u);
     assert(ids[0] == (uint32_t)'x' && ids[1] == 303u && ids[2] == (uint32_t)'3');
 
-    /* Special tokens ride the encode side as single ids. */
     EncodeText(&sidecar, "<|stop|>", ids, 64u, &count);
     assert(count == 1u && ids[0] == 304u);
 
-    /* Round trips incl. the added non-special token and unicode. */
     AssertRoundTrip(&sidecar, " ab!");
     AssertRoundTrip(&sidecar, "[role]x");
     AssertRoundTrip(&sidecar, "caf\xc3\xa9 na\xc3\xafve \xe4\xbd\xa0\xe5\xa5\xbd \xf0\x9f\x8c\x8d");
@@ -265,9 +225,6 @@ static void TestFormatDetectionAndRoundTrips(void)
     AssertRoundTrip(&sidecar, "contractions don't we'll I've");
     SparkTokenizerSidecarUnload(&sidecar);
 
-    /* Single-digit variant: "123" pretokenizes as three pieces, and pieces
-     * never merge across boundaries: one more token than the digit-runs
-     * variant on the same text. */
     WriteHuggingFaceFixture(HF_SINGLE_DIGIT_PATH, 0u, SINGLE_DIGIT_PATTERN);
     LoadSidecarAuto(&sidecar, HF_SINGLE_DIGIT_PATH);
     assert(sidecar.format == SPARK_TOKENIZER_SIDECAR_FORMAT_HUGGINGFACE_JSON);
@@ -277,8 +234,6 @@ static void TestFormatDetectionAndRoundTrips(void)
         ids[2] == (uint32_t)'2' && ids[3] == (uint32_t)'3');
     SparkTokenizerSidecarUnload(&sidecar);
 
-    /* The compiled format: v2 save/load keeps plain-BPE behavior; AUTO
-     * detects it by magic. */
     {
         SparkTokenizer tokenizer;
         SparkTokenizerHuggingFaceJsonConfiguration load_configuration;
@@ -305,7 +260,6 @@ static void TestFormatDetectionAndRoundTrips(void)
     AssertRoundTrip(&sidecar, " ab!");
     SparkTokenizerSidecarUnload(&sidecar);
 
-    /* tiktoken ranks: merge priority is the rank id of the concatenation. */
     WriteRanksFixture();
     LoadSidecarAuto(&sidecar, RANKS_PATH);
     assert(sidecar.format == SPARK_TOKENIZER_SIDECAR_FORMAT_TIKTOKEN_RANKS);
@@ -313,34 +267,27 @@ static void TestFormatDetectionAndRoundTrips(void)
     EncodeText(&sidecar, " ab!", ids, 64u, &count);
     assert(count == 2u);
     assert(ids[0] == 2u && ids[1] == 5u);
-    /* " bah": the only mergeable pair is (a,h)->"ah"=3; " bah"=9 exists in
-     * the vocabulary but is unreachable (its " b" prefix never forms), and
-     * rank-ordered BPE must NOT invent it - pins the exact tiktoken rule. */
     EncodeText(&sidecar, " bah", ids, 64u, &count);
     assert(count == 3u);
     assert(ids[0] == 4u && ids[1] == 7u && ids[2] == 3u);
     AssertRoundTrip(&sidecar, " ab! bah hhh aha");
     SparkTokenizerSidecarUnload(&sidecar);
 
-    /* Stop-token awareness on the REAL decode edge: the first stop id cuts
-     * the text and is not rendered. */
     LoadSidecarAuto(&sidecar, HF_DIGIT_RUNS_PATH);
     {
         uint32_t stream[3];
         EncodeText(&sidecar, " ab", stream, 64u, &count);
         assert(count == 1u);
-        stream[1] = 304u; /* <|stop|> */
-        stream[2] = 302u; /* " ab" - must NOT be rendered */
+        stream[1] = 304u;
+        stream[2] = 302u;
         stop_tokens[0] = 304u;
         DecodeIds(&sidecar, stream, 3u, stop_tokens, 1u, 0u,
             decoded, sizeof(decoded), &decoded_bytes);
         assert(decoded_bytes == 3u);
         assert(memcmp(decoded, " ab", 3u) == 0);
-        /* Without the stop the whole stream decodes: text + stop text + tail. */
         DecodeIds(&sidecar, stream, 3u, 0, 0, 0u,
             decoded, sizeof(decoded), &decoded_bytes);
         assert(decoded_bytes == 3u + 8u + 3u);
-        /* skip_special_tokens: the stop text vanishes, the tail stays. */
         DecodeIds(&sidecar, stream, 3u, 0, 0,
             SPARK_TOKENIZER_DECODE_FLAG_SKIP_SPECIAL_TOKENS,
             decoded, sizeof(decoded), &decoded_bytes);
@@ -348,7 +295,6 @@ static void TestFormatDetectionAndRoundTrips(void)
     }
     SparkTokenizerSidecarUnload(&sidecar);
 
-    /* A missing asset is an IO error, loud, not a silent empty tokenizer. */
     {
         SparkTokenizerSidecarConfiguration configuration;
         SparkTokenizerSidecarReset(&sidecar);
@@ -364,7 +310,6 @@ static void TestFormatDetectionAndRoundTrips(void)
     printf("test_tokenizer_sidecar: format detection + round trips OK\n");
 }
 
-/* ===================== the ds4_eval ground truth ===================== */
 
 static uint32_t GroundTruthCasesReady(uint32_t *case_count_out,
     SparkJsonDocument *fixture_document, SparkJsonDocument *cases_document)
@@ -398,8 +343,6 @@ static uint32_t GroundTruthCasesReady(uint32_t *case_count_out,
     return 1u;
 }
 
-/* Verify encode(text)==ids and decode(ids)==text for one case. Cases are
- * ordinal-aligned; the id fields prove the alignment case by case. */
 static void GroundTruthCase(SparkTokenizerSidecar *sidecar,
     const SparkJsonDocument *fixture_document,
     const SparkJsonDocument *cases_document,
@@ -446,13 +389,11 @@ static void GroundTruthCase(SparkTokenizerSidecar *sidecar,
     prompt_member = SparkJsonFindObjectMember((SparkJsonDocument *)cases_document, cases_case, "rendered_prompt");
     assert(SparkJsonCopyString((SparkJsonDocument *)cases_document, prompt_member, &prompt_text) == SPARK_STATUS_OK);
 
-    /* decode(ids) == text */
     assert(SparkTokenizerSidecarDecodeText(sidecar, ids, id_count, 0, 0, 0u,
         decoded_text, sizeof(decoded_text), &decoded_bytes) == SPARK_STATUS_OK);
     assert(decoded_bytes == strlen(prompt_text));
     assert(memcmp(decoded_text, prompt_text, decoded_bytes) == 0);
 
-    /* encode(text) == ids */
     SparkTokenizerEncodingReset(&encoding);
     encoding.token_capacity = (uint32_t)sizeof(encoded) / sizeof(encoded[0]);
     encoding.token_ids = encoded;
@@ -501,9 +442,6 @@ static void TestGroundTruth(void)
     assert(SparkTokenizerSidecarLoad(&sidecar, &configuration) == SPARK_STATUS_OK);
     assert(sidecar.format == SPARK_TOKENIZER_SIDECAR_FORMAT_HUGGINGFACE_JSON);
     SparkTokenizerWorkspaceReset(&workspace);
-    /* One workspace for the whole sweep: it grows to the longest prompt and
-     * its piece cache warms across cases, which is exactly how the serving
-     * edge uses it. */
     assert(SparkTokenizerWorkspaceInitialize(&workspace, 1u << 16) == SPARK_STATUS_OK);
     for (case_index = 0u; case_index < case_count; case_index++)
         GroundTruthCase(&sidecar, &fixture_document, &cases_document,
@@ -516,8 +454,6 @@ static void TestGroundTruth(void)
         "encode+decode identity OK\n", case_count, case_count);
 }
 
-/* The other named family: the tiktoken ranks asset loads through the same
- * sidecar and round trips; its byte order pins single-byte ids. */
 static void TestKimiRanksAsset(void)
 {
     SparkTokenizerSidecar sidecar;
@@ -539,7 +475,6 @@ static void TestKimiRanksAsset(void)
     configuration.format = SPARK_TOKENIZER_SIDECAR_FORMAT_AUTO;
     assert(SparkTokenizerSidecarLoad(&sidecar, &configuration) == SPARK_STATUS_OK);
     assert(sidecar.format == SPARK_TOKENIZER_SIDECAR_FORMAT_TIKTOKEN_RANKS);
-    /* "IQ== 0" is the first line: byte '!' is id 0. */
     EncodeText(&sidecar, "!", ids, 256u, &count);
     assert(count == 1u && ids[0] == 0u);
     AssertRoundTrip(&sidecar,

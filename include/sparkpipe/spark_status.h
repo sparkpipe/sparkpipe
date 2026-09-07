@@ -37,9 +37,6 @@ const char *SparkStatusToString(SparkStatus status);
 }
 #endif
 
-// Shared micro-helpers, extracted from three and four near-identical
-// copies respectively (the duplication instrument found them at 0.97+
-// similarity). One definition; everyone includes this header already.
 static inline SparkStatus SparkReportError(char *error_buffer, uint32_t error_buffer_bytes, SparkStatus status, const char *message)
 {
 	if ( error_buffer != 0 && error_buffer_bytes != 0u )

@@ -45,13 +45,6 @@ typedef struct SparkModelResidentClientConfiguration
 	void *completion_context;
 } SparkModelResidentClientConfiguration;
 
-/*
- * The client is an event-loop object: one thread owns submit/progress/destroy.
- * adapter_descriptor and every callback context must outlive the client. A
- * disconnect is terminal; reconnecting creates a new client and handshake.
- * Callbacks may submit more work after the client has updated its queue state.
- * They must not recursively call progress or destroy the client.
- */
 
 typedef struct SparkModelResidentClientPollDescriptor
 {

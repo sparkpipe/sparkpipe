@@ -48,15 +48,14 @@ for i in $(seq 0 15); do
     echo "  \"capture_graphs\": 1,"
     echo "  \"hidden\": 7168,"
     echo "  \"device_collective\": {"
-    echo "    \"backend\": \"nccl\","
-    echo "    \"backend_module_path\": \"lib/runtime_libs/libnccl.so.2\","
+    echo "    \"backend\": \"hidden_transport\","
+    echo "    \"backend_module_path\": \"lib/hidden_transport.so\","
     echo "    \"local_host\": \"$host\","
     echo "    \"collective_identifier\": 1,"
     echo "    \"listen_port\": 64620,"
     echo "    \"connect_timeout_milli\": 300000,"
     echo "    \"operation_timeout_milli\": 30000,"
     echo "    \"peer_hosts\": ["
-    first=1
     for r in $(seq 0 $((TP - 1))); do
       p=$((stage * TP + r))
       ph=$(printf '%x' "$p")
@@ -64,6 +63,20 @@ for i in $(seq 0 15); do
       comma=","
       [ "$r" = "$((TP - 1))" ] && comma=""
       echo "      \"$ip\"$comma"
+    done
+    echo "    ],"
+    echo "    \"session_ports\": ["
+    for a in $(seq 0 $((TP - 1))); do
+      row=""
+      for b in $(seq 0 $((TP - 1))); do
+        cell=0
+        [ "$a" != "$b" ] && cell=$((64630 + a * TP + b))
+        row="$row$cell"
+        [ "$b" != "$((TP - 1))" ] && row="$row,"
+      done
+      comma=","
+      [ "$a" = "$((TP - 1))" ] && comma=""
+      echo "      [$row]$comma"
     done
     echo "    ]"
     echo "  }"

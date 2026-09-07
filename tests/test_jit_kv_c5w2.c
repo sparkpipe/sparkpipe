@@ -1,37 +1,3 @@
-// The JIT-KV pager's last two named remainders (docs/JIT_KV_RESPONSE.md
-// C5 + W2), on a host, over the read-vtable fake backing - no GPU, no
-// reservations, no fleet.
-//
-// C5 REUSE-VALUE PARK POLICY: the victim choice becomes a selectable
-// admission-time knob on the pager configuration (park_policy). LRU stays
-// the default and the historical behavior byte for byte. REUSE_VALUE ranks
-// victims by keepness - restored-again history first (a block restored
-// twice came back on purpose: hot), then dirtiness (a clean block is cheap
-// to drop; a dirty one costs a write on park and endurance is a line
-// item), then recency. The proofs: a twice-restored block that LRU evicts
-// SURVIVES under the reuse policy (the policy flips the victim); a clean
-// cold block drops before a dirty warm one under both policies, and a
-// dirty old block survives a clean younger one only under the reuse policy
-// (the dirtiness factor decides); and the policy choice never changes
-// budget accounting - identical op sequences hold identical admissions,
-// reservations, resident counts, tier slots, and pager budget statistics,
-// differing ONLY in which block parked.
-//
-// W2 DEADLINE LOOKAHEAD AS THE C2 GATE'S ENGINE: the dispatch offer
-// carries an optional deadline hint (the struct's former reserved0); the
-// gate rides it into the tier's read path (RequestDemandDeadline), and a
-// tier saturated in cancel-pending staging ORDERs the gated block in its
-// pending debt at that deadline - earliest deadline first - instead of
-// yanking it out of the queue to spin. The proofs, one fixture, two runs:
-// with the hint the gate answers QUEUED (healthy backpressure) and the
-// tier's very next freed staging buffer carries the GATED block's read,
-// which completes before its FIFO-older peer. The debt-lane follow-up made
-// the queue-not-wedge answer UNIVERSAL: the hintless gate used to burn its
-// poll budget to a hard IO_ERROR while the backlog churned; it now answers
-// the same QUEUED (the spin itself, the tier's yank and stall accounting,
-// stay byte for byte - only the terminal answer changed), and the gated
-// block still completes after the peer. Same state, same device, only the
-// hint differs, and the hint's residue is the ORDER, never an error.
 #include "sparkpipe/spark_kv_pager.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -56,8 +22,6 @@ static void expect(int condition, const char *label)
 #define CW2_MAX_RESIDENT_SLOTS 4u
 #define CW2_MAX_TIER_SLOTS 8u
 
-/* the fake drive: every read takes a fixed number of polls, and every
-   completed poll is recorded - the completion ORDER is the W2 proof. */
 typedef struct CW2Read
 {
 	uint64_t ticket;
@@ -76,7 +40,7 @@ typedef struct CW2Device
 	uint8_t *drive;
 	uint64_t drive_base;
 	uint64_t completions;
-	uint64_t first_completion[CW2_MAX_TIER_SLOTS]; /* by slot, 0 = none */
+	uint64_t first_completion[CW2_MAX_TIER_SLOTS];
 }
 CW2Device;
 
@@ -144,9 +108,6 @@ static SparkStatus CW2PollRead(void *context,uint64_t ticket)
 	return(SPARK_STATUS_NOT_FOUND);
 }
 
-/* the saturated drive: cancellation is ALWAYS still in flight, so a staged
-   read is unstealable until it lands - the tier must order work in its
-   pending debt instead of taking a buffer. */
 static SparkStatus CW2CancelReadPending(void *context,uint64_t ticket)
 {
 	(void)context;
@@ -211,7 +172,6 @@ static void CW2Digest(uint32_t block_index,uint8_t *digest_out)
 	SparkSha256Finalize(&context,digest_out);
 }
 
-/* the pager's 64-bit tier key fold, mirrored for tier-side calls */
 static uint64_t CW2HashFromDigest(const uint8_t digest[SPARK_KV_PAGER_DIGEST_BYTES])
 {
 	uint64_t hash = 0u;
@@ -244,7 +204,6 @@ static SparkStatus CW2ModuleRestore(void *module_context,
 	return(SPARK_STATUS_OK);
 }
 
-/* The budget law, asserted after every state change in every scenario. */
 static void CW2CheckBudget(CW2Fixture *fixture,const char *where)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -360,7 +319,6 @@ static SparkStatus CW2Open(
 	return(SparkKvPagerInitialize(&fixture->pager,pager_configuration));
 }
 
-/* Admit + fill one block (the lane's ordinary residency path). */
 static int32_t CW2FillBlock(CW2Fixture *fixture,uint32_t block_index)
 {
 	SparkKvCacheArena *arena = &fixture->arena;
@@ -440,9 +398,6 @@ static int32_t CW2Restore(CW2Fixture *fixture,uint32_t block_index)
 		SPARK_STATUS_OK);
 }
 
-/* A dispatch offer. Returns the RAW status: under the universal
-   queue-not-wedge discipline saturation answers OK/QUEUED; only a hard
-   failure surfaces as an error status. */
 static SparkStatus CW2Dispatch(CW2Fixture *fixture,uint32_t block_index,
 	uint32_t deadline_step,SparkKvPagerDispatchDecision *decision_out)
 {
@@ -481,12 +436,7 @@ static int32_t CW2DispatchUntilReady(CW2Fixture *fixture,
 	return(0);
 }
 
-/* ---- scenario 1 sequence: the reuse-value victim decision ----------- */
 
-/* Drives one fixture through the identical op sequence and reports the
-   residency of blocks 0 and 1 after THE victim decision: one park-out
-   with two candidates - block 0 (restored twice, LRU-oldest, clean) and
-   block 1 (restored once, newer, clean). */
 static void CW2ReuseSequence(CW2Fixture *fixture,
 	uint32_t *zero_resident_out,uint32_t *one_resident_out)
 {
@@ -496,8 +446,6 @@ static void CW2ReuseSequence(CW2Fixture *fixture,
 		decision.outcome == SPARK_KV_PAGER_ADMITTED &&
 		CW2FillBlock(fixture,0u) && CW2FillBlock(fixture,1u),
 		"lane A fills the budget");
-	/* step 2: one park-out, both dirty, no history: the LRU-oldest
-	   (block 0) is the victim under BOTH policies */
 	expect(CW2Admit(fixture,2u,&decision) &&
 		decision.outcome == SPARK_KV_PAGER_ADMITTED &&
 		decision.park_evictions == 1u,
@@ -505,15 +453,12 @@ static void CW2ReuseSequence(CW2Fixture *fixture,
 	expect(SparkKvPagerReleaseAdmission(&fixture->pager,2u) == SPARK_STATUS_OK,
 		"the unused reservation releases");
 	expect(CW2Restore(fixture,0u),"block 0 restores (history 1)");
-	/* step 4: the never-restored newer block 1 is the victim under BOTH
-	   policies (block 0 now carries one restore) */
 	expect(CW2Admit(fixture,2u,&decision) &&
 		decision.outcome == SPARK_KV_PAGER_ADMITTED &&
 		decision.park_evictions == 1u,
 		"the second park-out takes the never-restored block");
 	expect(SparkKvPagerReleaseAdmission(&fixture->pager,2u) == SPARK_STATUS_OK,
 		"the unused reservation releases");
-	/* step 5: block 0 parks once more and comes back a SECOND time */
 	expect(CW2Admit(fixture,3u,&decision) &&
 		decision.outcome == SPARK_KV_PAGER_ADMITTED &&
 		decision.park_evictions == 1u,
@@ -522,11 +467,6 @@ static void CW2ReuseSequence(CW2Fixture *fixture,
 		"the unused reservation releases");
 	expect(CW2Restore(fixture,0u),"block 0 restores AGAIN (history 2)");
 	expect(CW2Restore(fixture,1u),"block 1 restores (history 1)");
-	/* THE VICTIM DECISION: one park-out, two candidates - block 0
-	   (twice-restored, LRU-oldest) and block 1 (once-restored, newer).
-	   Both are re-dirtied first (the oldest write-back receipt records
-	   the victim), so the choice lands in the page-out receipt as well
-	   as residency. */
 	expect(SparkKvCacheArenaMarkBlockDirty(&fixture->arena,0u) ==
 			SPARK_STATUS_OK &&
 		SparkKvCacheArenaMarkBlockDirty(&fixture->arena,1u) ==
@@ -605,8 +545,6 @@ int main(void)
 			lru.arena.blocks[0].restore_count == 2u,
 			"the restored-again counters read 2 and 1 (the history is"
 			" policy-independent)");
-		/* C5 accounting invariance: the identical sequences must hold
-		   identical budget state; only the victim moved. */
 		expect(lru.pager.statistics.page_out_count ==
 				reuse.pager.statistics.page_out_count &&
 			lru.pager.statistics.page_out_bytes ==
@@ -651,8 +589,6 @@ int main(void)
 		CW2Fixture reuse;
 		SparkKvPagerAdmissionDecision decision;
 
-		/* B1: clean-cold (0) vs dirty-warm (1) - both policies drop the
-		   clean cold block. */
 		expect(CW2Open(&lru,3u,3u,8u,8u,1u,4u,1u,
 			SPARK_KV_PAGER_PARK_POLICY_LRU,0u) == SPARK_STATUS_OK &&
 			CW2Open(&reuse,3u,3u,8u,8u,1u,4u,1u,
@@ -695,9 +631,6 @@ int main(void)
 			}
 		}
 
-		/* B2: dirty-OLD (0) vs clean-NEW (1) - LRU ignores dirtiness and
-		   evicts the dirty block (a write-back); the reuse policy keeps
-		   it and drops the clean block (free to drop). */
 		expect(CW2Open(&lru,3u,3u,8u,8u,1u,4u,1u,
 			SPARK_KV_PAGER_PARK_POLICY_LRU,0u) == SPARK_STATUS_OK &&
 			CW2Open(&reuse,3u,3u,8u,8u,1u,4u,1u,
@@ -772,12 +705,6 @@ int main(void)
 		uint32_t run,block_index;
 		SparkNvmeTierPlanReport report;
 
-		/* one shared prologue: four parked blocks, the lookahead queueing
-		   all of them at the same far deadline (FIFO inside it), and one
-		   pump putting the first two backlog reads in flight on a drive
-		   whose cancellations never land (staging saturated and
-		   unstealable). The two fixtures are bit-identical up to the
-		   gated dispatch. */
 		for ( run = 0u; run < 2u; ++run )
 		{
 			CW2Fixture *fixture = (run == 0u) ? &hinted : &baseline;
@@ -819,14 +746,9 @@ int main(void)
 				"one pump: two backlog reads in flight, the debt queue"
 				" holds the rest");
 		}
-		/* the two fixtures are geometrically identical: the gated block 3
-		   and its FIFO peer block 2 land on the same device slots */
 		gated_slot = (offsets[3u] - CW2_TIER_BASE) / CW2_BLOCK_BYTES;
 		peer_slot = (offsets[2u] - CW2_TIER_BASE) / CW2_BLOCK_BYTES;
 
-		/* HINTED: the gate's offer ORDERs the gated block at its deadline;
-		   the offer answers QUEUED, and the pump inside it serves the debt
-		   queue head - the gated block, not the FIFO peer. */
 		expect(CW2Dispatch(&hinted,3u,2u,&decision) == SPARK_STATUS_OK &&
 			decision.outcome == SPARK_KV_PAGER_DISPATCH_QUEUED,
 			"HINTED: the saturated gate answers QUEUED (never a hard"
@@ -846,12 +768,6 @@ int main(void)
 			"THE PROOF: EDF - the gated block's read completed BEFORE"
 			" its FIFO-older peer's");
 
-		/* BASELINE: no hint - the gate yanks the block out of the debt
-		   queue and spins its poll budget on the saturated tier; the
-		   terminal answer is the SAME QUEUED the hinted gate gives (the
-		   universal queue-not-wedge follow-up), not the hard IO_ERROR it
-		   used to surface. The block lost its place and completes after
-		   the FIFO peer - the order, not an error, is what the hint buys. */
 		expect(CW2Dispatch(&baseline,3u,0u,&decision) ==
 				SPARK_STATUS_OK &&
 			decision.outcome == SPARK_KV_PAGER_DISPATCH_QUEUED,

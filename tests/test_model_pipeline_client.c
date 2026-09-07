@@ -436,16 +436,6 @@ static void TestModelPipelineStopResidents(
 	}
 }
 
-/* Stop residents after the client destroyed a FAILED pipeline.
- *
- * The exit status of each rank is a race the test cannot control: the
- * destroyed client's socket EOF turns the run loop into an io_error
- * failure (exit 1), but a SIGTERM that lands first stops the loop
- * cleanly (exit 0). Both orderings are correct residentd behavior; what
- * the gate can and must pin is that every rank exits by one of exactly
- * those two paths and that the failure was not silently swallowed
- * everywhere (at least one rank observed it). The failure itself is
- * already asserted through the client view before this runs. */
 static void TestModelPipelineStopResidentsAfterFailure(
 	pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT],
 	char paths[][108])
@@ -1035,9 +1025,6 @@ static void TestModelBatchEngineRun(
 	third = TestModelBatchSubmit(engine,1003u,2003u,prompt_long,15u,1u);
 	assert(SparkModelBatchEngineProgress(engine,2u) == SPARK_STATUS_OK);
 	assert(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK);
-	/* The engine admits the next submission before the previous one's
-	 * spec phase-two scan (the 2-in-flight overlap), so mid-run counts
-	 * depend on scheduling; the drained invariants below are the contract. */
 	assert(view.inflight_submission_count >= 1u && view.inflight_submission_count <= 2u);
 	TestModelBatchWaitIdle(engine,3u);
 	assert(state.accepted_count == 3u);
@@ -1061,9 +1048,6 @@ static void TestModelBatchEngineRun(
 	assert(state.cancelled_count == 0u);
 	assert(state.error_count == 0u);
 	fprintf(stderr,"TT-PREFILL lanes=%u rows=%u\n",state.first_prefill_lane_count,state.first_prefill_row_count);
-	/* Prefill lane concentration: a request's prompt rows ride ONE lane,
-	 * so the first 4-row prefill batch is 1001's three rows plus one of
-	 * 1002's - two lanes, not the old per-row three. */
 	assert(state.first_prefill_lane_count == 2u);
 	assert(state.first_prefill_row_count == 4u);
 	assert(third != first);
@@ -1300,10 +1284,6 @@ static void TestModelBatchEngineCachePageBudget(
 			13u,1u);
 	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
 	TestModelBatchWaitIdle(engine,32u);
-	/* Chunked prefill under the page budget: lane counts vary with
-	 * scheduling, so the old exact "15-lane tail" is gone. The budget's
-	 * observable effect survives: at least one prefill batch runs with
-	 * FEWER lanes than the busiest batch (the capacity tail). */
 	found_capacity_tail = 0u;
 	{
 		uint32_t max_prefill_lanes = 0u;
@@ -1334,10 +1314,6 @@ static void TestModelBatchEngineContinuous(
 	for (index=0u; index<15u; index++)
 		long_prompt[index] = 41u + index;
 	prompt[0] = 41u;
-	/* Chunked prefill continuity: three 15-token prompts prefill in
-	 * block-span passes (3 lanes x 4 rows) and the engine repeats until
-	 * every prompt is resident - submit, process, repeat with no
-	 * between-pass gating. */
 	memset(&state,0,sizeof(state));
 	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,8u);
 	for (index=0u; index<3u; index++)
@@ -1371,14 +1347,9 @@ static void TestModelBatchEngineContinuous(
 				state.submission_row_counts[index] == 9u);
 			prefill_submissions++;
 		}
-		/* 45 prompt rows ride block-span chunks of 3 lanes x 4 rows, with
-		 * a 3-row tail: exactly four repeating passes, no gating between. */
 		assert(prefill_submissions == 4u);
 	}
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
-	/* Staggered arrival: r3/r4 land while r1/r2's prefill is inflight and
-	 * are admitted to the next pass. The old floor (16) deferred them
-	 * until the pipe drained or they aged out of the bypass. */
 	memset(&state,0,sizeof(state));
 	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,8u);
 	(void)TestModelBatchSubmit(engine,1601u,2601u,prompt,1u,2u);
@@ -1395,8 +1366,6 @@ static void TestModelBatchEngineContinuous(
 	assert(state.completed_count == 4u);
 	assert(state.cancelled_count == 0u);
 	assert(state.error_count == 0u);
-	/* Every ready request decoded exactly once; decode submissions carry
-	 * whatever was ready (2 lanes per wave, or one merged 4-lane pass). */
 	decode_lanes = 0u;
 	for (index=0u; index<state.submission_count; index++)
 	{
@@ -1407,14 +1376,9 @@ static void TestModelBatchEngineContinuous(
 		decode_lanes += state.submission_lane_counts[index];
 	}
 	assert(decode_lanes == 4u);
-	/* Oldest-first at equal priority: prefill tokens emit in arrival
-	 * order regardless of the mid-flight join. */
 	for (index=0u; index<4u; index++)
 		assert(state.token_request_ids[index] == 1601u + index);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
-	/* Deep queue: the first window takes MAX_ACTIVE (16) lanes in arrival
-	 * order, the tail drains in a smaller variable batch - token emission
-	 * stays oldest-first across the whole depth. */
 	memset(&state,0,sizeof(state));
 	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,24u);
 	for (index=0u; index<20u; index++)

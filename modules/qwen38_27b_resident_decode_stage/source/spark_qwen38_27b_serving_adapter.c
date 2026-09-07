@@ -1,38 +1,3 @@
-/*
- * Qwen 3.6 27B serving adapter: the SparkModelServingAdapterInterface face of
- * the qwen38_27b_resident_decode_stage firmware driver.
- *
- * Two structural differences from the glm52/dsv4 adapters, both owned by the
- * module contract in spark_qwen38_27b_resident_decode_stage_firmware.h:
- *
- * - The module is configured through the strict process environment (the
- *   firmware description's runtime_contract lists every variable), not
- *   through a node context struct. The adapter derives the whole slice
- *   environment from its own configuration - stage pack path, PP13 stage
- *   geometry, runtime limits, and the KV pool size implied by the
- *   max_sequence_positions cap - and sets it before driver create. One
- *   resident process hosts one stage, so the process-wide setenv is the
- *   intended channel. SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION is set to 1:
- *   the published recipe this adapter loads is the qualified execution path.
- *
- * - The module's frame contract takes first-class hidden transport callbacks
- *   and a caller-owned paged KV block table with device and host mirrors.
- *   The adapter supplies both: a per-frame transport shim that lands the
- *   submission's hidden boundary in the module's expected contiguity (decode
- *   rows are already contiguous; a multi-lane prefill is round-major across
- *   lanes, so each lane frame's rows are gathered by explicit flat row index
- *   and the frame's output is scattered back the same way), and a block
- *   allocator over the module's KV pool with the host mirror the module
- *   proves coverage against before every launch.
- *
- * Prefill frames are one lane per frame capped at max_input_row_count
- * positions (R2b: the chunk width tracks the deployment's max_input_rows
- * runtime limit, NOT max_active_sequence_count - a B1 deployment would
- * otherwise re-stream every weight once per prompt token), so a multi-lane
- * or over-cap prefill submission is split into a sequence of frames inside
- * submit; execution is submit_return synchronous, and the single serving
- * completion fires after the final frame lands.
- */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -60,6 +25,7 @@ static double clock_gettime_mono_ns(void)
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_qwen38_27b_serving_adapter.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
+#include "sparkpipe/spark_speculation_seam.h"
 
 #ifndef QWEN38_27B_MODEL_REVISION
 #error "QWEN38_27B_MODEL_REVISION must name the exact source snapshot revision"
@@ -68,18 +34,9 @@ static double clock_gettime_mono_ns(void)
 #error "QWEN38_27B_CONTRACT_SHA256 must identify the exact package contract"
 #endif
 
-/* Serving topology build knob. SPARK_QWEN38_27B_SERVING_TP_DEGREE is the single
- * switch and may be overridden on the compile line (-D...=N):
- *   4 (default) = shipped TP4 whole-stack build (4 TP ranks; unchanged).
- *   1           = TP1 single-rank full-width build.
- *   0           = legacy PP layer-slice build (not shipped).
- * Every downstream constant derives from it; the TP4 default is byte-for-byte
- * the prior build. */
 #ifndef SPARK_QWEN38_27B_SERVING_TP_DEGREE
 #define SPARK_QWEN38_27B_SERVING_TP_DEGREE 4u
 #endif
-/* TP mode = single-stage whole stack: every rank runs module stage 1/1 and
- * owns both the embedding and the head; no hidden boundaries. */
 #define SPARK_QWEN38_27B_SERVING_TP (SPARK_QWEN38_27B_SERVING_TP_DEGREE >= 1u)
 #if SPARK_QWEN38_27B_SERVING_TP_DEGREE == 1u
 #define SPARK_QWEN38_27B_SERVING_ADAPTER_ID "spark.qwen38_27b.serving-adapter.tp1.v1"
@@ -97,10 +54,6 @@ static double clock_gettime_mono_ns(void)
 #define SPARK_QWEN38_27B_SERVING_TARGET \
 	"cuda.sm121.qwen38_27b.resident_decode_stage.bf16"
 #define SPARK_QWEN38_27B_SERVING_PROGRAM_NAME "resident_decode"
-/* The owner's KV-limit decision: serving caps context at 8192 positions
- * until the long-context KV plan lands, far under the module's 256K admit
- * ceiling. The KV pool is sized from this cap, so a conforming deployment
- * can never exhaust blocks. */
 #define SPARK_QWEN38_27B_SERVING_MAX_SEQUENCE_POSITIONS_CAP 262144u
 #define SPARK_QWEN38_27B_SERVING_REQUIRED_PROGRAM_FLAGS \
 	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
@@ -110,42 +63,34 @@ static double clock_gettime_mono_ns(void)
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
 
-/* MTP chain speculation: when SPARK_QWEN38_27B_SERVING_SPECULATE is set (and not
- * "0"), a decode submission runs the three-frame chain the firmware contract
- * describes - a per-lane decode frame that drafts (MTP_DRAFT_AFTER), a
- * per-lane verify prefill (SPECULATIVE_VERIFY), and a per-lane GDN-restore
- * replay prefill (GDN_RESTORE_FIRST). Disabled, the adapter is the previous
- * non-speculating path unchanged. */
 #define SPARK_QWEN38_27B_SERVING_SPECULATE_ENV "SPARK_QWEN38_27B_SERVING_SPECULATE"
 #define SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_ENV "SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT"
-/* Draft tokens requested per MTP_DRAFT_AFTER frame. The module caps this at
- * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS and sizes its draft
- * ids array by the same constant. The verify prefill costs one full-model row
- * walk per draft, so the profitable depth is a tunable: env-overridable via
- * SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT (1..8). */
-#define SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT \
-	SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS
+#define SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV "SPARK_QWEN38_27B_SPECULATORS"
+#define SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT 2u
+#define SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_TIME_BUDGET_MS 20u
+#define SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_DEPTH 16u
+#define SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_NODE_COUNT 64u
+#define SPARK_QWEN38_27B_SERVING_SEAM_CONNECT_TIMEOUT_MS 1000u
+#define SPARK_QWEN38_27B_SERVING_SEAM_IO_TIMEOUT_MS 30000u
+#define SPARK_QWEN38_27B_SERVING_AVAILABLE_SOURCES \
+	(SPARK_SPECULATION_SEAM_SOURCE_MTP | \
+	 SPARK_SPECULATION_SEAM_SOURCE_DSPARK | \
+	 SPARK_SPECULATION_SEAM_SOURCE_DFLASH2 | \
+	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM | \
+	 SPARK_SPECULATION_SEAM_SOURCE_SUFFIX | \
+	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM3)
+#define SPARK_QWEN38_27B_SERVING_LOCAL_METHOD_SOURCES \
+	(SPARK_SPECULATION_SEAM_SOURCE_MTP | \
+	 SPARK_SPECULATION_SEAM_SOURCE_DSPARK | \
+	 SPARK_SPECULATION_SEAM_SOURCE_DFLASH2)
+#define SPARK_QWEN38_27B_SERVING_REMOTE_METHOD_SOURCES \
+	(SPARK_SPECULATION_SEAM_SOURCE_NGRAM | \
+	 SPARK_SPECULATION_SEAM_SOURCE_SUFFIX | \
+	 SPARK_SPECULATION_SEAM_SOURCE_NGRAM3)
 
-static uint32_t SparkQwen38_27bServingSpeculativeDraftCount(void)
-{
-	const char *value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_ENV);
-	/* Measured optimum on TP4: D=2 (13.1 tok/s at B1) beats D=1/D=4/D=8 and
-	 * the non-spec baseline (12.1). */
-	uint32_t count = 2u;
-	if ( value != 0 )
-	{
-		uint32_t parsed = (uint32_t)strtoul(value,0,0);
-		if ( parsed >= 1u && parsed <= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS )
-			count = parsed;
-	}
-	return(count);
-}
-/* First-draft policy for the MTP chain. draft[0] predicts the just-committed
- * position, so it is redundant with the committed token C0 and is never fed to
- * the verify/replay frames (C0 is fed in its place). "recover" (default)
- * records a first-draft miss as telemetry and keeps speculating; "strict"
- * preserves the legacy behavior (a miss declares the chain dead and zeroes
- * speculation) for A/B comparison. */
+typedef struct SparkQwen38_27bServingState SparkQwen38_27bServingState;
+
+static uint32_t SparkQwen38_27bServingSpeculativeDraftCount(const SparkQwen38_27bServingState *state);
 #define SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_ENV "SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY"
 #define SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_RECOVER 0u
 #define SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT 1u
@@ -157,57 +102,20 @@ static uint32_t SparkQwen38_27bServingSpecFirstDraftPolicy(void)
 	return(SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_RECOVER);
 }
 
-/* Speculation method: "mtp" (default) drives the MTP chain; "dflash2" drives
- * the DFlash2 block-diffusion drafter (block 8 = C0 anchor + 7 mask tokens,
- * conv-wrapped 5-layer backbone, top-16 + candidate-selector walk). "dspark"
- * names the same driver path for the superseded DSpark drafter pack and fails
- * loudly at load time against a DFlash2 pack (the module geometry check
- * rejects 40-head/FFN-10240 weights). Both block drafters produce draft[0] as
- * the just-committed position (redundant with C0), so the verify/replay
- * phases are shared; only the phase-one draft view, flag, and draft buffer
- * differ. */
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_ENV "SPARK_QWEN38_27B_SERVING_SPEC_METHOD"
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_MTP 0u
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK 1u
 #define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2 2u
-static uint32_t SparkQwen38_27bServingSpecMethod(void)
-{
-	const char *value = getenv(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_ENV);
-	if ( value != 0 && strcmp(value,"dspark") == 0 )
-		return(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK);
-	if ( value != 0 && strcmp(value,"dflash2") == 0 )
-		return(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2);
-	return(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_MTP);
-}
+#define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_NONE 3u
+#define SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE 4u
 
-/* Draft depth for the active spec method: the block drafters always draft
- * their full block_size (verify window = C0 + block-1 drafts); MTP uses the
- * env-tunable depth. */
 static uint32_t SparkQwen38_27bServingBlockDraftMethod(uint32_t spec_method)
 {
 	return(spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK || spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2);
 }
-static uint32_t SparkQwen38_27bServingActiveDraftCount(uint32_t spec_method)
-{
-	if ( !SparkQwen38_27bServingBlockDraftMethod(spec_method) )
-		return(SparkQwen38_27bServingSpeculativeDraftCount());
-	/* The verify-depth cap (the DSV4 session's speed lever, unified 052d0e5):
-	 * the module still drafts the full block; the adapter verifies only the
-	 * first k, dropping the surplus. At measured acceptance the verify walk
-	 * dominates the round, so k tunes tokens-per-round-cost directly. */
-	{
-		uint32_t block = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
-		uint32_t cap = SparkQwen38_27bServingSpeculativeDraftCount();
-		return(cap < block ? cap : block);
-	}
-}
-/* GDN snapshot slots. The two-phase min-accept schedule keeps one verify
- * snapshot in flight per lane, capped by the module's slot ceiling; a lane
- * index is the snapshot slot it uses. */
+static uint32_t SparkQwen38_27bServingActiveDraftCount(const SparkQwen38_27bServingState *state,uint32_t spec_method);
 #define SPARK_QWEN38_27B_SERVING_GDN_SNAPSHOT_SLOTS \
 	SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS
-/* Committed tokens per lane: decode token + up to (D-1) accepted drafts +
- * correction + the replay frame's final emission. */
 #define SPARK_QWEN38_27B_SERVING_MAX_COMMITTED_TOKENS \
 	(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 2u)
 
@@ -219,8 +127,36 @@ static const char *const SparkQwen38_27bServingConfigurationMembers[] =
 	"max_sequence_positions"
 };
 
-/* Per-lane MTP speculation state, persisted across one submission's three
- * frames (decode-draft, verify, replay). */
+static const char *const SparkQwen38_27bServingConfigurationMembersDraft[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"speculative_draft_count"
+};
+
+static const char *const SparkQwen38_27bServingConfigurationMembersBridge[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"draft_bridge_host",
+	"draft_bridge_port"
+};
+
+static const char *const SparkQwen38_27bServingConfigurationMembersBridgeDraft[] =
+{
+	"schema_version",
+	"model_revision",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"draft_bridge_host",
+	"draft_bridge_port",
+	"speculative_draft_count"
+};
+
 typedef struct SparkQwen38_27bServingSpecState
 {
 	uint32_t resident_slot;
@@ -231,27 +167,23 @@ typedef struct SparkQwen38_27bServingSpecState
 	uint32_t accepted_count;
 	uint32_t chain_dead;
 	uint32_t first_draft_miss;
+	uint32_t engine_staged;
 	uint32_t draft_ids[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t emitted_ids[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t committed_ids[SPARK_QWEN38_27B_SERVING_MAX_COMMITTED_TOKENS];
 } SparkQwen38_27bServingSpecState;
 
-/* Completion model_extension payload: speculation-reason telemetry so the
- * resident receipt records WHY a first-draft miss happened (and which policy
- * was in effect), not only the accepted-token count. */
-#define SPARK_QWEN38_27B_SERVING_EXTENSION_KIND 0x5136u /* "Q6" */
+#define SPARK_QWEN38_27B_SERVING_EXTENSION_KIND 0x5136u
 typedef struct SparkQwen38_27bServingSpecTelemetry
 {
-	uint32_t first_draft_miss_count;   /* lanes where draft[0] != committed C0 */
-	uint32_t first_draft_policy;       /* RECOVER or STRICT (see above) */
+	uint32_t first_draft_miss_count;
+	uint32_t first_draft_policy;
 } SparkQwen38_27bServingSpecTelemetry;
 
 typedef struct SparkQwen38_27bServingPending
 {
 	struct SparkQwen38_27bServingState *owner;
-	/* The shared submission view (the serving-adapter template fills it). */
 	SparkServingAdapterPendingCommon common;
-	/* The frame currently inside the driver; completion matches against it. */
 	uint64_t frame_sequence_id;
 	uint64_t frame_sequence_position;
 	SparkStatus frame_status;
@@ -277,13 +209,6 @@ typedef struct SparkQwen38_27bServingPending
 	uint32_t spec_fold;
 } SparkQwen38_27bServingPending;
 
-/* Per-frame transport shim state. The module calls post_receive/send through
- * the frame context; the shim moves the submission boundary into the frame's
- * expected contiguity. Decode rows are contiguous. Prefill frames are one
- * lane each while the submission boundary is round-major across lanes, so a
- * lane's rows sit at irregular flat offsets whenever lane lengths differ;
- * the row maps give each frame row's flat index in the submission buffer
- * (NULL means the frame rows are contiguous from the base). */
 typedef struct SparkQwen38_27bServingTransportShim
 {
 	const void *input_base;
@@ -319,20 +244,20 @@ typedef struct SparkQwen38_27bServingState
 	uint32_t kv_block_count;
 	uint32_t quiescing;
 	uint32_t spec_method;
+	uint32_t speculation_enabled;
+	uint32_t speculative_draft_count;
+	SparkSpeculationSeam *speculation_seam;
+	char *bridge_host;
+	uint32_t bridge_port;
 	uint64_t orphan_completion_count;
 	SparkModelServingRuntimeLimits runtime_limits;
 	SparkQwen38_27bKvBlockTableView block_table;
-	/* Memory-M1 typed handles: every allocation names its space. */
-	SparkMemoryBuffer host_block_indices;   /* HOST_COHERENT mirror */
-	SparkMemoryBuffer device_block_indices; /* DEVICE_PRIVATE twin */
-	SparkMemoryBuffer device_block_counts;  /* DEVICE_PRIVATE twin */
-	SparkMemoryBuffer free_blocks;          /* HOST_COHERENT free list */
-	SparkMemoryBuffer block_refs;           /* HOST_COHERENT refcounts */
+	SparkMemoryBuffer host_block_indices;
+	SparkMemoryBuffer device_block_indices;
+	SparkMemoryBuffer device_block_counts;
+	SparkMemoryBuffer free_blocks;
+	SparkMemoryBuffer block_refs;
 	uint32_t free_block_count;
-	/* ---- prefix cache (KV reuse across sequences; the client protocol) ----
-	 * Per-block refcounts (entries share blocks when one prefix extends
-	 * another); identity-keyed entries own refs on their blocks + one
-	 * persistent GDN snapshot slot each. */
 	uint32_t lane_prefix_entry[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t lane_prefix_blocks[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint8_t lane_publish_identity[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT][32];
@@ -352,34 +277,36 @@ typedef struct SparkQwen38_27bServingState
 	uint64_t prefix_epoch;
 	uint32_t lane_block_counts[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_context_tokens[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	SparkMemoryBuffer gather_scratch; /* DEVICE_PRIVATE gather scratch */
+	SparkMemoryBuffer gather_scratch;
+	SparkMemoryBuffer committed_token_history;
+	uint64_t lane_committed_counts[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkQwen38_27bServingTransportShim shim;
-	/* DFlash2 draft source: 0 until the first draft runs; the verify frame
-	 * thereafter re-drafts at its tail (state-consistent taps), so the
-	 * decode frame stops drafting after the first iteration. Keyed by the
-	 * active sequence: a new sequence restarts at the decode frame. */
 	uint32_t dflash2_drafts_valid;
 	uint64_t dflash2_draft_sequence_id;
-	/* Drafts must outlive the submission: the replay-tail drafter writes
-	 * here, and the NEXT submission's remap consumes them (the pending
-	 * struct dies at the submission boundary). */
 	uint32_t dflash2_next_draft_ids[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
-	/* Bonus fold (the vLLM round shape): when the correction frame ran the
-	 * drafter at its tail, the NEXT decode submission skips its decode walk -
-	 * the verify's row 0 walks the client token (the correction's emission)
-	 * directly, cutting the round from three full-model frames to two. Armed
-	 * only for the matching sequence AND position, so any desync (plain
-	 * decode, prefill, dead chain) self-heals into the bootstrap path. */
 	uint32_t dflash2_fold_armed;
 	uint64_t dflash2_fold_position;
 	uint64_t dflash2_fold_sequence_id;
-	/* one-frame chain: the verify row-0 restore slot (the previous round's
-	 * accept depth; -1 = walk from live state) and the multi-block draft
-	 * matrix (block i = verify row i's block; the host picks block m). */
 	int32_t dflash2_fold_restore_slot;
 	uint32_t dflash2_draft_matrix[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS * (SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u)];
 	SparkQwen38_27bServingPending pending[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkQwen38_27bServingState;
+
+static uint32_t SparkQwen38_27bServingSpeculativeDraftCount(const SparkQwen38_27bServingState *state)
+{
+	return(state->speculative_draft_count);
+}
+
+static uint32_t SparkQwen38_27bServingActiveDraftCount(const SparkQwen38_27bServingState *state,uint32_t spec_method)
+{
+	if ( !SparkQwen38_27bServingBlockDraftMethod(spec_method) )
+		return(SparkQwen38_27bServingSpeculativeDraftCount(state));
+	{
+		uint32_t block = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+		uint32_t cap = SparkQwen38_27bServingSpeculativeDraftCount(state);
+		return(cap < block ? cap : block);
+	}
+}
 
 static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor =
 {
@@ -415,6 +342,12 @@ static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor
 	.minimum_efficient_submission_row_count = 0u
 };
 
+#define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkQwen38_27b##name
+#define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkQwen38_27b##name
+#define SPARK_QWEN38_SERVING_ADAPTER_CONST(name) SPARK_QWEN38_27B_##name
+
+#include "sparkpipe/spark_qwen38_serving_adapter_common.h"
+
 static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 	const char *path,
 	const char *runtime_root,
@@ -423,6 +356,7 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 {
 	SparkJsonDocument document;
 	int32_t root,token;
+	int32_t bridge_host_token,bridge_port_token,draft_count_token;
 	uint32_t schema_version;
 	char *relative_stage_pack_path;
 	SparkStatus status;
@@ -432,8 +366,45 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	bridge_host_token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_host") : -1;
+	bridge_port_token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"draft_bridge_port") : -1;
+	draft_count_token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"speculative_draft_count") : -1;
+	if ( status == SPARK_STATUS_OK && (bridge_host_token < 0) != (bridge_port_token < 0) )
+	{
+		fprintf(stderr,"qwen38_27b_serving draft_bridge_host and draft_bridge_port must both be present or both absent\n");
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,SparkQwen38_27bServingConfigurationMembers,(uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembers) / sizeof(SparkQwen38_27bServingConfigurationMembers[0])));
+	{
+		const char *const *members = SparkQwen38_27bServingConfigurationMembers;
+		uint32_t member_count = (uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembers) / sizeof(SparkQwen38_27bServingConfigurationMembers[0]));
+		if ( bridge_host_token >= 0 && draft_count_token >= 0 )
+		{
+			members = SparkQwen38_27bServingConfigurationMembersBridgeDraft;
+			member_count = (uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembersBridgeDraft) / sizeof(SparkQwen38_27bServingConfigurationMembersBridgeDraft[0]));
+		}
+		else if ( bridge_host_token >= 0 )
+		{
+			members = SparkQwen38_27bServingConfigurationMembersBridge;
+			member_count = (uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembersBridge) / sizeof(SparkQwen38_27bServingConfigurationMembersBridge[0]));
+		}
+		else if ( draft_count_token >= 0 )
+		{
+			members = SparkQwen38_27bServingConfigurationMembersDraft;
+			member_count = (uint32_t)(sizeof(SparkQwen38_27bServingConfigurationMembersDraft) / sizeof(SparkQwen38_27bServingConfigurationMembersDraft[0]));
+		}
+		status = SparkJsonValidateObjectMembersExact(&document,root,members,member_count);
+	}
+	state->speculative_draft_count = SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT;
+	if ( status == SPARK_STATUS_OK && draft_count_token >= 0 )
+	{
+		status = SparkJsonGetUInt32(&document,draft_count_token,&state->speculative_draft_count);
+		if ( status == SPARK_STATUS_OK && ( state->speculative_draft_count == 0u || state->speculative_draft_count > SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS ) )
+		{
+			fprintf(stderr,"qwen38_27b_serving speculative_draft_count must be 1..%u\n",(unsigned)SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS);
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		}
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_QWEN38_27B_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
@@ -446,6 +417,12 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
+	if ( status == SPARK_STATUS_OK && bridge_host_token >= 0 )
+	{
+		status = SparkJsonCopyString(&document,bridge_host_token,&state->bridge_host);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkJsonGetUInt32(&document,bridge_port_token,&state->bridge_port);
+	}
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
@@ -466,22 +443,133 @@ static uint32_t SparkQwen38_27bServingFirstLayer(uint32_t stage_index)
 	return(first_layer);
 }
 
-static uint32_t SparkQwen38_27bServingStageAttentionLayers(uint32_t first_layer, uint32_t layer_count)
-{
-	uint32_t layer,count;
-	count = 0u;
-	for (layer=first_layer; layer<first_layer+layer_count; layer++)
-		count += SPARK_QWEN38_27B_MODEL_LAYER_IS_GDN(layer) == 0u ? 1u : 0u;
-	return(count);
-}
-
 static uint32_t SparkQwen38_27bServingOwnsFinalHead(const SparkQwen38_27bServingState *state);
 
-static uint32_t SparkQwen38_27bServingSpeculationEnabled(void)
+static SparkStatus SparkQwen38_27bServingRejectRetiredSpeculationEnvironment(void)
 {
-	const char *value;
-	value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATE_ENV);
-	return(value != 0 && value[0] != '\0' && strcmp(value,"0") != 0 ? 1u : 0u);
+	if ( getenv(SPARK_QWEN38_27B_SERVING_SPECULATE_ENV) != 0 )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s is retired: use %s (speculation source mask) instead\n",SPARK_QWEN38_27B_SERVING_SPECULATE_ENV,SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( getenv(SPARK_QWEN38_27B_SERVING_SPEC_METHOD_ENV) != 0 )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s is retired: use %s (speculation source mask) instead\n",SPARK_QWEN38_27B_SERVING_SPEC_METHOD_ENV,SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( getenv(SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_ENV) != 0 )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s is retired: use %s (speculation source mask) instead\n",SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_ENV,SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen38_27bServingResolveSpeculationMethods(
+	uint32_t enabled_sources,
+	uint32_t *spec_method_out,
+	uint32_t *speculation_enabled_out)
+{
+	uint32_t local_sources;
+	local_sources = enabled_sources & SPARK_QWEN38_27B_SERVING_LOCAL_METHOD_SOURCES;
+	if ( (enabled_sources & SPARK_QWEN38_27B_SERVING_REMOTE_METHOD_SOURCES) != 0u && local_sources != 0u )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s=0x%x selects remote sources together with a local method: not supported\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,enabled_sources);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( (enabled_sources & SPARK_QWEN38_27B_SERVING_REMOTE_METHOD_SOURCES) != 0u )
+	{
+		*spec_method_out = SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE;
+		*speculation_enabled_out = 1u;
+		return(SPARK_STATUS_OK);
+	}
+	if ( local_sources != 0u && (local_sources & (local_sources - 1u)) != 0u )
+	{
+		fprintf(stderr,"qwen38_27b_serving %s=0x%x selects more than one local speculation method\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,enabled_sources);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	*spec_method_out = (local_sources & SPARK_SPECULATION_SEAM_SOURCE_DSPARK) != 0u ? SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DSPARK :
+		(local_sources & SPARK_SPECULATION_SEAM_SOURCE_DFLASH2) != 0u ? SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2 :
+		(local_sources & SPARK_SPECULATION_SEAM_SOURCE_MTP) != 0u ? SPARK_QWEN38_27B_SERVING_SPEC_METHOD_MTP :
+		SPARK_QWEN38_27B_SERVING_SPEC_METHOD_NONE;
+	*speculation_enabled_out = local_sources != 0u ? 1u : 0u;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
+	SparkQwen38_27bServingState *state)
+{
+	SparkSpeculationSeamConfiguration seam_configuration;
+	const char *control_value;
+	uint32_t available_sources;
+	uint32_t enabled_sources;
+	SparkStatus status;
+	status = SparkQwen38_27bServingRejectRetiredSpeculationEnvironment();
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	available_sources = SPARK_QWEN38_27B_SERVING_AVAILABLE_SOURCES;
+	if ( state->bridge_host == 0 )
+		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
+	control_value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
+	if ( control_value == 0 || (control_value[0] == '1' && control_value[1] == '\0') )
+		enabled_sources = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
+	else
+	{
+		status = SparkSpeculationSeamParseControl(control_value,available_sources,&enabled_sources);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"qwen38_27b_serving %s control value rejected: status=%d available=0x%x\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,(int)status,available_sources);
+			return(status);
+		}
+	}
+	status = SparkQwen38_27bServingResolveSpeculationMethods(enabled_sources,&state->spec_method,&state->speculation_enabled);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( state->spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE && state->speculative_draft_count > SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u )
+	{
+		fprintf(stderr,"qwen38_27b_serving remote drafting needs one verify row for the committed bonus: speculative_draft_count must be <= %u\n",(unsigned)(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u));
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	memset(&seam_configuration,0,sizeof(seam_configuration));
+	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
+	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
+	seam_configuration.available_source_mask = available_sources;
+	seam_configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
+	seam_configuration.default_speculative_token_count = state->speculative_draft_count;
+	seam_configuration.lane_count = state->max_active_sequence_count;
+	seam_configuration.max_committed_token_count = state->max_sequence_positions;
+	seam_configuration.max_tap_row_count = 0u;
+	seam_configuration.draft_time_budget_ms = SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_TIME_BUDGET_MS;
+	seam_configuration.draft_max_depth = SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_DEPTH;
+	seam_configuration.draft_max_node_count = SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_NODE_COUNT;
+	seam_configuration.connect_timeout_ms = SPARK_QWEN38_27B_SERVING_SEAM_CONNECT_TIMEOUT_MS;
+	seam_configuration.io_timeout_ms = SPARK_QWEN38_27B_SERVING_SEAM_IO_TIMEOUT_MS;
+	seam_configuration.control_value = control_value;
+	seam_configuration.bridge_host = state->bridge_host;
+	seam_configuration.bridge_port = state->bridge_port;
+	memcpy(seam_configuration.target_model,SPARK_QWEN38_27B_SERVING_MODEL_ID,sizeof(SPARK_QWEN38_27B_SERVING_MODEL_ID));
+	seam_configuration.model_contract.abi_version = SPARK_SPECULATION_ABI_VERSION;
+	seam_configuration.model_contract.descriptor_bytes = SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+	seam_configuration.model_contract.verifier_hidden_dtype = SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
+	seam_configuration.model_contract.draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
+	seam_configuration.model_contract.draft_layer_count = SPARK_QWEN38_27B_MODEL_MTP_LAYER_COUNT;
+	seam_configuration.model_contract.block_size = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE;
+	seam_configuration.model_contract.hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
+	seam_configuration.model_contract.intermediate_dimension = SPARK_QWEN38_27B_MODEL_FFN_INTERMEDIATE_DIMENSION;
+	seam_configuration.model_contract.attention_head_count = SPARK_QWEN38_27B_MODEL_ATTENTION_HEAD_COUNT;
+	seam_configuration.model_contract.kv_head_count = SPARK_QWEN38_27B_MODEL_KV_HEAD_COUNT;
+	seam_configuration.model_contract.head_dimension = SPARK_QWEN38_27B_MODEL_HEAD_DIMENSION;
+	seam_configuration.model_contract.vocab_size = SPARK_QWEN38_27B_MODEL_VOCAB_COUNT;
+	seam_configuration.model_contract.draft_vocab_size = SPARK_QWEN38_27B_MODEL_VOCAB_COUNT;
+	seam_configuration.model_contract.maximum_speculative_token_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS;
+	seam_configuration.model_contract.verifier_accept_k = 1u;
+	status = SparkSpeculationSeamInitialize(&seam_configuration,&state->speculation_seam);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"qwen38_27b_serving speculation seam init failed: status=%d\n",(int)status);
+		return(status);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bServingSetEnvironment(
@@ -511,13 +599,10 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_MAX_INPUT_ROWS",state->max_input_row_count);
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_PIPELINE_SLOTS",state->pipeline_slot_count);
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_KV_BLOCKS",state->kv_block_count);
-	if ( SparkQwen38_27bServingSpeculationEnabled() != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u )
+	if ( state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u )
 	{
-		/* The GDN snapshot is used by BOTH the MTP verify and the block-drafter
-		 * verify/replay; only the MTP module itself is suppressed for the
-		 * dspark/dflash2 methods. */
-		SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS",SparkQwen38_27bServingBlockDraftMethod(SparkQwen38_27bServingSpecMethod()) ? 16u : SPARK_QWEN38_27B_SERVING_GDN_SNAPSHOT_SLOTS);
-		if ( !SparkQwen38_27bServingBlockDraftMethod(SparkQwen38_27bServingSpecMethod()) )
+		SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS",SparkQwen38_27bServingBlockDraftMethod(state->spec_method) ? 16u : SPARK_QWEN38_27B_SERVING_GDN_SNAPSHOT_SLOTS);
+		if ( state->spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_MTP )
 			SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_MTP","1");
 		else
 			SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_MTP","0");
@@ -527,10 +612,7 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 		SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_MTP","0");
 		SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_GDN_SNAPSHOT_SLOTS","0");
 	}
-	/* Fail loudly, never draft silently: a block-drafter method without a
-	 * drafter pack initializes an unarmed module whose draft forward is a
-	 * no-op (vLLM's V1 trap, mirrored). */
-	if ( SparkQwen38_27bServingSpeculationEnabled() != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && SparkQwen38_27bServingBlockDraftMethod(SparkQwen38_27bServingSpecMethod()) != 0u )
+	if ( state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && SparkQwen38_27bServingBlockDraftMethod(state->spec_method) != 0u )
 	{
 		const char *drafter_pack = getenv("SPARK_QWEN38_27B_DSPARK_PACK_PATH");
 		if ( drafter_pack == 0 || drafter_pack[0] == '\0' )
@@ -549,10 +631,6 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 	return(SPARK_STATUS_OK);
 }
 
-/* Wave-major row order, lane bounds, the positions cap, and distinct
- * resident slots. Identical discipline to the glm52 adapter plus the slot
- * uniqueness the qwen38_27b paged KV table requires: two submission lanes
- * aliasing one resident slot would silently share a KV and GDN state. */
 static SparkStatus SparkQwen38_27bServingRowOrderReject(
 	const SparkModelServingSubmission *submission,
 	const char *reason)
@@ -606,9 +684,6 @@ static SparkStatus SparkQwen38_27bServingValidateRowOrder(
 	return(row == submission->row_count ? SPARK_STATUS_OK : SparkQwen38_27bServingRowOrderReject(submission,"row_count_mismatch"));
 }
 
-/* TP stage-position helpers (degree >= 1): every rank owns the embedding and
- * the head and no rank sends or receives hidden boundaries. The legacy PP
- * build (degree 0) keeps the original stage-slice derivations. */
 static uint32_t SparkQwen38_27bServingOwnsEmbedding(const SparkQwen38_27bServingState *state)
 {
 	(void)state;
@@ -639,10 +714,6 @@ static uint32_t SparkQwen38_27bServingNeedsHiddenOutput(const SparkQwen38_27bSer
 #endif
 }
 
-/* Hidden boundary pointers exist only after the resident commits a route:
- * the wire submission validate_submission sees always has them absent (the
- * serving header documents this), so this check is meaningful only from
- * submit, never from validate_submission. */
 static SparkStatus SparkQwen38_27bServingValidateBoundaries(
 	const SparkQwen38_27bServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -664,7 +735,6 @@ static SparkStatus SparkQwen38_27bServingValidateSubmissionBase(
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(&SparkQwen38_27bServingDescriptor,&state->runtime_limits,submission);
-	/* R5 hoist: the adapter validated (descriptor, limits) at configure; per-submission checks unchanged. */
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"qwen38_27b_debug validate_runtime status=%d kind=%u rows=%u lanes=%u act=%u tps=%u new_tokens=%u pos=%llu ctx=%llu\\n",(int)status,submission->work_kind,submission->row_count,submission->lane_count,submission->active_sequence_count,submission->tokens_per_sequence,submission->new_token_count,(unsigned long long)submission->sequence_position,(unsigned long long)(submission->active_sequence_count > 0u ? submission->lanes[0].context_token_count : 0u));
@@ -699,92 +769,37 @@ static SparkStatus SparkQwen38_27bServingValidateSubmission(
 	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
 }
 
-static SparkQwen38_27bServingPending *SparkQwen38_27bServingReservePending(
-	SparkQwen38_27bServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	SparkQwen38_27bServingPending *pending;
-	uint32_t lane;
-	pending = (SparkQwen38_27bServingPending *)
-		SparkServingAdapterTemplateReservePending(state->pending,
-			sizeof(*pending),
-			(uint32_t)offsetof(SparkQwen38_27bServingPending,common),
-			state->pipeline_slot_count,
-			(uint32_t)offsetof(SparkQwen38_27bServingPending,last_row_by_lane),
-			submission);
-	if ( pending == 0 )
-		return(0);
-	pending->owner = state;
-	pending->common.active = 1u;
-	pending->frame_status = SPARK_STATUS_OK;
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		pending->resident_slots[lane] = submission->lanes[lane].resident_sequence_slot;
-	return(pending);
-}
-
-static void SparkQwen38_27bServingOrphanDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkQwen38_27bServingState *state;
-	(void)driver_completion;
-	state = (SparkQwen38_27bServingState *)completion_context;
-	if ( state != 0 )
-		state->orphan_completion_count++;
-}
-
-static void SparkQwen38_27bServingDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkQwen38_27bServingPending *pending;
-	SparkQwen38_27bServingState *state;
-	uint32_t matches;
-	pending = (SparkQwen38_27bServingPending *)completion_context;
-	state = pending != 0 ? pending->owner : 0;
-	if ( state == 0 || pending->common.active == 0u || driver_completion == 0 )
-		return;
-	matches = driver_completion->request_id == pending->common.request_id && driver_completion->sequence_id == pending->frame_sequence_id && driver_completion->sequence_position == pending->frame_sequence_position && driver_completion->program_id == state->program->program_id;
-	if ( matches == 0u )
-	{
-		state->orphan_completion_count++;
-		pending->frame_status = SPARK_STATUS_SCHEMA_ERROR;
-		return;
-	}
-	pending->frame_status = (SparkStatus)driver_completion->status;
-	pending->residency = driver_completion->residency;
-	pending->accepted_token_count += driver_completion->accepted_token_count;
-	pending->queue_delay_ns += driver_completion->queue_delay_ns;
-	pending->service_time_ns += driver_completion->service_time_ns;
-}
-
-static void SparkQwen38_27bServingDriverWake(void *wake_context)
-{
-	SparkQwen38_27bServingState *state;
-	state = (SparkQwen38_27bServingState *)wake_context;
-	if ( state != 0 && state->wake_function != 0 )
-		state->wake_function(state->wake_context);
-}
-
-static uint32_t SparkQwen38_27bServingAvailableSubmissionCount(
-	const SparkQwen38_27bServingState *state)
-{
-	uint32_t available,index;
-	available = 0u;
-	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += state->pending[index].common.active == 0u ? 1u : 0u;
-	return(available);
-}
-
-/* Lane block bookkeeping. A lane whose frame range starts at position zero
- * is a (re)start: its old blocks return to the free stack before the new
- * coverage is allocated. On any failure the lane is dropped back to cold so
- * the next touch is a position-zero reset, matching the module's own
- * continuity invalidation. */
 static void SparkQwen38_27bServingBlockRelease(SparkQwen38_27bServingState *state, uint32_t block)
 {
 	if ( state->block_refs.pointer != 0 && --((uint16_t *)state->block_refs.pointer)[block] == 0u )
 		((uint32_t *)state->free_blocks.pointer)[state->free_block_count++] = block;
+}
+
+static void SparkQwen38_27bServingRecordCommittedToken(
+	SparkQwen38_27bServingState *state,
+	uint32_t slot,
+	uint64_t position,
+	uint32_t token_id)
+{
+	uint32_t *history;
+	if ( slot >= state->resident_sequence_capacity || position >= state->max_sequence_positions )
+	{
+		fprintf(stderr,"qwen38_27b_committed_history overflow slot=%u position=%llu capacity=%u\n",slot,(unsigned long long)position,state->max_sequence_positions);
+		return;
+	}
+	history = (uint32_t *)state->committed_token_history.pointer + (uint64_t)slot * state->max_sequence_positions;
+	history[position] = token_id;
+	if ( position == state->lane_committed_counts[slot] )
+		state->lane_committed_counts[slot] = position + 1u;
+}
+
+static void SparkQwen38_27bServingRecordSubmissionTokens(
+	SparkQwen38_27bServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t row;
+	for (row=0u; row<submission->row_count; row++)
+		SparkQwen38_27bServingRecordCommittedToken(state,submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot,submission->row_positions[row],submission->token_ids[row]);
 }
 
 static void SparkQwen38_27bServingReleaseLane(
@@ -796,14 +811,13 @@ static void SparkQwen38_27bServingReleaseLane(
 		SparkQwen38_27bServingBlockRelease(state,((uint32_t *)state->host_block_indices.pointer)[((uint64_t)slot * state->blocks_per_lane) + ordinal]);
 	if ( state->lane_prefix_entry[slot] != 0xFFu )
 	{
-		/* the borrowed prefix blocks carried their own refs: the lane's
-		 * per-block release above already dropped them */
 		state->prefix_entries[state->lane_prefix_entry[slot]].refs--;
 		state->lane_prefix_entry[slot] = 0xFFu;
 	}
 	state->lane_prefix_blocks[slot] = 0u;
 	state->lane_block_counts[slot] = 0u;
 	state->lane_context_tokens[slot] = 0u;
+	state->lane_committed_counts[slot] = 0u;
 	state->lane_publish_armed[slot] = 0u;
 	state->lane_restore_armed[slot] = 0u;
 }
@@ -819,9 +833,6 @@ static SparkStatus SparkQwen38_27bServingCoverLane(
 	required = (uint32_t)((end_position + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 	if ( required > state->blocks_per_lane )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	/* Commit each block as it is popped: on mid-loop capacity exhaustion
-	 * the lane count already covers every popped block, so the rollback
-	 * (ReleaseLane) can return them instead of leaking them. */
 	for (ordinal=state->lane_block_counts[slot]; ordinal<required; ordinal++)
 	{
 		if ( state->free_block_count == 0u )
@@ -835,7 +846,6 @@ static SparkStatus SparkQwen38_27bServingCoverLane(
 	return(SPARK_STATUS_OK);
 }
 
-/* ---- prefix store ops ---- */
 static uint32_t SparkQwen38_27bServingPrefixFind(SparkQwen38_27bServingState *state, const uint8_t *identity, uint32_t token_count)
 {
 	uint32_t index;
@@ -850,12 +860,9 @@ static SparkStatus SparkQwen38_27bServingPrefixPublish(SparkQwen38_27bServingSta
 {
 	uint32_t index,blocks,ordinal,free_index;
 	uint64_t used;
-	/* create/refresh the entry for this lane's armed publish: the entry
-	 * takes a ref on every prefix block (shared with the lane + any
-	 * borrowing lanes), and owns GDN pool slot = entry index */
 	blocks = (state->lane_publish_tokens[slot] + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	if ( blocks == 0u || blocks > 64u || blocks > state->lane_block_counts[slot] )
-		return(SPARK_STATUS_OK); /* nothing to pin (degenerate) */
+		return(SPARK_STATUS_OK);
 	index = SparkQwen38_27bServingPrefixFind(state,state->lane_publish_identity[slot],state->lane_publish_tokens[slot]);
 	if ( index == 0xFFu )
 	{
@@ -876,7 +883,7 @@ static SparkStatus SparkQwen38_27bServingPrefixPublish(SparkQwen38_27bServingSta
 		}
 		index = free_index;
 		if ( index == 0xFFu )
-			return(SPARK_STATUS_OK); /* pool exhausted: skip this publish */
+			return(SPARK_STATUS_OK);
 		if ( state->prefix_entries[index].valid != 0u )
 		{
 			for (ordinal=0u; ordinal<state->prefix_entries[index].block_count; ordinal++)
@@ -890,15 +897,11 @@ static SparkStatus SparkQwen38_27bServingPrefixPublish(SparkQwen38_27bServingSta
 		for (ordinal=0u; ordinal<blocks; ordinal++)
 			state->prefix_entries[index].blocks[ordinal] = ((uint32_t *)state->host_block_indices.pointer)[((uint64_t)slot * state->blocks_per_lane) + ordinal];
 		state->prefix_entries[index].refs = 0u;
-		/* the entry's own pin on each block (taken once, at creation) */
 		for (ordinal=0u; ordinal<blocks; ordinal++)
 			if ( state->block_refs.pointer != 0 )
 				((uint16_t *)state->block_refs.pointer)[state->prefix_entries[index].blocks[ordinal]]++;
 	}
 	state->prefix_entries[index].last_used = ++state->prefix_epoch;
-	/* the publishing lane carries exactly ONE entry borrow: swap it off the
-	 * previous chain entry so re-publishes (each longer boundary) do not
-	 * leak refs and exhaust the 8-slot pool */
 	if ( state->lane_prefix_entry[slot] != index )
 	{
 		uint32_t previous = state->lane_prefix_entry[slot];
@@ -921,8 +924,6 @@ static SparkStatus SparkQwen38_27bServingPrefixBorrow(SparkQwen38_27bServingStat
 	blocks = state->prefix_entries[index].block_count;
 	if ( blocks > state->blocks_per_lane )
 		return(SPARK_STATUS_NOT_FOUND);
-	/* seed the lane's block table with the entry's pinned blocks (a ref
-	 * each) so CoverLane extends from the prefix edge */
 	for (ordinal=0u; ordinal<blocks; ordinal++)
 	{
 		uint32_t block = state->prefix_entries[index].blocks[ordinal];
@@ -936,19 +937,10 @@ static SparkStatus SparkQwen38_27bServingPrefixBorrow(SparkQwen38_27bServingStat
 	state->lane_prefix_blocks[slot] = blocks;
 	state->prefix_entries[index].refs++;
 	state->prefix_entries[index].last_used = ++state->prefix_epoch;
-	state->lane_restore_slot[slot] = index; /* GDN pool slot = entry index */
+	state->lane_restore_slot[slot] = index;
 	state->lane_restore_armed[slot] = 1u;
 	fprintf(stderr,"qwen38_27b_prefix borrow slot=%u entry=%u tokens=%u blocks=%u\n",slot,index,token_count,blocks);
 	return(SPARK_STATUS_OK);
-}
-
-static void SparkQwen38_27bServingDropSubmission(
-	SparkQwen38_27bServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	uint32_t lane;
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		SparkQwen38_27bServingReleaseLane(state,submission->lanes[lane].resident_sequence_slot);
 }
 
 static SparkStatus SparkQwen38_27bServingCoverSubmission(
@@ -962,15 +954,11 @@ static SparkStatus SparkQwen38_27bServingCoverSubmission(
 		uint32_t slot;
 		uint64_t first_position,end_position;
 		slot = submission->lanes[lane].resident_sequence_slot;
-		/* ---- prefix-cache lane glue (the client protocol) ---- */
 		if ( (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u && state->lane_restore_armed[slot] == 0u )
 		{
 			SparkStatus borrow = SparkQwen38_27bServingPrefixBorrow(state,slot,submission->lanes[lane].cache_prefix_identity.sha256,submission->lanes[lane].cache_prefix_token_count);
 			if ( borrow != SPARK_STATUS_OK )
 			{
-				/* cache miss on the adapter side: fall through to a cold
-				 * prefill (the client believes the prefix is cached; the
-				 * safe degradation is to recompute - correct, slower) */
 				fprintf(stderr,"qwen38_27b_prefix miss slot=%u tokens=%u - recomputing\n",slot,submission->lanes[lane].cache_prefix_token_count);
 				state->lane_restore_armed[slot] = 0u;
 			}
@@ -997,8 +985,6 @@ static SparkStatus SparkQwen38_27bServingCoverSubmission(
 		status = SparkQwen38_27bServingCoverLane(state,slot,end_position);
 		if ( status != SPARK_STATUS_OK )
 		{
-			/* Coverage failure is KV exhaustion: drop every lane the
-			 * submission touches so a partial allocation cannot linger. */
 			SparkQwen38_27bServingDropSubmission(state,submission);
 			return(status);
 		}
@@ -1018,16 +1004,25 @@ static void SparkQwen38_27bServingCommitSubmission(
 		slot = submission->lanes[lane].resident_sequence_slot;
 		if ( pending->spec_active != 0u )
 		{
-			uint32_t last_row;
+			uint32_t last_row,step;
 			last_row = pending->last_row_by_lane[lane];
 			if ( submission->row_positions[last_row] + pending->spec_tokens_per_sequence > state->lane_context_tokens[slot] )
 				state->lane_context_tokens[slot] = submission->row_positions[last_row] + pending->spec_tokens_per_sequence;
+			for (step=0u; step<pending->spec_tokens_per_sequence; step++)
+				SparkQwen38_27bServingRecordCommittedToken(state,slot,submission->row_positions[last_row] + 1u + step,pending->spec[lane].committed_ids[step]);
 		}
 		else
 		{
+			uint64_t end_position;
+			end_position = 0u;
 			for (row=0u; row<submission->row_count; row++)
 				if ( submission->row_lane_indices[row] == lane && submission->row_positions[row] + 1u > state->lane_context_tokens[slot] )
 					state->lane_context_tokens[slot] = submission->row_positions[row] + 1u;
+			for (row=0u; row<submission->row_count; row++)
+				if ( submission->row_lane_indices[row] == lane && submission->row_positions[row] + 1u > end_position )
+					end_position = submission->row_positions[row] + 1u;
+			if ( SparkQwen38_27bServingOwnsFinalHead(state) != 0u && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u )
+				SparkQwen38_27bServingRecordCommittedToken(state,slot,end_position,pending->output_token_ids[lane]);
 		}
 	}
 }
@@ -1046,11 +1041,8 @@ static SparkStatus SparkQwen38_27bServingUploadBlockTable(
 	counts_bytes = (uint64_t)state->max_active_sequence_count * sizeof(uint32_t);
 	host_indices = SPARK_MEMORY_BUFFER_VIEW(state->host_block_indices.pointer,
 		SPARK_MEMORY_SPACE_HOST_COHERENT,indices_bytes);
-	/* A copy-source view of const state memory: the copy only reads it. */
 	host_counts = SPARK_MEMORY_BUFFER_VIEW((uint32_t *)state->lane_block_counts,
 		SPARK_MEMORY_SPACE_HOST_COHERENT,counts_bytes);
-	/* Space-aware copies: the tags resolve host-to-device; the pasted
-	 * open-coded cudaMemcpy pairs are unexpressible now. */
 	destination = state->device_block_indices;
 	status = SparkMemoryBufferCopy(&destination,&host_indices,indices_bytes,0);
 	if ( status == SPARK_STATUS_OK )
@@ -1061,11 +1053,6 @@ static SparkStatus SparkQwen38_27bServingUploadBlockTable(
 	return(status);
 }
 
-/* Extend KV coverage for the speculation chain: the MTP draft rows land at
- * [base_position, base_position + D - 1) and the verify/replay prefills walk
- * through base_position + D + 1, so a speculating lane must hold D + 2 more
- * positions than the plain decode row. Feasibility is proven before any block
- * is handed out, so a refused extension falls back to the plain path cleanly. */
 static SparkStatus SparkQwen38_27bServingExtendSpeculativeCoverage(
 	SparkQwen38_27bServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -1082,7 +1069,7 @@ static SparkStatus SparkQwen38_27bServingExtendSpeculativeCoverage(
 		for (row=0u; row<submission->row_count; row++)
 			if ( submission->row_lane_indices[row] == lane )
 				position = submission->row_positions[row];
-		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state->spec_method) + 2u;
+		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state,state->spec_method) + 2u;
 		required = (end_position + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 		if ( required > state->blocks_per_lane )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1101,64 +1088,12 @@ static SparkStatus SparkQwen38_27bServingExtendSpeculativeCoverage(
 		for (row=0u; row<submission->row_count; row++)
 			if ( submission->row_lane_indices[row] == lane )
 				position = submission->row_positions[row];
-		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state->spec_method) + 2u;
+		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state,state->spec_method) + 2u;
 		status = SparkQwen38_27bServingCoverLane(state,slot,end_position);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
 	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bServingPostReceive(
-	SparkHiddenTransportSession *transport_session,
-	SparkHiddenTransportPacket *packet)
-{
-	SparkQwen38_27bServingTransportShim *shim;
-	const void *source;
-	uint32_t row;
-	shim = (SparkQwen38_27bServingTransportShim *)transport_session;
-	if ( shim == 0 || packet == 0 || shim->input_base == 0 || shim->input_rows == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	source = shim->input_base;
-	if ( shim->input_row_map != 0 )
-	{
-		for (row=0u; row<shim->input_rows; row++)
-			if ( cudaMemcpyAsync((uint8_t *)shim->input_scratch + ((uint64_t)row * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES),(const uint8_t *)shim->input_base + ((uint64_t)shim->input_row_map[row] * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES),SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)shim->execution_stream) != cudaSuccess )
-				return(SPARK_STATUS_IO_ERROR);
-		if ( cudaStreamSynchronize((cudaStream_t)shim->execution_stream) != cudaSuccess )
-			return(SPARK_STATUS_IO_ERROR);
-		source = shim->input_scratch;
-	}
-	memset(packet,0,sizeof(*packet));
-	packet->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-	packet->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_PACKET_BYTES;
-	packet->flags = SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 | SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER;
-	packet->active_sequence_count = shim->input_rows;
-	packet->hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-	packet->bytes_per_sequence = SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES;
-	packet->hidden_bf16 = source;
-	packet->cuda_stream = shim->execution_stream;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bServingSend(
-	SparkHiddenTransportSession *transport_session,
-	const SparkHiddenTransportPacket *packet)
-{
-	SparkQwen38_27bServingTransportShim *shim;
-	uint32_t row;
-	shim = (SparkQwen38_27bServingTransportShim *)transport_session;
-	if ( shim == 0 || packet == 0 || packet->hidden_bf16 == 0 || shim->output_base == 0 || packet->active_sequence_count == 0u || packet->hidden_dimension != SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( shim->output_row_map != 0 )
-	{
-		for (row=0u; row<packet->active_sequence_count; row++)
-			if ( cudaMemcpyAsync((uint8_t *)shim->output_base + ((uint64_t)shim->output_row_map[row] * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES),(const uint8_t *)packet->hidden_bf16 + ((uint64_t)row * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES),SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
-				return(SPARK_STATUS_IO_ERROR);
-	}
-	else if ( cudaMemcpyAsync(shim->output_base,packet->hidden_bf16,(uint64_t)packet->active_sequence_count * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
-		return(SPARK_STATUS_IO_ERROR);
-	return(cudaStreamSynchronize((cudaStream_t)packet->cuda_stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
 }
 
 static void SparkQwen38_27bServingBuildFrame(
@@ -1180,12 +1115,6 @@ static void SparkQwen38_27bServingBuildFrame(
 	uint32_t row;
 	slot = prefill != 0u ? pending->resident_slots[lane] : 0u;
 	base_position = 0u;
-	/* The module's view validators check reserved0 (and any future member)
-	 * EXACTLY: an uninitialized view carried stack garbage into
-	 * SparkQwen38_27bModuleValidateDecodeView/ValidatePrefillView and was
-	 * refused invalid_argument nondeterministically (the prefill frame got
-	 * lucky zeros, the decode frame did not). Zero both views before the
-	 * branch fills them, exactly like the frame context below. */
 	memset(decode_batch,0,sizeof(*decode_batch));
 	memset(prefill_view,0,sizeof(*prefill_view));
 	memset(context,0,sizeof(*context));
@@ -1213,9 +1142,6 @@ static void SparkQwen38_27bServingBuildFrame(
 	state->shim.output_base = submission->hidden_output_address;
 	if ( prefill != 0u )
 	{
-		/* Round-major submissions interleave lanes by wave, so with unequal
-		 * lane lengths a lane's rows sit at irregular flat offsets; gather
-		 * the lane's rows by explicit flat index instead of a fixed pitch. */
 		uint32_t lane_row,flat;
 		lane_row = 0u;
 		for (flat=0u; flat<submission->row_count; flat++)
@@ -1240,10 +1166,6 @@ static void SparkQwen38_27bServingBuildFrame(
 		prefill_view->sequence_id = submission->row_sequence_ids[pending->frame_row_flats[0]];
 		context->flags |= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW;
 		context->prefill_frame = prefill_view;
-		/* prefix-cache glue (the plain prefill path - where borrow suffixes
-		 * and publish-boundary frames actually run): RESTORE_IN on a borrow
-		 * lane's first frame (position == the borrowed prefix edge);
-		 * SNAPSHOT_OUT on the frame that completes the publish boundary */
 		if ( state->lane_restore_armed[slot] != 0u && base_position == state->lane_context_tokens[slot] )
 		{
 			memset(&pending->prefix_gdn_view,0,sizeof(pending->prefix_gdn_view));
@@ -1317,29 +1239,12 @@ static void SparkQwen38_27bServingBuildFrame(
 	frame->buffers = SparkQwen38_27bServingOwnsEmbedding(state) != 0u || SparkQwen38_27bServingOwnsFinalHead(state) != 0u ? buffers : 0;
 	frame->buffer_count = (SparkQwen38_27bServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen38_27bServingOwnsFinalHead(state) != 0u ? 1u : 0u);
 	frame->residency = submission->residency;
-	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
+	frame->scalar[0] = submission->request_generation;
 	frame->user_context = context;
 	frame->completion_function = SparkQwen38_27bServingDriverCompletion;
 	frame->completion_context = pending;
 	pending->frame_sequence_id = frame->sequence_id;
 	pending->frame_sequence_position = frame->sequence_position;
-}
-
-static SparkStatus SparkQwen38_27bServingAdmit(
-	SparkQwen38_27bServingState *state,
-	const SparkModelServingSubmission *submission,
-	SparkModelDriverFrame *frame)
-{
-	SparkModelDriverAdmissionRequest request;
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	(void)submission;
-	status = SparkAdmissionRequestFromFrame(
-		state->program->program_id,frame,0,0u,&request);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(SparkAdmissionEvaluateAndApply(
-		state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
 static SparkStatus SparkQwen38_27bServingRunFrame(
@@ -1391,11 +1296,6 @@ static SparkStatus SparkQwen38_27bServingRunFrame(
 	return(status);
 }
 
-/* Build one speculative frame: a single-lane decode with MTP_DRAFT_AFTER, or a
- * single-lane prefill with SPECULATIVE_VERIFY / GDN_RESTORE_FIRST. The token
- * rows are caller-owned host ids (the lane's decode token or the drafts), not
- * gathered from the submission, and the output buffer is sized for the exact
- * id count the module contract emits. */
 static void SparkQwen38_27bServingBuildSpeculativeFrame(
 	SparkQwen38_27bServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1470,10 +1370,6 @@ static void SparkQwen38_27bServingBuildSpeculativeFrame(
 		context->flags |= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW;
 		context->decode_batch = decode_batch;
 	}
-	/* prefix-cache glue lives ONLY in the plain frame builder: borrow
-	 * suffixes and publish boundaries are plain-prefill frames, and spec
-	 * frames (verify/replay) snapshot GDN state before the acceptance
-	 * rewind, so a boundary-coincident snapshot there would be wrong. */
 	context->flags |= extra_flags;
 	if ( mtp_draft != 0 )
 		context->mtp_draft = mtp_draft;
@@ -1512,7 +1408,7 @@ static void SparkQwen38_27bServingBuildSpeculativeFrame(
 	frame->buffers = SparkQwen38_27bServingOwnsEmbedding(state) != 0u || SparkQwen38_27bServingOwnsFinalHead(state) != 0u ? buffers : 0;
 	frame->buffer_count = (SparkQwen38_27bServingOwnsEmbedding(state) != 0u ? 1u : 0u) + (SparkQwen38_27bServingOwnsFinalHead(state) != 0u ? 1u : 0u);
 	frame->residency = submission->residency;
-	frame->scalar[0] = submission->request_generation; /* module lane-continuity key */
+	frame->scalar[0] = submission->request_generation;
 	frame->user_context = context;
 	frame->completion_function = SparkQwen38_27bServingDriverCompletion;
 	frame->completion_context = pending;
@@ -1556,16 +1452,6 @@ static SparkStatus SparkQwen38_27bServingRunSpeculativeFrame(
 	return(status);
 }
 
-/* Chain speculative decode for one decode submission. Precondition: the head
- * stage owns the head, speculation is armed, active_sequence_count fits the
- * GDN snapshot slots, and the draft-chain KV coverage was extended.
- *
- * Phase one runs each lane's MTP_DRAFT_AFTER decode frame (committed token +
- * D drafts) and its SPECULATIVE_VERIFY prefill (D emitted ids), accepting the
- * leading matches host-side: emitted[i] == draft[i+1]. Phase two runs each
- * lane's GDN_RESTORE_FIRST replay over the accepted drafts plus the correction
- * token, whose final emission is the next committed token. Every lane commits
- * the same min_accepted depth so the completion stays lane-uniform. */
 static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 	SparkQwen38_27bServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1574,6 +1460,7 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 	SparkQwen38_27bMtpDraftView mtp_draft;
 	SparkQwen38_27bDsparkDraftView dspark_draft;
 	SparkQwen38_27bGdnSnapshotView gdn_snapshot;
+	SparkSpeculationPolicyVerifyResult verify_result;
 	uint32_t lane,draft;
 	uint32_t draft_count;
 	uint32_t min_accepted;
@@ -1582,7 +1469,7 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 	uint32_t verify_tokens[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	SparkStatus status;
 	spec_method = state->spec_method;
-	draft_count = SparkQwen38_27bServingActiveDraftCount(state->spec_method);
+	draft_count = SparkQwen38_27bServingActiveDraftCount(state,state->spec_method);
 	first_draft_policy = SparkQwen38_27bServingSpecFirstDraftPolicy();
 	pending->spec_active = 1u;
 	pending->spec_first_draft_miss = 0u;
@@ -1608,7 +1495,32 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 		spec->sequence_id = sequence;
 		spec->snapshot_index = lane;
 		spec->draft_token_count = draft_count;
-		if ( SparkQwen38_27bServingBlockDraftMethod(spec_method) )
+		if ( spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE )
+		{
+			uint32_t remote_count;
+			remote_count = 0u;
+			status = SparkQwen38_27bServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,0u,0,0,0,1u);
+			if ( status != SPARK_STATUS_OK )
+				fprintf(stderr, "qwen38_27b_spec_diag decode_frame_failed lane=%u status=%d\n", lane, (int)status);
+			if ( status == SPARK_STATUS_OK )
+			{
+				spec->committed_ids[0] = pending->frame_output_ids[0];
+				spec->draft_ids[0] = spec->committed_ids[0];
+				status = SparkSpeculationSeamDraftRemoteChain(state->speculation_seam,submission->request_id,sequence,position,token,
+					(const uint32_t *)state->committed_token_history.pointer + (uint64_t)slot * state->max_sequence_positions,
+					(uint32_t)state->lane_committed_counts[slot],0,0u,draft_count,
+					spec->draft_ids + 1u,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u,&remote_count);
+				if ( status == SPARK_STATUS_OK )
+				{
+					draft_count = remote_count + 1u;
+					spec->draft_token_count = draft_count;
+					spec->engine_staged = 1u;
+				}
+				else
+					fprintf(stderr, "qwen38_27b_spec_diag remote_draft_failed lane=%u status=%d\n", lane, (int)status);
+			}
+		}
+		else if ( SparkQwen38_27bServingBlockDraftMethod(spec_method) )
 		{
 			const char *fold_env = getenv("SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD");
 			uint32_t fold_mode = fold_env != 0 && fold_env[0] != '0' ? (uint32_t)strtoul(fold_env,0,0) : 0u;
@@ -1618,15 +1530,6 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 				&& state->dflash2_fold_sequence_id == sequence
 				&& state->dflash2_fold_position == position )
 			{
-				/* Bonus-fold round (the vLLM shape): the previous round's
-				 * tail drafted this round's block, so the decode walk is
-				 * redundant - the verify's row 0 walks the client token in
-				 * its place and its emission becomes this round's C0.
-				 * base_position drops to the client row's position, so every
-				 * downstream offset keeps its formula. Mode 2 = the ONE-FRAME
-				 * round: row 0 also restores the previous accept's GDN
-				 * checkpoint and the multi-block drafter runs at this
-				 * verify's tail (no correction frame at all). */
 				fold_active = fold_mode >= 2u ? 2u : 1u;
 				spec->base_position = position;
 				spec->draft_ids[0] = 0u;
@@ -1635,17 +1538,11 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			}
 			else
 			{
-				/* Draft on EVERY decode frame: the anchor must be this round's
-				 * C0 = the decode's own emission (the oracle-verified winner;
-				 * at a replay tail output_token_ids holds the replay emission,
-				 * which drafts from the wrong token). */
 				state->dflash2_fold_armed = 0u;
 				memset(&dspark_draft,0,sizeof(dspark_draft));
 				dspark_draft.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
 				dspark_draft.descriptor_bytes = sizeof(dspark_draft);
 				dspark_draft.block_size = draft_count;
-				/* DFlash2 emits block-1 draft ids (the mask slots); DSpark emitted
-				 * one per block row and the remap below dropped the last. */
 				dspark_draft.draft_token_count = spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_DFLASH2 ? draft_count - 1u : draft_count;
 				dspark_draft.sequence_id = sequence;
 				dspark_draft.base_position = spec->base_position;
@@ -1666,19 +1563,13 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			mtp_draft.row_token_ids = pending->frame_token_ids;
 			status = SparkQwen38_27bServingRunSpeculativeFrame(state,submission,pending,slot,0u,&token,&position,&sequence,1u,0u,submission->sequence_id,submission->sequence_position,SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER,&mtp_draft,0,0,1u + draft_count);
 		}
-		if ( status != SPARK_STATUS_OK )
+		if ( status != SPARK_STATUS_OK && spec_method != SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE )
 			fprintf(stderr, "qwen38_27b_spec_diag decode_frame_failed lane=%u status=%d\n", lane, (int)status);
-		if ( status == SPARK_STATUS_OK && fold_active == 0u )
+		if ( status == SPARK_STATUS_OK && fold_active == 0u && spec_method != SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE )
 		{
 			spec->committed_ids[0] = pending->frame_output_ids[0];
 			if ( SparkQwen38_27bServingBlockDraftMethod(spec_method) )
 			{
-				/* Block drafters emit own-position drafts: block row r at
-				 * base-1+r predicts the token at that position, so the walk's
-				 * output 0 (position base, the anchor's own slot) is redundant
-				 * with C0 and output i predicts position base+i = C0+i-1. The
-				 * verify walks [C0, outputs 1..k-1] one slot later than the old
-				 * shifted remap (the convention-sweep winner). */
 				spec->draft_ids[0] = spec->committed_ids[0];
 				for (draft=1u; draft<draft_count; draft++)
 					spec->draft_ids[draft] = state->dflash2_next_draft_ids[draft - 1u];
@@ -1688,14 +1579,18 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 				for (draft=0u; draft<draft_count; draft++)
 					spec->draft_ids[draft] = pending->frame_output_ids[1u + draft];
 			}
-			/* draft[0] predicts the just-committed position, so it is redundant
-			 * with C0 and is never fed to verify/replay (C0 is fed in its place).
-			 * A first-draft miss is recorded in telemetry + the receipt; only the
-			 * strict policy turns it into a dead chain (legacy zero-speculation). */
 			spec->first_draft_miss = spec->draft_ids[0] != spec->committed_ids[0] ? 1u : 0u;
 			spec->chain_dead = (spec->first_draft_miss != 0u && first_draft_policy == SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT) ? 1u : 0u;
 			if ( spec->first_draft_miss != 0u )
 				fprintf(stderr, "qwen38_27b_spec first_draft_miss lane=%u C0=%u draft0=%u policy=%s\n", lane, spec->committed_ids[0], spec->draft_ids[0], first_draft_policy == SPARK_QWEN38_27B_SERVING_SPEC_FIRST_DRAFT_POLICY_STRICT ? "strict" : "recover");
+		}
+		if ( status == SPARK_STATUS_OK && spec->chain_dead == 0u && spec_method != SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE )
+		{
+			status = SparkSpeculationSeamStageLocalDraft(state->speculation_seam,submission->request_id,spec->sequence_id,spec->base_position,spec->draft_ids + 1u,draft_count - 1u);
+			if ( status == SPARK_STATUS_OK )
+				spec->engine_staged = 1u;
+			else
+				fprintf(stderr, "qwen38_27b_spec_diag stage_local_draft_failed lane=%u status=%d\n", lane, (int)status);
 		}
 		if ( status == SPARK_STATUS_OK && spec->chain_dead == 0u )
 		{
@@ -1703,12 +1598,6 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			gdn_snapshot.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 			gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
 			gdn_snapshot.snapshot_index = spec->snapshot_index;
-			/* Feed C0 (not draft[0]) as the first verify row: draft[0]
-			 * predicts the already-committed position, so it is redundant
-			 * and a first-draft miss must not poison the rest of the chain.
-			 * A folded round feeds the CLIENT token instead - its walk is
-			 * the decode walk's replacement, and the row's emission (filled
-			 * in below) becomes the round's C0. */
 			verify_tokens[0] = fold_active != 0u ? token : spec->committed_ids[0];
 			for (draft=1u; draft<draft_count; draft++)
 				verify_tokens[draft] = spec->draft_ids[draft];
@@ -1717,10 +1606,6 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 				SparkQwen38_27bDsparkDraftView *verify_draft = 0;
 				if ( fold_active == 2u )
 				{
-					/* the one-frame round: row 0 restores the previous
-					 * accept's checkpoint before its walk, and the padding
-					 * drafter runs at THIS verify's tail (block i anchored on
-					 * row i's emission; the host picks block m post-accept) */
 					verify_flags |= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER;
 					if ( getenv("SPARK_QWEN38_27B_DFLASH2_OF_NORESTORE") != 0 )
 						state->dflash2_fold_restore_slot = -1;
@@ -1752,18 +1637,28 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 				spec->emitted_ids[draft] = pending->frame_output_ids[draft];
 			if ( fold_active != 0u )
 			{
-				/* Row 0 walked the client token; its emission is the C0 the
-				 * skipped decode frame would have produced. It doubles as the
-				 * redundant draft[0] slot, so a folded round never records a
-				 * first-draft miss. */
 				spec->committed_ids[0] = spec->emitted_ids[0];
 				spec->draft_ids[0] = spec->emitted_ids[0];
 				spec->first_draft_miss = 0u;
 				spec->chain_dead = 0u;
 			}
-			spec->accepted_count = 0u;
-			while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
-				spec->accepted_count++;
+			if ( spec->chain_dead == 0u )
+			{
+				status = SparkSpeculationSeamAcceptChain(state->speculation_seam,spec->sequence_id,spec->emitted_ids,draft_count,&verify_result);
+				if ( status == SPARK_STATUS_OK )
+				{
+					spec->accepted_count = verify_result.accepted_draft_token_count;
+					spec->engine_staged = 0u;
+				}
+				else
+					fprintf(stderr, "qwen38_27b_spec_diag accept_chain_failed lane=%u status=%d\n", lane, (int)status);
+			}
+			else
+			{
+				spec->accepted_count = 0u;
+				while ( spec->accepted_count + 1u < draft_count && spec->emitted_ids[spec->accepted_count] == spec->draft_ids[spec->accepted_count + 1u] )
+					spec->accepted_count++;
+			}
 			if ( fold_active != 0u )
 				pending->spec_fold = fold_active;
 			fprintf(stderr, "qwen38_27b_spec_diag t=%.6f C0=%u accepted=%u drafts=[%u,%u,%u,%u,%u,%u,%u,%u] emitted=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
@@ -1789,19 +1684,8 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			if ( pending->spec[lane].accepted_count < min_accepted )
 				min_accepted = pending->spec[lane].accepted_count;
 		}
-		/* A dead chain's verify output is poisoned, so a batch with any dead
-		 * lane commits the model token alone for every lane (speculation is
-		 * simply not credited this round; tokens stay exact). */
 		if ( pending->spec_chain_dead != 0u )
 			min_accepted = 0u;
-		/* The shared serving ABI caps tokens_per_sequence at
-		 * SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE (8); a fully-accepted
-		 * block-8 chain would commit 10 (C0 + 7 drafts + correction +
-		 * replay emission), or 9 on a bonus-fold round (no decode C0, so
-		 * the round commits accepted+2). Clamp acceptance so the
-		 * completion fits the cap; the surplus verified drafts are
-		 * discarded and re-drafted next iteration. Removing the clamp
-		 * needs the shared ABI bump, reviewed cross-session. */
 		{
 			uint32_t commit_overhead = pending->spec_fold == 2u ? 1u : (pending->spec_fold == 1u ? 2u : 3u);
 			if ( min_accepted + commit_overhead > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
@@ -1817,11 +1701,6 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 		uint32_t replay_rows;
 		if ( pending->spec_fold == 2u )
 		{
-			/* ONE-FRAME round tail: no correction frame. Select block m from
-			 * the padding matrix (the block anchored on the accepted row),
-			 * commit [e0, drafts 2..m, e_m] (m+1 tokens - the next round's
-			 * row 0 walks e_m from checkpoint m and its emission continues
-			 * the chain), and arm the next round. */
 			spec = &pending->spec[lane];
 			slot = spec->resident_slot;
 			(void)slot;
@@ -1840,26 +1719,14 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			}
 			continue;
 		}
-		/* +1: a fully-accepted block-8 chain replays C0 + 7 drafts + the
-		 * correction = 9 rows, one past MAX_MTP_DRAFT_TOKENS. */
 		uint32_t replay_tokens[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 1u];
 		uint64_t replay_base;
 		spec = &pending->spec[lane];
 		slot = spec->resident_slot;
-		/* The snapshot restores the GDN state to BEFORE the first drafted
-		 * position, so the replay must re-walk it too: the committed token
-		 * C0, the accepted drafts, and the correction. draft[0] is not used
-		 * (it predicted the already-committed position). */
-		/* The replay is now ONE row (the correction): the verify walked the
-		 * step path with per-row checkpoints, so GDN_RESTORE_VERIFY_ROW
-		 * SELECTS the accepted-prefix state (snapshot_index = min_accepted+1,
-		 * the row whose walk covered [C0, d1..d_a]) and this frame walks only
-		 * the correction - the token the verify did not walk. */
 		{
 			const char *sel_env = getenv("SPARK_QWEN38_27B_DFLASH2_STATE_SELECT");
 			if ( sel_env == 0 || sel_env[0] == '0' )
 			{
-				/* default: the validated replay re-walk */
 				uint32_t d2;
 				replay_rows = min_accepted + 2u;
 				replay_tokens[0] = spec->committed_ids[0];
@@ -1884,13 +1751,6 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			SparkQwen38_27bDsparkDraftView *replay_draft = 0;
 			if ( fold_env != 0 && fold_env[0] != '0' )
 			{
-				/* Draft at the correction tail (the bonus fold's engine): the
-				 * 1-row correction is shape-identical to the decode frame it
-				 * replaces - it walks one committed token from live-restored
-				 * state and its emission c' is fresh (never re-walked; the
-				 * next round's verify row 0 walks it). Anchor = c', so the
-				 * block's base is the emission position replay_base+1, the
-				 * exact decode-frame relation (walked+1). */
 				memset(&dspark_draft,0,sizeof(dspark_draft));
 				dspark_draft.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_DRAFT_VIEW_ABI_VERSION;
 				dspark_draft.descriptor_bytes = sizeof(dspark_draft);
@@ -1912,7 +1772,7 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 				state->dflash2_fold_armed = 1u;
 				state->dflash2_fold_position = replay_base + 1u;
 				state->dflash2_fold_sequence_id = spec->sequence_id;
-				state->dflash2_fold_restore_slot = -1; /* round 2 walks from live state */
+				state->dflash2_fold_restore_slot = -1;
 			}
 		}
 		replay_done:;
@@ -1922,10 +1782,6 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 		{
 			if ( pending->spec_fold != 0u )
 			{
-				/* Folded commit: [e0(=C0), d2..dm, e_m, c']. draft[1] is
-				 * represented by e0 (it predicted e0's position), and at
-				 * m=0 e_m IS e0, so the correction token slot collapses -
-				 * the round commits m+2, not m+3. */
 				uint32_t commit_index = 1u;
 				for (draft=2u; draft<=min_accepted; draft++)
 					spec->committed_ids[commit_index++] = spec->draft_ids[draft];
@@ -1942,6 +1798,10 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 			}
 		}
 	}
+	if ( status != SPARK_STATUS_OK )
+		for (lane=0u; lane<submission->active_sequence_count; lane++)
+			if ( pending->spec[lane].engine_staged != 0u )
+				(void)SparkSpeculationSeamCancelSequence(state->speculation_seam,pending->spec[lane].sequence_id);
 	return(status);
 }
 
@@ -2036,31 +1896,27 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 			(unsigned long long)submission->submission_id);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
-		/* REQUIRES_RELEASE contract: drop every lane's KV blocks (prefix
-		 * entries keep their own pins) and complete with no tokens. The
-		 * daemon unbinds the resident slot at this completion, so a later
-		 * request may claim it at a cached-prefix position. */
 		uint32_t lane;
 		state->dflash2_fold_armed = 0u;
 		for (lane=0u; lane<submission->active_sequence_count; lane++)
+		{
+			(void)SparkSpeculationSeamCancelSequence(state->speculation_seam,submission->lanes[lane].sequence_id);
 			SparkQwen38_27bServingReleaseLane(state,submission->lanes[lane].resident_sequence_slot);
+		}
 		pending->common.active_sequence_count = 0u;
-		pending->residency = submission->residency; /* no driver frame runs: echo the client's token */
+		pending->residency = submission->residency;
 		SparkQwen38_27bServingComplete(state,pending,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
 	}
 	speculate = 0u;
 	status = SparkQwen38_27bServingCoverSubmission(state,submission);
-	/* B1 only: the per-lane chain is serial by contract, so batched decodes
-	 * (B2+) would serialize D+2 extra full-model walks per lane and lose to
-	 * the plain batched path (measured). */
-	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && SparkQwen38_27bServingSpeculationEnabled() != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && submission->active_sequence_count == 1u )
+	if ( status == SPARK_STATUS_OK )
+		SparkQwen38_27bServingRecordSubmissionTokens(state,submission);
+	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && submission->active_sequence_count == 1u )
 	{
 		status = SparkQwen38_27bServingExtendSpeculativeCoverage(state,submission);
 		if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 		{
-			/* The KV pool cannot hold the draft chain (near the context cap):
-			 * fall back to the plain batched decode. */
 			speculate = 0u;
 			status = SPARK_STATUS_OK;
 		}
@@ -2083,8 +1939,6 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 			(const void *)state->block_table.host_lane_physical_block_counts,
 			state->max_active_sequence_count, state->blocks_per_lane,
 			state->stage_attn_layer_count);
-		/* A plain decode walk invalidates the fold chain's position
-		 * assumption; the next speculative round re-bootstraps. */
 		state->dflash2_fold_armed = 0u;
 		status = SparkQwen38_27bServingRunFrame(state,submission,pending,0u,0u,0u,submission->row_count);
 	}
@@ -2100,9 +1954,6 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 				lane_rows += submission->row_lane_indices[wave] == lane ? 1u : 0u;
 			for (wave=0u; status == SPARK_STATUS_OK && wave<lane_rows; wave+=chunk_rows)
 			{
-				/* R2b: chunk to max_input_row_count, not the active-lane
-				 * count - one weight pass per chunk instead of one per
-				 * prompt token (the 21.7 tok/s prefill mechanism). */
 				chunk_rows = lane_rows - wave;
 				if ( chunk_rows > state->max_input_row_count )
 					chunk_rows = state->max_input_row_count;
@@ -2114,9 +1965,6 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 		status = SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status != SPARK_STATUS_OK )
 	{
-		/* A failed submission fires no completion, matching the glm52/dsv4
-		 * adapters; every lane it touched drops back to cold so the next
-		 * touch is a position-zero reset on both sides of the contract. */
 		SparkQwen38_27bServingDropSubmission(state,submission);
 		pending->common.active = 0u;
 		return(status);
@@ -2128,68 +1976,6 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 	}
 	SparkQwen38_27bServingCommitSubmission(state,submission,pending);
 	SparkQwen38_27bServingComplete(state,pending,SPARK_STATUS_OK);
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bServingProgress(
-	void *adapter_state,
-	uint32_t maximum_step_count)
-{
-	(void)maximum_step_count;
-	return(adapter_state != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
-static SparkStatus SparkQwen38_27bServingQuiesce(
-	void *adapter_state,
-	uint64_t deadline_time_ns)
-{
-	SparkQwen38_27bServingState *state;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	SparkStatus status;
-	state = (SparkQwen38_27bServingState *)adapter_state;
-	if ( state == 0 || deadline_time_ns == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->quiescing = 1u;
-	if ( SparkQwen38_27bServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		return(SPARK_STATUS_BUSY);
-	memset(&snapshot,0,sizeof(snapshot));
-	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
-}
-
-static SparkStatus SparkQwen38_27bServingSnapshot(
-	void *adapter_state,
-	SparkModelServingAdapterSnapshot *snapshot)
-{
-	SparkQwen38_27bServingState *state;
-	SparkModelDriverRuntimeSnapshot driver_snapshot;
-	uint32_t available;
-	SparkStatus status;
-	state = (SparkQwen38_27bServingState *)adapter_state;
-	if ( state == 0 || snapshot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(&driver_snapshot,0,sizeof(driver_snapshot));
-	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&driver_snapshot);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	memset(snapshot,0,sizeof(*snapshot));
-	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
-	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
-	available = SparkQwen38_27bServingAvailableSubmissionCount(state);
-	if ( available > driver_snapshot.available_dispatch_slot_count )
-		available = driver_snapshot.available_dispatch_slot_count;
-	snapshot->available_submission_count = state->quiescing == 0u ? available : 0u;
-	snapshot->active_submission_count = state->pipeline_slot_count - SparkQwen38_27bServingAvailableSubmissionCount(state);
-	snapshot->submitted_count = driver_snapshot.submitted_count;
-	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + state->orphan_completion_count;
-	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
-	snapshot->resident_token_count = driver_snapshot.resident_token_count;
-	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
-	snapshot->device_memcpy_bytes_per_submit = driver_snapshot.device_memcpy_bytes_per_submit;
-	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
 	return(SPARK_STATUS_OK);
 }
 
@@ -2217,11 +2003,12 @@ static void SparkQwen38_27bServingDestroy(void *adapter_state)
 	SparkMemoryBufferFree(&state->host_block_indices);
 	SparkMemoryBufferFree(&state->block_refs);
 	SparkMemoryBufferFree(&state->free_blocks);
+	SparkMemoryBufferFree(&state->committed_token_history);
+	SparkSpeculationSeamDestroy(state->speculation_seam);
+	free(state->bridge_host);
 	free(state);
 }
 
-/* The program's flag/profile contract, family policy on the shared spine:
- * a shared approximation would change accept/reject on real descriptors. */
 static SparkStatus SparkQwen38_27bServingAcceptsProgram(
 	const SparkModelDriverProgramDescriptor *program,
 	void *accept_context)
@@ -2264,17 +2051,13 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 	uint64_t indices;
 	SparkStatus status;
 	indices = (uint64_t)state->max_active_sequence_count * state->blocks_per_lane;
-	/* Every allocation names its space (memory-M1): the block table keeps a
-	 * host-coherent mirror plus device-private twins; the refcounts and the
-	 * free list are host-coherent bookkeeping; the gather scratch is
-	 * device-private. */
 	status = SparkMemoryBufferAllocate(&state->host_block_indices,
 		SPARK_MEMORY_SPACE_HOST_COHERENT,indices * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMemoryBufferAllocate(&state->block_refs,
 			SPARK_MEMORY_SPACE_HOST_COHERENT,(uint64_t)state->kv_block_count * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
-		memset(state->block_refs.pointer,0,(size_t)state->block_refs.bytes); /* calloc semantics */
+		memset(state->block_refs.pointer,0,(size_t)state->block_refs.bytes);
 	{
 		uint32_t li;
 		for (li=0u; li<SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; li++)
@@ -2293,8 +2076,6 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 	for (block=0u; block<state->kv_block_count; block++)
 		((uint32_t *)state->free_blocks.pointer)[block] = state->kv_block_count - 1u - block;
 	state->free_block_count = state->kv_block_count;
-	/* Gather scratch spans one frame's rows: decode rows or a prefill
-	 * chunk's rows, so the width is max(active, input_rows). */
 	{
 		uint32_t frame_rows = state->max_active_sequence_count > state->max_input_row_count ?
 			state->max_active_sequence_count : state->max_input_row_count;
@@ -2302,6 +2083,9 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,(uint64_t)frame_rows * SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES) != SPARK_STATUS_OK )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	if ( SparkMemoryBufferAllocate(&state->committed_token_history,
+		SPARK_MEMORY_SPACE_HOST_COHERENT,(uint64_t)state->resident_sequence_capacity * state->max_sequence_positions * sizeof(uint32_t)) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( state->stage_attn_layer_count != 0u )
 	{
 		if ( SparkMemoryBufferAllocate(&state->device_block_indices,
@@ -2320,22 +2104,6 @@ static SparkStatus SparkQwen38_27bServingAllocatePools(
 	state->block_table.lane_physical_block_counts = state->device_block_counts.pointer;
 	state->block_table.host_physical_block_indices = state->host_block_indices.pointer;
 	state->block_table.host_lane_physical_block_counts = state->lane_block_counts;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bServingValidateConfiguration(
-	const SparkModelServingAdapterConfiguration *configuration)
-{
-	SparkStatus status;
-	if ( configuration == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkQwen38_27bServingDescriptor,&configuration->runtime_limits);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( configuration->stage_index >= SPARK_QWEN38_27B_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_QWEN38_27B_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -2370,7 +2138,6 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
 	state->shim.execution_stream = configuration->execution_stream;
-	state->spec_method = SparkQwen38_27bServingSpecMethod();
 	status = SparkQwen38_27bServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_QWEN38_27B_SERVING_MAX_SEQUENCE_POSITIONS_CAP) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -2382,6 +2149,8 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 		status = SparkQwen38_27bServingAllocatePools(state);
 		state->shim.input_scratch = state->gather_scratch.pointer;
 	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38_27bServingInitializeSpeculationSeam(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38_27bServingSetEnvironment(state);
 	if ( status == SPARK_STATUS_OK )
@@ -2395,11 +2164,6 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-/* JIT_KV interface hooks (required once cache_block_token_count > 0).
- * Prefetch prepares nothing ahead of submit - the block-table borrow in
- * CoverSubmission is the preparation - so the admission is a no-op and
- * COMMIT resolves immediately; the prefix entry refs are taken at the
- * publish/borrow points, not here. */
 static SparkStatus SparkQwen38_27bServingPrefetch(
 	void *adapter_state,
 	const SparkModelServingSubmission *submissions,

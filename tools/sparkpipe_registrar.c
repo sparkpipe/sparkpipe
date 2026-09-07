@@ -1,44 +1,3 @@
-/*
- * sparkpipe_registrar — fleet startup protocol phase 1 + 1b registrar.
- *
- * docs/FLEET_STARTUP_PROTOCOL.md: a featherweight per-node registrar that
- * makes fleet membership exist BEFORE the heavy residentd wave fires. Pure
- * POSIX TCP, poll-driven, no threads, links nothing: starts in
- * milliseconds, no CUDA, no GPU alloc.
- *
- *   ANNOUNCE (~every 250ms, TCP unicast to every expected member):
- *       SPGA <rank> <viewmask-hex> <stale_daemon_pid> <immune0|1>\n
- *   The reply carries the peer's own state in the same shape, so one
- *   round trip merges both directions.
- *   MERGE: heard announcements update my view, each member's latest
- *   announced view, and each member's stale-daemon report.
- *   READY is three-level (the operator's "all see all, all clean"):
- *     (a) my view == the expected set,
- *     (b) every expected member's latest announced view == the expected set,
- *     (c) every expected member (including MY OWN node, self-checked
- *         first) reports stale_daemon == 0.
- *   GO: the leader (lowest rank in the expected set) broadcasts GO
- *       (SPGG) once ready; every registrar relays GO once and exits 0.
- *   FAIL LOUD: after --timeout-ms every registrar prints the actionable
- *       diff — MISSING: [ranks], PARTIAL-VIEW: rank->who-they-see,
- *       STALE / STALE-IMMUNE: rank->pid — and exits nonzero.
- *   CLEANSLATE (phase 1b): a lingering previous daemon on MY node is
- *       found by exact exe basename + exact deployment cwd (never a
- *       pattern scan), TERMed (TERM is the registrar's ONLY action,
- *       never KILL), and only its observed exit clears my stale field.
- *       A daemon that survives the TERM wait is TERM-immune: reported
- *       as STALE-IMMUNE: rank->pid in the fail-loud diff — the
- *       operator path — while GO stays withheld.
- *
- * One log line per state change; nothing else.
- *
- * usage:
- *   sparkpipe_registrar --rank N --hosts h0,h1,...,hN-1
- *       [--port-base 22480] [--timeout-ms 120000] [--announce-ms 250]
- *       [--term-wait-ms 15000] [--deployment-cwd DIR]
- *       [--daemon-name sparkpipe_model_residentd]
- *       [--expect-subset r1,r2,...]
- */
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -69,10 +28,10 @@
 #define SPARK_REGISTRAR_GO_WIRE "SPGG"
 
 typedef struct {
-    int fd;              /* -1 when unused */
-    int peer;            /* expected-rank index for client conns, else -1 */
-    int is_client;       /* 1 = I dialed this peer to announce */
-    int sent_announce;   /* client: announce written, awaiting reply */
+    int fd;
+    int peer;
+    int is_client;
+    int sent_announce;
     size_t len;
     char buf[SPARK_REGISTRAR_MSG_MAX];
     long long deadline_ms;
@@ -127,9 +86,6 @@ static long long now_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* Acceptance evidence: every line carries [+++s.mmm] since this
- * registrar started, so GO latency after the last registrar start is
- * measurable per node. */
 static long long g_log_t0 = -1;
 
 static void log_prefix(void) {
@@ -382,8 +338,6 @@ static int dial_peer(int peer_rank, long long deadline_ms, conn *c) {
     return 0;
 }
 
-/* TERM is the registrar's ONLY remediation; never KILL, never a pattern
- * scan: exact exe basename + exact deployment cwd, explicit pids only. */
 static int proc_alive_and_matching(pid_t pid) {
     char path[64], link[PATH_MAX], state = 'R';
     snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid);
@@ -428,7 +382,6 @@ static void stale_scan(long long now) {
     }
     closedir(dir);
 
-    /* TERM every discovered pid once; track until observed exit. */
     for (int i = 0; i < found_count; i++) {
         int known = 0;
         for (int j = 0; j < st.stale_count; j++)
@@ -447,7 +400,6 @@ static void stale_scan(long long now) {
                  was_killed);
     }
 
-    /* Clear entries whose pid is gone; flag survivors as TERM-immune. */
     for (int j = st.stale_count - 1; j >= 0; j--) {
         if (!proc_alive_and_matching(st.stale[j].pid)) {
             log_line("stale_clear rank=%d pid=%ld", cfg.rank,
@@ -473,7 +425,7 @@ static void stale_scan(long long now) {
 
 static int three_levels_met(void) {
     if (st.my_view != cfg.expected_mask) return 0;
-    if (st.my_stale_pid != 0) return 0;          /* self-check first */
+    if (st.my_stale_pid != 0) return 0;
     for (int r = 0; r < cfg.member_count; r++) {
         if (!cfg.is_expected[r] || r == cfg.rank) continue;
         if (!st.peer_view_seen[r] || st.peer_view[r] != cfg.expected_mask)
@@ -492,7 +444,6 @@ static int send_go_once(int peer_rank, long long deadline_ms) {
     char msg[SPARK_REGISTRAR_MSG_MAX];
     snprintf(msg, sizeof(msg), "%s %d\n", SPARK_REGISTRAR_GO_WIRE, cfg.rank);
     size_t len = strlen(msg);
-    /* peers are alive at GO time; a bounded blocking write is safe here */
     struct pollfd pfd = { .fd = c->fd, .events = POLLOUT, .revents = 0 };
     if (poll(&pfd, 1, 300) > 0 && (pfd.revents & POLLOUT)) {
         ssize_t n = write(c->fd, msg, len);
@@ -604,10 +555,6 @@ int main(int argc, char **argv) {
     for (int i = 0; i < SPARK_REGISTRAR_MAX_CONNS; i++) st.conns[i].fd = -1;
 
     open_listen();
-    /* FAIL LOUD at startup: a registrar told to verify the cleanslate on a
-     * host where it cannot scan processes must never silently pass GO.
-     * Without --deployment-cwd the cleanslate is explicitly DISABLED and
-     * every GO line says so (the wave tools always pass the cwd). */
     int cleanslate_enabled = (cfg.deployment_cwd[0] != '\0');
     if (cleanslate_enabled) {
         DIR *procd = opendir("/proc");
@@ -637,7 +584,6 @@ int main(int argc, char **argv) {
         long long now = now_ms();
         long long elapsed = now - t0;
 
-        /* periodic work: local cleanslate scan + announces */
         if (now - last_stale_scan >= cfg.announce_ms) {
             stale_scan(now);
             last_stale_scan = now;
@@ -658,7 +604,6 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* three-level ready -> GO */
         if (!st.go_received && three_levels_met()) {
             if (cfg.rank == cfg.leader_rank) {
                 char text[512];
@@ -691,7 +636,6 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        /* poll set */
         struct pollfd pfds[SPARK_REGISTRAR_MAX_CONNS + 1];
         conn *mapping[SPARK_REGISTRAR_MAX_CONNS + 1];
         int n = 0;

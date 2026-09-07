@@ -15,8 +15,11 @@
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
+    src/spark_ck128.c \
     src/spark_admission.c \
     src/spark_speculation_policy.c \
+    src/spark_speculation_seam.c \
+    ring/transport/draft_bridge.c \
     runtime/filesystem.c \
     runtime/json.c
 
@@ -28,6 +31,7 @@ SPARKPIPE_COMPILER_SOURCES := \
 SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
     src/spark_orchestrator.c \
+    runtime/stagepack_format.c \
     runtime/runtime_completion.c \
     runtime/model_runtime.c \
 	runtime/model_serving_adapter.c \
