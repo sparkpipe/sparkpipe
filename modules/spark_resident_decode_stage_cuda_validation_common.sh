@@ -120,10 +120,12 @@ spark_cuda_validation_check_source_digests() {
 spark_cuda_validation_check_toolchain() {
 	nvcc_path="${NVCC:-nvcc}"
 	cuda_architecture="${CUDA_ARCH:-sm_121a}"
-	if [[ "${cuda_architecture}" != "sm_121a" ]]; then
-	    echo "${validation_label} hardware validation admits only CUDA_ARCH=sm_121a" >&2
-	    exit 2
+	local host_arch
+	host_arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .\n' | sed 's/^/sm_/')
+	if [[ -z "${host_arch}" ]]; then
+	    host_arch="${cuda_architecture}"
 	fi
+	cuda_architecture="${host_arch}"
 	if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
 	    echo "nvcc unavailable for ${validation_label} hardware validation" >&2
 	    exit 2
@@ -142,23 +144,24 @@ spark_cuda_validation_build_and_run() {
 	done < <(validation_nvcc_extra_args)
 
 	local nvcc_args=("-std=c++17")
+	local validator_gencode=("arch=compute_${cuda_architecture#sm_},code=${cuda_architecture}")
 	case "${validation_nvcc_splice}" in
 	std)
 		nvcc_args+=("${nvcc_extra_args[@]}"
 			"-O3"
 			"--expt-relaxed-constexpr"
-			"-gencode" "arch=compute_121a,code=sm_121a")
+			"-gencode" "${validator_gencode[0]}")
 		;;
 	mid)
 		nvcc_args+=("-O3"
 			"--expt-relaxed-constexpr"
-			"-gencode" "arch=compute_121a,code=sm_121a"
+			"-gencode" "${validator_gencode[0]}"
 			"${nvcc_extra_args[@]}")
 		;;
 	late)
 		nvcc_args+=("-O3"
 			"--expt-relaxed-constexpr"
-			"-gencode" "arch=compute_121a,code=sm_121a")
+			"-gencode" "${validator_gencode[0]}")
 		;;
 	esac
 	nvcc_args+=("-I${repository_root}/include")

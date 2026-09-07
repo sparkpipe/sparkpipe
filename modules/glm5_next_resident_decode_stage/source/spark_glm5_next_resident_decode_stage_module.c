@@ -84,6 +84,7 @@ struct SparkGlm5NextModuleState
 	uint32_t tp_degree;
 	uint32_t tp_rank;
 	uint32_t tp_collective_disabled;
+	uint32_t mtp_active;
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -1671,12 +1672,6 @@ static void SparkGlm5NextModuleTpCompletion(
 	chain = (SparkGlm5NextTpChain *)context;
 	if ( chain == 0 || chain->active == 0u || completion == 0 )
 		return;
-	fprintf(stderr,"G5N-DBG tp completion: status %u ordinal %llu slot %u rows %llu stage %u layer %u\n",
-		(unsigned)completion->status,
-		(unsigned long long)completion->ordinal,
-		(unsigned)completion->slot_index,
-		(unsigned long long)0u,
-		(unsigned)chain->stage,(unsigned)chain->next_layer);
 	SparkGlm5NextTpChainAdvance(chain,completion->status);
 }
 
@@ -1694,6 +1689,11 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
 	}
+	if ( hc_wide != 0u && state->mtp_active == 0u )
+	{
+		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
+	}
 	if ( state->tp_device_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	if ( hc_wide != 0u )
@@ -1702,21 +1702,6 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		collective = &state->tp_device_collective_hc;
 		wide_ordinal = &state->tp_next_ordinal_hc;
-		if ( SparkGlm5NextProbeEnabled() && chain->next_layer >= 33u && chain->next_layer <= 35u )
-		{
-			uint16_t probe_pre[256];
-			uint32_t probe_qi,probe_qb;
-			uint64_t probe_qs;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_qs = 0u;
-			for ( probe_qb = 0u; probe_qb < 4u; probe_qb++ )
-			{
-				(void)cudaMemcpy(probe_pre,(uint8_t *)device_bf16 + (uint64_t)probe_qb * sizeof(probe_pre),sizeof(probe_pre),cudaMemcpyDeviceToHost);
-				for ( probe_qi = 0u; probe_qi < 256u; probe_qi++ )
-					probe_qs += probe_pre[probe_qi];
-			}
-			fprintf(stderr,"G5N-PROBE layer %u pre-wide-submit hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_qs);
-		}
 	}
 	else
 	{
@@ -1823,27 +1808,6 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION:
-		if ( SparkGlm5NextProbeEnabled() )
-		{
-			uint16_t probe_hidden[256];
-			uint32_t probe_i,probe_block;
-			uint64_t probe_sum;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_sum = 0u;
-			for ( probe_block = 0u; probe_block < 4u; probe_block++ )
-			{
-				error = cudaMemcpy(probe_hidden,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_block * sizeof(probe_hidden),sizeof(probe_hidden),cudaMemcpyDeviceToHost);
-				for ( probe_i = 0u; probe_i < 256u; probe_i++ )
-					probe_sum += probe_hidden[probe_i];
-			}
-			fprintf(stderr,"G5N-PROBE layer %u rows %u hidden row0 [0,1024) bf16sum %llu first8 %u %u %u %u %u %u %u %u\n",
-				(unsigned)chain->next_layer,
-				(unsigned)chain->wave_rows,
-				(unsigned long long)probe_sum,
-				(unsigned)probe_hidden[0],(unsigned)probe_hidden[1],(unsigned)probe_hidden[2],(unsigned)probe_hidden[3],
-				(unsigned)probe_hidden[4],(unsigned)probe_hidden[5],(unsigned)probe_hidden[6],(unsigned)probe_hidden[7]);
-			(void)error;
-		}
 		if ( SparkGlm5NextLaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1855,22 +1819,6 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION:
-		if ( SparkGlm5NextProbeEnabled() )
-		{
-			uint16_t probe_attn[256];
-			uint32_t probe_i,probe_block;
-			uint64_t probe_sum;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_sum = 0u;
-			for ( probe_block = 0u; probe_block < 4u; probe_block++ )
-			{
-				error = cudaMemcpy(probe_attn,(uint8_t *)chain->slot->attention_out_bf16 + (uint64_t)probe_block * sizeof(probe_attn),sizeof(probe_attn),cudaMemcpyDeviceToHost);
-				for ( probe_i = 0u; probe_i < 256u; probe_i++ )
-					probe_sum += probe_attn[probe_i];
-			}
-			(void)error;
-			fprintf(stderr,"G5N-PROBE layer %u attn_out [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_sum);
-		}
 		if ( SparkGlm5NextLaunchCudaLayerAttentionPost(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1880,22 +1828,6 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_MLP:
-		if ( SparkGlm5NextProbeEnabled() )
-		{
-			uint16_t probe_mlp0[256];
-			uint32_t probe_mi,probe_mb;
-			uint64_t probe_ms;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_ms = 0u;
-			for ( probe_mb = 0u; probe_mb < 4u; probe_mb++ )
-			{
-				error = cudaMemcpy(probe_mlp0,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_mb * sizeof(probe_mlp0),sizeof(probe_mlp0),cudaMemcpyDeviceToHost);
-				for ( probe_mi = 0u; probe_mi < 256u; probe_mi++ )
-					probe_ms += probe_mlp0[probe_mi];
-			}
-			(void)error;
-			fprintf(stderr,"G5N-PROBE layer %u mlp-entry hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ms);
-		}
 		if ( SparkGlm5NextLaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1911,22 +1843,6 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
-		}
-		if ( SparkGlm5NextProbeEnabled() )
-		{
-			uint16_t probe_post[256];
-			uint32_t probe_pi,probe_pb;
-			uint64_t probe_ps;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			probe_ps = 0u;
-			for ( probe_pb = 0u; probe_pb < 4u; probe_pb++ )
-			{
-				error = cudaMemcpy(probe_post,(uint8_t *)chain->slot->hidden_bf16 + (uint64_t)probe_pb * sizeof(probe_post),sizeof(probe_post),cudaMemcpyDeviceToHost);
-				for ( probe_pi = 0u; probe_pi < 256u; probe_pi++ )
-					probe_ps += probe_post[probe_pi];
-			}
-			(void)error;
-			fprintf(stderr,"G5N-PROBE layer %u post-mlp hidden [0,1024) bf16sum %llu\n",(unsigned)chain->next_layer,(unsigned long long)probe_ps);
 		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
@@ -1960,23 +1876,6 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		{
 			SparkGlm5NextTpChainFail(chain,launch_status);
 			return;
-		}
-		if ( SparkGlm5NextProbeEnabled() )
-		{
-			float probe_score = 0.0f;
-			uint32_t probe_token = 0u;
-			uint64_t probe_maxloc = 0u;
-			(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
-			error = cudaMemcpy(&probe_score,chain->slot->output_score,sizeof(probe_score),cudaMemcpyDeviceToHost);
-			if ( error == cudaSuccess )
-				error = cudaMemcpy(&probe_token,chain->slot->output_token,sizeof(probe_token),cudaMemcpyDeviceToHost);
-			if ( error == cudaSuccess )
-				error = cudaMemcpy(&probe_maxloc,chain->slot->head_maxloc_u64,sizeof(probe_maxloc),cudaMemcpyDeviceToHost);
-			fprintf(stderr,"G5N-PROBE head score %.6f token %u maxloc %llx rank %u/%u\n",
-				(double)probe_score,(unsigned)probe_token,
-				(unsigned long long)probe_maxloc,
-				state->tp_rank,state->tp_degree);
-			(void)error;
 		}
 		if ( chain->next_wave_row < chain->batch->row_count )
 		{
@@ -2157,10 +2056,6 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	}
-	fprintf(stderr,"G5N-DBG complete: exit slot %u status %u pos %llu rows %u lanes %u\n",
-		(unsigned)async->slot_index,(unsigned)async->completion.status,
-		(unsigned long long)async->completion.sequence_position,
-		(unsigned)async->row_count,(unsigned)async->lane_count);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
@@ -2205,33 +2100,6 @@ static SparkStatus SparkGlm5NextExecuteBatch(
 	SparkStatus status;
 	cudaError_t error;
 	batch = context->batch;
-	fprintf(stderr,"G5N-DBG execute: frame req %llu seq %llu pos %llu new %u slots %u rows %u act %u flags %llx frame_lanes %u\n",
-		(unsigned long long)frame->request_id,(unsigned long long)frame->sequence_id,
-		(unsigned long long)frame->sequence_position,(unsigned)frame->new_token_count,
-		(unsigned)frame->active_slot_count,(unsigned)batch->row_count,
-		(unsigned)batch->active_sequence_count,
-		(unsigned long long)frame->flags,
-		(unsigned)frame->cache_lane_count);
-	if ( SparkGlm5NextProbeEnabled() && batch->token_ids != 0 )
-	{
-		uint32_t probe_row;
-		fprintf(stderr,"G5N-PROBE batch token_ids rows %u:",batch->row_count);
-		for ( probe_row = 0u; probe_row < batch->row_count && probe_row < 8u; probe_row++ )
-			fprintf(stderr," %u",batch->token_ids[probe_row]);
-		fprintf(stderr,"\n");
-	}
-	if ( frame->cache_lane_count != 0u )
-	{
-		const SparkModelDriverCacheLane *frame_lane = &frame->cache_lanes[0];
-		fprintf(stderr,"G5N-DBG execute: frame_lane[0] slot %u seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx\n",
-			(unsigned)frame_lane->resident_sequence_slot,
-			(unsigned long long)frame_lane->sequence_id,
-			(unsigned long long)frame_lane->sequence_position,
-			(unsigned long long)frame_lane->context_token_count,
-			(unsigned long long)frame_lane->prefix_token_count,
-			(unsigned long long)frame_lane->publish_token_count,
-			(unsigned long long)frame_lane->flags);
-	}
 	continuity.state = state;
 	continuity.batch = batch;
 	continuity.bound = simulated_bound;
@@ -2352,13 +2220,6 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	table.predicate_context = state;
 	table.cost = SparkGlm5NextAdmissionCost;
 	table.cost_context = state;
-	fprintf(stderr,"G5N-DBG admit-entry: prog %u slots %u new %u pos %llu flags %llx lanes %u admflags %u avail %u\n",
-		(unsigned)request->program_id,(unsigned)request->active_slot_count,
-		(unsigned)request->new_token_count,
-		(unsigned long long)request->sequence_position,
-		(unsigned long long)request->frame_flags,
-		(unsigned)request->cache_lane_count,
-		(unsigned)request->admission_flags,(unsigned)available);
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )
 		return(status);

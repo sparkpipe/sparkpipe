@@ -174,19 +174,6 @@ static uint64_t SparkTpDeviceCollectiveNowMilli(void)
         ((uint64_t)current_time.tv_nsec / 1000000u);
 }
 
-static volatile uint64_t SparkTpDeviceCollectiveDbgSubCount;
-static volatile uint64_t SparkTpDeviceCollectiveDbgDoneCount;
-
-static uint64_t SparkTpDeviceCollectiveNowNs(void)
-{
-    struct timespec current_time;
-
-    if (clock_gettime(CLOCK_MONOTONIC,&current_time) != 0)
-        return 0u;
-    return ((uint64_t)current_time.tv_sec * 1000000000u) +
-        (uint64_t)current_time.tv_nsec;
-}
-
 static uint64_t SparkTpDeviceCollectiveStateWord(
     uint64_t generation,
     uint32_t phase,
@@ -1266,15 +1253,6 @@ static void SparkTpDeviceCollectivePublishCompletion(
     completion.credit_index = operation->credit_index;
     completion.ordinal = operation->ordinal;
     completion.generation = operation->generation;
-    if (SparkTpDeviceCollectiveDbgDoneCount < 160u)
-    {
-        SparkTpDeviceCollectiveDbgDoneCount++;
-        fprintf(stderr,"TPDONE hid=%u slot=%u ord=%llu t=%llu\n",
-            implementation->collective->local_hidden_dimension,
-            operation->slot_index,
-            (unsigned long long)operation->ordinal,
-            (unsigned long long)SparkTpDeviceCollectiveNowNs());
-    }
     operation->completion_function(operation->completion_context,&completion);
     (void)SparkTpDeviceCollectiveTransitionPhase(operation,
         SPARK_TP_DEVICE_COLLECTIVE_PHASE_CALLBACK_CLAIMED,
@@ -1549,16 +1527,6 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     operation = &implementation->operations[credit_index];
-    if (SparkTpDeviceCollectiveDbgSubCount < 160u)
-    {
-        SparkTpDeviceCollectiveDbgSubCount++;
-        fprintf(stderr,"TPSUB rank=%u ord=%llu kind=%u hid=%u t=%llu\n",
-            collective->tp_rank,
-            (unsigned long long)submission->ordinal,
-            (uint32_t)operation_kind,
-            collective->local_hidden_dimension,
-            (unsigned long long)SparkTpDeviceCollectiveNowNs());
-    }
     expected_state = atomic_load_explicit(
         &operation->lifecycle,memory_order_acquire);
     if (SparkTpDeviceCollectiveStatePhase(expected_state) !=

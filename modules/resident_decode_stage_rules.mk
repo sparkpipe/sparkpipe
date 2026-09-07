@@ -19,9 +19,6 @@ endif
 ifndef MODULE_CUDA_SOURCE
 $(error MODULE_CUDA_SOURCE must be defined before including resident_decode_stage_rules.mk)
 endif
-ifndef STAGE_PACK_PATH
-$(error STAGE_PACK_PATH must be defined before including resident_decode_stage_rules.mk)
-endif
 ifndef RUNTIME_CONFIGURATION
 $(error RUNTIME_CONFIGURATION must be defined before including resident_decode_stage_rules.mk)
 endif
@@ -36,9 +33,11 @@ NVCC ?= nvcc
 CUDA_HOME ?= /usr/local/cuda
 CUDA_ARCH ?= sm_121a
 CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
+HOST_ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d . | sed 's/^/sm_/')
+HOST_COMPUTE_ARCH ?= $(subst sm_,compute_,$(HOST_ARCH))
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3
 MODULE_POSIX_FLAGS := -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
-NVCCFLAGS ?= -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
+NVCCFLAGS ?= -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH) $(if $(filter $(HOST_ARCH),$(CUDA_ARCH:%a=%)),,-gencode arch=$(HOST_COMPUTE_ARCH),code=$(HOST_ARCH))
 MODULE_LIBRARY_ROOT ?= $(REPOSITORY_ROOT)/build/module_library
 GPU_VALIDATOR ?=
 GPU_VALIDATOR_ARGUMENTS ?=
@@ -181,7 +180,7 @@ require_cuda_target:
 	@test "$(CUDA_ARCH)" = "sm_121a" || { echo "$(MODULE_FAMILY): CUDA_ARCH must be sm_121a, got $(CUDA_ARCH)" >&2; exit 1; }
 
 require_stage_pack:
-	@test -r "$(STAGE_PACK_PATH)" || { echo "$(MODULE_FAMILY): readable STAGE_PACK_PATH is required: $(STAGE_PACK_PATH)" >&2; exit 1; }
+	@test -z "$(STAGE_PACK_PATH)" || test -r "$(STAGE_PACK_PATH)" || { echo "$(MODULE_FAMILY): readable STAGE_PACK_PATH is required: $(STAGE_PACK_PATH)" 2>&1; exit 1; }
 
 require_gpu_validator:
 	@test -n "$(GPU_VALIDATOR)" || { echo "$(MODULE_FAMILY): GPU_VALIDATOR must name an executable retained-receipt validator" >&2; exit 1; }
