@@ -26,7 +26,7 @@ export PATH="/usr/local/cuda/bin:$PATH"
 SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 
 echo "== host build"
-make -q build/sparkpipe_model_compile || make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api
+make -q build/sparkpipe_model_compile || make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/libhidden_transport_spark_host_rdma_verbs.so
 
 echo "== park local agent + daemon (validator needs the GPU; UPDATE restores the fleet)"
 systemctl --user stop fleet-agent 2>/dev/null || true
@@ -56,9 +56,11 @@ build/sparkpipe_model_compile \
     --cc-arg -ldl --cc-arg -pthread 2>&1 | tail -1
 
 echo "== install into hub reference"
-ssh -o BatchMode=yes "${HUB_REF%%:*}" "mkdir -p '${HUB_REF#*:}/$ROOT_NAME/stages/stage_000'"
+ssh -o BatchMode=yes "${HUB_REF%%:*}" "mkdir -p '${HUB_REF#*:}/$ROOT_NAME/stages/stage_000' '${HUB_REF#*:}/$ROOT_NAME/lib'"
 rsync -c "$HOME/sparkdata/out/stages/stage_000/model_driver.so" \
     "${HUB_REF}/$ROOT_NAME/stages/stage_000/model_driver.so"
+rsync -c build/libhidden_transport_spark_host_rdma_verbs.so \
+    "${HUB_REF}/$ROOT_NAME/lib/hidden_transport.so"
 ssh -o BatchMode=yes "${HUB_REF%%:*}" "touch '${HUB_REF#*:}/$ROOT_NAME/UPDATE'"
 systemctl --user start fleet-agent 2>/dev/null || true
 echo "released $REV"
