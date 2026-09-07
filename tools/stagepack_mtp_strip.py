@@ -50,6 +50,20 @@ FAMILIES = {
         "mtp_global_kinds": {28, 29, 30, 31, 43, 44},
         "mtp_layer_range": None, "sentinel_mtp": True,   # layer == 0xFFFFFFFE
     },
+    # qwen36sp (qwen38_27b packer): 120-byte header (26I2Q), 56-byte
+    # entries (<6I4Q) — same layout as qwen4_flash. MTP tensors ride the
+    # 0xFFFFFFFE layer marker with kinds 23..26 (MTP_FC + three norms);
+    # the 0xffffffff GLOBAL entries (kinds 0..2) are the embedding/head
+    # and are NOT MTP.
+    "qwen36sp": {
+        "magic": 0x50533651, "header_bytes": 120,
+        "u32_count": 26, "count_index": 4, "mtp_index": 25,
+        "u64_count_index": 0,
+        "entry_bytes": 56,
+        "payload_off_at": 24, "scale_off_at": 40,
+        "mtp_global_kinds": set(),
+        "mtp_layer_range": None, "sentinel_mtp": True,
+    },
     # dsv4 (DSpark draft blocks): 80-byte header (<16I2Q), 40-byte
     # entries (<6I2Q) WITHOUT size fields - offsets are monotonic, so
     # the tail check runs on offsets alone. MTP = the three draft
