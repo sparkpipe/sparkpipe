@@ -145,6 +145,7 @@ int main(int argc,char **argv)
         config.operation_timeout_milli = 30000u;
         config.control_port_base = 21000u + rank_index;
         config.collective_identifier = UINT64_C(0x534c4f54424e4348);
+        config.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
         config.backend_module_path = dso;
         config.local_host = "bench";
         {
