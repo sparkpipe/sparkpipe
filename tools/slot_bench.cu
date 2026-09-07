@@ -1,11 +1,11 @@
 #include <cuda_runtime.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <atomic>
 #include "sparkpipe/spark_tp_device_collective.h"
 
 typedef struct SlotBenchRank
@@ -13,9 +13,8 @@ typedef struct SlotBenchRank
     SparkTpDeviceCollective collective;
     void *local_device;
     void *full_device;
-    uint64_t *flag_device;
     uint64_t ordinal;
-    atomic_uint done;
+    std::atomic<unsigned> done;
 } SlotBenchRank;
 
 static uint64_t NowNs(void)
@@ -91,9 +90,9 @@ static void SlotBenchCompletion(
 {
     SlotBenchRank *rank = (SlotBenchRank *)context;
     if (completion != 0 && completion->status == SPARK_STATUS_OK)
-        atomic_store_explicit(&rank->done,1u,memory_order_release);
+        rank->done.store(1u,std::memory_order_release);
     else if (completion != 0)
-        atomic_store_explicit(&rank->done,2u,memory_order_release);
+        rank->done.store(2u,std::memory_order_release);
 }
 
 int main(int argc,char **argv)
@@ -168,7 +167,7 @@ int main(int argc,char **argv)
             return 1;
         }
         ranks[rank_index].ordinal = 0u;
-        atomic_init(&ranks[rank_index].done,0u);
+        ranks[rank_index].done.store(0u,std::memory_order_relaxed);
     }
     fprintf(stderr,"mesh up: %u ranks, %u ops, producer %.1f us\n",
         tp_degree,ops,producer_us);
@@ -195,8 +194,7 @@ int main(int argc,char **argv)
             if (producer_us > 0.0)
                 SlotBenchProducerKernel<<<1,32,0,compute_stream>>>(
                     (unsigned long long)(producer_us * clock_mhz),0);
-            atomic_store_explicit(&ranks[rank_index].done,0u,
-                memory_order_release);
+            ranks[rank_index].done.store(0u,std::memory_order_release);
             if (SparkTpDeviceCollectiveSubmitBf16(
                     &ranks[rank_index].collective,&submission) !=
                     SPARK_STATUS_OK)
@@ -219,14 +217,14 @@ int main(int argc,char **argv)
         for (rank_index = 0u; rank_index < tp_degree; ++rank_index)
         {
             uint64_t waited = 0u;
-            while (atomic_load_explicit(&ranks[rank_index].done,
-                    memory_order_acquire) == 0u)
+            while (ranks[rank_index].done.load(std::memory_order_acquire) ==
+                    0u)
             {
                 if (++waited > 1200000000000ull)
                     break;
             }
-            if (atomic_load_explicit(&ranks[rank_index].done,
-                    memory_order_acquire) != 1u)
+            if (ranks[rank_index].done.load(std::memory_order_acquire) !=
+                    1u)
             {
                 fprintf(stderr,"rank %u op %u failed/timed out\n",
                     rank_index,op_index);
