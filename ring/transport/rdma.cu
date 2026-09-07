@@ -147,6 +147,7 @@ typedef struct SparkHiddenSparkHostRdmaQueuePairWireInfo
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR \
     "/mnt/qpn"
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_TTL_SECONDS 900u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_AWAIT_SECONDS 180u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_MAGIC \
     UINT64_C(0x5245454e44565a53)
 
@@ -154,6 +155,7 @@ typedef struct SparkHiddenSparkHostRdmaRendezvousRecord
 {
     uint64_t magic;
     uint64_t boot_id;
+    uint64_t rendezvous_started_ns;
     uint64_t fixed_address;
     uint64_t fixed_bytes;
     uint32_t fixed_rkey;
@@ -509,6 +511,7 @@ static SparkStatus SparkHiddenSparkHostRdmaAwaitPeerRecord(
     SparkStatus status;
 
     SparkHiddenSparkHostRdmaBuildIdentity(state,&local_identity);
+    state->rendezvous_started_ns = SparkHiddenSparkHostRdmaMonotonicNs();
     (void)poll(0,0,300);
     for (;;)
     {
@@ -520,7 +523,10 @@ static SparkStatus SparkHiddenSparkHostRdmaAwaitPeerRecord(
                 &local_identity,&record->identity);
         if (status == SPARK_STATUS_OK)
             return SPARK_STATUS_OK;
-        if (now_ns == 0u || now_ns >= state->open_deadline_ns)
+        if (now_ns == 0u || now_ns >= state->open_deadline_ns &&
+            now_ns >= state->rendezvous_started_ns +
+                SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_AWAIT_SECONDS *
+                    UINT64_C(1000000000))
         {
             fprintf(stderr,
                 "rendezvous await timeout route=%s peer=%u path_dir=%s\n",
