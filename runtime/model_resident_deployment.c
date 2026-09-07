@@ -6,6 +6,7 @@
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_model_runtime.h"
 
 static const char *const SparkModelResidentDeploymentRootMembers[] =
 {
@@ -15,7 +16,9 @@ static const char *const SparkModelResidentDeploymentRootMembers[] =
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT 7u
 static const char *const SparkModelResidentDeploymentTokenizerMembers[] =
 {
-	"path"
+	"path",
+	"vocabulary_size",
+	"sha256"
 };
 static const char *const SparkModelResidentDeploymentAdapterMembers[] =
 {
@@ -355,8 +358,18 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	}
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentTokenizerMembers,1u);
-	return(status == SPARK_STATUS_OK ? SparkModelResidentDeploymentString(document,object,"path",&deployment->tokenizer_asset_path) : status);
+	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentTokenizerMembers,3u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkModelResidentDeploymentString(document,object,"path",&deployment->tokenizer_asset_path);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"vocabulary_size",&deployment->tokenizer_vocabulary_size);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentString(document,object,"sha256",&deployment->tokenizer_asset_sha256);
+	if ( status == SPARK_STATUS_OK && (deployment->tokenizer_vocabulary_size == 0u ||
+			!SparkModelRuntimeArtifactSha256IsValid(deployment->tokenizer_asset_sha256)) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	return(status);
 }
 
 static SparkStatus SparkModelResidentDeploymentParseWeightd(
@@ -495,6 +508,7 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->transport_shared_object_path);
 	free(deployment->transport_mode);
 	free(deployment->tokenizer_asset_path);
+	free(deployment->tokenizer_asset_sha256);
 	free(deployment->weightd_socket_path);
 	for (index=0u; index<deployment->node_count; index++)
 	{

@@ -15,6 +15,7 @@
 
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tokenizer_sidecar.h"
 
 #ifndef TEST_MODEL_API_PATH
@@ -188,6 +189,32 @@ static void TestApiWriteDeployment(const char *path,
 	fixture.control_port_base = control_port_base;
 	fixture.node_count = TEST_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
+	if ( tokenizer_asset_path != 0 )
+	{
+		SparkTokenizerSidecar sidecar;
+		SparkTokenizerSidecarConfiguration configuration;
+		static char asset_sha256[SPARK_SHA256_HEX_BYTES];
+		static const char missing_sha256[] = "0000000000000000000000000000000000000000000000000000000000000000";
+		SparkTokenizerSidecarReset(&sidecar);
+		memset(&configuration,0,sizeof(configuration));
+		configuration.abi_version = SPARK_TOKENIZER_SIDECAR_ABI_VERSION;
+		configuration.descriptor_bytes =
+			SPARK_TOKENIZER_SIDECAR_CONFIGURATION_DESCRIPTOR_BYTES;
+		configuration.asset_path = tokenizer_asset_path;
+		configuration.format = SPARK_TOKENIZER_SIDECAR_FORMAT_AUTO;
+		if ( SparkTokenizerSidecarLoad(&sidecar,&configuration) == SPARK_STATUS_OK &&
+			SparkSha256File(tokenizer_asset_path,asset_sha256) == SPARK_STATUS_OK )
+		{
+			fixture.tokenizer_vocabulary_size = sidecar.tokenizer.vocabulary_count;
+			fixture.tokenizer_asset_sha256 = asset_sha256;
+		}
+		else
+		{
+			fixture.tokenizer_vocabulary_size = 1u;
+			fixture.tokenizer_asset_sha256 = missing_sha256;
+		}
+		SparkTokenizerSidecarUnload(&sidecar);
+	}
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
 

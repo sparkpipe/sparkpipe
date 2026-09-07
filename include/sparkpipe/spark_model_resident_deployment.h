@@ -44,8 +44,10 @@ typedef struct SparkModelResidentDeployment
 	char *transport_mode;
 	uint32_t transport_control_port_base;
 	char *tokenizer_asset_path;
+	uint32_t tokenizer_vocabulary_size;
+	char *tokenizer_asset_sha256;
 	char *weightd_socket_path;
-	uint32_t reserved[4];
+	uint32_t reserved[3];
 	SparkModelResidentDeploymentNode nodes[
 		SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
 } SparkModelResidentDeployment;

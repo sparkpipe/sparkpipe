@@ -133,8 +133,12 @@ static int32_t TestModelResidentWriteBody(
 			status = -8;
 		else
 			status = TestModelResidentWriteText(stream,fixture->tokenizer_asset_path);
-		if ( status == 0 && fputc('}',stream) == EOF )
+		if ( status == 0 && fprintf(stream,",\"vocabulary_size\":%u,\"sha256\":",fixture->tokenizer_vocabulary_size) < 0 )
 			status = -9;
+		if ( status == 0 )
+			status = TestModelResidentWriteText(stream,fixture->tokenizer_asset_sha256);
+		if ( status == 0 && fputc('}',stream) == EOF )
+			status = -10;
 	}
 	if ( status == 0 && fputs("}",stream) == EOF )
 		status = -7;
