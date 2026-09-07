@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "sparkpipe/spark_tp_collective.h"
 
 #include <arpa/inet.h>

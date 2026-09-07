@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include "tp_device_collective_nccl.h"
 
 #include <arpa/inet.h>
