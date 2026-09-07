@@ -115,5 +115,8 @@
       ],
       "target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16"
     }
-  ]
+  ],
+  "tokenizer": {
+    "path": "/opt/sparkpipe/tokenizers/dsv4_tokenizer.json"
+  }
 }

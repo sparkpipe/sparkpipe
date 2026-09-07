@@ -570,6 +570,9 @@ def render_flash_model_description(
             }],
         }],
     }
+    description["tokenizer"] = {
+        "path": "/opt/sparkpipe/tokenizers/dsv4_tokenizer.json",
+    }
     return json.dumps(description, indent=2, sort_keys=True) + "\n"
 
 
