@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -340,6 +341,8 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint64_t gpudirect_transfer_bytes;
 } SparkHiddenSparkHostRdmaState;
 
+static uint64_t SparkHiddenSparkHostRdmaMonotonicNs(void);
+
 static void SparkHiddenSparkHostRdmaRendezvousPath(
     const SparkHiddenSparkHostRdmaState *state,
     uint32_t writer_rank,
@@ -348,7 +351,7 @@ static void SparkHiddenSparkHostRdmaRendezvousPath(
 {
     snprintf(buffer,bytes,"%s/%016llx-%d-%d-%u.rec",
         SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR,
-        (unsigned long long)state->route_identifier,
+        (unsigned long long)state->endpoint.route_identifier,
         state->source_rank,state->sink_rank,writer_rank);
 }
 
