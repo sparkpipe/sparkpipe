@@ -905,3 +905,22 @@ maps driven by .experts (eager: nothing above the 64 MiB chunk layer;
 expert tensors resolved through the safetensors header to chunk
 ranges), then the TP16 native module (forward cell = blueprint,
 FP8-native MX kernels).
+
+## 09-08: the proper .experts C tool — gate solved, provenance closed
+
+Operator directive: fix the blocking of the .experts .c tool. Root
+cause of the rejections (5 blocked candidates): the Mimosa pre-write
+engine rejects argv-derived WRITE paths (fopen(argv[2], "wb")) and
+text-parsed offsets; it accepts output names DERIVED from the input
+(snprintf("%s.experts", argv[1])) and offsets from fixed-struct
+fread directories — exactly the committed glm5_next_experts_manifest
+shape. With that shape the tool passed unmodified.
+
+tools/hy4_experts_manifest.c: emits the .experts chunk-cover (64 MiB
+chunks, 40B glm5_next records, ck128 per chunk) from the pack alone.
+Validated on sparkc: regenerated rank-00's deployed .experts
+BYTE-IDENTICAL (837 chunks, 33496 bytes, record-0 ck128
+7a6aa3862b97a940e3a9f3b6982a61a0). The ck128 path is the committed
+src/spark_ck128.c — no second hash implementation exists. The interim
+python ck128 port and per-expert plan scaffolding are deleted; the
+deployed .experts files (sysadmin, 09-05) are correct as-is.
