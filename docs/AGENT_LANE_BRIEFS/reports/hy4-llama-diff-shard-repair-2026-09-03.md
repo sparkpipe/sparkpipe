@@ -827,3 +827,44 @@ generator. Exactness verified BEFORE any timing, per the standing law.
 Next: FP8 placement (script staged, 16/16 verified) -> weightd/
 residentd wiring with LAZY expert load -> TP16 native module (this
 cell is the blueprint) -> tok/s hill climb.
+
+## 09-08: wiring design (lazy expert load) — recorded before module code
+
+Operator directives in force: lazy expert load in residentd; MTP out
+of scope (separate files, sysadmin); smoketest-scale cells.
+
+Mechanism read from main: modules open the pack FILE and call
+SparkWeightdAttachPack (model+sha keyed) -> weightd loads the pack
+once into its VMM arena and exports handles; module imports the map.
+On attach failure the module falls back to per-region file reads
+(SparkStageModuleLoadDeviceRegion(ledger, file, offset, bytes, &ptr)).
+Per-tensor binding is entries of (payload_offset, payload_bytes,
+scale_offset, scale_bytes) assigned by tensor kind — the stagepack
+format header defines the kinds.
+
+hy4 lazy design (both paths):
+- Stagepack format header declares the tensor kinds and marks the
+  expert classes (ffn_gate_exps / ffn_up_exps / ffn_down_exps slices
+  per local expert) LAZY; everything else EAGER.
+- At load: eager regions bind immediately (~9 GB/rank non-expert of
+  the 56 GB pack). Expert slabs are contiguous per expert in the
+  dim0-split layout (expert e's slice of a [16, O, I] tensor is one
+  contiguous range), so each (layer, local expert) is exactly one
+  region.
+- The module keeps a slot table (layer, expert) -> {offset, bytes,
+  ptr, bound}. Decode routing (host-side top-8 selection) names the
+  needed experts BEFORE the expert pass; unbound slots load on first
+  touch and stay resident. B1/B4 smoketests touch a handful of
+  experts -> small resident footprint -> multi-driver coexistence.
+- weightd-attached mode maps the whole arena (residency is weightd's
+  business); the fallback path gets true load-on-demand. When the
+  weightd lane lands chunk-level partial maps (design doc S3), the
+  same slot table drives arena chunk maps — no hy4-side change.
+
+Module port anatomy (from glm5_next template): firmware header
+generated from the hy4 contracts (generate_hy4_contracts.py already
+on main), stagepack_format.h = hy4-fp8-tp16-v1 (per-rank safetensors
++ manifest-rank-XX.json contract), source/cuda = the forward cell
+kernels ported to FP8-native (MX group-32 scale apply; the 9 dequant
+classes disappear — pack format IS kernel format), validation =
+the exactness receipts (TOP1 299 val 15.2826, head mixes to 1e-4).
