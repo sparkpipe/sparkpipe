@@ -161,6 +161,8 @@ int main(int argc,char **argv)
                 config.rank_hosts[peer_index] = "bench";
                 config.session_ports[peer_index][rank_index] =
                     (uint16_t)(21000u + peer_index);
+                config.session_ports[rank_index][peer_index] =
+                    (uint16_t)(21000u + rank_index);
             }
         }
         config.registration_cuda_stream = compute_stream;
