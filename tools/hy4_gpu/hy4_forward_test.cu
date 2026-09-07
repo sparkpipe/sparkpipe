@@ -787,16 +787,11 @@ int main(int argc, char** argv) {
             }
         }
         {
-            const int nb = (HC * N_EMBD + 255) / 256;
-            k_sum<<<nb, 256>>>(d_streams_all, d_red, HC * N_EMBD);
-            std::vector<float> parts(nb);
-            cudaMemcpy(parts.data(), d_red, nb * 4, cudaMemcpyDeviceToHost);
+            k_sum<<<1, 256>>>(d_streams_all, d_red, HC * N_EMBD);
             float s = 0.f;
             int bad = 0;
-            for (int i = 0; i < nb; ++i) {
-                s += parts[i];
-                if (!isfinite(parts[i])) bad = 1;
-            }
+            cudaMemcpy(&s, d_red, 4, cudaMemcpyDeviceToHost);
+            bad = !isfinite(s);
             fprintf(stderr, "post-ffn  L%d t0: sum %.6f nan=%d\n", il, s,
                     bad);
             fflush(stderr);
