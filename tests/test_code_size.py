@@ -1457,13 +1457,15 @@ CEILING = 237507
 # PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
 # Re-pinned from measured reality per the ratchet rule.
 CEILING = 233150
-# 235653 exact (2026-09-08, dsv4flash lane re-pin from measured reality):
+# 235671 exact (2026-09-08, dsv4flash lane re-pin from measured reality):
 # +65 mine (tools/dsv4flash_build_release.sh — the DEVCYCLE build+release
-# script with the tp16 default-firmware pairing law); the remaining +2438
-# is inherited drift: main@862a2fe measures 235588, and the 233150 pin sat
-# BELOW the earlier 237507 pin — a merge ratcheted DOWN past reality.
-# Ratchets only move up; this restores the floor at measured truth.
-CEILING = 235653
+# script with the tp16 default-firmware pairing law); +83 mine (weightd
+# runtime content verification becomes opt-in SPARK_WEIGHTD_VERIFY=1 —
+# the firmware model: validate at install/acceptance, load = plumbing);
+# the remaining +2355 is inherited drift: main@862a2fe measures 235588,
+# and the 233150 pin sat BELOW the earlier 237507 pin — a merge ratcheted
+# DOWN past reality. Ratchets only move up; this restores the floor.
+CEILING = 235671
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
