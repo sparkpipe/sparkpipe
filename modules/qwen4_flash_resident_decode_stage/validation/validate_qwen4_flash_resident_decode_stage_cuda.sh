@@ -57,7 +57,15 @@ if [[ "${SPARK_QWEN4_FLASH_TP_DEGREE:-1}" != "1" ]] || [[ "${SPARK_QWEN4_FLASH_T
     require_configuration_value SPARK_QWEN4_FLASH_TP_STANDALONE 1
     require_configuration_value SPARK_QWEN4_FLASH_STAGE_COUNT 1
     require_configuration_value SPARK_QWEN4_FLASH_STAGE_LAYER_COUNT 48
-    require_configuration_value SPARK_QWEN4_FLASH_STAGE_MTP 1
+    # MTP follows the pack: main packs are MTP-free (separate MTP sidecar
+    # files are a later phase); MTP-carrying packs compile the draft chain.
+    case "${SPARK_QWEN4_FLASH_STAGE_MTP:-0}" in
+        0|1) ;;
+        *)
+            echo "qwen4_flash hardware validation requires SPARK_QWEN4_FLASH_STAGE_MTP in {0,1}, got '${SPARK_QWEN4_FLASH_STAGE_MTP}'" >&2
+            exit 2
+            ;;
+    esac
 else
     if (( ${SPARK_QWEN4_FLASH_STAGE_COUNT:-0} < 2 )); then
         echo "qwen4_flash hardware validation requires SPARK_QWEN4_FLASH_STAGE_COUNT >= 2 (mid-pipeline stage 0)" >&2
