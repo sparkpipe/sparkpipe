@@ -130,6 +130,52 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
+    /* LAZY ARENA, opt-in: set SPARK_WEIGHTD_ATTACH_LAZY and generate a
+     * per-pack .experts manifest (tools/glm52_experts_manifest). The
+     * lazy arena VMM-reserves with NO read; expert extents materialize
+     * only through the Ensure protocol, so a module that has not
+     * implemented Ensure MUST NOT enable this (unread extents read as
+     * unallocated device memory). The server rejects the lazy attach
+     * when the manifest is absent or over budget; any lazy failure
+     * falls through to the eager resident attach below, unchanged. */
+    if (SparkWeightdAttachEnvText("SPARK_WEIGHTD_ATTACH_LAZY") != 0)
+    {
+        SparkWeightdLazyAttachRequest lazy_request;
+        SparkWeightdLazyAttachResult lazy_result;
+
+        memset(&lazy_result, 0, sizeof(lazy_result));
+        status = SparkWeightdClientConnect(socket, &outcome->client, 0);
+        if (status == SPARK_STATUS_OK)
+        {
+            memset(&lazy_request, 0, sizeof(lazy_request));
+            lazy_request.identity = identity;
+            memcpy(lazy_request.pack_path, pack_path,
+                strlen(pack_path) + 1u <= SPARK_WEIGHTD_PATH_BYTES
+                    ? strlen(pack_path) + 1u
+                    : SPARK_WEIGHTD_PATH_BYTES);
+            lazy_request.expert_pool_bytes =
+                SPARK_WEIGHTD_LAZY_POOL_BYTES_DEFAULT;
+            memset(&lazy_result, 0, sizeof(lazy_result));
+            status = SparkWeightdClientAttachLazy(outcome->client,
+                &lazy_request, &lazy_result, timeout_nanoseconds);
+        }
+        if (status == SPARK_STATUS_OK &&
+            lazy_result.status == SPARK_STATUS_OK)
+        {
+            outcome->device_handle = lazy_result.device_handle;
+            outcome->arena_bytes = lazy_result.arena_bytes;
+            outcome->arena_generation = lazy_result.arena_generation;
+            outcome->refcount = lazy_result.refcount;
+            outcome->loaded_from_pack = 0u;
+            return SPARK_STATUS_OK;
+        }
+        SparkWeightdAttachSetReason(reason, "lazy_attach_failed");
+        if (outcome->client != 0)
+        {
+            SparkWeightdAttachRelease(outcome);
+        }
+    }
+
     status = SparkWeightdClientConnect(socket, &outcome->client, 0);
     if (status != SPARK_STATUS_OK)
     {
