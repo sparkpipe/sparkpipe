@@ -122,10 +122,10 @@ spark_cuda_validation_check_toolchain() {
 	cuda_architecture="${CUDA_ARCH:-sm_121a}"
 	local host_arch
 	host_arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .\n' | sed 's/^/sm_/')
-	if [[ -z "${host_arch}" ]]; then
-	    host_arch="${cuda_architecture}"
+	if [[ -n "${host_arch}" && "${host_arch}" != "${cuda_architecture}" ]]; then
+	    echo "${validation_label} hardware validation needs the target GPU (arch ${cuda_architecture}, host has ${host_arch}); run on a spark" >&2
+	    exit 2
 	fi
-	cuda_architecture="${host_arch}"
 	if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
 	    echo "nvcc unavailable for ${validation_label} hardware validation" >&2
 	    exit 2

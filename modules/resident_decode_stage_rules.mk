@@ -33,11 +33,9 @@ NVCC ?= nvcc
 CUDA_HOME ?= /usr/local/cuda
 CUDA_ARCH ?= sm_121a
 CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
-HOST_ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d . | sed 's/^/sm_/')
-HOST_COMPUTE_ARCH ?= $(subst sm_,compute_,$(HOST_ARCH))
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3
 MODULE_POSIX_FLAGS := -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
-NVCCFLAGS ?= -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH) $(if $(filter $(HOST_ARCH),$(CUDA_ARCH:%a=%)),,-gencode arch=$(HOST_COMPUTE_ARCH),code=$(HOST_ARCH))
+NVCCFLAGS ?= -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
 MODULE_LIBRARY_ROOT ?= $(REPOSITORY_ROOT)/build/module_library
 GPU_VALIDATOR ?=
 GPU_VALIDATOR_ARGUMENTS ?=
