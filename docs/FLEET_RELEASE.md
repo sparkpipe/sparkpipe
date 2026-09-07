@@ -13,8 +13,9 @@ copying it into the reference — nothing else. This document is the contract.
 - **Pull, never push.** Every spark runs one fleet agent (systemd user unit,
   `tools/fleet_node_agent.sh`) that rsyncs the parts it owns from the hub
   every 5 seconds. Builds never fan out to nodes; they write to the hub once.
-- **Reload convention**: a file changed → TERM the daemon → start the new
-  one. This applies ONLY where a restart is cheap (see weightd below).
+- **Reload convention**: an UPDATE sentinel dropped next to the changed
+  files → TERM the daemon → start the new one. This applies ONLY where a
+  restart is cheap (see weightd below).
 
 ## Layout
 
@@ -40,12 +41,24 @@ nodes compute nothing.
 
 ## Updating a module
 
-All updates are the same act: **build, then copy into the hub reference.**
-The agents converge the fleet within one 5-second cycle.
+All updates are the same act: **build, copy into the hub reference, then
+drop the UPDATE sentinel.** The file `release/<root>/UPDATE` (content
+irrelevant — it becomes the ledger) is what triggers the reload; copying
+files alone leaves the old daemons running. The agents converge the fleet
+within a few 5-second cycles, coordinated through the sentinel:
+
+1. Every node rsyncs the root's parts (a failed rsync aborts that node's
+   restart; it retries next cycle).
+2. Each node TERMs its residentd for that root (cwd-scoped), waits for
+   exit, and appends `down:<host>` to the UPDATE ledger.
+3. Only when all 16 distinct hosts are `down:` does each node start the
+   new daemon and append `up:<host>`. This keeps the whole fleet on one
+   side of the seam at a time.
+4. When all 16 are `up:`, the ledger is archived to `UPDATE.<n>`.
 
 | module | where it goes | reload |
 |---|---|---|
-| model driver (`model_driver.so`) | `release/<root>/stages/stage_000/` | automatic (residentd restart, ~15s fleet-wide) |
+| model driver (`model_driver.so`) | `release/<root>/stages/stage_000/` | automatic (UPDATE sentinel, ~35-90s fleet-wide) |
 | serving adapter, hidden transport (`lib/*.so`) | `release/<root>/lib/` | automatic (same) |
 | configs (`stage_*.json`, `model_resident.json`) | `release/<root>/config/` | automatic (a config change is a restart) |
 | api / residentd binaries (`bin/*`) | `release/<root>/bin/` | automatic (cheap) |
@@ -65,6 +78,19 @@ That residency is the entire point:
   into place and takes effect at the next deliberate restart (manual
   choice, or node reboot). Schedule that only when you accept a fleet-wide
   cold load.
+- **Rolling a new binary out**: copy it into `release/weightd/` and drop
+  `release/weightd/UPDATE` containing the new binary's sha16 as the fleet
+  target. Every node rsyncs the binary and records the sha it synced in
+  `current/<host>.json`. Nodes NEVER remove the UPDATE file — it lives on
+  the hub, shared by all 16. Once `tools/fleet_sync.sh <ref> <roots>
+  status` shows every node reporting the new weightd sha, retire the
+  sentinel from the operator side:
+
+      tools/fleet_sync.sh <ref> <roots> retire-update
+
+  `retire-update` re-checks all 16 reports and refuses (nonzero, naming
+  the laggards) unless every node is on the target sha before it removes
+  the hub file.
 - residentd must never load packs itself — the direct-load path is a
   fallback seam for a missing weightd, and agents guarantee weightd is up
   before any residentd starts, so the fallback never engages.
@@ -91,14 +117,19 @@ transport. Reading one directory answers "what is running on every spark":
 
 ## Commands
 
-    tools/fleet_sync.sh <ref> <roots> start|stop|status
+    tools/fleet_sync.sh <ref> <roots> start|stop|status|retire-update
         install/control the per-node agents (systemd user units, survive
         reboots). <ref> e.g. rtx5090:release ; <roots> comma-separated.
+        retire-update removes a weightd UPDATE sentinel once all 16
+        nodes report its sha.
 
-    tools/fleet_serve.sh <root> stop|start|api|full
-        manual relaunch: TERM in parallel, same-second launch, ready-or-
-        error poll that fails in seconds (fail-fast prints the first
-        error line from any node).
+    tools/fleet_serve.sh <root> stop|start|api|full [--force-kill]
+        manual relaunch: full = stop && sync && start && api. stop TERMs
+        in parallel and polls up to 30s for the root's daemons to exit
+        (cwd-scoped), failing loudly if any host does not drain — a TERM'd
+        daemon that won't die is an incident; --force-kill adds a SIGKILL
+        sweep for when you mean it. start refuses to launch a second
+        daemon into a root that already has one.
 
 Build side (any capable host): produce artifacts in the runtime-root
 layout (module `make publish` + `sparkpipe_model_compile` + adapter make),

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # fleet_node_agent.sh — runs ON a spark: the whole release process.
 # Pulls every managed runtime root from a reference tree (ceph or any
-# reachable path), and on the convention file-changed -> TERM -> start,
-# restarts exactly what changed. After any (re)start it reports the
-# running binary versions to the fleet view on the hub (RTX5090 host).
+# reachable path), and on the UPDATE-sentinel convention (down:/up:
+# ledger -> TERM -> start), restarts exactly what changed. After any
+# (re)start it reports the running binary versions to the fleet view on
+# the hub (RTX5090 host).
 #
 # usage: fleet_node_agent.sh REFERENCE_BASE ROOTS_CSV [HUB]  (under setsid)
 #   REFERENCE_BASE  directory containing <root-name>/ per deployment
@@ -23,18 +24,19 @@ mkdir -p "$VIEW"
 sha16() { [ -f "$1" ] && sha256sum < "$1" | cut -c1-16 || echo none; }
 
 root_state() {
-    local rr="$HOME/sparkdata/$1"
-    if pgrep -f "bin/sparkpipe_model_residentd" >/dev/null && \
-       [ "$(readlink /proc/$(pgrep -f 'bin/sparkpipe_model_residentd' | head -1)/cwd 2>/dev/null)" = "$rr" ]; then
-        local last
-        last=$(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)
-        case "$last" in
-            *"model_residentd ready"*) echo "ready" ;;
-            *) echo "starting: $last" ;;
-        esac
-    else
-        echo "down"
-    fi
+    local rr="$HOME/sparkdata/$1" p
+    for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+        if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ]; then
+            local last
+            last=$(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)
+            case "$last" in
+                *"model_residentd ready"*) echo "ready" ;;
+                *) echo "starting: $last" ;;
+            esac
+            return
+        fi
+    done
+    echo "down"
 }
 
 report() {
@@ -48,11 +50,13 @@ report() {
             [ -d "$rr" ] || continue
             local st; st=$(root_state "$r")
             states="$states$r=$st;"
-            printf '%s"%s":{"state":"%s","residentd":"%s","driver":"%s"}' \
+            printf '%s"%s":{"state":"%s","residentd":"%s","driver":"%s","adapter":"%s","transport":"%s"}' \
                 "$([ $first = 1 ] && echo ,roots:{ || echo ,)" "$r" \
                 "${st//\"/\\\"}" \
                 "$(sha16 "$rr/bin/sparkpipe_model_residentd")" \
-                "$(sha16 "$rr/stages/stage_000/model_driver.so")"
+                "$(sha16 "$rr/stages/stage_000/model_driver.so")" \
+                "$(sha16 "$rr/lib/model_serving_adapter.so")" \
+                "$(sha16 "$rr/lib/hidden_transport.so")"
             first=0
         done
         [ $first = 0 ] && printf '}'
@@ -137,9 +141,14 @@ sync_root() {
     if [ "$exists" != yes ] && [ -x "$root/bin/sparkpipe_model_residentd" ]; then
         return 0
     fi
+    local rc=0
     for p in lib bin stages config model_resident.json; do
-        rsync -a -e "$HUBSSH" --checksum --omit-dir-times --exclude=stage.json "$REF_BASE/$name/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log" || true
+        rsync -a -e "$HUBSSH" --checksum --omit-dir-times --exclude=stage.json "$REF_BASE/$name/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log" || rc=1
     done
+    if [ "$rc" != 0 ]; then
+        echo "$(date +%T) $name: rsync FAILED; aborting restart, retry next cycle" >&2
+        return 1
+    fi
     [ "$exists" = yes ] || return 0
     upd=$($HUBSSH "$refhost" "cat '$refdir/UPDATE'") || upd=""
     if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
@@ -147,17 +156,19 @@ sync_root() {
         $HUBSSH "$refhost" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
         upd=$(printf '%s\ndown:%s\n' "$upd" "$HOST")
     fi
-    [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -ge "$FLEET_SIZE" ] || return 0
+    [ "$(printf '%s\n' "$upd" | grep '^down:' | sort -u | grep -c '^down:')" -ge "$FLEET_SIZE" ] || return 0
     if ! printf '%s\n' "$upd" | grep -qx "up:$HOST"; then
         start_root "$name" || return 0
         $HUBSSH "$refhost" "echo up:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
         upd=$(printf '%s\nup:%s\n' "$upd" "$HOST")
     fi
-    [ "$(printf '%s\n' "$upd" | grep -c '^up:')" -ge "$FLEET_SIZE" ] || return 0
+    [ "$(printf '%s\n' "$upd" | grep '^up:' | sort -u | grep -c '^up:')" -ge "$FLEET_SIZE" ] || return 0
     local c
     c=$($HUBSSH "$refhost" "ls '$refdir' 2>/dev/null | sed -n 's/^UPDATE\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1")
     $HUBSSH "$refhost" "mv '$refdir/UPDATE' '$refdir/UPDATE.$(( ${c:-0} + 1 ))'" 2>/dev/null || true
 }
+
+LAST_WEIGHTD_SHA=""
 
 sync_weightd() {
     local home="$HOME/sparkdata/weightd"
@@ -165,8 +176,19 @@ sync_weightd() {
     if [ -x "$home/sparkpipe_weightd" ] && [ "$(hub_has weightd/UPDATE)" != yes ]; then
         return 0
     fi
-    rsync -a -e "$HUBSSH" --checksum "$REF_BASE/weightd/" "$home/" 2>>"$HOME/fleet_agent_rsync.log" || true
-    $HUBSSH "${REF_BASE%%:*}" "mv '${REF_BASE#*:}/weightd/UPDATE' '${REF_BASE#*:}/weightd/UPDATE.$(date +%s)'" 2>/dev/null || true
+    rsync -a -e "$HUBSSH" --checksum "$REF_BASE/weightd/" "$home/" 2>>"$HOME/fleet_agent_rsync.log" || {
+        echo "$(date +%T) weightd: rsync FAILED; keeping old binary, retry next cycle" >&2
+        return 1
+    }
+    # Never remove the hub UPDATE sentinel: it is shared by all 16 nodes.
+    # Record the sha we synced in current/<host>.json; the operator retires
+    # the sentinel via fleet_sync.sh retire-update once all nodes report it.
+    local wsha
+    wsha=$(sha16 "$home/sparkpipe_weightd")
+    if [ "$wsha" != "$LAST_WEIGHTD_SHA" ]; then
+        LAST_WEIGHTD_SHA="$wsha"
+        report
+    fi
 }
 
 ensure_weightd() {
@@ -178,6 +200,8 @@ ensure_weightd() {
         > "$HOME/weightd.log" 2>&1 < /dev/null &
 }
 
+exec 9>>"$PID_FILE"
+flock -n 9 || { echo "agent: another instance holds $PID_FILE (pid $(cat "$PID_FILE" 2>/dev/null)); exiting" >&2; exit 1; }
 echo "$$" > "$PID_FILE"
 echo "agent: rank=$RANK roots=$ROOTS ref=$REF_BASE hub=$HUB"
 report
