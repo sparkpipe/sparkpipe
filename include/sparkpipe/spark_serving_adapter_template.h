@@ -49,7 +49,7 @@ SparkStatus SparkServingAdapterTemplateJsonUnsigned(
 typedef enum SparkTpCollectiveAlgorithmPolicy
 {
 	SPARK_TP_COLLECTIVE_ALGORITHMS_FULL_KNOWN_SET = 1,
-	SPARK_TP_COLLECTIVE_ALGORITHMS_RECURSIVE_DOUBLING_ONLY = 2
+	SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY = 2
 } SparkTpCollectiveAlgorithmPolicy;
 
 typedef enum SparkTpCollectiveThresholdPolicy
@@ -65,6 +65,7 @@ typedef struct SparkTpCollectiveConfigPolicy
 	uint32_t require_contiguous_peer_ports;
 	SparkTpCollectiveAlgorithmPolicy algorithms;
 	SparkTpCollectiveThresholdPolicy thresholds;
+	uint32_t require_session_ports;
 } SparkTpCollectiveConfigPolicy;
 
 typedef struct SparkTpCollectiveAdapterConfig
@@ -80,6 +81,9 @@ typedef struct SparkTpCollectiveAdapterConfig
 	char *backend_module_path_buffer;
 	uint32_t backend_module_path_bytes;
 	SparkTpDeviceCollectiveTopology topology;
+	uint16_t session_ports_hc
+		[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
+		[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
 } SparkTpCollectiveAdapterConfig;
 
 SparkStatus SparkServingAdapterTemplateLoadTpCollective(
