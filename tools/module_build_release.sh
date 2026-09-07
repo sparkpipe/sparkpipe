@@ -28,7 +28,7 @@ SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 echo "== host build"
 rm -f build/sparkpipe_model_compile build/libhidden_transport_spark_host_rdma_verbs.so
 make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/libhidden_transport_spark_host_rdma_verbs.so
-strings build/libhidden_transport_spark_host_rdma_verbs.so | grep -q mnt/qpn || { echo "DSO missing rendezvous"; exit 1; }
+strings build/libhidden_transport_spark_host_rdma_verbs.so | grep -q QP-WIRE || { echo "DSO stale"; exit 1; }
 
 echo "== park local agent + daemon (validator needs the GPU; UPDATE restores the fleet)"
 systemctl --user stop fleet-agent 2>/dev/null || true
@@ -63,6 +63,6 @@ rsync -c "$HOME/sparkdata/out/stages/stage_000/model_driver.so" \
     "${HUB_REF}/$ROOT_NAME/stages/stage_000/model_driver.so"
 rsync -c build/libhidden_transport_spark_host_rdma_verbs.so \
     "${HUB_REF}/$ROOT_NAME/lib/hidden_transport.so"
-ssh -o BatchMode=yes "${HUB_REF%%:*}" "touch '${HUB_REF#*:}/$ROOT_NAME/UPDATE'"
+ssh -o BatchMode=yes "${HUB_REF%%:*}" "rm -f /srv/qpn/*.rec; touch '${HUB_REF#*:}/$ROOT_NAME/UPDATE'"
 systemctl --user start fleet-agent 2>/dev/null || true
 echo "released $REV"
