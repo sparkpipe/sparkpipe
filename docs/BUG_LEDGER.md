@@ -181,3 +181,32 @@ SparkContinuousBatchStep is test-only dead weight; scheduler/continuous
 _batch.c gates only the benchmark CLI, default off. B~100 amortization:
 the direction is proven (27B dense B1->B32 = 174x aggregate, still
 falling per-step at B32) but the wall is software defects, not bandwidth.
+
+## B4-serialize / B8-wedge root causes (2026-09-08, d2a serving analysis)
+
+The measured B4-no-gain / B8-timeout on glm5.3 TP16 d2a serving decompose
+to two distinct defects, neither in the collective engine:
+
+1. PREFILL IS ROW-SERIAL PER SEQUENCE: a wave carries one token-row per
+   sequence; a 512-token prompt = 512 sequential full-model waves (45
+   layers x 91 collectives each) ~= 37s. Four concurrent prompts = 2
+   serialized 1024-row submissions on one execution stream ~= the
+   measured 95.6s p50. THE fix is chunked multi-row prefill (waves
+   carrying many positions of one sequence) - which is exactly what the
+   multi-row machinery on main does for DSA layers MINUS the unresolved
+   multi-row DSA store nondeterminism (CONSULT_multirow_kv_nondeterminism.md);
+   the 1-row clamp in RoundMajorWaveRows stays until that bug dies.
+2. B8 WEDGE = TP ORDINAL DIVERGENCE: ordinals come from a per-rank
+   post-order atomic counter, so concurrent frame chains interleave
+   differently per rank; a rank whose ordinal N is another chain's op
+   never rendezvous-matches -> 30s operation_timeout -> OP-FAIL ->
+   latched collective-wide failure, and the api's unconditional
+   ReopenAdmission keeps feeding requests into the dead collective.
+   Fix in flight (lane/tp-ordinal-determinism): ordinals derived
+   deterministically from the broadcast dispatch generation + per-chain
+   op index; the ack gate stops assuming contiguous ordinals. Interim
+   mitigation if needed before it lands: max_inflight_submissions: 1.
+Secondary: ReopenAdmission unconditional retry converts a dead
+collective into infinite 30s stalls instead of failing loudly
+(node/model_api.c); the api worker's 10ms poll loop should be
+event-driven (completion wake).
