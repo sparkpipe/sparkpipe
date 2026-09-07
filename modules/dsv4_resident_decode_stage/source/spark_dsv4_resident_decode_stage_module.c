@@ -1185,7 +1185,7 @@ static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state,
 	void *payload = 0,*scale = 0;
 
 	uint32_t is_global = entry->layer_index == SPARK_DSV4_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	SparkStatus status;
+	SparkStatus status = SPARK_STATUS_OK;
 
 	if ( state->weightd_arena_base != 0 )
 	{
