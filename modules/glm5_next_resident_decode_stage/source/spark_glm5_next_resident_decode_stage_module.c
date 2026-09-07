@@ -1664,6 +1664,10 @@ static SparkStatus SparkGlm5NextModuleReduceAttentionOut(SparkGlm5NextTpChain *c
 	return(SparkGlm5NextModuleReduceHiddenWide(chain,device_bf16,0u));
 }
 
+static void SparkGlm5NextTpChainFail(
+	SparkGlm5NextTpChain *chain,
+	SparkStatus status);
+
 static void SparkGlm5NextModuleTpCompletion(
 	void *context,
 	const SparkTpDeviceCollectiveCompletion *completion)
