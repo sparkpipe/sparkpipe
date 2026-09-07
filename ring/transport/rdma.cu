@@ -286,6 +286,7 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint64_t fixed_local_bytes;
     uint32_t fixed_local_rkey;
     uint64_t boot_id;
+    uint64_t rendezvous_started_ns;
     SparkHiddenTransportCompletion fixed_overflow[4u];
     uint32_t fixed_overflow_count;
     uint32_t control_port_base;
