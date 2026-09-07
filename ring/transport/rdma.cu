@@ -503,7 +503,7 @@ static SparkStatus SparkHiddenSparkHostRdmaReadPeerRecord(
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaAwaitPeerRecord(
-    const SparkHiddenSparkHostRdmaState *state,
+    SparkHiddenSparkHostRdmaState *state,
     SparkHiddenSparkHostRdmaRendezvousRecord *record)
 {
     uint32_t peer_rank = state->is_sender != 0u ?
