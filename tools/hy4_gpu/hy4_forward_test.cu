@@ -516,6 +516,10 @@ int main(int argc, char** argv) {
                 k_gemv<<<(1024 + 127) / 128, 128>>>(
                     d_wqb, d_qr_all + (size_t)t * 2048,
                     d_qh_all + (size_t)t * 1024, 1024, 2048);
+                for (int lh = 0; lh < RANK_HEADS; ++lh)
+                    k_rope<<<1, 32>>>(d_qh_all + (size_t)t * 1024 +
+                                          (size_t)lh * HK + NOPE, ROT,
+                                      (float)t);
                 k_gemv<<<(1024 + 127) / 128, 128>>>(
                     d_wgate, d_cur_all + (size_t)t * N_EMBD,
                     d_gatev_all + (size_t)t * 1024, 1024, N_EMBD);
