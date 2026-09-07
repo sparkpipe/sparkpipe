@@ -13,8 +13,11 @@ HUB_REF="${HUB_REF:-rtx5090:release}"
 FIRMWARE="examples/model_descriptions/${FAMILY}_${CODEC}_firmware.json"
 
 cd "$TREE"
-git fetch -q "$REMOTE" "$BRANCH"
-git reset -q --hard FETCH_HEAD
+git fetch -q "$REMOTE" "${G5_SOURCE_BRANCH:-lane/glm53-tree-2}"
+if ! git cat-file -e "$BRANCH^{commit}" 2>/dev/null; then
+    BRANCH="${G5_SOURCE_BRANCH:-lane/glm53-tree-2}"
+fi
+git reset -q --hard "$BRANCH"
 git clean -q -fd build "modules/$FAMILY" 2>/dev/null || true
 REV=$(git rev-parse --short HEAD)
 echo "== $REV"
