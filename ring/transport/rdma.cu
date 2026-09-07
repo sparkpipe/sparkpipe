@@ -4559,6 +4559,19 @@ static SparkStatus SparkHiddenSparkHostRdmaPersistentRemoteCreditReady(
     {
         return status;
     }
+    if (state->fixed_remote.address == 0u)
+    {
+        SparkHiddenSparkHostRdmaRendezvousRecord peer_record;
+        uint32_t peer_rank = (uint32_t)state->sink_rank;
+        if (SparkHiddenSparkHostRdmaReadPeerRecord(state,peer_rank,
+                &peer_record) == SPARK_STATUS_OK &&
+            peer_record.fixed_address != 0u)
+        {
+            state->fixed_remote.address = peer_record.fixed_address;
+            state->fixed_remote.bytes = peer_record.fixed_bytes;
+            state->fixed_remote.rkey = peer_record.fixed_rkey;
+        }
+    }
     if (state->fixed_remote.address != 0u)
     {
         return SPARK_STATUS_OK;
@@ -5426,34 +5439,6 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
                     ++lane_index)
                 state->lanes[lane_index].remote_info =
                     peer_record.lanes[lane_index];
-        }
-        if (status == SPARK_STATUS_OK && state->is_sender != 0u)
-        {
-            uint32_t peer_rank = (uint32_t)state->sink_rank;
-            for (;;)
-            {
-                status = SparkHiddenSparkHostRdmaReadPeerRecord(state,
-                    peer_rank,&peer_record);
-                if (status == SPARK_STATUS_OK &&
-                    peer_record.fixed_address != 0u)
-                {
-                    state->fixed_remote.address =
-                        peer_record.fixed_address;
-                    state->fixed_remote.bytes = peer_record.fixed_bytes;
-                    state->fixed_remote.rkey = peer_record.fixed_rkey;
-                    break;
-                }
-                if (SparkHiddenSparkHostRdmaMonotonicNs() >=
-                        state->open_deadline_ns)
-                {
-                    fprintf(stderr,
-                        "rendezvous fixed timeout route=%s peer=%u\n",
-                        state->endpoint.route_name,peer_rank);
-                    status = SPARK_STATUS_BUSY;
-                    break;
-                }
-                (void)poll(0,0,100);
-            }
         }
         if (status != SPARK_STATUS_OK)
         {
