@@ -1,20 +1,12 @@
 #!/bin/sh
 cd ~/hy4-fp8-packs || exit 1
-place() {
+place_once() {
   r=$1
   node=$2
   p="model-fp8-tp16-rank-$r.safetensors"
-  if [ -f "pl_${r}.done" ]; then
-    echo "$r already placed"
-    return 0
-  fi
-  if [ ! -f "rb_${r}.done" ] && [ "$node" != "sparkc" ]; then
-    echo "$r rebuild not done yet, skipping"
-    return 2
-  fi
   if [ "$node" = "sparkc" ]; then
     mkdir -p ~/sparkdata/hy4.fp8.tp16/packs/rank-$r || return 1
-    cp -n "$p" ~/sparkdata/hy4.fp8.tp16/packs/rank-$r/ || return 1
+    cp -f "$p" ~/sparkdata/hy4.fp8.tp16/packs/rank-$r/ || return 1
   else
     ssh "$node" "mkdir -p ~/sparkdata/hy4.fp8.tp16/packs/rank-$r" || return 1
     scp -q "$p" "$node":sparkdata/hy4.fp8.tp16/packs/rank-$r/ || return 1
@@ -23,9 +15,32 @@ place() {
     "$node":sparkdata/hy4.fp8.tp16/packs/rank-$r/ || return 1
   ssh "$node" "cd ~/sparkdata/hy4.fp8.tp16/packs/rank-$r && \
     sha256sum -c $p.sha256" || return 1
-  touch "pl_${r}.done"
-  echo "$r -> $node placed $(date +%H:%M)" >> placement.log
   return 0
+}
+place() {
+  r=$1
+  node=$2
+  if [ -f "pl_${r}.done" ]; then
+    echo "$r already placed"
+    return 0
+  fi
+  if [ ! -f "rb_${r}.done" ] && [ "$node" != "sparkc" ]; then
+    echo "$r rebuild not done yet, skipping"
+    return 2
+  fi
+  attempt=0
+  while [ $attempt -lt 4 ]; do
+    if place_once "$r" "$node"; then
+      touch "pl_${r}.done"
+      echo "$r -> $node placed $(date +%H:%M) attempt $attempt" >> placement.log
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    echo "$r -> $node attempt $attempt failed, retrying" >> placement.log
+    sleep 30
+  done
+  echo "$r -> $node FAILED after 4 attempts" >> placement.log
+  return 1
 }
 place 00 spark0 || exit 1
 place 01 spark1 || exit 1
