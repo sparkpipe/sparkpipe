@@ -161,6 +161,185 @@ typedef struct SparkHiddenSparkHostRdmaRendezvousRecord
         SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
 } SparkHiddenSparkHostRdmaRendezvousRecord;
 
+typedef struct SparkHiddenSparkHostRdmaLane
+{
+    struct ibv_cq *completion_queue;
+    struct ibv_qp *queue_pair;
+    SparkHiddenSparkHostRdmaQueuePairWireInfo local_info;
+    SparkHiddenSparkHostRdmaQueuePairWireInfo remote_info;
+} SparkHiddenSparkHostRdmaLane;
+
+typedef struct SparkHiddenSparkHostRdmaCachedMemoryRegion
+{
+    const void *cuda_visible_pointer;
+    const void *pointer;
+    uint64_t bytes;
+    uint64_t last_use_epoch;
+    uint32_t in_flight_count;
+    struct ibv_mr *memory_region;
+} SparkHiddenSparkHostRdmaCachedMemoryRegion;
+
+typedef struct SparkHiddenSparkHostRdmaPendingReceive
+{
+    uint32_t active;
+    uint32_t complete;
+    uint32_t advertised;
+    uint32_t completion_generation_tag;
+    uint32_t visibility_flushed;
+    uint32_t persistent_registered;
+    uint32_t completion_published;
+    uint32_t release_event_recorded;
+    uint32_t receive_index;
+    uint64_t generation;
+    uint64_t returned_generation;
+    uint32_t hidden_region_index;
+    uint32_t sideband_region_index;
+    SparkHiddenTransportPacket packet_template;
+    SparkHiddenTransportPacket packet_snapshot;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden_descriptor;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband_descriptor;
+    SparkStatus completion_status;
+} SparkHiddenSparkHostRdmaPendingReceive;
+
+typedef struct SparkHiddenSparkHostRdmaRemoteReceive
+{
+    uint32_t active;
+    uint32_t used;
+    uint32_t persistent;
+    uint32_t receive_index;
+    uint64_t generation;
+    uint64_t returned_generation;
+    uint64_t sequence_id;
+    uint64_t token_index;
+    uint32_t active_sequence_count;
+    uint32_t sideband_kind;
+    uint32_t sideband_bytes_per_sequence;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden_descriptor;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband_descriptor;
+} SparkHiddenSparkHostRdmaRemoteReceive;
+
+typedef struct SparkHiddenSparkHostRdmaInflightSend
+{
+    uint32_t active;
+    uint32_t complete;
+    uint32_t remote_receive_index;
+    uint32_t posted_lane_mask;
+    uint32_t completed_lane_mask;
+    uint32_t doorbell;
+    uint32_t hidden_region_index;
+    uint32_t sideband_region_index;
+    SparkStatus status;
+    uint64_t start_time_ns;
+    uint8_t posted_wr_counts[
+        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
+    SparkHiddenTransportPacket packet_snapshot;
+} SparkHiddenSparkHostRdmaInflightSend;
+
+typedef struct SparkHiddenSparkHostRdmaStripedCompletion
+{
+    uint32_t active;
+    uint32_t complete;
+    uint32_t lane_index;
+    uint32_t remote_receive_index;
+    SparkStatus status;
+    uint64_t service_time_ns;
+    SparkHiddenTransportPacket packet_snapshot;
+} SparkHiddenSparkHostRdmaStripedCompletion;
+
+typedef struct SparkHiddenSparkHostRdmaInflightBatch
+{
+    uint32_t active;
+    uint32_t packet_count;
+    uint32_t posted_lane_mask;
+    uint32_t completed_lane_mask;
+    uint32_t send_indices[
+        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT];
+} SparkHiddenSparkHostRdmaInflightBatch;
+
+typedef struct SparkHiddenSparkHostRdmaPreparedSend
+{
+    SparkHiddenSparkHostRdmaInflightSend *send;
+    SparkHiddenSparkHostRdmaRemoteReceive *remote_receive;
+    struct ibv_mr *hidden_memory_region;
+    struct ibv_mr *sideband_memory_region;
+    void *hidden_local_pointer;
+    void *sideband_local_pointer;
+    uint64_t hidden_bytes;
+    uint64_t sideband_bytes;
+} SparkHiddenSparkHostRdmaPreparedSend;
+
+typedef struct SparkHiddenSparkHostRdmaState
+{
+    SparkHiddenTransportEndpoint endpoint;
+    int32_t local_rank;
+    int32_t source_rank;
+    int32_t sink_rank;
+    uint32_t is_sender;
+    uint32_t lane_count;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor fixed_remote;
+    void *fixed_local;
+    uint32_t fixed_local_lkey;
+    uint64_t fixed_local_bytes;
+    uint32_t fixed_local_rkey;
+    uint64_t boot_id;
+    SparkHiddenTransportCompletion fixed_overflow[4u];
+    uint32_t fixed_overflow_count;
+    uint32_t control_port_base;
+    uint32_t open_timeout_milli;
+    uint64_t open_deadline_ns;
+    uint8_t verbs_port;
+    uint8_t active_mtu;
+    int32_t gid_index;
+    int listen_fd;
+    int control_fd;
+    int event_fd;
+    uint32_t terminal_state;
+    uint32_t debug_enabled;
+    uint32_t memory_mode;
+    uint32_t gpudirect_flush_required;
+    char source_host[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES];
+    char sink_host[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES];
+    char verbs_device_name[SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_NAME_BYTES];
+    struct ibv_context *verbs_context;
+    struct ibv_pd *protection_domain;
+    struct ibv_comp_channel *completion_channel;
+    union ibv_gid local_gid;
+    uint16_t local_lid;
+    SparkHiddenSparkHostRdmaLane lanes[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
+    SparkHiddenSparkHostRdmaCachedMemoryRegion cached_regions[SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT];
+    uint64_t memory_region_epoch;
+    SparkHiddenSparkHostRdmaPendingReceive pending_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
+    SparkHiddenSparkHostRdmaRemoteReceive remote_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
+    SparkHiddenSparkHostRdmaInflightSend inflight_sends[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT];
+    SparkHiddenSparkHostRdmaStripedCompletion striped_completions[
+        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT];
+    SparkHiddenSparkHostRdmaInflightBatch inflight_batches[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_BATCH_COUNT];
+    uint32_t outstanding_send_wr_counts[
+        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
+    cudaEvent_t send_ready_events[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
+    uint32_t send_ready_recorded[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
+    cudaEvent_t receive_release_events[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
+    SparkHiddenSparkHostRdmaControlMessage control_queue[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_QUEUE_DEPTH];
+    uint32_t control_queue_head;
+    uint32_t control_queue_count;
+    uint32_t control_queue_write_offset;
+    SparkHiddenTransportCompletionQueue completion_queue;
+    uint32_t doorbell_max_bytes;
+    uint64_t doorbell_send_count;
+    uint64_t striped_send_count;
+    uint64_t memory_region_cache_hit_count;
+    uint64_t pointer_attribute_query_count;
+    uint64_t memory_region_register_count;
+    uint64_t memory_region_eviction_count;
+    uint64_t asynchronous_send_count;
+    uint64_t completed_send_count;
+    uint64_t control_queue_busy_count;
+    uint64_t mapped_host_zero_copy_transfer_count;
+    uint64_t mapped_host_zero_copy_transfer_bytes;
+    uint64_t gpudirect_transfer_count;
+    uint64_t gpudirect_transfer_bytes;
+} SparkHiddenSparkHostRdmaState;
+
 static void SparkHiddenSparkHostRdmaRendezvousPath(
     const SparkHiddenSparkHostRdmaState *state,
     uint32_t writer_rank,
@@ -340,184 +519,6 @@ static SparkStatus SparkHiddenSparkHostRdmaAwaitPeerRecord(
     }
 }
 
-typedef struct SparkHiddenSparkHostRdmaLane
-{
-    struct ibv_cq *completion_queue;
-    struct ibv_qp *queue_pair;
-    SparkHiddenSparkHostRdmaQueuePairWireInfo local_info;
-    SparkHiddenSparkHostRdmaQueuePairWireInfo remote_info;
-} SparkHiddenSparkHostRdmaLane;
-
-typedef struct SparkHiddenSparkHostRdmaCachedMemoryRegion
-{
-    const void *cuda_visible_pointer;
-    const void *pointer;
-    uint64_t bytes;
-    uint64_t last_use_epoch;
-    uint32_t in_flight_count;
-    struct ibv_mr *memory_region;
-} SparkHiddenSparkHostRdmaCachedMemoryRegion;
-
-typedef struct SparkHiddenSparkHostRdmaPendingReceive
-{
-    uint32_t active;
-    uint32_t complete;
-    uint32_t advertised;
-    uint32_t completion_generation_tag;
-    uint32_t visibility_flushed;
-    uint32_t persistent_registered;
-    uint32_t completion_published;
-    uint32_t release_event_recorded;
-    uint32_t receive_index;
-    uint64_t generation;
-    uint64_t returned_generation;
-    uint32_t hidden_region_index;
-    uint32_t sideband_region_index;
-    SparkHiddenTransportPacket packet_template;
-    SparkHiddenTransportPacket packet_snapshot;
-    SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden_descriptor;
-    SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband_descriptor;
-    SparkStatus completion_status;
-} SparkHiddenSparkHostRdmaPendingReceive;
-
-typedef struct SparkHiddenSparkHostRdmaRemoteReceive
-{
-    uint32_t active;
-    uint32_t used;
-    uint32_t persistent;
-    uint32_t receive_index;
-    uint64_t generation;
-    uint64_t returned_generation;
-    uint64_t sequence_id;
-    uint64_t token_index;
-    uint32_t active_sequence_count;
-    uint32_t sideband_kind;
-    uint32_t sideband_bytes_per_sequence;
-    SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden_descriptor;
-    SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband_descriptor;
-} SparkHiddenSparkHostRdmaRemoteReceive;
-
-typedef struct SparkHiddenSparkHostRdmaInflightSend
-{
-    uint32_t active;
-    uint32_t complete;
-    uint32_t remote_receive_index;
-    uint32_t posted_lane_mask;
-    uint32_t completed_lane_mask;
-    uint32_t doorbell;
-    uint32_t hidden_region_index;
-    uint32_t sideband_region_index;
-    SparkStatus status;
-    uint64_t start_time_ns;
-    uint8_t posted_wr_counts[
-        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
-    SparkHiddenTransportPacket packet_snapshot;
-} SparkHiddenSparkHostRdmaInflightSend;
-
-typedef struct SparkHiddenSparkHostRdmaStripedCompletion
-{
-    uint32_t active;
-    uint32_t complete;
-    uint32_t lane_index;
-    uint32_t remote_receive_index;
-    SparkStatus status;
-    uint64_t service_time_ns;
-    SparkHiddenTransportPacket packet_snapshot;
-} SparkHiddenSparkHostRdmaStripedCompletion;
-
-typedef struct SparkHiddenSparkHostRdmaInflightBatch
-{
-    uint32_t active;
-    uint32_t packet_count;
-    uint32_t posted_lane_mask;
-    uint32_t completed_lane_mask;
-    uint32_t send_indices[
-        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT];
-} SparkHiddenSparkHostRdmaInflightBatch;
-
-typedef struct SparkHiddenSparkHostRdmaPreparedSend
-{
-    SparkHiddenSparkHostRdmaInflightSend *send;
-    SparkHiddenSparkHostRdmaRemoteReceive *remote_receive;
-    struct ibv_mr *hidden_memory_region;
-    struct ibv_mr *sideband_memory_region;
-    void *hidden_local_pointer;
-    void *sideband_local_pointer;
-    uint64_t hidden_bytes;
-    uint64_t sideband_bytes;
-} SparkHiddenSparkHostRdmaPreparedSend;
-
-typedef struct SparkHiddenSparkHostRdmaState
-{
-    SparkHiddenTransportEndpoint endpoint;
-    int32_t local_rank;
-    int32_t source_rank;
-    int32_t sink_rank;
-    uint32_t is_sender;
-    uint32_t lane_count;
-    SparkHiddenSparkHostRdmaMemoryRegionDescriptor fixed_remote;
-    void *fixed_local;
-    uint32_t fixed_local_lkey;
-    uint64_t fixed_local_bytes;
-    uint32_t fixed_local_rkey;
-    uint64_t boot_id;
-    SparkHiddenTransportCompletion fixed_overflow[4u];
-    uint32_t fixed_overflow_count;
-    uint32_t control_port_base;
-    uint32_t open_timeout_milli;
-    uint64_t open_deadline_ns;
-    uint8_t verbs_port;
-    uint8_t active_mtu;
-    int32_t gid_index;
-    int listen_fd;
-    int control_fd;
-    int event_fd;
-    uint32_t terminal_state;
-    uint32_t debug_enabled;
-    uint32_t memory_mode;
-    uint32_t gpudirect_flush_required;
-    char source_host[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES];
-    char sink_host[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES];
-    char verbs_device_name[SPARK_HIDDEN_SPARK_HOST_RDMA_DEVICE_NAME_BYTES];
-    struct ibv_context *verbs_context;
-    struct ibv_pd *protection_domain;
-    struct ibv_comp_channel *completion_channel;
-    union ibv_gid local_gid;
-    uint16_t local_lid;
-    SparkHiddenSparkHostRdmaLane lanes[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
-    SparkHiddenSparkHostRdmaCachedMemoryRegion cached_regions[SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT];
-    uint64_t memory_region_epoch;
-    SparkHiddenSparkHostRdmaPendingReceive pending_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
-    SparkHiddenSparkHostRdmaRemoteReceive remote_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
-    SparkHiddenSparkHostRdmaInflightSend inflight_sends[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT];
-    SparkHiddenSparkHostRdmaStripedCompletion striped_completions[
-        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT];
-    SparkHiddenSparkHostRdmaInflightBatch inflight_batches[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_BATCH_COUNT];
-    uint32_t outstanding_send_wr_counts[
-        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
-    cudaEvent_t send_ready_events[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
-    uint32_t send_ready_recorded[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
-    cudaEvent_t receive_release_events[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
-    SparkHiddenSparkHostRdmaControlMessage control_queue[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_QUEUE_DEPTH];
-    uint32_t control_queue_head;
-    uint32_t control_queue_count;
-    uint32_t control_queue_write_offset;
-    SparkHiddenTransportCompletionQueue completion_queue;
-    uint32_t doorbell_max_bytes;
-    uint64_t doorbell_send_count;
-    uint64_t striped_send_count;
-    uint64_t memory_region_cache_hit_count;
-    uint64_t pointer_attribute_query_count;
-    uint64_t memory_region_register_count;
-    uint64_t memory_region_eviction_count;
-    uint64_t asynchronous_send_count;
-    uint64_t completed_send_count;
-    uint64_t control_queue_busy_count;
-    uint64_t mapped_host_zero_copy_transfer_count;
-    uint64_t mapped_host_zero_copy_transfer_bytes;
-    uint64_t gpudirect_transfer_count;
-    uint64_t gpudirect_transfer_bytes;
-} SparkHiddenSparkHostRdmaState;
 
 typedef struct SparkHiddenSparkHostRdmaResolveRequest
 {
