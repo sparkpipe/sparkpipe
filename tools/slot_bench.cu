@@ -113,7 +113,6 @@ int main(int argc,char **argv)
     uint64_t *done_ns;
     cudaStream_t compute_stream;
     double clock_mhz = 1000.0;
-    cudaDeviceProp properties;
 
     if (tp_degree > 16u)
     {
@@ -125,8 +124,6 @@ int main(int argc,char **argv)
     done_ns = (uint64_t *)calloc(ops,sizeof(uint64_t));
     if (submit_ns == 0 || done_ns == 0)
         return 1;
-    cudaGetDeviceProperties(&properties,0);
-    clock_mhz = (double)properties.clockRate / 1000.0;
     cudaStreamCreate(&compute_stream);
     pthread_barrier_init(&barrier,0,(unsigned)tp_degree);
     for (rank_index = 0u; rank_index < tp_degree; ++rank_index)
