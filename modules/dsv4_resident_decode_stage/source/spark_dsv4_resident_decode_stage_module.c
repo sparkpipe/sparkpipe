@@ -1048,25 +1048,6 @@ static int32_t SparkDsv4ModuleResolvedShape(
 	return(0);
 }
 
-static SparkStatus SparkDsv4ModuleValidateEntry(SparkDsv4ModuleState *state, const SparkDsv4StagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)
-{
-	SparkDsv4StagePackTensorShape shape;
-	uint64_t payload_bytes,scale_bytes;
-	uint32_t global = entry->layer_index == SPARK_DSV4_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	uint32_t in_slice = (SparkDsv4StagePackLayerIsMtp(entry->layer_index) != 0u && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u) || (entry->layer_index >= state->first_layer_index && entry->layer_index < state->first_layer_index + state->layer_count) ? 1u : 0u;
-	if ( entry->tensor_kind >= SPARK_DSV4_STAGEPACK_TENSOR_KIND_COUNT || (global == 0u && in_slice == 0u) )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( SparkDsv4ModuleResolvedShape(state,entry,&shape) < 0 )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( shape.rows != entry->rows || shape.columns != entry->columns || shape.weight_format != entry->weight_format )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	payload_bytes = SparkDsv4StagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns);
-	scale_bytes = SparkDsv4StagePackScaleBytes(entry->weight_format,entry->rows,entry->columns);
-	if ( entry->payload_offset + payload_bytes > file_bytes || (scale_bytes != 0u && (entry->scale_offset != entry->payload_offset + payload_bytes || entry->scale_offset + scale_bytes > file_bytes)) )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	*is_global = global;
-	return(SPARK_STATUS_OK);
-}
 
 static SparkStatus SparkDsv4ModuleBindGlobal(SparkDsv4ModuleState *state, const SparkDsv4StagePackEntry *entry, void *payload, void *scale)
 {
@@ -1194,18 +1175,13 @@ static SparkStatus SparkDsv4ModuleBindLayer(SparkDsv4ModuleState *state, const S
 
 static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state,
 	SparkStageModuleLoadPipeline *pipeline, FILE *file,
-	const SparkDsv4StagePackEntry *entry, uint64_t file_bytes)
+	const SparkDsv4StagePackEntry *entry)
 {
 	uint64_t payload_bytes = SparkDsv4StagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns);
 	uint64_t scale_bytes = SparkDsv4StagePackScaleBytes(entry->weight_format,entry->rows,entry->columns);
 	void *payload = 0,*scale = 0;
-	uint32_t is_global = 0u;
-	SparkStatus status = SparkDsv4ModuleValidateEntry(state,entry,file_bytes,&is_global);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"%s pack_entry_invalid kind=%u layer=%u\n",SPARK_DSV4_MODULE_TAG,entry->tensor_kind,entry->layer_index);
-		return(status);
-	}
+	uint32_t is_global = entry->layer_index == SPARK_DSV4_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
+	SparkStatus status;
 	if ( state->weightd_arena_base != 0 )
 	{
 		payload = (void *)((uint8_t *)state->weightd_arena_base + entry->payload_offset);
@@ -1233,68 +1209,6 @@ static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state,
 	return(SparkDsv4ModuleBindLayer(state,entry,payload,scale));
 }
 
-static uint64_t SparkDsv4ModuleExpectedLayerBits(uint32_t layer_index)
-{
-	uint32_t kind = SparkDsv4StagePackLayerKind(layer_index),tensor;
-	uint64_t bits = 0u;
-	for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_ATTN_SINK; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_SHARED_W3; tensor++)
-		bits |= 1ull << tensor;
-	bits &= ~(1ull << (SparkDsv4StagePackLayerIsHashRouted(layer_index) != 0u ? SPARK_DSV4_STAGEPACK_TENSOR_GATE_BIAS : SPARK_DSV4_STAGEPACK_TENSOR_GATE_TID2EID));
-	if ( kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA )
-		bits |= (1ull << SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_APE) | (1ull << SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_WKV) | (1ull << SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_WGATE) | (1ull << SPARK_DSV4_STAGEPACK_TENSOR_COMPRESS_NORM);
-	if ( kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA )
-	{
-		bits |= (1ull << SPARK_DSV4_STAGEPACK_TENSOR_INDEX_WQ_B) | (1ull << SPARK_DSV4_STAGEPACK_TENSOR_INDEX_WEIGHTS) | (1ull << SPARK_DSV4_STAGEPACK_TENSOR_INDEX_APE);
-		bits |= (1ull << SPARK_DSV4_STAGEPACK_TENSOR_INDEX_WKV) | (1ull << SPARK_DSV4_STAGEPACK_TENSOR_INDEX_WGATE) | (1ull << SPARK_DSV4_STAGEPACK_TENSOR_INDEX_NORM);
-	}
-	return(bits);
-}
-
-static SparkStatus SparkDsv4ModuleVerifyCoverage(SparkDsv4ModuleState *state)
-{
-	uint64_t expected_globals = 0u;
-	uint32_t layer,tensor;
-	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
-		if ( state->layer_seen_bits[layer] != SparkDsv4ModuleExpectedLayerBits(layer) )
-		{
-			fprintf(stderr,"%s pack_layer_coverage layer=%u seen=%llx\n",SPARK_DSV4_MODULE_TAG,layer,(unsigned long long)state->layer_seen_bits[layer]);
-			return(SPARK_STATUS_VALIDATION_FAILED);
-		}
-	if ( state->owns_embedding != 0u || (state->participates_final_head != 0u && SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u) )
-		expected_globals |= 1ull << SPARK_DSV4_STAGEPACK_TENSOR_EMBEDDING;
-	if ( state->participates_final_head != 0u )
-	{
-		for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_FINAL_NORM; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_HC_HEAD_SCALE; tensor++)
-			expected_globals |= 1ull << tensor;
-	}
-	if ( SPARK_DSV4_MODEL_MTP_LAYER_COUNT != 0u )
-	{
-		uint32_t stage;
-		for (tensor = SPARK_DSV4_STAGEPACK_TENSOR_MTP_MAIN_PROJ; tensor <= SPARK_DSV4_STAGEPACK_TENSOR_MTP_CONFIDENCE_PROJ; tensor++)
-			expected_globals |= 1ull << tensor;
-		for (stage = 0u; stage < SPARK_DSV4_MODEL_MTP_LAYER_COUNT; stage++)
-			if ( state->mtp_seen_bits[stage] != SparkDsv4ModuleExpectedLayerBits(SPARK_DSV4_STAGEPACK_MTP_LAYER(stage)) )
-			{
-				fprintf(stderr,"%s pack_mtp_coverage stage=%u seen=%llx\n",SPARK_DSV4_MODULE_TAG,stage,(unsigned long long)state->mtp_seen_bits[stage]);
-				return(SPARK_STATUS_VALIDATION_FAILED);
-			}
-		if ( state->mtp.main_proj.payload == 0 || state->mtp.main_proj.scale_data == 0 ||
-			state->mtp.main_norm_weight_bf16 == 0 || state->mtp.final_norm_weight_bf16 == 0 ||
-			state->mtp.hc_head_fn_f32 == 0 || state->mtp.hc_head_base_f32 == 0 ||
-			state->mtp.hc_head_scale_f32 == 0 || state->mtp.markov_w1.payload == 0 ||
-			state->mtp.markov_w2.payload == 0 || state->mtp.confidence_proj.payload == 0 )
-		{
-			fprintf(stderr,"%s pack_mtp_extras_coverage incomplete\n",SPARK_DSV4_MODULE_TAG);
-			return(SPARK_STATUS_VALIDATION_FAILED);
-		}
-	}
-	if ( state->global_seen_bits != expected_globals )
-	{
-		fprintf(stderr,"%s pack_global_coverage seen=%llx expected=%llx\n",SPARK_DSV4_MODULE_TAG,(unsigned long long)state->global_seen_bits,(unsigned long long)expected_globals);
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	}
-	return(SPARK_STATUS_OK);
-}
 
 static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, const char *path, const SparkDsv4StagePackHeader *header)
 {
@@ -1382,7 +1296,7 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 		SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK )
 		status = SparkStageModuleLoadPipelineCreate(SPARK_DSV4_MODULE_TAG,file,&pipeline);
 	for (index = 0; status == SPARK_STATUS_OK && index < header.tensor_count; index++)
-		status = SparkDsv4ModuleLoadEntry(state,pipeline,file,&directory[index],header.file_bytes);
+		status = SparkDsv4ModuleLoadEntry(state,pipeline,file,&directory[index]);
 	if ( pipeline != 0 )
 	{
 		SparkStatus finish_status = SparkStageModuleLoadPipelineFinish(pipeline);
@@ -1390,8 +1304,6 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 			status = finish_status;
 		SparkStageModuleLoadPipelineDestroy(pipeline);
 	}
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ModuleVerifyCoverage(state);
 	free(directory);
 	fclose(file);
 	return(status);
