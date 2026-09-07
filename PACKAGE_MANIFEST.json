@@ -1,5 +1,5 @@
 {
-  "file_count": 1864,
+  "file_count": 1860,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -733,8 +733,8 @@
     },
     {
       "path": "docs/DEVCYCLE.md",
-      "sha256": "a7b10d8d93cbb03071de7fb6de724921857bea6024dbf017ea0ff6761cc5f7f5",
-      "size_bytes": 4542
+      "sha256": "1132125a1548e0e02da176d462de5abb9b52ebf588d0b67e7bc6da439f0ff5ed",
+      "size_bytes": 4839
     },
     {
       "path": "docs/EXPERT_GROUPED_SCHEDULING.md",
@@ -2988,8 +2988,8 @@
     },
     {
       "path": "include/sparkpipe/spark_tp_device_collective.h",
-      "sha256": "a59bb1f4ff2fe4661cc37269decca5a2cb7566d8879c273384d1711ba6e16748",
-      "size_bytes": 12456
+      "sha256": "527246e939c1a438e9f5561f7cb594f8917da22e8f84a959442c4ee92430c380",
+      "size_bytes": 12621
     },
     {
       "path": "include/sparkpipe/spark_weight_codec.h",
@@ -3908,18 +3908,18 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "146e4e4548cc3ca044b1bf44a037615c020d253f2c6f76e5d49e4bac1283e22c",
-      "size_bytes": 30735
+      "sha256": "9c9134ec43683277e47dd75c08beb2e874b9682c690f68b30fc5ed40a4b8af3f",
+      "size_bytes": 31315
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
-      "sha256": "e317c72f5959b0b7b6f3174ae5761204314ce1d484a7e8d5011b48d42b36b7ec",
-      "size_bytes": 7986
+      "sha256": "192811256a340c92dd543641f0d51fa206b23bb42126312d750501851597b8ed",
+      "size_bytes": 8084
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "cc377634995c9fc871376ac2eb43d4c58c8c4f429ce9d368a495356e07b798dc",
-      "size_bytes": 118916
+      "sha256": "efe45957704c2a2ae8f294e2d6023e165d10476e37c58f6bde06197504735a8d",
+      "size_bytes": 119897
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -5743,8 +5743,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "ba2a596ba05f32be73bcc2a1c28e3a22e124fdf9944c1c7964e007ed0b3a9bcb",
-      "size_bytes": 79283
+      "sha256": "f4c7eb000025499278f0104829f063e7e208af9fea3d3a39954439ede8f97f35",
+      "size_bytes": 88914
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
@@ -8148,8 +8148,8 @@
     },
     {
       "path": "tools/fleet_node_agent.sh",
-      "sha256": "f4b4c4581471c9d7f0098f8f59f0de47020f088c3b150ab76c4fc84896022ed1",
-      "size_bytes": 7460
+      "sha256": "cca8e2d65bacb01dbec7aa0c3bcf51838677240ab186d14f312987d83c3af964",
+      "size_bytes": 8075
     },
     {
       "path": "tools/fleet_preflight.sh",
@@ -8158,13 +8158,13 @@
     },
     {
       "path": "tools/fleet_ready_poll.sh",
-      "sha256": "f4f524187468150a37cafec9f9e1bb6e6f60cf6e9c9172130139ec7435b7ddc5",
-      "size_bytes": 932
+      "sha256": "17d6c4a4394fc329767681b2fd03c2410d666119f194e5a5b8716461032af238",
+      "size_bytes": 789
     },
     {
       "path": "tools/fleet_serve.sh",
-      "sha256": "cef22a82170ee1246451794db8e54d48ecdb512a869e1e4ab6c96bbace468cce",
-      "size_bytes": 3798
+      "sha256": "4d178665cdf2e671ee9d8394cc6154f4db2d92db7ec02605dba753b3412fbf52",
+      "size_bytes": 3376
     },
     {
       "path": "tools/fleet_swap.sh",
@@ -8357,21 +8357,6 @@
       "size_bytes": 26738
     },
     {
-      "path": "tools/glm53_m5_cell_task.sh",
-      "sha256": "4b20ec7fb0bf99c381a9d15e71a673611aa3a5c0b82bc001138e5117f78369b2",
-      "size_bytes": 4424
-    },
-    {
-      "path": "tools/glm53_m5_stage.sh",
-      "sha256": "681f32848c331809fdf09e70f24da4d012d4f6003079b42d265da92cd0f39e88",
-      "size_bytes": 4323
-    },
-    {
-      "path": "tools/glm53_m5_stage2.sh",
-      "sha256": "9453665fa989e3b0a7368b083137aa18a77030a810f42540c079fdb8361f89c4",
-      "size_bytes": 2537
-    },
-    {
       "path": "tools/glm53full_bf16_tp16_source_verify.py",
       "sha256": "f83a0320c14d3eb0189c33b52dae2104e4c0fb4c757e45cf592abc2198669994",
       "size_bytes": 13626
@@ -8402,16 +8387,6 @@
       "size_bytes": 1788
     },
     {
-      "path": "tools/glm5_next_build_release.sh",
-      "sha256": "d534b92000ecc61491bc351c75ec34ea7c54616a92bccc8e0fe4fd312736fb62",
-      "size_bytes": 2543
-    },
-    {
-      "path": "tools/glm5_next_closeout_wave.sh",
-      "sha256": "9eb6d96ac9e1d478d10f4f9f3f2e8ce7227e3aa03ea5e289cd8f51120d691bbd",
-      "size_bytes": 4057
-    },
-    {
       "path": "tools/glm5_next_compsec17.py",
       "sha256": "de235e8e549f71835d63c1b33a033f016ad4faf6e7f0ff159a005bcd6bba10aa",
       "size_bytes": 7859
@@ -8428,7 +8403,7 @@
     },
     {
       "path": "tools/glm5_next_gen_deployment.py",
-      "sha256": "7425aaed19a8f036f48c98eeb9016bdc1ad94278c78b86d8cf3609831389feae",
+      "sha256": "8118db7fa962640372a43720b37bad9dd1aac776ad0f05a1a01251df2ac36de4",
       "size_bytes": 9917
     },
     {
@@ -8765,6 +8740,11 @@
       "path": "tools/model_stream_decode_benchmark.py",
       "sha256": "2b6a777864be920918ac12921535dff3355ea97ee3513aee30a4d64e26e7f53a",
       "size_bytes": 2866
+    },
+    {
+      "path": "tools/module_build_release.sh",
+      "sha256": "edd0d3d27701c8d9589ad8cbcb468126bc703a27f4518d027e957a322752c7d9",
+      "size_bytes": 2445
     },
     {
       "path": "tools/mtp_strip_audit.py",
@@ -9325,5 +9305,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 31930180
+  "total_bytes": 31926543
 }
