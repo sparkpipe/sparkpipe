@@ -17,6 +17,8 @@
 static uint32_t BENCH_PORT_BASE = BENCH_PORT_BASE_DEFAULT;
 #define BENCH_IDENTIFIER 0x444f4f52424f4f01ull
 static uint32_t BENCH_CREDITS = 64u;
+static uint32_t BENCH_D2A_MAX = 0u;
+static uint32_t BENCH_SKEW_US = 0u;
 #define BENCH_MAX_TIMED_ITERS 4096u
 static double bench_latency_us[BENCH_MAX_TIMED_ITERS];
 
@@ -138,7 +140,7 @@ int main(int argc, char **argv)
 {
     SparkTpDeviceCollectiveTopology topology;
     SparkTpDeviceCollectiveConfig config;
-    SparkTpDeviceCollectiveCreditBinding bindings[1024];
+    SparkTpDeviceCollectiveCreditBinding bindings[2048];
     SparkTpDeviceCollective collective;
     char rail_direct[16][24];
     char rail_switch[16][24];
@@ -180,15 +182,22 @@ int main(int argc, char **argv)
             BENCH_CREDITS = (uint32_t)strtoul(credits_env,0,10);
         if (BENCH_CREDITS == 0u || BENCH_CREDITS > 64u)
             BENCH_CREDITS = 64u;
+        const char *d2a_env = getenv("BENCH_D2A_MAX_BYTES");
+        if (d2a_env != 0 && d2a_env[0] >= '0' && d2a_env[0] <= '9')
+            BENCH_D2A_MAX = (uint32_t)strtoul(d2a_env,0,10);
+        const char *skew_env = getenv("BENCH_SKEW_US");
+        if (skew_env != 0 && skew_env[0] >= '0' && skew_env[0] <= '9')
+            BENCH_SKEW_US = (uint32_t)strtoul(skew_env,0,10);
         const char *port_env = getenv("BENCH_PORT_BASE");
         if (port_env != 0 && port_env[0] >= '0' && port_env[0] <= '9')
         {
             uint32_t candidate = (uint32_t)strtoul(port_env,0,10);
-            if (candidate >= 20000u && candidate <= 60000u)
+            if (candidate >= 20000u && candidate <= 64511u)
                 BENCH_PORT_BASE = candidate;
         }
     }
-    printf("BENCH-BUILD %s %s credits=%u\n", __DATE__, __TIME__, BENCH_CREDITS);
+    printf("BENCH-BUILD %s %s credits=%u d2a_max=%u\n", __DATE__, __TIME__,
+        BENCH_CREDITS, BENCH_D2A_MAX);
     if (argc < 6)
     {
         printf("usage: rank degree iters rows mode(0 async 1 sync) [transport]\n");
@@ -221,8 +230,10 @@ int main(int argc, char **argv)
         const char *algo = getenv("BENCH_ALGO");
         topology.algorithm_mask =
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE |
-            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-        topology.direct_all_to_all_max_payload_bytes = 0u;
+            SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
+            (BENCH_D2A_MAX != 0u ?
+                SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL : 0u);
+        topology.direct_all_to_all_max_payload_bytes = BENCH_D2A_MAX;
         topology.split_ring_min_payload_bytes = 0u;
         (void)algo;
     }
@@ -300,7 +311,7 @@ int main(int argc, char **argv)
         printf("route_count -> %u\n", (unsigned)status);
         return 1;
     }
-    printf("doorbell rank=%u memory_mode=%u routes=%u connect_ms=%u\n", rank, memory_mode, route_count, config.connect_timeout_milli);
+    printf("doorbell rank=%u memory_mode=%u routes=%u connect_ms=%u d2a_max=%u\n", rank, memory_mode, route_count, config.connect_timeout_milli, BENCH_D2A_MAX);
 
     credit_bytes = rows * BENCH_HIDDEN * 2u;
     total_bytes = route_count * BENCH_CREDITS * (credit_bytes + 8u);
@@ -318,20 +329,29 @@ int main(int argc, char **argv)
     }
     binding_count = 0u;
     offset = 0u;
-    for (route = 0u; route < route_count; route++)
     {
-        for (credit = 0u; credit < BENCH_CREDITS; credit++)
+        uint32_t d2a_routes = BENCH_D2A_MAX != 0u ? 15u : 0u;
+        uint32_t tree_routes = route_count - d2a_routes;
+        for (route = 0u; route < route_count; route++)
         {
-            bindings[binding_count].step_index = route;
-            bindings[binding_count].credit_index = credit;
-            bindings[binding_count].send_device = (uint8_t *)mapped_send + offset;
-            bindings[binding_count].receive_device = (uint8_t *)mapped_receive + offset;
-            bindings[binding_count].send_transport = (uint8_t *)host_send + offset;
-            bindings[binding_count].receive_transport = (uint8_t *)host_receive + offset;
-            bindings[binding_count].flags = SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS;
-            bindings[binding_count].reserved0 = 0u;
-            binding_count++;
-            offset += credit_bytes + 8u;
+            for (credit = 0u; credit < BENCH_CREDITS; credit++)
+            {
+                bindings[binding_count].step_index =
+                    route < tree_routes ? route : route - tree_routes;
+                bindings[binding_count].credit_index = credit;
+                bindings[binding_count].send_device = (uint8_t *)mapped_send + offset;
+                bindings[binding_count].receive_device = (uint8_t *)mapped_receive + offset;
+                bindings[binding_count].send_transport = (uint8_t *)host_send + offset;
+                bindings[binding_count].receive_transport = (uint8_t *)host_receive + offset;
+                bindings[binding_count].flags =
+                    SPARK_TP_DEVICE_COLLECTIVE_BINDING_SEND_MAPPED_ALIAS |
+                    SPARK_TP_DEVICE_COLLECTIVE_BINDING_RECEIVE_MAPPED_ALIAS |
+                    (route < tree_routes ? 0u :
+                        SPARK_TP_DEVICE_COLLECTIVE_BINDING_DIRECT_ALL_TO_ALL);
+                bindings[binding_count].reserved0 = 0u;
+                binding_count++;
+                offset += credit_bytes + 8u;
+            }
         }
     }
     config.credit_bindings = bindings;
@@ -453,6 +473,7 @@ int main(int argc, char **argv)
                 if (status != SPARK_STATUS_BUSY || ++retry > 100)
                 {
                     printf("submit %llu -> %u\n", (unsigned long long)ordinal, (unsigned)status);
+                    SparkTpDeviceCollectiveDumpOperations(&collective);
                     return 1;
                 }
                 usleep(50u);
@@ -479,6 +500,8 @@ int main(int argc, char **argv)
                         (double)(bench_now_ns() - op_started) / 1000.0;
             }
         }
+        if (BENCH_SKEW_US != 0u && rank == 8u)
+            usleep(BENCH_SKEW_US);
     }
     if (mode == 0u)
     {
@@ -487,13 +510,14 @@ int main(int argc, char **argv)
             printf("final sync failed\n");
             return 1;
         }
-        while (__sync_fetch_and_add(&bench_completions, 0) < (int64_t)(20u + iters))
+        while (__sync_fetch_and_add(&bench_completions, 0) < (int64_t)(68u + iters))
         {
             usleep(1000u);
             if (bench_now_ns() - started_ns > 120000000000ull)
             {
                 printf("drain timeout %lld/%u\n",
                     (long long)__sync_fetch_and_add(&bench_completions, 0), iters);
+                SparkTpDeviceCollectiveDumpOperations(&collective);
                 return 1;
             }
         }
