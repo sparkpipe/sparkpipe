@@ -105,6 +105,10 @@ int main(int argc,char **argv)
     const char *dso = getenv("SLOT_BENCH_DSO");
     if (dso == 0)
         dso = "lib/hidden_transport.so";
+    SparkTpDeviceCollectiveCreditBinding
+        bindings[16u][7u * 8u];
+    void *send_stage;
+    void *receive_stage;
     SlotBenchRank ranks[16u];
     pthread_barrier_t barrier;
     uint32_t rank_index;
@@ -125,6 +129,8 @@ int main(int argc,char **argv)
     if (submit_ns == 0 || done_ns == 0)
         return 1;
     cudaStreamCreate(&compute_stream);
+    cudaMalloc(&send_stage,(size_t)hidden * rows * 2u + 64u);
+    cudaMalloc(&receive_stage,(size_t)hidden * rows * 2u + 64u);
     pthread_barrier_init(&barrier,0,(unsigned)tp_degree);
     for (rank_index = 0u; rank_index < tp_degree; ++rank_index)
     {
@@ -160,6 +166,47 @@ int main(int argc,char **argv)
         config.registration_cuda_stream = compute_stream;
         config.combine_bf16_function = SlotBenchCombineBf16;
         config.combine_context = 0;
+        {
+            uint32_t route_count = 0u;
+            uint32_t used_bits[7u] = {0u};
+            uint32_t bit;
+            uint32_t route = 0u;
+            for (bit = 0u; bit < 7u; ++bit)
+            {
+                uint32_t peer = (rank_index & ~3u) + bit;
+                if (bit >= 4u)
+                    peer = ((((rank_index >> 2u) + 1u + (bit - 4u)) & 3u) << 2u);
+                if (peer == rank_index)
+                    continue;
+                used_bits[route] = bit;
+                route++;
+            }
+            route_count = route;
+            for (route = 0u; route < route_count; ++route)
+            {
+                uint32_t peer = (rank_index & ~3u) + used_bits[route];
+                if (used_bits[route] >= 4u)
+                    peer = ((((rank_index >> 2u) + 1u +
+                        (used_bits[route] - 4u)) & 3u) << 2u);
+                {
+                    uint32_t credit;
+                    for (credit = 0u; credit < 8u; ++credit)
+                    {
+                        SparkTpDeviceCollectiveCreditBinding *binding =
+                            &bindings[rank_index][route * 8u + credit];
+                        memset(binding,0,sizeof(*binding));
+                        binding->step_index = route;
+                        binding->credit_index = credit;
+                        binding->send_device = send_stage;
+                        binding->receive_device = receive_stage;
+                        binding->send_transport = receive_stage;
+                        binding->receive_transport = receive_stage;
+                    }
+                }
+            }
+            config.credit_bindings = bindings[rank_index];
+            config.credit_binding_count = route_count * 8u;
+        }
         cudaMalloc(&ranks[rank_index].local_device,
             (size_t)hidden * rows * 2u + 64u);
         cudaMalloc(&ranks[rank_index].full_device,
