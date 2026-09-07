@@ -1224,7 +1224,7 @@ static uint32_t SparkTpDeviceCollectiveAckGateOpen(
         return 1u;
     return *(volatile const uint64_t *)(ack_slots +
         (uint64_t)route * implementation->collective->credit_count +
-        credit_index) == last_posted + 1u ? 1u : 0u;
+        credit_index) >= last_posted + 1u ? 1u : 0u;
 }
 
 static SparkStatus SparkTpDeviceCollectivePostAck(
@@ -2388,7 +2388,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
         &operation->lifecycle,memory_order_acquire);
     if (SparkTpDeviceCollectiveStatePhase(expected_state) !=
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE ||
-        generation == SparkTpDeviceCollectiveStateGeneration(expected_state))
+        generation <= SparkTpDeviceCollectiveStateGeneration(expected_state))
     {
         return SPARK_STATUS_BUSY;
     }
