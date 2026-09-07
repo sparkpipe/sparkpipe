@@ -212,6 +212,7 @@ extern "C" {
 
 int32_t SparkGlm5NextLaunchCudaWave(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave *wave);
+SparkStatus SparkGlm5NextLaunchOpWait(cudaStream_t stream,void *flag_device,uint64_t wait_value);
 int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);

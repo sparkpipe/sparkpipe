@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sched.h>
 
 #include <cuda_runtime.h>
 
@@ -1671,7 +1672,8 @@ static void SparkGlm5NextModuleTpCompletion(
 	chain = (SparkGlm5NextTpChain *)context;
 	if ( chain == 0 || chain->active == 0u || completion == 0 )
 		return;
-	SparkGlm5NextTpChainAdvance(chain,completion->status);
+	if ( completion->status != SPARK_STATUS_OK )
+		SparkGlm5NextTpChainFail(chain,completion->status);
 }
 
 static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *chain,
@@ -1722,12 +1724,20 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 	submission.completion_context = chain;
 	{
 		SparkStatus submit_status;
-		submit_status = SparkTpDeviceCollectiveSubmitBf16(collective,&submission);
-		if ( submit_status != SPARK_STATUS_OK )
-			fprintf(stderr,"G5N-DBG reduce submit -> %d (rows %u slot %u dev %p stream %p maxact %u)\n",
-				(int)submit_status,(unsigned)chain->wave_rows,(unsigned)chain->slot_index,
-				device_bf16,chain->slot->stream,
-				(unsigned)state->tp_device_collective.max_active_sequence_count);
+		void *wait_flag;
+		uint64_t wait_value;
+		for (;;)
+		{
+			submit_status = SparkTpDeviceCollectiveSubmitBf16(collective,&submission);
+			if ( submit_status != SPARK_STATUS_CAPACITY_EXCEEDED )
+				break;
+			sched_yield();
+		}
+		if ( submit_status == SPARK_STATUS_OK &&
+			SparkTpDeviceCollectiveOpWaitHandles(collective,ordinal,
+				&wait_flag,&wait_value) == SPARK_STATUS_OK )
+			submit_status = SparkGlm5NextLaunchOpWait(
+				(cudaStream_t)chain->slot->stream,wait_flag,wait_value);
 		return(submit_status);
 	}
 }
@@ -1758,7 +1768,24 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	submission.cuda_stream = chain->slot->stream;
 	submission.completion_function = SparkGlm5NextModuleTpCompletion;
 	submission.completion_context = chain;
-	return(SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission));
+	{
+		SparkStatus submit_status;
+		void *wait_flag;
+		uint64_t wait_value;
+		for (;;)
+		{
+			submit_status = SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission);
+			if ( submit_status != SPARK_STATUS_CAPACITY_EXCEEDED )
+				break;
+			sched_yield();
+		}
+		if ( submit_status == SPARK_STATUS_OK &&
+			SparkTpDeviceCollectiveOpWaitHandles(&state->tp_device_collective,
+				ordinal,&wait_flag,&wait_value) == SPARK_STATUS_OK )
+			submit_status = SparkGlm5NextLaunchOpWait(
+				(cudaStream_t)chain->slot->stream,wait_flag,wait_value);
+		return(submit_status);
+	}
 }
 
 static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus status)
@@ -1805,6 +1832,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		launch_status = SparkGlm5NextModuleReduceHidden(chain,chain->slot->hidden_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
+		else
+			SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION:
 		if ( SparkGlm5NextLaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
@@ -1816,6 +1845,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		launch_status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
+		else
+			SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION:
 		if ( SparkGlm5NextLaunchCudaLayerAttentionPost(&chain->wave,chain->next_layer) != 0 )
@@ -1836,6 +1867,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		launch_status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
+		else
+			SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP:
 		if ( SparkGlm5NextLaunchCudaLayerMlpPost(&chain->wave,chain->next_layer) != 0 )
@@ -1865,6 +1898,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		launch_status = SparkGlm5NextModuleReduceHeadMax(chain);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
+		else
+			SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_HEAD:
 		error = SparkGlm5NextLaunchHeadMaxlocUnpack((cudaStream_t)chain->slot->stream,chain->slot->head_maxloc_u64,chain->slot->output_token,chain->wave_rows);

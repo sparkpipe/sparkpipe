@@ -307,6 +307,12 @@ SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
 
+SparkStatus SparkTpDeviceCollectiveOpWaitHandles(
+    SparkTpDeviceCollective *collective,
+    uint64_t ordinal,
+    void **flag_device,
+    uint64_t *wait_value);
+
 SparkStatus SparkTpDeviceCollectiveRequestFailure(
     SparkTpDeviceCollective *collective,
     SparkStatus failure_status);

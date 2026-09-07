@@ -125,6 +125,8 @@ typedef struct SparkTpDeviceCollectiveImplementation
     cudaEvent_t consumer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaEvent_t producer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaStream_t operation_streams[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
+    uint64_t *op_done_flags;
+    uint64_t *op_done_staging;
     void *registration_cuda_stream;
     atomic_uint admission_open;
     atomic_uint shutdown_requested;
@@ -877,7 +879,7 @@ static SparkStatus SparkTpDeviceCollectiveTreePack(
         status = SparkTpDeviceCollectivePackSendRows(
             collective,binding,operation->full_device,local_bytes,local_bytes,
             local_bytes,1u,
-            operation->cuda_stream);
+            implementation->operation_streams[operation->credit_index]);
         if (status != SPARK_STATUS_OK)
             return status;
     }
@@ -977,7 +979,8 @@ static void SparkTpDeviceCollectiveTreeOperation(
                 operation->full_device,local_bytes,
                 down_src,
                 local_bytes,local_bytes,1u,
-                cudaMemcpyDeviceToDevice,operation->cuda_stream);
+                cudaMemcpyDeviceToDevice,
+                implementation->operation_streams[operation->credit_index]);
             if (status != SPARK_STATUS_OK)
             {
                 SparkTpDeviceCollectiveMarkOperationFailure(implementation,
@@ -1002,13 +1005,15 @@ static void SparkTpDeviceCollectiveTreeOperation(
                     implementation->combine_context,
                     (uint64_t *)operation->full_device,
                     (const uint64_t *)u64_src,
-                    operation->active_sequence_count,operation->cuda_stream);
+                    operation->active_sequence_count,
+                    implementation->operation_streams[operation->credit_index]);
             }
             else
                 status = implementation->combine_bf16_function(
                     implementation->combine_context,operation->full_device,
                     binding->receive_device,operation->active_sequence_count,
-                    collective->local_hidden_dimension,operation->cuda_stream);
+                    collective->local_hidden_dimension,
+                    implementation->operation_streams[operation->credit_index]);
             if (status != SPARK_STATUS_OK)
             {
                 fprintf(stderr,"TREE-FOLD-FAIL rank=%u ord=%llu stage=%u status=%u cuda=%s\n",
@@ -1030,7 +1035,7 @@ static void SparkTpDeviceCollectiveTreeOperation(
         if (status == SPARK_STATUS_OK)
             status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
                 implementation->consumer_events[operation->credit_index],
-                (cudaStream_t)operation->cuda_stream));
+                implementation->operation_streams[operation->credit_index]));
         if (status != SPARK_STATUS_OK)
         {
             fprintf(stderr,"TREE-PACK-FAIL rank=%u ord=%llu stage=%u status=%u cuda=%s\n",
@@ -1055,7 +1060,30 @@ static void SparkTpDeviceCollectiveTreeOperation(
     if (stage + 1u == TREE_STAGES ||
         implementation->failure_status != SPARK_STATUS_OK)
     {
+        cudaError_t flag_error;
         operation->stage = TREE_STAGES;
+        flag_error = cudaMemcpyAsync(
+            (uint8_t *)implementation->op_done_flags +
+                (size_t)operation->credit_index * sizeof(uint64_t),
+            (const uint8_t *)implementation->op_done_staging +
+                (size_t)operation->credit_index * sizeof(uint64_t),
+            sizeof(uint64_t),cudaMemcpyHostToDevice,
+            implementation->operation_streams[operation->credit_index]);
+        if (flag_error == cudaSuccess)
+            flag_error = cudaEventRecord(
+                implementation->consumer_events[operation->credit_index],
+                implementation->operation_streams[operation->credit_index]);
+        if (flag_error != cudaSuccess)
+        {
+            fprintf(stderr,"TREE-FLAG-ENQ-FAIL rank=%u ord=%llu cuda=%s\n",
+                collective->tp_rank,
+                (unsigned long long)operation->ordinal,
+                cudaGetErrorString(flag_error));
+            SparkTpDeviceCollectiveMarkOperationFailure(implementation,
+                operation,operation->generation,
+                SPARK_STATUS_DRIVER_LOAD_ERROR);
+            return;
+        }
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE,
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY);
@@ -1686,6 +1714,19 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
     operation->completion_context = submission->completion_context;
     status = now_milli == 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
     if (status == SPARK_STATUS_OK &&
+        cudaEventQuery(
+            implementation->consumer_events[credit_index]) ==
+            cudaErrorNotReady)
+        status = SPARK_STATUS_CAPACITY_EXCEEDED;
+    if (status == SPARK_STATUS_OK)
+        status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
+            implementation->producer_events[credit_index],
+            (cudaStream_t)operation->cuda_stream));
+    if (status == SPARK_STATUS_OK)
+        status = SparkTpDeviceCollectiveCudaStatus(cudaStreamWaitEvent(
+            implementation->operation_streams[credit_index],
+            implementation->producer_events[credit_index],0u));
+    if (status == SPARK_STATUS_OK &&
         operation->full_device != operation->local_device)
     {
         uint64_t local_bytes =
@@ -1693,16 +1734,14 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
         status = SparkTpDeviceCollectiveCopyRows(operation->full_device,
             local_bytes,operation->local_device,local_bytes,local_bytes,1u,
             cudaMemcpyDeviceToDevice,
-            operation->cuda_stream);
+            implementation->operation_streams[credit_index]);
     }
     if (status == SPARK_STATUS_OK)
-    {
-        status = SparkTpDeviceCollectiveCudaStatus(cudaEventRecord(
-            implementation->consumer_events[credit_index],
-            (cudaStream_t)operation->cuda_stream));
-    }
+        implementation->op_done_staging[credit_index] = generation;
     if (status != SPARK_STATUS_OK)
     {
+        if (status == SPARK_STATUS_CAPACITY_EXCEEDED)
+            return status;
         (void)SparkTpDeviceCollectiveMarkOperationFailure(
             implementation,operation,generation,status);
         (void)SparkTpDeviceCollectiveTransitionPhase(operation,
@@ -1751,6 +1790,29 @@ SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
         return SparkTpDeviceCollectiveNcclSubmitU64Max(collective,submission);
     return SparkTpDeviceCollectiveSubmitHidden(collective,submission,
         SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64);
+}
+
+SparkStatus SparkTpDeviceCollectiveOpWaitHandles(
+    SparkTpDeviceCollective *collective,
+    uint64_t ordinal,
+    void **flag_device,
+    uint64_t *wait_value)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+
+    if (collective == 0 || flag_device == 0 || wait_value == 0 ||
+        collective->implementation == 0 || ordinal == UINT64_MAX ||
+        collective->backend_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    implementation =
+        (SparkTpDeviceCollectiveImplementation *)collective->implementation;
+    if (implementation->op_done_flags == 0)
+        return SPARK_STATUS_UNSUPPORTED;
+    *flag_device = (uint8_t *)implementation->op_done_flags +
+        (size_t)(ordinal % collective->credit_count) * sizeof(uint64_t);
+    *wait_value = ordinal / collective->credit_count + 1u;
+    return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectiveRequestFailure(
@@ -2087,6 +2149,9 @@ SparkStatus SparkTpDeviceCollectiveCreate(
                 SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE,0u));
         if (cudaEventCreateWithFlags(
                 &implementation->consumer_events[credit_index],
+                cudaEventDisableTiming) != cudaSuccess ||
+            cudaEventCreateWithFlags(
+                &implementation->producer_events[credit_index],
                 cudaEventDisableTiming) != cudaSuccess)
         {
             fprintf(stderr,"TREE-EVENT-FAIL rank=%u credit=%u cuda=%s\n",
@@ -2095,6 +2160,31 @@ SparkStatus SparkTpDeviceCollectiveCreate(
             status = SPARK_STATUS_DRIVER_LOAD_ERROR;
             goto fail_create;
         }
+        if (cudaStreamCreate(
+                &implementation->operation_streams[credit_index]) != cudaSuccess)
+        {
+            fprintf(stderr,"TREE-STREAM-FAIL rank=%u credit=%u cuda=%s\n",
+                collective_out->tp_rank,credit_index,
+                cudaGetErrorString(cudaGetLastError()));
+            status = SPARK_STATUS_DRIVER_LOAD_ERROR;
+            goto fail_create;
+        }
+    }
+    if (cudaMalloc(&implementation->op_done_flags,
+            (size_t)collective_out->credit_count * sizeof(uint64_t)) !=
+            cudaSuccess ||
+        cudaMemset(implementation->op_done_flags,0,
+            (size_t)collective_out->credit_count * sizeof(uint64_t)) !=
+            cudaSuccess ||
+        cudaHostAlloc(&implementation->op_done_staging,
+            (size_t)collective_out->credit_count * sizeof(uint64_t),
+            cudaHostAllocPortable) != cudaSuccess)
+    {
+        fprintf(stderr,"TREE-FLAG-FAIL rank=%u cuda=%s\n",
+            collective_out->tp_rank,
+            cudaGetErrorString(cudaGetLastError()));
+        status = SPARK_STATUS_DRIVER_LOAD_ERROR;
+        goto fail_create;
     }
     for (binding_index = 0u;
          binding_index < config->credit_binding_count;
@@ -2213,6 +2303,10 @@ fail_create:
     SparkTpDeviceCollectiveDestroyEvents(implementation);
     if (implementation->fold_stage_host != 0)
         (void)cudaFreeHost(implementation->fold_stage_host);
+    if (implementation->op_done_flags != 0)
+        (void)cudaFree(implementation->op_done_flags);
+    if (implementation->op_done_staging != 0)
+        (void)cudaFreeHost(implementation->op_done_staging);
     free(implementation);
     collective_out->implementation = 0;
     return status;
@@ -2265,6 +2359,10 @@ void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
     SparkTpDeviceCollectiveDestroyEvents(implementation);
     if (implementation->fold_stage_host != 0)
         (void)cudaFreeHost(implementation->fold_stage_host);
+    if (implementation->op_done_flags != 0)
+        (void)cudaFree(implementation->op_done_flags);
+    if (implementation->op_done_staging != 0)
+        (void)cudaFreeHost(implementation->op_done_staging);
     free(implementation);
     memset(collective,0,sizeof(*collective));
 }

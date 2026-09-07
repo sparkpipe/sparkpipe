@@ -631,6 +631,28 @@ extern "C" int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave 
 	return(status);
 }
 
+__global__ void SparkGlm5NextOpWaitKernel(
+	volatile unsigned long long *flag,
+	unsigned long long value)
+{
+	while (*flag < value)
+		__nanosleep(100u);
+}
+
+extern "C" SparkStatus SparkGlm5NextLaunchOpWait(
+	cudaStream_t stream,
+	void *flag_device,
+	uint64_t wait_value)
+{
+	if ( stream == 0 || flag_device == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	SparkGlm5NextOpWaitKernel<<<1,1,0,stream>>>(
+		(volatile unsigned long long *)flag_device,
+		(unsigned long long)wait_value);
+	return cudaPeekAtLastError() == cudaSuccess ?
+		SPARK_STATUS_OK : SPARK_STATUS_DRIVER_LOAD_ERROR;
+}
+
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	int32_t status;
