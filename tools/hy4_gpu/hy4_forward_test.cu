@@ -56,6 +56,20 @@ __global__ void k_dot(const float* a, const float* b, float* out, int n) {
     out[0] = s;
 }
 
+__global__ void k_sum(const float* x, float* out, int n) {
+    __shared__ float part[256];
+    int tid = threadIdx.x;
+    float s = 0.f;
+    for (int k = tid; k < n; k += blockDim.x) s += x[k];
+    part[tid] = s;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        __syncthreads();
+        if (tid < off) part[tid] += part[tid + off];
+    }
+    if (tid == 0) out[blockIdx.x] = part[0];
+}
+
 __global__ void k_rms_sq(const float* x, float* ss, int n) {
     __shared__ float part[256];
     int tid = threadIdx.x;
@@ -546,6 +560,21 @@ int main(int argc, char** argv) {
             k_hc_distribute<<<N_EMBD / 256, 256>>>(
                 d_st, d_acc_all + (size_t)t * N_EMBD, d_post, N_EMBD, HC);
         }
+        {
+            const int nb = (HC * N_EMBD + 255) / 256;
+            k_sum<<<nb, 256>>>(d_streams_all, d_red, HC * N_EMBD);
+            std::vector<float> parts(nb);
+            cudaMemcpy(parts.data(), d_red, nb * 4, cudaMemcpyDeviceToHost);
+            float s = 0.f;
+            int bad = 0;
+            for (int i = 0; i < nb; ++i) {
+                s += parts[i];
+                if (!isfinite(parts[i])) bad = 1;
+            }
+            fprintf(stderr, "post-attn L%d t0: sum %.6f nan=%d\n", il, s,
+                    bad);
+            fflush(stderr);
+        }
 
         snprintf(nm, sizeof(nm), "blk.%d.hc_ffn_fn.weight", il);
         load_f32(R[0], nm, hhost.data(), hhost.size());
@@ -742,6 +771,21 @@ int main(int argc, char** argv) {
                     d_st, d_branch + (size_t)t * N_EMBD, d_post, N_EMBD,
                     HC);
             }
+        }
+        {
+            const int nb = (HC * N_EMBD + 255) / 256;
+            k_sum<<<nb, 256>>>(d_streams_all, d_red, HC * N_EMBD);
+            std::vector<float> parts(nb);
+            cudaMemcpy(parts.data(), d_red, nb * 4, cudaMemcpyDeviceToHost);
+            float s = 0.f;
+            int bad = 0;
+            for (int i = 0; i < nb; ++i) {
+                s += parts[i];
+                if (!isfinite(parts[i])) bad = 1;
+            }
+            fprintf(stderr, "post-ffn  L%d t0: sum %.6f nan=%d\n", il, s,
+                    bad);
+            fflush(stderr);
         }
         if (il % 10 == 0)
             printf("layer %d done\n", il), fflush(stdout);
