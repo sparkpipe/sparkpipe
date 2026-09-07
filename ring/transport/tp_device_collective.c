@@ -125,8 +125,8 @@ typedef struct SparkTpDeviceCollectiveImplementation
     cudaEvent_t consumer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaEvent_t producer_events[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
     cudaStream_t operation_streams[SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
-    uint64_t *op_done_flags;
-    uint64_t *op_done_staging;
+    void *op_done_flags;
+    void *op_done_staging;
     void *registration_cuda_stream;
     atomic_uint admission_open;
     atomic_uint shutdown_requested;
@@ -1737,7 +1737,8 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
             implementation->operation_streams[credit_index]);
     }
     if (status == SPARK_STATUS_OK)
-        implementation->op_done_staging[credit_index] = generation;
+        ((uint64_t *)implementation->op_done_staging)[credit_index] =
+            generation;
     if (status != SPARK_STATUS_OK)
     {
         if (status == SPARK_STATUS_CAPACITY_EXCEEDED)
