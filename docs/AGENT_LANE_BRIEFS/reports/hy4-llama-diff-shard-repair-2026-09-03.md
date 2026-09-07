@@ -868,3 +868,40 @@ on main), stagepack_format.h = hy4-fp8-tp16-v1 (per-rank safetensors
 kernels ported to FP8-native (MX group-32 scale apply; the 9 dequant
 classes disappear — pack format IS kernel format), validation =
 the exactness receipts (TOP1 299 val 15.2826, head mixes to 1e-4).
+
+## 09-08: FP8 PLACEMENT DONE 16/16 + .experts sidecars distributed
+
+- PLACEMENT_DONE at 07:21: every rank r now lives on spark{hex r} at
+  ~/sparkdata/hy4.fp8.tp16/packs/rank-XX/ (pack + manifest-rank-XX.json
+  + .sha256), each copy sha256-gated on the destination before its
+  pl_XX.done marker. Two placement-script defects fixed en route:
+  rank-12's failure was ssh-to-self (the manifest/sha steps scp+ssh'd
+  to sparkc FROM sparkc — self-ssh is refused; the local branch now
+  copies and verifies entirely locally), and the retry budget moved to
+  8x45s after a ~2-minute link-flake window outlasted 4x30s. A lesson
+  re-learned: repeated relaunches overlapped once and two concurrent
+  copies corrupted one target (1,257 extra bytes, sha gate caught it) —
+  kill old instances before relaunching.
+
+- The .experts sidecars: files for all 16 ranks already existed on
+  sparkc (generated 09-05, 33,496 B each). Format decoded — it is the
+  glm5_next lazy-manifest verbatim: 16B header (WPEX magic, v1, count)
+  + 40B records (reserved u32=0, chunk ordinal u32, offset u64,
+  bytes u64, ck128 16B); 837 contiguous 64 MiB chunks covering the
+  whole pack, each independently digest-verified at lazy-map time.
+  Distributed to all 16 placed rank directories (EXPERTS_DIST_DONE,
+  spot-verified on sparkf rank-15: pack + manifest + .sha256 +
+  .experts all present).
+
+- ck128 generator port validated: my python port of SparkCk128
+  (Murmur3 x64_128 seed 0) produces byte-identical digests to the
+  committed tools/ck128_stamp.c on a 3 MB test blob; a repo-side
+  per-expert .experts generator (hy4_experts_manifest) follows once
+  the Mimosa gate accepts the file shape — the fleet-side work does
+  not wait on it.
+
+NEXT: weightd/residentd wiring for hy4-fp8-tp16-v1 with lazy chunk
+maps driven by .experts (eager: nothing above the 64 MiB chunk layer;
+expert tensors resolved through the safetensors header to chunk
+ranges), then the TP16 native module (forward cell = blueprint,
+FP8-native MX kernels).
