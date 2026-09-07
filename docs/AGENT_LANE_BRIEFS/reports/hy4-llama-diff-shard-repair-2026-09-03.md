@@ -760,3 +760,51 @@ rebuild completes -> spot-verify ranks 7 + 15; (3) placement rank r ->
 spark{hex r}:~/sparkdata/hy4.fp8.tp16/packs/rank-XX/; (4) weightd/
 residentd load wiring for hy4-fp8-tp16-v1; (5) TP16 native module
 port (the forward cell is the blueprint).
+
+## 09-08: exactness hunt closed to a single question; FP8 packs 16/16 verified
+
+Directive context: MTP out of scope (separate MTP files by sysadmin,
+mixed-quant combos); residentd wiring must use lazy expert load;
+smoketest-scale cells only. Lane worktree recreated at
+/Users/mac/lane-hy4-dev (the /tmp copy lost its git dir).
+
+RESOLUTION CHAIN (all committed on lane/hy4-dev):
+1. The spark2 CPU generator binary was STALE — it ran 8 tokens (4 real
+   + zero fill), produced the bogus "top1 0 / -2.07 sums" reference.
+   Rebuilt from the committed source: prompt honored, 4 tokens.
+2. Committed CPU generator on prompt [802 5466 19405 63357]:
+   post-attn L0 t0 sum -0.618758; greedy GENERATED TOKEN: 299
+   (HY4_TOP: 299 @15.28, 268 @13.25, 347 @13.13, 341 @13.09,
+   303 @12.93). The original "expected 299" was correct all along.
+3. LAYER_STATE PASS vs the FRESH same-prompt dump
+   (~/hy4-cmp/l1state_gpu4.t0, max|d| 2.68e-06): committed CPU ==
+   GPU layer cell, element-wise, formally closed.
+4. Forward cell had three real defects, all fixed:
+   a. stale shared d_pre/d_post hc coefficients across the token loop
+      (per-token slots, ce6d941);
+   b. d_branch MoE accumulator never zeroed per layer (d514b04);
+   c. instrumentation: k_sum launched a 96-block grid where every
+      block strides the WHOLE array — 96 identical partials summed
+      (-0.6188 x 96 = -59.40 exactly). Prints fixed to single-block.
+5. PROOF the forward cell now tracks the CPU: byte-diff of its
+   post-L1 t0 stream dump vs l1state_gpu4.t0 = fp32 mantissa noise
+   only (24414 low-bit diffs, values equal to ~1e-8); and at L77 the
+   per-layer sums agree to 3 ppm (CPU -242737.18 vs GPU -242734.0).
+6. REMAINING QUESTION (one iteration from closed): the head stage on
+   t3 diverges — HCHEADGPU t3 mixes [-10.38, -4.67, -0.25, 16.18] vs
+   CPU [-19.17, -9.10, -1.03, 21.43]; final normed differs; TOP1 303
+   @12.02 vs CPU 299 @15.28 (303 is the CPU's own #5 token). t0
+   matches to ppm through L77, so the suspicion is cross-token
+   chaotic amplification of fp32 noise concentrating in t3 (the most
+   KV-coupled token) — but it is NOT yet distinguished from a
+   semantic bug in the multi-token KV path (k_attn_head_multi's
+   cache indexing is the only never-independently-validated code).
+   NEXT: per-layer t3 stream-sum trajectory GPU-vs-CPU (one edit +
+   one ~2h run): smooth exponential growth from ~L2 = noise-class
+   (close the gate with the fp64-noise caveat, like the llama diff);
+   a jump at a specific layer = semantic bug at that layer.
+
+FP8 PACKS: 16/16 VERIFY PASS (ranks 0-4 on 09-04, 05-15 on 09-08,
+sample-8 byte-exact vs checkpoint). Placement script staged on sparkc
+(~/hy4-fp8-packs/place_fp8_packs.sh, sha-gated per node). weightd/
+residentd wiring next (lazy expert load per operator directive).
