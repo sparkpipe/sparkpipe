@@ -565,26 +565,18 @@ int main(int argc, char** argv) {
                 d_post_all + t * HC, N_EMBD, HC);
         }
         {
-            const int nb = (HC * N_EMBD + 255) / 256;
-            k_sum<<<nb, 256>>>(d_streams_all, d_red, HC * N_EMBD);
-            std::vector<float> parts(nb);
-            cudaMemcpy(parts.data(), d_red, nb * 4, cudaMemcpyDeviceToHost);
+            k_sum<<<1, 256>>>(d_streams_all, d_red, HC * N_EMBD);
             float s = 0.f;
             int bad = 0;
-            for (int i = 0; i < nb; ++i) {
-                s += parts[i];
-                if (!isfinite(parts[i])) bad = 1;
-            }
+            cudaMemcpy(&s, d_red, 4, cudaMemcpyDeviceToHost);
+            bad = !isfinite(s);
             float st3[3], ac3[3];
             float asum = 0.f;
             float post_probe[4];
-            std::vector<float> aparts(nb);
             cudaMemcpy(post_probe, d_post_all, 16, cudaMemcpyDeviceToHost);
             cudaMemcpy(st3, d_streams_all, 12, cudaMemcpyDeviceToHost);
-            k_sum<<<nb, 256>>>(d_acc_all, d_red, N_EMBD);
-            cudaMemcpy(aparts.data(), d_red, nb * 4,
-                       cudaMemcpyDeviceToHost);
-            for (int i = 0; i < nb; ++i) asum += aparts[i];
+            k_sum<<<1, 256>>>(d_acc_all, d_red, N_EMBD);
+            cudaMemcpy(&asum, d_red, 4, cudaMemcpyDeviceToHost);
             cudaMemcpy(ac3, d_acc_all, 12, cudaMemcpyDeviceToHost);
             fprintf(stderr,
                     "post-attn L%d t0: sum %.6f nan=%d first3 %.6f %.6f "
