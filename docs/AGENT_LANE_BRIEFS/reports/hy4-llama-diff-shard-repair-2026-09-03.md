@@ -808,3 +808,22 @@ FP8 PACKS: 16/16 VERIFY PASS (ranks 0-4 on 09-04, 05-15 on 09-08,
 sample-8 byte-exact vs checkpoint). Placement script staged on sparkc
 (~/hy4-fp8-packs/place_fp8_packs.sh, sha-gated per node). weightd/
 residentd wiring next (lazy expert load per operator directive).
+
+## 09-08 LATER: EXACTNESS GATE CLOSED — FORWARD PASS
+
+hy4-fwd-qrope receipt (q_pe rope fix 931dac1, PR #826):
+- TOP1 299 (expected 299) val 15.2826 — CPU reference HY4_TOP 299
+  @15.282612, a 5-decimal match.
+- HCHEADGPU t3 mixes [-19.1730, -9.1037, -1.0290, 21.4265] vs CPU
+  [-19.1731, -9.1037, -1.0290, 21.4266] — 1e-4 agreement on the most
+  KV-coupled token through all 78 layers.
+- The t3 "divergence" was never chaos: it was the missing query-side
+  RoPE (identity at position 0, wrong everywhere else). The
+  noise-vs-semantic discriminator did its job — a jump at the first
+  checkpoint (0.92 at L1) pointed at position-dependent math.
+
+State: 78-layer GPU forward cell is token-exact vs the committed CPU
+generator. Exactness verified BEFORE any timing, per the standing law.
+Next: FP8 placement (script staged, 16/16 verified) -> weightd/
+residentd wiring with LAZY expert load -> TP16 native module (this
+cell is the blueprint) -> tok/s hill climb.
