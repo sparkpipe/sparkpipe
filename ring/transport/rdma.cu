@@ -2808,7 +2808,7 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueue(
     {
         memset(work_completions, 0, sizeof(work_completions));
         result = ibv_poll_cq(state->lanes[lane_index].completion_queue,
-            1,
+            (int)SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT,
             work_completions);
         if (result < 0)
         {
