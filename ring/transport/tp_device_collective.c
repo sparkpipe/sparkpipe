@@ -1189,11 +1189,8 @@ static void SparkTpDeviceCollectiveTreeSend(
         &implementation->bindings[route][operation->credit_index];
     uint64_t payload_bytes = SparkTpDeviceCollectiveOperationBytes(
         implementation->collective,operation);
-    uint64_t nonce_at = implementation->nonce_offset;
+    uint64_t nonce_at = payload_bytes;
     SparkStatus status;
-
-    if (payload_bytes > nonce_at)
-        nonce_at = payload_bytes;
     *(volatile uint64_t *)((uint8_t *)binding->send_transport +
         nonce_at) = operation->ordinal + 1u;
     status = SparkHiddenTransportSendFixed(
@@ -1326,9 +1323,7 @@ static void SparkTpDeviceCollectiveTreeOperation(
         binding = &implementation->bindings[
             tree_bit_route(used,bit)][operation->credit_index];
         {
-            uint64_t nonce_at = implementation->nonce_offset;
-            if (local_bytes > nonce_at)
-                nonce_at = local_bytes;
+            uint64_t nonce_at = local_bytes;
             if (*(volatile uint64_t *)
                     ((uint8_t *)binding->receive_transport + nonce_at) !=
                 operation->ordinal + 1u)
@@ -1456,12 +1451,10 @@ static void SparkTpDeviceCollectiveD2aOperation(
     SparkTpDeviceCollective *collective = implementation->collective;
     uint64_t local_bytes =
         SparkTpDeviceCollectiveOperationBytes(collective,operation);
-    uint64_t nonce_at = implementation->nonce_offset;
+    uint64_t nonce_at = local_bytes;
     uint32_t route;
     SparkStatus status;
 
-    if (local_bytes > nonce_at)
-        nonce_at = local_bytes;
     if (operation->stage == 0u)
     {
         uint32_t acks_open = 1u;

@@ -21,7 +21,7 @@ def post_completion(api, ids, max_tokens):
     body = json.dumps({
         "model": "default",
         "prompt_token_ids": ids,
-        "max_tokens": str(max_tokens),
+        "max_tokens": max_tokens,
         "temperature": 0,
     }).encode()
     req = urllib.request.Request(
@@ -31,9 +31,12 @@ def post_completion(api, ids, max_tokens):
     with urllib.request.urlopen(req, timeout=900) as resp:
         payload = json.loads(resp.read())
     wall = time.monotonic() - t0
-    text = payload["choices"][0]
-    usage = payload.get("usage", {})
-    return wall, int(usage.get("completion_tokens", 0)), text.get("finish_reason", "?")
+    if "choices" in payload:
+        usage = payload.get("usage", {})
+        return wall, int(usage.get("completion_tokens", 0)), \
+            payload["choices"][0].get("finish_reason", "?")
+    return wall, len(payload.get("tokens", [])), \
+        ("stop" if payload.get("status") == 0 else f"status={payload.get('status')}")
 
 
 def main():
