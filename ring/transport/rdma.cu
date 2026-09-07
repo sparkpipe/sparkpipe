@@ -145,7 +145,7 @@ typedef struct SparkHiddenSparkHostRdmaQueuePairWireInfo
 } SparkHiddenSparkHostRdmaQueuePairWireInfo;
 
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR \
-    "/mnt/model-warm/qpn"
+    "/mnt/qpn"
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_MAGIC \
     UINT64_C(0x5245454e44565a53)
 
@@ -500,6 +500,7 @@ static SparkStatus SparkHiddenSparkHostRdmaAwaitPeerRecord(
     SparkStatus status;
 
     SparkHiddenSparkHostRdmaBuildIdentity(state,&local_identity);
+    (void)poll(0,0,300);
     for (;;)
     {
         uint64_t now_ns = SparkHiddenSparkHostRdmaMonotonicNs();
@@ -518,7 +519,7 @@ static SparkStatus SparkHiddenSparkHostRdmaAwaitPeerRecord(
                 SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR);
             return SPARK_STATUS_BUSY;
         }
-        (void)poll(0,0,2);
+        (void)poll(0,0,100);
     }
 }
 
@@ -5433,7 +5434,7 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
                     status = SPARK_STATUS_BUSY;
                     break;
                 }
-                (void)poll(0,0,2);
+                (void)poll(0,0,100);
             }
         }
         if (status != SPARK_STATUS_OK)
