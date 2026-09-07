@@ -457,7 +457,7 @@ static void SparkGlm5NextBindLayer(
 	buffers->kda_output_bf16 = slot->kda_output_bf16;
 	buffers->kda_retention = slot->kda_retention;
 	buffers->kda_write_gate = slot->kda_write_gate;
-	buffers->kda_state_index = wave->run_state_index;
+	buffers->kda_state_index = wave->run_count != 0u ? wave->run_state_index : wave->kda_state_index;
 	buffers->sequence_row_begin = wave->sequence_row_begin;
 	kda_ordinal = wave->kda_ordinal_by_local_layer[local_layer];
 	if ( kda_ordinal != UINT32_MAX )
@@ -511,7 +511,7 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	}
 	if ( SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer) )
 	{
-		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->run_count,wave->commit,wave->multiprocessor_count,stream));
+		return(Glm5NextLayerKda(&buffers,wave->row_count,wave->run_count != 0u ? wave->run_count : wave->row_count,wave->commit,wave->multiprocessor_count,stream));
 	}
 	status = Glm5NextLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
