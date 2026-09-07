@@ -239,6 +239,25 @@ void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__re
 	}
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadWiseGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16, uint32_t heads, uint32_t head_dimension)
+{
+	uint64_t base = (uint64_t)blockIdx.x * heads * head_dimension;
+	uint32_t head, index;
+	for (head = 0u; head < heads; ++head)
+	{
+		float gate = LmBf16ToFloat(gate_bf16[base + (uint64_t)head]);
+		gate = 1.0f / (1.0f + __expf(-gate));
+		for (index = threadIdx.x; index < head_dimension; index += THREADS)
+		{
+			uint64_t element = base + (uint64_t)head * head_dimension + index;
+			output_bf16[element] =
+				LmFloatToBf16(gate * LmBf16ToFloat(output_bf16[element]));
+		}
+	}
+}
+
 template<class Format, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmQuantiseRowsKernel(const uint16_t *__restrict__ input_bf16, const uint32_t *__restrict__ source_row_map, uint8_t *__restrict__ output_codes, uint8_t *__restrict__ output_scales, uint32_t row_count, uint32_t dimension)
