@@ -1199,13 +1199,9 @@ static void SparkTpDeviceCollectivePollSessions(
          route_index < implementation->route_count;
          ++route_index)
     {
-        uint32_t poll_index;
-
         if (implementation->route_dead[route_index] != 0u)
             continue;
-        for (poll_index = 0u;
-             poll_index < implementation->collective->credit_count;
-             ++poll_index)
+        for (;;)
         {
             SparkHiddenTransportCompletion completion;
             SparkStatus status;
@@ -1234,6 +1230,8 @@ static void SparkTpDeviceCollectivePollSessions(
                 implementation->route_retry_milli[route_index] = 0u;
                 break;
             }
+            if (completion.status == SPARK_STATUS_BUSY)
+                break;
         }
     }
 }
