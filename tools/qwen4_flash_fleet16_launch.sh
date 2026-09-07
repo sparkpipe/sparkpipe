@@ -143,6 +143,15 @@ launch_one() {  # rank host pos pp tp rail tp_hosts
   local rank="$1" host="$2" pos="$3" pp="$4" tp="$5" rail="$6" tp_hosts="$7"
   local identifier="$8"
   local pid
+  local session_ports
+  session_ports=$(python3 -c "
+tp = 4
+base = 64500 + 200
+cells = []
+for a in range(tp):
+    for b in range(tp):
+        cells.append(0 if a == b else base + a * tp + b)
+print(','.join(str(c) for c in cells))")
   pid=$(ssh -o BatchMode=yes "$host" bash -s <<REMOTE
 set -euo pipefail
 dir="$(deploy_dir_for "$host")"
@@ -154,6 +163,7 @@ export SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH="\$dir/lib/libhidden_transport_sp
 export SPARK_QWEN4_FLASH_STAGE_TP_IDENTIFIER=$identifier
 export SPARK_QWEN4_FLASH_STAGE_TP_PORT_BASE=64500
 export SPARK_QWEN4_FLASH_STAGE_TP_HOSTS="$tp_hosts"
+export SPARK_QWEN4_FLASH_STAGE_TP_SESSION_PORTS="$session_ports"
 export SPARK_QWEN4_FLASH_STAGE_TP_LOCAL_HOST="$rail"
 export SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS=180000
 export LD_LIBRARY_PATH="\$dir/lib:\${LD_LIBRARY_PATH:-}"
