@@ -137,11 +137,10 @@ typedef void (*SparkSha256TransformBlocksFunction)(
     const uint8_t *data,
     size_t block_count);
 
-static SparkSha256TransformBlocksFunction g_transform_blocks =
-    SparkSha256TransformBlocksPortability;
-
 #if defined(__aarch64__) && defined(__ARM_NEON) && \
     (defined(__GNUC__) || defined(__clang__)) && !defined(__CUDACC__)
+static SparkSha256TransformBlocksFunction g_transform_blocks =
+    SparkSha256TransformBlocksPortability;
 #include <arm_neon.h>
 #if defined(__GNUC__) && !defined(__clang__)
 #define SPARK_SHA256_SHA2_TARGET __attribute__((target("arch=armv8-a+sha2")))
