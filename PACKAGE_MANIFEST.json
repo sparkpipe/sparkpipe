@@ -1,5 +1,5 @@
 {
-  "file_count": 1963,
+  "file_count": 1964,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -635,6 +635,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-packs-2026-08-28.md",
       "sha256": "73a929f51b3b21ade499810292f5e79e996d5a70bd6b4d94eebc46e7c8670ff5",
       "size_bytes": 11633
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-publication-smoke-2026-09-08.md",
+      "sha256": "68fb19bc59ef8bc110a637c71778017990f85d950c4fb73864fa8c6396fb70ba",
+      "size_bytes": 3109
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-s6-2026-08-29.md",
@@ -4498,8 +4503,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/validation/validate_qwen4_flash_resident_decode_stage_cuda.sh",
-      "sha256": "ac74f52a15e7ba476c09063c22d6a6abdd66722ac6c4ffebd6ef10367796f02b",
-      "size_bytes": 3607
+      "sha256": "412a4d43b8829a3901c76386c8003edad6c14faef728a5a5265e24cfe8145e70",
+      "size_bytes": 3952
     },
     {
       "path": "modules/resident_decode_stage_rules.mk",
@@ -9548,8 +9553,8 @@
     },
     {
       "path": "tools/qwen4_flash_deploy_v4.py",
-      "sha256": "9232ceb7852650c08aa1ba383ccb4bcd3e206a47f0a6548414418f571c4d50ad",
-      "size_bytes": 5198
+      "sha256": "019f6b66b951e7df31a0d6a02862ecf9493da0f0a932d683468747ea4e55aa34",
+      "size_bytes": 5384
     },
     {
       "path": "tools/qwen4_flash_fetch_fp8.py",
@@ -9820,5 +9825,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32768716
+  "total_bytes": 32772356
 }
