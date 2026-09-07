@@ -10,7 +10,7 @@ BRANCH="${6:-${G5_BRANCH:-lane/glm53-tree-2}}"
 REMOTE="${7:-origin}"
 TREE="$HOME/sparkpipe-build"
 HUB_REF="${HUB_REF:-rtx5090:release}"
-FIRMWARE="examples/model_descriptions/${FAMILY}_resident_decode_stage_${CODEC}_firmware.json"
+FIRMWARE="examples/model_descriptions/${FAMILY}_${CODEC}_firmware.json"
 
 cd "$TREE"
 git fetch -q "$REMOTE" "$BRANCH"
