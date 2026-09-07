@@ -146,6 +146,15 @@ int main(int argc,char **argv)
         config.control_port_base = 21000u + rank_index;
         config.backend_module_path = dso;
         config.local_host = "bench";
+        {
+            uint32_t peer_index;
+            for (peer_index = 0u; peer_index < tp_degree; ++peer_index)
+            {
+                config.rank_hosts[peer_index] = "bench";
+                config.session_ports[peer_index][rank_index] =
+                    (uint16_t)(21000u + peer_index);
+            }
+        }
         config.registration_cuda_stream = compute_stream;
         config.combine_bf16_function = SlotBenchCombineBf16;
         config.combine_context = 0;
