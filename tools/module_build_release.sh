@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BRANCH="${1:-lane/glm53-tree-2}"
-ROOT="${2:-origin}"
+FAMILY="${1:?module family dir under modules/}"
+CODEC="${2:?expert codec (fp8, bf16, nvfp4, ...)}"
+ROOT_NAME="${3:?runtime root name under ~/sparkdata and the hub release dir}"
+REVISION="${4:?model source revision}"
+CONTRACT="${5:?contract json path}"
+BRANCH="${6:-${G5_BRANCH:-lane/glm53-tree-2}}"
+REMOTE="${7:-origin}"
 TREE="$HOME/sparkpipe-build"
-HUB_REF="${G5_HUB_REF:-rtx5090:release}"
-NAME="glm53flash.fp8.tp16"
+HUB_REF="${HUB_REF:-rtx5090:release}"
+FIRMWARE="examples/model_descriptions/${FAMILY}_resident_decode_stage_${CODEC}_firmware.json"
 
 cd "$TREE"
-git fetch -q "$ROOT" "$BRANCH"
+git fetch -q "$REMOTE" "$BRANCH"
 git reset -q --hard FETCH_HEAD
-git clean -q -fd build modules/glm5_next_resident_decode_stage 2>/dev/null || true
+git clean -q -fd build "modules/$FAMILY" 2>/dev/null || true
 REV=$(git rev-parse --short HEAD)
 echo "== $REV"
 
 export PATH="/usr/local/cuda/bin:$PATH"
-SHA=$(shasum -a 256 model_contracts/glm53_flash_authoritative.json | cut -d' ' -f1)
+SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 
 echo "== host build"
 make -q build/sparkpipe_model_compile || make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api
@@ -31,16 +36,16 @@ for t in $(seq 1 15); do
 done
 
 echo "== module publish (GPU receipts)"
-make -C modules/glm5_next_resident_decode_stage publish \
-    EXPERT_CODEC=fp8 \
-    MODEL_REVISION=84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+make -C "modules/$FAMILY" publish \
+    EXPERT_CODEC="$CODEC" \
+    MODEL_REVISION="$REVISION" \
     CONTRACT_SHA256="$SHA" \
     NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a 2>&1 | tail -2
 
 echo "== driver compile"
 mkdir -p "$HOME/sparkdata/out"
 build/sparkpipe_model_compile \
-    --model examples/model_descriptions/glm5_next_resident_decode_stage_fp8_firmware.json \
+    --model "$FIRMWARE" \
     --library build/module_library --output "$HOME/sparkdata/out" \
     --cc /usr/bin/cc --include include \
     --cc-arg -L/usr/local/cuda/targets/sbsa-linux/lib \
@@ -48,9 +53,9 @@ build/sparkpipe_model_compile \
     --cc-arg -ldl --cc-arg -pthread 2>&1 | tail -1
 
 echo "== install into hub reference"
-ssh -o BatchMode=yes "${HUB_REF%%:*}" "mkdir -p '${HUB_REF#*:}/$NAME/stages/stage_000'"
+ssh -o BatchMode=yes "${HUB_REF%%:*}" "mkdir -p '${HUB_REF#*:}/$ROOT_NAME/stages/stage_000'"
 rsync -c "$HOME/sparkdata/out/stages/stage_000/model_driver.so" \
-    "${HUB_REF}/$NAME/stages/stage_000/model_driver.so"
-ssh -o BatchMode=yes "${HUB_REF%%:*}" "touch '${HUB_REF#*:}/$NAME/UPDATE'"
+    "${HUB_REF}/$ROOT_NAME/stages/stage_000/model_driver.so"
+ssh -o BatchMode=yes "${HUB_REF%%:*}" "touch '${HUB_REF#*:}/$ROOT_NAME/UPDATE'"
 systemctl --user start fleet-agent 2>/dev/null || true
 echo "released $REV"

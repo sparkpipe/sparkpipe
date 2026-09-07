@@ -9,7 +9,11 @@ directories. Any node can recreate the same source tree from a branch.
     1. edit    your lane worktree (or any clone)
     2. push    git push origin <branch>
     3. build   ssh <any-spark> 'cd ~/sparkpipe-build && git pull && \
-                bash tools/glm5_next_build_release.sh <branch>'
+                bash tools/module_build_release.sh <family> <codec> <root> \
+                    <revision> <contract.json> [branch]'
+       e.g. bash tools/module_build_release.sh glm5_next_resident_decode_stage \
+                fp8 glm53flash.fp8.tp16 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+                model_contracts/glm53_flash_authoritative.json
     4. wait    the UPDATE cycle converges the fleet (poll, don't sleep)
     5. test    API request against spark0:8433
 
