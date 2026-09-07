@@ -132,8 +132,7 @@ int main(int argc,char **argv)
         cudaError_t stream_error = cudaStreamCreate(&compute_stream);
         if (stream_error != cudaSuccess)
         {
-            fprintf(stderr,"stream create failed: %s
-",
+            fprintf(stderr,"stream create failed: %s\n",
                 cudaGetErrorString(stream_error));
             return 1;
         }
