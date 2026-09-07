@@ -730,6 +730,7 @@ static int SparkWeightdVerifyRequested(void)
 }
 
 static SparkStatus SparkWeightdSidecarCk128(const char *pack_path,
+    char hex[SPARK_CK128_HEX_BYTES])
 {
     char sidecar_path[SPARK_WEIGHTD_PATH_BYTES + 8];
     FILE *sidecar;
