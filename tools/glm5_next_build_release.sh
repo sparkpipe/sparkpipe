@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# glm5_next build + release from the repo. Runs ON a spark (aarch64 + GB10).
-# Any node can recreate the tree: git pull, publish (GPU receipts), compile
-# the driver, install into the hub reference, drop UPDATE. The debug cycle is
-# edit -> push -> run this -> fleet converges.
 set -euo pipefail
 
 BRANCH="${1:-lane/glm53-tree-2}"

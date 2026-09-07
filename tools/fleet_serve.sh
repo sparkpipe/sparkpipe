@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# fleet_serve.sh — relaunch a resident deployment on the fleet. The daemons
-# are load-order-independent (background accepts, retrying connects) and
-# listeners set SO_REUSEADDR: TERM in parallel -> same-second launch ->
-# ready-or-error poll that fails in seconds -> api.
-#
-# usage: tools/fleet_serve.sh RUNTIME_ROOT_NAME [stop|start|api|full]
-#        (default full; api host spark0 port 8433 unless G5_API_HOST/PORT)
 set -uo pipefail
 NAME="${1:?runtime root name (under ~/sparkdata/)}"
 CMD="${2:-full}"

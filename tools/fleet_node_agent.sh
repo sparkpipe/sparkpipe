@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# fleet_node_agent.sh — runs ON a spark: the whole release process.
-# Pulls every managed runtime root from a reference tree (ceph or any
-# reachable path), and on the convention file-changed -> TERM -> start,
-# restarts exactly what changed. After any (re)start it reports the
-# running binary versions to the fleet view on the hub (RTX5090 host).
-#
-# usage: fleet_node_agent.sh REFERENCE_BASE ROOTS_CSV [HUB]  (under setsid)
-#   REFERENCE_BASE  directory containing <root-name>/ per deployment
-#   ROOTS_CSV       e.g. glm53flash.fp8.tp16,dsv4flash.tp16
 set -uo pipefail
 REF_BASE="${1:?reference base dir}"
 ROOTS="${2:?comma-separated runtime root names}"
