@@ -339,7 +339,7 @@ int main(int argc, char** argv) {
           *d_ge, *d_ue, *d_he, *d_wshg, *d_wshu, *d_wshd, *d_qpe, *d_s,
           *d_ones, *d_normed, *d_klat_all, *d_kpe_all, *d_qr_all,
           *d_gatev_all, *d_hhead_fn, *d_hh_sc, *d_hh_base, *d_onorm,
-          *d_outw;
+          *d_outw, *d_pre_all, *d_post_all;
     CHECK_CUDA(cudaMalloc(&d_streams_all, (size_t)T * HC * N_EMBD * 4));
     CHECK_CUDA(cudaMalloc(&d_flat, (size_t)HC * N_EMBD * 4));
     CHECK_CUDA(cudaMalloc(&d_mixes, 8 * 4));
@@ -355,6 +355,8 @@ int main(int argc, char** argv) {
     CHECK_CUDA(cudaMalloc(&d_gatev_all, (size_t)T * 1024 * 4));
     CHECK_CUDA(cudaMalloc(&d_cur_all, (size_t)T * N_EMBD * 4));
     CHECK_CUDA(cudaMalloc(&d_qr_all, (size_t)T * 2048 * 4));
+    CHECK_CUDA(cudaMalloc(&d_pre_all, (size_t)T * HC * 4));
+    CHECK_CUDA(cudaMalloc(&d_post_all, (size_t)T * HC * 4));
     CHECK_CUDA(cudaMalloc(&d_wdg, (size_t)18432 * N_EMBD * 4));
     CHECK_CUDA(cudaMalloc(&d_wdu, (size_t)18432 * N_EMBD * 4));
     CHECK_CUDA(cudaMalloc(&d_wdd, (size_t)N_EMBD * 18432 * 4));
@@ -469,8 +471,9 @@ int main(int argc, char** argv) {
         for (int t = 0; t < T; ++t) {
             float* d_st = d_streams_all + (size_t)t * HC * N_EMBD;
             hc_pre_gpu(d_st, d_flat, d_hc_fn, (float*)d_hc_sc,
-                       (float*)d_hc_base, d_mixes, d_pre, d_post, d_red,
-                       nullptr, d_ss, N_EMBD, HC);
+                       (float*)d_hc_base, d_mixes, d_pre_all + t * HC,
+                       d_post_all + t * HC, d_red, nullptr, d_ss, N_EMBD,
+                       HC);
             k_rms_sq<<<1, 256>>>(d_red, d_ss, N_EMBD);
             k_rms_scale<<<N_EMBD / 256, 256>>>(d_red, (float*)d_an, d_cur,
                                                N_EMBD, 1e-5f, d_ss);
@@ -558,7 +561,8 @@ int main(int argc, char** argv) {
         for (int t = 0; t < T; ++t) {
             float* d_st = d_streams_all + (size_t)t * HC * N_EMBD;
             k_hc_distribute<<<N_EMBD / 256, 256>>>(
-                d_st, d_acc_all + (size_t)t * N_EMBD, d_post, N_EMBD, HC);
+                d_st, d_acc_all + (size_t)t * N_EMBD,
+                d_post_all + t * HC, N_EMBD, HC);
         }
         {
             const int nb = (HC * N_EMBD + 255) / 256;
@@ -589,8 +593,9 @@ int main(int argc, char** argv) {
         for (int t = 0; t < T; ++t) {
             float* d_st = d_streams_all + (size_t)t * HC * N_EMBD;
             hc_pre_gpu(d_st, d_flat, d_hc_fn, (float*)d_hc_sc,
-                       (float*)d_hc_base, d_mixes, d_pre, d_post, d_red,
-                       nullptr, d_ss, N_EMBD, HC);
+                       (float*)d_hc_base, d_mixes, d_pre_all + t * HC,
+                       d_post_all + t * HC, d_red, nullptr, d_ss, N_EMBD,
+                       HC);
             k_rms_sq<<<1, 256>>>(d_red, d_ss, N_EMBD);
             k_rms_scale<<<N_EMBD / 256, 256>>>(d_red, (float*)d_fn2,
                                                d_cur_all +
@@ -618,7 +623,7 @@ int main(int argc, char** argv) {
                     d_wdd, d_du, d_branch, N_EMBD, 18432);
                 float* d_st = d_streams_all + (size_t)t * HC * N_EMBD;
                 k_hc_distribute<<<N_EMBD / 256, 256>>>(
-                    d_st, d_branch, d_post, N_EMBD, HC);
+                    d_st, d_branch, d_post_all + t * HC, N_EMBD, HC);
             }
         } else {
             std::vector<int> sel(T * N_USED);
@@ -768,8 +773,8 @@ int main(int argc, char** argv) {
                     d_branch + (size_t)t * N_EMBD, d_he, 1.0f, N_EMBD);
                 float* d_st = d_streams_all + (size_t)t * HC * N_EMBD;
                 k_hc_distribute<<<N_EMBD / 256, 256>>>(
-                    d_st, d_branch + (size_t)t * N_EMBD, d_post, N_EMBD,
-                    HC);
+                    d_st, d_branch + (size_t)t * N_EMBD,
+                    d_post_all + t * HC, N_EMBD, HC);
             }
         }
         {
