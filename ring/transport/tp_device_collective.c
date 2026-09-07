@@ -140,6 +140,10 @@ typedef struct SparkTpDeviceCollectiveImplementation
     void *fold_stage_host;
     void *fold_stage[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
     SparkTpDeviceCollective *collective;
+    SparkTpDeviceCollectiveConfig config;
+    uint32_t route_dead[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint64_t route_retry_milli[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
+    uint32_t dead_route_count;
 } SparkTpDeviceCollectiveImplementation;
 
 static uint32_t SparkTpDeviceCollectiveDegreeIsSupported(uint32_t tp_degree)
@@ -1197,6 +1201,8 @@ static void SparkTpDeviceCollectivePollSessions(
     {
         uint32_t poll_index;
 
+        if (implementation->route_dead[route_index] != 0u)
+            continue;
         for (poll_index = 0u;
              poll_index < implementation->collective->credit_count;
              ++poll_index)
@@ -1209,15 +1215,128 @@ static void SparkTpDeviceCollectivePollSessions(
             if (status != SPARK_STATUS_OK)
             {
                 fprintf(stderr,
-                    "POLL-FAIL rank=%u route=%u status=%u transfer=%llu active=%llu\n",
+                    "TREE-ROUTE-DOWN rank=%u route=%u status=%u transfer=%llu active=%llu\n",
                     implementation->collective->tp_rank,route_index,
                     (uint32_t)status,
                     (unsigned long long)completion.transfer_bytes,
                     (unsigned long long)completion.active_sequence_count);
-                SparkTpDeviceCollectiveLatchFailure(implementation,status);
-                return;
+                SparkHiddenTransportClose(
+                    implementation->send_sessions[route_index]);
+                implementation->send_sessions[route_index] = 0;
+                if (implementation->receive_sessions[route_index] != 0)
+                {
+                    SparkHiddenTransportClose(
+                        implementation->receive_sessions[route_index]);
+                    implementation->receive_sessions[route_index] = 0;
+                }
+                implementation->route_dead[route_index] = 1u;
+                implementation->dead_route_count++;
+                implementation->route_retry_milli[route_index] = 0u;
+                break;
             }
         }
+    }
+}
+
+static SparkStatus SparkTpDeviceCollectiveTryReopenRoute(
+    SparkTpDeviceCollectiveImplementation *implementation,
+    uint32_t route_index)
+{
+    SparkTpDeviceCollectiveConfig retry_config;
+    SparkHiddenTransportSession *send_session = 0;
+    SparkHiddenTransportSession *receive_session = 0;
+    SparkHiddenTransportPacket packet;
+    uint64_t credit_span_bytes;
+    uint64_t deadline_milli;
+    uint32_t peers[7];
+    uint32_t rank = implementation->collective->tp_rank;
+    SparkStatus status;
+
+    retry_config = implementation->config;
+    if (retry_config.connect_timeout_milli > 2000u)
+        retry_config.connect_timeout_milli = 2000u;
+    SparkTpDeviceCollectiveTreeRoutePeers(rank,tree_used(rank),peers);
+    status = SparkTpDeviceCollectiveOpenSession(implementation,
+        &retry_config,route_index,rank,peers[route_index],
+        implementation->send_route_names[route_index],&send_session);
+    if (status == SPARK_STATUS_OK)
+        status = SparkTpDeviceCollectiveOpenSession(implementation,
+            &retry_config,route_index,peers[route_index],rank,
+            implementation->receive_route_names[route_index],
+            &receive_session);
+    if (status == SPARK_STATUS_OK)
+        status = SparkTpDeviceCollectiveBuildPacket(
+            implementation->bindings[route_index][0u].receive_transport,
+            implementation->collective->max_active_sequence_count,
+            implementation->step_hidden_dimensions[route_index],
+            0u,route_index,implementation->registration_cuda_stream,
+            &packet);
+    if (status == SPARK_STATUS_OK)
+    {
+        credit_span_bytes = (uint64_t)
+            implementation->collective->credit_count *
+            ((uint64_t)packet.bytes_per_sequence *
+            implementation->collective->max_active_sequence_count +
+            NONCE_BYTES);
+        status = SparkHiddenTransportSetFixedLocal(
+            receive_session,
+            implementation->bindings[route_index][0u].receive_transport,
+            credit_span_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        deadline_milli = SparkTpDeviceCollectiveNowMilli() +
+            retry_config.connect_timeout_milli;
+        for (;;)
+        {
+            status = SparkHiddenTransportPersistentRemoteCreditReady(
+                send_session,0u);
+            if (status != SPARK_STATUS_BUSY ||
+                SparkTpDeviceCollectiveNowMilli() >= deadline_milli)
+                break;
+            (void)poll(0,0,10);
+        }
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        implementation->send_sessions[route_index] = send_session;
+        implementation->receive_sessions[route_index] = receive_session;
+        implementation->route_dead[route_index] = 0u;
+        implementation->dead_route_count--;
+        fprintf(stderr,"TREE-ROUTE-UP rank=%u route=%u peer=%u\n",
+            rank,route_index,peers[route_index]);
+    }
+    else
+    {
+        if (send_session != 0)
+            SparkHiddenTransportClose(send_session);
+        if (receive_session != 0)
+            SparkHiddenTransportClose(receive_session);
+    }
+    return status;
+}
+
+static void SparkTpDeviceCollectiveMaintainRoutes(
+    SparkTpDeviceCollectiveImplementation *implementation)
+{
+    uint64_t now_milli;
+    uint32_t route_index;
+
+    now_milli = SparkTpDeviceCollectiveNowMilli();
+    if (now_milli == UINT64_MAX)
+        return;
+    for (route_index = 0u;
+         route_index < implementation->route_count;
+         ++route_index)
+    {
+        if (implementation->route_dead[route_index] == 0u)
+            continue;
+        if (implementation->route_retry_milli[route_index] != 0u &&
+            now_milli < implementation->route_retry_milli[route_index])
+            continue;
+        implementation->route_retry_milli[route_index] = now_milli + 2000u;
+        (void)SparkTpDeviceCollectiveTryReopenRoute(implementation,
+            route_index);
     }
 }
 
@@ -1357,6 +1476,8 @@ static void *SparkTpDeviceCollectiveProgressMain(void *context)
     for (;;)
     {
         SparkTpDeviceCollectivePollSessions(implementation);
+        if (implementation->dead_route_count != 0u)
+            SparkTpDeviceCollectiveMaintainRoutes(implementation);
         for (credit_index = 0u;
              credit_index < implementation->collective->credit_count;
              ++credit_index)
@@ -1514,6 +1635,8 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
         return (SparkStatus)atomic_load_explicit(
             &implementation->failure_status,memory_order_acquire);
     }
+    if (implementation->dead_route_count != 0u)
+        return SPARK_STATUS_BUSY;
     credit_index = (uint32_t)(submission->ordinal %
         collective->credit_count);
     generation = submission->ordinal /
@@ -2038,6 +2161,7 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         status = SPARK_STATUS_UNSUPPORTED;
         goto fail_create;
     }
+    implementation->config = *config;
     status = SparkTpDeviceCollectiveOpenTreeSessions(implementation,config);
     if (status != SPARK_STATUS_OK)
     {

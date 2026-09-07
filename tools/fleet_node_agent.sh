@@ -147,6 +147,13 @@ sync_root() {
         $HUBSSH "$refhost" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
         upd=$(printf '%s\ndown:%s\n' "$upd" "$HOST")
     fi
+    local gate_wait=0
+    while [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -lt "$FLEET_SIZE" ] &&
+          [ "$gate_wait" -lt 120 ]; do
+        sleep 1
+        gate_wait=$((gate_wait + 1))
+        upd=$($HUBSSH "$refhost" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
+    done
     [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -ge "$FLEET_SIZE" ] || return 0
     if ! printf '%s\n' "$upd" | grep -qx "up:$HOST"; then
         start_root "$name" || return 0
