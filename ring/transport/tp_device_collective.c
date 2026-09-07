@@ -160,6 +160,9 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t *d2a_ack_receive_slots;
     uint64_t *ack_stage_slots;
     uint64_t *d2a_ack_stage_slots;
+    uint64_t tree_last_posted[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS]
+        [TREE_FIXED_SLOTS];
+    uint64_t d2a_last_posted[D2A_ROUTE_COUNT][TREE_FIXED_SLOTS];
     SparkTpDeviceCollectiveCombineTp4Bf16Function combine_all_bf16_function;
     uint32_t d2a_route_count;
     uint32_t d2a_timing_enabled;
@@ -1200,19 +1203,28 @@ static void SparkTpDeviceCollectiveTreeSend(
         (uint32_t)((operation->ordinal << 8u) | route));
     if (status != SPARK_STATUS_OK)
         SparkTpDeviceCollectiveLatchFailure(implementation,status);
+    else
+        implementation->tree_last_posted[route][operation->credit_index] =
+            operation->ordinal;
 }
 
 static uint32_t SparkTpDeviceCollectiveAckGateOpen(
-    const uint64_t *ack_slots,
+    const SparkTpDeviceCollectiveImplementation *implementation,
+    uint32_t direct_all_to_all,
     uint32_t route,
-    uint32_t credit_count,
-    const SparkTpDeviceCollectiveOperation *operation)
+    uint32_t credit_index)
 {
-    if (operation->ordinal < TREE_FIXED_SLOTS)
+    const uint64_t *ack_slots = direct_all_to_all != 0u ?
+        implementation->d2a_ack_receive_slots : implementation->ack_receive_slots;
+    uint64_t last_posted = direct_all_to_all != 0u ?
+        implementation->d2a_last_posted[route][credit_index] :
+        implementation->tree_last_posted[route][credit_index];
+
+    if (last_posted == UINT64_MAX)
         return 1u;
-    return *(volatile uint64_t *)(ack_slots +
-        (uint64_t)route * credit_count + operation->credit_index) >=
-        operation->ordinal - TREE_FIXED_SLOTS + 1u ? 1u : 0u;
+    return *(volatile const uint64_t *)(ack_slots +
+        (uint64_t)route * implementation->collective->credit_count +
+        credit_index) == last_posted + 1u ? 1u : 0u;
 }
 
 static SparkStatus SparkTpDeviceCollectivePostAck(
@@ -1421,10 +1433,8 @@ static void SparkTpDeviceCollectiveTreeOperation(
         return;
     for (bit = 0u; bit < 7u; bit++)
         if ((send_mask >> bit & 1u) != 0u &&
-            SparkTpDeviceCollectiveAckGateOpen(
-                implementation->ack_receive_slots,
-                tree_bit_route(used,bit),
-                implementation->collective->credit_count,operation) == 0u)
+            SparkTpDeviceCollectiveAckGateOpen(implementation,0u,
+                tree_bit_route(used,bit),operation->credit_index) == 0u)
             return;
     for (bit = 0u; bit < 7u; bit++)
         if ((send_mask >> bit & 1u) != 0u)
@@ -1464,9 +1474,8 @@ static void SparkTpDeviceCollectiveD2aOperation(
             cudaErrorNotReady)
             return;
         for (route = 0u; route < implementation->d2a_route_count; route++)
-            if (SparkTpDeviceCollectiveAckGateOpen(
-                    implementation->d2a_ack_receive_slots,route,
-                    collective->credit_count,operation) == 0u)
+            if (SparkTpDeviceCollectiveAckGateOpen(implementation,1u,route,
+                    operation->credit_index) == 0u)
             {
                 acks_open = 0u;
                 break;
@@ -1504,6 +1513,8 @@ static void SparkTpDeviceCollectiveD2aOperation(
                         status);
                     return;
                 }
+                implementation->d2a_last_posted[route]
+                    [operation->credit_index] = operation->ordinal;
             }
             operation->stage = 1u;
             if (implementation->d2a_timing_enabled != 0u)
@@ -2377,7 +2388,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
         &operation->lifecycle,memory_order_acquire);
     if (SparkTpDeviceCollectiveStatePhase(expected_state) !=
             SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE ||
-        generation <= SparkTpDeviceCollectiveStateGeneration(expected_state))
+        generation == SparkTpDeviceCollectiveStateGeneration(expected_state))
     {
         return SPARK_STATUS_BUSY;
     }
@@ -2842,6 +2853,10 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     atomic_init(&implementation->shutdown_requested,0u);
     atomic_init(&implementation->shutdown_deadline_milli,UINT64_MAX);
     atomic_init(&implementation->failure_status,SPARK_STATUS_OK);
+    memset(implementation->tree_last_posted,0xff,
+        sizeof(implementation->tree_last_posted));
+    memset(implementation->d2a_last_posted,0xff,
+        sizeof(implementation->d2a_last_posted));
     for (credit_index = 0u;
          credit_index < collective_out->credit_count;
          ++credit_index)

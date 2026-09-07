@@ -19,8 +19,17 @@ static uint32_t BENCH_PORT_BASE = BENCH_PORT_BASE_DEFAULT;
 static uint32_t BENCH_CREDITS = 64u;
 static uint32_t BENCH_D2A_MAX = 0u;
 static uint32_t BENCH_SKEW_US = 0u;
+static uint32_t BENCH_ORDINAL_JUMP = 0u;
+#define BENCH_ORDINAL_JUMP_AFTER 100u
+#define BENCH_ORDINAL_JUMP_DELTA (1ull << 20)
 #define BENCH_MAX_TIMED_ITERS 4096u
 static double bench_latency_us[BENCH_MAX_TIMED_ITERS];
+
+static uint64_t bench_wire_ordinal(uint64_t ordinal)
+{
+    return BENCH_ORDINAL_JUMP != 0u && ordinal >= BENCH_ORDINAL_JUMP_AFTER ?
+        ordinal + BENCH_ORDINAL_JUMP_DELTA : ordinal;
+}
 
 static int bench_compare_double(const void *left, const void *right)
 {
@@ -188,6 +197,9 @@ int main(int argc, char **argv)
         const char *skew_env = getenv("BENCH_SKEW_US");
         if (skew_env != 0 && skew_env[0] >= '0' && skew_env[0] <= '9')
             BENCH_SKEW_US = (uint32_t)strtoul(skew_env,0,10);
+        const char *jump_env = getenv("BENCH_ORDINAL_BASE_JUMP");
+        if (jump_env != 0 && jump_env[0] == '1')
+            BENCH_ORDINAL_JUMP = 1u;
         const char *port_env = getenv("BENCH_PORT_BASE");
         if (port_env != 0 && port_env[0] >= '0' && port_env[0] <= '9')
         {
@@ -404,7 +416,7 @@ int main(int argc, char **argv)
         submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
         submission.active_sequence_count = rows;
         submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-        submission.ordinal = ordinal;
+        submission.ordinal = bench_wire_ordinal(ordinal);
         submission.local_device = payload[ordinal % 64u];
         submission.full_device = payload[ordinal % 64u];
         submission.cuda_stream = stream;
@@ -456,7 +468,7 @@ int main(int argc, char **argv)
         submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
         submission.active_sequence_count = rows;
         submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-        submission.ordinal = ordinal;
+        submission.ordinal = bench_wire_ordinal(ordinal);
         submission.local_device = payload[ordinal % 64u];
         submission.full_device = payload[ordinal % 64u];
         submission.cuda_stream = stream;
