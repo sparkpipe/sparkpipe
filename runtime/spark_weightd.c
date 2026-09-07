@@ -723,8 +723,13 @@ static void SparkWeightdServerDetachRelease(SparkWeightdServer *server,
 
 /* ------------------------------ server: load path ------------------------------ */
 
+static int SparkWeightdVerifyRequested(void)
+{
+    const char *text = getenv("SPARK_WEIGHTD_VERIFY");
+    return text != 0 && text[0] == '1' && text[1] == '\0';
+}
+
 static SparkStatus SparkWeightdSidecarCk128(const char *pack_path,
-    char hex[SPARK_CK128_HEX_BYTES])
 {
     char sidecar_path[SPARK_WEIGHTD_PATH_BYTES + 8];
     FILE *sidecar;
@@ -780,6 +785,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     SparkSha256Context sha_context;
     SparkStatus verify_status;
     int use_ck128;
+    int verify;
     SparkStatus status;
     uint64_t loaded = 0ull;
     uint64_t load_start_ns;
@@ -844,6 +850,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     {
         memcpy(expected_hex, identity.pack_sha256, SPARK_SHA256_HEX_BYTES);
     }
+    verify = SparkWeightdVerifyRequested();
 
     /* the NO-2x gate: make room by reclaiming COLD arenas only; if a live
      * arena still blocks the fit, fail closed with nothing allocated — the
@@ -880,13 +887,16 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
     load_start_ns = SparkWeightdMonotonicTimeNs();
-    if (use_ck128)
+    if (verify)
     {
-        SparkCk128Initialize(&ck_context);
-    }
-    else
-    {
-        SparkSha256Initialize(&sha_context);
+        if (use_ck128)
+        {
+            SparkCk128Initialize(&ck_context);
+        }
+        else
+        {
+            SparkSha256Initialize(&sha_context);
+        }
     }
     while (loaded < identity.arena_bytes)
     {
@@ -902,13 +912,16 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
             result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
             return;
         }
-        if (use_ck128)
+        if (verify)
         {
-            SparkCk128Update(&ck_context, staging, chunk);
-        }
-        else
-        {
-            SparkSha256Update(&sha_context, staging, chunk);
+            if (use_ck128)
+            {
+                SparkCk128Update(&ck_context, staging, chunk);
+            }
+            else
+            {
+                SparkSha256Update(&sha_context, staging, chunk);
+            }
         }
         if (cudaMemcpy((void *)((uint8_t *)pending.device_base + loaded),
                 staging, chunk, cudaMemcpyHostToDevice) != cudaSuccess)
@@ -922,21 +935,28 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         loaded += (uint64_t)chunk;
     }
     free(staging);
-    if (use_ck128)
+    if (verify)
     {
-        uint8_t digest[16];
-        SparkCk128Finalize(&ck_context, digest);
-        SparkCk128DigestToHex(digest, computed_hex);
+        if (use_ck128)
+        {
+            uint8_t digest[16];
+            SparkCk128Finalize(&ck_context, digest);
+            SparkCk128DigestToHex(digest, computed_hex);
+        }
+        else
+        {
+            uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+            SparkSha256Finalize(&sha_context, digest);
+            SparkSha256DigestToHex(digest, computed_hex);
+        }
+        verify_status = memcmp(computed_hex, expected_hex, use_ck128 ? 32u : 64u) == 0
+            ? SPARK_STATUS_OK
+            : SPARK_STATUS_HASH_MISMATCH;
     }
     else
     {
-        uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-        SparkSha256Finalize(&sha_context, digest);
-        SparkSha256DigestToHex(digest, computed_hex);
+        verify_status = SPARK_STATUS_OK;
     }
-    verify_status = memcmp(computed_hex, expected_hex, use_ck128 ? 32u : 64u) == 0
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_HASH_MISMATCH;
     if (fstat(fileno(file), &pack_stat_after) != 0 ||
         pack_stat_after.st_size != pack_stat_before.st_size ||
         SparkWeightdStatMtimeNs(&pack_stat_after) !=
@@ -1526,15 +1546,18 @@ static void SparkWeightdServerEnsure(SparkWeightdServer *server,
         result->status = (uint32_t)status;
         return;
     }
-    SparkCk128Initialize(&context);
-    SparkCk128Update(&context, staging, (size_t)entry->bytes);
-    SparkCk128Finalize(&context, digest);
-    if (memcmp(digest, entry->digest, 16u) != 0)
+    if (SparkWeightdVerifyRequested())
     {
-        free(staging);
-        result->status = (uint32_t)SPARK_STATUS_HASH_MISMATCH;
-        result->resident_bytes = server->resident_bytes;
-        return;
+        SparkCk128Initialize(&context);
+        SparkCk128Update(&context, staging, (size_t)entry->bytes);
+        SparkCk128Finalize(&context, digest);
+        if (memcmp(digest, entry->digest, 16u) != 0)
+        {
+            free(staging);
+            result->status = (uint32_t)SPARK_STATUS_HASH_MISMATCH;
+            result->resident_bytes = server->resident_bytes;
+            return;
+        }
     }
     if (SparkWeightdArenaChunkEnsure(arena, first_chunk, last_chunk) !=
         SPARK_STATUS_OK)
