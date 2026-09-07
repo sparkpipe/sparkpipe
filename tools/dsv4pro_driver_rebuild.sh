@@ -12,7 +12,8 @@ exec > /mnt/model-warm/packbuild/dsv4pro/driver_rebuild_$(date +%s).log 2>&1
 [[ -f Makefile ]] || { echo "NO-REPO-MAKEFILE at $REPO"; exit 1; }
 RR=/home/$(hostname)/sparkdata/dsv4_pro.tp4pp4
 PACK="$RR/packs/dsv4_pro_tp4_pp4_stage.spstage"
-[[ -s "$PACK" ]] || { echo "MISSING-RANK0-PACK $PACK"; exit 1; }
+[[ -s "$PACK" ]] || PACK="$RR/packs/dsv4_pro.tp4_pp4.rank00.spstage"
+[[ -s "$PACK" ]] || { echo "MISSING-RANK0-PACK under $RR/packs"; exit 1; }
 export PATH=/usr/local/cuda/bin:$PATH
 command -v nvcc >/dev/null || { echo "NO-NVCC"; exit 1; }
 sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' || true
