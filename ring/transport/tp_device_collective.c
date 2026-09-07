@@ -1131,7 +1131,7 @@ static void SparkTpDeviceCollectiveLatchFailure(
     }
     fprintf(stderr,
         "LATCH rank=%u status=%u\n",
-        implementation->collective->tp_rank,(uint)status);
+        implementation->collective->tp_rank,(unsigned)status);
     atomic_store_explicit(&implementation->admission_open,0u,
         memory_order_release);
     expected_status = SPARK_STATUS_OK;
