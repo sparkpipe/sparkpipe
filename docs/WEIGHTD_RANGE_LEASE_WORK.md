@@ -6,6 +6,19 @@ The shared version-2 manifest parser now represents explicitly typed ranges grou
 
 This branch is incomplete and must remain a draft. The parser is built into the shared runtime but is not yet used by the daemon. Remaining integration:
 
+The shared lease table now supplies serialized owner-scoped working-set pin
+accounting. Acquisition deduplicates keys and commits all pins only after
+validation; release checks owner and a monotonically increasing identifier.
+An active lease prevents table destruction. Storage is allocated at table
+creation, with no acquire/release allocations. Each lease admits up to 512
+logical experts, with 64 concurrent leases. Larger prewarm sets require
+multiple leases. The daemon must scope the table to an arena generation and
+must not reuse connection owner identifiers.
+
+These are accounting invariants only. The table does not establish GPU
+completion, load weights, export memory, or make disconnect safe. Those
+operations must be wired to it before any claim of protected GPU residency.
+
 - Qualify the new FP8/BF16 generator against corrected packs from PR #843. It now emits payload and scale ranges, validates the complete manifest with the shared parser, uses a fixed 64 KiB read buffer, and publishes exclusively through a temporary file. Unsupported codecs are explicit errors. NVFP4 needs its separate global-scale and block-scale ranges implemented before use. Build with `make build/glm5_next_experts_manifest`; do not run against the known interleaved legacy packs.
 - Replace single-range ENSURE with generation-scoped working-set acquisition. Return all ranges plus a lease; do not expose successful partial acquisition.
 - Plan memory against the union of required chunks and protect every acquired range before evicting unleased ranges. Use bounded staging and preserve correctness on allocation, read, checksum and mapping failures.
@@ -14,3 +27,7 @@ This branch is incomplete and must remain a draft. The parser is built into the 
 - Exercise two real driver consumers, eviction pressure, corruption, cancellation and restart. Retain numerical and residency receipts from clean merged-main deployment before claiming hardware qualification.
 
 `tests/test_weightd_manifest.py` currently checks 12,096 logical groups with four ranges each (two weights and two scale fixtures), exact lookup and malformed files. These are host parser tests, not a claim of lazy GPU functionality or complete scale-layout validation.
+
+`build/test_weightd_lease` checks shared pins across owners, duplicate keys,
+failure without partial pins, stale/wrong-owner release, capacity bounds and
+identifier exhaustion. It is a host accounting test, not a CUDA lifetime gate.

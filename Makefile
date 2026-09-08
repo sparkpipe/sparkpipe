@@ -265,6 +265,7 @@ TEST_NAMES := \
     test_stage_module_common \
     test_dsv4_w1_loader \
     test_weightd \
+    test_weightd_lease \
     test_weightd_attach \
     test_weightd_expert \
     test_stage_module_weightd \
@@ -1043,6 +1044,9 @@ build/sparkpipe_weightd: node/weightd.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPA
 
 build/glm5_next_experts_manifest: tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/glm5_next/include $(CFLAGS) tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_weightd_lease: tests/test_weightd_lease.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_lease.h include/sparkpipe/spark_weightd_manifest.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tests/test_weightd_lease.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c $(LDFLAGS) -o $@
 
 build/test_weightd: tests/test_weightd.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub -DSPARK_TEST_WEIGHTD_BINARY=\"build/sparkpipe_weightd\" $(CFLAGS) $^ $(LDFLAGS) -o $@
