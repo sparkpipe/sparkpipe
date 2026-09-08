@@ -32,7 +32,7 @@ correct math from repeatability, or full serving from a component probe.
 | Index-KV stride, PR #856 | Per-layer addressing was combined with a page size already multiplied by layer count, producing invalid accesses. Correct the per-layer page stride. | Trace allocation, layer offset, page index and byte stride together; a compiling field access can still have wrong units. |
 | True batch waves, PR #858 / main `93c8f0d` | Removed an unconditional one-row clamp. True B3 memcheck returned zero errors; resident/lazy parity and two concurrent lazy consumers passed. This does not establish distributed model accuracy. | Audit actual launch shapes. A B3/B7 request can still execute as repeated B1. Diagnostic clamps require DEBUG and visible diagnostics. |
 | Separate decode window, PR #859 / main `b8f20ae` | Wrapper retains per-sequence traces and measures the interval after every first token and before the first sequence finishes. | Separate prefill and batch tail effects. Client arrival timestamps are not device execution timing; this is not yet a required-hit prefix-cache benchmark. |
-| Shared row policy, PR #860 / head `35f2cd2` | GLM wrappers use common row validation and wave selection with indexed lane callbacks. Host harness passes widths 1–101, ragged waves, invalid order and released claims. GPU qualification follows merged main. | The qsort pattern applies directly: common algorithm, narrow ordinal callback, opaque context. Replace O(rows × lanes) searches with indexed lookups. |
+| Shared row policy, PR #860 / main `5500665` | GLM wrappers use common row validation and wave selection with indexed lane callbacks. Host harness passes widths 1–101, ragged waves, invalid order and released claims. Merged-main B3 memcheck and resident/lazy parity pass. | The qsort pattern applies directly: common algorithm, narrow ordinal callback, opaque context. Replace O(rows × lanes) searches with indexed lookups. |
 | Mandatory serving contract, draft PR #861 | ABI 21 removes seven opt-out bits, makes callbacks/cache geometry mandatory and removes zero-cache scheduling paths. Common host tests pass; GLM cache/reset integration remains incomplete. | Required means fail explicitly when missing. Callback presence is only structural validation; stubs and flags cannot establish behavior. |
 | Accurate ABI probe, draft PR #861 | Replaced copied, incorrect structs/flag values with the public header and common loader. | Diagnostic tools must consume the same contract as production, or they can report misleading capability results. |
 
@@ -60,12 +60,25 @@ True B3 component receipts on `93c8f0d`:
   `0358bcbd01ee4d3e87152c60b5ffc79b`: resident/lazy parity, concurrent lazy
   consumers; rank0, collectives disabled, four fixed-input steps.
 
+The same component checks passed after the shared-row refactor on `5500665`:
+`glm-common-build-5500665` (attempt `31fb02910dcd47e6b382fcd43402af28`),
+`glm-common-memcheck-5500665` (`28ba044fffb8454388d75cb067675a73`, zero errors),
+and `glm-common-compare-5500665` (`4a2f9ae0165f403b8e79bb24e2a0201e`, parity).
+All participant cgroups stopped and the assigned Spark was released. These
+checks do not provide a new distributed throughput result.
+
 ## Current next steps, not completed work
 
 1. Complete GLM integration with the shared cache: dynamic logical/physical
    mapping and full KV/index/KDA/convolution/continuity state restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed
    identity page mapping or KV-only snapshot may masquerade as this result.
+   The allocation trace also shows a layout mismatch: arena page bytes cover
+   all KV layers, while CUDA pools are layer-major; the current page-copy hook
+   performs one contiguous transfer. Total-allocation-size checks do not prove
+   that any individual page contains the right layer slices. Resolve this
+   payload-layout contract with a multi-layer round-trip test before enabling
+   cache reuse. Include index state in the payload contract, not only main KV.
 2. Qualify true batched distributed computation and clean release/reconnect.
    A continuation-lease teardown failure was observed on the old baseline;
    preserve the safety guard and fix ownership rather than suppressing it.
