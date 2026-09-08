@@ -20,6 +20,7 @@ typedef struct cuda_stub_alloc_header
 {
     uint32_t magic;
     uint32_t tracked;
+    uint64_t bytes;
 } cuda_stub_alloc_header;
 
 static void *cuda_stub_tracked[CUDA_STUB_MAX_TRACKED];
@@ -59,6 +60,7 @@ static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
         return cudaErrorMemoryAllocation;
     }
     header->magic = CUDA_STUB_ALLOC_MAGIC;
+    header->bytes = bytes;
     if (cuda_stub_tracked_count < CUDA_STUB_MAX_TRACKED)
     {
         header->tracked = 1u;
@@ -131,6 +133,13 @@ void spark_stub_cuda_reset_faults(void)
 void spark_stub_cuda_fail_alloc_call(uint32_t one_based_call_index)
 {
     cuda_stub_fail_alloc_at = (int32_t)one_based_call_index;
+}
+
+void spark_stub_cuda_fail_next_alloc(void)
+{
+    cuda_stub_ledger_lock();
+    cuda_stub_fail_alloc_at = (int32_t)(cuda_stub_alloc_calls + 1u);
+    cuda_stub_ledger_unlock();
 }
 
 void spark_stub_cuda_fail_host_map_call(uint32_t one_based_call_index)
@@ -453,6 +462,7 @@ cudaError_t cudaGetDevice(int *device)
 
 
 #define CUDA_STUB_VMM_MAGIC UINT32_C(0x564D4D31)
+#define CUDA_STUB_RESERVATION_MAGIC UINT32_C(0x564D4D32)
 #define CUDA_STUB_VMM_MAPPED_MAX 128
 
 typedef struct cuda_stub_vmm_phys
@@ -485,12 +495,13 @@ static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_at(
     cuda_stub_alloc_header *header =
         ((cuda_stub_alloc_header *)user_pointer) - 1;
     cuda_stub_vmm_reservation *reservation;
-    if (header->magic != CUDA_STUB_ALLOC_MAGIC)
+    if (header->magic != CUDA_STUB_ALLOC_MAGIC ||
+        header->bytes < sizeof(cuda_stub_vmm_reservation))
     {
         return 0;
     }
     reservation = (cuda_stub_vmm_reservation *)user_pointer;
-    return reservation->magic == CUDA_STUB_VMM_MAGIC ? reservation : 0;
+    return reservation->magic == CUDA_STUB_RESERVATION_MAGIC ? reservation : 0;
 }
 
 static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_for_va(
@@ -806,7 +817,7 @@ CUresult cuMemAddressReserve(CUdeviceptr *pointer,
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
     memset(reservation, 0, sizeof(*reservation) + bytes);
-    reservation->magic = CUDA_STUB_VMM_MAGIC;
+    reservation->magic = CUDA_STUB_RESERVATION_MAGIC;
     reservation->bytes = (uint64_t)bytes;
     *pointer = (CUdeviceptr)(reservation + 1);
     return CUDA_SUCCESS;
@@ -978,4 +989,3 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
     }
     return cuda_stub_free(reservation);
 }
-

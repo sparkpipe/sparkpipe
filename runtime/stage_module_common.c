@@ -722,7 +722,7 @@ typedef struct SparkStageModulePackArena
 	SparkWeightdAttachOutcome outcome;
 	uint64_t pack_bytes;
 	char pack_path[SPARK_WEIGHTD_PATH_BYTES];
-	int failed;
+	SparkStatus status;
 } SparkStageModulePackArena;
 
 static void SparkStageModulePackArenaRelease(SparkStageModuleLedger *ledger)
@@ -737,7 +737,7 @@ static void SparkStageModulePackArenaRelease(SparkStageModuleLedger *ledger)
 	ledger->pack_arena = 0;
 }
 
-static int SparkStageModulePackArenaEnsure(
+static SparkStatus SparkStageModulePackArenaEnsure(
 	SparkStageModuleLedger *ledger,
 	FILE *file)
 {
@@ -750,17 +750,18 @@ static int SparkStageModulePackArenaEnsure(
 	SparkStatus status;
 
 	if (ledger == 0 || file == 0)
-		return 0;
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if (ledger->pack_arena != 0)
 	{
 		arena = (SparkStageModulePackArena *)ledger->pack_arena;
-		return arena->outcome.client != 0 && arena->outcome.map_base != 0;
+		return(arena->status);
 	}
 	if (SparkWeightdAttachRequested() != SPARK_STATUS_OK)
-		return 0;
+		return(SPARK_STATUS_BUSY);
 	arena = (SparkStageModulePackArena *)calloc(1u,sizeof(*arena));
 	if (arena == 0)
-		return 0;
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	arena->status = SPARK_STATUS_BUSY;
 	ledger->pack_arena = arena;
 	path_bytes = -1;
 	(void)snprintf(fd_path,sizeof(fd_path),"/proc/self/fd/%d",fileno(file));
@@ -777,40 +778,31 @@ static int SparkStageModulePackArenaEnsure(
 				sizeof(arena->pack_path),"%s",fcntl_path);
 	}
 #endif
-	if (path_bytes <= 0 || fstat(fileno(file),&pack_stat) != 0 ||
+	if (path_bytes <= 0 || (uint64_t)path_bytes >= sizeof(arena->pack_path) || fstat(fileno(file),&pack_stat) != 0 ||
 		pack_stat.st_size <= 0)
 	{
-		arena->failed = 1;
-		return 0;
+		arena->status = SPARK_STATUS_IO_ERROR;
+		return(arena->status);
 	}
 	arena->pack_path[path_bytes] = '\0';
 	arena->pack_bytes = (uint64_t)pack_stat.st_size;
 	memset(&slice,0,sizeof(slice));
 	slice.model = ledger->module_tag;
 	slice.pack_bytes = arena->pack_bytes;
-	status = SparkWeightdAttachPack(&slice,arena->pack_path,
+	status = SparkWeightdAttachMappedPack(&slice,arena->pack_path,
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&arena->outcome,reason);
 	if (status != SPARK_STATUS_OK || arena->outcome.client == 0)
 	{
-		fprintf(stderr,"stage-module weightd fallback: status=%s reason=%s\n",
-			SparkStatusToString(status),reason);
-		arena->failed = 1;
-		return 0;
+		fprintf(stderr,"stage-module weightd attach failed: pack=%s status=%s reason=%s\n",
+			arena->pack_path,SparkStatusToString(status),reason);
+		arena->status = status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR;
+		return(arena->status);
 	}
-	status = SparkWeightdAttachImportMap(&arena->outcome,arena->pack_bytes,
-		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,reason);
-	if (status != SPARK_STATUS_OK || arena->outcome.map_base == 0)
-	{
-		if (arena->outcome.client != 0)
-			(void)SparkWeightdAttachRelease(&arena->outcome);
-		memset(&arena->outcome,0,sizeof(arena->outcome));
-		arena->failed = 1;
-		return 0;
-	}
-	return 1;
+	arena->status = SPARK_STATUS_OK;
+	return(arena->status);
 }
 
-static int SparkStageModulePackArenaSlice(
+static SparkStatus SparkStageModulePackArenaSlice(
 	SparkStageModuleLedger *ledger,
 	FILE *file,
 	uint64_t offset,
@@ -818,15 +810,17 @@ static int SparkStageModulePackArenaSlice(
 	void **pointer)
 {
 	SparkStageModulePackArena *arena;
-	if ((offset & UINT64_C(0xff)) != 0u)
-		return 0;
-	if (SparkStageModulePackArenaEnsure(ledger,file) == 0)
-		return 0;
+	SparkStatus status;
+	if ( (offset & UINT64_C(0xff)) != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkStageModulePackArenaEnsure(ledger,file);
+	if (status != SPARK_STATUS_OK)
+		return(status);
 	arena = (SparkStageModulePackArena *)ledger->pack_arena;
 	if (offset > arena->pack_bytes || bytes > arena->pack_bytes - offset)
-		return 0;
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*pointer = (uint8_t *)arena->outcome.map_base + offset;
-	return 1;
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkStageModuleLoadRegionSynchronous(
@@ -1363,8 +1357,11 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     SparkStageModuleLoadPipeline *pipeline = 0;
     SparkStatus status;
 
-    if (SparkStageModulePackArenaSlice(ledger,file,offset,bytes,pointer) != 0)
-        return SPARK_STATUS_OK;
+    if (ledger == 0 || file == 0 || pointer == 0 || bytes == 0u)
+        return(SPARK_STATUS_INVALID_ARGUMENT);
+    *pointer = 0;
+    if (SparkWeightdAttachRequested() == SPARK_STATUS_OK)
+        return(SparkStageModulePackArenaSlice(ledger,file,offset,bytes,pointer));
     if (SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK &&
         bytes >= SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES)
     {
@@ -1381,6 +1378,7 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
             SparkStageModuleLoadPipelineDestroy(pipeline);
             return status;
         }
+        return(status);
     }
     return SparkStageModuleLoadRegionSynchronous(
         ledger, file, offset, bytes, pointer);

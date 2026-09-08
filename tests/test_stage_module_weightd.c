@@ -16,6 +16,8 @@
 #define PACK_BYTES (256u * 1024u)
 #define SOCKET_PATH "/tmp/test_stage_module_weightd.sock"
 
+void spark_stub_cuda_fail_next_alloc(void);
+
 static void TestStageFillPack(uint8_t *buffer, uint64_t bytes)
 {
 	uint64_t index;
@@ -30,6 +32,33 @@ static void *TestStageServerThread(void *argument)
 	SparkWeightdServer *server = (SparkWeightdServer *)argument;
 	(void)SparkWeightdServerRun(server,&TestStageStop);
 	return 0;
+}
+
+static void TestStageAttachFailureAllocatesNothing(const char *digest)
+{
+	SparkStageModuleLedger ledger;
+	FILE *file;
+	void *pointer;
+	memset(&ledger,0,sizeof(ledger));
+	ledger.module_tag = "test_module";
+	setenv("SPARK_WEIGHTD_ATTACH","1",1);
+	if (digest != 0)
+		setenv("SPARK_WEIGHTD_PACK_SHA256",digest,1);
+	else
+		unsetenv("SPARK_WEIGHTD_PACK_SHA256");
+	file = fopen("/tmp/test_stage_module_weightd.pack","rb");
+	assert(file != 0);
+	pointer = 0;
+	assert(SparkStageModuleLoadDeviceRegion(&ledger,file,4096u,8192u,
+		&pointer) != SPARK_STATUS_OK);
+	assert(pointer == 0);
+	assert(ledger.device_allocation_count == 0u);
+	assert(ledger.device_bytes_resident == 0u);
+	assert(SparkStageModuleLoadDeviceRegion(&ledger,file,4096u,8192u,
+		&pointer) != SPARK_STATUS_OK);
+	assert(pointer == 0 && ledger.device_allocation_count == 0u);
+	SparkStageModuleLedgerRelease(&ledger);
+	(void)fclose(file);
 }
 
 int main(void)
@@ -80,7 +109,12 @@ int main(void)
 	assert(memcmp(staging,pack + region_offset,region_bytes) == 0);
 	SparkStageModuleLedgerRelease(&ledger);
 	(void)fclose(file);
-	printf("stage_module_weightd: no-daemon fallback byte-identical PASS\n");
+	printf("stage_module_weightd: explicitly disabled attach uses direct load PASS\n");
+	unsetenv("SPARK_WEIGHTD_SOCKET");
+	TestStageAttachFailureAllocatesNothing(sha_hex);
+	setenv("SPARK_WEIGHTD_SOCKET",SOCKET_PATH,1);
+	TestStageAttachFailureAllocatesNothing(0);
+	TestStageAttachFailureAllocatesNothing(sha_hex);
 
 	memset(&server_config,0,sizeof(server_config));
 	server_config.socket_path = SOCKET_PATH;
@@ -103,6 +137,12 @@ int main(void)
 	assert(cudaMemcpy(staging,arena_pointer,region_bytes,
 		cudaMemcpyDeviceToHost) == cudaSuccess);
 	assert(memcmp(staging,pack + region_offset,region_bytes) == 0);
+	{
+		void *unaligned = 0;
+		assert(SparkStageModuleLoadDeviceRegion(&ledger,file,region_offset + 1u,
+			4096u,&unaligned) == SPARK_STATUS_INVALID_ARGUMENT);
+		assert(unaligned == 0);
+	}
 	{
 		void *second = 0;
 		uint64_t second_offset = 128u * 1024u;
@@ -138,6 +178,9 @@ int main(void)
 	SparkStageModuleLedgerRelease(&ledger);
 	(void)fclose(file);
 	printf("stage_module_weightd: reattach after release PASS\n");
+	TestStageAttachFailureAllocatesNothing("1111111111111111111111111111111111111111111111111111111111111111");
+	spark_stub_cuda_fail_next_alloc();
+	TestStageAttachFailureAllocatesNothing(sha_hex);
 
 	setenv("SPARK_WEIGHTD_ATTACH","0",1);
 	memset(&ledger,0,sizeof(ledger));
