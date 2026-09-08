@@ -33,6 +33,19 @@ stderr to a temporary file, and kills its owned process group at the deadline.
 Failed, cancelled, incomplete or malformed token streams do not receive a
 throughput field, and the wrapper exits nonzero for invalid receipts.
 
+For batched decode, use `all_sequences_decode_window`: its clock starts
+after every sequence has emitted its first token and ends at the earliest
+sequence's last token. It excludes remaining prefill and the shrinking-batch
+tail. If those bounds do not overlap, no decode-window rate is reported.
+Per-sequence token IDs and arrival times are retained for parity checks and
+independent timing analysis. The first-token boundary includes scheduling,
+prefill and first-token work; it is not a measurement of prefill compute alone.
+
+A cached-prefix benchmark must restore KV, index KV, KDA recurrent state,
+convolution windows and sequence positions before its timed decode phase.
+GLM does not yet advertise that full prefix-restore contract. Do not label
+an uncached run a cache hit or silently recompute a missing benchmark entry.
+
 `decode_tokens_per_second` counts all output tokens after the first global
 token divided by the first-to-last arrival interval. Tokens stay in arrival
 order; request-local indices never reorder different requests. TTFT is from
