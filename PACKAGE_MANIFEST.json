@@ -1,5 +1,5 @@
 {
-  "file_count": 1910,
+  "file_count": 1912,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "b5bcdf808121d05fc135b539ceda49d24946a15a82485a6ff6b5d93daffad88e",
-      "size_bytes": 93009
+      "sha256": "c4b202a0ab97c12d92efe9be89a704a83f4e4a029abc441bdd67e4d22e599af9",
+      "size_bytes": 93053
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "90f1b7e3adcc77cfbff789160ef3f5831613861014e8a302deac378b4ba7b4f5",
-      "size_bytes": 6663
+      "sha256": "3331ea580194f6b73189c880e29bd55bbaeb346ca01d77badab561e577f1815d",
+      "size_bytes": 7790
     },
     {
       "path": "docs/GOALS.md",
@@ -3060,6 +3060,11 @@
       "path": "include/sparkpipe/spark_weightd_attach.h",
       "sha256": "9ac4184224c7a4603c0c000a8d19f59a25a7c19a64b20d6535a010e65b740541",
       "size_bytes": 2286
+    },
+    {
+      "path": "include/sparkpipe/spark_weightd_lazy_pack.h",
+      "sha256": "e4691f880da39e76e1a6a54e4023a49d067bee50b92ceb707861eda4714d4869",
+      "size_bytes": 1235
     },
     {
       "path": "include/sparkpipe/spark_weightd_lease.h",
@@ -5987,6 +5992,11 @@
       "size_bytes": 15854
     },
     {
+      "path": "runtime/spark_weightd_lazy_pack.c",
+      "sha256": "aae59d967b42722d926ce3702e535e3a830f94bad1bbf30830163e3e3cce12e1",
+      "size_bytes": 4753
+    },
+    {
       "path": "runtime/spark_weightd_lease.c",
       "sha256": "71642d9aea8f43f365f8d4e78f70220c7f4355a20991e65df5e004cad2665d5b",
       "size_bytes": 5704
@@ -6038,8 +6048,8 @@
     },
     {
       "path": "runtime/weightd_sources.mk",
-      "sha256": "3491235b14e977a4350d36d5add484fc8306475d54a807326200ff511130bc5f",
-      "size_bytes": 333
+      "sha256": "b2785d6bfd8ebea381b26127009a461c43e250825ea16f2d2c75cd40b0efe1ac",
+      "size_bytes": 370
     },
     {
       "path": "runtime/work_transaction.c",
@@ -7828,8 +7838,8 @@
     },
     {
       "path": "tests/test_weightd_working_set.c",
-      "sha256": "19a99cab64542bc70fd86bc33df86af4168e6b849dce756e03f775f4063721e1",
-      "size_bytes": 20219
+      "sha256": "1e867e161bb050908834b96f6dc2f8d951964790a4c86c8e9d27bdc5f9e5e5bc",
+      "size_bytes": 22952
     },
     {
       "path": "tests/test_work_transaction.c",
@@ -9555,5 +9565,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32318832
+  "total_bytes": 32328761
 }

@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_map.h"
 #include "sparkpipe/spark_weightd_spine.h"
+#include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_sha256.h"
 
 #define CHUNK (2u * 1024u * 1024u)
@@ -425,6 +426,47 @@ static void check_many_exports(void)
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
 }
 
+static void check_lazy_pack(const char *socket_path,const char *path,const char *manifest_path)
+{
+	SparkWeightdLazyAttachRequest request = {0};
+	SparkWeightdLazyPack *pack;
+	SparkWeightdExpertKey key = {0u,0u};
+	uint64_t lease;
+	const void *pointer;
+	char saved[300];
+	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+	request.identity.arena_bytes = (3u * CHUNK);
+	memcpy(request.identity.model,"lazy-pack-test",15u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
+	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
+	request.expert_pool_bytes = (2u * CHUNK);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,1u,TIMEOUT,&pack) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(pack == 0);
+	snprintf(saved,sizeof(saved),"%s.saved",manifest_path);
+	assert(rename(manifest_path,saved) == 0);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_NOT_FOUND);
+	assert(pack == 0);
+	assert(rename(saved,manifest_path) == 0);
+	spark_stub_cuda_fail_next_alloc();
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(pack == 0);
+	memset(request.identity.pack_sha256,'b',64u);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_HASH_MISMATCH);
+	assert(pack == 0);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
+	assert(pack != 0 && pack->attached.resident_bytes == 0u);
+	assert(SparkWeightdLazyPackSlice(pack,512u,1u,&pointer) == SPARK_STATUS_OK);
+	assert(*(const uint8_t *)pointer == 255u);
+	assert(SparkWeightdLazyPackSlice(pack,0u,64u,&pointer) == SPARK_STATUS_NOT_FOUND && pointer == 0);
+	assert(SparkWeightdMapAcquire(pack->map,&key,1u,&lease,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_BUSY);
+	assert(SparkWeightdLazyPackSlice(pack,512u,1u,&pointer) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkWeightdMapRelease(pack->map,lease,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_OK);
+}
+
 int main(void)
 {
 	char root[] = "/tmp/weightd-set-XXXXXX",path[256],manifest[272],socket_path[256];
@@ -452,6 +494,14 @@ int main(void)
 	check_map_lifetime(a,generation,base);
 	check_orphan(a,b,generation,base,socket_path,path);
 	SparkWeightdClientClose(b);
+	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
+	assert(pthread_join(thread,0) == 0);
+	SparkWeightdServerDestroy(state.server);
+	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	state.stop = 0;
+	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
+	assert(pthread_create(&thread,0,run_server,&state) == 0);
+	check_lazy_pack(socket_path,path,manifest);
 	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(state.server);

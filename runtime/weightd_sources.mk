@@ -6,4 +6,5 @@ SPARKPIPE_WEIGHTD_SOURCES := \
 	runtime/spark_weightd_attach.c \
 	runtime/spark_weightd_map.c \
 	runtime/spark_weightd_spine.c \
-	runtime/spark_weightd_worker.c
+	runtime/spark_weightd_worker.c \
+	runtime/spark_weightd_lazy_pack.c
