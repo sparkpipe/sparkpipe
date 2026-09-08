@@ -32,3 +32,9 @@ Use runtime/weightd_sources.mk (SPARKPIPE_WEIGHTD_SOURCES) when a module links t
 The explicit split Route entry point now queues the 289 group offsets to per-slot pinned host storage, allocated with existing startup staging. Its caller must establish stream-event completion before inspecting those offsets. Dense layers skip the readback. The combined resident entry point does not call this readback API, so this adds no metadata transfer to resident decode. Host syntax checks pass; real readback/event and CUDA compilation gates remain pending on this revision.
 
 Each slot now creates a disable-timing route readiness event at startup and destroys it with slot host resources. The split Route entry records it after readback (or dense work), and PollCudaLayerMlpRoute rejects an unrecorded event and otherwise returns CUDA completion status. Calls remain serialized under slot ownership; do not begin another route before consuming the current result. Runtime polling/acquisition and cancellation integration remain outstanding.
+
+## Host worker boundary
+
+SparkWeightdWorker now provides a shared serialized worker bound to the creating CUDA context, with 64 queued tasks plus one executing task and no submission allocation. It refuses destruction while work is queued/executing and joins when idle. Each task owns its deadline, callback/context lifetime, and lease cleanup. Use this worker to wait for route readiness and perform blocking acquisition off the collective progress thread. The GLM chain is not yet connected to it. Host FIFO/admission/teardown tests pass with CUDA stubs under ASan/UBSan; the CUDA context binding signature was verified against the installed Spark toolkit.
+
+CUDA CI run 34243438798 passed on c08eda0, including the GLM Flash FP8 compilation gate and the route/expert split plus readback readiness API. This is compile evidence only, predates this worker, and does not establish numerical or serving correctness.

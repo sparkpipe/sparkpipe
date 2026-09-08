@@ -33,6 +33,11 @@ static uint32_t cuda_stub_export_calls;
 static uint32_t cuda_stub_fail_export_at;
 static pthread_mutex_t cuda_stub_ledger_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+CUresult cuCtxSetCurrent(CUcontext ctx)
+{
+    return ctx != 0 ? CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
+}
+
 CUresult cuCtxGetCurrent(CUcontext *pctx)
 {
     static uint8_t context;
