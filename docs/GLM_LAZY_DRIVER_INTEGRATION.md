@@ -48,3 +48,7 @@ The composed host test uses its own daemon instance, checks missing manifests, i
 ## Destruction ordering
 
 GLM already calls SparkStageModuleWaitForSlots before stream synchronization and resource release. Keep the slot occupied for the entire acquisition task, kernel use, and lease cleanup so this existing quiescence gate covers host work as well. Join the idle weightd worker before destroying maps/spine state. Do not add a second family-specific shutdown queue. GLM destruction now reports a failed stream drain and retains its state instead of freeing resources after an ignored CUDA synchronization error. This protects teardown but is not a completed lazy-chain integration.
+
+## Wave-local expert addresses
+
+Layer weights now retain their validated pack payload/scale offsets independently of resident pointers. A lazy wave binds these offsets against its consumer-local lease base and identifies the local layer covered by that lease. An absent base or mismatched layer yields null expert addresses; it never selects resident pointers. Routing no longer requires expert weight addresses, while the expert phase checks all four payload/scale pointers before submission. This allows routing to produce the working set before acquisition without mutating shared layer weights. The runtime still must acquire the complete routed set, bind only after BeginUse, retain the lease through completion, and clear the wave binding before advancing layers. Startup and chain dispatch are not connected yet.

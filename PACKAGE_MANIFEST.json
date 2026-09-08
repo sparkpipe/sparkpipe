@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "11fc6672cc051735c9fc97b0e3cd33494bcc91402117e6b92691cd84baecc023",
-      "size_bytes": 8393
+      "sha256": "c18d59779065f2b70e15e15a1389ca3f74a8fb781149e4c8fcb4d8f3ce2079a3",
+      "size_bytes": 9214
     },
     {
       "path": "docs/GOALS.md",
@@ -3983,8 +3983,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "a47c96ebf9e492843c9db05274065736acae19f5585fbec0ba434a526410a62c",
-      "size_bytes": 88909
+      "sha256": "8d99833bb77c597753427b58f68de0495a34b3509df67f7e04806b3cf78aaaa2",
+      "size_bytes": 88946
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -3993,18 +3993,18 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "2cdf9ac43e94de42908444b78249b632035073b02ce81bab94a9f0f7dc6c3457",
-      "size_bytes": 46410
+      "sha256": "b22908ffc134262ff60e8a56cabcb0e5de8c7e83f10eeeb40c172a4257866083",
+      "size_bytes": 47161
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
-      "sha256": "854b461f43e002952062d77bb82491f2d8a9a718999837487e398679a60e1428",
-      "size_bytes": 9877
+      "sha256": "b3665d211dd27d0b77842f170fc53d9050a67c0df3f675a8f9cf9eb1e91cdf9c",
+      "size_bytes": 10202
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "e165cb4c39dfbd542a0a328eb8fbd5a3e08e70815b6f3381f743de4f51167506",
-      "size_bytes": 138478
+      "sha256": "f59673c47f6fce52e6daf965e50f16180a243dbe9d9d4e2018a87ef7d534d84e",
+      "size_bytes": 138721
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -9565,5 +9565,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32329471
+  "total_bytes": 32331648
 }

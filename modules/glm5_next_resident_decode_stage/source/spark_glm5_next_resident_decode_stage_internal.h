@@ -30,6 +30,10 @@ typedef struct SparkGlm5NextLayerWeights
 	const void *expert_up_gate_scale;
 	const void *expert_down_payload;
 	const void *expert_down_scale;
+	uint64_t expert_up_gate_payload_offset;
+	uint64_t expert_up_gate_scale_offset;
+	uint64_t expert_down_payload_offset;
+	uint64_t expert_down_scale_offset;
 	const void *shared_gate_up_bf16;
 	const void *shared_down_bf16;
 	const void *kda_qkv_beta_bf16;
@@ -187,6 +191,10 @@ typedef struct SparkGlm5NextCudaWave
 	const float *head_certified_fp8_scale_f32;
 	const float *head_certified_fp8_norm_f32;
 	const SparkGlm5NextLayerWeights *layers;
+	// A lazy wave must bind its current layer lease before expert submission.
+	uint32_t lazy_experts;
+	uint32_t expert_lease_local_layer;
+	const uint8_t *expert_lease_base;
 	SparkGlm5NextExecutionSlot *slot;
 	uint8_t *kv_cache;
 	uint64_t kv_layer_stride_bytes;

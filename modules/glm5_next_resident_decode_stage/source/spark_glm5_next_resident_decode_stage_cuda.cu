@@ -382,6 +382,13 @@ static void SparkGlm5NextBindLayer(
 	buffers->expert_w1_scale = weight->expert_up_gate_scale;
 	buffers->expert_w2_weight = weight->expert_down_payload;
 	buffers->expert_w2_scale = weight->expert_down_scale;
+	if ( wave->lazy_experts != 0u )
+	{
+		buffers->expert_w1_weight = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_up_gate_payload_offset;
+		buffers->expert_w1_scale = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
+		buffers->expert_w2_weight = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_down_payload_offset;
+		buffers->expert_w2_scale = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_down_scale_offset;
+	}
 	buffers->shared_gate_up_weight = weight->shared_gate_up_bf16;
 	buffers->shared_down_weight = weight->shared_down_bf16;
 	buffers->kda_qkv_beta_weight = weight->kda_qkv_beta_bf16;

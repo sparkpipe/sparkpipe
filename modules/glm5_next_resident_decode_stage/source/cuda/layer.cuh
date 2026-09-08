@@ -2122,8 +2122,6 @@ static int32_t Glm5NextLayerMoeValidate(
         buffers->group_row_offset == 0 ||
         buffers->group_tile_prefix_w1 == 0 ||
         buffers->group_tile_prefix_w2 == 0 ||
-        buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
-        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 ||
         buffers->expert_out_bf16 == 0 || buffers->gate_up_bf16 == 0 ||
         buffers->intermediate_bf16 == 0 || buffers->hidden_bf16 == 0 ||
         buffers->shared_gate_up_weight == 0 ||
@@ -2245,6 +2243,9 @@ static int32_t Glm5NextLayerMoeExperts(
     int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
     if (status != LM_LAUNCH_OK)
         return status;
+    if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
+        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
+        return(LM_LAUNCH_ERR_SHAPE);
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(

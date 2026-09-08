@@ -378,11 +378,11 @@ static void SparkGlm5NextPackMarkSeen(
 static SparkStatus SparkGlm5NextPackAssignLayer(
 	SparkGlm5NextModuleState *state,
 	SparkGlm5NextLayerWeights *weights,
-	uint32_t tensor_kind,
+	const SparkGlm5NextStagePackEntry *entry,
 	const void *payload,
 	const void *scale)
 {
-	switch ( tensor_kind )
+	switch ( entry->tensor_kind )
 	{
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_ATTN_NORM: weights->attn_norm_bf16 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_Q_A: weights->q_a_bf16 = payload; break;
@@ -403,8 +403,8 @@ static SparkStatus SparkGlm5NextPackAssignLayer(
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_DENSE_DOWN: weights->dense_down_bf16 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_ROUTER: weights->router_bf16 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_ROUTER_CORRECTION: weights->router_correction_f32 = (const float *)payload; break;
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; break;
-	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; weights->expert_up_gate_payload_offset = entry->payload_offset; weights->expert_up_gate_scale_offset = entry->scale_offset; break;
+	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; weights->expert_down_payload_offset = entry->payload_offset; weights->expert_down_scale_offset = entry->scale_offset; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_GATE_UP: weights->shared_gate_up_bf16 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_SHARED_DOWN: weights->shared_down_bf16 = payload; break;
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KDA_QKV_BETA: weights->kda_qkv_beta_bf16 = payload; break;
@@ -442,9 +442,9 @@ static SparkStatus SparkGlm5NextPackAssign(
 	const void *scale)
 {
 	if ( entry->layer_index == SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
-		return(SparkGlm5NextPackAssignLayer(state,&state->mtp_layer,entry->tensor_kind,payload,scale));
+		return(SparkGlm5NextPackAssignLayer(state,&state->mtp_layer,entry,payload,scale));
 	if ( entry->layer_index != SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER )
-		return(SparkGlm5NextPackAssignLayer(state,&state->layers[entry->layer_index - state->first_layer_index],entry->tensor_kind,payload,scale));
+		return(SparkGlm5NextPackAssignLayer(state,&state->layers[entry->layer_index - state->first_layer_index],entry,payload,scale));
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
