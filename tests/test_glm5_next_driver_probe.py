@@ -1,5 +1,6 @@
 """Host control-flow checks; the fake driver proves no GPU/model results."""
 import os
+import importlib.util
 import pathlib
 import shlex
 import subprocess
@@ -10,6 +11,22 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class DriverProbeTests(unittest.TestCase):
+    def test_comparison_receipt_rejects_missing_and_reordered_rows(self):
+        spec = importlib.util.spec_from_file_location("compare", ROOT / "tools/glm5_next_driver_compare.py")
+        compare = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(compare)
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "receipt"
+            lines = [f"TOKEN step={step} row={row} input=1 output=2"
+                     for step in range(4) for row in range(3)]
+            path.write_text("\n".join(lines + ["PASS local-token-smoke fixture"]))
+            self.assertEqual(compare.token_receipt(path, 3), lines)
+            for invalid in (lines, lines[:-1] + ["PASS local-token-smoke fixture"],
+                            list(reversed(lines)) + ["PASS local-token-smoke fixture"]):
+                path.write_text("\n".join(invalid))
+                with self.assertRaises(RuntimeError):
+                    compare.token_receipt(path, 3)
+
     def test_modes_admission_continuity_and_completion(self):
         with tempfile.TemporaryDirectory(prefix="glm-probe-test-") as directory:
             binary = str(pathlib.Path(directory) / "probe")

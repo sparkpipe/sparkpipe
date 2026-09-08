@@ -37,3 +37,16 @@ KV/recurrent state. Full numerical qualification still requires those checks
 and actual TP16 / TP4xPP4 collectives. This probe neither claims those results
 nor measures serving performance. The host fixture tests only the probe's
 control flow, with fake CUDA/driver functions and real shared admission code.
+
+`tools/glm5_next_driver_compare.py` owns the comparison processes and daemon
+within a queue GPU job. Pass `--probe`, `--driver`, `--daemon`, `--pack`, a new
+`--output` directory, verified `--pack-sha256`, and explicit `--pool-bytes` and
+`--spine-bytes`. It records resident B1/B3 baselines, lazy B1, then starts two
+lazy B3 processes before waiting for either. All token lines must match the
+corresponding baseline. Only complete success writes `RESULT.json`. Logs stay
+in the output directory on failure. A shared 12-minute deadline bounds child
+waits; owned children are terminated and reaped on errors. Set the queue TTL
+to 15 minutes and budget for the resident pack or both lazy spines plus the
+shared expert pool and driver workspaces. Starting both processes does not
+itself prove simultaneous lease ownership; use the dedicated lazy pair test
+for deterministic pin/eviction assertions.
