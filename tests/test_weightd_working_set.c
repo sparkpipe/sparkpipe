@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -6,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "cuda.h"
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
 
@@ -14,6 +16,7 @@
 
 void spark_stub_cuda_fail_next_alloc(void);
 void spark_stub_cuda_fail_alloc_after(uint32_t calls);
+void spark_stub_cuda_fail_export_after(uint32_t calls);
 uint32_t spark_stub_cuda_outstanding_allocs(void);
 
 typedef struct TestServer
@@ -36,10 +39,10 @@ static uint64_t range_offset(uint32_t expert,uint32_t kind)
 	return((2u * CHUNK) + ((expert - 2u) * 256u) + (kind * 64u));
 }
 
-static void write_range(FILE *pack,FILE *manifest,uint32_t expert,uint32_t kind)
+static void write_range(FILE *pack,FILE *manifest,uint32_t expert,uint32_t kind,uint64_t offset)
 {
 	uint8_t record[48] = {0},data[64],digest[16];
-	uint64_t offset = range_offset(expert,kind),bytes = sizeof(data);
+	uint64_t bytes = sizeof(data);
 	SparkCk128Context ck;
 	memset(data,(int32_t)(1u + (expert * 4u) + kind),sizeof(data));
 	assert(fseek(pack,(long)offset,SEEK_SET) == 0);
@@ -67,26 +70,43 @@ static void write_fixture(const char *path,const char *manifest_path)
 	assert(fwrite(header,1u,sizeof(header),manifest) == sizeof(header));
 	for (expert=0u; expert<4u; expert++)
 		for (kind=0u; kind<4u; kind++)
-			write_range(pack,manifest,expert,kind);
+			write_range(pack,manifest,expert,kind,range_offset(expert,kind));
 	assert(fclose(pack) == 0);
 	assert(fclose(manifest) == 0);
 }
 
-static uint64_t attach(SparkWeightdClient *client,const char *path,uint64_t *base)
+static uint64_t attach_config(SparkWeightdClient *client,const char *path,uint32_t chunks,uint32_t pool,uint32_t experts,uint64_t *base)
 {
 	SparkWeightdLazyAttachRequest request = {0};
 	SparkWeightdLazyAttachResult result;
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-	request.identity.arena_bytes = (3u * CHUNK);
+	request.identity.arena_bytes = (chunks * CHUNK);
 	memcpy(request.identity.model,"working-set-test",17u);
 	memset(request.identity.pack_sha256,'a',64u);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
-	request.expert_pool_bytes = (2u * CHUNK);
+	request.expert_pool_bytes = (pool * CHUNK);
 	assert(SparkWeightdClientAttachLazy(client,&request,&result,TIMEOUT) == SPARK_STATUS_OK);
-	assert(result.expert_count == 4u);
+	assert(result.expert_count == experts);
 	*base = result.device_handle;
 	return(result.arena_generation);
+}
+
+static uint64_t attach(SparkWeightdClient *client,const char *path,uint64_t *base)
+{
+	return(attach_config(client,path,3u,2u,4u,base));
+}
+
+static void write_many(const char *path,const char *manifest_path)
+{
+	FILE *pack = fopen(path,"wb"),*manifest = fopen(manifest_path,"wb");
+	uint32_t header[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,2u,65u,0u},i;
+	assert(pack != 0 && manifest != 0);
+	assert(ftruncate(fileno(pack),(65u * CHUNK)) == 0);
+	assert(fwrite(header,1u,sizeof(header),manifest) == sizeof(header));
+	for (i=0u; i<65u; i++)
+		write_range(pack,manifest,i,0u,((uint64_t)i * CHUNK));
+	assert(fclose(pack) == 0 && fclose(manifest) == 0);
 }
 
 static SparkWeightdWorkingSetResult acquire(SparkWeightdClient *client,uint64_t generation,uint32_t expert,SparkStatus expected)
@@ -117,6 +137,68 @@ static void check_ranges(uint64_t base,uint32_t expert)
 	}
 }
 
+static uint32_t count_fds(void)
+{
+	uint32_t count = 0u,i;
+	for (i=0u; i<1024u; i++)
+		count += fcntl((int32_t)i,F_GETFD) >= 0;
+	return(count);
+}
+
+static void check_export(SparkWeightdClient *client,uint64_t generation,uint64_t lease,uint64_t daemon_base)
+{
+	SparkWeightdExportBatch batch;
+	CUmemGenericAllocationHandle handles[2];
+	CUdeviceptr base;
+	CUmemAccessDesc access = {0};
+	uint32_t i,descriptors = count_fds();
+	spark_stub_cuda_fail_export_after(2u);
+	assert(SparkWeightdClientExportLeaseBatch(client,generation,lease,0u,&batch,TIMEOUT) == SPARK_STATUS_OK);
+	assert(batch.status == SPARK_STATUS_IO_ERROR && batch.batch_count == 0u);
+	assert(count_fds() == descriptors);
+	assert(SparkWeightdClientExportLeaseBatch(client,generation,lease,0u,&batch,TIMEOUT) == SPARK_STATUS_OK);
+	assert(batch.status == SPARK_STATUS_OK && batch.batch_count == 2u && batch.lease_chunk_count == 2u && batch.chunk_count == 3u);
+	assert(batch.chunk_bytes == CHUNK && batch.chunk_indices[0] == 0u && batch.chunk_indices[1] == 1u);
+	assert(cuMemAddressReserve(&base,(3u * CHUNK),0u,0u,0u) == CUDA_SUCCESS);
+	assert(base != daemon_base);
+	access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+	access.location.id = 0;
+	access.flags = CU_MEM_ACCESS_FLAGS_PROT_READ;
+	for (i=0u; i<2u; i++)
+	{
+		assert((fcntl(batch.fds[i],F_GETFD) & FD_CLOEXEC) != 0);
+		assert(cuMemImportFromShareableHandle(&handles[i],(void *)(intptr_t)batch.fds[i],CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) == CUDA_SUCCESS);
+		assert(close(batch.fds[i]) == 0);
+		assert(cuMemMap(base + (batch.chunk_indices[i] * CHUNK),CHUNK,0u,handles[i],0u) == CUDA_SUCCESS);
+		assert(cuMemSetAccess(base + (batch.chunk_indices[i] * CHUNK),CHUNK,&access,1u) == CUDA_SUCCESS);
+	}
+	check_ranges(base,0u);
+	for (i=0u; i<2u; i++)
+	{
+		assert(cuMemUnmap(base + (batch.chunk_indices[i] * CHUNK),CHUNK) == CUDA_SUCCESS);
+		assert(cuMemRelease(handles[i]) == CUDA_SUCCESS);
+	}
+	assert(cuMemAddressFree(base,(3u * CHUNK)) == CUDA_SUCCESS);
+	assert(count_fds() == descriptors);
+}
+
+static void check_export_refused(SparkWeightdClient *client,uint64_t generation,uint64_t lease)
+{
+	SparkWeightdExportBatch batch;
+	assert(SparkWeightdClientExportLeaseBatch(client,generation,lease,0u,&batch,TIMEOUT) == SPARK_STATUS_OK);
+	assert(batch.status == SPARK_STATUS_NOT_FOUND && batch.batch_count == 0u);
+}
+
+static void check_sparse_export(SparkWeightdClient *client,uint64_t generation,uint64_t lease)
+{
+	SparkWeightdExportBatch batch;
+	assert(SparkWeightdClientExportLeaseBatch(client,generation,lease,0u,&batch,TIMEOUT) == SPARK_STATUS_OK);
+	assert(batch.status == SPARK_STATUS_OK && batch.batch_count == 1u && batch.chunk_indices[0] == 2u);
+	assert(close(batch.fds[0]) == 0);
+	assert(SparkWeightdClientExportLeaseBatch(client,generation,lease,1u,&batch,TIMEOUT) == SPARK_STATUS_OK);
+	assert(batch.status == SPARK_STATUS_INVALID_ARGUMENT && batch.batch_count == 0u);
+}
+
 static void check_two_clients(SparkWeightdClient *a,SparkWeightdClient *b,uint64_t generation,uint64_t base)
 {
 	SparkWeightdWorkingSetResult first,second,result;
@@ -134,6 +216,8 @@ static void check_two_clients(SparkWeightdClient *a,SparkWeightdClient *b,uint64
 	assert(detached.status == SPARK_STATUS_BUSY);
 	assert(first.resident_bytes == (2u * CHUNK));
 	check_ranges(base,0u);
+	check_export(a,generation,first.lease_identifier,base);
+	check_export_refused(b,generation,first.lease_identifier);
 	second = acquire(b,generation,1u,SPARK_STATUS_OK);
 	assert(second.resident_bytes == first.resident_bytes);
 	check_ranges(base,1u);
@@ -142,9 +226,11 @@ static void check_two_clients(SparkWeightdClient *a,SparkWeightdClient *b,uint64
 	check_ranges(base,0u);
 	check_ranges(base,1u);
 	release(a,generation,first.lease_identifier);
+	check_export_refused(a,generation,first.lease_identifier);
 	(void)acquire(a,generation,2u,SPARK_STATUS_CAPACITY_EXCEEDED);
 	release(b,generation,second.lease_identifier);
 	result = acquire(a,generation,2u,SPARK_STATUS_OK);
+	check_sparse_export(a,generation,result.lease_identifier);
 	check_ranges(base,2u);
 	release(a,generation,result.lease_identifier);
 }
@@ -180,6 +266,53 @@ static void check_orphan(SparkWeightdClient *a,SparkWeightdClient *b,uint64_t ge
 	SparkWeightdClientClose(replacement);
 }
 
+static void check_many_exports(void)
+{
+	char root[] = "/tmp/weightd-many-XXXXXX",path[256],manifest[272],socket_path[256];
+	TestServer state = {0};
+	SparkWeightdServerConfig config = {0};
+	SparkWeightdClient *client;
+	SparkWeightdExpertKey keys[65];
+	SparkWeightdWorkingSetResult result;
+	SparkWeightdExportBatch batch;
+	pthread_t thread;
+	uint64_t generation,base;
+	uint32_t i,offset = 0u;
+	assert(mkdtemp(root) != 0);
+	snprintf(path,sizeof(path),"%s/pack",root);
+	snprintf(manifest,sizeof(manifest),"%s.experts",path);
+	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
+	write_many(path,manifest);
+	config.socket_path = socket_path;
+	config.device_bytes_max = (66u * CHUNK);
+	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
+	assert(pthread_create(&thread,0,run_server,&state) == 0);
+	assert(SparkWeightdClientConnect(socket_path,&client,0) == SPARK_STATUS_OK);
+	generation = attach_config(client,path,65u,65u,65u,&base);
+	for (i=0u; i<65u; i++)
+		keys[i] = (SparkWeightdExpertKey){0u,i};
+	assert(SparkWeightdClientAcquire(client,generation,keys,65u,&result,TIMEOUT) == SPARK_STATUS_OK);
+	while ( offset < 65u )
+	{
+		assert(SparkWeightdClientExportLeaseBatch(client,generation,result.lease_identifier,offset,&batch,TIMEOUT) == SPARK_STATUS_OK);
+		assert(batch.status == SPARK_STATUS_OK && batch.lease_chunk_count == 65u && batch.chunk_count == 65u);
+		assert(batch.batch_count == (offset == 0u ? 64u : 1u));
+		for (i=0u; i<batch.batch_count; i++)
+		{
+			assert(batch.chunk_indices[i] == (offset + i));
+			assert(close(batch.fds[i]) == 0);
+		}
+		offset += batch.batch_count;
+	}
+	release(client,generation,result.lease_identifier);
+	SparkWeightdClientClose(client);
+	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
+	assert(pthread_join(thread,0) == 0);
+	SparkWeightdServerDestroy(state.server);
+	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	assert(unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
+}
+
 int main(void)
 {
 	char root[] = "/tmp/weightd-set-XXXXXX",path[256],manifest[272],socket_path[256];
@@ -210,6 +343,7 @@ int main(void)
 	SparkWeightdServerDestroy(state.server);
 	assert(spark_stub_cuda_outstanding_allocs() == 0u);
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
-	puts("PASS working-set IPC: all ranges, shared chunks, owner leases, capacity and corruption");
+	check_many_exports();
+	puts("PASS working-set IPC: all ranges, leases, rollback, scoped imports and 65-chunk exports");
 	return(0);
 }

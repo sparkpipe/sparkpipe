@@ -249,6 +249,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
 {
     switch (kind)
     {
+        case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE:
+            return sizeof(SparkWeightdIpcExportLease) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT:
+            return sizeof(SparkWeightdIpcExportLeaseResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
             return sizeof(SparkWeightdIpcAcquire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT:
@@ -294,6 +298,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
 {
     switch (kind)
     {
+        case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE:
+            return SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
             return SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RELEASE:
@@ -1537,6 +1543,22 @@ static void SparkWeightdServerCloseStagedFds(SparkWeightdConnection *connection)
     connection->response_fd_count = 0u;
 }
 
+static SparkStatus SparkWeightdServerExportOne(SparkWeightdConnection *connection,void *handle)
+{
+	int32_t fd = -1;
+	if ( connection->response_fd_count >= SPARK_WEIGHTD_EXPORT_BATCH_MAX )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( cuMemExportToShareableHandle(&fd,(CUmemGenericAllocationHandle)handle,CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,0u) != CUDA_SUCCESS || fd < 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	if ( fcntl(fd,F_SETFD,FD_CLOEXEC) != 0 )
+	{
+		(void)close(fd);
+		return(SPARK_STATUS_IO_ERROR);
+	}
+	connection->response_fds[connection->response_fd_count++] = fd;
+	return(SPARK_STATUS_OK);
+}
+
 /* The daemon's half of the fd tier: hand the attached arena's physical
  * chunks to THIS connection, one position-addressed batch at a time, each
  * chunk as a CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR shareable fd. Access
@@ -1593,27 +1615,60 @@ static void SparkWeightdServerExportBatch(SparkWeightdServer *server,
     }
     for (index = 0u; index < count; index++)
     {
-        int fd = -1;
-        if (cuMemExportToShareableHandle(&fd,
-                (CUmemGenericAllocationHandle)
-                    arena->chunk_handles[request->batch_offset + index],
-                CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
-                0ull) != CUDA_SUCCESS ||
-            fd < 0)
+        if (SparkWeightdServerExportOne(connection,arena->chunk_handles[request->batch_offset + index]) != SPARK_STATUS_OK)
         {
             SparkWeightdServerCloseStagedFds(connection);
-            result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
+            result->status = SPARK_STATUS_IO_ERROR;
             return;
         }
-        /* the fd discipline: chunk fds never survive an exec in the daemon */
-        (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
-        connection->response_fds[index] = fd;
     }
-    connection->response_fd_count = count;
     result->chunk_bytes = arena->chunk_bytes;
     result->chunk_count = arena->chunk_count;
     result->batch_count = count;
     result->status = (uint32_t)SPARK_STATUS_OK;
+}
+
+static void SparkWeightdServerExportLease(SparkWeightdServer *server,SparkWeightdConnection *connection,const SparkWeightdIpcExportLease *request,SparkWeightdIpcExportLeaseResult *result)
+{
+	SparkWeightdArena *arena = SparkWeightdAttachedArena(server,connection,request->arena_generation);
+	const SparkWeightdLease *lease;
+	uint32_t i,ordinal = 0u,count = 0u;
+	result->base.arena_generation = request->arena_generation;
+	result->base.batch_offset = request->batch_offset;
+	result->lease_identifier = request->lease_identifier;
+	result->base.status = SPARK_STATUS_NOT_FOUND;
+	if ( arena == 0 || arena->lazy == 0u )
+		return;
+	lease = SparkWeightdLeaseFind(arena->leases,connection->owner,request->lease_identifier);
+	if ( lease == 0 )
+		return;
+	result->base.status = SPARK_STATUS_INVALID_ARGUMENT;
+	if ( request->reserved0 != 0u || arena->failure_status != SPARK_STATUS_OK )
+		return;
+	memset(arena->needed_chunks,0,arena->chunk_count);
+	for (i=0u; i<lease->count; i++)
+		SparkWeightdMarkGroupChunks(arena,lease->groups[i]);
+	for (i=0u; i<arena->chunk_count; i++)
+		count += arena->needed_chunks[i] != 0u;
+	if ( request->batch_offset >= count )
+		return;
+	result->lease_chunk_count = count;
+	for (i=0u; i<arena->chunk_count && connection->response_fd_count<SPARK_WEIGHTD_EXPORT_BATCH_MAX; i++)
+	{
+		if ( arena->needed_chunks[i] == 0u || ordinal++ < request->batch_offset )
+			continue;
+		result->chunk_indices[connection->response_fd_count] = i;
+		if ( arena->chunk_handles[i] == 0 || SparkWeightdServerExportOne(connection,arena->chunk_handles[i]) != SPARK_STATUS_OK )
+		{
+			SparkWeightdServerCloseStagedFds(connection);
+			result->base.status = SPARK_STATUS_IO_ERROR;
+			return;
+		}
+	}
+	result->base.chunk_bytes = arena->chunk_bytes;
+	result->base.chunk_count = arena->chunk_count;
+	result->base.batch_count = connection->response_fd_count;
+	result->base.status = SPARK_STATUS_OK;
 }
 
 /* ------------------------------ server: dispatch ------------------------------ */
@@ -1673,6 +1728,15 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
         SparkWeightdServerExportBatch(server, connection,
             (const SparkWeightdIpcExport *)request, result);
         return SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES;
+    }
+
+    if ( request_header->kind == SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE )
+    {
+        SparkWeightdIpcExportLeaseResult *result = (SparkWeightdIpcExportLeaseResult *)response;
+        memset(result,0,sizeof(*result));
+        SparkWeightdBuildHeader(response,result_kind,request_id);
+        SparkWeightdServerExportLease(server,connection,(const SparkWeightdIpcExportLease *)request,result);
+        return(sizeof(*result));
     }
 
     if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY)
@@ -1830,9 +1894,9 @@ static SparkStatus SparkWeightdServerFlushResponse(
         {
             struct msghdr message;
             struct iovec vector;
+            struct cmsghdr *control_header;
             char control[CMSG_SPACE(SPARK_WEIGHTD_EXPORT_BATCH_MAX *
                 sizeof(int))];
-            struct cmsghdr *control_header;
             memset(&message, 0, sizeof(message));
             vector.iov_base =
                 connection->response + connection->response_written;
@@ -2615,6 +2679,36 @@ SparkStatus SparkWeightdClientEnsure(SparkWeightdClient *client,
 
 /* ------------------------------ client: export (W3 fd tier) ------------------------------ */
 
+static SparkStatus SparkWeightdReceiveFds(struct msghdr *message,int *fds,uint32_t capacity,uint32_t *count)
+{
+	struct cmsghdr *header;
+	int32_t fd;
+	uint32_t i,bytes,n,bad = ((message->msg_flags & MSG_CTRUNC) != 0);
+	for (header=CMSG_FIRSTHDR(message); header!=0; header=CMSG_NXTHDR(message,header))
+	{
+		if ( header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS )
+			continue;
+		if ( header->cmsg_len < CMSG_LEN(0) )
+			return(SPARK_STATUS_IO_ERROR);
+		bytes = (uint32_t)(header->cmsg_len - CMSG_LEN(0));
+		n = (bytes / sizeof(int));
+		if ( (bytes % sizeof(int)) != 0u )
+			bad = 1u;
+		for (i=0u; i<n; i++)
+		{
+			memcpy(&fd,(uint8_t *)CMSG_DATA(header) + (i * sizeof(int)),sizeof(fd));
+			if ( *count >= capacity || fcntl(fd,F_SETFD,FD_CLOEXEC) != 0 )
+			{
+				(void)close(fd);
+				bad = 1u;
+			}
+			else
+				fds[(*count)++] = fd;
+		}
+	}
+	return(bad != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK);
+}
+
 /* Receive exactly `bytes` of a reply frame, collecting the SCM_RIGHTS
  * ancillary that rides the FIRST data (fds always arrive with the frame's
  * leading bytes, never detached from it). Every fd that lands is made
@@ -2630,7 +2724,9 @@ static SparkStatus SparkWeightdClientReadFrameWithFds(
     uint32_t fds_capacity,
     uint32_t *fds_received)
 {
-    char control[CMSG_SPACE(SPARK_WEIGHTD_EXPORT_BATCH_MAX * sizeof(int))];
+    /* Receive the kernel's full SCM_RIGHTS allowance before enforcing our
+     * smaller protocol cap. Truncating control data can hide installed FDs. */
+    char control[253u * CMSG_SPACE(sizeof(int))];
     uint32_t received = 0u;
     uint32_t fd_count = 0u;
 
@@ -2657,7 +2753,6 @@ static SparkStatus SparkWeightdClientReadFrameWithFds(
         {
             struct msghdr message;
             struct iovec vector;
-            struct cmsghdr *control_header;
             memset(&message, 0, sizeof(message));
             vector.iov_base = buffer;
             vector.iov_len = bytes;
@@ -2678,32 +2773,9 @@ static SparkStatus SparkWeightdClientReadFrameWithFds(
             {
                 goto fail; /* EOF mid-exchange: the daemon is gone */
             }
-            if ((message.msg_flags & MSG_CTRUNC) != 0)
-            {
-                goto fail; /* truncated ancillary: a frame that cannot count */
-            }
-            for (control_header = CMSG_FIRSTHDR(&message); control_header != 0;
-                control_header = CMSG_NXTHDR(&message, control_header))
-            {
-                if (control_header->cmsg_level == SOL_SOCKET &&
-                    control_header->cmsg_type == SCM_RIGHTS)
-                {
-                    size_t payload = control_header->cmsg_len - CMSG_LEN(0);
-                    uint32_t count = (uint32_t)(payload / sizeof(int));
-                    if (payload % sizeof(int) != 0u ||
-                        fd_count + count > fds_capacity)
-                    {
-                        /* over the batch bound: a lying frame, never mapped.
-                         * Close what was copied; any overflow fds the kernel
-                         * already queued die with this socket, which the
-                         * caller closes on every failure path. */
-                        goto fail;
-                    }
-                    memcpy(fds_out + fd_count, CMSG_DATA(control_header),
-                        count * sizeof(int));
-                    fd_count += count;
-                }
-            }
+            if (SparkWeightdReceiveFds(&message,fds_out,fds_capacity,&fd_count) != SPARK_STATUS_OK)
+                goto fail;
+
         }
         else
         {
@@ -2719,15 +2791,7 @@ static SparkStatus SparkWeightdClientReadFrameWithFds(
         }
         received += (uint32_t)chunk;
     }
-#ifndef MSG_CMSG_CLOEXEC
-    {
-        uint32_t index;
-        for (index = 0u; index < fd_count; index++)
-        {
-            (void)fcntl(fds_out[index], F_SETFD, FD_CLOEXEC);
-        }
-    }
-#endif
+
     *fds_received = fd_count;
     return SPARK_STATUS_OK;
 fail:
@@ -2739,6 +2803,27 @@ fail:
     return SPARK_STATUS_IO_ERROR;
 }
 
+static SparkStatus SparkWeightdClientExportExchange(SparkWeightdClient *client,const void *request,uint32_t request_bytes,void *response,uint32_t response_bytes,int *fds,uint32_t *received,uint64_t timeout)
+{
+	uint64_t now = SparkWeightdMonotonicTimeNs(),deadline;
+	SparkStatus status;
+	*received = 0u;
+	if ( timeout == 0u )
+		timeout = SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS;
+	if ( now == 0u || timeout > (UINT64_MAX - now) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	deadline = (now + timeout);
+	status = SparkWeightdClientWriteAll(client,request,request_bytes,deadline);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdClientReadFrameWithFds(client,response,response_bytes,deadline,fds,SPARK_WEIGHTD_EXPORT_BATCH_MAX,received);
+	if ( status != SPARK_STATUS_OK )
+	{
+		(void)close(client->fd);
+		client->fd = -1;
+	}
+	return(status);
+}
+
 SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
     uint64_t arena_generation,
     uint32_t batch_offset,
@@ -2747,8 +2832,6 @@ SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
 {
     SparkWeightdIpcExport wire;
     SparkWeightdIpcExportResult wire_result;
-    uint64_t now;
-    uint64_t deadline_ns;
     uint32_t fds_received = 0u;
     SparkStatus status;
 
@@ -2756,14 +2839,9 @@ SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    if (client->next_request_id == UINT64_MAX)
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
     memset(batch, 0, sizeof(*batch));
-    now = SparkWeightdMonotonicTimeNs();
-    if (now == 0ull)
-    {
-        return SPARK_STATUS_INTERNAL_ERROR;
-    }
-    deadline_ns = now + (timeout_nanoseconds != 0ull ? timeout_nanoseconds
-                                                     : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS);
     memset(&wire, 0, sizeof(wire));
     wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
     wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
@@ -2774,15 +2852,7 @@ SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
     wire.arena_generation = arena_generation;
     wire.batch_offset = batch_offset;
     memset(&wire_result, 0, sizeof(wire_result));
-    status = SparkWeightdClientWriteAll(client, (const uint8_t *)&wire,
-        SPARK_WEIGHTD_IPC_EXPORT_BYTES, deadline_ns);
-    if (status == SPARK_STATUS_OK)
-    {
-        status = SparkWeightdClientReadFrameWithFds(client,
-            (uint8_t *)&wire_result, SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES,
-            deadline_ns, batch->fds, SPARK_WEIGHTD_EXPORT_BATCH_MAX,
-            &fds_received);
-    }
+    status = SparkWeightdClientExportExchange(client,&wire,sizeof(wire),&wire_result,sizeof(wire_result),batch->fds,&fds_received,timeout_nanoseconds);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -2802,6 +2872,8 @@ SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
         {
             (void)close(batch->fds[--fds_received]);
         }
+        (void)close(client->fd);
+        client->fd = -1;
         return status != SPARK_STATUS_OK ? status : SPARK_STATUS_SCHEMA_ERROR;
     }
     batch->status = SparkWeightdStatusFromWire(wire_result.status);
@@ -2811,6 +2883,73 @@ SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
     batch->batch_offset = wire_result.batch_offset;
     batch->batch_count = wire_result.batch_count;
     return SPARK_STATUS_OK;
+}
+
+
+static SparkStatus SparkWeightdValidateLeaseExport(const SparkWeightdIpcExportLease *request,const SparkWeightdIpcExportLeaseResult *response,uint32_t fds_received)
+{
+	const SparkWeightdIpcExportResult *base = &response->base;
+	uint32_t i,count;
+	SparkStatus status;
+	status = SparkWeightdIpcValidateHeader(&base->header,sizeof(*response),SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( base->header.request_id != request->header.request_id || base->arena_generation != request->arena_generation || response->lease_identifier != request->lease_identifier || base->batch_offset != request->batch_offset || base->batch_count != fds_received || base->batch_count > SPARK_WEIGHTD_EXPORT_BATCH_MAX || base->reserved0 != 0u || response->reserved1 != 0u || base->status > SPARK_STATUS_UNSUPPORTED )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( base->status != SPARK_STATUS_OK )
+		return(base->batch_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
+	if ( base->chunk_bytes == 0u || base->chunk_count == 0u || base->chunk_count > SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX || base->chunk_bytes > (UINT64_MAX / base->chunk_count) || response->lease_chunk_count > base->chunk_count || base->batch_offset >= response->lease_chunk_count )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = (response->lease_chunk_count - base->batch_offset);
+	if ( count > SPARK_WEIGHTD_EXPORT_BATCH_MAX )
+		count = SPARK_WEIGHTD_EXPORT_BATCH_MAX;
+	if ( base->batch_count != count )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (i=0u; i<count; i++)
+		if ( response->chunk_indices[i] >= base->chunk_count || (i != 0u && response->chunk_indices[i] <= response->chunk_indices[i - 1u]) )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdClientExportLeaseBatch(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,uint32_t batch_offset,SparkWeightdExportBatch *batch,uint64_t timeout_nanoseconds)
+{
+	SparkWeightdIpcExportLease request;
+	SparkWeightdIpcExportLeaseResult response;
+	uint32_t received = 0u;
+	SparkStatus status;
+	if ( client == 0 || batch == 0 || lease_identifier == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(batch,0,sizeof(*batch));
+	if ( client->next_request_id == UINT64_MAX )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(&request,0,sizeof(request));
+	memset(&response,0,sizeof(response));
+	SparkWeightdBuildHeader((uint8_t *)&request,SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE,++client->next_request_id);
+	request.arena_generation = arena_generation;
+	request.lease_identifier = lease_identifier;
+	request.batch_offset = batch_offset;
+	status = SparkWeightdClientExportExchange(client,&request,sizeof(request),&response,sizeof(response),batch->fds,&received,timeout_nanoseconds);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkWeightdValidateLeaseExport(&request,&response,received);
+	if ( status != SPARK_STATUS_OK )
+	{
+		while ( received != 0u )
+			(void)close(batch->fds[--received]);
+		(void)close(client->fd);
+		client->fd = -1;
+		return(status);
+	}
+	batch->status = SparkWeightdStatusFromWire(response.base.status);
+	batch->arena_generation = response.base.arena_generation;
+	batch->lease_identifier = response.lease_identifier;
+	batch->chunk_bytes = response.base.chunk_bytes;
+	batch->chunk_count = response.base.chunk_count;
+	batch->lease_chunk_count = response.lease_chunk_count;
+	batch->batch_offset = response.base.batch_offset;
+	batch->batch_count = response.base.batch_count;
+	memcpy(batch->chunk_indices,response.chunk_indices,sizeof(batch->chunk_indices));
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdClientDetach(SparkWeightdClient *client,

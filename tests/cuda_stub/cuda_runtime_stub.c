@@ -29,6 +29,8 @@ static uint32_t cuda_stub_alloc_calls;
 static int32_t cuda_stub_fail_alloc_at = -1;
 static uint32_t cuda_stub_host_map_calls;
 static int32_t cuda_stub_fail_host_map_at = -1;
+static uint32_t cuda_stub_export_calls;
+static uint32_t cuda_stub_fail_export_at;
 static pthread_mutex_t cuda_stub_ledger_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void cuda_stub_ledger_lock(void)
@@ -127,6 +129,8 @@ void spark_stub_cuda_reset_faults(void)
     cuda_stub_fail_alloc_at = -1;
     cuda_stub_host_map_calls = 0u;
     cuda_stub_fail_host_map_at = -1;
+    cuda_stub_export_calls = 0u;
+    cuda_stub_fail_export_at = 0u;
     cuda_stub_ledger_unlock();
 }
 
@@ -147,6 +151,11 @@ void spark_stub_cuda_fail_alloc_after(uint32_t calls)
     cuda_stub_ledger_lock();
     cuda_stub_fail_alloc_at = (int32_t)(cuda_stub_alloc_calls + calls);
     cuda_stub_ledger_unlock();
+}
+
+void spark_stub_cuda_fail_export_after(uint32_t calls)
+{
+    cuda_stub_fail_export_at = cuda_stub_export_calls + calls;
 }
 
 void spark_stub_cuda_fail_host_map_call(uint32_t one_based_call_index)
@@ -605,6 +614,9 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     int fd;
     int written;
     (void)flags;
+    cuda_stub_export_calls++;
+    if (cuda_stub_export_calls == cuda_stub_fail_export_at)
+        return CUDA_ERROR_OUT_OF_MEMORY;
     if (shareable_handle == 0 || phys == 0 ||
         ((cuda_stub_alloc_header *)phys - 1)->magic != CUDA_STUB_ALLOC_MAGIC ||
         phys->magic != CUDA_STUB_VMM_MAGIC ||

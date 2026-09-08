@@ -50,6 +50,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT 16u
 #define SPARK_WEIGHTD_IPC_KIND_RELEASE 17u
 #define SPARK_WEIGHTD_IPC_KIND_RELEASE_RESULT 18u
+#define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE 19u
+#define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT 20u
 
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
@@ -243,6 +245,24 @@ typedef struct SparkWeightdIpcRelease
 
 typedef SparkWeightdIpcAcquireResult SparkWeightdIpcReleaseResult;
 
+typedef struct SparkWeightdIpcExportLease
+{
+	SparkWeightdIpcHeader header;
+	uint64_t arena_generation;
+	uint64_t lease_identifier;
+	uint32_t batch_offset;
+	uint32_t reserved0;
+} SparkWeightdIpcExportLease;
+
+typedef struct SparkWeightdIpcExportLeaseResult
+{
+	SparkWeightdIpcExportResult base;
+	uint64_t lease_identifier;
+	uint32_t lease_chunk_count;
+	uint32_t reserved1;
+	uint32_t chunk_indices[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+} SparkWeightdIpcExportLeaseResult;
+
 _Static_assert(sizeof(SparkWeightdIpcAcquire) <= SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX,"working set request exceeds IPC frame");
 
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
@@ -414,7 +434,14 @@ typedef struct SparkWeightdExportBatch
     uint32_t batch_count;
     uint32_t reserved0;
     int fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+    uint64_t lease_identifier;
+    uint32_t lease_chunk_count;
+    uint32_t chunk_indices[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
 } SparkWeightdExportBatch;
+
+// batch_offset indexes the sorted union of this lease's physical chunks.
+// chunk_count remains the arena's total virtual chunk count.
+SparkStatus SparkWeightdClientExportLeaseBatch(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,uint32_t batch_offset,SparkWeightdExportBatch *batch,uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
     uint64_t arena_generation,

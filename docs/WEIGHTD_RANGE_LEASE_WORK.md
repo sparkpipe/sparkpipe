@@ -7,8 +7,10 @@ The shared version-2 manifest parser now represents explicitly typed ranges grou
 This branch is incomplete and must remain a draft. The daemon now uses the v2
 parser for lazy attachment. IPC ABI 2 adds bounded whole-working-set ACQUIRE and
 owner-scoped RELEASE. Legacy single-range ENSURE returns UNSUPPORTED; the old
-whole-arena export rejects lazy arenas. Consumer migration and lease-scoped
-export/import must land before this branch is usable for lazy drivers.
+whole-arena export rejects lazy arenas. Lease-scoped export returns the sorted
+physical chunk union, explicit chunk indices, and up to 64 descriptors per
+response. Consumer mapping/lifetime integration must land before this branch
+is usable for lazy drivers.
 
 The shared lease table now supplies serialized owner-scoped working-set pin
 accounting. Acquisition deduplicates keys and commits all pins only after
@@ -26,14 +28,15 @@ pass ck128 before the set is committed. Allocation/read/hash failures release
 the new lease and undo newly allocated chunks. Each connection gets a
 non-reused owner ID. Explicit detach is BUSY while that owner has active leases.
 
-This still does not establish GPU completion or export memory to a consumer.
+This still does not establish GPU completion or provide the production
+consumer mapping/lifetime helper.
 Disconnected owners retain their pins, including across connection-slot reuse;
 they cannot be automatically reclaimed without a completion/death proof. This
 is an explicit unfinished recovery requirement, not a completed debug system.
 
 - Qualify the new FP8/BF16 generator against corrected packs from PR #843. It now emits payload and scale ranges, validates the complete manifest with the shared parser, uses a fixed 64 KiB read buffer, and publishes exclusively through a temporary file. Unsupported codecs are explicit errors. NVFP4 needs its separate global-scale and block-scale ranges implemented before use. Build with `make build/glm5_next_experts_manifest`; do not run against the known interleaved legacy packs.
-- Finish the lease-scoped range/chunk export protocol and consumer integration. Acquisition now returns a lease only after every requested expert range loads; exported chunk metadata must cover that lease exactly.
-- Extend fault injection to read, copy, map/unmap and export failures. First/second allocation failure, capacity rejection, all-range copying and corruption rollback have host-stub coverage; real CUDA qualification remains open.
+- Wire lease-scoped exports into the shared consumer mapping/lifetime helper. Acquisition returns a lease only after every requested expert range loads; export checks the connection owner and returns the exact physical chunk union at allocation granularity.
+- Extend fault injection to read, copy and map/unmap failures. First/second allocation failure, partial export failure, capacity rejection, all-range copying and corruption rollback have host-stub coverage; real CUDA qualification remains open.
 - Export only ranges covered by the consumer's lease and map them into its own CUDA virtual address space. Spine residency is separate from routed expert working sets.
 - Hold the lease through actual GPU completion, then unmap and release. Handle cancellation and disconnect without releasing backing storage still used by a GPU.
 - Exercise two real driver consumers, eviction pressure, corruption, cancellation and restart. Retain numerical and residency receipts from clean merged-main deployment before claiming hardware qualification.
@@ -47,8 +50,10 @@ identifier exhaustion. It is a host accounting test, not a CUDA lifetime gate.
 `build/test_weightd_working_set` runs the real daemon/client IPC with CUDA stubs:
 four ranges per expert, shared chunks, two owners, duplicate keys, pool pressure,
 wrong-owner release, detach refusal, first/second allocation rollback, corruption,
-and disconnected-owner pin retention. It inspects the daemon's host-stub memory
-in the same process; this is not a consumer-local CUDA mapping test. The legacy
+and disconnected-owner pin retention. It also imports descriptors into a
+separate CUDA-stub virtual address, checks weights there, verifies wrong-owner
+and stale-lease export rejection, and exercises 65 chunks across two responses.
+These remain host-stub tests, not real consumer GPU qualification. The legacy
 single-range `test_weightd_expert` fixtures and their callers still require ABI-2
 migration before the complete suite can pass.
 
@@ -56,3 +61,10 @@ The existing eager `test_weightd_map` also fails its 2 MiB chunk-size assertion
 on unchanged main dd9bfdb (eager arenas use 64 MiB chunks). This baseline fixture
 drift was reproduced independently; do not claim the complete mapping suite is
 green from the working-set test. It needs correction alongside export tests.
+
+`build/test_weightd_fd_frames` checks 64-FD frames, oversized ancillary cleanup,
+truncation rejection, CLOEXEC, and lease-response identity/index/count checks.
+The receive buffer accommodates the kernel descriptor limit before applying
+the protocol cap, so surplus descriptors can be explicitly closed. Server
+exports account each descriptor as it is created, including failure midway
+through a batch.
