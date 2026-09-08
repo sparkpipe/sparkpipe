@@ -35,6 +35,7 @@ correct math from repeatability, or full serving from a component probe.
 | Shared row policy, PR #860 / main `5500665` | GLM wrappers use common row validation and wave selection with indexed lane callbacks. Host harness passes widths 1–101, ragged waves, invalid order and released claims. Merged-main B3 memcheck and resident/lazy parity pass. | The qsort pattern applies directly: common algorithm, narrow ordinal callback, opaque context. Replace O(rows × lanes) searches with indexed lookups. |
 | Mandatory serving contract, draft PR #861 | ABI 21 removes seven opt-out bits, makes callbacks/cache geometry mandatory and removes zero-cache scheduling paths. Common host tests pass; GLM cache/reset integration remains incomplete. | Required means fail explicitly when missing. Callback presence is only structural validation; stubs and flags cannot establish behavior. |
 | Accurate ABI probe, draft PR #861 | Replaced copied, incorrect structs/flag values with the public header and common loader. | Diagnostic tools must consume the same contract as production, or they can report misleading capability results. |
+| Layered KV/index backing payload, PR #862 | Common gather/scatter with a hardware copy callback; GLM supplies native geometry. Actual GLM host hook tests pass both regions across three layers and five pages; substituting the previous contiguous copy fails the payload check. CUDA CI and merged-main GPU validation are pending. | Trace native layer/page indexing against backing payload layout. Total allocation size is insufficient; distinguish each page and layer in tests. Include index state in payload sizing. |
 
 ## Baseline that must not be misinterpreted
 
@@ -73,12 +74,10 @@ checks do not provide a new distributed throughput result.
    mapping and full KV/index/KDA/convolution/continuity state restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed
    identity page mapping or KV-only snapshot may masquerade as this result.
-   The allocation trace also shows a layout mismatch: arena page bytes cover
-   all KV layers, while CUDA pools are layer-major; the current page-copy hook
-   performs one contiguous transfer. Total-allocation-size checks do not prove
-   that any individual page contains the right layer slices. Resolve this
-   payload-layout contract with a multi-layer round-trip test before enabling
-   cache reuse. Include index state in the payload contract, not only main KV.
+   PR #862 fixes the identified layer-major/backing-page mismatch and missing
+   index payload; complete its merged-main validation before using it as a
+   foundation. The payload tests do not establish full prefix restoration.
+   See that PR's `docs/GLM_KV_PAYLOAD.md` for the regression and reusable lesson.
 2. Qualify true batched distributed computation and clean release/reconnect.
    A continuation-lease teardown failure was observed on the old baseline;
    preserve the safety guard and fix ownership rather than suppressing it.
