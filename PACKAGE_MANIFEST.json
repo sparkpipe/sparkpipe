@@ -1,5 +1,5 @@
 {
-  "file_count": 1886,
+  "file_count": 1887,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "f9a2602f930f92cb93322a6139f845daa35d0409ba082d8244e51b8974d3463d",
-      "size_bytes": 90947
+      "sha256": "9106a9eec984de39cb39b589b6a0bd3c9070115c8bd15aec4063740dece6830c",
+      "size_bytes": 90986
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -3913,8 +3913,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h",
-      "sha256": "e2ca66bd5a095a60c1ae355c1585ee3981f3205fdd1304bca527efbc9f76e833",
-      "size_bytes": 8406
+      "sha256": "3baeabd1c8aa8d5bbd53e2c0b80eb57b4bc3eb5f5b06d526c7347d65629fd838",
+      "size_bytes": 8440
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_serving_adapter.h",
@@ -3948,8 +3948,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "d2f5c7b7f439972d0eef52b65540bf3dabc2b8caaad58b1b113277e943b144d6",
-      "size_bytes": 44028
+      "sha256": "99b758a3044b77299f77b0573fb08640f16d328ae0a6cf1a85986eb02748051c",
+      "size_bytes": 43802
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
@@ -6882,6 +6882,11 @@
       "size_bytes": 17916
     },
     {
+      "path": "tests/test_glm5_next_hc_boundary.py",
+      "sha256": "eec87c1bd677e3e431382e04e73ec2d82d9ee0c1036b0ff2307cae870019ba70",
+      "size_bytes": 4620
+    },
+    {
       "path": "tests/test_glm5_next_module_host_syntax.py",
       "sha256": "134a70b8c9d703b6d0674c3a1a9f634c609350e021ab5eb2861b1299f2720c86",
       "size_bytes": 2471
@@ -9435,5 +9440,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32167473
+  "total_bytes": 32171940
 }

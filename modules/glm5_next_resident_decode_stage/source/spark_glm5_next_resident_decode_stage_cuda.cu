@@ -15,14 +15,14 @@ __global__ static void SparkGlm5NextBoundaryLoadKernel(
 	uint64_t first_row,
 	uint32_t row_count)
 {
-	uint64_t element,row,source,stream;
+	uint64_t element,row,source,width;
+	width = ((uint64_t)GLM5_NEXT_HC * GLM5_NEXT_HIDDEN);
 	element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
 	row = blockIdx.y;
-	if ( row >= row_count || element >= GLM5_NEXT_HIDDEN )
+	if ( row >= row_count || element >= width )
 		return;
-	source = (first_row + row) * (uint64_t)GLM5_NEXT_HIDDEN;
-	for ( stream = 0u; stream < GLM5_NEXT_HC; ++stream )
-		streams[((row * (uint64_t)GLM5_NEXT_HC + stream) * GLM5_NEXT_HIDDEN) + element] = boundary[source + element];
+	source = ((first_row + row) * width);
+	streams[(row * width) + element] = boundary[source + element];
 }
 
 __global__ static void SparkGlm5NextBoundaryStoreKernel(
@@ -31,17 +31,14 @@ __global__ static void SparkGlm5NextBoundaryStoreKernel(
 	uint64_t first_row,
 	uint32_t row_count)
 {
-	uint64_t element,row,destination,stream;
-	float value;
+	uint64_t element,row,destination,width;
+	width = ((uint64_t)GLM5_NEXT_HC * GLM5_NEXT_HIDDEN);
 	element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
 	row = blockIdx.y;
-	if ( row >= row_count || element >= GLM5_NEXT_HIDDEN )
+	if ( row >= row_count || element >= width )
 		return;
-	value = 0.0f;
-	for ( stream = 0u; stream < GLM5_NEXT_HC; ++stream )
-		value += LmBf16ToFloat(streams[((row * (uint64_t)GLM5_NEXT_HC + stream) * GLM5_NEXT_HIDDEN) + element]);
-	destination = (first_row + row) * (uint64_t)GLM5_NEXT_HIDDEN;
-	boundary[destination + element] = LmFloatToBf16(value / (float)GLM5_NEXT_HC);
+	destination = ((first_row + row) * width);
+	boundary[destination + element] = streams[(row * width) + element];
 }
 
 __global__ static void SparkGlm5NextEmbeddingKernel(
@@ -289,7 +286,7 @@ static int32_t SparkGlm5NextStageWaveBoundary(const SparkGlm5NextCudaWave *wave)
 	}
 	else
 	{
-		SparkGlm5NextBoundaryLoadKernel<<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,wave->row_count),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>((const uint16_t *)wave->hidden_input_bf16,slot->hidden_bf16,wave->boundary_row_offset,wave->row_count);
+		SparkGlm5NextBoundaryLoadKernel<<<dim3((GLM5_NEXT_HC * GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,wave->row_count),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>((const uint16_t *)wave->hidden_input_bf16,slot->hidden_bf16,wave->boundary_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	if ( error != cudaSuccess || wave->sideband_input == 0u || wave->maximum_context <= GLM5_NEXT_DSA_SELECTED )
@@ -616,7 +613,7 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 	}
 	else
 	{
-		SparkGlm5NextBoundaryStoreKernel<<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,wave->row_count),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->hidden_bf16,(uint16_t *)wave->hidden_output_bf16,wave->boundary_row_offset,wave->row_count);
+		SparkGlm5NextBoundaryStoreKernel<<<dim3((GLM5_NEXT_HC * GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,wave->row_count),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->hidden_bf16,(uint16_t *)wave->hidden_output_bf16,wave->boundary_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	if ( error != cudaSuccess || wave->sideband_output == 0u )
