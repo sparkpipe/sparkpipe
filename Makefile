@@ -402,6 +402,7 @@ PYTHON_TESTS := \
 	tests/test_weightd_manifest.py \
 	tests/test_glm5_next_range_manifest.py \
 	tests/test_weightd_lazy_pair.py \
+	tests/test_glm5_next_driver_probe.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_pack_regions.py \
 	tests/test_glm5_next_queue_build.py \
@@ -565,6 +566,9 @@ build/sparkpipe_model_compile: tools/sparkpipe_model_compile.c $(COMPILER_LIBRAR
 
 build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/glm5_next_driver_probe: tools/glm5_next_driver_probe.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -L$(CUDA_HOME)/lib64 -lcudart -o $@
 
 build/sparkpipe_dsv4_driver_cuda_smoke: tools/sparkpipe_dsv4_driver_cuda_smoke.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY)
 	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -I$(CUDA_HOME)/include $< modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -L$(CUDA_HOME)/lib64 -lcudart -lstdc++ -lm -o $@

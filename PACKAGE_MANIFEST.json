@@ -1,5 +1,5 @@
 {
-  "file_count": 1916,
+  "file_count": 1920,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "20edd3568db8ef116a31d72445ee57ec313c7de49c3084f3b5018553a690fc0e",
-      "size_bytes": 94085
+      "sha256": "b4162589cfbb8dd2e9fd68ee76d6b6bb22e4d5d2e6cd93932ddd259b994802f6",
+      "size_bytes": 94453
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -785,6 +785,11 @@
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
       "sha256": "47cc5c9a0ba5125ce29fe25de766431655d0281e2fa8b69ed0e004d325b63c92",
       "size_bytes": 8312
+    },
+    {
+      "path": "docs/GLM_REAL_DRIVER_PROBE.md",
+      "sha256": "b4a03ee83c0230050b85c5efdeaecb77ed92701ace46294a3b125a0c18a9716c",
+      "size_bytes": 2251
     },
     {
       "path": "docs/GOALS.md",
@@ -6957,6 +6962,16 @@
       "size_bytes": 2682
     },
     {
+      "path": "tests/test_glm5_next_driver_probe.c",
+      "sha256": "14f382a849eb2cb1bd490ce3c79337f31e0c727950fae56179f42d52e88f3486",
+      "size_bytes": 4124
+    },
+    {
+      "path": "tests/test_glm5_next_driver_probe.py",
+      "sha256": "037ac70a03970c960c891560627cffc096ca4c61135496514eecd6fe7efae512",
+      "size_bytes": 2322
+    },
+    {
       "path": "tests/test_glm5_next_expert_pack_layout.py",
       "sha256": "7eff8899652a904460abe8d7c8203b21ebfd6ad841867e374b755ce67f43c897",
       "size_bytes": 6809
@@ -7918,8 +7933,8 @@
     },
     {
       "path": "tools/cuda13_sm121a_compile_gate.sh",
-      "sha256": "4573f7ac777721464a538cc928cf35433ac5a440bfd70d0b890208482e04dd63",
-      "size_bytes": 9187
+      "sha256": "ec0777025cf1b68866b6772e1641016524a77301741f5b98acc712b3543b1098",
+      "size_bytes": 9435
     },
     {
       "path": "tools/devcycle.sh",
@@ -8640,6 +8655,11 @@
       "path": "tools/glm5_next_compsec17.py",
       "sha256": "de235e8e549f71835d63c1b33a033f016ad4faf6e7f0ff159a005bcd6bba10aa",
       "size_bytes": 7859
+    },
+    {
+      "path": "tools/glm5_next_driver_probe.c",
+      "sha256": "febaead39d7ffdadce835f9ac24165589dbc5fc27c11c67366bfb45642d6b75f",
+      "size_bytes": 9029
     },
     {
       "path": "tools/glm5_next_dsa_host_oracle.py",
@@ -9585,5 +9605,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32367142
+  "total_bytes": 32385484
 }
