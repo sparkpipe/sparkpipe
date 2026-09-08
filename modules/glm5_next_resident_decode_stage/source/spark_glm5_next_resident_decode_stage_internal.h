@@ -56,6 +56,8 @@ typedef struct SparkGlm5NextLayerWeights
 typedef struct SparkGlm5NextExecutionSlot
 {
 	void *stream;
+	void *route_ready_event;
+	uint32_t route_recorded;
 	void *host_staging;
 	uint32_t *host_token_ids;
 	uint32_t *host_resident_slots;
@@ -246,6 +248,9 @@ int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32
 // queues group offsets into slot host_group_row_offset; record/wait an event
 // on that stream before inspecting them or calling SparkWeightdRouteKeys.
 int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+// cudaSuccess means the current routing readback is complete; cudaErrorNotReady
+// means pending. Calling before a successful Route returns cudaErrorInvalidValue.
+cudaError_t SparkGlm5NextPollCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);

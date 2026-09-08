@@ -615,7 +615,8 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	cursor = (uint32_t *)slot->host_run_begin;
 	cursor += rows + 1u;
 	slot->host_run_state_index = cursor;
-	return(SPARK_STATUS_OK);
+	error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->route_ready_event,cudaEventDisableTiming);
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"route_ready_event"));
 }
 
 static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
@@ -625,6 +626,10 @@ static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
 		return;
 	for (index=0u; index<state->pipeline_slot_count; index++)
 	{
+		if ( state->slots[index].route_ready_event != 0 )
+			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].route_ready_event);
+		state->slots[index].route_ready_event = 0;
+		state->slots[index].route_recorded = 0u;
 		if ( state->slots[index].host_staging != 0 )
 			(void)cudaFreeHost(state->slots[index].host_staging);
 		state->slots[index].host_staging = 0;

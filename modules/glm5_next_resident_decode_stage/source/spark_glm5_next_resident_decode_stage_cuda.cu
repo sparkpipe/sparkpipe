@@ -684,16 +684,34 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaW
 {
 	int32_t status;
 	uint32_t routed;
+	cudaError_t error = cudaSuccess;
 	status = SparkGlm5NextValidateWaveShape(wave);
 	if ( status != LM_LAUNCH_OK || local_layer >= wave->layer_count )
 		return(LM_LAUNCH_ERR_SHAPE);
+	if ( wave->slot->route_ready_event == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	wave->slot->route_recorded = 0u;
 	routed = (wave->first_layer_index + local_layer) >= GLM5_NEXT_FIRST_ROUTED_LAYER;
 	if ( routed != 0u && wave->slot->host_group_row_offset == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	status = SparkGlm5NextRunLayerMlpRoute(wave,local_layer);
-	if ( status != LM_LAUNCH_OK || routed == 0u )
+	if ( status != LM_LAUNCH_OK )
 		return(status);
-	return(cudaMemcpyAsync(wave->slot->host_group_row_offset,wave->slot->group_row_offset,(GLM5_NEXT_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( routed != 0u )
+		error = cudaMemcpyAsync(wave->slot->host_group_row_offset,wave->slot->group_row_offset,(GLM5_NEXT_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
+	if ( error == cudaSuccess )
+		error = cudaEventRecord((cudaEvent_t)wave->slot->route_ready_event,(cudaStream_t)wave->slot->stream);
+	if ( error != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	wave->slot->route_recorded = 1u;
+	return(LM_LAUNCH_OK);
+}
+
+extern "C" cudaError_t SparkGlm5NextPollCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave)
+{
+	if ( wave == 0 || wave->slot == 0 || wave->slot->route_ready_event == 0 || wave->slot->route_recorded == 0u )
+		return(cudaErrorInvalidValue);
+	return(cudaEventQuery((cudaEvent_t)wave->slot->route_ready_event));
 }
 
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
