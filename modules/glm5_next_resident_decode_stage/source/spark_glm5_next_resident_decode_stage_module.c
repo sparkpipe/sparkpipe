@@ -2626,7 +2626,8 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 		return;
 	if ( SparkStageModuleWaitForSlots(SPARK_GLM5_NEXT_MODULE_TAG,state->slot_states,state->pipeline_slot_count,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK )
 		return;
-	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
+	if ( SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)state->execution_stream),"destroy_stream_drain") != SPARK_STATUS_OK )
+		return;
 	if ( state->tp_device_collective_hc_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective_hc);
 	if ( state->tp_hc_host_credit_send_bf16 != 0 )
