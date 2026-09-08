@@ -1,5 +1,4 @@
 #include "tests/host_cuda/lm_host_cuda.cuh"
-#include <assert.h>
 #include <stdio.h>
 LmHostDim3 blockIdx,threadIdx,blockDim,gridDim;
 #include "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
@@ -30,8 +29,13 @@ int main(void)
 			{
 				expected = (((uint64_t)sequence * 128u + position) * slot_bytes);
 				address = LmKvSlotMutableRequired<Glm5NextIndexKv>(view,sequence,position,sequence);
-				assert(address == view.pool + expected);
-				assert(address + slot_bytes <= view.pool + layer_bytes);
+				if ( address != view.pool + expected )
+				{
+					fprintf(stderr,"wrong index address: layer=%u sequence=%u position=%u\n",layer,sequence,position);
+					return(1);
+				}
+				if ( address + slot_bytes > view.pool + layer_bytes )
+					return(2);
 				address[0] = (uint8_t)(sequence + 1u);
 			}
 	}

@@ -6433,8 +6433,8 @@
     },
     {
       "path": "tests/host_cuda/glm_index_kv_host.cu",
-      "sha256": "f5d3e98afc64e42be5c1972b557b75b04eefc98ecc38e71e85f68a54b8eeef2a",
-      "size_bytes": 1571
+      "sha256": "deca6d5db4da3e54f248ab226e8ad15f0396c4fe3150be620e7415aa29d206e9",
+      "size_bytes": 1694
     },
     {
       "path": "tests/host_cuda/gqa_host.cu",
@@ -9625,5 +9625,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32397253
+  "total_bytes": 32397376
 }
