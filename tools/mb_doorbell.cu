@@ -224,9 +224,9 @@ int main(int argc, char **argv)
     mode = (uint32_t)strtoul(argv[5], 0, 10);
     transport_path = argc > 6 ? argv[6] :
         "/home/spark0/sparkdata/glm5_next.tp16/lib/hidden_transport.so";
-    if (degree != 16u || rank >= degree || iters == 0u || iters > BENCH_MAX_TIMED_ITERS || rows == 0u || rows > 1024u || mode > 1u)
+    if ((degree != 4u && degree != 16u) || rank >= degree || iters == 0u || iters > BENCH_MAX_TIMED_ITERS || rows == 0u || rows > 1024u || mode > 1u)
     {
-        printf("doorbell bench requires degree 16\n");
+        printf("doorbell bench requires degree 4 or 16\n");
         return 2;
     }
 
@@ -344,7 +344,7 @@ int main(int argc, char **argv)
     binding_count = 0u;
     offset = 0u;
     {
-        uint32_t d2a_routes = BENCH_D2A_MAX != 0u ? 15u : 0u;
+        uint32_t d2a_routes = BENCH_D2A_MAX != 0u ? degree - 1u : 0u;
         uint32_t tree_routes = route_count - d2a_routes;
         for (route = 0u; route < route_count; route++)
         {
@@ -549,7 +549,7 @@ int main(int argc, char **argv)
     {
         uint64_t last = 67u + iters;
         last -= (last + 64u - buffer) % 64u;
-        float expected = (float)(136u + 16u * ((last / 64u) % 4u));
+        float expected = (float)(degree * (degree + 1u) / 2u + degree * ((last / 64u) % 4u));
         uint32_t expected_bits;
         memcpy(&expected_bits,&expected,sizeof(expected_bits));
         if (cudaMemcpy(verify_host,payload[buffer],(size_t)rows * BENCH_HIDDEN * 2u,

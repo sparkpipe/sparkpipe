@@ -53,7 +53,55 @@ static SparkStatus test_combine(void *context,void *destination,const void *sour
 	return(SPARK_STATUS_OK);
 }
 
-static void test_configuration(uint32_t credits)
+static uint32_t test_tree_step(uint32_t degree,uint32_t rank,uint32_t *stages,uint32_t *values,uint32_t messages[16][16])
+{
+	uint32_t stage = stages[rank],recv,send,bit,peer;
+	if ( stage == TREE_STAGES )
+		return(0u);
+	recv = tree_recv_mask(rank,stage,degree);
+	for (bit=0u; bit<7u; bit++)
+		if ( (recv & (1u << bit)) != 0u && messages[tree_peer(rank,bit)][rank] == 0u )
+			return(0u);
+	for (bit=0u; bit<7u; bit++)
+	{
+		if ( (recv & (1u << bit)) == 0u )
+			continue;
+		peer = tree_peer(rank,bit);
+		if ( stage == 3u )
+			values[rank] = messages[peer][rank];
+		else
+		{
+			assert((values[rank] & messages[peer][rank]) == 0u);
+			values[rank] |= messages[peer][rank];
+		}
+		messages[peer][rank] = 0u;
+	}
+	send = stage == 0u ? tree_send_mask(rank,0u,degree) | tree_send_mask(rank,1u,degree) : (stage < 3u ? tree_send_mask(rank,stage + 1u,degree) : 0u);
+	for (bit=0u; bit<7u; bit++)
+		if ( (send & (1u << bit)) != 0u )
+		{
+			peer = tree_peer(rank,bit);
+			assert(peer < degree && peer != rank && messages[rank][peer] == 0u);
+			messages[rank][peer] = values[rank];
+		}
+	stages[rank]++;
+	return(1u);
+}
+
+static void test_tree_topology(uint32_t degree)
+{
+	uint32_t stages[16] = {0},values[16] = {0},messages[16][16] = {{0}};
+	uint32_t round,rank;
+	for (rank=0u; rank<degree; rank++)
+		values[rank] = (1u << rank);
+	for (round=0u; round<16u; round++)
+		for (rank=degree; rank>0u; rank--)
+			(void)test_tree_step(degree,rank - 1u,stages,values,messages);
+	for (rank=0u; rank<degree; rank++)
+		assert(stages[rank] == TREE_STAGES && values[rank] == (1u << degree) - 1u);
+}
+
+static void test_configuration(uint32_t credits,uint32_t degree)
 {
 	SparkTpDeviceCollectiveConfig config;
 	SparkTpDeviceCollectiveCreditBinding bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
@@ -61,7 +109,7 @@ static void test_configuration(uint32_t credits)
 	memset(&config,0,sizeof(config));
 	memset(bindings,0,sizeof(bindings));
 	config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	config.tp_degree = 16u;
+	config.tp_degree = degree;
 	config.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 	config.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 	config.credit_count = credits;
@@ -76,7 +124,7 @@ static void test_configuration(uint32_t credits)
 	config.combine_bf16_function = test_combine;
 	for (index=0u; index<16u; index++)
 		config.rank_hosts[index] = "test";
-	for (route=0u; route<tree_route_count(0u); route++)
+	for (route=0u; route<tree_route_count(0u,degree); route++)
 		for (credit=0u; credit<credits; credit++)
 		{
 			index = ((route * credits) + credit);
@@ -86,9 +134,15 @@ static void test_configuration(uint32_t credits)
 			bindings[index].receive_device = bindings[index].receive_transport = &config;
 		}
 	config.credit_bindings = bindings;
-	config.credit_binding_count = (tree_route_count(0u) * credits);
+	config.credit_binding_count = (tree_route_count(0u,degree) * credits);
 	assert(SparkTpDeviceCollectiveValidateConfig(&config,&count) == SPARK_STATUS_OK);
 	assert(count == credits);
+	config.algorithm_mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
+	config.direct_all_to_all_max_payload_bytes = 65536u;
+	assert(SparkTpDeviceCollectiveCreditBindingRouteCount(&config,&count) == SPARK_STATUS_OK);
+	assert(count == tree_route_count(0u,degree) + degree - 1u);
+	config.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
+	config.direct_all_to_all_max_payload_bytes = 0u;
 	config.credit_count = (SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT + 1u);
 	assert(SparkTpDeviceCollectiveValidateConfig(&config,&count) == SPARK_STATUS_CAPACITY_EXCEEDED);
 }
@@ -115,12 +169,15 @@ int main(void)
 {
 	uint32_t counts[] = {1u,3u,4u,8u,17u,64u};
 	uint32_t index,route,credit;
+	test_tree_topology(4u);
+	test_tree_topology(16u);
 	IMPLEMENTATION.collective = &COLLECTIVE;
 	IMPLEMENTATION.ack_receive_slots = TREE_ACKS;
 	IMPLEMENTATION.d2a_ack_receive_slots = D2A_ACKS;
 	for (index=0u; index<(sizeof(counts) / sizeof(counts[0])); index++)
 	{
-		test_configuration(counts[index]);
+		test_configuration(counts[index],4u);
+		test_configuration(counts[index],16u);
 		test_fixed_offset(counts[index] - 1u);
 		COLLECTIVE.credit_count = counts[index];
 		memset(TREE_ACKS,0,sizeof(TREE_ACKS));
