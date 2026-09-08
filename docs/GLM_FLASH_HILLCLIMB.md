@@ -36,6 +36,7 @@ correct math from repeatability, or full serving from a component probe.
 | Mandatory serving contract, draft PR #861 | ABI 21 removes seven opt-out bits, makes callbacks/cache geometry mandatory and removes zero-cache scheduling paths. Common host tests pass; GLM cache/reset integration remains incomplete. | Required means fail explicitly when missing. Callback presence is only structural validation; stubs and flags cannot establish behavior. |
 | Accurate ABI probe, draft PR #861 | Replaced copied, incorrect structs/flag values with the public header and common loader. | Diagnostic tools must consume the same contract as production, or they can report misleading capability results. |
 | Layered KV/index backing payload, PR #862 | Common gather/scatter with a hardware copy callback; GLM supplies native geometry. Actual GLM host hook tests pass both regions across three layers and five pages; substituting the previous contiguous copy fails the payload check. CUDA CI and merged-main GPU validation are pending. | Trace native layer/page indexing against backing payload layout. Total allocation size is insufficient; distinguish each page and layer in tests. Include index state in payload sizing. |
+| Numerical gate integrity, PR #863 | Three probe failure results were discarded; projection readback could skip a comparison. Checks now affect exit status. Common metrics reject nonfinite inputs and accumulate squared errors directly; regression tests reject the previous metric implementation. GPU rerun pending. | Test the acceptance test with bad values. Error-norm cancellation and ignored return codes can turn an optimization regression green. Component repeatability is not numerical correctness. |
 
 ## Baseline that must not be misinterpreted
 
@@ -67,6 +68,15 @@ The same component checks passed after the shared-row refactor on `5500665`:
 and `glm-common-compare-5500665` (`4a2f9ae0165f403b8e79bb24e2a0201e`, parity).
 All participant cgroups stopped and the assigned Spark was released. These
 checks do not provide a new distributed throughput result.
+
+The existing synthetic validator also passed on `5500665`, job
+`glm-synthetic-oracle-5500665`, attempt `8a86853a13754fd6983359322e3d5fb9`.
+Its KDA+dense+mHC numerical check measured relative L2 0.00468 and cosine
+0.9999891. KDA and DSA attention repeatability passed. Source inspection proves
+this is TP1/B1, despite a maximum-sequence environment setting of eight; this
+checkout does not contain the multirow tiers claimed by the old handoff.
+DSA reference comparison and routed MLP execution remain absent. PR #863 fixes
+discarded probe failures and labels the component coverage explicitly.
 
 ## Current next steps, not completed work
 
