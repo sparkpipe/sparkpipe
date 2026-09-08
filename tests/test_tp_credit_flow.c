@@ -128,6 +128,10 @@ static void test_pending(uint32_t failure)
 	submission.cuda_stream = stream;
 	submission.completion_function = test_pending_completion;
 	submission.completion_context = result;
+	atomic_store(&IMPLEMENTATION.admission_open,0u);
+	assert(SparkTpDeviceCollectiveEnqueue(&COLLECTIVE,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_IO_ERROR);
+	assert(atomic_load(&IMPLEMENTATION.pending[1].state) == 0u && result[0] == 0u);
+	atomic_store(&IMPLEMENTATION.admission_open,1u);
 	assert(SparkTpDeviceCollectiveEnqueue(&COLLECTIVE,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_OK);
 	assert(SparkTpDeviceCollectiveEnqueue(&COLLECTIVE,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_BUSY);
 	assert(SparkTpDeviceCollectiveRequestOperationFailure(&COLLECTIVE,8u,(SparkStatus)(SPARK_STATUS_UNSUPPORTED + 1u)) == SPARK_STATUS_INVALID_ARGUMENT);

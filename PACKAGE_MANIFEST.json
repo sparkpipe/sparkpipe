@@ -1,5 +1,5 @@
 {
-  "file_count": 1891,
+  "file_count": 1894,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "b16aaa6d15a92dc12787393a03c0659de88d0689a5619c2c72ca946b461d899a",
-      "size_bytes": 91632
+      "sha256": "cf27fdced091ab6c4aadf95b4e61d8d042a3ba43961b0c52c8c86d7a8b31ac4f",
+      "size_bytes": 91757
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -878,8 +878,8 @@
     },
     {
       "path": "docs/PARALLEL_DRIVER_DEBUG.md",
-      "sha256": "57e530b855e10141b60f41fd51bd897a9721ee340d15e9f72bd587b226943dbd",
-      "size_bytes": 8736
+      "sha256": "8b3a0cc128bcc914ecf28219a4860e08d01b0cfded9d091131f691593aa91d0e",
+      "size_bytes": 10417
     },
     {
       "path": "docs/PERFORMANCE_LEDGER.md",
@@ -5798,8 +5798,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "17e42ea789fee36008c7502a3a8f1842a58d5a9f891ce24e40a11cfc69574f97",
-      "size_bytes": 126337
+      "sha256": "de46631edd5154fbc3a1bbd199419f759d42e679af3ec453f30109bcc68625ed",
+      "size_bytes": 126414
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
@@ -6897,6 +6897,11 @@
       "size_bytes": 2682
     },
     {
+      "path": "tests/test_glm5_next_expert_pack_layout.py",
+      "sha256": "fe5fb0ff7e743634587b1a50b4aeacf54013ae4e01a0a92b4dc359dc0d892d2d",
+      "size_bytes": 4946
+    },
+    {
       "path": "tests/test_glm5_next_geometry.py",
       "sha256": "5b8fbeb8530d9fcfbb7ab676e8c36fe71eef1bf4b5132fb4383fd0e086667ed4",
       "size_bytes": 17916
@@ -6905,6 +6910,16 @@
       "path": "tests/test_glm5_next_module_host_syntax.py",
       "sha256": "134a70b8c9d703b6d0674c3a1a9f634c609350e021ab5eb2861b1299f2720c86",
       "size_bytes": 2471
+    },
+    {
+      "path": "tests/test_glm5_next_pack_regions.py",
+      "sha256": "8e3b9b16ec96de9047e6291c36ca8509d567710b1df85c7b53a2f5999d10267a",
+      "size_bytes": 1526
+    },
+    {
+      "path": "tests/test_glm5_next_queue_build.py",
+      "sha256": "83219dbcd5c5a7034878a3a71c4175d83d95c3874ef532076804224968b0302e",
+      "size_bytes": 1616
     },
     {
       "path": "tests/test_glm5_next_range_manifest.py",
@@ -7548,8 +7563,8 @@
     },
     {
       "path": "tests/test_spark_queue.py",
-      "sha256": "0015735674660aa07208fee917623f7f4c0a8d239ae0ca39a8b0e29f7c8a0088",
-      "size_bytes": 9858
+      "sha256": "053b92349169754b63ac79070797cdc4840aa99af2ab6c62f5143d8632329134",
+      "size_bytes": 12266
     },
     {
       "path": "tests/test_spark_ssh_failover.py",
@@ -7683,8 +7698,8 @@
     },
     {
       "path": "tests/test_tp_credit_flow.c",
-      "sha256": "a4335a668fce45cfb0da500478077930f7b8fdd60f89b5478f336d7b1a80a6c8",
-      "size_bytes": 13396
+      "sha256": "c8e78804c5f27322d65231e2fbbcd886090567f03c2a8d02391c58d4f08598ff",
+      "size_bytes": 13725
     },
     {
       "path": "tests/test_tp_device_collective.c",
@@ -8513,8 +8528,8 @@
     },
     {
       "path": "tools/glm5_next_build_release.sh",
-      "sha256": "d534b92000ecc61491bc351c75ec34ea7c54616a92bccc8e0fe4fd312736fb62",
-      "size_bytes": 2543
+      "sha256": "a1890af6287d7d25165823abb6de1eecc2c98095b859672b5dcc0e32fb126083",
+      "size_bytes": 2422
     },
     {
       "path": "tools/glm5_next_closeout_wave.sh",
@@ -8588,13 +8603,13 @@
     },
     {
       "path": "tools/glm5_next_pack_verify.py",
-      "sha256": "ca83f4be745b2ec7621e40533bfb808430d3e2da3439d31ca778fa034c791bec",
-      "size_bytes": 13810
+      "sha256": "132043a12d71f89fe5c6cc57c35303987ac9cb9e2f313c56e9eec7d930af828e",
+      "size_bytes": 14104
     },
     {
       "path": "tools/glm5_next_resident_stagepack.py",
-      "sha256": "abc2416382276896cadb5c860b444df619baac4a3171f1c9dc005ea069a2b2ee",
-      "size_bytes": 45802
+      "sha256": "e24657677d50a0786d93979880803e3e9893bad8ceb2b5d1982bb2e941ff6898",
+      "size_bytes": 47483
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -8868,8 +8883,8 @@
     },
     {
       "path": "tools/mb_doorbell.cu",
-      "sha256": "5e082a56465d8c71b1c05052c21f6a1afd9ae0fe7d62181e69876b64c6bef9cf",
-      "size_bytes": 27695
+      "sha256": "6b40f4555e56c154e0b95373591f63aca16982635ff4815e964df56ab5d81c80",
+      "size_bytes": 27489
     },
     {
       "path": "tools/mb_run.sh",
@@ -9308,13 +9323,13 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "5b7821bc25dc24ac3c3a10a45b04701123fd32adfd2b9ea0c3b0baf8a6471567",
-      "size_bytes": 20275
+      "sha256": "9750fe931d26def8f4f66bc16f28eafb3fa1700989a8314238c344ef02692be8",
+      "size_bytes": 20966
     },
     {
       "path": "tools/spark_queue_live_gate.py",
-      "sha256": "abfa54b0c8c277eee12c4b1b959e062ac1ebf2a8c5170fe442273df572b8b78b",
-      "size_bytes": 4825
+      "sha256": "7b082a6d4d73de7191e1c767a3b0d31c441a7debf2d7a9c51fe19857acd573c5",
+      "size_bytes": 7030
     },
     {
       "path": "tools/spark_ssh_proxy.py",
@@ -9460,5 +9475,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32171024
+  "total_bytes": 32188276
 }

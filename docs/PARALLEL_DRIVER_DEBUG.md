@@ -27,6 +27,13 @@ Local transactions never wait for SSH; remote operations run concurrently with
 bounded timeouts. CPU and GPU ownership are independent. Exclusive jobs exclude
 both classes, and waiting exclusive jobs drain conflicting work before starting.
 
+`--after parent1,parent2` requires distinct existing job IDs; submit parents
+before children. A child starts only after every parent succeeds and cleanup is
+confirmed. A failed or cancelled parent finishes its unstarted descendants with
+exit 125 and `failed_dependencies` in their receipts. No descendant command runs.
+Use a new job ID for recovery. Submit independent per-node builds separately so
+one failed build does not prevent verification of another node's successful build.
+
 Jobs have 3-minute default / 15-minute maximum deadlines. systemd enforces the
 deadline even if the controller disappears, with a 5-second termination grace.
 Cancellation remains stopping until each control group is confirmed stopped.
@@ -162,3 +169,24 @@ to the authoritative queue as one exclusive job; it does not launch detached
 SSH children or decide completion from a readiness log line. Inspect the queue
 receipt and every rank's numerical result. Logs include source and binary SHAs.
 These are transport component measurements, not GLM serving throughput.
+
+## GLM firmware build on an assigned Spark
+
+Run `tools/glm5_next_build_release.sh` with no arguments through a GPU-owned
+queue job in the clean checkout returned by `spark_queue.py sync`. Use
+`--memory-mib 32768 --ttl-min 15 --resources gpu` and the command
+`bash tools/glm5_next_build_release.sh`. The module publish step executes GPU
+validation, so a CPU-only queue reservation is insufficient.
+
+The script builds the host services, native transport, serving adapter and
+validated module, then compiles the model driver. Its local output is
+`build/glm53_release`, with `SOURCE_COMMIT` and relative
+`ARTIFACT_SHA256SUMS` for provenance. A failed build does not leave a current
+checksum receipt. Use `sha256sum -c ARTIFACT_SHA256SUMS` inside that directory
+before assembling a deployment with its verified packs and topology config.
+
+The script no longer accepts a branch argument, resets a shared tree, stops
+resident processes, writes to the hub or triggers fleet updates. Those old
+invocations fail explicitly. Build completion is not a deployment or serving
+qualification; deploy the coherent artifact through the queue-owned workflow
+and retain numerical and performance receipts separately.

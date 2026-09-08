@@ -86,6 +86,25 @@ def parse_entries(mm: mmap.mmap, directory_offset: int, count: int) -> list:
     return entries
 
 
+def verify_region(mm, offset, expected, chunks, label):
+    source_hash, pack_hash = hashlib.sha256(), hashlib.sha256()
+    written = 0
+    for chunk in chunks:
+        if len(chunk) > expected - written:
+            fail(f"{label}: producer exceeds declared {expected} bytes")
+        view = memoryview(chunk)
+        for start in range(0, len(view), 8 * 1024 * 1024):
+            piece = view[start:start + 8 * 1024 * 1024]
+            source_hash.update(piece)
+            pack_hash.update(mm[offset + written:offset + written + len(piece)])
+            written += len(piece)
+    if written != expected:
+        fail(f"{label}: producer wrote {written}, expected {expected}")
+    if source_hash.digest() != pack_hash.digest():
+        fail(f"{label}: pack {pack_hash.hexdigest()} != checkpoint {source_hash.hexdigest()}")
+    return pack_hash.hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pack", required=True)
@@ -98,8 +117,11 @@ def main() -> int:
                          "has its own uniform rank size)")
     ap.add_argument("--mtp", action="store_true",
                     help="pack carries the MTP block (flags=1, +24 entries)")
-    ap.add_argument("--deep", action="store_true")
-    ap.add_argument("--skip-spot", action="store_true",
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--deep", action="store_true")
+    mode.add_argument("--all-tensors", action="store_true",
+                      help="compare every payload and scale region against the checkpoint")
+    mode.add_argument("--skip-spot", action="store_true",
                     help="header/layout/plan-diff only (no checkpoint payload reads)")
     args = ap.parse_args()
 
@@ -242,6 +264,9 @@ def main() -> int:
         spot += [(K_LM_HEAD, GLOBAL_LAYER), (K_SHARED_GATE_UP, 3),
                  (K_Q_B, 3), (K_EXPERT_UP_GATE, 3)]
     by_key = {(it.entry.kind, it.entry.layer): it for it in packer.plan}
+    entry_by_key = {(e["kind"], e["layer"]): e for e in entries}
+    if args.all_tensors:
+        spot = list(by_key)
     if args.skip_spot:
         source.close()
         mm.close()
@@ -253,34 +278,20 @@ def main() -> int:
         item = by_key.get((kind, layer))
         if item is None:
             fail(f"spot: plan has no (kind={kind}, layer={layer:#x})")
-        e = entries[[ (x["kind"], x["layer"]) for x in entries ].index((kind, layer))]
-        produced = b"".join(item.produce_payload())
-        produced_sha = hashlib.sha256(produced).hexdigest()
-        # Expert slabs' produce yields payload AND scale bytes interleaved
-        # per expert (emit writes them as one stream across the payload and
-        # scale regions); plain tensors' produce is payload bytes only.
-        if len(produced) == e["payload_bytes"]:
-            region = mm[e["payload_offset"]:e["payload_offset"] + e["payload_bytes"]]
-            region_desc = f"payload ({e['payload_bytes']} B)"
-        elif (e["scale_bytes"]
-              and len(produced) == e["payload_bytes"] + e["scale_bytes"]
-              and e["scale_offset"] == e["payload_offset"] + e["payload_bytes"]):
-            region = mm[e["payload_offset"]:e["scale_offset"] + e["scale_bytes"]]
-            region_desc = (f"payload+scale ({e['payload_bytes']}+"
-                           f"{e['scale_bytes']} B)")
-        else:
-            fail(f"spot {kind}/{layer:#x}: produced {len(produced)} B matches "
-                 f"neither payload region nor payload+scale layout")
-        onpack = hashlib.sha256(region).hexdigest()
-        label = f"kind={kind} layer={layer:#x} {region_desc}"
-        if produced_sha != onpack:
-            fail(f"spot round-trip {label}: pack {onpack[:16]} != ckpt {produced_sha[:16]}")
-        print(f"PASS spot round-trip {label}: sha {onpack[:16]}")
+        e = entry_by_key[kind, layer]
+        for plane, producer in (("payload", item.produce_payload),
+                                ("scale", item.produce_scale)):
+            expected = e[f"{plane}_bytes"]
+            offset = e[f"{plane}_offset"]
+            label = f"kind={kind} layer={layer:#x} {plane} ({expected} B)"
+            onpack = verify_region(mm, offset, expected,
+                                   producer() if producer else iter(()), label)
+            print(f"PASS checkpoint region {label}: sha {onpack[:16]}")
 
     source.close()
     mm.close()
     f.close()
-    print(f"VERIFY-PASS rank {args.tp_rank}: {path.name} "
+    print(f"VERIFY-PASS scope={'all-tensors' if args.all_tensors else 'spot'} rank {args.tp_rank}: {path.name} "
           f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}")
     return 0
 
