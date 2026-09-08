@@ -1,802 +1,448 @@
 #!/usr/bin/env python3
-"""Spark run queue: reserve nodes, enqueue GPU/script runs, dispatch
-non-conflicting entries in parallel, let long runs cook.
-
-The OS-for-inference idea applied to ourselves: nodes are the scarce
-resource, entries declare the nodes they need, the scheduler runs every
-entry whose node set is free (disjoint sets run in parallel), and a
-running entry HOLDS its nodes until it finishes - no preemption, no
-contention, long benches cook undisturbed.
-
-Files (repo-local, coordinator Mac - agents and the sweep both write):
-  runs/queue.jsonl       one JSON entry per line (append-only via lock)
-  runs/reservations.json {node: {id, holder, acquired_at, ttl_minutes, pid}}
-  runs/results.jsonl     finished entries with exit status
-
-Entry fields:
-  id            unique, required
-  nodes         ["spark3", ...] required - the exclusive set
-  cmd           remote shell command (runs via ssh, nohup, on nodes[0])
-  cwd           remote working directory (default $HOME)
-  priority      lower runs first (0 = highest, default 5)
-  kind          "run" (executes cmd) | "gate" (nothing to execute; blocks
-                dependents until a human/agent marks it done) | "note"
-  after         [ids/tags] entries that must be done before this one
-  class         "short" (<15m) | "long" (holds nodes indefinitely)
-  submitted_by  free text
-  notes         free text
-
-Usage:
-  spark_queue.py add --id X --nodes spark3 --cmd '...' [options]
-  spark_queue.py list [--all]        queued+running (or everything)
-  spark_queue.py status ID           one entry incl. log tail
-  spark_queue.py done ID [--exit N]  mark done (gates, manual completions)
-  spark_queue.py cancel ID
-  spark_queue.py reserve --node sparkX --holder lane-y [--ttl-min 3]
-  spark_queue.py release --node sparkX | --id ID
-  spark_queue.py schedule            ONE dispatch pass (the sweep calls this
-                                     every 30m; safe to run manually too)
-
-Denylist: commands containing reboot/shutdown/poweroff/'kill -9'/SIGKILL/
-rm -rf are refused - the no-KILL and no-reboot rules apply to the queue.
-"""
-
+"""Durable Spark queue; see docs/PARALLEL_DRIVER_DEBUG.md."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+import fcntl
 import json
-from datetime import datetime
+import math
 import os
-import pathlib
+from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# THE QUEUE STATE IS MACHINE-GLOBAL and DURABLE (the split-brain fix, then
-# the /tmp-is-volatile fix: macOS cleans /tmp and reboots wipe it - queued
-# work must survive both). Every worktree and every dev session on this
-# host sees ONE queue at ~/.sparkpipe/queue.
-STATE = os.environ.get("SPARK_QUEUE_STATE",
-    os.path.expanduser("~/.sparkpipe/queue"))
-os.makedirs(STATE, exist_ok=True)
-QUEUE = os.path.join(STATE, "queue.jsonl")
-RESERV = os.path.join(STATE, "reservations.json")
-RESULTS = os.path.join(STATE, "results.jsonl")
-LOGDIR = os.path.join(STATE, "logs")
-LOCK = os.path.join(STATE, ".lock")
-FENCED = os.path.join(STATE, "fenced.json")
-# one-time migrations: absorb prior state locations into the DEFAULT home
-# only - an explicit SPARK_QUEUE_STATE override (tests, scratch queues)
-# must start EMPTY, never inheriting production state.
-import shutil
-if "SPARK_QUEUE_STATE" not in os.environ:
-    for _prior in ("/tmp/sparkqueue", os.path.join(ROOT, "runs")):
-        if not os.path.exists(QUEUE) and os.path.exists(os.path.join(_prior, "queue.jsonl")):
-            for name in ("queue.jsonl", "reservations.json", "results.jsonl"):
-                src = os.path.join(_prior, name)
-                if os.path.exists(src):
-                    shutil.copy2(src, os.path.join(STATE, name))
-# NOTE: task-side sentinel files (exit/pid/log) stay in the NODE's /tmp -
-# they are transient by design; only this host-side state is durable.
-# Operator ruling 2026-09-04: reservations are STRICT WINDOWS - default
-# 3 minutes, 15 max. At the deadline the reservation is released and the
-# task's processes are KILLED (group SIGKILL + pattern sweep); a node the
-# kill cannot reach is FENCED (skipped by dispatch, probed every pass),
-# never allowed to block the next task. Weights stay resident across
-# windows (weightd lazy experts), so a window is pure test time; pulling
-# extra experts spends your own window.
-MAX_TTL_MINUTES = 15.0
-DEFAULT_TTL_MINUTES = 3.0
-
-DENY = ("reboot", "shutdown", "poweroff", "init 0", "init 6",
-        "kill -9", "kill -KILL", "SIGKILL", "rm -rf")
-SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
-SSH_UNREACHED = (255, 124)
+STATE = Path(os.environ.get("SPARK_QUEUE_STATE", Path.home() / ".sparkpipe/queue"))
+ACTIVE = {"launching", "running", "stopping"}
+SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+            "-o", "ServerAliveInterval=3", "-o", "ServerAliveCountMax=1"]
 
 
-def now():
-    return time.strftime("%Y-%m-%dT%H:%M:%S")
+def validate_ttl(value):
+    if not math.isfinite(value) or not 0 < value <= 15:
+        raise SystemExit("task window must be finite, positive, and at most 15 minutes")
+    return value
 
 
-def acquire_lock():
-    import fcntl
-    os.makedirs(STATE, exist_ok=True)
-    fh = open(LOCK, "a+")
-    fcntl.flock(fh, fcntl.LOCK_EX)
-    return fh
+def valid_name(value):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", value):
+        raise SystemExit("invalid ID: use 1-80 letters, digits, dots, underscores or hyphens")
+    return value
 
 
-def load_queue():
-    os.makedirs(STATE, exist_ok=True)
-    if not os.path.exists(QUEUE):
-        return []
-    entries = []
-    with open(QUEUE) as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                e = json.loads(line)
-                if e.get("state") in (None, "queued", "running", "blocked"):
-                    entries.append(e)
-    return entries
+def timestamp(value):
+    if isinstance(value, (int, float)):
+        return value
+    return time.mktime(time.strptime(value, "%Y-%m-%dT%H:%M:%S"))
 
 
-def rewrite_queue(entries):
-    tmp = QUEUE + ".tmp"
-    with open(tmp, "w") as fh:
-        for e in entries:
-            fh.write(json.dumps(e) + "\n")
-    os.replace(tmp, QUEUE)
+def read_json(path, default):
+    return json.loads(path.read_text()) if path.exists() else default
 
 
-def load_reservations():
-    if not os.path.exists(RESERV):
-        return {}
+def migrate():
+    """Preserve legacy receipts, fail closed on legacy running jobs."""
+    def lines(name):
+        path = STATE / name
+        return [json.loads(s) for s in path.read_text().splitlines() if s.strip()] if path.exists() else []
+    jobs = lines("queue.jsonl")
+    holds = read_json(STATE / "reservations.json", {})
+    fences = read_json(STATE / "fenced.json", {})
+    for job in jobs:
+        if job.get("state") == "running":
+            job["state"] = "legacy-review"
+            for node in job["nodes"]:
+                fences[node] = {"reason": "legacy process requires operator cleanup", "id": job["id"]}
+    return {"version": 2, "jobs": jobs, "results": lines("results.jsonl"),
+            "manual": [dict(r, nodes=[n]) for n, r in holds.items() if r.get("id", "").startswith("manual:")],
+            "fences": fences}
+
+
+@contextmanager
+def transaction():
+    # Network operations must never occur in this transaction.
+    STATE.mkdir(parents=True, exist_ok=True)
+    with (STATE / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = STATE / "state-v2.json"
+        state = read_json(path, None)
+        if state is None:
+            state = migrate()
+        yield state
+        tmp = path.with_suffix(".tmp")
+        with tmp.open("w") as out:
+            json.dump(state, out, allow_nan=False)
+            out.flush()
+            os.fsync(out.fileno())
+        tmp.replace(path)
+        fd = os.open(STATE, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def ssh(node, command, timeout=12):
     try:
-        with open(RESERV) as fh:
-            return json.load(fh)
-    except (ValueError, OSError):
-        return {}
-
-
-def save_reservations(res):
-    tmp = RESERV + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(res, fh, indent=1, sort_keys=True)
-    os.replace(tmp, RESERV)
-
-
-def append_result(entry, exit_code, note=""):
-    os.makedirs(STATE, exist_ok=True)
-    with open(RESULTS, "a") as fh:
-        fh.write(json.dumps(dict(entry, state="finished",
-            exit=exit_code, finished_at=now(), note=note)) + "\n")
-
-
-def ssh(node, cmd, timeout=20):
-    try:
-        out = subprocess.run(["ssh"] + SSH_OPTS + [node, cmd],
-            capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(["ssh", *SSH_OPTS, node, command], capture_output=True, text=True, timeout=timeout)
         return out.returncode, out.stdout.strip()
     except subprocess.TimeoutExpired:
         return 124, ""
 
 
-def check_denied(cmd):
-    low = cmd.lower()
-    for bad in DENY:
-        if bad.lower() in low:
-            sys.exit(f"REFUSED: command contains denied token '{bad}' "
-                     "(no-reboot / no-KILL policy)")
-
-
-def pid_alive(node, pid):
-    rc, _ = ssh(node, f"kill -0 {pid} 2>/dev/null")
-    return rc == 0
-
-
-def load_fenced():
-    p = pathlib.Path(FENCED)
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except (ValueError, OSError):
-        return {}
-
-
-def save_fenced(fenced):
-    p = pathlib.Path(FENCED)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(fenced, indent=1, sort_keys=True))
-    tmp.replace(p)
-
-
-def fence(node, reason):
-    fenced = load_fenced()
-    fenced[node] = dict(reason=reason, at=now())
-    save_fenced(fenced)
-
-
-def unfence_pass():
-    fenced = load_fenced()
-    before = set(fenced)
-    for node in list(fenced):
-        rc, out = ssh(node, "echo ok", timeout=8)
-        if rc == 0 and out == "ok":
-            del fenced[node]
-            print(f"unfenced {node} (probe ok)")
-    if set(fenced) != before:
-        save_fenced(fenced)
-
-
-def expire_stale(res):
-    """Release reservations whose pid is dead OR whose TTL passed.
-
-    The old rule required BOTH (ttl expired AND pid dead) - a hung or
-    pid-recycled task held its nodes forever (the 19h-running/45min-ttl
-    incident class). Each condition is now sufficient on its own; the
-    TTL is the authority, and the release never kills anything (the
-    no-KILL rule) - the orphan process simply no longer locks the queue.
-    """
-    changed = False
-    for node in list(res):
-        r = res[node]
-        ttl = float(r.get("ttl_minutes", 0) or 0)
-        age = (time.time() - time.mktime(time.strptime(
-            r.get("acquired_at", now()), "%Y-%m-%dT%H:%M:%S"))) / 60.0
-        pid = r.get("pid")
-        if pid and not pid_alive(node, pid):
-            del res[node]
-            changed = True
-        elif ttl and age > ttl:
-            del res[node]
-            changed = True
-            print(f"EXPIRED {node} reservation for {r.get('id', '?')} "
-                  f"(ttl {ttl:.0f}m exceeded at age {age:.0f}m; pid "
-                  f"{pid} left running but no longer holds the queue)")
-    return changed
-
-
-def cmd_doctor(args):
-    """Onboarding + health check: one command a new dev runs first."""
-    checks = []
-    ok = lambda name, detail="": checks.append((name, True, detail))
-    bad = lambda name, detail="": checks.append((name, False, detail))
-    writable = os.access(STATE, os.W_OK)
-    (ok if writable else bad)("state dir", STATE)
-    n_queued = n_running = 0
-    for e in load_queue():
-        if e.get("state") == "running":
-            n_running += 1
-        elif e.get("state") == "queued":
-            n_queued += 1
-    ok("queue", f"{n_queued} queued, {n_running} running, "
-        f"{sum(1 for _ in open(RESULTS)) if os.path.exists(RESULTS) else 0} finished")
-    res = load_reservations()
-    holds = ", ".join(f"{n}={r['id']}" for n, r in sorted(res.items())) or "(none)"
-    ok("node holds", holds)
-    fenced = load_fenced()
-    if fenced:
-        bad("fenced nodes", ", ".join(
-            f"{n} ({v['reason']}, since {v['at']})" for n, v in sorted(fenced.items())))
+def remote(job, node, action):
+    """Retained units reconcile lost launch ACKs without duplicate execution."""
+    unit = "sparkqueue-" + job["attempt"]
+    ctl = "sudo -n systemctl"
+    show = f"{ctl} show {unit} -p LoadState -p ActiveState -p SubState -p ExecMainStatus -p Result"
+    if action == "stop":
+        command = (f'if [ "$({ctl} show {unit} -p LoadState --value)" != not-found ]; '
+                   f"then {ctl} stop {unit} >/dev/null 2>&1 || exit 1; fi; {show}")
+    elif action == "launch":
+        remaining = max(1, int(job["deadline"] - time.time()))
+        cwd = (job.get("cwd") or "$HOME").replace("{host}", node)
+        cd = 'cd "$HOME"' if cwd == "$HOME" else "cd " + shlex.quote(cwd)
+        inner = cd + " && exec bash -c " + shlex.quote(job["cmd"])
+        argv = ["sudo", "-n", "systemd-run", "--quiet", "--unit=" + unit,
+                "--uid=" + node, "--property=Type=exec", "--property=RemainAfterExit=yes",
+                "--property=KillMode=control-group", "--property=TimeoutStopSec=5",
+                "--property=RuntimeMaxSec=" + str(remaining),
+                "--property=MemoryMax=" + str(job.get("memory_mib", 8192)) + "M",
+                "--property=MemorySwapMax=0", "--property=TasksMax=512",
+                "--property=StandardOutput=append:/tmp/" + unit + ".log",
+                "--property=StandardError=inherit", "--setenv=SPARK_QUEUE_RANK=" + str(job["nodes"].index(node)),
+                "--setenv=SPARK_QUEUE_SIZE=" + str(len(job["nodes"])),
+                "--setenv=SPARK_QUEUE_ID=" + job["id"], "bash", "-c", inner]
+        command = (f'if [ "$({ctl} show {unit} -p LoadState --value)" = not-found ]; '
+                   f"then {shlex.join(argv)}; fi; {show}")
     else:
-        ok("fenced nodes", "(none)")
-    try:
-        out = subprocess.run(["pgrep", "-f", "spark_queue.py dispatch"],
-            capture_output=True, text=True, timeout=5)
-        pids = [l for l in out.stdout.split() if l]
-        if pids:
-            ok("dispatcher daemon", f"pid {','.join(pids)}")
-        else:
-            bad("dispatcher daemon", "not running - restart: "
-                "nohup bash -c 'while true; do python3 "
-                "/Users/mac/sparkpipe/tools/spark_queue.py dispatch >> "
-                "~/.sparkpipe/queue/dispatcher.log 2>&1; sleep 5; done' &")
-    except Exception as exc:
-        bad("dispatcher daemon", str(exc))
-    with open(__file__) as fh:
-        body = fh.read()
-    if "STATE = " in body and 'os.path.join(ROOT, "runs")' not in body.split("def ")[0][:3000]:
-        ok("tool version", "global-state version")
-    else:
-        bad("tool version", "stale pre-split-brain copy - git pull main")
-    for name, good, detail in checks:
-        print(f"{'PASS' if good else 'FAIL'}  {name}: {detail}")
-    sys.exit(1 if any(not g for _, g, _ in checks) else 0)
-
-def cmd_add(args):
-    if getattr(args, "cmd_file", None) is not None:
-        if args.cmd:
-            sys.exit("--cmd and --cmd-file are mutually exclusive")
-        args.cmd = args.cmd_file.read_text().rstrip("\n")
-    if args.ttl_min is not None and args.ttl_min > MAX_TTL_MINUTES:
-        sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute "
-                 f"task cap - batch several tests into the window (one cmd or "
-                 f"after= chains) and re-submit the remainder as a new task")
-    with acquire_lock():
-        check_denied(args.cmd or "")
-        entries = load_queue()
-        ids = {e["id"] for e in entries} | {
-            json.loads(l)["id"] for l in open(RESULTS) if l.strip()} \
-            if os.path.exists(RESULTS) else {e["id"] for e in entries}
-        if args.id in ids:
-            sys.exit(f"id '{args.id}' already exists")
-        entry = dict(id=args.id, nodes=args.nodes.split(","),
-            resources=args.resources,
-            ttl_minutes=args.ttl_min,
-            cmd=args.cmd or "", cwd=args.cwd or "$HOME",
-            priority=args.priority, kind=args.kind, class_=args.klass,
-            after=[a for a in (args.after or "").split(",") if a],
-            submitted_by=args.by, notes=args.notes or "",
-            state="queued", submitted_at=now())
-        del entry["class_"]
-        entry["class"] = args.klass
-        entries.append(entry)
-        rewrite_queue(entries)
-        print(f"queued {args.id} nodes={args.nodes} kind={args.kind} "
-              f"after={entry['after']}")
+        command = show
+    rc, out = ssh(node, command)
+    if rc != 0:
+        return {"unknown": True, "ssh_exit": rc}
+    fields = dict(s.split("=", 1) for s in out.splitlines() if "=" in s)
+    return fields if fields.get("LoadState") else {"unknown": True}
 
 
-def cmd_list(args):
-    with acquire_lock():
-        entries = load_queue()
-    res = load_reservations()
-    if not args.all:
-        entries = [e for e in entries if e["state"] in ("queued", "running", "blocked")]
-    entries.sort(key=lambda e: (e.get("priority", 5), e.get("submitted_at", "")))
-    for e in entries:
-        hold = ",".join(n for n in e["nodes"] if n in res and res[n].get("id") == e["id"])
-        print(f"{e['state']:8} {e.get('priority',5)} {e['id']:24} "
-              f"[{e.get('resources','gpu')}]"
-              f"[{','.join(e['nodes'])}] hold={hold or '-'} "
-              f"after={e.get('after') or '-'} {e.get('notes','')[:60]}")
-    if not entries:
-        print("(queue empty)")
+def terminal(reply):
+    return not reply.get("unknown") and (reply.get("LoadState") == "not-found" or
+        reply.get("ActiveState") in {"inactive", "failed"} or reply.get("SubState") == "exited")
 
 
-def cmd_status(args):
-    for e in load_queue():
-        if e["id"] == args.id:
-            print(json.dumps(e, indent=1, sort_keys=True))
-            if e.get("remote_log"):
-                rc, tail = ssh(e["nodes"][0], f"tail -5 {e['remote_log']}")
-                if rc == 0 and tail:
-                    print("--- log tail ---\n" + tail)
-            return
-    if os.path.exists(RESULTS):
-        for line in reversed(open(RESULTS).read().splitlines()):
-            if line.strip() and json.loads(line)["id"] == args.id:
-                print(json.dumps(json.loads(line), indent=1, sort_keys=True))
-                print("(finished - see results.jsonl; task log was "
-                      f"/tmp/sparkqueue-{args.id}.log on {json.loads(line)['nodes'][0]})")
-                return
-    sys.exit(f"no entry '{args.id}'")
+def conflicts(left, right):
+    return bool((set(left["nodes"]) - set(left.get("released_nodes", []))) &
+                (set(right["nodes"]) - set(right.get("released_nodes", [])))) and (
+        left.get("resources", "gpu") == right.get("resources", "gpu") or
+        "exclusive" in {left.get("resources"), right.get("resources")})
 
 
-def cmd_done(args):
-    with acquire_lock():
-        entries = load_queue()
-        res = load_reservations()
-        hit = False
-        for e in entries:
-            if e["id"] == args.id:
-                if e.get("state") == "running":
-                    kill_remote_task(e, res)
-                e["state"] = "done"
-                append_result(e, args.exit, "marked done")
-                for n in e["nodes"]:
-                    if res.get(n, {}).get("id") == e["id"]:
-                        del res[n]
-                hit = True
-        if not hit:
-            sys.exit(f"no entry '{args.id}'")
-        rewrite_queue([e for e in entries if e["state"] not in ("done",)])
-        save_reservations(res)
-        print(f"done {args.id} (exit {args.exit})")
-
-
-
-def pick_runnable(entries, results_ids):
-    done_ids = results_ids
-    best = None
-    for e in entries:
-        if e.get("state") != "queued" or not e.get("cmd"):
-            continue
-        if any(a not in done_ids for a in e.get("after", [])):
-            continue
-        if best is None or (e["priority"], e["submitted_at"]) < \
-                (best["priority"], best["submitted_at"]):
-            best = e
-    return best
-
-
-def nodes_free(nodes, res, resources="gpu", fenced=None):
-    # Resource classes are SYMMETRIC (operator ruling 2026-09-01): cpu
-    # work and gpu work coexist on the same node; only a hold of the
-    # SAME class blocks. A gpu task blocked by a cpu hold (pack builds
-    # freezing the whole gpu queue) was the one-sided original and is
-    # wrong. When both classes hold one node the later hold OVERWRITES
-    # the earlier - cpu-vs-cpu exclusivity then lapses for the
-    # overwritten entry, which is accepted: the operator contract is
-    # only cross-class coexistence.
-    blocking = resources
-    for n in nodes:
-        if fenced and n in fenced:
-            return False
-        if n in res and res[n].get("resources", "gpu") == blocking:
+def memory_available(job, held):
+    for node in job["nodes"]:
+        used = sum(owner.get("memory_mib", 0) for owner in held
+                   if node in owner["nodes"] and node not in owner.get("released_nodes", []))
+        if used + job.get("memory_mib", 8192) > 114688:
             return False
     return True
 
 
+def finish(state, job, code, reason):
+    state["results"].append(dict(job, state="finished", exit=code, finished_at=time.time(), note=reason))
+    state["jobs"].remove(job)
+
+
+def reconcile(snapshot):
+    operations = [(j, n, "stop" if j["state"] == "stopping" or time.time() >= j["deadline"]
+                   else "launch" if j["state"] == "launching" else "poll")
+                  for j in snapshot if j["state"] in ACTIVE for n in j["nodes"]]
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        replies = list(pool.map(lambda op: remote(*op), operations))
+    grouped = {}
+    for (job, node, action), reply in zip(operations, replies):
+        grouped.setdefault(job["attempt"], {})[node] = (action, reply)
+    with transaction() as state:
+        for job in list(state["jobs"]):
+            results = grouped.get(job.get("attempt"))
+            if results is None:
+                continue
+            job["observed"] = {node: reply for node, (_, reply) in results.items()}
+            if job["state"] == "stopping" or time.time() >= job["deadline"]:
+                job["state"] = "stopping"
+                job.setdefault("exit", 124)
+                # Poll/launch racing cancellation is not a stop acknowledgement.
+                job["released_nodes"] = [n for n, (a, r) in results.items()
+                    if a == "stop" and not r.get("unknown") and
+                    (r.get("LoadState") == "not-found" or r.get("ActiveState") in {"inactive", "failed"})]
+                if len(job["released_nodes"]) == len(job["nodes"]):
+                    finish(state, job, job["exit"], "all participant control groups stopped")
+                continue
+            if any(r.get("unknown") for _, r in results.values()):
+                job["unknown_passes"] = job.get("unknown_passes", 0) + 1
+                if job["unknown_passes"] >= 2:
+                    job.update(state="stopping", exit=75)
+                continue
+            job["unknown_passes"] = 0
+            missing = any(r.get("LoadState") == "not-found" for _, r in results.values())
+            failed = any(r.get("ActiveState") == "failed" or
+                         (terminal(r) and int(r.get("ExecMainStatus", "0")) != 0) for _, r in results.values())
+            if missing or failed:
+                job.update(state="stopping", exit=1)
+            elif all(terminal(r) for _, r in results.values()):
+                job.update(state="stopping", exit=0)
+            else:
+                job["state"] = "running"
+
+
+def claim(default_ttl):
+    with transaction() as state:
+        now = time.time()
+        state["manual"] = [r for r in state["manual"] if now < timestamp(r["acquired_at"]) + r["ttl_minutes"] * 60]
+        done = {r["id"] for r in state["results"] if r.get("exit") == 0}
+        held = [j for j in state["jobs"] if j["state"] in ACTIVE] + state["manual"]
+        unavailable = set(state["fences"])
+        for owner in held:
+            if owner.get("state") == "stopping":
+                unavailable.update(set(owner["nodes"]) - set(owner.get("released_nodes", [])))
+        candidates = []
+        for job in state["jobs"]:
+            if job.get("state") not in {"queued", "blocked"} or job.get("kind", "run") != "run":
+                continue
+            try:
+                ttl = validate_ttl(float(job.get("ttl_minutes") or default_ttl))
+                valid = job.get("cmd", "").strip() and (len(job["nodes"]) == 1 or job.get("per_node"))
+            except (ValueError, TypeError, SystemExit):
+                valid = False
+            if not valid:
+                job.update(state="invalid", error="legacy command/window requires resubmission")
+                continue
+            if not all(dep in done for dep in job.get("after", [])):
+                continue
+            if any(n in unavailable for n in job["nodes"]):
+                continue
+            candidates.append(job)
+        candidates.sort(key=lambda j: (0 if now - timestamp(j["submitted_at"]) > 7200 else j.get("priority", 5), timestamp(j["submitted_at"])))
+        waiting, claimed = [], []
+        for job in candidates:
+            if any(conflicts(job, other) for other in held + waiting) or not memory_available(job, held):
+                waiting.append(job)
+                continue
+            ttl = validate_ttl(float(job.get("ttl_minutes") or default_ttl))
+            job.update(state="launching", attempt=uuid.uuid4().hex, deadline=now + ttl * 60,
+                       dispatched_at=now, ttl_minutes=ttl)
+            held.append(job)
+            claimed.append(dict(job))
+        return claimed
+
+
 def cmd_dispatch(args):
-    """Task-based dispatch: run the head runnable task NOW if its nodes are
-    lease-free; hold nodes only for the task's duration; release on exit.
-    This is the operator's contract: the queue is TASK-based, not
-    wall-clock-based - a lane codes on CPU while the sparks serve the
-    next task."""
-    with acquire_lock():
-        entries = load_queue()
-        res = load_reservations()
-        results_ids = {json.loads(l)["id"] for l in open(RESULTS) \
-            if l.strip()} if os.path.exists(RESULTS) else set()
-        unfence_pass()
-        for e in [x for x in entries if x.get("state") == "running"]:
-            n0 = e["nodes"][0]
-            ttl_src = e.get("ttl_minutes")
-            if ttl_src is None:
-                ttl_src = res.get(n0, {}).get("ttl_minutes")
-            tttl = float(ttl_src or 0)
-            tacq = res.get(n0, {}).get("acquired_at")
-            if tttl and tacq:
-                tage = (time.time() - time.mktime(time.strptime(
-                    tacq, "%Y-%m-%dT%H:%M:%S"))) / 60.0
-                if tage > tttl:
-                    reached = kill_remote_task(e, res, force=True)
-                    e["state"] = "done"
-                    append_result(e, 124, f"deadline-killed at {tage:.0f}m "
-                                   f"(limit {tttl:.0f}m; kill_delivered={reached})")
-                    for n in e["nodes"]:
-                        if res.get(n, {}).get("id") == e["id"]:
-                            del res[n]
-                    if not reached:
-                        fence(n0, f"deadline kill undeliverable: {e['id']}")
-                    print(f"expired {e['id']} ttl={tttl:.0f}m age={tage:.0f}m "
-                          f"killed={reached} (nodes released)")
-                    continue
-            continue
-        for node in list(res):
-            r = res[node]
-            httl = float(r.get("ttl_minutes", 0) or 0)
-            if not httl:
-                continue
-            try:
-                age = (time.time() - time.mktime(time.strptime(
-                    r.get("acquired_at", now()), "%Y-%m-%dT%H:%M:%S"))) / 60.0
-            except ValueError:
-                continue
-            if age > httl:
-                del res[node]
-                print(f"EXPIRED {node} hold for {r.get('id', '?')} "
-                      f"(ttl {httl:.0f}m at age {age:.0f}m)")
-        # Exit-file polls BATCHED PER NODE and age-gated: each poll is an
-        # ssh under the global lock, and N running tasks on N nodes with a
-        # dead one used to hold the lock for N x timeout - every other
-        # dev's add/list stacked behind it. One ssh per node; tasks
-        # younger than 25s skip this pass (the next 5s pass catches them).
-        exit_results = {}
-        by_node = {}
-        for e in entries:
-            if e.get("state") != "running":
-                continue
-            try:
-                age_s = (time.time() - time.mktime(time.strptime(
-                    e.get("dispatched_at", now()), "%Y-%m-%dT%H:%M:%S")))
-            except Exception:
-                age_s = 1e9
-            if age_s < 25.0:
-                continue
-            by_node.setdefault(e["nodes"][0], []).append(e["id"])
-        for node, ids in by_node.items():
-            listing = "; ".join(
-                f"echo {i} $(cat /tmp/sparkqueue-{i}.exit 2>/dev/null)"
-                for i in ids)
-            _, out = ssh(node, listing, timeout=12)
-            for line in out.splitlines():
-                parts = line.split()
-                if len(parts) == 2 and parts[1].lstrip('-').isdigit():
-                    exit_results[parts[0]] = int(parts[1])
-        for e in [x for x in entries if x.get("state") == "running"]:
-            n0 = e["nodes"][0]
-            if e["id"] in exit_results:
-                e["state"] = "done"
-                append_result(e, exit_results[e["id"]], "dispatch reaped")
-                for n in e["nodes"]:
-                    if res.get(n, {}).get("id") == e["id"]:
-                        del res[n]
-                print(f"reaped {e['id']} exit={exit_results[e['id']]} (nodes released)")
-        entries = [e for e in entries if e.get("state") != "done"]
-        # stale notes age out: they never hold nodes, but ancient notes
-        # pollute every listing (the 19h-old notes class)
-        fresh = []
-        for e in entries:
-            if e.get("kind") == "note":
-                try:
-                    age_h = (time.time() - time.mktime(time.strptime(
-                        e.get("submitted_at", now()), "%Y-%m-%dT%H:%M:%S"))) / 3600.0
-                except ValueError:
-                    age_h = 0.0
-                if age_h > 24.0:
-                    e["state"] = "done"
-                    append_result(e, 0, f"note aged out at {age_h:.0f}h")
-                    continue
-            fresh.append(e)
-        entries = fresh
-        # blocked -> queued when dependencies are done (the legacy schedule
-        # path marks deps-unmet entries blocked; dispatch previously never
-        # promoted them back, stranding them forever - a p0 task stranded
-        # this way let a p5 task dispatch ahead of it, 2026-09-01)
-        for e in entries:
-            if e.get("state") == "blocked" and                all(a in results_ids for a in e.get("after", [])):
-                e["state"] = "queued"
-        candidates = [e for e in entries if e.get("state") == "queued"
-                      and e.get("cmd")
-                      and not any(a not in results_ids for a in e.get("after", []))]
-        # Operator policy: equal priority -> longest-waiting wins (FCFS in
-        # class); any task waiting over AGE_ELEVATE_MINUTES is elevated to
-        # the highest priority (anti-starvation aging). Effective priority
-        # drives both the sort and the priority barrier.
-        def eff_priority(e):
-            try:
-                age_min = (datetime.utcnow() - datetime.strptime(
-                    e["submitted_at"], "%Y-%m-%dT%H:%M:%S")).total_seconds() / 60.0
-            except Exception:
-                age_min = 0.0
-            return 0 if age_min > 120.0 else e["priority"]
-        candidates.sort(key=lambda e: (eff_priority(e), e["submitted_at"]))
-        task = None
-        fenced = load_fenced()
-        for cand in candidates:
-            rc = cand.get("resources", "gpu")
-            if not nodes_free(cand["nodes"], res, rc, fenced):
-                why = "nodes fenced" if any(n in fenced for n in cand["nodes"]) \
-                    else "nodes busy"
-                print(f"blocked: {cand['id']} {why}")
-                continue
-            held_by = next((o for o in candidates
-                if o["id"] != cand["id"] and eff_priority(o) < eff_priority(cand)
-                and cand["id"] not in o.get("after", [])
-                and rc == "gpu" and o.get("resources", "gpu") == "gpu"
-                and set(cand["nodes"]).intersection(o["nodes"])), None)
-            if held_by is not None:
-                print(f"held: {cand['id']} — priority barrier for "
-                      f"{held_by['id']} (p{held_by['priority']})")
-                continue
-            task = cand
-            break
-        if task is None:
-            rewrite_queue(entries); save_reservations(res)
-            print("nothing dispatched this pass")
+    ttl = validate_ttl(float(args.ttl))
+    STATE.mkdir(parents=True, exist_ok=True)
+    with (STATE / ".dispatcher-v2.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
             return
-        ttl = min(float(task.get("ttl_minutes") or args.ttl), MAX_TTL_MINUTES)
-        for n in task["nodes"]:
-            res[n] = dict(id=task["id"], holder=f"task:{task['id']}",
-                acquired_at=now(), ttl_minutes=ttl,
-                resources=task.get("resources", "gpu"), pid=None)
-        n0 = task["nodes"][0]
-        inner = ("echo $$ > /tmp/sparkqueue-" + task['id'] + ".pid; "
-                 + task['cmd']
-                 + "; echo \"$?\" > /tmp/sparkqueue-" + task['id'] + ".exit")
-        wrapper = ("cd " + task.get('cwd', '$HOME') + " && nohup setsid bash -c "
-                   + shlex.quote(inner)
-                   + " >/tmp/sparkqueue-" + task['id'] + ".log 2>&1 & echo $!")
-        _, out = ssh(n0, wrapper, timeout=20)
-        pid = out.splitlines()[-1] if out else None
-        res[n0]["pid"] = pid
-        task["state"] = "running"
-        task["dispatched_at"] = now()
-        rewrite_queue(entries); save_reservations(res)
-        print(f"dispatched {task['id']} nodes={','.join(task['nodes'])} pid={pid}")
+        with transaction() as state:
+            snapshot = [dict(j) for j in state["jobs"]]
+        reconcile(snapshot)
+        jobs = claim(ttl)
+        if jobs:
+            reconcile(jobs)
+        with transaction() as state:
+            state["dispatcher_at"] = time.time()
+        print(f"claimed {len(jobs)} jobs")
 
 
-def kill_remote_task(entry, res, force=False):
-    """Kill the remote process of a running task so cancel/done/deadline
-    cannot orphan a live process on a node we are about to release.
-    force (the strict-deadline path) escalates to SIGKILL and adds a
-    pattern sweep for setsid escapees. Returns True when the node was
-    REACHED (the command ran) - a delivered-but-no-such-pid kill still
-    counts as reached; only ssh failure (255) / timeout (124) do not.
-    The queue's own cleanup - the denylist governs submitted commands."""
-    n0 = entry["nodes"][0]
-    pid = res.get(n0, {}).get("pid")
-    if not pid or not str(pid).isdigit():
-        _, pid_txt = ssh(n0,
-            f"cat /tmp/sparkqueue-{entry['id']}.pid 2>/dev/null", timeout=10)
-        pid = pid_txt.strip() if pid_txt.strip().isdigit() else None
-    cmds = []
-    if pid:
-        sig = "-KILL " if force else ""
-        cmds.append(f"kill {sig}-- -{pid} {pid} 2>/dev/null")
-    if force:
-        cmds.append(f"pkill -KILL -f sparkqueue-{entry['id']} 2>/dev/null; true")
-    reached = False
-    for c in cmds:
-        rc, _ = ssh(n0, c, timeout=10)
-        if rc not in SSH_UNREACHED:
-            reached = True
-    return reached
+def cmd_add(args):
+    valid_name(args.id)
+    nodes = args.nodes.split(",")
+    if len(set(nodes)) != len(nodes) or any(not re.fullmatch(r"spark[0-9a-f]", n) for n in nodes):
+        raise SystemExit("nodes must be distinct spark0..sparkf aliases")
+    if len(nodes) > 1 and args.kind == "run" and not args.per_node:
+        raise SystemExit("multi-node jobs require --per-node; all participants need bounded control groups")
+    if args.cmd_file:
+        if args.cmd:
+            raise SystemExit("--cmd and --cmd-file are mutually exclusive")
+        args.cmd = args.cmd_file.read_text()
+    if args.kind == "run" and not (args.cmd or "").strip():
+        raise SystemExit("run entries require a nonempty command")
+    ttl = validate_ttl(3.0 if args.ttl_min is None else args.ttl_min)
+    if not 64 <= args.memory_mib <= 114688:
+        raise SystemExit("--memory-mib must be 64..114688, including child processes")
+    with transaction() as state:
+        if any(j["id"] == args.id for j in state["jobs"] + state["results"]):
+            raise SystemExit("ID already exists; use a new ID for each attempt")
+        state["jobs"].append(dict(id=args.id, nodes=nodes, cmd=args.cmd or "", cwd=args.cwd or "$HOME",
+            resources=args.resources, ttl_minutes=ttl, memory_mib=args.memory_mib, per_node=args.per_node,
+            priority=args.priority, kind=args.kind, after=(args.after.split(",") if args.after else []),
+            submitted_by=args.by, notes=args.notes, state="queued", submitted_at=time.time()))
+    print("queued " + args.id)
+
+
+def cmd_list(args):
+    with transaction() as state:
+        jobs = state["jobs"] + (state["results"] if args.all else [])
+    print(json.dumps(jobs, indent=2))
+
+
+def cmd_status(args):
+    with transaction() as state:
+        jobs = state["jobs"] + state["results"]
+    job = next((j for j in jobs if j["id"] == args.id), None)
+    if job is None:
+        raise SystemExit("unknown ID")
+    print(json.dumps(job, indent=2))
+
+
+def cmd_done(args):
+    with transaction() as state:
+        job = next((j for j in state["jobs"] if j["id"] == args.id), None)
+        if job is None:
+            raise SystemExit("unknown ID")
+        if job["state"] == "legacy-review":
+            raise SystemExit("legacy process requires operator cleanup before migration")
+        if job["state"] in ACTIVE:
+            job.update(state="stopping", exit=args.exit)
+        else:
+            finish(state, job, args.exit, "manual completion")
+    print("completion requested " + args.id)
+
 
 def cmd_cancel(args):
-    with acquire_lock():
-        entries = load_queue()
-        res = load_reservations()
-        kept = []
-        for e in entries:
-            if e["id"] == args.id:
-                if e.get("state") == "running":
-                    kill_remote_task(e, res)
-                append_result(e, -1, "cancelled")
-                for n in e["nodes"]:
-                    if res.get(n, {}).get("id") == e["id"]:
-                        del res[n]
-            else:
-                kept.append(e)
-        rewrite_queue(kept)
-        save_reservations(res)
-        print(f"cancelled {args.id}")
+    args.exit = 125
+    cmd_done(args)
 
 
 def cmd_reserve(args):
-    if args.ttl_min > MAX_TTL_MINUTES:
-        sys.exit(f"--ttl-min {args.ttl_min} exceeds the {MAX_TTL_MINUTES:.0f}-minute cap")
-    with acquire_lock():
-        res = load_reservations()
-        if args.node in res:
-            sys.exit(f"{args.node} already reserved: {res[args.node]}")
-        res[args.node] = dict(id=f"manual:{args.holder}", holder=args.holder,
-            acquired_at=now(), ttl_minutes=args.ttl_min,
-            resources=getattr(args, "resources", "gpu") or "gpu")
-        save_reservations(res)
-        print(f"reserved {args.node} for {args.holder} ttl={args.ttl_min}m")
+    validate_ttl(args.ttl_min)
+    if not re.fullmatch(r"spark[0-9a-f]", args.node):
+        raise SystemExit("invalid node")
+    with transaction() as state:
+        hold = dict(id="manual:" + args.holder, nodes=[args.node], resources=args.resources,
+                    acquired_at=time.time(), ttl_minutes=args.ttl_min)
+        active = [j for j in state["jobs"] if j["state"] in ACTIVE] + state["manual"]
+        if args.node in state["fences"] or any(conflicts(hold, j) for j in active):
+            raise SystemExit("node/resource is held or fenced")
+        state["manual"].append(hold)
 
 
 def cmd_release(args):
-    with acquire_lock():
-        res = load_reservations()
-        if args.node:
-            if args.node in res:
-                del res[args.node]
-                save_reservations(res)
-                print(f"released {args.node}")
-            else:
-                print(f"{args.node} was not reserved")
-        elif args.id:
-            for n in list(res):
-                if res[n].get("id") == args.id:
-                    del res[n]
-            save_reservations(res)
-            print(f"released nodes held by {args.id}")
+    with transaction() as state:
+        state["manual"] = [j for j in state["manual"] if not (
+            (args.node and args.node in j["nodes"]) or (args.id and args.id == j["id"]))]
+    print("manual reservations released; use cancel for running jobs")
 
 
-def cmd_schedule(args):
-    """Legacy name kept for the sweep: ONE dispatch pass (same semantics
-    as dispatch - the old wall-clock launch path is gone)."""
-    cmd_dispatch(args)
+def cmd_doctor(args):
+    with transaction() as state:
+        report = {"state": str(STATE), "version": state["version"], "fences": state["fences"],
+                  "dispatcher_age_seconds": time.time() - state.get("dispatcher_at", 0),
+                  "manual": state["manual"], "active": [j["id"] for j in state["jobs"] if j["state"] in ACTIVE]}
+    print(json.dumps(report, indent=2))
 
-def _legacy_schedule_unused(args):
-    with acquire_lock():
-        """One dispatch pass: poll running entries, then launch runnable ones."""
-        lock = acquire_lock()
+
+def cmd_sync(args):
+    """Rsync a clean main checkout into an immutable, lane-owned directory."""
+    valid_name(args.id)
+    nodes = args.nodes.split(",")
+    if len(set(nodes)) != len(nodes) or any(not re.fullmatch(r"spark[0-9a-f]", n) for n in nodes):
+        raise SystemExit("invalid nodes")
+    root = Path(__file__).resolve().parents[1]
+    def git(*argv):
+        return subprocess.check_output(["git", "-C", str(root), *argv], text=True).strip()
+    sha = git("rev-parse", "HEAD")
+    if sha != git("rev-parse", "origin/main") or git("status", "--porcelain", "--untracked-files=no"):
+        raise SystemExit("sync requires clean HEAD == origin/main; merge and pull first")
+    relative = "srcdata/sparkqueue/" + args.id + "/" + sha
+    with tempfile.TemporaryDirectory(prefix="sparkqueue-source-") as tmp:
+        checkout = Path(tmp) / "source"
+        subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", "--no-checkout",
+                        str(root), str(checkout)], check=True)
+        subprocess.run(["git", "-C", str(checkout), "checkout", "--quiet", "-B", "main", sha], check=True)
+        subprocess.run(["git", "-C", str(checkout), "remote", "set-url", "origin",
+                        "https://github.com/sparkpipe/sparkpipe"], check=True)
+        for node in nodes:
+            final = "/home/" + node + "/" + relative
+            partial = final + ".partial-" + uuid.uuid4().hex
+            rc, _ = ssh(node, "test ! -e " + shlex.quote(final) + " && mkdir -p " + shlex.quote(partial))
+            if rc != 0:
+                raise SystemExit("destination exists or is unreachable: " + node + ":" + final)
+            subprocess.run(["rsync", "-a", "--checksum", "-e", "ssh " + shlex.join(SSH_OPTS),
+                            str(checkout) + "/", node + ":" + partial + "/"], check=True)
+            verify = (f"test $(git -C {shlex.quote(partial)} rev-parse HEAD) = {sha} && "
+                      f"git -C {shlex.quote(partial)} diff --quiet HEAD && "
+                      f"mv -T {shlex.quote(partial)} {shlex.quote(final)}")
+            rc, _ = ssh(node, verify)
+            if rc != 0:
+                raise SystemExit("source verification failed: " + node + ":" + partial)
+    print(json.dumps({"git_commit": sha, "nodes": nodes, "cwd": "/home/{host}/" + relative}))
+
+
+def cmd_serve(args):
+    while True:
         try:
-            entries = load_queue()
-            res = load_reservations()
-            done_ids = set()
-            if os.path.exists(RESULTS):
-                done_ids = {json.loads(l)["id"] for l in open(RESULTS) if l.strip()}
-            if expire_stale(res):
-                save_reservations(res)
-
-            # 1) poll running entries: pid dead -> finished (log exit note)
-            for e in entries:
-                if e.get("state") != "running":
-                    continue
-                node, pid = e["nodes"][0], e.get("pid")
-                if not pid or not pid_alive(node, pid):
-                    rc, tail = ssh(node, f"tail -1 {e['remote_log']} 2>/dev/null")
-                    e["state"] = "done"
-                    append_result(e, 0 if rc == 0 else 1,
-                        "process exited; " + tail[:120])
-                    for n in e["nodes"]:
-                        if res.get(n, {}).get("id") == e["id"]:
-                            del res[n]
-                    print(f"finished {e['id']} (log: {e['remote_log']})")
-
-            # 2) blocked -> queued when dependencies are done
-            for e in entries:
-                if e.get("state") == "blocked" and \
-                   all(a in done_ids for a in e.get("after", [])):
-                    e["state"] = "queued"
-
-            # 3) launch: priority order, nodes must be entirely free
-            for e in sorted(entries, key=lambda x: x.get("priority", 5)):
-                if e.get("state") != "queued":
-                    continue
-                if e.get("after") and not all(a in done_ids for a in e["after"]):
-                    e["state"] = "blocked"
-                    continue
-                if any(n in res for n in e["nodes"]):
-                    continue
-                if e.get("kind") == "gate":
-                    e["state"] = "blocked"   # holds nothing; waits for done-mark
-                    print(f"gate {e['id']} waiting for {e.get('after')}")
-                    continue
-                if e.get("kind") == "note":
-                    e["state"] = "done"
-                    append_result(e, 0, "note")
-                    continue
-                log = f"/tmp/sparkq/{e['id']}.log"
-                quoted = shlex.quote(e["cmd"])
-                launch = (f"mkdir -p /tmp/sparkq && cd {e['cwd']} && "
-                          f"nohup bash -c {quoted} > {log} 2>&1 & echo $!")
-                rc, out = ssh(e["nodes"][0], launch)
-                if rc != 0 or not out.isdigit():
-                    print(f"LAUNCH FAILED {e['id']}: rc={rc} out={out!r}")
-                    continue
-                e.update(state="running", pid=int(out), remote_log=log,
-                         started_at=now())
-                for n in e["nodes"]:
-                    res[n] = dict(id=e["id"], holder=e.get("submitted_by", "?"),
-                                  acquired_at=now(), pid=int(out),
-                                  ttl_minutes=0)
-                print(f"launched {e['id']} on {e['nodes'][0]} pid={out} log={log}")
-
-            rewrite_queue([e for e in entries if e["state"] != "done"])
-            save_reservations(res)
-            held = ", ".join(f"{n}:{r['id']}" for n, r in sorted(res.items())) or "-"
-            print(f"reservations: {held}")
-        finally:
-            lock.close()
+            cmd_dispatch(args)
+        except (OSError, ValueError) as error:
+            print(f"dispatcher error: {error}", file=sys.stderr, flush=True)
+        sys.stdout.flush()
+        time.sleep(5)
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p = argparse.ArgumentParser(description=__doc__)
+    sub = p.add_subparsers(required=True)
     a = sub.add_parser("add")
     a.add_argument("--id", required=True)
-    a.add_argument("--nodes", required=True, help="comma list, e.g. spark3")
+    a.add_argument("--nodes", required=True)
     a.add_argument("--cmd")
-    a.add_argument("--cmd-file", type=pathlib.Path, help="read the command from this file "
-        "(avoids nested-quoting footguns for long scripts)")
-    a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"],
-        help="gpu (default): exclusive node claim. cpu: disk/CPU-only work - "
-             "coexists with gpu tasks and gpu holds on the same nodes "
-             "(pack builds, sha sweeps, log pulls); still exclusive "
-             "against OTHER cpu tasks on the same nodes.")
+    a.add_argument("--cmd-file", type=Path)
+    a.add_argument("--per-node", action="store_true")
+    a.add_argument("--memory-mib", type=int, default=8192)
+    a.add_argument("--resources", choices=["gpu", "cpu", "exclusive"], default="gpu")
     a.add_argument("--cwd")
     a.add_argument("--priority", type=int, default=5)
-    a.add_argument("--kind", default="run", choices=["run", "gate", "note"])
-    a.add_argument("--after", help="comma list of ids this waits for")
-    a.add_argument("--klass", default="long", choices=["short", "long"])
+    a.add_argument("--kind", choices=["run", "gate", "note"], default="run")
+    a.add_argument("--after")
+    a.add_argument("--klass", choices=["short", "long"], default="short", help="compatibility only; all jobs have deadlines")
     a.add_argument("--by", default="coordinator")
     a.add_argument("--notes", default="")
-    a.add_argument("--ttl-min", type=float, default=None,
-        help="expected duration minutes; the dispatch lease holds exactly "
-             "this long (dispatch default 3, hard cap 15; at the deadline "
-             "the task is KILLED and the nodes released)")
+    a.add_argument("--ttl-min", type=float)
     a.set_defaults(fn=cmd_add)
     a = sub.add_parser("list")
     a.add_argument("--all", action="store_true")
     a.set_defaults(fn=cmd_list)
-    a = sub.add_parser("status")
-    a.add_argument("id" if False else "--id", dest="id", required=True)
-    a.set_defaults(fn=cmd_status)
-    a = sub.add_parser("done")
-    a.add_argument("--id", required=True)
-    a.add_argument("--exit", type=int, default=0)
-    a.set_defaults(fn=cmd_done)
-    a = sub.add_parser("dispatch")
-    a.add_argument("--ttl", type=int, default=int(DEFAULT_TTL_MINUTES),
-        help="lease minutes held for the TASK (not the lane); a task's "
-             "own --ttl at submit time overrides this default; at the "
-             "deadline the task is KILLED, not merely released")
-    a.set_defaults(fn=cmd_dispatch)
-    a = sub.add_parser("cancel")
-    a.add_argument("--id", required=True)
-    a.set_defaults(fn=cmd_cancel)
+    for name, fn in [("status", cmd_status), ("done", cmd_done), ("cancel", cmd_cancel)]:
+        a = sub.add_parser(name)
+        a.add_argument("--id", required=True)
+        if name == "done":
+            a.add_argument("--exit", type=int, default=0)
+        a.set_defaults(fn=fn)
+    for name in ["dispatch", "schedule"]:
+        a = sub.add_parser(name)
+        a.add_argument("--ttl", type=float, default=3.0)
+        a.set_defaults(fn=cmd_dispatch)
+    a = sub.add_parser("serve")
+    a.add_argument("--ttl", type=float, default=3.0)
+    a.set_defaults(fn=cmd_serve)
     a = sub.add_parser("reserve")
     a.add_argument("--node", required=True)
     a.add_argument("--holder", required=True)
-    a.add_argument("--ttl-min", type=float, default=DEFAULT_TTL_MINUTES)
-    a.add_argument("--resources", default="gpu", choices=["gpu", "cpu"])
+    a.add_argument("--ttl-min", type=float, default=3.0)
+    a.add_argument("--resources", choices=["gpu", "cpu", "exclusive"], default="gpu")
     a.set_defaults(fn=cmd_reserve)
     a = sub.add_parser("release")
-    a.add_argument("--node")
-    a.add_argument("--id")
+    group = a.add_mutually_exclusive_group(required=True)
+    group.add_argument("--node")
+    group.add_argument("--id")
     a.set_defaults(fn=cmd_release)
-    a = sub.add_parser("doctor")
-    a.set_defaults(fn=cmd_doctor)
-    a = sub.add_parser("schedule")
-    a.set_defaults(fn=cmd_schedule)
+    a = sub.add_parser("sync")
+    a.add_argument("--id", required=True)
+    a.add_argument("--nodes", required=True)
+    a.set_defaults(fn=cmd_sync)
+    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     args = p.parse_args()
     args.fn(args)
 

@@ -63,7 +63,7 @@ static void *SparkTestExchangeRdmaHello(void *context)
     thread->status = SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(
         thread->fd,
         SparkHiddenTransportRdmaControlDeadlineNs(thread->timeout_milli),
-        &thread->identity);
+        &thread->identity,0);
     return 0;
 }
 
@@ -84,7 +84,7 @@ static void SparkTestRdmaHelloPair(
     thread.identity = *sink;
     assert(pthread_create(&thread_id,0,SparkTestExchangeRdmaHello,&thread) == 0);
     status = SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(sockets[0],
-        SparkHiddenTransportRdmaControlDeadlineNs(500u),source);
+        SparkHiddenTransportRdmaControlDeadlineNs(500u),source,0);
     assert(pthread_join(thread_id,0) == 0);
     assert(status == expected);
     assert(thread.status == expected);
@@ -136,7 +136,7 @@ static void SparkTestRdmaV4HelloTimeoutAndNoSigpipe(void)
     assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
     before = SparkHiddenTransportRdmaControlMonotonicNs();
     status = SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(sockets[0],
-        SparkHiddenTransportRdmaControlDeadlineNs(25u),&source);
+        SparkHiddenTransportRdmaControlDeadlineNs(25u),&source,0);
     after = SparkHiddenTransportRdmaControlMonotonicNs();
     assert(status == SPARK_STATUS_BUSY);
     assert(after >= before + 15000000ull);
@@ -147,7 +147,7 @@ static void SparkTestRdmaV4HelloTimeoutAndNoSigpipe(void)
     assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
     close(sockets[1]);
     status = SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(sockets[0],
-        SparkHiddenTransportRdmaControlDeadlineNs(25u),&source);
+        SparkHiddenTransportRdmaControlDeadlineNs(25u),&source,0);
     assert(status == SPARK_STATUS_IO_ERROR);
     close(sockets[0]);
 }

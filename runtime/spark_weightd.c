@@ -808,6 +808,11 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     arena = SparkWeightdServerFindArena(server, &identity);
     if (arena != 0)
     {
+        if (arena->lazy != 0u)
+        {
+            result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+            return;
+        }
         slot = (uint32_t)(arena - server->arenas);
         status = SparkWeightdServerAttachRegister(server, connection, slot);
         result->status = (uint32_t)status;
@@ -1114,9 +1119,32 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
         return;
     }
 
+    if (stat(request->pack_path, &pack_stat) != 0 ||
+        pack_stat.st_size < 0 ||
+        (uint64_t)pack_stat.st_size != identity.arena_bytes)
+    {
+        result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+        return;
+    }
+    status = SparkWeightdExpertManifestLoad(request->pack_path,
+        identity.arena_bytes, &entries, &expert_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr,"weightd lazy attach rejected: %s.experts status=%s; generate the model-specific expert manifest before loading\n",
+            request->pack_path,SparkStatusToString(status));
+        result->status = (uint32_t)status;
+        return;
+    }
+
     arena = SparkWeightdServerFindArena(server, &identity);
     if (arena != 0)
     {
+        free(entries);
+        if (arena->lazy == 0u || arena->expert_pool_bytes != request->expert_pool_bytes)
+        {
+            result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+            return;
+        }
         slot = (uint32_t)(arena - server->arenas);
         status = SparkWeightdServerAttachRegister(server, connection, slot);
         result->status = (uint32_t)status;
@@ -1134,21 +1162,6 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
             result->arena_count = server->arena_count;
             result->expert_count = server->arenas[slot].expert_count;
         }
-        return;
-    }
-
-    if (stat(request->pack_path, &pack_stat) != 0 ||
-        pack_stat.st_size < 0 ||
-        (uint64_t)pack_stat.st_size != identity.arena_bytes)
-    {
-        result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
-        return;
-    }
-    status = SparkWeightdExpertManifestLoad(request->pack_path,
-        identity.arena_bytes, &entries, &expert_count);
-    if (status != SPARK_STATUS_OK)
-    {
-        result->status = (uint32_t)status;
         return;
     }
 

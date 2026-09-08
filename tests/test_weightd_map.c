@@ -365,7 +365,7 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
     assert(gated.client != 0);
     assert(SparkWeightdAttachImportMap(&gated,
         sizeof(pack_image) + SPARK_TEST_CHUNK_BYTES, SPARK_TEST_TIMEOUT_NS,
-        reason) == SPARK_STATUS_OK);
+        reason) != SPARK_STATUS_OK);
     assert(gated.client == 0 && gated.map_base == 0);
     assert(strcmp(reason, "import_short") == 0);
 

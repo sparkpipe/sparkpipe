@@ -268,6 +268,26 @@ int main(void)
         SPARK_STATUS_OK);
     assert(hello.status == SPARK_STATUS_OK);
 
+    assert(rename("/tmp/spark_weightd_expert_a.bin.experts",
+        "/tmp/spark_weightd_expert_a.bin.experts.saved") == 0);
+    SparkTestLazyAttach(client, &identity_a, "/tmp/spark_weightd_expert_a.bin",
+        SPARK_TEST_POOL_BYTES, &attach_a);
+    assert(attach_a.status == SPARK_STATUS_NOT_FOUND);
+    assert(attach_a.resident_bytes == 0ull && attach_a.arena_count == 0u);
+    {
+        FILE *invalid = fopen("/tmp/spark_weightd_expert_a.bin.experts","wb");
+        assert(invalid != 0);
+        assert(fwrite("bad",1u,3u,invalid) == 3u);
+        assert(fclose(invalid) == 0);
+    }
+    SparkTestLazyAttach(client, &identity_a, "/tmp/spark_weightd_expert_a.bin",
+        SPARK_TEST_POOL_BYTES, &attach_a);
+    assert(attach_a.status == SPARK_STATUS_PARSE_ERROR);
+    assert(attach_a.resident_bytes == 0ull && attach_a.arena_count == 0u);
+    assert(rename("/tmp/spark_weightd_expert_a.bin.experts.saved",
+        "/tmp/spark_weightd_expert_a.bin.experts") == 0);
+    printf("missing and corrupt expert manifests fail before residency green\n");
+
     SparkTestLazyAttach(client, &identity_a, "/tmp/spark_weightd_expert_a.bin",
         SPARK_TEST_POOL_BYTES, &attach_a);
     assert(attach_a.status == SPARK_STATUS_OK);
