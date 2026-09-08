@@ -175,6 +175,27 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.state()["results"][-1]["exit"], 125)
         self.assertFalse(any(call[0] == "b" for call in self.calls))
 
+    def test_dependency_live_gate_preserves_unrelated_jobs(self):
+        spec = importlib.util.spec_from_file_location("queue_gate_test", ROOT / "tools/spark_queue_live_gate.py")
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        gate.queue = self.q
+        self.add("unrelated", "spark2")
+        original = self.q.remote
+        def complete(j, n, action):
+            reply = original(j, n, action)
+            if j["id"] != "unrelated" and action == "launch":
+                reply.update(SubState="exited", ExecMainStatus="7" if j["cmd"] == "exit 7" else "0")
+            return reply
+        self.q.remote = complete
+        output = Path(self.tmp.name) / "receipt.json"
+        with patch.object(gate.time, "sleep"):
+            gate.dependency_gate("spark1", output)
+        receipt = json.loads(output.read_text())
+        self.assertEqual(len(receipt["results"]), 3)
+        self.assertEqual(receipt["remaining"], [])
+        self.assertEqual(self.jobs()["unrelated"]["state"], "running")
+
     def test_success_requires_cleanup_and_then_unlocks_dependency(self):
         self.add("a")
         self.add("b", "spark1", "--after", "a")

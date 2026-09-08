@@ -36,10 +36,53 @@ def job(name):
     return next(j for j in state()["jobs"] if j["id"] == name)
 
 
+def dependency_gate(node, output):
+    prefix = "qdep-" + str(time.time_ns())
+    parent, child, independent = [prefix + suffix for suffix in ["-parent", "-child", "-independent"]]
+    ids = [parent, child, independent]
+    try:
+        for name, command, after in [(parent,"exit 7",None),
+                (child,"echo ERROR-dependent-command-ran",parent),
+                (independent,"echo independent-pass",None)]:
+            queue.cmd_add(argparse.Namespace(id=name, nodes=node, per_node=True,
+                cmd=command, cmd_file=None, cwd=None, ttl_min=1, memory_mib=64,
+                resources="cpu", kind="run", priority=5, after=after,
+                by="queue-live-gate", notes="bounded dependency failure probe"))
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            dispatch()
+            current = state()
+            results = {j["id"]: j for j in current["results"] if j["id"] in ids}
+            if len(results) == len(ids):
+                assert results[parent]["exit"] != 0, results
+                assert results[child]["exit"] == 125, results
+                assert results[child]["failed_dependencies"] == [parent], results
+                assert "attempt" not in results[child], results
+                assert results[independent]["exit"] == 0, results
+                print("PASS failed dependency never launched; independent job completed")
+                return
+            time.sleep(1)
+        raise RuntimeError("dependency gate did not finish within 180 seconds")
+    finally:
+        for current in state()["jobs"]:
+            if current["id"] in ids:
+                cancel(current["id"])
+        dispatch()
+        current = state()
+        receipt = {"results": [j for j in current["results"] if j["id"] in ids],
+                   "remaining": [j for j in current["jobs"] if j["id"] in ids]}
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(receipt, indent=2) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--dependency-node", help="run only a bounded dependency gate on this node")
     args = parser.parse_args()
+    if args.dependency_node:
+        dependency_gate(args.dependency_node, args.output)
+        return
     if any(j["state"] in queue.ACTIVE for j in state()["jobs"]):
         raise SystemExit("gate requires no active jobs on the authoritative queue")
     prefix = "qgate-" + str(time.time_ns())

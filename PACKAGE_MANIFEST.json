@@ -7533,8 +7533,8 @@
     },
     {
       "path": "tests/test_spark_queue.py",
-      "sha256": "0a8c067c9d3fe7cd7874aa3b758751811ec461d3155845fd367dad12b7799c21",
-      "size_bytes": 11217
+      "sha256": "053b92349169754b63ac79070797cdc4840aa99af2ab6c62f5143d8632329134",
+      "size_bytes": 12266
     },
     {
       "path": "tests/test_spark_ssh_failover.py",
@@ -9288,8 +9288,8 @@
     },
     {
       "path": "tools/spark_queue_live_gate.py",
-      "sha256": "abfa54b0c8c277eee12c4b1b959e062ac1ebf2a8c5170fe442273df572b8b78b",
-      "size_bytes": 4825
+      "sha256": "7b082a6d4d73de7191e1c767a3b0d31c441a7debf2d7a9c51fe19857acd573c5",
+      "size_bytes": 7030
     },
     {
       "path": "tools/spark_ssh_proxy.py",
@@ -9435,5 +9435,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32155098
+  "total_bytes": 32158352
 }
