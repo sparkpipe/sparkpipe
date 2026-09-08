@@ -1,5 +1,5 @@
 {
-  "file_count": 1924,
+  "file_count": 1926,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "23cbd61022d042071fab4fac97184269471793de4ffd01b0e87e08a2066ff46c",
-      "size_bytes": 94489
+      "sha256": "e1321273779370ab269832e56aa92f28bd0e8fe1c8abb6f20f19ee1cb3e1a4aa",
+      "size_bytes": 94527
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -785,6 +785,11 @@
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
       "sha256": "47cc5c9a0ba5125ce29fe25de766431655d0281e2fa8b69ed0e004d325b63c92",
       "size_bytes": 8312
+    },
+    {
+      "path": "docs/GLM_PERFORMANCE_GATES.md",
+      "sha256": "0f42893de03fc060a91533e08d580ddddabba5dceddaf8e135498badd5012548",
+      "size_bytes": 2738
     },
     {
       "path": "docs/GLM_REAL_DRIVER_PROBE.md",
@@ -6967,6 +6972,11 @@
       "size_bytes": 4460
     },
     {
+      "path": "tests/test_glm5_next_bench_wrap.py",
+      "sha256": "09daa75d1871e46dcb754ce24fd1f8f07fda7c0dfc34034a199f7dd047f79dbb",
+      "size_bytes": 2402
+    },
+    {
       "path": "tests/test_glm5_next_cuda_validator_tier2_oracle.py",
       "sha256": "c18ba966cc7cee2763a83efab930f91d80ab97f6826773897a93483f9f78b980",
       "size_bytes": 2682
@@ -8653,8 +8663,8 @@
     },
     {
       "path": "tools/glm5_next_bench_wrap.py",
-      "sha256": "6102f8dd0cf7a73c67e3997c9070d6f4f1d4ca05997316f9510d2e991f73aac3",
-      "size_bytes": 1788
+      "sha256": "c4ebece3fb889942200240d8b193c74619d84bbd53f6a93a00fcf72df188b243",
+      "size_bytes": 5030
     },
     {
       "path": "tools/glm5_next_build_release.sh",
@@ -9625,5 +9635,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32397376
+  "total_bytes": 32405796
 }
