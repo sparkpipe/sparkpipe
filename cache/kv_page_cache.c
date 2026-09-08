@@ -68,6 +68,16 @@ static uint32_t SparkKvPageCacheIsValid(const SparkKvPageCache *cache)
 		cache->entry_indices_by_logical_page != 0 ? 1u : 0u);
 }
 
+SparkStatus SparkKvPageCacheAttachStateStore(SparkKvPageCache *cache,SparkKvPageStore *store)
+{
+	if ( SparkKvPageCacheIsValid(cache) == 0u || cache->page_store == 0 || cache->state_store != 0 || store == 0 || store == cache->page_store || store->abi_version != SPARK_KV_PAGE_STORE_ABI_VERSION || store->descriptor_bytes != SPARK_KV_PAGE_STORE_BYTES || store->worker_state == 0 || store->logical_page_capacity < cache->kv_cache_arena->logical_block_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( cache->live_sequence_count != 0u || cache->published_page_count != 0u || store->backing_page_count != 0u )
+		return(SPARK_STATUS_BUSY);
+	cache->state_store = store;
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkKvPageCacheInitialize(
 	SparkKvPageCache *cache,
 	const SparkKvPageCacheConfiguration *configuration)
@@ -223,20 +233,33 @@ static void SparkKvPageCacheUnlinkEntry(
 	}
 }
 
+static uint32_t SparkKvPageCachePageCanDiscard(const SparkKvPageCache *cache,uint32_t logical_page_index)
+{
+	const SparkKvCacheBlock *block;
+	if ( logical_page_index >= cache->kv_cache_arena->logical_block_count )
+		return(0u);
+	block = &cache->kv_cache_arena->blocks[logical_page_index];
+	return((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u && block->reference_count == 1u && block->residency_reference_count == 0u && (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) == 0u);
+}
+
 static SparkStatus SparkKvPageCacheDiscardLogicalPage(
 	SparkKvPageCache *cache,
 	uint32_t logical_page_index)
 {
 	SparkKvCacheBlockView view;
 	SparkStatus status;
+	if ( SparkKvPageCachePageCanDiscard(cache,logical_page_index) == 0u )
+		return(SPARK_STATUS_BUSY);
 	if ( cache->page_store != 0 )
 	{
 		status = SparkKvCacheArenaResolveBlock(cache->kv_cache_arena,
 			logical_page_index,&view);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
-		status = SparkKvPageStoreInvalidate(cache->page_store,
-			logical_page_index,view.generation);
+		if ( cache->state_store != 0 )
+			status = SparkKvPageStoreInvalidatePair(cache->page_store,cache->state_store,logical_page_index,view.generation);
+		else
+			status = SparkKvPageStoreInvalidate(cache->page_store,logical_page_index,view.generation);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -272,7 +295,7 @@ static uint32_t SparkKvPageCacheEvictionCandidate(
 			return(SPARK_KV_PAGE_CACHE_NO_INDEX);
 		entry = &cache->entries[entry_index];
 		if ( (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) == 0u ||
-			entry->reference_count != 0u )
+			entry->reference_count != 0u || SparkKvPageCachePageCanDiscard(cache,entry->logical_page_index) == 0u )
 			continue;
 		if ( victim == 0 || entry->last_used_epoch < victim->last_used_epoch )
 		{
@@ -285,7 +308,7 @@ static uint32_t SparkKvPageCacheEvictionCandidate(
 	{
 		entry = &cache->entries[entry_index];
 		if ( (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) == 0u ||
-			entry->reference_count != 0u )
+			entry->reference_count != 0u || SparkKvPageCachePageCanDiscard(cache,entry->logical_page_index) == 0u )
 			continue;
 		if ( victim == 0 || entry->last_used_epoch < victim->last_used_epoch )
 		{
@@ -330,6 +353,15 @@ static SparkStatus SparkKvPageCacheEvictEntry(
 	cache->free_entry_head = entry_index;
 	cache->evicted_entry_count++;
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache)
+{
+	uint32_t entry;
+	if ( SparkKvPageCacheIsValid(cache) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	entry = SparkKvPageCacheEvictionCandidate(cache,0u);
+	return(entry == SPARK_KV_PAGE_CACHE_NO_INDEX ? SPARK_STATUS_CAPACITY_EXCEEDED : SparkKvPageCacheEvictEntry(cache,entry));
 }
 
 static SparkStatus SparkKvPageCacheAcquireEntry(

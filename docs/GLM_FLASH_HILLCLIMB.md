@@ -212,6 +212,20 @@ generation and finish before execution. Snapshot eviction must follow common
 prefix ownership, and bounded backing-store exhaustion needs coordinated prefix
 eviction rather than stale records or unbounded pinned-memory allocation.
 
+The common page cache now accepts a state-record store at startup and reclaims
+it with the matching KV record. `SparkKvPageStoreInvalidatePair` checks both
+stores under a fixed lock order before changing either. A busy read or a stale
+generation leaves both intact. `SparkKvPageCacheEvictUnused` reuses the existing
+LRU policy for backing-capacity pressure. Page-cache ABI is 4 because the cache
+now retains the attached store. GLM has not yet attached/populated that store.
+
+This work exposed an existing reclamation error: release dropped the logical
+reference before finding that the page remained pinned. The new regression
+exits 61 against the old implementation and passes with the fix. Reclamation
+now checks ownership before mutation, and LRU skips pinned pages rather than
+blocking an otherwise available victim. Real worker/file tests verify paired
+invalidation, pinned protection, exact restored bytes and eventual reclamation.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed

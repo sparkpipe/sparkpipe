@@ -167,6 +167,12 @@ SparkStatus SparkKvPageStoreInvalidate(
 	SparkKvPageStore *store,
 	uint32_t logical_page_index,
 	uint64_t generation);
+// Validate both records under both worker locks before invalidating either.
+SparkStatus SparkKvPageStoreInvalidatePair(
+	SparkKvPageStore *first,
+	SparkKvPageStore *second,
+	uint32_t logical_page_index,
+	uint64_t generation);
 
 #ifdef __cplusplus
 }

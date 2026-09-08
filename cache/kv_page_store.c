@@ -907,52 +907,88 @@ SparkStatus SparkKvPageStoreProgress(
 	return(result);
 }
 
-SparkStatus SparkKvPageStoreInvalidate(
-	SparkKvPageStore *store,
-	uint32_t logical_page_index,
-	uint64_t generation)
+static SparkStatus SparkKvPageStoreCanInvalidateLocked(SparkKvPageStoreWorker *worker,uint32_t logical_page_index,uint64_t generation)
 {
-	SparkKvPageStoreWorker *worker;
+	SparkKvPageStore *store = worker->store;
 	SparkKvPageStoreJob *job;
-	SparkStatus status;
 	uint32_t backing_slot_index,index;
-	if ( SparkKvPageStoreIsValid(store) == 0u || generation == 0u ||
-		logical_page_index >= store->logical_page_capacity )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	worker = (SparkKvPageStoreWorker *)store->worker_state;
-	if ( pthread_mutex_lock(&worker->mutex) != 0 )
-		return(SPARK_STATUS_INTERNAL_ERROR);
 	for (index=0u; index<store->transfer_capacity; index++)
 	{
 		job = &worker->jobs[index];
 		if ( job->state != SPARK_KV_PAGE_STORE_JOB_FREE &&
 			job->logical_page_index == logical_page_index )
-		{
-			(void)pthread_mutex_unlock(&worker->mutex);
 			return(SPARK_STATUS_BUSY);
-		}
 	}
 	if ( store->valid_pages[logical_page_index] ==
 		SPARK_KV_PAGE_STORE_PAGE_INVALID )
-	{
-		status = worker->backing_slots_by_logical_page[logical_page_index] ==
+		return(worker->backing_slots_by_logical_page[logical_page_index] ==
 			SPARK_KV_CACHE_NO_BLOCK ? SPARK_STATUS_OK :
-			SPARK_STATUS_INTERNAL_ERROR;
-		(void)pthread_mutex_unlock(&worker->mutex);
-		return(status);
-	}
+			SPARK_STATUS_INTERNAL_ERROR);
 	if ( store->valid_pages[logical_page_index] !=
 			SPARK_KV_PAGE_STORE_PAGE_VALID ||
 		store->generations[logical_page_index] != generation )
-	{
-		(void)pthread_mutex_unlock(&worker->mutex);
 		return(SPARK_STATUS_NOT_FOUND);
-	}
 	backing_slot_index =
 		worker->backing_slots_by_logical_page[logical_page_index];
-	status = SparkKvPageStoreReleaseBackingSlotLocked(worker,
-		logical_page_index,backing_slot_index);
+	if ( backing_slot_index >= worker->backing_slot_capacity || worker->logical_pages_by_backing_slot[backing_slot_index] != logical_page_index || store->backing_page_count == 0u )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkKvPageStoreInvalidateLocked(SparkKvPageStoreWorker *worker,uint32_t logical_page_index)
+{
+	if ( worker->store->valid_pages[logical_page_index] == SPARK_KV_PAGE_STORE_PAGE_INVALID )
+		return(SPARK_STATUS_OK);
+	return(SparkKvPageStoreReleaseBackingSlotLocked(worker,logical_page_index,worker->backing_slots_by_logical_page[logical_page_index]));
+}
+
+SparkStatus SparkKvPageStoreInvalidate(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation)
+{
+	SparkKvPageStoreWorker *worker;
+	SparkStatus status;
+	if ( SparkKvPageStoreIsValid(store) == 0u || generation == 0u || logical_page_index >= store->logical_page_capacity )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkKvPageStoreCanInvalidateLocked(worker,logical_page_index,generation);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageStoreInvalidateLocked(worker,logical_page_index);
 	(void)pthread_mutex_unlock(&worker->mutex);
+	return(status);
+}
+
+SparkStatus SparkKvPageStoreInvalidatePair(SparkKvPageStore *first,SparkKvPageStore *second,uint32_t logical_page_index,uint64_t generation)
+{
+	SparkKvPageStoreWorker *left,*right;
+	SparkKvPageStore *swap;
+	SparkStatus status;
+	if ( first == second || SparkKvPageStoreIsValid(first) == 0u || SparkKvPageStoreIsValid(second) == 0u || generation == 0u || logical_page_index >= first->logical_page_capacity || logical_page_index >= second->logical_page_capacity )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (uintptr_t)first > (uintptr_t)second )
+	{
+		swap = first;
+		first = second;
+		second = swap;
+	}
+	left = (SparkKvPageStoreWorker *)first->worker_state;
+	right = (SparkKvPageStoreWorker *)second->worker_state;
+	if ( pthread_mutex_lock(&left->mutex) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	if ( pthread_mutex_lock(&right->mutex) != 0 )
+	{
+		(void)pthread_mutex_unlock(&left->mutex);
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	status = SparkKvPageStoreCanInvalidateLocked(left,logical_page_index,generation);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageStoreCanInvalidateLocked(right,logical_page_index,generation);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageStoreInvalidateLocked(left,logical_page_index);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageStoreInvalidateLocked(right,logical_page_index);
+	(void)pthread_mutex_unlock(&right->mutex);
+	(void)pthread_mutex_unlock(&left->mutex);
 	return(status);
 }
 

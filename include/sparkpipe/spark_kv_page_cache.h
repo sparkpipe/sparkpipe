@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 3u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 4u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE UINT32_C(0x00000001)
@@ -75,6 +75,7 @@ typedef struct SparkKvPageCache
 	uint32_t live_sequence_count;
 	SparkKvCacheArena *kv_cache_arena;
 	SparkKvPageStore *page_store;
+	SparkKvPageStore *state_store;
 	SparkKvPageCacheEntry *entries;
 	SparkKvPageCacheSequence *sequences;
 	uint32_t *hash_bucket_heads;
@@ -97,6 +98,11 @@ SparkKvPageCache;
 SparkStatus SparkKvPageCacheInitialize(
 	SparkKvPageCache *cache,
 	const SparkKvPageCacheConfiguration *configuration);
+// Attach before admitting lanes. State records use the corresponding logical
+// page generation; transfers must retain that page's residency pin until done.
+SparkStatus SparkKvPageCacheAttachStateStore(SparkKvPageCache *cache,SparkKvPageStore *store);
+// Reclaim one unreferenced, unpinned prefix using the common LRU policy.
+SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCachePrepareLane(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane,
