@@ -1280,8 +1280,7 @@ static uint32_t SparkGlm5NextRoundMajorWaveRows(
 		current = next;
 		count++;
 	}
-	if ( count > 1u )
-		count = 1u;
+	// Distinct lanes share a wave; a repeated lane starts the next time step.
 	return(count);
 }
 

@@ -38,6 +38,32 @@ SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCache
 	return(SPARK_STATUS_PENDING);
 }
 
+static int32_t check_batch_waves(void)
+{
+	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
+	uint32_t slots[45],width,row;
+	uint32_t ragged[8] = {5u,2u,9u,5u,2u,9u,5u,9u};
+	batch.row_resident_slots = slots;
+	for (width=1u; width<=15u; width++)
+	{
+		batch.active_sequence_count = width;
+		batch.row_count = (width * 3u);
+		for (row=0u; row<batch.row_count; row++)
+			slots[row] = (width - 1u - (row % width));
+		for (row=0u; row<batch.row_count; row+=width)
+			if ( SparkGlm5NextRoundMajorWaveRows(&batch,row) != width )
+				return(-1);
+	}
+	batch.row_resident_slots = ragged;
+	batch.active_sequence_count = 3u;
+	batch.row_count = 8u;
+	if ( SparkGlm5NextRoundMajorWaveRows(&batch,0u) != 3u || SparkGlm5NextRoundMajorWaveRows(&batch,3u) != 3u || SparkGlm5NextRoundMajorWaveRows(&batch,6u) != 2u )
+		return(-2);
+	if ( SparkGlm5NextRoundMajorWaveRows(&batch,8u) != 0u || SparkGlm5NextRoundMajorWaveRows(0,0u) != 0u )
+		return(-3);
+	return(0);
+}
+
 static void check_small_kv(void)
 {
 	uint32_t pages;
@@ -111,6 +137,8 @@ int32_t main(void)
 	SparkFirmwareModuleHostServices services = {0};
 	const char *path = 0;
 	uint32_t first[4] = {0u,12u,23u,34u},counts[4] = {12u,11u,11u,11u},stage;
+	if ( check_batch_waves() != 0 )
+		return(1);
 	check_small_kv();
 	context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	context.descriptor_bytes = sizeof(context);
