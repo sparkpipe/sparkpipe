@@ -2882,6 +2882,27 @@ SparkStatus SparkGlm5NextResidentDecodeStageSnapshot(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkGlm5NextReleaseCaches(SparkGlm5NextModuleState *state)
+{
+	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
+		SparkKvPageStoreDestroy(&state->kv_page_store);
+	free(state->kda_state_index_host);
+	free(state->kv_blocks);
+	free(state->kv_resident_slot_logical_block_indices);
+	free(state->kv_entries);
+	free(state->kv_sequences);
+	free(state->kv_hash_bucket_heads);
+	free(state->kv_entry_indices_by_logical_page);
+	free(state->kv_page_staging);
+	free(state->kv_lane_logical_pages);
+	free(state->page_table_shadow);
+	free(state->kv_lane_transactions);
+	if ( state->kv_lane_physical_pages != 0 )
+		(void)cudaFreeHost(state->kv_lane_physical_pages);
+	if ( state->kv_mutex_initialized != 0u )
+		(void)pthread_mutex_destroy(&state->kv_mutex);
+}
+
 void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 {
 	SparkGlm5NextModuleState *state;
@@ -2925,26 +2946,10 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 	state->tp_hc_host_credit_receive_bf16 = 0;
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
-	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
-		SparkKvPageStoreDestroy(&state->kv_page_store);
+	SparkGlm5NextReleaseCaches(state);
 	SparkGlm5NextReleaseSlotHost(state);
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state->mtp_lane_armed);
-	free(state->kda_state_index_host);
-	free(state->kv_blocks);
-	free(state->kv_resident_slot_logical_block_indices);
-	free(state->kv_entries);
-	free(state->kv_sequences);
-	free(state->kv_hash_bucket_heads);
-	free(state->kv_entry_indices_by_logical_page);
-	free(state->kv_page_staging);
-	free(state->kv_lane_logical_pages);
-	free(state->page_table_shadow);
-	free(state->kv_lane_transactions);
-	if ( state->kv_lane_physical_pages != 0 )
-		(void)cudaFreeHost(state->kv_lane_physical_pages);
-	if ( state->kv_mutex_initialized != 0u )
-		(void)pthread_mutex_destroy(&state->kv_mutex);
 	free(state);
 }
 
@@ -3017,8 +3022,10 @@ static SparkStatus SparkGlm5NextInitializeState(
 			fprintf(stderr,"GLM lazy initialization cleanup failed; retaining CUDA resources until process exit\n");
 			return(status);
 		}
+		SparkGlm5NextReleaseCaches(state);
 		SparkGlm5NextReleaseSlotHost(state);
 		SparkStageModuleLedgerRelease(&state->ledger);
+		free(state->mtp_lane_armed);
 		free(state);
 		return(status);
 	}

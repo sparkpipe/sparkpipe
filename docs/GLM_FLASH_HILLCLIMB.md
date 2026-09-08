@@ -235,6 +235,18 @@ missing and wrong-generation records, then saves the correct record and proves
 successful publication and paired eviction. GLM still needs to attach its
 store and save the recurrent payload before invoking completion.
 
+GLM initialization failure previously released its ledger and module object
+without destroying the cache worker or freeing cache host allocations. Normal
+shutdown and initialization failure now share one cache cleanup helper, which
+joins the store worker before freeing staging memory. The host harness queues
+a real backing write and verifies teardown closes the descriptor and removes
+the worker; partial-allocation fixtures use the same production helper.
+Checkpoint capacity remains an integration issue: the current zero-budget KV
+default holds one backing page. KV and recurrent records must share the stated
+budget, and active prefix ancestors cannot be evicted as whole entries while
+referenced. Do not add a second store that silently doubles the budget or waits
+forever for an active ancestor to become evictable.
+
 The GLM recurrent copy hook now describes four existing pools to
 `SparkKvPageStoreCopyLayered`: KDA state followed by Q, K and V convolution
 windows, each in layer order. A resident sequence slot selects one slice from

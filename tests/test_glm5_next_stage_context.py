@@ -54,6 +54,12 @@ cudaError_t cudaHostAlloc(void **destination,size_t bytes,unsigned int flags)
 	return(*destination != 0 ? cudaSuccess : cudaErrorMemoryAllocation);
 }
 
+cudaError_t cudaFreeHost(void *pointer)
+{
+	free(pointer);
+	return(cudaSuccess);
+}
+
 cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,cudaMemcpyKind kind,cudaStream_t stream)
 {
 	(void)stream;
@@ -245,21 +251,37 @@ static int32_t check_batch_waves(void)
 
 static void free_cache_fixture(void)
 {
+	SparkGlm5NextReleaseCaches(&state);
 	SparkStageModuleLedgerRollback(&state.ledger,0u);
-	free(state.kda_state_index_host);
-	free(state.kv_blocks);
-	free(state.kv_resident_slot_logical_block_indices);
-	free(state.kv_entries);
-	free(state.kv_sequences);
-	free(state.kv_hash_bucket_heads);
-	free(state.kv_entry_indices_by_logical_page);
-	free(state.kv_page_staging);
-	free(state.kv_lane_logical_pages);
-	free(state.kv_lane_transactions);
-	free(state.kv_lane_physical_pages);
-	free(state.page_table_shadow);
-	if ( state.kv_mutex_initialized != 0u )
-		pthread_mutex_destroy(&state.kv_mutex);
+}
+
+static void check_cache_worker_cleanup(void)
+{
+	SparkKvPageStoreConfiguration config = {0};
+	uint8_t source[32] = {1u};
+	char path[] = "/tmp/glm-cache-cleanup-XXXXXX";
+	int32_t descriptor;
+	memset(&state,0,sizeof(state));
+	descriptor = mkstemp(path);
+	assert(descriptor >= 0 && close(descriptor) == 0 && unlink(path) == 0);
+	state.kv_page_staging = malloc(sizeof(source));
+	assert(state.kv_page_staging != 0 && pthread_mutex_init(&state.kv_mutex,0) == 0);
+	state.kv_mutex_initialized = 1u;
+	config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	config.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
+	config.logical_page_capacity = config.transfer_capacity = 1u;
+	config.page_bytes = config.maximum_backing_bytes = config.staging_bytes = sizeof(source);
+	config.staging_address = state.kv_page_staging;
+	config.backing_path = path;
+	assert(SparkKvPageStoreInitialize(&state.kv_page_store,&config) == SPARK_STATUS_OK);
+	descriptor = state.kv_page_store.file_descriptor;
+	assert(SparkKvPageStoreWriteback(&state.kv_page_store,0u,0u,1u,(uintptr_t)source,sizeof(source),0u,0u) == SPARK_STATUS_BUSY);
+	SparkGlm5NextReleaseCaches(&state);
+	assert(state.kv_page_store.worker_state == 0 && state.kv_page_store.file_descriptor == -1);
+	errno = 0;
+	assert(fcntl(descriptor,F_GETFD) == -1 && errno == EBADF);
+	assert(unlink(path) == 0);
 }
 
 static int32_t check_rank_state(void)
@@ -462,6 +484,7 @@ int32_t main(void)
 	if ( check_layered_page_copy() != 0 )
 		return(2);
 	assert(check_recurrent_copy() == 0);
+	check_cache_worker_cleanup();
 	check_small_kv();
 	if ( check_rank_state() != 0 )
 		return(3);
