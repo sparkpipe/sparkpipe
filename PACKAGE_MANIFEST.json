@@ -993,8 +993,8 @@
     },
     {
       "path": "docs/WEIGHTD_RANGE_LEASE_WORK.md",
-      "sha256": "3366421014a26d685b822a599e264481d1270de373740c1cb1b4e0137f058987",
-      "size_bytes": 11272
+      "sha256": "85c639c181bd83f11ca81105197f4816ed897b1dbe17830128fb2936633f05b3",
+      "size_bytes": 11782
     },
     {
       "path": "docs/WEIGHTD_RESIDENT_CACHE_DESIGN.md",
@@ -3053,8 +3053,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd.h",
-      "sha256": "ed45bd1506b61afa4bc0d6f0b2ffcfe02baf8ca885c42e0f67f1822e1be69aa4",
-      "size_bytes": 14326
+      "sha256": "a19f92d689347bce2e9e66040425c4c4e9b7f89f989fae5415bff84de6d195a8",
+      "size_bytes": 14397
     },
     {
       "path": "include/sparkpipe/spark_weightd_attach.h",
@@ -3073,8 +3073,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd_map.h",
-      "sha256": "43a7f59454732f07e03a880b479cb11c90ef6651580ab9232979b229fa351022",
-      "size_bytes": 1514
+      "sha256": "e56a77a57cffb12de9d11de6aac6e805b922a0927352048c38bd53e94d18287f",
+      "size_bytes": 1672
     },
     {
       "path": "include/sparkpipe/spark_weightd_spine.h",
@@ -5973,8 +5973,8 @@
     },
     {
       "path": "runtime/spark_weightd.c",
-      "sha256": "42df6ba7038b5fbeb60e7e7e466a24a68cae3900e8106e6e61c60076ce8da012",
-      "size_bytes": 115203
+      "sha256": "04cc8b62998beaf8b66a0d6fa21647c5bab07854a266702f480c31e52f31ddb5",
+      "size_bytes": 115140
     },
     {
       "path": "runtime/spark_weightd_attach.c",
@@ -5993,8 +5993,8 @@
     },
     {
       "path": "runtime/spark_weightd_map.c",
-      "sha256": "622e7a3c5d6c5210e2dbe4bd088a3e5e133ec4fd419a6dc0c63593751708226f",
-      "size_bytes": 11606
+      "sha256": "79a300a3f9b6214cedce423db1e4dedaa287ba9137e53bc9bcc6f4de29f0912e",
+      "size_bytes": 12732
     },
     {
       "path": "runtime/spark_weightd_spine.c",
@@ -6138,8 +6138,8 @@
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_stub.c",
-      "sha256": "eedea6aecebc25b7d880f51360f2f3463e08050b7064d56d7dc9142322a9d419",
-      "size_bytes": 28532
+      "sha256": "9a34eb64151ba2f615c38c0e5421d568685f7a6b6db6c9427cc56eb5e8ee68aa",
+      "size_bytes": 28757
     },
     {
       "path": "tests/fake_model_kernel_probe_module.c",
@@ -7813,8 +7813,8 @@
     },
     {
       "path": "tests/test_weightd_working_set.c",
-      "sha256": "13fd6b5f978f2acabf67ea04cc5d77db7fcf203aa4e21d50109737e89ceea116",
-      "size_bytes": 19835
+      "sha256": "19a99cab64542bc70fd86bc33df86af4168e6b849dce756e03f775f4063721e1",
+      "size_bytes": 20219
     },
     {
       "path": "tests/test_work_transaction.c",
@@ -9540,5 +9540,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32307305
+  "total_bytes": 32309716
 }

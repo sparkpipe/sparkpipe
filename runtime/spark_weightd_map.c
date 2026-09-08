@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 enum
 {
@@ -34,6 +35,26 @@ struct SparkWeightdMap
 	uint8_t *mapped;
 	SparkWeightdMapSlot slots[SPARK_WEIGHTD_LEASE_COUNT_MAX];
 };
+
+static uint64_t map_now(void)
+{
+	struct timespec now;
+	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
+		return(0u);
+	return(((uint64_t)now.tv_sec * UINT64_C(1000000000)) + (uint64_t)now.tv_nsec);
+}
+
+static SparkStatus map_remaining(uint64_t deadline,uint64_t *remaining)
+{
+	uint64_t now = map_now();
+	*remaining = 0u;
+	if ( now == 0u )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	if ( now >= deadline )
+		return(SPARK_STATUS_BUSY);
+	*remaining = (deadline - now);
+	return(SPARK_STATUS_OK);
+}
 
 static SparkStatus map_context(const SparkWeightdMap *map)
 {
@@ -239,10 +260,11 @@ static SparkStatus map_import_chunk(SparkWeightdMap *map,uint32_t slot,uint32_t 
 	return(cuMemSetAccess(map->base + (chunk * map->chunk_bytes),(size_t)map->chunk_bytes,&access,1u) == CUDA_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
 }
 
-static SparkStatus map_import_batch(SparkWeightdMap *map,uint32_t slot,SparkWeightdExportBatch *batch,uint32_t *last,uint32_t offset,uint32_t total)
+static SparkStatus map_import_batch(SparkWeightdMap *map,uint32_t slot,SparkWeightdExportBatch *batch,uint32_t *last,uint32_t offset,uint32_t total,uint64_t deadline)
 {
 	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t i,chunk;
+	uint64_t remaining;
 	if ( batch->chunk_bytes != map->chunk_bytes || batch->chunk_count != map->chunk_count || (offset != 0u && batch->lease_chunk_count != total) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	for (i=0u; i<batch->batch_count; i++)
@@ -251,6 +273,8 @@ static SparkStatus map_import_batch(SparkWeightdMap *map,uint32_t slot,SparkWeig
 		if ( (offset != 0u || i != 0u) && chunk <= *last )
 			status = SPARK_STATUS_SCHEMA_ERROR;
 		if ( status == SPARK_STATUS_OK )
+			status = map_remaining(deadline,&remaining);
+		if ( status == SPARK_STATUS_OK )
 			status = map_import_chunk(map,slot,chunk,batch->fds[i]);
 		(void)close(batch->fds[i]);
 		*last = chunk;
@@ -258,25 +282,29 @@ static SparkStatus map_import_batch(SparkWeightdMap *map,uint32_t slot,SparkWeig
 	return(status);
 }
 
-static SparkStatus map_import_lease(SparkWeightdMap *map,uint32_t slot,uint64_t timeout)
+static SparkStatus map_import_lease(SparkWeightdMap *map,uint32_t slot,uint64_t deadline)
 {
 	SparkWeightdExportBatch batch;
 	SparkStatus status;
 	uint32_t offset = 0u,total = 0u,last = 0u;
+	uint64_t timeout;
 	do
 	{
+		status = map_remaining(deadline,&timeout);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
 		status = SparkWeightdClientExportLeaseBatch(map->client,map->generation,map->slots[slot].identifier,offset,&batch,timeout);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 		if ( batch.status != SPARK_STATUS_OK )
 			return(batch.status);
-		status = map_import_batch(map,slot,&batch,&last,offset,total);
+		status = map_import_batch(map,slot,&batch,&last,offset,total,deadline);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 		total = batch.lease_chunk_count;
 		offset += batch.batch_count;
 	} while ( offset < total );
-	return(SPARK_STATUS_OK);
+	return(map_remaining(deadline,&timeout));
 }
 
 SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier,uint64_t timeout)
@@ -284,6 +312,7 @@ SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpert
 	SparkWeightdWorkingSetResult result;
 	SparkStatus status;
 	uint32_t slot;
+	uint64_t now,deadline,remaining;
 	if ( identifier == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*identifier = 0u;
@@ -297,17 +326,25 @@ SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpert
 			break;
 	if ( slot == SPARK_WEIGHTD_LEASE_COUNT_MAX )
 		return(SPARK_STATUS_BUSY);
+	now = map_now();
+	if ( now == 0u )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	if ( timeout == 0u )
+		timeout = SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS;
+	if ( timeout > (UINT64_MAX - now) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	deadline = (now + timeout);
 	status = SparkWeightdClientAcquire(map->client,map->generation,keys,count,&result,timeout);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	map->slots[slot].identifier = result.lease_identifier;
 	map->slots[slot].state = MAP_ACQUIRED;
 	*identifier = result.lease_identifier;
-	status = map_import_lease(map,slot,timeout);
+	status = map_import_lease(map,slot,deadline);
 	if ( status != SPARK_STATUS_OK )
 	{
 		map->slots[slot].state = MAP_RETIRING;
-		if ( SparkWeightdMapRelease(map,*identifier,timeout) == SPARK_STATUS_OK )
+		if ( map_remaining(deadline,&remaining) == SPARK_STATUS_OK && SparkWeightdMapRelease(map,*identifier,remaining) == SPARK_STATUS_OK )
 			*identifier = 0u;
 	}
 	return(status);

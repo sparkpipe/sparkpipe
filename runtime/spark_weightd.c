@@ -52,7 +52,6 @@
 #include "sparkpipe/spark_ck128.h"
 
 #define SPARK_WEIGHTD_LOAD_CHUNK_BYTES (64ull * 1024ull * 1024ull)
-#define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS 10000000000ull
 
 /* The VMM page law (docs/WEIGHTD_DESIGN.md): a 25-100 GiB arena must not
  * drown the TLB in 4 KiB pages. Physical chunks are created at the driver's

@@ -16,6 +16,8 @@ SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map);
 
 // On error a nonzero identifier still requires Release; no GPU use is allowed.
 // Acquire maps all chunks before success and exposes no address until BeginUse.
+// One deadline covers request/import batches; elapsed time returns BUSY. CUDA
+// calls cannot be preempted. Expiry retains a nonzero identifier for cleanup.
 SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier,uint64_t timeout);
 SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,void **address);
 // Record after every stream using the lease has joined this stream. No further

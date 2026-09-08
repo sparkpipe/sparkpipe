@@ -738,6 +738,12 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
 }
 
 static uint32_t cuda_stub_import_count,cuda_stub_import_fail_at,cuda_stub_unmap_fail;
+static uint32_t cuda_stub_import_delay_us;
+
+void spark_stub_cuda_set_import_delay(uint32_t delay)
+{
+    cuda_stub_import_delay_us = delay;
+}
 
 void spark_stub_cuda_fail_import_after(uint32_t calls)
 {
@@ -762,6 +768,8 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     size_t remaining;
     int fd;
     int received;
+    if (cuda_stub_import_delay_us != 0u)
+        usleep(cuda_stub_import_delay_us);
     cuda_stub_import_count++;
     if (cuda_stub_import_count == cuda_stub_import_fail_at)
         return CUDA_ERROR_OUT_OF_MEMORY;
