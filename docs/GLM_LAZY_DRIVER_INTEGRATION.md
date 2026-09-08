@@ -28,3 +28,5 @@ The draft now splits Glm5NextLayerMoe into Route and Experts helpers and exposes
 ## Shared build dependency list
 
 Use runtime/weightd_sources.mk (SPARKPIPE_WEIGHTD_SOURCES) when a module links the shared weightd client. GLM Flash and DSV4 now consume that list, as do the runtime/model-common libraries. Do not retain a private two-file weightd/attach list: the daemon/client now depends on manifest and lease code, and mapping/spine integration uses the same shared set. GLM Flash host-source syntax checks and the host working-set test passed after this change; CUDA linking and GPU execution remain separate gates.
+
+The explicit split Route entry point now queues the 289 group offsets to per-slot pinned host storage, allocated with existing startup staging. Its caller must establish stream-event completion before inspecting those offsets. Dense layers skip the readback. The combined resident entry point does not call this readback API, so this adds no metadata transfer to resident decode. Host syntax checks pass; real readback/event and CUDA compilation gates remain pending on this revision.

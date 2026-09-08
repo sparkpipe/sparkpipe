@@ -683,10 +683,17 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	int32_t status;
+	uint32_t routed;
 	status = SparkGlm5NextValidateWaveShape(wave);
 	if ( status != LM_LAUNCH_OK || local_layer >= wave->layer_count )
 		return(LM_LAUNCH_ERR_SHAPE);
-	return(SparkGlm5NextRunLayerMlpRoute(wave,local_layer));
+	routed = (wave->first_layer_index + local_layer) >= GLM5_NEXT_FIRST_ROUTED_LAYER;
+	if ( routed != 0u && wave->slot->host_group_row_offset == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	status = SparkGlm5NextRunLayerMlpRoute(wave,local_layer);
+	if ( status != LM_LAUNCH_OK || routed == 0u )
+		return(status);
+	return(cudaMemcpyAsync(wave->slot->host_group_row_offset,wave->slot->group_row_offset,(GLM5_NEXT_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)

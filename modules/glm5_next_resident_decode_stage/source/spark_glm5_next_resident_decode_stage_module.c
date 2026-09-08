@@ -585,7 +585,7 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	if ( slot == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	rows = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
-	words = (rows * 4u) + SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT;
+	words = (rows * 4u) + SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT + SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u;
 	bytes = words * sizeof(uint32_t);
 	error = cudaHostAlloc(&slot->host_staging,bytes,cudaHostAllocPortable);
 	if ( error != cudaSuccess )
@@ -601,6 +601,8 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	slot->host_output_token_ids = cursor;
 	cursor += rows;
 	slot->host_kv_access_error = cursor;
+	cursor += SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT;
+	slot->host_group_row_offset = cursor;
 	bytes = ((rows + 1u) * 2u + rows) * sizeof(uint32_t);
 	error = cudaHostAlloc((void **)&slot->host_run_begin,bytes,cudaHostAllocPortable);
 	if ( error != cudaSuccess )

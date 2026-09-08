@@ -62,6 +62,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t *host_positions;
 	uint32_t *host_output_token_ids;
 	uint32_t *host_kv_access_error;
+	uint32_t *host_group_row_offset;
 	uint32_t *token_ids;
 	uint32_t *resident_slots;
 	uint32_t *positions;
@@ -241,7 +242,9 @@ int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 // Split path: Route completes dense layers; routed layers require Experts after
-// route readiness and working-set acquisition on the same slot/stream.
+// route readiness and working-set acquisition on the same slot/stream. Route
+// queues group offsets into slot host_group_row_offset; record/wait an event
+// on that stream before inspecting them or calling SparkWeightdRouteKeys.
 int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
