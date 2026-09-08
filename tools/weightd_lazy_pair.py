@@ -59,6 +59,9 @@ def main():
                     processes.append(client)
                     clients.append(client)
                 wait_ready(clients)
+                pressure = subprocess.run([probe, str(socket), str(pack), "pressure"], capture_output=True, timeout=10, check=True)
+                if b"PASS pinned pool rejects fourth chunk" not in pressure.stdout:
+                    raise RuntimeError("missing pinned-pool rejection receipt")
                 for client in clients:
                     client.stdin.write(b"G")
                     client.stdin.flush()
@@ -66,10 +69,16 @@ def main():
                     output, _ = client.communicate(timeout=10)
                     if client.returncode != 0 or b"PASS consumer-local lazy reads" not in output:
                         raise RuntimeError(f"consumer failure: {output!r}")
+                replacement = subprocess.Popen([probe, str(socket), str(pack), "consumer", "2"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+                processes.append(replacement)
+                wait_ready([replacement])
+                output, _ = replacement.communicate(input=b"G", timeout=10)
+                if replacement.returncode != 0 or b"PASS consumer-local lazy reads" not in output:
+                    raise RuntimeError(f"post-release eviction/read failure: {output!r}")
                 server.terminate()
                 if server.wait(timeout=10) != 0:
                     raise RuntimeError("daemon shutdown failed")
-                print("PASS two simultaneous lazy consumers, overlapping sets {0,1}/{1,2}, pool 3 of 4 chunks")
+                print("PASS two simultaneous lazy consumers, overlapping sets {0,1}/{1,2}, pool 3 of 4 chunks, pinned rejection and post-release eviction")
             finally:
                 for process in reversed(processes):
                     if process.poll() is None:

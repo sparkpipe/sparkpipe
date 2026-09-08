@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "25d1c0812171a46d20e836690f66e4b10118f1ec8c591ab93905784a2f410ab7",
-      "size_bytes": 8068
+      "sha256": "47cc5c9a0ba5125ce29fe25de766431655d0281e2fa8b69ed0e004d325b63c92",
+      "size_bytes": 8312
     },
     {
       "path": "docs/GOALS.md",
@@ -9553,13 +9553,13 @@
     },
     {
       "path": "tools/weightd_lazy_consumer.c",
-      "sha256": "bc405c72690b0f5e900e04accab5ae6fa8eb055f6f0f0cc9a387afe5deebacfc",
-      "size_bytes": 4941
+      "sha256": "02cbedd2b63ffcb817789770e90b448c329af894d67155b287e3be3a2bb1bdfa",
+      "size_bytes": 5660
     },
     {
       "path": "tools/weightd_lazy_pair.py",
-      "sha256": "4f66b488cf5f04f441fbeb6c22a1ee4a924ef818f123bb4538a48def3350cd32",
-      "size_bytes": 4002
+      "sha256": "dccde4cb42bd21df5849b80d198a56f28e314b4d1379fd13f00d9e685982335a",
+      "size_bytes": 4876
     },
     {
       "path": "tools/weightd_loadall.c",
@@ -9585,5 +9585,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32365305
+  "total_bytes": 32367142
 }

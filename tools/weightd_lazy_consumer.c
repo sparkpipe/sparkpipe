@@ -88,12 +88,23 @@ static int32_t read_leased(SparkWeightdLazyPack *pack,uint32_t first)
 	return(0);
 }
 
+static int32_t reject_pinned(SparkWeightdLazyPack *pack)
+{
+	SparkWeightdExpertKey key = {0u,3u};
+	uint64_t lease = 0u;
+	SparkStatus status;
+	status = SparkWeightdMapAcquire(pack->map,&key,1u,&lease,TIMEOUT);
+	if ( lease != 0u && SparkWeightdMapRelease(pack->map,lease,TIMEOUT) != SPARK_STATUS_OK ) return(-25);
+	if ( status != SPARK_STATUS_CAPACITY_EXCEEDED ) return(-26);
+	return(0);
+}
+
 static int32_t consume(const char *socket,const char *path,uint32_t first)
 {
 	SparkWeightdLazyAttachRequest request = {0};
 	SparkWeightdLazyPack *pack = 0;
 	int32_t err;
-	if ( strlen(path) >= sizeof(request.pack_path) || first > 1u ) return(-19);
+	if ( strlen(path) >= sizeof(request.pack_path) || first > 3u ) return(-19);
 	if ( cudaFree(0) != cudaSuccess ) return(-20);
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = PACK_BYTES;
@@ -103,10 +114,10 @@ static int32_t consume(const char *socket,const char *path,uint32_t first)
 	if ( SparkSha256File(path,request.identity.pack_sha256) != SPARK_STATUS_OK ) return(-21);
 	if ( SparkWeightdLazyPackCreate(socket,&request,PACK_BYTES + 255u,TIMEOUT,&pack) != SPARK_STATUS_OK ) return(-22);
 	if ( pack->attached.chunk_bytes != CHUNK ) return(-23);
-	err = read_leased(pack,first);
+	err = first == 3u ? reject_pinned(pack) : read_leased(pack,first);
 	if ( err != 0 ) return(err);
 	if ( SparkWeightdLazyPackDestroy(pack) != SPARK_STATUS_OK ) return(-24);
-	puts("PASS consumer-local lazy reads");
+	puts(first == 3u ? "PASS pinned pool rejects fourth chunk" : "PASS consumer-local lazy reads");
 	return(0);
 }
 
@@ -116,7 +127,9 @@ int main(int argc,char **argv)
 	if ( argc == 3 && strcmp(argv[1],"prepare") == 0 ) err = prepare(argv[2]);
 	else if ( argc == 5 && strcmp(argv[3],"consumer") == 0 && strcmp(argv[4],"0") == 0 ) err = consume(argv[1],argv[2],0u);
 	else if ( argc == 5 && strcmp(argv[3],"consumer") == 0 && strcmp(argv[4],"1") == 0 ) err = consume(argv[1],argv[2],1u);
-	else { fprintf(stderr,"usage: %s prepare PACK | SOCKET PACK consumer 0|1\n",argv[0]); return(2); }
+	else if ( argc == 5 && strcmp(argv[3],"consumer") == 0 && strcmp(argv[4],"2") == 0 ) err = consume(argv[1],argv[2],2u);
+	else if ( argc == 4 && strcmp(argv[3],"pressure") == 0 ) err = consume(argv[1],argv[2],3u);
+	else { fprintf(stderr,"usage: %s prepare PACK | SOCKET PACK consumer 0|1|2 | SOCKET PACK pressure\n",argv[0]); return(2); }
 	if ( err != 0 ) fprintf(stderr,"lazy probe failed: %d\n",err);
 	return(err == 0 ? 0 : 1);
 }
