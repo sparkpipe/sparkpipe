@@ -12,6 +12,18 @@ HARNESS = r'''
 #include "cache/kv_page_store.c"
 static SparkGlm5NextModuleState state;
 
+cudaError_t cudaMalloc(void **pointer,size_t bytes)
+{
+	*pointer = malloc(bytes);
+	return(*pointer != 0 ? cudaSuccess : cudaErrorMemoryAllocation);
+}
+
+cudaError_t cudaFree(void *pointer)
+{
+	free(pointer);
+	return(cudaSuccess);
+}
+
 const char *cudaGetErrorString(cudaError_t error)
 {
 	(void)error;
@@ -80,6 +92,59 @@ static int32_t check_batch_waves(void)
 	return(0);
 }
 
+static void free_cache_fixture(void)
+{
+	SparkStageModuleLedgerRollback(&state.ledger,0u);
+	free(state.kda_state_index_host);
+	free(state.kv_blocks);
+	free(state.kv_resident_slot_logical_block_indices);
+	free(state.kv_entries);
+	free(state.kv_sequences);
+	free(state.kv_hash_bucket_heads);
+	free(state.kv_entry_indices_by_logical_page);
+	free(state.kv_page_staging);
+	free(state.kv_lane_logical_pages);
+	free(state.kv_lane_page_count);
+	free(state.kv_lane_mutable_page);
+	free(state.kv_lane_mutation_flags);
+	free(state.kv_lane_cache_lanes);
+}
+
+static int32_t check_rank_state(void)
+{
+	uint32_t degrees[3] = {1u,4u,16u},index,allocation;
+	uint64_t state_bytes,window_bytes,actual_state = 0u,actual_window = 0u;
+	for (index=0u; index<3u; index++)
+	{
+		memset(&state,0,sizeof(state));
+		state.ledger.module_tag = "rank-state-test";
+		state.tp_degree = degrees[index];
+		state.layer_count = 4u;
+		state.resident_sequence_capacity = 3u;
+		state.max_sequence_positions = 64u;
+		state.kv_backing_directory = "/unused-host-fixture";
+		if ( SparkGlm5NextAllocateCaches(&state) != SPARK_STATUS_PENDING || state.kda_layer_count != 3u )
+			return(-8);
+		state_bytes = (uint64_t)(64u / degrees[index]) * 128u * 128u * sizeof(float);
+		window_bytes = (uint64_t)(64u / degrees[index]) * 128u * 4u * sizeof(uint16_t);
+		if ( state.kda_state_layer_stride_bytes != 3u * state_bytes || state.kda_window_layer_stride_bytes != 3u * window_bytes )
+			return(-9);
+		for (allocation=0u; allocation<state.ledger.device_allocation_count; allocation++)
+		{
+			if ( state.ledger.device_allocations[allocation] == state.kda_state_pools )
+				actual_state = state.ledger.device_allocation_bytes[allocation];
+			if ( state.ledger.device_allocations[allocation] == state.kda_window_pools )
+				actual_window = state.ledger.device_allocation_bytes[allocation];
+		}
+		if ( actual_state != 9u * state_bytes || actual_window != 27u * window_bytes )
+			return(-10);
+		if ( state.kda_k_window_pool != state.kda_q_window_pool + 9u * window_bytes || state.kda_v_window_pool != state.kda_k_window_pool + 9u * window_bytes )
+			return(-11);
+		free_cache_fixture();
+	}
+	return(0);
+}
+
 static void check_small_kv(void)
 {
 	static uint8_t index_pool[3u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u];
@@ -95,18 +160,7 @@ static void check_small_kv(void)
 		state.resident_sequence_capacity = 1u;
 		state.kv_backing_directory = "/unused-host-fixture";
 		assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_PENDING);
-		free(state.kv_blocks);
-		free(state.kv_resident_slot_logical_block_indices);
-		free(state.kv_entries);
-		free(state.kv_sequences);
-		free(state.kv_hash_bucket_heads);
-		free(state.kv_entry_indices_by_logical_page);
-		free(state.kv_page_staging);
-		free(state.kv_lane_logical_pages);
-		free(state.kv_lane_page_count);
-		free(state.kv_lane_mutable_page);
-		free(state.kv_lane_mutation_flags);
-		free(state.kv_lane_cache_lanes);
+		free_cache_fixture();
 	}
 	memset(&state,0,sizeof(state));
 }
@@ -205,6 +259,8 @@ int32_t main(void)
 	if ( check_layered_page_copy() != 0 )
 		return(2);
 	check_small_kv();
+	if ( check_rank_state() != 0 )
+		return(3);
 	context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	context.descriptor_bytes = sizeof(context);
 	context.stage_count = 4u;

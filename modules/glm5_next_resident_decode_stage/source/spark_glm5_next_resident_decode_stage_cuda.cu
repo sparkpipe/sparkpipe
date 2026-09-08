@@ -259,7 +259,7 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 	{
 		SparkGlm5NextKdaResetKernel<<<dim3(wave->kda_layer_count,wave->row_count),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(
 			wave->kda_state_pools,wave->kda_state_layer_stride_bytes,
-			(uint64_t)SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER,
+			(uint64_t)SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER / wave->tp_degree,
 			wave->kda_q_window_pool,wave->kda_k_window_pool,wave->kda_v_window_pool,
 			wave->kda_window_layer_stride_bytes,
 			(uint64_t)(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree) * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_CONV_KERNEL * 2u,
@@ -467,7 +467,7 @@ static void SparkGlm5NextBindLayer(
 	if ( kda_ordinal != UINT32_MAX )
 	{
 		buffers->kda_state_pool = wave->kda_state_pools + (uint64_t)kda_ordinal * wave->kda_state_layer_stride_bytes;
-		buffers->kda_state_slot_bytes = GLM5_NEXT_KDA_STATE_BYTES_PER_LAYER;
+		buffers->kda_state_slot_bytes = GLM5_NEXT_KDA_STATE_BYTES_PER_LAYER / wave->tp_degree;
 		buffers->kda_q_window = (uint16_t *)(wave->kda_q_window_pool + (uint64_t)kda_ordinal * wave->kda_window_layer_stride_bytes);
 		buffers->kda_k_window = (uint16_t *)(wave->kda_k_window_pool + (uint64_t)kda_ordinal * wave->kda_window_layer_stride_bytes);
 		buffers->kda_v_window = (uint16_t *)(wave->kda_v_window_pool + (uint64_t)kda_ordinal * wave->kda_window_layer_stride_bytes);
@@ -978,7 +978,7 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpCommit(
 			(LmReplayFoldKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM,float>),
 			dim3(1u,rank_heads),GLM5_NEXT_LAYER_THREADS,0,stream,
 			wave->kda_state_pools + (uint64_t)ordinal * wave->kda_state_layer_stride_bytes,
-			GLM5_NEXT_KDA_STATE_BYTES_PER_LAYER,
+			GLM5_NEXT_KDA_STATE_BYTES_PER_LAYER / wave->tp_degree,
 			slot->resident_slots,
 			device_steps,
 			slot->mtp_committed,

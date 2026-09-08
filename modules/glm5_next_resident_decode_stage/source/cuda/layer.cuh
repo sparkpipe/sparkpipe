@@ -1204,7 +1204,7 @@ static int32_t Glm5NextLayerKda(
 
     if (buffers == 0 || rows == 0u || sequences == 0u ||
         buffers->kda_state_pool == 0 ||
-        buffers->kda_state_slot_bytes != GLM5_NEXT_KDA_STATE_BYTES_PER_LAYER ||
+        buffers->kda_state_slot_bytes != rank_heads * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float) ||
         buffers->kda_qkv_beta_weight == 0 ||
         buffers->kda_decay_gate_down_weight == 0 ||
         buffers->kda_decay_up_weight == 0 ||
