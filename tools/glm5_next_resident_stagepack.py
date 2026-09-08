@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import struct
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -886,7 +888,7 @@ def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes]) -> Non
         raise PackFailure(f"region at {offset}: producer wrote {written}, expected {expected}")
 
 
-def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
+def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> int:
     packer.build()
     directory_offset = (HEADER_BYTES + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
     cursor = directory_offset + len(packer.plan) * ENTRY_BYTES
@@ -910,6 +912,27 @@ def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
                         item.produce_payload())
             emit_region(out, item.entry.scale_offset, item.entry.scale_bytes,
                         item.produce_scale() if item.produce_scale else iter(()))
+    return file_bytes
+
+
+def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
+    if path.exists():
+        raise PackFailure(f"output already exists; choose a new artifact path: {path}")
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
+    os.close(fd)
+    try:
+        file_bytes = _emit(packer, Path(temporary), header_extra)
+        with open(temporary, "rb") as source:
+            os.fsync(source.fileno())
+        # An exclusive link preserves an existing artifact even across a race.
+        os.link(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        os.unlink(temporary)
     print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes "
           f"(tp{packer.tp_degree} rank {packer.tp_rank}, layers "
           f"{header_extra['first_layer']}..{header_extra['first_layer'] + header_extra['layer_count'] - 1})")

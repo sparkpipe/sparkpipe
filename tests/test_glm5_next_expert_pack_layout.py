@@ -3,6 +3,7 @@
 import io
 from pathlib import Path
 import sys
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import glm5_next_resident_stagepack as pack
@@ -65,6 +66,29 @@ def main():
                     pack.emit_region(output, 0, len(weights), iter([weights]))
                     pack.emit_region(output, len(weights), len(scales), iter([scales]))
                     assert output.getvalue() == weights + scales
+                if degree == 4 and rank == 0:
+                    builder.build = lambda: None
+                    header = dict(stage_count=1, stage_index=0, first_layer=3, layer_count=1, flags=0)
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "pack.sp"
+                        pack.emit(builder, path, header)
+                        original = path.read_bytes()
+                        try:
+                            pack.emit(builder, path, header)
+                        except pack.PackFailure:
+                            pass
+                        else:
+                            raise AssertionError("existing artifact overwritten")
+                        assert path.read_bytes() == original
+                        path.unlink()
+                        builder.plan[0].produce_payload = lambda: iter([b"x"])
+                        try:
+                            pack.emit(builder, path, header)
+                        except pack.PackFailure:
+                            pass
+                        else:
+                            raise AssertionError("partial pack published")
+                        assert not path.exists() and list(Path(directory).iterdir()) == []
     for chunks, expected in (([b"1234"], 3), ([b"12"], 3)):
         try:
             pack.emit_region(io.BytesIO(), 0, expected, iter(chunks))
