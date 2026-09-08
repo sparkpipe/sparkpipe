@@ -1,5 +1,5 @@
 {
-  "file_count": 1912,
+  "file_count": 1913,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "c4b202a0ab97c12d92efe9be89a704a83f4e4a029abc441bdd67e4d22e599af9",
-      "size_bytes": 93053
+      "sha256": "1fb27130ceeb5a6cf12fdc5ff2d06c2fdcc72f1a2ca169a33ab5acff24ab7bc2",
+      "size_bytes": 93741
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "c2c36ecd2a07af1ca5a9571b758654bbf03cb1e0e7b7c42ea3070b193c702bd4",
-      "size_bytes": 10479
+      "sha256": "172c57ce30ef483d1dd297d26aa1cb018b1a07cb578a795f738d276af9ba551e",
+      "size_bytes": 11868
     },
     {
       "path": "docs/GOALS.md",
@@ -4003,8 +4003,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "90dbd4b1807fbc2cbc88363d13c892490c7c1392148ceaa1865d2b9cc2be6c89",
-      "size_bytes": 144097
+      "sha256": "d8c3278e99e732beaa9f27cc9b9aacc56b69e7b994c588a8075e60b79dfe0eaa",
+      "size_bytes": 147847
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -6972,6 +6972,11 @@
       "size_bytes": 5764
     },
     {
+      "path": "tests/test_glm5_next_lazy_dispatch.c",
+      "sha256": "487bd162cf317d36b333bbb73236cda244b235377de509c95cf12f5a14daae2e",
+      "size_bytes": 3212
+    },
+    {
       "path": "tests/test_glm5_next_module_host_syntax.py",
       "sha256": "134a70b8c9d703b6d0674c3a1a9f634c609350e021ab5eb2861b1299f2720c86",
       "size_bytes": 2471
@@ -9565,5 +9570,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32339674
+  "total_bytes": 32348713
 }

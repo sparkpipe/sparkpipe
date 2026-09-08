@@ -28,6 +28,7 @@ static int SparkGlm5NextProbeEnabled(void)
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
+#include "sparkpipe/spark_weightd_lease.h"
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_speculation_policy.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
@@ -84,6 +85,7 @@ struct SparkGlm5NextModuleState
 {
 	SparkStageModuleLedger ledger;
 	SparkWeightdLazyPack *lazy_pack;
+	void *lazy_retained[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t stage_count;
 	uint32_t stage_index;
 	uint32_t first_layer_index;
@@ -1481,6 +1483,8 @@ typedef struct SparkGlm5NextTpChain
 	uint32_t spec_verify;
 	uint32_t tp_op_index;
 	uint32_t tp_hc_op_index;
+	uint64_t expert_lease;
+	uint32_t expert_lease_begun;
 } SparkGlm5NextTpChain;
 
 static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status);
@@ -2203,12 +2207,92 @@ static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus sta
 	state = chain->state;
 	fprintf(stderr,"G5N-DBG chainfail: stage %u next_layer %u rows %u status %d\n",
 		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
-	(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+	if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
+	{
+		state->lazy_retained[chain->slot_index] = chain;
+		fprintf(stderr,"GLM chain drain failed; retaining slot %u and CUDA resources until process exit\n",chain->slot_index);
+		return;
+	}
 	async = &state->completions[chain->slot_index];
 	async->completion.status = status;
 	chain->active = 0u;
 	SparkGlm5NextCompleteAsync(async);
 	free(chain);
+}
+
+static SparkStatus SparkGlm5NextLazyRelease(SparkGlm5NextTpChain *chain)
+{
+	SparkWeightdMap *map = chain->state->lazy_pack->map;
+	SparkStatus status;
+	if ( chain->expert_lease == 0u )
+		return(SPARK_STATUS_OK);
+	if ( chain->expert_lease_begun != 0u )
+	{
+		status = SparkWeightdMapRecordCompletion(map,chain->expert_lease,(cudaStream_t)chain->slot->stream);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
+			return(SPARK_STATUS_IO_ERROR);
+	}
+	status = SparkWeightdMapRelease(map,chain->expert_lease,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK )
+	{
+		chain->expert_lease = 0u;
+		chain->expert_lease_begun = 0u;
+		chain->wave.expert_lease_base = 0;
+	}
+	return(status);
+}
+
+static void SparkGlm5NextTpChainReduceMlp(SparkGlm5NextTpChain *chain)
+{
+	SparkStatus status;
+	chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP;
+	status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
+	if ( status != SPARK_STATUS_OK )
+		SparkGlm5NextTpChainFail(chain,status);
+}
+
+static SparkStatus SparkGlm5NextLazyExperts(SparkGlm5NextTpChain *chain)
+{
+	SparkWeightdExpertKey keys[SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT];
+	SparkWeightdMap *map = chain->state->lazy_pack->map;
+	SparkStatus status;
+	void *address = 0;
+	uint32_t count = 0u;
+	if ( chain->slot->route_recorded == 0u || cudaEventSynchronize((cudaEvent_t)chain->slot->route_ready_event) != cudaSuccess )
+		return(SPARK_STATUS_IO_ERROR);
+	status = SparkWeightdRouteKeys(chain->wave.first_layer_index + chain->next_layer,chain->slot->host_group_row_offset,SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT,chain->wave.row_count * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K,keys,SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT,&count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdMapAcquire(map,keys,count,&chain->expert_lease,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdMapBeginUse(map,chain->expert_lease,&address);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	chain->expert_lease_begun = 1u;
+	chain->wave.expert_lease_base = (const uint8_t *)address;
+	chain->wave.expert_lease_local_layer = chain->next_layer;
+	if ( SparkGlm5NextLaunchCudaLayerMlpExperts(&chain->wave,chain->next_layer) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm5NextLazyWork(void *context)
+{
+	SparkGlm5NextTpChain *chain = (SparkGlm5NextTpChain *)context;
+	SparkStatus status,cleanup;
+	status = SparkGlm5NextLazyExperts(chain);
+	cleanup = SparkGlm5NextLazyRelease(chain);
+	if ( cleanup != SPARK_STATUS_OK )
+	{
+		chain->state->lazy_retained[chain->slot_index] = chain;
+		fprintf(stderr,"GLM expert cleanup failed: slot=%u lease=%llu status=%d; retaining slot and lease until process exit\n",chain->slot_index,(unsigned long long)chain->expert_lease,(int32_t)cleanup);
+		return;
+	}
+	if ( status != SPARK_STATUS_OK )
+		SparkGlm5NextTpChainFail(chain,status);
+	else
+		SparkGlm5NextTpChainReduceMlp(chain);
 }
 
 static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
@@ -2262,15 +2346,24 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_MLP:
+		if ( state->lazy_pack != 0 && (chain->wave.first_layer_index + chain->next_layer) >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
+		{
+			if ( SparkGlm5NextLaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 )
+				SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+			else
+			{
+				launch_status = SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm5NextLazyWork,chain);
+				if ( launch_status != SPARK_STATUS_OK )
+					SparkGlm5NextTpChainFail(chain,launch_status);
+			}
+			return;
+		}
 		if ( SparkGlm5NextLaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
 		}
-		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP;
-		launch_status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
-		if ( launch_status != SPARK_STATUS_OK )
-			SparkGlm5NextTpChainFail(chain,launch_status);
+		SparkGlm5NextTpChainReduceMlp(chain);
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP:
 		if ( SparkGlm5NextLaunchCudaLayerMlpPost(&chain->wave,chain->next_layer) != 0 )
