@@ -61,13 +61,35 @@ cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,cu
 	return(cudaMemcpy(destination,source,bytes,kind));
 }
 
+static SparkWeightdWorkFunction COMPLETION_WORK;
+static void *COMPLETION_CONTEXT;
+static SparkStatus WORK_STATUS,COMPLETION_STATUS;
+
+SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWorkFunction function,void *context)
+{
+	if ( worker != (SparkWeightdWorker *)(uintptr_t)1u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( WORK_STATUS == SPARK_STATUS_OK )
+	{
+		COMPLETION_WORK = function;
+		COMPLETION_CONTEXT = context;
+	}
+	return(WORK_STATUS);
+}
+
+static void observe_completion(void *context,const SparkModelDriverCompletion *completion)
+{
+	(void)context;
+	COMPLETION_STATUS = completion->status;
+}
+
 static int32_t check_cache_transactions(void)
 {
 	SparkTestKvTransactions fixture;
 	SparkModelDriverAdmissionDecision decision;
 	SparkModelDriverFrame frame;
 	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
-	uint32_t slots[2] = {0,1},device_table[16],shadow[16];
+	uint32_t slots[2] = {0,1},device_table[16],shadow[16],errors[6] = {0};
 	uint64_t positions[2] = {0,0},sequences[2] = {1,2},next[2] = {1,1};
 	SparkTestKvTransactionsInitialize(&fixture,2u);
 	(void)SparkTestKvAcquire(&fixture.pages.kv);
@@ -109,7 +131,22 @@ static int32_t check_cache_transactions(void)
 	if ( SparkGlm5NextUploadPageTables(&state,&state.completions[0],0) != SPARK_STATUS_OK || COPY_COUNT != 2u )
 		return(-26);
 	state.completions[0].completion.status = SPARK_STATUS_IO_ERROR;
-	if ( SparkGlm5NextFinishCacheLanes(&state.completions[0]) != SPARK_STATUS_IO_ERROR || fixture.pages.cache.sequences[0].sequence_id != 0u || fixture.pages.cache.sequences[1].sequence_id != 0u || shadow[0] != UINT32_MAX )
+	state.completions[0].completion_function = observe_completion;
+	state.slots[0].host_kv_access_error = errors;
+	state.completion_worker = (SparkWeightdWorker *)(uintptr_t)1u;
+	atomic_store(&state.slot_states[0],SPARK_STAGE_MODULE_SLOT_CLAIMED);
+	atomic_store(&state.lane_states[0],SPARK_STAGE_MODULE_SLOT_CLAIMED);
+	atomic_store(&state.lane_states[1],SPARK_STAGE_MODULE_SLOT_CLAIMED);
+	WORK_STATUS = SPARK_STATUS_BUSY;
+	SparkGlm5NextCompleteAsync(&state.completions[0]);
+	if ( COMPLETION_WORK != 0 || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_CLAIMED || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
+		return(-28);
+	WORK_STATUS = SPARK_STATUS_OK;
+	SparkGlm5NextCompleteAsync(&state.completions[0]);
+	if ( COMPLETION_WORK == 0 || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_CLAIMED || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
+		return(-29);
+	COMPLETION_WORK(COMPLETION_CONTEXT);
+	if ( COMPLETION_STATUS != SPARK_STATUS_IO_ERROR || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE || atomic_load(&state.lane_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE || atomic_load(&state.lane_states[1]) != SPARK_STAGE_MODULE_SLOT_FREE || fixture.pages.cache.sequences[0].sequence_id != 0u || fixture.pages.cache.sequences[1].sequence_id != 0u || shadow[0] != UINT32_MAX )
 		return(-27);
 	pthread_mutex_destroy(&state.kv_mutex);
 	memset(&state,0,sizeof(state));

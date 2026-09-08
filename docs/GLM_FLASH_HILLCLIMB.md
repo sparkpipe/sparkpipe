@@ -196,6 +196,22 @@ destination ownership, error propagation and unchanged arena residency.
 GLM checkpoint capture, publication and restore still need to be connected to
 this primitive. No prefix-hit correctness claim follows from the store test.
 
+GLM completion now hands off from the CUDA callback to a dedicated instance of
+the existing bounded CUDA-context worker (`SparkWeightdWorker`). Cache finish,
+publication and lane release execute there; the callback performs no CUDA work.
+One queued job per occupied pipeline slot fits the existing queue capacity,
+checked at compile time. Startup creates the worker and teardown waits for it.
+The real module host harness proves handoff retains ownership until execution
+and that a failed handoff does not free in-flight lanes. This prepares the host
+context needed for checkpoint processing; it does not yet capture snapshots.
+Other MTP callback paths remain outside this non-speculative qualification.
+
+Checkpoint publication must wait for the recurrent state and all three
+convolution windows to be saved. Restore must verify the same logical-page
+generation and finish before execution. Snapshot eviction must follow common
+prefix ownership, and bounded backing-store exhaustion needs coordinated prefix
+eviction rather than stale records or unbounded pinned-memory allocation.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed

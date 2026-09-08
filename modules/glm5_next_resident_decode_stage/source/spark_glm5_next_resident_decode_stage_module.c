@@ -49,6 +49,8 @@ static int SparkGlm5NextProbeEnabled(void)
 #define SPARK_GLM5_NEXT_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT 6u
 
+_Static_assert(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT <= SPARK_WEIGHTD_WORK_QUEUE_CAPACITY,"completion worker must hold one job per occupied slot");
+
 #if SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES != \
 	( SPARK_GLM5_NEXT_KV_ARENA_KV_HEAD_COUNT * \
 	  SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM * \
@@ -86,6 +88,7 @@ typedef struct SparkGlm5NextAsyncCompletion
 struct SparkGlm5NextModuleState
 {
 	SparkStageModuleLedger ledger;
+	SparkWeightdWorker *completion_worker;
 	SparkWeightdLazyPack *lazy_pack;
 	_Atomic(void *) lazy_retained[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t stage_count;
@@ -2557,7 +2560,7 @@ static SparkStatus SparkGlm5NextFinishCacheLanes(SparkGlm5NextAsyncCompletion *a
 	return(result);
 }
 
-static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
+static void SparkGlm5NextCompleteOnWorker(void *context)
 {
 	SparkGlm5NextAsyncCompletion *async = (SparkGlm5NextAsyncCompletion *)context;
 	SparkGlm5NextModuleState *state = async != 0 ? async->state : 0;
@@ -2581,6 +2584,17 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
+}
+
+static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
+{
+	SparkGlm5NextAsyncCompletion *async = (SparkGlm5NextAsyncCompletion *)context;
+	SparkStatus status;
+	if ( async == 0 || async->state == 0 )
+		return;
+	status = SparkWeightdWorkerSubmit(async->state->completion_worker,SparkGlm5NextCompleteOnWorker,async);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"GLM completion handoff failed: status %d; retaining lane and slot ownership\n",(int32_t)status);
 }
 
 static SparkStatus SparkGlm5NextEnqueueAsyncCompletion(
@@ -2839,6 +2853,12 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 		return;
 	if ( state->lazy_pack != 0 && state->lazy_pack->worker != 0 && SparkWeightdWorkerWaitIdle(state->lazy_pack->worker,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK )
 		return;
+	if ( state->completion_worker != 0 )
+	{
+		if ( SparkWeightdWorkerWaitIdle(state->completion_worker,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK || SparkWeightdWorkerDestroy(state->completion_worker) != SPARK_STATUS_OK )
+			return;
+		state->completion_worker = 0;
+	}
 	if ( SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)state->execution_stream),"destroy_stream_drain") != SPARK_STATUS_OK )
 		return;
 	if ( state->lazy_pack != 0 )
@@ -2940,6 +2960,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 		status = SparkGlm5NextModuleInitializeTpCollective(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextBuildHeadShadow(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdWorkerCreate(&state->completion_worker);
 	if ( status != SPARK_STATUS_OK )
 	{
 		if ( state->lazy_pack != 0 && SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
