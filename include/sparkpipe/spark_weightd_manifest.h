@@ -47,6 +47,10 @@ typedef struct SparkWeightdManifest
 	uint64_t spine_allocation_bytes;
 } SparkWeightdManifest;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Startup allocation only. The caller owns a successful result until Destroy.
 // Wire header: magic, version, range_count, zero (four little-endian u32).
 // Each 48-byte record: layer, expert, kind, zero, offset, bytes, ck128[16].
@@ -57,3 +61,7 @@ const SparkWeightdRangeGroup *SparkWeightdManifestFind(const SparkWeightdManifes
 // Translate a wholly non-expert slice in O(log N). Compact offsets preserve
 // source alignment modulo 256; allocation size includes alignment padding.
 SparkStatus SparkWeightdManifestSpineSlice(const SparkWeightdManifest *manifest,uint64_t offset,uint64_t bytes,uint64_t *compact_offset);
+
+#ifdef __cplusplus
+}
+#endif

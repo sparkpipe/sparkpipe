@@ -40,6 +40,41 @@ static void check_arbitrary_working_sets(void)
 	assert(SparkWeightdLeaseTableDestroy(table) == SPARK_STATUS_OK);
 }
 
+static void check_route_keys(void)
+{
+	SparkWeightdExpertKey keys[288];
+	uint32_t offsets[289],histogram[288],rows,i,count,expected,state = 42u;
+	for (rows=1u; rows<=100u; rows++)
+	{
+		memset(histogram,0,sizeof(histogram));
+		for (i=0u; i<(rows * 8u); i++)
+		{
+			state = ((state * 1664525u) + 1013904223u);
+			histogram[state % 288u]++;
+		}
+		offsets[0] = 0u;
+		for (i=0u; i<288u; i++)
+			offsets[i + 1u] = (offsets[i] + histogram[i]);
+		assert(SparkWeightdRouteKeys(17u,offsets,288u,rows * 8u,keys,288u,&count) == SPARK_STATUS_OK);
+		expected = 0u;
+		for (i=0u; i<288u; i++)
+			if ( histogram[i] != 0u )
+			{
+				assert(keys[expected].layer == 17u && keys[expected].expert == i);
+				expected++;
+			}
+		assert(count == expected);
+		assert(SparkWeightdRouteKeys(17u,offsets,288u,rows * 8u,keys,count - 1u,&count) == SPARK_STATUS_CAPACITY_EXCEEDED);
+		assert(count == 0u);
+	}
+	offsets[0] = 1u;
+	assert(SparkWeightdRouteKeys(17u,offsets,288u,800u,keys,288u,&count) == SPARK_STATUS_SCHEMA_ERROR);
+	offsets[0] = 0u;
+	offsets[100] = 801u;
+	assert(SparkWeightdRouteKeys(17u,offsets,288u,800u,keys,288u,&count) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(count == 0u);
+}
+
 int main(void)
 {
 	SparkWeightdRangeGroup groups[3] = {{3u,0u,0u,4u},{3u,1u,4u,4u},{4u,0u,8u,4u}};
@@ -49,6 +84,7 @@ int main(void)
 	uint64_t first,second,failed,ids[SPARK_WEIGHTD_LEASE_COUNT_MAX];
 	uint32_t i;
 	check_arbitrary_working_sets();
+	check_route_keys();
 	assert(SparkWeightdLeaseTableCreate(&manifest,&table) == SPARK_STATUS_OK);
 	assert(SparkWeightdLeaseAcquire(table,1u,a,3u,&first) == SPARK_STATUS_OK);
 	assert(table->pins[0] == 1u && table->pins[1] == 1u && table->pins[2] == 0u);

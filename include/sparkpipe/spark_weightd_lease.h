@@ -26,6 +26,10 @@ typedef struct SparkWeightdLeaseTable
 	SparkWeightdLease leases[SPARK_WEIGHTD_LEASE_COUNT_MAX];
 } SparkWeightdLeaseTable;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Startup allocation; the manifest must outlive the table. Calls are serialized
 // by the daemon thread. Owner identifiers must not be reused for new connections.
 SparkStatus SparkWeightdLeaseTableCreate(const SparkWeightdManifest *manifest,SparkWeightdLeaseTable **out);
@@ -35,3 +39,11 @@ const SparkWeightdLease *SparkWeightdLeaseFind(const SparkWeightdLeaseTable *tab
 // Release only after consumer GPU completion and unmapping are established.
 // Connection loss alone is not permission to release an in-flight lease.
 SparkStatus SparkWeightdLeaseRelease(SparkWeightdLeaseTable *table,uint64_t owner,uint64_t identifier);
+
+// Completed host routing offsets, length expert_count + 1. Validate the full
+// prefix before emitting keys. No allocation; failures leave count zero.
+SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_t expert_count,uint32_t packed_rows,SparkWeightdExpertKey *keys,uint32_t capacity,uint32_t *count);
+
+#ifdef __cplusplus
+}
+#endif

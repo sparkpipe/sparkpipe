@@ -154,3 +154,32 @@ SparkStatus SparkWeightdLeaseRelease(SparkWeightdLeaseTable *table,uint64_t owne
 	lease->identifier = 0u;
 	return(SPARK_STATUS_OK);
 }
+
+SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_t expert_count,uint32_t packed_rows,SparkWeightdExpertKey *keys,uint32_t capacity,uint32_t *count)
+{
+	uint32_t i,needed = 0u;
+	if ( count == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*count = 0u;
+	if ( offsets == 0 || keys == 0 || expert_count == 0u || expert_count > SPARK_WEIGHTD_RANGE_COUNT_MAX || packed_rows == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( offsets[0] != 0u || offsets[expert_count] != packed_rows )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (i=0u; i<expert_count; i++)
+	{
+		if ( offsets[i] > offsets[i + 1u] || offsets[i + 1u] > packed_rows )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		if ( offsets[i] != offsets[i + 1u] )
+			needed++;
+	}
+	if ( needed > capacity || needed > SPARK_WEIGHTD_LEASE_GROUPS_MAX )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (i=0u; i<expert_count; i++)
+		if ( offsets[i] != offsets[i + 1u] )
+		{
+			keys[*count].layer = layer;
+			keys[*count].expert = i;
+			(*count)++;
+		}
+	return(SPARK_STATUS_OK);
+}
