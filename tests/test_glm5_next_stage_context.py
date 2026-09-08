@@ -387,6 +387,62 @@ static void open_recurrent_fixture(SparkKvPageStore *store,char *path,void *stag
 	assert(SparkKvPageStoreInitialize(store,&config) == SPARK_STATUS_OK);
 }
 
+static void check_checkpoint_restore(SparkTestKvTransactions *fixture,const uint8_t *expected)
+{
+	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
+	SparkGlm5NextClaimedContinuityContext continuity = {0};
+	SparkGlm5NextAsyncCompletion completion = {0};
+	SparkModelDriverFrame frame;
+	uint32_t resident = 1u;
+	uint64_t sequence = 2u,position = 4u,next = 0u,simulated = 0u;
+	uint8_t bound = 0u,restored[60];
+	assert(SparkKvPageCacheReleaseLane(&fixture->pages.cache,0u,1u) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&fixture->lanes[0],sequence,resident,position,5u);
+	SparkTestKvPagePrefix(&fixture->lanes[0],4u,81u);
+	fixture->request.request_id++;
+	fixture->request.new_token_count = 1u;
+	fixture->request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
+	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture->request) == SPARK_STATUS_OK);
+	fixture->request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture->request) == SPARK_STATUS_OK);
+	batch.active_sequence_count = batch.row_count = 1u;
+	batch.row_resident_slots = &resident;
+	batch.row_sequence_ids = &sequence;
+	batch.row_positions = &position;
+	state.max_sequence_positions = 64u;
+	atomic_store(&state.lane_bound[resident],1u);
+	atomic_store(&state.lane_sequence_ids[resident],99u);
+	atomic_store(&state.lane_next_positions[resident],100u);
+	continuity.state = &state;
+	continuity.batch = &batch;
+	continuity.bound = &bound;
+	continuity.sequence_ids = &simulated;
+	continuity.next_positions = &next;
+	assert(SparkStageModuleIndexSetClaimAndPrepare(state.lane_states,4u,&resident,1u,SparkGlm5NextPrepareClaimedContinuity,&continuity) == SPARK_STATUS_OK);
+	assert(bound == 1u && simulated == sequence && next == 5u);
+	frame = SparkTestKvTransactionFrame(&fixture->request);
+	frame.driver_dispatch_cookie0++;
+	assert(SparkKvLaneTransactionsClaim(&state.kv_transactions,&frame) == SPARK_STATUS_VALIDATION_FAILED);
+	frame.driver_dispatch_cookie0--;
+	assert(SparkKvLaneTransactionsClaim(&state.kv_transactions,&frame) == SPARK_STATUS_OK);
+	completion.state = &state;
+	completion.lane_count = 1u;
+	completion.lane_indices[0] = resident;
+	assert(SparkGlm5NextRestoreCacheLanes(&state,&completion) == SPARK_STATUS_OK);
+	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,resident,restored,sizeof(restored)) == SPARK_STATUS_OK);
+	assert(memcmp(restored,expected,sizeof(restored)) == 0);
+	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,restored,sizeof(restored)) == SPARK_STATUS_OK);
+	assert(memcmp(restored,expected,sizeof(restored)) == 0);
+	{
+		uint32_t entry = fixture->pages.cache.sequences[resident].terminal_entry_index;
+		uint32_t page = fixture->pages.cache.entries[entry].logical_page_index;
+		assert(SparkKvPageStoreInvalidate(&state.recurrent_store,page,state.kv_blocks[page].generation) == SPARK_STATUS_OK);
+		assert(SparkGlm5NextRestoreCacheLanes(&state,&completion) == SPARK_STATUS_NOT_FOUND);
+	}
+	assert(SparkKvLaneTransactionsFinish(&state.kv_transactions,&resident,1u,SPARK_STATUS_IO_ERROR,0u) == SPARK_STATUS_IO_ERROR);
+	SparkStageModuleIndexSetRelease(state.lane_states,4u,&resident,1u);
+}
+
 static void check_checkpoint_finish(uint32_t fail_copy)
 {
 	SparkTestKvTransactions fixture;
@@ -450,6 +506,7 @@ static void check_checkpoint_finish(uint32_t fail_copy)
 		assert(SparkKvPageStoreWaitForTransfers(&state.recurrent_store) == SPARK_STATUS_OK);
 		assert(SparkKvPageStoreReadback(&state.recurrent_store,page,generation,(uintptr_t)restored,sizeof(restored)) == SPARK_STATUS_OK);
 		assert(memcmp(restored,expected,sizeof(expected)) == 0);
+		check_checkpoint_restore(&fixture,expected);
 	}
 	else
 		assert(fixture.pages.cache.sequences[0].sequence_id == 0u);

@@ -1406,6 +1406,38 @@ static SparkStatus SparkGlm5NextValidateRoundMajor(
 	return(SparkRowLayoutValidateRoundMajor(batch->row_count,batch->active_sequence_count,batch->row_resident_slots,SparkRowLayoutDirectLaneOrdinal,&lanes,counts,last_rows));
 }
 
+static uint32_t SparkGlm5NextPrefixRestorePending(const SparkKvLaneTransaction *owner)
+{
+	return(owner != 0 && (owner->mutation_flags & SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE) != 0u && (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u && owner->lane.sequence_position != 0u);
+}
+
+static SparkStatus SparkGlm5NextLoadSequenceContinuity(const SparkGlm5NextModuleState *state,const SparkGlm5NextResidentDecodeStageBatchView *batch,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+{
+	const SparkKvLaneTransaction *owner;
+	uint32_t lane,slot;
+	if ( state->kv_lane_transactions == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (lane=0u; lane<batch->active_sequence_count; lane++)
+	{
+		slot = batch->row_resident_slots[lane];
+		if ( slot >= state->resident_sequence_capacity )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		bound[lane] = atomic_load_explicit(&state->lane_bound[slot],memory_order_acquire);
+		sequence_ids[lane] = atomic_load_explicit(&state->lane_sequence_ids[slot],memory_order_acquire);
+		next_positions[lane] = atomic_load_explicit(&state->lane_next_positions[slot],memory_order_acquire);
+		owner = &state->kv_lane_transactions[slot];
+		if ( SparkGlm5NextPrefixRestorePending(owner) != 0u )
+		{
+			if ( owner->phase != SPARK_KV_LANE_TRANSACTION_COMMITTED || owner->lane.sequence_id != batch->row_sequence_ids[lane] || owner->lane.sequence_position != batch->row_positions[lane] )
+				return(SPARK_STATUS_VALIDATION_FAILED);
+			bound[lane] = 1u;
+			sequence_ids[lane] = owner->lane.sequence_id;
+			next_positions[lane] = owner->lane.sequence_position;
+		}
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextValidateSequenceContinuity(
 	const SparkGlm5NextModuleState *state,
 	const SparkGlm5NextResidentDecodeStageBatchView *batch,
@@ -1417,15 +1449,9 @@ static SparkStatus SparkGlm5NextValidateSequenceContinuity(
 	uint64_t position,sequence;
 	uint32_t lane,row,slot;
 	SparkStatus status;
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
-	{
-		slot = batch->row_resident_slots[lane];
-		if ( slot >= state->resident_sequence_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		bound[lane] = atomic_load_explicit(&state->lane_bound[slot],memory_order_acquire);
-		sequence_ids[lane] = atomic_load_explicit(&state->lane_sequence_ids[slot],memory_order_acquire);
-		next_positions[lane] = atomic_load_explicit(&state->lane_next_positions[slot],memory_order_acquire);
-	}
+	status = SparkGlm5NextLoadSequenceContinuity(state,batch,bound,sequence_ids,next_positions);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	for (row=0u; row<batch->row_count; row++)
 	{
 		slot = batch->row_resident_slots[row];
@@ -1455,7 +1481,7 @@ static SparkStatus SparkGlm5NextValidateSequenceContinuity(
 
 typedef struct SparkGlm5NextClaimedContinuityContext
 {
-	const SparkGlm5NextModuleState *state;
+	SparkGlm5NextModuleState *state;
 	const SparkGlm5NextResidentDecodeStageBatchView *batch;
 	uint8_t *bound;
 	uint64_t *sequence_ids;
@@ -1465,8 +1491,13 @@ typedef struct SparkGlm5NextClaimedContinuityContext
 static SparkStatus SparkGlm5NextPrepareClaimedContinuity(void *prepare_context)
 {
 	SparkGlm5NextClaimedContinuityContext *context;
+	SparkStatus status;
 	context = (SparkGlm5NextClaimedContinuityContext *)prepare_context;
-	return(SparkGlm5NextValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions));
+	if ( pthread_mutex_lock(&context->state->kv_mutex) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkGlm5NextValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions);
+	(void)pthread_mutex_unlock(&context->state->kv_mutex);
+	return(status);
 }
 
 static SparkStatus SparkGlm5NextValidateFrameBuffers(
@@ -2805,6 +2836,48 @@ static SparkStatus SparkGlm5NextUploadPageTables(SparkGlm5NextModuleState *state
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm5NextRestoreRecurrent(SparkGlm5NextModuleState *state,uint32_t resident)
+{
+	const SparkKvLaneTransaction *owner = &state->kv_lane_transactions[resident];
+	SparkKvPageCache *cache = state->kv_transactions.cache;
+	uint32_t entry,page;
+	uint64_t generation;
+	SparkStatus status;
+	if ( SparkGlm5NextPrefixRestorePending(owner) == 0u || state->kda_layer_count == 0u )
+		return(SPARK_STATUS_OK);
+	if ( owner->phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	entry = cache->sequences[resident].terminal_entry_index;
+	if ( entry >= cache->entry_capacity || cache->entries[entry].token_count != owner->lane.sequence_position )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	page = cache->entries[entry].logical_page_index;
+	if ( page >= state->page_count || state->kv_blocks[page].residency_reference_count == 0u )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	generation = state->kv_blocks[page].generation;
+	status = SparkKvPageStoreReadback(&state->recurrent_store,page,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes);
+	while ( status == SPARK_STATUS_BUSY )
+	{
+		if ( SparkKvPageStoreWaitForTransfers(&state->recurrent_store) != SPARK_STATUS_OK )
+			return(SPARK_STATUS_BUSY);
+		status = SparkKvPageStoreReadback(&state->recurrent_store,page,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextRecurrentCopy(state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,resident,state->recurrent_staging,state->recurrent_page_bytes);
+	return(status);
+}
+
+static SparkStatus SparkGlm5NextRestoreCacheLanes(SparkGlm5NextModuleState *state,const SparkGlm5NextAsyncCompletion *async)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t lane;
+	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	for (lane=0u; lane<async->lane_count && status==SPARK_STATUS_OK; lane++)
+		status = SparkGlm5NextRestoreRecurrent(state,async->lane_indices[lane]);
+	(void)pthread_mutex_unlock(&state->kv_mutex);
+	return(status);
+}
+
 static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *state,SparkModelDriverFrame *frame,const SparkGlm5NextResidentDecodeStageFrameContext *context,uint32_t slot_index)
 {
 	SparkGlm5NextExecutionSlot *slot = &state->slots[slot_index];
@@ -2831,7 +2904,9 @@ static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *stat
 	chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	status = SparkGlm5NextUploadPageTables(state,&state->completions[slot_index],slot->stream);
+	status = SparkGlm5NextRestoreCacheLanes(state,&state->completions[slot_index]);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextUploadPageTables(state,&state->completions[slot_index],slot->stream);
 	if ( status == SPARK_STATUS_OK )
 	{
 		error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);

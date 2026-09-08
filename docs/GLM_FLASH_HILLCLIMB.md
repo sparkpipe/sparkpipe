@@ -193,7 +193,7 @@ arena progress cannot consume that completion. Invalidation cannot recycle an
 in-flight record. Existing storage, copy callbacks and backing-slot accounting
 are reused. Real worker/file tests cover byte equality, stale generations,
 destination ownership, error propagation and unchanged arena residency.
-GLM capture now uses the existing write path; restore still needs to use this
+GLM capture uses the existing write path and restore uses this
 primitive. No prefix-hit correctness claim follows from the store test.
 
 GLM completion now hands off from the CUDA callback to a dedicated instance of
@@ -217,7 +217,7 @@ it with the matching KV record. `SparkKvPageStoreInvalidatePair` checks both
 stores under a fixed lock order before changing either. A busy read or a stale
 generation leaves both intact. `SparkKvPageCacheEvictUnused` reuses the existing
 LRU policy for backing-capacity pressure. Page-cache ABI is 4 because the cache
-now retains the attached store. GLM attaches that store at startup; restore remains unfinished.
+now retains the attached store. GLM attaches that store at startup; GPU prefix reuse remains unqualified.
 
 This work exposed an existing reclamation error: release dropped the logical
 reference before finding that the page remained pinned. The new regression
@@ -265,7 +265,8 @@ every layer. All pool geometry and the complete host buffer are checked before
 copying. The host harness round-trips three slots across three layers, verifies
 packed ordering and untouched neighboring slots, and rejects missing windows
 or malformed buffers without copying. This hook is connected to capture before
-checkpoint publication; restore and prefix-hit execution remain unfinished.
+checkpoint publication and restore before dispatch. GPU prefix-hit execution
+remains unqualified.
 Keep the integration narrow: reuse the existing store, worker and layered-copy
 algorithm; add only the model layout and the ownership transitions required by
 capture and restore.
@@ -286,6 +287,21 @@ stores attached before admission, claim a publishing transaction, run actual
 GLM finish, and compare the saved bytes. Missing-window failure publishes
 nothing and releases the failed sequence. These prove host capture/publication
 ordering, not GPU numerical prefix reuse or performance.
+
+Newly bound prefix lanes now seed continuity from their committed cache
+transaction, under the cache mutex. This updates only the local validation
+view; the frame still must claim its complete transaction identity before any
+restore. Dispatch restores the terminal prefix generation while its pages are
+pinned, then starts GPU work. Existing continuous lanes retain their current
+recurrent state. Missing checkpoint records fail explicitly.
+
+The real-store host fixture now captures in slot 0, releases that sequence,
+admits its prefix for another sequence in slot 1, and restores the exact bytes
+there despite stale slot-1 continuity metadata. Slot 0 remains unchanged. A
+stale dispatch cookie is rejected and a deliberately removed checkpoint causes
+restore failure. These checks exercise capture, publication, admission,
+continuity and restore together; they do not establish numerical equality of
+GPU continuations, full serving reset, or distributed performance.
 
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
