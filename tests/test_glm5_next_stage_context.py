@@ -370,6 +370,94 @@ static int32_t check_recurrent_copy(void)
 	return(0);
 }
 
+static void open_recurrent_fixture(SparkKvPageStore *store,char *path,void *staging)
+{
+	SparkKvPageStoreConfiguration config = {0};
+	int32_t descriptor = mkstemp(path);
+	assert(descriptor >= 0 && close(descriptor) == 0 && unlink(path) == 0);
+	config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	config.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
+	config.logical_page_capacity = state.page_count;
+	config.transfer_capacity = 1u;
+	config.page_bytes = config.staging_bytes = state.recurrent_page_bytes;
+	config.maximum_backing_bytes = config.page_bytes * config.logical_page_capacity;
+	config.staging_address = staging;
+	config.backing_path = path;
+	assert(SparkKvPageStoreInitialize(store,&config) == SPARK_STATUS_OK);
+}
+
+static void check_checkpoint_finish(uint32_t fail_copy)
+{
+	SparkTestKvTransactions fixture;
+	SparkGlm5NextAsyncCompletion completion = {0};
+	SparkModelDriverFrame frame;
+	uint8_t pools[4][96],staging[180],expected[60],restored[60];
+	uint32_t page,part,byte,shadow[16];
+	uint64_t generation;
+	char path[] = "/tmp/glm-checkpoint-finish-XXXXXX",kv_path[] = "/tmp/glm-checkpoint-kv-XXXXXX";
+	SparkTestKvTransactionsInitialize(&fixture,1u);
+	fixture.lanes[0].context_token_count = fixture.request.new_token_count = 4u;
+	SparkTestKvPagePublish(&fixture.lanes[0],4u,81u);
+	memset(&state,0,sizeof(state));
+	state.resident_sequence_capacity = 4u;
+	state.page_count = SPARK_TEST_LOGICAL_BLOCK_COUNT;
+	state.pages_per_sequence = 4u;
+	state.page_table_shadow = shadow;
+	state.kv_transactions = fixture.transactions;
+	state.kv_lane_transactions = fixture.owners;
+	state.kv_blocks = fixture.pages.kv.blocks;
+	state.kda_layer_count = 3u;
+	state.kda_state_layer_stride_bytes = 32u;
+	state.kda_window_layer_stride_bytes = 16u;
+	state.kda_state_pools = pools[0];
+	state.kda_q_window_pool = pools[1];
+	state.kda_k_window_pool = pools[2];
+	state.kda_v_window_pool = pools[3];
+	state.recurrent_page_bytes = sizeof(expected);
+	state.recurrent_staging = staging;
+	assert(pthread_mutex_init(&state.kv_mutex,0) == 0);
+	open_recurrent_fixture(&state.recurrent_store,path,staging + 60u);
+	open_recurrent_fixture(&state.kv_page_store,kv_path,staging + 120u);
+	fixture.pages.cache.page_store = &state.kv_page_store;
+	assert(SparkKvPageCacheAttachStateStore(&fixture.pages.cache,&state.recurrent_store) == SPARK_STATUS_OK);
+	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture.request) == SPARK_STATUS_OK);
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture.request) == SPARK_STATUS_OK);
+	frame = SparkTestKvTransactionFrame(&fixture.request);
+	assert(SparkKvLaneTransactionsClaim(&state.kv_transactions,&frame) == SPARK_STATUS_OK);
+
+	for (part=0u; part<4u; part++)
+		for (byte=0u; byte<96u; byte++)
+			pools[part][byte] = (uint8_t)(part * 73u + byte);
+	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,expected,sizeof(expected)) == SPARK_STATUS_OK);
+	page = fixture.pages.cache.sequences[0].mutable_logical_page_index;
+	generation = fixture.pages.kv.blocks[page].generation;
+	completion.state = &state;
+	completion.lane_count = 1u;
+	completion.lane_bound[0] = 1u;
+	completion.lane_sequence_ids[0] = 1u;
+	completion.lane_next_positions[0] = 4u;
+	if ( fail_copy != 0u )
+		state.kda_v_window_pool = 0;
+	assert(SparkGlm5NextFinishCacheLanes(&completion) == (fail_copy != 0u ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK));
+	assert(fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
+	assert(fixture.pages.kv.blocks[page].residency_reference_count == 0u);
+	assert(fixture.pages.cache.published_page_count == (fail_copy != 0u ? 0u : 1u));
+	if ( fail_copy == 0u )
+	{
+		assert(SparkKvPageStoreReadback(&state.recurrent_store,page,generation,(uintptr_t)restored,sizeof(restored)) == SPARK_STATUS_BUSY);
+		assert(SparkKvPageStoreWaitForTransfers(&state.recurrent_store) == SPARK_STATUS_OK);
+		assert(SparkKvPageStoreReadback(&state.recurrent_store,page,generation,(uintptr_t)restored,sizeof(restored)) == SPARK_STATUS_OK);
+		assert(memcmp(restored,expected,sizeof(expected)) == 0);
+	}
+	else
+		assert(fixture.pages.cache.sequences[0].sequence_id == 0u);
+	SparkKvPageStoreDestroy(&state.recurrent_store);
+	SparkKvPageStoreDestroy(&state.kv_page_store);
+	assert(pthread_mutex_destroy(&state.kv_mutex) == 0 && unlink(path) == 0 && unlink(kv_path) == 0);
+}
+
 static void check_small_kv(void)
 {
 	static uint8_t index_pool[3u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u];
@@ -491,6 +579,8 @@ int32_t main(void)
 		return(2);
 	assert(check_recurrent_copy() == 0);
 	check_cache_worker_cleanup();
+	check_checkpoint_finish(0u);
+	check_checkpoint_finish(1u);
 	check_small_kv();
 	if ( check_rank_state() != 0 )
 		return(3);

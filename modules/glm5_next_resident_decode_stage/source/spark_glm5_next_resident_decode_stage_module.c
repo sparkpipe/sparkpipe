@@ -2641,6 +2641,40 @@ static void SparkGlm5NextPrepareAsyncCompletion(
 	async->completion.device_memcpy_bytes = async->completion.host_staging_bytes;
 }
 
+static SparkStatus SparkGlm5NextCaptureRecurrent(SparkGlm5NextModuleState *state,uint32_t resident)
+{
+	SparkKvLaneTransaction *owner;
+	SparkKvPageCacheSequence *sequence;
+	uint32_t page;
+	uint64_t generation;
+	SparkStatus status;
+	if ( state->kda_layer_count == 0u )
+		return(SPARK_STATUS_OK);
+	if ( resident >= state->resident_sequence_capacity || state->kv_lane_transactions == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	owner = &state->kv_lane_transactions[resident];
+	if ( (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u )
+		return(SPARK_STATUS_OK);
+	if ( owner->phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	sequence = &state->kv_transactions.cache->sequences[resident];
+	page = sequence->mutable_logical_page_index;
+	if ( page >= state->page_count || state->kv_blocks[page].residency_reference_count == 0u )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	generation = state->kv_blocks[page].generation;
+	status = SparkGlm5NextRecurrentCopy(state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,resident,state->recurrent_staging,state->recurrent_page_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkKvPageStoreWriteback(&state->recurrent_store,page,resident,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes,0u,0u);
+	while ( status == SPARK_STATUS_BUSY )
+	{
+		if ( SparkKvPageStoreWaitForTransfers(&state->recurrent_store) != SPARK_STATUS_OK )
+			return(SPARK_STATUS_BUSY);
+		status = SparkKvPageStoreWriteback(&state->recurrent_store,page,resident,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes,0u,0u);
+	}
+	return(status);
+}
+
 static SparkStatus SparkGlm5NextFinishCacheLanes(SparkGlm5NextAsyncCompletion *async)
 {
 	SparkGlm5NextModuleState *state = async->state;
@@ -2648,7 +2682,15 @@ static SparkStatus SparkGlm5NextFinishCacheLanes(SparkGlm5NextAsyncCompletion *a
 	uint32_t lane,resident;
 	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	result = SparkKvLaneTransactionsFinish(&state->kv_transactions,async->lane_indices,async->lane_count,async->completion.status,(uint32_t)async->mtp_cache_extra);
+	result = async->completion.status;
+	for (lane=0u; lane<async->lane_count && result==SPARK_STATUS_OK; lane++)
+		result = SparkGlm5NextCaptureRecurrent(state,async->lane_indices[lane]);
+	if ( result == SPARK_STATUS_BUSY )
+	{
+		(void)pthread_mutex_unlock(&state->kv_mutex);
+		return(result);
+	}
+	result = SparkKvLaneTransactionsFinish(&state->kv_transactions,async->lane_indices,async->lane_count,result,(uint32_t)async->mtp_cache_extra);
 	for (lane=0u; lane<async->lane_count; lane++)
 	{
 		resident = async->lane_indices[lane];
@@ -2683,6 +2725,11 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 	}
 	async->completion.status = SparkGlm5NextFinishCacheLanes(async);
+	if ( async->completion.status == SPARK_STATUS_BUSY )
+	{
+		fprintf(stderr,"GLM checkpoint completion not quiescent; retaining lane and slot ownership\n");
+		return;
+	}
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )

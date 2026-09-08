@@ -193,8 +193,8 @@ arena progress cannot consume that completion. Invalidation cannot recycle an
 in-flight record. Existing storage, copy callbacks and backing-slot accounting
 are reused. Real worker/file tests cover byte equality, stale generations,
 destination ownership, error propagation and unchanged arena residency.
-GLM checkpoint capture, publication and restore still need to be connected to
-this primitive. No prefix-hit correctness claim follows from the store test.
+GLM capture now uses the existing write path; restore still needs to use this
+primitive. No prefix-hit correctness claim follows from the store test.
 
 GLM completion now hands off from the CUDA callback to a dedicated instance of
 the existing bounded CUDA-context worker (`SparkWeightdWorker`). Cache finish,
@@ -203,7 +203,7 @@ One queued job per occupied pipeline slot fits the existing queue capacity,
 checked at compile time. Startup creates the worker and teardown waits for it.
 The real module host harness proves handoff retains ownership until execution
 and that a failed handoff does not free in-flight lanes. This prepares the host
-context needed for checkpoint processing; it does not yet capture snapshots.
+context needed for checkpoint processing; checkpoint capture now runs there.
 Other MTP callback paths remain outside this non-speculative qualification.
 
 Checkpoint publication must wait for the recurrent state and all three
@@ -217,7 +217,7 @@ it with the matching KV record. `SparkKvPageStoreInvalidatePair` checks both
 stores under a fixed lock order before changing either. A busy read or a stale
 generation leaves both intact. `SparkKvPageCacheEvictUnused` reuses the existing
 LRU policy for backing-capacity pressure. Page-cache ABI is 4 because the cache
-now retains the attached store. GLM attaches that store at startup; capture and restore remain unfinished.
+now retains the attached store. GLM attaches that store at startup; restore remains unfinished.
 
 This work exposed an existing reclamation error: release dropped the logical
 reference before finding that the page remained pinned. The new regression
@@ -232,7 +232,7 @@ deduplicating the mutable page, under the page-store lock, without scheduling
 a transfer. A missing or stale record leaves the prefix unpublished and the
 sequence position unchanged. The real backing-store regression first rejects
 missing and wrong-generation records, then saves the correct record and proves
-successful publication and paired eviction. GLM must still save the recurrent payload before invoking completion.
+successful publication and paired eviction. GLM now saves the recurrent payload before invoking common completion.
 
 GLM initialization failure previously released its ledger and module object
 without destroying the cache worker or freeing cache host allocations. Normal
@@ -264,11 +264,28 @@ windows, each in layer order. A resident sequence slot selects one slice from
 every layer. All pool geometry and the complete host buffer are checked before
 copying. The host harness round-trips three slots across three layers, verifies
 packed ordering and untouched neighboring slots, and rejects missing windows
-or malformed buffers without copying. This hook is not yet connected to
-checkpoint publication or restore and does not establish prefix-hit execution.
+or malformed buffers without copying. This hook is connected to capture before
+checkpoint publication; restore and prefix-hit execution remain unfinished.
 Keep the integration narrow: reuse the existing store, worker and layered-copy
 algorithm; add only the model layout and the ownership transitions required by
 capture and restore.
+
+GLM completion now captures KDA and all convolution windows for each publishing
+lane while its transaction still pins the mutable page. The CUDA-context worker
+gathers into bounded host storage, saves the matching logical-page generation,
+and only then calls common transaction finish to unpin and publish. Copy or
+write failure follows the existing whole-batch discard path. An inability to
+establish transfer quiescence retains lane/slot ownership rather than reusing
+memory still owned by the store.
+
+`SparkKvPageStoreWaitForTransfers` uses the existing worker condition variable;
+it does not consume completion results or spin. Submission broadcasts that
+condition so a completion waiter cannot steal the worker wakeup. The caller
+then consumes the original operation result. Host tests use real KV and state
+stores attached before admission, claim a publishing transaction, run actual
+GLM finish, and compare the saved bytes. Missing-window failure publishes
+nothing and releases the failed sequence. These prove host capture/publication
+ordering, not GPU numerical prefix reuse or performance.
 
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.

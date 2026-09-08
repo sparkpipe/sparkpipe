@@ -944,12 +944,13 @@ static void SparkTestKvPageStoreFailedPrefetchCancelsReservation(void)
 
 static SparkStatus SparkTestKvRecordWrite(SparkKvPageStore *store,uint32_t logical_page,uint64_t generation,const uint8_t *source)
 {
-	SparkStatus status = SPARK_STATUS_BUSY;
-	uint32_t attempts;
-	for (attempts=0u; attempts<100000u && status==SPARK_STATUS_BUSY; attempts++)
+	SparkStatus status;
+	status = SparkKvPageStoreWriteback(store,logical_page,0u,generation,(uintptr_t)source,SPARK_TEST_BLOCK_BYTES,0u,0u);
+	if ( status == SPARK_STATUS_BUSY )
 	{
-		status = SparkKvPageStoreWriteback(store,logical_page,0u,generation,(uintptr_t)source,SPARK_TEST_BLOCK_BYTES,0u,0u);
-		(void)sched_yield();
+		status = SparkKvPageStoreWaitForTransfers(store);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkKvPageStoreWriteback(store,logical_page,0u,generation,(uintptr_t)source,SPARK_TEST_BLOCK_BYTES,0u,0u);
 	}
 	return(status);
 }

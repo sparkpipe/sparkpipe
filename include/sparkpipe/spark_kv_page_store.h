@@ -138,6 +138,10 @@ SparkStatus SparkKvPageStoreBuildPath(
 	const char *node_id,
 	uint32_t stage_index);
 void SparkKvPageStoreDestroy(SparkKvPageStore *store);
+// Host-worker wait: finishes queued transfers without consuming their results.
+// Caller retains buffers and excludes destruction; poll the original operation
+// afterward to consume its terminal status. Not callable from a copy callback.
+SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store);
 SparkStatus SparkKvPageStoreWriteback(
 	void *context,
 	uint32_t logical_page_index,

@@ -583,6 +583,33 @@ void SparkKvPageStoreDestroy(SparkKvPageStore *store)
 	store->file_descriptor = -1;
 }
 
+SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store)
+{
+	SparkKvPageStoreWorker *worker;
+	uint32_t index;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( SparkKvPageStoreIsValid(store) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	for (;;)
+	{
+		for (index=0u; index<store->transfer_capacity; index++)
+			if ( worker->jobs[index].state == SPARK_KV_PAGE_STORE_JOB_QUEUED || worker->jobs[index].state == SPARK_KV_PAGE_STORE_JOB_ACTIVE )
+				break;
+		if ( index == store->transfer_capacity )
+			break;
+		if ( pthread_cond_wait(&worker->condition,&worker->mutex) != 0 )
+		{
+			status = SPARK_STATUS_INTERNAL_ERROR;
+			break;
+		}
+	}
+	(void)pthread_mutex_unlock(&worker->mutex);
+	return(status);
+}
+
 static SparkKvPageStoreJob *SparkKvPageStoreFindJob(
 	SparkKvPageStoreWorker *worker,
 	uint32_t direction,
@@ -619,7 +646,7 @@ static void SparkKvPageStoreQueueJob(
 {
 	job->state = SPARK_KV_PAGE_STORE_JOB_QUEUED;
 	job->terminal_status = SPARK_STATUS_BUSY;
-	(void)pthread_cond_signal(&worker->condition);
+	(void)pthread_cond_broadcast(&worker->condition);
 }
 
 SparkStatus SparkKvPageStoreWriteback(
