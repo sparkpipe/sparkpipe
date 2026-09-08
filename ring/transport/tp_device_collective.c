@@ -2440,8 +2440,9 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
     if (atomic_load_explicit(&implementation->admission_open,
             memory_order_acquire) == 0u)
     {
-        return (SparkStatus)atomic_load_explicit(
+        status = (SparkStatus)atomic_load_explicit(
             &implementation->failure_status,memory_order_acquire);
+        return status == SPARK_STATUS_OK ? SPARK_STATUS_IO_ERROR : status;
     }
     credit_index = (uint32_t)(submission->ordinal %
         collective->credit_count);
