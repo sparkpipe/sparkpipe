@@ -426,12 +426,21 @@ static void check_many_exports(void)
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
 }
 
+static SparkStatus reject_manifest(const SparkWeightdManifest *manifest,void *context)
+{
+	uint32_t *calls = (uint32_t *)context;
+	assert(manifest->range_count != 0u);
+	*calls += 1u;
+	return(SPARK_STATUS_SCHEMA_ERROR);
+}
+
 static void check_lazy_pack(const char *socket_path,const char *path,const char *manifest_path)
 {
 	SparkWeightdLazyAttachRequest request = {0};
 	SparkWeightdLazyPack *pack;
 	SparkWeightdExpertKey key = {0u,0u};
 	uint64_t lease;
+	uint32_t checks = 0u;
 	const void *pointer;
 	char saved[300];
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
@@ -449,6 +458,9 @@ static void check_lazy_pack(const char *socket_path,const char *path,const char 
 	assert(pack == 0);
 	assert(rename(saved,manifest_path) == 0);
 	spark_stub_cuda_fail_next_alloc();
+	assert(SparkWeightdLazyPackCreateChecked(socket_path,&request,4u * CHUNK,TIMEOUT,reject_manifest,&checks,&pack) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(pack == 0 && checks == 1u);
+	// Rejection must precede allocation: the injected failure remains pending.
 	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(pack == 0);
 	memset(request.identity.pack_sha256,'b',64u);

@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "c18d59779065f2b70e15e15a1389ca3f74a8fb781149e4c8fcb4d8f3ce2079a3",
-      "size_bytes": 9214
+      "sha256": "c2c36ecd2a07af1ca5a9571b758654bbf03cb1e0e7b7c42ea3070b193c702bd4",
+      "size_bytes": 10479
     },
     {
       "path": "docs/GOALS.md",
@@ -3063,8 +3063,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd_lazy_pack.h",
-      "sha256": "e4691f880da39e76e1a6a54e4023a49d067bee50b92ceb707861eda4714d4869",
-      "size_bytes": 1235
+      "sha256": "7d1fbbac2f58d472e1ecbfd0dad760dc11c6c9483622d791c96fe7882a91ae14",
+      "size_bytes": 1645
     },
     {
       "path": "include/sparkpipe/spark_weightd_lease.h",
@@ -4003,8 +4003,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "f59673c47f6fce52e6daf965e50f16180a243dbe9d9d4e2018a87ef7d534d84e",
-      "size_bytes": 138721
+      "sha256": "90dbd4b1807fbc2cbc88363d13c892490c7c1392148ceaa1865d2b9cc2be6c89",
+      "size_bytes": 144097
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -5993,8 +5993,8 @@
     },
     {
       "path": "runtime/spark_weightd_lazy_pack.c",
-      "sha256": "aae59d967b42722d926ce3702e535e3a830f94bad1bbf30830163e3e3cce12e1",
-      "size_bytes": 4753
+      "sha256": "ece863d6b87edbadb6fc2a0462253f22de49918b3e035bc037a62639bc4b9b4b",
+      "size_bytes": 5227
     },
     {
       "path": "runtime/spark_weightd_lease.c",
@@ -7838,8 +7838,8 @@
     },
     {
       "path": "tests/test_weightd_working_set.c",
-      "sha256": "1e867e161bb050908834b96f6dc2f8d951964790a4c86c8e9d27bdc5f9e5e5bc",
-      "size_bytes": 22952
+      "sha256": "9b2cee676f8a3bb8f819931b3d2d3b0fc6c1b9457b325de52c976b6d6069c847",
+      "size_bytes": 23453
     },
     {
       "path": "tests/test_work_transaction.c",
@@ -9565,5 +9565,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32331648
+  "total_bytes": 32339674
 }

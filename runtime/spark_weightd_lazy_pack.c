@@ -58,7 +58,7 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 	return(SparkWeightdSpineLoad(fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,pack->spine,bytes));
 }
 
-static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t budget,uint64_t timeout)
+static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context)
 {
 	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
 	SparkStatus status;
@@ -66,7 +66,10 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	status = SparkWeightdManifestLoad(path,request->identity.arena_bytes,&pack->manifest);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = lazy_spine_load(pack,fd,request,budget);
+	if ( check != 0 )
+		status = check(&pack->manifest,context);
+	if ( status == SPARK_STATUS_OK )
+		status = lazy_spine_load(pack,fd,request,budget);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdClientConnect(socket,&pack->client,0);
 	if ( status == SPARK_STATUS_OK )
@@ -78,7 +81,7 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	return(status);
 }
 
-SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t spine_budget,uint64_t timeout,SparkWeightdLazyPack **out)
+SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t spine_budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context,SparkWeightdLazyPack **out)
 {
 	SparkWeightdLazyPack *pack;
 	SparkWeightdIdentity identity;
@@ -107,7 +110,7 @@ SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazy
 		(void)close(fd);
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	status = lazy_pack_initialize(pack,fd,socket,request,spine_budget,timeout);
+	status = lazy_pack_initialize(pack,fd,socket,request,spine_budget,timeout,check,context);
 	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK && SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_OK )
@@ -116,6 +119,11 @@ SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazy
 		pack->ready = 1u;
 	*out = pack;
 	return(status);
+}
+
+SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t spine_budget,uint64_t timeout,SparkWeightdLazyPack **out)
+{
+	return(SparkWeightdLazyPackCreateChecked(socket,request,spine_budget,timeout,0,0,out));
 }
 
 SparkStatus SparkWeightdLazyPackSlice(const SparkWeightdLazyPack *pack,uint64_t offset,uint64_t bytes,const void **pointer)
