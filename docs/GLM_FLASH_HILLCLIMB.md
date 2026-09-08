@@ -226,6 +226,18 @@ now checks ownership before mutation, and LRU skips pinned pages rather than
 blocking an otherwise available victim. Real worker/file tests verify paired
 invalidation, pinned protection, exact restored bytes and eventual reclamation.
 
+The GLM recurrent copy hook now describes four existing pools to
+`SparkKvPageStoreCopyLayered`: KDA state followed by Q, K and V convolution
+windows, each in layer order. A resident sequence slot selects one slice from
+every layer. All pool geometry and the complete host buffer are checked before
+copying. The host harness round-trips three slots across three layers, verifies
+packed ordering and untouched neighboring slots, and rejects missing windows
+or malformed buffers without copying. This hook is not yet connected to
+checkpoint publication or restore and does not establish prefix-hit execution.
+Keep the integration narrow: reuse the existing store, worker and layered-copy
+algorithm; add only the model layout and the ownership transitions required by
+capture and restore.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed

@@ -991,6 +991,54 @@ static SparkStatus SparkGlm5NextDevicePageCopy(
 	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"kv_page_copy"));
 }
 
+// Checkpoints pack all KDA layers, then all Q, K and V convolution layers.
+// The caller owns the resident slot until the complete transfer succeeds.
+static inline SparkStatus SparkGlm5NextRecurrentCopy(SparkGlm5NextModuleState *state,uint32_t direction,uint32_t slot,void *host,uint64_t bytes)
+{
+	SparkKvLayeredPageLayout layout;
+	uint8_t *pools[4];
+	uint64_t strides[4],payloads[4],total = 0u,offset = 0u;
+	uint32_t part;
+	SparkStatus status;
+	if ( state == 0 || host == 0 || state->resident_sequence_capacity == 0u || state->kda_layer_count == 0u || slot >= state->resident_sequence_capacity )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( direction != SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST && direction != SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	pools[0] = state->kda_state_pools;
+	pools[1] = state->kda_q_window_pool;
+	pools[2] = state->kda_k_window_pool;
+	pools[3] = state->kda_v_window_pool;
+	strides[0] = state->kda_state_layer_stride_bytes;
+	strides[1] = strides[2] = strides[3] = state->kda_window_layer_stride_bytes;
+	for (part=0u; part<4u; part++)
+	{
+		if ( pools[part] == 0 || strides[part] == 0u || strides[part] % state->resident_sequence_capacity != 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( strides[part] > (UINTPTR_MAX - (uintptr_t)pools[part]) / state->kda_layer_count )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		payloads[part] = (strides[part] / state->resident_sequence_capacity) * state->kda_layer_count;
+		if ( payloads[part] > UINT64_MAX - total )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		total += payloads[part];
+	}
+	if ( bytes != total || bytes > UINTPTR_MAX - (uintptr_t)host )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	layout.layer_count = state->kda_layer_count;
+	layout.page_count = state->resident_sequence_capacity;
+	for (part=0u; part<4u; part++)
+	{
+		layout.device_base = (uintptr_t)pools[part];
+		layout.device_bytes = strides[part] * layout.layer_count;
+		layout.layer_stride_bytes = strides[part];
+		layout.layer_page_bytes = strides[part] / layout.page_count;
+		status = SparkKvPageStoreCopyLayered(&layout,direction,slot,(uint8_t *)host + offset,payloads[part],SparkGlm5NextDevicePageCopy,state);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		offset += payloads[part];
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextPageCopy(
 	void *context,
 	uint32_t direction,

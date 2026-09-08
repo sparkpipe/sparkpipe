@@ -297,6 +297,51 @@ static int32_t check_rank_state(void)
 	return(0);
 }
 
+static int32_t check_recurrent_copy(void)
+{
+	uint8_t pools[4][72],saved[4][72],packed[60],before[60];
+	uint32_t part,layer,slot,byte,offset,width;
+	memset(&state,0,sizeof(state));
+	state.resident_sequence_capacity = 3u;
+	state.kda_layer_count = 3u;
+	state.kda_state_layer_stride_bytes = 24u;
+	state.kda_window_layer_stride_bytes = 12u;
+	state.kda_state_pools = pools[0];
+	state.kda_q_window_pool = pools[1];
+	state.kda_k_window_pool = pools[2];
+	state.kda_v_window_pool = pools[3];
+	for (part=0u; part<4u; part++)
+		for (byte=0u; byte<72u; byte++)
+			pools[part][byte] = (uint8_t)(part * 73u + byte);
+	memcpy(saved,pools,sizeof(saved));
+	for (slot=0u; slot<3u; slot++)
+	{
+		assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,slot,packed,sizeof(packed)) == SPARK_STATUS_OK);
+		offset = 0u;
+		for (part=0u; part<4u; part++)
+		{
+			width = part == 0u ? 8u : 4u;
+			for (layer=0u; layer<3u; layer++)
+			{
+				assert(memcmp(packed + offset,saved[part] + (layer * 3u + slot) * width,width) == 0);
+				memset(pools[part] + (layer * 3u + slot) * width,0,width);
+				offset += width;
+			}
+		}
+		assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,slot,packed,sizeof(packed)) == SPARK_STATUS_OK);
+		assert(memcmp(pools,saved,sizeof(pools)) == 0);
+	}
+	memset(packed,0xa5,sizeof(packed));
+	memcpy(before,packed,sizeof(before));
+	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,3u,packed,sizeof(packed)) != SPARK_STATUS_OK);
+	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,packed,sizeof(packed) - 1u) != SPARK_STATUS_OK);
+	state.kda_v_window_pool = 0;
+	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,packed,sizeof(packed)) != SPARK_STATUS_OK);
+	assert(memcmp(packed,before,sizeof(packed)) == 0);
+	assert(memcmp(pools,saved,sizeof(pools)) == 0);
+	return(0);
+}
+
 static void check_small_kv(void)
 {
 	static uint8_t index_pool[3u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u];
@@ -416,6 +461,7 @@ int32_t main(void)
 		return(1);
 	if ( check_layered_page_copy() != 0 )
 		return(2);
+	assert(check_recurrent_copy() == 0);
 	check_small_kv();
 	if ( check_rank_state() != 0 )
 		return(3);
