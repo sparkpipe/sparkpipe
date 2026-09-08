@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_PERFORMANCE_GATES.md",
-      "sha256": "0f42893de03fc060a91533e08d580ddddabba5dceddaf8e135498badd5012548",
-      "size_bytes": 2738
+      "sha256": "6e32c29460c2cf5e90753b626283d198a7d309ec7bd7ab2d6e9354318f85338a",
+      "size_bytes": 3567
     },
     {
       "path": "docs/GLM_REAL_DRIVER_PROBE.md",
@@ -6973,8 +6973,8 @@
     },
     {
       "path": "tests/test_glm5_next_bench_wrap.py",
-      "sha256": "09daa75d1871e46dcb754ce24fd1f8f07fda7c0dfc34034a199f7dd047f79dbb",
-      "size_bytes": 2402
+      "sha256": "c7595d96a62821671220433f3516213e89de76bf7d38575c2f068762bf357eb5",
+      "size_bytes": 3466
     },
     {
       "path": "tests/test_glm5_next_cuda_validator_tier2_oracle.py",
@@ -8663,8 +8663,8 @@
     },
     {
       "path": "tools/glm5_next_bench_wrap.py",
-      "sha256": "c4ebece3fb889942200240d8b193c74619d84bbd53f6a93a00fcf72df188b243",
-      "size_bytes": 5030
+      "sha256": "edf79e3351fff7050c35904d67019dea2d57569460a3254834a7c9f871170795",
+      "size_bytes": 6075
     },
     {
       "path": "tools/glm5_next_build_release.sh",
@@ -9635,5 +9635,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32406831
+  "total_bytes": 32409769
 }

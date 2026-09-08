@@ -15,6 +15,21 @@ def event(kind, request, index=0):
 
 
 class BenchTests(unittest.TestCase):
+    def test_decode_window_excludes_remaining_prefill_and_completion_tail(self):
+        events = [(1., event("token", 1, 0)), (2., event("token", 1, 1)),
+                  (10., event("token", 2, 0)), (11., event("token", 1, 2)),
+                  (12., event("token", 2, 1)), (13., event("token", 1, 3)),
+                  (14., event("token", 2, 2)), (15., event("completed", 1)),
+                  (16., event("completed", 2))]
+        result = bench.summarize(events, 0)
+        window = result["all_sequences_decode_window"]
+        self.assertTrue(window["valid"])
+        self.assertEqual(window["all_prefixes_ready_seconds"], 10.)
+        self.assertEqual(window["elapsed_seconds"], 3.)
+        self.assertEqual(window["token_count"], 3)
+        self.assertEqual(window["aggregate_tokens_per_second"], 1.)
+        self.assertEqual(result["sequences"][0]["token_ids"], [10, 11, 12, 13])
+
     def test_interleaved_stream_preserves_arrival_order(self):
         events = [(1., event("token", 1, 0)), (2., event("token", 1, 1)),
                   (3., event("token", 2, 0)), (4., event("token", 2, 1)),
@@ -24,6 +39,8 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(result["token_ids"], (10, 11, 20, 21))
         self.assertEqual(result["decode_tokens_per_second"], 1.)
         self.assertNotIn("inter_token_median_seconds", result)
+        self.assertFalse(result["all_sequences_decode_window"]["valid"])
+        self.assertNotIn("aggregate_tokens_per_second", result["all_sequences_decode_window"])
 
     def test_failure_and_incomplete_streams_have_no_rate(self):
         streams = [([], 0), ([(1., event("token", 1))], 0),

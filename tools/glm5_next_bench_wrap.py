@@ -12,8 +12,24 @@ import threading
 import time
 
 
+def decode_window(sequences):
+    start = max(rows[0][0] for rows in sequences.values())
+    end = min(rows[-1][0] for rows in sequences.values())
+    result = {"all_prefixes_ready_seconds": start,
+              "first_sequence_last_token_seconds": end,
+              "valid": end > start,
+              "scope": "after every sequence first token, through earliest sequence last token"}
+    if end > start:
+        counts = [sum(start < stamp <= end for stamp, _ in rows)
+                  for rows in sequences.values()]
+        result.update(elapsed_seconds=end-start, token_count=sum(counts),
+                      aggregate_tokens_per_second=sum(counts)/(end-start))
+    return result
+
+
 def summarize(events, status):
     tokens, previous, completed, seen = [], {}, set(), set()
+    sequences = {}
     errors = []
     for stamp, event in events:
         key = (event.get("request_id", 0), event.get("sequence_id", 0))
@@ -34,6 +50,7 @@ def summarize(events, status):
             previous[key] = index
             seen.add(key)
             tokens.append((stamp, token))
+            sequences.setdefault(key, []).append((stamp, token))
     if seen - completed:
         errors.append("missing request completion")
     if not tokens:
@@ -44,6 +61,10 @@ def summarize(events, status):
     if not result["valid"]:
         return result
     stamps, ids = zip(*tokens)
+    result["sequences"] = [dict(request_id=key[0], sequence_id=key[1],
+        token_ids=[row[1] for row in rows],
+        arrival_seconds=[row[0] for row in rows]) for key, rows in sequences.items()]
+    result["all_sequences_decode_window"] = decode_window(sequences)
     duration = stamps[-1] - stamps[0]
     result.update(ttft_seconds=stamps[0], total_seconds=stamps[-1],
                   decode_seconds_after_first=duration, timed_intervals=len(tokens) - 1,
