@@ -1,5 +1,5 @@
 {
-  "file_count": 1881,
+  "file_count": 1882,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "5a1f3a5506acd76a00ace28ebb2c6bad6cbb293b43eaa4421580d6136b92962c",
-      "size_bytes": 90134
+      "sha256": "0185ff7f2f00d0b3b52d049d5d1f4d5eb822df0c4bfb25fa0cea1282ff68e81c",
+      "size_bytes": 90503
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -5778,8 +5778,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "318c0e801981bda5a8da10ff301d38ae1c63e4c9deb38574419edcc731ce6889",
-      "size_bytes": 118226
+      "sha256": "7966acf48244ced39ce6338e59b162f2ebf5443e2853f1b7594a41356380d343",
+      "size_bytes": 119054
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
@@ -7647,6 +7647,11 @@
       "size_bytes": 28466
     },
     {
+      "path": "tests/test_tp_credit_flow.c",
+      "sha256": "ba566d08d59fd774131772c7bd2d6d87457013dc2798d68c1e3c740dca56c6b0",
+      "size_bytes": 4309
+    },
+    {
       "path": "tests/test_tp_device_collective.c",
       "sha256": "a4d966cc81f848b521bbbc9a96e36adfe2d5aae7b748b212da5e901529850e87",
       "size_bytes": 67825
@@ -9410,5 +9415,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32106106
+  "total_bytes": 32111612
 }
