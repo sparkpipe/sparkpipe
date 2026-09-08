@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Execute production boundary kernels as host functions with CUDA index stubs."""
+"""Execute production boundary kernels on host, or on CUDA with --cuda."""
+import argparse
 from pathlib import Path
 import subprocess
 import tempfile
@@ -9,6 +10,9 @@ SOURCE = ROOT / "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cuda", action="store_true")
+    args = parser.parse_args()
     text = SOURCE.read_text()
     kernels = text[text.index("__global__ static void SparkGlm5NextBoundaryLoadKernel"):
                    text.index("__global__ static void SparkGlm5NextEmbeddingKernel")]
@@ -57,16 +61,28 @@ int32_t main(void)
 	return(0);
 }
 '''
+    compiler = ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2"]
+    if args.cuda:
+        prefix = "#include <cuda_runtime.h>\n" + prefix.replace("#define __global__\n", "")
+        prefix = prefix.replace("static struct { uint32_t x,y; } blockIdx,blockDim,threadIdx;", "")
+        prefix = prefix.replace("static uint16_t source", "__device__ __managed__ uint16_t source")
+        probe = probe.replace("blockDim.x = 256u;", "assert(cudaFree(0) == cudaSuccess);")
+        loop = "\t\tfor (blockIdx.y=0u; blockIdx.y<=rows; blockIdx.y++)\n\t\t\tfor (blockIdx.x=0u; blockIdx.x<=(WIDTH / blockDim.x); blockIdx.x++)\n\t\t\t\tfor (threadIdx.x=0u; threadIdx.x<blockDim.x; threadIdx.x++)\n\t\t\t\t\t"
+        for name, params in (("Store", "source,boundary,1u,rows"), ("Load", "boundary,result,1u,rows")):
+            old = loop + f"SparkGlm5NextBoundary{name}Kernel({params});"
+            assert probe.count(old) == 1
+            probe = probe.replace(old, f"\t\tSparkGlm5NextBoundary{name}Kernel<<<dim3((WIDTH / 256u) + 1u,rows + 1u),256u>>>({params});\n\t\tassert(cudaDeviceSynchronize() == cudaSuccess);")
+        compiler = ["nvcc", "-std=c++17", "-arch=sm_121a", "-O2"]
     with tempfile.TemporaryDirectory() as directory:
-        source, binary = Path(directory) / "probe.c", Path(directory) / "probe"
+        source, binary = Path(directory) / ("probe.cu" if args.cuda else "probe.c"), Path(directory) / "probe"
         source.write_text(prefix + kernels + probe)
-        subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",
+        subprocess.run([*compiler,
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', "-Iinclude",
                         "-Imodel-families/glm5_next/include",
                         "-Imodules/glm5_next_resident_decode_stage/include",
                         str(source), "-o", str(binary)], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS HC boundary bit preservation, row offsets and guards at B1/3/17/97/100")
+    print(f"PASS {'CUDA' if args.cuda else 'host'} HC boundary bit preservation, row offsets and guards at B1/3/17/97/100")
 
 
 if __name__ == "__main__":

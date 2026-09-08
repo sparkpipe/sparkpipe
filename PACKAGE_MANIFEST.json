@@ -93,8 +93,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "67d407daf0eca304b2a3db47b92967ff8e2acb471b5f3d4e815a1862a8b1720b",
-      "size_bytes": 10487
+      "sha256": "a6498de512bce6115528dad5a87414bd989c825df9427607288ee61f37c16ebb",
+      "size_bytes": 12123
     },
     {
       "path": "UNIFIED.md",
@@ -6883,8 +6883,8 @@
     },
     {
       "path": "tests/test_glm5_next_hc_boundary.py",
-      "sha256": "deee81f11d2abea5210f6c90464471c083351d4ef19f2830df931388cac2d03c",
-      "size_bytes": 3269
+      "sha256": "eec87c1bd677e3e431382e04e73ec2d82d9ee0c1036b0ff2307cae870019ba70",
+      "size_bytes": 4620
     },
     {
       "path": "tests/test_glm5_next_module_host_syntax.py",
@@ -9440,5 +9440,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32168953
+  "total_bytes": 32171940
 }
