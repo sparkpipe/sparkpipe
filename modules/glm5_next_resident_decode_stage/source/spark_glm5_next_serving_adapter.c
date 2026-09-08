@@ -6,7 +6,7 @@
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm5_next_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
-#include "sparkpipe/spark_admission.h"
+#include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
@@ -88,6 +88,7 @@ typedef struct SparkGlm5NextServingPending
 	uint64_t dispatch_generation;
 	uint64_t request_generation;
 	uint64_t step_generation;
+	SparkModelDriverCacheLane cache_lanes[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t last_row_by_lane[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
@@ -126,6 +127,8 @@ typedef struct SparkGlm5NextServingState
 	SparkGlm5NextServingPending pending[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkGlm5NextServingState;
 
+static _Thread_local SparkModelDriverCacheLane SparkGlm5NextServingCacheScratch[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+
 static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -142,6 +145,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.expert_weight_codec = GLM5_NEXT_EXPERT_WEIGHT_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
+	.cache_block_token_count = SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS,
 	.max_inflight_submission_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.max_active_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
@@ -963,6 +967,43 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 	return(status);
 }
 
+static SparkServingCacheAdmission SparkGlm5NextServingCacheContext(SparkGlm5NextServingState *state,SparkModelDriverCacheLane *lanes)
+{
+	SparkServingCacheAdmission cache;
+	cache.program_id = state->program->program_id;
+	cache.lane_capacity = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	cache.lanes = lanes;
+	cache.driver = state->driver.interface;
+	cache.driver_instance = state->driver_instance;
+	cache.validate = SparkGlm5NextServingValidateSubmission;
+	cache.adapter_state = state;
+	return(cache);
+}
+
+static SparkStatus SparkGlm5NextServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t count)
+{
+	SparkGlm5NextServingState *state;
+	SparkServingCacheAdmission cache;
+	state = (SparkGlm5NextServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = SparkGlm5NextServingCacheContext(state,SparkGlm5NextServingCacheScratch);
+	return(SparkServingCacheAdmissionRun(&cache,submissions,count,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
+}
+
+static SparkStatus SparkGlm5NextServingResolvePrefetch(void *adapter_state,const SparkModelServingSubmission *submission,uint32_t resolution)
+{
+	SparkGlm5NextServingState *state;
+	SparkServingCacheAdmission cache;
+	uint32_t flags;
+	state = (SparkGlm5NextServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	cache = SparkGlm5NextServingCacheContext(state,SparkGlm5NextServingCacheScratch);
+	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
+}
+
 static void SparkGlm5NextServingBuildFrame(
 	const SparkGlm5NextServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1024,17 +1065,20 @@ static void SparkGlm5NextServingBuildFrame(
 static SparkStatus SparkGlm5NextServingAdmit(
 	SparkGlm5NextServingState *state,
 	const SparkModelServingSubmission *submission,
+	SparkGlm5NextServingPending *pending,
 	SparkModelDriverFrame *frame)
 {
+	SparkServingCacheAdmission cache;
 	SparkModelDriverAdmissionRequest request;
 	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
-	status = SparkAdmissionRequestFromSubmission(
-		state->program->program_id,submission,0,0u,&request);
+	cache = SparkGlm5NextServingCacheContext(state,pending->cache_lanes);
+	status = SparkServingCacheBuildRequest(&cache,submission,0u,&request);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	return(SparkAdmissionEvaluateAndApply(
-		state->driver.interface,state->driver_instance,&request,frame,&decision));
+	frame->cache_lanes = pending->cache_lanes;
+	frame->cache_lane_count = request.cache_lane_count;
+	return(SparkAdmissionEvaluateAndApply(state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
 static SparkStatus SparkGlm5NextServingSubmit(
@@ -1056,7 +1100,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
 	SparkGlm5NextServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
-	status = SparkGlm5NextServingAdmit(state,submission,&frame);
+	status = SparkGlm5NextServingAdmit(state,submission,pending,&frame);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"G5N-DBG submit: admit -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
@@ -1141,6 +1185,8 @@ static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 	.destroy = SparkGlm5NextServingDestroy,
 	.validate_submission = SparkGlm5NextServingValidateSubmission,
 	.submit = SparkGlm5NextServingSubmit,
+	.prefetch = SparkGlm5NextServingPrefetch,
+	.resolve_prefetch = SparkGlm5NextServingResolvePrefetch,
 	.progress = SparkGlm5NextServingProgress,
 	.quiesce = SparkGlm5NextServingQuiesce,
 	.snapshot = SparkGlm5NextServingSnapshot

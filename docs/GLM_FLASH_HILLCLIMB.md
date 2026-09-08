@@ -36,7 +36,8 @@ correct math from repeatability, or full serving from a component probe.
 | Mandatory serving contract, draft PR #861 | ABI 21 removes seven opt-out bits, makes callbacks/cache geometry mandatory and removes zero-cache scheduling paths. Common host tests pass; GLM cache/reset integration remains incomplete. | Required means fail explicitly when missing. Callback presence is only structural validation; stubs and flags cannot establish behavior. |
 | Accurate ABI probe, draft PR #861 | Replaced copied, incorrect structs/flag values with the public header and common loader. | Diagnostic tools must consume the same contract as production, or they can report misleading capability results. |
 | Layered KV/index backing payload, PR #862 / main `d687fc8` | Common gather/scatter with a hardware copy callback; GLM supplies native geometry. Actual GLM host hook tests pass both regions across three layers and five pages; substituting the previous contiguous copy fails the payload check. CUDA CI, merged-main B3 memcheck and resident/lazy/concurrent parity pass. | Trace native layer/page indexing against backing payload layout. Total allocation size is insufficient; distinguish each page and layer in tests. Include index state in payload sizing. |
-| Numerical gate integrity, PR #863 | Three probe failure results were discarded; projection readback could skip a comparison. Checks now affect exit status. Common metrics reject nonfinite inputs and accumulate squared errors directly; regression tests reject the previous metric implementation. GPU rerun pending. | Test the acceptance test with bad values. Error-norm cancellation and ignored return codes can turn an optimization regression green. Component repeatability is not numerical correctness. |
+| Numerical gate integrity, PR #863 / main `52ce0e5` | Three probe failure results were discarded; projection readback could skip a comparison. Checks now affect exit status. Common metrics reject nonfinite inputs and accumulate squared errors directly; regression tests reject the previous metric implementation. Corrected GPU component validator passes on merged main. | Test the acceptance test with bad values. Error-norm cancellation and ignored return codes can turn an optimization regression green. Component repeatability is not numerical correctness. |
+| Cache admission wiring, draft PR #861 | GLM builds persistent cache lanes for submitted frames and routes prepare/commit/abort through a common algorithm with a validation callback and caller-owned scratch. Host tests preserve B3 lane identities and transaction generations, propagate driver failure, validate all inputs before dispatch and keep release separate. Full reset/restoration and GPU serving acceptance remain incomplete. | Common policy builds and validates the transaction; the model supplies geometry and hooks. Keep submitted lane storage alive through device completion. |
 
 ## Baseline that must not be misinterpreted
 
@@ -85,6 +86,13 @@ this is TP1/B1, despite a maximum-sequence environment setting of eight; this
 checkout does not contain the multirow tiers claimed by the old handoff.
 DSA reference comparison and routed MLP execution remain absent. PR #863 fixes
 discarded probe failures and labels the component coverage explicitly.
+
+The corrected validator passed on clean main `52ce0e5`, build job
+`glm-numerical-build-52ce0e5` (attempt `6e673b1919204a818eb5d43575b75fae`) and
+run `glm-numerical-oracle-52ce0e5` (`57d766739f974f4abd5f343dcbc8daef`). Both
+finished with exit 0 and released Spark0. KDA+dense+mHC metrics remain 0.00468
+relative L2 and 0.9999891 cosine. All three formerly ignored numerical probes
+also pass with their results now counted. This remains synthetic TP1/B1.
 
 ## Current next steps, not completed work
 
