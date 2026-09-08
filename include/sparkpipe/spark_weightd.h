@@ -195,6 +195,9 @@ typedef struct SparkWeightdIpcAttachLazyResult
     uint32_t refcount;
     uint32_t arena_count;
     uint32_t expert_count;
+    uint64_t chunk_bytes;
+    uint32_t chunk_count;
+    uint32_t reserved0;
 } SparkWeightdIpcAttachLazyResult;
 
 typedef struct SparkWeightdIpcEnsure
@@ -378,6 +381,8 @@ typedef struct SparkWeightdLazyAttachResult
     uint32_t refcount;
     uint32_t arena_count;
     uint32_t expert_count;
+    uint64_t chunk_bytes;
+    uint32_t chunk_count;
 } SparkWeightdLazyAttachResult;
 
 typedef struct SparkWeightdEnsureResult

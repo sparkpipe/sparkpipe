@@ -33,6 +33,15 @@ static uint32_t cuda_stub_export_calls;
 static uint32_t cuda_stub_fail_export_at;
 static pthread_mutex_t cuda_stub_ledger_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+CUresult cuCtxGetCurrent(CUcontext *pctx)
+{
+    static uint8_t context;
+    if (pctx == 0)
+        return CUDA_ERROR_INVALID_VALUE;
+    *pctx = (CUcontext)&context;
+    return CUDA_SUCCESS;
+}
+
 static void cuda_stub_ledger_lock(void)
 {
     (void)pthread_mutex_lock(&cuda_stub_ledger_mutex);
@@ -329,14 +338,31 @@ cudaError_t cudaEventDestroy(cudaEvent_t event)
     return cudaSuccess;
 }
 
+static uint32_t cuda_stub_event_pending;
+static uint32_t cuda_stub_event_record_failure;
+
+void spark_stub_cuda_event_pending(uint32_t pending)
+{
+    cuda_stub_event_pending = pending;
+}
+
+void spark_stub_cuda_event_record_failure(uint32_t failure)
+{
+    cuda_stub_event_record_failure = failure;
+}
+
 cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
 {
     (void)stream;
+    if (cuda_stub_event_record_failure != 0u)
+        return cudaErrorInvalidValue;
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 cudaError_t cudaEventQuery(cudaEvent_t event)
 {
+    if (event != 0 && cuda_stub_event_pending != 0u)
+        return cudaErrorNotReady;
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 

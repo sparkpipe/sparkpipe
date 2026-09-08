@@ -10,10 +10,13 @@
 #include "cuda.h"
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_weightd_map.h"
 
 #define CHUNK (2u * 1024u * 1024u)
 #define TIMEOUT UINT64_C(10000000000)
 
+void spark_stub_cuda_event_pending(uint32_t pending);
+void spark_stub_cuda_event_record_failure(uint32_t failure);
 void spark_stub_cuda_fail_next_alloc(void);
 void spark_stub_cuda_fail_alloc_after(uint32_t calls);
 void spark_stub_cuda_fail_export_after(uint32_t calls);
@@ -251,6 +254,50 @@ static void check_transaction(SparkWeightdClient *client,uint64_t generation,uin
 	release(client,generation,result.lease_identifier);
 }
 
+static void check_map_lifetime(SparkWeightdClient *client,uint64_t generation,uint64_t daemon_base)
+{
+	SparkWeightdLazyAttachResult attached = {0};
+	SparkWeightdMap *map;
+	SparkWeightdExpertKey key = {0u,0u};
+	uint64_t first,second;
+	void *address,*other;
+	attached.status = SPARK_STATUS_OK;
+	attached.arena_generation = generation;
+	attached.arena_bytes = (3u * CHUNK);
+	attached.chunk_bytes = CHUNK;
+	attached.chunk_count = 3u;
+	assert(SparkWeightdMapCreate(client,&attached,&map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
+	key.expert = 1u;
+	assert(SparkWeightdMapAcquire(map,&key,1u,&second,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_BUSY);
+	assert(SparkWeightdMapBeginUse(map,first,&address) == SPARK_STATUS_OK);
+	assert((uint64_t)(uintptr_t)address != daemon_base);
+	check_ranges((uint64_t)(uintptr_t)address,0u);
+	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_BUSY);
+	spark_stub_cuda_event_record_failure(1u);
+	assert(SparkWeightdMapRecordCompletion(map,first,0) == SPARK_STATUS_IO_ERROR);
+	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_BUSY);
+	spark_stub_cuda_event_record_failure(0u);
+	assert(SparkWeightdMapRecordCompletion(map,first,0) == SPARK_STATUS_OK);
+	spark_stub_cuda_event_pending(1u);
+	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_BUSY);
+	spark_stub_cuda_event_pending(0u);
+	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkWeightdMapBeginUse(map,second,&other) == SPARK_STATUS_OK);
+	assert(other == address);
+	check_ranges((uint64_t)(uintptr_t)other,1u);
+	assert(SparkWeightdMapRecordCompletion(map,second,0) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapRelease(map,second,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
+	spark_stub_cuda_fail_export_after(2u);
+	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
+	assert(first == 0u);
+	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);
+}
+
 static void check_orphan(SparkWeightdClient *a,SparkWeightdClient *b,uint64_t generation,uint64_t base,const char *socket_path,const char *path)
 {
 	SparkWeightdWorkingSetResult pinned,result;
@@ -336,6 +383,7 @@ int main(void)
 	assert(attach(b,path,&other_base) == generation && other_base == base);
 	check_two_clients(a,b,generation,base);
 	check_transaction(a,generation,base);
+	check_map_lifetime(a,generation,base);
 	check_orphan(a,b,generation,base,socket_path,path);
 	SparkWeightdClientClose(b);
 	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);

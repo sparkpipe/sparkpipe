@@ -68,3 +68,9 @@ The receive buffer accommodates the kernel descriptor limit before applying
 the protocol cap, so surplus descriptors can be explicitly closed. Server
 exports account each descriptor as it is created, including failure midway
 through a batch.
+
+### Shared consumer mapping lifecycle (draft)
+
+The shared `spark_weightd_map` helper reserves consumer-local VA and imports the exact leased chunk union read-only. Startup creates its metadata and completion events. BeginUse marks a lease in flight; Release refuses it until RecordCompletion has recorded an event and that event completes. Overlapping leases share local chunks, and the last local owner unmaps/releases before sending daemon RELEASE. Unused acquisitions can be cancelled. Failed import cleanup retains a nonzero identifier when further cleanup is required. Calls are serialized on the creating CUDA context; callers must join every using stream before recording completion.
+
+The working-set host test exercises the helper through real client/server IPC with CUDA stubs: separate consumer VA, overlapping leases, destroy while busy, release before recording, record failure, pending completion, completed release, stale release, unused cancellation, and partial export rollback. This is not GPU qualification. Production driver/spine integration, real GPU event proof, disconnected-owner recovery, and an overall multi-batch acquisition deadline remain incomplete.
