@@ -296,7 +296,6 @@ int main(int argc, char **argv)
     uint32_t bad;
     uint32_t step;
     SparkStatus status;
-    int retry;
 
     {
         const char *credits_env = getenv("BENCH_CREDITS");
@@ -599,7 +598,6 @@ int main(int argc, char **argv)
         submission.cuda_stream = stream;
         submission.completion_function = bench_completion;
         submission.completion_context = 0;
-        retry = 0;
         {
             uint64_t op_started = bench_now_ns();
             for (;;)
@@ -607,9 +605,10 @@ int main(int argc, char **argv)
                 status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
                 if (status == SPARK_STATUS_OK)
                     break;
-                if (status != SPARK_STATUS_BUSY || ++retry > 100)
+                if (status != SPARK_STATUS_BUSY ||
+                    bench_now_ns() - op_started >= (uint64_t)config.operation_timeout_milli * 1000000ull)
                 {
-                    printf("submit %llu -> %u\n", (unsigned long long)ordinal, (unsigned)status);
+                    printf("submit %llu -> %u after %.3f ms completions=%lld\n", (unsigned long long)ordinal, (unsigned)status, (bench_now_ns() - op_started) / 1e6, (long long)__sync_fetch_and_add(&bench_completions,0));
                     SparkTpDeviceCollectiveDumpOperations(&collective);
                     return 1;
                 }
