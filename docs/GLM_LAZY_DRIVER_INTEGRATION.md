@@ -46,3 +46,9 @@ Remaining gates:
 - Prewarm/pin measured performance sets, remove unnecessary serialization, and measure metadata transfer, misses, startup hashing, weight reuse and overlap.
 
 GPU/deployment qualification uses reviewed, merged-main queue builds with recorded SHAs and receipts. Passing component tests does not satisfy full serving qualification.
+
+## Two-process mapping probe
+
+Build `build/sparkpipe_weightd` and `build/weightd_lazy_consumer`, then run `python3 tools/weightd_lazy_pair.py --daemon build/sparkpipe_weightd --probe build/weightd_lazy_consumer`. The controller owns a fresh temporary fixture and daemon, starts two separate consumers with sets {0,1} and {1,2}, waits for both to hold their leases, then permits completion/release. The pool holds three of the four fixture chunks. Both consumers read payload and scale bytes through consumer-local maps and compare their contents. Child processes have bounded waits and are terminated on failure. The fixture writer is for this test only, not production model publication.
+
+The process/FD/mapping orchestration passes locally with CUDA stubs. A real-CUDA merged-main queue build must rerun it before claiming GPU proof. This probe tests mapped reads and lease coexistence, not expert kernels or full model inference.
