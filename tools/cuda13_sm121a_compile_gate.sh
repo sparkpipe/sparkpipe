@@ -165,6 +165,7 @@ compile_cuda \
 	-I"${repository_root}/modules/glm5_next_resident_decode_stage/source" \
 	-include "${repository_root}/model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h" \
 	-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 \
+	'-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"' \
 	-DSPARK_BATCH_BUCKET=1024u
 
 glm_model_header="${repository_root}/model-families/glm52/include/sparkpipe/spark_glm52_model.h"
