@@ -288,8 +288,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/README.md",
-      "sha256": "2f2eec43fa85a24de2a16cf941e46ec765d517a4772975b41c2b7a1811b8e017",
-      "size_bytes": 20074
+      "sha256": "c09a910078284d8acd5cbd657e9764b192426ebed570047ef0b4b504d4d693fd",
+      "size_bytes": 19632
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/continuous_batching.md",
@@ -9410,5 +9410,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32106548
+  "total_bytes": 32106106
 }

@@ -1,28 +1,21 @@
-## THE GPU QUEUE IS TASK-BASED (operator directive 2026-08-29; supersedes rolling-reservation usage)
+## Shared debug workflow (2026-09-08)
 
-- Lanes NEVER hold wall-clock reservations while coding/analyzing. The
-  5-hour x16 hold with a few minutes of waves was named by the operator
-  as the anti-pattern; rolling renewals by a live lane are the same bug.
-- GPU work is submitted as a TASK: `tools/spark_queue.py add <id>
-  --nodes <list> --cmd '<real command>' --priority <0=highest>` (with
-  optional --after <ids> for ordering). The standing DISPATCHER
-  (`spark_queue.py dispatch`, 60s loop on the controller) runs the
-  highest-priority runnable task the moment its nodes are free, holds
-  the nodes ONLY for the task's duration, and releases them on exit
-  (result appended to runs/results).
-- Wave owners: submit each wave as a task when you need it. Between
-  waves, TAKE YOUR FLEET DOWN (TERM by cwd-filter rule) if the gap
-  exceeds ~15 minutes — registrar bring-up is ~1s/node and the W1
-  loader minimizes reload. Your idle time is the fleet's throughput.
-- Entries without a real cmd never dispatch (notes belong in reports).
-- CPU work (nvcc builds, host oracles, pack verification) still never
-  needs the queue at all.
-- Operator tuning (2026-08-29): dispatch TTL default is 15 minutes —
-  turnover over headroom. Tasks that legitimately run longer (exact-32K
-  timing cells, validator sweeps) MUST declare `--ttl-min <n>` at
-  submit or their lease expires mid-run and the nodes dispatch under
-  them. glm5.3-family tasks (glm5_next waves, glm53full verifies)
-  submit at priority 0 — the front of the queue (operator directive).
+Use [Parallel driver debugging](../PARALLEL_DRIVER_DEBUG.md) and
+[the queue runbook](../SPARK_QUEUE_RUNBOOK.md) for queue v2 commands,
+source synchronization, resource ownership, cleanup and loading behavior.
+
+All driver lanes use the same controller queue. Assigned-node debugging does
+not reserve the whole fleet. Multi-rank integration declares its participants;
+performance uses an exclusive reservation. CPU builds also declare CPU and
+memory usage so they cannot silently perturb exclusive measurements.
+The default deadline is 3 minutes and the maximum is 15 minutes. A disconnected
+node is not released merely because the controller cannot contact it.
+
+Missing expert metadata or failed attach/import is an error, never permission
+to load directly. Shared daemon lazy tests are not proof of full driver lazy
+inference. Follow the explicit consumer-mapping and in-flight lifetime gates
+in the shared workflow. Historical lane reports and prior queue instructions
+do not override this contract.
 
 # Agent lane rules (shared, binding for every driver lane)
 
@@ -56,6 +49,9 @@ larger agent fleet failed here; every rule below encodes a real failure.
   Open a PR at each milestone; never merge it yourself.
 
 ## Fleet pack policy (hard, 2026-08-27): every model on all 16 sparks
+
+Pack coverage is a storage requirement, not a requirement to reserve all sixteen
+Sparks for a one-node kernel or forward-cell test.
 
 Every served model runs on a 16-rank topology fleet-wide, therefore
 **every spark holds its rank's pack for EVERY model**. A pack build that
