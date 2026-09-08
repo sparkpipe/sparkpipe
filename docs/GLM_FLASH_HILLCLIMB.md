@@ -164,6 +164,25 @@ failure. It verifies host protocol only. The reusable lesson is to keep async
 descriptors in existing owner storage and make benchmarks use the same ownership
 protocol as serving, without adding a parallel cache implementation.
 
+PR #865 removes full-head KDA allocation on each TP rank and the repeated Q/K/V
+window factor, using the shared kernel's existing stride parameter. At TP16,
+the calculated recurrent-plus-window allocation per resident sequence falls
+from 155.125 MiB to 8.8984375 MiB across 34 KDA layers. See
+`docs/GLM_KDA_STATE_LAYOUT.md` for formulas and the actual allocator host test.
+The draft includes this merged layout for checkpoint integration.
+
+Clean main `d62e93e` passed GPU build (`82ef7d87dae8435c80a1d2a34639a107`),
+B3 memcheck (`4d3b9fe729b34aa5aa07d1e60b81bc20`, zero errors), resident/lazy
+comparison (`f81b2729301842a0ab48a356af25d74c`) and the synthetic numerical
+validator (`1dbc3289146147ba8d5640e31c4cafe0`). All queue jobs stopped and
+released Spark0. All 44 tokens across five resident/lazy receipts exactly match
+the pre-change `06be88e` baseline. KDA+dense+HC relative L2 remains 0.00376,
+cosine 0.9999930. This is component qualification: token checks use TP16 rank0
+without collectives, and the numerical oracle uses synthetic TP1/B1. No new
+distributed throughput result is claimed. Local artifacts are
+`/private/tmp/ds4_glm_rank_baseline_06be88e` and
+`/private/tmp/ds4_glm_rank_result_d62e93e`.
+
 ## Current next steps, not completed work
 
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
