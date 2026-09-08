@@ -17,6 +17,9 @@
 
 void spark_stub_cuda_event_pending(uint32_t pending);
 void spark_stub_cuda_event_record_failure(uint32_t failure);
+void spark_stub_cuda_fail_import_after(uint32_t calls);
+void spark_stub_cuda_fail_next_unmap(void);
+void spark_stub_cuda_fail_event_destroy_after(uint32_t calls);
 void spark_stub_cuda_fail_next_alloc(void);
 void spark_stub_cuda_fail_alloc_after(uint32_t calls);
 void spark_stub_cuda_fail_export_after(uint32_t calls);
@@ -293,6 +296,23 @@ static void check_map_lifetime(SparkWeightdClient *client,uint64_t generation,ui
 	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
 	spark_stub_cuda_fail_export_after(2u);
+	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
+	assert(first == 0u);
+	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreate(client,&attached,&map) == SPARK_STATUS_OK);
+	spark_stub_cuda_fail_import_after(2u);
+	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
+	assert(first == 0u);
+	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
+	spark_stub_cuda_fail_next_unmap();
+	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
+	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_BUSY);
+	(void)acquire(client,generation,2u,SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreate(client,&attached,&map) == SPARK_STATUS_OK);
+	spark_stub_cuda_fail_event_destroy_after(2u);
+	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_IO_ERROR);
 	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
 	assert(first == 0u);
 	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);

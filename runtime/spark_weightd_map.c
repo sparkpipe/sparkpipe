@@ -136,6 +136,7 @@ SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map)
 	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
 		if ( map->slots[i].state != MAP_EMPTY )
 			return(SPARK_STATUS_BUSY);
+	map->failure = SPARK_STATUS_IO_ERROR;
 	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
 		if ( map->slots[i].event != 0 )
 		{

@@ -332,8 +332,18 @@ cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags)
     return *event != 0 ? cudaSuccess : cudaErrorMemoryAllocation;
 }
 
+static uint32_t cuda_stub_destroy_count,cuda_stub_destroy_fail_at;
+
+void spark_stub_cuda_fail_event_destroy_after(uint32_t calls)
+{
+    cuda_stub_destroy_fail_at = cuda_stub_destroy_count + calls;
+}
+
 cudaError_t cudaEventDestroy(cudaEvent_t event)
 {
+    cuda_stub_destroy_count++;
+    if (cuda_stub_destroy_count == cuda_stub_destroy_fail_at)
+        return cudaErrorInvalidValue;
     free(event);
     return cudaSuccess;
 }
@@ -727,6 +737,18 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     return CUDA_SUCCESS;
 }
 
+static uint32_t cuda_stub_import_count,cuda_stub_import_fail_at,cuda_stub_unmap_fail;
+
+void spark_stub_cuda_fail_import_after(uint32_t calls)
+{
+    cuda_stub_import_fail_at = cuda_stub_import_count + calls;
+}
+
+void spark_stub_cuda_fail_next_unmap(void)
+{
+    cuda_stub_unmap_fail = 1u;
+}
+
 CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     void *shareable_handle,
     CUmemAllocationHandleType handle_type)
@@ -740,6 +762,9 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     size_t remaining;
     int fd;
     int received;
+    cuda_stub_import_count++;
+    if (cuda_stub_import_count == cuda_stub_import_fail_at)
+        return CUDA_ERROR_OUT_OF_MEMORY;
     if (handle == 0 || shareable_handle == 0 ||
         handle_type != CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR)
     {
@@ -965,6 +990,11 @@ CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
 
 CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
 {
+    if (cuda_stub_unmap_fail != 0u)
+    {
+        cuda_stub_unmap_fail = 0u;
+        return CUDA_ERROR_INVALID_VALUE;
+    }
     cuda_stub_vmm_reservation *reservation =
         cuda_stub_vmm_reservation_for_va(pointer);
     uint32_t mapping_index;
