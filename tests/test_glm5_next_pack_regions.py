@@ -4,12 +4,28 @@ import hashlib
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from glm5_next_pack_verify import verify_region
+from glm5_next_pack_verify import verify_region, check_stage_header
 
 
 def main():
+    for stage, first, count in ((0, 0, 12), (1, 12, 11), (2, 23, 11), (3, 34, 11)):
+        args = SimpleNamespace(stage_count=4, stage_index=stage,
+                               first_layer=first, layer_count=count, mtp=False)
+        header = dict(stage_count=4, stage_index=stage, first_layer=first,
+                      layer_count=count, total_layers=45, flags=0)
+        check_stage_header(header, args)
+        for key in header:
+            corrupted = dict(header)
+            corrupted[key] += 1
+            try:
+                check_stage_header(corrupted, args)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError(f"incorrect {key} accepted")
     data = bytes(range(251)) * 40000
     expected = hashlib.sha256(data).hexdigest()
     assert verify_region(b"prefix" + data, 6, len(data), iter([data]), "large") == expected

@@ -938,12 +938,31 @@ def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
           f"{header_extra['first_layer']}..{header_extra['first_layer'] + header_extra['layer_count'] - 1})")
 
 
+def validate_stage(stage_count, stage_index, first_layer, layer_count,
+                   owns_embedding, owns_head, mtp):
+    if not 1 <= stage_count <= LAYERS or not 0 <= stage_index < stage_count:
+        raise PackFailure("invalid pipeline stage count/index")
+    if first_layer < 0 or layer_count <= 0 or first_layer + layer_count > LAYERS:
+        raise PackFailure("pipeline layer span is outside the model")
+    if owns_embedding and (stage_index != 0 or first_layer != 0):
+        raise PackFailure("embedding ownership requires the first stage and layer")
+    if (owns_head or mtp) and (stage_index + 1 != stage_count or first_layer + layer_count != LAYERS):
+        raise PackFailure("head/MTP ownership requires the final stage and layer")
+
+
+def stage_pack_name(tp_degree, tp_rank, stage_count, stage_index):
+    pipeline = f".pp{stage_count}.stage{stage_index}" if stage_count != 1 else ""
+    return f"glm5_next_stage.tp{tp_degree}{pipeline}.rank{tp_rank}.g5nsp"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, help="checkpoint directory (warm ceph)")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--first-layer", type=int, default=0)
     parser.add_argument("--layer-count", type=int, default=LAYERS)
+    parser.add_argument("--stage-count", type=int, default=1)
+    parser.add_argument("--stage-index", type=int, default=0)
     parser.add_argument("--mtp", action="store_true")
     parser.add_argument("--owns-embedding", action="store_true")
     parser.add_argument("--owns-head", action="store_true")
@@ -954,6 +973,8 @@ def main() -> int:
     parser.add_argument("--dry-plan", action="store_true",
                         help="plan and print the inventory without writing")
     args = parser.parse_args()
+    validate_stage(args.stage_count, args.stage_index, args.first_layer,
+                   args.layer_count, args.owns_embedding, args.owns_head, args.mtp)
 
     source = SourceReader(Path(args.source))
     out_dir = Path(args.output_dir)
@@ -967,9 +988,9 @@ def main() -> int:
             packer.build()
             print(f"rank {rank}: {len(packer.plan)} tensors planned")
             continue
-        emit(packer, out_dir / f"glm5_next_stage.tp{args.tp_all or args.tp_degree}"
-                              f".rank{rank}.g5nsp",
-             dict(stage_count=1, stage_index=0, first_layer=args.first_layer,
+        emit(packer, out_dir / stage_pack_name(args.tp_all or args.tp_degree,
+                                              rank, args.stage_count, args.stage_index),
+             dict(stage_count=args.stage_count, stage_index=args.stage_index, first_layer=args.first_layer,
                   layer_count=args.layer_count,
                   flags=1 if args.mtp else 0))
     source.close()
