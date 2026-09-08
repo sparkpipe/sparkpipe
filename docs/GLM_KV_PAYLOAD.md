@@ -17,9 +17,11 @@ algorithm has no CUDA dependency and supports padding between layer slabs.
 The GLM hook supplies native layout and translates the arena's packed block
 address into a physical page index. CUDA allocation and kernel addressing stay
 layer-major. The existing key/value payload mechanism carries main KV and
-index state respectively; staging and backing page sizes include both. A new
-layout fingerprint prevents old backing payloads from being treated as this
-format.
+index state respectively; staging and backing page sizes include both. The
+table's layout label now describes this format. The current backend does not
+consume that label to validate persisted data: GLM uses a newly created
+anonymous backing file. Persistent reopen compatibility remains unimplemented
+and must be checked explicitly before adding that behavior.
 
 ## Evidence
 
