@@ -85,6 +85,14 @@ class SupervisedWeightd(unittest.TestCase):
         self.assertEqual(self.call(), -16)
         self.assertIsNone(self.libc.getenv(b"SPARK_WEIGHTD_SOCKET"))
 
+    def test_non_regular_sidecar_rejected_without_waiting_for_writer(self):
+        self.sidecar.unlink()
+        os.mkfifo(self.sidecar)
+        self.assertEqual(self.call(), -20)
+        self.sidecar.unlink()
+        self.sidecar.mkdir()
+        self.assertEqual(self.call(), -20)
+
     def test_explicit_off_cannot_override_deployment(self):
         os.environ["SPARK_WEIGHTD_ATTACH"] = "0"
         self.assertEqual(self.call(), -14)

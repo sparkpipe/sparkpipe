@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include "weightd_spawn.h"
@@ -28,10 +29,33 @@ static int32_t SparkWeightdReadDigest(FILE *file,char digest[65])
 	return(0);
 }
 
+static int32_t SparkWeightdReadDigestPath(const char *path,char digest[65])
+{
+	struct stat info;
+	FILE *file;
+	int32_t fd,status;
+	fd = open(path,O_RDONLY | O_NONBLOCK);
+	if ( fd < 0 )
+		return(-7);
+	if ( fstat(fd,&info) != 0 || S_ISREG(info.st_mode) == 0 )
+	{
+		(void)close(fd);
+		return(-20);
+	}
+	file = fdopen(fd,"rb");
+	if ( file == 0 )
+	{
+		(void)close(fd);
+		return(-21);
+	}
+	status = SparkWeightdReadDigest(file,digest);
+	(void)fclose(file);
+	return(status);
+}
+
 static int32_t SparkWeightdFindDigest(DIR *directory,const char *root,char digest[65])
 {
 	struct dirent *entry;
-	FILE *file;
 	char path[1024];
 	uint32_t found = 0u;
 	int32_t bytes,status;
@@ -46,11 +70,7 @@ static int32_t SparkWeightdFindDigest(DIR *directory,const char *root,char diges
 		bytes = snprintf(path,sizeof(path),"%s/packs/%s",root,entry->d_name);
 		if ( bytes < 0 || (uint32_t)bytes >= sizeof(path) )
 			return(-6);
-		file = fopen(path,"rb");
-		if ( file == 0 )
-			return(-7);
-		status = SparkWeightdReadDigest(file,digest);
-		(void)fclose(file);
+		status = SparkWeightdReadDigestPath(path,digest);
 		if ( status != 0 )
 			return(status);
 		found = 1u;
