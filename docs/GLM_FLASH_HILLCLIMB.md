@@ -340,6 +340,23 @@ and injected CUDA-drain ownership retention. Common cache, serving-admission
 and mandatory-interface tests pass. This does not prove GPU reset, rank-wide
 collective restart, continuous traffic or throughput.
 
+The generated driver wrapper must preserve control-operation semantics. It now
+allows zero-row reset and does not require free decode capacity for an accepted
+cache control or release. A module without admission cannot acknowledge reset.
+The generator version changes so cached drivers rebuild. A regression compiles
+the actual emitted wrapper and checks these cases; the full driver compiler
+test also passes. CUDA compilation of reset head
+`43a121bfa34bfa3560010aca7cd759ed50b44972` passed in run `34290859245`.
+
+The existing rank-local driver probe accepts an optional `prefix` argument. It
+publishes a 64-token checkpoint, compares four continuation tokens after reuse
+in different slots, resets, requires the old prefix to be missing, and compares
+fresh execution against its initial output. Host fixtures cover resident B1/B3
+and lazy B3 and reject injected continuation/reset mismatches. This probe still
+needs merged-main GPU execution; token parity alone does not establish full
+numerical or distributed correctness. Extend existing probes and shared control
+paths before adding infrastructure; each abstraction needs a concrete caller.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed

@@ -61,6 +61,24 @@ class DriverProbeTests(unittest.TestCase):
                     else:
                         self.assertNotIn("PASS ", result.stdout)
 
+            prefix_cases = [
+                ("resident", "1", {}, 0), ("resident", "3", {}, 0),
+                ("lazy", "3", {"SPARK_WEIGHTD_SOCKET": "fixture"}, 0),
+                ("resident", "3", {"PROBE_BAD_PREFIX": "1"}, 4),
+                ("resident", "3", {"PROBE_BAD_RESET": "1"}, 4),
+            ]
+            for mode, rows, extra, expected in prefix_cases:
+                with self.subTest(prefix=True, mode=mode, rows=rows, extra=extra):
+                    result = subprocess.run([binary, "fixture", "pack", mode, rows, "prefix"],
+                                            env=environment | extra, capture_output=True,
+                                            text=True, timeout=5)
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    if expected == 0:
+                        self.assertIn("PASS local-prefix-reuse", result.stdout)
+                        self.assertEqual(result.stdout.count("TOKEN "), int(rows) * 76)
+                    else:
+                        self.assertNotIn("PASS ", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

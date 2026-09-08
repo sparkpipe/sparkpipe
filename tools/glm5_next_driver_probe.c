@@ -13,6 +13,7 @@
 
 #define PROBE_ROWS 3u
 #define PROBE_STEPS 4u
+#define PROBE_PREFIX_TOKENS 64u
 #define PROBE_TARGET "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
 typedef struct probe_state
@@ -29,6 +30,8 @@ typedef struct probe_state
 	SparkModelDriverCompletion completion;
 	SparkModelDriverCacheLane cache_lanes[PROBE_ROWS];
 	atomic_uint completed;
+	uint32_t prefix_probe;
+	uint64_t next_request_id,control_generation;
 	uint32_t tokens[PROBE_ROWS],slots[PROBE_ROWS],outputs[PROBE_ROWS];
 	uint64_t positions[PROBE_ROWS],sequences[PROBE_ROWS];
 } probe_state_t;
@@ -79,9 +82,9 @@ static void probe_node(probe_state_t *state,const char *pack,uint32_t rows)
 	node->stage_count = 1u;
 	node->layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT;
 	node->expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
-	node->resident_sequence_capacity = rows;
+	node->resident_sequence_capacity = state->prefix_probe != 0u ? 2u * rows : rows;
 	node->pipeline_slot_count = 1u;
-	node->max_sequence_positions = 64u;
+	node->max_sequence_positions = state->prefix_probe != 0u ? 128u : 64u;
 	node->execution_row_capacity = rows;
 	node->tp_degree = 16u;
 	node->tp_rank = 0u;
@@ -153,7 +156,7 @@ static void probe_frame(probe_state_t *state,uint32_t rows,uint32_t step)
 	state->buffer.flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 	state->buffer.address = state->outputs;
 	state->buffer.bytes = ((uint64_t)rows * sizeof(uint32_t));
-	frame->request_id = (step + 1u);
+	frame->request_id = ++state->next_request_id;
 	frame->sequence_id = 1u;
 	frame->sequence_position = step;
 	frame->active_slot_count = rows;
@@ -178,7 +181,7 @@ static SparkStatus probe_request(probe_state_t *state,SparkModelDriverAdmissionR
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	request->submission_id = state->frame.request_id;
-	request->control_generation = 1u;
+	request->control_generation = state->control_generation;
 	request->transaction_id = state->frame.request_id;
 	request->request_generation = 1u;
 	request->step_generation = state->frame.request_id;
@@ -211,13 +214,11 @@ static SparkStatus probe_submit(probe_state_t *state)
 	return(rollback == SPARK_STATUS_OK ? status : rollback);
 }
 
-static int32_t probe_step(probe_state_t *state,uint32_t rows,uint32_t step)
+static int32_t probe_execute(probe_state_t *state,uint32_t rows,uint32_t step)
 {
 	SparkStatus status;
 	uint32_t row;
 	int32_t result;
-	probe_batch(state,rows,step);
-	probe_frame(state,rows,step);
 	atomic_store_explicit(&state->completed,0u,memory_order_release);
 	status = probe_submit(state);
 	if ( status != SPARK_STATUS_OK )
@@ -242,22 +243,29 @@ static int32_t probe_step(probe_state_t *state,uint32_t rows,uint32_t step)
 	return(0);
 }
 
-static int32_t probe_release(probe_state_t *state,uint32_t rows)
+static int32_t probe_step(probe_state_t *state,uint32_t rows,uint32_t step)
+{
+	probe_batch(state,rows,step);
+	probe_frame(state,rows,step);
+	return(probe_execute(state,rows,step));
+}
+
+static int32_t probe_release(probe_state_t *state,uint32_t rows,uint32_t position)
 {
 	SparkModelDriverAdmissionRequest request;
 	SparkModelDriverAdmissionDecision decision;
 	SparkModelDriverRuntimeSnapshot snapshot;
 	SparkStatus status;
 	uint32_t row;
-	state->frame.request_id = PROBE_STEPS + 1u;
+	state->frame.request_id = ++state->next_request_id;
 	state->frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
 	state->frame.new_token_count = 0u;
-	state->frame.sequence_position = PROBE_STEPS;
+	state->frame.sequence_position = position;
 	for (row=0u; row<rows; row++)
 	{
 		state->cache_lanes[row].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
-		state->cache_lanes[row].sequence_position = PROBE_STEPS;
-		state->cache_lanes[row].step_generation = PROBE_STEPS + 1u;
+		state->cache_lanes[row].sequence_position = position;
+		state->cache_lanes[row].step_generation = position + 1u;
 	}
 	status = probe_request(state,&request);
 	if ( status == SPARK_STATUS_OK )
@@ -269,15 +277,104 @@ static int32_t probe_release(probe_state_t *state,uint32_t rows)
 	return(0);
 }
 
+static void probe_checkpoint_frame(probe_state_t *state,uint32_t rows,uint32_t step,uint32_t replay)
+{
+	SparkModelDriverCacheLane *lane;
+	uint32_t row;
+	probe_batch(state,rows,step);
+	probe_frame(state,rows,step);
+	for (row=0u; row<rows; row++)
+	{
+		lane = &state->cache_lanes[row];
+		if ( replay != 0u )
+		{
+			state->slots[row] = lane->resident_sequence_slot = rows + row;
+			state->sequences[row] = lane->sequence_id = rows + row + 1u;
+		}
+		// Fixed-input test identities distinguish the three complete prompts.
+		if ( step + 1u == PROBE_PREFIX_TOKENS )
+		{
+			lane->flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;
+			lane->publish_token_count = PROBE_PREFIX_TOKENS;
+			lane->publish_identity.sha256[0] = (uint8_t)(row + 1u);
+		}
+		if ( replay != 0u && step == PROBE_PREFIX_TOKENS )
+		{
+			lane->flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+			lane->prefix_token_count = PROBE_PREFIX_TOKENS;
+			lane->prefix_identity.sha256[0] = (uint8_t)(row + 1u);
+		}
+	}
+	state->frame.sequence_id = state->sequences[0];
+}
+
+static int32_t probe_reset(probe_state_t *state)
+{
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status;
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = state->program->program_id;
+	request.control_generation = state->control_generation + 1u;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	status = SparkAdmissionEvaluate(state->driver.interface,state->instance,&request,&decision);
+	if ( status != SPARK_STATUS_OK )
+		return(-13);
+	state->control_generation = request.control_generation;
+	return(0);
+}
+
+static int32_t probe_prefix(probe_state_t *state,uint32_t rows)
+{
+	uint32_t start[PROBE_STEPS][PROBE_ROWS],continuation[PROBE_STEPS][PROBE_ROWS];
+	uint32_t step;
+	int32_t result;
+	for (step=0u; step<PROBE_PREFIX_TOKENS + PROBE_STEPS; step++)
+	{
+		probe_checkpoint_frame(state,rows,step,0u);
+		result = probe_execute(state,rows,step);
+		if ( result != 0 )
+			return(result);
+		if ( step < PROBE_STEPS )
+			memcpy(start[step],state->outputs,rows * sizeof(uint32_t));
+		if ( step >= PROBE_PREFIX_TOKENS )
+			memcpy(continuation[step - PROBE_PREFIX_TOKENS],state->outputs,rows * sizeof(uint32_t));
+	}
+	result = probe_release(state,rows,PROBE_PREFIX_TOKENS + PROBE_STEPS);
+	for (step=0u; result == 0 && step<PROBE_STEPS; step++)
+	{
+		probe_checkpoint_frame(state,rows,PROBE_PREFIX_TOKENS + step,1u);
+		result = probe_execute(state,rows,PROBE_PREFIX_TOKENS + step);
+		if ( result == 0 && memcmp(continuation[step],state->outputs,rows * sizeof(uint32_t)) != 0 )
+			return(-14);
+	}
+	if ( result == 0 )
+		result = probe_release(state,rows,PROBE_PREFIX_TOKENS + PROBE_STEPS);
+	if ( result == 0 )
+		result = probe_reset(state);
+	if ( result != 0 )
+		return(result);
+	probe_checkpoint_frame(state,rows,PROBE_PREFIX_TOKENS,1u);
+	if ( probe_submit(state) != SPARK_STATUS_NOT_FOUND )
+		return(-15);
+	for (step=0u; step<PROBE_STEPS; step++)
+	{
+		result = probe_step(state,rows,step);
+		if ( result != 0 || memcmp(start[step],state->outputs,rows * sizeof(uint32_t)) != 0 )
+			return(result != 0 ? result : -16);
+	}
+	return(probe_release(state,rows,PROBE_STEPS));
+}
+
 int main(int argc,char **argv)
 {
 	probe_state_t state;
 	uint32_t rows,step;
 	int32_t result;
 	const char *socket;
-	if ( argc != 5 || (strcmp(argv[3],"resident") != 0 && strcmp(argv[3],"lazy") != 0) || (strcmp(argv[4],"1") != 0 && strcmp(argv[4],"3") != 0) )
+	if ( (argc != 5 && argc != 6) || (argc == 6 && strcmp(argv[5],"prefix") != 0) || (strcmp(argv[3],"resident") != 0 && strcmp(argv[3],"lazy") != 0) || (strcmp(argv[4],"1") != 0 && strcmp(argv[4],"3") != 0) )
 	{
-		fprintf(stderr,"usage: %s DRIVER TP16_RANK0_PACK resident|lazy 1|3\n",argv[0]);
+		fprintf(stderr,"usage: %s DRIVER TP16_RANK0_PACK resident|lazy 1|3 [prefix]\n",argv[0]);
 		return(2);
 	}
 	socket = getenv("SPARK_WEIGHTD_SOCKET");
@@ -288,12 +385,16 @@ int main(int argc,char **argv)
 	}
 	rows = (uint32_t)(argv[4][0] - '0');
 	memset(&state,0,sizeof(state));
+	state.prefix_probe = argc == 6 ? 1u : 0u;
+	state.control_generation = 1u;
 	atomic_init(&state.completed,0u);
 	result = probe_open(&state,argv[1],argv[2],rows);
-	for (step=0u; result == 0 && step<PROBE_STEPS; step++)
+	if ( result == 0 && state.prefix_probe != 0u )
+		result = probe_prefix(&state,rows);
+	for (step=0u; state.prefix_probe == 0u && result == 0 && step<PROBE_STEPS; step++)
 		result = probe_step(&state,rows,step);
-	if ( result == 0 )
-		result = probe_release(&state,rows);
+	if ( result == 0 && state.prefix_probe == 0u )
+		result = probe_release(&state,rows,PROBE_STEPS);
 	if ( result != 0 )
 	{
 		fprintf(stderr,"probe failed result=%d; process exit preserves uncertain in-flight ownership\n",result);
@@ -304,6 +405,9 @@ int main(int argc,char **argv)
 	if ( cudaStreamDestroy(state.stream) != cudaSuccess )
 		return(5);
 	SparkUnloadModelDriver(&state.driver);
-	printf("PASS local-token-smoke mode=%s rows=%u steps=%u; not full-model numerical qualification\n",argv[3],rows,PROBE_STEPS);
+	if ( state.prefix_probe != 0u )
+		printf("PASS local-prefix-reuse mode=%s rows=%u prefix=64 continuation=4 reset=verified; rank-local token parity only\n",argv[3],rows);
+	else
+		printf("PASS local-token-smoke mode=%s rows=%u steps=%u; not full-model numerical qualification\n",argv[3],rows,PROBE_STEPS);
 	return(0);
 }

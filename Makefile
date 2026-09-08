@@ -407,6 +407,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_range_manifest.py \
 	tests/test_weightd_lazy_pair.py \
 	tests/test_glm5_next_driver_probe.py \
+	tests/test_generated_control_admission.py \
 	tests/test_glm5_next_index_kv.py \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \

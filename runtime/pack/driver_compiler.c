@@ -21,7 +21,7 @@
 #define SPARK_MODEL_PACKAGE_MANIFEST_NAME "model_package.json"
 #define SPARK_MODEL_PACKAGE_STAGE_DIRECTORY_NAME "stages"
 #define SPARK_MODEL_PACKAGE_SCHEMA_VERSION 3u
-#define SPARK_DRIVER_GENERATOR_ID "sparkpipe.driver.generator.v3"
+#define SPARK_DRIVER_GENERATOR_ID "sparkpipe.driver.generator.v4"
 static const uint8_t SparkDriverHashFieldTerminator = 0u;
 #if defined(__APPLE__)
 #define SPARK_DRIVER_FIXED_LINK_CONTRACT "-std=c11;-O3;-fPIC;-fvisibility=hidden;-fno-semantic-interposition;-dynamiclib;-Wl,-undefined,error;-Wl,-exported_symbol,_SparkModelDriverGetInterface"
@@ -828,7 +828,7 @@ static void SparkWriteGeneratedAdmitFunction(
         fprintf(file, "            decision->available_dispatch_slot_count = %uu;\n", program->max_inflight);
         if (program->scheduling.max_active_slots != 0u)
         {
-            fputs("            if (request->active_slot_count == 0u)\n            {\n", file);
+            fputs("            if (request->active_slot_count == 0u && request->admission_flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET)\n            {\n", file);
             fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);\n            }\n", file);
             fprintf(file, "            if (request->active_slot_count > %uu)\n            {\n", program->scheduling.max_active_slots);
             fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);\n            }\n", file);
@@ -840,6 +840,7 @@ static void SparkWriteGeneratedAdmitFunction(
         }
         if (has_module_admission == 0)
         {
+            fputs("            if (request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET)\n            {\n                return SPARK_STATUS_UNSUPPORTED;\n            }\n", file);
             fprintf(file, "            decision->estimated_service_time_ns = %lluull;\n", (unsigned long long)program->scheduling.target_latency_ns);
             fprintf(file, "            decision->device_memcpy_bytes = %lluull;\n", (unsigned long long)program->scheduling.device_memcpy_bytes_per_submit_ceiling);
             fprintf(file, "            decision->host_staging_bytes = %lluull;\n", (unsigned long long)program->scheduling.host_staging_bytes_per_submit_ceiling);
@@ -867,7 +868,7 @@ static void SparkWriteGeneratedAdmitFunction(
             }
         }
         fputs("            SparkGeneratedFinalizeAdmissionDecision(decision);\n", file);
-        fputs("            if (decision->available_dispatch_slot_count == 0u)\n            {\n", file);
+        fputs("            if (decision->available_dispatch_slot_count == 0u && request->admission_flags == 0u && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) == 0u)\n            {\n", file);
         fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY);\n            }\n", file);
         fputs("            return SPARK_STATUS_OK;\n        }\n", file);
     }
