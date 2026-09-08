@@ -1,8 +1,13 @@
+#define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "sparkpipe/spark_weightd.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static uint32_t read32(const uint8_t *p)
 {
@@ -125,15 +130,28 @@ static SparkStatus load_manifest(FILE *file,uint64_t pack_bytes,SparkWeightdMani
 SparkStatus SparkWeightdManifestLoad(const char *path,uint64_t pack_bytes,SparkWeightdManifest *out)
 {
 	FILE *file;
+	struct stat info;
+	int32_t fd;
 	SparkStatus status;
 	if ( out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(out,0,sizeof(*out));
 	if ( path == 0 || pack_bytes == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	file = fopen(path,"rb");
+	fd = open(path,O_RDONLY | O_NONBLOCK);
+	if ( fd < 0 )
+		return(errno == ENOENT ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_IO_ERROR);
+	if ( fstat(fd,&info) != 0 || S_ISREG(info.st_mode) == 0 )
+	{
+		(void)close(fd);
+		return(SPARK_STATUS_PARSE_ERROR);
+	}
+	file = fdopen(fd,"rb");
 	if ( file == 0 )
-		return(SPARK_STATUS_NOT_FOUND);
+	{
+		(void)close(fd);
+		return(SPARK_STATUS_IO_ERROR);
+	}
 	status = load_manifest(file,pack_bytes,out);
 	if ( fclose(file) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;

@@ -37,10 +37,37 @@ SparkStatus SparkWeightdLeaseTableDestroy(SparkWeightdLeaseTable *table)
 	return(SPARK_STATUS_OK);
 }
 
-static int32_t compare_index(const void *left,const void *right)
+static void sift_groups(uint32_t *groups,uint32_t root,uint32_t count)
 {
-	uint32_t a = *(const uint32_t *)left,b = *(const uint32_t *)right;
-	return(a < b ? -1 : a > b);
+	uint32_t child,value;
+	for (;;)
+	{
+		child = ((root * 2u) + 1u);
+		if ( child >= count )
+			return;
+		if ( (child + 1u) < count && groups[child] < groups[child + 1u] )
+			child++;
+		if ( groups[root] >= groups[child] )
+			return;
+		value = groups[root];
+		groups[root] = groups[child];
+		groups[child] = value;
+		root = child;
+	}
+}
+
+static void sort_groups(uint32_t *groups,uint32_t count)
+{
+	uint32_t i,value;
+	for (i=(count / 2u); i>0u; i--)
+		sift_groups(groups,(i - 1u),count);
+	for (i=count; i>1u; i--)
+	{
+		value = groups[0];
+		groups[0] = groups[i - 1u];
+		groups[i - 1u] = value;
+		sift_groups(groups,0u,(i - 1u));
+	}
 }
 
 static SparkStatus prepare_groups(SparkWeightdLeaseTable *table,SparkWeightdLease *lease,const SparkWeightdExpertKey *keys,uint32_t count,uint32_t *unique)
@@ -55,7 +82,7 @@ static SparkStatus prepare_groups(SparkWeightdLeaseTable *table,SparkWeightdLeas
 			return(SPARK_STATUS_NOT_FOUND);
 		lease->groups[i] = (uint32_t)(group - table->manifest->groups);
 	}
-	qsort(lease->groups,count,sizeof(*lease->groups),compare_index);
+	sort_groups(lease->groups,count);
 	for (i=0u; i<count; i++)
 		if ( *unique == 0u || lease->groups[i] != lease->groups[*unique - 1u] )
 			lease->groups[(*unique)++] = lease->groups[i];

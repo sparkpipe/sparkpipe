@@ -85,6 +85,10 @@ def main():
         assert not result.ranges and not result.groups
         path.unlink()
         assert lib.SparkWeightdManifestLoad(bytes(path), 128, C.byref(result)) != 0
+        import os
+        os.mkfifo(path)
+        assert lib.SparkWeightdManifestLoad(bytes(path), 128, C.byref(result)) != 0
+        path.unlink()
         print("PASS v2 expert manifest: 12096 groups, 48384 ranges, lookup and corruption gates")
 
 
