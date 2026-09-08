@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "92325fc20e62226a01c66d6d01d336ea539d80ff34d1be7f995407fa95871eba",
-      "size_bytes": 9678
+      "sha256": "f33e8a737f164cc072156da448411d7608eff3009b4a0d820bf4b0beffd7910c",
+      "size_bytes": 10144
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
@@ -9645,5 +9645,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32423478
+  "total_bytes": 32423944
 }

@@ -35,7 +35,7 @@ correct math from repeatability, or full serving from a component probe.
 | Shared row policy, PR #860 / main `5500665` | GLM wrappers use common row validation and wave selection with indexed lane callbacks. Host harness passes widths 1–101, ragged waves, invalid order and released claims. Merged-main B3 memcheck and resident/lazy parity pass. | The qsort pattern applies directly: common algorithm, narrow ordinal callback, opaque context. Replace O(rows × lanes) searches with indexed lookups. |
 | Mandatory serving contract, draft PR #861 | ABI 21 removes seven opt-out bits, makes callbacks/cache geometry mandatory and removes zero-cache scheduling paths. Common host tests pass; GLM cache/reset integration remains incomplete. | Required means fail explicitly when missing. Callback presence is only structural validation; stubs and flags cannot establish behavior. |
 | Accurate ABI probe, draft PR #861 | Replaced copied, incorrect structs/flag values with the public header and common loader. | Diagnostic tools must consume the same contract as production, or they can report misleading capability results. |
-| Layered KV/index backing payload, PR #862 | Common gather/scatter with a hardware copy callback; GLM supplies native geometry. Actual GLM host hook tests pass both regions across three layers and five pages; substituting the previous contiguous copy fails the payload check. CUDA CI and merged-main GPU validation are pending. | Trace native layer/page indexing against backing payload layout. Total allocation size is insufficient; distinguish each page and layer in tests. Include index state in payload sizing. |
+| Layered KV/index backing payload, PR #862 / main `d687fc8` | Common gather/scatter with a hardware copy callback; GLM supplies native geometry. Actual GLM host hook tests pass both regions across three layers and five pages; substituting the previous contiguous copy fails the payload check. CUDA CI, merged-main B3 memcheck and resident/lazy/concurrent parity pass. | Trace native layer/page indexing against backing payload layout. Total allocation size is insufficient; distinguish each page and layer in tests. Include index state in payload sizing. |
 | Numerical gate integrity, PR #863 | Three probe failure results were discarded; projection readback could skip a comparison. Checks now affect exit status. Common metrics reject nonfinite inputs and accumulate squared errors directly; regression tests reject the previous metric implementation. GPU rerun pending. | Test the acceptance test with bad values. Error-norm cancellation and ignored return codes can turn an optimization regression green. Component repeatability is not numerical correctness. |
 
 ## Baseline that must not be misinterpreted
@@ -69,6 +69,14 @@ and `glm-common-compare-5500665` (`4a2f9ae0165f403b8e79bb24e2a0201e`, parity).
 All participant cgroups stopped and the assigned Spark was released. These
 checks do not provide a new distributed throughput result.
 
+After #862, all three jobs passed on clean main `d687fc8`:
+`glm-cache-build-d687fc8` (attempt `a2f9cdc14eef41aa91b2b70c4f8e4454`),
+`glm-cache-memcheck-d687fc8` (`c158b1860ba24b9bbca1ccf4b39ed654`, zero errors),
+and `glm-cache-compare-d687fc8` (`c75db10414b74f498cbf4e528a76d89a`, parity).
+The queue confirmed all cgroups stopped and Spark0 released. This proves the
+component checks survived the cache change; full prefix restoration remains
+unqualified.
+
 The existing synthetic validator also passed on `5500665`, job
 `glm-synthetic-oracle-5500665`, attempt `8a86853a13754fd6983359322e3d5fb9`.
 Its KDA+dense+mHC numerical check measured relative L2 0.00468 and cosine
@@ -85,8 +93,8 @@ discarded probe failures and labels the component coverage explicitly.
    Prove prefix-hit execution matches uninterrupted computation. No fixed
    identity page mapping or KV-only snapshot may masquerade as this result.
    PR #862 fixes the identified layer-major/backing-page mismatch and missing
-   index payload; complete its merged-main validation before using it as a
-   foundation. The payload tests do not establish full prefix restoration.
+   index payload; its merged-main component checks pass. The payload tests do
+   not establish full prefix restoration.
    See that PR's `docs/GLM_KV_PAYLOAD.md` for the regression and reusable lesson.
 2. Qualify true batched distributed computation and clean release/reconnect.
    A continuation-lease teardown failure was observed on the old baseline;
