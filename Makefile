@@ -232,6 +232,8 @@ TEST_NAMES := \
     test_release \
     test_kv_store \
     test_serving_cache_admission \
+    test_kda_reference \
+    test_numerical_metrics \
     test_kv_cache \
     test_kv_page_layout \
 	test_k3_kv_cache \
@@ -639,6 +641,12 @@ build/test_dsv4_parallel_shape: tests/test_dsv4_parallel_shape.c $(DSV4_HOST_LIB
 
 build/test_kv_page_layout: tests/test_kv_page_layout.c include/sparkpipe/spark_kv_page_store.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kda_reference: tests/test_kda_reference.c include/sparkpipe/spark_kda_reference.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
+
+build/test_numerical_metrics: tests/test_numerical_metrics.c include/sparkpipe/spark_numerical_metrics.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -lm -o $@
 
 build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
@@ -1150,7 +1158,7 @@ test: $(TEST_BINARIES)
 		python3 $$python_test; \
 	done
 
-# ============================================================
+# =====================================================
 # THE OFFLINE GATE SET (red-gate lane, 2026-08-28). The kimi audit found
 # the previous "zero red gates" claim ran a selection of gates, not a
 # set. This variable IS the set: a claim of an "offline gate pass" means
@@ -1169,7 +1177,7 @@ test: $(TEST_BINARIES)
 # hardware_* tools) SKIP with a notice when nvcc is absent and are
 # validated on spark nodes. C test binaries that a host cannot build are
 # skipped by `make test` with the same notice contract.
-# ============================================================
+# =====================================================
 OFFLINE_GATES := build-all run-tests package-manifest
 
 .PHONY: offline-gates

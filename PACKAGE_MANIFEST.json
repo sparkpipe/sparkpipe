@@ -1,5 +1,5 @@
 {
-  "file_count": 1932,
+  "file_count": 1938,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "7749ede05c07d1842059a0bb72e81d2ebbe4dccdabd9de7ebb87ded2da63df18",
-      "size_bytes": 95282
+      "sha256": "fb5d2b84d06f09aea1ff44c3f134907d37748ff088ece57bd0d627e54a472d15",
+      "size_bytes": 95618
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -792,6 +792,11 @@
       "size_bytes": 14171
     },
     {
+      "path": "docs/GLM_KDA_REFERENCE.md",
+      "sha256": "90b3d5c4ea504fba5a76a9a6b21bb961c45a02405cc7e284c9789b2ccc8acded",
+      "size_bytes": 1684
+    },
+    {
       "path": "docs/GLM_KV_PAYLOAD.md",
       "sha256": "c2a3a427af71846bd3a2ea9302876ca5a07c99029eea296a0e12a7a05be06115",
       "size_bytes": 3082
@@ -800,6 +805,11 @@
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
       "sha256": "47cc5c9a0ba5125ce29fe25de766431655d0281e2fa8b69ed0e004d325b63c92",
       "size_bytes": 8312
+    },
+    {
+      "path": "docs/GLM_NUMERICAL_GATES.md",
+      "sha256": "c7522e1e886e0f1b8fb87995a076a479722571d8531dc7e13398d63ec226c6c5",
+      "size_bytes": 2093
     },
     {
       "path": "docs/GLM_PERFORMANCE_GATES.md",
@@ -2842,6 +2852,11 @@
       "size_bytes": 2632
     },
     {
+      "path": "include/sparkpipe/spark_kda_reference.h",
+      "sha256": "ad4746a387f73a91e0ae0964ce0947a6e18dec107629c4c7c6dcde4163d965fc",
+      "size_bytes": 1114
+    },
+    {
       "path": "include/sparkpipe/spark_kv_backing.h",
       "sha256": "495b47dd956998e4150aa498776de8d37ff93c8c404c48563ac7abd744ab5978",
       "size_bytes": 1573
@@ -2950,6 +2965,11 @@
       "path": "include/sparkpipe/spark_module_library.h",
       "sha256": "3d4758272e545193fc59b3c8800e4dfd7740f6b871ef1e9ed078f4fe79196648",
       "size_bytes": 3014
+    },
+    {
+      "path": "include/sparkpipe/spark_numerical_metrics.h",
+      "sha256": "8ce4598d68b9975d35827f59e96bfb7e1b1774f6dbb6295fc7814b27f4b8a07c",
+      "size_bytes": 1717
     },
     {
       "path": "include/sparkpipe/spark_nvme_tier.h",
@@ -4068,8 +4088,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu",
-      "sha256": "834fc20c5d6b9970c33a14eae117c4da13f54255dbd3ed8bb0805eaaafde2665",
-      "size_bytes": 89207
+      "sha256": "6c63e86f54b472eaac101aef8184258b929d5b42f476b50a1617a28aa6d8d74a",
+      "size_bytes": 85718
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu",
@@ -4078,8 +4098,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/validate_glm5_next_resident_decode_stage_cuda.sh",
-      "sha256": "a799f04093da4b0f7b3fbb6008180ba12cf96cad26bfa2345a8bb97f17646c90",
-      "size_bytes": 2884
+      "sha256": "2dcaa13c8db595b07878e8dc7c602361f4a1d176eb21faeb8138e842dd59bfac",
+      "size_bytes": 2875
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/validate_glm5_next_resident_decode_stage_mtp_parity.sh",
@@ -7302,6 +7322,11 @@
       "size_bytes": 8515
     },
     {
+      "path": "tests/test_kda_reference.c",
+      "sha256": "0ce3589267d27ceb90e647d5d47e5f14ff4bf929583ccd42fe6804696c4d5d12",
+      "size_bytes": 1172
+    },
+    {
       "path": "tests/test_kernel_algorithms.py",
       "sha256": "4d6f5f9daeae5fdba317fe18138e6e22cb9a10db0dfef351b8105ee78e7e5e9e",
       "size_bytes": 14289
@@ -7495,6 +7520,11 @@
       "path": "tests/test_no_python_in_production.py",
       "sha256": "c12797204c4bc34bd42e846a9585c387e1834b11f14e2b86d0194d02c2e24ac8",
       "size_bytes": 1784
+    },
+    {
+      "path": "tests/test_numerical_metrics.c",
+      "sha256": "28753f64c11adce7fd43e06d14c8bc0ab47518aa6b3317f27b57c54b80cd2a63",
+      "size_bytes": 2026
     },
     {
       "path": "tests/test_nvme_kv_estimate.py",
@@ -9665,5 +9695,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32465629
+  "total_bytes": 32472273
 }

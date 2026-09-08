@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_numerical_metrics.h"
+#include "sparkpipe/spark_kda_reference.h"
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
@@ -119,38 +121,19 @@ static int SparkGlm5NextValFail(const char *check,const char *detail)
 	return(1);
 }
 
-typedef struct SparkGlm5NextValMetrics
-{
-	double max_relative_l2;
-	double cosine;
-	double max_abs;
-} SparkGlm5NextValMetrics;
+typedef SparkNumericalMetrics SparkGlm5NextValMetrics;
 
 static void SparkGlm5NextValMeasure(SparkGlm5NextValMetrics *metrics,const float *actual,const float *reference,uint64_t count)
 {
-	double dot = 0.0, na = 0.0, nr = 0.0, max_abs = 0.0;
-	uint64_t index;
-	for (index = 0u; index < count; index++)
-	{
-		double a = (double)actual[index];
-		double r = (double)reference[index];
-		dot += a * r;
-		na += a * a;
-		nr += r * r;
-		if ( fabs(a - r) > max_abs )
-			max_abs = fabs(a - r);
-	}
-	metrics->max_abs = max_abs;
-	metrics->cosine = (na > 0.0 && nr > 0.0) ? dot / (sqrt(na) * sqrt(nr)) : 1.0;
-	metrics->max_relative_l2 = nr > 0.0 ? sqrt(na > 0.0 ? (na - 2.0 * dot + nr) : nr) / sqrt(nr) : sqrt(na);
+	*metrics = SparkNumericalMeasureF32(actual,reference,count);
 }
 
 static int SparkGlm5NextValReport(const char *check,const SparkGlm5NextValMetrics *metrics,double max_relative_l2,double minimum_cosine)
 {
-	int ok = metrics->max_relative_l2 <= max_relative_l2 && metrics->cosine >= minimum_cosine;
+	int ok = SparkNumericalMetricsWithin(metrics,max_relative_l2,minimum_cosine);
 	printf("%s %-42s rel_l2 %.5f (max %.5f) cos %.7f (min %.7f) maxabs %.3e\n",
-		ok ? "PASS" : "FAIL",check,metrics->max_relative_l2,max_relative_l2,
-		metrics->cosine,minimum_cosine,metrics->max_abs);
+		ok ? "PASS" : "FAIL",check,metrics->relative_l2,max_relative_l2,
+		metrics->cosine,minimum_cosine,metrics->max_absolute);
 	return(ok ? 0 : 1);
 }
 
@@ -575,31 +558,7 @@ static void SparkGlm5NextValKdaToken(
 		const float *vh = v + head * dim_per_head;
 		const float *ah = retention + head * dim_per_head;
 		float *sh = state + (uint64_t)head * dim_per_head * dim_per_head;
-		float predicted[SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION];
-		for (uint32_t key = 0u; key < dim_per_head; key++)
-			for (uint32_t value = 0u; value < dim_per_head; value++)
-				sh[(uint64_t)key * dim_per_head + value] *= ah[key];
-		for (uint32_t value = 0u; value < dim_per_head; value++)
-		{
-			float dot = 0.0f;
-			for (uint32_t key = 0u; key < dim_per_head; key++)
-				dot += sh[(uint64_t)key * dim_per_head + value] *
-					kh[key] * ah[key];
-			predicted[value] = dot;
-		}
-		for (uint32_t value = 0u; value < dim_per_head; value++)
-		{
-			float scale = beta[head] * (vh[value] - predicted[value]);
-			for (uint32_t key = 0u; key < dim_per_head; key++)
-				sh[(uint64_t)key * dim_per_head + value] += scale * kh[key];
-		}
-		for (uint32_t value = 0u; value < dim_per_head; value++)
-		{
-			float dot = 0.0f;
-			for (uint32_t key = 0u; key < dim_per_head; key++)
-				dot += sh[(uint64_t)key * dim_per_head + value] * qh[key];
-			core[head * dim_per_head + value] = dot;
-		}
+		SparkKdaReferenceHead(sh,qh,kh,vh,ah,beta[head],dim_per_head,dim_per_head,core + head * dim_per_head);
 	}
 	for (head = 0u; head < heads; head++)
 	{
@@ -1742,6 +1701,26 @@ static void SparkGlm5NextValOracleTier1Token(SparkGlm5NextValOracleWalk *walk,co
 		SPARK_GLM5_NEXT_VHIDDEN,walk->streams);
 }
 
+static int32_t SparkGlm5NextValCheckOutputProjection(const SparkGlm5NextValFixture *fixture)
+{
+	uint16_t y[SPARK_GLM5_NEXT_VKDA_DIM],output[SPARK_GLM5_NEXT_VHIDDEN];
+	float reference[SPARK_GLM5_NEXT_VHIDDEN],actual[SPARK_GLM5_NEXT_VHIDDEN],sum;
+	SparkGlm5NextValMetrics metrics;
+	uint32_t row,column;
+	if ( cudaMemcpy(y,fixture->kv_slot,sizeof(y),cudaMemcpyDeviceToHost) != cudaSuccess || cudaMemcpy(output,fixture->attention_out,sizeof(output),cudaMemcpyDeviceToHost) != cudaSuccess )
+		return(SparkGlm5NextValFail("probe o_proj","readback"));
+	for (row=0u; row<SPARK_GLM5_NEXT_VHIDDEN; row++)
+	{
+		sum = 0.0f;
+		for (column=0u; column<SPARK_GLM5_NEXT_VKDA_DIM; column++)
+			sum += SparkGlm5NextValFromBf16(y[column]) * fixture->kda_out.host[(uint64_t)row * SPARK_GLM5_NEXT_VKDA_DIM + column];
+		reference[row] = sum;
+		actual[row] = SparkGlm5NextValFromBf16(output[row]);
+	}
+	SparkGlm5NextValMeasure(&metrics,actual,reference,SPARK_GLM5_NEXT_VHIDDEN);
+	return(SparkGlm5NextValReport("probe o_proj gemm (device y vs host recompute)",&metrics,0.02,0.999));
+}
+
 int main(int argc,char **argv)
 {
 	static SparkGlm5NextValFixture fixture;
@@ -1816,83 +1795,12 @@ int main(int argc,char **argv)
 			device_sublayer[i] = SparkGlm5NextValFromBf16(read_sublayer[i]);
 		}
 		SparkGlm5NextValMeasure(&probe_metrics,device_collapsed,collapsed,SPARK_GLM5_NEXT_VHIDDEN);
-		(void)SparkGlm5NextValReport("probe0 hc collapsed",&probe_metrics,0.02,0.999);
+		failures += SparkGlm5NextValReport("probe0 hc collapsed",&probe_metrics,0.02,0.999);
 		SparkGlm5NextValMeasure(&probe_metrics,device_sublayer,sublayer,SPARK_GLM5_NEXT_VHIDDEN);
-		(void)SparkGlm5NextValReport("probe0 kda sublayer",&probe_metrics,0.05,0.995);
+		failures += SparkGlm5NextValReport("probe0 kda sublayer",&probe_metrics,0.05,0.995);
 		printf("probe0 device sublayer[0..3] %f %f %f %f\n",
 			device_sublayer[0],device_sublayer[1],device_sublayer[2],device_sublayer[3]);
-		{
-			float retention_probe[128];
-			float write_gate_probe[SPARK_GLM5_NEXT_VKDA_HEADS];
-			float q_probe[128];
-			uint16_t q_read[128];
-			if (cudaMemcpy(retention_probe,fixture.kda_retention,128u * sizeof(float),cudaMemcpyDeviceToHost) == cudaSuccess &&
-				cudaMemcpy(write_gate_probe,fixture.kda_write_gate,SPARK_GLM5_NEXT_VKDA_HEADS * sizeof(float),cudaMemcpyDeviceToHost) == cudaSuccess &&
-				cudaMemcpy(q_read,fixture.q_bf16,128u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
-			{
-				uint32_t j;
-				float gate_probe[128];
-				float v_probe[128];
-				uint16_t gate_read[128];
-				uint16_t v_read[128];
-				printf("probe retention[0..3] %f %f %f %f  write_gate[0..3] %f %f %f %f\n",
-					retention_probe[0],retention_probe[1],retention_probe[2],retention_probe[3],
-					write_gate_probe[0],write_gate_probe[1],write_gate_probe[2],write_gate_probe[3]);
-				for (j = 0u; j < 128u; j++)
-					q_probe[j] = SparkGlm5NextValFromBf16(q_read[j]);
-				printf("probe q_norm_sq %f\n",
-					q_probe[0]*q_probe[0] + q_probe[1]*q_probe[1] + q_probe[2]*q_probe[2] + q_probe[3]*q_probe[3]);
-				if (cudaMemcpy(gate_read,fixture.kda_gate_bf16,128u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess &&
-					cudaMemcpy(v_read,fixture.gate_up,128u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
-				{
-					for (j = 0u; j < 8u; j++)
-					{
-						gate_probe[j] = SparkGlm5NextValFromBf16(gate_read[j]);
-						v_probe[j] = SparkGlm5NextValFromBf16(v_read[j]);
-					}
-					printf("probe gate[0..3] %f %f %f %f  v[0..3] %f %f %f %f\n",
-						gate_probe[0],gate_probe[1],gate_probe[2],gate_probe[3],
-						v_probe[0],v_probe[1],v_probe[2],v_probe[3]);
-				}
-				{
-					uint16_t y_read[8];
-					if (cudaMemcpy(y_read,fixture.kv_slot,8u * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
-						printf("probe y post-norm-gate head0 [0..3] %f %f %f %f\n",
-							SparkGlm5NextValFromBf16(y_read[0]),SparkGlm5NextValFromBf16(y_read[1]),
-							SparkGlm5NextValFromBf16(y_read[2]),SparkGlm5NextValFromBf16(y_read[3]));
-				}
-				{
-					static uint16_t y_all[SPARK_GLM5_NEXT_VKDA_DIM];
-					static float recomputed[SPARK_GLM5_NEXT_VHIDDEN];
-					static float actual_out[SPARK_GLM5_NEXT_VHIDDEN];
-					uint16_t out_read[SPARK_GLM5_NEXT_VHIDDEN];
-					uint32_t row, column;
-					SparkGlm5NextValMetrics gemm_metrics;
-					if (cudaMemcpy(y_all,fixture.kv_slot,
-						(uint64_t)SPARK_GLM5_NEXT_VKDA_DIM * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(out_read,fixture.attention_out,
-						(uint64_t)SPARK_GLM5_NEXT_VHIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess)
-					{
-						for (row = 0u; row < SPARK_GLM5_NEXT_VHIDDEN; row++)
-						{
-							float acc = 0.0f;
-							for (column = 0u; column < SPARK_GLM5_NEXT_VKDA_DIM; column++)
-								acc += SparkGlm5NextValFromBf16(y_all[column]) *
-									fixture.kda_out.host[(uint64_t)row * SPARK_GLM5_NEXT_VKDA_DIM + column];
-							recomputed[row] = acc;
-							actual_out[row] = SparkGlm5NextValFromBf16(out_read[row]);
-						}
-						SparkGlm5NextValMeasure(&gemm_metrics,actual_out,recomputed,
-							SPARK_GLM5_NEXT_VHIDDEN);
-						(void)SparkGlm5NextValReport("probe o_proj gemm (device y vs host recompute)",
-							&gemm_metrics,0.02,0.999);
-						printf("probe o_proj recomputed[0..3] %f %f %f %f actual %f %f %f %f\n",
-							recomputed[0],recomputed[1],recomputed[2],recomputed[3],
-							actual_out[0],actual_out[1],actual_out[2],actual_out[3]);
-					}
-				}
-			}
-		}
+		failures += SparkGlm5NextValCheckOutputProjection(&fixture);
 	}
 
 	if (cudaMemset(fixture.kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
@@ -1920,7 +1828,8 @@ int main(int argc,char **argv)
 		return(1);
 	failures += SparkGlm5NextValCheckDeterminism(&fixture,SparkGlm5NextValRunTier2aAttention,"tier2a determinism");
 
-	printf("glm5_next validator: %s (%d failures)\n",
+	printf("coverage: synthetic TP1 B1; KDA+dense+HC numerical; DSA attention determinism only; distributed, routed MLP and multirow numerical checks remain required\n");
+	printf("glm5_next component validator: %s (%d failures)\n",
 		failures == 0 ? "PASS" : "FAIL",failures);
 	return(failures == 0 ? 0 : 1);
 }
