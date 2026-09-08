@@ -10,7 +10,11 @@ HARNESS = r'''
 #include <assert.h>
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"
 #include "cache/kv_page_store.c"
+#define main SparkUnusedKvTestMain
+#include "tests/test_kv_cache.c"
+#undef main
 static SparkGlm5NextModuleState state;
+static uint32_t COPY_COUNT;
 
 const char *cudaGetErrorString(cudaError_t error)
 {
@@ -23,6 +27,75 @@ cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,cudaMem
 	(void)kind;
 	memcpy(destination,source,bytes);
 	return(cudaSuccess);
+}
+
+cudaError_t cudaHostAlloc(void **destination,size_t bytes,unsigned int flags)
+{
+	(void)flags;
+	*destination = malloc(bytes);
+	return(*destination != 0 ? cudaSuccess : cudaErrorMemoryAllocation);
+}
+
+cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,cudaMemcpyKind kind,cudaStream_t stream)
+{
+	(void)stream;
+	COPY_COUNT++;
+	return(cudaMemcpy(destination,source,bytes,kind));
+}
+
+static int32_t check_cache_transactions(void)
+{
+	SparkTestKvTransactions fixture;
+	SparkModelDriverAdmissionDecision decision;
+	SparkModelDriverFrame frame;
+	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
+	uint32_t slots[2] = {0,1},device_table[16],shadow[16];
+	uint64_t positions[2] = {0,0},sequences[2] = {1,2},next[2] = {1,1};
+	SparkTestKvTransactionsInitialize(&fixture,2u);
+	(void)SparkTestKvAcquire(&fixture.pages.kv);
+	memset(&state,0,sizeof(state));
+	memset(device_table,0xff,sizeof(device_table));
+	memset(shadow,0xff,sizeof(shadow));
+	state.pipeline_slot_count = 2u;
+	state.resident_sequence_capacity = 4u;
+	state.pages_per_sequence = 4u;
+	state.kv_transactions = fixture.transactions;
+	state.kv_lane_transactions = fixture.owners;
+	state.kv_lane_physical_pages = fixture.physical;
+	state.page_table = device_table;
+	state.page_table_shadow = shadow;
+	if ( pthread_mutex_init(&state.kv_mutex,0) != 0 )
+		return(-20);
+	SparkModelDriverInitializeAdmissionDecision(&decision);
+	if ( SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) != SPARK_STATUS_OK || SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u )
+		return(-21);
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	if ( SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) != SPARK_STATUS_OK )
+		return(-22);
+	fixture.request.admission_flags = 0u;
+	frame = SparkTestKvTransactionFrame(&fixture.request);
+	if ( SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) != SPARK_STATUS_OK || SparkModelDriverApplyAdmissionDecision(&decision,&frame) != SPARK_STATUS_OK )
+		return(-23);
+	batch.active_sequence_count = 2u;
+	batch.row_resident_slots = slots;
+	batch.row_positions = positions;
+	batch.row_sequence_ids = sequences;
+	if ( SparkGlm5NextClaimCacheFrame(&state,&frame,&batch,next) != SPARK_STATUS_OK )
+		return(-24);
+	state.completions[0].state = &state;
+	state.completions[0].lane_count = 2u;
+	state.completions[0].lane_indices[1] = 1u;
+	COPY_COUNT = 0u;
+	if ( SparkGlm5NextUploadPageTables(&state,&state.completions[0],0) != SPARK_STATUS_OK || COPY_COUNT != 2u || device_table[0] != fixture.physical[0] || device_table[4] != fixture.physical[4] || device_table[0] == fixture.logical[0] )
+		return(-25);
+	if ( SparkGlm5NextUploadPageTables(&state,&state.completions[0],0) != SPARK_STATUS_OK || COPY_COUNT != 2u )
+		return(-26);
+	state.completions[0].completion.status = SPARK_STATUS_IO_ERROR;
+	if ( SparkGlm5NextFinishCacheLanes(&state.completions[0]) != SPARK_STATUS_IO_ERROR || fixture.pages.cache.sequences[0].sequence_id != 0u || fixture.pages.cache.sequences[1].sequence_id != 0u || shadow[0] != UINT32_MAX )
+		return(-27);
+	pthread_mutex_destroy(&state.kv_mutex);
+	memset(&state,0,sizeof(state));
+	return(0);
 }
 
 SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCacheArena *arena,SparkKvPageCache *cache,SparkKvPageStore *store)
@@ -103,10 +176,9 @@ static void check_small_kv(void)
 		free(state.kv_entry_indices_by_logical_page);
 		free(state.kv_page_staging);
 		free(state.kv_lane_logical_pages);
-		free(state.kv_lane_page_count);
-		free(state.kv_lane_mutable_page);
-		free(state.kv_lane_mutation_flags);
-		free(state.kv_lane_cache_lanes);
+		free(state.kv_lane_transactions);
+		free(state.kv_lane_physical_pages);
+		pthread_mutex_destroy(&state.kv_mutex);
 	}
 	memset(&state,0,sizeof(state));
 }
@@ -200,6 +272,9 @@ int32_t main(void)
 	SparkFirmwareModuleHostServices services = {0};
 	const char *path = 0;
 	uint32_t first[4] = {0u,12u,23u,34u},counts[4] = {12u,11u,11u,11u},stage;
+	int32_t status = check_cache_transactions();
+	if ( status != 0 )
+		return(-status);
 	if ( check_batch_waves() != 0 )
 		return(1);
 	if ( check_layered_page_copy() != 0 )
@@ -263,9 +338,10 @@ def main():
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                         *["-I" + p for p in includes], "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
-                        str(source), "runtime/stage_module_common.c", "-o", str(binary)], cwd=ROOT, check=True)
+                        str(source), "runtime/stage_module_common.c", "cache/kv_cache.c", "cache/kv_page_cache.c",
+                        "-o", str(binary)], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS actual module TP4/PP4 and TP16 context, ownership and ABI gates")
+    print("PASS actual module context, cache transaction ownership, physical mapping and unchanged-map upload suppression")
 
 
 if __name__ == "__main__":

@@ -155,6 +155,49 @@ SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
 	uint32_t *page_count_out,
 	uint32_t *mutation_flags_out);
 
+#define SPARK_KV_LANE_TRANSACTION_EMPTY 0u
+#define SPARK_KV_LANE_TRANSACTION_PREPARED 1u
+#define SPARK_KV_LANE_TRANSACTION_COMMITTED 2u
+#define SPARK_KV_LANE_TRANSACTION_EXECUTING 3u
+
+typedef struct SparkKvLaneTransaction
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverCacheLane lane;
+	uint64_t validation_epoch;
+	uint32_t phase;
+	uint32_t page_count;
+	uint32_t mutation_flags;
+} SparkKvLaneTransaction;
+
+/* Startup-owned storage; zero-initialize records and epoch. Caller serializes
+ * every operation with admission/completion, and drains device work before
+ * FinishLane. Tables have sequence_capacity * page_capacity elements. */
+typedef struct SparkKvLaneTransactions
+{
+	SparkKvPageCache *cache;
+	SparkKvLaneTransaction *lanes;
+	uint32_t *logical_pages;
+	uint32_t *physical_pages;
+	uint32_t page_capacity;
+	uint64_t validation_epoch;
+} SparkKvLaneTransactions;
+
+SparkStatus SparkKvLaneTransactionsAdmit(
+	SparkKvLaneTransactions *transactions,
+	const SparkModelDriverAdmissionRequest *request);
+/* Dispatch binds generation=control_generation, cookie0=transaction_id,
+ * cookie1=submission_id. Claim checks these and the complete lane payload. */
+SparkStatus SparkKvLaneTransactionsClaim(
+	SparkKvLaneTransactions *transactions,
+	const SparkModelDriverFrame *frame);
+SparkStatus SparkKvLaneTransactionsFinish(
+	SparkKvLaneTransactions *transactions,
+	const uint32_t *resident_slots,
+	uint32_t lane_count,
+	SparkStatus execution_status,
+	uint32_t extra_tokens);
+
 #ifdef __cplusplus
 }
 #endif

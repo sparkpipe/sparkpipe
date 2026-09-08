@@ -5,6 +5,9 @@ the hardware-normalized performance target. Defer other model integrations
 and optimization lanes. Use their existing code as potential donors, but
 prove the GLM result first. This log becomes the migration handbook for other
 drivers after the path is qualified; unfinished ideas are not recipes.
+Keep the implementation as simple as the problem permits. Extend existing
+common primitives, keep required ownership transitions explicit, and avoid
+new frameworks or alternate paths that are not needed for GLM qualification.
 
 ## Acceptance and measurement
 
@@ -39,7 +42,7 @@ correct math from repeatability, or full serving from a component probe.
 | Numerical gate integrity, PR #863 / main `52ce0e5` | Three probe failure results were discarded; projection readback could skip a comparison. Checks now affect exit status. Common metrics reject nonfinite inputs and accumulate squared errors directly; regression tests reject the previous metric implementation. Corrected GPU component validator passes on merged main. | Test the acceptance test with bad values. Error-norm cancellation and ignored return codes can turn an optimization regression green. Component repeatability is not numerical correctness. |
 | Cache admission wiring, draft PR #861 | GLM builds persistent cache lanes for submitted frames and routes prepare/commit/abort through a common algorithm with a validation callback and caller-owned scratch. Host tests preserve B3 lane identities and transaction generations, propagate driver failure, validate all inputs before dispatch and keep release separate. Full reset/restoration and GPU serving acceptance remain incomplete. | Common policy builds and validates the transaction; the model supplies geometry and hooks. Keep submitted lane storage alive through device completion. |
 | KDA oracle recurrence, PR #864 / main `06be88e` | The C oracle decayed state, then applied decay again in its prediction. A shared scalar reference has hand-calculated two-token nonzero-state and rectangular-state tests; injecting the old second decay fails. CUDA CI and merged-main synthetic GPU validation pass; KDA+dense+HC relative L2 is 0.00376, cosine 0.9999930. | Validate recurrent state directly with nonzero initial state. Small random end-to-end fixtures can underweight reference errors. Keep reference math independent of production kernels. |
-| Shared page pinning and transaction mapping, draft PR #861 | Common arena operations resolve logical pages to pinned physical slots and roll back partial pin failures. A common page-cache operation pins the prefix before allocating the writable page and rolls back its own lane mutations on failure. Host tests cover eviction pressure, shared pins, non-identity mapping, pin overflow, insufficient table capacity, abort and prefix deduplication. GLM execution wiring remains pending. | Physical residency is separate from logical prefix identity. Keep logical tables immutable and physical pages pinned until GPU completion. Serialize cache metadata access; after GPU completion unpin before deduplication can free a writable page. This policy belongs in common code. |
+| Shared page pinning and transaction mapping, draft PR #861 | Common cache operations now own prepare, commit, claim, finish and abort. GLM uses them under its cache mutex, initializes device mappings to invalid entries, and uploads actual physical mappings only when they change. Host tests exercise the actual GLM admission/claim/upload/completion hooks, plus common stale-owner, partial-failure and eviction tests. GPU serving qualification remains pending. | Physical residency is separate from logical prefix identity. Keep logical tables immutable and physical pages pinned until GPU completion. Serialize cache metadata access; after GPU completion unpin before deduplication can free a writable page. This policy belongs in common code. |
 
 ## Baseline that must not be misinterpreted
 
@@ -112,18 +115,33 @@ probes also pass. This remains synthetic TP1/B1, with DSA determinism only.
 There is no new qualified distributed throughput result.
 
 The draft's common pinned-transaction tests pass through `build/test_kv_cache`.
-They use real common arena/page-cache code, including an insufficient output
-table after lane binding: failure releases the new writable page and its
-binding while preserving the reusable prefix and other owners' pins. The
-common API requires caller serialization and exclusive lane ownership; it
-does not itself implement the GLM transaction identity or completion lock.
-Those must be connected before changing the device page table or claiming
-working prefix reuse. No other model driver was changed for this foundation.
+They use real arena/page-cache code, including insufficient output capacity
+after lane binding: failure releases the new writable page and its binding
+while preserving the reusable prefix and other owners' pins. The added owner
+records retain exact transaction identity and lane content. Prepare holds
+pinned pages; commit authorizes execution; claim prevents abort until GPU
+completion. Failed B3 preparation unwinds prior lanes. Stale transactions and
+duplicate slots are rejected. GPU failure discards the affected sequence,
+including an existing writable page: metadata rollback cannot undo writes.
+If one lane fails completion, all sequences in that batch are invalidated so
+the scheduler cannot continue with mixed token positions.
+
+GLM's real host harness now checks the admission decisions and dispatch
+cookies, claims a committed batch, uploads non-identity physical mappings,
+then proves an unchanged mapping performs no additional copy. Its injected
+execution error releases both lanes and invalidates the mapping shadow.
+The common API has three entry points (admit, claim, finish) in the existing
+page-cache implementation; allocation remains at startup. GLM adds its mutex,
+CUDA upload and continuity bookkeeping. No other model driver was changed.
+This is host execution with copy stubs; CUDA CI and merged-main serving tests
+are still required. The draft still lacks complete KDA/convolution snapshots,
+restoration, reset and release integration. The direct driver probe also needs
+to submit real cache transactions before this stricter driver can accept it.
 
 ## Current next steps, not completed work
 
-1. Complete GLM integration with the shared cache: dynamic logical/physical
-   mapping and full KV/index/KDA/convolution/continuity state restoration.
+1. Complete GLM integration with the shared cache: qualify dynamic mappings on
+   the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed
    identity page mapping or KV-only snapshot may masquerade as this result.
    PR #862 fixes the identified layer-major/backing-page mismatch and missing

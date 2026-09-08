@@ -118,8 +118,8 @@
     },
     {
       "path": "cache/kv_page_cache.c",
-      "sha256": "8bd11708753748e1ced993bb1b5b5e1dbeb84fd48df59fa769a4a1805ba3f813",
-      "size_bytes": 39844
+      "sha256": "e827ffc3a27800e7ccb45c3ad26c7598cb717163c8fbf168c606848976a37201",
+      "size_bytes": 54155
     },
     {
       "path": "cache/kv_page_store.c",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "848cb70c85f9ed3fdb0167f948807904d03b8608e35c97da9588d2f3873f2b98",
-      "size_bytes": 14171
+      "sha256": "c4a9eed9a92a77ffd7627e96eb87b4d442fe30caf6dec9ebe924eac47a56f534",
+      "size_bytes": 15432
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -2873,8 +2873,8 @@
     },
     {
       "path": "include/sparkpipe/spark_kv_page_cache.h",
-      "sha256": "a067e68a708d33d7d7bf3b4902eef986d94dff44968bdabe960f873c39fba095",
-      "size_bytes": 4896
+      "sha256": "24040b66e3f5599df46f62f93cd1aecd2ae6ec90b45d92e8361b6327c800b8d2",
+      "size_bytes": 6378
     },
     {
       "path": "include/sparkpipe/spark_kv_page_store.h",
@@ -4058,8 +4058,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "e342aaaf1d860d8060c7526ef9eb9e988cdc290904dbc32970f457bb05cf3e21",
-      "size_bytes": 152344
+      "sha256": "a456c32c2e5d3d5f9917144166c1c05e28158c5242ba2f19586deafb11896332",
+      "size_bytes": 149409
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -7078,8 +7078,8 @@
     },
     {
       "path": "tests/test_glm5_next_stage_context.py",
-      "sha256": "cc4c005d5fdb07002b7eef6351031c4a18342d09d4257b711666200e58b7450f",
-      "size_bytes": 11493
+      "sha256": "c7b1741a58f0e7ed1276c6450cdcef711dbe648b1d2523d5240e935be813d801",
+      "size_bytes": 14952
     },
     {
       "path": "tests/test_gqa_host.py",
@@ -7343,8 +7343,8 @@
     },
     {
       "path": "tests/test_kv_cache.c",
-      "sha256": "2e02373d369fb4ebec97b7021c6e9b3983e884433348f2f25980c6fd05905b37",
-      "size_bytes": 55618
+      "sha256": "887ce4226defa3f3d97919c068d5ab744e0b83abb4528816ba1fb2dac5a9b331",
+      "size_bytes": 63068
     },
     {
       "path": "tests/test_kv_failure_host.py",
@@ -9695,5 +9695,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32472273
+  "total_bytes": 32497301
 }
