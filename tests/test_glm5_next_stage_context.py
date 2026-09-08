@@ -9,7 +9,62 @@ ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r'''
 #include <assert.h>
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"
+#include "cache/kv_page_store.c"
 static SparkGlm5NextModuleState state;
+
+cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,cudaMemcpyKind kind)
+{
+	(void)destination;
+	(void)source;
+	(void)bytes;
+	(void)kind;
+	return(cudaSuccess);
+}
+
+SparkStatus SparkStageModuleCudaStatus(const char *tag,cudaError_t error,const char *operation)
+{
+	(void)tag;
+	(void)operation;
+	return(error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR);
+}
+
+SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCacheArena *arena,SparkKvPageCache *cache,SparkKvPageStore *store)
+{
+	(void)arena;
+	(void)cache;
+	(void)store;
+	assert(SparkKvPageStoreConfigurationIsValid(&table->page_store_config) != 0u);
+	assert(table->page_store_config.transfer_capacity <= 2u);
+	return(SPARK_STATUS_PENDING);
+}
+
+static void check_small_kv(void)
+{
+	uint32_t pages;
+	for (pages=1u; pages<=3u; pages++)
+	{
+		memset(&state,0,sizeof(state));
+		state.kv_layer_count = 1u;
+		state.page_count = pages;
+		state.pages_per_sequence = pages;
+		state.resident_sequence_capacity = 1u;
+		state.kv_backing_directory = "/unused-host-fixture";
+		assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_PENDING);
+		free(state.kv_blocks);
+		free(state.kv_resident_slot_logical_block_indices);
+		free(state.kv_entries);
+		free(state.kv_sequences);
+		free(state.kv_hash_bucket_heads);
+		free(state.kv_entry_indices_by_logical_page);
+		free(state.kv_page_staging);
+		free(state.kv_lane_logical_pages);
+		free(state.kv_lane_page_count);
+		free(state.kv_lane_mutable_page);
+		free(state.kv_lane_mutation_flags);
+		free(state.kv_lane_cache_lanes);
+	}
+	memset(&state,0,sizeof(state));
+}
 
 static void check_pack_identity(void)
 {
@@ -56,6 +111,7 @@ int32_t main(void)
 	SparkFirmwareModuleHostServices services = {0};
 	const char *path = 0;
 	uint32_t first[4] = {0u,12u,23u,34u},counts[4] = {12u,11u,11u,11u},stage;
+	check_small_kv();
 	context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	context.descriptor_bytes = sizeof(context);
 	context.stage_count = 4u;
@@ -110,7 +166,7 @@ def main():
         includes = [".", "include", "tests/cuda_stub", "model-families/common/include",
                     "model-families/glm5_next/include", "modules/glm5_next_resident_decode_stage/include",
                     "modules/glm5_next_resident_decode_stage/source"]
-        subprocess.run(["cc", "-std=c11", "-O2", "-ffunction-sections", "-fdata-sections",
+        subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-O2", "-ffunction-sections", "-fdata-sections",
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                         *["-I" + p for p in includes], "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
