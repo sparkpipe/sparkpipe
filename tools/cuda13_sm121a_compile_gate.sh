@@ -157,6 +157,10 @@ compile_cuda \
 	-DSPARK_QWEN38_27B_MODULE_BUILD=1
 
 # GLM 5.3 Flash uses the glm5_next implementation, separate from glm52.
+make -C "${repository_root}" -j2 build/glm5_next_driver_probe \
+	CUDA_HOME="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")" \
+	> "${output_directory}/logs/glm5-next-driver-probe.txt" 2>&1
+python3 "${repository_root}/tests/test_glm5_next_driver_probe.py"
 compile_cuda \
 	modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu \
 	glm5_next_resident_decode_stage_fp8 \
