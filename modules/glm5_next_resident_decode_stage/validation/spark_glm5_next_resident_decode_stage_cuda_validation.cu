@@ -1112,7 +1112,7 @@ typedef struct SparkGlm5NextValFixture
 	uint64_t *head_maxloc;
 	uint8_t *kv_cache,*index_cache,*kda_state_pools,*kda_window_pools;
 	uint16_t *boundary_input;
-	uint16_t boundary_host_rows[8u * SPARK_GLM5_NEXT_VHIDDEN];
+	uint16_t boundary_host_rows[8u * SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHIDDEN];
 	uint32_t host_resident_slots_stage[1u];
 	uint32_t host_positions_stage[1u];
 	uint32_t host_token_ids_stage[1u];
@@ -1266,8 +1266,8 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 	{
 		uint32_t row,element;
 		for (row = 0u; row < 8u; row++)
-			for (element = 0u; element < SPARK_GLM5_NEXT_VHIDDEN; element++)
-				fixture->boundary_host_rows[(uint64_t)row * SPARK_GLM5_NEXT_VHIDDEN + element] =
+			for (element = 0u; element < SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHIDDEN; element++)
+				fixture->boundary_host_rows[(uint64_t)row * SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHIDDEN + element] =
 					SparkGlm5NextValBf16((((row * 7u + element) % 23u) - 11.0f) * 0.02f);
 		fixture->boundary_input = (uint16_t *)SparkGlm5NextValAllocZeroed(sizeof(fixture->boundary_host_rows));
 		if (fixture->boundary_input == 0 ||
@@ -1696,8 +1696,7 @@ static void SparkGlm5NextValOracleTier1Token(SparkGlm5NextValOracleWalk *walk,co
 	uint32_t index,i;
 	for (i = 0u; i < SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHIDDEN; i++)
 		walk->streams[i] = SparkGlm5NextValFromBf16(
-			fixture->boundary_host_rows[(uint64_t)position * SPARK_GLM5_NEXT_VHIDDEN +
-				(i % SPARK_GLM5_NEXT_VHIDDEN)]);
+			fixture->boundary_host_rows[(uint64_t)position * SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHIDDEN + i]);
 	SparkGlm5NextValHcSite(walk->streams,fixture->hc_attn_fn_host,fixture->hc_attn_base_host,
 		fixture->hc_attn_scale_host,SPARK_GLM5_NEXT_MODEL_HC_EPSILON,
 		SPARK_GLM5_NEXT_VHC,SPARK_GLM5_NEXT_VHIDDEN,mixes,pre,post,comb,collapsed,snapshot);
@@ -1787,8 +1786,7 @@ int main(int argc,char **argv)
 		{
 			for (i = 0u; i < SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHIDDEN; i++)
 				walk.streams[i] = SparkGlm5NextValFromBf16(
-					fixture.boundary_host_rows[(uint64_t)step * SPARK_GLM5_NEXT_VHIDDEN +
-						(i % SPARK_GLM5_NEXT_VHIDDEN)]);
+					fixture.boundary_host_rows[(uint64_t)step * SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHIDDEN + i]);
 			SparkGlm5NextValHcSite(walk.streams,fixture.hc_attn_fn_host,fixture.hc_attn_base_host,
 				fixture.hc_attn_scale_host,SPARK_GLM5_NEXT_MODEL_HC_EPSILON,
 				SPARK_GLM5_NEXT_VHC,SPARK_GLM5_NEXT_VHIDDEN,mixes,pre,post,comb,collapsed,snapshot);
