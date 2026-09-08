@@ -138,6 +138,12 @@ int main(void)
 		cudaMemcpyDeviceToHost) == cudaSuccess);
 	assert(memcmp(staging,pack + region_offset,region_bytes) == 0);
 	{
+		void *unaligned = 0;
+		assert(SparkStageModuleLoadDeviceRegion(&ledger,file,region_offset + 1u,
+			4096u,&unaligned) == SPARK_STATUS_INVALID_ARGUMENT);
+		assert(unaligned == 0);
+	}
+	{
 		void *second = 0;
 		uint64_t second_offset = 128u * 1024u;
 		assert(SparkStageModuleLoadDeviceRegion(&ledger,file,second_offset,

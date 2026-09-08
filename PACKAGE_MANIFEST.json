@@ -5943,8 +5943,8 @@
     },
     {
       "path": "runtime/stage_module_common.c",
-      "sha256": "14510746df86a62277c28dad91abfd84ea6ca0fed01ded43ce2a8442b3b19c0c",
-      "size_bytes": 52221
+      "sha256": "7f270f6dd177606b204559928e03831984159f7648512b48778580e670e9633c",
+      "size_bytes": 52302
     },
     {
       "path": "runtime/stage_module_lifecycle.c",
@@ -7573,8 +7573,8 @@
     },
     {
       "path": "tests/test_stage_module_weightd.c",
-      "sha256": "c43f6eb6ff333f47854cf39223e46997f1901fb3fd5b0290c23c6f7fe4e8e8c5",
-      "size_bytes": 6913
+      "sha256": "86749ec468b58fcca8f2ca678df9047df27489f882454c24d5f027ac52f178e6",
+      "size_bytes": 7099
     },
     {
       "path": "tests/test_staging_manifest.py",
@@ -9410,5 +9410,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32106217
+  "total_bytes": 32106484
 }

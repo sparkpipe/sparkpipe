@@ -811,6 +811,8 @@ static SparkStatus SparkStageModulePackArenaSlice(
 {
 	SparkStageModulePackArena *arena;
 	SparkStatus status;
+	if ( (offset & UINT64_C(0xff)) != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageModulePackArenaEnsure(ledger,file);
 	if (status != SPARK_STATUS_OK)
 		return(status);
