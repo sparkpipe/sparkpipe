@@ -546,11 +546,8 @@ static void SparkModelBatchFreeRequest(
 	uint32_t slot,generation;
 	slot = (uint32_t)(request - engine->requests);
 	generation = request->generation;
-	if ( engine->cache_block_token_count != 0u )
-	{
-		status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
-		(void)status;
-	}
+	status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
+	(void)status;
 	SparkModelBatchReleaseResidentSlot(engine,request);
 	memset(request,0,sizeof(*request));
 	request->generation = generation;
@@ -691,8 +688,6 @@ static SparkStatus SparkModelBatchPublishCompletedBlocks(
 	SparkStatus status;
 	uint32_t completed_block_tokens;
 	uint32_t *tokens;
-	if ( engine->cache_block_token_count == 0u )
-		return(SPARK_STATUS_OK);
 	completed_block_tokens = (completed_token_count / engine->cache_block_token_count) * engine->cache_block_token_count;
 	if ( completed_block_tokens <= request->cache_published_token_count )
 		return(SPARK_STATUS_OK);
@@ -927,8 +922,6 @@ static SparkStatus SparkModelBatchAllocate(
 	engine->scratch_prefill_counts = (uint32_t *)calloc(engine->max_active_sequence_count,sizeof(engine->scratch_prefill_counts[0]));
 	if ( engine->requests == 0 || engine->submissions == 0 || engine->request_token_storage == 0 || engine->resident_slot_next == 0 || engine->submission_request_slots == 0 || engine->submission_prefill_counts == 0 || engine->scratch_lanes == 0 || engine->scratch_token_ids == 0 || engine->scratch_row_lane_indices == 0 || engine->scratch_row_positions == 0 || engine->scratch_row_sequence_ids == 0 || engine->scratch_request_slots == 0 || engine->scratch_prefill_counts == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( engine->cache_block_token_count == 0u )
-		return(SPARK_STATUS_OK);
 	engine->cache_demand_entry_capacity =
 		SparkModelBatchCacheDemandCapacity(engine->request_capacity);
 	if ( engine->cache_demand_entry_capacity == 0u )
@@ -1042,12 +1035,11 @@ static SparkStatus SparkModelBatchInitialize(
 	if ( engine->adapter_descriptor == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	engine->cache_block_token_count = engine->adapter_descriptor->cache_block_token_count;
-	if ( engine->cache_block_token_count != 0u )
-	{
-		engine->prefix_cache_entry_capacity = engine->kv_logical_page_capacity;
-		engine->prefix_cache_binding_capacity =
-			engine->kv_logical_page_capacity;
-	}
+	if ( engine->cache_block_token_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	engine->prefix_cache_entry_capacity = engine->kv_logical_page_capacity;
+	engine->prefix_cache_binding_capacity =
+		engine->kv_logical_page_capacity;
 	status = SparkModelBatchAllocate(engine);
 	if ( engine->requests != 0 && engine->resident_slot_next != 0 )
 		SparkModelBatchInitializeFreeList(engine);
@@ -1238,8 +1230,7 @@ static void SparkModelBatchRefreshQueuedPrefix(
 	SparkPrefixCacheLookup lookup;
 	SparkStatus status;
 	uint32_t slot;
-	if ( engine->cache_block_token_count == 0u ||
-		request->computed_prompt_token_count != 0u ||
+	if ( request->computed_prompt_token_count != 0u ||
 		request->cache_lookup_epoch == engine->cache_publication_epoch )
 		return;
 	slot = (uint32_t)(request - engine->requests);
@@ -1260,8 +1251,6 @@ static uint32_t SparkModelBatchPrefillSpan(
 {
 	uint32_t block_remaining,remaining;
 	remaining = request->prompt_token_count - request->computed_prompt_token_count;
-	if ( engine->cache_block_token_count == 0u )
-		return(remaining);
 	block_remaining = engine->cache_block_token_count -
 		(request->computed_prompt_token_count % engine->cache_block_token_count);
 	return(remaining < block_remaining ? remaining : block_remaining);
@@ -1680,7 +1669,7 @@ static void SparkModelBatchInitializeLane(
 	uint32_t context_token_count,
 	uint32_t input_token_id,
 	uint32_t flags,
-	uint32_t allow_cache)
+	uint32_t work_kind)
 {
 	SparkModelBatchRequestState *request;
 	SparkSha256Context publish_context;
@@ -1697,7 +1686,7 @@ static void SparkModelBatchInitializeLane(
 	lane->context_token_count = context_token_count;
 	lane->input_token_id = input_token_id;
 	lane->flags = flags;
-	if ( allow_cache == 0u || engine->cache_block_token_count == 0u )
+	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		return;
 	if ( request->cache_prefix_token_count != 0u &&
 		request->computed_prompt_token_count == request->cache_prefix_token_count &&
@@ -1732,7 +1721,7 @@ static void SparkModelBatchBuildPrefillRows(
 		slot = engine->scratch_request_slots[lane];
 		request = &engine->requests[slot];
 		tokens = SparkModelBatchRequestTokens(engine,slot);
-		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,request->computed_prompt_token_count,request->computed_prompt_token_count + engine->scratch_prefill_counts[lane],tokens[request->computed_prompt_token_count],request->computed_prompt_token_count + engine->scratch_prefill_counts[lane] == request->prompt_token_count ? SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN : 0u,1u);
+		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,request->computed_prompt_token_count,request->computed_prompt_token_count + engine->scratch_prefill_counts[lane],tokens[request->computed_prompt_token_count],request->computed_prompt_token_count + engine->scratch_prefill_counts[lane] == request->prompt_token_count ? SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN : 0u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
 		if ( engine->scratch_prefill_counts[lane] > maximum )
 			maximum = engine->scratch_prefill_counts[lane];
 	}
@@ -1789,14 +1778,11 @@ static void SparkModelBatchBuildDecodeRows(
 			(request->prompt_token_count + request->generated_token_count);
 		if ( remaining < chain_tokens )
 			chain_tokens = remaining;
-		if ( engine->cache_block_token_count != 0u )
-		{
-			block_remaining = engine->cache_block_token_count -
-				(position % engine->cache_block_token_count);
-			if ( block_remaining < chain_tokens )
-				chain_tokens = block_remaining;
-		}
-		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position + 1u,tokens[position],SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,1u);
+		block_remaining = engine->cache_block_token_count -
+			(position % engine->cache_block_token_count);
+		if ( block_remaining < chain_tokens )
+			chain_tokens = block_remaining;
+		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position + 1u,tokens[position],SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,SPARK_MODEL_SERVING_WORK_KIND_DECODE);
 		engine->scratch_token_ids[lane] = tokens[position];
 		engine->scratch_row_lane_indices[lane] = lane;
 		engine->scratch_row_positions[lane] = position;
@@ -1819,7 +1805,7 @@ static void SparkModelBatchBuildReleaseLanes(
 		slot = engine->scratch_request_slots[lane];
 		request = &engine->requests[slot];
 		position = request->prompt_token_count + request->generated_token_count;
-		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position,0u,0u,0u);
+		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position,0u,0u,SPARK_MODEL_SERVING_WORK_KIND_RELEASE);
 	}
 }
 

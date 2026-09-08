@@ -377,7 +377,7 @@ static void TestModelResidentRunCase(
 	assert(node != 0);
 	child = TestModelResidentStart(deployment_path,rank_index);
 	TestModelResidentWaitForSocket(socket_paths[rank_index]);
-	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&adapter) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&adapter) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;

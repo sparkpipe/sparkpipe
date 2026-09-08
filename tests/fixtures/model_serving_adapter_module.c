@@ -38,6 +38,7 @@ typedef struct TestModelServingState
 	uint32_t held_count;
 	uint32_t held_head;
 	TestModelServingHeld held[TEST_MODEL_SERVING_HOLD_CAPACITY];
+	uint64_t reset_generation;
 	uint64_t submitted_count;
 	uint64_t completed_count;
 	uint64_t rejected_count;
@@ -48,7 +49,7 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN,
 	.stage_count = 3u,
 	.layer_count = 7u,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -462,6 +463,27 @@ static SparkStatus TestModelServingSnapshot(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus TestModelServingReset(void *adapter_state,uint64_t control_generation)
+{
+	TestModelServingState *state;
+	uint32_t index;
+	state = (TestModelServingState *)adapter_state;
+	if ( state == 0 || control_generation == 0u || control_generation <= state->reset_generation )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( state->held_count != 0u )
+		return(SPARK_STATUS_BUSY);
+	for (index=0u; index<4u; index++)
+		if ( state->prepared[index].active != 0u )
+			return(SPARK_STATUS_BUSY);
+	memset(state->held,0,sizeof(state->held));
+	memset(state->prepared,0,sizeof(state->prepared));
+	state->held_head = 0u;
+	state->continuation_busy_returned = 0u;
+	state->quiescing = 0u;
+	state->reset_generation = control_generation;
+	return(SPARK_STATUS_OK);
+}
+
 static const SparkModelServingAdapterInterface TestModelServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -475,7 +497,8 @@ static const SparkModelServingAdapterInterface TestModelServingInterface =
 	.resolve_prefetch = TestModelServingResolvePrefetch,
 	.progress = TestModelServingProgress,
 	.quiesce = TestModelServingQuiesce,
-	.snapshot = TestModelServingSnapshot
+	.snapshot = TestModelServingSnapshot,
+	.reset = TestModelServingReset
 };
 
 __attribute__((visibility("default")))

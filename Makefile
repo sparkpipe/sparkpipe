@@ -827,6 +827,9 @@ build/test_model_runtime: tests/test_model_runtime.c $(RUNTIME_LIBRARY) $(MODEL_
 build/test_model_serving_adapter: tests/test_model_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(TEST_MODEL_SERVING_ADAPTER_MODULE)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_MODULE_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" $(CFLAGS) tests/test_model_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/probe_adapter: tools/devcycle/probe_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_model_resident_deployment: tests/test_model_resident_deployment.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_model_resident_deployment.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 

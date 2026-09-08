@@ -9,7 +9,7 @@ static void TestBuildDescriptor(
 	memset(descriptor,0,sizeof(*descriptor));
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
 	descriptor->stage_count = 3u;
 	descriptor->layer_count = 6u;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
@@ -23,6 +23,8 @@ static void TestBuildDescriptor(
 	descriptor->max_input_row_count = 8u;
 	descriptor->max_resident_sequence_count = 16u;
 	descriptor->max_output_token_count = 4u;
+	descriptor->cache_block_token_count = 4u;
+	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE;
 	descriptor->adapter_id = "test.adapter";
 	descriptor->model_id = "test/model";
 	descriptor->model_revision = "revision";

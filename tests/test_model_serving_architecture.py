@@ -797,7 +797,7 @@ def main() -> int:
         ROOT / "tests/fixtures/model_resident_transport_module.c"
     ).read_text(encoding="utf-8")
     require(
-        "SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE" in fixture_adapter
+        "SPARK_MODEL_SERVING_WORK_KIND_RELEASE" in fixture_adapter
         and "SPARK_MODEL_SERVING_WORK_KIND_RELEASE" in pipeline_process_test
         and "SPARK_STATUS_UNSUPPORTED" in pipeline_process_test,
         "generic process test misses release or partial rejection abort",

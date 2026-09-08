@@ -8,9 +8,11 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	static const uint32_t layers[13] = {3u,3u,3u,3u,3u,3u,3u,4u,4u,4u,4u,4u,2u};
 	uint32_t index;
 	memset(descriptor,0,sizeof(*descriptor));
+	descriptor->cache_block_token_count = 4u;
+	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE;
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
 	descriptor->stage_count = 13u;
 	descriptor->layer_count = 43u;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
@@ -62,7 +64,7 @@ static void TestBuildFanoutDescriptor(SparkModelServingAdapterDescriptor *descri
 {
 	uint32_t index;
 	TestBuildDescriptor(descriptor);
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT;
 	descriptor->stage_count = 16u;
 	memset(descriptor->stage_layer_counts,0,sizeof(descriptor->stage_layer_counts));
 	for (index=0u; index<13u; index++)
