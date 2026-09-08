@@ -187,6 +187,8 @@ struct SparkGlm5NextModuleState
 	void *tp_hc_credit_receive_bf16;
 	void *tp_hc_host_credit_send_bf16;
 	void *tp_hc_host_credit_receive_bf16;
+	atomic_ullong nccl_next_ordinal;
+	atomic_ullong nccl_next_ordinal_hc;
 };
 
 
@@ -1822,6 +1824,18 @@ static void SparkGlm5NextModuleTpCompletion(
 	SparkGlm5NextTpChainAdvance(chain,completion->status);
 }
 
+static SparkStatus SparkGlm5NextChainOrdinal(SparkGlm5NextTpChain *chain,uint32_t hc_wide,uint32_t operation,uint64_t *ordinal)
+{
+	SparkGlm5NextModuleState *state;
+	state = chain->state;
+	if ( state->tp_device_collective.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
+	{
+		*ordinal = atomic_fetch_add_explicit(hc_wide != 0u ? &state->nccl_next_ordinal_hc : &state->nccl_next_ordinal,1u,memory_order_relaxed);
+		return(SPARK_STATUS_OK);
+	}
+	return(SparkTpChainOrdinal(chain->frame->request_id,state->pipeline_slot_count,SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS,operation,ordinal));
+}
+
 static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *chain,
 	void *device_bf16,uint32_t hc_wide)
 {
@@ -1856,7 +1870,7 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		collective = &state->tp_device_collective;
 		op_index = &chain->tp_op_index;
 	}
-	ordinal_status = SparkTpChainOrdinal(chain->frame->request_id,state->pipeline_slot_count,SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS,*op_index,&ordinal);
+	ordinal_status = SparkGlm5NextChainOrdinal(chain,hc_wide,*op_index,&ordinal);
 	if ( ordinal_status != SPARK_STATUS_OK )
 		return(ordinal_status);
 	memset(&submission,0,sizeof(submission));
@@ -1874,7 +1888,7 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 	{
 		SparkStatus submit_status;
 		*op_index += 1u;
-		submit_status = SparkTpDeviceCollectiveSubmitBf16(collective,&submission);
+		submit_status = SparkTpDeviceCollectiveEnqueue(collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 		if ( submit_status != SPARK_STATUS_OK )
 			*op_index -= 1u;
 		if ( submit_status != SPARK_STATUS_OK )
@@ -1900,7 +1914,7 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	}
 	if ( state->tp_device_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkTpChainOrdinal(chain->frame->request_id,state->pipeline_slot_count,SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS,chain->tp_op_index,&ordinal);
+	status = SparkGlm5NextChainOrdinal(chain,0u,chain->tp_op_index,&ordinal);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	memset(&submission,0,sizeof(submission));
@@ -1916,7 +1930,7 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	submission.completion_function = SparkGlm5NextModuleTpCompletion;
 	submission.completion_context = chain;
 	chain->tp_op_index += 1u;
-	status = SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission);
+	status = SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64);
 	if ( status != SPARK_STATUS_OK )
 		chain->tp_op_index -= 1u;
 	return(status);
@@ -2711,6 +2725,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 	atomic_init(&state->rejected_count,0u);
 	atomic_init(&state->failed_count,0u);
 	atomic_init(&state->host_callback_completion_count,0u);
+	atomic_init(&state->nccl_next_ordinal,0u);
+	atomic_init(&state->nccl_next_ordinal_hc,0u);
 	*state_out = state;
 	return(SPARK_STATUS_OK);
 }
