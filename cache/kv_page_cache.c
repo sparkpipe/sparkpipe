@@ -1427,3 +1427,55 @@ SparkStatus SparkKvLaneTransactionsFinish(SparkKvLaneTransactions *transactions,
 		return(SparkKvLaneTransactionsDiscardCompleted(transactions,resident_slots,lane_count,result));
 	return(result);
 }
+
+static SparkStatus SparkKvPageCacheEvictUnreferencedChains(SparkKvPageCache *cache)
+{
+	uint32_t index,entry,parent;
+	SparkStatus status;
+	for (index=0u; index<cache->entry_capacity; index++)
+	{
+		entry = index;
+		while ( entry != SPARK_KV_PAGE_CACHE_NO_INDEX && (cache->entries[entry].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && cache->entries[entry].reference_count == 0u )
+		{
+			parent = cache->entries[entry].parent_entry_index;
+			status = SparkKvPageCacheEvictEntry(cache,entry);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			entry = parent;
+		}
+	}
+	for (index=0u; index<cache->entry_capacity; index++)
+		if ( (cache->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+			return(SPARK_STATUS_BUSY);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions)
+{
+	SparkKvPageCache *cache;
+	SparkStatus status;
+	uint32_t slot;
+	if ( transactions == 0 || SparkKvPageCacheIsValid(transactions->cache) == 0u || transactions->lanes == 0 || transactions->logical_pages == 0 || transactions->physical_pages == 0 || transactions->page_capacity == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = transactions->cache;
+	for (slot=0u; slot<cache->sequence_capacity; slot++)
+		if ( transactions->lanes[slot].phase >= SPARK_KV_LANE_TRANSACTION_EXECUTING )
+			return(SPARK_STATUS_BUSY);
+	for (slot=0u; slot<cache->sequence_capacity; slot++)
+	{
+		if ( transactions->lanes[slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY )
+		{
+			status = SparkKvLaneTransactionAbort(transactions,&transactions->lanes[slot]);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
+	}
+	for (slot=0u; slot<cache->sequence_capacity; slot++)
+		if ( cache->sequences[slot].sequence_id != 0u )
+		{
+			status = SparkKvPageCacheReleaseLane(cache,slot,cache->sequences[slot].sequence_id);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+		}
+	return(SparkKvPageCacheEvictUnreferencedChains(cache));
+}

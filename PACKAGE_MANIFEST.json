@@ -118,8 +118,8 @@
     },
     {
       "path": "cache/kv_page_cache.c",
-      "sha256": "faad7b33987fbc7c2be6dad584d016081d2074b5fada2a9854d5b3cde222254f",
-      "size_bytes": 56400
+      "sha256": "0e5bcbc3693faf2014aa0327d63c0abc763485a2163dd66c78d8ecc9238bcfaf",
+      "size_bytes": 58372
     },
     {
       "path": "cache/kv_page_store.c",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "428873e81046d36dd729659f939a7102c3bc4abf8eafe700f5675f58e2b890f4",
-      "size_bytes": 26301
+      "sha256": "384691a00e5b54def0fa2901cd8b4b1e5d7829e7f1f7327f9282a07aad93e338",
+      "size_bytes": 27157
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -2878,8 +2878,8 @@
     },
     {
       "path": "include/sparkpipe/spark_kv_page_cache.h",
-      "sha256": "7318992043ef9629083370b48a950fc0dec14943fe6bda2fbb468c08a0634902",
-      "size_bytes": 6799
+      "sha256": "df3e3f4c5fece26f4babcef88a221530899c354a4eac4267e30e03b37d45a148",
+      "size_bytes": 7036
     },
     {
       "path": "include/sparkpipe/spark_kv_page_store.h",
@@ -7348,8 +7348,8 @@
     },
     {
       "path": "tests/test_kv_cache.c",
-      "sha256": "1c1528b333041f5fe4a1bac0c289895d8be15840621e49d1aeff74e56da9a081",
-      "size_bytes": 74165
+      "sha256": "45d52351d534ee66732afe8ffc565e43f526ff0a5887955b0bdbb54ef33fc06e",
+      "size_bytes": 78435
     },
     {
       "path": "tests/test_kv_failure_host.py",
@@ -9700,5 +9700,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32577116
+  "total_bytes": 32584451
 }

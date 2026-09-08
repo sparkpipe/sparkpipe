@@ -197,6 +197,9 @@ SparkStatus SparkKvLaneTransactionsAdmit(
 SparkStatus SparkKvLaneTransactionsClaim(
 	SparkKvLaneTransactions *transactions,
 	const SparkModelDriverFrame *frame);
+// Quiescent reset: executing lanes prevent any mutation. On a later busy/error
+// result keep admission stopped and retry; completed cleanup is preserved.
+SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions);
 SparkStatus SparkKvLaneTransactionsFinish(
 	SparkKvLaneTransactions *transactions,
 	const uint32_t *resident_slots,

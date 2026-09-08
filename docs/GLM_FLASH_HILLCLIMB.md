@@ -303,6 +303,18 @@ restore failure. These checks exercise capture, publication, admission,
 continuity and restore together; they do not establish numerical equality of
 GPU continuations, full serving reset, or distributed performance.
 
+The common transaction cache now provides quiescent reset. It rejects executing
+lanes before changing anything, aborts prepared/committed reservations with the
+existing rollback helper, releases sequences, and walks unreferenced prefix
+chains to reclaim paired records. It does not repeatedly scan LRU for each
+entry. If an external pin or store transfer prevents cleanup, admission must
+remain stopped while the caller retries; completed cleanup is preserved.
+Tests cover every owner phase, a pinned branched chain and retry, repeat reset,
+and real paired backing-record reclamation. GLM still needs the serving reset
+callback and driver control path; this primitive is not a complete reset.
+CUDA compilation of capture/restore head `a55efe559e32bd76ed6defc10367e17a2faff187`
+passed in run `34289359047`; this is compilation, not GPU execution evidence.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed
