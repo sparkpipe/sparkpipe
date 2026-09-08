@@ -27,6 +27,13 @@ Local transactions never wait for SSH; remote operations run concurrently with
 bounded timeouts. CPU and GPU ownership are independent. Exclusive jobs exclude
 both classes, and waiting exclusive jobs drain conflicting work before starting.
 
+`--after parent1,parent2` requires distinct existing job IDs; submit parents
+before children. A child starts only after every parent succeeds and cleanup is
+confirmed. A failed or cancelled parent finishes its unstarted descendants with
+exit 125 and `failed_dependencies` in their receipts. No descendant command runs.
+Use a new job ID for recovery. Submit independent per-node builds separately so
+one failed build does not prevent verification of another node's successful build.
+
 Jobs have 3-minute default / 15-minute maximum deadlines. systemd enforces the
 deadline even if the controller disappears, with a 5-second termination grace.
 Cancellation remains stopping until each control group is confirmed stopped.

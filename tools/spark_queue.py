@@ -203,14 +203,21 @@ def claim(default_ttl):
         now = time.time()
         state["manual"] = [r for r in state["manual"] if now < timestamp(r["acquired_at"]) + r["ttl_minutes"] * 60]
         done = {r["id"] for r in state["results"] if r.get("exit") == 0}
+        failed = {r["id"] for r in state["results"] if r.get("exit") != 0}
         held = [j for j in state["jobs"] if j["state"] in ACTIVE] + state["manual"]
         unavailable = set(state["fences"])
         for owner in held:
             if owner.get("state") == "stopping":
                 unavailable.update(set(owner["nodes"]) - set(owner.get("released_nodes", [])))
         candidates = []
-        for job in state["jobs"]:
+        for job in list(state["jobs"]):
             if job.get("state") not in {"queued", "blocked"} or job.get("kind", "run") != "run":
+                continue
+            failed_dependencies = sorted(set(job.get("after", [])) & failed)
+            if failed_dependencies:
+                job["failed_dependencies"] = failed_dependencies
+                finish(state, job, 125, "dependency failed: " + ", ".join(failed_dependencies))
+                failed.add(job["id"])
                 continue
             try:
                 ttl = validate_ttl(float(job.get("ttl_minutes") or default_ttl))
@@ -277,9 +284,13 @@ def cmd_add(args):
     with transaction() as state:
         if any(j["id"] == args.id for j in state["jobs"] + state["results"]):
             raise SystemExit("ID already exists; use a new ID for each attempt")
+        after = args.after.split(",") if args.after else []
+        known = {j["id"] for j in state["jobs"] + state["results"]}
+        if len(set(after)) != len(after) or any(dep not in known for dep in after):
+            raise SystemExit("dependencies must be distinct existing job IDs; submit parents first")
         state["jobs"].append(dict(id=args.id, nodes=nodes, cmd=args.cmd or "", cwd=args.cwd or "$HOME",
             resources=args.resources, ttl_minutes=ttl, memory_mib=args.memory_mib, per_node=args.per_node,
-            priority=args.priority, kind=args.kind, after=(args.after.split(",") if args.after else []),
+            priority=args.priority, kind=args.kind, after=after,
             submitted_by=args.by, notes=args.notes, state="queued", submitted_at=time.time()))
     print("queued " + args.id)
 
