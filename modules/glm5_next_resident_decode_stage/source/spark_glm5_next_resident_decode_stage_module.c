@@ -2751,6 +2751,9 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	SparkGlm5NextAsyncCompletion *async = (SparkGlm5NextAsyncCompletion *)context;
 	SparkGlm5NextModuleState *state = async != 0 ? async->state : 0;
 	SparkGlm5NextExecutionSlot *slot;
+	SparkModelDriverCompletion completion;
+	SparkModelDriverCompletionFunction complete;
+	void *complete_context;
 	if ( state == 0 || async->slot_index >= state->pipeline_slot_count )
 		return;
 	slot = &state->slots[async->slot_index];
@@ -2774,7 +2777,13 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	else
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
-	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
+	// Snapshot before releasing the slot: callback-driven reuse can overwrite async.
+	completion = async->completion;
+	complete = async->completion_function;
+	complete_context = async->completion_context;
+	SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count);
+	SparkStageModuleSlotRelease(state->slot_states,async->slot_index);
+	complete(complete_context,&completion);
 }
 
 static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)

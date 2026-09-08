@@ -357,6 +357,16 @@ needs merged-main GPU execution; token parity alone does not establish full
 numerical or distributed correctness. Extend existing probes and shared control
 paths before adding infrastructure; each abstraction needs a concrete caller.
 
+GLM completion now snapshots the completion record, releases finished lane and
+slot claims with the existing common helpers, then notifies the caller. The old
+callback-first helper intentionally retains claims through a callback; that
+contract caused immediate reuse after GLM completion to race cleanup. The GLM
+regression reclaims the same resources inside the callback and overwrites the
+old slot record, proving the returned completion remains stable. Output copies
+and cache completion still precede release; uncertain cleanup retains claims.
+Validation also no longer dereferences an invalid submission to print debug
+fields after the common validator has rejected it. Both host regressions pass.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed

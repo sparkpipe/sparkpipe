@@ -967,23 +967,12 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 	if ( submission != 0 && submission->control_generation < atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkGlm5NextServingDescriptor,&state->runtime_limits,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: runtime_submission -> %d (kind %u rows %u lanes %u ext %u)\n",
-			(int)status,submission->work_kind,submission->row_count,submission->active_sequence_count,submission->model_extension_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingValidateBoundaries(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: boundaries -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingValidateRowOrder(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: row_order -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
-	{
-		fprintf(stderr,"G5N-DBG validate: model_extension_bytes=%u kind=%u\n",
-			submission->model_extension_bytes,submission->model_extension_kind);
 		status = SPARK_STATUS_UNSUPPORTED;
-	}
 	return(status);
 }
 

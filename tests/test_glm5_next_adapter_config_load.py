@@ -266,6 +266,8 @@ static int32_t TestServingReset(void)
         return(-24);
     if ( SparkGlm5NextServingValidateSubmission(&state,&submission) != SPARK_STATUS_VALIDATION_FAILED )
         return(-25);
+    if ( SparkGlm5NextServingValidateSubmission(&state,0) == SPARK_STATUS_OK )
+        return(-28);
     atomic_store(&state.reset_active,1u);
     if ( SparkGlm5NextServingReset(&state,4u) != SPARK_STATUS_BUSY || ResetCalls != 2u )
         return(-26);

@@ -83,6 +83,7 @@ cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,cu
 static SparkWeightdWorkFunction COMPLETION_WORK;
 static void *COMPLETION_CONTEXT;
 static SparkStatus WORK_STATUS,COMPLETION_STATUS;
+static uint32_t COMPLETION_REUSED;
 
 SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWorkFunction function,void *context)
 {
@@ -98,8 +99,17 @@ SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWork
 
 static void observe_completion(void *context,const SparkModelDriverCompletion *completion)
 {
+	uint32_t lanes[2] = {0u,1u},slot;
 	(void)context;
+	COMPLETION_REUSED = SparkStageModuleIndexSetClaim(state.lane_states,state.resident_sequence_capacity,lanes,2u) == SPARK_STATUS_OK;
+	COMPLETION_REUSED &= SparkStageModuleSlotClaim(state.slot_states,1u,&slot) == SPARK_STATUS_OK;
+	state.completions[0].completion.status = SPARK_STATUS_OK;
 	COMPLETION_STATUS = completion->status;
+	if ( COMPLETION_REUSED != 0u )
+	{
+		SparkStageModuleIndexSetRelease(state.lane_states,state.resident_sequence_capacity,lanes,2u);
+		SparkStageModuleSlotRelease(state.slot_states,slot);
+	}
 }
 
 static int32_t check_cache_transactions(void)
@@ -165,6 +175,8 @@ static int32_t check_cache_transactions(void)
 	if ( COMPLETION_WORK == 0 || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_CLAIMED || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
 		return(-29);
 	COMPLETION_WORK(COMPLETION_CONTEXT);
+	if ( COMPLETION_REUSED == 0u )
+		return(-30);
 	if ( COMPLETION_STATUS != SPARK_STATUS_IO_ERROR || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE || atomic_load(&state.lane_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE || atomic_load(&state.lane_states[1]) != SPARK_STAGE_MODULE_SLOT_FREE || fixture.pages.cache.sequences[0].sequence_id != 0u || fixture.pages.cache.sequences[1].sequence_id != 0u || shadow[0] != UINT32_MAX )
 		return(-27);
 	pthread_mutex_destroy(&state.kv_mutex);
