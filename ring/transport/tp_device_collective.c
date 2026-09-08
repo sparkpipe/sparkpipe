@@ -26,7 +26,6 @@ extern cudaError_t cudaEventQuery(cudaEvent_t event);
 #define TREE_STAGES 4u
 #define D2A_ROUTE_COUNT \
     SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_MAX_PEERS
-#define D2A_ALL_ARRIVED ((1u << D2A_ROUTE_COUNT) - 1u)
 #define D2A_CONTROL_PORT_OFFSET 256u
 #define ACK_CONTROL_PORT_OFFSET 512u
 #define D2A_ACK_CONTROL_PORT_OFFSET 768u
@@ -42,7 +41,7 @@ static uint32_t tree_peer(uint32_t rank,uint32_t bit)
     return ((((rank >> 2u) + 1u + (bit - 4u)) & 3u) << 2u);
 }
 
-static uint32_t tree_send_mask(uint32_t rank,uint32_t stage)
+static uint32_t tree_send_mask(uint32_t rank,uint32_t stage,uint32_t degree)
 {
     uint32_t j = rank & 3u;
 
@@ -51,11 +50,11 @@ static uint32_t tree_send_mask(uint32_t rank,uint32_t stage)
     if (stage == 1u)
         return j == 2u ? 1u : 0u;
     if (stage == 2u)
-        return j == 0u ? 0x70u : 0u;
+        return j == 0u && degree == 16u ? 0x70u : 0u;
     return j == 0u ? 0xeu : 0u;
 }
 
-static uint32_t tree_recv_mask(uint32_t rank,uint32_t stage)
+static uint32_t tree_recv_mask(uint32_t rank,uint32_t stage,uint32_t degree)
 {
     uint32_t j = rank & 3u;
 
@@ -64,23 +63,23 @@ static uint32_t tree_recv_mask(uint32_t rank,uint32_t stage)
     if (stage == 1u)
         return j == 0u ? 4u : 0u;
     if (stage == 2u)
-        return j == 0u ? 0x70u : 0u;
+        return j == 0u && degree == 16u ? 0x70u : 0u;
     return j == 0u ? 0u : 1u;
 }
 
-static uint32_t tree_used(uint32_t rank)
+static uint32_t tree_used(uint32_t rank,uint32_t degree)
 {
     uint32_t used = 0u;
     uint32_t stage;
 
     for (stage = 0u; stage < TREE_STAGES; stage++)
-        used |= tree_send_mask(rank,stage) | tree_recv_mask(rank,stage);
+        used |= tree_send_mask(rank,stage,degree) | tree_recv_mask(rank,stage,degree);
     return used;
 }
 
-static uint32_t tree_route_count(uint32_t rank)
+static uint32_t tree_route_count(uint32_t rank,uint32_t degree)
 {
-    return __builtin_popcount(tree_used(rank));
+    return __builtin_popcount(tree_used(rank,degree));
 }
 
 static uint32_t tree_bit_route(uint32_t used,uint32_t bit)
@@ -248,8 +247,7 @@ static uint32_t SparkTpDeviceCollectiveD2aEnabled(
     uint32_t algorithm_mask;
 
     if (config == 0 ||
-        config->tp_degree !=
-            SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT ||
+        (config->tp_degree != 4u && config->tp_degree != 16u) ||
         config->direct_all_to_all_max_payload_bytes == 0u)
         return 0u;
     algorithm_mask = config->algorithm_mask == 0u ?
@@ -428,7 +426,7 @@ static uint32_t SparkTpDeviceCollectiveAlgorithmMask(
 static uint32_t SparkTpDeviceCollectiveConfigRouteCount(
     const SparkTpDeviceCollectiveConfig *config)
 {
-    return tree_route_count(config->tp_rank);
+    return tree_route_count(config->tp_rank,config->tp_degree);
 }
 
 static const char *SparkTpDeviceCollectiveRankHost(
@@ -457,13 +455,13 @@ static SparkStatus SparkTpDeviceCollectiveValidateAlgorithms(
 
     if ((SparkTpDeviceCollectiveAlgorithmMask(config) &
             SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE) == 0u ||
-        config->tp_degree != 16u ||
+        (config->tp_degree != 4u && config->tp_degree != 16u) ||
         config->operation_kind !=
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
         return SPARK_STATUS_INVALID_ARGUMENT;
     if (config->rail_count != 0u)
         for (route_index=0u;
-             route_index<tree_route_count(config->tp_rank);
+             route_index<tree_route_count(config->tp_rank,config->tp_degree);
              route_index++)
             if (config->step_rail_indices[route_index] >= config->rail_count)
                 return SPARK_STATUS_INVALID_ARGUMENT;
@@ -483,9 +481,9 @@ static SparkStatus SparkTpDeviceCollectiveValidateBindings(
     uint32_t d2a_route_count;
 
     d2a_route_count = SparkTpDeviceCollectiveD2aEnabled(config) != 0u ?
-        D2A_ROUTE_COUNT : 0u;
+        config->tp_degree - 1u : 0u;
     required_binding_count =
-        (tree_route_count(config->tp_rank) + d2a_route_count) * credit_count;
+        (tree_route_count(config->tp_rank,config->tp_degree) + d2a_route_count) * credit_count;
     if (config->credit_binding_count != required_binding_count ||
         (required_binding_count != 0u && config->credit_bindings == 0))
     {
@@ -521,7 +519,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateBindings(
             d2a_seen[binding->step_index][binding->credit_index] = 1u;
             continue;
         }
-        if (binding->step_index >= tree_route_count(config->tp_rank) ||
+        if (binding->step_index >= tree_route_count(config->tp_rank,config->tp_degree) ||
             seen[binding->step_index][binding->credit_index] != 0u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -922,8 +920,8 @@ static SparkStatus SparkTpDeviceCollectiveOpenTreeSessions(
     pthread_t threads[28];
     uint32_t peers[7];
     uint32_t rank = config->tp_rank;
-    uint32_t used = tree_used(rank);
-    uint32_t route_count = tree_route_count(rank);
+    uint32_t used = tree_used(rank,config->tp_degree);
+    uint32_t route_count = tree_route_count(rank,config->tp_degree);
     uint32_t route;
     uint32_t index = 0u;
     SparkStatus status;
@@ -1154,7 +1152,7 @@ static SparkStatus SparkTpDeviceCollectiveTreePack(
     const SparkTpDeviceCollective *collective = implementation->collective;
     uint64_t local_bytes =
         SparkTpDeviceCollectiveOperationBytes(collective,operation);
-    uint32_t used = tree_used(collective->tp_rank);
+    uint32_t used = tree_used(collective->tp_rank,collective->tp_degree);
     uint32_t bit;
     SparkStatus status;
 
@@ -1289,13 +1287,13 @@ static SparkStatus SparkTpDeviceCollectiveSendAcks(
     else
     {
         uint32_t rank = collective->tp_rank;
-        uint32_t used = tree_used(rank);
+        uint32_t used = tree_used(rank,collective->tp_degree);
         uint32_t recv_union = 0u;
         uint32_t stage;
         uint32_t bit;
 
         for (stage = 0u; stage < TREE_STAGES; stage++)
-            recv_union |= tree_recv_mask(rank,stage);
+            recv_union |= tree_recv_mask(rank,stage,collective->tp_degree);
         for (bit = 0u; bit < 7u; bit++)
         {
             uint64_t *staging;
@@ -1330,14 +1328,14 @@ static void SparkTpDeviceCollectiveTreeOperation(
 {
     SparkTpDeviceCollective *collective = implementation->collective;
     uint32_t rank = collective->tp_rank;
-    uint32_t used = tree_used(rank);
+    uint32_t used = tree_used(rank,collective->tp_degree);
     uint64_t local_bytes =
         SparkTpDeviceCollectiveOperationBytes(collective,operation);
     uint32_t stage = operation->stage;
-    uint32_t recv_bits = tree_recv_mask(rank,stage);
+    uint32_t recv_bits = tree_recv_mask(rank,stage,collective->tp_degree);
     uint32_t send_mask = stage == 0u ?
-        (tree_send_mask(rank,0u) | tree_send_mask(rank,1u)) :
-        (stage + 1u < TREE_STAGES ? tree_send_mask(rank,stage + 1u) : 0u);
+        (tree_send_mask(rank,0u,collective->tp_degree) | tree_send_mask(rank,1u,collective->tp_degree)) :
+        (stage + 1u < TREE_STAGES ? tree_send_mask(rank,stage + 1u,collective->tp_degree) : 0u);
     uint32_t bit;
 
     for (bit = 0u; bit < 7u; bit++)
@@ -1550,7 +1548,7 @@ static void SparkTpDeviceCollectiveD2aOperation(
             continue;
         operation->arrived |= 1u << route;
     }
-    if (operation->arrived != D2A_ALL_ARRIVED)
+    if (operation->arrived != ((1u << implementation->d2a_route_count) - 1u))
         return;
     if (implementation->d2a_timing_enabled != 0u &&
         operation->d2a_arrived_micro == 0u)
@@ -2832,9 +2830,9 @@ SparkStatus SparkTpDeviceCollectiveCreditBindingRouteCount(
     algorithm_mask = SparkTpDeviceCollectiveAlgorithmMask(config);
     if ((algorithm_mask & ~SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS) != 0u)
         return SPARK_STATUS_INVALID_ARGUMENT;
-    *route_count_out = tree_route_count(config->tp_rank) +
+    *route_count_out = tree_route_count(config->tp_rank,config->tp_degree) +
         (SparkTpDeviceCollectiveD2aEnabled(config) != 0u ?
-            D2A_ROUTE_COUNT : 0u);
+            config->tp_degree - 1u : 0u);
     return SPARK_STATUS_OK;
 }
 
@@ -2964,7 +2962,7 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     implementation->binding_route_count = implementation->route_count;
     implementation->d2a_route_count =
         SparkTpDeviceCollectiveD2aEnabled(config) != 0u ?
-        D2A_ROUTE_COUNT : 0u;
+        config->tp_degree - 1u : 0u;
     {
         const char *timing_env = getenv("SPARK_TP_D2A_TIMING");
         implementation->d2a_timing_enabled = timing_env != 0 &&
