@@ -131,7 +131,7 @@ static void SparkTestMakeSlice(SparkWeightdPackSlice *slice,
 }
 
 
-static void SparkTestFallbackGates(void)
+static void SparkTestConfigurationGates(void)
 {
     SparkWeightdPackSlice slice;
     SparkWeightdAttachOutcome outcome;
@@ -147,7 +147,11 @@ static void SparkTestFallbackGates(void)
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
     assert(SparkWeightdAttachRequested() == SPARK_STATUS_OK);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "0");
-    assert(SparkWeightdAttachRequested() == SPARK_STATUS_BUSY);
+    assert(SparkWeightdAttachRequested() == SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "typo");
+    assert(SparkWeightdAttachRequested() == SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "");
+    assert(SparkWeightdAttachRequested() == SPARK_STATUS_INVALID_ARGUMENT);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, 0);
 
     SparkTestClearAttachEnv();
@@ -162,7 +166,7 @@ static void SparkTestFallbackGates(void)
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
         SPARK_TEST_TIMEOUT_NS, &outcome, reason) != SPARK_STATUS_OK);
     assert(outcome.client == 0);
-    assert(strcmp(reason, "env_off") == 0);
+    assert(strcmp(reason, "attach_config") == 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, 0);
 
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
@@ -350,7 +354,7 @@ static void SparkTestColdWarmAndRetention(void)
 int main(void)
 {
     (void)signal(SIGPIPE, SIG_IGN);
-    SparkTestFallbackGates();
+    SparkTestConfigurationGates();
     SparkTestRefusedAttachFailsAndAllocatesNothing();
     SparkTestColdWarmAndRetention();
     printf("w2 weightd lane: serving-side attach errors + warm hit green\n");

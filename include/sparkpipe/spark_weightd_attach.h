@@ -47,6 +47,8 @@ typedef struct SparkWeightdAttachOutcome
     uint32_t map_mapped_count;
 } SparkWeightdAttachOutcome;
 
+// BUSY means unconfigured direct loading. A configured socket cannot be
+// disabled; conflicting or malformed settings return INVALID_ARGUMENT.
 SparkStatus SparkWeightdAttachRequested(void);
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,

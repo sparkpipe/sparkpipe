@@ -988,8 +988,8 @@
     },
     {
       "path": "docs/WEIGHTD_RANGE_LEASE_WORK.md",
-      "sha256": "b3778ef34536c683a16b24062fef0957aabcd075a9e73b8686a4a34fa2961659",
-      "size_bytes": 7609
+      "sha256": "66e740bcb5fbca93f2cde72f0fa10eb67eca386207a20a765a7748b0647a6ee3",
+      "size_bytes": 8158
     },
     {
       "path": "docs/WEIGHTD_RESIDENT_CACHE_DESIGN.md",
@@ -3053,8 +3053,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd_attach.h",
-      "sha256": "b7a31f3e7e87c5bd93362142cf2cd9f0b33f662a475fdede00a5fe7da4870359",
-      "size_bytes": 2141
+      "sha256": "9ac4184224c7a4603c0c000a8d19f59a25a7c19a64b20d6535a010e65b740541",
+      "size_bytes": 2286
     },
     {
       "path": "include/sparkpipe/spark_weightd_lease.h",
@@ -5968,8 +5968,8 @@
     },
     {
       "path": "runtime/spark_weightd_attach.c",
-      "sha256": "0a34f691ce5188d231b5a7c8668f5ad8c8fc510b8cc27dc7d5955c41a06e008e",
-      "size_bytes": 15470
+      "sha256": "17afc9da62f9f7a6dcd3074bae71da1f2f4d06f167c231add3b353586ffa4592",
+      "size_bytes": 15854
     },
     {
       "path": "runtime/spark_weightd_lease.c",
@@ -5993,8 +5993,8 @@
     },
     {
       "path": "runtime/stage_module_common.c",
-      "sha256": "7f270f6dd177606b204559928e03831984159f7648512b48778580e670e9633c",
-      "size_bytes": 52302
+      "sha256": "c475e8c7a2bd03a50caf17c3aed558468d803976b268f7b3bf20dac04b93aea6",
+      "size_bytes": 52581
     },
     {
       "path": "runtime/stage_module_lifecycle.c",
@@ -7653,8 +7653,8 @@
     },
     {
       "path": "tests/test_stage_module_weightd.c",
-      "sha256": "86749ec468b58fcca8f2ca678df9047df27489f882454c24d5f027ac52f178e6",
-      "size_bytes": 7099
+      "sha256": "38aef9fac000fe1d84b8253d96ee43bd170e142febdb8077e64b65b8eef14087",
+      "size_bytes": 7430
     },
     {
       "path": "tests/test_staging_manifest.py",
@@ -7758,8 +7758,8 @@
     },
     {
       "path": "tests/test_weightd_attach.c",
-      "sha256": "c3cef0ab80c00e0ab07f4b2d5418e89b88aafb2fb261f08508d9abb6d093521d",
-      "size_bytes": 13080
+      "sha256": "54cfe14719e3d18a4ecebe393a5d5f30a4309a0ebb62e62a37f0c524b2ca2069",
+      "size_bytes": 13380
     },
     {
       "path": "tests/test_weightd_expert.c",
@@ -9520,5 +9520,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32276238
+  "total_bytes": 32278226
 }
