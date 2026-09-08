@@ -20,10 +20,8 @@ const char *cudaGetErrorString(cudaError_t error)
 
 cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,cudaMemcpyKind kind)
 {
-	(void)destination;
-	(void)source;
-	(void)bytes;
 	(void)kind;
+	memcpy(destination,source,bytes);
 	return(cudaSuccess);
 }
 
@@ -34,6 +32,9 @@ SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCache
 	(void)store;
 	assert(SparkKvPageStoreConfigurationIsValid(&table->page_store_config) != 0u);
 	assert(table->page_store_config.transfer_capacity <= 2u);
+	assert(table->page_store_config.page_bytes == table->page_store_config.staging_bytes);
+	assert(table->arena_configuration.value_device_base == state.index_cache);
+	assert(table->arena_configuration.value_block_stride_bytes == (uint64_t)state.index_layer_count * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
 	return(SPARK_STATUS_PENDING);
 }
 
@@ -81,11 +82,14 @@ static int32_t check_batch_waves(void)
 
 static void check_small_kv(void)
 {
+	static uint8_t index_pool[3u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u];
 	uint32_t pages;
 	for (pages=1u; pages<=3u; pages++)
 	{
 		memset(&state,0,sizeof(state));
 		state.kv_layer_count = 1u;
+		state.index_layer_count = 1u;
+		state.index_cache = index_pool;
 		state.page_count = pages;
 		state.pages_per_sequence = pages;
 		state.resident_sequence_capacity = 1u;
@@ -105,6 +109,50 @@ static void check_small_kv(void)
 		free(state.kv_lane_cache_lanes);
 	}
 	memset(&state,0,sizeof(state));
+}
+
+static int32_t check_layered_page_copy(void)
+{
+	uint8_t kv[3u * 5u * 8u],index[3u * 5u * 6u],packed[3u * 8u];
+	uint8_t *pool;
+	uint32_t region,page,layer,i,per_page;
+	uintptr_t address;
+	memset(&state,0,sizeof(state));
+	state.kv_cache = kv;
+	state.index_cache = index;
+	state.page_count = 5u;
+	state.kv_layer_count = state.index_layer_count = 3u;
+	state.kv_layer_stride_bytes = 5u * 8u;
+	state.index_layer_stride_bytes = 5u * 6u;
+	for (region=0u; region<2u; region++)
+	{
+		pool = region == 0u ? kv : index;
+		per_page = region == 0u ? 8u : 6u;
+		for (page=0u; page<5u; page++)
+		{
+			memset(kv,0x7e,sizeof(kv));
+			memset(index,0x7e,sizeof(index));
+			for (layer=0u; layer<3u; layer++)
+				memset(pool + (layer * 5u + page) * per_page,(int)(layer + page + 1u),per_page);
+			address = (uintptr_t)pool + page * 3u * per_page;
+			if ( SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,address,packed,3u * per_page) != SPARK_STATUS_OK )
+				return(-1);
+			for (layer=0u; layer<3u; layer++)
+				for (i=0u; i<per_page; i++)
+					if ( packed[layer * per_page + i] != layer + page + 1u )
+						return(-2);
+			memset(pool,0x7e,3u * 5u * per_page);
+			if ( SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,address,packed,3u * per_page) != SPARK_STATUS_OK )
+				return(-3);
+			for (i=0u; i<3u * 5u * per_page; i++)
+				if ( pool[i] != (i / per_page % 5u == page ? i / (5u * per_page) + page + 1u : 0x7eu) )
+					return(-4);
+		}
+	}
+	if ( SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,(uintptr_t)kv + 1u,packed,sizeof(packed)) == SPARK_STATUS_OK )
+		return(-5);
+	memset(&state,0,sizeof(state));
+	return(0);
 }
 
 static void check_pack_identity(void)
@@ -154,6 +202,8 @@ int32_t main(void)
 	uint32_t first[4] = {0u,12u,23u,34u},counts[4] = {12u,11u,11u,11u},stage;
 	if ( check_batch_waves() != 0 )
 		return(1);
+	if ( check_layered_page_copy() != 0 )
+		return(2);
 	check_small_kv();
 	context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	context.descriptor_bytes = sizeof(context);
