@@ -1,3 +1,5 @@
+include $(dir $(lastword $(MAKEFILE_LIST)))runtime/weightd_sources.mk
+
 # Every host source, by the library it lands in, at the path it actually lives.
 #
 # This replaced four per-directory sources.mk files. They encoded the directory
@@ -41,12 +43,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
 	runtime/model_resident_ipc.c \
 	runtime/model_resident_client.c \
 	runtime/model_pipeline_client.c \
-	runtime/spark_weightd.c \
-	runtime/spark_weightd_manifest.c \
-	runtime/spark_weightd_lease.c \
-	runtime/spark_weightd_attach.c \
-	runtime/spark_weightd_map.c \
-    runtime/spark_weightd_spine.c \
+	$(SPARKPIPE_WEIGHTD_SOURCES) \
 	runtime/model_batch_engine.c \
 	runtime/pipeline_runtime.c
 
@@ -55,12 +52,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
 # as deleted twice with every gate green, because it was named for who shared it
 # rather than what it is.
 SPARKPIPE_MODEL_COMMON_SOURCES := \
-    runtime/spark_weightd.c \
-    runtime/spark_weightd_manifest.c \
-    runtime/spark_weightd_lease.c \
-    runtime/spark_weightd_attach.c \
-    runtime/spark_weightd_map.c \
-    runtime/spark_weightd_spine.c \
+    $(SPARKPIPE_WEIGHTD_SOURCES) \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \

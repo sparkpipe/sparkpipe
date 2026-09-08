@@ -24,3 +24,7 @@ Compare resident and lazy paths numerically for arbitrary rows including 1, 3, 1
 ## Route/expert boundary implementation
 
 The draft now splits Glm5NextLayerMoe into Route and Experts helpers and exposes SparkGlm5NextLaunchCudaLayerMlpRoute/Experts. The resident wrapper invokes both in order; dense layers complete in Route and Experts is a no-op for those layers. Kernel submission bodies were preserved during extraction. The lazy runtime state machine is not connected yet: it must retain the same slot/stream between calls and satisfy all lease gates above. CUDA CI now includes the glm5_next FP8 translation unit; compilation and numerical parity must be checked on the resulting revision before qualification.
+
+## Shared build dependency list
+
+Use runtime/weightd_sources.mk (SPARKPIPE_WEIGHTD_SOURCES) when a module links the shared weightd client. GLM Flash and DSV4 now consume that list, as do the runtime/model-common libraries. Do not retain a private two-file weightd/attach list: the daemon/client now depends on manifest and lease code, and mapping/spine integration uses the same shared set. GLM Flash host-source syntax checks and the host working-set test passed after this change; CUDA linking and GPU execution remain separate gates.

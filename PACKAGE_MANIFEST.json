@@ -1,5 +1,5 @@
 {
-  "file_count": 1906,
+  "file_count": 1907,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "7d2cc535d85cfb664a8b599dd780cb45f894f1af62846e318ad6aa426650653f",
-      "size_bytes": 4257
+      "sha256": "9bee229803a5958e2ee312b752b3959898d370092953e50530da32d540f3d431",
+      "size_bytes": 4795
     },
     {
       "path": "docs/GOALS.md",
@@ -3703,8 +3703,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile",
-      "sha256": "c5ed387420ba6af531f64c5b93bcbff058de6b5aa9f91744c3fb5aaaf6a35164",
-      "size_bytes": 4469
+      "sha256": "3bad3c4567ce110830406c8539479fc0bc4223d718ea6287b77e291a4c019344",
+      "size_bytes": 4490
     },
     {
       "path": "modules/dsv4_resident_decode_stage/Makefile.pro",
@@ -3933,8 +3933,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/Makefile",
-      "sha256": "998b769d4775419dba2a4109613fa6f0ef1e587dc5a20f26bb6c95ca867d0013",
-      "size_bytes": 5038
+      "sha256": "ae67ef2f8458c3597c9408e9a4a5d14af2c535991fe464fc5d0ea313614c8f66",
+      "size_bytes": 5059
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/README.md",
@@ -6027,6 +6027,11 @@
       "size_bytes": 2262
     },
     {
+      "path": "runtime/weightd_sources.mk",
+      "sha256": "7c9c02a65f36b84a2c45e2e62e7d3cecc771c459a32f7a7de8cf87de53a8dcda",
+      "size_bytes": 299
+    },
+    {
       "path": "runtime/work_transaction.c",
       "sha256": "0bdf5cb9405376585cbe30cdeaea2d49d0f89489a657d38b61a22efb090f9036",
       "size_bytes": 20985
@@ -6058,8 +6063,8 @@
     },
     {
       "path": "sources.mk",
-      "sha256": "c9511cd2cd020663b8c5503ef5007995e0796e0eead4be05dc04f1b10607ad51",
-      "size_bytes": 3920
+      "sha256": "234ece480aba3e0933393334d7086ece9350e58897d5981eb21b336c317cbd7b",
+      "size_bytes": 3649
     },
     {
       "path": "src/spark_admission.c",
@@ -9535,5 +9540,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32304551
+  "total_bytes": 32305159
 }
