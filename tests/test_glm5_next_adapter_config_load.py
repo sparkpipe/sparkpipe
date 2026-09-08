@@ -21,6 +21,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 HARNESS = r"""
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
+#include <sched.h>
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c"
 #define main SparkCacheAdmissionFixtureMain
 #include "tests/test_serving_cache_admission.c"
@@ -141,6 +143,41 @@ static int32_t TestSubmitRelease(SparkGlm5NextServingState *state)
     return(0);
 }
 
+static atomic_uint ReservationAttempts,ReservationWinners;
+static SparkGlm5NextServingState ReservationState;
+
+static void *TestReserveThread(void *context)
+{
+    SparkModelServingSubmission submission = {0};
+    SparkGlm5NextServingPending *pending;
+    (void)context;
+    pending = SparkGlm5NextServingReservePending(&ReservationState,&submission);
+    if ( pending != 0 )
+        atomic_fetch_add(&ReservationWinners,1u);
+    atomic_fetch_add(&ReservationAttempts,1u);
+    while ( atomic_load(&ReservationAttempts) != 8u )
+        sched_yield();
+    if ( pending != 0 )
+        atomic_store_explicit(&pending->active,0u,memory_order_release);
+    return(0);
+}
+
+static int32_t TestConcurrentReservation(void)
+{
+    pthread_t threads[8];
+    uint32_t index;
+    ReservationState.pipeline_slot_count = 1u;
+    for (index=0u; index<8u; index++)
+        if ( pthread_create(&threads[index],0,TestReserveThread,0) != 0 )
+            return(-12);
+    for (index=0u; index<8u; index++)
+        if ( pthread_join(threads[index],0) != 0 )
+            return(-13);
+    if ( atomic_load(&ReservationWinners) != 1u || SparkGlm5NextServingAvailableSubmissionCount(&ReservationState) != 1u )
+        return(-14);
+    return(0);
+}
+
 static int32_t TestDeferredFrameLifetime(void)
 {
     static SparkGlm5NextServingState state;
@@ -187,6 +224,8 @@ int main(int argc, char **argv)
         return(2);
     if ( TestDeferredFrameLifetime() != 0 )
         return(3);
+    if ( TestConcurrentReservation() != 0 )
+        return(4);
     static SparkGlm5NextServingState state;
     uint32_t msp = 0, erc = 0, dsct = 0, tpd = 0, tpr = 0;
     memset(&state, 0, sizeof(state));
@@ -254,7 +293,7 @@ def main() -> int:
                   "generator/adapter drift (this is the incident class the "
                   "drift gate cannot see: it compares member names, not shapes)")
             return 1
-        print("PASS actual GLM B3 admission, deferred frame lifetime and zero-token release; "
+        print("PASS actual GLM B3 admission, deferred lifetime, release and concurrent reservation; "
               "adapter loads the generator's deployment config")
         return 0
 

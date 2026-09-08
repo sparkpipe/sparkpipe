@@ -144,6 +144,10 @@ clear of the entire multi-megabyte pending slot is removed. The real adapter
 host test submits B3, returns from the caller and overwrites its arrays, then
 checks the saved frame and completes it. Per-completion debug printing is
 removed from the production path.
+Pending-slot ownership uses an atomic claim/release so the submit thread and
+CUDA completion thread do not race on a plain flag; rejection counters are
+atomic as well. The host harness also checks eight concurrent claimants for one
+slot: exactly one owns it, and the slot is available again after release.
 
 Zero-token release now goes through cache admission and emits a zero-token
 completion without launching decode. The module releases common cache ownership

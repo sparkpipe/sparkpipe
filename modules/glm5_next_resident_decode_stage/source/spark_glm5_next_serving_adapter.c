@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "spark_filesystem.h"
@@ -75,7 +76,7 @@ static const char *const SparkGlm5NextServingConfigurationMembers[] =
 typedef struct SparkGlm5NextServingPending
 {
 	struct SparkGlm5NextServingState *owner;
-	uint32_t active;
+	atomic_uint active;
 	uint32_t row_count;
 	uint32_t lane_count;
 	uint32_t active_sequence_count;
@@ -121,7 +122,7 @@ typedef struct SparkGlm5NextServingState
 	uint32_t resident_sequence_capacity;
 	uint32_t mtp_enabled;
 	uint32_t quiescing;
-	uint64_t orphan_completion_count;
+	atomic_uint_fast64_t orphan_completion_count;
 	uint16_t tp_listen_port;
 	uint16_t tp_peer_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
 	uint32_t tp_connect_timeout_milli;
@@ -631,14 +632,14 @@ static SparkGlm5NextServingPending *SparkGlm5NextServingReservePending(
 	const SparkModelServingSubmission *submission)
 {
 	SparkGlm5NextServingPending *pending;
-	uint32_t index,lane,row;
+	uint32_t index,lane,row,expected;
 	for (index=0u; index<state->pipeline_slot_count; index++)
 	{
 		pending = &state->pending[index];
-		if ( pending->active == 0u )
+		expected = 0u;
+		if ( atomic_compare_exchange_strong_explicit(&pending->active,&expected,1u,memory_order_acquire,memory_order_relaxed) != 0 )
 		{
 			pending->owner = state;
-			pending->active = 1u;
 			pending->row_count = submission->row_count;
 			pending->lane_count = submission->lane_count;
 			pending->active_sequence_count = submission->active_sequence_count;
@@ -675,7 +676,7 @@ static void SparkGlm5NextServingOrphanDriverCompletion(
 	(void)driver_completion;
 	state = (SparkGlm5NextServingState *)completion_context;
 	if ( state != 0 )
-		state->orphan_completion_count++;
+		atomic_fetch_add_explicit(&state->orphan_completion_count,1u,memory_order_relaxed);
 }
 
 static void SparkGlm5NextServingDriverCompletion(
@@ -688,7 +689,7 @@ static void SparkGlm5NextServingDriverCompletion(
 	uint32_t index,matches;
 	pending = (SparkGlm5NextServingPending *)completion_context;
 	state = pending != 0 ? pending->owner : 0;
-	if ( state == 0 || pending->active == 0u || driver_completion == 0 )
+	if ( state == 0 || atomic_load_explicit(&pending->active,memory_order_acquire) == 0u || driver_completion == 0 )
 		return;
 	matches = driver_completion->request_id == pending->request_id && driver_completion->sequence_id == pending->sequence_id && driver_completion->sequence_position == pending->sequence_position && driver_completion->program_id == state->program->program_id;
 	memset(&completion,0,sizeof(completion));
@@ -712,7 +713,7 @@ static void SparkGlm5NextServingDriverCompletion(
 	if ( matches != 0u )
 		completion.residency = driver_completion->residency;
 	else
-		state->orphan_completion_count++;
+		atomic_fetch_add_explicit(&state->orphan_completion_count,1u,memory_order_relaxed);
 	if ( completion.status != SPARK_STATUS_OK )
 	{
 		completion.accepted_token_count = 0u;
@@ -728,7 +729,7 @@ static void SparkGlm5NextServingDriverCompletion(
 			completion.status = SPARK_STATUS_SCHEMA_ERROR;
 			completion.accepted_token_count = 0u;
 			completion.completion_flags = 0u;
-			pending->active = 0u;
+			atomic_store_explicit(&pending->active,0u,memory_order_release);
 			state->completion_function(state->completion_context,&completion);
 			return;
 		}
@@ -742,7 +743,7 @@ static void SparkGlm5NextServingDriverCompletion(
 			for (index=0u; index<completion.token_count; index++)
 				completion.token_ids[index] = pending->output_token_ids[index];
 	}
-	pending->active = 0u;
+	atomic_store_explicit(&pending->active,0u,memory_order_release);
 	state->completion_function(state->completion_context,&completion);
 }
 
@@ -760,7 +761,7 @@ static uint32_t SparkGlm5NextServingAvailableSubmissionCount(
 	uint32_t available,index;
 	available = 0u;
 	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += state->pending[index].active == 0u ? 1u : 0u;
+		available += atomic_load_explicit(&state->pending[index].active,memory_order_acquire) == 0u ? 1u : 0u;
 	return(available);
 }
 
@@ -848,7 +849,7 @@ static SparkStatus SparkGlm5NextServingInitialize(
 {
 	SparkGlm5NextServingState *state;
 	uint32_t max_sequence_positions,execution_row_capacity,tp_degree,tp_rank;
-	uint32_t decode_split_context_threshold;
+	uint32_t decode_split_context_threshold,index;
 	SparkStatus status;
 	if ( adapter_state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -859,6 +860,9 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	state = (SparkGlm5NextServingState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	atomic_init(&state->orphan_completion_count,0u);
+	for (index=0u; index<SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; index++)
+		atomic_init(&state->pending[index].active,0u);
 	state->stage_index = configuration->stage_index;
 	state->pipeline_slot_count = configuration->runtime_limits.max_inflight_submission_count;
 	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
@@ -1119,7 +1123,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 			fprintf(stderr,"G5N-DBG submit: program->submit -> %d\n",(int)status);
 	}
 	if ( status != SPARK_STATUS_OK )
-		pending->active = 0u;
+		atomic_store_explicit(&pending->active,0u,memory_order_release);
 	return(status);
 }
 
@@ -1176,7 +1180,7 @@ static SparkStatus SparkGlm5NextServingSnapshot(
 	snapshot->active_submission_count = state->pipeline_slot_count - SparkGlm5NextServingAvailableSubmissionCount(state);
 	snapshot->submitted_count = driver_snapshot.submitted_count;
 	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + state->orphan_completion_count;
+	snapshot->rejected_count = driver_snapshot.rejected_count + atomic_load_explicit(&state->orphan_completion_count,memory_order_relaxed);
 	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
 	snapshot->resident_token_count = driver_snapshot.resident_token_count;
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
