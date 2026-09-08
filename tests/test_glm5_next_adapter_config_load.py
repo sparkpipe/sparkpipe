@@ -218,10 +218,70 @@ static int32_t TestDeferredFrameLifetime(void)
     return(TestSubmitRelease(&state));
 }
 
+static uint32_t ResetCalls,ResetSnapshotActive;
+static SparkStatus ResetStatus;
+
+static SparkStatus TestResetAdmit(void *context,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
+{
+    (void)context;
+    if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u || request->admission_flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
+        return(SPARK_STATUS_INVALID_ARGUMENT);
+    ResetCalls++;
+    decision->accepted = ResetStatus == SPARK_STATUS_OK ? 1u : 0u;
+    return(ResetStatus);
+}
+
+static SparkStatus TestResetSnapshot(void *context,uint32_t program,SparkModelDriverRuntimeSnapshot *snapshot)
+{
+    (void)context;
+    (void)program;
+    snapshot->active_submission_count = ResetSnapshotActive;
+    return(SPARK_STATUS_OK);
+}
+
+static int32_t TestServingReset(void)
+{
+    static SparkGlm5NextServingState state;
+    SparkModelDriverInterface driver = {.admit=TestResetAdmit,.snapshot=TestResetSnapshot};
+    SparkModelDriverProgramDescriptor program = {.program_id=1u};
+    SparkModelServingSubmission submission = {.control_generation=2u};
+    state.driver.interface = &driver;
+    state.program = &program;
+    state.pipeline_slot_count = 1u;
+    atomic_store(&state.pending[0].active,1u);
+    if ( SparkGlm5NextServingReset(&state,3u) != SPARK_STATUS_BUSY || ResetCalls != 0u )
+        return(-20);
+    atomic_store(&state.pending[0].active,0u);
+    ResetSnapshotActive = 1u;
+    if ( SparkGlm5NextServingReset(&state,3u) != SPARK_STATUS_BUSY || ResetCalls != 0u )
+        return(-21);
+    ResetSnapshotActive = 0u;
+    ResetStatus = SPARK_STATUS_IO_ERROR;
+    if ( SparkGlm5NextServingReset(&state,3u) != SPARK_STATUS_IO_ERROR || state.quiescing == 0u || state.reset_generation != 0u )
+        return(-22);
+    ResetStatus = SPARK_STATUS_OK;
+    if ( SparkGlm5NextServingReset(&state,3u) != SPARK_STATUS_OK || state.quiescing != 0u || state.reset_generation != 3u )
+        return(-23);
+    if ( SparkGlm5NextServingReset(&state,3u) != SPARK_STATUS_INVALID_ARGUMENT || state.quiescing != 0u || ResetCalls != 2u )
+        return(-24);
+    if ( SparkGlm5NextServingValidateSubmission(&state,&submission) != SPARK_STATUS_VALIDATION_FAILED )
+        return(-25);
+    atomic_store(&state.reset_active,1u);
+    if ( SparkGlm5NextServingReset(&state,4u) != SPARK_STATUS_BUSY || ResetCalls != 2u )
+        return(-26);
+    atomic_store(&state.reset_active,0u);
+    state.quiescing = 1u;
+    if ( SparkGlm5NextServingReservePending(&state,&submission) != 0 || state.pending[0].active != 0u || SparkGlm5NextServingInterface.reset == 0 )
+        return(-27);
+    return(0);
+}
+
 int main(int argc, char **argv)
 {
     if ( TestAdapterCacheAdmission() != 0 )
         return(2);
+    if ( TestServingReset() != 0 )
+        return(8);
     if ( TestDeferredFrameLifetime() != 0 )
         return(3);
     if ( TestConcurrentReservation() != 0 )

@@ -36,11 +36,11 @@ correct math from repeatability, or full serving from a component probe.
 | True batch waves, PR #858 / main `93c8f0d` | Removed an unconditional one-row clamp. True B3 memcheck returned zero errors; resident/lazy parity and two concurrent lazy consumers passed. This does not establish distributed model accuracy. | Audit actual launch shapes. A B3/B7 request can still execute as repeated B1. Diagnostic clamps require DEBUG and visible diagnostics. |
 | Separate decode window, PR #859 / main `b8f20ae` | Wrapper retains per-sequence traces and measures the interval after every first token and before the first sequence finishes. | Separate prefill and batch tail effects. Client arrival timestamps are not device execution timing; this is not yet a required-hit prefix-cache benchmark. |
 | Shared row policy, PR #860 / main `5500665` | GLM wrappers use common row validation and wave selection with indexed lane callbacks. Host harness passes widths 1–101, ragged waves, invalid order and released claims. Merged-main B3 memcheck and resident/lazy parity pass. | The qsort pattern applies directly: common algorithm, narrow ordinal callback, opaque context. Replace O(rows × lanes) searches with indexed lookups. |
-| Mandatory serving contract, draft PR #861 | ABI 21 removes seven opt-out bits, makes callbacks/cache geometry mandatory and removes zero-cache scheduling paths. Common host tests pass; GLM cache/reset integration remains incomplete. | Required means fail explicitly when missing. Callback presence is only structural validation; stubs and flags cannot establish behavior. |
+| Mandatory serving contract, draft PR #861 | ABI 21 removes seven opt-out bits, makes callbacks/cache geometry mandatory and removes zero-cache scheduling paths. Common host tests pass; GLM GPU cache/reset qualification remains incomplete. | Required means fail explicitly when missing. Callback presence is only structural validation; stubs and flags cannot establish behavior. |
 | Accurate ABI probe, draft PR #861 | Replaced copied, incorrect structs/flag values with the public header and common loader. | Diagnostic tools must consume the same contract as production, or they can report misleading capability results. |
 | Layered KV/index backing payload, PR #862 / main `d687fc8` | Common gather/scatter with a hardware copy callback; GLM supplies native geometry. Actual GLM host hook tests pass both regions across three layers and five pages; substituting the previous contiguous copy fails the payload check. CUDA CI, merged-main B3 memcheck and resident/lazy/concurrent parity pass. | Trace native layer/page indexing against backing payload layout. Total allocation size is insufficient; distinguish each page and layer in tests. Include index state in payload sizing. |
 | Numerical gate integrity, PR #863 / main `52ce0e5` | Three probe failure results were discarded; projection readback could skip a comparison. Checks now affect exit status. Common metrics reject nonfinite inputs and accumulate squared errors directly; regression tests reject the previous metric implementation. Corrected GPU component validator passes on merged main. | Test the acceptance test with bad values. Error-norm cancellation and ignored return codes can turn an optimization regression green. Component repeatability is not numerical correctness. |
-| Cache admission wiring, draft PR #861 | GLM builds persistent cache lanes for submitted frames and routes prepare/commit/abort through a common algorithm with a validation callback and caller-owned scratch. Host tests preserve B3 lane identities and transaction generations, propagate driver failure, validate all inputs before dispatch and keep release separate. Full reset/restoration and GPU serving acceptance remain incomplete. | Common policy builds and validates the transaction; the model supplies geometry and hooks. Keep submitted lane storage alive through device completion. |
+| Cache admission wiring, draft PR #861 | GLM builds persistent cache lanes for submitted frames and routes prepare/commit/abort through a common algorithm with a validation callback and caller-owned scratch. Host tests preserve B3 lane identities and transaction generations, propagate driver failure, validate all inputs before dispatch and keep release separate. GPU reset/restoration and serving acceptance remain incomplete. | Common policy builds and validates the transaction; the model supplies geometry and hooks. Keep submitted lane storage alive through device completion. |
 | KDA oracle recurrence, PR #864 / main `06be88e` | The C oracle decayed state, then applied decay again in its prediction. A shared scalar reference has hand-calculated two-token nonzero-state and rectangular-state tests; injecting the old second decay fails. CUDA CI and merged-main synthetic GPU validation pass; KDA+dense+HC relative L2 is 0.00376, cosine 0.9999930. | Validate recurrent state directly with nonzero initial state. Small random end-to-end fixtures can underweight reference errors. Keep reference math independent of production kernels. |
 | Shared page pinning and transaction mapping, draft PR #861 | Common cache operations now own prepare, commit, claim, finish and abort. GLM uses them under its cache mutex, initializes device mappings to invalid entries, and uploads actual physical mappings only when they change. Host tests exercise the actual GLM admission/claim/upload/completion hooks, plus common stale-owner, partial-failure and eviction tests. GPU serving qualification remains pending. | Physical residency is separate from logical prefix identity. Keep logical tables immutable and physical pages pinned until GPU completion. Serialize cache metadata access; after GPU completion unpin before deduplication can free a writable page. This policy belongs in common code. |
 
@@ -135,7 +135,8 @@ page-cache implementation; allocation remains at startup. GLM adds its mutex,
 CUDA upload and continuity bookkeeping. No other model driver was changed.
 This is host execution with copy stubs. CUDA compilation passed for draft
 `a525c5a` (run `34281042843`); merged-main serving tests are still required.
-The draft still lacks complete KDA/convolution snapshots, restoration and reset.
+The draft now has host-tested snapshot, restore and reset paths; merged-main
+GPU numerical and lifecycle qualification remain required.
 
 The GLM adapter also retained stack-local frame/context/buffer descriptors and
 borrowed row arrays after submit returned. Its existing pending slots now own
@@ -310,10 +311,34 @@ chains to reclaim paired records. It does not repeatedly scan LRU for each
 entry. If an external pin or store transfer prevents cleanup, admission must
 remain stopped while the caller retries; completed cleanup is preserved.
 Tests cover every owner phase, a pinned branched chain and retry, repeat reset,
-and real paired backing-record reclamation. GLM still needs the serving reset
-callback and driver control path; this primitive is not a complete reset.
+and real paired backing-record reclamation. GLM now calls this primitive from its reset control path; distributed reset
+and GPU lifecycle acceptance remain unqualified.
 CUDA compilation of capture/restore head `a55efe559e32bd76ed6defc10367e17a2faff187`
 passed in run `34289359047`; this is compilation, not GPU execution evidence.
+
+GLM now implements the mandatory serving reset callback through a zero-row
+reset control request in the existing admission interface. This is a control
+operation, not an option to disable functionality. The common request validator
+rejects reset requests carrying rows or cache lanes. The adapter stops admission,
+waits for its pending frames and driver snapshot to be idle, then dispatches
+reset; failure leaves admission stopped and success advances its generation.
+An atomic owner serializes reset callbacks, and pending reservation rechecks
+quiescence after claiming a slot. Submissions from earlier reset generations
+are rejected.
+
+The module claims all execution slots and lanes before resetting the shared
+cache, clears KDA/convolution pools on its execution stream, and clears mapping
+shadows and continuity. It preserves loaded weights and cumulative execution
+counters. Successful reset generations cannot repeat; a failed cache cleanup
+can retry the same generation. A failed CUDA stream drain retains claims and
+reports pending instead of making potentially active memory reusable. Recovery
+from that device-failure state still requires lifecycle qualification.
+
+Host tests cover active-driver and adapter reservations, malformed reset shape,
+copy-stub zeroing, failed reset/retry, stale generations, reset serialization,
+and injected CUDA-drain ownership retention. Common cache, serving-admission
+and mandatory-interface tests pass. This does not prove GPU reset, rank-wide
+collective restart, continuous traffic or throughput.
 
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.

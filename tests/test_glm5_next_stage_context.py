@@ -15,6 +15,7 @@ HARNESS = r'''
 #undef main
 static SparkGlm5NextModuleState state;
 static uint32_t COPY_COUNT;
+static cudaError_t DRAIN_STATUS;
 
 cudaError_t cudaMalloc(void **pointer,size_t bytes)
 {
@@ -32,6 +33,18 @@ cudaError_t cudaMemset(void *pointer,int value,size_t bytes)
 {
 	memset(pointer,value,bytes);
 	return(cudaSuccess);
+}
+
+cudaError_t cudaMemsetAsync(void *pointer,int value,size_t bytes,cudaStream_t stream)
+{
+	(void)stream;
+	return(cudaMemset(pointer,value,bytes));
+}
+
+cudaError_t cudaStreamSynchronize(cudaStream_t stream)
+{
+	(void)stream;
+	return(DRAIN_STATUS);
 }
 
 const char *cudaGetErrorString(cudaError_t error)
@@ -515,6 +528,62 @@ static void check_checkpoint_finish(uint32_t fail_copy)
 	assert(pthread_mutex_destroy(&state.kv_mutex) == 0 && unlink(path) == 0 && unlink(kv_path) == 0);
 }
 
+static void check_module_reset(void)
+{
+	SparkTestKvTransactions fixture;
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
+	uint8_t recurrent[96],windows[144];
+	uint32_t shadow[16],index,slot = 0u;
+	SparkTestKvTransactionsInitialize(&fixture,2u);
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	memset(&state,0,sizeof(state));
+	memset(recurrent,0xa5,sizeof(recurrent));
+	memset(windows,0xa5,sizeof(windows));
+	memset(shadow,0,sizeof(shadow));
+	state.kv_transactions = fixture.transactions;
+	state.kv_lane_transactions = fixture.owners;
+	state.pipeline_slot_count = 2u;
+	state.resident_sequence_capacity = 4u;
+	state.pages_per_sequence = 4u;
+	state.page_table_shadow = shadow;
+	state.kda_layer_count = 3u;
+	state.kda_state_layer_stride_bytes = 32u;
+	state.kda_window_layer_stride_bytes = 16u;
+	state.kda_state_pools = recurrent;
+	state.kda_window_pools = windows;
+	state.control_generation = 2u;
+	assert(pthread_mutex_init(&state.kv_mutex,0) == 0);
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = 1u;
+	request.control_generation = 3u;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	request.new_token_count = 1u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+	request.new_token_count = 0u;
+	assert(SparkStageModuleIndexSetClaim(state.slot_states,2u,&slot,1u) == SPARK_STATUS_OK);
+	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&request,&decision) == SPARK_STATUS_BUSY);
+	assert(state.reset_generation == 0u && fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_PREPARED);
+	SparkStageModuleIndexSetRelease(state.slot_states,2u,&slot,1u);
+	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&request,&decision) == SPARK_STATUS_OK && decision.accepted != 0u);
+	assert(state.reset_generation == 3u && fixture.pages.cache.live_sequence_count == 0u);
+	for (index=0u; index<sizeof(recurrent); index++)
+		assert(recurrent[index] == 0u);
+	for (index=0u; index<sizeof(windows); index++)
+		assert(windows[index] == 0u);
+	for (index=0u; index<16u; index++)
+		assert(shadow[index] == UINT32_MAX);
+	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&request,&decision) == SPARK_STATUS_VALIDATION_FAILED);
+	assert(SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) == SPARK_STATUS_VALIDATION_FAILED);
+	request.control_generation = 4u;
+	DRAIN_STATUS = cudaErrorInvalidValue;
+	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&request,&decision) == SPARK_STATUS_PENDING);
+	assert(state.reset_generation == 3u && atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE && atomic_load(&state.lane_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE);
+	DRAIN_STATUS = cudaSuccess;
+	assert(pthread_mutex_destroy(&state.kv_mutex) == 0);
+}
+
 static void check_small_kv(void)
 {
 	static uint8_t index_pool[3u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u];
@@ -638,6 +707,7 @@ int32_t main(void)
 	check_cache_worker_cleanup();
 	check_checkpoint_finish(0u);
 	check_checkpoint_finish(1u);
+	check_module_reset();
 	check_small_kv();
 	if ( check_rank_state() != 0 )
 		return(3);

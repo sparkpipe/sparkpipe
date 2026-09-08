@@ -121,7 +121,9 @@ typedef struct SparkGlm5NextServingState
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
 	uint32_t mtp_enabled;
-	uint32_t quiescing;
+	atomic_uint quiescing;
+	atomic_uint reset_active;
+	atomic_uint_fast64_t reset_generation;
 	atomic_uint_fast64_t orphan_completion_count;
 	uint16_t tp_listen_port;
 	uint16_t tp_peer_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
@@ -633,12 +635,19 @@ static SparkGlm5NextServingPending *SparkGlm5NextServingReservePending(
 {
 	SparkGlm5NextServingPending *pending;
 	uint32_t index,lane,row,expected;
+	if ( atomic_load_explicit(&state->quiescing,memory_order_acquire) != 0u )
+		return(0);
 	for (index=0u; index<state->pipeline_slot_count; index++)
 	{
 		pending = &state->pending[index];
 		expected = 0u;
 		if ( atomic_compare_exchange_strong_explicit(&pending->active,&expected,1u,memory_order_acquire,memory_order_relaxed) != 0 )
 		{
+			if ( atomic_load_explicit(&state->quiescing,memory_order_acquire) != 0u )
+			{
+				atomic_store_explicit(&pending->active,0u,memory_order_release);
+				return(0);
+			}
 			pending->owner = state;
 			pending->row_count = submission->row_count;
 			pending->lane_count = submission->lane_count;
@@ -861,6 +870,9 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	atomic_init(&state->orphan_completion_count,0u);
+	atomic_init(&state->quiescing,0u);
+	atomic_init(&state->reset_active,0u);
+	atomic_init(&state->reset_generation,0u);
 	for (index=0u; index<SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; index++)
 		atomic_init(&state->pending[index].active,0u);
 	state->stage_index = configuration->stage_index;
@@ -952,6 +964,8 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
+	if ( submission != 0 && submission->control_generation < atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		return(SPARK_STATUS_VALIDATION_FAILED);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkGlm5NextServingDescriptor,&state->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"G5N-DBG validate: runtime_submission -> %d (kind %u rows %u lanes %u ext %u)\n",
@@ -1189,6 +1203,47 @@ static SparkStatus SparkGlm5NextServingSnapshot(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm5NextServingResetControl(void *adapter_state,uint64_t control_generation)
+{
+	SparkGlm5NextServingState *state = (SparkGlm5NextServingState *)adapter_state;
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status;
+	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkGlm5NextServingQuiesce(state,UINT64_MAX);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = state->program->program_id;
+	request.control_generation = control_generation;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	SparkModelDriverInitializeAdmissionDecision(&decision);
+	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	if ( status == SPARK_STATUS_OK )
+	{
+		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
+		atomic_store_explicit(&state->quiescing,0u,memory_order_release);
+	}
+	return(status);
+}
+
+static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t control_generation)
+{
+	SparkGlm5NextServingState *state = (SparkGlm5NextServingState *)adapter_state;
+	uint32_t expected = 0u;
+	SparkStatus status;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
+		return(SPARK_STATUS_BUSY);
+	status = SparkGlm5NextServingResetControl(state,control_generation);
+	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
+	return(status);
+}
+
 static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -1202,7 +1257,8 @@ static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 	.resolve_prefetch = SparkGlm5NextServingResolvePrefetch,
 	.progress = SparkGlm5NextServingProgress,
 	.quiesce = SparkGlm5NextServingQuiesce,
-	.snapshot = SparkGlm5NextServingSnapshot
+	.snapshot = SparkGlm5NextServingSnapshot,
+	.reset = SparkGlm5NextServingReset
 };
 
 __attribute__((visibility("default")))

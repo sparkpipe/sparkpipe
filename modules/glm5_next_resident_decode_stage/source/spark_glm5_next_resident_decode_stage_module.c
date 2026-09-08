@@ -172,6 +172,8 @@ struct SparkGlm5NextModuleState
 	SparkKvLaneTransactions kv_transactions;
 	pthread_mutex_t kv_mutex;
 	uint32_t kv_mutex_initialized;
+	uint64_t control_generation;
+	uint64_t reset_generation;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
 	char kv_backing_default[256];
@@ -1355,7 +1357,9 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkKvLaneTransactionsAdmit(&state->kv_transactions,request);
+	status = request->control_generation < state->control_generation ? SPARK_STATUS_VALIDATION_FAILED : SparkKvLaneTransactionsAdmit(&state->kv_transactions,request);
+	if ( status == SPARK_STATUS_OK )
+		state->control_generation = request->control_generation;
 	if ( status == SPARK_STATUS_OK && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 		for (lane=0u; lane<request->cache_lane_count; lane++)
 		{
@@ -2999,6 +3003,85 @@ static void SparkGlm5NextAdmissionCost(
 	decision->device_memcpy_bytes = decision->host_staging_bytes;
 }
 
+static SparkStatus SparkGlm5NextResetExecutionState(SparkGlm5NextModuleState *state)
+{
+	cudaError_t error = cudaSuccess,drain;
+	uint32_t lane;
+	if ( state->kda_layer_count != 0u )
+	{
+		error = cudaMemsetAsync(state->kda_state_pools,0,state->kda_state_layer_stride_bytes * state->kda_layer_count,(cudaStream_t)state->execution_stream);
+		if ( error == cudaSuccess )
+			error = cudaMemsetAsync(state->kda_window_pools,0,state->kda_window_layer_stride_bytes * state->kda_layer_count * 3u,(cudaStream_t)state->execution_stream);
+	}
+	drain = cudaStreamSynchronize((cudaStream_t)state->execution_stream);
+	if ( drain != cudaSuccess )
+	{
+		(void)SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,drain,"reset_stream_drain");
+		return(SPARK_STATUS_PENDING);
+	}
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"cache_reset"));
+	memset(state->page_table_shadow,0xff,(uint64_t)state->resident_sequence_capacity * state->pages_per_sequence * sizeof(uint32_t));
+	for (lane=0u; lane<state->resident_sequence_capacity; lane++)
+	{
+		atomic_store_explicit(&state->lane_bound[lane],0u,memory_order_release);
+		atomic_store_explicit(&state->lane_sequence_ids[lane],0u,memory_order_release);
+		atomic_store_explicit(&state->lane_next_positions[lane],0u,memory_order_release);
+		if ( state->mtp_lane_armed != 0 )
+			state->mtp_lane_armed[lane] = 0u;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextResetClaimed(SparkGlm5NextModuleState *state,uint64_t generation)
+{
+	SparkStatus status;
+	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	status = SPARK_STATUS_VALIDATION_FAILED;
+	if ( generation >= state->control_generation && generation > state->reset_generation )
+	{
+		state->control_generation = generation;
+		status = SparkKvLaneTransactionsReset(&state->kv_transactions);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextResetExecutionState(state);
+		if ( status == SPARK_STATUS_OK )
+			state->reset_generation = generation;
+	}
+	(void)pthread_mutex_unlock(&state->kv_mutex);
+	return(status);
+}
+
+static SparkStatus SparkGlm5NextReset(SparkGlm5NextModuleState *state,const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t slots[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	uint32_t lanes[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t index;
+	SparkStatus status;
+	if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (index=0u; index<state->pipeline_slot_count; index++)
+		slots[index] = index;
+	for (index=0u; index<state->resident_sequence_capacity; index++)
+		lanes[index] = index;
+	status = SparkStageModuleIndexSetClaim(state->slot_states,state->pipeline_slot_count,slots,state->pipeline_slot_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkStageModuleIndexSetClaim(state->lane_states,state->resident_sequence_capacity,lanes,state->resident_sequence_capacity);
+	if ( status == SPARK_STATUS_OK )
+	{
+		status = SparkGlm5NextResetClaimed(state,request->control_generation);
+		if ( status == SPARK_STATUS_PENDING )
+		{
+			fprintf(stderr,"GLM reset stream not quiescent; retaining lane and slot ownership\n");
+			return(status);
+		}
+		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,lanes,state->resident_sequence_capacity);
+	}
+	SparkStageModuleIndexSetRelease(state->slot_states,state->pipeline_slot_count,slots,state->pipeline_slot_count);
+	return(status);
+}
+
 SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
@@ -3011,6 +3094,17 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	state = (SparkGlm5NextModuleState *)module_state;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
+	{
+		SparkModelDriverInitializeAdmissionDecision(decision);
+		status = SparkGlm5NextReset(state,request);
+		if ( status == SPARK_STATUS_OK )
+		{
+			decision->accepted = 1u;
+			decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+		}
+		return(status);
+	}
 	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 	{
 		if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u || request->new_token_count != 0u )
