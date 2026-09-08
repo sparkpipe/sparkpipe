@@ -2,6 +2,7 @@
 #include <cuda.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <time.h>
 
 typedef struct SparkWeightdWork
 {
@@ -119,6 +120,35 @@ SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWork
 	pthread_cond_signal(&worker->changed);
 	pthread_mutex_unlock(&worker->mutex);
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdWorkerWaitIdle(SparkWeightdWorker *worker,uint64_t timeout_nanoseconds)
+{
+	struct timespec now,pause;
+	uint64_t start,current,remaining;
+	uint32_t idle;
+	if ( worker == 0 || pthread_equal(pthread_self(),worker->thread) != 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	start = (((uint64_t)now.tv_sec * UINT64_C(1000000000)) + (uint64_t)now.tv_nsec);
+	for (;;)
+	{
+		pthread_mutex_lock(&worker->mutex);
+		idle = worker->count == 0u && worker->active == 0u;
+		pthread_mutex_unlock(&worker->mutex);
+		if ( idle != 0u )
+			return(SPARK_STATUS_OK);
+		if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
+			return(SPARK_STATUS_IO_ERROR);
+		current = (((uint64_t)now.tv_sec * UINT64_C(1000000000)) + (uint64_t)now.tv_nsec);
+		if ( current < start || (current - start) >= timeout_nanoseconds )
+			return(SPARK_STATUS_BUSY);
+		remaining = (timeout_nanoseconds - (current - start));
+		pause.tv_sec = 0;
+		pause.tv_nsec = remaining < UINT64_C(1000000) ? (long)remaining : 1000000L;
+		(void)nanosleep(&pause,0);
+	}
 }
 
 SparkStatus SparkWeightdWorkerDestroy(SparkWeightdWorker *worker)

@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "3a0698adb02fe9c02aa2474183fec411402c54586e32f48e44807fb4adbe60e9",
-      "size_bytes": 6896
+      "sha256": "2d90e3e0a784438f0bc6c83cac4a9555df66172255a2683635586862d1d3ef38",
+      "size_bytes": 7134
     },
     {
       "path": "docs/GOALS.md",
@@ -3088,8 +3088,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd_worker.h",
-      "sha256": "09144e995d965220d8f0375827e5e5e124c967d46ed9c0d6ebea01081ae3e153",
-      "size_bytes": 1079
+      "sha256": "77a525bec44cf319b6047551110f112c6f31463e9eab8baeab6cb5dc23ecbd7d",
+      "size_bytes": 1330
     },
     {
       "path": "include/sparkpipe/spark_work_transaction.h",
@@ -4003,8 +4003,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "a07286723f5e316efae4b8bb010068a3eb3d79aa161c810684c9b9533dcfaf68",
-      "size_bytes": 149890
+      "sha256": "0474b57d5aa53fc1448f0efd6a9e989cf4f35aa926c3f51cfe420f7cc6f64735",
+      "size_bytes": 150084
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -6018,8 +6018,8 @@
     },
     {
       "path": "runtime/spark_weightd_worker.c",
-      "sha256": "54bc9ef5147ed09a8fe3fae9fb236fdb4fcb87db806707e1e7a373d70d66a5a6",
-      "size_bytes": 3958
+      "sha256": "ad9378210866ab71dda601979cf4535bf2de75a8589ba09b4a8aeda72353cdd9",
+      "size_bytes": 5082
     },
     {
       "path": "runtime/speculation_provider.c",
@@ -7838,8 +7838,8 @@
     },
     {
       "path": "tests/test_weightd_worker.c",
-      "sha256": "a8e5cb6f5c7a9eaf53b7b5f3b8dce400786f32a44a08f8e5797ad7a93768faca",
-      "size_bytes": 2706
+      "sha256": "8da38f75fd9049ce2123c4ff1377282d96f23dba005f06824ed0fec1b35eeae1",
+      "size_bytes": 2897
     },
     {
       "path": "tests/test_weightd_working_set.c",
@@ -9570,5 +9570,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32351515
+  "total_bytes": 32353513
 }

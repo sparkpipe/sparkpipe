@@ -29,6 +29,7 @@ static void execute(void *context)
 	assert(pthread_equal(pthread_self(),state->caller) == 0);
 	assert(cuCtxGetCurrent(&current) == CUDA_SUCCESS && current == state->cuda_context);
 	assert(SparkWeightdWorkerDestroy(state->worker) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkWeightdWorkerWaitIdle(state->worker,1u) == SPARK_STATUS_INVALID_ARGUMENT);
 	pthread_mutex_lock(&state->mutex);
 	if ( job->index == 0u )
 	{
@@ -47,7 +48,6 @@ int main(void)
 {
 	State state = {0};
 	Job jobs[SPARK_WEIGHTD_WORK_QUEUE_CAPACITY + 1u];
-	SparkStatus status;
 	uint32_t i;
 	assert(pthread_mutex_init(&state.mutex,0) == 0);
 	assert(pthread_cond_init(&state.changed,0) == 0);
@@ -65,20 +65,16 @@ int main(void)
 		assert(SparkWeightdWorkerSubmit(state.worker,execute,&jobs[i]) == SPARK_STATUS_OK);
 	assert(SparkWeightdWorkerSubmit(state.worker,execute,0) == SPARK_STATUS_BUSY);
 	assert(SparkWeightdWorkerDestroy(state.worker) == SPARK_STATUS_BUSY);
+	assert(SparkWeightdWorkerWaitIdle(state.worker,0u) == SPARK_STATUS_BUSY);
+	assert(SparkWeightdWorkerWaitIdle(state.worker,1000000u) == SPARK_STATUS_BUSY);
 	pthread_mutex_lock(&state.mutex);
 	state.release = 1u;
 	pthread_cond_signal(&state.changed);
 	while ( state.completed != (SPARK_WEIGHTD_WORK_QUEUE_CAPACITY + 1u) )
 		pthread_cond_wait(&state.changed,&state.mutex);
 	pthread_mutex_unlock(&state.mutex);
-	for (i=0u; i<100u; i++)
-	{
-		status = SparkWeightdWorkerDestroy(state.worker);
-		if ( status != SPARK_STATUS_BUSY )
-			break;
-		usleep(1000u);
-	}
-	assert(status == SPARK_STATUS_OK);
+	assert(SparkWeightdWorkerWaitIdle(state.worker,1000000000u) == SPARK_STATUS_OK);
+	assert(SparkWeightdWorkerDestroy(state.worker) == SPARK_STATUS_OK);
 	pthread_cond_destroy(&state.changed);
 	pthread_mutex_destroy(&state.mutex);
 	puts("PASS weightd worker: separate thread, FIFO, bounded admission and idle teardown");
