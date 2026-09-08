@@ -967,7 +967,7 @@ static SparkStatus SparkGlm5NextBuildPageTable(SparkGlm5NextModuleState *state)
 	return(status);
 }
 
-static SparkStatus SparkGlm5NextPageCopy(
+static SparkStatus SparkGlm5NextDevicePageCopy(
 	void *context,
 	uint32_t direction,
 	uintptr_t device_address,
@@ -988,10 +988,50 @@ static SparkStatus SparkGlm5NextPageCopy(
 	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"kv_page_copy"));
 }
 
+static SparkStatus SparkGlm5NextPageCopy(
+	void *context,
+	uint32_t direction,
+	uintptr_t device_address,
+	void *host_address,
+	uint64_t bytes)
+{
+	SparkGlm5NextModuleState *state;
+	SparkKvLayeredPageLayout layout;
+	uint64_t offset,packed_page_bytes;
+	state = (SparkGlm5NextModuleState *)context;
+	if ( state == 0 || state->page_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( state->index_layer_count != 0u && state->index_layer_stride_bytes > UINT64_MAX / state->index_layer_count )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	layout.device_base = (uintptr_t)state->kv_cache;
+	layout.layer_stride_bytes = state->kv_layer_stride_bytes;
+	layout.layer_count = state->kv_layer_count;
+	layout.page_count = state->page_count;
+	if ( device_address >= (uintptr_t)state->index_cache && device_address - (uintptr_t)state->index_cache < state->index_layer_stride_bytes * state->index_layer_count )
+	{
+		layout.device_base = (uintptr_t)state->index_cache;
+		layout.layer_stride_bytes = state->index_layer_stride_bytes;
+		layout.layer_count = state->index_layer_count;
+	}
+	if ( layout.layer_count == 0u || layout.layer_stride_bytes % layout.page_count != 0u || layout.layer_stride_bytes > UINT64_MAX / layout.layer_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	layout.device_bytes = layout.layer_stride_bytes * layout.layer_count;
+	layout.layer_page_bytes = layout.layer_stride_bytes / layout.page_count;
+	packed_page_bytes = layout.layer_page_bytes * layout.layer_count;
+	if ( device_address < layout.device_base || device_address - layout.device_base >= layout.device_bytes || packed_page_bytes == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	// Arena block addresses name packed payloads. Translate their page index
+	// to the native layer-major allocation before a device copy dereferences it.
+	offset = device_address - layout.device_base;
+	if ( offset % packed_page_bytes != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkKvPageStoreCopyLayered(&layout,direction,(uint32_t)(offset / packed_page_bytes),host_address,bytes,SparkGlm5NextDevicePageCopy,state));
+}
+
 static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 {
 	SparkKvModelTable table;
-	uint64_t block_bytes;
+	uint64_t block_bytes,index_block_bytes,payload_bytes;
 	uint64_t lane_page_entries;
 	SparkStatus status;
 	if ( state->kv_layer_count == 0u )
@@ -999,6 +1039,10 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	block_bytes = (uint64_t)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT *
 		(uint64_t)state->kv_layer_count * SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM *
 		SPARK_GLM5_NEXT_KV_BYTES_PER_SCALAR;
+	index_block_bytes = (uint64_t)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT * state->index_layer_count * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
+	if ( index_block_bytes > UINT64_MAX - block_bytes )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	payload_bytes = block_bytes + index_block_bytes;
 	lane_page_entries = (uint64_t)state->resident_sequence_capacity *
 		state->pages_per_sequence;
 	state->kv_blocks = (SparkKvCacheBlock *)calloc(state->page_count,sizeof(*state->kv_blocks));
@@ -1007,7 +1051,7 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	state->kv_sequences = (SparkKvPageCacheSequence *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_sequences));
 	state->kv_hash_bucket_heads = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_hash_bucket_heads));
 	state->kv_entry_indices_by_logical_page = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_entry_indices_by_logical_page));
-	state->kv_page_staging = (uint8_t *)malloc((size_t)block_bytes);
+	state->kv_page_staging = (uint8_t *)malloc((size_t)payload_bytes);
 	state->kv_lane_logical_pages = (uint32_t *)calloc((size_t)lane_page_entries,sizeof(*state->kv_lane_logical_pages));
 	state->kv_lane_page_count = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_page_count));
 	state->kv_lane_mutable_page = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutable_page));
@@ -1020,6 +1064,10 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.abi_version = SPARK_KV_MODEL_TABLE_ABI_VERSION;
 	table.descriptor_bytes = SPARK_KV_MODEL_TABLE_BYTES;
 	SparkGlm5NextKvFillCapacityRequest(&table.capacity_request);
+	table.capacity_request.layer_count = state->kv_layer_count;
+	table.capacity_request.index_key_layer_count = state->index_layer_count;
+	table.capacity_request.index_key_dimension = SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION;
+	table.capacity_request.index_key_bytes_per_scalar = 2u;
 
 	table.arena_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	table.arena_configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
@@ -1031,6 +1079,8 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.arena_configuration.head_dim = SPARK_GLM5_NEXT_KV_ARENA_HEAD_DIM;
 	table.arena_configuration.bytes_per_scalar = SPARK_GLM5_NEXT_KV_BYTES_PER_SCALAR;
 	table.arena_configuration.key_device_base = state->kv_cache;
+	table.arena_configuration.value_device_base = state->index_cache;
+	table.arena_configuration.value_block_stride_bytes = index_block_bytes;
 	table.arena_configuration.blocks = state->kv_blocks;
 	table.arena_configuration.resident_slot_logical_block_indices = state->kv_resident_slot_logical_block_indices;
 
@@ -1039,7 +1089,7 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.page_store_config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
 	table.page_store_config.logical_page_capacity = state->page_count;
 	table.page_store_config.transfer_capacity = state->page_count < 2u ? state->page_count : 2u;
-	table.page_store_config.page_bytes = block_bytes;
+	table.page_store_config.page_bytes = payload_bytes;
 	if ( state->kv_backing_directory != 0 && state->kv_backing_directory[0] != '\0' )
 		table.page_store_config.backing_path = state->kv_backing_directory;
 	else
@@ -1050,11 +1100,11 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		table.page_store_config.backing_path = state->kv_backing_default;
 	}
 	table.page_store_config.maximum_backing_bytes =
-		state->kv_backing_maximum_bytes >= block_bytes
+		state->kv_backing_maximum_bytes >= payload_bytes
 			? state->kv_backing_maximum_bytes
-			: block_bytes;
+			: payload_bytes;
 	table.page_store_config.staging_address = state->kv_page_staging;
-	table.page_store_config.staging_bytes = block_bytes;
+	table.page_store_config.staging_bytes = payload_bytes;
 	table.page_store_config.copy_function = SparkGlm5NextPageCopy;
 	table.page_store_config.copy_context = state;
 
@@ -1067,12 +1117,13 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
 	table.model_id = "glm5_next";
 	table.model_revision = state->model_revision;
-	table.cache_layout_fingerprint = "compressed-key-value-bf16-block-major";
+	table.cache_layout_fingerprint = "kv-bf16-index-packed-layer-major-gather-v1";
 
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->kv_arena.key_block_stride_bytes != block_bytes ||
+		state->kv_arena.value_block_stride_bytes != index_block_bytes ||
 		state->kv_arena.logical_block_count != state->page_count ||
 		state->kv_layer_stride_bytes == 0u ||
 		block_bytes != ( state->kv_layer_stride_bytes /
