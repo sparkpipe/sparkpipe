@@ -458,6 +458,12 @@ int main(int argc, char **argv)
             }
             usleep(1000u);
         }
+        if (__sync_fetch_and_add(&bench_last_status,0u) != SPARK_STATUS_OK)
+        {
+            fprintf(stderr,"warmup completion failed ordinal=%llu status=%u\n",(unsigned long long)ordinal,bench_last_status);
+            SparkTpDeviceCollectiveDumpOperations(&collective);
+            return 1;
+        }
     }
 
     started_ns = bench_now_ns();

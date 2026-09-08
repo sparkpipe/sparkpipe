@@ -1,10 +1,46 @@
 #include <assert.h>
+#include <sparkpipe/spark_hidden_transport.h>
+static SparkStatus test_fixed_send(SparkHiddenTransportSession *session,const void *buffer,uint64_t bytes,uint64_t offset,uint32_t sequence);
+#define SparkHiddenTransportSendFixed test_fixed_send
 #include "../ring/transport/tp_device_collective.c"
 
 static SparkTpDeviceCollectiveImplementation IMPLEMENTATION;
 static SparkTpDeviceCollective COLLECTIVE;
 static uint64_t TREE_ACKS[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS * SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
 static uint64_t D2A_ACKS[D2A_ROUTE_COUNT * SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT];
+
+static uint64_t SEND_OFFSET,SEND_BYTES;
+
+static SparkStatus test_fixed_send(SparkHiddenTransportSession *session,const void *buffer,uint64_t bytes,uint64_t offset,uint32_t sequence)
+{
+	(void)session;
+	(void)buffer;
+	(void)sequence;
+	SEND_OFFSET = offset;
+	SEND_BYTES = bytes;
+	return(SPARK_STATUS_OK);
+}
+
+static void test_fixed_offset(uint32_t credit)
+{
+	SparkTpDeviceCollectiveOperation operation = {0};
+	uint64_t payload[8] = {0};
+	COLLECTIVE.max_active_sequence_count = 97u;
+	COLLECTIVE.local_hidden_dimension = 4u;
+	operation.credit_index = credit;
+	operation.active_sequence_count = 7u;
+	operation.ordinal = (1ull << 40u) + credit;
+	IMPLEMENTATION.bindings[0][credit].send_transport = payload;
+	SparkTpDeviceCollectiveTreeSend(&IMPLEMENTATION,&operation,0u);
+	assert(SEND_OFFSET == (uint64_t)credit * 784u && SEND_BYTES == 64u);
+	assert(payload[7] == operation.ordinal + 1u);
+	operation.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64;
+	operation.active_sequence_count = 3u;
+	SparkTpDeviceCollectiveTreeSend(&IMPLEMENTATION,&operation,0u);
+	assert(SEND_OFFSET == (uint64_t)credit * 784u && SEND_BYTES == 32u);
+	assert(SparkTpDeviceCollectivePostAck(0,payload,operation.ordinal,0u,credit) == SPARK_STATUS_OK);
+	assert(SEND_OFFSET == (uint64_t)credit * 8u && SEND_BYTES == 8u);
+}
 
 static SparkStatus test_combine(void *context,void *destination,const void *source,uint32_t rows,uint32_t hidden,void *stream)
 {
@@ -85,6 +121,7 @@ int main(void)
 	for (index=0u; index<(sizeof(counts) / sizeof(counts[0])); index++)
 	{
 		test_configuration(counts[index]);
+		test_fixed_offset(counts[index] - 1u);
 		COLLECTIVE.credit_count = counts[index];
 		memset(TREE_ACKS,0,sizeof(TREE_ACKS));
 		memset(D2A_ACKS,0,sizeof(D2A_ACKS));
