@@ -24,7 +24,19 @@ class QueueTests(unittest.TestCase):
         with patch.dict(os.environ, {"SPARK_QUEUE_STATE": self.tmp.name}):
             spec.loader.exec_module(self.q)
         self.units, self.calls, self.down = {}, [], set()
+        self.actual_remote = self.q.remote
         self.q.remote = self.remote
+
+    def test_rdma_registration_uses_declared_finite_memory_budget(self):
+        job = {"id": "rdma", "attempt": "test", "nodes": ["spark0"],
+               "deadline": time.time() + 60, "cmd": "true", "memory_mib": 1536}
+        with patch.object(self.q, "ssh", return_value=(0, "LoadState=loaded")) as ssh:
+            self.actual_remote(job, "spark0", "launch")
+        command = ssh.call_args.args[1]
+        self.assertIn("--property=MemoryMax=1536M", command)
+        self.assertIn("--property=LimitMEMLOCK=1536M", command)
+        self.assertIn("--property=MemorySwapMax=0", command)
+        self.assertNotIn("infinity", command)
 
     def remote(self, job, node, action):
         self.calls.append((job["id"], node, action))

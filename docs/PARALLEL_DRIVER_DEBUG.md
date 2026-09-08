@@ -38,6 +38,8 @@ only; it cannot release a running job.
 MemoryMax defaults to 8192 MiB per job per node, with no swap. Declare enough
 memory for compiler, driver, KV and workspace together. This bounds the job's
 Linux cgroup, not allocations made by an independent shared weightd process.
+The locked-memory allowance uses that same finite declared budget so RDMA/CUDA
+registration is not restricted by systemd's default 8 MiB memlock limit.
 The weightd pool must be budgeted independently. A queue memory limit alone is
 not proof of bounded GPU expert residency.
 

@@ -112,6 +112,7 @@ def remote(job, node, action):
                 "--property=KillMode=control-group", "--property=TimeoutStopSec=5",
                 "--property=RuntimeMaxSec=" + str(remaining),
                 "--property=MemoryMax=" + str(job.get("memory_mib", 8192)) + "M",
+                "--property=LimitMEMLOCK=" + str(job.get("memory_mib", 8192)) + "M",
                 "--property=MemorySwapMax=0", "--property=TasksMax=512",
                 "--property=StandardOutput=append:/tmp/" + unit + ".log",
                 "--property=StandardError=inherit", "--setenv=SPARK_QUEUE_RANK=" + str(job["nodes"].index(node)),
