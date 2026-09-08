@@ -185,6 +185,17 @@ distributed throughput result is claimed. Local artifacts are
 
 ## Current next steps, not completed work
 
+The draft adds `SparkKvPageStoreReadback` to the existing bounded page-store
+worker. It restores one saved generation into caller-owned storage, without
+constructing an arena prefetch plan or changing KV residency. The caller keeps
+the destination alive and polls the same request through completion; generic
+arena progress cannot consume that completion. Invalidation cannot recycle an
+in-flight record. Existing storage, copy callbacks and backing-slot accounting
+are reused. Real worker/file tests cover byte equality, stale generations,
+destination ownership, error propagation and unchanged arena residency.
+GLM checkpoint capture, publication and restore still need to be connected to
+this primitive. No prefix-hit correctness claim follows from the store test.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed

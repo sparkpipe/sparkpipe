@@ -942,6 +942,84 @@ static void SparkTestKvPageStoreFailedPrefetchCancelsReservation(void)
 	assert(unlink(path) == 0);
 }
 
+static SparkStatus SparkTestKvRecordWrite(SparkKvPageStore *store,uint64_t generation,const uint8_t *source)
+{
+	SparkStatus status = SPARK_STATUS_BUSY;
+	uint32_t attempts;
+	for (attempts=0u; attempts<100000u && status==SPARK_STATUS_BUSY; attempts++)
+	{
+		status = SparkKvPageStoreWriteback(store,1u,0u,generation,(uintptr_t)source,SPARK_TEST_BLOCK_BYTES,0u,0u);
+		(void)sched_yield();
+	}
+	return(status);
+}
+
+static int32_t SparkTestKvRecordRead(SparkKvPageStore *store,uint8_t *source,uint8_t *output,uint8_t *other)
+{
+	SparkTestKvFixture fixture;
+	uint32_t index,attempts;
+	SparkStatus status = SPARK_STATUS_BUSY;
+	SparkTestKvInitialize(&fixture);
+	for (index=0u; index<SPARK_TEST_BLOCK_BYTES; index++)
+		source[index] = (uint8_t)(index + 7u);
+	memset(output,0,SPARK_TEST_BLOCK_BYTES);
+	memset(other,0,SPARK_TEST_BLOCK_BYTES);
+	if ( SparkTestKvRecordWrite(store,7u,source) != SPARK_STATUS_OK || SparkKvPageStoreReadback(store,1u,6u,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_NOT_FOUND || SparkKvPageStoreReadback(store,1u,7u,(uintptr_t)output,1u) != SPARK_STATUS_INVALID_ARGUMENT )
+		return(-50);
+	if ( SparkKvPageStoreReadback(store,1u,7u,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_BUSY || SparkKvPageStoreInvalidate(store,1u,7u) != SPARK_STATUS_BUSY || SparkKvPageStoreReadback(store,1u,7u,(uintptr_t)other,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_BUSY )
+		return(-51);
+	for (attempts=0u; attempts<100000u && status==SPARK_STATUS_BUSY; attempts++)
+	{
+		if ( SparkKvPageStoreProgress(store,&fixture.arena,1u) != SPARK_STATUS_OK )
+			return(-52);
+		status = SparkKvPageStoreReadback(store,1u,7u,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES);
+		(void)sched_yield();
+	}
+	if ( status != SPARK_STATUS_OK || memcmp(output,source,SPARK_TEST_BLOCK_BYTES) != 0 || fixture.arena.resident_block_count != 0u || fixture.arena.reserved_block_count != 0u )
+		return(-53);
+	for (index=0u; index<SPARK_TEST_BLOCK_BYTES; index++)
+		if ( other[index] != 0u )
+			return(-54);
+	if ( SparkKvPageStoreInvalidate(store,1u,7u) != SPARK_STATUS_OK || SparkKvPageStoreReadback(store,1u,7u,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_NOT_FOUND || SparkTestKvRecordWrite(store,8u,source) != SPARK_STATUS_OK || SparkKvPageStoreReadback(store,1u,7u,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_NOT_FOUND )
+		return(-55);
+	store->copy_function = SparkTestKvFailingPrefetchCopy;
+	status = SPARK_STATUS_BUSY;
+	for (attempts=0u; attempts<100000u && status==SPARK_STATUS_BUSY; attempts++)
+	{
+		status = SparkKvPageStoreReadback(store,1u,8u,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES);
+		(void)sched_yield();
+	}
+	return(status == SPARK_STATUS_IO_ERROR ? 0 : -56);
+}
+
+static int32_t SparkTestKvPageStoreReadback(void)
+{
+	SparkKvPageStore store;
+	SparkKvPageStoreConfiguration configuration = {0};
+	uint8_t staging[SPARK_TEST_BLOCK_BYTES],source[SPARK_TEST_BLOCK_BYTES],output[SPARK_TEST_BLOCK_BYTES],other[SPARK_TEST_BLOCK_BYTES];
+	char path[] = "/tmp/sparkpipe-kv-readback-XXXXXX";
+	int32_t descriptor,status;
+	descriptor = mkstemp(path);
+	if ( descriptor < 0 || close(descriptor) != 0 || unlink(path) != 0 )
+		return(-57);
+	configuration.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
+	configuration.logical_page_capacity = 2u;
+	configuration.transfer_capacity = 1u;
+	configuration.page_bytes = configuration.maximum_backing_bytes = sizeof(staging);
+	configuration.backing_path = path;
+	configuration.staging_address = staging;
+	configuration.staging_bytes = sizeof(staging);
+	if ( SparkKvPageStoreInitialize(&store,&configuration) != SPARK_STATUS_OK )
+		return(-58);
+	status = SparkTestKvRecordRead(&store,source,output,other);
+	SparkKvPageStoreDestroy(&store);
+	if ( unlink(path) != 0 )
+		return(-59);
+	return(status);
+}
+
 static void SparkTestPrefixCacheReusesCommittedLogicalBlocks(void)
 {
 	SparkTestKvFixture fixture;
@@ -1417,7 +1495,9 @@ static void SparkTestKvPageCacheReclaimsColdPrefixUnderPressure(void)
 int main(void)
 {
 	int32_t status;
-	status = SparkTestKvPinnedTableUsesPhysicalMapping();
+	status = SparkTestKvPageStoreReadback();
+	if ( status == 0 )
+		status = SparkTestKvPinnedTableUsesPhysicalMapping();
 	if ( status == 0 )
 		status = SparkTestKvPinnedTableFailurePreservesOtherOwners();
 	if ( status == 0 )

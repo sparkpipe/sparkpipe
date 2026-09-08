@@ -151,6 +151,14 @@ SparkStatus SparkKvPageStorePrefetch(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,
 	uint32_t logical_page_index);
+// Repeat the identical request while BUSY; destination remains owned until a
+// terminal result or store destruction. Does not change KV arena residency.
+SparkStatus SparkKvPageStoreReadback(
+	SparkKvPageStore *store,
+	uint32_t logical_page_index,
+	uint64_t generation,
+	uintptr_t destination,
+	uint64_t bytes);
 SparkStatus SparkKvPageStoreProgress(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,

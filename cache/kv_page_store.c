@@ -18,11 +18,14 @@
 #define SPARK_KV_PAGE_STORE_PAGE_INVALID 0u
 #define SPARK_KV_PAGE_STORE_PAGE_VALID 1u
 #define SPARK_KV_PAGE_STORE_PAGE_RESERVED 2u
+#define SPARK_KV_PAGE_STORE_READ_ARENA 1u
+#define SPARK_KV_PAGE_STORE_READ_BUFFER 2u
 
 typedef struct SparkKvPageStoreJob
 {
 	uint32_t state;
 	uint32_t direction;
+	uint32_t read_kind;
 	uint32_t logical_page_index;
 	uint32_t physical_page_index;
 	uint64_t generation;
@@ -708,6 +711,50 @@ SparkStatus SparkKvPageStoreWriteback(
 	return(SPARK_STATUS_BUSY);
 }
 
+static SparkStatus SparkKvPageStoreReadbackLocked(SparkKvPageStoreWorker *worker,uint32_t logical_page_index,uint64_t generation,uintptr_t destination)
+{
+	SparkKvPageStore *store = worker->store;
+	SparkKvPageStoreJob *job;
+	SparkStatus status;
+	job = SparkKvPageStoreFindJob(worker,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,logical_page_index,generation);
+	if ( job != 0 )
+	{
+		if ( job->read_kind != SPARK_KV_PAGE_STORE_READ_BUFFER || job->key_device_address != destination || job->state != SPARK_KV_PAGE_STORE_JOB_COMPLETE )
+			return(SPARK_STATUS_BUSY);
+		status = job->terminal_status;
+		memset(job,0,sizeof(*job));
+		return(status);
+	}
+	if ( store->valid_pages[logical_page_index] != SPARK_KV_PAGE_STORE_PAGE_VALID || store->generations[logical_page_index] != generation || worker->backing_slots_by_logical_page[logical_page_index] == SPARK_KV_CACHE_NO_BLOCK )
+		return(SPARK_STATUS_NOT_FOUND);
+	job = SparkKvPageStoreFindFreeJob(worker);
+	if ( job == 0 )
+		return(SPARK_STATUS_BUSY);
+	job->direction = SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE;
+	job->read_kind = SPARK_KV_PAGE_STORE_READ_BUFFER;
+	job->logical_page_index = logical_page_index;
+	job->generation = generation;
+	job->key_device_address = destination;
+	job->key_bytes = store->page_bytes;
+	job->backing_slot_index = worker->backing_slots_by_logical_page[logical_page_index];
+	SparkKvPageStoreQueueJob(worker,job);
+	return(SPARK_STATUS_BUSY);
+}
+
+SparkStatus SparkKvPageStoreReadback(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation,uintptr_t destination,uint64_t bytes)
+{
+	SparkKvPageStoreWorker *worker;
+	SparkStatus status;
+	if ( SparkKvPageStoreIsValid(store) == 0u || logical_page_index >= store->logical_page_capacity || generation == 0u || destination == 0u || bytes != store->page_bytes || bytes > UINTPTR_MAX - destination )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkKvPageStoreReadbackLocked(worker,logical_page_index,generation,destination);
+	(void)pthread_mutex_unlock(&worker->mutex);
+	return(status);
+}
+
 static void SparkKvPageStoreBuildCompletedPlan(
 	const SparkKvPageStoreJob *job,
 	SparkKvCachePrefetchPlan *plan)
@@ -738,7 +785,7 @@ static SparkStatus SparkKvPageStoreFinishPrefetch(
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	job = SparkKvPageStoreFindJob(worker,
 		SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,logical_page_index,generation);
-	if ( job == 0 || job->state != SPARK_KV_PAGE_STORE_JOB_COMPLETE )
+	if ( job == 0 || job->read_kind != SPARK_KV_PAGE_STORE_READ_ARENA || job->state != SPARK_KV_PAGE_STORE_JOB_COMPLETE )
 	{
 		status = job == 0 ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_BUSY;
 		(void)pthread_mutex_unlock(&worker->mutex);
@@ -788,6 +835,7 @@ static SparkStatus SparkKvPageStoreStartPrefetch(
 	if ( job != 0 )
 	{
 		job->direction = SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE;
+		job->read_kind = SPARK_KV_PAGE_STORE_READ_ARENA;
 		job->logical_page_index = logical_page_index;
 		job->physical_page_index = plan.blocks[0u].resident_slot_index;
 		job->generation = plan.blocks[0u].generation;
@@ -829,7 +877,7 @@ SparkStatus SparkKvPageStoreProgress(
 		job = 0;
 		for (index=0u; index<store->transfer_capacity; index++)
 			if ( worker->jobs[index].state ==
-				SPARK_KV_PAGE_STORE_JOB_COMPLETE )
+				SPARK_KV_PAGE_STORE_JOB_COMPLETE && worker->jobs[index].read_kind != SPARK_KV_PAGE_STORE_READ_BUFFER )
 			{
 				job = &worker->jobs[index];
 				break;
