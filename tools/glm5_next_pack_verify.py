@@ -254,28 +254,19 @@ def main() -> int:
         if item is None:
             fail(f"spot: plan has no (kind={kind}, layer={layer:#x})")
         e = entries[[ (x["kind"], x["layer"]) for x in entries ].index((kind, layer))]
-        produced = b"".join(item.produce_payload())
-        produced_sha = hashlib.sha256(produced).hexdigest()
-        # Expert slabs' produce yields payload AND scale bytes interleaved
-        # per expert (emit writes them as one stream across the payload and
-        # scale regions); plain tensors' produce is payload bytes only.
-        if len(produced) == e["payload_bytes"]:
-            region = mm[e["payload_offset"]:e["payload_offset"] + e["payload_bytes"]]
-            region_desc = f"payload ({e['payload_bytes']} B)"
-        elif (e["scale_bytes"]
-              and len(produced) == e["payload_bytes"] + e["scale_bytes"]
-              and e["scale_offset"] == e["payload_offset"] + e["payload_bytes"]):
-            region = mm[e["payload_offset"]:e["scale_offset"] + e["scale_bytes"]]
-            region_desc = (f"payload+scale ({e['payload_bytes']}+"
-                           f"{e['scale_bytes']} B)")
-        else:
-            fail(f"spot {kind}/{layer:#x}: produced {len(produced)} B matches "
-                 f"neither payload region nor payload+scale layout")
-        onpack = hashlib.sha256(region).hexdigest()
-        label = f"kind={kind} layer={layer:#x} {region_desc}"
-        if produced_sha != onpack:
-            fail(f"spot round-trip {label}: pack {onpack[:16]} != ckpt {produced_sha[:16]}")
-        print(f"PASS spot round-trip {label}: sha {onpack[:16]}")
+        for plane, producer in (("payload", item.produce_payload),
+                                ("scale", item.produce_scale)):
+            produced = b"".join(producer()) if producer else b""
+            expected = e[f"{plane}_bytes"]
+            if len(produced) != expected:
+                fail(f"spot {kind}/{layer:#x} {plane}: produced {len(produced)}, expected {expected}")
+            offset = e[f"{plane}_offset"]
+            onpack = hashlib.sha256(mm[offset:offset + expected]).hexdigest()
+            produced_sha = hashlib.sha256(produced).hexdigest()
+            label = f"kind={kind} layer={layer:#x} {plane} ({expected} B)"
+            if produced_sha != onpack:
+                fail(f"spot round-trip {label}: pack {onpack[:16]} != ckpt {produced_sha[:16]}")
+            print(f"PASS spot round-trip {label}: sha {onpack[:16]}")
 
     source.close()
     mm.close()
