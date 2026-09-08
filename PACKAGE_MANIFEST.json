@@ -7758,8 +7758,8 @@
     },
     {
       "path": "tools/cuda13_sm121a_compile_gate.sh",
-      "sha256": "69afd99a1ff72d7b057fe2725ebdf45b539ea470d2fe012e60275df98cf954ac",
-      "size_bytes": 8530
+      "sha256": "c2c0bc90bc065db22b437219ca2eea7e8bde5b6388ea673912658eec26894bc5",
+      "size_bytes": 8552
     },
     {
       "path": "tools/devcycle.sh",
@@ -8823,8 +8823,8 @@
     },
     {
       "path": "tools/mb_doorbell.cu",
-      "sha256": "be34123d097f4554c47bc70f3ca6661934b33a3b8126d79c21b991d87929bc72",
-      "size_bytes": 22063
+      "sha256": "7aaf75493a0b65960e4b79ffed81ee164ebc3e45d7723dd4a3b76d02239b3da5",
+      "size_bytes": 22847
     },
     {
       "path": "tools/mb_run.sh",
@@ -9415,5 +9415,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32113304
+  "total_bytes": 32114110
 }

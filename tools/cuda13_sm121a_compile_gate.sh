@@ -117,6 +117,7 @@ compile_cuda()
 compile_cuda "${output_directory}/probe.cu" probe
 
 translation_units=(
+	tools/mb_doorbell.cu
 	tools/hardware/spark_cuda_characterize.cu
 	tools/hardware/spark_nvme_characterize.cu
 	inference/llms/kimi_k3/bind.cu
