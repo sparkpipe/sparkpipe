@@ -5783,8 +5783,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "17e42ea789fee36008c7502a3a8f1842a58d5a9f891ce24e40a11cfc69574f97",
-      "size_bytes": 126337
+      "sha256": "de46631edd5154fbc3a1bbd199419f759d42e679af3ec453f30109bcc68625ed",
+      "size_bytes": 126414
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
@@ -7653,8 +7653,8 @@
     },
     {
       "path": "tests/test_tp_credit_flow.c",
-      "sha256": "a4335a668fce45cfb0da500478077930f7b8fdd60f89b5478f336d7b1a80a6c8",
-      "size_bytes": 13396
+      "sha256": "c8e78804c5f27322d65231e2fbbcd886090567f03c2a8d02391c58d4f08598ff",
+      "size_bytes": 13725
     },
     {
       "path": "tests/test_tp_device_collective.c",
@@ -9420,5 +9420,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32135884
+  "total_bytes": 32136290
 }
