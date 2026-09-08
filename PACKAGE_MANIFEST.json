@@ -8828,8 +8828,8 @@
     },
     {
       "path": "tools/mb_doorbell.cu",
-      "sha256": "b11c7d59c041c792be72d0c8ad325b0a53ba949c64053bc2d55b4cc91b5a9924",
-      "size_bytes": 23213
+      "sha256": "7d1ff83f5c1f06852a657628b351f3890199e8084a979265c0f12d22343ae268",
+      "size_bytes": 27515
     },
     {
       "path": "tools/mb_run.sh",
@@ -9420,5 +9420,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32135884
+  "total_bytes": 32140186
 }
