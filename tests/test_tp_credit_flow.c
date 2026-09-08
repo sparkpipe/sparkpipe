@@ -1,5 +1,38 @@
 #include <assert.h>
 #include "../ring/transport/tp_device_collective.c"
+#include "sparkpipe/spark_tp_chain_ordinal.h"
+
+_Static_assert(SPARK_TP_CHAIN_MAX_GENERATION == (UINT64_MAX >> SPARK_TP_DEVICE_COLLECTIVE_GENERATION_SHIFT),"chain generation must fit transport lifecycle");
+
+static void test_chain_ordinals(void)
+{
+	uint32_t lanes,operation,chain,credit;
+	uint64_t ordinal,generation,last[8],older,newer;
+	const uint32_t capacity = (106u * 65536u);
+	for (lanes=1u; lanes<=4u; lanes++)
+	{
+		memset(last,0,sizeof(last));
+		for (operation=0u; operation<5824u; operation++)
+			for (chain=lanes; chain>0u; chain--)
+			{
+				assert(SparkTpChainOrdinal(chain,lanes,2u,capacity,operation,&ordinal) == SPARK_STATUS_OK);
+				credit = (uint32_t)(ordinal % (lanes * 2u));
+				generation = ((ordinal / (lanes * 2u)) + 1u);
+				assert((credit / 2u) == (chain % lanes));
+				assert(generation > last[credit]);
+				last[credit] = generation;
+			}
+		for (chain=1u; chain<=lanes; chain++)
+		{
+			assert(SparkTpChainOrdinal(chain,lanes,2u,capacity,capacity - 1u,&older) == SPARK_STATUS_OK);
+			assert(SparkTpChainOrdinal(chain + lanes,lanes,2u,capacity,0u,&newer) == SPARK_STATUS_OK);
+			assert((newer / (lanes * 2u)) > (older / (lanes * 2u)));
+		}
+	}
+	assert(SparkTpChainOrdinal(1u,4u,2u,capacity,capacity,&ordinal) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkTpChainOrdinal(UINT64_MAX,4u,2u,capacity,0u,&ordinal) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkTpChainOrdinal(0u,4u,2u,capacity,0u,&ordinal) == SPARK_STATUS_INVALID_ARGUMENT);
+}
 
 static SparkTpDeviceCollectiveImplementation IMPLEMENTATION;
 static SparkTpDeviceCollective COLLECTIVE;
@@ -79,6 +112,7 @@ int main(void)
 {
 	uint32_t counts[] = {1u,3u,4u,8u,17u,64u};
 	uint32_t index,route,credit;
+	test_chain_ordinals();
 	IMPLEMENTATION.collective = &COLLECTIVE;
 	IMPLEMENTATION.ack_receive_slots = TREE_ACKS;
 	IMPLEMENTATION.d2a_ack_receive_slots = D2A_ACKS;
@@ -97,6 +131,6 @@ int main(void)
 			for (credit=0u; credit<counts[index]; credit++)
 				test_credit(1u,route,credit);
 	}
-	puts("TP credit ACK jumps and independent routes PASS");
+	puts("TP chain ownership, prefill ordinal capacity and ACK flow PASS");
 	return(0);
 }

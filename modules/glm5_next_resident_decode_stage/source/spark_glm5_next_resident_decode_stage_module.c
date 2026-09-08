@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <cuda_runtime.h>
+#include "sparkpipe/spark_tp_chain_ordinal.h"
 
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 
@@ -186,8 +187,6 @@ struct SparkGlm5NextModuleState
 	void *tp_hc_credit_receive_bf16;
 	void *tp_hc_host_credit_send_bf16;
 	void *tp_hc_host_credit_receive_bf16;
-	atomic_ullong tp_next_ordinal;
-	atomic_ullong tp_next_ordinal_hc;
 };
 
 
@@ -1326,6 +1325,7 @@ static SparkStatus SparkGlm5NextValidateFrame(
 }
 
 #define SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
+#define SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS ((2u * SPARK_GLM5_NEXT_MODEL_LAYER_COUNT + 16u) * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT)
 #define SPARK_GLM5_NEXT_TP_COLLECTIVE_HC_PORT_STRIDE 512u
 #define SPARK_GLM5_NEXT_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES 65536u
 
@@ -1357,6 +1357,8 @@ typedef struct SparkGlm5NextTpChain
 	uint32_t next_layer;
 	uint32_t active;
 	uint32_t spec_verify;
+	uint32_t tp_op_index;
+	uint32_t tp_hc_op_index;
 } SparkGlm5NextTpChain;
 
 static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status);
@@ -1823,7 +1825,8 @@ static void SparkGlm5NextModuleTpCompletion(
 static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *chain,
 	void *device_bf16,uint32_t hc_wide)
 {
-	atomic_ullong *wide_ordinal;
+	uint32_t *op_index;
+	SparkStatus ordinal_status;
 	SparkGlm5NextModuleState *state;
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkTpDeviceCollective *collective;
@@ -1846,14 +1849,16 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		if ( state->tp_device_collective_hc_initialized == 0u )
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		collective = &state->tp_device_collective_hc;
-		wide_ordinal = &state->tp_next_ordinal_hc;
+		op_index = &chain->tp_hc_op_index;
 	}
 	else
 	{
 		collective = &state->tp_device_collective;
-		wide_ordinal = &state->tp_next_ordinal;
+		op_index = &chain->tp_op_index;
 	}
-	ordinal = atomic_fetch_add_explicit(wide_ordinal,1u,memory_order_relaxed);
+	ordinal_status = SparkTpChainOrdinal(chain->frame->request_id,state->pipeline_slot_count,SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS,*op_index,&ordinal);
+	if ( ordinal_status != SPARK_STATUS_OK )
+		return(ordinal_status);
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
@@ -1868,7 +1873,10 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 	submission.completion_context = chain;
 	{
 		SparkStatus submit_status;
+		*op_index += 1u;
 		submit_status = SparkTpDeviceCollectiveSubmitBf16(collective,&submission);
+		if ( submit_status != SPARK_STATUS_OK )
+			*op_index -= 1u;
 		if ( submit_status != SPARK_STATUS_OK )
 			fprintf(stderr,"G5N-DBG reduce submit -> %d (rows %u slot %u dev %p stream %p maxact %u)\n",
 				(int)submit_status,(unsigned)chain->wave_rows,(unsigned)chain->slot_index,
@@ -1883,6 +1891,7 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	SparkGlm5NextModuleState *state;
 	SparkTpDeviceCollectiveSubmission submission;
 	uint64_t ordinal;
+	SparkStatus status;
 	state = chain->state;
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 	{
@@ -1891,7 +1900,9 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	}
 	if ( state->tp_device_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
+	status = SparkTpChainOrdinal(chain->frame->request_id,state->pipeline_slot_count,SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS,chain->tp_op_index,&ordinal);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
@@ -1904,7 +1915,11 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	submission.cuda_stream = chain->slot->stream;
 	submission.completion_function = SparkGlm5NextModuleTpCompletion;
 	submission.completion_context = chain;
-	return(SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission));
+	chain->tp_op_index += 1u;
+	status = SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission);
+	if ( status != SPARK_STATUS_OK )
+		chain->tp_op_index -= 1u;
+	return(status);
 }
 
 static void SparkGlm5NextBuildMtpDraftWave(
@@ -2405,8 +2420,12 @@ static SparkStatus SparkGlm5NextExecuteBatch(
 	uint64_t simulated_sequence[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t simulated_next[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t slot_index,wave_rows;
+	uint64_t last_ordinal;
 	SparkStatus status;
 	cudaError_t error;
+	status = SparkTpChainOrdinal(frame->request_id,state->pipeline_slot_count,SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS - 1u,&last_ordinal);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	batch = context->batch;
 	continuity.state = state;
 	continuity.batch = batch;
@@ -2416,8 +2435,8 @@ static SparkStatus SparkGlm5NextExecuteBatch(
 	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count,SparkGlm5NextPrepareClaimedContinuity,&continuity);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
-	status = SparkStageModuleSlotClaim(state->slot_states,state->pipeline_slot_count,&slot_index);
+	slot_index = (uint32_t)(frame->request_id % state->pipeline_slot_count);
+	status = SparkStageModuleIndexSetClaim(state->slot_states,state->pipeline_slot_count,&slot_index,1u);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
@@ -2527,7 +2546,7 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	state = (SparkGlm5NextModuleState *)module_state;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
+	available = request->request_id != 0u && atomic_load_explicit(&state->slot_states[request->request_id % state->pipeline_slot_count],memory_order_acquire) == SPARK_STAGE_MODULE_SLOT_FREE ? 1u : 0u;
 	memset(&table,0,sizeof(table));
 	table.abi_version = SPARK_ADMISSION_ABI_VERSION;
 	table.descriptor_bytes = (uint32_t)sizeof(table);
@@ -2692,8 +2711,6 @@ static SparkStatus SparkGlm5NextInitializeState(
 	atomic_init(&state->rejected_count,0u);
 	atomic_init(&state->failed_count,0u);
 	atomic_init(&state->host_callback_completion_count,0u);
-	atomic_init(&state->tp_next_ordinal,0u);
-	atomic_init(&state->tp_next_ordinal_hc,0u);
 	*state_out = state;
 	return(SPARK_STATUS_OK);
 }
