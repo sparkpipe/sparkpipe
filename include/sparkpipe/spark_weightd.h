@@ -200,6 +200,7 @@ typedef struct SparkWeightdIpcAttachLazyResult
     uint64_t chunk_bytes;
     uint32_t chunk_count;
     uint32_t reserved0;
+    uint8_t manifest_sha256[32];
 } SparkWeightdIpcAttachLazyResult;
 
 typedef struct SparkWeightdIpcEnsure
@@ -365,6 +366,9 @@ typedef struct SparkWeightdReclaimResult
     uint32_t arena_count;
 } SparkWeightdReclaimResult;
 
+// Canonical identity of a successfully loaded, grouped manifest.
+SparkStatus SparkWeightdManifestIdentity(const SparkWeightdManifest *manifest,uint8_t digest[32]);
+
 typedef struct SparkWeightdLazyAttachRequest
 {
     SparkWeightdIdentity identity;
@@ -385,6 +389,7 @@ typedef struct SparkWeightdLazyAttachResult
     uint32_t expert_count;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
+    uint8_t manifest_sha256[32];
 } SparkWeightdLazyAttachResult;
 
 typedef struct SparkWeightdEnsureResult

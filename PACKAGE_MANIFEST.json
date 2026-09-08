@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "e2a6ae443d8e65cbd08d38fcbeb5928f66c01f03fc99d0e8e4bbd37c9350db51",
-      "size_bytes": 12320
+      "sha256": "2cf6af39c088d85bcddab17170d61c77d77c6dca51c904bd49aff1af2107d246",
+      "size_bytes": 13133
     },
     {
       "path": "docs/GOALS.md",
@@ -3053,8 +3053,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd.h",
-      "sha256": "a19f92d689347bce2e9e66040425c4c4e9b7f89f989fae5415bff84de6d195a8",
-      "size_bytes": 14397
+      "sha256": "4c6eaf2bc480f4ed7457adcb8fb5fc6ee6065a9056a289d03f03a08bc6159b8f",
+      "size_bytes": 14629
     },
     {
       "path": "include/sparkpipe/spark_weightd_attach.h",
@@ -5983,8 +5983,8 @@
     },
     {
       "path": "runtime/spark_weightd.c",
-      "sha256": "04cc8b62998beaf8b66a0d6fa21647c5bab07854a266702f480c31e52f31ddb5",
-      "size_bytes": 115140
+      "sha256": "e879d513e41cdf89bdae150c80adc4bfc5fcb9f844bba5cb052442e03a22b885",
+      "size_bytes": 116421
     },
     {
       "path": "runtime/spark_weightd_attach.c",
@@ -5993,8 +5993,8 @@
     },
     {
       "path": "runtime/spark_weightd_lazy_pack.c",
-      "sha256": "ece863d6b87edbadb6fc2a0462253f22de49918b3e035bc037a62639bc4b9b4b",
-      "size_bytes": 5227
+      "sha256": "36d3a535a44d2ade0dd2ae38d0784eff470761d693f61f64799fd14cef3321a8",
+      "size_bytes": 5525
     },
     {
       "path": "runtime/spark_weightd_lease.c",
@@ -7843,8 +7843,8 @@
     },
     {
       "path": "tests/test_weightd_working_set.c",
-      "sha256": "9b2cee676f8a3bb8f819931b3d2d3b0fc6c1b9457b325de52c976b6d6069c847",
-      "size_bytes": 23453
+      "sha256": "68389a572eb22249c90a6db9580b3d9d8550213c176ccd1b6a4a0499c0f1bc1e",
+      "size_bytes": 24321
     },
     {
       "path": "tests/test_work_transaction.c",
@@ -9570,5 +9570,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32349718
+  "total_bytes": 32353210
 }

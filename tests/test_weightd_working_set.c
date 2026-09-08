@@ -434,6 +434,20 @@ static SparkStatus reject_manifest(const SparkWeightdManifest *manifest,void *co
 	return(SPARK_STATUS_SCHEMA_ERROR);
 }
 
+static SparkStatus change_manifest_after_parse(const SparkWeightdManifest *manifest,void *context)
+{
+	FILE *file;
+	uint8_t byte;
+	(void)manifest;
+	file = fopen((const char *)context,"r+b");
+	assert(file != 0);
+	assert(fseek(file,48,SEEK_SET) == 0 && fread(&byte,1u,1u,file) == 1u);
+	byte ^= 1u;
+	assert(fseek(file,48,SEEK_SET) == 0 && fwrite(&byte,1u,1u,file) == 1u);
+	assert(fclose(file) == 0);
+	return(SPARK_STATUS_OK);
+}
+
 static void check_lazy_pack(const char *socket_path,const char *path,const char *manifest_path)
 {
 	SparkWeightdLazyAttachRequest request = {0};
@@ -467,6 +481,11 @@ static void check_lazy_pack(const char *socket_path,const char *path,const char 
 	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_HASH_MISMATCH);
 	assert(pack == 0);
 	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+	snprintf(request.identity.model,sizeof(request.identity.model),"manifest-race-test");
+	assert(SparkWeightdLazyPackCreateChecked(socket_path,&request,4u * CHUNK,TIMEOUT,change_manifest_after_parse,(void *)manifest_path,&pack) == SPARK_STATUS_HASH_MISMATCH);
+	assert(pack == 0);
+	assert(change_manifest_after_parse(0,(void *)manifest_path) == SPARK_STATUS_OK);
+	snprintf(request.identity.model,sizeof(request.identity.model),"lazy-pack-test");
 	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
 	assert(pack != 0 && pack->attached.resident_bytes == 0u);
 	assert(SparkWeightdLazyPackSlice(pack,512u,1u,&pointer) == SPARK_STATUS_OK);

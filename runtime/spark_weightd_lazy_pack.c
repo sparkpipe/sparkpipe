@@ -61,6 +61,7 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context)
 {
 	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
+	uint8_t manifest_digest[32];
 	SparkStatus status;
 	(void)snprintf(path,sizeof(path),"%s.experts",request->pack_path);
 	status = SparkWeightdManifestLoad(path,request->identity.arena_bytes,&pack->manifest);
@@ -74,6 +75,10 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 		status = SparkWeightdClientConnect(socket,&pack->client,0);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdClientAttachLazy(pack->client,request,&pack->attached,timeout);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdManifestIdentity(&pack->manifest,manifest_digest);
+	if ( status == SPARK_STATUS_OK && memcmp(manifest_digest,pack->attached.manifest_sha256,sizeof(manifest_digest)) != 0 )
+		status = SPARK_STATUS_HASH_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdMapCreate(pack->client,&pack->attached,&pack->map);
 	if ( status == SPARK_STATUS_OK )

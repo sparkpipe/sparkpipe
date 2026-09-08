@@ -187,6 +187,36 @@ static SparkStatus SparkWeightdStringBounded(const char *text, uint32_t capacity
 
 /* ------------------------------ identity ------------------------------ */
 
+SparkStatus SparkWeightdManifestIdentity(const SparkWeightdManifest *manifest,uint8_t digest[32])
+{
+	SparkSha256Context hash;
+	const SparkWeightdRange *range;
+	uint8_t record[48] = {0};
+	uint32_t i,j,values[4];
+	if ( manifest == 0 || digest == 0 || manifest->ranges == 0 || manifest->range_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	SparkSha256Initialize(&hash);
+	for (i=0u; i<manifest->range_count; i++)
+	{
+		range = &manifest->ranges[i];
+		values[0] = range->layer;
+		values[1] = range->expert;
+		values[2] = range->kind;
+		values[3] = SPARK_WEIGHTD_RANGE_MANIFEST_VERSION;
+		for (j=0u; j<16u; j++)
+			record[j] = (uint8_t)(values[j / 4u] >> ((j % 4u) * 8u));
+		for (j=0u; j<8u; j++)
+		{
+			record[16u + j] = (uint8_t)(range->offset >> (j * 8u));
+			record[24u + j] = (uint8_t)(range->bytes >> (j * 8u));
+		}
+		memcpy(record + 32u,range->digest,16u);
+		SparkSha256Update(&hash,record,sizeof(record));
+	}
+	SparkSha256Finalize(&hash,digest);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity)
 {
     uint32_t index;
@@ -1164,6 +1194,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
             result->expert_count = server->arenas[slot].expert_count;
             result->chunk_bytes = server->arenas[slot].chunk_bytes;
             result->chunk_count = server->arenas[slot].chunk_count;
+            (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
         }
         return;
     }
@@ -1234,6 +1265,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     result->expert_count = expert_count;
     result->chunk_bytes = server->arenas[slot].chunk_bytes;
     result->chunk_count = server->arenas[slot].chunk_count;
+    (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
     printf("weightd lazy-attach model=%s experts=%u arena=%llu pool=%llu\n",
         identity.model, expert_count,
         (unsigned long long)identity.arena_bytes,
@@ -2633,6 +2665,7 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
     result->refcount = wire_result.refcount;
     result->arena_count = wire_result.arena_count;
     result->expert_count = wire_result.expert_count;
+    memcpy(result->manifest_sha256,wire_result.manifest_sha256,sizeof(result->manifest_sha256));
     result->chunk_bytes = wire_result.chunk_bytes;
     result->chunk_count = wire_result.chunk_count;
     return SPARK_STATUS_OK;
