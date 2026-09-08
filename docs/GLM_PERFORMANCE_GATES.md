@@ -1,11 +1,24 @@
 # GLM non-speculative performance gates
 
-Local driver qualification on merged main `80acca1` passes real-pack B1/B3
+Local driver qualification on merged main `93c8f0d` passes real-pack B1/B3
 resident/lazy token comparison, two concurrently started lazy B3 consumers,
 and resident B3 CUDA memcheck with zero errors. These are TP16 rank0 runs with
 collectives disabled, four fixed-input positions, and short context. They do
 not establish full-model accuracy or distributed performance. See PR #856 for
 the index-cache corruption that invalidated earlier B3 comparisons.
+
+PR #858 removed an unconditional one-row wave clamp. The earlier `80acca1`
+B3 checks and `a53ca6f` distributed B3/B7 timing cells serialized the rows;
+they are not evidence of batched execution or weight reuse. The new B3
+checks ran after that fix: queue jobs `glm-batch-memcheck-93c8f0d` and
+`glm-batch-compare-93c8f0d`. These results are component qualification only.
+
+Report functional qualification separately from hardware-normalized
+performance qualification. Record raw rates and normalization assumptions
+(node count, precision/actual bytes, context, occupancy, speculative mode).
+An accurately implemented driver can still fail its performance target;
+use that measured gap to select the next optimization. TP16 speedup and
+TP4xPP4 capacity require separately measured, matched TP4 baselines.
 
 Before reporting a full-system throughput result:
 

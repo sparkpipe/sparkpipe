@@ -12,6 +12,12 @@ HARNESS = r'''
 #include "cache/kv_page_store.c"
 static SparkGlm5NextModuleState state;
 
+const char *cudaGetErrorString(cudaError_t error)
+{
+	(void)error;
+	return("host test CUDA status");
+}
+
 cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,cudaMemcpyKind kind)
 {
 	(void)destination;
@@ -19,13 +25,6 @@ cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,cudaMem
 	(void)bytes;
 	(void)kind;
 	return(cudaSuccess);
-}
-
-SparkStatus SparkStageModuleCudaStatus(const char *tag,cudaError_t error,const char *operation)
-{
-	(void)tag;
-	(void)operation;
-	return(error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR);
 }
 
 SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCacheArena *arena,SparkKvPageCache *cache,SparkKvPageStore *store)
@@ -41,26 +40,42 @@ SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCache
 static int32_t check_batch_waves(void)
 {
 	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
-	uint32_t slots[45],width,row;
+	uint32_t slots[303],width,row;
+	atomic_uint *claims = state.lane_states;
+	state.resident_sequence_capacity = 101u;
+	for (row=0u; row<101u; row++)
+		atomic_init(&claims[row],SPARK_STAGE_MODULE_SLOT_FREE);
 	uint32_t ragged[8] = {5u,2u,9u,5u,2u,9u,5u,9u};
 	batch.row_resident_slots = slots;
-	for (width=1u; width<=15u; width++)
+	for (width=1u; width<=101u; width++)
 	{
 		batch.active_sequence_count = width;
 		batch.row_count = (width * 3u);
 		for (row=0u; row<batch.row_count; row++)
 			slots[row] = (width - 1u - (row % width));
+		if ( SparkGlm5NextValidateRoundMajor(&state,&batch) != SPARK_STATUS_OK || SparkStageModuleIndexSetClaim(claims,101u,slots,width) != SPARK_STATUS_OK )
+			return(-4);
 		for (row=0u; row<batch.row_count; row+=width)
-			if ( SparkGlm5NextRoundMajorWaveRows(&batch,row) != width )
+			if ( SparkGlm5NextRoundMajorWaveRows(&state,&batch,row) != width )
 				return(-1);
+		SparkStageModuleIndexSetRelease(claims,101u,slots,width);
 	}
 	batch.row_resident_slots = ragged;
 	batch.active_sequence_count = 3u;
 	batch.row_count = 8u;
-	if ( SparkGlm5NextRoundMajorWaveRows(&batch,0u) != 3u || SparkGlm5NextRoundMajorWaveRows(&batch,3u) != 3u || SparkGlm5NextRoundMajorWaveRows(&batch,6u) != 2u )
+	if ( SparkGlm5NextValidateRoundMajor(&state,&batch) != SPARK_STATUS_OK || SparkStageModuleIndexSetClaim(claims,101u,ragged,3u) != SPARK_STATUS_OK )
+		return(-5);
+	if ( SparkGlm5NextRoundMajorWaveRows(&state,&batch,0u) != 3u || SparkGlm5NextRoundMajorWaveRows(&state,&batch,3u) != 3u || SparkGlm5NextRoundMajorWaveRows(&state,&batch,6u) != 2u )
 		return(-2);
-	if ( SparkGlm5NextRoundMajorWaveRows(&batch,8u) != 0u || SparkGlm5NextRoundMajorWaveRows(0,0u) != 0u )
+	if ( SparkGlm5NextRoundMajorWaveRows(&state,&batch,8u) != 0u || SparkGlm5NextRoundMajorWaveRows(&state,0,0u) != 0u )
 		return(-3);
+	SparkStageModuleIndexSetRelease(claims,101u,ragged,3u);
+	if ( SparkGlm5NextRoundMajorWaveRows(&state,&batch,0u) != 0u )
+		return(-6);
+	ragged[6] = 9u;
+	ragged[7] = 5u;
+	if ( SparkGlm5NextValidateRoundMajor(&state,&batch) == SPARK_STATUS_OK )
+		return(-7);
 	return(0);
 }
 
@@ -198,7 +213,7 @@ def main():
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                         *["-I" + p for p in includes], "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
-                        str(source), "-o", str(binary)], cwd=ROOT, check=True)
+                        str(source), "runtime/stage_module_common.c", "-o", str(binary)], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS actual module TP4/PP4 and TP16 context, ownership and ABI gates")
 

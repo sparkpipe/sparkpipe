@@ -180,6 +180,25 @@ SparkStatus SparkStageModuleIndexClaimOrdinal(
     uint32_t index_capacity,
     uint32_t index,
     uint32_t *ordinal_out);
+
+typedef struct SparkStageModuleClaimedLaneContext
+{
+	const atomic_uint *index_states;
+	uint32_t index_capacity;
+} SparkStageModuleClaimedLaneContext;
+
+static inline SparkStatus SparkStageModuleClaimedLaneOrdinal(
+	void *context,
+	uint32_t lane_id,
+	uint32_t *ordinal_out)
+{
+	const SparkStageModuleClaimedLaneContext *lanes;
+	lanes = (const SparkStageModuleClaimedLaneContext *)context;
+	if ( lanes == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkStageModuleIndexClaimOrdinal(lanes->index_states,lanes->index_capacity,lane_id,ordinal_out));
+}
+
 SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
     atomic_uint *index_states,
     uint32_t index_capacity,
