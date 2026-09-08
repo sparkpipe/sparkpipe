@@ -13,6 +13,7 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/config.h"
+#include "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
 
 struct Glm5NextKv
 {
@@ -27,23 +28,6 @@ struct Glm5NextKv
     { return position % GLM5_NEXT_KV_PAGE_SLOTS; }
     static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
     { return (tokens + GLM5_NEXT_KV_PAGE_SLOTS - 1u) / GLM5_NEXT_KV_PAGE_SLOTS; }
-    static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
-    { return pages * (uint64_t)kPageBytes; }
-};
-struct Glm5NextIndexKv
-{
-    static constexpr uint32_t kSlotBytes =
-        SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
-    static constexpr uint32_t kPageSlots = GLM5_NEXT_KV_PAGE_SLOTS;
-    static constexpr uint32_t kPageBytes =
-        kSlotBytes * kPageSlots * SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
-    static constexpr bool kGrows = true;
-    static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
-    { return position / kPageSlots; }
-    static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position)
-    { return position % kPageSlots; }
-    static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
-    { return (tokens + kPageSlots - 1u) / kPageSlots; }
     static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
     { return pages * (uint64_t)kPageBytes; }
 };
