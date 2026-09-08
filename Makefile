@@ -1061,8 +1061,8 @@ build/test_weightd_lease: tests/test_weightd_lease.c runtime/spark_weightd_lease
 build/test_weightd_working_set: tests/test_weightd_working_set.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-build/test_glm5_next_lazy_dispatch: tests/test_glm5_next_lazy_dispatch.c runtime/spark_weightd_lease.c tests/cuda_stub/cuda_runtime_stub.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h | build
-	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(CFLAGS) -ffunction-sections -fdata-sections $(wordlist 1,3,$^) $(LDFLAGS) -Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $@
+build/test_glm5_next_lazy_dispatch: tests/test_glm5_next_lazy_dispatch.c runtime/spark_weightd_lease.c tests/cuda_stub/cuda_runtime_stub.c runtime/spark_weightd_manifest.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(CFLAGS) -ffunction-sections -fdata-sections $(wordlist 1,4,$^) $(LDFLAGS) -Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $@
 
 build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c,$^)) $(LDFLAGS) -o $@

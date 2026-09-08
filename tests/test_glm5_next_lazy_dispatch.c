@@ -52,6 +52,58 @@ SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint
 	return(FAIL_RELEASE != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK);
 }
 
+static void check_manifest_geometry(void)
+{
+	SparkGlm5NextStagePackEntry entries[2] = {0};
+	SparkWeightdRange ranges[1153] = {0};
+	SparkWeightdRangeGroup groups[288] = {0};
+	SparkWeightdManifest manifest = {0};
+	SparkGlm5NextManifestContext context = {entries,2u};
+	uint32_t expert,tensor,plane,index;
+	for (tensor=0u; tensor<2u; tensor++)
+	{
+		entries[tensor].tensor_kind = SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE + tensor;
+		entries[tensor].layer_index = 3u;
+		entries[tensor].weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+		entries[tensor].group_count = 288u;
+		entries[tensor].payload_offset = 4096u + (tensor * 131072u);
+		entries[tensor].payload_bytes = 288u * 256u;
+		entries[tensor].scale_offset = entries[tensor].payload_offset + entries[tensor].payload_bytes;
+		entries[tensor].scale_bytes = 288u * 16u;
+	}
+	for (expert=0u; expert<288u; expert++)
+	{
+		groups[expert] = (SparkWeightdRangeGroup){3u,expert,expert * 4u,4u};
+		for (index=0u; index<4u; index++)
+		{
+			tensor = index / 2u;
+			plane = index % 2u;
+			ranges[expert * 4u + index] = (SparkWeightdRange){.offset = (plane == 0u ? entries[tensor].payload_offset + expert * 256u : entries[tensor].scale_offset + expert * 16u),.bytes = plane == 0u ? 256u : 16u,.layer = 3u,.expert = expert,.kind = entries[tensor].tensor_kind * 2u + plane};
+		}
+	}
+	manifest.ranges = ranges;
+	manifest.groups = groups;
+	manifest.range_count = 1152u;
+	manifest.group_count = 288u;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_OK);
+	ranges[69].offset++;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+	ranges[69].offset--;
+	ranges[69].bytes++;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+	ranges[69].bytes--;
+	groups[17].range_count = 3u;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+	groups[17].range_count = 4u;
+	manifest.group_count--;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+	manifest.group_count++;
+	manifest.range_count++;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+	manifest.range_count--;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_OK);
+}
+
 int main(void)
 {
 	SparkGlm5NextModuleState state = {0};
@@ -60,6 +112,7 @@ int main(void)
 	SparkWeightdLazyPack pack = {0};
 	uint32_t offsets[289],i,scenario;
 	cudaEvent_t event;
+	check_manifest_geometry();
 	assert(cudaEventCreateWithFlags(&event,cudaEventDisableTiming) == cudaSuccess);
 	assert(cudaEventRecord(event,0) == cudaSuccess);
 	for (i=0u; i<289u; i++) offsets[i] = i == 0u ? 0u : (i <= 17u ? 4u : 8u);
