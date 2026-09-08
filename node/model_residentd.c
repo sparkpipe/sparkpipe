@@ -26,6 +26,7 @@
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
 #include "sparkpipe/spark_pipeline_runtime.h"
+#include "weightd_spawn.h"
 
 #define SPARK_MODEL_RESIDENTD_TRANSPORT_POLL_CAPACITY 32u
 #define SPARK_MODEL_RESIDENTD_PROGRESS_STEPS 64u
@@ -2768,6 +2769,7 @@ int main(int argument_count,char **arguments)
 	SparkModelResidentdLaunch launch;
 	SparkModelResidentdRuntime runtime;
 	SparkStatus status;
+	int32_t weightd_status;
 	SparkModelResidentDeploymentReset(&deployment);
 	status = SparkModelResidentdParseLaunch(argument_count,arguments,&launch);
 	if ( status == SPARK_STATUS_OK )
@@ -2789,9 +2791,13 @@ int main(int argument_count,char **arguments)
 	if ( deployment.weightd_socket_path != 0 &&
 		deployment.weightd_socket_path[0] != '\0' )
 	{
-		extern void SparkModelResidentdEnsureWeightd(const char *,const char *);
-		SparkModelResidentdEnsureWeightd(configuration.runtime_root,
-			deployment.weightd_socket_path);
+		weightd_status = SparkModelResidentdPrepareWeightd(configuration.runtime_root,deployment.weightd_socket_path);
+		if ( weightd_status != 0 )
+		{
+			fprintf(stderr,"model_residentd weightd-required status=%d root=%s socket=%s: require one valid packs/*.sha256 and a supervised daemon; direct loading is disabled\n",weightd_status,configuration.runtime_root,deployment.weightd_socket_path);
+			SparkModelResidentDeploymentDestroy(&deployment);
+			return(1);
+		}
 	}
 	status = SparkModelResidentdInitialize(&runtime,&configuration);
 	if ( status == SPARK_STATUS_OK )
