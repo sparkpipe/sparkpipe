@@ -49,7 +49,7 @@ def stage_config(rank):
         "tp_collective": {
             "backend": "hidden_transport",
             "backend_module_path": "lib/hidden_transport.so",
-            "algorithms": ["recursive_doubling", "direct_all_to_all"],
+            "algorithms": ["tree", "direct_all_to_all"],
             "collective_identifier": COLLECTIVE_ID_BASE + group,
             "listen_port": collective_base + tp_rank,
             "connect_timeout_milli": 30000,
