@@ -125,7 +125,7 @@ int main(int argc, char **argv)
     }
     if (outcome.client == 0)
     {
-        printf("FALLBACK reason=%s (daemon path not taken)\n", reason);
+        fprintf(stderr,"weightdctl: attach returned no client: %s\n", reason);
         return 3;
     }
     printf("ATTACHED %s arena_bytes=%llu generation=%llu cold=%u refcount=%u\n",

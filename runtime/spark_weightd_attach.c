@@ -321,10 +321,8 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
                     CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
             if (import_rc != CUDA_SUCCESS)
             {
-                if (getenv("SPARK_WEIGHTD_IMPORT_DIAG") != 0)
-                    fprintf(stderr,
-                        "weightd import diag: fd=%d curesult=%d\n",
-                        batch.fds[index], (int)import_rc);
+                fprintf(stderr,"weightd import failed: fd=%d curesult=%d\n",
+                    batch.fds[index], (int)import_rc);
                 SparkWeightdAttachCloseBatchFds(&batch);
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
@@ -382,6 +380,31 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     outcome->device_handle = (uint64_t)(uintptr_t)base;
     SparkWeightdAttachSetReason(reason, "");
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
+    const char *pack_path,
+    uint64_t timeout_nanoseconds,
+    SparkWeightdAttachOutcome *outcome,
+    char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES])
+{
+	SparkStatus status;
+	status = SparkWeightdAttachPack(slice,pack_path,timeout_nanoseconds,outcome,reason);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( outcome->client == 0 || outcome->arena_bytes != slice->pack_bytes )
+	{
+		SparkWeightdAttachRelease(outcome);
+		SparkWeightdAttachSetReason(reason,"arena_mismatch");
+		return(SPARK_STATUS_ABI_MISMATCH);
+	}
+	status = SparkWeightdAttachImportMap(outcome,slice->pack_bytes,timeout_nanoseconds,reason);
+	if ( status != SPARK_STATUS_OK || outcome->client == 0 || outcome->map_base == 0 )
+	{
+		SparkWeightdAttachRelease(outcome);
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome)

@@ -789,24 +789,12 @@ static SparkStatus SparkStageModulePackArenaEnsure(
 	memset(&slice,0,sizeof(slice));
 	slice.model = ledger->module_tag;
 	slice.pack_bytes = arena->pack_bytes;
-	status = SparkWeightdAttachPack(&slice,arena->pack_path,
+	status = SparkWeightdAttachMappedPack(&slice,arena->pack_path,
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&arena->outcome,reason);
 	if (status != SPARK_STATUS_OK || arena->outcome.client == 0)
 	{
 		fprintf(stderr,"stage-module weightd attach failed: pack=%s status=%s reason=%s\n",
 			arena->pack_path,SparkStatusToString(status),reason);
-		arena->status = status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR;
-		return(arena->status);
-	}
-	status = SparkWeightdAttachImportMap(&arena->outcome,arena->pack_bytes,
-		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,reason);
-	if (status != SPARK_STATUS_OK || arena->outcome.map_base == 0)
-	{
-		fprintf(stderr,"stage-module weightd import failed: pack=%s status=%s reason=%s\n",
-			arena->pack_path,SparkStatusToString(status),reason);
-		if (arena->outcome.client != 0)
-			(void)SparkWeightdAttachRelease(&arena->outcome);
-		memset(&arena->outcome,0,sizeof(arena->outcome));
 		arena->status = status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR;
 		return(arena->status);
 	}

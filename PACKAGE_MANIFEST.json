@@ -878,8 +878,8 @@
     },
     {
       "path": "docs/PARALLEL_DRIVER_DEBUG.md",
-      "sha256": "465235052eb32274d0efe8e33563400344679db40df863ddad441c9526ebe0ca",
-      "size_bytes": 7256
+      "sha256": "9d052a352a85986aa3b450943c8eca7c99f990ec168d5ee6c2a1822a93b1983a",
+      "size_bytes": 7541
     },
     {
       "path": "docs/PERFORMANCE_LEDGER.md",
@@ -3038,8 +3038,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd_attach.h",
-      "sha256": "2027850d6c2ea52640e6169979b608b307d28de71cfd4d1750db38cc96e30465",
-      "size_bytes": 1829
+      "sha256": "b7a31f3e7e87c5bd93362142cf2cd9f0b33f662a475fdede00a5fe7da4870359",
+      "size_bytes": 2141
     },
     {
       "path": "include/sparkpipe/spark_work_transaction.h",
@@ -3748,8 +3748,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c",
-      "sha256": "b98fdd71902c952544063451079716cffb5f065f2dd722cae2aa4e8c9ff7c217",
-      "size_bytes": 287774
+      "sha256": "7e11463973fd749f63af75879533eeabe0e12dfe034f7b70d80a54e4b211a456",
+      "size_bytes": 286933
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
@@ -5933,8 +5933,8 @@
     },
     {
       "path": "runtime/spark_weightd_attach.c",
-      "sha256": "bfda5dfecdcfa14a8fbffea28a2fae747f1c84edf3bf7ad1889454710bdde946",
-      "size_bytes": 14641
+      "sha256": "0a34f691ce5188d231b5a7c8668f5ad8c8fc510b8cc27dc7d5955c41a06e008e",
+      "size_bytes": 15470
     },
     {
       "path": "runtime/speculation_provider.c",
@@ -5943,8 +5943,8 @@
     },
     {
       "path": "runtime/stage_module_common.c",
-      "sha256": "45deb89c053eaadd84b8ee72cf84fb2ec3a1896d48d6cb8fb06ffe0e349e6f34",
-      "size_bytes": 52794
+      "sha256": "14510746df86a62277c28dad91abfd84ea6ca0fed01ded43ce2a8442b3b19c0c",
+      "size_bytes": 52221
     },
     {
       "path": "runtime/stage_module_lifecycle.c",
@@ -7573,8 +7573,8 @@
     },
     {
       "path": "tests/test_stage_module_weightd.c",
-      "sha256": "107cd5e893502363431c277838c7c5d291f4b422fc09410a854b9422649c13ee",
-      "size_bytes": 6781
+      "sha256": "c43f6eb6ff333f47854cf39223e46997f1901fb3fd5b0290c23c6f7fe4e8e8c5",
+      "size_bytes": 6913
     },
     {
       "path": "tests/test_staging_manifest.py",
@@ -9403,12 +9403,12 @@
     },
     {
       "path": "tools/weightdctl.c",
-      "sha256": "7276b96353cef79d319d3029ea11770a1755deb5cb90fc139c6cd31552a8a677",
-      "size_bytes": 4931
+      "sha256": "57d1d717ca3462ab712e97791a341e5f112dfb7c1e77da163beb62c53f378f0a",
+      "size_bytes": 4938
     }
   ],
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32106066
+  "total_bytes": 32106217
 }

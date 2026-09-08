@@ -107,6 +107,10 @@ rejected pack and failed consumer import. stage_module_common must propagate
 them without allocating a direct copy. Explicitly disabled attach remains a
 direct-load request; it is not a recovery path and is not lazy debugging.
 The pending opt-in lazy attach in PR #829 must follow this rule as well.
+Families with a specialized pack identity use SparkWeightdAttachMappedPack,
+which owns attach/import validation and releases partial mappings on error.
+DSV4 and the common region loader share this helper. Do not recreate their
+former attach/import/fallback sequence in another driver.
 
 Current shared lazy Ensure tests exercise the daemon's materialization and
 eviction, including missing/corrupt metadata before residency. They do not yet

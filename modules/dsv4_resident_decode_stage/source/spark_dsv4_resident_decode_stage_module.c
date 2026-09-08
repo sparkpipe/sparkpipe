@@ -1326,34 +1326,11 @@ static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, con
 	slice.topology = state->tp_configuration_hash;
 	slice.geometry_fingerprint = geometry;
 	slice.pack_bytes = header->file_bytes;
-	status = SparkWeightdAttachPack(&slice,path,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&outcome,reason);
+	status = SparkWeightdAttachMappedPack(&slice,path,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&outcome,reason);
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"%s weightd_attach_error status=%s\n",SPARK_DSV4_MODULE_TAG,SparkStatusToString(status));
-		return(SPARK_STATUS_OK);
-	}
-	if ( outcome.client == 0 )
-	{
-		fprintf(stderr,"%s weightd_fallback reason=%s\n",SPARK_DSV4_MODULE_TAG,reason);
-		return(SPARK_STATUS_OK);
-	}
-	if ( outcome.arena_bytes != (uint64_t)header->file_bytes )
-	{
-		SparkWeightdAttachRelease(&outcome);
-		fprintf(stderr,"%s weightd_fallback reason=arena_mismatch\n",SPARK_DSV4_MODULE_TAG);
-		return(SPARK_STATUS_OK);
-	}
-	status = SparkWeightdAttachImportMap(&outcome,(uint64_t)header->file_bytes,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,reason);
-	if ( status != SPARK_STATUS_OK )
-	{
-		SparkWeightdAttachRelease(&outcome);
-		fprintf(stderr,"%s weightd_attach_error status=%s\n",SPARK_DSV4_MODULE_TAG,SparkStatusToString(status));
-		return(SPARK_STATUS_OK);
-	}
-	if ( outcome.client != 0 || outcome.map_base == 0 )
-	{
-		fprintf(stderr,"%s weightd_fallback reason=%s\n",SPARK_DSV4_MODULE_TAG,reason);
-		return(SPARK_STATUS_OK);
+		fprintf(stderr,"%s weightd_attach_error pack=%s status=%s reason=%s\n",SPARK_DSV4_MODULE_TAG,path,SparkStatusToString(status),reason);
+		return(status);
 	}
 	state->weightd_outcome = outcome;
 	state->weightd_arena_base = outcome.map_base;

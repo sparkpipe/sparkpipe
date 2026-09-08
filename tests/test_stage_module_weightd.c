@@ -110,6 +110,9 @@ int main(void)
 	SparkStageModuleLedgerRelease(&ledger);
 	(void)fclose(file);
 	printf("stage_module_weightd: explicitly disabled attach uses direct load PASS\n");
+	unsetenv("SPARK_WEIGHTD_SOCKET");
+	TestStageAttachFailureAllocatesNothing(sha_hex);
+	setenv("SPARK_WEIGHTD_SOCKET",SOCKET_PATH,1);
 	TestStageAttachFailureAllocatesNothing(0);
 	TestStageAttachFailureAllocatesNothing(sha_hex);
 

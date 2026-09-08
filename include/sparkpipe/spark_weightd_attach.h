@@ -60,6 +60,13 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     uint64_t timeout_nanoseconds,
     char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES]);
 
+// Success owns a valid consumer mapping; every failure releases partial state.
+SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
+    const char *pack_path,
+    uint64_t timeout_nanoseconds,
+    SparkWeightdAttachOutcome *outcome,
+    char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES]);
+
 void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome);
 
 #ifdef __cplusplus
