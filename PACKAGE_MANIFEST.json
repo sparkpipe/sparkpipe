@@ -1,5 +1,5 @@
 {
-  "file_count": 1915,
+  "file_count": 1916,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -7817,6 +7817,11 @@
       "size_bytes": 4446
     },
     {
+      "path": "tests/test_weightd_lazy_pair.py",
+      "sha256": "83f1c6da4012c804e78ad4c5ca54ffa2945e40495d550cc60d94089343e5f1e1",
+      "size_bytes": 1604
+    },
+    {
       "path": "tests/test_weightd_lease.c",
       "sha256": "5c180e7e069cdb7cb4d0e04e7142303e820b7e913f7e1d02c73904ba84c18fb8",
       "size_bytes": 5194
@@ -9553,8 +9558,8 @@
     },
     {
       "path": "tools/weightd_lazy_pair.py",
-      "sha256": "cc41e2cfab26294c5a4ed6a84eef0a8ebcf6996a468d48253ab602c68b6ca0cf",
-      "size_bytes": 3652
+      "sha256": "4f66b488cf5f04f441fbeb6c22a1ee4a924ef818f123bb4538a48def3350cd32",
+      "size_bytes": 4002
     },
     {
       "path": "tools/weightd_loadall.c",
@@ -9580,5 +9585,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32363316
+  "total_bytes": 32365270
 }

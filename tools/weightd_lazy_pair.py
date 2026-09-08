@@ -1,11 +1,36 @@
 #!/usr/bin/env python3
 """Run two overlapping lazy consumers against an owned daemon."""
 import argparse
+import os
 import pathlib
 import selectors
 import subprocess
 import tempfile
 import time
+
+
+def wait_ready(clients, timeout=10):
+    deadline = time.monotonic() + timeout
+    buffers = {client.stdout: bytearray() for client in clients}
+    with selectors.DefaultSelector() as selector:
+        for stream in buffers:
+            selector.register(stream, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("consumers did not hold both leases before deadline")
+            for key, _ in selector.select(remaining):
+                data = os.read(key.fileobj.fileno(), 4096)
+                if not data:
+                    raise RuntimeError("consumer closed output before READY")
+                buffer = buffers[key.fileobj]
+                buffer.extend(data)
+                if len(buffer) > 64:
+                    raise RuntimeError("consumer readiness output exceeds limit")
+                if b"\n" in buffer:
+                    if buffer != b"READY\n":
+                        raise RuntimeError(f"invalid consumer readiness: {bytes(buffer)!r}")
+                    selector.unregister(key.fileobj)
 
 
 def main():
@@ -28,30 +53,19 @@ def main():
                     if server.poll() is not None or time.monotonic() >= deadline:
                         raise RuntimeError("daemon did not become ready")
                     time.sleep(0.02)
-                with selectors.DefaultSelector() as selector:
-                    clients = []
-                    for first in (0, 1):
-                        client = subprocess.Popen([probe, str(socket), str(pack), "consumer", str(first)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                        processes.append(client)
-                        clients.append(client)
-                        selector.register(client.stdout, selectors.EVENT_READ, client)
-                    deadline = time.monotonic() + 10
-                    while selector.get_map():
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise RuntimeError("consumers did not hold both leases before deadline")
-                        for key, _ in selector.select(remaining):
-                            line = key.fileobj.readline()
-                            if line.strip() != "READY":
-                                raise RuntimeError(f"consumer failed before barrier: {line!r}")
-                            selector.unregister(key.fileobj)
-                    for client in clients:
-                        client.stdin.write("G")
-                        client.stdin.flush()
-                    for client in clients:
-                        output, _ = client.communicate(timeout=10)
-                        if client.returncode != 0 or "PASS consumer-local lazy reads" not in output:
-                            raise RuntimeError(f"consumer failure: {output}")
+                clients = []
+                for first in (0, 1):
+                    client = subprocess.Popen([probe, str(socket), str(pack), "consumer", str(first)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+                    processes.append(client)
+                    clients.append(client)
+                wait_ready(clients)
+                for client in clients:
+                    client.stdin.write(b"G")
+                    client.stdin.flush()
+                for client in clients:
+                    output, _ = client.communicate(timeout=10)
+                    if client.returncode != 0 or b"PASS consumer-local lazy reads" not in output:
+                        raise RuntimeError(f"consumer failure: {output!r}")
                 server.terminate()
                 if server.wait(timeout=10) != 0:
                     raise RuntimeError("daemon shutdown failed")
