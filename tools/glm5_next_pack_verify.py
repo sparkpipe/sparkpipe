@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Verify a glm5_next TP16 rank pack (.g5nsp) against the fixed packer's plan.
+"""Verify a glm5_next rank/stage pack (.g5nsp) against the checkpoint plan.
+
+Pipeline packs require --stage-count, --stage-index, --first-layer,
+--layer-count, --expected-bytes and --all-tensors. The verifier checks the
+requested stage identity instead of accepting the pack's own metadata as its
+expected contract. Embedding/head ownership belongs to the first/last stage.
 
 Checks (in order):
   1. header: magic, format, entry geometry, tp_degree/tp_rank, header
@@ -40,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from glm5_next_resident_stagepack import (  # noqa: E402
     ALIGNMENT, ENTRY_BYTES, FORMAT_VERSION, GLOBAL_LAYER, HEADER_BYTES, MAGIC,
     LAYERS, Packer, SCALE_F32, SCALE_NONE, SCALE_UE4M3_F32_GLOBAL, CODEC_NVFP4,
-    SourceReader,
+    SourceReader, validate_stage,
     K_DENSE_GATE_UP, K_EMBEDDING, K_EXPERT_UP_GATE, K_KDA_DECAY_GATE_DOWN,
     K_KDA_QKV_BETA, K_LM_HEAD, K_Q_B, K_SHARED_GATE_UP,
     PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT,
@@ -105,12 +110,28 @@ def verify_region(mm, offset, expected, chunks, label):
     return pack_hash.hexdigest()
 
 
+def check_stage_header(header, args):
+    validate_stage(args.stage_count, args.stage_index, args.first_layer,
+                   args.layer_count, args.stage_index == 0,
+                   args.stage_index + 1 == args.stage_count, args.mtp)
+    expected = dict(stage_count=args.stage_count, stage_index=args.stage_index,
+                    first_layer=args.first_layer, layer_count=args.layer_count,
+                    total_layers=LAYERS, flags=int(args.mtp))
+    for key, value in expected.items():
+        if header[key] != value:
+            fail(f"header {key} {header[key]} != requested {value}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pack", required=True)
     ap.add_argument("--source", required=True)
     ap.add_argument("--tp-rank", type=int, required=True)
     ap.add_argument("--tp-degree", type=int, default=16)
+    ap.add_argument("--stage-count", type=int, default=1)
+    ap.add_argument("--stage-index", type=int, default=0)
+    ap.add_argument("--first-layer", type=int, default=0)
+    ap.add_argument("--layer-count", type=int, default=LAYERS)
     ap.add_argument("--expected-bytes", type=int, default=None,
                     help="override the tp16 rank-0 receipt byte gate "
                          "(required for non-tp16 degrees — each topology "
@@ -124,6 +145,10 @@ def main() -> int:
     mode.add_argument("--skip-spot", action="store_true",
                     help="header/layout/plan-diff only (no checkpoint payload reads)")
     args = ap.parse_args()
+    if args.stage_count != 1 and not args.all_tensors:
+        ap.error("pipeline packs require --all-tensors checkpoint verification")
+    if args.stage_count != 1 and args.expected_bytes is None:
+        ap.error("pipeline packs require their own --expected-bytes receipt")
 
     path = Path(args.pack)
     size = path.stat().st_size
@@ -133,6 +158,7 @@ def main() -> int:
     mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
 
     h = parse_header(mm)
+    check_stage_header(h, args)
     if h["magic"] != MAGIC:
         fail(f"magic {h['magic']:#x} != {MAGIC:#x}")
     if h["format_version"] != FORMAT_VERSION:
@@ -150,7 +176,7 @@ def main() -> int:
     if size != expected:
         fail(f"byte count {size} != expected {expected}")
     print(f"PASS header: tp{h['tp_degree']} rank {h['tp_rank']}, "
-          f"file_bytes {size} == rank-0 receipt")
+          f"stage {h['stage_index']}/{h['stage_count']}, file_bytes {size} == expected")
 
     if (not args.mtp and args.expected_bytes is None
             and h["entry_count"] != EXPECTED_TENSOR_COUNT):
@@ -228,8 +254,9 @@ def main() -> int:
     # -- plan diff against the fixed packer (headers-only; no payload reads
     #    except three small f32 vectors the packer reads at plan time) -----
     source = SourceReader(Path(args.source))
-    packer = Packer(source, args.tp_degree, args.tp_rank, 0, LAYERS,
-                    args.mtp, True, True)
+    packer = Packer(source, args.tp_degree, args.tp_rank,
+                    args.first_layer, args.layer_count, args.mtp,
+                    args.stage_index == 0, args.stage_index + 1 == args.stage_count)
     packer.build()
     want = [{
         "kind": it.entry.kind, "layer": it.entry.layer,
