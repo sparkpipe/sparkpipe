@@ -993,8 +993,8 @@
     },
     {
       "path": "docs/WEIGHTD_RANGE_LEASE_WORK.md",
-      "sha256": "789bca71fd2b25755c48d9a6c5542a1b6f6ba40518890818d060f9573ca35040",
-      "size_bytes": 10705
+      "sha256": "3366421014a26d685b822a599e264481d1270de373740c1cb1b4e0137f058987",
+      "size_bytes": 11272
     },
     {
       "path": "docs/WEIGHTD_RESIDENT_CACHE_DESIGN.md",
@@ -7783,8 +7783,8 @@
     },
     {
       "path": "tests/test_weightd_expert.c",
-      "sha256": "9578b666fb1f6fe6538cb1401a610e1b93612339c62a939a240477b550e8fded",
-      "size_bytes": 15502
+      "sha256": "eaa8b0cb87f9a897650af31f49168209feea7482e16d375af57456572c9ae3bc",
+      "size_bytes": 13911
     },
     {
       "path": "tests/test_weightd_fd_frames.c",
@@ -9540,5 +9540,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32308329
+  "total_bytes": 32307305
 }
