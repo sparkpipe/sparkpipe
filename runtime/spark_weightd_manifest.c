@@ -77,7 +77,7 @@ static SparkStatus read_ranges(FILE *file,uint64_t pack_bytes,SparkWeightdManife
 
 static SparkStatus build_spine(SparkWeightdManifest *out,uint64_t pack_bytes)
 {
-	uint64_t cursor = 0u,end;
+	uint64_t cursor = 0u,end,padding;
 	uint32_t i;
 	SparkWeightdSpan *span;
 	out->spine = calloc(out->range_count + 1u,sizeof(*out->spine));
@@ -91,6 +91,13 @@ static SparkStatus build_spine(SparkWeightdManifest *out,uint64_t pack_bytes)
 			span = &out->spine[out->spine_count++];
 			span->offset = cursor;
 			span->bytes = (end - cursor);
+			padding = ((cursor - out->spine_allocation_bytes) & UINT64_C(255));
+			if ( padding > (UINT64_MAX - out->spine_allocation_bytes) )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			span->compact_offset = (out->spine_allocation_bytes + padding);
+			if ( span->bytes > (UINT64_MAX - span->compact_offset) )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			out->spine_allocation_bytes = (span->compact_offset + span->bytes);
 			out->spine_bytes += span->bytes;
 		}
 		if ( i < out->range_count )
@@ -208,4 +215,35 @@ const SparkWeightdRangeGroup *SparkWeightdManifestFind(const SparkWeightdManifes
 			high = middle;
 	}
 	return(0);
+}
+
+SparkStatus SparkWeightdManifestSpineSlice(const SparkWeightdManifest *manifest,uint64_t offset,uint64_t bytes,uint64_t *compact_offset)
+{
+	const SparkWeightdSpan *span;
+	uint32_t low = 0u,high,middle;
+	uint64_t relative;
+	if ( compact_offset == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*compact_offset = 0u;
+	if ( manifest == 0 || bytes == 0u || bytes > (UINT64_MAX - offset) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	high = manifest->spine_count;
+	while ( low < high )
+	{
+		middle = (low + ((high - low) / 2u));
+		span = &manifest->spine[middle];
+		if ( offset < span->offset )
+			high = middle;
+		else if ( (offset - span->offset) >= span->bytes )
+			low = (middle + 1u);
+		else
+		{
+			relative = (offset - span->offset);
+			if ( bytes > (span->bytes - relative) )
+				return(SPARK_STATUS_NOT_FOUND);
+			*compact_offset = (span->compact_offset + relative);
+			return(SPARK_STATUS_OK);
+		}
+	}
+	return(SPARK_STATUS_NOT_FOUND);
 }

@@ -29,6 +29,7 @@ typedef struct SparkWeightdSpan
 {
 	uint64_t offset;
 	uint64_t bytes;
+	uint64_t compact_offset;
 } SparkWeightdSpan;
 
 // Spine spans are the sorted exact complement of expert ranges in the pack.
@@ -43,6 +44,7 @@ typedef struct SparkWeightdManifest
 	SparkWeightdSpan *spine;
 	uint64_t spine_bytes;
 	uint32_t spine_count;
+	uint64_t spine_allocation_bytes;
 } SparkWeightdManifest;
 
 // Startup allocation only. The caller owns a successful result until Destroy.
@@ -51,3 +53,7 @@ typedef struct SparkWeightdManifest
 SparkStatus SparkWeightdManifestLoad(const char *path,uint64_t pack_bytes,SparkWeightdManifest *out);
 void SparkWeightdManifestDestroy(SparkWeightdManifest *manifest);
 const SparkWeightdRangeGroup *SparkWeightdManifestFind(const SparkWeightdManifest *manifest,uint32_t layer,uint32_t expert);
+
+// Translate a wholly non-expert slice in O(log N). Compact offsets preserve
+// source alignment modulo 256; allocation size includes alignment padding.
+SparkStatus SparkWeightdManifestSpineSlice(const SparkWeightdManifest *manifest,uint64_t offset,uint64_t bytes,uint64_t *compact_offset);
