@@ -139,3 +139,24 @@ with compute overlap. Carry the logical batch policy across split chains:
 splitting B2 into one-row halves must not accidentally select the B1 path.
 Host callbacks must not call CUDA APIs. Use the existing host progress loop for
 BUSY retry and submission.
+
+## Collective regression runs
+
+Build `build/mb_doorbell` and
+`build/libhidden_transport_spark_host_rdma_verbs.so` in each synced main checkout
+through a per-node CPU queue job. The benchmark target uses sm_121a and the same
+shared transport library as the runtime. Then set `BENCH_CWD` to the sync result
+and `BENCH_ID` to a unique job ID and run:
+
+```sh
+BENCH_ORDINAL_BASE_JUMP=1 tools/mb_run.sh 1 256 7 17 65536
+```
+
+Arguments are sync mode (0 async, 1 sync), iterations, live rows, credits and
+the direct-all-to-all byte threshold (0 selects tree). This example tests seven
+rows, seventeen credits and an ordinal jump during the timed interval. Use
+`BENCH_SKEW_US=500` for rank-8 skew. The wrapper submits all sixteen participants
+to the authoritative queue as one exclusive job; it does not launch detached
+SSH children or decide completion from a readiness log line. Inspect the queue
+receipt and every rank's numerical result. Logs include source and binary SHAs.
+These are transport component measurements, not GLM serving throughput.

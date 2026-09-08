@@ -19,8 +19,17 @@ static uint32_t BENCH_PORT_BASE = BENCH_PORT_BASE_DEFAULT;
 static uint32_t BENCH_CREDITS = 64u;
 static uint32_t BENCH_D2A_MAX = 0u;
 static uint32_t BENCH_SKEW_US = 0u;
+static uint32_t BENCH_ORDINAL_JUMP = 0u;
+#define BENCH_ORDINAL_JUMP_AFTER 100u
+#define BENCH_ORDINAL_JUMP_DELTA (1ull << 20)
 #define BENCH_MAX_TIMED_ITERS 4096u
 static double bench_latency_us[BENCH_MAX_TIMED_ITERS];
+
+static uint64_t bench_wire_ordinal(uint64_t ordinal)
+{
+    return BENCH_ORDINAL_JUMP != 0u && ordinal >= BENCH_ORDINAL_JUMP_AFTER ?
+        ordinal + BENCH_ORDINAL_JUMP_DELTA : ordinal;
+}
 
 static int bench_compare_double(const void *left, const void *right)
 {
@@ -124,8 +133,8 @@ static volatile uint32_t bench_last_status;
 static void bench_completion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
 {
     (void)context;
-    if (completion != 0)
-        bench_last_status = completion->status;
+    if (completion != 0 && completion->status != SPARK_STATUS_OK)
+        (void)__sync_val_compare_and_swap(&bench_last_status,0u,(uint32_t)completion->status);
     __sync_fetch_and_add(&bench_completions, 1);
 }
 
@@ -181,13 +190,19 @@ int main(int argc, char **argv)
         if (credits_env != 0 && credits_env[0] >= '0' && credits_env[0] <= '9')
             BENCH_CREDITS = (uint32_t)strtoul(credits_env,0,10);
         if (BENCH_CREDITS == 0u || BENCH_CREDITS > 64u)
-            BENCH_CREDITS = 64u;
+        {
+            fprintf(stderr,"BENCH_CREDITS must be between 1 and 64\n");
+            return 2;
+        }
         const char *d2a_env = getenv("BENCH_D2A_MAX_BYTES");
         if (d2a_env != 0 && d2a_env[0] >= '0' && d2a_env[0] <= '9')
             BENCH_D2A_MAX = (uint32_t)strtoul(d2a_env,0,10);
         const char *skew_env = getenv("BENCH_SKEW_US");
         if (skew_env != 0 && skew_env[0] >= '0' && skew_env[0] <= '9')
             BENCH_SKEW_US = (uint32_t)strtoul(skew_env,0,10);
+        const char *jump_env = getenv("BENCH_ORDINAL_BASE_JUMP");
+        if (jump_env != 0 && jump_env[0] == '1')
+            BENCH_ORDINAL_JUMP = 1u;
         const char *port_env = getenv("BENCH_PORT_BASE");
         if (port_env != 0 && port_env[0] >= '0' && port_env[0] <= '9')
         {
@@ -210,7 +225,7 @@ int main(int argc, char **argv)
     mode = (uint32_t)strtoul(argv[5], 0, 10);
     transport_path = argc > 6 ? argv[6] :
         "/home/spark0/sparkdata/glm5_next.tp16/lib/hidden_transport.so";
-    if (degree != 16u || rank >= degree)
+    if (degree != 16u || rank >= degree || iters == 0u || iters > BENCH_MAX_TIMED_ITERS || rows == 0u || rows > 1024u || mode > 1u)
     {
         printf("doorbell bench requires degree 16\n");
         return 2;
@@ -397,14 +412,14 @@ int main(int argc, char **argv)
     {
         uint64_t wait_started = bench_now_ns();
         bench_fill_bf16_kernel<<<(rows * BENCH_HIDDEN + 255u) / 256u, 256u, 0, stream>>>(
-            payload[ordinal % 64u], (float)(rank + 1u), rows * BENCH_HIDDEN);
+            payload[ordinal % 64u], (float)(rank + 1u + ((ordinal / 64u) % 4u)), rows * BENCH_HIDDEN);
         memset(&submission, 0, sizeof(submission));
         submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
         submission.descriptor_bytes = sizeof(submission);
         submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
         submission.active_sequence_count = rows;
         submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-        submission.ordinal = ordinal;
+        submission.ordinal = bench_wire_ordinal(ordinal);
         submission.local_device = payload[ordinal % 64u];
         submission.full_device = payload[ordinal % 64u];
         submission.cuda_stream = stream;
@@ -449,14 +464,14 @@ int main(int argc, char **argv)
     for (ordinal = 68u; ordinal < 68u + iters; ordinal++)
     {
         bench_fill_bf16_kernel<<<(rows * BENCH_HIDDEN + 255u) / 256u, 256u, 0, stream>>>(
-            payload[ordinal % 64u], (float)(rank + 1u), rows * BENCH_HIDDEN);
+            payload[ordinal % 64u], (float)(rank + 1u + ((ordinal / 64u) % 4u)), rows * BENCH_HIDDEN);
         memset(&submission, 0, sizeof(submission));
         submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
         submission.descriptor_bytes = sizeof(submission);
         submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
         submission.active_sequence_count = rows;
         submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-        submission.ordinal = ordinal;
+        submission.ordinal = bench_wire_ordinal(ordinal);
         submission.local_device = payload[ordinal % 64u];
         submission.full_device = payload[ordinal % 64u];
         submission.cuda_stream = stream;
@@ -524,22 +539,28 @@ int main(int argc, char **argv)
     }
     elapsed_us = (double)(bench_now_ns() - started_ns) / 1000.0;
 
-    if (cudaMemcpy(verify_host, payload[(19u + iters) % 64u], (size_t)rows * BENCH_HIDDEN * 2u,
-            cudaMemcpyDeviceToHost) != cudaSuccess)
-    {
-        printf("verify copy failed\n");
-        return 1;
-    }
     bad = 0u;
-    for (index = 0u; index < rows * BENCH_HIDDEN; index++)
+    for (uint32_t buffer = 0u; buffer < 64u; buffer++)
     {
-        uint32_t value = (uint32_t)verify_host[index];
-        if (value != 17160u)
+        uint64_t last = 67u + iters;
+        last -= (last + 64u - buffer) % 64u;
+        float expected = (float)(136u + 16u * ((last / 64u) % 4u));
+        uint32_t expected_bits;
+        memcpy(&expected_bits,&expected,sizeof(expected_bits));
+        if (cudaMemcpy(verify_host,payload[buffer],(size_t)rows * BENCH_HIDDEN * 2u,
+                cudaMemcpyDeviceToHost) != cudaSuccess)
         {
-            bad++;
-            if (bad < 4u)
-                printf("el%u=%u ", index, value);
+            printf("verify copy failed buffer=%u\n",buffer);
+            return 1;
         }
+        for (index = 0u; index < rows * BENCH_HIDDEN; index++)
+            if ((uint32_t)verify_host[index] != (expected_bits >> 16u))
+            {
+                bad++;
+                if (bad < 4u)
+                    printf("buffer%u el%u=%u expected=%u ",buffer,index,
+                        (unsigned)verify_host[index],expected_bits >> 16u);
+            }
     }
     printf("doorbell rank=%u rows=%u mode=%u iters=%u per_op_us=%.1f completions=%lld status=%u %s\n",
         rank, rows, mode, iters, elapsed_us / (double)iters,
@@ -556,5 +577,5 @@ int main(int argc, char **argv)
             bench_latency_us[0],
             bench_latency_us[iters - 1u]);
     }
-    return bad != 0u ? 3 : 0;
+    return bad != 0u || bench_last_status != SPARK_STATUS_OK ? 3 : 0;
 }
