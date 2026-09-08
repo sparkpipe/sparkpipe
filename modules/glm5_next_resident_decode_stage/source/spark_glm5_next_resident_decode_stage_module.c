@@ -1174,12 +1174,13 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 	main_page_bytes = (uint64_t)64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES;
 	index_page_bytes = (uint64_t)64u *
 		SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
+	// The model constant includes all three windows; each pool owns one rank-local window.
 	kda_window_stride = (uint64_t)state->resident_sequence_capacity *
-		SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER;
+		(SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / (3u * state->tp_degree));
 	state->kv_layer_stride_bytes = (uint64_t)state->page_count * main_page_bytes;
 	state->index_layer_stride_bytes = (uint64_t)state->page_count * index_page_bytes;
 	state->kda_state_layer_stride_bytes = (uint64_t)state->resident_sequence_capacity *
-		SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER;
+		(SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER / state->tp_degree);
 	state->kda_window_layer_stride_bytes = kda_window_stride;
 	if ( status != SPARK_STATUS_OK || state->kv_layer_stride_bytes == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_CAPACITY_EXCEEDED : status);

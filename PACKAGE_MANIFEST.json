@@ -1,5 +1,5 @@
 {
-  "file_count": 1938,
+  "file_count": 1939,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -795,6 +795,11 @@
       "path": "docs/GLM_KDA_REFERENCE.md",
       "sha256": "90b3d5c4ea504fba5a76a9a6b21bb961c45a02405cc7e284c9789b2ccc8acded",
       "size_bytes": 1684
+    },
+    {
+      "path": "docs/GLM_KDA_STATE_LAYOUT.md",
+      "sha256": "7810a505fe16e810cd8e7ca41278efdb06a39c547110856643d4d740c99cecdf",
+      "size_bytes": 1895
     },
     {
       "path": "docs/GLM_KV_PAYLOAD.md",
@@ -4038,8 +4043,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "e5a46663cd9fe9073715d26474074aee4a2562042a8d04baaf3fa9c8ff22fe9d",
-      "size_bytes": 88170
+      "sha256": "190cb9f1c8d69fee5cb7d7098d0e3b83f7737b172850834fd933e51402ddb938",
+      "size_bytes": 88211
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -4048,8 +4053,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "b22908ffc134262ff60e8a56cabcb0e5de8c7e83f10eeeb40c172a4257866083",
-      "size_bytes": 47161
+      "sha256": "d048c589ce05bb42f37e0f53965eab8e4d99319b45a096d95165791e3cd06f02",
+      "size_bytes": 47215
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
@@ -4058,8 +4063,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "7fd9ff8db47c0da629ad29d0ea8a6e68824fc89fd1a9d595ed78bb571000bb67",
-      "size_bytes": 150171
+      "sha256": "68641b70f32e623fd94005d7110b901197e00302e115de34f4d351939d9c047c",
+      "size_bytes": 150309
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -7078,8 +7083,8 @@
     },
     {
       "path": "tests/test_glm5_next_stage_context.py",
-      "sha256": "625cb1ef0e8ddf347dc114f492adcf0bae7d04422ac22ee14425690de34a0801",
-      "size_bytes": 16820
+      "sha256": "121f7e85ed667b2f2ac69a90fbb0736e4ebda9f4b65b1a1e45080cf590d23a63",
+      "size_bytes": 19024
     },
     {
       "path": "tests/test_gqa_host.py",
@@ -9695,5 +9700,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32516332
+  "total_bytes": 32520664
 }
