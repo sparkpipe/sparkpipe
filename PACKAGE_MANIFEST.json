@@ -1,5 +1,5 @@
 {
-  "file_count": 1927,
+  "file_count": 1928,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -785,6 +785,11 @@
       "path": "docs/FLEET_STARTUP_PROTOCOL.md",
       "sha256": "01634ea06bca42632d6fee19b8f32599b59161c5c05961a5d84e78baeff5dca7",
       "size_bytes": 3984
+    },
+    {
+      "path": "docs/GLM_FLASH_HILLCLIMB.md",
+      "sha256": "d5f8d76648cd3c1ac824722b990fe62412c7f072326bff657f4ef54acd92a70a",
+      "size_bytes": 7286
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
@@ -9640,5 +9645,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32413800
+  "total_bytes": 32421086
 }
