@@ -118,13 +118,13 @@
     },
     {
       "path": "cache/kv_page_cache.c",
-      "sha256": "6b806554bdb3f3740c8a36b6a7c2892576b2a56d2da1d1ffa30cf34afcd30009",
-      "size_bytes": 56108
+      "sha256": "faad7b33987fbc7c2be6dad584d016081d2074b5fada2a9854d5b3cde222254f",
+      "size_bytes": 56400
     },
     {
       "path": "cache/kv_page_store.c",
-      "sha256": "4f14b6d7fc2196ff2d5be1f57449cf5ba5b3af0818e8f50b0b40fd989af3b107",
-      "size_bytes": 35587
+      "sha256": "da02858455ebc1da16bdb05acc4b804d72b24ee0e40990f867de24d3cfa8a383",
+      "size_bytes": 36563
     },
     {
       "path": "cache/kv_pager.c",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "963a264fa9e43a34586363786bca5d96b0d01aa956b993713c09385078ec1e8f",
-      "size_bytes": 21946
+      "sha256": "ddd17d941ba6f9903d65ead77c89591bbc6648c60a487951f68d10e780fb3223",
+      "size_bytes": 22546
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -2883,8 +2883,8 @@
     },
     {
       "path": "include/sparkpipe/spark_kv_page_store.h",
-      "sha256": "3140fc64e48cc43599f9300d1ab110a05b64ab9731e1ba222556ffa18bb1e2e6",
-      "size_bytes": 6110
+      "sha256": "f8b5abb4c64fb5ca7074f980edd7d36bed2b4f2cdadfb6f12cf91469cc73c7b1",
+      "size_bytes": 6304
     },
     {
       "path": "include/sparkpipe/spark_kv_pager.h",
@@ -7348,8 +7348,8 @@
     },
     {
       "path": "tests/test_kv_cache.c",
-      "sha256": "949824c153e88f1e96671af74f86159aa7a5bec9b338e9bf14e431b42422265a",
-      "size_bytes": 73460
+      "sha256": "36aca889d417d582188336a7fa924107341c70f0cd0fbb3525f00b3a74499726",
+      "size_bytes": 74064
     },
     {
       "path": "tests/test_kv_failure_host.py",
@@ -9700,5 +9700,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32550470
+  "total_bytes": 32553136
 }

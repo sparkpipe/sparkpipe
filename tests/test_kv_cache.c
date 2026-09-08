@@ -1507,12 +1507,16 @@ static int32_t SparkTestKvPairedEviction(SparkKvPageStore *stores,uint8_t *sourc
 	SparkTestKvPagePublish(&lane,4u,41u);
 	page = SparkTestKvPageBegin(&fixture,&lane);
 	generation = fixture.kv.blocks[page].generation;
-	if ( SparkKvPageCacheCompleteLane(&fixture.cache,&lane) != SPARK_STATUS_OK || SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) != SPARK_STATUS_OK || SparkKvCacheArenaPinResidentTable(&fixture.kv.arena,&page,1u,&physical) != SPARK_STATUS_OK )
+	if ( SparkKvPageCacheCompleteLane(&fixture.cache,&lane) != SPARK_STATUS_NOT_FOUND || fixture.cache.published_page_count != 0u || fixture.cache.sequences[0].next_token_position != 0u )
 		return(-68);
 	for (index=0u; index<SPARK_TEST_BLOCK_BYTES; index++)
 		source[index] = (uint8_t)(91u + index);
+	if ( SparkTestKvRecordWrite(&stores[1],page,generation + 1u,source) != SPARK_STATUS_OK || SparkKvPageCacheCompleteLane(&fixture.cache,&lane) != SPARK_STATUS_NOT_FOUND || fixture.cache.published_page_count != 0u || SparkKvPageStoreInvalidate(&stores[1],page,generation + 1u) != SPARK_STATUS_OK )
+		return(-77);
 	if ( SparkTestKvRecordWrite(&stores[0],page,generation,source) != SPARK_STATUS_OK || SparkTestKvRecordWrite(&stores[1],page,generation,source) != SPARK_STATUS_OK || SparkKvPageStoreInvalidatePair(&stores[0],&stores[1],page,generation + 1u) != SPARK_STATUS_NOT_FOUND )
 		return(-69);
+	if ( SparkKvPageStoreValidateRecord(&stores[1],page,generation + 1u) != SPARK_STATUS_NOT_FOUND || SparkKvPageCacheCompleteLane(&fixture.cache,&lane) != SPARK_STATUS_OK || SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) != SPARK_STATUS_OK || SparkKvCacheArenaPinResidentTable(&fixture.kv.arena,&page,1u,&physical) != SPARK_STATUS_OK )
+		return(-76);
 	if ( SparkKvPageStoreReadback(&stores[1],page,generation,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_BUSY || SparkKvPageStoreInvalidatePair(&stores[0],&stores[1],page,generation) != SPARK_STATUS_BUSY || SparkKvPageStoreInvalidatePair(&stores[1],&stores[0],page,generation) != SPARK_STATUS_BUSY || stores[0].valid_pages[page] == 0u || stores[1].valid_pages[page] == 0u )
 		return(-70);
 	if ( SparkKvPageCacheEvictUnused(&fixture.cache) != SPARK_STATUS_CAPACITY_EXCEEDED )

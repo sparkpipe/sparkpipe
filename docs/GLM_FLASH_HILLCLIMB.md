@@ -226,6 +226,15 @@ now checks ownership before mutation, and LRU skips pinned pages rather than
 blocking an otherwise available victim. Real worker/file tests verify paired
 invalidation, pinned protection, exact restored bytes and eventual reclamation.
 
+Common prefix publication now requires a completed matching-generation record
+whenever a state store is attached. The check runs before publishing or
+deduplicating the mutable page, under the page-store lock, without scheduling
+a transfer. A missing or stale record leaves the prefix unpublished and the
+sequence position unchanged. The real backing-store regression first rejects
+missing and wrong-generation records, then saves the correct record and proves
+successful publication and paired eviction. GLM still needs to attach its
+store and save the recurrent payload before invoking completion.
+
 The GLM recurrent copy hook now describes four existing pools to
 `SparkKvPageStoreCopyLayered`: KDA state followed by Q, K and V convolution
 windows, each in layer order. A resident sequence slot selects one slice from

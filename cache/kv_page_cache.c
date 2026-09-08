@@ -979,10 +979,17 @@ static SparkStatus SparkKvPageCachePublishMutable(
 	const SparkModelDriverCacheLane *lane)
 {
 	uint32_t entry_index,expected_parent_count;
+	SparkStatus status;
 	if ( sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK ||
 		lane->publish_token_count == 0u ||
 		lane->publish_token_count % cache->kv_cache_arena->block_token_count != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( cache->state_store != 0 )
+	{
+		status = SparkKvPageStoreValidateRecord(cache->state_store,sequence->mutable_logical_page_index,cache->kv_cache_arena->blocks[sequence->mutable_logical_page_index].generation);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	expected_parent_count = lane->publish_token_count -
 		cache->kv_cache_arena->block_token_count;
 	if ( (sequence->terminal_entry_index == SPARK_KV_PAGE_CACHE_NO_INDEX) !=

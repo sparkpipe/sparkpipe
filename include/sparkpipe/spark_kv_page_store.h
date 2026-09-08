@@ -163,6 +163,8 @@ SparkStatus SparkKvPageStoreProgress(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,
 	uint32_t maximum_job_count);
+// Requires a completed record of this generation; does not schedule a copy.
+SparkStatus SparkKvPageStoreValidateRecord(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation);
 SparkStatus SparkKvPageStoreInvalidate(
 	SparkKvPageStore *store,
 	uint32_t logical_page_index,
