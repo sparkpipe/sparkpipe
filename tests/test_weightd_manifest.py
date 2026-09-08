@@ -20,9 +20,15 @@ class Group(C.Structure):
                 ("layer", "expert", "first_range", "range_count")]
 
 
+class Span(C.Structure):
+    _fields_ = [("offset", C.c_uint64), ("bytes", C.c_uint64)]
+
+
 class Manifest(C.Structure):
     _fields_ = [("ranges", C.POINTER(Range)), ("groups", C.POINTER(Group)),
-                ("range_count", C.c_uint32), ("group_count", C.c_uint32)]
+                ("range_count", C.c_uint32), ("group_count", C.c_uint32),
+                ("spine", C.POINTER(Span)), ("spine_bytes", C.c_uint64),
+                ("spine_count", C.c_uint32)]
 
 
 def record(layer, expert, kind, offset, size=32):
@@ -57,6 +63,11 @@ def main():
         result = Manifest()
         assert lib.SparkWeightdManifestLoad(bytes(path), arena_bytes, C.byref(result)) == 0
         assert result.range_count == 48384 and result.group_count == 12096
+        assert result.spine_count == len(records)
+        assert result.spine_bytes == arena_bytes // 2
+        for index in range(result.spine_count):
+            span = result.spine[index]
+            assert (span.offset, span.bytes) == (index * 64 + 32, 32)
         for layer in range(3, 45):
             for expert in range(288):
                 group = lib.SparkWeightdManifestFind(C.byref(result), layer, expert).contents
@@ -67,6 +78,19 @@ def main():
                     assert bytes(item.digest) == bytes([kind]) * 16
         assert not lib.SparkWeightdManifestFind(C.byref(result), 45, 0)
         lib.SparkWeightdManifestDestroy(C.byref(result))
+        # Exact coverage, adjacent experts, leading/trailing bytes and wide offsets.
+        for offsets, pack_bytes, expected in [
+                ([0, 32], 64, []),
+                ([32, 64], 128, [(0, 32), (96, 32)]),
+                ([0, 64], 128, [(32, 32), (96, 32)]),
+                ([(1 << 40)], (1 << 40) + 64, [(0, 1 << 40), ((1 << 40) + 32, 32)])]:
+            path.write_bytes(payload([record(0, i, 0, off) for i, off in enumerate(offsets)]))
+            assert lib.SparkWeightdManifestLoad(bytes(path), pack_bytes, C.byref(result)) == 0
+            assert [(result.spine[i].offset, result.spine[i].bytes)
+                    for i in range(result.spine_count)] == expected
+            assert result.spine_bytes + len(offsets) * 32 == pack_bytes
+            lib.SparkWeightdManifestDestroy(C.byref(result))
+            assert not result.spine and result.spine_count == 0
         good = [record(3, 0, 0, 0), record(3, 0, 1, 64)]
         malformed = [payload(good)[:-1], payload(good) + b"x",
                      payload(good, version=1), payload(good, reserved=1),

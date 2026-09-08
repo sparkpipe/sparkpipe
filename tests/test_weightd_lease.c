@@ -8,7 +8,7 @@ static void check_arbitrary_working_sets(void)
 	SparkWeightdRangeGroup groups[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
 	SparkWeightdExpertKey keys[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
 	uint8_t seen[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
-	SparkWeightdManifest manifest = {0,groups,SPARK_WEIGHTD_LEASE_GROUPS_MAX,SPARK_WEIGHTD_LEASE_GROUPS_MAX};
+	SparkWeightdManifest manifest = {0,groups,SPARK_WEIGHTD_LEASE_GROUPS_MAX,SPARK_WEIGHTD_LEASE_GROUPS_MAX,0,0u,0u};
 	SparkWeightdLeaseTable *table;
 	const SparkWeightdLease *lease;
 	uint64_t id;
@@ -43,7 +43,7 @@ static void check_arbitrary_working_sets(void)
 int main(void)
 {
 	SparkWeightdRangeGroup groups[3] = {{3u,0u,0u,4u},{3u,1u,4u,4u},{4u,0u,8u,4u}};
-	SparkWeightdManifest manifest = {0,groups,12u,3u};
+	SparkWeightdManifest manifest = {0,groups,12u,3u,0,0u,0u};
 	SparkWeightdLeaseTable *table;
 	SparkWeightdExpertKey a[3] = {{3u,1u},{3u,0u},{3u,1u}},bad[2] = {{3u,0u},{99u,0u}};
 	uint64_t first,second,failed,ids[SPARK_WEIGHTD_LEASE_COUNT_MAX];

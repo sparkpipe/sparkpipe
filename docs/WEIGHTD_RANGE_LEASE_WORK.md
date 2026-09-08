@@ -78,3 +78,9 @@ The working-set host test exercises the helper through real client/server IPC wi
 Additional host fault gates cover failure on the second CUDA import, unmap failure retaining the remote pin, and successful cleanup retry. Once event teardown begins, the map rejects new acquisitions even if destruction fails. CUDA-stub gates do not establish GPU correctness.
 
 The shared attach gate now rejects a configured socket combined with ATTACH=0, malformed ATTACH values, and ATTACH=1 without a socket. The common stage loader propagates configuration errors before device allocation, closing the standalone-driver bypass of the supervised launchers configuration check. Unconfigured standalone direct loading remains explicit; this change does not yet convert the eager shared stage path to lazy spine/expert mapping. Host attach and stage-module tests pass, including zero allocation on conflicting configuration.
+
+### Non-expert span derivation
+
+The shared manifest parser now retains the sorted exact complement of routed expert ranges as spine spans, plus total spine bytes. It derives these at startup while expert ranges are sorted for overlap validation; no second manifest format or hot-path sort is introduced. Tests cover 48,384 ranges, complete expert coverage, adjacent ranges, leading/trailing gaps, and offsets above 1 TiB. These spans include headers and alignment padding and have no independent digest: the loader must validate pack identity before publication.
+
+This is metadata groundwork, not a loaded spine. Do not map every complement span at its original pack VA: tiny padding gaps could pin nearly every expert physical chunk. The production spine must use separate compact storage or explicit non-expert tensor allocation, with source-offset lookup, while routed experts retain the sparse leased VA. Loading/export, lifetime integration, and real driver tests remain open.

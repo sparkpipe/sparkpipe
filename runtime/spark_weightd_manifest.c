@@ -45,6 +45,7 @@ void SparkWeightdManifestDestroy(SparkWeightdManifest *manifest)
 		return;
 	free(manifest->ranges);
 	free(manifest->groups);
+	free(manifest->spine);
 	memset(manifest,0,sizeof(*manifest));
 }
 
@@ -74,10 +75,35 @@ static SparkStatus read_ranges(FILE *file,uint64_t pack_bytes,SparkWeightdManife
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus group_ranges(SparkWeightdManifest *out)
+static SparkStatus build_spine(SparkWeightdManifest *out,uint64_t pack_bytes)
+{
+	uint64_t cursor = 0u,end;
+	uint32_t i;
+	SparkWeightdSpan *span;
+	out->spine = calloc(out->range_count + 1u,sizeof(*out->spine));
+	if ( out->spine == 0 )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (i=0u; i<=out->range_count; i++)
+	{
+		end = i < out->range_count ? out->ranges[i].offset : pack_bytes;
+		if ( end > cursor )
+		{
+			span = &out->spine[out->spine_count++];
+			span->offset = cursor;
+			span->bytes = (end - cursor);
+			out->spine_bytes += span->bytes;
+		}
+		if ( i < out->range_count )
+			cursor = (out->ranges[i].offset + out->ranges[i].bytes);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus group_ranges(SparkWeightdManifest *out,uint64_t pack_bytes)
 {
 	SparkWeightdRange *range,*previous;
 	SparkWeightdRangeGroup *group = 0;
+	SparkStatus status;
 	uint32_t i;
 	qsort(out->ranges,out->range_count,sizeof(*out->ranges),compare_offset);
 	for (i=1u; i<out->range_count; i++)
@@ -86,6 +112,9 @@ static SparkStatus group_ranges(SparkWeightdManifest *out)
 		if ( out->ranges[i].offset < (previous->offset + previous->bytes) )
 			return(SPARK_STATUS_PARSE_ERROR);
 	}
+	status = build_spine(out,pack_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	qsort(out->ranges,out->range_count,sizeof(*out->ranges),compare_group);
 	for (i=0u; i<out->range_count; i++)
 	{
@@ -123,7 +152,7 @@ static SparkStatus load_manifest(FILE *file,uint64_t pack_bytes,SparkWeightdMani
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = read_ranges(file,pack_bytes,out);
 	if ( status == SPARK_STATUS_OK )
-		status = group_ranges(out);
+		status = group_ranges(out,pack_bytes);
 	return(status);
 }
 

@@ -25,12 +25,24 @@ typedef struct SparkWeightdRangeGroup
 	uint32_t range_count;
 } SparkWeightdRangeGroup;
 
+typedef struct SparkWeightdSpan
+{
+	uint64_t offset;
+	uint64_t bytes;
+} SparkWeightdSpan;
+
+// Spine spans are the sorted exact complement of expert ranges in the pack.
+// They include headers/padding, carry no per-span checksum, and require pack
+// identity validation by the loader before publication.
 typedef struct SparkWeightdManifest
 {
 	SparkWeightdRange *ranges;
 	SparkWeightdRangeGroup *groups;
 	uint32_t range_count;
 	uint32_t group_count;
+	SparkWeightdSpan *spine;
+	uint64_t spine_bytes;
+	uint32_t spine_count;
 } SparkWeightdManifest;
 
 // Startup allocation only. The caller owns a successful result until Destroy.
