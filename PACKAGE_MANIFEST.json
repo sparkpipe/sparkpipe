@@ -3908,8 +3908,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_batch_tuning.h",
-      "sha256": "1f2839b54925ea1d3fddc1e66a5c08eb671f8407faf36de7576cf8f8f434f118",
-      "size_bytes": 2732
+      "sha256": "ccfaaea58c5393c2caa70a4ef95806df65067994e1a01408f1e7f14713714c1e",
+      "size_bytes": 2644
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h",
@@ -6518,8 +6518,8 @@
     },
     {
       "path": "tests/test_batch_variants.py",
-      "sha256": "7c4209a12f8ca4a1fda79d6d9ba66111f3722caa453a8db0e2ac542c3771e308",
-      "size_bytes": 21648
+      "sha256": "ccd69cb6002a48c971ca0d94a7ac9bb2072b6b085f409e93781d1e767f65e59c",
+      "size_bytes": 23669
     },
     {
       "path": "tests/test_cache.c",
@@ -6873,8 +6873,8 @@
     },
     {
       "path": "tests/test_glm5_next_expert_pack_layout.py",
-      "sha256": "fe5fb0ff7e743634587b1a50b4aeacf54013ae4e01a0a92b4dc359dc0d892d2d",
-      "size_bytes": 4946
+      "sha256": "7eff8899652a904460abe8d7c8203b21ebfd6ad841867e374b755ce67f43c897",
+      "size_bytes": 6809
     },
     {
       "path": "tests/test_glm5_next_geometry.py",
@@ -6888,8 +6888,8 @@
     },
     {
       "path": "tests/test_glm5_next_pack_regions.py",
-      "sha256": "8e3b9b16ec96de9047e6291c36ca8509d567710b1df85c7b53a2f5999d10267a",
-      "size_bytes": 1526
+      "sha256": "ce01085405e4d59db1a30e30c37b534da4462cb4f2e76715278386f27f0b6a74",
+      "size_bytes": 2293
     },
     {
       "path": "tests/test_glm5_next_queue_build.py",
@@ -8563,13 +8563,13 @@
     },
     {
       "path": "tools/glm5_next_pack_verify.py",
-      "sha256": "132043a12d71f89fe5c6cc57c35303987ac9cb9e2f313c56e9eec7d930af828e",
-      "size_bytes": 14104
+      "sha256": "ac14cf8388319e4239a8516fd1b2501c9e7cd15b5e0ac76f114e388cf2ca87cf",
+      "size_bytes": 15705
     },
     {
       "path": "tools/glm5_next_resident_stagepack.py",
-      "sha256": "e24657677d50a0786d93979880803e3e9893bad8ceb2b5d1982bb2e941ff6898",
-      "size_bytes": 47483
+      "sha256": "7d4a41fe437712dcf63006d57102a9e3f4651b77c40300ef2b2f27fc6226c956",
+      "size_bytes": 48804
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -9435,5 +9435,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32159988
+  "total_bytes": 32167473
 }

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Check the packer's expert slabs against separate driver payload/scale planes."""
 import io
+import struct
 from pathlib import Path
 import sys
 import tempfile
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import glm5_next_resident_stagepack as pack
+import glm5_next_pack_verify as verify
 
 
 class Source:
@@ -31,6 +34,23 @@ class Source:
 
 
 def main():
+    for stage, first, count in ((0, 0, 12), (1, 12, 11), (2, 23, 11), (3, 34, 11)):
+        pack.validate_stage(4, stage, first, count, stage == 0, stage == 3, False)
+    for values in ((0, 0, 0, 45, False, False, False),
+                   (4, 4, 0, 12, False, False, False),
+                   (4, 1, 12, 34, False, False, False),
+                   (4, 1, 12, 11, True, False, False),
+                   (4, 0, 0, 12, False, True, False),
+                   (4, 0, 0, 12, False, False, True)):
+        try:
+            pack.validate_stage(*values)
+        except pack.PackFailure:
+            pass
+        else:
+            raise AssertionError("invalid pipeline metadata accepted")
+    assert pack.stage_pack_name(16, 2, 1, 0) == "glm5_next_stage.tp16.rank2.g5nsp"
+    assert len({pack.stage_pack_name(4, rank, 4, stage)
+                for rank in range(4) for stage in range(4)}) == 16
     pack.EXPERTS, pack.HIDDEN, pack.EXPERT_INTER = 2, 128, 2048
     for bf16 in (False, True):
         for degree in (1, 4, 16):
@@ -68,11 +88,20 @@ def main():
                     assert output.getvalue() == weights + scales
                 if degree == 4 and rank == 0:
                     builder.build = lambda: None
-                    header = dict(stage_count=1, stage_index=0, first_layer=3, layer_count=1, flags=0)
+                    header = dict(stage_count=4, stage_index=1, first_layer=3, layer_count=1, flags=0)
                     with tempfile.TemporaryDirectory() as directory:
                         path = Path(directory) / "pack.sp"
                         pack.emit(builder, path, header)
                         original = path.read_bytes()
+                        assert struct.unpack_from("<4I", original, 7 * 4) == (4, 1, 3, 1)
+                        source = type("VerifySource", (), {"close": lambda self: None})()
+                        argv = ["verify", "--pack", str(path), "--source", "fixture",
+                                "--tp-degree", "4", "--tp-rank", "0", "--stage-count", "4",
+                                "--stage-index", "1", "--first-layer", "3", "--layer-count", "1",
+                                "--expected-bytes", str(len(original)), "--all-tensors"]
+                        with patch.object(sys, "argv", argv), patch.object(verify, "SourceReader", return_value=source), patch.object(verify, "Packer", return_value=builder) as factory:
+                            assert verify.main() == 0
+                            factory.assert_called_once_with(source, 4, 0, 3, 1, False, False, False)
                         try:
                             pack.emit(builder, path, header)
                         except pack.PackFailure:
