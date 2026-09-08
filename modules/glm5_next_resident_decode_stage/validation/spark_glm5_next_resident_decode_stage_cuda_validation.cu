@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_numerical_metrics.h"
+#include "sparkpipe/spark_kda_reference.h"
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
@@ -557,31 +558,7 @@ static void SparkGlm5NextValKdaToken(
 		const float *vh = v + head * dim_per_head;
 		const float *ah = retention + head * dim_per_head;
 		float *sh = state + (uint64_t)head * dim_per_head * dim_per_head;
-		float predicted[SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION];
-		for (uint32_t key = 0u; key < dim_per_head; key++)
-			for (uint32_t value = 0u; value < dim_per_head; value++)
-				sh[(uint64_t)key * dim_per_head + value] *= ah[key];
-		for (uint32_t value = 0u; value < dim_per_head; value++)
-		{
-			float dot = 0.0f;
-			for (uint32_t key = 0u; key < dim_per_head; key++)
-				dot += sh[(uint64_t)key * dim_per_head + value] *
-					kh[key] * ah[key];
-			predicted[value] = dot;
-		}
-		for (uint32_t value = 0u; value < dim_per_head; value++)
-		{
-			float scale = beta[head] * (vh[value] - predicted[value]);
-			for (uint32_t key = 0u; key < dim_per_head; key++)
-				sh[(uint64_t)key * dim_per_head + value] += scale * kh[key];
-		}
-		for (uint32_t value = 0u; value < dim_per_head; value++)
-		{
-			float dot = 0.0f;
-			for (uint32_t key = 0u; key < dim_per_head; key++)
-				dot += sh[(uint64_t)key * dim_per_head + value] * qh[key];
-			core[head * dim_per_head + value] = dot;
-		}
+		SparkKdaReferenceHead(sh,qh,kh,vh,ah,beta[head],dim_per_head,dim_per_head,core + head * dim_per_head);
 	}
 	for (head = 0u; head < heads; head++)
 	{

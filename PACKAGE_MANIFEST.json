@@ -1,5 +1,5 @@
 {
-  "file_count": 1931,
+  "file_count": 1934,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "8f977f313f492d80ce9aec92eea97455df65db3f257adb179a184582c0809319",
-      "size_bytes": 94887
+      "sha256": "94321ef41824212cee3f3226493d12b60c20b09bc064f7e7145fdcb5aace55f8",
+      "size_bytes": 95052
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -780,6 +780,11 @@
       "path": "docs/FLEET_STARTUP_PROTOCOL.md",
       "sha256": "01634ea06bca42632d6fee19b8f32599b59161c5c05961a5d84e78baeff5dca7",
       "size_bytes": 3984
+    },
+    {
+      "path": "docs/GLM_KDA_REFERENCE.md",
+      "sha256": "90b3d5c4ea504fba5a76a9a6b21bb961c45a02405cc7e284c9789b2ccc8acded",
+      "size_bytes": 1684
     },
     {
       "path": "docs/GLM_KV_PAYLOAD.md",
@@ -2837,6 +2842,11 @@
       "size_bytes": 2632
     },
     {
+      "path": "include/sparkpipe/spark_kda_reference.h",
+      "sha256": "ad4746a387f73a91e0ae0964ce0947a6e18dec107629c4c7c6dcde4163d965fc",
+      "size_bytes": 1114
+    },
+    {
       "path": "include/sparkpipe/spark_kv_backing.h",
       "sha256": "495b47dd956998e4150aa498776de8d37ff93c8c404c48563ac7abd744ab5978",
       "size_bytes": 1573
@@ -4063,8 +4073,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu",
-      "sha256": "d4a1933701a0be9fafeb674890bf68b792a5bdd96ffe1598be87126edf76f6d8",
-      "size_bytes": 86549
+      "sha256": "6c63e86f54b472eaac101aef8184258b929d5b42f476b50a1617a28aa6d8d74a",
+      "size_bytes": 85718
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu",
@@ -7297,6 +7307,11 @@
       "size_bytes": 8515
     },
     {
+      "path": "tests/test_kda_reference.c",
+      "sha256": "0ce3589267d27ceb90e647d5d47e5f14ff4bf929583ccd42fe6804696c4d5d12",
+      "size_bytes": 1172
+    },
+    {
       "path": "tests/test_kernel_algorithms.py",
       "sha256": "4d6f5f9daeae5fdba317fe18138e6e22cb9a10db0dfef351b8105ee78e7e5e9e",
       "size_bytes": 14289
@@ -9660,5 +9675,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32432621
+  "total_bytes": 32435925
 }
