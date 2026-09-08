@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_PERFORMANCE_GATES.md",
-      "sha256": "6e32c29460c2cf5e90753b626283d198a7d309ec7bd7ab2d6e9354318f85338a",
-      "size_bytes": 3567
+      "sha256": "07fbda1e96d81794d66c99da8ed21533766e5eb6f4c43db342ef9c993c61a1ac",
+      "size_bytes": 4370
     },
     {
       "path": "docs/GLM_REAL_DRIVER_PROBE.md",
@@ -798,8 +798,8 @@
     },
     {
       "path": "docs/GOALS.md",
-      "sha256": "7d8f93287155352553d5e167e85d6f94f2a0096a7c2a8ef7a7e6192acbac8bda",
-      "size_bytes": 9906
+      "sha256": "4c0d9fb295162077c7eee16a45a659858ecdd665254604254fb2df1fe7711e78",
+      "size_bytes": 14846
     },
     {
       "path": "docs/HARDWARE_INDEPENDENCE.md",
@@ -3003,8 +3003,8 @@
     },
     {
       "path": "include/sparkpipe/spark_stage_module_common.h",
-      "sha256": "d06073a764b418b8e2774f95f873a745c4c3cb8351b374bc6ecf4903de7d20ee",
-      "size_bytes": 7477
+      "sha256": "89955d828b78d695012ceb3aa575884c44c34f7fbafabcc1d7f82f29d2bc11f7",
+      "size_bytes": 8034
     },
     {
       "path": "include/sparkpipe/spark_stage_module_lifecycle.h",
@@ -3928,8 +3928,8 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
-      "sha256": "4d8802a750ec418d82ed36785790ca1a381b418338e4d83a7cc6cbd6093dc48e",
-      "size_bytes": 93779
+      "sha256": "e910675e09567f6cc79476d3d88f389d9f50b7ceb122f9468e3c03f23d789ff1",
+      "size_bytes": 93078
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c",
@@ -4018,8 +4018,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "9b7d315d54196d6e40519f9fb42e06f54f4c5ae1299ac4823705f4a1b0f3199b",
-      "size_bytes": 150172
+      "sha256": "1dc4304cbadf21e964a31f7784c8731b6780796f5b548cb5e9dd592d0cfe1920",
+      "size_bytes": 149410
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -7038,8 +7038,8 @@
     },
     {
       "path": "tests/test_glm5_next_stage_context.py",
-      "sha256": "e8d3e850db1c67b1e61e27bc92c622e2c7f3e946ed4576c34b233fb625dd25b9",
-      "size_bytes": 8517
+      "sha256": "e25e85f6d863681cbd11a6b9f0a91e310bef0895f8402fa0a89f2dd16ab1a44b",
+      "size_bytes": 9307
     },
     {
       "path": "tests/test_gqa_host.py",
@@ -9635,5 +9635,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32409769
+  "total_bytes": 32415396
 }
