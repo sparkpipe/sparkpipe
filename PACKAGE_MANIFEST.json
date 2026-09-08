@@ -6858,8 +6858,8 @@
     },
     {
       "path": "tests/test_glm53_contract.py",
-      "sha256": "00724e34f4fea191bb96dd940502e96ab6b6751142113c8c50b92356632b9878",
-      "size_bytes": 9331
+      "sha256": "f8256b28214d70ae924dc7c70245b3a36e41a90bd139f110805403a1921edb14",
+      "size_bytes": 10079
     },
     {
       "path": "tests/test_glm5_next_adapter_config_load.py",
@@ -8508,8 +8508,8 @@
     },
     {
       "path": "tools/glm5_next_gen_tp4pp4_deployment.py",
-      "sha256": "e37df59cf9440e6e53b63ee097da4774d2817e764f953a3e158f517359e6ef55",
-      "size_bytes": 4478
+      "sha256": "6c28bbdb2a41ccca13474da1bfe0261c1419f4033a0754d3c8e4ee36612ebf3e",
+      "size_bytes": 4464
     },
     {
       "path": "tools/glm5_next_kda_host_oracle.py",
@@ -9420,5 +9420,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32135884
+  "total_bytes": 32136618
 }

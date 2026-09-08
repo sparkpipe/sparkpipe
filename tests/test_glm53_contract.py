@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import runpy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,6 +167,18 @@ def main() -> int:
                    abs(src["text_stack_gbytes"] - (total - ba["vision"]["gbytes"])) < 0.01))
     checks.append(("tp16 rank ~19.1 GiB (20.45 GB)",
                    abs(src["tp16_gbytes_per_rank"] - src["text_stack_gbytes"] / 16) < 0.01))
+
+    deployment = runpy.run_path(str(ROOT / "tools/glm5_next_gen_tp4pp4_deployment.py"))
+    for rank in range(16):
+        stage = deployment["stage_config"](rank)
+        collective = stage["tp_collective"]
+        expected_hosts = [f"spark{peer:x}" for peer in range(rank // 4 * 4, rank // 4 * 4 + 4)]
+        checks.append((f"TP4 stage {rank} native tree contract",
+                       stage["tp_degree"] == 4 and stage["tp_rank"] == rank % 4
+                       and collective["backend"] == "hidden_transport"
+                       and "tree" in collective["algorithms"]
+                       and "recursive_doubling" not in collective["algorithms"]
+                       and collective["peer_hosts"] == expected_hosts))
 
     failed = [name for name, ok in checks if not ok]
     for name, ok in checks:
