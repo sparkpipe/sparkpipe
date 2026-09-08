@@ -878,8 +878,8 @@
     },
     {
       "path": "docs/PARALLEL_DRIVER_DEBUG.md",
-      "sha256": "512832b3b5fe438fb81d43151a31086ad429f393a41f308f7b98ca6900554922",
-      "size_bytes": 8584
+      "sha256": "57e530b855e10141b60f41fd51bd897a9721ee340d15e9f72bd587b226943dbd",
+      "size_bytes": 8736
     },
     {
       "path": "docs/PERFORMANCE_LEDGER.md",
@@ -7518,8 +7518,8 @@
     },
     {
       "path": "tests/test_spark_queue.py",
-      "sha256": "dfe93acef8f4a6fb99d6e28147b4f85dba35f5a7aa59a45a4c1652b5362755e6",
-      "size_bytes": 9177
+      "sha256": "0015735674660aa07208fee917623f7f4c0a8d239ae0ca39a8b0e29f7c8a0088",
+      "size_bytes": 9858
     },
     {
       "path": "tests/test_spark_ssh_failover.py",
@@ -9268,8 +9268,8 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "6ec45a66b28cc2b69abf95076be857a7ff777011447678a047f2f9d48b505066",
-      "size_bytes": 20190
+      "sha256": "5b7821bc25dc24ac3c3a10a45b04701123fd32adfd2b9ea0c3b0baf8a6471567",
+      "size_bytes": 20275
     },
     {
       "path": "tools/spark_queue_live_gate.py",
@@ -9420,5 +9420,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32129512
+  "total_bytes": 32130430
 }
