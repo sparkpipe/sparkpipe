@@ -3,6 +3,39 @@
 static SparkStatus test_fixed_send(SparkHiddenTransportSession *session,const void *buffer,uint64_t bytes,uint64_t offset,uint32_t sequence);
 #define SparkHiddenTransportSendFixed test_fixed_send
 #include "../ring/transport/tp_device_collective.c"
+#include "sparkpipe/spark_tp_chain_ordinal.h"
+
+_Static_assert(SPARK_TP_CHAIN_MAX_GENERATION == (UINT64_MAX >> SPARK_TP_DEVICE_COLLECTIVE_GENERATION_SHIFT),"chain generation must fit transport lifecycle");
+
+static void test_chain_ordinals(void)
+{
+	uint32_t lanes,operation,chain,credit;
+	uint64_t ordinal,generation,last[8],older,newer;
+	const uint32_t capacity = (106u * 65536u);
+	for (lanes=1u; lanes<=4u; lanes++)
+	{
+		memset(last,0,sizeof(last));
+		for (operation=0u; operation<5824u; operation++)
+			for (chain=lanes; chain>0u; chain--)
+			{
+				assert(SparkTpChainOrdinal(chain,lanes,2u,capacity,operation,&ordinal) == SPARK_STATUS_OK);
+				credit = (uint32_t)(ordinal % (lanes * 2u));
+				generation = ((ordinal / (lanes * 2u)) + 1u);
+				assert((credit / 2u) == (chain % lanes));
+				assert(generation > last[credit]);
+				last[credit] = generation;
+			}
+		for (chain=1u; chain<=lanes; chain++)
+		{
+			assert(SparkTpChainOrdinal(chain,lanes,2u,capacity,capacity - 1u,&older) == SPARK_STATUS_OK);
+			assert(SparkTpChainOrdinal(chain + lanes,lanes,2u,capacity,0u,&newer) == SPARK_STATUS_OK);
+			assert((newer / (lanes * 2u)) > (older / (lanes * 2u)));
+		}
+	}
+	assert(SparkTpChainOrdinal(1u,4u,2u,capacity,capacity,&ordinal) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkTpChainOrdinal(UINT64_MAX,4u,2u,capacity,0u,&ordinal) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkTpChainOrdinal(0u,4u,2u,capacity,0u,&ordinal) == SPARK_STATUS_INVALID_ARGUMENT);
+}
 
 static SparkTpDeviceCollectiveImplementation IMPLEMENTATION;
 static SparkTpDeviceCollective COLLECTIVE;
@@ -51,6 +84,75 @@ static SparkStatus test_combine(void *context,void *destination,const void *sour
 	(void)hidden;
 	(void)stream;
 	return(SPARK_STATUS_OK);
+}
+
+static void test_pending_completion(void *context,const SparkTpDeviceCollectiveCompletion *completion)
+{
+	uint32_t *result = (uint32_t *)context;
+	result[0]++;
+	result[1] = completion->status;
+	assert(completion->ordinal == 8u && completion->slot_index == 1u);
+}
+
+static void test_pending(uint32_t failure)
+{
+	SparkTpDeviceCollectiveSubmission submission;
+	cudaStream_t stream;
+	uint16_t payload[4] = {0};
+	uint32_t result[2] = {0},index;
+	memset(&IMPLEMENTATION,0,sizeof(IMPLEMENTATION));
+	memset(&COLLECTIVE,0,sizeof(COLLECTIVE));
+	memset(&submission,0,sizeof(submission));
+	COLLECTIVE.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	COLLECTIVE.implementation = &IMPLEMENTATION;
+	COLLECTIVE.credit_count = 8u;
+	COLLECTIVE.max_active_sequence_count = 1u;
+	COLLECTIVE.operation_timeout_milli = 1000u;
+	IMPLEMENTATION.collective = &COLLECTIVE;
+	IMPLEMENTATION.combine_bf16_function = test_combine;
+	atomic_init(&IMPLEMENTATION.admission_open,1u);
+	atomic_init(&IMPLEMENTATION.failure_status,SPARK_STATUS_OK);
+	for (index=0u; index<8u; index++)
+	{
+		atomic_init(&IMPLEMENTATION.pending[index].state,0u);
+		atomic_init(&IMPLEMENTATION.operations[index].lifecycle,SparkTpDeviceCollectiveStateWord(1u,index == 0u ? SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE : SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE,0u));
+	}
+	assert(cudaStreamCreate(&stream) == cudaSuccess);
+	assert(cudaEventCreateWithFlags(&IMPLEMENTATION.consumer_events[0],cudaEventDisableTiming) == cudaSuccess);
+	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	submission.descriptor_bytes = sizeof(submission);
+	submission.slot_index = 1u;
+	submission.ordinal = 8u;
+	submission.active_sequence_count = 1u;
+	submission.local_device = submission.full_device = payload;
+	submission.cuda_stream = stream;
+	submission.completion_function = test_pending_completion;
+	submission.completion_context = result;
+	assert(SparkTpDeviceCollectiveEnqueue(&COLLECTIVE,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_OK);
+	assert(SparkTpDeviceCollectiveEnqueue(&COLLECTIVE,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_BUSY);
+	assert(SparkTpDeviceCollectiveRequestOperationFailure(&COLLECTIVE,8u,(SparkStatus)(SPARK_STATUS_UNSUPPORTED + 1u)) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkTpDeviceCollectiveRequestFailure(&COLLECTIVE,(SparkStatus)-1) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(IMPLEMENTATION.pending[1].failure_status == SPARK_STATUS_OK);
+	assert(SparkTpProgressPending(&IMPLEMENTATION) == 1u && result[0] == 0u);
+	if ( failure == 1u )
+		IMPLEMENTATION.pending[1].deadline_milli = 0u;
+	else if ( failure == 3u )
+		assert(SparkTpDeviceCollectiveRequestOperationFailure(&COLLECTIVE,8u,SPARK_STATUS_IO_ERROR) == SPARK_STATUS_OK);
+	else if ( failure == 2u )
+		assert(SparkTpDeviceCollectiveRequestFailure(&COLLECTIVE,SPARK_STATUS_IO_ERROR) == SPARK_STATUS_OK);
+	else
+		atomic_store(&IMPLEMENTATION.operations[0].lifecycle,SparkTpDeviceCollectiveStateWord(1u,SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE,0u));
+	assert(SparkTpProgressPending(&IMPLEMENTATION) == 0u);
+	if ( failure == 0u )
+	{
+		assert(SparkTpDeviceCollectiveStatePhase(atomic_load(&IMPLEMENTATION.operations[0].lifecycle)) == SPARK_TP_DEVICE_COLLECTIVE_PHASE_ACTIVE);
+		atomic_store(&IMPLEMENTATION.operations[0].lifecycle,SparkTpDeviceCollectiveStateWord(2u,SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY,0u));
+		SparkTpDeviceCollectivePublishCompletion(&IMPLEMENTATION,&IMPLEMENTATION.operations[0]);
+	}
+	assert(result[0] == 1u && result[1] == (failure != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK));
+	assert(SparkTpProgressPending(&IMPLEMENTATION) == 0u && result[0] == 1u);
+	assert(cudaEventDestroy(IMPLEMENTATION.consumer_events[0]) == cudaSuccess);
+	assert(cudaStreamDestroy(stream) == cudaSuccess);
 }
 
 static uint32_t test_tree_step(uint32_t degree,uint32_t rank,uint32_t *stages,uint32_t *values,uint32_t messages[16][16])
@@ -169,6 +271,11 @@ int main(void)
 {
 	uint32_t counts[] = {1u,3u,4u,8u,17u,64u};
 	uint32_t index,route,credit;
+	test_chain_ordinals();
+	test_pending(0u);
+	test_pending(1u);
+	test_pending(2u);
+	test_pending(3u);
 	test_tree_topology(4u);
 	test_tree_topology(16u);
 	IMPLEMENTATION.collective = &COLLECTIVE;
@@ -191,6 +298,6 @@ int main(void)
 			for (credit=0u; credit<counts[index]; credit++)
 				test_credit(1u,route,credit);
 	}
-	puts("TP credit ACK jumps and independent routes PASS");
+	puts("TP chain ownership, prefill ordinal capacity and ACK flow PASS");
 	return(0);
 }

@@ -34,6 +34,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
@@ -304,6 +305,15 @@ SparkStatus SparkTpDeviceCollectiveSliceTopology(
 SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
+
+// Host-thread API. OK transfers submission ownership until completion, including
+// when a credit is temporarily occupied. One pending submission per slot_index;
+// buffers and callback context must remain alive. Pending work shares the
+// collective timeout/failure lifecycle. Never call from a CUDA host callback.
+SparkStatus SparkTpDeviceCollectiveEnqueue(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind);
 
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
