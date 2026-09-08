@@ -401,6 +401,7 @@ PYTHON_TESTS := \
 	tests/test_status_truth.py \
 	tests/test_weightd_manifest.py \
 	tests/test_glm5_next_range_manifest.py \
+	tests/test_weightd_lazy_pair.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_pack_regions.py \
 	tests/test_glm5_next_queue_build.py \
