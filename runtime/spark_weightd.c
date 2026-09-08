@@ -112,8 +112,8 @@ typedef struct SparkWeightdConnection
     uint32_t hello_done;
     uint32_t request_bytes;
     uint32_t attach_count;
-    uint8_t request[SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX];
-    uint8_t response[SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX];
+    _Alignas(SparkWeightdIpcHeader) uint8_t request[SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX];
+    _Alignas(SparkWeightdIpcHeader) uint8_t response[SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX];
     uint32_t response_bytes;
     uint32_t response_written;
     /* W3 fd tier: the EXPORT_RESULT reply leaves with the chunk fds in its
