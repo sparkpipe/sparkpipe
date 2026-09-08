@@ -143,8 +143,58 @@ class QueueTests(unittest.TestCase):
         self.add("a")
         self.cli("done", "--id", "a", "--exit", "1")
         self.add("b", "spark1", "--after", "a")
+        self.add("c", "spark2", "--after", "b")
+        self.add("independent", "spark1")
         self.dispatch()
+        results = {j["id"]: j for j in self.state()["results"]}
+        self.assertEqual(results["b"]["exit"], 125)
+        self.assertEqual(results["b"]["failed_dependencies"], ["a"])
+        self.assertEqual(results["c"]["exit"], 125)
+        self.assertEqual(self.jobs()["independent"]["state"], "running")
+        self.assertFalse(any(call[0] in {"b", "c"} for call in self.calls))
+
+    def test_invalid_dependencies_rejected_before_submission(self):
+        self.add("parent")
+        for deps in ["missing", "child", "parent,parent", "parent,"]:
+            with self.assertRaises(SystemExit):
+                self.add("child", "spark1", "--after", deps)
+            self.assertNotIn("child", self.jobs())
+
+    def test_failed_parent_cleanup_precedes_descendant_completion(self):
+        self.add("a")
+        self.add("b", "spark1", "--after", "a")
+        self.dispatch()
+        self.cli("cancel", "--id", "a")
+        self.down.add("spark0")
+        self.dispatch()
+        self.assertEqual(self.jobs()["a"]["state"], "stopping")
         self.assertEqual(self.jobs()["b"]["state"], "queued")
+        self.down.clear()
+        self.dispatch()
+        self.assertNotIn("b", self.jobs())
+        self.assertEqual(self.state()["results"][-1]["exit"], 125)
+        self.assertFalse(any(call[0] == "b" for call in self.calls))
+
+    def test_dependency_live_gate_preserves_unrelated_jobs(self):
+        spec = importlib.util.spec_from_file_location("queue_gate_test", ROOT / "tools/spark_queue_live_gate.py")
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        gate.queue = self.q
+        self.add("unrelated", "spark2")
+        original = self.q.remote
+        def complete(j, n, action):
+            reply = original(j, n, action)
+            if j["id"] != "unrelated" and action == "launch":
+                reply.update(SubState="exited", ExecMainStatus="7" if j["cmd"] == "exit 7" else "0")
+            return reply
+        self.q.remote = complete
+        output = Path(self.tmp.name) / "receipt.json"
+        with patch.object(gate.time, "sleep"):
+            gate.dependency_gate("spark1", output)
+        receipt = json.loads(output.read_text())
+        self.assertEqual(len(receipt["results"]), 3)
+        self.assertEqual(receipt["remaining"], [])
+        self.assertEqual(self.jobs()["unrelated"]["state"], "running")
 
     def test_success_requires_cleanup_and_then_unlocks_dependency(self):
         self.add("a")
