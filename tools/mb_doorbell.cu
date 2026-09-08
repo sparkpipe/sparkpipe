@@ -93,7 +93,7 @@ struct BenchFoldDevices
 };
 
 static __global__ void bench_fold_all_kernel(
-    __nv_bfloat16 *destination, const __nv_bfloat16 *const *rank_devices,
+    __nv_bfloat16 *destination, BenchFoldDevices rank_devices,
     uint32_t tp_rank, uint32_t elements)
 {
     uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -104,26 +104,25 @@ static __global__ void bench_fold_all_kernel(
     total = __bfloat162float(destination[index]);
     for (rank_index = 0u; rank_index < 16u; rank_index++)
     {
-        if (rank_index != tp_rank && rank_devices[rank_index] != 0)
-            total += __bfloat162float(rank_devices[rank_index][index]);
+        if (rank_index != tp_rank && rank_devices.devices[rank_index] != 0)
+            total += __bfloat162float(rank_devices.devices[rank_index][index]);
     }
     destination[index] = __float2bfloat16(total);
 }
-
-static BenchFoldDevices *bench_fold_context = 0;
 
 static SparkStatus bench_combine_all_bf16(
     void *context, void *destination, const void *const *rank_devices,
     uint32_t tp_rank, uint32_t rows, uint32_t hidden, void *stream)
 {
-    BenchFoldDevices *devices = (BenchFoldDevices *)context;
+    BenchFoldDevices devices;
     uint32_t elements = rows * hidden;
     uint32_t index;
+    (void)context;
     for (index = 0u; index < 16u; index++)
-        devices->devices[index] =
+        devices.devices[index] =
             (const __nv_bfloat16 *)rank_devices[index];
     bench_fold_all_kernel<<<(elements + 255u) / 256u, 256u, 0, (cudaStream_t)stream>>>(
-        (__nv_bfloat16 *)destination, devices->devices, tp_rank, elements);
+        (__nv_bfloat16 *)destination, devices, tp_rank, elements);
     return cudaGetLastError() == cudaSuccess ?
         SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -164,7 +163,7 @@ static SparkStatus bench_chain_submit(BenchChain *chain)
 	status = SparkTpChainOrdinal(4u + chain->lane,4u,1u,BENCH_MAX_TIMED_ITERS,chain->next,&ordinal);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	bench_fill_bf16_kernel<<<(chain->rows * BENCH_HIDDEN + 255u) / 256u,256u,0,chain->stream>>>((__nv_bfloat16 *)chain->submission.local_device,(float)(chain->rank + 1u + chain->next % 4u),chain->rows * BENCH_HIDDEN);
+	bench_fill_bf16_kernel<<<(chain->rows * BENCH_HIDDEN + 255u) / 256u,256u,0,chain->stream>>>((__nv_bfloat16 *)chain->submission.local_device,(float)(chain->rank + 1u + chain->lane * 4u + chain->next % 4u),chain->rows * BENCH_HIDDEN);
 	if ( cudaGetLastError() != cudaSuccess )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	chain->submission.ordinal = ordinal;
@@ -218,10 +217,9 @@ static int32_t bench_chains(SparkTpDeviceCollective *collective,__nv_bfloat16 **
 	uint64_t start = bench_now_ns();
 	uint32_t lane,done,index,bits,selected;
 	uint16_t *verify = (uint16_t *)malloc((uint64_t)rows * BENCH_HIDDEN * sizeof(uint16_t));
-	float expected = (float)(degree * (degree + 1u) / 2u + degree * ((iterations - 1u) % 4u));
+	float expected;
 	if ( collective->credit_count != 4u || verify == 0 )
 		return(1);
-	memcpy(&bits,&expected,sizeof(bits));
 	for (lane=0u; lane<4u; lane++)
 	{
 		selected = rank % 2u != 0u ? 3u - lane : lane;
@@ -244,6 +242,8 @@ static int32_t bench_chains(SparkTpDeviceCollective *collective,__nv_bfloat16 **
 	}
 	for (lane=0u; lane<4u; lane++)
 	{
+		expected = (float)(degree * (degree + 1u) / 2u + degree * (lane * 4u + (iterations - 1u) % 4u));
+		memcpy(&bits,&expected,sizeof(bits));
 		if ( chains[lane].status != SPARK_STATUS_OK || cudaStreamSynchronize(chains[lane].stream) != cudaSuccess )
 			return(5);
 		if ( cudaMemcpy(verify,payload[lane],(uint64_t)rows * BENCH_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
@@ -417,13 +417,8 @@ int main(int argc, char **argv)
     config.registration_cuda_stream = 0;
     config.combine_bf16_function = bench_combine_bf16;
     config.combine_u64_max_function = bench_combine_u64_max;
-    if (cudaMallocManaged(&bench_fold_context, sizeof(BenchFoldDevices)) != cudaSuccess)
-    {
-        printf("fold context alloc failed\n");
-        return 1;
-    }
     config.combine_tp4_bf16_function = bench_combine_all_bf16;
-    config.combine_context = bench_fold_context;
+    config.combine_context = 0;
 
     status = SparkTpDeviceCollectiveProbeMemoryMode(config.backend_kind,
         config.backend_module_path, &memory_mode);
