@@ -120,6 +120,7 @@ typedef struct SparkTpPendingSubmission
     SparkTpDeviceCollectiveSubmission submission;
     uint64_t deadline_milli;
     uint32_t operation_kind;
+    SparkStatus failure_status;
 } SparkTpPendingSubmission;
 
 typedef struct SparkTpDeviceCollectiveImplementation
@@ -2101,6 +2102,8 @@ static uint32_t SparkTpProgressPending(SparkTpDeviceCollectiveImplementation *im
             continue;
         }
         status = (SparkStatus)atomic_load_explicit(&implementation->failure_status,memory_order_acquire);
+        if (status == SPARK_STATUS_OK)
+            status = pending->failure_status;
         if (status == SPARK_STATUS_OK && SparkTpDeviceCollectiveNowMilli() >= pending->deadline_milli)
             status = SPARK_STATUS_IO_ERROR;
         if (status == SPARK_STATUS_OK)
@@ -2598,6 +2601,7 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
         return SPARK_STATUS_BUSY;
     pending->submission = *submission;
     pending->operation_kind = operation_kind;
+    pending->failure_status = SPARK_STATUS_OK;
     pending->deadline_milli = now + collective->operation_timeout_milli;
     atomic_store_explicit(&pending->state,2u,memory_order_release);
     return SPARK_STATUS_OK;
@@ -2629,6 +2633,29 @@ SparkStatus SparkTpDeviceCollectiveRequestFailure(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkTpFailPending(SparkTpDeviceCollectiveImplementation *implementation,uint64_t ordinal,SparkStatus status)
+{
+    SparkTpPendingSubmission *pending;
+    uint32_t index,expected,busy = 0u,found;
+    for (index=0u; index<implementation->collective->credit_count; index++)
+    {
+        pending = &implementation->pending[index];
+        expected = 2u;
+        if (atomic_compare_exchange_strong_explicit(&pending->state,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0)
+        {
+            busy |= expected != 0u;
+            continue;
+        }
+        found = pending->submission.ordinal == ordinal;
+        if (found != 0u && pending->failure_status == SPARK_STATUS_OK)
+            pending->failure_status = status;
+        atomic_store_explicit(&pending->state,2u,memory_order_release);
+        if (found != 0u)
+            return SPARK_STATUS_OK;
+    }
+    return busy != 0u ? SPARK_STATUS_BUSY : SPARK_STATUS_NOT_FOUND;
+}
+
 SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
     SparkTpDeviceCollective *collective,
     uint64_t ordinal,
@@ -2637,6 +2664,7 @@ SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
     SparkTpDeviceCollectiveImplementation *implementation;
     SparkTpDeviceCollectiveOperation *operation;
     uint64_t generation;
+    SparkStatus pending_status,status;
     uint32_t credit_index;
 
     if (collective != 0 && collective->backend_kind ==
@@ -2655,12 +2683,15 @@ SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
     }
     implementation = (SparkTpDeviceCollectiveImplementation *)
         collective->implementation;
+    pending_status = SparkTpFailPending(implementation,ordinal,failure_status);
+    if (pending_status == SPARK_STATUS_OK)
+        return pending_status;
     credit_index = (uint32_t)(ordinal %
         collective->credit_count);
     generation = ordinal / collective->credit_count + 1u;
     operation = &implementation->operations[credit_index];
-    return SparkTpDeviceCollectiveMarkOperationFailure(
-        implementation,operation,generation,failure_status);
+    status = SparkTpDeviceCollectiveMarkOperationFailure(implementation,operation,generation,failure_status);
+    return status == SPARK_STATUS_NOT_FOUND && pending_status == SPARK_STATUS_BUSY ? SPARK_STATUS_BUSY : status;
 }
 
 SparkStatus SparkTpDeviceCollectiveOperationPhase(

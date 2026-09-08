@@ -97,6 +97,8 @@ static void test_pending(uint32_t failure)
 	assert(SparkTpProgressPending(&IMPLEMENTATION) == 1u && result[0] == 0u);
 	if ( failure == 1u )
 		IMPLEMENTATION.pending[1].deadline_milli = 0u;
+	else if ( failure == 3u )
+		assert(SparkTpDeviceCollectiveRequestOperationFailure(&COLLECTIVE,8u,SPARK_STATUS_IO_ERROR) == SPARK_STATUS_OK);
 	else if ( failure == 2u )
 		assert(SparkTpDeviceCollectiveRequestFailure(&COLLECTIVE,SPARK_STATUS_IO_ERROR) == SPARK_STATUS_OK);
 	else
@@ -180,6 +182,7 @@ int main(void)
 	test_pending(0u);
 	test_pending(1u);
 	test_pending(2u);
+	test_pending(3u);
 	IMPLEMENTATION.collective = &COLLECTIVE;
 	IMPLEMENTATION.ack_receive_slots = TREE_ACKS;
 	IMPLEMENTATION.d2a_ack_receive_slots = D2A_ACKS;
