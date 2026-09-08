@@ -393,7 +393,8 @@ PYTHON_TESTS := \
 	tests/test_staging_manifest.py \
 	tests/test_template_adoption.py \
 	tests/test_status_truth.py \
-	tests/test_glm5_next_expert_pack_layout.py
+	tests/test_glm5_next_expert_pack_layout.py \
+	tests/test_glm5_next_pack_regions.py
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
     build/test_modules/module_add_one.o \
