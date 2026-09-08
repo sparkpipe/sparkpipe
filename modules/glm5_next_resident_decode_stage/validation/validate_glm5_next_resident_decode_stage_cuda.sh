@@ -4,15 +4,14 @@ set -euo pipefail
 # glm5_next (GLM 5.3 Flash) hardware validation driver (sm_121a).
 #
 # Compiles the validator translation unit against the MODULE ARCHIVE and
-# runs it on the pack named by the pinned configuration. The binary runs
+# runs its synthetic fixture with the supplied configuration identity. The binary runs
 # the host oracle selftest first (bounded decay, expert-major codec
 # addressing, e4m3, mHC sinkhorn, kpool expansion, and end-to-end
-# KDA/MLA/router oracle executions at real geometry), then the GPU tier
-# drivers: tier 1 the KDA layer with its dense MLP through both mHC sites,
-# tier 2a the DSA (rope-0 MLA) layer with routed experts, each against the
-# same fp32 oracle with a bit-exact determinism re-walk. The binary FAILS
-# (nonzero) until every wired tier passes; a not-yet-wired tier is a hard
-# failure, never a silent pass.
+# KDA/MLA/router oracle executions at real geometry), then a GPU numerical
+# check of KDA+dense MLP+mHC and repeatability checks of KDA and DSA attention.
+# It currently executes TP1/B1. It does not compare GPU DSA against its host
+# oracle or run a routed MLP, multiple rows, distributed ranks or real weights.
+# A component PASS is not full GLM numerical or driver acceptance.
 # The mechanical skeleton is the shared validation driver; the codec ladder
 # and the build-identity defaults below are glm5_next's own.
 
