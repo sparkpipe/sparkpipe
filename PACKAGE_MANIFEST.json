@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_KV_PAYLOAD.md",
-      "sha256": "c0f05bb39e9c49f533761af81cb3545e21a8ff5f925cca0198d667467a945ee8",
-      "size_bytes": 2881
+      "sha256": "c2a3a427af71846bd3a2ea9302876ca5a07c99029eea296a0e12a7a05be06115",
+      "size_bytes": 3082
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
@@ -9645,5 +9645,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32429080
+  "total_bytes": 32429281
 }
