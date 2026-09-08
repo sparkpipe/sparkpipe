@@ -141,6 +141,20 @@ SparkStatus SparkKvPageCacheBuildLaneTable(
 	uint32_t logical_page_capacity,
 	uint32_t *logical_page_count_out);
 
+/* Caller holds exclusive lane ownership and serializes cache/arena access.
+ * On success both tables remain caller-owned and every page is pinned until
+ * device completion. Unpin before CompleteLane (which may deduplicate/free a
+ * mutable page), or before RollbackLaneTransaction on abort. On failure this
+ * operation undoes its pins and lane mutations; outputs count/flags are zero. */
+SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
+	SparkKvPageCache *cache,
+	const SparkModelDriverCacheLane *lane,
+	uint32_t *logical_pages,
+	uint32_t *physical_pages,
+	uint32_t page_capacity,
+	uint32_t *page_count_out,
+	uint32_t *mutation_flags_out);
+
 #ifdef __cplusplus
 }
 #endif

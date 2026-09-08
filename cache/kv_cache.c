@@ -2290,6 +2290,72 @@ SparkStatus SparkKvCacheArenaResolveBlock(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkKvCacheArenaUnpinResidentTable(
+	SparkKvCacheArena *arena,
+	const uint32_t *logical_block_indices,
+	uint32_t block_count)
+{
+	uint32_t page;
+	SparkStatus status,result;
+	result = SparkKvCacheArenaValidate(arena);
+	if ( result != SPARK_STATUS_OK )
+		return(result);
+	if ( block_count != 0u && logical_block_indices == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (page=0u; page<block_count; page++)
+	{
+		status = SparkKvCacheArenaUnpinResidentBlock(arena,logical_block_indices[page]);
+		if ( result == SPARK_STATUS_OK && status != SPARK_STATUS_OK )
+			result = status;
+	}
+	return(result);
+}
+
+SparkStatus SparkKvCacheArenaPinResidentTable(
+	SparkKvCacheArena *arena,
+	const uint32_t *logical_block_indices,
+	uint32_t block_count,
+	uint32_t *resident_slot_indices)
+{
+	SparkKvCacheBlockView view;
+	uint32_t page,pinned_count = 0u;
+	uint64_t bytes;
+	uintptr_t input,output;
+	SparkStatus status,rollback_status;
+	status = SparkKvCacheArenaValidate(arena);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( block_count == 0u )
+		return(SPARK_STATUS_OK);
+	if ( logical_block_indices == 0 || resident_slot_indices == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	input = (uintptr_t)logical_block_indices;
+	output = (uintptr_t)resident_slot_indices;
+	bytes = ((uint64_t)block_count * sizeof(uint32_t));
+	if ( (input <= output ? output - input : input - output) < bytes )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (page=0u; page<block_count; page++)
+	{
+		status = SparkKvCacheArenaPinResidentBlock(arena,logical_block_indices[page]);
+		if ( status != SPARK_STATUS_OK )
+			break;
+		pinned_count++;
+		status = SparkKvCacheArenaResolveBlock(arena,logical_block_indices[page],&view);
+		if ( status != SPARK_STATUS_OK )
+			break;
+		if ( view.resident_slot_index >= arena->resident_block_capacity )
+		{
+			status = SPARK_STATUS_INTERNAL_ERROR;
+			break;
+		}
+		resident_slot_indices[page] = view.resident_slot_index;
+	}
+	if ( status == SPARK_STATUS_OK )
+		return(status);
+	rollback_status = SparkKvCacheArenaUnpinResidentTable(arena,logical_block_indices,pinned_count);
+	return(rollback_status == SPARK_STATUS_OK ? status : rollback_status);
+}
+
 SparkStatus SparkKvCacheArenaReset(
     SparkKvCacheArena *arena)
 {

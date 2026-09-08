@@ -38,7 +38,8 @@ correct math from repeatability, or full serving from a component probe.
 | Layered KV/index backing payload, PR #862 / main `d687fc8` | Common gather/scatter with a hardware copy callback; GLM supplies native geometry. Actual GLM host hook tests pass both regions across three layers and five pages; substituting the previous contiguous copy fails the payload check. CUDA CI, merged-main B3 memcheck and resident/lazy/concurrent parity pass. | Trace native layer/page indexing against backing payload layout. Total allocation size is insufficient; distinguish each page and layer in tests. Include index state in payload sizing. |
 | Numerical gate integrity, PR #863 / main `52ce0e5` | Three probe failure results were discarded; projection readback could skip a comparison. Checks now affect exit status. Common metrics reject nonfinite inputs and accumulate squared errors directly; regression tests reject the previous metric implementation. Corrected GPU component validator passes on merged main. | Test the acceptance test with bad values. Error-norm cancellation and ignored return codes can turn an optimization regression green. Component repeatability is not numerical correctness. |
 | Cache admission wiring, draft PR #861 | GLM builds persistent cache lanes for submitted frames and routes prepare/commit/abort through a common algorithm with a validation callback and caller-owned scratch. Host tests preserve B3 lane identities and transaction generations, propagate driver failure, validate all inputs before dispatch and keep release separate. Full reset/restoration and GPU serving acceptance remain incomplete. | Common policy builds and validates the transaction; the model supplies geometry and hooks. Keep submitted lane storage alive through device completion. |
-| KDA oracle recurrence, PR #864 | The C oracle decayed state, then applied decay again in its prediction. The pinned upstream reference and repository Python oracle apply it once. A shared scalar head reference now has hand-calculated two-token nonzero-state and rectangular-state tests; injecting the old second decay fails. GPU rerun pending. | Validate recurrent state directly with nonzero initial state. Small random end-to-end fixtures can underweight reference errors. Keep reference math independent of production kernels. |
+| KDA oracle recurrence, PR #864 / main `06be88e` | The C oracle decayed state, then applied decay again in its prediction. A shared scalar reference has hand-calculated two-token nonzero-state and rectangular-state tests; injecting the old second decay fails. CUDA CI and merged-main synthetic GPU validation pass; KDA+dense+HC relative L2 is 0.00376, cosine 0.9999930. | Validate recurrent state directly with nonzero initial state. Small random end-to-end fixtures can underweight reference errors. Keep reference math independent of production kernels. |
+| Shared page pinning and transaction mapping, draft PR #861 | Common arena operations resolve logical pages to pinned physical slots and roll back partial pin failures. A common page-cache operation pins the prefix before allocating the writable page and rolls back its own lane mutations on failure. Host tests cover eviction pressure, shared pins, non-identity mapping, pin overflow, insufficient table capacity, abort and prefix deduplication. GLM execution wiring remains pending. | Physical residency is separate from logical prefix identity. Keep logical tables immutable and physical pages pinned until GPU completion. Serialize cache metadata access; after GPU completion unpin before deduplication can free a writable page. This policy belongs in common code. |
 
 ## Baseline that must not be misinterpreted
 
@@ -99,6 +100,25 @@ PR #864. Treat the earlier PASS as a scoped execution receipt, not proof of
 the reference's correctness. The actual GLM adapter host harness now also
 checks B3 admission and verifies that frame-owned cache lanes survive mutation
 of the caller's lane array; this does not exercise full cache restoration.
+
+The corrected KDA reference passed on clean main `06be88e`, build job
+`glm-kda-build-06be88e` (attempt `7f9b084156a1411ca319329aa68b2acb`) and
+run `glm-kda-oracle-06be88e` (`b00d1a70aa624f539d96dcb13d65749a`). Both finished
+with exit 0, all participant cgroups stopped and Spark0 released. The run's
+configuration SHA-256 is
+`06a3495bf92558f341eac53c8a38abb68022bd637f679dbe9b4bc3ed6daab623`.
+KDA+dense+HC relative L2 is 0.00376 and cosine 0.9999930; the three intermediate
+probes also pass. This remains synthetic TP1/B1, with DSA determinism only.
+There is no new qualified distributed throughput result.
+
+The draft's common pinned-transaction tests pass through `build/test_kv_cache`.
+They use real common arena/page-cache code, including an insufficient output
+table after lane binding: failure releases the new writable page and its
+binding while preserving the reusable prefix and other owners' pins. The
+common API requires caller serialization and exclusive lane ownership; it
+does not itself implement the GLM transaction identity or completion lock.
+Those must be connected before changing the device page table or claiming
+working prefix reuse. No other model driver was changed for this foundation.
 
 ## Current next steps, not completed work
 

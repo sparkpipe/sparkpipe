@@ -358,6 +358,64 @@ static void SparkTestKvFramePinProtectsResidentBlock(void)
 	assert(SparkKvCacheArenaMarkBlockNonResident(&fixture.arena,block0) == SPARK_STATUS_OK);
 }
 
+static int32_t SparkTestKvPinnedTableUsesPhysicalMapping(void)
+{
+	SparkTestKvFixture fixture;
+	uint32_t blocks[3],pages[3],physical[3],index;
+	SparkTestKvInitialize(&fixture);
+	for (index=0u; index<3u; index++)
+		blocks[index] = SparkTestKvAcquire(&fixture);
+	if ( SparkKvCacheArenaMarkBlockResident(&fixture.arena,blocks[2]) != SPARK_STATUS_OK || SparkKvCacheArenaMarkBlockResident(&fixture.arena,blocks[0]) != SPARK_STATUS_OK )
+		return(-1);
+	pages[0] = blocks[2];
+	pages[1] = blocks[0];
+	pages[2] = blocks[2];
+	if ( SparkKvCacheArenaPinResidentTable(&fixture.arena,pages,3u,physical) != SPARK_STATUS_OK )
+		return(-2);
+	if ( physical[0] == pages[0] || physical[0] != physical[2] || physical[0] == physical[1] || fixture.blocks[blocks[2]].residency_reference_count != 2u )
+		return(-3);
+	if ( SparkKvCacheArenaMarkBlockResident(&fixture.arena,blocks[1]) != SPARK_STATUS_CAPACITY_EXCEEDED )
+		return(-4);
+	if ( SparkKvCacheArenaUnpinResidentTable(&fixture.arena,pages,3u) != SPARK_STATUS_OK || fixture.blocks[blocks[2]].residency_reference_count != 0u )
+		return(-5);
+	if ( SparkKvCacheArenaMarkBlockResident(&fixture.arena,blocks[1]) != SPARK_STATUS_OK )
+		return(-6);
+	return(0);
+}
+
+static int32_t SparkTestKvPinnedTableFailurePreservesOtherOwners(void)
+{
+	SparkTestKvFixture fixture;
+	uint32_t pages[3],physical[3],index;
+	SparkTestKvInitialize(&fixture);
+	for (index=0u; index<3u; index++)
+		pages[index] = SparkTestKvAcquire(&fixture);
+	if ( SparkKvCacheArenaMarkBlockResident(&fixture.arena,pages[0]) != SPARK_STATUS_OK || SparkKvCacheArenaMarkBlockResident(&fixture.arena,pages[1]) != SPARK_STATUS_OK )
+		return(-7);
+	if ( SparkKvCacheArenaPinResidentBlock(&fixture.arena,pages[0]) != SPARK_STATUS_OK )
+		return(-8);
+	if ( SparkKvCacheArenaPinResidentTable(&fixture.arena,pages,3u,physical) != SPARK_STATUS_BUSY )
+		return(-9);
+	if ( fixture.blocks[pages[0]].residency_reference_count != 1u || fixture.blocks[pages[1]].residency_reference_count != 0u )
+		return(-10);
+	fixture.blocks[pages[1]].residency_reference_count = UINT32_MAX;
+	if ( SparkKvCacheArenaPinResidentTable(&fixture.arena,pages,2u,physical) != SPARK_STATUS_CAPACITY_EXCEEDED || fixture.blocks[pages[0]].residency_reference_count != 1u )
+		return(-11);
+	fixture.blocks[pages[1]].residency_reference_count = 0u;
+	pages[1] = fixture.arena.logical_block_count;
+	if ( SparkKvCacheArenaPinResidentTable(&fixture.arena,pages,2u,physical) != SPARK_STATUS_INVALID_ARGUMENT || fixture.blocks[pages[0]].residency_reference_count != 1u )
+		return(-12);
+	if ( SparkKvCacheArenaPinResidentTable(&fixture.arena,pages,1u,pages) != SPARK_STATUS_INVALID_ARGUMENT || SparkKvCacheArenaPinResidentTable(&fixture.arena,pages,2u,pages + 1u) != SPARK_STATUS_INVALID_ARGUMENT )
+		return(-13);
+	if ( SparkKvCacheArenaPinResidentTable(&fixture.arena,0,0u,0) != SPARK_STATUS_OK || SparkKvCacheArenaUnpinResidentTable(&fixture.arena,0,0u) != SPARK_STATUS_OK )
+		return(-14);
+	pages[1] = pages[0];
+	pages[0] = fixture.arena.logical_block_count;
+	if ( SparkKvCacheArenaUnpinResidentTable(&fixture.arena,pages,2u) != SPARK_STATUS_INVALID_ARGUMENT || fixture.blocks[pages[1]].residency_reference_count != 0u )
+		return(-15);
+	return(0);
+}
+
 static void SparkTestKvUnassignedResidentCapacityOwnership(void)
 {
 	SparkTestKvFixture fixture;
@@ -1002,6 +1060,43 @@ static uint32_t SparkTestKvPageBegin(
 	return(logical_page);
 }
 
+static int32_t SparkTestKvPagePinnedTransaction(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane lane;
+	uint32_t logical[4],physical[4],count,mutations,prefix,mutable_page;
+	SparkTestKvPageInitialize(&fixture);
+	SparkTestKvPageLane(&lane,1u,0u,0u,4u);
+	SparkTestKvPagePublish(&lane,4u,71u);
+	if ( SparkKvPageCacheBeginPinnedLaneTransaction(&fixture.cache,&lane,logical,physical,4u,&count,&mutations) != SPARK_STATUS_OK || count != 1u )
+		return(-16);
+	prefix = logical[0];
+	if ( SparkKvCacheArenaUnpinResidentTable(&fixture.kv.arena,logical,count) != SPARK_STATUS_OK || SparkKvPageCacheCompleteLane(&fixture.cache,&lane) != SPARK_STATUS_OK || SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) != SPARK_STATUS_OK )
+		return(-17);
+	SparkTestKvPageLane(&lane,2u,1u,4u,5u);
+	SparkTestKvPagePrefix(&lane,4u,71u);
+	if ( SparkKvPageCacheBeginPinnedLaneTransaction(&fixture.cache,&lane,logical,physical,1u,&count,&mutations) != SPARK_STATUS_CAPACITY_EXCEEDED )
+		return(-18);
+	if ( count != 0u || mutations != 0u || fixture.cache.sequences[1].sequence_id != 0u || fixture.kv.blocks[prefix].residency_reference_count != 0u )
+		return(-19);
+	if ( SparkKvPageCacheBeginPinnedLaneTransaction(&fixture.cache,&lane,logical,physical,4u,&count,&mutations) != SPARK_STATUS_OK || count != 2u || logical[0] != prefix || logical[1] == prefix )
+		return(-20);
+	mutable_page = logical[1];
+	if ( fixture.kv.blocks[prefix].residency_reference_count != 1u || fixture.kv.blocks[mutable_page].residency_reference_count != 1u || physical[0] == physical[1] )
+		return(-21);
+	if ( SparkKvCacheArenaUnpinResidentTable(&fixture.kv.arena,logical,count) != SPARK_STATUS_OK || SparkKvPageCacheRollbackLaneTransaction(&fixture.cache,&lane,mutations) != SPARK_STATUS_OK )
+		return(-22);
+	if ( fixture.cache.sequences[1].sequence_id != 0u || fixture.kv.blocks[prefix].residency_reference_count != 0u || (fixture.kv.blocks[mutable_page].flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u )
+		return(-23);
+	SparkTestKvPageLane(&lane,3u,2u,0u,4u);
+	SparkTestKvPagePublish(&lane,4u,71u);
+	if ( SparkKvPageCacheBeginPinnedLaneTransaction(&fixture.cache,&lane,logical,physical,4u,&count,&mutations) != SPARK_STATUS_OK )
+		return(-24);
+	if ( SparkKvCacheArenaUnpinResidentTable(&fixture.kv.arena,logical,count) != SPARK_STATUS_OK || SparkKvPageCacheCompleteLane(&fixture.cache,&lane) != SPARK_STATUS_OK || fixture.cache.deduplicated_page_count != 1u )
+		return(-25);
+	return(0);
+}
+
 static void SparkTestKvPageCacheSharesImmutableChains(void)
 {
 	SparkTestKvPageFixture fixture;
@@ -1177,6 +1272,14 @@ static void SparkTestKvPageCacheReclaimsColdPrefixUnderPressure(void)
 
 int main(void)
 {
+	int32_t status;
+	status = SparkTestKvPinnedTableUsesPhysicalMapping();
+	if ( status == 0 )
+		status = SparkTestKvPinnedTableFailurePreservesOtherOwners();
+	if ( status == 0 )
+		status = SparkTestKvPagePinnedTransaction();
+	if ( status != 0 )
+		return(-status);
 	SparkTestKvLogicalBlocksReuseBoundedResidentSlots();
 	SparkTestKvEvictionBackpressurePreservesResidentOwner();
 	SparkTestKvEvictionIoErrorDegradesInsteadOfWedging();

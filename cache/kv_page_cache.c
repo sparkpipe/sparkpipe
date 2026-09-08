@@ -1038,3 +1038,57 @@ SparkStatus SparkKvPageCacheBuildLaneTable(
 	*logical_page_count_out = page_count;
 	return(SPARK_STATUS_OK);
 }
+
+static SparkStatus SparkKvPageCacheRollbackPinnedLane(
+	SparkKvPageCache *cache,
+	const SparkModelDriverCacheLane *lane,
+	const uint32_t *logical_pages,
+	uint32_t pinned_count,
+	uint32_t mutation_flags,
+	SparkStatus failure)
+{
+	SparkStatus status;
+	status = SparkKvCacheArenaUnpinResidentTable(cache->kv_cache_arena,logical_pages,pinned_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkKvPageCacheRollbackLaneTransaction(cache,lane,mutation_flags);
+	return(status == SPARK_STATUS_OK ? failure : status);
+}
+
+SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
+	SparkKvPageCache *cache,
+	const SparkModelDriverCacheLane *lane,
+	uint32_t *logical_pages,
+	uint32_t *physical_pages,
+	uint32_t page_capacity,
+	uint32_t *page_count_out,
+	uint32_t *mutation_flags_out)
+{
+	uint32_t prepared_count,page_count,pinned_count,mutable_page,mutation_flags = 0u;
+	SparkStatus status;
+	if ( page_count_out == 0 || mutation_flags_out == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*page_count_out = 0u;
+	*mutation_flags_out = 0u;
+	if ( logical_pages == 0 || physical_pages == 0 || page_capacity == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkKvPageCachePrepareLane(cache,lane,logical_pages,page_capacity,&prepared_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkKvCacheArenaPinResidentTable(cache->kv_cache_arena,logical_pages,prepared_count,physical_pages);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	pinned_count = prepared_count;
+	status = SparkKvPageCacheBeginLaneTransaction(cache,lane,&mutable_page,&mutation_flags);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageCacheBuildLaneTable(cache,lane->resident_sequence_slot,lane->sequence_id,logical_pages,page_capacity,&page_count);
+	if ( status == SPARK_STATUS_OK && page_count < prepared_count )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvCacheArenaPinResidentTable(cache->kv_cache_arena,logical_pages + prepared_count,(page_count - prepared_count),physical_pages + prepared_count);
+	if ( status != SPARK_STATUS_OK )
+		return(SparkKvPageCacheRollbackPinnedLane(cache,lane,logical_pages,pinned_count,mutation_flags,status));
+	*page_count_out = page_count;
+	*mutation_flags_out = mutation_flags;
+	return(SPARK_STATUS_OK);
+}
