@@ -17,15 +17,17 @@ class DriverProbeTests(unittest.TestCase):
         spec.loader.exec_module(compare)
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "receipt"
-            lines = [f"TOKEN step={step} row={row} input=1 output=2"
-                     for step in range(4) for row in range(3)]
-            path.write_text("\n".join(lines + ["PASS local-token-smoke fixture"]))
-            self.assertEqual(compare.token_receipt(path, 3), lines)
-            for invalid in (lines, lines[:-1] + ["PASS local-token-smoke fixture"],
-                            list(reversed(lines)) + ["PASS local-token-smoke fixture"]):
-                path.write_text("\n".join(invalid))
-                with self.assertRaises(RuntimeError):
-                    compare.token_receipt(path, 3)
+            for prefix in (False, True):
+                steps = list(range(68)) + list(range(64, 68)) + list(range(4)) if prefix else list(range(4))
+                marker = "PASS local-prefix-reuse fixture" if prefix else "PASS local-token-smoke fixture"
+                lines = [f"TOKEN step={step} row={row} input=1 output=2"
+                         for step in steps for row in range(3)]
+                path.write_text("\n".join(lines + [marker]))
+                self.assertEqual(compare.token_receipt(path, 3, prefix), lines)
+                for invalid in (lines, lines[:-1] + [marker], list(reversed(lines)) + [marker]):
+                    path.write_text("\n".join(invalid))
+                    with self.assertRaises(RuntimeError):
+                        compare.token_receipt(path, 3, prefix)
 
     def test_modes_admission_continuity_and_completion(self):
         with tempfile.TemporaryDirectory(prefix="glm-probe-test-") as directory:

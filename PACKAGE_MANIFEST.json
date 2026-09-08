@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "3fb8093e1eed62533e6c38f32dc3a8e03d4759660ff82f0b6549844718f7dc55",
-      "size_bytes": 30624
+      "sha256": "8cf526cf802ae659bb36fffacde1104e5eabc532865bf8fcec244a8a9b2cc5ac",
+      "size_bytes": 31301
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -7038,8 +7038,8 @@
     },
     {
       "path": "tests/test_glm5_next_driver_probe.py",
-      "sha256": "ffeccd5169d4892db8f5225b304e6f16c69595161dbb8a40ed5086098d4b5f08",
-      "size_bytes": 4560
+      "sha256": "a10617c4167112b82f9296b4d9b2fa2f1934386473e89dd98912f8cf16ad573e",
+      "size_bytes": 4756
     },
     {
       "path": "tests/test_glm5_next_expert_pack_layout.py",
@@ -8753,8 +8753,8 @@
     },
     {
       "path": "tools/glm5_next_driver_compare.py",
-      "sha256": "52baab505402f1c35487d23853d431077e62b824f1977b6cc0941051e2253624",
-      "size_bytes": 5434
+      "sha256": "973128fd2b537c693b889ad2fe1c31309646b2f0d02095077c9b0ebbc37ee4a4",
+      "size_bytes": 5899
     },
     {
       "path": "tools/glm5_next_driver_probe.c",
@@ -9705,5 +9705,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32614721
+  "total_bytes": 32616059
 }

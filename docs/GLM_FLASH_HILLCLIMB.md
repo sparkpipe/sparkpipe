@@ -367,6 +367,16 @@ and cache completion still precede release; uncertain cleanup retains claims.
 Validation also no longer dereferences an invalid submission to print debug
 fields after the common validator has rejected it. Both host regressions pass.
 
+The queue-owned comparison runner accepts `--prefix` to run this same probe
+for resident B1/B3 and lazy B1/two concurrent B3 consumers. It verifies all 76
+steps per row, including replay and reset, before comparing resident/lazy
+tokens. Missing, truncated and reordered receipts fail host tests. The mode is
+recorded in `RESULT.json`; it remains rank-local, with collectives disabled.
+The broader `make -j4 test` at `c6fe4fa` failed in the older DSV4 adapter test:
+its load-success assertion conflicts with mandatory rejection of its missing
+reset callback. This is an unresolved non-GLM acceptance failure. No stub or
+exception was added; the full host suite is not passing.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed

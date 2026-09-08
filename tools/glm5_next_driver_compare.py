@@ -11,14 +11,16 @@ import tempfile
 import time
 
 
-def token_receipt(path, rows):
+def token_receipt(path, rows, prefix=False):
     lines = path.read_text().splitlines()
     tokens = [line for line in lines if line.startswith("TOKEN ")]
-    if len(tokens) != rows * 4 or not any(line.startswith("PASS local-token-smoke ") for line in lines):
+    steps = list(range(68)) + list(range(64, 68)) + list(range(4)) if prefix else list(range(4))
+    marker = "PASS local-prefix-reuse " if prefix else "PASS local-token-smoke "
+    if len(tokens) != rows * len(steps) or not any(line.startswith(marker) for line in lines):
         raise RuntimeError(f"incomplete driver receipt: {path}")
     for index, line in enumerate(tokens):
         match = re.fullmatch(r"TOKEN step=(\d+) row=(\d+) input=(\d+) output=(\d+)", line)
-        if match is None or tuple(map(int, match.groups()[:2])) != divmod(index, rows):
+        if match is None or tuple(map(int, match.groups()[:2])) != (steps[index // rows], index % rows):
             raise RuntimeError(f"invalid token ordering: {path}")
     return tokens
 
@@ -59,14 +61,14 @@ def compare(args):
 
         def probe(mode, rows, name, env):
             return launch([str(args.probe.resolve()), str(args.driver.resolve()),
-                           str(args.pack.resolve()), mode, str(rows)], name, env)
+                           str(args.pack.resolve()), mode, str(rows)] + (["prefix"] if args.prefix else []), name, env)
 
         try:
             baseline = {}
             for rows in (1, 3):
                 name = f"resident-b{rows}"
                 wait(probe("resident", rows, name, environment))
-                baseline[rows] = token_receipt(args.output / (name + ".log"), rows)
+                baseline[rows] = token_receipt(args.output / (name + ".log"), rows, args.prefix)
             socket = pathlib.Path(directory) / "socket"
             server = launch([str(args.daemon.resolve()), "--socket", str(socket),
                              "--device-bytes-max", str(args.pool_bytes)], "daemon", environment)
@@ -86,13 +88,14 @@ def compare(args):
             for client in clients:
                 wait(client)
             for name, rows in (("lazy-b1", 1), ("lazy-b3-0", 3), ("lazy-b3-1", 3)):
-                if token_receipt(args.output / (name + ".log"), rows) != baseline[rows]:
+                if token_receipt(args.output / (name + ".log"), rows, args.prefix) != baseline[rows]:
                     raise RuntimeError(f"local token mismatch: {name}")
             server.terminate()
             wait(server)
             receipt = {"result": "PASS local token parity", "queue": os.environ["SPARK_QUEUE_ID"],
                        "pack_sha256": args.pack_sha256, "pool_bytes": args.pool_bytes,
                        "spine_bytes_per_consumer": args.spine_bytes,
+                       "probe": "prefix-reuse-reset" if args.prefix else "token-smoke",
                        "collectives": "disabled", "tp_degree": 16, "rank": 0,
                        "full_model_numerical_qualification": False}
             (args.output / "RESULT.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -109,6 +112,7 @@ def main():
     parser.add_argument("--pack-sha256", required=True)
     parser.add_argument("--pool-bytes", type=int, required=True)
     parser.add_argument("--spine-bytes", type=int, required=True)
+    parser.add_argument("--prefix", action="store_true", help="compare checkpoint reuse and reset continuations")
     compare(parser.parse_args())
 
 
