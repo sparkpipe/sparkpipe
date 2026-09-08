@@ -6873,8 +6873,8 @@
     },
     {
       "path": "tests/test_glm5_next_expert_pack_layout.py",
-      "sha256": "cf9f70d2410fb6c77a78c06d353f95161a5f48f43b5e5a2690df2a61b83d99b7",
-      "size_bytes": 5942
+      "sha256": "7eff8899652a904460abe8d7c8203b21ebfd6ad841867e374b755ce67f43c897",
+      "size_bytes": 6809
     },
     {
       "path": "tests/test_glm5_next_geometry.py",
@@ -6888,8 +6888,8 @@
     },
     {
       "path": "tests/test_glm5_next_pack_regions.py",
-      "sha256": "8e3b9b16ec96de9047e6291c36ca8509d567710b1df85c7b53a2f5999d10267a",
-      "size_bytes": 1526
+      "sha256": "ce01085405e4d59db1a30e30c37b534da4462cb4f2e76715278386f27f0b6a74",
+      "size_bytes": 2293
     },
     {
       "path": "tests/test_glm5_next_queue_build.py",
@@ -8563,8 +8563,8 @@
     },
     {
       "path": "tools/glm5_next_pack_verify.py",
-      "sha256": "132043a12d71f89fe5c6cc57c35303987ac9cb9e2f313c56e9eec7d930af828e",
-      "size_bytes": 14104
+      "sha256": "ac14cf8388319e4239a8516fd1b2501c9e7cd15b5e0ac76f114e388cf2ca87cf",
+      "size_bytes": 15705
     },
     {
       "path": "tools/glm5_next_resident_stagepack.py",
@@ -9435,5 +9435,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32160669
+  "total_bytes": 32163904
 }

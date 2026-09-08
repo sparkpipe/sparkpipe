@@ -5,9 +5,11 @@ import struct
 from pathlib import Path
 import sys
 import tempfile
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import glm5_next_resident_stagepack as pack
+import glm5_next_pack_verify as verify
 
 
 class Source:
@@ -92,6 +94,14 @@ def main():
                         pack.emit(builder, path, header)
                         original = path.read_bytes()
                         assert struct.unpack_from("<4I", original, 7 * 4) == (4, 1, 3, 1)
+                        source = type("VerifySource", (), {"close": lambda self: None})()
+                        argv = ["verify", "--pack", str(path), "--source", "fixture",
+                                "--tp-degree", "4", "--tp-rank", "0", "--stage-count", "4",
+                                "--stage-index", "1", "--first-layer", "3", "--layer-count", "1",
+                                "--expected-bytes", str(len(original)), "--all-tensors"]
+                        with patch.object(sys, "argv", argv), patch.object(verify, "SourceReader", return_value=source), patch.object(verify, "Packer", return_value=builder) as factory:
+                            assert verify.main() == 0
+                            factory.assert_called_once_with(source, 4, 0, 3, 1, False, False, False)
                         try:
                             pack.emit(builder, path, header)
                         except pack.PackFailure:
