@@ -1,5 +1,5 @@
 {
-  "file_count": 1921,
+  "file_count": 1924,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "b4162589cfbb8dd2e9fd68ee76d6b6bb22e4d5d2e6cd93932ddd259b994802f6",
-      "size_bytes": 94453
+      "sha256": "23cbd61022d042071fab4fac97184269471793de4ffd01b0e87e08a2066ff46c",
+      "size_bytes": 94489
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -3982,14 +3982,19 @@
       "size_bytes": 4439
     },
     {
+      "path": "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh",
+      "sha256": "61efe6d2d168534daa69aa5755b5e177100125b58e2d8345e0ac553f46726ce5",
+      "size_bytes": 1189
+    },
+    {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/launch_shape.h",
       "sha256": "aa9156215e56671e5e187642ce9226828b1ba043cb882cab6913803a13b19135",
       "size_bytes": 86
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "8d99833bb77c597753427b58f68de0495a34b3509df67f7e04806b3cf78aaaa2",
-      "size_bytes": 88946
+      "sha256": "e5a46663cd9fe9073715d26474074aee4a2562042a8d04baaf3fa9c8ff22fe9d",
+      "size_bytes": 88170
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -6427,6 +6432,11 @@
       "size_bytes": 20084
     },
     {
+      "path": "tests/host_cuda/glm_index_kv_host.cu",
+      "sha256": "f5d3e98afc64e42be5c1972b557b75b04eefc98ecc38e71e85f68a54b8eeef2a",
+      "size_bytes": 1571
+    },
+    {
       "path": "tests/host_cuda/gqa_host.cu",
       "sha256": "ad83b0925f8b55d795068efa8978f5343826f85f662af47d15747115e440bd33",
       "size_bytes": 4534
@@ -6985,6 +6995,11 @@
       "path": "tests/test_glm5_next_hc_boundary.py",
       "sha256": "0d39b8235904c146d2265377561ce752fbfb993b7739c9fc89920d33d16bc758",
       "size_bytes": 5764
+    },
+    {
+      "path": "tests/test_glm5_next_index_kv.py",
+      "sha256": "0591762069d3401f216d8986cc72244a99b6598b4bf95167db2d17be3edbd4f4",
+      "size_bytes": 660
     },
     {
       "path": "tests/test_glm5_next_lazy_dispatch.c",
@@ -9610,5 +9625,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32394573
+  "total_bytes": 32397253
 }
