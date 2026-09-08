@@ -232,6 +232,7 @@ TEST_NAMES := \
     test_release \
     test_kv_store \
     test_kv_cache \
+    test_kv_page_layout \
 	test_k3_kv_cache \
 	test_k3_dspark_pack \
 	test_k3_run_equivalence \
@@ -634,6 +635,9 @@ build/test_dsv4_cache_plan: tests/test_dsv4_cache_plan.c $(DSV4_HOST_LIBRARY) $(
 
 build/test_dsv4_parallel_shape: tests/test_dsv4_parallel_shape.c $(DSV4_HOST_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(DSV4_INCLUDE_FLAGS) $(CFLAGS) $< $(DSV4_HOST_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kv_page_layout: tests/test_kv_page_layout.c include/sparkpipe/spark_kv_page_store.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
