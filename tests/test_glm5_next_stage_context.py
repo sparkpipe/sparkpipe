@@ -167,6 +167,7 @@ SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCache
 	assert(SparkKvPageStoreConfigurationIsValid(&table->page_store_config) != 0u);
 	assert(table->page_store_config.transfer_capacity <= 2u);
 	assert(table->page_store_config.page_bytes == table->page_store_config.staging_bytes);
+	assert(table->page_store_config.maximum_backing_bytes == state.page_count * table->page_store_config.page_bytes);
 	assert(table->arena_configuration.value_device_base == state.index_cache);
 	assert(table->arena_configuration.value_block_stride_bytes == (uint64_t)state.index_layer_count * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
 	return(SPARK_STATUS_PENDING);
@@ -314,6 +315,11 @@ static int32_t check_rank_state(void)
 			return(-10);
 		if ( state.kda_k_window_pool != state.kda_q_window_pool + 9u * window_bytes || state.kda_v_window_pool != state.kda_k_window_pool + 9u * window_bytes )
 			return(-11);
+		assert(state.recurrent_page_bytes == 3u * (state_bytes + 3u * window_bytes));
+		state.kv_backing_maximum_bytes = state.page_count * (state.recurrent_page_bytes + 128u);
+		assert(SparkGlm5NextBackingCapacity(&state,128u) == SPARK_STATUS_OK);
+		state.kv_backing_maximum_bytes--;
+		assert(SparkGlm5NextBackingCapacity(&state,128u) == SPARK_STATUS_CAPACITY_EXCEEDED);
 		free_cache_fixture();
 	}
 	return(0);

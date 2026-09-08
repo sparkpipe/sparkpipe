@@ -156,6 +156,9 @@ struct SparkGlm5NextModuleState
 	SparkKvCacheArena kv_arena;
 	SparkKvPageCache kv_page_cache;
 	SparkKvPageStore kv_page_store;
+	SparkKvPageStore recurrent_store;
+	uint8_t *recurrent_staging;
+	uint64_t recurrent_page_bytes;
 	SparkKvCacheBlock *kv_blocks;
 	uint32_t *kv_resident_slot_logical_block_indices;
 	SparkKvPageCacheEntry *kv_entries;
@@ -1079,6 +1082,64 @@ static SparkStatus SparkGlm5NextPageCopy(
 	return(SparkKvPageStoreCopyLayered(&layout,direction,(uint32_t)(offset / packed_page_bytes),host_address,bytes,SparkGlm5NextDevicePageCopy,state));
 }
 
+static SparkStatus SparkGlm5NextBackingCapacity(SparkGlm5NextModuleState *state,uint64_t kv_page_bytes)
+{
+	uint64_t window_bytes,state_bytes,total;
+	if ( state->page_count == 0u || state->resident_sequence_capacity == 0u || kv_page_bytes == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	state->recurrent_page_bytes = 0u;
+	if ( state->kda_layer_count != 0u )
+	{
+		if ( state->kda_state_layer_stride_bytes % state->resident_sequence_capacity != 0u || state->kda_window_layer_stride_bytes % state->resident_sequence_capacity != 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		state_bytes = state->kda_state_layer_stride_bytes / state->resident_sequence_capacity;
+		window_bytes = state->kda_window_layer_stride_bytes / state->resident_sequence_capacity;
+		if ( state_bytes == 0u || window_bytes == 0u || window_bytes > (UINT64_MAX - state_bytes) / 3u )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		state_bytes += 3u * window_bytes;
+		if ( state_bytes > (UINT64_MAX - kv_page_bytes) / state->kda_layer_count )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		state->recurrent_page_bytes = state_bytes * state->kda_layer_count;
+	}
+	total = kv_page_bytes + state->recurrent_page_bytes;
+	if ( total > INT64_MAX / state->page_count || state->recurrent_page_bytes > SIZE_MAX / 2u )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	total *= state->page_count;
+	if ( state->kv_backing_maximum_bytes != 0u && state->kv_backing_maximum_bytes < total )
+	{
+		fprintf(stderr,"GLM cache backing budget insufficient: need %llu bytes for %u pages, configured %llu\n",(unsigned long long)total,state->page_count,(unsigned long long)state->kv_backing_maximum_bytes);
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextRecurrentInitialize(SparkGlm5NextModuleState *state,const char *backing_path)
+{
+	SparkKvPageStoreConfiguration config = {0};
+	SparkStatus status;
+	if ( state->kda_layer_count == 0u )
+		return(SPARK_STATUS_OK);
+	if ( state->recurrent_page_bytes == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( cudaHostAlloc((void **)&state->recurrent_staging,2u * state->recurrent_page_bytes,cudaHostAllocPortable) != cudaSuccess )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
+	config.logical_page_capacity = state->page_count;
+	config.transfer_capacity = 1u;
+	config.page_bytes = state->recurrent_page_bytes;
+	config.maximum_backing_bytes = state->page_count * state->recurrent_page_bytes;
+	config.backing_path = backing_path;
+	// First half is caller-owned gather/scatter storage; the worker uses the second.
+	config.staging_address = state->recurrent_staging + state->recurrent_page_bytes;
+	config.staging_bytes = state->recurrent_page_bytes;
+	status = SparkKvPageStoreInitialize(&state->recurrent_store,&config);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageCacheAttachStateStore(&state->kv_page_cache,&state->recurrent_store);
+	return(status);
+}
+
 static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 {
 	SparkKvModelTable table;
@@ -1097,6 +1158,9 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	if ( index_block_bytes > UINT64_MAX - block_bytes )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	payload_bytes = block_bytes + index_block_bytes;
+	status = SparkGlm5NextBackingCapacity(state,payload_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	lane_page_entries = (uint64_t)state->resident_sequence_capacity *
 		state->pages_per_sequence;
 	state->kv_blocks = (SparkKvCacheBlock *)calloc(state->page_count,sizeof(*state->kv_blocks));
@@ -1157,10 +1221,7 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		mkdir(state->kv_backing_default,0700);
 		table.page_store_config.backing_path = state->kv_backing_default;
 	}
-	table.page_store_config.maximum_backing_bytes =
-		state->kv_backing_maximum_bytes >= payload_bytes
-			? state->kv_backing_maximum_bytes
-			: payload_bytes;
+	table.page_store_config.maximum_backing_bytes = state->page_count * payload_bytes;
 	table.page_store_config.staging_address = state->kv_page_staging;
 	table.page_store_config.staging_bytes = payload_bytes;
 	table.page_store_config.copy_function = SparkGlm5NextPageCopy;
@@ -1190,7 +1251,7 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		(uint64_t)state->page_count * block_bytes !=
 			state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	return(status);
+	return(SparkGlm5NextRecurrentInitialize(state,table.page_store_config.backing_path));
 }
 
 static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
@@ -2884,6 +2945,10 @@ SparkStatus SparkGlm5NextResidentDecodeStageSnapshot(
 
 static void SparkGlm5NextReleaseCaches(SparkGlm5NextModuleState *state)
 {
+	if ( state->recurrent_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
+		SparkKvPageStoreDestroy(&state->recurrent_store);
+	if ( state->recurrent_staging != 0 )
+		(void)cudaFreeHost(state->recurrent_staging);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	free(state->kda_state_index_host);

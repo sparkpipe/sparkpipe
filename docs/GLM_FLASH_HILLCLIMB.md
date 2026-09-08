@@ -217,7 +217,7 @@ it with the matching KV record. `SparkKvPageStoreInvalidatePair` checks both
 stores under a fixed lock order before changing either. A busy read or a stale
 generation leaves both intact. `SparkKvPageCacheEvictUnused` reuses the existing
 LRU policy for backing-capacity pressure. Page-cache ABI is 4 because the cache
-now retains the attached store. GLM has not yet attached/populated that store.
+now retains the attached store. GLM attaches that store at startup; capture and restore remain unfinished.
 
 This work exposed an existing reclamation error: release dropped the logical
 reference before finding that the page remained pinned. The new regression
@@ -232,8 +232,7 @@ deduplicating the mutable page, under the page-store lock, without scheduling
 a transfer. A missing or stale record leaves the prefix unpublished and the
 sequence position unchanged. The real backing-store regression first rejects
 missing and wrong-generation records, then saves the correct record and proves
-successful publication and paired eviction. GLM still needs to attach its
-store and save the recurrent payload before invoking completion.
+successful publication and paired eviction. GLM must still save the recurrent payload before invoking completion.
 
 GLM initialization failure previously released its ledger and module object
 without destroying the cache worker or freeing cache host allocations. Normal
@@ -241,11 +240,23 @@ shutdown and initialization failure now share one cache cleanup helper, which
 joins the store worker before freeing staging memory. The host harness queues
 a real backing write and verifies teardown closes the descriptor and removes
 the worker; partial-allocation fixtures use the same production helper.
-Checkpoint capacity remains an integration issue: the current zero-budget KV
-default holds one backing page. KV and recurrent records must share the stated
-budget, and active prefix ancestors cannot be evicted as whole entries while
-referenced. Do not add a second store that silently doubles the budget or waits
-forever for an active ancestor to become evictable.
+Checkpoint backing capacity now covers one KV/index record and one recurrent
+record per logical page. The two stores share the configured upper bound;
+startup reports the required bytes when an explicit budget is too small.
+A zero budget derives this capacity from geometry, replacing the one-KV-page
+default. The deployment generators use that derived capacity instead of a
+fixed 8 GiB budget. This is a backing-file limit, not a GPU allocation; record
+payloads consume disk space as they are written. Reserving record capacity for
+all logical pages avoids waiting to evict referenced prefix ancestors.
+
+Successful GLM cache initialization creates and attaches the recurrent store.
+Two checkpoint-sized pinned host buffers provide gather/scatter storage and
+worker staging; they do not scale with logical page count. The store uses host
+copies, with CUDA gather/scatter performed by the model hook on its owning
+execution context. Shared cleanup joins the worker before freeing the buffers.
+TP1/4/16 host tests verify checkpoint sizes, combined budget arithmetic, exact
+budget acceptance and rejection one byte below it. These are host checks;
+merged-main GPU initialization and capture/restore remain unqualified.
 
 The GLM recurrent copy hook now describes four existing pools to
 `SparkKvPageStoreCopyLayered`: KDA state followed by Q, K and V convolution
