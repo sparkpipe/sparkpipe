@@ -135,6 +135,13 @@ void spark_stub_cuda_fail_alloc_call(uint32_t one_based_call_index)
     cuda_stub_fail_alloc_at = (int32_t)one_based_call_index;
 }
 
+void spark_stub_cuda_fail_next_alloc(void)
+{
+    cuda_stub_ledger_lock();
+    cuda_stub_fail_alloc_at = (int32_t)(cuda_stub_alloc_calls + 1u);
+    cuda_stub_ledger_unlock();
+}
+
 void spark_stub_cuda_fail_host_map_call(uint32_t one_based_call_index)
 {
     cuda_stub_fail_host_map_at = (int32_t)one_based_call_index;
@@ -982,4 +989,3 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
     }
     return cuda_stub_free(reservation);
 }
-

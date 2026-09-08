@@ -761,6 +761,7 @@ static SparkStatus SparkStageModulePackArenaEnsure(
 	arena = (SparkStageModulePackArena *)calloc(1u,sizeof(*arena));
 	if (arena == 0)
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	arena->status = SPARK_STATUS_BUSY;
 	ledger->pack_arena = arena;
 	path_bytes = -1;
 	(void)snprintf(fd_path,sizeof(fd_path),"/proc/self/fd/%d",fileno(file));

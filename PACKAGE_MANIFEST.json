@@ -1,5 +1,5 @@
 {
-  "file_count": 1880,
+  "file_count": 1881,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -5943,8 +5943,8 @@
     },
     {
       "path": "runtime/stage_module_common.c",
-      "sha256": "fe7e8b4b082970fe4392a0092fc7c0fe7394d8f77762dd89ce47177d5d86e638",
-      "size_bytes": 52758
+      "sha256": "45deb89c053eaadd84b8ee72cf84fb2ec3a1896d48d6cb8fb06ffe0e349e6f34",
+      "size_bytes": 52794
     },
     {
       "path": "runtime/stage_module_lifecycle.c",
@@ -6068,8 +6068,8 @@
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_stub.c",
-      "sha256": "32f3ea10c09914d7be98ab7b3c43655f018a2a1ecd957edb483d27557adbd7ca",
-      "size_bytes": 26224
+      "sha256": "9e00c917e72ff3208334a4841b49580376f3f754bc669b74487ee7da8e8ee741",
+      "size_bytes": 26400
     },
     {
       "path": "tests/fake_model_kernel_probe_module.c",
@@ -7573,8 +7573,8 @@
     },
     {
       "path": "tests/test_stage_module_weightd.c",
-      "sha256": "cecf2f5e6ee4093f9195cb0c6833eccbb6b083708243ab775b07f878d63574ec",
-      "size_bytes": 6650
+      "sha256": "107cd5e893502363431c277838c7c5d291f4b422fc09410a854b9422649c13ee",
+      "size_bytes": 6781
     },
     {
       "path": "tests/test_staging_manifest.py",
@@ -7678,8 +7678,8 @@
     },
     {
       "path": "tests/test_weightd_expert.c",
-      "sha256": "c8d742f1a8a82f7fee4ef3a42fa6da888dcc340a99d75d395411f9b72e1ae8dd",
-      "size_bytes": 14790
+      "sha256": "9578b666fb1f6fe6538cb1401a610e1b93612339c62a939a240477b550e8fded",
+      "size_bytes": 15502
     },
     {
       "path": "tests/test_weightd_map.c",
@@ -9258,8 +9258,13 @@
     },
     {
       "path": "tools/spark_queue.py",
-      "sha256": "5a66828aae72de757079a0f13e11742f1838ace11daac5dc342dacf78a4090dc",
-      "size_bytes": 20081
+      "sha256": "6ec45a66b28cc2b69abf95076be857a7ff777011447678a047f2f9d48b505066",
+      "size_bytes": 20190
+    },
+    {
+      "path": "tools/spark_queue_live_gate.py",
+      "sha256": "abfa54b0c8c277eee12c4b1b959e062ac1ebf2a8c5170fe442273df572b8b78b",
+      "size_bytes": 4825
     },
     {
       "path": "tools/spark_ssh_proxy.py",
@@ -9405,5 +9410,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32100077
+  "total_bytes": 32106066
 }

@@ -292,6 +292,19 @@ int main(void)
         SPARK_TEST_POOL_BYTES, &attach_a);
     assert(attach_a.status == SPARK_STATUS_OK);
     assert(attach_a.expert_count == SPARK_TEST_EXPERTS_PER_MODEL);
+    {
+        SparkWeightdLazyAttachResult refused;
+        assert(rename("/tmp/spark_weightd_expert_a.bin.experts",
+            "/tmp/spark_weightd_expert_a.bin.experts.saved") == 0);
+        SparkTestLazyAttach(client, &identity_a, "/tmp/spark_weightd_expert_a.bin",
+            SPARK_TEST_POOL_BYTES, &refused);
+        assert(refused.status == SPARK_STATUS_NOT_FOUND);
+        assert(rename("/tmp/spark_weightd_expert_a.bin.experts.saved",
+            "/tmp/spark_weightd_expert_a.bin.experts") == 0);
+        SparkTestLazyAttach(client, &identity_a, "/tmp/spark_weightd_expert_a.bin",
+            SPARK_TEST_POOL_BYTES + 1u, &refused);
+        assert(refused.status == SPARK_STATUS_INVALID_ARGUMENT);
+    }
     assert(attach_a.resident_bytes == 0ull);
     SparkTestLazyAttach(client, &identity_b, "/tmp/spark_weightd_expert_b.bin",
         SPARK_TEST_POOL_BYTES, &attach_b);

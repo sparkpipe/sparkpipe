@@ -103,7 +103,7 @@ def remote(job, node, action):
         command = (f'if [ "$({ctl} show {unit} -p LoadState --value)" != not-found ]; '
                    f"then {ctl} stop {unit} >/dev/null 2>&1 || exit 1; fi; {show}")
     elif action == "launch":
-        remaining = max(1, int(job["deadline"] - time.time()))
+        remaining = max(1, math.ceil(job["deadline"] - time.time()))
         cwd = (job.get("cwd") or "$HOME").replace("{host}", node)
         cd = 'cd "$HOME"' if cwd == "$HOME" else "cd " + shlex.quote(cwd)
         inner = cd + " && exec bash -c " + shlex.quote(job["cmd"])
@@ -189,7 +189,8 @@ def reconcile(snapshot):
             failed = any(r.get("ActiveState") == "failed" or
                          (terminal(r) and int(r.get("ExecMainStatus", "0")) != 0) for _, r in results.values())
             if missing or failed:
-                job.update(state="stopping", exit=1)
+                code = 124 if any(r.get("Result") == "timeout" for _, r in results.values()) else 1
+                job.update(state="stopping", exit=code)
             elif all(terminal(r) for _, r in results.values()):
                 job.update(state="stopping", exit=0)
             else:

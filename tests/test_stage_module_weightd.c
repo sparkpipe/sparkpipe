@@ -16,6 +16,8 @@
 #define PACK_BYTES (256u * 1024u)
 #define SOCKET_PATH "/tmp/test_stage_module_weightd.sock"
 
+void spark_stub_cuda_fail_next_alloc(void);
+
 static void TestStageFillPack(uint8_t *buffer, uint64_t bytes)
 {
 	uint64_t index;
@@ -168,6 +170,8 @@ int main(void)
 	(void)fclose(file);
 	printf("stage_module_weightd: reattach after release PASS\n");
 	TestStageAttachFailureAllocatesNothing("1111111111111111111111111111111111111111111111111111111111111111");
+	spark_stub_cuda_fail_next_alloc();
+	TestStageAttachFailureAllocatesNothing(sha_hex);
 
 	setenv("SPARK_WEIGHTD_ATTACH","0",1);
 	memset(&ledger,0,sizeof(ledger));
