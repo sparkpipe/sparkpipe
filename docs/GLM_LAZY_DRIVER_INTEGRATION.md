@@ -20,3 +20,7 @@ Replacing attach alone cannot make this lazy. The route-to-expert submission bou
 ## Required acceptance evidence
 
 Compare resident and lazy paths numerically for arbitrary rows including 1, 3, 17, 97, and 100 once execution capacity supports them. Exercise at least two consumers with overlapping/disjoint routed sets under a pool smaller than full expert storage; demonstrate actual consumer-local CUDA maps and bounded residency. Cover queue cancellation, partial acquisition, missing/corrupt manifests, checksum failures, pending completion, and disconnected consumers. GPU/deployment qualification must use merged-main zero-drift queue builds. Current host/stub tests do not establish these gates.
+
+## Route/expert boundary implementation
+
+The draft now splits Glm5NextLayerMoe into Route and Experts helpers and exposes SparkGlm5NextLaunchCudaLayerMlpRoute/Experts. The resident wrapper invokes both in order; dense layers complete in Route and Experts is a no-op for those layers. Kernel submission bodies were preserved during extraction. The lazy runtime state machine is not connected yet: it must retain the same slot/stream between calls and satisfy all lease gates above. CUDA CI now includes the glm5_next FP8 translation unit; compilation and numerical parity must be checked on the resulting revision before qualification.

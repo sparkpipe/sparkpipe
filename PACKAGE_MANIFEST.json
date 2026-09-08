@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "00e0ed62d413faff5223c2b51423f9f358ed1343118d120aec5bf66e4c9ccbe3",
-      "size_bytes": 3621
+      "sha256": "7d2cc535d85cfb664a8b599dd780cb45f894f1af62846e318ad6aa426650653f",
+      "size_bytes": 4257
     },
     {
       "path": "docs/GOALS.md",
@@ -3973,8 +3973,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "a32980b7a65ee6e57c918bdf4e9e42ba74df8aedb06aa47b1b3078c16cd7f2f9",
-      "size_bytes": 87428
+      "sha256": "a47c96ebf9e492843c9db05274065736acae19f5585fbec0ba434a526410a62c",
+      "size_bytes": 88909
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -3983,13 +3983,13 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "99b758a3044b77299f77b0573fb08640f16d328ae0a6cf1a85986eb02748051c",
-      "size_bytes": 43802
+      "sha256": "0a1e7612b46f37fa084d088777d5a706699739443c60347aefc114f4bc75b0ba",
+      "size_bytes": 45249
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
-      "sha256": "2e847ccf6d9f107ac6650a607c5a3492b3936fd1e0307f66ea3211ea317e7ebf",
-      "size_bytes": 9026
+      "sha256": "cc69ffd78973ea6975ab982c065d6057db3dc9f9703dd3a532c1c1ffab1abfa0",
+      "size_bytes": 9385
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
@@ -7878,8 +7878,8 @@
     },
     {
       "path": "tools/cuda13_sm121a_compile_gate.sh",
-      "sha256": "c2c0bc90bc065db22b437219ca2eea7e8bde5b6388ea673912658eec26894bc5",
-      "size_bytes": 8552
+      "sha256": "6b25949f3d9fdbde3e7870ee4b53102ae3a8d87b7b283165df1fdfcd335a1337",
+      "size_bytes": 9146
     },
     {
       "path": "tools/devcycle.sh",
@@ -9535,5 +9535,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32297340
+  "total_bytes": 32301857
 }
