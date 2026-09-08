@@ -61,8 +61,7 @@ SparkStatus SparkAdmissionRequestFromFrame(
     request->sequence_position = frame->sequence_position;
     request->deadline_time_ns = frame->deadline_time_ns;
     request->active_slot_count = frame->active_slot_count;
-    request->new_token_count =
-        frame->new_token_count != 0u ? frame->new_token_count : 1u;
+    request->new_token_count = frame->new_token_count;
     request->priority = frame->priority;
     request->frame_flags = frame->flags;
     request->admission_flags = admission_flags;

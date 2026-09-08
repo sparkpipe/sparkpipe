@@ -27,6 +27,7 @@ typedef struct probe_state
 	SparkModelDriverFrame frame;
 	SparkModelDriverBuffer buffer;
 	SparkModelDriverCompletion completion;
+	SparkModelDriverCacheLane cache_lanes[PROBE_ROWS];
 	atomic_uint completed;
 	uint32_t tokens[PROBE_ROWS],slots[PROBE_ROWS],outputs[PROBE_ROWS];
 	uint64_t positions[PROBE_ROWS],sequences[PROBE_ROWS];
@@ -129,6 +130,7 @@ static void probe_batch(probe_state_t *state,uint32_t rows,uint32_t step)
 		state->positions[row] = step;
 		state->sequences[row] = (row + 1u);
 		state->outputs[row] = UINT32_MAX;
+		state->cache_lanes[row] = (SparkModelDriverCacheLane){.sequence_id=(row + 1u),.sequence_position=step,.request_generation=1u,.step_generation=(step + 1u),.resident_sequence_slot=row,.context_token_count=(step + 1u)};
 	}
 	state->batch.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION;
 	state->batch.descriptor_bytes = sizeof(state->batch);
@@ -166,23 +168,58 @@ static void probe_frame(probe_state_t *state,uint32_t rows,uint32_t step)
 	frame->user_context = &state->context;
 	frame->completion_function = probe_complete;
 	frame->completion_context = state;
+	frame->cache_lanes = state->cache_lanes;
+	frame->cache_lane_count = rows;
+}
+
+static SparkStatus probe_request(probe_state_t *state,SparkModelDriverAdmissionRequest *request)
+{
+	SparkStatus status = SparkAdmissionRequestFromFrame(state->program->program_id,&state->frame,state->cache_lanes,0u,request);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request->submission_id = state->frame.request_id;
+	request->control_generation = 1u;
+	request->transaction_id = state->frame.request_id;
+	request->request_generation = 1u;
+	request->step_generation = state->frame.request_id;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus probe_submit(probe_state_t *state)
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status,rollback;
+	status = probe_request(state,&request);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
+	status = SparkAdmissionEvaluate(state->driver.interface,state->instance,&request,&decision);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	status = SparkAdmissionEvaluate(state->driver.interface,state->instance,&request,&decision);
+	request.admission_flags = 0u;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkAdmissionEvaluateAndApply(state->driver.interface,state->instance,&request,&state->frame,&decision);
+	if ( status == SPARK_STATUS_OK )
+		status = state->program->submit(state->instance,&state->frame);
+	if ( status == SPARK_STATUS_OK )
+		return(status);
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	rollback = SparkAdmissionEvaluate(state->driver.interface,state->instance,&request,&decision);
+	return(rollback == SPARK_STATUS_OK ? status : rollback);
 }
 
 static int32_t probe_step(probe_state_t *state,uint32_t rows,uint32_t step)
 {
-	SparkModelDriverAdmissionRequest request;
-	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
 	uint32_t row;
 	int32_t result;
 	probe_batch(state,rows,step);
 	probe_frame(state,rows,step);
 	atomic_store_explicit(&state->completed,0u,memory_order_release);
-	status = SparkAdmissionRequestFromFrame(state->program->program_id,&state->frame,0,0u,&request);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkAdmissionEvaluateAndApply(state->driver.interface,state->instance,&request,&state->frame,&decision);
-	if ( status == SPARK_STATUS_OK )
-		status = state->program->submit(state->instance,&state->frame);
+	status = probe_submit(state);
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"submit step=%u status=%d\n",step,status);
@@ -202,6 +239,33 @@ static int32_t probe_step(probe_state_t *state,uint32_t rows,uint32_t step)
 			return(-10);
 		printf("TOKEN step=%u row=%u input=%u output=%u\n",step,row,state->tokens[row],state->outputs[row]);
 	}
+	return(0);
+}
+
+static int32_t probe_release(probe_state_t *state,uint32_t rows)
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	SparkModelDriverRuntimeSnapshot snapshot;
+	SparkStatus status;
+	uint32_t row;
+	state->frame.request_id = PROBE_STEPS + 1u;
+	state->frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
+	state->frame.new_token_count = 0u;
+	state->frame.sequence_position = PROBE_STEPS;
+	for (row=0u; row<rows; row++)
+	{
+		state->cache_lanes[row].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
+		state->cache_lanes[row].sequence_position = PROBE_STEPS;
+		state->cache_lanes[row].step_generation = PROBE_STEPS + 1u;
+	}
+	status = probe_request(state,&request);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkAdmissionEvaluate(state->driver.interface,state->instance,&request,&decision);
+	if ( status == SPARK_STATUS_OK )
+		status = state->driver.interface->snapshot(state->instance,state->program->program_id,&snapshot);
+	if ( status != SPARK_STATUS_OK || snapshot.active_submission_count != 0u || snapshot.resident_sequence_count != 0u )
+		return(-12);
 	return(0);
 }
 
@@ -228,6 +292,8 @@ int main(int argc,char **argv)
 	result = probe_open(&state,argv[1],argv[2],rows);
 	for (step=0u; result == 0 && step<PROBE_STEPS; step++)
 		result = probe_step(&state,rows,step);
+	if ( result == 0 )
+		result = probe_release(&state,rows);
 	if ( result != 0 )
 	{
 		fprintf(stderr,"probe failed result=%d; process exit preserves uncertain in-flight ownership\n",result);

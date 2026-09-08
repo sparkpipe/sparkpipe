@@ -66,6 +66,28 @@ static void TestBuildSubmissions(SparkModelServingSubmission *submissions,SparkM
 	submissions[1].submission_id = 2u;
 }
 
+static int32_t TestFrameTokenCount(void)
+{
+	SparkModelDriverFrame frame = {0};
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	SparkAdmissionPolicyTable policy = {0};
+	frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
+	if ( SparkAdmissionRequestFromFrame(1u,&frame,0,0u,&request) != SPARK_STATUS_OK || request.new_token_count != 0u )
+		return(-1);
+	frame.flags = 0u;
+	frame.active_slot_count = 1u;
+	policy.abi_version = SPARK_ADMISSION_ABI_VERSION;
+	policy.descriptor_bytes = sizeof(policy);
+	if ( SparkAdmissionRequestFromFrame(1u,&frame,0,0u,&request) != SPARK_STATUS_OK || SparkAdmissionEvaluateShape(&policy,1u,&request,&decision) != SPARK_STATUS_OK || decision.accepted != 0u )
+		return(-2);
+	frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	frame.new_token_count = 3u;
+	if ( SparkAdmissionRequestFromFrame(1u,&frame,0,0u,&request) != SPARK_STATUS_OK || request.new_token_count != 3u )
+		return(-3);
+	return(0);
+}
+
 int main(void)
 {
 	SparkModelServingSubmission submissions[2] = {0};
@@ -76,6 +98,8 @@ int main(void)
 	TestState state = {0};
 	SparkServingCacheAdmission cache = {1u,3u,scratch,&driver,&state,TestValidate,&state};
 	SparkStatus status;
+	if ( TestFrameTokenCount() != 0 )
+		return(9);
 	driver.admit = TestAdmit;
 	TestBuildSubmissions(submissions,lanes);
 	status = SparkServingCacheAdmissionRun(&cache,submissions,2u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);

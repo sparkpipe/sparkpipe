@@ -48,6 +48,8 @@ class DriverProbeTests(unittest.TestCase):
                 ("resident", "3", {"PROBE_BAD_COMPLETION": "1"}, 4),
                 ("resident", "2", {}, 2),
             ]
+            cases += [("resident", "3", {"PROBE_FAIL_PHASE": str(phase)}, 4)
+                      for phase in range(1, 5)]
             for mode, rows, extra, expected in cases:
                 with self.subTest(mode=mode, rows=rows, extra=extra):
                     result = subprocess.run([binary, "fixture", "pack", mode, rows],

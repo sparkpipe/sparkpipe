@@ -111,6 +111,41 @@ SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCache
 	return(SPARK_STATUS_PENDING);
 }
 
+static int32_t check_cache_release(void)
+{
+	SparkTestKvTransactions fixture;
+	SparkModelDriverFrame frame;
+	SparkModelDriverAdmissionDecision decision;
+	SparkTestKvTransactionsInitialize(&fixture,2u);
+	memset(&state,0,sizeof(state));
+	state.kv_transactions = fixture.transactions;
+	state.pipeline_slot_count = 1u;
+	if ( pthread_mutex_init(&state.kv_mutex,0) != 0 )
+		return(-30);
+	if ( SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) != SPARK_STATUS_OK )
+		return(-31);
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	if ( SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) != SPARK_STATUS_OK )
+		return(-32);
+	frame = SparkTestKvTransactionFrame(&fixture.request);
+	if ( SparkKvLaneTransactionsClaim(&fixture.transactions,&frame) != SPARK_STATUS_OK || SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){0u,1u},2u,SPARK_STATUS_OK,0u) != SPARK_STATUS_OK )
+		return(-33);
+	atomic_store(&state.lane_bound[0],1u);
+	atomic_store(&state.lane_bound[1],1u);
+	fixture.request.admission_flags = 0u;
+	fixture.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
+	fixture.request.new_token_count = 0u;
+	fixture.lanes[0].sequence_position = fixture.lanes[1].sequence_position = 1u;
+	fixture.lanes[0].flags = fixture.lanes[1].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
+	if ( SparkGlm5NextResidentDecodeStageAdmit(&state,&fixture.request,&decision) != SPARK_STATUS_OK || SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u )
+		return(-34);
+	if ( fixture.pages.cache.live_sequence_count != 0u || atomic_load(&state.lane_bound[0]) != 0u || atomic_load(&state.lane_bound[1]) != 0u )
+		return(-35);
+	pthread_mutex_destroy(&state.kv_mutex);
+	memset(&state,0,sizeof(state));
+	return(0);
+}
+
 static int32_t check_batch_waves(void)
 {
 	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
@@ -275,6 +310,9 @@ int32_t main(void)
 	int32_t status = check_cache_transactions();
 	if ( status != 0 )
 		return(-status);
+	status = check_cache_release();
+	if ( status != 0 )
+		return(-status);
 	if ( check_batch_waves() != 0 )
 		return(1);
 	if ( check_layered_page_copy() != 0 )
@@ -341,7 +379,7 @@ def main():
                         str(source), "runtime/stage_module_common.c", "cache/kv_cache.c", "cache/kv_page_cache.c",
                         "-o", str(binary)], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS actual module context, cache transaction ownership, physical mapping and unchanged-map upload suppression")
+    print("PASS actual module context, cache transaction ownership, release, physical mapping and unchanged-map upload suppression")
 
 
 if __name__ == "__main__":

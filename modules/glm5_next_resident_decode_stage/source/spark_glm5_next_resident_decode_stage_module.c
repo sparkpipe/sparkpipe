@@ -1237,11 +1237,20 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 {
 	SparkGlm5NextModuleState *state = (SparkGlm5NextModuleState *)context;
 	SparkStatus status;
+	uint32_t lane,slot;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	status = SparkKvLaneTransactionsAdmit(&state->kv_transactions,request);
+	if ( status == SPARK_STATUS_OK && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
+		for (lane=0u; lane<request->cache_lane_count; lane++)
+		{
+			slot = request->cache_lanes[lane].resident_sequence_slot;
+			atomic_store_explicit(&state->lane_bound[slot],0u,memory_order_release);
+			if ( state->mtp_lane_armed != 0 )
+				state->mtp_lane_armed[slot] = 0u;
+		}
 	(void)pthread_mutex_unlock(&state->kv_mutex);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -2756,6 +2765,13 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	state = (SparkGlm5NextModuleState *)module_state;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
+	{
+		if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u || request->new_token_count != 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		SparkModelDriverInitializeAdmissionDecision(decision);
+		return(SparkGlm5NextAdmissionPredicate(state,request,decision));
+	}
 	available = request->request_id != 0u && atomic_load_explicit(&state->slot_states[request->request_id % state->pipeline_slot_count],memory_order_acquire) == SPARK_STAGE_MODULE_SLOT_FREE ? 1u : 0u;
 	memset(&table,0,sizeof(table));
 	table.abi_version = SPARK_ADMISSION_ABI_VERSION;

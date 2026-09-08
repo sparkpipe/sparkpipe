@@ -172,7 +172,7 @@ typedef struct SparkKvLaneTransaction
 
 /* Startup-owned storage; zero-initialize records and epoch. Caller serializes
  * every operation with admission/completion, and drains device work before
- * FinishLane. Tables have sequence_capacity * page_capacity elements. */
+ * Finish. Tables have sequence_capacity * page_capacity elements. */
 typedef struct SparkKvLaneTransactions
 {
 	SparkKvPageCache *cache;

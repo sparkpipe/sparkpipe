@@ -27,7 +27,7 @@ HARNESS = r"""
 #undef main
 static int32_t TestAdapterCacheAdmission(void)
 {
-    SparkGlm5NextServingState state = {0};
+    static SparkGlm5NextServingState state;
     SparkGlm5NextServingPending pending = {0};
     SparkModelServingSubmission submissions[2] = {0};
     SparkModelServingLane lanes[3] = {0};
@@ -50,11 +50,144 @@ static int32_t TestAdapterCacheAdmission(void)
         return(-3);
     return(0);
 }
+static SparkModelDriverFrame *DeferredFrame;
+static SparkModelServingCompletion DeferredCompletion;
+static uint32_t ReleaseCount;
+
+static SparkStatus TestLifecycleAdmit(void *context,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
+{
+    uint32_t lane;
+    if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) == 0u )
+        return(TestAdmit(context,request,decision));
+    if ( request->new_token_count != 0u || request->cache_lane_count != 3u )
+        return(SPARK_STATUS_SCHEMA_ERROR);
+    for (lane=0u; lane<3u; lane++)
+        if ( request->cache_lanes[lane].flags != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE )
+            return(SPARK_STATUS_SCHEMA_ERROR);
+    ReleaseCount++;
+    decision->accepted = 1u;
+    decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+    return(SPARK_STATUS_OK);
+}
+
+static SparkStatus TestDeferredSubmit(void *context,SparkModelDriverFrame *frame)
+{
+    (void)context;
+    DeferredFrame = frame;
+    return(SPARK_STATUS_OK);
+}
+
+static void TestDeferredComplete(void *context,const SparkModelServingCompletion *completion)
+{
+    (void)context;
+    DeferredCompletion = *completion;
+}
+
+static int32_t TestSubmitBorrowedRows(SparkGlm5NextServingState *state)
+{
+    SparkModelServingSubmission submissions[2] = {0};
+    SparkModelServingLane lanes[3] = {0};
+    uint32_t tokens[3] = {11,12,13},indices[3] = {0,1,2},row;
+    uint64_t positions[3] = {64,64,64},sequences[3] = {100,101,102};
+    TestBuildSubmissions(submissions,lanes);
+    submissions[0].request_id = submissions[0].sequence_id = 100u;
+    submissions[0].dispatch_generation = 1u;
+    submissions[0].row_count = submissions[0].token_count = 3u;
+    submissions[0].token_ids = tokens;
+    submissions[0].row_lane_indices = indices;
+    submissions[0].row_positions = positions;
+    submissions[0].row_sequence_ids = sequences;
+    for (row=0u; row<3u; row++)
+    {
+        lanes[row].request_id = 100u + row;
+        lanes[row].flags |= SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+    }
+    if ( SparkGlm5NextServingSubmit(state,submissions) != SPARK_STATUS_OK )
+        return(-4);
+    memset(tokens,0,sizeof(tokens));
+    memset(positions,0,sizeof(positions));
+    memset(sequences,0,sizeof(sequences));
+    memset(submissions,0,sizeof(submissions));
+    memset(lanes,0,sizeof(lanes));
+    return(0);
+}
+
+static int32_t TestSubmitRelease(SparkGlm5NextServingState *state)
+{
+    SparkModelServingSubmission submissions[2] = {0};
+    SparkModelServingLane lanes[3] = {0};
+    uint32_t row;
+    TestBuildSubmissions(submissions,lanes);
+    submissions[0].request_id = submissions[0].sequence_id = 100u;
+    submissions[0].dispatch_generation = 1u;
+    submissions[0].work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
+    submissions[0].tokens_per_sequence = submissions[0].new_token_count = 0u;
+    for (row=0u; row<3u; row++)
+    {
+        lanes[row].request_id = 100u + row;
+        lanes[row].flags = 0u;
+        lanes[row].cache_prefix_token_count = 0u;
+        memset(&lanes[row].cache_prefix_identity,0,sizeof(lanes[row].cache_prefix_identity));
+    }
+    DeferredFrame = 0;
+    ReleaseCount = 0u;
+    memset(&DeferredCompletion,0xff,sizeof(DeferredCompletion));
+    if ( SparkGlm5NextServingSubmit(state,submissions) != SPARK_STATUS_OK )
+        return(-9);
+    if ( ReleaseCount != 1u || DeferredFrame != 0 || state->pending[0].active != 0u )
+        return(-10);
+    if ( DeferredCompletion.status != SPARK_STATUS_OK || DeferredCompletion.token_count != 0u || DeferredCompletion.tokens_per_sequence != 0u || DeferredCompletion.accepted_token_count != 0u || DeferredCompletion.completion_flags != 0u )
+        return(-11);
+    return(0);
+}
+
+static int32_t TestDeferredFrameLifetime(void)
+{
+    static SparkGlm5NextServingState state;
+    SparkModelDriverInterface driver = {0};
+    SparkModelDriverProgramDescriptor program = {0};
+    SparkModelDriverCompletion completion = {0};
+    SparkGlm5NextServingPending *pending = &state.pending[0];
+    TestState observed = {0};
+    uint32_t row;
+    state.runtime_limits = (SparkModelServingRuntimeLimits){.abi_version=SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,.descriptor_bytes=SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES,.max_inflight_submission_count=1u,.max_active_sequence_count=3u,.max_input_row_count=3u,.resident_sequence_capacity=8u,.kv_logical_page_capacity=8u,.kv_physical_page_capacity=8u};
+    state.node_context.max_sequence_positions = 128u;
+    state.pipeline_slot_count = 1u;
+    driver.admit = TestLifecycleAdmit;
+    program.program_id = 1u;
+    program.submit = TestDeferredSubmit;
+    state.program = &program;
+    state.driver.interface = &driver;
+    state.driver_instance = &observed;
+    state.completion_function = TestDeferredComplete;
+    if ( TestSubmitBorrowedRows(&state) != 0 || DeferredFrame != &pending->frame )
+        return(-5);
+    if ( DeferredFrame->user_context != &pending->context || DeferredFrame->buffers != &pending->buffer || pending->context.batch != &pending->batch )
+        return(-6);
+    for (row=0u; row<3u; row++)
+    {
+        if ( pending->batch.token_ids[row] != 11u + row || pending->batch.row_positions[row] != 64u || pending->batch.row_sequence_ids[row] != 100u + row || pending->batch.row_resident_slots[row] != 7u - row )
+            return(-7);
+        pending->output_token_ids[row] = 20u + row;
+    }
+    completion.request_id = completion.sequence_id = 100u;
+    completion.sequence_position = 64u;
+    completion.program_id = 1u;
+    completion.accepted_token_count = 3u;
+    completion.tokens_per_sequence = 1u;
+    DeferredFrame->completion_function(DeferredFrame->completion_context,&completion);
+    if ( pending->active != 0u || DeferredCompletion.status != SPARK_STATUS_OK || DeferredCompletion.token_count != 3u || DeferredCompletion.token_ids[2] != 22u )
+        return(-8);
+    return(TestSubmitRelease(&state));
+}
+
 int main(int argc, char **argv)
 {
     if ( TestAdapterCacheAdmission() != 0 )
         return(2);
-    SparkGlm5NextServingState state;
+    if ( TestDeferredFrameLifetime() != 0 )
+        return(3);
+    static SparkGlm5NextServingState state;
     uint32_t msp = 0, erc = 0, dsct = 0, tpd = 0, tpr = 0;
     memset(&state, 0, sizeof(state));
     SparkStatus rc = SparkGlm5NextServingLoadConfiguration(
@@ -121,7 +254,7 @@ def main() -> int:
                   "generator/adapter drift (this is the incident class the "
                   "drift gate cannot see: it compares member names, not shapes)")
             return 1
-        print("PASS actual GLM B3 cache admission preserves frame-owned lanes; "
+        print("PASS actual GLM B3 admission, deferred frame lifetime and zero-token release; "
               "adapter loads the generator's deployment config")
         return 0
 

@@ -133,10 +133,32 @@ execution error releases both lanes and invalidates the mapping shadow.
 The common API has three entry points (admit, claim, finish) in the existing
 page-cache implementation; allocation remains at startup. GLM adds its mutex,
 CUDA upload and continuity bookkeeping. No other model driver was changed.
-This is host execution with copy stubs; CUDA CI and merged-main serving tests
-are still required. The draft still lacks complete KDA/convolution snapshots,
-restoration, reset and release integration. The direct driver probe also needs
-to submit real cache transactions before this stricter driver can accept it.
+This is host execution with copy stubs. CUDA compilation passed for draft
+`a525c5a` (run `34281042843`); merged-main serving tests are still required.
+The draft still lacks complete KDA/convolution snapshots, restoration and reset.
+
+The GLM adapter also retained stack-local frame/context/buffer descriptors and
+borrowed row arrays after submit returned. Its existing pending slots now own
+these until completion. Only submitted rows are copied; the per-submission
+clear of the entire multi-megabyte pending slot is removed. The real adapter
+host test submits B3, returns from the caller and overwrites its arrays, then
+checks the saved frame and completes it. Per-completion debug printing is
+removed from the production path.
+
+Zero-token release now goes through cache admission and emits a zero-token
+completion without launching decode. The module releases common cache ownership
+and clears continuity bindings. The shared frame-to-admission helper preserves
+zero rather than silently converting it to one: positive DSV4 and Qwen callers
+were checked, and the DSV4 runner regression passes. Host tests exercise both
+the actual GLM adapter release and the module's release of completed lanes.
+This does not yet prove GPU recurrent-state reset or slot reuse.
+
+The direct probe now prepares, commits and submits real cache lane transactions,
+then releases all lanes and requires a drained, empty snapshot. Its fake-driver
+test verifies order and identity, plus rollback on prepare/commit/admit/submit
+failure. It verifies host protocol only. The reusable lesson is to keep async
+descriptors in existing owner storage and make benchmarks use the same ownership
+protocol as serving, without adding a parallel cache implementation.
 
 ## Current next steps, not completed work
 
