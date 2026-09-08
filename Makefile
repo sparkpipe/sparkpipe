@@ -285,6 +285,7 @@ TEST_NAMES := \
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
+	tests/test_weightd_supervised.py \
 	tests/test_spark_queue.py \
 	tests/test_qwen4_flash_model_header.py \
 	tests/test_api_stress.py \

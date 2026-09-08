@@ -1,5 +1,5 @@
 {
-  "file_count": 1888,
+  "file_count": 1891,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "adb5fce1a36e53ed52849099da241ff44d11ddf04f6d119ac7bac0e1194421f1",
-      "size_bytes": 91027
+      "sha256": "97401b5cac1710a71faf010f805c737f2bcd11d08c4d0e7504a759440dcfdfe1",
+      "size_bytes": 91105
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -990,6 +990,11 @@
       "path": "docs/WEIGHTD_RESIDENT_CACHE_DESIGN.md",
       "sha256": "93f63b22bf881a2d42a229e0359b74b85807dfa35e1c665d4c6d510e601fe45e",
       "size_bytes": 3332
+    },
+    {
+      "path": "docs/WEIGHTD_SUPERVISED_STARTUP.md",
+      "sha256": "f74b63ae372964f5af5f7bf561c7ec8266718814a04e0b476b44d5ef45ff0cc2",
+      "size_bytes": 1563
     },
     {
       "path": "docs/archive/AUDIT_2026-07-29_BANDWIDTH_PATH.md",
@@ -4413,8 +4418,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "bb0b7f5de0b18349ddb861a7007b7e6d05e5e2cd20e89f2bc040c706ffe4202d",
-      "size_bytes": 114583
+      "sha256": "195c8b7b5f92839011cb76d46da860a7895fad689788c316bfc020f08560c634",
+      "size_bytes": 114922
     },
     {
       "path": "node/weightd.c",
@@ -4423,8 +4428,13 @@
     },
     {
       "path": "node/weightd_spawn.c",
-      "sha256": "4ad826307dbc0dc1533fede620dd63c5b75845e18c1ae6b5f0a552833dc688b4",
-      "size_bytes": 3954
+      "sha256": "5c4d67686982d555149339ae24292843a6ab8401bfb26bc8d7ff0e8f5726b5d5",
+      "size_bytes": 3042
+    },
+    {
+      "path": "node/weightd_spawn.h",
+      "sha256": "4073c5b1f0342b4722ff6863b35003da8b4b19543071b329c7def98dc2bab602",
+      "size_bytes": 287
     },
     {
       "path": "qualification/dsv4/collectives/tp4_tree_bitwise_20260814/result.json",
@@ -7722,6 +7732,11 @@
       "size_bytes": 24001
     },
     {
+      "path": "tests/test_weightd_supervised.py",
+      "sha256": "018342f3de2566e60bdd172505df27457acb0c8ba67859af36bcb2b1492dd910",
+      "size_bytes": 3648
+    },
+    {
       "path": "tests/test_work_transaction.c",
       "sha256": "0e6e6c940760648d33007206b9f6af6f4513fb01658d9e9d528bce2152b08b9e",
       "size_bytes": 6758
@@ -9445,5 +9460,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32179592
+  "total_bytes": 32184595
 }
