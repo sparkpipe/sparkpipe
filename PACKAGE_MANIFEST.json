@@ -1,5 +1,5 @@
 {
-  "file_count": 1885,
+  "file_count": 1886,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "3dbf1cd77b26fee17630362bb02ac443bcdcbc7cc5ec5b7d5f946c71a4d4f919",
-      "size_bytes": 90908
+      "sha256": "f9a2602f930f92cb93322a6139f845daa35d0409ba082d8244e51b8974d3463d",
+      "size_bytes": 90947
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -878,8 +878,8 @@
     },
     {
       "path": "docs/PARALLEL_DRIVER_DEBUG.md",
-      "sha256": "57e530b855e10141b60f41fd51bd897a9721ee340d15e9f72bd587b226943dbd",
-      "size_bytes": 8736
+      "sha256": "61b7023ab1683d55378a36f6ab71a0fb9015c3fa614cd64127d9e1c8d239253f",
+      "size_bytes": 9934
     },
     {
       "path": "docs/PERFORMANCE_LEDGER.md",
@@ -6892,6 +6892,11 @@
       "size_bytes": 1526
     },
     {
+      "path": "tests/test_glm5_next_queue_build.py",
+      "sha256": "83219dbcd5c5a7034878a3a71c4175d83d95c3874ef532076804224968b0302e",
+      "size_bytes": 1616
+    },
+    {
       "path": "tests/test_gqa_host.py",
       "sha256": "6fad29a2148bdf2f16e7b76b7f51442d763b45fe1a6c9bcca633a99fdea43215",
       "size_bytes": 5773
@@ -8483,8 +8488,8 @@
     },
     {
       "path": "tools/glm5_next_build_release.sh",
-      "sha256": "d534b92000ecc61491bc351c75ec34ea7c54616a92bccc8e0fe4fd312736fb62",
-      "size_bytes": 2543
+      "sha256": "a1890af6287d7d25165823abb6de1eecc2c98095b859672b5dcc0e32fb126083",
+      "size_bytes": 2422
     },
     {
       "path": "tools/glm5_next_closeout_wave.sh",
@@ -9430,5 +9435,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32149833
+  "total_bytes": 32152565
 }

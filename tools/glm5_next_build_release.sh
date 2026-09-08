@@ -1,60 +1,40 @@
 #!/usr/bin/env bash
-# glm5_next build + release from the repo. Runs ON a spark (aarch64 + GB10).
-# Any node can recreate the tree: git pull, publish (GPU receipts), compile
-# the driver, install into the hub reference, drop UPDATE. The debug cycle is
-# edit -> push -> run this -> fleet converges.
+# Build a complete local GLM release inside a clean queue-synced checkout.
+# Submit with spark_queue.py add --resources gpu (or exclusive), memory >=32 GiB.
+# No branch checkout, process stopping, hub writes or fleet UPDATE side effects.
 set -euo pipefail
-
-BRANCH="${1:-lane/glm53-tree-2}"
-ROOT="${2:-origin}"
-TREE="$HOME/sparkpipe-build"
-HUB_REF="${G5_HUB_REF:-rtx5090:release}"
-NAME="glm53flash.fp8.tp16"
-
-cd "$TREE"
-git fetch -q "$ROOT" "$BRANCH"
-git reset -q --hard FETCH_HEAD
-git clean -q -fd build modules/glm5_next_resident_decode_stage 2>/dev/null || true
-REV=$(git rev-parse --short HEAD)
-echo "== $REV"
-
+if (( $# != 0 )); then
+    echo "usage: queue this script with no arguments from a clean synced checkout" >&2
+    exit 2
+fi
+: "${SPARK_QUEUE_ID:?run through spark_queue.py with GPU ownership}"
+cd "$(dirname "$0")/.."
+git diff --quiet HEAD --
+git diff --cached --quiet --
 export PATH="/usr/local/cuda/bin:$PATH"
-SHA=$(shasum -a 256 model_contracts/glm53_flash_authoritative.json | cut -d' ' -f1)
-
-echo "== host build"
-make -q build/sparkpipe_model_compile || make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api
-
-echo "== park local agent + daemon (validator needs the GPU; UPDATE restores the fleet)"
-systemctl --user stop fleet-agent 2>/dev/null || true
-for l in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model_residentd | sed 's|.*/proc/\([0-9]*\)/exe.*|\1|'); do
-    kill -TERM "$l" 2>/dev/null || true
-done
-for t in $(seq 1 15); do
-    ls -l /proc/[0-9]*/exe 2>/dev/null | grep -q sparkpipe_model_residentd || break
-    sleep 1
-done
-
-echo "== module publish (GPU receipts)"
-make -C modules/glm5_next_resident_decode_stage publish \
-    EXPERT_CODEC=fp8 \
-    MODEL_REVISION=84c6a6aa9497188e15a635ba793b0f95a79b1033 \
-    CONTRACT_SHA256="$SHA" \
-    NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a 2>&1 | tail -2
-
-echo "== driver compile"
-mkdir -p "$HOME/sparkdata/out"
+read -r contract_sha contract_path < <(sha256sum model_contracts/glm53_flash_authoritative.json)
+module_args=(EXPERT_CODEC=fp8 MODEL_REVISION=84c6a6aa9497188e15a635ba793b0f95a79b1033
+    "CONTRACT_SHA256=$contract_sha" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a)
+output=build/glm53_release
+rm -f "$output/ARTIFACT_SHA256SUMS" "$output/SOURCE_COMMIT"
+echo "queue=$SPARK_QUEUE_ID source=$(git rev-parse HEAD) contract=$contract_sha"
+make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api \
+    hidden_transport_spark_host_rdma_verbs NVCC=/usr/local/cuda/bin/nvcc
+make -j4 -C modules/glm5_next_resident_decode_stage publish adapter "${module_args[@]}"
 build/sparkpipe_model_compile \
     --model examples/model_descriptions/glm5_next_resident_decode_stage_fp8_firmware.json \
-    --library build/module_library --output "$HOME/sparkdata/out" \
+    --library build/module_library --output "$output" \
     --cc /usr/bin/cc --include include \
     --cc-arg -L/usr/local/cuda/targets/sbsa-linux/lib \
     --cc-arg -lcuda --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm \
-    --cc-arg -ldl --cc-arg -pthread 2>&1 | tail -1
-
-echo "== install into hub reference"
-ssh -o BatchMode=yes "${HUB_REF%%:*}" "mkdir -p '${HUB_REF#*:}/$NAME/stages/stage_000'"
-rsync -c "$HOME/sparkdata/out/stages/stage_000/model_driver.so" \
-    "${HUB_REF}/$NAME/stages/stage_000/model_driver.so"
-ssh -o BatchMode=yes "${HUB_REF%%:*}" "touch '${HUB_REF#*:}/$NAME/UPDATE'"
-systemctl --user start fleet-agent 2>/dev/null || true
-echo "released $REV"
+    --cc-arg -ldl --cc-arg -pthread
+mkdir -p "$output/bin" "$output/lib"
+install -m755 build/sparkpipe_model_residentd build/sparkpipe_model_api "$output/bin/"
+install -m755 build/libhidden_transport_spark_host_rdma_verbs.so "$output/lib/hidden_transport.so"
+install -m755 build/modules/glm5_next_resident_decode_stage/fp8/libglm5_next_serving_adapter_fp8.so "$output/lib/model_serving_adapter.so"
+git rev-parse HEAD > "$output/SOURCE_COMMIT"
+(cd "$output" && sha256sum bin/sparkpipe_model_residentd bin/sparkpipe_model_api \
+    lib/hidden_transport.so lib/model_serving_adapter.so stages/stage_000/model_driver.so) \
+    > "$output/ARTIFACT_SHA256SUMS.partial"
+mv "$output/ARTIFACT_SHA256SUMS.partial" "$output/ARTIFACT_SHA256SUMS"
+echo "BUILD-PASS $output (local artifact; not deployed)"
