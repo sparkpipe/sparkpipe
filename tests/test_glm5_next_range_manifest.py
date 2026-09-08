@@ -48,6 +48,13 @@ def main():
         missing_down = fixture()
         struct.pack_into("<I", missing_down, 576, 24)
         malformed.append(missing_down)
+        missing_layer = fixture()
+        struct.pack_into("<I", missing_layer, 40, 2)
+        malformed.append(missing_layer)
+        wrong_scale_encoding = fixture()
+        struct.pack_into("<I", wrong_scale_encoding, 512 + 16, 4)
+        malformed.append(wrong_scale_encoding)
+        malformed.append(fixture(codec=1))  # BF16 must not carry FP8 scales.
         for data in malformed:
             path.write_bytes(data)
             assert subprocess.run([str(binary), str(path)], capture_output=True).returncode != 0

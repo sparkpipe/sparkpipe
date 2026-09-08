@@ -46,6 +46,10 @@ static int32_t entry_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackHead
 		return(-4);
 	if ( entry->group_count != header->routed_expert_count || entry->payload_bytes == 0u )
 		return(-5);
+	if ( entry->weight_codec == SPARK_WEIGHT_CODEC_BF16 && (entry->scale_bytes != 0u || entry->scale_offset != 0u || entry->scale_encoding != SPARK_WEIGHT_SCALE_ENCODING_NONE) )
+		return(-24);
+	if ( entry->weight_codec == SPARK_WEIGHT_CODEC_FP8_E4M3 && entry->scale_encoding != SPARK_WEIGHT_SCALE_ENCODING_F32 )
+		return(-25);
 	directory_end = (header->directory_offset + ((uint64_t)header->tensor_count * sizeof(*entry)));
 	for (plane=0u; plane<2u; plane++)
 	{
@@ -75,10 +79,13 @@ static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackH
 	SparkGlm5NextStagePackEntry entry;
 	uint32_t words[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,SPARK_WEIGHTD_RANGE_MANIFEST_VERSION,0u,0u};
 	uint32_t i;
-	uint64_t up = 0u,down = 0u;
+	uint64_t up = 0u,down = 0u,expected = 0u;
 	int32_t err;
 	if ( fwrite(words,1u,sizeof(words),out) != sizeof(words) )
 		return(-8);
+	for (i=header->first_layer_index; i<(header->first_layer_index + header->layer_count); i++)
+		if ( SparkGlm5NextStagePackLayerIsDense(i) == 0u )
+			expected |= (UINT64_C(1) << i);
 	for (i=0u; i<header->tensor_count; i++)
 	{
 		if ( fseeko(pack,(off_t)(header->directory_offset + ((uint64_t)i * sizeof(entry))),SEEK_SET) != 0 || fread(&entry,1u,sizeof(entry),pack) != sizeof(entry) )
@@ -96,7 +103,7 @@ static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackH
 		if ( err < 0 )
 			return(err);
 	}
-	if ( up != down || words[2] == 0u || fseeko(out,0,SEEK_SET) != 0 || fwrite(words,1u,sizeof(words),out) != sizeof(words) )
+	if ( up != expected || down != expected || words[2] == 0u || fseeko(out,0,SEEK_SET) != 0 || fwrite(words,1u,sizeof(words),out) != sizeof(words) )
 		return(-10);
 	return(0);
 }
@@ -111,6 +118,8 @@ static int32_t header_read(FILE *pack,SparkGlm5NextStagePackHeader *header)
 		return(-12);
 	if ( header->file_bytes != (uint64_t)st.st_size || header->routed_expert_count == 0u || header->tensor_count == 0u )
 		return(-13);
+	if ( header->first_layer_index > SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX || header->layer_count == 0u || header->layer_count > (SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX + 1u - header->first_layer_index) )
+		return(-26);
 	directory_bytes = ((uint64_t)header->tensor_count * sizeof(SparkGlm5NextStagePackEntry));
 	if ( header->directory_offset < sizeof(*header) || header->directory_offset > header->file_bytes || directory_bytes > (header->file_bytes - header->directory_offset) )
 		return(-14);
