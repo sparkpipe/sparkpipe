@@ -34,14 +34,15 @@ static const char *SparkWeightdAttachEnvText(const char *name)
 
 SparkStatus SparkWeightdAttachRequested(void)
 {
-    const char *socket = SparkWeightdAttachEnvText(
-        SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
-    if (SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0 ||
-        (socket == 0 && SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) == 0))
-    {
-        return SPARK_STATUS_BUSY;
-    }
-    return SPARK_STATUS_OK;
+	const char *socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+	const char *setting = getenv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH);
+	if ( setting != 0 && strcmp(setting,"0") != 0 && strcmp(setting,"1") != 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( socket != 0 )
+		return(SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
+	if ( setting != 0 && strcmp(setting,"1") == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_BUSY);
 }
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
@@ -68,6 +69,12 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         reason[0] = '\0';
     }
 
+    status = SparkWeightdAttachRequested();
+    if (status == SPARK_STATUS_INVALID_ARGUMENT)
+    {
+        SparkWeightdAttachSetReason(reason, "attach_config");
+        return status;
+    }
     if (SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0)
     {
         SparkWeightdAttachSetReason(reason, "env_off");

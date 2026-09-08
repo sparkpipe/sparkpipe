@@ -156,6 +156,18 @@ compile_cuda \
 	-include "${qwen38_27b_model_header}" \
 	-DSPARK_QWEN38_27B_MODULE_BUILD=1
 
+# GLM 5.3 Flash uses the glm5_next implementation, separate from glm52.
+compile_cuda \
+	modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu \
+	glm5_next_resident_decode_stage_fp8 \
+	-I"${repository_root}/model-families/glm5_next/include" \
+	-I"${repository_root}/modules/glm5_next_resident_decode_stage/include" \
+	-I"${repository_root}/modules/glm5_next_resident_decode_stage/source" \
+	-include "${repository_root}/model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h" \
+	-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 \
+	'-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"' \
+	-DSPARK_BATCH_BUCKET=1024u
+
 glm_model_header="${repository_root}/model-families/glm52/include/sparkpipe/spark_glm52_model.h"
 glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)
 glm_codec_ids=(2 3 4 5 6 7)

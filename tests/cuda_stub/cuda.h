@@ -9,6 +9,9 @@ extern "C" {
 
 typedef int CUresult;
 typedef int CUdevice;
+typedef struct CUctx_st *CUcontext;
+CUresult cuCtxGetCurrent(CUcontext *pctx);
+CUresult cuCtxSetCurrent(CUcontext ctx);
 typedef unsigned long long CUdeviceptr;
 typedef struct CUmemGenericAllocationHandle_st *CUmemGenericAllocationHandle;
 

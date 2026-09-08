@@ -2098,16 +2098,12 @@ static int32_t Glm5NextLayerDenseMlp(
 }
 
 template<uint32_t ExpertCodec>
-static int32_t Glm5NextLayerMoe(
+static int32_t Glm5NextLayerMoeValidate(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
-    uint32_t packed_rows,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
+    uint32_t packed_rows)
 {
     using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
-    LmGemmArguments gemm;
-    int32_t status;
 
     static_assert(ExpertCodec != SPARK_WEIGHT_CODEC_BF16,
         "GLM 5.2 routed experts require an explicit compressed codec");
@@ -2126,8 +2122,6 @@ static int32_t Glm5NextLayerMoe(
         buffers->group_row_offset == 0 ||
         buffers->group_tile_prefix_w1 == 0 ||
         buffers->group_tile_prefix_w2 == 0 ||
-        buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
-        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 ||
         buffers->expert_out_bf16 == 0 || buffers->gate_up_bf16 == 0 ||
         buffers->intermediate_bf16 == 0 || buffers->hidden_bf16 == 0 ||
         buffers->shared_gate_up_weight == 0 ||
@@ -2136,6 +2130,21 @@ static int32_t Glm5NextLayerMoe(
         return LM_LAUNCH_ERR_SHAPE;
     }
 
+    return LM_LAUNCH_OK;
+}
+
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoeRoute(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    LmGemmArguments gemm;
+    int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
+    if (status != LM_LAUNCH_OK)
+        return status;
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
         rows,
@@ -2218,6 +2227,25 @@ static int32_t Glm5NextLayerMoe(
         return status;
     }
 
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoeExperts(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
+    LmGemmArguments gemm;
+    int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
+        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
+        return(LM_LAUNCH_ERR_SHAPE);
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(
@@ -2373,6 +2401,22 @@ static int32_t Glm5NextLayerMoe(
     return cudaPeekAtLastError() == cudaSuccess
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;
+}
+
+// Resident execution retains the same submission order. Lazy execution can
+// acquire/import the routed working set between these two calls on this stream.
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoe(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status = Glm5NextLayerMoeRoute<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    return Glm5NextLayerMoeExperts<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
 }
 
 static int32_t Glm5NextHead(

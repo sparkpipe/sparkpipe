@@ -97,7 +97,7 @@ static void SparkTestWritePack(const char *path,
 {
     static uint8_t staging[SPARK_TEST_EXPERT_BYTES];
     uint8_t header[16];
-    uint8_t record[40];
+    uint8_t record[48];
     uint8_t digest[16];
     SparkCk128Context context;
     FILE *file;
@@ -123,7 +123,7 @@ static void SparkTestWritePack(const char *path,
     assert(manifest != 0);
     memset(header, 0, sizeof(header));
     memcpy(header + 0u, &(uint32_t){SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC}, 4u);
-    memcpy(header + 4u, &(uint32_t){SPARK_WEIGHTD_EXPERT_MANIFEST_VERSION}, 4u);
+    memcpy(header + 4u, &(uint32_t){SPARK_WEIGHTD_RANGE_MANIFEST_VERSION}, 4u);
     memcpy(header + 8u, &(uint32_t){SPARK_TEST_EXPERTS_PER_MODEL}, 4u);
     assert(fwrite(header, 1u, sizeof(header), manifest) == sizeof(header));
     for (expert = 0u; expert < SPARK_TEST_EXPERTS_PER_MODEL; expert++)
@@ -139,9 +139,9 @@ static void SparkTestWritePack(const char *path,
         memset(record, 0, sizeof(record));
         memcpy(record + 0u, &layer, 4u);
         memcpy(record + 4u, &expert, 4u);
-        memcpy(record + 8u, &offset, 8u);
-        memcpy(record + 16u, &expert_bytes, 8u);
-        memcpy(record + 24u, digest, 16u);
+        memcpy(record + 16u, &offset, 8u);
+        memcpy(record + 24u, &expert_bytes, 8u);
+        memcpy(record + 32u, digest, 16u);
         assert(fwrite(record, 1u, sizeof(record), manifest) == sizeof(record));
     }
     assert(fclose(manifest) == 0);
@@ -201,32 +201,24 @@ static void SparkTestLazyAttach(SparkWeightdClient *client,
         SPARK_TEST_TIMEOUT_NS) == result->status);
 }
 
-static void SparkTestEnsure(SparkWeightdClient *client,
-    uint64_t generation,
-    uint32_t layer,
-    uint32_t expert,
-    SparkWeightdEnsureResult *result)
+static void SparkTestAcquireReadRelease(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,uint32_t layer,uint32_t expert,uint32_t seed,SparkStatus expected_status)
 {
-    memset(result, 0, sizeof(*result));
-    assert(SparkWeightdClientEnsure(client, generation, layer, expert,
-        result, SPARK_TEST_TIMEOUT_NS) == result->status);
-}
-
-static void SparkTestReadback(uint64_t device_handle,
-    const SparkWeightdEnsureResult *ensure,
-    uint32_t model_seed,
-    uint32_t layer,
-    uint32_t expert)
-{
-    static uint8_t expected[SPARK_TEST_EXPERT_BYTES];
-    static uint8_t observed[SPARK_TEST_EXPERT_BYTES];
-    assert(ensure->status == SPARK_STATUS_OK);
-    assert(cudaMemcpy(observed,
-            (const void *)(uintptr_t)(device_handle + ensure->device_offset),
-            (size_t)ensure->expert_bytes, cudaMemcpyDeviceToHost) ==
-        cudaSuccess);
-    SparkTestFillExpert(model_seed, layer, expert, expected);
-    assert(memcmp(observed, expected, (size_t)ensure->expert_bytes) == 0);
+	SparkWeightdExpertKey key = {layer,expert};
+	SparkWeightdWorkingSetResult result,released;
+	static uint8_t expected[SPARK_TEST_EXPERT_BYTES],observed[SPARK_TEST_EXPERT_BYTES];
+	assert(SparkWeightdClientAcquire(client,attached->arena_generation,&key,1u,&result,SPARK_TEST_TIMEOUT_NS) == expected_status);
+	assert(result.status == expected_status);
+	if ( expected_status != SPARK_STATUS_OK )
+	{
+		assert(result.lease_identifier == 0u);
+		return;
+	}
+	assert(result.lease_identifier != 0u && result.resident_bytes <= SPARK_TEST_CEILING_BYTES);
+	// Same-process CUDA-stub oracle; real consumer imports are tested separately.
+	assert(cudaMemcpy(observed,(const void *)(uintptr_t)(attached->device_handle + (expert * SPARK_TEST_EXPERT_BYTES)),sizeof(observed),cudaMemcpyDeviceToHost) == cudaSuccess);
+	SparkTestFillExpert(seed,layer,expert,expected);
+	assert(memcmp(observed,expected,sizeof(observed)) == 0);
+	assert(SparkWeightdClientRelease(client,attached->arena_generation,result.lease_identifier,&released,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
 }
 
 int main(void)
@@ -313,72 +305,30 @@ int main(void)
     assert(attach_b.resident_bytes == 0ull);
     printf("lazy attach two models zero resident green\n");
 
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 0u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK);
-    assert(ensure.loaded == 1u);
-    assert(ensure.device_offset == 0ull);
-    assert(ensure.resident_bytes == SPARK_TEST_CHUNK_BYTES);
-    assert(ensure.load_ns < SPARK_TEST_TIMEOUT_NS);
-    SparkTestReadback(attach_a.device_handle, &ensure, 11u, 2u, 0u);
-    printf("cold ensure fault-in byte-exact green\n");
-
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 0u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK);
-    assert(ensure.loaded == 0u);
-    assert(ensure.resident_bytes == SPARK_TEST_CHUNK_BYTES);
-    printf("warm ensure no-reload green\n");
-
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 1u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK && ensure.loaded == 1u);
-    assert(ensure.resident_bytes == SPARK_TEST_CHUNK_BYTES);
-    SparkTestEnsure(client, attach_b.arena_generation, 7u, 0u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK && ensure.loaded == 1u);
-    SparkTestReadback(attach_b.device_handle, &ensure, 29u, 7u, 0u);
-    assert(ensure.resident_bytes == 2ull * SPARK_TEST_CHUNK_BYTES);
-    printf("cross-model co-residency shared-chunk green\n");
-
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 0u, &ensure);
-    assert(ensure.loaded == 0u);
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 2u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK && ensure.loaded == 1u);
-    assert(ensure.resident_bytes == 2ull * SPARK_TEST_CHUNK_BYTES);
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 3u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK && ensure.loaded == 1u);
-    assert(ensure.resident_bytes == 2ull * SPARK_TEST_CHUNK_BYTES);
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 4u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK && ensure.loaded == 1u);
-    assert(ensure.resident_bytes == 2ull * SPARK_TEST_CHUNK_BYTES);
-    assert(ensure.device_offset == 4ull * SPARK_TEST_EXPERT_BYTES);
-    SparkTestReadback(attach_a.device_handle, &ensure, 11u, 2u, 4u);
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 0u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK && ensure.loaded == 1u);
-    printf("pool pressure lru evict reload green\n");
-
-    SparkTestLazyAttach(client, &identity_c, "/tmp/spark_weightd_expert_c.bin",
-        SPARK_TEST_POOL_BYTES, &attach_c);
+    assert(SparkWeightdClientEnsure(client,attach_a.arena_generation,2u,0u,&ensure,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_UNSUPPORTED);
+    SparkTestAcquireReadRelease(client,&attach_a,2u,0u,11u,SPARK_STATUS_OK);
+    SparkTestAcquireReadRelease(client,&attach_a,2u,0u,11u,SPARK_STATUS_OK);
+    SparkTestAcquireReadRelease(client,&attach_a,2u,1u,11u,SPARK_STATUS_OK);
+    SparkTestAcquireReadRelease(client,&attach_b,7u,0u,29u,SPARK_STATUS_OK);
+    SparkTestAcquireReadRelease(client,&attach_a,2u,2u,11u,SPARK_STATUS_OK);
+    SparkTestAcquireReadRelease(client,&attach_a,2u,3u,11u,SPARK_STATUS_OK);
+    SparkTestAcquireReadRelease(client,&attach_a,2u,4u,11u,SPARK_STATUS_OK);
+    SparkTestAcquireReadRelease(client,&attach_a,2u,0u,11u,SPARK_STATUS_OK);
+    printf("leased byte-exact reads across models and pool eviction pass\n");
+    SparkTestLazyAttach(client,&identity_c,"/tmp/spark_weightd_expert_c.bin",SPARK_TEST_POOL_BYTES,&attach_c);
     assert(attach_c.status == SPARK_STATUS_OK);
-    SparkTestEnsure(client, attach_c.arena_generation, 5u, 5u, &ensure);
-    assert(ensure.status == SPARK_STATUS_HASH_MISMATCH);
-    assert(ensure.loaded == 0u);
-    SparkTestEnsure(client, attach_c.arena_generation, 5u, 6u, &ensure);
-    assert(ensure.status == SPARK_STATUS_OK && ensure.loaded == 1u);
-    SparkTestReadback(attach_c.device_handle, &ensure, 47u, 5u, 6u);
-    printf("stale digest fail-closed green\n");
-
-    SparkTestRewritePackGrown("/tmp/spark_weightd_expert_a.bin", 11u, 2u);
-    SparkTestEnsure(client, attach_a.arena_generation, 2u, 1u, &ensure);
-    assert(ensure.status == SPARK_STATUS_HASH_MISMATCH);
-    printf("pack drift fail-closed green\n");
-
-    SparkTestEnsure(client, attach_a.arena_generation, 99u, 0u, &ensure);
-    assert(ensure.status == SPARK_STATUS_INVALID_ARGUMENT);
-    SparkTestEnsure(client, 0xDEADBEEFull, 2u, 0u, &ensure);
-    assert(ensure.status == SPARK_STATUS_NOT_FOUND);
-    printf("unknown expert and generation fail-closed green\n");
+    SparkTestAcquireReadRelease(client,&attach_c,5u,5u,47u,SPARK_STATUS_HASH_MISMATCH);
+    SparkTestAcquireReadRelease(client,&attach_c,5u,6u,47u,SPARK_STATUS_OK);
+    SparkTestRewritePackGrown("/tmp/spark_weightd_expert_a.bin",11u,2u);
+    SparkTestAcquireReadRelease(client,&attach_a,2u,1u,11u,SPARK_STATUS_HASH_MISMATCH);
+    SparkTestAcquireReadRelease(client,&attach_a,99u,0u,11u,SPARK_STATUS_NOT_FOUND);
+    attach_a.arena_generation = 0xDEADBEEFull;
+    SparkTestAcquireReadRelease(client,&attach_a,2u,0u,11u,SPARK_STATUS_NOT_FOUND);
+    printf("stale checksum, pack drift, unknown expert and generation rejected\n");
 
     SparkWeightdClientClose(client);
     SparkTestStopServer(&server, server_thread);
 
-    printf("weightd lazy-expert poc green\n");
+    printf("weightd v2 lazy-expert lease regression PASS\n");
     return 0;
 }

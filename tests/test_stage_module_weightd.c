@@ -100,6 +100,10 @@ int main(void)
 	region_offset = 4096u;
 	region_bytes = 8192u;
 	direct_pointer = 0;
+	assert(SparkStageModuleLoadDeviceRegion(&ledger,file,region_offset,region_bytes,&direct_pointer) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(direct_pointer == 0 && ledger.device_allocation_count == 0u && ledger.pack_arena == 0);
+	unsetenv("SPARK_WEIGHTD_SOCKET");
+	direct_pointer = 0;
 	assert(SparkStageModuleLoadDeviceRegion(&ledger,file,region_offset,
 		region_bytes,&direct_pointer) == SPARK_STATUS_OK);
 	assert(direct_pointer != 0);
@@ -109,7 +113,7 @@ int main(void)
 	assert(memcmp(staging,pack + region_offset,region_bytes) == 0);
 	SparkStageModuleLedgerRelease(&ledger);
 	(void)fclose(file);
-	printf("stage_module_weightd: explicitly disabled attach uses direct load PASS\n");
+	printf("stage_module_weightd: conflicting attach rejected; unconfigured direct load PASS\n");
 	unsetenv("SPARK_WEIGHTD_SOCKET");
 	TestStageAttachFailureAllocatesNothing(sha_hex);
 	setenv("SPARK_WEIGHTD_SOCKET",SOCKET_PATH,1);
@@ -183,6 +187,7 @@ int main(void)
 	TestStageAttachFailureAllocatesNothing(sha_hex);
 
 	setenv("SPARK_WEIGHTD_ATTACH","0",1);
+	unsetenv("SPARK_WEIGHTD_SOCKET");
 	memset(&ledger,0,sizeof(ledger));
 	ledger.module_tag = "test_module";
 	file = fopen("/tmp/test_stage_module_weightd.pack","rb");
@@ -196,7 +201,7 @@ int main(void)
 	assert(memcmp(staging,pack + region_offset,region_bytes) == 0);
 	SparkStageModuleLedgerRelease(&ledger);
 	(void)fclose(file);
-	printf("stage_module_weightd: kill-switch direct path PASS\n");
+	printf("stage_module_weightd: unconfigured direct path PASS\n");
 
 	__atomic_store_n(&TestStageStop,1,__ATOMIC_SEQ_CST);
 	pthread_join(server_thread,0);
