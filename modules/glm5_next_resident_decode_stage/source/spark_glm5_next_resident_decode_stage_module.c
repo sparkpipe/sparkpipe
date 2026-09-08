@@ -1485,6 +1485,7 @@ typedef struct SparkGlm5NextTpChain
 	uint32_t tp_hc_op_index;
 	uint64_t expert_lease;
 	uint32_t expert_lease_begun;
+	uint32_t expert_lease_recorded;
 } SparkGlm5NextTpChain;
 
 static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status);
@@ -2228,9 +2229,14 @@ static SparkStatus SparkGlm5NextLazyRelease(SparkGlm5NextTpChain *chain)
 		return(SPARK_STATUS_OK);
 	if ( chain->expert_lease_begun != 0u )
 	{
-		status = SparkWeightdMapRecordCompletion(map,chain->expert_lease,(cudaStream_t)chain->slot->stream);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
+		if ( chain->expert_lease_recorded == 0u )
+		{
+			status = SparkWeightdMapRecordCompletion(map,chain->expert_lease,(cudaStream_t)chain->slot->stream);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			chain->expert_lease_recorded = 1u;
+			chain->wave.expert_lease_base = 0;
+		}
 		if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
 			return(SPARK_STATUS_IO_ERROR);
 	}
@@ -2239,6 +2245,7 @@ static SparkStatus SparkGlm5NextLazyRelease(SparkGlm5NextTpChain *chain)
 	{
 		chain->expert_lease = 0u;
 		chain->expert_lease_begun = 0u;
+		chain->expert_lease_recorded = 0u;
 		chain->wave.expert_lease_base = 0;
 	}
 	return(status);
@@ -2283,6 +2290,8 @@ static void SparkGlm5NextLazyWork(void *context)
 	SparkStatus status,cleanup;
 	status = SparkGlm5NextLazyExperts(chain);
 	cleanup = SparkGlm5NextLazyRelease(chain);
+	if ( cleanup == SPARK_STATUS_IO_ERROR || cleanup == SPARK_STATUS_BUSY )
+		cleanup = SparkGlm5NextLazyRelease(chain);
 	if ( cleanup != SPARK_STATUS_OK )
 	{
 		chain->state->lazy_retained[chain->slot_index] = chain;

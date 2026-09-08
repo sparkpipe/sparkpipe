@@ -47,7 +47,7 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout)
 {
 	(void)map; (void)timeout;
-	assert(identifier == 123u && (STEP == 4u || (FAIL_ACQUIRE != 0u && STEP == 1u)));
+	assert(identifier == 123u && (STEP == 4u || STEP == 5u || (FAIL_ACQUIRE != 0u && STEP == 1u)));
 	STEP = 5u;
 	return(FAIL_RELEASE != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK);
 }
@@ -81,7 +81,14 @@ int main(void)
 		assert(SparkGlm5NextLazyRelease(&chain) == (FAIL_RELEASE != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK));
 		assert(STEP == 5u);
 		assert(chain.expert_lease == (FAIL_RELEASE != 0u ? 123u : 0u));
-		assert(FAIL_RELEASE != 0u || chain.wave.expert_lease_base == 0);
+		assert(chain.wave.expert_lease_base == 0);
+		if ( FAIL_RELEASE != 0u )
+		{
+			assert(chain.expert_lease_recorded == 1u);
+			FAIL_RELEASE = 0u;
+			assert(SparkGlm5NextLazyRelease(&chain) == SPARK_STATUS_OK);
+			assert(chain.expert_lease == 0u && chain.expert_lease_recorded == 0u);
+		}
 	}
 	assert(cudaEventDestroy(event) == cudaSuccess);
 	puts("PASS GLM lazy dispatch ordering and partial failure ownership (CUDA/map stubs)");
