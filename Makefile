@@ -231,6 +231,7 @@ TEST_NAMES := \
     test_memlink \
     test_release \
     test_kv_store \
+    test_kda_reference \
     test_numerical_metrics \
     test_kv_cache \
     test_kv_page_layout \
@@ -639,6 +640,9 @@ build/test_dsv4_parallel_shape: tests/test_dsv4_parallel_shape.c $(DSV4_HOST_LIB
 
 build/test_kv_page_layout: tests/test_kv_page_layout.c include/sparkpipe/spark_kv_page_store.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kda_reference: tests/test_kda_reference.c include/sparkpipe/spark_kda_reference.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
 
 build/test_numerical_metrics: tests/test_numerical_metrics.c include/sparkpipe/spark_numerical_metrics.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -lm -o $@
