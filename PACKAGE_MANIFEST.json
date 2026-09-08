@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "b6de2f2d69f01d7d73d9e946c6ce75bdd73d8d5963cf68980d51b58c6fa592cf",
-      "size_bytes": 95232
+      "sha256": "7749ede05c07d1842059a0bb72e81d2ebbe4dccdabd9de7ebb87ded2da63df18",
+      "size_bytes": 95282
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "640c94414969dcb26fa565da3c971b70151a2f17731c462ba806bec53865e413",
-      "size_bytes": 11244
+      "sha256": "90f8cede90643be79b00a059d26631024b9b0e79f3c0ca4f52ff406a7ad7b409",
+      "size_bytes": 12162
     },
     {
       "path": "docs/GLM_KV_PAYLOAD.md",
@@ -6988,8 +6988,8 @@
     },
     {
       "path": "tests/test_glm5_next_adapter_config_load.py",
-      "sha256": "0cbf9a8409b39ccbc3dbc474e9ca2f27c8f25bdba85fc12fa53da40b3ee6e034",
-      "size_bytes": 4460
+      "sha256": "a6aca1504122adadf0561f0625a3b2bcb68b96d16bdb70fb83eb1adfe525cef6",
+      "size_bytes": 5679
     },
     {
       "path": "tests/test_glm5_next_bench_wrap.py",
@@ -9665,5 +9665,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32449773
+  "total_bytes": 32451960
 }

@@ -38,6 +38,7 @@ correct math from repeatability, or full serving from a component probe.
 | Layered KV/index backing payload, PR #862 / main `d687fc8` | Common gather/scatter with a hardware copy callback; GLM supplies native geometry. Actual GLM host hook tests pass both regions across three layers and five pages; substituting the previous contiguous copy fails the payload check. CUDA CI, merged-main B3 memcheck and resident/lazy/concurrent parity pass. | Trace native layer/page indexing against backing payload layout. Total allocation size is insufficient; distinguish each page and layer in tests. Include index state in payload sizing. |
 | Numerical gate integrity, PR #863 / main `52ce0e5` | Three probe failure results were discarded; projection readback could skip a comparison. Checks now affect exit status. Common metrics reject nonfinite inputs and accumulate squared errors directly; regression tests reject the previous metric implementation. Corrected GPU component validator passes on merged main. | Test the acceptance test with bad values. Error-norm cancellation and ignored return codes can turn an optimization regression green. Component repeatability is not numerical correctness. |
 | Cache admission wiring, draft PR #861 | GLM builds persistent cache lanes for submitted frames and routes prepare/commit/abort through a common algorithm with a validation callback and caller-owned scratch. Host tests preserve B3 lane identities and transaction generations, propagate driver failure, validate all inputs before dispatch and keep release separate. Full reset/restoration and GPU serving acceptance remain incomplete. | Common policy builds and validates the transaction; the model supplies geometry and hooks. Keep submitted lane storage alive through device completion. |
+| KDA oracle recurrence, PR #864 | The C oracle decayed state, then applied decay again in its prediction. The pinned upstream reference and repository Python oracle apply it once. A shared scalar head reference now has hand-calculated two-token nonzero-state and rectangular-state tests; injecting the old second decay fails. GPU rerun pending. | Validate recurrent state directly with nonzero initial state. Small random end-to-end fixtures can underweight reference errors. Keep reference math independent of production kernels. |
 
 ## Baseline that must not be misinterpreted
 
@@ -93,6 +94,11 @@ run `glm-numerical-oracle-52ce0e5` (`57d766739f974f4abd5f343dcbc8daef`). Both
 finished with exit 0 and released Spark0. KDA+dense+mHC metrics remain 0.00468
 relative L2 and 0.9999891 cosine. All three formerly ignored numerical probes
 also pass with their results now counted. This remains synthetic TP1/B1.
+Subsequent audit found the C oracle's separate double-decay error, corrected in
+PR #864. Treat the earlier PASS as a scoped execution receipt, not proof of
+the reference's correctness. The actual GLM adapter host harness now also
+checks B3 admission and verifies that frame-owned cache lanes survive mutation
+of the caller's lane array; this does not exercise full cache restoration.
 
 ## Current next steps, not completed work
 

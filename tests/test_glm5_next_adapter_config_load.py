@@ -22,8 +22,38 @@ HARNESS = r"""
 #include <stdio.h>
 #include <string.h>
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c"
+#define main SparkCacheAdmissionFixtureMain
+#include "tests/test_serving_cache_admission.c"
+#undef main
+static int32_t TestAdapterCacheAdmission(void)
+{
+    SparkGlm5NextServingState state = {0};
+    SparkGlm5NextServingPending pending = {0};
+    SparkModelServingSubmission submissions[2] = {0};
+    SparkModelServingLane lanes[3] = {0};
+    SparkModelDriverInterface driver = {0};
+    SparkModelDriverProgramDescriptor program = {0};
+    SparkModelDriverFrame frame = {0};
+    TestState observed = {0};
+    TestBuildSubmissions(submissions,lanes);
+    driver.admit = TestAdmit;
+    program.program_id = 1u;
+    state.program = &program;
+    state.driver.interface = &driver;
+    state.driver_instance = &observed;
+    if ( SparkGlm5NextServingAdmit(&state,submissions,&pending,&frame) != SPARK_STATUS_OK || observed.admitted != 1u )
+        return(-1);
+    if ( frame.cache_lane_count != 3u || frame.cache_lanes != pending.cache_lanes )
+        return(-2);
+    lanes[0].cache_prefix_identity.sha256[0] = 99u;
+    if ( frame.cache_lanes[0].prefix_identity.sha256[0] != 1u || frame.cache_lanes[0].sequence_id != 100u )
+        return(-3);
+    return(0);
+}
 int main(int argc, char **argv)
 {
+    if ( TestAdapterCacheAdmission() != 0 )
+        return(2);
     SparkGlm5NextServingState state;
     uint32_t msp = 0, erc = 0, dsct = 0, tpd = 0, tpr = 0;
     memset(&state, 0, sizeof(state));
@@ -91,8 +121,8 @@ def main() -> int:
                   "generator/adapter drift (this is the incident class the "
                   "drift gate cannot see: it compares member names, not shapes)")
             return 1
-        print("PASS the adapter loads the generator's deployment config "
-              "(end to end: generate -> compile real adapter -> load)")
+        print("PASS actual GLM B3 cache admission preserves frame-owned lanes; "
+              "adapter loads the generator's deployment config")
         return 0
 
 
