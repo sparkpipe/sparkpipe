@@ -109,10 +109,12 @@ int main(void)
 	SparkGlm5NextModuleState state = {0};
 	SparkGlm5NextExecutionSlot slot = {0};
 	SparkGlm5NextTpChain chain = {0};
+	SparkGlm5NextTpChain *recovered;
 	SparkWeightdLazyPack pack = {0};
 	uint32_t offsets[289],i,scenario;
 	cudaEvent_t event;
 	check_manifest_geometry();
+	atomic_init(&state.lazy_retained[0],0);
 	assert(cudaEventCreateWithFlags(&event,cudaEventDisableTiming) == cudaSuccess);
 	assert(cudaEventRecord(event,0) == cudaSuccess);
 	for (i=0u; i<289u; i++) offsets[i] = i == 0u ? 0u : (i <= 17u ? 4u : 8u);
@@ -138,9 +140,14 @@ int main(void)
 		if ( FAIL_RELEASE != 0u )
 		{
 			assert(chain.expert_lease_recorded == 1u);
+			atomic_store(&state.lazy_retained[0],&chain);
+			assert(SparkGlm5NextLazyRecoverLease(&state,0u,&recovered) == SPARK_STATUS_IO_ERROR);
+			assert(recovered == 0 && atomic_load(&state.lazy_retained[0]) == &chain);
 			FAIL_RELEASE = 0u;
-			assert(SparkGlm5NextLazyRelease(&chain) == SPARK_STATUS_OK);
+			assert(SparkGlm5NextLazyRecoverLease(&state,0u,&recovered) == SPARK_STATUS_OK);
+			assert(recovered == &chain && atomic_load(&state.lazy_retained[0]) == 0);
 			assert(chain.expert_lease == 0u && chain.expert_lease_recorded == 0u);
+			assert(SparkGlm5NextLazyRecoverLease(&state,0u,&recovered) == SPARK_STATUS_NOT_FOUND && recovered == 0);
 		}
 	}
 	assert(cudaEventDestroy(event) == cudaSuccess);

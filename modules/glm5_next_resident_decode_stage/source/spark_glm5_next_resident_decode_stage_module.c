@@ -85,7 +85,7 @@ struct SparkGlm5NextModuleState
 {
 	SparkStageModuleLedger ledger;
 	SparkWeightdLazyPack *lazy_pack;
-	void *lazy_retained[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	_Atomic(void *) lazy_retained[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t stage_count;
 	uint32_t stage_index;
 	uint32_t first_layer_index;
@@ -1486,6 +1486,7 @@ typedef struct SparkGlm5NextTpChain
 	uint64_t expert_lease;
 	uint32_t expert_lease_begun;
 	uint32_t expert_lease_recorded;
+	SparkStatus retained_status;
 } SparkGlm5NextTpChain;
 
 static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status);
@@ -2210,8 +2211,9 @@ static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus sta
 		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
 	if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
 	{
-		state->lazy_retained[chain->slot_index] = chain;
-		fprintf(stderr,"GLM chain drain failed; retaining slot %u and CUDA resources until process exit\n",chain->slot_index);
+		chain->retained_status = status;
+		fprintf(stderr,"GLM chain drain failed; retaining slot %u and CUDA resources for teardown retry\n",chain->slot_index);
+		atomic_store_explicit(&state->lazy_retained[chain->slot_index],chain,memory_order_release);
 		return;
 	}
 	async = &state->completions[chain->slot_index];
@@ -2249,6 +2251,33 @@ static SparkStatus SparkGlm5NextLazyRelease(SparkGlm5NextTpChain *chain)
 		chain->wave.expert_lease_base = 0;
 	}
 	return(status);
+}
+
+static SparkStatus SparkGlm5NextLazyRecoverLease(SparkGlm5NextModuleState *state,uint32_t slot,SparkGlm5NextTpChain **out)
+{
+	SparkGlm5NextTpChain *chain;
+	SparkStatus status = SPARK_STATUS_OK;
+	*out = 0;
+	chain = atomic_exchange_explicit(&state->lazy_retained[slot],0,memory_order_acq_rel);
+	if ( chain == 0 )
+		return(SPARK_STATUS_NOT_FOUND);
+	if ( chain->expert_lease != 0u )
+		status = SparkGlm5NextLazyRelease(chain);
+	if ( status != SPARK_STATUS_OK )
+		atomic_store_explicit(&state->lazy_retained[slot],chain,memory_order_release);
+	else
+		*out = chain;
+	return(status);
+}
+
+static void SparkGlm5NextLazyRetryRetained(void *context)
+{
+	SparkGlm5NextModuleState *state = (SparkGlm5NextModuleState *)context;
+	SparkGlm5NextTpChain *chain;
+	uint32_t slot;
+	for (slot=0u; slot<state->pipeline_slot_count; slot++)
+		if ( SparkGlm5NextLazyRecoverLease(state,slot,&chain) == SPARK_STATUS_OK )
+			SparkGlm5NextTpChainFail(chain,chain->retained_status);
 }
 
 static void SparkGlm5NextTpChainReduceMlp(SparkGlm5NextTpChain *chain)
@@ -2294,8 +2323,9 @@ static void SparkGlm5NextLazyWork(void *context)
 		cleanup = SparkGlm5NextLazyRelease(chain);
 	if ( cleanup != SPARK_STATUS_OK )
 	{
-		chain->state->lazy_retained[chain->slot_index] = chain;
-		fprintf(stderr,"GLM expert cleanup failed: slot=%u lease=%llu status=%d; retaining slot and lease until process exit\n",chain->slot_index,(unsigned long long)chain->expert_lease,(int32_t)cleanup);
+		chain->retained_status = status != SPARK_STATUS_OK ? status : cleanup;
+		fprintf(stderr,"GLM expert cleanup failed: slot=%u lease=%llu status=%d; retaining slot and lease for teardown retry\n",chain->slot_index,(unsigned long long)chain->expert_lease,(int32_t)cleanup);
+		atomic_store_explicit(&chain->state->lazy_retained[chain->slot_index],chain,memory_order_release);
 		return;
 	}
 	if ( status != SPARK_STATUS_OK )
@@ -2833,9 +2863,18 @@ SparkStatus SparkGlm5NextResidentDecodeStageSnapshot(
 void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 {
 	SparkGlm5NextModuleState *state;
+	uint32_t slot;
 	state = (SparkGlm5NextModuleState *)module_state;
 	if ( state == 0 )
 		return;
+	for (slot=0u; slot<state->pipeline_slot_count; slot++)
+		if ( atomic_load_explicit(&state->lazy_retained[slot],memory_order_acquire) != 0 )
+			break;
+	if ( slot < state->pipeline_slot_count )
+	{
+		if ( state->lazy_pack == 0 || state->lazy_pack->worker == 0 || SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm5NextLazyRetryRetained,state) != SPARK_STATUS_OK )
+			return;
+	}
 	if ( SparkStageModuleWaitForSlots(SPARK_GLM5_NEXT_MODULE_TAG,state->slot_states,state->pipeline_slot_count,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK )
 		return;
 	if ( SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,cudaStreamSynchronize((cudaStream_t)state->execution_stream),"destroy_stream_drain") != SPARK_STATUS_OK )
@@ -2910,6 +2949,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->ledger.module_tag = SPARK_GLM5_NEXT_MODULE_TAG;
+	for (lane=0u; lane<SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; lane++)
+		atomic_init(&state->lazy_retained[lane],0);
 	status = SparkGlm5NextModuleConfigure(state,configuration,host_services,&pack_path);
 	if ( status == SPARK_STATUS_OK && SparkGlm5NextConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;

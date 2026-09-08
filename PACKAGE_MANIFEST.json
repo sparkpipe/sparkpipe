@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/GLM_LAZY_DRIVER_INTEGRATION.md",
-      "sha256": "2c48014d565b6e26b58087ae44598d4c855378bc0fc1bdaf5d8f7970d36fd2ba",
-      "size_bytes": 6510
+      "sha256": "3a0698adb02fe9c02aa2474183fec411402c54586e32f48e44807fb4adbe60e9",
+      "size_bytes": 6896
     },
     {
       "path": "docs/GOALS.md",
@@ -4003,8 +4003,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "c2ae1c4d6355e9b7cc55b86468e1367907763d3457485b118d4fb3d998b6bf99",
-      "size_bytes": 148166
+      "sha256": "a07286723f5e316efae4b8bb010068a3eb3d79aa161c810684c9b9533dcfaf68",
+      "size_bytes": 149890
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -6973,8 +6973,8 @@
     },
     {
       "path": "tests/test_glm5_next_lazy_dispatch.c",
-      "sha256": "e552735635406c493f7ee379cc8fae680e1380dd97c01b2d69ec3e710ecc7c84",
-      "size_bytes": 5737
+      "sha256": "e874ce154f03da0b62dafe3bcb1aa284a5d041c9d6eb2eb6dfa23244966e535b",
+      "size_bytes": 6231
     },
     {
       "path": "tests/test_glm5_next_module_host_syntax.py",
@@ -9570,5 +9570,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32348911
+  "total_bytes": 32351515
 }
