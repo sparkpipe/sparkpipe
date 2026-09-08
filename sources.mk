@@ -46,6 +46,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
 	runtime/spark_weightd_lease.c \
 	runtime/spark_weightd_attach.c \
 	runtime/spark_weightd_map.c \
+    runtime/spark_weightd_spine.c \
 	runtime/model_batch_engine.c \
 	runtime/pipeline_runtime.c
 
@@ -59,6 +60,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     runtime/spark_weightd_lease.c \
     runtime/spark_weightd_attach.c \
     runtime/spark_weightd_map.c \
+    runtime/spark_weightd_spine.c \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \

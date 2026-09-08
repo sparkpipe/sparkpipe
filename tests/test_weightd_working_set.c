@@ -11,6 +11,8 @@
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_map.h"
+#include "sparkpipe/spark_weightd_spine.h"
+#include "sparkpipe/spark_sha256.h"
 
 #define CHUNK (2u * 1024u * 1024u)
 #define TIMEOUT UINT64_C(10000000000)
@@ -79,6 +81,42 @@ static void write_fixture(const char *path,const char *manifest_path)
 			write_range(pack,manifest,expert,kind,range_offset(expert,kind));
 	assert(fclose(pack) == 0);
 	assert(fclose(manifest) == 0);
+}
+
+static void check_spine_load(const char *path,const char *manifest_path)
+{
+	SparkWeightdManifest manifest;
+	char digest[SPARK_SHA256_HEX_BYTES];
+	uint8_t *destination,value = 255u;
+	uint64_t i,j,cursor = 0u;
+	int32_t fd = open(path,O_RDWR);
+	assert(fd >= 0);
+	assert(pwrite(fd,&value,1u,512) == 1);
+	assert(SparkWeightdManifestLoad(manifest_path,3u * CHUNK,&manifest) == SPARK_STATUS_OK);
+	assert(SparkSha256File(path,digest) == SPARK_STATUS_OK);
+	assert(posix_memalign((void **)&destination,256u,(size_t)manifest.spine_allocation_bytes) == 0);
+	memset(destination,0xa5,(size_t)manifest.spine_allocation_bytes);
+	assert(SparkWeightdSpineLoad(fd,&manifest,3u * CHUNK,digest,destination,manifest.spine_allocation_bytes - 1u) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(destination[0] == 0xa5);
+	assert(lseek(fd,123,SEEK_SET) == 123);
+	assert(SparkWeightdSpineLoad(fd,&manifest,3u * CHUNK,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+	assert(lseek(fd,0,SEEK_CUR) == 123);
+	for (i=0u; i<manifest.spine_count; i++)
+	{
+		for (j=cursor; j<manifest.spine[i].compact_offset; j++)
+			assert(destination[j] == 0xa5);
+		cursor = (manifest.spine[i].compact_offset + manifest.spine[i].bytes);
+		for (j=manifest.spine[i].compact_offset; j<cursor; j++)
+			assert(destination[j] == ((manifest.spine[i].offset + j - manifest.spine[i].compact_offset) == 512u ? 255u : 0u));
+	}
+	// Changing an expert byte must invalidate the whole-pack identity too.
+	assert(pwrite(fd,&value,1u,0) == 1);
+	assert(SparkWeightdSpineLoad(fd,&manifest,3u * CHUNK,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_HASH_MISMATCH);
+	value = 1u;
+	assert(pwrite(fd,&value,1u,0) == 1);
+	free(destination);
+	SparkWeightdManifestDestroy(&manifest);
+	assert(close(fd) == 0);
 }
 
 static uint64_t attach_config(SparkWeightdClient *client,const char *path,uint32_t chunks,uint32_t pool,uint32_t experts,uint64_t *base)
@@ -393,6 +431,7 @@ int main(void)
 	snprintf(manifest,sizeof(manifest),"%s.experts",path);
 	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
 	write_fixture(path,manifest);
+	check_spine_load(path,manifest);
 	config.socket_path = socket_path;
 	config.device_bytes_max = (4u * CHUNK);
 	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
