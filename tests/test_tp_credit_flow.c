@@ -94,6 +94,9 @@ static void test_pending(uint32_t failure)
 	submission.completion_context = result;
 	assert(SparkTpDeviceCollectiveEnqueue(&COLLECTIVE,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_OK);
 	assert(SparkTpDeviceCollectiveEnqueue(&COLLECTIVE,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_BUSY);
+	assert(SparkTpDeviceCollectiveRequestOperationFailure(&COLLECTIVE,8u,(SparkStatus)(SPARK_STATUS_UNSUPPORTED + 1u)) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkTpDeviceCollectiveRequestFailure(&COLLECTIVE,(SparkStatus)-1) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(IMPLEMENTATION.pending[1].failure_status == SPARK_STATUS_OK);
 	assert(SparkTpProgressPending(&IMPLEMENTATION) == 1u && result[0] == 0u);
 	if ( failure == 1u )
 		IMPLEMENTATION.pending[1].deadline_milli = 0u;

@@ -2623,7 +2623,8 @@ SparkStatus SparkTpDeviceCollectiveRequestFailure(
         collective->abi_version != SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION ||
         failure_status == SPARK_STATUS_OK ||
         failure_status == SPARK_STATUS_BUSY ||
-        failure_status == SPARK_STATUS_PENDING)
+        failure_status == SPARK_STATUS_PENDING ||
+        (uint32_t)failure_status > SPARK_STATUS_UNSUPPORTED)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -2677,7 +2678,8 @@ SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
         collective->abi_version != SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION ||
         failure_status == SPARK_STATUS_OK ||
         failure_status == SPARK_STATUS_BUSY ||
-        failure_status == SPARK_STATUS_PENDING)
+        failure_status == SPARK_STATUS_PENDING ||
+        (uint32_t)failure_status > SPARK_STATUS_UNSUPPORTED)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
