@@ -1037,7 +1037,7 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.page_store_config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
 	table.page_store_config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
 	table.page_store_config.logical_page_capacity = state->page_count;
-	table.page_store_config.transfer_capacity = 2u;
+	table.page_store_config.transfer_capacity = state->page_count < 2u ? state->page_count : 2u;
 	table.page_store_config.page_bytes = block_bytes;
 	if ( state->kv_backing_directory != 0 && state->kv_backing_directory[0] != '\0' )
 		table.page_store_config.backing_path = state->kv_backing_directory;
