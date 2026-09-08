@@ -2788,8 +2788,8 @@
     },
     {
       "path": "include/sparkpipe/spark_hidden_transport.h",
-      "sha256": "5cbe39bba24160c7035db82c777db389c76336aed7df72aa4d49cd6ae91789b6",
-      "size_bytes": 19755
+      "sha256": "ccabdf9404f94d0cc233d3c16d7b5245ce4fbd9360506aa2a4d9b1aa75976aa4",
+      "size_bytes": 19912
     },
     {
       "path": "include/sparkpipe/spark_hidden_transport_rdma_control.h",
@@ -5753,8 +5753,8 @@
     },
     {
       "path": "ring/transport/hidden_transport.c",
-      "sha256": "e5074ee5d700142874420c7bb8b67b1460a4ffb423fc05b56efdf64eab0e5dfe",
-      "size_bytes": 52378
+      "sha256": "02fdbf9bc24817b3d2dbb9a5467907a98a8ca5febb3f53ed2688aeae4065c188",
+      "size_bytes": 52420
     },
     {
       "path": "ring/transport/memlink.c",
@@ -5763,8 +5763,8 @@
     },
     {
       "path": "ring/transport/rdma.cu",
-      "sha256": "3644f12d1c47664ba9e28f43c4eacb30b74b8b4f0d7d93e48a23cdc1dd1c6720",
-      "size_bytes": 215885
+      "sha256": "c492ad2c9537f1375e5d9ebc8e85e492ee3aa5eb43fa247c2473cc0ad0ad2669",
+      "size_bytes": 215869
     },
     {
       "path": "ring/transport/rdma_control.c",
@@ -5778,8 +5778,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "7966acf48244ced39ce6338e59b162f2ebf5443e2853f1b7594a41356380d343",
-      "size_bytes": 119054
+      "sha256": "95c6e3576417ce48f0594e633c7d007ba5e4df65eadb1cbbfa13a5eb9821ffb3",
+      "size_bytes": 119679
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
@@ -7648,8 +7648,8 @@
     },
     {
       "path": "tests/test_tp_credit_flow.c",
-      "sha256": "ba566d08d59fd774131772c7bd2d6d87457013dc2798d68c1e3c740dca56c6b0",
-      "size_bytes": 4309
+      "sha256": "4e570c2d6cf7b3f1f13bcdecbabfca9cf0ffff198a2187e2d95a03158f91168b",
+      "size_bytes": 5901
     },
     {
       "path": "tests/test_tp_device_collective.c",
@@ -8823,8 +8823,8 @@
     },
     {
       "path": "tools/mb_doorbell.cu",
-      "sha256": "7aaf75493a0b65960e4b79ffed81ee164ebc3e45d7723dd4a3b76d02239b3da5",
-      "size_bytes": 22847
+      "sha256": "320d0e285c74a2a1db258d8866217b022fbccee80d083db60442a778c9855ee6",
+      "size_bytes": 23156
     },
     {
       "path": "tools/mb_run.sh",
@@ -9415,5 +9415,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32115028
+  "total_bytes": 32117737
 }

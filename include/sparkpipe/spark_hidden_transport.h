@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 4u
+#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 5u
 #define SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportInterface))
 #define SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES \
@@ -281,10 +281,12 @@ typedef SparkStatus (*SparkHiddenTransportGetPollDescriptorsFunction)(
     uint32_t descriptor_capacity,
     uint32_t *descriptor_count_out);
 
+// remote_offset addresses bytes within the peer registered span; sequence is only a completion tag.
 typedef SparkStatus (*SparkHiddenTransportSendFixedFunction)(
     void *transport_state,
     const void *local_buffer,
     uint64_t bytes,
+    uint64_t remote_offset,
     uint32_t sequence);
 typedef SparkStatus (*SparkHiddenTransportSetFixedRemoteFunction)(
     void *transport_state,
@@ -407,6 +409,7 @@ SparkStatus SparkHiddenTransportSendFixed(
     SparkHiddenTransportSession *session,
     const void *local_buffer,
     uint64_t bytes,
+    uint64_t remote_offset,
     uint32_t sequence);
 SparkStatus SparkHiddenTransportReservePersistentSend(
     SparkHiddenTransportSession *session,

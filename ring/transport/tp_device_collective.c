@@ -1182,6 +1182,11 @@ static uint32_t SparkTpDeviceCollectiveTransitionPhase(
     uint32_t expected_phase,
     uint32_t desired_phase);
 
+static uint64_t SparkTpDeviceCollectiveCreditOffset(const SparkTpDeviceCollective *collective,uint32_t credit)
+{
+	return((uint64_t)credit * ((uint64_t)collective->max_active_sequence_count * collective->local_hidden_dimension * SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT + NONCE_BYTES));
+}
+
 static void SparkTpDeviceCollectiveTreeSend(
     SparkTpDeviceCollectiveImplementation *implementation,
     SparkTpDeviceCollectiveOperation *operation,
@@ -1199,6 +1204,7 @@ static void SparkTpDeviceCollectiveTreeSend(
         implementation->send_sessions[route],
         binding->send_transport,
         nonce_at + NONCE_BYTES,
+        SparkTpDeviceCollectiveCreditOffset(implementation->collective,operation->credit_index),
         (uint32_t)((operation->ordinal << 8u) | route));
     if (status != SPARK_STATUS_OK)
         SparkTpDeviceCollectiveLatchFailure(implementation,status);
@@ -1230,18 +1236,19 @@ static SparkStatus SparkTpDeviceCollectivePostAck(
     SparkHiddenTransportSession *session,
     const uint64_t *staging,
     uint64_t ordinal,
-    uint32_t route)
+    uint32_t route,
+    uint32_t credit)
 {
     SparkHiddenTransportCompletion completion;
     SparkStatus status;
 
-    status = SparkHiddenTransportSendFixed(session,staging,sizeof(uint64_t),
+    status = SparkHiddenTransportSendFixed(session,staging,sizeof(uint64_t),(uint64_t)credit * sizeof(uint64_t),
         (uint32_t)((ordinal << 8u) | route));
     if (status == SPARK_STATUS_BUSY)
     {
         (void)SparkHiddenTransportPoll(session,&completion);
         status = SparkHiddenTransportSendFixed(session,staging,
-            sizeof(uint64_t),(uint32_t)((ordinal << 8u) | route));
+            sizeof(uint64_t),(uint64_t)credit * sizeof(uint64_t),(uint32_t)((ordinal << 8u) | route));
     }
     return status;
 }
@@ -1265,7 +1272,7 @@ static SparkStatus SparkTpDeviceCollectiveSendAcks(
             *(volatile uint64_t *)staging = operation->ordinal + 1u;
             status = SparkTpDeviceCollectivePostAck(
                 implementation->d2a_ack_send_sessions[route],
-                staging,operation->ordinal,route);
+                staging,operation->ordinal,route,operation->credit_index);
             if (status != SPARK_STATUS_OK)
                 break;
         }
@@ -1292,7 +1299,7 @@ static SparkStatus SparkTpDeviceCollectiveSendAcks(
             *(volatile uint64_t *)staging = operation->ordinal + 1u;
             status = SparkTpDeviceCollectivePostAck(
                 implementation->ack_send_sessions[route],
-                staging,operation->ordinal,route);
+                staging,operation->ordinal,route,operation->credit_index);
             if (status != SPARK_STATUS_OK)
                 break;
         }
@@ -1501,6 +1508,7 @@ static void SparkTpDeviceCollectiveD2aOperation(
                     implementation->d2a_send_sessions[route],
                     binding->send_transport,
                     nonce_at + NONCE_BYTES,
+                    SparkTpDeviceCollectiveCreditOffset(collective,operation->credit_index),
                     (uint32_t)((operation->ordinal << 8u) | route));
                 if (status != SPARK_STATUS_OK)
                 {
