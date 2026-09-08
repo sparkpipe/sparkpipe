@@ -6,7 +6,7 @@ The shared version-2 manifest parser now represents explicitly typed ranges grou
 
 This branch is incomplete and must remain a draft. The parser is built into the shared runtime but is not yet used by the daemon. Remaining integration:
 
-- Generate complete weight and scale ranges from the actual codec layout, validate against the shared parser, and atomically publish `.experts` without destroying an existing artifact on failure.
+- Qualify the new FP8/BF16 generator against corrected packs from PR #843. It now emits payload and scale ranges, validates the complete manifest with the shared parser, uses a fixed 64 KiB read buffer, and publishes exclusively through a temporary file. Unsupported codecs are explicit errors. NVFP4 needs its separate global-scale and block-scale ranges implemented before use. Build with `make build/glm5_next_experts_manifest`; do not run against the known interleaved legacy packs.
 - Replace single-range ENSURE with generation-scoped working-set acquisition. Return all ranges plus a lease; do not expose successful partial acquisition.
 - Plan memory against the union of required chunks and protect every acquired range before evicting unleased ranges. Use bounded staging and preserve correctness on allocation, read, checksum and mapping failures.
 - Export only ranges covered by the consumer's lease and map them into its own CUDA virtual address space. Spine residency is separate from routed expert working sets.
