@@ -1,5 +1,5 @@
 {
-  "file_count": 1887,
+  "file_count": 1888,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "9106a9eec984de39cb39b589b6a0bd3c9070115c8bd15aec4063740dece6830c",
-      "size_bytes": 90986
+      "sha256": "adb5fce1a36e53ed52849099da241ff44d11ddf04f6d119ac7bac0e1194421f1",
+      "size_bytes": 91027
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -6902,6 +6902,11 @@
       "size_bytes": 1616
     },
     {
+      "path": "tests/test_glm5_next_stage_context.py",
+      "sha256": "94d7f083ce3f1291040f28bc5472aa86baad11505822b0ef249591d4b79062ca",
+      "size_bytes": 5854
+    },
+    {
       "path": "tests/test_gqa_host.py",
       "sha256": "6fad29a2148bdf2f16e7b76b7f51442d763b45fe1a6c9bcca633a99fdea43215",
       "size_bytes": 5773
@@ -9440,5 +9445,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32173653
+  "total_bytes": 32179548
 }

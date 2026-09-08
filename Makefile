@@ -396,7 +396,8 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_pack_regions.py \
 	tests/test_glm5_next_queue_build.py \
-	tests/test_glm5_next_hc_boundary.py
+	tests/test_glm5_next_hc_boundary.py \
+	tests/test_glm5_next_stage_context.py
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
     build/test_modules/module_add_one.o \
