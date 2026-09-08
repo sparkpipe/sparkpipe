@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "0185ff7f2f00d0b3b52d049d5d1f4d5eb822df0c4bfb25fa0cea1282ff68e81c",
-      "size_bytes": 90503
+      "sha256": "7ec2562a069d5fc0941e0a1f0c39aacdcd84243f8159a910179de346f28f1542",
+      "size_bytes": 90779
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -878,8 +878,8 @@
     },
     {
       "path": "docs/PARALLEL_DRIVER_DEBUG.md",
-      "sha256": "9d052a352a85986aa3b450943c8eca7c99f990ec168d5ee6c2a1822a93b1983a",
-      "size_bytes": 7541
+      "sha256": "512832b3b5fe438fb81d43151a31086ad429f393a41f308f7b98ca6900554922",
+      "size_bytes": 8584
     },
     {
       "path": "docs/PERFORMANCE_LEDGER.md",
@@ -8823,13 +8823,13 @@
     },
     {
       "path": "tools/mb_doorbell.cu",
-      "sha256": "fa59e1433453e359a1955059b0fb537b9f618cd2ff86453f641e3760db252345",
-      "size_bytes": 21557
+      "sha256": "be34123d097f4554c47bc70f3ca6661934b33a3b8126d79c21b991d87929bc72",
+      "size_bytes": 22063
     },
     {
       "path": "tools/mb_run.sh",
-      "sha256": "a6027f66a7f278005b378498e78441dcfc7b7881470b5276394523da6cb52aa3",
-      "size_bytes": 1594
+      "sha256": "9fb7637241a3d4ae110bcbb95c8ccecab7550764ee12e7ff8cbd1c6c1093edc4",
+      "size_bytes": 1461
     },
     {
       "path": "tools/metric.sh",
@@ -9415,5 +9415,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32111612
+  "total_bytes": 32113304
 }
