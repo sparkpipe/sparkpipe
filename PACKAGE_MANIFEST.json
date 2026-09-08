@@ -1,5 +1,5 @@
 {
-  "file_count": 1883,
+  "file_count": 1884,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "5411bbd6d50791226ce73b43331e3ac7a39f1fc517cb27bf38b20a81cd997077",
-      "size_bytes": 90822
+      "sha256": "12fe2c8610de79c51ccb5875703d36070c3afb21647db8033cb3c986d85b34e0",
+      "size_bytes": 90868
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -6872,6 +6872,11 @@
       "size_bytes": 2682
     },
     {
+      "path": "tests/test_glm5_next_expert_pack_layout.py",
+      "sha256": "808fb8cc0406d6cab3a1295c31f8ec1a01441e47240cde503cd9272975712327",
+      "size_bytes": 3664
+    },
+    {
       "path": "tests/test_glm5_next_geometry.py",
       "sha256": "5b8fbeb8530d9fcfbb7ab676e8c36fe71eef1bf4b5132fb4383fd0e086667ed4",
       "size_bytes": 17916
@@ -8548,13 +8553,13 @@
     },
     {
       "path": "tools/glm5_next_pack_verify.py",
-      "sha256": "ca83f4be745b2ec7621e40533bfb808430d3e2da3439d31ca778fa034c791bec",
-      "size_bytes": 13810
+      "sha256": "b1fc780de6f740e96bd6df1b435091c5619b8ad565d032536ee07faab8075428",
+      "size_bytes": 13269
     },
     {
       "path": "tools/glm5_next_resident_stagepack.py",
-      "sha256": "abc2416382276896cadb5c860b444df619baac4a3171f1c9dc005ea069a2b2ee",
-      "size_bytes": 45802
+      "sha256": "8fb450665278ff1376c5670e925536396df541da15f4c620fbc12c67e9b6fed0",
+      "size_bytes": 46672
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -9420,5 +9425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32141506
+  "total_bytes": 32145545
 }

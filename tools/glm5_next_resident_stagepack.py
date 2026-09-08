@@ -606,8 +606,8 @@ class Packer:
         rank = self.tp_rank
         w1_rows, w1_cols = 2 * EXPERT_INTER, HIDDEN      # stacked up|gate
         w2_rows, w2_cols = HIDDEN, EXPERT_INTER
-        w1_r0 = w1_r1 = 0; w1_c0 = 0; w1_c1 = w1_cols
-        w2_c0 = w2_c1 = 0; w2_r0 = 0; w2_r1 = w2_rows
+        w1_r0 = 0; w1_r1 = w1_rows; w1_c0 = 0; w1_c1 = w1_cols
+        w2_c0 = 0; w2_c1 = w2_cols; w2_r0 = 0; w2_r1 = w2_rows
         if tp > 1:
             if w1_rows % tp or w2_cols % tp:
                 raise PackFailure(f"expert dims not divisible by tp{tp}")
@@ -718,9 +718,16 @@ class Packer:
                     hi = min(w1_r1, base + up_rows) - base
                     if hi > lo:
                         yield source.expert_payload(name, lo, hi, w1_c0, w1_c1)
-                for name, base in ((up, 0), (gate, up_rows)):
+
+        def produce_w1_scale() -> Iterator[bytes]:
+            if experts_bf16:
+                return
+            for expert in range(EXPERTS):
+                up = f"{prefix}.{expert}.up_proj.weight"
+                gate = f"{prefix}.{expert}.gate_proj.weight"
+                for name, base in ((up, 0), (gate, EXPERT_INTER)):
                     lo = max(w1_r0, base) - base
-                    hi = min(w1_r1, base + up_rows) - base
+                    hi = min(w1_r1, base + EXPERT_INTER) - base
                     if hi > lo:
                         yield source.expert_scale(name, lo, hi, w1_c0, w1_c1)
 
@@ -728,13 +735,16 @@ class Packer:
             for expert in range(EXPERTS):
                 down = f"{prefix}.{expert}.down_proj.weight"
                 yield source.expert_payload(down, w2_r0, w2_r1, w2_c0, w2_c1)
+
+        def produce_w2_scale() -> Iterator[bytes]:
+            if experts_bf16:
+                return
+            for expert in range(EXPERTS):
+                down = f"{prefix}.{expert}.down_proj.weight"
                 yield source.expert_scale(down, w2_r0, w2_r1, w2_c0, w2_c1)
 
-        def empty() -> Iterator[bytes]:
-            return iter(())
-
-        self.plan.append(PlanItem(w1, produce_w1, empty))
-        self.plan.append(PlanItem(w2, produce_w2, empty))
+        self.plan.append(PlanItem(w1, produce_w1, produce_w1_scale))
+        self.plan.append(PlanItem(w2, produce_w2, produce_w2_scale))
 
     # -- the plan -----------------------------------------------------------
 
@@ -864,6 +874,18 @@ def serialize_entry(entry: Entry) -> bytes:
     )
 
 
+def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes]) -> None:
+    out.seek(offset)
+    written = 0
+    for chunk in chunks:
+        if len(chunk) > expected - written:
+            raise PackFailure(f"region at {offset}: producer exceeds {expected} bytes")
+        out.write(chunk)
+        written += len(chunk)
+    if written != expected:
+        raise PackFailure(f"region at {offset}: producer wrote {written}, expected {expected}")
+
+
 def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
     packer.build()
     directory_offset = (HEADER_BYTES + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
@@ -884,13 +906,10 @@ def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
         for item in packer.plan:
             out.write(serialize_entry(item.entry))
         for item in packer.plan:
-            out.seek(item.entry.payload_offset)
-            for chunk in item.produce_payload():
-                out.write(chunk)
-            if item.entry.scale_bytes and item.produce_scale:
-                out.seek(item.entry.scale_offset)
-                for chunk in item.produce_scale():
-                    out.write(chunk)
+            emit_region(out, item.entry.payload_offset, item.entry.payload_bytes,
+                        item.produce_payload())
+            emit_region(out, item.entry.scale_offset, item.entry.scale_bytes,
+                        item.produce_scale() if item.produce_scale else iter(()))
     print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes "
           f"(tp{packer.tp_degree} rank {packer.tp_rank}, layers "
           f"{header_extra['first_layer']}..{header_extra['first_layer'] + header_extra['layer_count'] - 1})")
