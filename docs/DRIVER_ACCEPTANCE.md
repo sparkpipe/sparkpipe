@@ -1,5 +1,7 @@
 # Driver acceptance
 
+The normative contract is [SparkPipe invariants](../sparkpipe_invariants.md).
+
 Required behavior is mandatory. No descriptor bit, configuration option,
 environment variable, stub or documentation exception can disable it. Report
 functional qualification and hardware-normalized performance qualification
@@ -57,7 +59,9 @@ Serving ABI 21 retires the PREFILL, DECODE, RELEASE, PREFETCH, RESET,
 DRIVER_OWNS_KV and JIT_KV capability bits. Their old numeric bits are rejected.
 Every interface must provide initialize, destroy, validate_submission,
 submit, prefetch, resolve_prefetch, progress, quiesce, snapshot and reset.
-Cache geometry, positive runtime page capacities and slot reuse are required.
+ABI 22 additionally removes the slot-reuse policy field. Common code always
+requires release before another sequence can own a bound slot, including at
+position zero. Cache geometry and positive runtime page capacities are required.
 Clearing every remaining capability bit does not skip any of these checks.
 The remaining descriptors describe transport/topology and specialized
 execution modes; they cannot waive required externally observable behavior.

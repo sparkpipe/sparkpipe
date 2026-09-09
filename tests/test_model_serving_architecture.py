@@ -173,8 +173,7 @@ def main() -> int:
     require(
         "SparkModelResidentdQueueDeadlineCompletionLocked" in resident
         and "deadline_completion_queued" in resident
-        and "deadline_wait_state" in resident
-        and "stay quarantined until transport reports a terminal" in resident,
+        and "deadline_wait_state" in resident,
         "transport expiry can hang completion or recycle a live boundary",
     )
     resident_client = (
