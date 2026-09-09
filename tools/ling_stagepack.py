@@ -192,10 +192,14 @@ class SourceReader:
         return matrix
 
     def vector_f32(self, name: str) -> np.ndarray:
-        dtype, shape = self.meta(name)
-        if dtype != "F32":
-            raise PackFailure(f"{name}: expected F32, got {dtype}")
-        return self.raw(name).view(np.float32).reshape(-1).copy()
+        """Exact f32 vector: F32 verbatim, BF16 upcast (bit-exact)."""
+        dtype, _ = self.meta(name)
+        if dtype == "F32":
+            return self.raw(name).view(np.float32).reshape(-1).copy()
+        if dtype == "BF16":
+            return (self.raw(name).view(np.uint16).astype(np.uint32)
+                    << np.uint32(16)).view(np.float32).astype(np.float32)
+        raise PackFailure(f"{name}: f32 upcast from {dtype} unsupported")
 
     def close(self) -> None:
         self._mmaps.clear()
@@ -306,8 +310,9 @@ class Packer:
 
     def add_rows_sharded_f32(self, kind: int, layer: int, name: str, total: int):
         dtype, shape = self.s.meta(name)
-        if dtype != "F32" or (len(shape) != 1 or shape[0] != total):
-            raise PackFailure(f"{name}: expected F32[{total}], got {dtype} {tuple(shape)}")
+        if dtype not in ("F32", "BF16") or (len(shape) != 1 or shape[0] != total):
+            raise PackFailure(f"{name}: expected F32[{total}] (or exact BF16), "
+                              f"got {dtype} {tuple(shape)}")
         start, count = self._slice_rows(total)
         entry = Entry(kind, layer, PAYLOAD_F32, CODEC_NONE, SCALE_NONE, 1, 1, count)
         entry.payload_bytes = count * 4
@@ -321,9 +326,10 @@ class Packer:
 
     def add_replicated_f32(self, kind: int, layer: int, name: str, total: int):
         dtype, shape = self.s.meta(name)
-        if dtype != "F32" or (len(shape) != 1 and tuple(shape) != (1, total)) or \
+        if dtype not in ("F32", "BF16") or (len(shape) != 1 and tuple(shape) != (1, total)) or \
                 (len(shape) == 1 and shape[0] != total):
-            raise PackFailure(f"{name}: expected F32[{total}], got {dtype} {tuple(shape)}")
+            raise PackFailure(f"{name}: expected F32[{total}] (or exact BF16), "
+                              f"got {dtype} {tuple(shape)}")
         entry = Entry(kind, layer, PAYLOAD_F32, CODEC_NONE, SCALE_NONE, 1, 1, total)
         entry.payload_bytes = total * 4
         source = self.s
