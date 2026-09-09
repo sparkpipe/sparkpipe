@@ -1,6 +1,7 @@
 MODULE_FAMILY := muse
 MODULE_IDENTIFIER := spark.muse.resident_decode_stage.bf16.h6656.l52.a52.v1
 MODULE_TARGET := cuda.sm121.muse.resident_decode_stage.bf16
+REPOSITORY_ROOT ?= $(abspath ../..)
 MODEL_HEADER := ../../model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h
 MODULE_ENTRY_PREFIX := SparkMuseGlimmerResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_muse_glimmer_resident_decode_stage_module.c
