@@ -141,6 +141,7 @@ def stage_config(rank: int) -> dict:
 
 
 def resident_deployment() -> dict:
+    contract = json.loads((Path(__file__).resolve().parents[1] / "model_contracts/glm53_flash_authoritative.json").read_text())
     page_capacity = 16 * ((stage_config(0)["max_sequence_positions"] + 63) // 64)
     nodes = []
     for rank, host in enumerate(HOSTS):
@@ -161,6 +162,7 @@ def resident_deployment() -> dict:
         })
     return {
         "schema_version": 2,
+        "eos_token_ids": contract["tokens"]["eos_token_ids"],
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {

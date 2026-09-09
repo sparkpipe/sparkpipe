@@ -660,3 +660,31 @@ Controller artifacts:
 - `/private/tmp/ds4_glm_layer4_e38ebb2/residentd.log`
 - `/private/tmp/ds4_glm_layer4_e38ebb2/rms_rounding_analysis.json`
 - `/private/tmp/ds4_glm_chat_checks/math-receipt.json`
+
+## Required model EOS metadata
+
+Resident deployment ABI 3 carries `eos_token_ids`. Common batch-engine startup
+rejects missing, empty, excessive or duplicate model EOS metadata, and rejects
+IDs outside a declared tokenizer vocabulary. The transport deployment reader
+can still inspect deployments without generation metadata; such a deployment
+cannot connect a generation engine. There is no no-EOS serving mode.
+
+The engine copies the model EOS list and appends caller stop tokens. Caller
+stops are additive: an empty list or a different token cannot disable model
+termination. EOS applies to generated tokens, not prompt tokens. The existing
+common completion/release path handles EOS just as it handles output-budget
+completion. The API uses the same model list for text decoding and no longer
+reads `SPARK_EOS_TOKEN_IDS`.
+
+`tools/glm5_next_gen_deployment.py` obtains the three GLM EOS tokens from
+`model_contracts/glm53_flash_authoritative.json`. Other deployment producers
+must likewise populate authoritative model EOS metadata before their outputs
+can serve. Old binaries must be rebuilt for the deployment ABI change.
+
+Host qualification executes the real common pipeline with fixture ranks. It
+submits a prompt containing model EOS, uses a different additional caller stop,
+observes generated model EOS, and verifies completion and transaction drain.
+Startup tests reject missing metadata even when a caller stop token is supplied.
+Parser tests load valid metadata and reject empty lists, repeated IDs, repeated
+JSON keys and oversized lists. These tests do not establish GLM GPU completion;
+that requires the merged-main deployment and repeated chat/lifecycle requests.

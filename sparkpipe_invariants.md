@@ -232,6 +232,13 @@ changes to common code. Track implementation evidence in
   contracts, never the presence or wording of comments. Do not restore or add
   a comment to satisfy a test; fix the test.
 
+- **I49 — Model EOS is mandatory.** Common generation loads termination tokens
+  from authoritative model deployment metadata. Missing or invalid EOS blocks
+  engine startup. Caller stop tokens are additive and cannot replace model
+  EOS. An EOS token in the prompt does not terminate prefill; a generated EOS
+  completes the request through common release and slot-lifetime handling.
+  No environment variable or driver option enables no-EOS serving.
+
 ## Applying this document
 
 For each affected invariant, a PR states the behavior changed and the evidence

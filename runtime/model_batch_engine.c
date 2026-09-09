@@ -110,7 +110,7 @@ struct SparkModelBatchEngine
 	uint32_t submission_capacity;
 	uint32_t maximum_messages_per_rank;
 	uint32_t stop_token_count;
-	uint32_t stop_token_ids[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
+	uint32_t stop_token_ids[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT + SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT];
 	uint32_t free_request_head;
 	uint32_t free_resident_slot_head;
 	uint32_t free_resident_slot_count;
@@ -894,6 +894,18 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 		for (right=left + 1u; right<configuration->stop_token_count; right++)
 			if ( configuration->stop_token_ids[left] == configuration->stop_token_ids[right] )
 				return(SPARK_STATUS_DUPLICATE);
+	if ( configuration->deployment->abi_version != SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION || configuration->deployment->descriptor_bytes != SPARK_MODEL_RESIDENT_DEPLOYMENT_BYTES )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	if ( configuration->deployment->eos_token_count == 0u || configuration->deployment->eos_token_count > SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (left=0u; left<configuration->deployment->eos_token_count; left++)
+	{
+		if ( configuration->deployment->tokenizer_vocabulary_size != 0u && configuration->deployment->eos_token_ids[left] >= configuration->deployment->tokenizer_vocabulary_size )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		for (right=left + 1u; right<configuration->deployment->eos_token_count; right++)
+			if ( configuration->deployment->eos_token_ids[left] == configuration->deployment->eos_token_ids[right] )
+				return(SPARK_STATUS_DUPLICATE);
+	}
 	return(SPARK_STATUS_OK);
 }
 
@@ -1020,7 +1032,9 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->submission_capacity = limits->max_inflight_submission_count;
 	engine->maximum_messages_per_rank = configuration->maximum_messages_per_rank_per_progress;
 	engine->stop_token_count = configuration->stop_token_count;
-	memcpy(engine->stop_token_ids,configuration->stop_token_ids,sizeof(engine->stop_token_ids));
+	memcpy(engine->stop_token_ids,configuration->stop_token_ids,engine->stop_token_count * sizeof(uint32_t));
+	memcpy(engine->stop_token_ids + engine->stop_token_count,configuration->deployment->eos_token_ids,configuration->deployment->eos_token_count * sizeof(uint32_t));
+	engine->stop_token_count += configuration->deployment->eos_token_count;
 	engine->event_function = configuration->event_function;
 	engine->event_context = configuration->event_context;
 	engine->admission_open = 1u;
