@@ -118,10 +118,6 @@ static void SparkMuseGlimmerValReferenceCenteredNorm(const uint16_t *input, cons
  * a constant 0x3f3f input (0.74609 each) normed to 1.00002 and scaled by
  * 3.87 rounds to 0x4078, computed by hand and frozen here. */
 
-static void SparkMuseGlimmerValReferenceHeadNormUnused(void)
-{
-}
-
 static void SparkMuseGlimmerValReferenceDecode(const uint16_t *query, const uint16_t *pool, const uint32_t *selected, uint32_t selected_count, uint16_t *output, uint64_t slot_elements)
 {
 	uint32_t head,element,step;
@@ -253,7 +249,6 @@ static int SparkMuseGlimmerValCheckNorms(void)
 		return(1);
 	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"head_norm_sync") != 0 )
 		return(1);
-	SparkMuseGlimmerValReferenceHeadNorm(head_input,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_NORM_EPSILON,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_SCALE_FACTOR);
 	for (uint32_t index = 0; index < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; index++)
 		head_reference[index] = 0x4078u;
 	failures += SparkMuseGlimmerValCompareNearby("qk_norm_3_87",head_output,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,1u);
