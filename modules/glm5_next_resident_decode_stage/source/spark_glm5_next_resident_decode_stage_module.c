@@ -1746,23 +1746,10 @@ static SparkStatus SparkGlm5NextModuleCombineDirectBf16(
 	uint32_t hidden_dimension,
 	void *cuda_stream)
 {
-	uint32_t index;
 	cudaError_t error;
 	(void)combine_context;
-	for (index=0u;
-		index<SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT;
-		index++)
-	{
-		if (rank_devices[index] == 0 || index == tp_rank)
-			continue;
-		error = SparkGlm5NextLaunchAccumAdd((cudaStream_t)cuda_stream,
-			destination_device,rank_devices[index],
-			active_sequence_count,hidden_dimension);
-		if (error != cudaSuccess)
-			return(SparkStageModuleCudaStatus(
-				SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_d2d_all_reduce_sum"));
-	}
-	return(SPARK_STATUS_OK);
+	error = SparkGlm5NextLaunchDirectSum((cudaStream_t)cuda_stream,destination_device,rank_devices,tp_rank,active_sequence_count,hidden_dimension);
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_d2d_all_reduce_sum"));
 }
 
 static SparkStatus SparkGlm5NextModuleCombineU64Max(
