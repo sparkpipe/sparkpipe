@@ -1,0 +1,38 @@
+{
+ "schema_version": 1,
+ "family": "muse_glimmer",
+ "contract": "model_contracts/muse_glimmer_authoritative.json",
+ "model_id": "meta-models/Muse-Glimmer-30B",
+ "source_revision": "4177486a9f199bd7be520eff14431071d5d41ec5",
+ "scope": {
+  "text_decode_only": true,
+  "prefix": "model.language_model.",
+  "vision_excluded": ["model.vision_tower.", "model.vision_adapter.", "model.multi_modal_projector."],
+  "embedding_norm": "scale-less runtime step (MuseGlimmerTextNormedEmbedding.embed_norm); no weight tensor, never folded"
+ },
+ "layer_classes": {
+  "every_layer": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51],
+  "full_attention_layers": [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51],
+  "sliding_attention_layers": [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50],
+  "mtp_layers": [],
+  "kind_dispatch": "SPARK_MUSE_GLIMMER_MODEL_LAYER_IS_FULL_ATTENTION(layer): period 4, full phase 3; sliding layers rope (theta 5e5) and 2048-token window reads, full layers NoPE and full-context reads"
+ },
+ "dispatch": {
+  "stagepack": "one EVERY_LAYER class carries all 52 layers; kind differences are runtime dispatch only",
+  "tensor_kind_map": {
+   "input_layernorm.weight": 22,
+   "post_attention_layernorm.weight": 23,
+   "pre_feedforward_layernorm.weight": 24,
+   "post_feedforward_layernorm.weight": 25,
+   "self_attn.qkv_gate_proj": 26,
+   "self_attn.o_proj.weight": 27,
+   "mlp.gate_up_proj": 28,
+   "mlp.down_proj.weight": 29
+  },
+  "global_kind_map": {
+   "model.language_model.embed_tokens.weight": 0,
+   "model.language_model.norm.weight": 1,
+   "lm_head.weight": 2
+  }
+ }
+}
