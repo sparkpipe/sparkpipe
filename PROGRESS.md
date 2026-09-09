@@ -133,21 +133,42 @@ differ. They bind the kernels (criterion 4+).
 
 | # | criterion | status |
 | --- | --- | --- |
-| 1 | h3_authoritative.json + identity proof | in progress (inv job on sparke) |
-| 2 | family headers compile, static asserts | in progress |
-| 3 | stagepack format + synthesize + real-shard rank-0 pack ≤1GB RSS | pending |
-| 4 | CPU oracle + V2 gate | pending |
-| 5 | V3 real-weights block-0 gate | pending |
-| 6 | V4 VAE decode gates | pending |
-| 7 | module build + offline-gates + ratchet | pending |
-| 8 | V5 determinism + TP4≡TP1 | pending |
-| 9 | cell E2E slice + instrumentation | pending |
-| 10 | cancellation + oversize fail-closed + report + manifest last | pending |
+| 1 | h3_authoritative.json + identity proof | **DONE** — commit c590436; identity REFUTED and recorded (per-tensor proof, pack top-level transformer/ only); revisions pinned (HF 42ed227e cross-evidenced, diffusers 3c221246, transformers 4.57.0.dev0); text_encoder shard digests still to append at pack time |
+| 2 | family headers compile, static asserts | **DONE** — 8ecf333 + 39081ce; cc -Werror clean; 61 kinds resolve; counts bind measured census (705+638+585+936) |
+| 3 | stagepack format + synthesize + real-shard rank-0 pack ≤1GB RSS | **IN PROGRESS** — format header + pack_synthesize (45GB synth smoke OK, SPARK_FAIL sites) + packer committed; real-shard rank-0 DiT pack running as detached chain minimax-c3-pack-010..014 (warm pool measured 2.8 MB/s under cross-lane contention — 15-min ttl forced the resume/cursor design, commit 176f66a); dry-run census confirmed on sparke: encoder 705, dit 638 (stage split 187/156/156/139), video 585, audio 936; fix pending: SparkMinimaxH3StagePackAudioTensorCount must return 936 (measured), not 937 |
+| 4 | CPU oracle + V2 gate | **PARTIAL** — oracle primitives committed (bc68a8f), self-check green; CUDA kernels + validation not started |
+| 5-8 | V3/V4/V5 gates, module build | pending |
+| 9 | cell E2E | pending — 16-spark TP4×PP4, port base env-parameterized pending fleet renumber |
+| 10 | fail-closed tests + report + manifest | pending |
 
 ## ABI seam instrumentation (ruling 3) — to be filled with measured numbers
 
-- per-denoise-step submission/completion round-trip vs step compute: TBD
-- model_extension payload handling at admission: TBD
-- receipt shape: TBD
-- spool I/O cadence: TBD
-- queue-window/TTL vs video-job lifetime (criterion 9): TBD
+- per-denoise-step submission/completion round-trip vs step compute: TBD (C9)
+- model_extension payload handling at admission: TBD (C9)
+- receipt shape: FLAG_MODEL_EXTENSION model_extension[512] blob = {artifact path id,
+  sha256[32], byte count, width/height/frames/sample-rate} — layout to be frozen in
+  spark_minimax_h3_serving_adapter.h
+- spool I/O cadence: rank-0 adapter writes job JSON at admission + per-step (state,
+  step k/N) + terminal receipt; media file written once, atomic rename
+- queue-window/TTL vs video-job lifetime: measured pool contention (2.8 MB/s) already
+  forced the ttl-15 detached-chain pattern for a single rank pack; a full 16-rank pack
+  set (135 GB) at contended rates needs either an idle-pool window or the chain pattern
+  at scale — record actuals when the pack chain completes
+
+## Handoff notes (next coder session)
+
+- Pinned-source contract section above is the ground truth for all kernels; the
+  FP32-module list (proj_in, audio_proj_in, time_embedder, proj_out, audio_proj_out,
+  both VAEs) means those pack entries carry weight_format F32 (1), everything else BF16.
+- The module host source + CUDA kernel file + serving adapter do not exist yet; the
+  Makefile already declares their paths. The oracle primitives in
+  modules/minimax_h3_resident_media_stage/validation/spark_minimax_h3_reference.c are
+  the V2 comparison target — the CUDA validation includes the same math at identical
+  inputs and compares to the GLM numerical gates (bf16 rel ≤ 2e-2 for latents).
+- Audio tensor count: fix SparkMinimaxH3StagePackAudioTensorCount 937 -> 936 and re-run
+  the format test (the header's expected tensor_count assert must match the measured
+  census; the discrepancy is in the audio globals — recount from the shard dump in the
+  lane transcript before editing).
+- The /v1/videos door (node/model_api.c shared edit) is not started. Receipt layout
+  note above is the design; freeze it when writing the adapter header.
+- transformer_ref/ and FL2VA remain untouched, per design.
