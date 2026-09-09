@@ -50,10 +50,6 @@ static const uint32_t kinds[] = {
 	SPARK_MINIMAX_H3_VIDEO_SCALE1,
 	SPARK_MINIMAX_H3_VIDEO_SCALE2,
 	SPARK_MINIMAX_H3_AUDIO_IN_PROJ,
-	SPARK_MINIMAX_H3_AUDIO_PRE_ATTN_QKV,
-	SPARK_MINIMAX_H3_AUDIO_PRE_ATTN_PROJ,
-	SPARK_MINIMAX_H3_AUDIO_PRE_MLP,
-	SPARK_MINIMAX_H3_AUDIO_PRE_NORM,
 	SPARK_MINIMAX_H3_AUDIO_CONV_PRE,
 	SPARK_MINIMAX_H3_AUDIO_RESBLOCK_CONV1,
 	SPARK_MINIMAX_H3_AUDIO_RESBLOCK_CONV2,
@@ -99,6 +95,20 @@ int main(void)
 	{
 		failures++;
 		printf("FAIL video block out of range accepted\n");
+	}
+	if ( SparkMinimaxH3StagePackResolvedShape(
+		SPARK_MINIMAX_H3_AUDIO_RESBLOCK_CONV1,
+		SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCK_STAGE_COUNT *
+		SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCKS_PER_STAGE,0u,&shape) == 0 )
+	{
+		failures++;
+		printf("FAIL audio resblock out of range accepted\n");
+	}
+	if ( SparkMinimaxH3StagePackAudioTensorCount() != 914u )
+	{
+		failures++;
+		printf("FAIL audio census count %u != 914\n",
+			SparkMinimaxH3StagePackAudioTensorCount());
 	}
 	if ( SparkMinimaxH3StagePackResolvedShape(
 		SPARK_MINIMAX_H3_DIT_ATTENTION_QUERY,

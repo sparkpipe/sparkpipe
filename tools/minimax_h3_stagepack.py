@@ -144,6 +144,7 @@ def component_inventory(component: str, warm: Path, patterns: list[dict], codes:
                         excluded: list[re.Pattern]) -> list[dict]:
     directory = warm / COMPONENT_DIRS[component]
     entries = []
+    stray = []
     if COMPONENT_INDEX[component] is None:
         shards = sorted(path.name for path in directory.glob("*.safetensors"))
     else:
@@ -157,15 +158,23 @@ def component_inventory(component: str, warm: Path, patterns: list[dict], codes:
     names = sorted(headers[shard]) if COMPONENT_INDEX[component] is None else sorted(
         (name for name, shard in json.loads((directory / COMPONENT_INDEX[component]).read_text())[
             "weight_map"].items() if shard in headers))
+    weight_map = None
+    if COMPONENT_INDEX[component] is not None:
+        weight_map = json.loads((directory / COMPONENT_INDEX[component]).read_text())["weight_map"]
     for name in names:
-        shard = shards[0] if COMPONENT_INDEX[component] is None else json.loads(
-            (directory / COMPONENT_INDEX[component]).read_text())["weight_map"][name]
+        shard = shards[0] if weight_map is None else weight_map[name]
         info = headers[shard][name]
         matched = match_name(name, patterns, codes, excluded)
         if matched is None:
+            if not any(rx.fullmatch(name) for rx in excluded):
+                stray.append(name)
             continue
         entries.append(dict(matched, name=name, shard=shard, shape=info["shape"],
                             dtype=info["dtype"], data_offsets=info["data_offsets"]))
+    if stray:
+        raise SystemExit(
+            f"{component}: {len(stray)} checkpoint tensors match no pattern and no exclusion; "
+            f"refusing to pack (fail-closed census): {stray[:8]}")
     return entries
 
 

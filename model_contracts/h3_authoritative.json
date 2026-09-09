@@ -9,7 +9,9 @@
   "diffusers_commit": "3c22124636a332a0df02910f609315d4c2898f57",
   "diffusers_note": "github.com/huggingface/diffusers main; contains modular_pipelines/minimax_h3/{encoders,before_denoise,denoise,decoders,modular_blocks_minimax_h3}.py and models/transformers/transformer_minimax_h3.py",
   "diffusers_version_string": "0.36.0.dev0 (all landed *_config.json _diffusers_version fields)",
-  "transformers_version_string": "4.57.0.dev0 (text_encoder/config.json transformers_version)",
+  "transformers_commit": "4815a0a6a064214f2d8208c094464a5a6b76ca8d",
+  "transformers_version_string": "5.18.0.dev0 (github.com/huggingface/transformers main at the 2026-09-09 diffusers pin date; the text_encoder/config.json field records the checkpoint authoring metadata 4.57.0.dev0, which is NOT a usable pin: released 4.57.0 hard-requires huggingface-hub<1.0 while diffusers@3c221246 requires huggingface-hub>=1.26, so 4.57.0(.dev0) cannot coexist with the pinned diffusers and the .dev0 string is a commit range, not a revision; finding cross-checked by the independent anchor lane, venv ~/val-minimax installs transformers -e @ 4815a0a6)",
+  "transformers_pin_scope": "encoder-harvest gate only (prompt ids -> hidden_states[50]); every other gate is transformers-independent",
   "library_name": "minimax-h3 (publisher pip library per README front matter; pipeline classes resolve inside diffusers main)",
   "resolution_status": "pinned; V2/V3 gates compare against these sources, never driver imports"
  },

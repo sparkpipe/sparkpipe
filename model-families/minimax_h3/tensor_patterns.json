@@ -1,5 +1,5 @@
 {
- "comment": "Name patterns are regex over checkpoint tensor names; {N} is the layer capture. tp: rows = output-channel split, cols = input-channel split, repl = replicate on every TP rank, vocab = embedding row split, rank0 = pack on rank 0 only. stage: 0-3 for the TP4xPP4 placement, 'first'/'last' follows the DiT block split, 'g0'/'g3' = entry/exit globals.",
+ "comment": "Name patterns are regex over checkpoint tensor names; {N} is the layer capture. tp: rows = output-channel split, cols = input-channel split, repl = replicate on every TP rank, vocab = embedding row split, rank0 = pack on rank 0 only. stage: 0-3 for the TP4xPP4 placement, 'first'/'last' follows the DiT block split, 'g0'/'g3' = entry/exit globals. Exclusions include the audio VAE encode arm (pre_block/mean_proj/logs_proj sit on the encode path per the pinned AutoencoderKLMiniMaxH3Audio.encode; decode is dec_in_proj + decoder BigVGAN only) and the audio/video VAE encoder stacks.",
  "sections": {
   "encoder": 4096,
   "dit": 8192,
@@ -668,204 +668,6 @@
    "stage": 0
   },
   {
-   "regex": "^pre_block\\.attn\\.qkv\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_ATTN_QKV",
-   "layer": "global",
-   "sub": 0,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.attn\\.proj\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_ATTN_PROJ",
-   "layer": "global",
-   "sub": 0,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.attn\\.proj\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_ATTN_PROJ",
-   "layer": "global",
-   "sub": 1,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.attn\\.q_bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_ATTN_PROJ",
-   "layer": "global",
-   "sub": 2,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.attn\\.v_bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_ATTN_PROJ",
-   "layer": "global",
-   "sub": 3,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.attn\\.zero_k_bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_ATTN_PROJ",
-   "layer": "global",
-   "sub": 4,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.mlp\\.w0\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_MLP",
-   "layer": "global",
-   "sub": 0,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.mlp\\.w0\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_MLP",
-   "layer": "global",
-   "sub": 1,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.mlp\\.w1\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_MLP",
-   "layer": "global",
-   "sub": 2,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.mlp\\.w1\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_MLP",
-   "layer": "global",
-   "sub": 3,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.mlp\\.w2\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_MLP",
-   "layer": "global",
-   "sub": 4,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.mlp\\.w2\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_MLP",
-   "layer": "global",
-   "sub": 5,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.norm1\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_NORM",
-   "layer": "global",
-   "sub": 0,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.norm1\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_NORM",
-   "layer": "global",
-   "sub": 1,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.norm2\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_NORM",
-   "layer": "global",
-   "sub": 2,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.norm2\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_NORM",
-   "layer": "global",
-   "sub": 3,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.norm3\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_NORM",
-   "layer": "global",
-   "sub": 4,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.norm3\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_NORM",
-   "layer": "global",
-   "sub": 5,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.mlp\\.norm\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_NORM",
-   "layer": "global",
-   "sub": 6,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.mlp\\.norm\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_NORM",
-   "layer": "global",
-   "sub": 7,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.proj\\.weight",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_ATTN_PROJ",
-   "layer": "global",
-   "sub": 5,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
-   "regex": "^pre_block\\.proj\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_PRE_ATTN_PROJ",
-   "layer": "global",
-   "sub": 6,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
    "regex": "^decoder\\.conv_pre\\.weight_g",
    "section": "audio_vae",
    "kind": "AUDIO_CONV_PRE",
@@ -1015,15 +817,6 @@
    "stage": 0
   },
   {
-   "regex": "^decoder\\.conv_post\\.bias",
-   "section": "audio_vae",
-   "kind": "AUDIO_CONV_POST",
-   "layer": "global",
-   "sub": 2,
-   "tp": "rank0",
-   "stage": 0
-  },
-  {
    "regex": "^decoder\\.activation_post\\.act\\.alpha",
    "section": "audio_vae",
    "kind": "AUDIO_POST_SNAKE",
@@ -1065,6 +858,9 @@
   "model\\.language_model\\.norm\\.weight",
   "model\\.visual\\..*",
   "^encoder\\..*",
-  "^quant_conv\\..*"
+  "^quant_conv\\..*",
+  "^pre_block\\..*",
+  "^mean_proj\\..*",
+  "^logs_proj\\..*"
  ]
 }
