@@ -98,6 +98,7 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 {
 	SparkWeightdLazyPack *pack;
 	SparkWeightdIdentity identity;
+	SparkWeightdLazyAttachRequest resolved;
 	SparkStatus status;
 	struct stat info;
 	int32_t fd;
@@ -111,9 +112,11 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 	{
 		if ( realpath(request->pack_path,absolute) == 0 )
 			return(errno == ENOENT ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_IO_ERROR);
-		if ( strlen(absolute) >= sizeof(request->pack_path) )
+		if ( strlen(absolute) >= sizeof(resolved.pack_path) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		memcpy(request->pack_path,absolute,strlen(absolute) + 1u);
+		resolved = *request;
+		memcpy(resolved.pack_path,absolute,strlen(absolute) + 1u);
+		request = &resolved;
 	}
 	identity = request->identity;
 	if ( SparkWeightdIdentityPrepare(&identity) != SPARK_STATUS_OK )
