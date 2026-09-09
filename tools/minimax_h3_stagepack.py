@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import resource
 import struct
@@ -184,6 +185,10 @@ def read_tensor_blob(file, shape: list[int], dtype: str, offsets: tuple[int, int
     return blob
 
 
+def args_signature(sections: list[str], rank: int, tp_degree: int) -> str:
+    return "|".join(sections) + f"|{rank}|{tp_degree}"
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -237,11 +242,29 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
         return {}
 
     out_path = out_dir / f"minimax_h3.rank{rank:02d}.sp"
-    with out_path.open("wb") as out:
-        out.write(b"\0" * HEADER_BYTES)
+    progress_path = out_dir / f"minimax_h3.rank{rank:02d}.progress.json"
+    ordered = sorted(directory, key=lambda e: (e["item"]["section"], e["item"]["shard"]))
+    started = time.time()
+    resume = None
+    if progress_path.exists():
+        resume = json.loads(progress_path.read_text())
+        if resume.get("signature") != (args_signature(sections, rank, tp_degree)):
+            resume = None
+    if resume is not None and out_path.exists():
+        with out_path.open("r+b") as out:
+            out.truncate(resume["payload_offset"])
+        start_index = resume["next_index"]
+        payload_offset = resume["payload_offset"]
+    else:
+        start_index = 0
         payload_offset = HEADER_BYTES
+    mode = "r+b" if resume is not None and out_path.exists() else "wb"
+    with out_path.open(mode) as out:
+        if mode == "wb":
+            out.write(b"\0" * HEADER_BYTES)
         by_shard: dict[str, object] = {}
-        for entry in sorted(directory, key=lambda e: (e["item"]["section"], e["item"]["shard"])):
+        for index in range(start_index, len(ordered)):
+            entry = ordered[index]
             item = entry["item"]
             shard_path = warm / COMPONENT_DIRS[item["section"]] / item["shard"]
             if item["shard"] not in by_shard:
@@ -258,26 +281,35 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
             out.write(blob)
             out.write(b"\0" * (aligned - len(blob)))
             payload_offset += aligned
+            out.flush()
+            progress_path.write_text(json.dumps({
+                "signature": args_signature(sections, rank, tp_degree),
+                "next_index": index + 1,
+                "payload_offset": payload_offset,
+            }))
+            os.sync()
         for handle in by_shard.values():
             handle.close()
         directory_offset = payload_offset
-        for entry in directory:
+        for entry in ordered:
             out.write(struct.pack(
-                "<III II I QQQQ".replace(" ", ""),
+                "<IIIIIQQQQ",
                 entry["tensor_kind"], entry["layer_index"], entry["weight_format"],
                 entry["rows"], entry["columns"], 0,
                 entry["payload_offset"], entry["payload_bytes"],
                 entry["scale_offset"], entry["scale_bytes"]))
-        file_bytes = directory_offset + len(directory) * ENTRY_BYTES
+        file_bytes = directory_offset + len(ordered) * ENTRY_BYTES
         out.seek(0)
         out.write(struct.pack(
             "<IIIIIIIIIIIIIIIIIIIIIIIIIIQQ",
-            MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, len(directory),
+            MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, len(ordered),
             5376, DIT_MAIN_BLOCKS, 0, DIT_MAIN_BLOCKS,
             0, 0, 0, 0, 0, 0, 0,
             56, 56, 128, 16,
             0, 0, 14336, 151936, 0, 0,
             directory_offset, file_bytes))
+    elapsed = time.time() - started
+    progress_path.unlink(missing_ok=True)
     digest = sha256_file(out_path)
     (out_dir / f"minimax_h3.rank{rank:02d}.sp.sha256").write_text(f"{digest}  {out_path.name}\n")
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -302,6 +334,7 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
             "audio_vae": "rank 0 replicated",
         },
         "peak_rss_mib": round(peak / 1024, 1),
+        "elapsed_seconds": round(elapsed, 1),
         "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (out_dir / f"minimax_h3.rank{rank:02d}.receipt.json").write_text(json.dumps(receipt, indent=1))
@@ -311,7 +344,7 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--warm", type=Path, default=Path("/mnt/model-warm/minimax-h3"))
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--patterns", type=Path,
                         default=ROOT / "model-families" / "minimax_h3" / "tensor_patterns.json")
     parser.add_argument("--sections", default="dit", help="comma list: encoder,dit,video_vae,audio_vae")
@@ -328,7 +361,8 @@ def main() -> int:
     codes = assign_kind_codes(spec)
     excluded = [re.compile(rx) for rx in spec.get("excluded", [])]
     sections = [s.strip() for s in args.sections.split(",")]
-    args.out.mkdir(parents=True, exist_ok=True)
+    if args.out is not None:
+        args.out.mkdir(parents=True, exist_ok=True)
 
     receipt = build_pack(args.rank, args.tp_degree, sections, args.warm, args.out,
                          patterns, codes, excluded, args.dry_run)
