@@ -1,0 +1,1070 @@
+{
+ "comment": "Name patterns are regex over checkpoint tensor names; {N} is the layer capture. tp: rows = output-channel split, cols = input-channel split, repl = replicate on every TP rank, vocab = embedding row split, rank0 = pack on rank 0 only. stage: 0-3 for the TP4xPP4 placement, 'first'/'last' follows the DiT block split, 'g0'/'g3' = entry/exit globals.",
+ "sections": {
+  "encoder": 4096,
+  "dit": 8192,
+  "video_vae": 12288,
+  "audio_vae": 16384
+ },
+ "patterns": [
+  {
+   "regex": "model\\.language_model\\.embed_tokens\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_EMBEDDING",
+   "layer": "global",
+   "sub": 0,
+   "tp": "vocab",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.self_attn\\.q_proj\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_ATTENTION_QUERY",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.self_attn\\.k_proj\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_ATTENTION_KEY",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.self_attn\\.v_proj\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_ATTENTION_VALUE",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.self_attn\\.o_proj\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_ATTENTION_OUTPUT",
+   "sub": 0,
+   "tp": "cols",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.self_attn\\.q_norm\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_ATTENTION_QUERY_NORM",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.self_attn\\.k_norm\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_ATTENTION_KEY_NORM",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.mlp\\.gate_proj\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_MLP_GATE",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.mlp\\.up_proj\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_MLP_UP",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.mlp\\.down_proj\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_MLP_DOWN",
+   "sub": 0,
+   "tp": "cols",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.input_layernorm\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_INPUT_NORM",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 0
+  },
+  {
+   "regex": "model\\.language_model\\.layers\\.{N}\\.post_attention_layernorm\\.weight",
+   "section": "encoder",
+   "kind": "ENCODER_POST_NORM",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 0
+  },
+  {
+   "regex": "^proj_in\\.weight",
+   "section": "dit",
+   "kind": "DIT_PROJ_IN",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "^proj_in\\.bias",
+   "section": "dit",
+   "kind": "DIT_PROJ_IN",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "audio_proj_in\\.weight",
+   "section": "dit",
+   "kind": "DIT_AUDIO_PROJ_IN",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "audio_proj_in\\.bias",
+   "section": "dit",
+   "kind": "DIT_AUDIO_PROJ_IN",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "context_embedder\\.weight",
+   "section": "dit",
+   "kind": "DIT_CONTEXT_EMBEDDER",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "context_embedder\\.bias",
+   "section": "dit",
+   "kind": "DIT_CONTEXT_EMBEDDER",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "time_embedder\\.linear_1\\.weight",
+   "section": "dit",
+   "kind": "DIT_TIME_EMBED_LINEAR_1",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "time_embedder\\.linear_1\\.bias",
+   "section": "dit",
+   "kind": "DIT_TIME_EMBED_LINEAR_1",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "time_embedder\\.linear_2\\.weight",
+   "section": "dit",
+   "kind": "DIT_TIME_EMBED_LINEAR_2",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "time_embedder\\.linear_2\\.bias",
+   "section": "dit",
+   "kind": "DIT_TIME_EMBED_LINEAR_2",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.to_q\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_QUERY",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.to_k\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_KEY",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.to_v\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_VALUE",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.to_out\\.0\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_OUTPUT",
+   "sub": 0,
+   "tp": "cols",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.norm_q\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_QUERY_NORM",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.norm_k\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_KEY_NORM",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.ff\\.net\\.0\\.proj\\.weight",
+   "section": "dit",
+   "kind": "DIT_FFN_GATE_UP",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.ff\\.net\\.2\\.weight",
+   "section": "dit",
+   "kind": "DIT_FFN_DOWN",
+   "sub": 0,
+   "tp": "cols",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.norm1\\.weight",
+   "section": "dit",
+   "kind": "DIT_NORM1",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.refiner_blocks\\.{N}\\.norm2\\.weight",
+   "section": "dit",
+   "kind": "DIT_NORM2",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 0,
+   "block_base": 50
+  },
+  {
+   "regex": "token_refiner\\.final_norm\\.weight",
+   "section": "dit",
+   "kind": "DIT_FINAL_NORM",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g0"
+  },
+  {
+   "regex": "^norm_out\\.norm\\.weight",
+   "section": "dit",
+   "kind": "DIT_FINAL_NORM",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g3"
+  },
+  {
+   "regex": "^norm_out\\.linear\\.weight",
+   "section": "dit",
+   "kind": "DIT_NORM_OUT_LINEAR",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g3"
+  },
+  {
+   "regex": "^norm_out\\.linear\\.bias",
+   "section": "dit",
+   "kind": "DIT_NORM_OUT_LINEAR",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g3"
+  },
+  {
+   "regex": "^proj_out\\.weight",
+   "section": "dit",
+   "kind": "DIT_PROJ_OUT",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g3"
+  },
+  {
+   "regex": "^proj_out\\.bias",
+   "section": "dit",
+   "kind": "DIT_PROJ_OUT",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g3"
+  },
+  {
+   "regex": "^audio_proj_out\\.weight",
+   "section": "dit",
+   "kind": "DIT_AUDIO_PROJ_OUT",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": "g3"
+  },
+  {
+   "regex": "^audio_proj_out\\.bias",
+   "section": "dit",
+   "kind": "DIT_AUDIO_PROJ_OUT",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": "g3"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.attn\\.to_q\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_QUERY",
+   "sub": 0,
+   "tp": "rows"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.attn\\.to_k\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_KEY",
+   "sub": 0,
+   "tp": "rows"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.attn\\.to_v\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_VALUE",
+   "sub": 0,
+   "tp": "rows"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.attn\\.to_out\\.0\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_OUTPUT",
+   "sub": 0,
+   "tp": "cols"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.attn\\.norm_q\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_QUERY_NORM",
+   "sub": 0,
+   "tp": "repl"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.attn\\.norm_k\\.weight",
+   "section": "dit",
+   "kind": "DIT_ATTENTION_KEY_NORM",
+   "sub": 0,
+   "tp": "repl"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.ff\\.net\\.0\\.proj\\.weight",
+   "section": "dit",
+   "kind": "DIT_FFN_GATE_UP",
+   "sub": 0,
+   "tp": "rows"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.ff\\.net\\.2\\.weight",
+   "section": "dit",
+   "kind": "DIT_FFN_DOWN",
+   "sub": 0,
+   "tp": "cols"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.adaln_proj\\.linear\\.weight",
+   "section": "dit",
+   "kind": "DIT_ADALN",
+   "sub": 0,
+   "tp": "repl"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.adaln_proj\\.linear\\.bias",
+   "section": "dit",
+   "kind": "DIT_ADALN",
+   "sub": 1,
+   "tp": "repl"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.norm1\\.weight",
+   "section": "dit",
+   "kind": "DIT_NORM1",
+   "sub": 0,
+   "tp": "repl"
+  },
+  {
+   "regex": "^transformer_blocks\\.{N}\\.norm2\\.weight",
+   "section": "dit",
+   "kind": "DIT_NORM2",
+   "sub": 0,
+   "tp": "repl"
+  },
+  {
+   "regex": "^decoder\\.proj_in\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_PROJ_IN",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.proj_in\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_PROJ_IN",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.register_tokens",
+   "section": "video_vae",
+   "kind": "VIDEO_REGISTER_TOKENS",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.norm_out\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_FINAL_NORM",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.norm_out\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_FINAL_NORM",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.proj_out\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_PROJ_OUT",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.proj_out\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_PROJ_OUT",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^post_quant_conv\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_POST_QUANT_CONV",
+   "layer": "global",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^post_quant_conv\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_POST_QUANT_CONV",
+   "layer": "global",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.attn\\.to_q\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_ATTENTION_QUERY",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.attn\\.to_k\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_ATTENTION_KEY",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.attn\\.to_v\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_ATTENTION_VALUE",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.attn\\.to_out\\.0\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_ATTENTION_OUTPUT",
+   "sub": 0,
+   "tp": "cols",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.attn\\.to_q\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_ATTENTION_QUERY",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.attn\\.to_k\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_ATTENTION_KEY",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.attn\\.to_v\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_ATTENTION_VALUE",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.attn\\.to_out\\.0\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_ATTENTION_OUTPUT",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.ff\\.net\\.0\\.proj\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_FFN_GATE_UP",
+   "sub": 0,
+   "tp": "rows",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.ff\\.net\\.0\\.proj\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_FFN_GATE_UP",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.ff\\.net\\.2\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_FFN_DOWN",
+   "sub": 0,
+   "tp": "cols",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.ff\\.net\\.2\\.bias",
+   "section": "video_vae",
+   "kind": "VIDEO_FFN_DOWN",
+   "sub": 1,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.norm1\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_NORM1",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.norm2\\.weight",
+   "section": "video_vae",
+   "kind": "VIDEO_NORM2",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.scale1",
+   "section": "video_vae",
+   "kind": "VIDEO_SCALE1",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^decoder\\.transformer_blocks\\.{N}\\.scale2",
+   "section": "video_vae",
+   "kind": "VIDEO_SCALE2",
+   "sub": 0,
+   "tp": "repl",
+   "stage": 3
+  },
+  {
+   "regex": "^dec_in_proj\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_IN_PROJ",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^dec_in_proj\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_IN_PROJ",
+   "layer": "global",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.attn\\.qkv\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_ATTN_QKV",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.attn\\.proj\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_ATTN_PROJ",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.attn\\.proj\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_ATTN_PROJ",
+   "layer": "global",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.attn\\.q_bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_ATTN_PROJ",
+   "layer": "global",
+   "sub": 2,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.attn\\.v_bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_ATTN_PROJ",
+   "layer": "global",
+   "sub": 3,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.attn\\.zero_k_bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_ATTN_PROJ",
+   "layer": "global",
+   "sub": 4,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.mlp\\.w0\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_MLP",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.mlp\\.w0\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_MLP",
+   "layer": "global",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.mlp\\.w1\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_MLP",
+   "layer": "global",
+   "sub": 2,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.mlp\\.w1\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_MLP",
+   "layer": "global",
+   "sub": 3,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.mlp\\.w2\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_MLP",
+   "layer": "global",
+   "sub": 4,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.mlp\\.w2\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_MLP",
+   "layer": "global",
+   "sub": 5,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.norm1\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_NORM",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.norm1\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_NORM",
+   "layer": "global",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.norm2\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_NORM",
+   "layer": "global",
+   "sub": 2,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.norm2\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_NORM",
+   "layer": "global",
+   "sub": 3,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.norm3\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_NORM",
+   "layer": "global",
+   "sub": 4,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.norm3\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_NORM",
+   "layer": "global",
+   "sub": 5,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.mlp\\.norm\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_NORM",
+   "layer": "global",
+   "sub": 6,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.mlp\\.norm\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_NORM",
+   "layer": "global",
+   "sub": 7,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.proj\\.weight",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_ATTN_PROJ",
+   "layer": "global",
+   "sub": 5,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^pre_block\\.proj\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_PRE_ATTN_PROJ",
+   "layer": "global",
+   "sub": 6,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.conv_pre\\.weight_g",
+   "section": "audio_vae",
+   "kind": "AUDIO_CONV_PRE",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.conv_pre\\.weight_v",
+   "section": "audio_vae",
+   "kind": "AUDIO_CONV_PRE",
+   "layer": "global",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.conv_pre\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_CONV_PRE",
+   "layer": "global",
+   "sub": 2,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.convs1\\.{M}\\.weight_g",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_CONV1",
+   "sub": "M*3+0",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.convs1\\.{M}\\.weight_v",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_CONV1",
+   "sub": "M*3+1",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.convs1\\.{M}\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_CONV1",
+   "sub": "M*3+2",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.convs2\\.{M}\\.weight_g",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_CONV2",
+   "sub": "M*3+0",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.convs2\\.{M}\\.weight_v",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_CONV2",
+   "sub": "M*3+1",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.convs2\\.{M}\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_CONV2",
+   "sub": "M*3+2",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.activations\\.{M}\\.act\\.alpha",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_SNAKE",
+   "sub": "M*2+0",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.activations\\.{M}\\.act\\.beta",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_SNAKE",
+   "sub": "M*2+1",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.activations\\.{M}\\.upsample\\.filter",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_FILTER",
+   "sub": "M*2+0",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.resblocks\\.{N}\\.activations\\.{M}\\.downsample\\.lowpass\\.filter",
+   "section": "audio_vae",
+   "kind": "AUDIO_RESBLOCK_FILTER",
+   "sub": "M*2+1",
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.ups\\.{N}\\.0\\.weight_g",
+   "section": "audio_vae",
+   "kind": "AUDIO_UPS",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.ups\\.{N}\\.0\\.weight_v",
+   "section": "audio_vae",
+   "kind": "AUDIO_UPS",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.ups\\.{N}\\.0\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_UPS",
+   "sub": 2,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.conv_post\\.weight_g",
+   "section": "audio_vae",
+   "kind": "AUDIO_CONV_POST",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.conv_post\\.weight_v",
+   "section": "audio_vae",
+   "kind": "AUDIO_CONV_POST",
+   "layer": "global",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.conv_post\\.bias",
+   "section": "audio_vae",
+   "kind": "AUDIO_CONV_POST",
+   "layer": "global",
+   "sub": 2,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.activation_post\\.act\\.alpha",
+   "section": "audio_vae",
+   "kind": "AUDIO_POST_SNAKE",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.activation_post\\.act\\.beta",
+   "section": "audio_vae",
+   "kind": "AUDIO_POST_SNAKE",
+   "layer": "global",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.activation_post\\.upsample\\.filter",
+   "section": "audio_vae",
+   "kind": "AUDIO_POST_FILTER",
+   "layer": "global",
+   "sub": 0,
+   "tp": "rank0",
+   "stage": 0
+  },
+  {
+   "regex": "^decoder\\.activation_post\\.downsample\\.lowpass\\.filter",
+   "section": "audio_vae",
+   "kind": "AUDIO_POST_FILTER",
+   "layer": "global",
+   "sub": 1,
+   "tp": "rank0",
+   "stage": 0
+  }
+ ],
+ "excluded": [
+  "lm_head\\.weight",
+  "model\\.language_model\\.norm\\.weight",
+  "model\\.visual\\..*",
+  "^encoder\\..*",
+  "^quant_conv\\..*"
+ ]
+}

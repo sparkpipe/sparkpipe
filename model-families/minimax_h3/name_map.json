@@ -1,0 +1,251 @@
+{
+ "comment": "kind -> checkpoint tensor name templates (regex, dots unescaped for reading). Canonical machine table: tensor_patterns.json",
+ "map": {
+  "AUDIO_CONV_POST": [
+   "^decoder.conv_post.bias",
+   "^decoder.conv_post.weight_g",
+   "^decoder.conv_post.weight_v"
+  ],
+  "AUDIO_CONV_PRE": [
+   "^decoder.conv_pre.bias",
+   "^decoder.conv_pre.weight_g",
+   "^decoder.conv_pre.weight_v"
+  ],
+  "AUDIO_IN_PROJ": [
+   "^dec_in_proj.bias",
+   "^dec_in_proj.weight"
+  ],
+  "AUDIO_POST_FILTER": [
+   "^decoder.activation_post.downsample.lowpass.filter",
+   "^decoder.activation_post.upsample.filter"
+  ],
+  "AUDIO_POST_SNAKE": [
+   "^decoder.activation_post.act.alpha",
+   "^decoder.activation_post.act.beta"
+  ],
+  "AUDIO_PRE_ATTN_PROJ": [
+   "^pre_block.attn.proj.bias",
+   "^pre_block.attn.proj.weight",
+   "^pre_block.attn.q_bias",
+   "^pre_block.attn.v_bias",
+   "^pre_block.attn.zero_k_bias",
+   "^pre_block.proj.bias",
+   "^pre_block.proj.weight"
+  ],
+  "AUDIO_PRE_ATTN_QKV": [
+   "^pre_block.attn.qkv.weight"
+  ],
+  "AUDIO_PRE_MLP": [
+   "^pre_block.mlp.w0.bias",
+   "^pre_block.mlp.w0.weight",
+   "^pre_block.mlp.w1.bias",
+   "^pre_block.mlp.w1.weight",
+   "^pre_block.mlp.w2.bias",
+   "^pre_block.mlp.w2.weight"
+  ],
+  "AUDIO_PRE_NORM": [
+   "^pre_block.mlp.norm.bias",
+   "^pre_block.mlp.norm.weight",
+   "^pre_block.norm1.bias",
+   "^pre_block.norm1.weight",
+   "^pre_block.norm2.bias",
+   "^pre_block.norm2.weight",
+   "^pre_block.norm3.bias",
+   "^pre_block.norm3.weight"
+  ],
+  "AUDIO_RESBLOCK_CONV1": [
+   "^decoder.resblocks.N.convs1.M.bias",
+   "^decoder.resblocks.N.convs1.M.weight_g",
+   "^decoder.resblocks.N.convs1.M.weight_v"
+  ],
+  "AUDIO_RESBLOCK_CONV2": [
+   "^decoder.resblocks.N.convs2.M.bias",
+   "^decoder.resblocks.N.convs2.M.weight_g",
+   "^decoder.resblocks.N.convs2.M.weight_v"
+  ],
+  "AUDIO_RESBLOCK_FILTER": [
+   "^decoder.resblocks.N.activations.M.downsample.lowpass.filter",
+   "^decoder.resblocks.N.activations.M.upsample.filter"
+  ],
+  "AUDIO_RESBLOCK_SNAKE": [
+   "^decoder.resblocks.N.activations.M.act.alpha",
+   "^decoder.resblocks.N.activations.M.act.beta"
+  ],
+  "AUDIO_UPS": [
+   "^decoder.ups.N.0.bias",
+   "^decoder.ups.N.0.weight_g",
+   "^decoder.ups.N.0.weight_v"
+  ],
+  "DIT_ADALN": [
+   "^transformer_blocks.N.adaln_proj.linear.bias",
+   "^transformer_blocks.N.adaln_proj.linear.weight"
+  ],
+  "DIT_ATTENTION_KEY": [
+   "^transformer_blocks.N.attn.to_k.weight",
+   "token_refiner.refiner_blocks.N.attn.to_k.weight"
+  ],
+  "DIT_ATTENTION_KEY_NORM": [
+   "^transformer_blocks.N.attn.norm_k.weight",
+   "token_refiner.refiner_blocks.N.attn.norm_k.weight"
+  ],
+  "DIT_ATTENTION_OUTPUT": [
+   "^transformer_blocks.N.attn.to_out.0.weight",
+   "token_refiner.refiner_blocks.N.attn.to_out.0.weight"
+  ],
+  "DIT_ATTENTION_QUERY": [
+   "^transformer_blocks.N.attn.to_q.weight",
+   "token_refiner.refiner_blocks.N.attn.to_q.weight"
+  ],
+  "DIT_ATTENTION_QUERY_NORM": [
+   "^transformer_blocks.N.attn.norm_q.weight",
+   "token_refiner.refiner_blocks.N.attn.norm_q.weight"
+  ],
+  "DIT_ATTENTION_VALUE": [
+   "^transformer_blocks.N.attn.to_v.weight",
+   "token_refiner.refiner_blocks.N.attn.to_v.weight"
+  ],
+  "DIT_AUDIO_PROJ_IN": [
+   "audio_proj_in.bias",
+   "audio_proj_in.weight"
+  ],
+  "DIT_AUDIO_PROJ_OUT": [
+   "^audio_proj_out.bias",
+   "^audio_proj_out.weight"
+  ],
+  "DIT_CONTEXT_EMBEDDER": [
+   "context_embedder.bias",
+   "context_embedder.weight"
+  ],
+  "DIT_FFN_DOWN": [
+   "^transformer_blocks.N.ff.net.2.weight",
+   "token_refiner.refiner_blocks.N.ff.net.2.weight"
+  ],
+  "DIT_FFN_GATE_UP": [
+   "^transformer_blocks.N.ff.net.0.proj.weight",
+   "token_refiner.refiner_blocks.N.ff.net.0.proj.weight"
+  ],
+  "DIT_FINAL_NORM": [
+   "^norm_out.norm.weight",
+   "token_refiner.final_norm.weight"
+  ],
+  "DIT_NORM1": [
+   "^transformer_blocks.N.norm1.weight",
+   "token_refiner.refiner_blocks.N.norm1.weight"
+  ],
+  "DIT_NORM2": [
+   "^transformer_blocks.N.norm2.weight",
+   "token_refiner.refiner_blocks.N.norm2.weight"
+  ],
+  "DIT_NORM_OUT_LINEAR": [
+   "^norm_out.linear.bias",
+   "^norm_out.linear.weight"
+  ],
+  "DIT_PROJ_IN": [
+   "proj_in.bias",
+   "proj_in.weight"
+  ],
+  "DIT_PROJ_OUT": [
+   "^proj_out.bias",
+   "^proj_out.weight"
+  ],
+  "DIT_TIME_EMBED_LINEAR_1": [
+   "time_embedder.linear_1.bias",
+   "time_embedder.linear_1.weight"
+  ],
+  "DIT_TIME_EMBED_LINEAR_2": [
+   "time_embedder.linear_2.bias",
+   "time_embedder.linear_2.weight"
+  ],
+  "ENCODER_ATTENTION_KEY": [
+   "model.language_model.layers.N.self_attn.k_proj.weight"
+  ],
+  "ENCODER_ATTENTION_KEY_NORM": [
+   "model.language_model.layers.N.self_attn.k_norm.weight"
+  ],
+  "ENCODER_ATTENTION_OUTPUT": [
+   "model.language_model.layers.N.self_attn.o_proj.weight"
+  ],
+  "ENCODER_ATTENTION_QUERY": [
+   "model.language_model.layers.N.self_attn.q_proj.weight"
+  ],
+  "ENCODER_ATTENTION_QUERY_NORM": [
+   "model.language_model.layers.N.self_attn.q_norm.weight"
+  ],
+  "ENCODER_ATTENTION_VALUE": [
+   "model.language_model.layers.N.self_attn.v_proj.weight"
+  ],
+  "ENCODER_EMBEDDING": [
+   "model.language_model.embed_tokens.weight"
+  ],
+  "ENCODER_INPUT_NORM": [
+   "model.language_model.layers.N.input_layernorm.weight"
+  ],
+  "ENCODER_MLP_DOWN": [
+   "model.language_model.layers.N.mlp.down_proj.weight"
+  ],
+  "ENCODER_MLP_GATE": [
+   "model.language_model.layers.N.mlp.gate_proj.weight"
+  ],
+  "ENCODER_MLP_UP": [
+   "model.language_model.layers.N.mlp.up_proj.weight"
+  ],
+  "ENCODER_POST_NORM": [
+   "model.language_model.layers.N.post_attention_layernorm.weight"
+  ],
+  "VIDEO_ATTENTION_KEY": [
+   "^decoder.transformer_blocks.N.attn.to_k.bias",
+   "^decoder.transformer_blocks.N.attn.to_k.weight"
+  ],
+  "VIDEO_ATTENTION_OUTPUT": [
+   "^decoder.transformer_blocks.N.attn.to_out.0.bias",
+   "^decoder.transformer_blocks.N.attn.to_out.0.weight"
+  ],
+  "VIDEO_ATTENTION_QUERY": [
+   "^decoder.transformer_blocks.N.attn.to_q.bias",
+   "^decoder.transformer_blocks.N.attn.to_q.weight"
+  ],
+  "VIDEO_ATTENTION_VALUE": [
+   "^decoder.transformer_blocks.N.attn.to_v.bias",
+   "^decoder.transformer_blocks.N.attn.to_v.weight"
+  ],
+  "VIDEO_FFN_DOWN": [
+   "^decoder.transformer_blocks.N.ff.net.2.bias",
+   "^decoder.transformer_blocks.N.ff.net.2.weight"
+  ],
+  "VIDEO_FFN_GATE_UP": [
+   "^decoder.transformer_blocks.N.ff.net.0.proj.bias",
+   "^decoder.transformer_blocks.N.ff.net.0.proj.weight"
+  ],
+  "VIDEO_FINAL_NORM": [
+   "^decoder.norm_out.bias",
+   "^decoder.norm_out.weight"
+  ],
+  "VIDEO_NORM1": [
+   "^decoder.transformer_blocks.N.norm1.weight"
+  ],
+  "VIDEO_NORM2": [
+   "^decoder.transformer_blocks.N.norm2.weight"
+  ],
+  "VIDEO_POST_QUANT_CONV": [
+   "^post_quant_conv.bias",
+   "^post_quant_conv.weight"
+  ],
+  "VIDEO_PROJ_IN": [
+   "^decoder.proj_in.bias",
+   "^decoder.proj_in.weight"
+  ],
+  "VIDEO_PROJ_OUT": [
+   "^decoder.proj_out.bias",
+   "^decoder.proj_out.weight"
+  ],
+  "VIDEO_REGISTER_TOKENS": [
+   "^decoder.register_tokens"
+  ],
+  "VIDEO_SCALE1": [
+   "^decoder.transformer_blocks.N.scale1"
+  ],
+  "VIDEO_SCALE2": [
+   "^decoder.transformer_blocks.N.scale2"
+  ]
+ }
+}
