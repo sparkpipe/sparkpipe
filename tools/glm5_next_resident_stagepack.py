@@ -599,26 +599,21 @@ class Packer:
         self.plan.append(PlanItem(entry, produce))
 
     def add_experts(self, layer: int):
-        """288 experts' fp8 payloads (up-then-gate stacked, then down) +
-        f32 scales, expert-major slabs, per-expert TP slicing exactly as
-        glm52 shards: w1 rows-sharded, w2 cols-sharded (the grouped GEMM
-        computes partial rows and the TP chain reduces)."""
         prefix = f"model.language_model.layers.{layer}.mlp.experts"
-        tp = self.tp_degree
-        rank = self.tp_rank
-        w1_rows, w1_cols = 2 * EXPERT_INTER, HIDDEN      # stacked up|gate
-        w2_rows, w2_cols = HIDDEN, EXPERT_INTER
-        w1_r0 = 0; w1_r1 = w1_rows; w1_c0 = 0; w1_c1 = w1_cols
-        w2_c0 = 0; w2_c1 = w2_cols; w2_r0 = 0; w2_r1 = w2_rows
-        if tp > 1:
-            if w1_rows % tp or w2_cols % tp:
-                raise PackFailure(f"expert dims not divisible by tp{tp}")
-            w1_r0 = (w1_rows // tp) * rank; w1_r1 = w1_r0 + w1_rows // tp
-            w2_c0 = (w2_cols // tp) * rank; w2_c1 = w2_c0 + w2_cols // tp
-        w1_out_rows = w1_r1 - w1_r0
-        w2_out_cols = w2_c1 - w2_c0
-        # source-driven expert codec: BF16 sources pass through verbatim
-        # with no scale plane (the packer never quantizes either direction)
+        w1_cols = HIDDEN
+        w2_rows = HIDDEN
+        w1_r0,width = self._rows_slice(EXPERT_INTER)
+        w1_r1 = w1_r0+width
+        w1_c0,w1_c1 = 0,HIDDEN
+        w2_r0,w2_r1 = 0,HIDDEN
+        w2_c0,w2_c1 = w1_r0,w1_r1
+        w1_out_rows,w2_out_cols = 2*width,width
+
+        def w1_slices():
+            for expert in range(EXPERTS):
+                for projection in ("up","gate"):
+                    yield f"{prefix}.{expert}.{projection}_proj.weight",w1_r0,w1_r1
+
         probe_name = next(
             (n for n in self.s.weight_map
              if ".mlp.experts.0.up_proj.weight" in n), None)
@@ -630,12 +625,6 @@ class Packer:
                          and self.s.meta(probe_packed)[0] == "U8")
         source = self.s
         if experts_nvfp4:
-            # community nvfp4 release (redhatai/modelopt): packed e2m1 +
-            # UE4M3 per-16 planes + one F32 weight global per expert, ALL
-            # byte-verbatim (the packer never quantizes). Scale region =
-            # EXPERTS F32 globals first (up/gate share-checked per expert),
-            # then expert-major UE4M3 planes - the layout
-            # LmWeightCodecScaleTensor hands the MoE GEMMs (UE4M3_F32_GLOBAL).
             w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT,
                        CODEC_NVFP4, SCALE_UE4M3_F32_GLOBAL, EXPERTS,
                        w1_out_rows, w1_cols)
@@ -646,19 +635,6 @@ class Packer:
             w1.scale_bytes = EXPERTS * 4 + EXPERTS * w1_out_rows * (w1_cols // 16)
             w2.payload_bytes = EXPERTS * w2_rows * (w2_out_cols // 2)
             w2.scale_bytes = EXPERTS * 4 + EXPERTS * w2_rows * (w2_out_cols // 16)
-
-            def w1_slices():
-                # same stacked up|gate row-slice rule as the fp8 path: a
-                # rank's slice intersects exactly one half of the stack
-                up_rows = EXPERT_INTER
-                for expert in range(EXPERTS):
-                    up = f"{prefix}.{expert}.up_proj.weight"
-                    gate = f"{prefix}.{expert}.gate_proj.weight"
-                    for name, base in ((up, 0), (gate, up_rows)):
-                        lo = max(w1_r0, base) - base
-                        hi = min(w1_r1, base + up_rows) - base
-                        if hi > lo:
-                            yield name, lo, hi
 
             def produce_w1() -> Iterator[bytes]:
                 for name, lo, hi in w1_slices():
@@ -707,31 +683,14 @@ class Packer:
         source = self.s
 
         def produce_w1() -> Iterator[bytes]:
-            for expert in range(EXPERTS):
-                up = f"{prefix}.{expert}.up_proj.weight"
-                gate = f"{prefix}.{expert}.gate_proj.weight"
-                # stacked up|gate sliced to [w1_r0:w1_r1] across the STACK:
-                up_rows = EXPERT_INTER
-                # a rank's 2*inter/tp row slice intersects exactly ONE of
-                # the up|gate halves (ranks 0..tp/2-1 in up, the rest in
-                # gate) - the partial rows all-reduce before silu-mul.
-                for name, base in ((up, 0), (gate, up_rows)):
-                    lo = max(w1_r0, base) - base
-                    hi = min(w1_r1, base + up_rows) - base
-                    if hi > lo:
-                        yield source.expert_payload(name, lo, hi, w1_c0, w1_c1)
+            for name,lo,hi in w1_slices():
+                yield source.expert_payload(name,lo,hi,w1_c0,w1_c1)
 
         def produce_w1_scale() -> Iterator[bytes]:
             if experts_bf16:
                 return
-            for expert in range(EXPERTS):
-                up = f"{prefix}.{expert}.up_proj.weight"
-                gate = f"{prefix}.{expert}.gate_proj.weight"
-                for name, base in ((up, 0), (gate, EXPERT_INTER)):
-                    lo = max(w1_r0, base) - base
-                    hi = min(w1_r1, base + EXPERT_INTER) - base
-                    if hi > lo:
-                        yield source.expert_scale(name, lo, hi, w1_c0, w1_c1)
+            for name,lo,hi in w1_slices():
+                yield source.expert_scale(name,lo,hi,w1_c0,w1_c1)
 
         def produce_w2() -> Iterator[bytes]:
             for expert in range(EXPERTS):
@@ -747,6 +706,7 @@ class Packer:
 
         self.plan.append(PlanItem(w1, produce_w1, produce_w1_scale))
         self.plan.append(PlanItem(w2, produce_w2, produce_w2_scale))
+
 
     # -- the plan -----------------------------------------------------------
 

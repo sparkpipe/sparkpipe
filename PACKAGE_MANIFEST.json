@@ -1,5 +1,5 @@
 {
-  "file_count": 1945,
+  "file_count": 1946,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "036d4ff949e80a47e8eba96afc890727632feed9687cc848f7e8f1ff8299f3ed",
-      "size_bytes": 96186
+      "sha256": "f419b3925bedeb9c32595ce3088a3fea5e36b606dc40e2397c1035eaeb9d58d0",
+      "size_bytes": 96231
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "6acad1c5845fc64df0954b6a07f17dac3281df9496ba0e717fb68159a325fcd3",
-      "size_bytes": 42010
+      "sha256": "5f7ab8fb1bde4ad1931b118e26b13831fea6991bde09e242d9dde189c86f282d",
+      "size_bytes": 43346
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -7058,8 +7058,13 @@
     },
     {
       "path": "tests/test_glm5_next_expert_pack_layout.py",
-      "sha256": "7eff8899652a904460abe8d7c8203b21ebfd6ad841867e374b755ce67f43c897",
-      "size_bytes": 6809
+      "sha256": "011956ab32bcd0d8d11a88593adbc0f79f1ac34d31baddb2179cacd940893b44",
+      "size_bytes": 6380
+    },
+    {
+      "path": "tests/test_glm5_next_expert_shard_math.py",
+      "sha256": "5bd351a89fc33b516dde0b6f9985668ddcb5e22d8994b3ea966d9601af65b9fe",
+      "size_bytes": 2692
     },
     {
       "path": "tests/test_glm5_next_geometry.py",
@@ -8853,8 +8858,8 @@
     },
     {
       "path": "tools/glm5_next_resident_stagepack.py",
-      "sha256": "7d4a41fe437712dcf63006d57102a9e3f4651b77c40300ef2b2f27fc6226c956",
-      "size_bytes": 48804
+      "sha256": "837448752956fba2f04cf170acafd168b096d51e42bd505c44b6ebc904cd8750",
+      "size_bytes": 46102
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -9730,5 +9735,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32657470
+  "total_bytes": 32658412
 }

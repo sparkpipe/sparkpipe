@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-"""Check the packer's expert slabs against separate driver payload/scale planes."""
 import io
 import struct
 from pathlib import Path
@@ -63,23 +61,19 @@ def main():
                     scales = b"".join(item.produce_scale())
                     assert len(weights) == entry.payload_bytes > 0
                     assert len(scales) == entry.scale_bytes
-                    # Interpret the same separate per-expert planes the driver uses.
                     for expert in range(2):
                         per = len(weights) // 2
                         slab = weights[expert * per:(expert + 1) * per]
                         base = 10 + expert * 10
                         if entry.kind == pack.K_EXPERT_DOWN:
                             expected = bytes([base + 2]) * per
-                        elif degree == 1:
-                            expected = bytes([base]) * (per // 2) + bytes([base + 1]) * (per // 2)
                         else:
-                            expected = bytes([base + int(rank >= degree // 2)]) * per
+                            expected = bytes([base]) * (per // 2) + bytes([base + 1]) * (per // 2)
                         assert slab == expected
                         if not bf16:
                             scale_per = len(scales) // 2
                             expected_scale = bytes([value + 100 for value in expected[::128]]) * 4
-                            # Same value order; F32 scale fixtures use four identical bytes.
-                            if degree == 1 and entry.kind == pack.K_EXPERT_UP_GATE:
+                            if entry.kind == pack.K_EXPERT_UP_GATE:
                                 expected_scale = bytes([base + 100]) * (scale_per // 2) + bytes([base + 101]) * (scale_per // 2)
                             assert scales[expert * scale_per:(expert + 1) * scale_per] == expected_scale
                     output = io.BytesIO()
