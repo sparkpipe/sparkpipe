@@ -190,7 +190,7 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchAddRows(cudaStream_t stream, const 
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkMuseGlimmerLaunchLinear(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors)
+extern "C" cudaError_t SparkMuseGlimmerLaunchLinear(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, const uint32_t *dense_row_offset)
 {
 	LmGemmArguments gemm;
 	int32_t status;
@@ -198,6 +198,7 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchLinear(cudaStream_t stream, const v
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
 	gemm.group_count = 1u;
+	gemm.group_row_offset = dense_row_offset;
 	gemm.input_dimension = input_dimension;
 	gemm.output_dimension = output_dimension;
 	gemm.output_bf16 = output_bf16;
@@ -207,7 +208,7 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchLinear(cudaStream_t stream, const v
 	return(status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
 }
 
-extern "C" cudaError_t SparkMuseGlimmerLaunchLinearScores(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors)
+extern "C" cudaError_t SparkMuseGlimmerLaunchLinearScores(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, const uint32_t *dense_row_offset)
 {
 	LmGemmArguments gemm;
 	int32_t status;
@@ -215,6 +216,7 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchLinearScores(cudaStream_t stream, c
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
 	gemm.group_count = 1u;
+	gemm.group_row_offset = dense_row_offset;
 	gemm.input_dimension = input_dimension;
 	gemm.output_dimension = output_dimension;
 	gemm.output_f32 = scores_f32;

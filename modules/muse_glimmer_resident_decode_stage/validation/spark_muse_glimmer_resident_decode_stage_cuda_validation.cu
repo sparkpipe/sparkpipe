@@ -246,6 +246,11 @@ static int SparkMuseGlimmerValCheckNorms(void)
 	error = cudaMallocManaged((void **)&head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
 	for (uint32_t index = 0; index < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; index++)
 		head_input[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(1.0f));
+	error = cudaMemsetAsync(head_input,0x3f,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,0);
+	if ( SparkMuseGlimmerValCuda(error,"head_norm_fill") != 0 )
+		return(1);
+	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"head_norm_fill_sync") != 0 )
+		return(1);
 	error = SparkMuseGlimmerLaunchHeadRmsNorm(0,head_input,0,head_output,1u,1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_NORM_EPSILON,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_SCALE_FACTOR);
 	if ( SparkMuseGlimmerValCuda(error,"head_norm_launch") != 0 )
 		return(1);

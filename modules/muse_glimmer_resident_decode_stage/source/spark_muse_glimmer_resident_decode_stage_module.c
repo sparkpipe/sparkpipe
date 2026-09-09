@@ -126,6 +126,7 @@ typedef struct SparkMuseGlimmerModuleState
 	uint64_t cache_layer_stride;
 	uint64_t cache_block_stride;
 	void *kv_access_error;
+	uint32_t *gemm_row_offset_device;
 	SparkMuseGlimmerModuleSlot slots[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t stage_count;
 	uint32_t stage_index;
@@ -1155,6 +1156,13 @@ static SparkStatus SparkMuseGlimmerModulePrepare(
 		status = SparkMuseGlimmerModuleAllocatePools(state);
 	}
 	if ( status == SPARK_STATUS_OK )
+	{
+		uint32_t gemm_row_offset_host[2];
+		gemm_row_offset_host[0] = 0u;
+		gemm_row_offset_host[1] = state->max_active_sequence_count;
+		status = SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,cudaMemcpy(state->gemm_row_offset_device,gemm_row_offset_host,sizeof(gemm_row_offset_host),cudaMemcpyHostToDevice),"gemm_row_offset");
+	}
+	if ( status == SPARK_STATUS_OK )
 		status = SparkMuseGlimmerModuleAllocateSlot(state,&state->slots[0]);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMuseGlimmerModuleAllocateSlotHostMirrors(state,&state->slots[0]);
@@ -1268,8 +1276,8 @@ extern cudaError_t SparkMuseGlimmerLaunchCenteredRmsNorm(cudaStream_t stream, co
 extern cudaError_t SparkMuseGlimmerLaunchHeadRmsNorm(cudaStream_t stream, const void *input_bf16, const void *weight_bf16, void *output_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dimension, float epsilon, float head_multiply);
 extern cudaError_t SparkMuseGlimmerLaunchCopyRows(cudaStream_t stream, const void *source_bf16, void *destination_bf16, uint32_t row_count, uint32_t dimension);
 extern cudaError_t SparkMuseGlimmerLaunchAddRows(cudaStream_t stream, const void *a_bf16, const void *b_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension);
-extern cudaError_t SparkMuseGlimmerLaunchLinear(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors);
-extern cudaError_t SparkMuseGlimmerLaunchLinearScores(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors);
+extern cudaError_t SparkMuseGlimmerLaunchLinear(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, const uint32_t *dense_row_offset);
+extern cudaError_t SparkMuseGlimmerLaunchLinearScores(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, const uint32_t *dense_row_offset);
 extern cudaError_t SparkMuseGlimmerLaunchSplitQkv(cudaStream_t stream, const void *fused_bf16, void *query_gate_bf16, void *key_bf16, void *value_bf16, uint32_t row_count, uint32_t tp_degree);
 extern cudaError_t SparkMuseGlimmerLaunchSplitQueryGate(cudaStream_t stream, const void *query_gate_bf16, void *query_bf16, void *gate_bf16, uint32_t row_count, uint32_t local_head_count);
 extern cudaError_t SparkMuseGlimmerLaunchQkNorm(cudaStream_t stream, const void *input_bf16, void *output_bf16, uint32_t head_count, float head_multiply, uint32_t row_count);
@@ -1303,7 +1311,7 @@ static SparkStatus SparkMuseGlimmerModuleRunLayer(SparkMuseGlimmerModuleState *s
 	if ( error == cudaSuccess )
 		error = SparkMuseGlimmerLaunchCenteredRmsNorm(stream,slot->hidden_bf16,weights->input_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
-		error = SparkMuseGlimmerLaunchLinear(stream,weights->qgkv.weight_payload,slot->normalized_bf16,slot->fused_qgkv_bf16,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_QGKV_LOCAL_ROWS(tp),state->multiprocessor_count);
+		error = SparkMuseGlimmerLaunchLinear(stream,weights->qgkv.weight_payload,slot->normalized_bf16,slot->fused_qgkv_bf16,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_QGKV_LOCAL_ROWS(tp),state->multiprocessor_count,state->gemm_row_offset_device);
 	if ( error == cudaSuccess )
 		error = SparkMuseGlimmerLaunchSplitQkv(stream,slot->fused_qgkv_bf16,slot->query_gate_bf16,slot->key_bf16,slot->value_bf16,rows,tp);
 	if ( error == cudaSuccess )
@@ -1331,7 +1339,7 @@ static SparkStatus SparkMuseGlimmerModuleRunLayer(SparkMuseGlimmerModuleState *s
 	if ( error == cudaSuccess )
 		error = SparkMuseGlimmerLaunchOutputGate(stream,slot->head_out_bf16,slot->attn_gate_bf16,rows,local_query_dimension);
 	if ( error == cudaSuccess )
-		error = SparkMuseGlimmerLaunchLinear(stream,weights->output.weight_payload,slot->head_out_bf16,slot->delta_bf16,rows,local_query_dimension,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count);
+		error = SparkMuseGlimmerLaunchLinear(stream,weights->output.weight_payload,slot->head_out_bf16,slot->delta_bf16,rows,local_query_dimension,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count,state->gemm_row_offset_device);
 	status = SPARK_STATUS_OK;
 	if ( error == cudaSuccess && state->tp_degree > 1u )
 		status = SparkMuseGlimmerModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
@@ -1342,11 +1350,11 @@ static SparkStatus SparkMuseGlimmerModuleRunLayer(SparkMuseGlimmerModuleState *s
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess )
 		error = SparkMuseGlimmerLaunchCenteredRmsNorm(stream,slot->hidden_bf16,weights->pre_feedforward_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON);
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess )
-		error = SparkMuseGlimmerLaunchLinear(stream,weights->gate_up.weight_payload,slot->normalized_bf16,slot->gate_up_bf16,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,2u * local_intermediate,state->multiprocessor_count);
+		error = SparkMuseGlimmerLaunchLinear(stream,weights->gate_up.weight_payload,slot->normalized_bf16,slot->gate_up_bf16,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,2u * local_intermediate,state->multiprocessor_count,state->gemm_row_offset_device);
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess )
 		error = SparkMuseGlimmerLaunchSiluMul(stream,slot->gate_up_bf16,slot->intermediate_bf16,rows,local_intermediate);
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess )
-		error = SparkMuseGlimmerLaunchLinear(stream,weights->down.weight_payload,slot->intermediate_bf16,slot->delta_bf16,rows,local_intermediate,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count);
+		error = SparkMuseGlimmerLaunchLinear(stream,weights->down.weight_payload,slot->intermediate_bf16,slot->delta_bf16,rows,local_intermediate,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count,state->gemm_row_offset_device);
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess && state->tp_degree > 1u )
 		status = SparkMuseGlimmerModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess )
@@ -1372,6 +1380,8 @@ static SparkStatus SparkMuseGlimmerModuleAllocatePools(SparkMuseGlimmerModuleSta
 	status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_MUSE_GLIMMER_MODEL_BF16_ELEMENT_BYTES,&state->kv_cache_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,sizeof(SparkMuseGlimmerKvViewShim),(void **)&state->kv_access_error);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,2u * sizeof(uint32_t),(void **)&state->gemm_row_offset_device);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MUSE_GLIMMER_MODULE_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t),(void **)&state->kv_table_indices_device);
 	if ( status == SPARK_STATUS_OK )
@@ -1525,7 +1535,7 @@ static SparkStatus SparkMuseGlimmerModuleEmitHead(SparkMuseGlimmerModuleState *s
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	error = SparkMuseGlimmerLaunchRmsNorm(stream,slot->hidden_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
-		error = SparkMuseGlimmerLaunchLinearScores(stream,state->lm_head_weight_bf16,slot->normalized_bf16,slot->head_scores_f32,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,vocab_local,state->multiprocessor_count);
+		error = SparkMuseGlimmerLaunchLinearScores(stream,state->lm_head_weight_bf16,slot->normalized_bf16,slot->head_scores_f32,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,vocab_local,state->multiprocessor_count,state->gemm_row_offset_device);
 	if ( error == cudaSuccess )
 		error = SparkMuseGlimmerLaunchHeadArgmaxPack(stream,slot->head_scores_f32,slot->local_token_ids,slot->head_maxloc_u64,rows,vocab_local,tp,state->tp_rank);
 	status = SPARK_STATUS_OK;
