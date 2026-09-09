@@ -178,8 +178,8 @@ static __global__ void SparkMinimaxH3GateResidualKernel(const __nv_bfloat16 *val
 	uint32_t column = (uint32_t)(index % (uint64_t)width);
 	float gate_value = __bfloat162float(gate[column]);
 	float residual_value = __bfloat162float(residual[index]);
-	float value = __bfloat162float(value[index]);
-	output[index] = __float2bfloat16(residual_value + gate_value * value);
+	float element_value = __bfloat162float(value[index]);
+	output[index] = __float2bfloat16(residual_value + gate_value * element_value);
 }
 
 static __global__ void SparkMinimaxH3SiluMulKernel(const __nv_bfloat16 *gate_up,

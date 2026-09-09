@@ -2,6 +2,14 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+#define SPARK_MINIMAX_H3_STATIC_ASSERT(condition,message) \
+	static_assert(condition,message)
+#else
+#define SPARK_MINIMAX_H3_STATIC_ASSERT(condition,message) \
+	_Static_assert(condition,message)
+#endif
+
 #define SPARK_MINIMAX_H3_MODEL_ID "MiniMaxAI/MiniMax-H3"
 #define SPARK_MINIMAX_H3_MODEL_ARCHITECTURE "MiniMaxH3ModularPipeline"
 #define SPARK_MINIMAX_H3_DIT_ARCHITECTURE "MiniMaxH3Transformer3DModel"
@@ -131,50 +139,50 @@
 #define SPARK_MINIMAX_H3_TP_DEGREE 4u
 #define SPARK_MINIMAX_H3_BF16_ELEMENT_BYTES 2u
 
-_Static_assert(SPARK_MINIMAX_H3_DIT_QKV_DIMENSION == 7168u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_DIT_QKV_DIMENSION == 7168u,
 	"h3 dit fused qkv width per landed config");
-_Static_assert(SPARK_MINIMAX_H3_DIT_ADALN_ROWS == 96768u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_DIT_ADALN_ROWS == 96768u,
 	"h3 dit per-block modulation width per landed safetensors header");
-_Static_assert(SPARK_MINIMAX_H3_DIT_PATCH_ELEMENTS == 96u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_DIT_PATCH_ELEMENTS == 96u,
 	"h3 dit video proj_in width per landed safetensors header");
-_Static_assert(SPARK_MINIMAX_H3_DIT_AUDIO_PATCH_ELEMENTS == 32u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_DIT_AUDIO_PATCH_ELEMENTS == 32u,
 	"h3 dit audio proj_in width per landed safetensors header");
-_Static_assert(SPARK_MINIMAX_H3_DIT_TIME_EMBED_DIMENSION == 2688u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_DIT_TIME_EMBED_DIMENSION == 2688u,
 	"h3 dit time embedding output width per landed safetensors header");
-_Static_assert(SPARK_MINIMAX_H3_DIT_NORM_OUT_ROWS == 10752u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_DIT_NORM_OUT_ROWS == 10752u,
 	"h3 dit final modulation width per landed safetensors header");
-_Static_assert(SPARK_MINIMAX_H3_ENCODER_QUERY_DIMENSION == 8192u &&
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_ENCODER_QUERY_DIMENSION == 8192u &&
 	SPARK_MINIMAX_H3_ENCODER_KV_DIMENSION == 1024u,
 	"h3 encoder attention projection widths per landed config");
-_Static_assert(SPARK_MINIMAX_H3_ENCODER_MROPE_SECTION_TEMPORAL +
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_ENCODER_MROPE_SECTION_TEMPORAL +
 	SPARK_MINIMAX_H3_ENCODER_MROPE_SECTION_HEIGHT +
 	SPARK_MINIMAX_H3_ENCODER_MROPE_SECTION_WIDTH ==
 	SPARK_MINIMAX_H3_ENCODER_ROPE_DIMENSION,
 	"h3 encoder mrope sections must cover the rope dimension");
-_Static_assert(SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION == 2048u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION == 2048u,
 	"h3 video vae transformer head hidden per landed config");
-_Static_assert(SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_ROPE_DIMENSION == 48u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_ROPE_DIMENSION == 48u,
 	"h3 video vae rope dim ratio 0.75 of head dim per landed config");
-_Static_assert(SPARK_MINIMAX_H3_AUDIO_VAE_UPSAMPLE_FACTOR == 800u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_AUDIO_VAE_UPSAMPLE_FACTOR == 800u,
 	"h3 audio vae decoder rates must multiply to the 800x stride");
-_Static_assert(SPARK_MINIMAX_H3_AUDIO_VAE_LATENT_RATE_HZ *
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_AUDIO_VAE_LATENT_RATE_HZ *
 	SPARK_MINIMAX_H3_AUDIO_VAE_UPSAMPLE_FACTOR ==
 	SPARK_MINIMAX_H3_AUDIO_VAE_SAMPLE_RATE_HZ,
 	"h3 audio vae latent rate times stride must equal the sample rate");
-_Static_assert(SPARK_MINIMAX_H3_SLICE_VIDEO_TOKEN_COUNT == 14985u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_SLICE_VIDEO_TOKEN_COUNT == 14985u,
 	"h3 slice latent grid per pinned-source frame law (37x15x27)");
-_Static_assert((SPARK_MINIMAX_H3_SLICE_FRAME_COUNT - 5u) % 17u == 0u,
+SPARK_MINIMAX_H3_STATIC_ASSERT((SPARK_MINIMAX_H3_SLICE_FRAME_COUNT - 5u) % 17u == 0u,
 	"h3 slice frame count must satisfy the 17n+5 snap law");
-_Static_assert(SPARK_MINIMAX_H3_SLICE_LATENT_TEMPORAL ==
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_SLICE_LATENT_TEMPORAL ==
 		(SPARK_MINIMAX_H3_SLICE_FRAME_COUNT - 5u) / 17u * 5u + 2u,
 	"h3 slice latent frames must follow 5n+2 from the snapped frame count");
-_Static_assert(SPARK_MINIMAX_H3_SLICE_WIDTH % 32u == 0u &&
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_SLICE_WIDTH % 32u == 0u &&
 	SPARK_MINIMAX_H3_SLICE_HEIGHT % 32u == 0u,
 	"h3 slice canvas must be a multiple of canvas_multiple 32");
-_Static_assert(SPARK_MINIMAX_H3_SLICE_AUDIO_TOKEN_COUNT == 414u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_SLICE_AUDIO_TOKEN_COUNT == 414u,
 	"h3 slice audio rows = 207 latents x 2 stereo channels");
-_Static_assert(SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCK_STAGE_COUNT *
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCK_STAGE_COUNT *
 	SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCKS_PER_STAGE == 63u,
 	"h3 audio vae decoder carries 63 resblocks per landed checkpoint");
-_Static_assert(SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_PROJ_OUT_ELEMENTS == 3072u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_PROJ_OUT_ELEMENTS == 3072u,
 	"h3 video vae decoder proj_out width per landed safetensors header");

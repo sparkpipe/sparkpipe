@@ -16,7 +16,7 @@
 	  SPARK_MINIMAX_H3_KV_BLOCK_TOKENS - 1u) / \
 	 SPARK_MINIMAX_H3_KV_BLOCK_TOKENS)
 
-_Static_assert(SPARK_MINIMAX_H3_KV_TOKEN_LAYER_BYTES == 4096u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_KV_TOKEN_LAYER_BYTES == 4096u,
 	"h3 encoder kv per token per layer must be k+v bf16 at 1024 columns");
-_Static_assert(SPARK_MINIMAX_H3_KV_MAX_PROMPT_BLOCK_COUNT == 2u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_KV_MAX_PROMPT_BLOCK_COUNT == 2u,
 	"h3 encoder prompt must admit within two kv pages at the block size");

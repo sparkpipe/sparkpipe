@@ -136,17 +136,17 @@ typedef struct SparkMinimaxH3StagePackEntry
 #define SPARK_MINIMAX_H3_DIT_TOTAL_BLOCK_COUNT \
 	(SPARK_MINIMAX_H3_DIT_BLOCK_COUNT + SPARK_MINIMAX_H3_DIT_REFINER_BLOCK_COUNT)
 
-_Static_assert(sizeof(SparkMinimaxH3StagePackHeader) ==
+SPARK_MINIMAX_H3_STATIC_ASSERT(sizeof(SparkMinimaxH3StagePackHeader) ==
 	SPARK_MINIMAX_H3_STAGEPACK_HEADER_BYTES,
 	"h3 stage pack header must be 120 wire bytes");
-_Static_assert(sizeof(SparkMinimaxH3StagePackEntry) ==
+SPARK_MINIMAX_H3_STATIC_ASSERT(sizeof(SparkMinimaxH3StagePackEntry) ==
 	SPARK_MINIMAX_H3_STAGEPACK_ENTRY_BYTES,
 	"h3 stage pack directory entry must be 56 wire bytes");
 SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(SparkMinimaxH3StagePackHeader);
-_Static_assert((SPARK_MINIMAX_H3_STAGEPACK_SECTION_DIT &
+SPARK_MINIMAX_H3_STATIC_ASSERT((SPARK_MINIMAX_H3_STAGEPACK_SECTION_DIT &
 	SPARK_MINIMAX_H3_STAGEPACK_KIND_MASK) == 0u,
 	"h3 section codes must occupy the kind high bits");
-_Static_assert(SPARK_MINIMAX_H3_DIT_TOTAL_BLOCK_COUNT == 52u,
+SPARK_MINIMAX_H3_STATIC_ASSERT(SPARK_MINIMAX_H3_DIT_TOTAL_BLOCK_COUNT == 52u,
 	"h3 dit must carry the 50 main blocks plus 2 refiner blocks");
 
 #define SPARK_MINIMAX_H3_STAGEPACK_LAYER_MASK 0xffffu
