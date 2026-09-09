@@ -78,7 +78,14 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdManifestIdentity(&pack->manifest,manifest_digest);
 	if ( status == SPARK_STATUS_OK && memcmp(manifest_digest,pack->attached.manifest_sha256,sizeof(manifest_digest)) != 0 )
+	{
+		fprintf(stderr,"LAZY-MANIFEST-MISMATCH local=");
+		for (uint32_t i=0u;i<32u;i++) fprintf(stderr,"%02x",manifest_digest[i]);
+		fprintf(stderr," weightd=");
+		for (uint32_t i=0u;i<32u;i++) fprintf(stderr,"%02x",pack->attached.manifest_sha256[i]);
+		fprintf(stderr,"\n");
 		status = SPARK_STATUS_HASH_MISMATCH;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdMapCreate(pack->client,&pack->attached,&pack->map);
 	if ( status == SPARK_STATUS_OK )
