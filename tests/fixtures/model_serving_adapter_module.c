@@ -64,7 +64,6 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.max_resident_sequence_count = 256u,
 	.max_output_token_count = 256u,
 	.max_speculative_token_count = 0u,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.adapter_id = "test.model.serving.adapter.v1",
 	.model_id = "test/model",
 	.model_revision = "test-revision",

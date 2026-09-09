@@ -312,7 +312,7 @@ def main() -> int:
         and "SPARK_MODEL_SERVING_WORK_KIND_PREFILL" in batch_engine
         and "SPARK_MODEL_SERVING_WORK_KIND_DECODE" in batch_engine
         and "SPARK_MODEL_SERVING_WORK_KIND_RELEASE" in batch_engine
-        and "SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE" in batch_engine,
+        and "SPARK_MODEL_SERVING_SLOT_REUSE_" not in batch_engine,
         "neutral request engine does not drive every adapter lifecycle phase",
     )
     require(
@@ -374,9 +374,9 @@ def main() -> int:
     )
     require(
         "resident_sequence_slot" in adapter_header
-        and "SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE" in adapter_header
-        and "SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO" in adapter_header,
-        "persistent KV slot ownership or reuse policy is implicit",
+        and "resident_sequence_slot_reuse" not in adapter_header
+        and "SPARK_MODEL_SERVING_SLOT_REUSE_" not in adapter_header,
+        "drivers must not override common slot release ownership",
     )
     require(
         "SparkModelServingAdapterValidateSubmissionFunction" in adapter_header

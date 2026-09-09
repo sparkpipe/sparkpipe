@@ -161,7 +161,6 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.max_resident_sequence_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.cache_block_token_count = 64u,
 	.stage_layer_counts = SPARK_GLM52_SERVING_STAGE_LAYERS,
 	.boundary_sideband_kinds = {0u},

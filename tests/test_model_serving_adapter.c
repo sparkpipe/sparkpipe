@@ -125,7 +125,6 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->max_input_row_count = 256u;
 	descriptor->max_resident_sequence_count = 512u;
 	descriptor->max_output_token_count = 1u;
-	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO;
 	descriptor->minimum_efficient_submission_row_count = 16u;
 	descriptor->adapter_id = "spark.dsv4.flash.serving.v1";
 	descriptor->model_id = "deepseek-ai/DeepSeek-V4-Flash-0731";
@@ -147,16 +146,14 @@ static void TestDescriptor(void)
 	descriptor.stage_layer_counts[12] = 1u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
 	TestBuildDescriptor(&descriptor);
-	descriptor.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
 	TestBuildDescriptor(&descriptor);
 	descriptor.capability_flags |=
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
-	descriptor.resident_sequence_slot_reuse =
-		SPARK_MODEL_SERVING_SLOT_REUSE_NONE;
+	descriptor.abi_version = 21u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) ==
-		SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_STATUS_ABI_MISMATCH);
 }
 
 static void TestHybridDescriptor(void)

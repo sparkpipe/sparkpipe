@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 21u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 22u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -35,10 +35,6 @@ extern "C" {
 	(SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | \
 	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | \
 	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH)
-
-#define SPARK_MODEL_SERVING_SLOT_REUSE_NONE 0u
-#define SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE 1u
-#define SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO 2u
 
 #define SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 1u
 
@@ -99,7 +95,6 @@ typedef struct SparkModelServingAdapterDescriptor
 	uint32_t max_resident_sequence_count;
 	uint32_t max_output_token_count;
 	uint32_t max_speculative_token_count;
-	uint32_t resident_sequence_slot_reuse;
 	const char *adapter_id;
 	const char *model_id;
 	const char *model_revision;
