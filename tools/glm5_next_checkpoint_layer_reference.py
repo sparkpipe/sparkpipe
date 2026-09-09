@@ -82,16 +82,42 @@ def dense_mlp(checkpoint, x, prefix, config):
     activated = bf16_round_f32(bf16_round_f32(gate*sigmoid(gate))*up)
     return checkpoint.linear(activated,prefix+'down_proj')
 
-def dense_layer(checkpoint, streams, prefix, config):
+def first_dsa(checkpoint, x, prefix, config, receipt):
+    if config['qk_rope_head_dim'] != 0 or not config['index_kpool_always_select_tail']:
+        raise ValueError('first-position DSA reference requires NOPE and a visible self token')
+    raw = checkpoint.linear(x,prefix+'kv_a_proj_with_mqa')
+    latent = rms(raw,checkpoint.tensor(prefix+'kv_a_layernorm.weight'),config['rms_norm_eps'])
+    expanded = checkpoint.linear(latent,prefix+'kv_b_proj').reshape(config['num_attention_heads'],-1)
+    values = expanded[:,config['qk_nope_head_dim']:]
+    receipt.update(dsa_latent=latent,dsa_values=values)
+    return checkpoint.linear(values.reshape(-1),prefix+'o_proj')
+
+def sparse_mlp(checkpoint, x, prefix, config, receipt):
+    if config['n_group'] != 1 or config['topk_group'] != 1 or not config['norm_topk_prob']:
+        raise ValueError('reference requires one routing group and normalized expert weights')
+    scores = sigmoid(checkpoint.tensor(prefix+'gate.weight')@x)
+    choice = scores+checkpoint.tensor(prefix+'gate.e_score_correction_bias')
+    selected = np.argsort(choice)[-config['num_experts_per_tok']:]
+    weights = scores[selected]/(scores[selected].sum()+1e-20)*config['routed_scaling_factor']
+    routed = np.zeros_like(x)
+    for index in np.argsort(selected):
+        output = dense_mlp(checkpoint,x,prefix+f'experts.{selected[index]}.',config)
+        routed = bf16_round_f32(routed+bf16_round_f32(output*weights[index]))
+    shared = dense_mlp(checkpoint,x,prefix+'shared_experts.',config)
+    receipt.update(selected_experts=selected,route_weights=weights,routed=routed,shared=shared)
+    return bf16_round_f32(routed+shared)
+
+def first_layer(checkpoint, streams, prefix, config, layer):
     receipt = {}
     collapsed,post,comb = hc_site(checkpoint,streams,prefix+'hc_attn',config)
     x = rms(collapsed,checkpoint.tensor(prefix+'input_layernorm.weight'),config['rms_norm_eps'])
-    attention = first_kda(checkpoint,x,prefix+'self_attn.',config,receipt)
+    attention_fn = first_kda if config['layer_types'][layer] == 'linear_attention' else first_dsa
+    attention = attention_fn(checkpoint,x,prefix+'self_attn.',config,receipt)
     streams = hc_post(streams,attention,post,comb)
     receipt.update(attention_norm=x,attention_output=attention,after_attention=streams.copy())
     collapsed,post,comb = hc_site(checkpoint,streams,prefix+'hc_ffn',config)
     x = rms(collapsed,checkpoint.tensor(prefix+'post_attention_layernorm.weight'),config['rms_norm_eps'])
-    mlp = dense_mlp(checkpoint,x,prefix+'mlp.',config)
+    mlp = dense_mlp(checkpoint,x,prefix+'mlp.',config) if config['mlp_layer_types'][layer] == 'dense' else sparse_mlp(checkpoint,x,prefix+'mlp.',config,receipt)
     streams = hc_post(streams,mlp,post,comb)
     receipt.update(mlp_norm=x,mlp_output=mlp,layer_output=streams)
     return streams,receipt
@@ -100,25 +126,33 @@ def run(checkpoint_path, token, output, layers=1):
     config = json.loads((checkpoint_path/'config.json').read_text())['text_config']
     if token < 0 or token >= config['vocab_size']:
         raise ValueError('token outside checkpoint vocabulary')
-    if layers < 1 or layers >= len(config['layer_types']):
-        raise ValueError('reference requires a nonempty prefix and a following layer')
+    if layers < 1 or layers > len(config['layer_types']):
+        raise ValueError('reference layer count outside the checkpoint')
     for layer in range(layers):
-        if config['layer_types'][layer] != 'linear_attention' or config['mlp_layer_types'][layer] != 'dense':
-            raise ValueError(f'layer {layer} is not KDA/dense')
+        if config['layer_types'][layer] not in ('linear_attention','deepseek_sparse_attention') or config['mlp_layer_types'][layer] not in ('dense','sparse'):
+            raise ValueError(f'unsupported layer {layer}')
     checkpoint = Checkpoint(str(checkpoint_path))
     embedding = checkpoint.tensor('model.language_model.embed_tokens.weight')[token].copy()
     streams = np.tile(embedding,(config['hc_mult'],1))
     receipt = {'embedding':embedding}
     for layer in range(layers):
-        streams,values = dense_layer(checkpoint,streams,PREFIX+str(layer)+'.',config)
+        streams,values = first_layer(checkpoint,streams,PREFIX+str(layer)+'.',config,layer)
         receipt.update({f'layer{layer}_{key}':value for key,value in values.items()})
-    collapsed,_,_ = hc_site(checkpoint,streams,PREFIX+str(layers)+'.hc_attn',config)
-    weight = checkpoint.tensor(PREFIX+str(layers)+'.input_layernorm.weight')
-    receipt['next_attention_norm'] = rms(collapsed,weight,config['rms_norm_eps'])
+        print(json.dumps({'completed_layer':layer,'norm':float(np.linalg.norm(streams))}),flush=True)
+    if layers < len(config['layer_types']):
+        collapsed,_,_ = hc_site(checkpoint,streams,PREFIX+str(layers)+'.hc_attn',config)
+        weight = checkpoint.tensor(PREFIX+str(layers)+'.input_layernorm.weight')
+        receipt['next_attention_norm'] = rms(collapsed,weight,config['rms_norm_eps'])
+    else:
+        collapsed = bf16_round_f32(streams.mean(axis=0))
+        weight = checkpoint.tensor('model.language_model.norm.weight')
+        receipt['head_norm'] = rms(collapsed,weight,config['rms_norm_eps'])
+        receipt['logits'] = checkpoint.linear(receipt['head_norm'],'lm_head')
+        print(json.dumps({'top_token':int(receipt['logits'].argmax()),'top_logit':float(receipt['logits'].max())}),flush=True)
     if any(not np.isfinite(value).all() for value in receipt.values()):
         raise ValueError('nonfinite checkpoint reference result')
     np.savez(output,**receipt)
-    print(json.dumps({'token':token,'layers':layers,'position':0,'scope':'unsharded checkpoint KDA/dense prefix reference','output':str(output),'norms':{k:float(np.linalg.norm(v)) for k,v in receipt.items()}}),flush=True)
+    print(json.dumps({'token':token,'layers':layers,'position':0,'scope':'unsharded checkpoint first-position reference','output':str(output),'norms':{k:float(np.linalg.norm(v)) for k,v in receipt.items()}}),flush=True)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
