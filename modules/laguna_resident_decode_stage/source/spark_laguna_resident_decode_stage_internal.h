@@ -73,9 +73,6 @@ typedef struct SparkLagunaExecutionSlot
 	uint32_t *output_token;
 	float *output_score;
 	uint64_t *head_maxloc_u64;
-	void *head_certified_scratch;
-	uint32_t *head_certified_candidates;
-	uint32_t *head_screened_count;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;
@@ -106,9 +103,6 @@ typedef struct SparkLagunaCudaWave
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
-	const uint8_t *head_certified_fp8_payload;
-	const float *head_certified_fp8_scale_f32;
-	const float *head_certified_fp8_norm_f32;
 	const float *yarn_inv_freq;
 	const SparkLagunaLayerWeights *layers;
 	uint32_t lazy_experts;
@@ -141,7 +135,6 @@ int32_t SparkLagunaLaunchCudaLayerMlpPost(const SparkLagunaCudaWave *wave,uint32
 int32_t SparkLagunaLaunchCudaWaveHead(const SparkLagunaCudaWave *wave);
 cudaError_t SparkLagunaLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkLagunaLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
-cudaError_t SparkLagunaLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkLagunaLaunchDirectSum(cudaStream_t stream,void *destination,const void *const *rank_devices,uint32_t local_rank,uint32_t rows,uint32_t width);
 cudaError_t SparkLagunaLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
 cudaError_t SparkLagunaLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
