@@ -1164,10 +1164,14 @@ typedef struct SparkLingValFixture
 static int SparkLingValSynthExperts(SparkLingValFixture *fixture)
 {
 	uint32_t codec = SPARK_LING_VAL_CODEC;
-	uint64_t w1_bytes = SparkLingValPayloadExpertBytes(codec,SPARK_LING_VAL_W1_ROWS,SPARK_LING_VAL_HIDDEN);
-	uint64_t w2_bytes = SparkLingValPayloadExpertBytes(codec,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_EXPERT_INTER);
-	uint64_t w1_scales = SparkLingValScaleExpertBytes(codec,SPARK_LING_VAL_W1_ROWS,SPARK_LING_VAL_HIDDEN);
-	uint64_t w2_scales = SparkLingValScaleExpertBytes(codec,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_EXPERT_INTER);
+	uint64_t w1_bytes = (uint64_t)SPARK_LING_VAL_EXPERTS *
+		SparkLingValPayloadExpertBytes(codec,SPARK_LING_VAL_W1_ROWS,SPARK_LING_VAL_HIDDEN);
+	uint64_t w2_bytes = (uint64_t)SPARK_LING_VAL_EXPERTS *
+		SparkLingValPayloadExpertBytes(codec,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_EXPERT_INTER);
+	uint64_t w1_scales = (uint64_t)SPARK_LING_VAL_EXPERTS *
+		SparkLingValScaleExpertBytes(codec,SPARK_LING_VAL_W1_ROWS,SPARK_LING_VAL_HIDDEN);
+	uint64_t w2_scales = (uint64_t)SPARK_LING_VAL_EXPERTS *
+		SparkLingValScaleExpertBytes(codec,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_EXPERT_INTER);
 	fixture->w1_payload_bytes = w1_bytes;
 	fixture->w2_payload_bytes = w2_bytes;
 	fixture->w1_scale_bytes = w1_scales;
