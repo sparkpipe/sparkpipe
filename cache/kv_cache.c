@@ -159,9 +159,9 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
     uint64_t attention_bytes_per_token_per_layer;
     uint64_t index_key_bytes_per_token_per_layer;
     uint64_t summary_bytes_per_index_layer_block;
-    uint64_t resident_token_bytes;
+    uint64_t resident_token_bytes = 0u;
     uint64_t payload_token_bytes;
-    uint64_t record_unaligned_bytes;
+    uint64_t record_unaligned_bytes = 0u;
     uint64_t active_token_capacity;
     uint64_t backing_token_capacity;
     uint64_t compact_selected_token_count;
