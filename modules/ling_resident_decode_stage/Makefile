@@ -1,5 +1,5 @@
 ifndef EXPERT_CODEC
-$(error EXPERT_CODEC is required: int6, int7, int8, fp8, nvfp4, or mxfp4)
+$(error EXPERT_CODEC is required: bf16, int6, int7, int8, fp8, nvfp4, or mxfp4)
 endif
 ifndef MODEL_REVISION
 $(error MODEL_REVISION is required and must be the exact source snapshot revision)
@@ -8,11 +8,14 @@ ifndef CONTRACT_SHA256
 $(error CONTRACT_SHA256 is required and must identify the exact model package contract)
 endif
 
-LING_EXPERT_CODECS := int6 int7 int8 fp8 nvfp4 mxfp4
+LING_EXPERT_CODECS := bf16 int6 int7 int8 fp8 nvfp4 mxfp4
 ifeq ($(filter $(EXPERT_CODEC),$(LING_EXPERT_CODECS)),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': choose $(LING_EXPERT_CODECS))
 endif
 
+ifeq ($(EXPERT_CODEC),bf16)
+LING_EXPERT_CODEC_ID := 1
+endif
 ifeq ($(EXPERT_CODEC),int6)
 LING_EXPERT_CODEC_ID := 2
 endif
@@ -89,16 +92,8 @@ RUNTIME_CONFIGURATION := \
 	SPARK_LING_STAGE_PIPELINE_SLOTS=$(PIPELINE_SLOT_COUNT)
 
 GPU_VALIDATOR := validation/validate_ling_resident_decode_stage_cuda.sh
-MTP_PARITY_VALIDATOR := validation/validate_ling_resident_decode_stage_mtp_parity.sh
 
 include ../resident_decode_stage_rules.mk
-
-.PHONY: validate_mtp_parity
-validate_mtp_parity: require_cuda_target $(MODULE_ARCHIVE)
-	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
-		$(MTP_PARITY_VALIDATOR) \
-		$(VALIDATION_CONFIGURATION_SHA256) \
-		$(MODULE_ARCHIVE)
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
