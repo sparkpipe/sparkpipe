@@ -1129,10 +1129,9 @@ static int Glm5NextKdaProbeVecLayer(const Glm5NextLayerBuffers *buffers)
     return(vec_layer);
 }
 
-static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
+static int32_t Glm5NextLayerProbeVecPass(const Glm5NextLayerBuffers *buffers,uint32_t *vec_pass,uint32_t calls_per_layer)
 {
     static int vec_enabled = -1;
-    static uint32_t vec_pass = 0u;
     uint32_t cap;
     if ( vec_enabled < 0 )
         vec_enabled = getenv("SPARK_GLM5_NEXT_PROBE_VEC") != 0 ? 1 : 0;
@@ -1145,10 +1144,10 @@ static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
         if ( cap_env != 0 && *cap_env != 0 )
             cap = (uint32_t)atoi(cap_env);
     }
-    if ( vec_pass >= cap )
+    if ( *vec_pass / calls_per_layer >= cap )
         return(0);
-    vec_pass += 1u;
-    return((int)vec_pass);
+    *vec_pass += 1u;
+    return((int32_t)*vec_pass);
 }
 
 static int32_t Glm5NextKdaReplayRecord(
@@ -1199,7 +1198,8 @@ static int32_t Glm5NextLayerKda(
     const uint32_t rank_heads = buffers->kda_heads;
     const uint32_t rank_qk = rank_heads * GLM5_NEXT_KDA_KEY_DIM;
     const uint32_t rank_v = rank_heads * GLM5_NEXT_KDA_VALUE_DIM;
-    const int32_t vec_pass = (int32_t)Glm5NextKdaProbeVecPass(buffers);
+    static uint32_t probe_count = 0u;
+    const int32_t vec_pass = Glm5NextLayerProbeVecPass(buffers,&probe_count,1u);
     int32_t status;
 
     if (buffers == 0 || rows == 0u || sequences == 0u ||
@@ -1914,6 +1914,15 @@ static int32_t Glm5NextHcPost(
     uint32_t rows,
     cudaStream_t stream)
 {
+    static uint32_t probe_count = 0u;
+    int32_t pass = Glm5NextLayerProbeVecPass(buffers,&probe_count,2u);
+    if ( pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,sublayer_out,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"hc_sublayer_out");
+        Glm5NextProbeVecU16(stream,buffers->hc_snapshot_bf16,GLM5_NEXT_HC_FLAT,buffers->layer_index,(uint32_t)pass,"hc_snapshot");
+        Glm5NextProbeVecF32(stream,buffers->hc_post_f32,GLM5_NEXT_HC,buffers->layer_index,(uint32_t)pass,"hc_post_weights");
+        Glm5NextProbeVecF32(stream,buffers->hc_comb_f32,GLM5_NEXT_HC * GLM5_NEXT_HC,buffers->layer_index,(uint32_t)pass,"hc_comb_weights");
+    }
     LM_LAUNCH(
         (Glm5NextHcPostKernel),
         rows,
@@ -1928,6 +1937,8 @@ static int32_t Glm5NextHcPost(
         rows,
         GLM5_NEXT_HC,
         GLM5_NEXT_HIDDEN);
+    if ( pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->hidden_bf16,GLM5_NEXT_HC_FLAT,buffers->layer_index,(uint32_t)pass,"hc_result");
     return LM_LAUNCH_OK;
 }
 
@@ -1938,7 +1949,8 @@ static int32_t Glm5NextLayerDenseMlp(
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    int32_t status;
+    static uint32_t probe_count = 0u;
+    int32_t status,pass = Glm5NextLayerProbeVecPass(buffers,&probe_count,1u);
 
     if (buffers == 0 || rows == 0u || buffers->attention_out_bf16 == 0 ||
         buffers->residual_bf16 == 0 || buffers->mlp_norm_weight == 0 ||
@@ -1965,6 +1977,11 @@ static int32_t Glm5NextLayerDenseMlp(
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
 
+    if ( pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"dense_collapsed");
+        Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"dense_normed");
+    }
     if (buffers->dense_gate_up_fused != 0u)
     {
         status = Glm5NextLaunchBf16Linear(
@@ -2034,7 +2051,12 @@ static int32_t Glm5NextLayerDenseMlp(
         buffers->dense_intermediate,
         SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
 
-    return Glm5NextLaunchBf16Linear(
+    if ( pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->gate_up_bf16,buffers->dense_gate_up_rows,buffers->layer_index,(uint32_t)pass,"dense_gate_up");
+        Glm5NextProbeVecU16(stream,buffers->intermediate_bf16,buffers->dense_intermediate,buffers->layer_index,(uint32_t)pass,"dense_intermediate");
+    }
+    status = Glm5NextLaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->dense_down_weight,
         buffers->attention_out_bf16,
@@ -2047,6 +2069,9 @@ static int32_t Glm5NextLayerDenseMlp(
         0u,
         multiprocessors,
         stream);
+    if ( status == LM_LAUNCH_OK && pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"dense_down_partial");
+    return(status);
 }
 
 template<uint32_t ExpertCodec>

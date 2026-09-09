@@ -888,3 +888,22 @@ Receipts: `/private/tmp/ds4_glm_tree_deployment_receipt.json`,
 metrics, complete API logs and summary). These results remain diagnostic:
 full numerical and lifecycle qualification, diverse traffic, occupancy near
 100, TP4 and TP4xPP4 comparisons, roofline and overlap profiling are outstanding.
+
+
+## Dense and HC matched-input capture
+
+The existing bounded vector probe now includes the selected layer dense RMS
+input/output, gate/up projection, SwiGLU output, local down-projection partial,
+and both HC post operations. Use the existing PROBE_VEC setting with
+PROBE_VEC_KDA_LAYER=0 and PROBE_VEC_PASSES=1 for first-layer diagnosis.
+HC pass 1 is after attention and pass 2 after the FFN; each records the
+full sublayer result, four snapshot streams, post/combination weights and
+four output streams. KDA and dense retain their own pass counts. These are
+first-row captures; they do not qualify batched rows or serve as timing data.
+
+Compare each captured operation using its actual input before attributing
+error to upstream propagation. Compare full captured HC outputs against
+the independently evaluated operation, then compare the following dense
+collapse and normalization. Keep the upstream semantic oracle unchanged.
+Probe readback synchronizes the captured stream; exhaust the bounded capture
+before measuring warm decode, and reject missing or incomplete vectors.
