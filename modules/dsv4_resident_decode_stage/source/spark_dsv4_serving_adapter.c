@@ -314,6 +314,7 @@ typedef struct SparkDsv4ServingAdapterState
 	uint32_t draft_bridge_port;
 	char draft_bridge_host[SPARK_DSV4_SERVING_DRAFT_BRIDGE_HOST_BYTES];
 	uint32_t quiescing;
+	uint32_t expert_lazy;
 	SparkModelServingRuntimeLimits runtime_limits;
 	uint64_t orphan_completion_count;
 	SparkDsv4ServingPending pending[SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX];
@@ -438,11 +439,25 @@ static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
 			index * SPARK_DSV4_SERVING_TP_DEGREE : 0u;
 		expected = SparkDsv4ResidentDecodeStageGraphIslandsPerSlot(
 			SparkDsv4ServingDescriptor.stage_layer_counts[descriptor_index]);
-		if ( status != SPARK_STATUS_OK || expected == 0u || value != expected )
+		if ( status != SPARK_STATUS_OK || expected == 0u )
 			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
+		if ( state->expert_lazy != 0u )
+		{
+			/* the lazy-expert gate runs graphs-off: the host reads back the
+			 * per-layer route, which graph capture forbids. Zero graphs is
+			 * accepted only under SPARK_DSV4_EXPERT_LAZY=1, never silently. */
+			if ( value != 0u && value != expected )
+				return(SPARK_STATUS_SCHEMA_ERROR);
+			continue;
+		}
+		if ( value != expected )
+			return(SPARK_STATUS_SCHEMA_ERROR);
 		if ( index == pp_stage_index )
 			*cuda_graph_count = value;
 	}
+	if ( state->expert_lazy != 0u )
+		*cuda_graph_count = 0u;
+	return(SPARK_STATUS_OK);
 	return(*cuda_graph_count != 0u ? SPARK_STATUS_OK :
 		SPARK_STATUS_SCHEMA_ERROR);
 }
@@ -846,6 +861,11 @@ static void SparkDsv4ServingInitializeState(
 	state->completion_context = configuration->completion_context;
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
+	{
+		const char *lazy = getenv("SPARK_DSV4_EXPERT_LAZY");
+		state->expert_lazy = lazy != 0 && lazy[0] == '1' && lazy[1] == '\0'
+			? 1u : 0u;
+	}
 }
 
 static void SparkDsv4ServingSpeculationModelContract(
