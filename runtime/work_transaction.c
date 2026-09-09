@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_work_transaction.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 
@@ -17,7 +18,7 @@ static SparkStatus SparkWorkTransactionValidateLedger(
         ledger->active_entry_count + ledger->terminal_entry_count !=
             ledger->entry_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -91,7 +92,7 @@ static SparkStatus SparkWorkTransactionFindInternal(
         entry = &ledger->entries[entry_index];
         if (entry->state == SPARK_WORK_TRANSACTION_STATE_EMPTY)
         {
-            return SPARK_STATUS_NOT_FOUND;
+            SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
         }
         if (entry->state != SPARK_WORK_TRANSACTION_STATE_TOMBSTONE &&
             SparkWorkTransactionIdentitiesMatch(
@@ -109,7 +110,7 @@ static SparkStatus SparkWorkTransactionFindInternal(
             return SPARK_STATUS_OK;
         }
     }
-    return SPARK_STATUS_NOT_FOUND;
+    SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 }
 
 static uint32_t SparkWorkTransactionHasActiveEntries(
@@ -149,11 +150,11 @@ static SparkStatus SparkWorkTransactionPrepareControlGeneration(
     }
     if (control_generation < ledger->active_control_generation)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     if (SparkWorkTransactionHasActiveEntries(ledger) != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     SparkWorkTransactionResetLedger(ledger,control_generation);
     return SPARK_STATUS_OK;
@@ -184,7 +185,7 @@ static SparkStatus SparkWorkTransactionRecycleOldestTerminalEntry(
     }
     if (oldest_index == SPARK_WORK_TRANSACTION_INVALID_INDEX)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     memset(&ledger->entries[oldest_index],0,
         sizeof(ledger->entries[oldest_index]));
@@ -240,7 +241,7 @@ static SparkStatus SparkWorkTransactionSelectInsertionEntry(
         *entry_out = &ledger->entries[first_tombstone_index];
         return SPARK_STATUS_OK;
     }
-    return SPARK_STATUS_CAPACITY_EXCEEDED;
+    SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
 uint32_t SparkWorkTransactionPhaseIsValid(
@@ -310,7 +311,7 @@ SparkStatus SparkWorkTransactionValidateIdentity(
         SparkWorkTransactionPhaseIsValid(identity->phase) == 0u ||
         identity->reserved0 != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -322,7 +323,7 @@ SparkStatus SparkWorkTransactionInitializeLedger(
 {
     if (ledger == 0 || entries == 0 || entry_capacity == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(ledger,0,sizeof(*ledger));
     memset(entries,0,(size_t)entry_capacity * sizeof(entries[0u]));
@@ -346,7 +347,7 @@ SparkStatus SparkWorkTransactionObserve(
     if (entry_out == 0 || observation_out == 0 ||
         payload_fingerprint == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *entry_out = 0;
     *observation_out = 0u;
@@ -380,7 +381,7 @@ SparkStatus SparkWorkTransactionObserve(
         if (entry->payload_fingerprint != payload_fingerprint)
         {
             *observation_out = SPARK_WORK_TRANSACTION_OBSERVATION_CONFLICT;
-            return SPARK_STATUS_VALIDATION_FAILED;
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
         }
         *observation_out = SparkWorkTransactionStateIsTerminal(entry->state)
             ? SPARK_WORK_TRANSACTION_OBSERVATION_REPLAY_TERMINAL
@@ -445,7 +446,7 @@ SparkStatus SparkWorkTransactionTransition(
     }
     if (SparkWorkTransactionStateIsStored(target_state) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkWorkTransactionFindInternal(ledger,identity,&entry,0);
     if (status != SPARK_STATUS_OK)
@@ -457,15 +458,15 @@ SparkStatus SparkWorkTransactionTransition(
         if (entry->state == target_state &&
             entry->terminal_status == (uint32_t)terminal_status)
         {
-            return SPARK_STATUS_DUPLICATE;
+            SPARK_FAIL(SPARK_STATUS_DUPLICATE);
         }
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (SparkWorkTransactionTransitionIsLegal(
             entry->state,
             target_state) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     ledger->epoch += 1u;
     if (ledger->epoch == 0u)
@@ -494,7 +495,7 @@ SparkStatus SparkWorkTransactionFind(
 
     if (entry_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *entry_out = 0;
     status = SparkWorkTransactionValidateLedger(ledger);
@@ -543,14 +544,14 @@ SparkStatus SparkWorkTransactionValidateAcknowledgement(
     if (acknowledgement == 0 || expected_identity == 0 ||
         expected_packet_fingerprint == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (acknowledgement->magic != SPARK_WORK_TRANSACTION_ACK_MAGIC ||
         acknowledgement->abi_version != SPARK_WORK_TRANSACTION_ABI_VERSION ||
         acknowledgement->descriptor_bytes !=
             SPARK_WORK_TRANSACTION_ACKNOWLEDGEMENT_BYTES)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if (SparkWorkTransactionValidateIdentity(
             &acknowledgement->identity) != SPARK_STATUS_OK ||
@@ -565,7 +566,7 @@ SparkStatus SparkWorkTransactionValidateAcknowledgement(
         acknowledgement->reserved0 != 0u ||
         acknowledgement->reserved1 != 0u)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     return (SparkStatus)acknowledgement->status;
 }
@@ -578,7 +579,7 @@ SparkStatus SparkWorkTransactionInitializeCreditLedger(
 
     if (ledger == 0 || capacities == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(ledger,0,sizeof(*ledger));
     ledger->abi_version = SPARK_WORK_TRANSACTION_ABI_VERSION;
@@ -605,13 +606,13 @@ SparkStatus SparkWorkTransactionAcquireCredits(
         domain >= SPARK_WORK_TRANSACTION_CREDIT_DOMAIN_COUNT ||
         credit_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     credit_domain = &ledger->domains[domain];
     if (credit_domain->in_use > credit_domain->capacity ||
         credit_count > credit_domain->capacity - credit_domain->in_use)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     credit_domain->in_use += credit_count;
     return SPARK_STATUS_OK;
@@ -630,12 +631,12 @@ SparkStatus SparkWorkTransactionReleaseCredits(
         domain >= SPARK_WORK_TRANSACTION_CREDIT_DOMAIN_COUNT ||
         credit_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     credit_domain = &ledger->domains[domain];
     if (credit_count > credit_domain->in_use)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     credit_domain->in_use -= credit_count;
     return SPARK_STATUS_OK;

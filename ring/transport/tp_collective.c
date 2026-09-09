@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_tp_collective.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -106,7 +107,7 @@ static SparkStatus SparkTpCollectivePollSocket(
 
     if (socket_descriptor < 0 || returned_events == NULL)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     for (;;)
@@ -114,7 +115,7 @@ static SparkStatus SparkTpCollectivePollSocket(
         poll_timeout_milli = SparkTpCollectiveDeadlinePollTimeout(deadline_milli);
         if (poll_timeout_milli <= 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         memset(&socket_poll, 0, sizeof(socket_poll));
@@ -129,12 +130,12 @@ static SparkStatus SparkTpCollectivePollSocket(
 
         if (poll_result == 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         if (errno != EINTR)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
     }
 }
@@ -146,12 +147,12 @@ static SparkStatus SparkTpCollectiveSetNonblocking(int32_t socket_descriptor)
     socket_flags = fcntl(socket_descriptor, F_GETFL, 0);
     if (socket_flags < 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     if (fcntl(socket_descriptor, F_SETFL, socket_flags | O_NONBLOCK) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     return SPARK_STATUS_OK;
@@ -170,7 +171,7 @@ static SparkStatus SparkTpCollectiveConfigureDataSocket(int32_t socket_descripto
             &no_delay_enabled,
             sizeof(no_delay_enabled)) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
 #ifdef SO_NOSIGPIPE
@@ -181,7 +182,7 @@ static SparkStatus SparkTpCollectiveConfigureDataSocket(int32_t socket_descripto
             &no_delay_enabled,
             sizeof(no_delay_enabled)) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 #endif
 
@@ -205,7 +206,7 @@ static SparkStatus SparkTpCollectiveSendAllUntil(
 
     if (socket_descriptor < 0 || (data == NULL && data_bytes != 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     source_bytes = (const uint8_t *)data;
@@ -239,7 +240,7 @@ static SparkStatus SparkTpCollectiveSendAllUntil(
 
         if (send_result == 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         if (errno == EINTR)
@@ -249,7 +250,7 @@ static SparkStatus SparkTpCollectiveSendAllUntil(
 
         if (errno != EAGAIN && errno != EWOULDBLOCK)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         if (SparkTpCollectivePollSocket(
@@ -258,13 +259,13 @@ static SparkStatus SparkTpCollectiveSendAllUntil(
                 deadline_milli,
                 &returned_events) != SPARK_STATUS_OK)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         if ((returned_events & POLLOUT) == 0 ||
             (returned_events & (POLLERR | POLLHUP | POLLNVAL)) != 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
     }
 
@@ -282,7 +283,7 @@ static SparkStatus SparkTpCollectiveReceiveAllUntil(
 
     if (socket_descriptor < 0 || (data == NULL && data_bytes != 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     destination_bytes = (uint8_t *)data;
@@ -310,7 +311,7 @@ static SparkStatus SparkTpCollectiveReceiveAllUntil(
 
         if (receive_result == 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         if (errno == EINTR)
@@ -320,7 +321,7 @@ static SparkStatus SparkTpCollectiveReceiveAllUntil(
 
         if (errno != EAGAIN && errno != EWOULDBLOCK)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         if (SparkTpCollectivePollSocket(
@@ -329,13 +330,13 @@ static SparkStatus SparkTpCollectiveReceiveAllUntil(
                 deadline_milli,
                 &returned_events) != SPARK_STATUS_OK)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         if ((returned_events & POLLIN) == 0 ||
             (returned_events & (POLLERR | POLLNVAL)) != 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
     }
 
@@ -421,14 +422,14 @@ static SparkStatus SparkTpCollectiveValidateConfig(
 
     if (config == NULL || config->abi_version != SPARK_TP_COLLECTIVE_ABI_VERSION)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     if (!SparkTpCollectiveDegreeIsSupported(config->tp_degree) ||
         config->tp_rank >= config->tp_degree ||
         config->reserved0 != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     step_count = SparkTpCollectiveStepCount(config->tp_degree);
@@ -439,7 +440,7 @@ static SparkStatus SparkTpCollectiveValidateConfig(
             config->operation_timeout_milli != 0u ||
             config->collective_identifier != 0u)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     else
@@ -449,7 +450,7 @@ static SparkStatus SparkTpCollectiveValidateConfig(
             config->operation_timeout_milli == 0u ||
             config->collective_identifier == 0u)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
 
         for (step_index = 0u; step_index < step_count; ++step_index)
@@ -467,7 +468,7 @@ static SparkStatus SparkTpCollectiveValidateConfig(
                 peer->reserved1 != 0u ||
                 inet_pton(AF_INET, peer->host_name, &peer_address) != 1)
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
             }
         }
     }
@@ -482,7 +483,7 @@ static SparkStatus SparkTpCollectiveValidateConfig(
                 &empty_peer,
                 sizeof(empty_peer)) != 0)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
 
@@ -501,7 +502,7 @@ static SparkStatus SparkTpCollectiveListen(
     if (collective->listen_socket < 0)
     {
         fprintf(stderr, "sparkpipe_tp: listen socket() errno=%d (%s)\n", errno, strerror(errno));
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     reuse_address_enabled = 1;
@@ -512,7 +513,7 @@ static SparkStatus SparkTpCollectiveListen(
             &reuse_address_enabled,
             sizeof(reuse_address_enabled)) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     status = SparkTpCollectiveSetNonblocking(collective->listen_socket);
@@ -532,12 +533,12 @@ static SparkStatus SparkTpCollectiveListen(
     {
         fprintf(stderr, "sparkpipe_tp: listen bind(%u) errno=%d (%s)\n",
             (uint32_t)listen_port, errno, strerror(errno));
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     if (listen(collective->listen_socket, SPARK_TP_COLLECTIVE_MAX_STEPS) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     return SPARK_STATUS_OK;
@@ -600,14 +601,14 @@ static SparkStatus SparkTpCollectiveValidateHandshake(
 
     if (!*belongs_to_collective)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
 
     if (abi_version != SPARK_TP_COLLECTIVE_ABI_VERSION ||
         tp_degree != collective->tp_degree ||
         tp_rank != expected_rank)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
 
     return SPARK_STATUS_OK;
@@ -625,7 +626,7 @@ static SparkStatus SparkTpCollectiveConnectSocketUntil(
     peer_address.sin_port = htons(peer->port);
     if (inet_pton(AF_INET, peer->host_name, &peer_address.sin_addr) != 1)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     for (;;)
@@ -639,13 +640,13 @@ static SparkStatus SparkTpCollectiveConnectSocketUntil(
 
         if (SparkTpCollectiveDeadlinePollTimeout(deadline_milli) <= 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         connect_socket = socket(AF_INET, SOCK_STREAM, 0);
         if (connect_socket < 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         status = SparkTpCollectiveConfigureDataSocket(connect_socket);
@@ -698,7 +699,7 @@ static SparkStatus SparkTpCollectiveConnectSocketUntil(
         close(connect_socket);
         if (SparkTpCollectiveDeadlinePollTimeout(deadline_milli) <= 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         {
@@ -777,7 +778,7 @@ static SparkStatus SparkTpCollectiveConnectPeer(
 
         if (SparkTpCollectiveDeadlinePollTimeout(deadline_milli) <= 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
     }
 }
@@ -807,7 +808,7 @@ static SparkStatus SparkTpCollectiveAcceptOne(
             (returned_events & POLLIN) == 0 ||
             (returned_events & (POLLERR | POLLNVAL)) != 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         accepted_socket = accept(collective->listen_socket, NULL, NULL);
@@ -817,7 +818,7 @@ static SparkStatus SparkTpCollectiveAcceptOne(
             {
                 continue;
             }
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
 
         status = SparkTpCollectiveConfigureDataSocket(accepted_socket);
@@ -837,7 +838,7 @@ static SparkStatus SparkTpCollectiveAcceptOne(
             close(accepted_socket);
             if (SparkTpCollectiveDeadlinePollTimeout(deadline_milli) <= 0)
             {
-                return SPARK_STATUS_IO_ERROR;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
             continue;
         }
@@ -858,7 +859,7 @@ static SparkStatus SparkTpCollectiveAcceptOne(
         if (status != SPARK_STATUS_OK || remote_rank >= collective->tp_degree)
         {
             close(accepted_socket);
-            return SPARK_STATUS_VALIDATION_FAILED;
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
         }
 
         SparkTpCollectiveBuildHandshake(collective, &local_handshake);
@@ -913,7 +914,7 @@ static SparkStatus SparkTpCollectiveAcceptPeers(
             (rank_difference & (rank_difference - 1u)) != 0u)
         {
             close(accepted_socket);
-            return SPARK_STATUS_VALIDATION_FAILED;
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
         }
 
         step_index = 0u;
@@ -926,7 +927,7 @@ static SparkStatus SparkTpCollectiveAcceptPeers(
             collective->step_sockets[step_index] >= 0)
         {
             close(accepted_socket);
-            return SPARK_STATUS_VALIDATION_FAILED;
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
         }
 
         collective->step_sockets[step_index] = accepted_socket;
@@ -990,7 +991,7 @@ static SparkStatus SparkTpCollectiveValidateOperationHeader(
             operation_header->element_count_high,
             operation_header->element_count_low) != expected_element_count)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
 
     return SPARK_STATUS_OK;
@@ -1085,7 +1086,7 @@ SparkStatus SparkTpCollectiveCreate(
 
     if (collective_out == NULL)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     SparkTpCollectiveReset(collective_out);
@@ -1267,7 +1268,7 @@ static SparkStatus SparkTpCollectiveAllReduceSum(
 
     if (collective == NULL || values == NULL || element_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     if (collective->abi_version != SPARK_TP_COLLECTIVE_ABI_VERSION ||
@@ -1276,7 +1277,7 @@ static SparkStatus SparkTpCollectiveAllReduceSum(
         collective->failed != 0u ||
         collective->reserved0 != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     expected_step_count = SparkTpCollectiveStepCount(collective->tp_degree);
@@ -1299,7 +1300,7 @@ static SparkStatus SparkTpCollectiveAllReduceSum(
         collective->next_operation_sequence == UINT64_MAX ||
         element_count > (uint64_t)(SIZE_MAX / element_bytes))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     buffer_bytes = element_count * element_bytes;
@@ -1308,7 +1309,7 @@ static SparkStatus SparkTpCollectiveAllReduceSum(
             scratch,
             (size_t)buffer_bytes))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     operation_sequence = collective->next_operation_sequence;

@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_speculation_seam.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -49,7 +50,7 @@ SparkStatus SparkSpeculationSeamParseControl(
 
     if (enabled_source_mask_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (control_value == 0 ||
         strcmp(control_value, "1") == 0)
@@ -59,7 +60,7 @@ SparkStatus SparkSpeculationSeamParseControl(
     }
     if (control_value[0] == '\0')
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     errno = 0;
     parse_end = 0;
@@ -69,11 +70,11 @@ SparkStatus SparkSpeculationSeamParseControl(
         *parse_end != '\0' ||
         parsed > SPARK_SPECULATION_SEAM_CONTROL_VALUE_MAX)
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     if (((uint32_t)parsed & ~available_source_mask) != 0u)
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     *enabled_source_mask_out = (uint32_t)parsed;
     return SPARK_STATUS_OK;
@@ -93,24 +94,24 @@ static SparkStatus SparkSpeculationSeamValidateConfiguration(
         configuration->descriptor_bytes !=
             SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES)
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     if ((configuration->available_source_mask &
             ~SPARK_SPECULATION_SEAM_KNOWN_SOURCES) != 0u ||
         (configuration->default_source_mask &
             ~configuration->available_source_mask) != 0u)
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     if (configuration->lane_count == 0u ||
         configuration->max_committed_token_count == 0u)
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     if (SparkSpeculationPolicyValidateModelContract(
             &configuration->model_contract) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     if (configuration->control_value == 0 ||
         (configuration->control_value[0] == '1' &&
@@ -155,7 +156,7 @@ static SparkStatus SparkSpeculationSeamValidateConfiguration(
             configuration->draft_time_budget_ms >
                 SPARK_DRAFT_BRIDGE_MAX_TIME_BUDGET_MS)
         {
-            return SPARK_STATUS_SCHEMA_ERROR;
+            SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
         }
         if ((enabled_source_mask & SPARK_SPECULATION_SEAM_SOURCE_DFLASH2) !=
             0u)
@@ -163,7 +164,7 @@ static SparkStatus SparkSpeculationSeamValidateConfiguration(
             if (configuration->max_tap_row_count == 0u ||
                 configuration->model_contract.aux_layer_count == 0u)
             {
-                return SPARK_STATUS_SCHEMA_ERROR;
+                SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
             }
             tap_row_bytes =
                 configuration->model_contract.aux_layer_count *
@@ -174,7 +175,7 @@ static SparkStatus SparkSpeculationSeamValidateConfiguration(
         {
             if (configuration->max_tap_row_count != 0u)
             {
-                return SPARK_STATUS_SCHEMA_ERROR;
+                SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
             }
             tap_row_bytes = 0u;
         }
@@ -215,7 +216,7 @@ static SparkStatus SparkSpeculationSeamExtractChain(
         nodes[0].parent_index != SPARK_DRAFT_BRIDGE_ROOT_PARENT_INDEX ||
         nodes[0].depth != 0u)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     for (node_index = 1u; node_index < node_count; ++node_index)
     {
@@ -223,7 +224,7 @@ static SparkStatus SparkSpeculationSeamExtractChain(
             nodes[node_index].depth !=
                 nodes[nodes[node_index].parent_index].depth + 1u)
         {
-            return SPARK_STATUS_VALIDATION_FAILED;
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
         }
     }
     best_index = SPARK_SPECULATION_SEAM_NO_SELECTION;
@@ -239,7 +240,7 @@ static SparkStatus SparkSpeculationSeamExtractChain(
     }
     if (best_index == SPARK_SPECULATION_SEAM_NO_SELECTION)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     token_count = nodes[best_index].depth;
     if (token_count > requested_token_count)
@@ -294,7 +295,7 @@ static SparkStatus SparkSpeculationSeamDraftCallback(
     }
     if (lane == 0)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     wire_source_mask =
         seam->enabled_source_mask & SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
@@ -304,7 +305,7 @@ static SparkStatus SparkSpeculationSeamDraftCallback(
     }
     if (wire_source_mask == 0u || seam->bridge == 0)
     {
-        return SPARK_STATUS_UNSUPPORTED;
+        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
     depth = request->requested_token_count;
     if (depth > SPARK_DRAFT_BRIDGE_MAX_DEPTH)
@@ -355,7 +356,7 @@ SparkStatus SparkSpeculationSeamInitialize(
 
     if (configuration == 0 || seam_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *seam_out = 0;
     status = SparkSpeculationSeamValidateConfiguration(
@@ -369,7 +370,7 @@ SparkStatus SparkSpeculationSeamInitialize(
     seam = (SparkSpeculationSeam *)calloc(1u, sizeof(*seam));
     if (seam == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     seam->available_source_mask = configuration->available_source_mask;
     seam->enabled_source_mask = enabled_source_mask;
@@ -394,7 +395,7 @@ SparkStatus SparkSpeculationSeamInitialize(
         seam->lanes == 0)
     {
         SparkSpeculationSeamDestroy(seam);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     if ((enabled_source_mask & SPARK_SPECULATION_SEAM_REMOTE_SOURCES) != 0u)
     {
@@ -404,7 +405,7 @@ SparkStatus SparkSpeculationSeamInitialize(
         if (seam->nodes == 0)
         {
             SparkSpeculationSeamDestroy(seam);
-            return SPARK_STATUS_INTERNAL_ERROR;
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
         }
     }
     memset(&policy_configuration, 0, sizeof(policy_configuration));
@@ -556,7 +557,7 @@ SparkStatus SparkSpeculationSeamDraftRemoteChain(
         draft_token_ids_out == 0 ||
         draft_token_count_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (sequence_id == 0u ||
         sequence_id == SPARK_SPECULATION_SEAM_EMPTY_SEQUENCE_ID ||
@@ -571,12 +572,12 @@ SparkStatus SparkSpeculationSeamDraftRemoteChain(
         tap_row_count > seam->max_tap_row_count ||
         (tap_row_count != 0u && tap_rows == 0))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((seam->enabled_source_mask &
             SPARK_SPECULATION_SEAM_REMOTE_SOURCES) == 0u)
     {
-        return SPARK_STATUS_UNSUPPORTED;
+        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
 
     lane_index = SparkSpeculationSeamFindLane(seam, sequence_id);
@@ -593,7 +594,7 @@ SparkStatus SparkSpeculationSeamDraftRemoteChain(
         }
         if (lane_index == seam->lane_count)
         {
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         seam->sequence_states[lane_index].sequence_id = sequence_id;
         lane_claimed = 1u;
@@ -657,7 +658,7 @@ SparkStatus SparkSpeculationSeamDraftRemoteChain(
     }
     if (draft_result.token_count > draft_token_id_capacity)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     memcpy(
         draft_token_ids_out,
@@ -684,12 +685,12 @@ SparkStatus SparkSpeculationSeamAcceptChain(
         verifier_token_count == 0u ||
         verify_result_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     lane_index = SparkSpeculationSeamFindLane(seam, sequence_id);
     if (lane_index == SPARK_SPECULATION_SEAM_NO_SELECTION)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     status = SparkSpeculationPolicyGetDraft(
         seam->speculator,
@@ -736,12 +737,12 @@ SparkStatus SparkSpeculationSeamCancelSequence(
 
     if (seam == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     lane_index = SparkSpeculationSeamFindLane(seam, sequence_id);
     if (lane_index == SPARK_SPECULATION_SEAM_NO_SELECTION)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     status = SparkSpeculationPolicyCancelSequence(
         seam->speculator,
@@ -773,7 +774,7 @@ SparkStatus SparkSpeculationSeamStageLocalDraft(
 
     if (seam == 0 || draft_token_ids == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     speculator = seam->speculator;
     if (sequence_id == 0u ||
@@ -782,14 +783,14 @@ SparkStatus SparkSpeculationSeamStageLocalDraft(
         draft_token_count >
             speculator->model_contract.maximum_speculative_token_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (token_index = 0u; token_index < draft_token_count; ++token_index)
     {
         if (draft_token_ids[token_index] >=
             speculator->model_contract.vocab_size)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
 
@@ -806,14 +807,14 @@ SparkStatus SparkSpeculationSeamStageLocalDraft(
         }
         if (lane_index == seam->lane_count)
         {
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
     }
     sequence_state = &seam->sequence_states[lane_index];
     if ((sequence_state->flags &
             SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY) != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
 
     sequence_state->flags =

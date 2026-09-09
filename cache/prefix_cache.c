@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_prefix_cache.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"
 
 #include <string.h>
@@ -149,7 +150,7 @@ SparkStatus SparkPrefixCacheHashPromptTokens(
         block_token_count > SPARK_PREFIX_CACHE_MAX_BLOCK_TOKENS ||
         (token_count != 0u && token_ids == 0))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     memset(prompt_hash, 0, sizeof(*prompt_hash));
@@ -228,7 +229,7 @@ static SparkStatus SparkPrefixCacheValidate(
         ((cache->binding_hash_bucket_count != 0u) !=
             (cache->binding_sequence_hash_bucket_heads != 0)))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -436,7 +437,7 @@ static SparkStatus SparkPrefixCacheUnlinkEntry(
     entry_index = SparkPrefixCacheEntryIndex(cache, entry);
     if (entry_index == SPARK_PREFIX_CACHE_NO_ENTRY)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     bucket = SparkPrefixCacheEntryBucket(
         cache,
@@ -453,7 +454,7 @@ static SparkStatus SparkPrefixCacheUnlinkEntry(
     {
         if (current >= cache->entry_count)
         {
-            return SPARK_STATUS_INTERNAL_ERROR;
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
         }
         if (current == entry_index)
         {
@@ -471,7 +472,7 @@ static SparkStatus SparkPrefixCacheUnlinkEntry(
         previous = current;
         current = cache->entries[current].hash_next;
     }
-    return SPARK_STATUS_INTERNAL_ERROR;
+    SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 static void SparkPrefixCacheLinkBinding(
@@ -517,7 +518,7 @@ static SparkStatus SparkPrefixCacheUnlinkBindingChain(
     {
         if (current >= binding_count)
         {
-            return SPARK_STATUS_INTERNAL_ERROR;
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
         }
         next = use_sequence_chain != 0u
             ? bindings[current].sequence_hash_next
@@ -541,7 +542,7 @@ static SparkStatus SparkPrefixCacheUnlinkBindingChain(
         previous = current;
         current = next;
     }
-    return SPARK_STATUS_INTERNAL_ERROR;
+    SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 static SparkStatus SparkPrefixCacheUnlinkBinding(
@@ -558,7 +559,7 @@ static SparkStatus SparkPrefixCacheUnlinkBinding(
     binding_index = (uint32_t)(binding - cache->sequence_bindings);
     if (binding_index >= cache->sequence_binding_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     bucket = SparkPrefixCacheBindingLookupBucket(
         cache,
@@ -616,7 +617,7 @@ static SparkStatus SparkPrefixCacheAcquireLogicalBlock(
     if (preferred_logical_block_index >= cache->logical_block_count)
     {
         *logical_block_index_out = SPARK_PREFIX_CACHE_NO_LOGICAL_BLOCK;
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     *logical_block_index_out = preferred_logical_block_index;
     return SPARK_STATUS_OK;
@@ -692,7 +693,7 @@ static SparkStatus SparkPrefixCacheFillPrefetchSourceBlock(
         entry->logical_block_index == SPARK_PREFIX_CACHE_NO_LOGICAL_BLOCK ||
         entry->logical_block_index >= cache->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     memset(source_block, 0, sizeof(*source_block));
@@ -853,12 +854,12 @@ static SparkStatus SparkPrefixCacheInvalidateEntry(
     }
     if (entry->reference_count != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     entry_index = SparkPrefixCacheEntryIndex(cache, entry);
     if (entry_index == SPARK_PREFIX_CACHE_NO_ENTRY)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (entry->logical_block_index != SPARK_PREFIX_CACHE_NO_LOGICAL_BLOCK)
     {
@@ -902,7 +903,7 @@ static SparkStatus SparkPrefixCacheInstallEntry(
     entry_index = SparkPrefixCacheEntryIndex(cache, entry);
     if (entry_index == SPARK_PREFIX_CACHE_NO_ENTRY)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     entry_was_valid =
         (entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID) != 0u;
@@ -911,7 +912,7 @@ static SparkStatus SparkPrefixCacheInstallEntry(
     {
         if (entry->reference_count != 0u)
         {
-            return SPARK_STATUS_BUSY;
+            SPARK_FAIL(SPARK_STATUS_BUSY);
         }
         logical_block_index = entry->logical_block_index;
         status = SparkPrefixCacheRecycleLogicalBlock(
@@ -932,7 +933,7 @@ static SparkStatus SparkPrefixCacheInstallEntry(
     {
         if (cache->free_entry_head != entry_index)
         {
-            return SPARK_STATUS_INTERNAL_ERROR;
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
         }
         next_free_entry_index = entry->reserved;
         status = SparkPrefixCacheAcquireLogicalBlock(
@@ -1026,12 +1027,12 @@ static SparkStatus SparkPrefixCacheReleaseBinding(
     if (binding->entry_index >= cache->entry_count ||
         cache->entries[binding->entry_index].reference_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     binding_index = (uint32_t)(binding - cache->sequence_bindings);
     if (binding_index >= cache->sequence_binding_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkPrefixCacheReleaseLogicalBlockReference(
         cache,
@@ -1068,7 +1069,7 @@ static SparkStatus SparkPrefixCacheAcquireEntryForSequence(
     entry_index = SparkPrefixCacheEntryIndex(cache, entry);
     if (entry_index == SPARK_PREFIX_CACHE_NO_ENTRY)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     binding = SparkPrefixCacheFindBindingAtTokenOffset(
         cache,
@@ -1078,7 +1079,7 @@ static SparkStatus SparkPrefixCacheAcquireEntryForSequence(
     {
         if (binding->entry_index != entry_index)
         {
-            return SPARK_STATUS_SCHEMA_ERROR;
+            SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
         }
         if (binding_is_pending != 0u)
         {
@@ -1089,7 +1090,7 @@ static SparkStatus SparkPrefixCacheAcquireEntryForSequence(
     binding = SparkPrefixCacheFindFreeBinding(cache);
     if (binding == 0)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     status = SparkPrefixCacheRetainLogicalBlock(
         cache,
@@ -1105,7 +1106,7 @@ static SparkStatus SparkPrefixCacheAcquireEntryForSequence(
         (void)SparkPrefixCacheReleaseLogicalBlockReference(
             cache,
             entry->logical_block_index);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     cache->free_binding_head = next_free_binding_index;
 
@@ -1152,7 +1153,7 @@ static SparkStatus SparkPrefixCacheRollbackEpoch(
 
             if (binding_index >= cache->sequence_binding_count)
             {
-                return SPARK_STATUS_INTERNAL_ERROR;
+                SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
             }
             binding = &cache->sequence_bindings[binding_index];
             next_binding_index = binding->sequence_hash_next;
@@ -1232,7 +1233,7 @@ SparkStatus SparkPrefixCacheInitialize(
 
     if (cache == 0 || configuration == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (configuration->abi_version != SPARK_PREFIX_CACHE_ABI_VERSION ||
         configuration->descriptor_bytes !=
@@ -1253,7 +1254,7 @@ SparkStatus SparkPrefixCacheInitialize(
         (configuration->kv_cache_arena == 0 &&
             configuration->logical_block_count < configuration->entry_count))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (configuration->kv_cache_arena != 0 &&
         (configuration->kv_cache_arena->logical_block_count <
@@ -1261,7 +1262,7 @@ SparkStatus SparkPrefixCacheInitialize(
          configuration->kv_cache_arena->block_token_count !=
             configuration->block_token_count))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     memset(cache, 0, sizeof(*cache));
@@ -1345,7 +1346,7 @@ SparkStatus SparkPrefixCacheProbePrompt(
     }
     if (token_ids == 0 || lookup == 0 || token_count == 0u || sequence_id == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     SparkPrefixCacheInitializeLookup(lookup, sequence_id, token_count);
     cache->lookup_count += 1u;
@@ -1517,7 +1518,7 @@ SparkStatus SparkPrefixCacheProbeLogicalBlockTable(
         logical_block_indices == 0 || matched_token_count_out == 0 ||
         logical_block_count_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     *matched_token_count_out = 0u;
@@ -1529,7 +1530,7 @@ SparkStatus SparkPrefixCacheProbeLogicalBlockTable(
     {
         if (logical_block_count >= logical_block_capacity)
         {
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         logical_block_indices[logical_block_count] =
             entry->logical_block_index;
@@ -1564,7 +1565,7 @@ SparkStatus SparkPrefixCacheProbeReusablePrefixPrefetchSources(
         source_blocks == 0 || matched_token_count_out == 0 ||
         source_block_count_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     *matched_token_count_out = 0u;
@@ -1576,7 +1577,7 @@ SparkStatus SparkPrefixCacheProbeReusablePrefixPrefetchSources(
     {
         if (source_block_count >= source_block_capacity)
         {
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         status = SparkPrefixCacheFillPrefetchSourceBlock(
             cache,
@@ -1617,7 +1618,7 @@ SparkStatus SparkPrefixCacheProbeReusablePrefixResidency(
         matched_token_count_out == 0 || resident_block_count_out == 0 ||
         nonresident_block_count_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     *matched_token_count_out = 0u;
@@ -1701,7 +1702,7 @@ SparkStatus SparkPrefixCacheProtectPromptLookahead(
     if (token_ids == 0 || token_count == 0u ||
         protected_token_count_out == 0 || protected_block_count_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (cache->lookahead_protection_epoch == 0u)
     {
@@ -1999,11 +2000,11 @@ SparkStatus SparkPrefixCacheTrimResidentBlocksByReuseScore(
         (hard_protected_logical_block_count != 0u &&
          hard_protected_logical_block_indices == 0))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (max_resident_block_count > cache->kv_cache_arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     evicted_block_count = 0u;
@@ -2027,7 +2028,7 @@ SparkStatus SparkPrefixCacheTrimResidentBlocksByReuseScore(
             {
                 *evicted_block_count_out = evicted_block_count;
             }
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
 
         status = SparkKvCacheArenaMarkBlockNonResident(
@@ -2120,7 +2121,7 @@ SparkStatus SparkPrefixCacheLookupPrompt(
                 cache,
                 sequence_id,
                 operation_epoch);
-            return SPARK_STATUS_INTERNAL_ERROR;
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
         }
         status = SparkPrefixCacheAcquireEntryForSequence(
             cache,
@@ -2174,7 +2175,7 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
         reservation->descriptor_bytes !=
             SPARK_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block_count = SparkCeilDivU32(
@@ -2183,7 +2184,7 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
     if (reservation->logical_block_indices != 0 &&
         reservation->logical_block_capacity < block_count)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     cache->operation_epoch += 1u;
@@ -2253,7 +2254,7 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
                     cache,
                     sequence_id,
                     operation_epoch);
-                return SPARK_STATUS_CAPACITY_EXCEEDED;
+                SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
             }
             entry_flags = SPARK_PREFIX_CACHE_ENTRY_FLAG_PENDING;
             if (is_full_block == 0u || allow_cross_sequence_reuse == 0u)
@@ -2400,7 +2401,7 @@ SparkStatus SparkPrefixCacheCommitReservation(
     }
     if (sequence_id == 0u || reservation_epoch == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (cache->binding_hash_bucket_count != 0u)
     {
@@ -2415,7 +2416,7 @@ SparkStatus SparkPrefixCacheCommitReservation(
 
             if (binding_index >= cache->sequence_binding_count)
             {
-                return SPARK_STATUS_INTERNAL_ERROR;
+                SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
             }
             binding = &cache->sequence_bindings[binding_index];
             if ((binding->flags & SPARK_PREFIX_CACHE_BINDING_FLAG_VALID) != 0u &&
@@ -2424,7 +2425,7 @@ SparkStatus SparkPrefixCacheCommitReservation(
             {
                 if (binding->entry_index >= cache->entry_count)
                 {
-                    return SPARK_STATUS_INTERNAL_ERROR;
+                    SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
                 }
                 status = SparkPrefixCacheCommitEntry(
                     cache,
@@ -2485,7 +2486,7 @@ SparkStatus SparkPrefixCacheCancelReservation(
     }
     if (sequence_id == 0u || reservation_epoch == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SparkPrefixCacheRollbackEpoch(
         cache,
@@ -2566,7 +2567,7 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
     }
     if (sequence_id == 0u || token_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block_count = SparkCeilDivU32(
@@ -2606,7 +2607,7 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
                     cache,
                     sequence_id,
                     operation_epoch);
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
             }
             entry = &cache->entries[binding->entry_index];
             if ((entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID) == 0u ||
@@ -2619,7 +2620,7 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
                     cache,
                     sequence_id,
                     operation_epoch);
-                return SPARK_STATUS_BUSY;
+                SPARK_FAIL(SPARK_STATUS_BUSY);
             }
             if (binding->token_count < required_block_token_count)
             {
@@ -2631,7 +2632,7 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
                         cache,
                         sequence_id,
                         operation_epoch);
-                    return SPARK_STATUS_MODULE_NOT_VALIDATED;
+                    SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
                 }
                 short_binding = binding;
                 short_entry = entry;
@@ -2647,7 +2648,7 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
                 cache,
                 sequence_id,
                 operation_epoch);
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         block_hash = SparkPrefixCacheMixU64(
             SparkPrefixCacheMixU64(parent_hash, sequence_id),
@@ -2737,14 +2738,14 @@ SparkStatus SparkPrefixCacheBuildLogicalBlockTable(
     if (sequence_id == 0u || token_count == 0u ||
         logical_block_indices == 0 || logical_block_count_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     block_count = SparkCeilDivU32(
         token_count,
         cache->block_token_count);
     if (logical_block_capacity < block_count)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     for (block_index = 0u; block_index < block_count; ++block_index)
     {
@@ -2763,7 +2764,7 @@ SparkStatus SparkPrefixCacheBuildLogicalBlockTable(
             token_offset);
         if (binding == 0 || binding->token_count < required_block_token_count)
         {
-            return SPARK_STATUS_NOT_FOUND;
+            SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
         }
         logical_block_indices[block_index] = binding->logical_block_index;
     }
@@ -2792,14 +2793,14 @@ SparkStatus SparkPrefixCacheBuildSequencePrefetchSources(
     if (sequence_id == 0u || token_count == 0u ||
         source_blocks == 0 || source_block_count_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     block_count = SparkCeilDivU32(
         token_count,
         cache->block_token_count);
     if (source_block_capacity < block_count)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     token_offset = 0u;
     for (block_index = 0u; block_index < block_count; ++block_index)
@@ -2813,7 +2814,7 @@ SparkStatus SparkPrefixCacheBuildSequencePrefetchSources(
             token_offset);
         if (binding == 0 || binding->entry_index >= cache->entry_count)
         {
-            return SPARK_STATUS_NOT_FOUND;
+            SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
         }
         entry = &cache->entries[binding->entry_index];
         status = SparkPrefixCacheFillPrefetchSourceBlock(
@@ -2854,7 +2855,7 @@ SparkStatus SparkPrefixCacheProbeSequenceResidency(
         logical_block_count_out == 0 || resident_block_count_out == 0 ||
         nonresident_block_count_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block_count = SparkCeilDivU32(
@@ -2873,7 +2874,7 @@ SparkStatus SparkPrefixCacheProbeSequenceResidency(
             token_offset);
         if (binding == 0)
         {
-            return SPARK_STATUS_NOT_FOUND;
+            SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
         }
         if (cache->kv_cache_arena != 0 &&
             binding->logical_block_index < cache->kv_cache_arena->logical_block_count &&
@@ -2914,7 +2915,7 @@ SparkStatus SparkPrefixCacheBindCommittedPrefixFromSequence(
     if (source_sequence_id == 0u || target_sequence_id == 0u ||
         source_sequence_id == target_sequence_id || token_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     cache->operation_epoch += 1u;
@@ -2939,7 +2940,7 @@ SparkStatus SparkPrefixCacheBindCommittedPrefixFromSequence(
                 cache,
                 target_sequence_id,
                 operation_epoch);
-            return SPARK_STATUS_NOT_FOUND;
+            SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
         }
         entry = &cache->entries[source_binding->entry_index];
         if ((entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID) == 0u ||
@@ -2949,7 +2950,7 @@ SparkStatus SparkPrefixCacheBindCommittedPrefixFromSequence(
                 cache,
                 target_sequence_id,
                 operation_epoch);
-            return SPARK_STATUS_BUSY;
+            SPARK_FAIL(SPARK_STATUS_BUSY);
         }
         target_binding = SparkPrefixCacheFindBindingAtTokenOffset(
             cache,
@@ -2962,7 +2963,7 @@ SparkStatus SparkPrefixCacheBindCommittedPrefixFromSequence(
                 cache,
                 target_sequence_id,
                 operation_epoch);
-            return SPARK_STATUS_DUPLICATE;
+            SPARK_FAIL(SPARK_STATUS_DUPLICATE);
         }
         status = SparkPrefixCacheAcquireEntryForSequence(
             cache,
@@ -2997,7 +2998,7 @@ SparkStatus SparkPrefixCacheReleaseSequence(
     }
     if (sequence_id == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (cache->binding_hash_bucket_count != 0u)
     {
@@ -3013,7 +3014,7 @@ SparkStatus SparkPrefixCacheReleaseSequence(
 
             if (binding_index >= cache->sequence_binding_count)
             {
-                return SPARK_STATUS_INTERNAL_ERROR;
+                SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
             }
             binding = &cache->sequence_bindings[binding_index];
             next_binding_index = binding->sequence_hash_next;

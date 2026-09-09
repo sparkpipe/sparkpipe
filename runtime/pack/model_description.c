@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_model_description.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +25,7 @@ static SparkStatus SparkModelDescriptionCopyRequiredString(
     if (member_token_index < 0 || !SparkJsonTokenIsType(document, member_token_index, SPARK_JSON_TOKEN_STRING))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "required string '%s' is missing", member_name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     status = SparkJsonCopyString(document, member_token_index, destination);
     if (status != SPARK_STATUS_OK)
@@ -37,7 +38,7 @@ static SparkStatus SparkModelDescriptionCopyRequiredString(
         SparkSetError(error_buffer, error_buffer_bytes, "required string '%s' is empty", member_name);
         free(*destination);
         *destination = 0;
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -54,7 +55,7 @@ static SparkStatus SparkModelDescriptionGetRequiredObject(
     if (*member_token_index < 0 || !SparkJsonTokenIsType(document, *member_token_index, SPARK_JSON_TOKEN_OBJECT))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "required object '%s' is missing", member_name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -71,7 +72,7 @@ static SparkStatus SparkModelDescriptionGetRequiredArray(
     if (*member_token_index < 0 || !SparkJsonTokenIsType(document, *member_token_index, SPARK_JSON_TOKEN_ARRAY))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "required array '%s' is missing", member_name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -95,7 +96,7 @@ static SparkStatus SparkModelDescriptionGetOptionalUInt32(
     if (SparkJsonGetUInt32(document, member_token_index, destination) != SPARK_STATUS_OK)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "optional integer '%s' is invalid", member_name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -118,7 +119,7 @@ static SparkStatus SparkModelDescriptionGetOptionalUInt64(
     if (SparkJsonGetUInt64(document, member_token_index, destination) != SPARK_STATUS_OK)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "optional integer '%s' is invalid", member_name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -129,7 +130,7 @@ static SparkStatus SparkParseModelProgramSchedulingFlag(
 {
     if (flag_name == 0 || flag == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (strcmp(flag_name, "stream_ordered") == 0)
     {
@@ -226,7 +227,7 @@ static SparkStatus SparkParseModelProgramSchedulingFlag(
         *flag = SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL;
         return SPARK_STATUS_OK;
     }
-    return SPARK_STATUS_SCHEMA_ERROR;
+    SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 }
 
 static SparkStatus SparkParseModelProgramScheduling(
@@ -249,7 +250,7 @@ static SparkStatus SparkParseModelProgramScheduling(
     if (!SparkJsonTokenIsType(document, scheduling_token_index, SPARK_JSON_TOKEN_OBJECT))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "program '%s' scheduling must be an object", program->name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
 
     flags_token_index = SparkJsonFindObjectMember(document, scheduling_token_index, "flags");
@@ -260,7 +261,7 @@ static SparkStatus SparkParseModelProgramScheduling(
         if (!SparkJsonTokenIsType(document, flags_token_index, SPARK_JSON_TOKEN_ARRAY))
         {
             SparkSetError(error_buffer, error_buffer_bytes, "program '%s' scheduling flags must be an array", program->name);
-            return SPARK_STATUS_SCHEMA_ERROR;
+            SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
         }
         flag_count = SparkJsonGetArrayElementCount(document, flags_token_index);
         for (flag_index = 0u; flag_index < flag_count; ++flag_index)
@@ -273,7 +274,7 @@ static SparkStatus SparkParseModelProgramScheduling(
             if (!SparkJsonTokenIsType(document, flag_token_index, SPARK_JSON_TOKEN_STRING))
             {
                 SparkSetError(error_buffer, error_buffer_bytes, "program '%s' scheduling flag must be a string", program->name);
-                return SPARK_STATUS_SCHEMA_ERROR;
+                SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
             }
             status = SparkJsonCopyString(document, flag_token_index, &flag_name);
             if (status != SPARK_STATUS_OK)
@@ -285,7 +286,7 @@ static SparkStatus SparkParseModelProgramScheduling(
             {
                 SparkSetError(error_buffer, error_buffer_bytes, "program '%s' has unknown scheduling flag '%s'", program->name, flag_name);
                 free(flag_name);
-                return SPARK_STATUS_SCHEMA_ERROR;
+                SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
             }
             free(flag_name);
             program->scheduling.flags |= parsed_flag;
@@ -465,7 +466,7 @@ static SparkStatus SparkParseModelProgramCompletionMode(
     if (!SparkJsonTokenIsType(document, completion_token_index, SPARK_JSON_TOKEN_STRING))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "program completion must be a string");
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     status = SparkJsonCopyString(document, completion_token_index, &completion_text);
     if (status != SPARK_STATUS_OK)
@@ -484,7 +485,7 @@ static SparkStatus SparkParseModelProgramCompletionMode(
     {
         SparkSetError(error_buffer, error_buffer_bytes, "unknown program completion mode '%s'", completion_text);
         free(completion_text);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     free(completion_text);
     return SPARK_STATUS_OK;
@@ -503,7 +504,7 @@ static SparkStatus SparkParseModelOperation(
     if (!SparkJsonTokenIsType(document, operation_token_index, SPARK_JSON_TOKEN_OBJECT))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "operation entry must be an object");
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     status = SparkModelDescriptionCopyRequiredString(document, operation_token_index, "name", &operation->name, error_buffer, error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
@@ -523,7 +524,7 @@ static SparkStatus SparkParseModelOperation(
             sizeof(SparkModelDescriptionEmptyConfiguration));
         if (operation->configuration_json == 0)
         {
-            return SPARK_STATUS_INTERNAL_ERROR;
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
         }
         memcpy(
             operation->configuration_json,
@@ -536,7 +537,7 @@ static SparkStatus SparkParseModelOperation(
     if (!SparkJsonTokenIsType(document, configuration_token_index, SPARK_JSON_TOKEN_OBJECT))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "operation '%s' configuration must be an object", operation->name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     status = SparkJsonCopyRawValue(document, configuration_token_index, &operation->configuration_json, &operation->configuration_json_bytes);
     if (status != SPARK_STATUS_OK)
@@ -561,7 +562,7 @@ static SparkStatus SparkValidateUniqueOperationNames(
             if (strcmp(program->operations[left_index].name, program->operations[right_index].name) == 0)
             {
                 SparkSetError(error_buffer, error_buffer_bytes, "program '%s' contains duplicate operation '%s'", program->name, program->operations[left_index].name);
-                return SPARK_STATUS_DUPLICATE;
+                SPARK_FAIL(SPARK_STATUS_DUPLICATE);
             }
         }
     }
@@ -583,7 +584,7 @@ static SparkStatus SparkParseModelProgram(
     if (!SparkJsonTokenIsType(document, program_token_index, SPARK_JSON_TOKEN_OBJECT))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "program entry must be an object");
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     status = SparkModelDescriptionCopyRequiredString(document, program_token_index, "name", &program->name, error_buffer, error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
@@ -595,7 +596,7 @@ static SparkStatus SparkParseModelProgram(
     if (member_token_index < 0 || SparkJsonGetUInt32(document, member_token_index, &program->program_id) != SPARK_STATUS_OK || program->program_id == 0u)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "program '%s' requires a nonzero integer id", program->name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     member_token_index = SparkJsonFindObjectMember(document, program_token_index, "max_inflight");
     if (member_token_index < 0)
@@ -605,7 +606,7 @@ static SparkStatus SparkParseModelProgram(
     else if (SparkJsonGetUInt32(document, member_token_index, &program->max_inflight) != SPARK_STATUS_OK || program->max_inflight == 0u)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "program '%s' max_inflight must be nonzero", program->name);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     status = SparkParseModelProgramCompletionMode(document, program_token_index, &program->completion_mode, error_buffer, error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
@@ -626,12 +627,12 @@ static SparkStatus SparkParseModelProgram(
     if (program->operation_count == 0u || program->operation_count > SPARK_MODEL_DESCRIPTION_MAX_OPERATIONS_PER_PROGRAM)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "program '%s' operation count is outside the supported range", program->name);
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     program->operations = (SparkModelOperationDescription *)calloc(program->operation_count, sizeof(*program->operations));
     if (program->operations == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     for (operation_index = 0u; operation_index < program->operation_count; ++operation_index)
     {
@@ -663,7 +664,7 @@ static SparkStatus SparkValidateUniquePrograms(
                 stage->programs[left_index].program_id == stage->programs[right_index].program_id)
             {
                 SparkSetError(error_buffer, error_buffer_bytes, "stage '%s' contains duplicate program name or id", stage->name);
-                return SPARK_STATUS_DUPLICATE;
+                SPARK_FAIL(SPARK_STATUS_DUPLICATE);
             }
         }
     }
@@ -684,7 +685,7 @@ static SparkStatus SparkParseModelStage(
     if (!SparkJsonTokenIsType(document, stage_token_index, SPARK_JSON_TOKEN_OBJECT))
     {
         SparkSetError(error_buffer, error_buffer_bytes, "stage entry must be an object");
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     status = SparkModelDescriptionCopyRequiredString(document, stage_token_index, "name", &stage->name, error_buffer, error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
@@ -705,12 +706,12 @@ static SparkStatus SparkParseModelStage(
     if (stage->program_count == 0u || stage->program_count > SPARK_MODEL_DESCRIPTION_MAX_PROGRAMS_PER_STAGE)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "stage '%s' program count is outside the supported range", stage->name);
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     stage->programs = (SparkModelProgramDescription *)calloc(stage->program_count, sizeof(*stage->programs));
     if (stage->programs == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     for (program_index = 0u; program_index < stage->program_count; ++program_index)
     {
@@ -741,7 +742,7 @@ static SparkStatus SparkValidateUniqueStages(
             if (strcmp(description->stages[left_index].name, description->stages[right_index].name) == 0)
             {
                 SparkSetError(error_buffer, error_buffer_bytes, "duplicate stage '%s'", description->stages[left_index].name);
-                return SPARK_STATUS_DUPLICATE;
+                SPARK_FAIL(SPARK_STATUS_DUPLICATE);
             }
         }
     }
@@ -766,7 +767,7 @@ SparkStatus SparkLoadModelDescription(
 
     if (path == 0 || description == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (error_buffer != 0 && error_buffer_bytes != 0u)
     {

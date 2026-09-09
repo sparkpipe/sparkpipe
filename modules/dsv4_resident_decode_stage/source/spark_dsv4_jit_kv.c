@@ -1,5 +1,6 @@
 
 #include "spark_dsv4_jit_kv.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 
@@ -43,7 +44,7 @@ static SparkStatus SparkDsv4KvFramesRun(
 		frames->spark_receipt_valid == 0u )
 	{
 		frames->refused_count += 1u;
-		return SPARK_STATUS_UNSUPPORTED;
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	status = frames->submit(frames->submit_context,op);
 	if ( status != SPARK_STATUS_OK )
@@ -85,7 +86,7 @@ SparkStatus SparkDsv4KvFramesInitialize(
 				SPARK_DSV4_KV_FRAMES_BACKEND_SPARK_FRAME_OPS &&
 			configuration->submit == 0) )
 	{
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	memset(frames,0,sizeof(*frames));
 	frames->abi_version = SPARK_DSV4_JIT_KV_ABI_VERSION;
@@ -117,7 +118,7 @@ SparkStatus SparkDsv4KvFramesSave(
 	if ( SparkDsv4KvFramesIsValid(frames) == 0u ||
 		SparkDsv4KvFramesViewIsValid(frames,view) == 0u )
 	{
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	return SparkDsv4KvFramesRun(frames,view,SPARK_DSV4_KV_FRAMES_OP_SAVE_OUT);
 }
@@ -131,7 +132,7 @@ SparkStatus SparkDsv4KvFramesRestore(
 	if ( SparkDsv4KvFramesIsValid(frames) == 0u ||
 		SparkDsv4KvFramesViewIsValid(frames,view) == 0u )
 	{
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	return SparkDsv4KvFramesRun(frames,view,
 		SPARK_DSV4_KV_FRAMES_OP_RESTORE_IN);
@@ -144,7 +145,7 @@ SparkStatus SparkDsv4KvFramesSubmitHostCopy(
 	(void)submit_context;
 	if ( op == 0 || op->host_staging == 0 )
 	{
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( op->op_code == SPARK_DSV4_KV_FRAMES_OP_SAVE_OUT )
 	{
@@ -170,7 +171,7 @@ SparkStatus SparkDsv4KvFramesSubmitHostCopy(
 		}
 		return SPARK_STATUS_OK;
 	}
-	return SPARK_STATUS_INVALID_ARGUMENT;
+	SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 SparkStatus SparkDsv4JitKvDecideParkability(
@@ -185,7 +186,7 @@ SparkStatus SparkDsv4JitKvDecideParkability(
 	if ( arena == 0 || parkability_out == 0 ||
 		(active_block_count != 0u && active_block_indices == 0) )
 	{
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	memset(&parkability,0,sizeof(parkability));
 	parkability.abi_version = SPARK_DSV4_JIT_KV_ABI_VERSION;
@@ -213,7 +214,7 @@ SparkStatus SparkDsv4JitKvDecideParkability(
 	{
 		if ( active_block_indices[index] >= arena->logical_block_count )
 		{
-			return SPARK_STATUS_INVALID_ARGUMENT;
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		if ( SparkKvCacheArenaBlockIsParkable(
 				arena,active_block_indices[index]) != 0u )
@@ -224,7 +225,7 @@ SparkStatus SparkDsv4JitKvDecideParkability(
 	*parkability_out = parkability;
 	if ( parkability.unprotected_active_count != 0u )
 	{
-		return SPARK_STATUS_BUSY;
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
 	return SPARK_STATUS_OK;
 }

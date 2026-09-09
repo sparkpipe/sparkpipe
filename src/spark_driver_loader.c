@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <dlfcn.h>
 #include <string.h>
@@ -65,7 +66,7 @@ static SparkStatus SparkValidateLoadedModelDriverProgram(
             error_buffer_bytes,
             "driver program descriptor %u is invalid",
             program_index);
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
 
     profile = program->profile;
@@ -82,7 +83,7 @@ static SparkStatus SparkValidateLoadedModelDriverProgram(
             error_buffer_bytes,
             "driver program profile %u is inconsistent with its descriptor",
             program_index);
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if ((program->flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_HOST_STAGING) != 0u &&
         profile->host_staging_bytes_per_submit_ceiling != 0u)
@@ -92,7 +93,7 @@ static SparkStatus SparkValidateLoadedModelDriverProgram(
             error_buffer_bytes,
             "driver program '%s' claims no host staging but reports a nonzero staging ceiling",
             program->name);
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if ((program->flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_DEVICE_MEMCPY) != 0u &&
         profile->device_memcpy_bytes_per_submit_ceiling != 0u)
@@ -102,7 +103,7 @@ static SparkStatus SparkValidateLoadedModelDriverProgram(
             error_buffer_bytes,
             "driver program '%s' claims no device memcpy but reports a nonzero memcpy ceiling",
             program->name);
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if ((program->flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_VALIDATED_LATENCY) != 0u &&
         profile->validated_latency_ns == 0u)
@@ -112,7 +113,7 @@ static SparkStatus SparkValidateLoadedModelDriverProgram(
             error_buffer_bytes,
             "driver program '%s' claims validated latency without a validated latency value",
             program->name);
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if ((program->flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_PRIVATE_QUEUE_PRESSURE) != 0u &&
         profile->private_queue_count == 0u)
@@ -122,7 +123,7 @@ static SparkStatus SparkValidateLoadedModelDriverProgram(
             error_buffer_bytes,
             "driver program '%s' claims private queue pressure without private queues",
             program->name);
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     return SPARK_STATUS_OK;
 }
@@ -146,7 +147,7 @@ static SparkStatus SparkValidateLoadedModelDriverInterface(
         interface->snapshot == 0)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "model driver interface ABI is invalid");
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
 
     descriptor = interface->descriptor;
@@ -163,7 +164,7 @@ static SparkStatus SparkValidateLoadedModelDriverInterface(
         descriptor->programs == 0)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "model driver descriptor ABI is invalid");
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if (expected_target != 0 &&
         expected_target[0] != '\0' &&
@@ -175,7 +176,7 @@ static SparkStatus SparkValidateLoadedModelDriverInterface(
             "driver target '%s' does not match node target '%s'",
             descriptor->target,
             expected_target);
-        return SPARK_STATUS_TARGET_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
     }
 
     for (program_index = 0u; program_index < descriptor->program_count; ++program_index)
@@ -208,7 +209,7 @@ static SparkStatus SparkValidateLoadedModelDriverInterface(
                     error_buffer,
                     error_buffer_bytes,
                     "driver contains duplicate program descriptors");
-                return SPARK_STATUS_ABI_MISMATCH;
+                SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
             }
         }
     }
@@ -232,7 +233,7 @@ SparkStatus SparkLoadModelDriver(
         driver_path[0] == '\0' ||
         driver == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (error_buffer != 0 && error_buffer_bytes != 0u)
     {
@@ -244,7 +245,7 @@ SparkStatus SparkLoadModelDriver(
             error_buffer,
             error_buffer_bytes,
             "model driver destination must be reset before loading");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     dlerror();
@@ -258,7 +259,7 @@ SparkStatus SparkLoadModelDriver(
             "cannot load model driver '%s': %s",
             driver_path,
             dynamic_error != 0 ? dynamic_error : "unknown loader error");
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
     }
 
     dlerror();
@@ -275,7 +276,7 @@ SparkStatus SparkLoadModelDriver(
             driver_path,
             SPARK_MODEL_DRIVER_INTERFACE_SYMBOL);
         dlclose(dynamic_library);
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
     }
 
     interface = get_interface();

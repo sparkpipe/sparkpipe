@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_hidden_transport_rdma_control.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_hidden_transport.h"
 
@@ -39,10 +40,10 @@ SparkStatus SparkHiddenTransportRdmaControlSetNonblocking(int fd)
     int flags;
 
     if (fd < 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     flags = fcntl(fd,F_GETFL,0);
     if (flags < 0 || fcntl(fd,F_SETFL,flags | O_NONBLOCK) != 0)
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     return SPARK_STATUS_OK;
 }
 
@@ -59,9 +60,9 @@ static SparkStatus SparkHiddenTransportRdmaControlWait(
     {
         now = SparkHiddenTransportRdmaControlMonotonicNs();
         if (now == UINT64_MAX)
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         if (deadline_ns == 0u || now >= deadline_ns)
-            return SPARK_STATUS_BUSY;
+            SPARK_FAIL(SPARK_STATUS_BUSY);
         remaining_ns = deadline_ns - now;
         remaining_ms = (remaining_ns + 999999ull) / 1000000ull;
         timeout = remaining_ms > (uint64_t)INT_MAX ? INT_MAX :
@@ -74,12 +75,12 @@ static SparkStatus SparkHiddenTransportRdmaControlWait(
         {
             if ((descriptor.revents & events) != 0)
                 return SPARK_STATUS_OK;
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         if (result == 0)
-            return SPARK_STATUS_BUSY;
+            SPARK_FAIL(SPARK_STATUS_BUSY);
         if (errno != EINTR)
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 }
 
@@ -93,7 +94,7 @@ SparkStatus SparkHiddenTransportRdmaControlReadFullDeadline(
     uint64_t done;
 
     if (fd < 0 || buffer == 0 || bytes == 0u || deadline_ns == 0u)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     cursor = (uint8_t *)buffer;
     done = 0u;
     while (done < bytes)
@@ -105,11 +106,11 @@ SparkStatus SparkHiddenTransportRdmaControlReadFullDeadline(
             continue;
         }
         if (result == 0)
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         if (errno == EINTR)
             continue;
         if (errno != EAGAIN && errno != EWOULDBLOCK)
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         {
             SparkStatus status = SparkHiddenTransportRdmaControlWait(
                 fd,POLLIN,deadline_ns);
@@ -130,7 +131,7 @@ SparkStatus SparkHiddenTransportRdmaControlWriteFullDeadline(
     uint64_t done;
 
     if (fd < 0 || buffer == 0 || bytes == 0u || deadline_ns == 0u)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     cursor = (const uint8_t *)buffer;
     done = 0u;
     while (done < bytes)
@@ -143,11 +144,11 @@ SparkStatus SparkHiddenTransportRdmaControlWriteFullDeadline(
             continue;
         }
         if (result == 0)
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         if (errno == EINTR)
             continue;
         if (errno != EAGAIN && errno != EWOULDBLOCK)
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         {
             SparkStatus status = SparkHiddenTransportRdmaControlWait(
                 fd,POLLOUT,deadline_ns);
@@ -161,10 +162,10 @@ SparkStatus SparkHiddenTransportRdmaControlWriteFullDeadline(
 SparkStatus SparkHiddenTransportRdmaControlFenceSession(int fd)
 {
     if (fd < 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if (shutdown(fd,SHUT_RDWR) == 0 || errno == ENOTCONN)
         return SPARK_STATUS_OK;
-    return SPARK_STATUS_IO_ERROR;
+    SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
 static uint32_t SparkHiddenTransportRdmaControlTextIsTerminated(
@@ -179,7 +180,7 @@ SparkStatus SparkHiddenTransportRdmaV4ValidatePeerIdentity(
     const SparkHiddenTransportRdmaV4Identity *peer)
 {
     if (local == 0 || peer == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if (local->magic != SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_MAGIC ||
         peer->magic != SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_MAGIC ||
         local->protocol_version != SPARK_HIDDEN_TRANSPORT_RDMA_CONTROL_VERSION ||
@@ -228,7 +229,7 @@ SparkStatus SparkHiddenTransportRdmaV4ValidatePeerIdentity(
         strcmp(peer->route_name,local->route_name) != 0 ||
         strcmp(peer->source_host,local->source_host) != 0 ||
         strcmp(peer->sink_host,local->sink_host) != 0)
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     return SPARK_STATUS_OK;
 }
 
@@ -242,7 +243,7 @@ SparkStatus SparkHiddenTransportRdmaV4ExchangeCompatibilityHello(
     SparkStatus status;
 
     if (local_identity == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     status = SparkHiddenTransportRdmaControlSetNonblocking(fd);
     if (status == SPARK_STATUS_OK)
         status = SparkHiddenTransportRdmaControlWriteFullDeadline(fd,

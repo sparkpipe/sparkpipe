@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_kv_store.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <dlfcn.h>
 #include <string.h>
@@ -71,7 +72,7 @@ SparkStatus SparkKvStoreValidateConfiguration(
 		configuration->cache_layout_fingerprint == 0u ||
 		configuration->service_address == 0 ||
 		configuration->service_address[0] == '\0')
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return SPARK_STATUS_OK;
 }
 
@@ -83,7 +84,7 @@ SparkStatus SparkKvStoreValidateBatch(
 		batch->descriptor_bytes != SPARK_KV_STORE_BATCH_BYTES ||
 		batch->batch_id == 0u || batch->block_count == 0u ||
 		batch->block_count > SPARK_KV_STORE_MAX_BATCH_BLOCKS)
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (block_index = 0u; block_index < batch->block_count; ++block_index)
 	{
 		const SparkKvStoreBlock *block;
@@ -94,7 +95,7 @@ SparkStatus SparkKvStoreValidateBatch(
 			block->key_bytes >= SPARK_KV_STORE_MAX_KEY_BYTES ||
 			block->key[block->key_bytes] != '\0' ||
 			block->payload_bytes == 0u || block->payload == 0)
-			return SPARK_STATUS_INVALID_ARGUMENT;
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	return SPARK_STATUS_OK;
 }
@@ -112,7 +113,7 @@ SparkStatus SparkKvStoreValidateInterface(
 		store_interface->submit == 0 || store_interface->poll == 0 ||
 		store_interface->allocate_buffer == 0 ||
 		store_interface->release_buffer == 0)
-		return SPARK_STATUS_ABI_MISMATCH;
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	return SPARK_STATUS_OK;
 }
 
@@ -126,17 +127,17 @@ SparkStatus SparkKvStoreLoadInterfaceFromSharedObject(
 	void *dynamic_library;
 	SparkStatus status;
 	if (shared_object_path == 0 || shared_object_path[0] == '\0' || library == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(library,0,sizeof(*library));
 	dynamic_library = dlopen(shared_object_path,RTLD_NOW | RTLD_LOCAL);
 	if (dynamic_library == 0)
-		return SPARK_STATUS_NOT_FOUND;
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	*(void **)(&get_interface) = dlsym(
 		dynamic_library,SPARK_KV_STORE_INTERFACE_SYMBOL);
 	if (get_interface == 0)
 	{
 		dlclose(dynamic_library);
-		return SPARK_STATUS_ABI_MISMATCH;
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	}
 	store_interface = get_interface();
 	status = SparkKvStoreValidateInterface(

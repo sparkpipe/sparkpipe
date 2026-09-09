@@ -45,7 +45,7 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
         configuration->program->submit == 0 ||
         configuration->execution_stream == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     parallel = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_TENSOR_PARALLEL) != 0u ? 1u : 0u;
 	hybrid = (configuration->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_HYBRID_TP_PP) != 0u ? 1u : 0u;
@@ -75,7 +75,7 @@ static SparkStatus SparkDsv4StageRunnerValidateConfiguration(
             SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_ADMISSION) != 0u &&
         configuration->driver_interface->admit == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 	return SPARK_STATUS_OK;
 }
@@ -162,7 +162,7 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
 		dispatch->request_id == 0u ||
         dispatch->sequence_id == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 	is_prefill = (dispatch->flags &
 		SPARK_DSV4_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u ? 1u : 0u;
@@ -172,13 +172,13 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchShape(
 			dispatch->new_token_count != dispatch->row_count ||
 			SparkDsv4StageRunnerValidatePrefillRows(runner,dispatch) != SPARK_STATUS_OK)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
 	else if (dispatch->new_token_count != dispatch->active_sequence_count ||
 		dispatch->row_count != dispatch->active_sequence_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 	if ( SparkDsv4StageRunnerValidateCacheLanes(dispatch) != SPARK_STATUS_OK )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -193,11 +193,11 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
 	uint32_t require_input,require_output;
     if (dispatch->token_ids == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (runner->owns_final_head != 0u && dispatch->output_token_ids == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 	require_input = (runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_INPUT_BOUNDARY) != 0u ? 1u : 0u;
 	require_output = (runner->flags & SPARK_DSV4_STAGE_RUNNER_FLAG_REQUIRE_OUTPUT_BOUNDARY) != 0u ? 1u : 0u;
@@ -214,7 +214,7 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
          (dispatch->hidden_output_bf16 != 0 ||
           dispatch->hidden_output_bytes != 0u)))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     hidden_bytes = (uint64_t)dispatch->row_count *
         SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
@@ -224,7 +224,7 @@ static SparkStatus SparkDsv4StageRunnerValidateDispatchBoundaries(
         (require_output != 0u &&
          hidden_bytes > dispatch->hidden_output_bytes))
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     return SPARK_STATUS_OK;
 }
@@ -394,7 +394,7 @@ static SparkStatus SparkDsv4StageRunnerAdmit(
     }
     if (dispatch->tokens_per_sequence > 1u && runner->pp_stage_count != 1u)
     {
-        return SPARK_STATUS_UNSUPPORTED;
+        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
     runner->stats.last_admission_rejection = decision.rejection_reason;
     if (status != SPARK_STATUS_OK)
@@ -414,7 +414,7 @@ SparkStatus SparkDsv4StageRunnerInitialize(
 
     if (runner == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkDsv4StageRunnerValidateConfiguration(configuration);
     if (status != SPARK_STATUS_OK)
@@ -507,7 +507,7 @@ SparkStatus SparkDsv4StageRunnerGetStats(
 {
     if (runner == 0 || stats_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *stats_out = runner->stats;
     return SPARK_STATUS_OK;

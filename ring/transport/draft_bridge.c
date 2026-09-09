@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_draft_bridge.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -116,7 +117,7 @@ static SparkStatus SparkDraftBridgeFailTransport(
     SparkDraftBridge *bridge)
 {
     SparkDraftBridgeDropConnection(bridge);
-    return SPARK_STATUS_IO_ERROR;
+    SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
 static SparkStatus SparkDraftBridgeWaitConnected(
@@ -135,18 +136,18 @@ static SparkStatus SparkDraftBridgeWaitConnected(
     flags = fcntl(socket_fd, F_GETFL, 0);
     if (flags < 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     connect_status = connect(socket_fd, address, address_bytes);
     if (connect_status != 0)
     {
         if (errno != EINPROGRESS)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         memset(&poll_descriptor, 0, sizeof(poll_descriptor));
         poll_descriptor.fd = socket_fd;
@@ -161,7 +162,7 @@ static SparkStatus SparkDraftBridgeWaitConnected(
         if (poll_status <= 0 ||
             (poll_descriptor.revents & (POLLOUT | POLLERR | POLLHUP)) == 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         socket_error = 0;
         socket_error_bytes = (socklen_t)sizeof(socket_error);
@@ -172,16 +173,16 @@ static SparkStatus SparkDraftBridgeWaitConnected(
                 &socket_error,
                 &socket_error_bytes) != 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         if (socket_error != 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
     }
     if (fcntl(socket_fd, F_SETFL, flags) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -201,7 +202,7 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
             &enabled,
             (socklen_t)sizeof(enabled)) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     timeout.tv_sec = (time_t)(io_timeout_ms / SPARK_DRAFT_BRIDGE_MS_PER_SECOND);
     timeout.tv_usec =
@@ -214,7 +215,7 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
             &timeout,
             (socklen_t)sizeof(timeout)) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (setsockopt(
             socket_fd,
@@ -223,7 +224,7 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
             &timeout,
             (socklen_t)sizeof(timeout)) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 #ifdef SO_NOSIGPIPE
     enabled = 1;
@@ -234,7 +235,7 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
             &enabled,
             (socklen_t)sizeof(enabled)) != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 #endif
     return SPARK_STATUS_OK;
@@ -266,7 +267,7 @@ static SparkStatus SparkDraftBridgeConnect(
         &address_list);
     if (address_status != 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     socket_fd = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
     for (address = address_list; address != 0; address = address->ai_next)
@@ -296,7 +297,7 @@ static SparkStatus SparkDraftBridgeConnect(
     freeaddrinfo(address_list);
     if (socket_fd == SPARK_DRAFT_BRIDGE_DISCONNECTED_FD)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     bridge->socket_fd = socket_fd;
     return SPARK_STATUS_OK;
@@ -324,7 +325,7 @@ static SparkStatus SparkDraftBridgeWriteAll(
         }
         if (written <= 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         offset += (uint64_t)written;
     }
@@ -353,7 +354,7 @@ static SparkStatus SparkDraftBridgeReadAll(
         }
         if (received <= 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         offset += (uint64_t)received;
     }
@@ -365,22 +366,22 @@ SparkStatus SparkDraftBridgeValidateConfig(
 {
     if (config == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (config->abi_version != SPARK_DRAFT_BRIDGE_ABI_VERSION ||
         config->descriptor_bytes != SPARK_DRAFT_BRIDGE_CONFIG_BYTES)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if (config->host == 0 ||
         config->host[0] == '\0' ||
         strlen(config->host) >= SPARK_DRAFT_BRIDGE_HOST_BYTES)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (config->port == 0u || config->port > SPARK_DRAFT_BRIDGE_MAX_PORT)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (config->target_model[0] == '\0' ||
         memchr(
@@ -388,7 +389,7 @@ SparkStatus SparkDraftBridgeValidateConfig(
             '\0',
             SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES) == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (config->max_committed_tokens == 0u ||
         config->max_nodes == 0u ||
@@ -396,11 +397,11 @@ SparkStatus SparkDraftBridgeValidateConfig(
         config->connect_timeout_ms == 0u ||
         config->io_timeout_ms == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((config->tap_row_bytes == 0u) != (config->max_tap_rows == 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -416,7 +417,7 @@ SparkStatus SparkDraftBridgeInitialize(
 
     if (bridge_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *bridge_out = 0;
     status = SparkDraftBridgeValidateConfig(config);
@@ -427,7 +428,7 @@ SparkStatus SparkDraftBridgeInitialize(
     bridge = (SparkDraftBridge *)calloc(1u, sizeof(*bridge));
     if (bridge == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     bridge->socket_fd = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
     memcpy(bridge->host, config->host, strlen(config->host) + 1u);
@@ -458,7 +459,7 @@ SparkStatus SparkDraftBridgeInitialize(
         free(bridge->request_buffer);
         free(bridge->response_buffer);
         free(bridge);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     bridge->request_buffer_bytes = request_bytes;
     bridge->response_buffer_bytes = response_bytes;
@@ -524,28 +525,28 @@ SparkStatus SparkDraftBridgeProposeTree(
         node_count_out == 0 ||
         info_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (committed_token_count == 0u ||
         node_capacity == 0u ||
         speculator_mask == 0u ||
         (uint64_t)committed_token_count != position + 1u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (committed_token_count > bridge->max_committed_tokens ||
         tap_row_count > bridge->max_tap_rows ||
         node_capacity > bridge->max_nodes)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (tap_row_count != 0u && bridge->tap_row_bytes == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (tap_row_count != 0u && tap_rows == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (depth == 0u ||
         depth > SPARK_DRAFT_BRIDGE_MAX_DEPTH ||
@@ -553,11 +554,11 @@ SparkStatus SparkDraftBridgeProposeTree(
         max_depth > SPARK_DRAFT_BRIDGE_MAX_TREE_DEPTH ||
         time_budget_ms > SPARK_DRAFT_BRIDGE_MAX_TIME_BUDGET_MS)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (committed_token_ids[position] != anchor_token_id)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     *node_count_out = 0u;
@@ -656,7 +657,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     if (node_count > node_capacity)
     {
         SparkDraftBridgeDropConnection(bridge);
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     response_node_bytes =
         (uint64_t)node_count * SPARK_DRAFT_BRIDGE_NODE_RECORD_BYTES;
@@ -671,7 +672,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     if (response_sequence_id != sequence_id ||
         response_generation != generation)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     info_out->server_status = server_status;
     footer = bridge->response_buffer +
@@ -691,7 +692,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     info_out->elapsed_us = SparkDraftBridgeGetU32Le(reader);
     if (server_status != SPARK_DRAFT_BRIDGE_SERVER_STATUS_OK)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     for (node_index = 0u; node_index < node_count; ++node_index)
     {

@@ -27,11 +27,11 @@ static SparkStatus SparkStageModuleValidateLedger(
 {
     if (ledger == 0 || ledger->module_tag == 0 || ledger->module_tag[0] == '\0')
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (ledger->device_allocation_count > SPARK_STAGE_MODULE_MAX_DEVICE_ALLOCATIONS)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -88,12 +88,12 @@ static SparkStatus SparkStageModuleRecordAllocation(
             "%s allocation_ledger_full count=%u\n",
             ledger->module_tag,
             ledger->device_allocation_count);
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     if (UINT64_MAX - ledger->device_bytes_resident < bytes)
     {
         fprintf(stderr, "%s allocation_byte_count_overflow\n", ledger->module_tag);
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     ledger->device_allocations[ledger->device_allocation_count] = allocation;
@@ -117,7 +117,7 @@ static SparkStatus SparkStageModuleParseUnsigned64(
     if (module_tag == 0 || name == 0 || text == 0 || value == 0 ||
         minimum > maximum || text[0] < '0' || text[0] > '9')
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     errno = 0;
@@ -134,7 +134,7 @@ static SparkStatus SparkStageModuleParseUnsigned64(
             text,
             (unsigned long long)minimum,
             (unsigned long long)maximum);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     *value = (uint64_t)parsed;
@@ -159,9 +159,9 @@ SparkStatus SparkStageModuleCudaStatus(
         SparkStageModuleSafeText(cudaGetErrorString(error)));
     if (error == cudaErrorMemoryAllocation)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
-    return SPARK_STATUS_INTERNAL_ERROR;
+    SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork)
@@ -207,7 +207,7 @@ SparkStatus SparkStageModuleCudaForkInitialize(
     if (module_tag == 0 || module_tag[0] == '\0' || fork == 0 ||
         fork->fork_event != 0 || fork->milestone_event != 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (branch = 0u; branch < SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES;
          ++branch)
@@ -215,7 +215,7 @@ SparkStatus SparkStageModuleCudaForkInitialize(
         if (fork->auxiliary_streams[branch] != 0 ||
             fork->join_events[branch] != 0)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     error = cudaSuccess;
@@ -330,7 +330,7 @@ SparkStatus SparkStageModuleCudaReadAheadInitialize(
     if (module_tag == 0 || module_tag[0] == '\0' || ledger == 0 ||
         read_ahead == 0 || sink_word_capacity == 0u || read_ahead->stream != 0 ||
         read_ahead->source_ready_event != 0 || read_ahead->completion_event != 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     atomic_init(&read_ahead->state, SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE);
     read_ahead->sink_word_capacity = sink_word_capacity;
     status = SparkStageModuleDeviceAllocate(ledger,
@@ -349,7 +349,7 @@ SparkStatus SparkStageModuleCudaReadAheadInitialize(
             "cuda_read_ahead_initialize");
     if (status != SPARK_STATUS_OK)
         SparkStageModuleCudaReadAheadDestroy(read_ahead);
-    return status;
+    SPARK_RETURN(status);
 }
 
 SparkStatus SparkStageModuleCudaReadAheadArm(
@@ -365,12 +365,12 @@ SparkStatus SparkStageModuleCudaReadAheadArm(
         read_ahead->source_ready_event == 0 || read_ahead->completion_event == 0 ||
         read_ahead->sink_u32 == 0 || read_ahead->sink_word_capacity == 0u ||
         primary_stream == 0 || launch_function == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     expected = SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE;
     if (!atomic_compare_exchange_strong_explicit(&read_ahead->state, &expected,
             SPARK_STAGE_MODULE_CUDA_READ_AHEAD_BUILDING,
             memory_order_acq_rel, memory_order_acquire))
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     error = cudaEventRecord(read_ahead->source_ready_event, primary_stream);
     if (error == cudaSuccess)
         error = cudaStreamWaitEvent(read_ahead->stream,
@@ -400,13 +400,13 @@ SparkStatus SparkStageModuleCudaReadAheadJoin(
     unsigned int state;
     cudaError_t error;
     if (module_tag == 0 || read_ahead == 0 || primary_stream == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     state = atomic_load_explicit(&read_ahead->state, memory_order_acquire);
     if (state == SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE)
         return SPARK_STATUS_OK;
     if (state != SPARK_STAGE_MODULE_CUDA_READ_AHEAD_ARMED ||
         read_ahead->completion_event == 0)
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     error = cudaStreamWaitEvent(primary_stream, read_ahead->completion_event, 0u);
     if (error != cudaSuccess)
         (void)cudaStreamSynchronize(read_ahead->stream);
@@ -424,14 +424,14 @@ SparkStatus SparkStageModuleEnvironmentText(
 
     if (module_tag == 0 || name == 0 || name[0] == '\0' || value == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *value = 0;
     text = getenv(name);
     if (text == 0 || text[0] == '\0')
     {
         fprintf(stderr, "%s config_missing name=%s\n", module_tag, name);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     *value = text;
@@ -451,12 +451,12 @@ SparkStatus SparkStageModuleEnvironmentUnsigned(
 
     if (value == 0 || minimum > maximum)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkStageModuleEnvironmentText(module_tag, name, &text);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
     status = SparkStageModuleParseUnsigned64(
         module_tag,
@@ -467,7 +467,7 @@ SparkStatus SparkStageModuleEnvironmentUnsigned(
         &parsed);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
 
     *value = (uint32_t)parsed;
@@ -486,12 +486,12 @@ SparkStatus SparkStageModuleEnvironmentUnsigned64(
 
     if (value == 0 || minimum > maximum)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkStageModuleEnvironmentText(module_tag, name, &text);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
     return SparkStageModuleParseUnsigned64(
         module_tag,
@@ -517,7 +517,7 @@ SparkStatus SparkStageModuleEnvironmentUnsignedOrDefault(
     if (module_tag == 0 || name == 0 || name[0] == '\0' || value == 0 ||
         minimum > maximum || fallback < minimum || fallback > maximum)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     text = getenv(name);
     if (text == 0 || text[0] == '\0')
@@ -534,7 +534,7 @@ SparkStatus SparkStageModuleEnvironmentUnsignedOrDefault(
         &parsed);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
 
     *value = (uint32_t)parsed;
@@ -551,7 +551,7 @@ SparkStatus SparkStageModuleDeviceAllocate(
 
     if (pointer == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *pointer = 0;
     status = SparkStageModuleValidateLedger(ledger);
@@ -562,7 +562,7 @@ SparkStatus SparkStageModuleDeviceAllocate(
     if (ledger->device_allocation_count >= SPARK_STAGE_MODULE_MAX_DEVICE_ALLOCATIONS ||
         UINT64_MAX - ledger->device_bytes_resident < bytes)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     allocation = 0;
@@ -572,14 +572,14 @@ SparkStatus SparkStageModuleDeviceAllocate(
         "cudaMalloc");
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
 
     status = SparkStageModuleRecordAllocation(ledger, allocation, bytes);
     if (status != SPARK_STATUS_OK)
     {
         (void)cudaFree(allocation);
-        return status;
+        SPARK_RETURN(status);
     }
 
     *pointer = allocation;
@@ -596,7 +596,7 @@ SparkStatus SparkStageModuleDeviceAllocateZeroed(
     status = SparkStageModuleDeviceAllocate(ledger, bytes, pointer);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
 
     status = SparkStageModuleCudaStatus(
@@ -608,7 +608,7 @@ SparkStatus SparkStageModuleDeviceAllocateZeroed(
         SparkStageModuleReleaseLastAllocation(ledger, *pointer);
         *pointer = 0;
     }
-    return status;
+    SPARK_RETURN(status);
 }
 
 void SparkStageModuleLedgerRollback(
@@ -690,7 +690,7 @@ SparkStatus SparkStageModulePackRead(
     if (module_tag == 0 || file == 0 || destination == 0 || bytes == 0u ||
         bytes > (uint64_t)SIZE_MAX || offset > (uint64_t)INT64_MAX)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (fseeko(file, (off_t)offset, SEEK_SET) != 0)
     {
@@ -699,7 +699,7 @@ SparkStatus SparkStageModulePackRead(
             "%s pack_seek_failed offset=%llu\n",
             module_tag,
             (unsigned long long)offset);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     read_bytes = fread(destination, 1u, (size_t)bytes, file);
@@ -712,7 +712,7 @@ SparkStatus SparkStageModulePackRead(
             (unsigned long long)offset,
             (unsigned long long)bytes,
             (unsigned long long)read_bytes);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -841,14 +841,14 @@ static SparkStatus SparkStageModuleLoadRegionSynchronous(
     if (pointer == 0 || file == 0 || bytes == 0u ||
         bytes > (uint64_t)SIZE_MAX || offset > UINT64_MAX - bytes)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *pointer = 0;
     device = 0;
     status = SparkStageModuleDeviceAllocate(ledger, bytes, &device);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
 
     staging_bytes = (size_t)(bytes < SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES
@@ -858,7 +858,7 @@ static SparkStatus SparkStageModuleLoadRegionSynchronous(
     if (staging == 0)
     {
         SparkStageModuleReleaseLastAllocation(ledger, device);
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     status = SPARK_STATUS_OK;
@@ -898,7 +898,7 @@ static SparkStatus SparkStageModuleLoadRegionSynchronous(
     if (status != SPARK_STATUS_OK)
     {
         SparkStageModuleReleaseLastAllocation(ledger, device);
-        return status;
+        SPARK_RETURN(status);
     }
 
     *pointer = device;
@@ -998,7 +998,7 @@ static SparkStatus SparkStageModuleLoadPipelineReadChunk(
                 (unsigned long long)(file_offset + moved),
                 (unsigned long long)bytes,
                 (unsigned long long)moved);
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         moved += (uint64_t)read_bytes;
     }
@@ -1073,13 +1073,13 @@ SparkStatus SparkStageModuleLoadPipelineCreate(
     if (module_tag == 0 || module_tag[0] == '\0' || file == 0 ||
         pipeline_pointer == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *pipeline_pointer = 0;
     pipeline = (SparkStageModuleLoadPipeline *)calloc(1u, sizeof(*pipeline));
     if (pipeline == 0)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     pipeline->module_tag = module_tag;
     pipeline->failure = SPARK_STATUS_OK;
@@ -1087,19 +1087,19 @@ SparkStatus SparkStageModuleLoadPipelineCreate(
     if (pipeline->file_descriptor < 0)
     {
         free(pipeline);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     pipeline->slot_bytes = SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES;
     if (pthread_mutex_init(&pipeline->mutex, 0) != 0)
     {
         free(pipeline);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     if (pthread_cond_init(&pipeline->progress, 0) != 0)
     {
         pthread_mutex_destroy(&pipeline->mutex);
         free(pipeline);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     error = cudaStreamCreateWithFlags(
         &pipeline->upload_stream, cudaStreamNonBlocking);
@@ -1121,7 +1121,7 @@ SparkStatus SparkStageModuleLoadPipelineCreate(
     {
         SparkStageModuleCudaStatus(module_tag, error, "load_pipeline_create");
         SparkStageModuleLoadPipelineDestroy(pipeline);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     if (pthread_create(
             &pipeline->worker_thread, 0,
@@ -1129,7 +1129,7 @@ SparkStatus SparkStageModuleLoadPipelineCreate(
     {
         fprintf(stderr, "%s load_pipeline_worker_spawn_failed\n", module_tag);
         SparkStageModuleLoadPipelineDestroy(pipeline);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     pipeline->worker_started = 1;
     *pipeline_pointer = pipeline;
@@ -1197,7 +1197,7 @@ static SparkStatus SparkStageModuleLoadPipelineDrain(
         pthread_cond_wait(&pipeline->progress, &pipeline->mutex);
     }
     pthread_mutex_unlock(&pipeline->mutex);
-    return status;
+    SPARK_RETURN(status);
 }
 
 SparkStatus SparkStageModuleLoadPipelineRegion(
@@ -1214,7 +1214,7 @@ SparkStatus SparkStageModuleLoadPipelineRegion(
     if (pipeline == 0 || ledger == 0 || pointer == 0 || bytes == 0u ||
         bytes > (uint64_t)SIZE_MAX || offset > UINT64_MAX - bytes)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *pointer = 0;
     if (pipeline->failure != SPARK_STATUS_OK)
@@ -1224,7 +1224,7 @@ SparkStatus SparkStageModuleLoadPipelineRegion(
     status = SparkStageModuleDeviceAllocate(ledger, bytes, &device);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
     status = SPARK_STATUS_OK;
     moved = 0u;
@@ -1268,7 +1268,7 @@ SparkStatus SparkStageModuleLoadPipelineRegion(
     if (status != SPARK_STATUS_OK)
     {
         SparkStageModuleReleaseLastAllocation(ledger, device);
-        return status;
+        SPARK_RETURN(status);
     }
     *pointer = device;
     return SPARK_STATUS_OK;
@@ -1282,7 +1282,7 @@ SparkStatus SparkStageModuleLoadPipelineFinish(
 
     if (pipeline == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkStageModuleLoadPipelineDrain(pipeline, 1);
     error = cudaStreamSynchronize(pipeline->upload_stream);
@@ -1306,7 +1306,7 @@ SparkStatus SparkStageModuleLoadPipelineFinish(
     {
         status = pipeline->failure;
     }
-    return status;
+    SPARK_RETURN(status);
 }
 
 void SparkStageModuleLoadPipelineDestroy(
@@ -1384,7 +1384,7 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
                 status = SparkStageModuleLoadPipelineFinish(pipeline);
             }
             SparkStageModuleLoadPipelineDestroy(pipeline);
-            return status;
+            SPARK_RETURN(status);
         }
         SPARK_RETURN(status);
     }
@@ -1488,7 +1488,7 @@ SparkStatus SparkStageModuleSlotClaim(
 
     if (slot_states == 0 || slot_index == 0 || slot_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
     for (index = 0u; index < slot_count; index++)
@@ -1505,7 +1505,7 @@ SparkStatus SparkStageModuleSlotClaim(
             return SPARK_STATUS_OK;
         }
     }
-    return SPARK_STATUS_BUSY;
+    SPARK_FAIL(SPARK_STATUS_BUSY);
 }
 
 SparkStatus SparkStageModuleIndexSetClaim(
@@ -1519,7 +1519,7 @@ SparkStatus SparkStageModuleIndexSetClaim(
     if (index_states == 0 || indices == 0 || index_capacity == 0u ||
         index_count == 0u || index_count > index_capacity)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     for (claimed_count = 0u; claimed_count < index_count; claimed_count++)
@@ -1537,7 +1537,7 @@ SparkStatus SparkStageModuleIndexSetClaim(
                 index_capacity,
                 indices,
                 claimed_count);
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         expected_state = SPARK_STAGE_MODULE_SLOT_FREE;
         if (!atomic_compare_exchange_strong_explicit(
@@ -1561,7 +1561,7 @@ SparkStatus SparkStageModuleIndexSetClaim(
                 index_capacity,
                 indices,
                 claimed_count);
-            return status;
+            SPARK_RETURN(status);
         }
     }
     return SPARK_STATUS_OK;
@@ -1577,17 +1577,17 @@ SparkStatus SparkStageModuleIndexClaimOrdinal(
 
     if (index_states == 0 || ordinal_out == 0 || index >= index_capacity)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *ordinal_out = UINT32_MAX;
     claim = atomic_load_explicit(&index_states[index], memory_order_acquire);
     if (claim == SPARK_STAGE_MODULE_SLOT_FREE)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     if (claim > index_capacity)
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     *ordinal_out = claim - 1u;
     return SPARK_STATUS_OK;
@@ -1605,7 +1605,7 @@ SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
 
     if (prepare_function == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkStageModuleIndexSetClaim(
         index_states,
@@ -1614,7 +1614,7 @@ SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
         index_count);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        SPARK_RETURN(status);
     }
     status = prepare_function(prepare_context);
     if (status != SPARK_STATUS_OK)
@@ -1625,7 +1625,7 @@ SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
             indices,
             index_count);
     }
-    return status;
+    SPARK_RETURN(status);
 }
 
 void SparkStageModuleIndexSetRelease(
@@ -1715,13 +1715,13 @@ SparkStatus SparkStageModuleWaitForSlots(
     if (module_tag == 0 || slot_states == 0 || slot_count == 0u ||
         timeout_nanoseconds == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     start_time = SparkStageModuleMonotonicNanoseconds();
     if (start_time == 0u)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     while (SparkStageModuleSlotAvailableCount(slot_states, slot_count) != slot_count)
     {
@@ -1735,7 +1735,7 @@ SparkStatus SparkStageModuleWaitForSlots(
                 slot_count - SparkStageModuleSlotAvailableCount(
                     slot_states,
                     slot_count));
-            return SPARK_STATUS_BUSY;
+            SPARK_FAIL(SPARK_STATUS_BUSY);
         }
         (void)nanosleep(&sleep_interval, 0);
     }

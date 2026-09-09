@@ -486,10 +486,10 @@ static SparkStatus K3ServingInitialize(
 	SparkK3ServingState *state;
 	SparkStatus status;
 	if ( configuration == 0 || adapter_state == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkK3ServingState *)calloc(1u, sizeof(*state));
 	if ( state == 0 )
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = K3ServingLoadConfiguration(state, configuration);
 	if ( status != SPARK_STATUS_OK )
 		{ free(state); return status; }
@@ -533,7 +533,7 @@ static SparkStatus K3ServingInitialize(
 		runs[active] = rows;
 		if ( submission->active_sequence_count != 0u &&
 			submission->active_sequence_count != active )
-			return SPARK_STATUS_VALIDATION_FAILED;
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		for ( uint32_t s = 0u; s < active; ++s )
 			seqslots[s] = slots[runs[s]];
 		(void)SparkMemoryBufferCopy(&state->runs_device,
@@ -570,7 +570,7 @@ static SparkStatus K3ServingInitialize(
 		SparkModelServingCompletion completion;
 		uint32_t *tokens_host = (uint32_t *)malloc((uint64_t)rows * 4u);
 		if ( tokens_host == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		memset(&completion, 0, sizeof(completion));
 		completion.abi_version = submission->abi_version;
 		completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
@@ -632,7 +632,7 @@ static SparkStatus K3ServingSnapshot(void *adapter_state,
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
 	SparkK3StageRunnerStats stats;
 	if ( state == 0 || snapshot == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(snapshot, 0, sizeof(*snapshot));
 	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;

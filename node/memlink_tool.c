@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "sparkpipe/spark_memlink.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_status.h"
 
 #include <arpa/inet.h>
@@ -645,12 +646,12 @@ static SparkStatus SparkMemlinkServerReadKey(int socket_fd, const SparkMemlinkWi
 {
     if (header->key_bytes == 0u || header->key_bytes > SPARK_MEMLINK_MAX_KEY_BYTES || key_capacity <= header->key_bytes)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     if (!SparkMemlinkReadExact(socket_fd, key, header->key_bytes))
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     key[header->key_bytes] = '\0';
@@ -690,7 +691,7 @@ static SparkStatus SparkMemlinkHandlePut(
         header->lane_index >= header->lane_count || header->offset > header->total_bytes ||
         header->byte_count > header->total_bytes - header->offset)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     end_offset = header->offset + header->byte_count;
@@ -701,7 +702,7 @@ static SparkStatus SparkMemlinkHandlePut(
         if (!object->complete || object->active_readers != 0u || object->active_writers != 0u)
         {
             pthread_mutex_unlock(&state->mutex);
-            return SPARK_STATUS_BUSY;
+            SPARK_FAIL(SPARK_STATUS_BUSY);
         }
         SparkMemlinkRemoveObjectLocked(state, object);
         object = NULL;
@@ -713,14 +714,14 @@ static SparkStatus SparkMemlinkHandlePut(
         if (object == NULL)
         {
             pthread_mutex_unlock(&state->mutex);
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
     }
 
     if (object->total_bytes != header->total_bytes || end_offset > object->total_bytes)
     {
         pthread_mutex_unlock(&state->mutex);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     object->active_writers++;
@@ -763,7 +764,7 @@ static SparkStatus SparkMemlinkHandleGet(
         header->lane_index >= header->lane_count || header->offset > header->total_bytes ||
         header->byte_count > header->total_bytes - header->offset)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     end_offset = header->offset + header->byte_count;
@@ -772,13 +773,13 @@ static SparkStatus SparkMemlinkHandleGet(
     if (object == NULL || !object->complete)
     {
         pthread_mutex_unlock(&state->mutex);
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
 
     if (object->total_bytes != header->total_bytes || end_offset > object->total_bytes)
     {
         pthread_mutex_unlock(&state->mutex);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     object->active_readers++;
@@ -818,14 +819,14 @@ static SparkStatus SparkMemlinkHandleStat(
     if (object == NULL || !object->complete)
     {
         pthread_mutex_unlock(&state->mutex);
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     total_bytes = object->total_bytes;
     pthread_mutex_unlock(&state->mutex);
 
     if (!SparkMemlinkSendStatus(socket_fd, header, SPARK_STATUS_OK, total_bytes))
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     return SPARK_STATUS_OK;

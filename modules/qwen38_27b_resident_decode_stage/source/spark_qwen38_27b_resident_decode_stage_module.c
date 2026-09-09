@@ -3179,7 +3179,7 @@ static SparkStatus SparkQwen38_27bModuleInitializeGate(void)
             &allow_unqualified_execution) != SPARK_STATUS_OK ||
         allow_unqualified_execution != 1u)
     {
-        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+        SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
     }
     return SPARK_STATUS_OK;
 }

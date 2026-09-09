@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_speculation_policy.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 
@@ -35,7 +36,7 @@ SparkStatus SparkSpeculationPolicyValidateModelContract(
         model_contract->enable_confidence_head > 1u ||
         model_contract->confidence_head_with_markov > 1u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (layer_index = 0u;
          layer_index < model_contract->aux_layer_count;
@@ -44,7 +45,7 @@ SparkStatus SparkSpeculationPolicyValidateModelContract(
         if (model_contract->aux_layer_ids[layer_index] ==
             SPARK_SPECULATION_INVALID_LAYER_INDEX)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     return SPARK_STATUS_OK;
@@ -106,7 +107,7 @@ SparkStatus SparkSpeculationPolicyValidate(
         SparkSpeculationPolicyValidateModelContract(
             &speculator->model_contract) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -126,19 +127,19 @@ static SparkStatus SparkSpeculationPolicyValidateConfiguration(
         configuration->model_contract == 0 ||
         configuration->reserved != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     policy_flags = SparkSpeculationPolicyNormalizePolicyFlags(
         configuration->policy_flags);
     if ((policy_flags & ~SPARK_SPECULATION_POLICY_KNOWN_FLAGS) != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (SparkSpeculationPolicyValidateModelContract(
             configuration->model_contract) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -237,7 +238,7 @@ SparkStatus SparkSpeculationPolicyInitialize(
 
     if (speculator == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkSpeculationPolicyValidateConfiguration(configuration);
     if (status != SPARK_STATUS_OK)
@@ -296,7 +297,7 @@ SparkStatus SparkSpeculationPolicyMarkVerifierTapsReady(
     }
     if (sequence_id == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     sequence_state = SparkSpeculationPolicyAcquireSequenceState(
@@ -305,7 +306,7 @@ SparkStatus SparkSpeculationPolicyMarkVerifierTapsReady(
         sequence_id);
     if (sequence_state == 0)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     sequence_state->flags &=
@@ -344,7 +345,7 @@ static SparkStatus SparkSpeculationPolicyValidateDraftRequest(
         request->tap_generation == 0u ||
         request->reserved != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -365,7 +366,7 @@ static SparkStatus SparkSpeculationPolicyValidateDraftResult(
         result->token_count > requested_token_count ||
         result->token_count > SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     for (token_index = 0u;
@@ -376,7 +377,7 @@ static SparkStatus SparkSpeculationPolicyValidateDraftResult(
             result->confidence_milli[token_index] >
                 SPARK_SPECULATION_CONFIDENCE_MILLI_ONE)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     return SPARK_STATUS_OK;
@@ -439,7 +440,7 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
     if (request->requested_token_count >
         speculator->model_contract.maximum_speculative_token_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     sequence_state = SparkSpeculationPolicyFindSequenceState(
@@ -450,7 +451,7 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
             SPARK_SPECULATION_SEQUENCE_STATE_FLAG_TAPS_READY) == 0u ||
         sequence_state->tap_generation != request->tap_generation)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     if ((sequence_state->flags &
             SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY) != 0u)
@@ -487,7 +488,7 @@ SparkStatus SparkSpeculationPolicyEnsureDraft(
     if (accepted_by_confidence == 0u)
     {
         speculator->draft_rejected_by_confidence_count += 1u;
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     if (accepted_by_confidence < result.token_count)
     {
@@ -546,7 +547,7 @@ SparkStatus SparkSpeculationPolicyGetDraft(
             SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY) == 0u ||
         sequence_state->draft_token_count == 0u)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
 
     memset(draft_result, 0, sizeof(*draft_result));
@@ -584,21 +585,21 @@ static SparkStatus SparkSpeculationPolicyValidateVerifyResult(
             verify_result->proposed_token_count + 1u ||
         verify_result->reserved != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((verify_result->flags &
             SPARK_SPECULATION_VERIFY_RESULT_FLAG_ACCEPTED_ALL) != 0u &&
         verify_result->accepted_draft_token_count !=
             verify_result->proposed_token_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((verify_result->flags &
             SPARK_SPECULATION_VERIFY_RESULT_FLAG_REJECTED) != 0u &&
         verify_result->accepted_draft_token_count >=
             verify_result->proposed_token_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -630,7 +631,7 @@ SparkStatus SparkSpeculationPolicyCompleteVerify(
             SPARK_SPECULATION_SEQUENCE_STATE_FLAG_DRAFT_READY) == 0u ||
         sequence_state->draft_token_count != verify_result->proposed_token_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     sequence_state->accepted_draft_token_count +=
@@ -690,7 +691,7 @@ static SparkStatus SparkSpeculationPolicyValidateDraftTree(
 
         if (draft_token_ids[node_index] >= vocab_size)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         parent_index = SparkSpeculationPolicyDraftParentIndex(
             draft_parent_indices,
@@ -698,7 +699,7 @@ static SparkStatus SparkSpeculationPolicyValidateDraftTree(
         if (parent_index != SPARK_SPECULATION_PARENT_INDEX_ROOT &&
             parent_index >= node_index)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         for (sibling_index = 0u;
              sibling_index < node_index;
@@ -710,7 +711,7 @@ static SparkStatus SparkSpeculationPolicyValidateDraftTree(
                 draft_token_ids[sibling_index] ==
                     draft_token_ids[node_index])
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
             }
         }
     }
@@ -744,7 +745,7 @@ SparkStatus SparkSpeculationPolicyResolveVerifierTree(
             verifier_token_count != draft_token_count + 1u) ||
         vocab_size == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     status = SparkSpeculationPolicyValidateDraftTree(
@@ -762,7 +763,7 @@ SparkStatus SparkSpeculationPolicyResolveVerifierTree(
     {
         if (verifier_token_ids[verifier_index] >= vocab_size)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
 
@@ -865,7 +866,7 @@ SparkStatus SparkSpeculationPolicyCancelSequence(
         sequence_id);
     if (sequence_state == 0)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     SparkSpeculationPolicyInitializeSequenceState(sequence_state);
     return SPARK_STATUS_OK;
