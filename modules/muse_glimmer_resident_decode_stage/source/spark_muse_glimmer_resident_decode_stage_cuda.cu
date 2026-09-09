@@ -207,6 +207,23 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchLinear(cudaStream_t stream, const v
 	return(status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
 }
 
+extern "C" cudaError_t SparkMuseGlimmerLaunchLinearScores(cudaStream_t stream, const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors)
+{
+	LmGemmArguments gemm;
+	int32_t status;
+	memset(&gemm,0,sizeof(gemm));
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorNone();
+	gemm.group_count = 1u;
+	gemm.input_dimension = input_dimension;
+	gemm.output_dimension = output_dimension;
+	gemm.output_f32 = scores_f32;
+	status = LmGemmLaunchTileK<LmBf16Format,SPARK_MUSE_GLIMMER_CUDA_TILE_N,SPARK_MUSE_GLIMMER_CUDA_STAGES,SPARK_MUSE_GLIMMER_CUDA_WARPS>(
+		&gemm,input_bf16,weight_bf16,row_count,row_count,1u,1u,
+		input_dimension,output_dimension,multiprocessors,false,stream);
+	return(status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
+}
+
 extern "C" cudaError_t SparkMuseGlimmerLaunchSplitQkv(cudaStream_t stream, const void *fused_bf16, void *query_gate_bf16, void *key_bf16, void *value_bf16, uint32_t row_count, uint32_t tp_degree)
 {
 	LmQkvLayout layout;
@@ -238,12 +255,17 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchRope(cudaStream_t stream, void *row
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkMuseGlimmerLaunchKvStore(cudaStream_t stream, const LmKvView *views, uint32_t layer_index, const void *key_bf16, const void *value_bf16, const uint32_t *sequence_of_row, const uint32_t *positions, uint32_t row_count, uint32_t local_kv_head_count)
+extern "C" uint32_t SparkMuseGlimmerKvViewBytes(void)
+{
+	return((uint32_t)sizeof(LmKvView));
+}
+
+extern "C" cudaError_t SparkMuseGlimmerLaunchKvStore(cudaStream_t stream, const void *views_handle, uint32_t layer_index, const void *key_bf16, const void *value_bf16, const uint32_t *sequence_of_row, const uint32_t *positions, uint32_t row_count, uint32_t local_kv_head_count)
 {
 	if ( local_kv_head_count == 1u )
-		LmGqaKvStoreKernel<MuseGlimmerKv,SPARK_MUSE_GLIMMER_CUDA_THREADS,1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION><<<row_count,SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>(views[layer_index],(const uint16_t *)key_bf16,(const uint16_t *)value_bf16,sequence_of_row,positions,row_count);
+		LmGqaKvStoreKernel<MuseGlimmerKv,SPARK_MUSE_GLIMMER_CUDA_THREADS,1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION><<<row_count,SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>(((const LmKvView *)views_handle)[layer_index],(const uint16_t *)key_bf16,(const uint16_t *)value_bf16,sequence_of_row,positions,row_count);
 	else
-		LmGqaKvStoreKernel<MuseGlimmerKv2,SPARK_MUSE_GLIMMER_CUDA_THREADS,2u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION><<<row_count,SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>(views[layer_index],(const uint16_t *)key_bf16,(const uint16_t *)value_bf16,sequence_of_row,positions,row_count);
+		LmGqaKvStoreKernel<MuseGlimmerKv2,SPARK_MUSE_GLIMMER_CUDA_THREADS,2u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION><<<row_count,SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>(((const LmKvView *)views_handle)[layer_index],(const uint16_t *)key_bf16,(const uint16_t *)value_bf16,sequence_of_row,positions,row_count);
 	return(cudaGetLastError());
 }
 
@@ -253,13 +275,13 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchWindowPositions(cudaStream_t stream
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkMuseGlimmerLaunchAttentionDecode(cudaStream_t stream, const LmKvView *views, uint32_t layer_index, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *window_positions, const uint32_t *positions, void *head_out_bf16, uint32_t row_count, uint32_t local_head_count, uint32_t local_kv_head_count)
+extern "C" cudaError_t SparkMuseGlimmerLaunchAttentionDecode(cudaStream_t stream, const void *views_handle, uint32_t layer_index, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *window_positions, const uint32_t *positions, void *head_out_bf16, uint32_t row_count, uint32_t local_head_count, uint32_t local_kv_head_count)
 {
 	uint32_t selected_count = window_positions != 0 ? SPARK_MUSE_GLIMMER_MODEL_SLIDING_WINDOW : 0u;
 	if ( local_kv_head_count == 1u )
-		LmGqaAttentionDecodeKernel<MuseGlimmerKv,SPARK_MUSE_GLIMMER_CUDA_THREADS,1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION><<<dim3(row_count,local_head_count),SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>((const uint16_t *)query_bf16,views[layer_index],sequence_of_row,context_lengths,window_positions,selected_count,local_head_count,SPARK_MUSE_GLIMMER_MODEL_ATTN_SCALE,(uint16_t *)head_out_bf16,positions);
+		LmGqaAttentionDecodeKernel<MuseGlimmerKv,SPARK_MUSE_GLIMMER_CUDA_THREADS,1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION><<<dim3(row_count,local_head_count),SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>((const uint16_t *)query_bf16,((const LmKvView *)views_handle)[layer_index],sequence_of_row,context_lengths,window_positions,selected_count,local_head_count,SPARK_MUSE_GLIMMER_MODEL_ATTN_SCALE,(uint16_t *)head_out_bf16,positions);
 	else
-		LmGqaAttentionDecodeKernel<MuseGlimmerKv2,SPARK_MUSE_GLIMMER_CUDA_THREADS,2u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION><<<dim3(row_count,local_head_count),SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>((const uint16_t *)query_bf16,views[layer_index],sequence_of_row,context_lengths,window_positions,selected_count,local_head_count,SPARK_MUSE_GLIMMER_MODEL_ATTN_SCALE,(uint16_t *)head_out_bf16,positions);
+		LmGqaAttentionDecodeKernel<MuseGlimmerKv2,SPARK_MUSE_GLIMMER_CUDA_THREADS,2u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION><<<dim3(row_count,local_head_count),SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>((const uint16_t *)query_bf16,((const LmKvView *)views_handle)[layer_index],sequence_of_row,context_lengths,window_positions,selected_count,local_head_count,SPARK_MUSE_GLIMMER_MODEL_ATTN_SCALE,(uint16_t *)head_out_bf16,positions);
 	return(cudaGetLastError());
 }
 
