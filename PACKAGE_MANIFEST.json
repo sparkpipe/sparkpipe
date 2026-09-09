@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "1cf6e0df14ec5330fe877ba1cee50bb35707dbb4041b0f6f840c74f5c7394c2c",
-      "size_bytes": 58212
+      "sha256": "59a4b9e6dc351b27108609fb47aa8e2bbe04a3e222d4c276d582bd4ad4e703e8",
+      "size_bytes": 61554
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -9765,5 +9765,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32708909
+  "total_bytes": 32712251
 }
