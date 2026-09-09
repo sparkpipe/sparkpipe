@@ -56,10 +56,10 @@ publish)
   cp "$AD" "$RR/lib/model_serving_adapter.so.new"
   cp build/sparkpipe_model_residentd build/sparkpipe_model_api \
     build/sparkpipe_model_batch "$RR/bin/"
-  make build/weightd_expert_segments
-  ./build/weightd_expert_segments "$PACK"
   sha256sum "$RR/lib/model_driver.so" "$RR/lib/model_serving_adapter.so.new" \
     | tee "$RR/driver_rebuild_receipt.txt"
+  make build/dsv4_experts_manifest
+  ./build/dsv4_experts_manifest "$PACK"
   echo "STAGE-$STAGE-RC=0"
   exit 0
   ;;
