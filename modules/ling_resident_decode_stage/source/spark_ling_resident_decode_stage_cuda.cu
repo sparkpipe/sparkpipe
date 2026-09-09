@@ -69,30 +69,6 @@ __global__ static void SparkLingEmbeddingKernel(
 			? embedding[source] : 0u;
 }
 
-__global__ static void SparkLingEmbeddingKernel(
-	const uint32_t *token_ids,
-	const uint16_t *embedding,
-	uint16_t *streams,
-	uint32_t row_count,
-	uint32_t tp_degree,
-	uint32_t tp_rank)
-{
-	uint64_t element,row,source,stream;
-	uint32_t token,vocab_per_rank,rank_offset;
-	uint16_t value;
-	element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	row = blockIdx.y;
-	if ( row >= row_count || element >= LING_HIDDEN )
-		return;
-	vocab_per_rank = LING_VOCAB / tp_degree;
-	rank_offset = tp_rank * vocab_per_rank;
-	token = token_ids[row];
-	source = (uint64_t)(token - rank_offset) * LING_HIDDEN + element;
-	value = (token >= rank_offset && token < rank_offset + vocab_per_rank) ? embedding[source] : 0u;
-	for ( stream = 0u; stream < LING_HC; ++stream )
-		streams[((row * (uint64_t)LING_HC + stream) * LING_HIDDEN) + element] = value;
-}
-
 __global__ static void SparkLingWaveMetadataKernel(
 	const uint32_t *resident_slots,
 	const uint32_t *positions,

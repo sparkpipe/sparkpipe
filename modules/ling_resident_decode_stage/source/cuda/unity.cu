@@ -32,8 +32,6 @@ static_assert(
 static_assert(
     LING_UNITY_TILE_K % LmBf16Format::kMmaK == 0u,
     "ling BF16 tile depth must contain complete MMA steps");
-static_assert(LING_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_BF16,
-    "ling routed experts require a compressed package codec");
 static_assert(LING_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_NONE,
     "ling routed experts require a package codec");
 static_assert(
