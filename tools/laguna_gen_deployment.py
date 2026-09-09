@@ -17,26 +17,39 @@ import json
 import os
 from pathlib import Path
 
+# PENDING FLEET RENUMBER: the whole 64800+ session region cannot safely
+# host session matrices (route-kind offsets +256/+512/+768 overflow 65535),
+# so the session base is REQUIRED from the environment with no frozen
+# default; a wrong or absent base fails closed here.
+SESSION_BASE_TEXT = os.environ.get("SPARK_LAGUNA_SESSION_BASE", "")
+if not SESSION_BASE_TEXT:
+    raise SystemExit(
+        "SPARK_LAGUNA_SESSION_BASE is required (no frozen default; the "
+        "64800+ region is pending the fleet port renumber)")
+SESSION_BASE = int(SESSION_BASE_TEXT)
+
+PP_STAGES = 2
+TP_DEGREE = 8
+RANKS = PP_STAGES * TP_DEGREE
+STAGE_LAYER_COUNTS = [48 // PP_STAGES for _ in range(PP_STAGES)]
 HOSTS = [h for h in os.environ.get(
     "LAGUNA_TP_HOSTS",
-    ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
+    ",".join(f"spark{hex(r)[2:]}" for r in range(RANKS))).split(",") if h]
+if len(HOSTS) != RANKS:
+    raise SystemExit(f"LAGUNA_TP_HOSTS must list exactly {RANKS} hosts (tp8 x pp2)")
 TP = len(HOSTS)
 RUNTIME_ROOT = os.environ.get("LAGUNA_RUNTIME_ROOT",
-                              "/home/{host}/sparkdata/glm53flash.bf16.tp16")
+                              "/home/{host}/sparkdata/laguna-s-2.1.bf16.tp8pp2")
 CONTROL_BASE = int(os.environ.get("LAGUNA_CONTROL_BASE", "19560"))
 COLLECTIVE_BASE = int(os.environ.get("LAGUNA_COLLECTIVE_BASE", "63640"))
 TRANSPORT_BASE = int(os.environ.get("LAGUNA_TRANSPORT_BASE", "60710"))
-COLLECTIVE_SESSION_BASE = int(os.environ.get(
-    "LAGUNA_SESSION_BASE", "61500"))
-COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
-    "LAGUNA_SESSION_HC_BASE", "62550"))
 COLLECTIVE_ID = 9911223344556679
 BACKEND = os.environ.get("LAGUNA_BACKEND", "nccl")
 PACK_TEMPLATE = os.environ.get(
     "LAGUNA_PACK_TEMPLATE",
-    "packs/glm53flash.bf16-official.tp16.rank%d.sp")
-MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
-NODE_TARGET = "cuda.sm121.laguna.resident_decode_stage.bf16.expert_fp8"
+    "packs/laguna-s-2.1.bf16.tp8pp2.stage%d.rank%d.lgsp")
+MODEL_REVISION = "PRE-FREEZE"
+NODE_TARGET = "cuda.sm121.laguna.resident_decode_stage.bf16.expert_bf16"
 
 TP_COLLECTIVE = {
     # THE NCCL ACTIVATION: the backend (ring/transport/tp_device_collective_
@@ -78,13 +91,11 @@ TP_COLLECTIVE = {
     # the collective's multi-route check REJECTS it when d2a is on)
     "step_rail_indices": [0] + [1] * (TP - 1),
     # explicit per-session control ports, [source][sink] - the tree
-    # collective reads them verbatim (no derived ports); hc gets its own
-    # table so the second collective never binds the same listeners.
+    # collective reads them verbatim (no derived ports). The base is the
+    # env-required SESSION_BASE; keep every session cell within 65535
+    # including the +768 route-kind offset until the fleet renumber lands.
     "session_ports": [
-        [COLLECTIVE_SESSION_BASE + a * TP + b if a != b else 0
-         for b in range(TP)] for a in range(TP)],
-    "session_ports_hc": [
-        [COLLECTIVE_SESSION_HC_BASE + a * TP + b if a != b else 0
+        [SESSION_BASE + a * TP + b if a != b else 0
          for b in range(TP)] for a in range(TP)],
 }
 
@@ -92,8 +103,7 @@ TP_COLLECTIVE = {
 if TP_COLLECTIVE["backend"] == "nccl":
     for _nccl_extra in ("algorithms", "direct_all_to_all_max_payload_bytes",
                         "split_ring_min_payload_bytes", "rail_peer_hosts",
-                        "step_rail_indices", "session_ports",
-                        "session_ports_hc"):
+                        "step_rail_indices", "session_ports"):
         TP_COLLECTIVE.pop(_nccl_extra, None)
 
 
@@ -110,8 +120,8 @@ def stage_config(rank: int) -> dict:
     return {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
-        "expert_weight_codec": "fp8",
-        "stage_pack_path": PACK_TEMPLATE % rank,
+        "expert_weight_codec": "bf16",
+        "stage_pack_path": PACK_TEMPLATE % (rank // TP_DEGREE, rank),
         "max_sequence_positions": 32768,
         # 1024-row prefill chunks (the module's SPARK_BATCH_BUCKET width):
         # the engine chunks prompts to runtime_limits.max_input_rows, and
@@ -134,8 +144,14 @@ def stage_config(rank: int) -> dict:
         # split-on vs split-off equivalence at 8K+ context on the resident
         # serving before the decode timing claim.
         "decode_split_context_threshold": 2048,
-        "tp_degree": TP,
-        "tp_rank": rank,
+        "pipeline_stage_count": PP_STAGES,
+        "pipeline_stage_index": rank // TP_DEGREE,
+        "first_layer_index": (rank // TP_DEGREE) * STAGE_LAYER_COUNTS[0],
+        "layer_count": STAGE_LAYER_COUNTS[rank // TP_DEGREE],
+        "stage_layer_counts": STAGE_LAYER_COUNTS,
+        "session_port_base": SESSION_BASE,
+        "tp_degree": TP_DEGREE,
+        "tp_rank": rank % TP_DEGREE,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),
     }
 
@@ -152,7 +168,7 @@ def resident_deployment() -> dict:
             "node_target": NODE_TARGET,
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
-            "kv_backing_directory": "/home/%s/kvcache/glm53flash.bf16.tp16" % host,
+            "kv_backing_directory": "/home/%s/kvcache/laguna-s-2.1.bf16.tp8pp2" % host,
             "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.
             "control_endpoint": {
                 "kind": "tcp",
@@ -201,7 +217,7 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(args.output)
     (root / "config").mkdir(parents=True, exist_ok=True)
-    for rank in range(TP):
+    for rank in range(RANKS):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
             json.dumps(stage_config(rank), indent=1) + "\n")
     (root / "model_resident.json").write_text(
