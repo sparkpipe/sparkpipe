@@ -830,7 +830,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 	state->rows = rows;
 	state->logical_sequence_count = dispatch->active_sequence_count;
 	b = state->dispatch.buffers;
-	sequences = rows;
+	sequences = dispatch->active_sequence_count;
 	packed_rows = rows * K3_TOP_K;
 	memset(&in, 0, sizeof(in));
 	if ( runner->owns_embedding != 0u )
@@ -855,7 +855,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.positions = dispatch->positions;
 	in.context_length = dispatch->context_length;
 	in.sequence_of_row = dispatch->sequence_of_row;
-	in.sequence_row_begin = 0;
+	in.sequence_row_begin = dispatch->sequence_row_begin;
 	in.kda_state_index = dispatch->kda_state_index;
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
