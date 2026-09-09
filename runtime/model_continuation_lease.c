@@ -25,12 +25,12 @@ SparkStatus SparkModelContinuationLeaseEstablish(
 {
 	if ( lease == 0 || client_generation == 0u || control_generation == 0u ||
 		step_generation == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	lease->lease_client_generation = client_generation;
 	lease->lease_control_generation = control_generation;
 	lease->next_sequence_position = next_sequence_position;
 	lease->last_step_generation = step_generation;
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelContinuationLeaseDecodePosition(
@@ -40,12 +40,12 @@ SparkStatus SparkModelContinuationLeaseDecodePosition(
 {
 	uint64_t advance;
 	if ( tokens_per_sequence == 0u || next_sequence_position == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	advance = (uint64_t)tokens_per_sequence - 1u;
 	if ( context_token_count > UINT64_MAX - advance )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	*next_sequence_position = context_token_count + advance;
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelContinuationLeaseValidate(
@@ -57,13 +57,13 @@ SparkStatus SparkModelContinuationLeaseValidate(
 {
 	if ( lease == 0 || client_generation == 0u || control_generation == 0u ||
 		step_generation == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( lease->lease_client_generation == 0u )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUN);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	if ( lease->lease_client_generation != client_generation ||
 		lease->lease_control_generation != control_generation ||
 		lease->next_sequence_position != sequence_position ||
 		step_generation <= lease->last_step_generation )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERRO);
-	SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }

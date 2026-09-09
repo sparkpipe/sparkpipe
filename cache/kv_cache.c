@@ -665,7 +665,7 @@ SparkStatus SparkKvCacheArenaReserveUnassignedResidentBlocks(
 			block_count > arena->resident_block_capacity - current ||
 			(uint64_t)arena->reserved_block_count + current + block_count >
 				arena->resident_block_capacity )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		target = arena->resident_block_capacity - arena->reserved_block_count -
 			current - block_count;
 		if ( arena->resident_block_count > target )
@@ -677,7 +677,7 @@ SparkStatus SparkKvCacheArenaReserveUnassignedResidentBlocks(
 		next = current + block_count;
 		if ( atomic_compare_exchange_weak(
 			&arena->unassigned_resident_block_count,&current,next) )
-			SPARK_FAIL(SPARK_STATUS_O);
+			SPARK_FAIL(SPARK_STATUS_OK);
 	}
 }
 
@@ -695,11 +695,11 @@ static SparkStatus SparkKvCacheArenaRemoveUnassignedResidentBlocks(
 	for (;;)
 	{
 		if ( current < block_count )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		next = current - block_count;
 		if ( atomic_compare_exchange_weak(
 			&arena->unassigned_resident_block_count,&current,next) )
-			SPARK_FAIL(SPARK_STATUS_O);
+			SPARK_FAIL(SPARK_STATUS_OK);
 	}
 }
 
@@ -1341,7 +1341,7 @@ static SparkStatus SparkKvCacheArenaMakeRoomForResidentBlocks(
 		new_resident_block_count > arena->resident_block_capacity )
 	{
 		arena->resident_capacity_stall_count += 1u;
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
     target_resident_block_count =
         arena->resident_block_capacity -
@@ -2302,7 +2302,7 @@ SparkStatus SparkKvCacheArenaUnpinResidentTable(
 	if ( result != SPARK_STATUS_OK )
 		return(result);
 	if ( block_count != 0u && logical_block_indices == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (page=0u; page<block_count; page++)
 	{
 		status = SparkKvCacheArenaUnpinResidentBlock(arena,logical_block_indices[page]);
@@ -2327,14 +2327,14 @@ SparkStatus SparkKvCacheArenaPinResidentTable(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( block_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	if ( logical_block_indices == 0 || resident_slot_indices == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	input = (uintptr_t)logical_block_indices;
 	output = (uintptr_t)resident_slot_indices;
 	bytes = ((uint64_t)block_count * sizeof(uint32_t));
 	if ( (input <= output ? output - input : input - output) < bytes )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (page=0u; page<block_count; page++)
 	{
 		status = SparkKvCacheArenaPinResidentBlock(arena,logical_block_indices[page]);

@@ -318,7 +318,7 @@ SparkStatus SparkKvPagerInitialize(
 		configuration->park_policy >
 			SPARK_KV_PAGER_PARK_POLICY_REUSE_VALUE)
 	{
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	block_bytes = configuration->arena->key_block_stride_bytes +
 		configuration->arena->value_block_stride_bytes;
@@ -327,7 +327,7 @@ SparkStatus SparkKvPagerInitialize(
 		configuration->staging_bytes <
 			block_bytes * SPARK_KV_PAGER_STAGING_BLOCK_COUNT )
 	{
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	resident_bytes = (uint64_t)configuration->arena->resident_block_capacity *
 		block_bytes;
@@ -335,12 +335,12 @@ SparkStatus SparkKvPagerInitialize(
 		configuration->device_budget_bytes > SPARK_KV_PAGER_DEVICE_LAW_BYTES ||
 		resident_bytes > configuration->device_budget_bytes )
 	{
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( configuration->arena->evict_function != 0 &&
 		configuration->arena->evict_function != SparkKvPagerEvictWriteback )
 	{
-		SPARK_FAIL(SPARK_STATUS_BUS);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
 	if ( configuration->park_queue_blocks >
 		SPARK_KV_PAGER_PARK_QUEUE_CAPACITY ||
@@ -350,7 +350,7 @@ SparkStatus SparkKvPagerInitialize(
 					(uint64_t)configuration->park_queue_blocks *
 						block_bytes)) )
 	{
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	memset(pager,0,sizeof(*pager));
 	pager->abi_version = SPARK_KV_PAGER_ABI_VERSION;
@@ -380,13 +380,13 @@ SparkStatus SparkKvPagerInitialize(
 				SPARK_KV_PAGER_PARK_POLICY_LRU;
 			configuration->arena->evict_function = 0;
 			configuration->arena->evict_context = 0;
-			SPARK_FAIL(SPARK_STATUS_IO_ERRO);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
 		memset(pager->park_worker_handle,0,sizeof(pager->park_worker_handle));
 		memcpy(pager->park_worker_handle,&worker,sizeof(worker));
 		pager->park_worker_active = 1u;
 	}
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 uint64_t SparkKvPagerBlockBytes(const SparkKvPager *pager)
@@ -412,14 +412,14 @@ SparkStatus SparkKvPagerAdmit(
 		admission->descriptor_bytes !=
 			SPARK_KV_PAGER_ADMISSION_DESCRIPTOR_BYTES )
 	{
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	memset(decision_out,0,sizeof(*decision_out));
 	decision.abi_version = SPARK_KV_PAGER_ADMISSION_ABI_VERSION;
 	decision.descriptor_bytes = SPARK_KV_PAGER_ADMISSION_DECISION_DESCRIPTOR_BYTES;
 	decision.block_demand = admission->block_demand;
 	if ( admission->block_demand == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	arena = pager->configuration.arena;
 	tier = pager->configuration.tier;
 	(void)SparkKvPagerPollParkCompletions(pager);
@@ -456,7 +456,7 @@ SparkStatus SparkKvPagerAdmit(
 			decision.outcome = SPARK_KV_PAGER_QUEUED;
 			pager->statistics.admission_queued_device += 1u;
 			*decision_out = decision;
-			SPARK_FAIL(SPARK_STATUS_O);
+			SPARK_FAIL(SPARK_STATUS_OK);
 		}
 		{
 			uint32_t park_headroom =
@@ -467,7 +467,7 @@ SparkStatus SparkKvPagerAdmit(
 				decision.outcome = SPARK_KV_PAGER_QUEUED;
 				pager->statistics.admission_queued_backing += 1u;
 				*decision_out = decision;
-				SPARK_FAIL(SPARK_STATUS_O);
+				SPARK_FAIL(SPARK_STATUS_OK);
 			}
 		}
 	}
@@ -487,7 +487,7 @@ SparkStatus SparkKvPagerAdmit(
 				decision.outcome = SPARK_KV_PAGER_QUEUED;
 				pager->statistics.admission_queued_bandwidth += 1u;
 				*decision_out = decision;
-				SPARK_FAIL(SPARK_STATUS_O);
+				SPARK_FAIL(SPARK_STATUS_OK);
 			}
 		}
 	}
@@ -516,7 +516,7 @@ SparkStatus SparkKvPagerAdmit(
 		return(status);
 	}
 	*decision_out = decision;
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkKvPagerCommitAdmission(
@@ -524,7 +524,7 @@ SparkStatus SparkKvPagerCommitAdmission(
     uint32_t block_count)
 {
 	if ( SparkKvPagerIsValid(pager) == 0u || block_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkKvCacheArenaConsumeUnassignedResidentBlocks(
 		pager->configuration.arena,block_count));
 }
@@ -534,7 +534,7 @@ SparkStatus SparkKvPagerReleaseAdmission(
     uint32_t block_count)
 {
 	if ( SparkKvPagerIsValid(pager) == 0u || block_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkKvCacheArenaReleaseUnassignedResidentBlocks(
 		pager->configuration.arena,block_count));
 }
@@ -560,11 +560,11 @@ SparkStatus SparkKvPagerEvictWriteback(
 	SparkStatus status;
 
 	if ( SparkKvPagerIsValid(pager) == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	(void)resident_slot_index;
 	(void)generation;
 	if ( key_bytes + value_bytes != (uint64_t)pager->block_bytes )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	asynchronous = pager->park_worker_active != 0u &&
 		pager->park_queue_blocks != 0u;
 	if ( pager->park_worker_active != 0u )
@@ -610,7 +610,7 @@ SparkStatus SparkKvPagerEvictWriteback(
 		entry.payload_bytes = (uint64_t)pager->block_bytes;
 		if ( SparkKvPagerParkQueuePush(pager,&entry) != 0u )
 		{
-			SPARK_FAIL(SPARK_STATUS_O);
+			SPARK_FAIL(SPARK_STATUS_OK);
 		}
 	}
 	if ( reservation.already_present == 0u )
@@ -632,7 +632,7 @@ SparkStatus SparkKvPagerEvictWriteback(
 		return(status);
 	SparkKvPagerRecordPageOut(pager,logical_block_index,
 		reservation.already_present);
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkKvPagerRestoreBlock(
@@ -662,26 +662,26 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
     if ( SparkKvPagerIsValid(pager) == 0u ||
         SparkKvPagerDigestIsUsable(content_digest) == 0u )
     {
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *poll_budget_exhausted = 0u;
 	(void)SparkKvPagerPollParkCompletions(pager);
 	arena = pager->configuration.arena;
 	if ( logical_block_index >= arena->logical_block_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	{
 		SparkKvCacheBlock *block = &arena->blocks[logical_block_index];
 		if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u )
-			SPARK_FAIL(SPARK_STATUS_O);
+			SPARK_FAIL(SPARK_STATUS_OK);
 		if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) == 0u )
-			SPARK_FAIL(SPARK_STATUS_NOT_FOUN);
+			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
 	if ( SparkKvPagerParkIsInFlight(pager,logical_block_index,
 		content_digest) != 0u )
 	{
-		SPARK_FAIL(SPARK_STATUS_BUS);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
 	{
 		uint64_t read_started = 0u;
@@ -695,7 +695,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 				demand.state == SPARK_NVME_TIER_DEMAND_MISS )
 			{
 				pager->statistics.page_in_misses += 1u;
-				SPARK_FAIL(SPARK_STATUS_NOT_FOUN);
+				SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 			}
 			if ( status == SPARK_STATUS_OK &&
 				demand.state == SPARK_NVME_TIER_DEMAND_READY )
@@ -708,7 +708,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 				demand.ordered != 0u )
 			{
 				(void)SparkNvmeTierPump(pager->configuration.tier,attempt);
-				SPARK_FAIL(SPARK_STATUS_BUS);
+				SPARK_FAIL(SPARK_STATUS_BUSY);
 			}
 			if ( read_issued == 0u )
 			{
@@ -726,7 +726,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 		if ( attempt == SPARK_KV_PAGER_RESTORE_POLL_LIMIT )
 		{
 			*poll_budget_exhausted = 1u;
-			SPARK_FAIL(SPARK_STATUS_IO_ERRO);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
 		if ( read_issued != 0u )
 		{
@@ -741,7 +741,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 	{
 		(void)SparkNvmeTierConsume(pager->configuration.tier,
 			SparkKvPagerHashFromDigest(content_digest),content_digest);
-		SPARK_FAIL(SPARK_STATUS_HASH_MISMATC);
+		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
 	}
 	memcpy(pager->landing_staging,demand.staging_pointer,
 		pager->block_bytes);
@@ -811,7 +811,7 @@ SparkStatus SparkKvPagerDispatchBlock(
 			SPARK_KV_PAGER_DISPATCH_DESCRIPTOR_BYTES ||
 		SparkKvPagerDigestIsUsable(dispatch->content_digest) == 0u )
 	{
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	memset(decision_out,0,sizeof(*decision_out));
 	memset(&decision,0,sizeof(decision));
@@ -867,7 +867,7 @@ SparkStatus SparkKvPagerAssertDeviceBudget(const SparkKvPager *pager)
 	uint64_t resident_bytes;
 
 	if ( SparkKvPagerIsValid(pager) == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	arena = pager->configuration.arena;
 	unassigned = atomic_load(&arena->unassigned_resident_block_count);
 	if ( arena->resident_block_count > arena->resident_block_capacity ||
@@ -876,12 +876,12 @@ SparkStatus SparkKvPagerAssertDeviceBudget(const SparkKvPager *pager)
 		pager->configuration.tier->slots_in_use >
 			pager->configuration.tier->slot_count )
 	{
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERRO);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	resident_bytes = arena->resident_block_count * (uint64_t)pager->block_bytes;
 	if ( resident_bytes > pager->configuration.device_budget_bytes )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
-	SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 void SparkKvPagerGetStatistics(
@@ -898,10 +898,10 @@ SparkStatus SparkKvPagerPollParkCompletions(SparkKvPager *pager)
 	SparkKvPagerParkCompletion completion;
 
 	if ( SparkKvPagerIsValid(pager) == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	while ( SparkKvPagerParkCompletionPop(pager,&completion) != 0u )
 		SparkKvPagerPublishCompletion(pager,&completion);
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkKvPagerShutdown(SparkKvPager *pager)
@@ -911,9 +911,9 @@ SparkStatus SparkKvPagerShutdown(SparkKvPager *pager)
 	pthread_t worker;
 
 	if ( SparkKvPagerIsValid(pager) == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pager->park_worker_active == 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	atomic_store_explicit(&pager->park_worker_stop,1u,memory_order_seq_cst);
 	memcpy(&worker,pager->park_worker_handle,sizeof(worker));
 	pthread_join(worker,0);

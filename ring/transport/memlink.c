@@ -127,14 +127,14 @@ SparkStatus SparkMemlinkFormatHostFromTemplate(
 
     if (host_template == NULL || host == NULL || host_capacity == 0u)
     {
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     {
         int template_kind = SparkMemlinkTemplatePlaceholder(
             host_template,&placeholder);
         if (template_kind < 0)
         {
-            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         if (template_kind == 0)
         {

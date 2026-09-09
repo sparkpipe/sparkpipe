@@ -349,7 +349,7 @@ static SparkStatus SparkQwen38_27bDflash2ConfigLoad(SparkQwen38_27bDflash2Config
 	{
 		fprintf(stderr,"qwen38_27b_stage dflash2_ctx_tail_out_of_range tail=%u max=%u\n",
 			config->ctx_tail,SPARK_QWEN38_27B_DFLASH2_FRAME_KV_ROWS - 2048u - 1u);
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	if ( config->ctx_tail != 0u )
 		config->ctx_cache_on = 0u;
@@ -364,7 +364,7 @@ static SparkStatus SparkQwen38_27bDflash2ConfigLoad(SparkQwen38_27bDflash2Config
 	}
 	text = getenv("SPARK_QWEN38_27B_DSPARK_SEL_CHECK");
 	config->sel_check_present = text != 0 ? 1u : 0u;
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *state)
@@ -408,27 +408,27 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 	if ( state->stage_index >= state->stage_count || state->first_layer_index + state->layer_count > SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT )
 	{
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( state->tp_rank >= state->tp_degree ||
 		(state->tp_degree > 1u && (state->stage_count != 1u || state->stage_index != 0u || state->first_layer_index != 0u || state->layer_count != SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT)) )
 	{
 		fprintf(stderr,"%s config_tp_invalid degree=%u rank=%u stage=%u/%u slice=%u+%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->tp_degree,state->tp_rank,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	state->owns_embedding = state->first_layer_index == 0u ? 1u : 0u;
 	state->owns_final_head = state->first_layer_index + state->layer_count == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LAYER_COUNT ? 1u : 0u;
 	if ( (state->stage_index == 0u) != (state->owns_embedding != 0u) || (state->stage_index + 1u == state->stage_count) != (state->owns_final_head != 0u) )
 	{
 		fprintf(stderr,"%s config_position_mismatch stage=%u/%u slice=%u+%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( state->mtp_armed != 0u && state->owns_final_head == 0u )
 	{
 		fprintf(stderr,"%s config_mtp_without_head stage=%u/%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->stage_index,state->stage_count);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 #define SPARK_PACK_LOAD_FN(name) SparkQwen38_27bModule##name
@@ -474,24 +474,24 @@ static SparkStatus SparkQwen38_27bModuleValidateEntry(SparkQwen38_27bModuleState
 	if ( SparkQwen38_27bStagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,state->tp_degree,&shape) != 0 || entry->rows != shape.rows || entry->columns != shape.columns )
 	{
 		fprintf(stderr,"%s dbg_shape kind=%u layer=%u rows=%u/%u cols=%u/%u\n",SPARK_QWEN38_27B_MODULE_TAG,entry->tensor_kind,entry->layer_index,entry->rows,shape.rows,entry->columns,shape.columns);
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	if ( entry->weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16_RANS )
 	{
 		if ( shape.quantizable == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		if ( (entry->rows % 64u) != 0u || (entry->columns % 128u) != 0u || entry->scale_bytes != 0u || entry->scale_group_size != 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	else if ( shape.quantizable != 0u )
 	{
 		if ( entry->weight_format != SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && entry->weight_format != SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && entry->weight_format != SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 && entry->weight_format != SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 && entry->weight_format != SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	else if ( entry->weight_format != shape.natural_format )
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	if ( entry->weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 ? entry->scale_group_size != 32u : ((entry->weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 || entry->weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128) ? entry->scale_group_size != 128u : (entry->weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED ? entry->scale_group_size != 16u : entry->scale_group_size != 0u)) )
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	return(SparkQwen38_27bModuleValidateEntryPlacement(state,entry,file_bytes,is_global));
 }
 
@@ -512,7 +512,7 @@ static SparkStatus SparkQwen38_27bModuleBindMtp(SparkQwen38_27bModuleState *stat
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->mtp.attention.query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->mtp.attention.key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	default:
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 }
 
@@ -522,24 +522,24 @@ static SparkStatus SparkQwen38_27bModuleBindGlobal(SparkQwen38_27bModuleState *s
 	{
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_EMBEDDING:
 		if ( state->owns_embedding == 0u && state->owns_final_head == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->token_embedding_bf16 = payload;
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_FINAL_NORM:
 		if ( state->owns_final_head == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->final_norm_weight_bf16 = payload;
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_LM_HEAD:
 		if ( state->owns_final_head == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->lm_head_weight_bf16 = payload;
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_EMBED_NORM: state->mtp.embed_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_HIDDEN_NORM: state->mtp.hidden_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.final_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	default:
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 }
 
@@ -569,7 +569,7 @@ static SparkStatus SparkQwen38_27bModuleBindLayer(SparkQwen38_27bModuleState *st
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->attn_by_layer[layer].query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->attn_by_layer[layer].key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	default:
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 }
 
@@ -608,7 +608,7 @@ static SparkStatus SparkQwen38_27bModuleLoadDsparkEntry(
 	SparkQwen38_27bDsparkWeights *w = &state->dspark_weights;
 	uint32_t layer = entry->layer_index;
 	if ( layer >= SPARK_QWEN38_27B_DSPARK_LAYER_COUNT && layer != 0xFFFFFFFFu )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	SparkQwen38_27bDsparkLayerWeights *lw = layer < SPARK_QWEN38_27B_DSPARK_LAYER_COUNT ? &w->layer[layer] : 0;
 	switch ( entry->tensor_kind )
 	{
@@ -645,12 +645,12 @@ static SparkStatus SparkQwen38_27bModuleLoadDsparkPack(SparkQwen38_27bModuleStat
 	SparkStatus status;
 	uint32_t index;
 	if ( path == 0 || path[0] == '\0' )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	file = fopen(path,"rb");
 	if ( file == 0 )
 	{
 		fprintf(stderr,"%s dspark_pack_open_failed path=%s\n",SPARK_QWEN38_27B_MODULE_TAG,path);
-		SPARK_FAIL(SPARK_STATUS_IO_ERRO);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	status = SparkStageModulePackRead(SPARK_QWEN38_27B_MODULE_TAG,file,0u,&header,sizeof(header));
 	if ( status == SPARK_STATUS_OK && (header.magic != SPARK_QWEN38_27B_STAGEPACK_MAGIC || header.hidden_dimension != SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION || header.layer_count != SPARK_QWEN38_27B_DSPARK_LAYER_COUNT || header.attn_query_head_count != SPARK_QWEN38_27B_DSPARK_ATTN_QUERY_HEADS || header.attn_kv_head_count != SPARK_QWEN38_27B_DSPARK_ATTN_KV_HEADS || header.attn_head_dimension != SPARK_QWEN38_27B_DSPARK_ATTN_HEAD_DIMENSION || header.ffn_intermediate_dimension != SPARK_QWEN38_27B_DSPARK_FFN_INTERMEDIATE || header.output_vocab_count != SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT) )
@@ -729,7 +729,7 @@ static SparkStatus SparkQwen38_27bModuleBuildHeadShadow(SparkQwen38_27bModuleSta
 	uint64_t vocab = state->tp.head_rows,dim = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
 	SparkStatus status;
 	if ( state->owns_final_head == 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	status = SparkStageModuleDeviceAllocate(&state->ledger,(vocab * dim) / 2u,(void **)&state->head_shadow_payload);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(vocab * dim) / 32u,(void **)&state->head_shadow_scale);
@@ -782,7 +782,7 @@ static SparkStatus SparkQwen38_27bModuleTpReduceDelta(SparkQwen38_27bModuleState
 	{
 		if ( state->profile_enabled != 0u && slot->capturing == 0u )
 			(void)cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	}
 	status = SparkQwen38_27bTpReduceHidden(&state->tp,slot->delta_bf16,rows,slot->logical_sequence_count,slot->cuda_stream);
 	if ( status != SPARK_STATUS_OK )
@@ -911,7 +911,7 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlotChunkWorkspace(SparkQwen38_2
 	uint64_t matrix_bytes = heads * chunk * chunk * sizeof(float);
 	SparkStatus status;
 	if ( state->gdn_layer_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	status = SparkStageModuleDeviceAllocate(&state->ledger,vector_bytes,(void **)&slot->chunk_qn_f32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,vector_bytes,(void **)&slot->chunk_kn_f32);
@@ -1610,24 +1610,24 @@ static SparkStatus SparkQwen38_27bModuleStagePosition(SparkQwen38_27bModuleState
 	slot->host_row_lane_indices[index] = lane;
 	slot->host_row_positions[index] = position;
 	if ( state->attn_layer_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	if ( position + 1u > (uint64_t)table->lane_stride * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	block_ordinal = (uint32_t)(position / SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 	if ( lane >= table->lane_count || block_ordinal >= table->host_lane_physical_block_counts[lane] )
 	{
 		fprintf(stderr,"qwen38_27b_debug stage_pos lane=%u ord=%u counts=%u stride=%u pos=%llu\n",lane,block_ordinal,lane < table->lane_count ? table->host_lane_physical_block_counts[lane] : 0u,table->lane_stride,(unsigned long long)position);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	block = table->host_physical_block_indices[((uint64_t)lane * table->lane_stride) + block_ordinal];
 	if ( block == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_NO_BLOCK || block >= state->kv_block_count )
 	{
 		fprintf(stderr,"qwen38_27b_debug stage_noblock lane=%u ord=%u block=%u kv=%u\n",lane,block_ordinal,block,state->kv_block_count);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	slot->host_slot_mapping[index] = (block * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) + (uint32_t)(position % SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 	slot->host_context_lengths[index] = (uint32_t)(position + 1u);
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bModuleStageRows(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, const SparkQwen38_27bResidentDecodeStageFrameContext *context, uint8_t *lane_used)
@@ -1639,14 +1639,14 @@ static SparkStatus SparkQwen38_27bModuleStageRows(SparkQwen38_27bModuleState *st
 	{
 		lane = batch->row_lane_indices[row];
 		if ( lane >= state->max_active_sequence_count || lane_used[lane] != 0u )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		lane_used[lane] = 1u;
 		slot->host_row_cold[row] = state->lane_warm[lane] != 0u ? 0u : 1u;
 		status = SparkQwen38_27bModuleStagePosition(state,slot,context->kv_block_table,lane,batch->row_positions[row],row);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bModulePrefillStage(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, const SparkQwen38_27bResidentDecodeStageFrameContext *context)
@@ -1660,7 +1660,7 @@ static SparkStatus SparkQwen38_27bModulePrefillStage(SparkQwen38_27bModuleState 
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bModuleStageMtpDraft(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, const SparkQwen38_27bResidentDecodeStageFrameContext *context, const SparkQwen38_27bPrefillFrameView *prefill, uint32_t rows)
@@ -1674,11 +1674,11 @@ static SparkStatus SparkQwen38_27bModuleStageMtpDraft(SparkQwen38_27bModuleState
 			if ( context->decode_batch->row_lane_indices[row] == view->lane_index )
 				break;
 		if ( row == rows )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		seed_row = row;
 	}
 	if ( slot->host_row_positions[seed_row] + 1u != view->base_position )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	slot->mtp_seed_row = seed_row;
 	for (draft = 0; draft + 1u < view->draft_token_count; draft++)
 	{
@@ -1686,7 +1686,7 @@ static SparkStatus SparkQwen38_27bModuleStageMtpDraft(SparkQwen38_27bModuleState
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bModuleUploadRows(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, const SparkQwen38_27bResidentDecodeStageFrameContext *context, const SparkModelDriverFrame *frame, const SparkQwen38_27bPrefillFrameView *prefill, uint32_t rows)
@@ -1711,7 +1711,7 @@ static SparkStatus SparkQwen38_27bModuleUploadRows(SparkQwen38_27bModuleState *s
 			if ( ((const uint32_t *)frame->buffers[0].address)[token_guard] >= SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT )
 			{
 				fprintf(stderr,"%s token_id_out_of_range row=%u\n",SPARK_QWEN38_27B_MODULE_TAG,token_guard);
-				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 			}
 		error = cudaMemcpyAsync(slot->input_token_ids,frame->buffers[0].address,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	}
@@ -1728,7 +1728,7 @@ static SparkStatus SparkQwen38_27bModuleResetLaneState(SparkQwen38_27bModuleStat
 	uint64_t tail_bytes = state->gdn_pool.conv_tail_lane_stride_elements * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES;
 	cudaError_t error;
 	if ( state->gdn_layer_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	error = cudaMemsetAsync(state->gdn_pool.state_f32 + ((uint64_t)lane * state->gdn_pool.state_lane_stride_elements),0,state_bytes,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemsetAsync((uint8_t *)state->gdn_pool.conv_tail_bf16 + ((uint64_t)lane * tail_bytes),0,tail_bytes,stream);
@@ -1746,7 +1746,7 @@ static SparkStatus SparkQwen38_27bModuleGdnSnapshot(SparkQwen38_27bModuleState *
 	uint8_t *shot_tail = (uint8_t *)state->snapshot_tail_bf16 + ((uint64_t)snapshot_index * tail_bytes);
 	cudaError_t error;
 	if ( state->gdn_layer_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	error = cudaMemcpyAsync(restore != 0u ? lane_state : shot_state,restore != 0u ? shot_state : lane_state,state_bytes,cudaMemcpyDeviceToDevice,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(restore != 0u ? lane_tail : shot_tail,restore != 0u ? shot_tail : lane_tail,tail_bytes,cudaMemcpyDeviceToDevice,stream);
@@ -1764,7 +1764,7 @@ static SparkStatus SparkQwen38_27bModuleGdnPrefixTransfer(SparkQwen38_27bModuleS
 	uint8_t *slot_tail = (uint8_t *)state->prefix_tail_bf16 + ((uint64_t)prefix_slot * tail_bytes);
 	cudaError_t error;
 	if ( state->gdn_layer_count == 0u || state->prefix_state_f32 == 0 || state->prefix_tail_bf16 == 0 || prefix_slot >= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_PREFIX_GDN_SLOT_COUNT )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	error = cudaMemcpyAsync(restore != 0u ? lane_state : slot_state,restore != 0u ? slot_state : lane_state,state_bytes,cudaMemcpyDeviceToDevice,stream);
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(restore != 0u ? lane_tail : slot_tail,restore != 0u ? slot_tail : lane_tail,tail_bytes,cudaMemcpyDeviceToDevice,stream);
@@ -1781,12 +1781,12 @@ static SparkStatus SparkQwen38_27bModuleBeginHidden(SparkQwen38_27bModuleState *
 		return(SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,error,"embedding"));
 	}
 	if ( context->hidden_input_post_receive_function == 0 || context->hidden_input_transport_session == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = context->hidden_input_post_receive_function(context->hidden_input_transport_session,&context->hidden_input_packet);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( context->hidden_input_packet.active_sequence_count != rows || context->hidden_input_packet.hidden_dimension != SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION || context->hidden_input_packet.hidden_bf16 == 0 )
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	error = cudaMemcpyAsync(slot->hidden_bf16,context->hidden_input_packet.hidden_bf16,(uint64_t)rows * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,cudaMemcpyDeviceToDevice,(cudaStream_t)slot->cuda_stream);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,error,"hidden_receive"));
 }
@@ -1926,7 +1926,7 @@ static SparkStatus SparkQwen38_27bModuleFinish(SparkQwen38_27bModuleState *state
 	if ( state->owns_final_head == 0u )
 	{
 		if ( context->hidden_output_send_function == 0 || context->hidden_output_transport_session == 0 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		context->hidden_output_packet.active_sequence_count = rows;
 		context->hidden_output_packet.hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
 		context->hidden_output_packet.bytes_per_sequence = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES;
@@ -2406,11 +2406,11 @@ static SparkStatus SparkQwen38_27bModuleRunDsparkBlockForward(
 	cudaError_t error;
 	uint32_t blk;
 	if ( w->armed == 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	if ( view == 0 || view->draft_token_ids == 0 || state->dflash_taps_history == 0 )
 	{
 		fprintf(stderr,"dflash2_trace drafter_invalid view=%p ids=%p taps=%p\n",(void*)view,(void*)(view!=0?(void*)view->draft_token_ids:0),(void*)state->dflash_taps_history);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	{
 		uint32_t sel_block = 0u;
@@ -2470,7 +2470,7 @@ static SparkStatus SparkQwen38_27bModuleRunDsparkBlockForward(
 			uint32_t overflow = 0u;
 			error = SparkQwen38_27bModuleDflashStageHistory(state,stream,lw,q,attn_out,kv_k,kv_v,layer,window,ctx_tail,base_blk,nkv,block_kv_on,&overflow);
 			if ( overflow != 0u )
-				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		if ( layer == 0u && cfg->ctx_dump_present != 0u )
 		{
@@ -2667,9 +2667,9 @@ static SparkStatus SparkQwen38_27bModuleCheckFrameError(SparkQwen38_27bModuleSta
 			(unsigned)state->host_frame_error[0],(unsigned)state->host_frame_error[1],
 			(unsigned)state->host_frame_error[2],(unsigned)state->host_frame_error[3],
 			(unsigned)state->host_frame_error[4],(unsigned)state->host_frame_error[5]);
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERRO);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bModuleRunFrame(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot, SparkQwen38_27bResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, const SparkQwen38_27bPrefillFrameView *prefill, uint32_t rows)

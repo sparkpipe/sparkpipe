@@ -9,7 +9,7 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 	SparkStatus status;
 	uint32_t layer;
 	if ( state == 0 || pack_path == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(state, 0, sizeof(*state));
 	status = SparkK3PackOpen(pack_path, &state->pack);
 	if ( status != SPARK_STATUS_OK )
@@ -25,12 +25,12 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 		state->pack.config.total_layers != 93u )
 	{
 		SparkK3ModuleDestroy(state);
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILE);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	if ( layer_count > SPARK_K3_MODULE_MAX_BOUND_LAYERS )
 	{
 		SparkK3ModuleDestroy(state);
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	state->first_layer = first_layer;
 	state->layer_count = layer_count;
@@ -46,7 +46,7 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 		}
 		state->bound_count++;
 	}
-	SPARK_FAIL(SPARK_STATUS_O);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 void SparkK3ModuleDestroy(SparkK3ModuleState *state)

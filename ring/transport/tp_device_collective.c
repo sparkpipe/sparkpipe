@@ -1340,9 +1340,9 @@ static SparkStatus SparkTpDeviceCollectiveTreeFoldGroups(SparkTpDeviceCollective
 		rank_devices[peer] = binding->receive_device;
 	}
 	if ( operation->arrived != recv_bits )
-		SPARK_FAIL(SPARK_STATUS_BUS);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	if ( operation->packed != 0u )
-		SPARK_FAIL(SPARK_STATUS_O);
+		SPARK_FAIL(SPARK_STATUS_OK);
 	rank_devices[collective->tp_rank] = operation->full_device;
 	return(implementation->combine_all_bf16_function(implementation->combine_context,operation->full_device,rank_devices,collective->tp_rank,operation->active_sequence_count,collective->local_hidden_dimension,operation->cuda_stream));
 }
