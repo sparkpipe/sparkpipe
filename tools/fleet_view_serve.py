@@ -18,7 +18,12 @@ HOST_RE = re.compile(r"^spark[a-z0-9]{1,4}$")
 def host_file(host):
     if not HOST_RE.fullmatch(host or ""):
         return None
-    return CURRENT + os.sep + host + ".json"
+    candidate = os.path.normpath(os.path.join(CURRENT, host + ".json"))
+    if not candidate.startswith(CURRENT + os.sep):
+        return None
+    if ".." in host:
+        return None
+    return candidate
 
 
 def aggregate():
