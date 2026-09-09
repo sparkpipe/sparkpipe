@@ -1295,3 +1295,7 @@ clean:
 
 build/test_weightd_worker: tests/test_weightd_worker.c runtime/spark_weightd_worker.c tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+.PHONY: publish
+publish:
+	bash tools/publish_local.sh "${FAMILY:?modules/ family}" "${CODEC:?codec}" "${ROOT:?release root name}"
