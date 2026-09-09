@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "a51e2fbe7ec6ee4ab78b7f2a9df2c177352445549769864572b5d7a4c9141698",
-      "size_bytes": 51359
+      "sha256": "0b5c7dd627d227fdffde4124b4e134ef578637872917bc8ff8eecda4b77f29ed",
+      "size_bytes": 54219
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -4508,8 +4508,8 @@
     },
     {
       "path": "node/model_api.c",
-      "sha256": "3c895a94c6d3ee4698c575992a7daf93e6d5fec7e72cb72304bd36b8dcc928b1",
-      "size_bytes": 33667
+      "sha256": "b3d6a129ecd44a51b03fc0006f48bbc9e52c6e07235b27e8a46935f258b24074",
+      "size_bytes": 33709
     },
     {
       "path": "node/model_batch.c",
@@ -7478,8 +7478,8 @@
     },
     {
       "path": "tests/test_model_api_queue_lifetime.py",
-      "sha256": "2779a2e10a27d28ab366ae8442a668587c8aa9a54418d38526374e60d57d5375",
-      "size_bytes": 4040
+      "sha256": "f05c41fa4c7b0945bdfb530b5f3d1d8f6962b250bfb68a348e79c5bf918d0b8c",
+      "size_bytes": 4739
     },
     {
       "path": "tests/test_model_api_text.c",
@@ -9740,5 +9740,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32685742
+  "total_bytes": 32689343
 }

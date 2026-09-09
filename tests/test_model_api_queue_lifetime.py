@@ -78,9 +78,24 @@ static void TestComplete(TestClient *client,uint64_t id,uint32_t token)
 	close(client->client);
 }
 
+static void *TestConcurrentMeasurements(void *context)
+{
+	ApiRequest request = {0};
+	uint32_t index;
+	request.id = (uint64_t)(uintptr_t)context;
+	for (index=0u; index<128u; index++)
+	{
+		api_logf("concurrent status %u",index);
+		api_log_request_measurements(&request);
+	}
+	return(0);
+}
+
 int32_t main(void)
 {
 	TestClient a,b,c;
+	pthread_t loggers[8];
+	uint32_t index;
 	alarm(10);
 	assert(pthread_mutex_init(&S.queue_mutex,0) == 0);
 	S.running = 1;
@@ -92,6 +107,10 @@ int32_t main(void)
 	TestComplete(&c,100003u,33u);
 	assert(S.queue_head == 0 && S.queue_tail == 0 && S.served == 3u);
 	assert(pthread_mutex_destroy(&S.queue_mutex) == 0);
+	for (index=0u; index<8u; index++)
+		assert(pthread_create(&loggers[index],0,TestConcurrentMeasurements,(void *)(uintptr_t)(700u + index)) == 0);
+	for (index=0u; index<8u; index++)
+		assert(pthread_join(loggers[index],0) == 0);
 	return(0);
 }
 '''
@@ -111,13 +130,15 @@ def main():
         ], cwd=ROOT, check=True)
         result = subprocess.run([str(binary)], cwd=ROOT, check=True, timeout=15, capture_output=True, text=True)
         records = [json.loads(line) for line in result.stderr.splitlines() if line.startswith('{')]
-        assert len(records) == 3
-        for record, token in zip(records, (22, 11, 33)):
+        assert len(records) == 3 + 8 * 128
+        for record, token in zip(records[:3], (22, 11, 33)):
             assert record['event'] == 'request_measurements'
             assert record['engine_completed'] == 1 and record['status'] == 0
             assert record['accepted_ns'] == record['request_id'] * 100
             assert record['tokens'] == [[token, record['accepted_ns'] + 50]]
             assert record['cached_prompt_tokens'] == 0
+        for identity in range(700,708):
+            assert sum(record['request_id'] == identity for record in records[3:]) == 128
     print("PASS real API enqueue, tail completion, enqueue again, remaining replies and empty queue")
 
 
