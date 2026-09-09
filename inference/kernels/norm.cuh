@@ -213,6 +213,19 @@ void LmSigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16, float *__rest
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmBf16SigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16,float *__restrict__ scores,uint32_t width)
+{
+	uint64_t base = (uint64_t)blockIdx.x * width;
+	uint32_t index;
+	for (index=threadIdx.x; index<width; index+=THREADS)
+	{
+		float value = LmBf16ToFloat(logits_bf16[base + index]);
+		scores[base + index] = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + __expf(-value))));
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16, uint32_t dimension)
 {
 	uint64_t base = (uint64_t)blockIdx.x * dimension;

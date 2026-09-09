@@ -1468,7 +1468,7 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_GATE_LOWER_BOUND,
         rows);
     LM_LAUNCH(
-        (LmSigmoidRowsKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmBf16SigmoidRowsKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,

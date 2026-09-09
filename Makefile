@@ -367,6 +367,7 @@ PYTHON_TESTS := \
 	tests/test_hc_post_host.py \
 	tests/test_bf16_rms_host.py \
 	tests/test_bf16_conv_host.py \
+	tests/test_bf16_sigmoid_host.py \
 	tests/test_tp_f32_tree_host.py \
 	tests/test_kv_failure_host.py \
 	tests/test_frame_error_host.py \

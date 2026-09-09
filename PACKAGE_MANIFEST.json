@@ -1,5 +1,5 @@
 {
-  "file_count": 1958,
+  "file_count": 1959,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "9201de0c3f095f2a32bb08c4e748ae419b00145a07e01eaf4ef689cd7110499d",
-      "size_bytes": 97456
+      "sha256": "dfbb1d88778c4516f7649b9d3e79322c0358d7d2de145e90ba870b755105576f",
+      "size_bytes": 97491
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "ec89243c64cf99cb347553b34d5b4ced39c14352b4e3a7d27073570284f568d3",
-      "size_bytes": 70368
+      "sha256": "86bc0717940ee835e242d51ff814a20c0b7475b1fa0b171a43f17c56aa691db4",
+      "size_bytes": 72175
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -3258,8 +3258,8 @@
     },
     {
       "path": "inference/kernels/norm.cuh",
-      "sha256": "54ff819f5de37d0b615c7094743fa36c212dcb38076e3a7f93a836f304fcda66",
-      "size_bytes": 18155
+      "sha256": "5cf50a6b77bc6acccd2e5888fa270c8b82b9bd4b2ff37b3e16818f7195d0077a",
+      "size_bytes": 18610
     },
     {
       "path": "inference/kernels/project.cuh",
@@ -4053,8 +4053,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "856f96a09e195eafd916f9114e04c033fcbb0ecd3fcf26bc26ba78fbe3c3f79a",
-      "size_bytes": 87417
+      "sha256": "7978d24961283f60e20e17f3ce57ec015b03e74e41d7c395ad91ed4c4a29b9dd",
+      "size_bytes": 87421
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -6700,6 +6700,11 @@
       "path": "tests/test_bf16_rms_host.py",
       "sha256": "6a827eedfb276f3792b21c06de31fa744de788450e3fc886e34ff55e0c42ceba",
       "size_bytes": 3457
+    },
+    {
+      "path": "tests/test_bf16_sigmoid_host.py",
+      "sha256": "8197790b52121124260015f7868755dd587c6d4a54399bc2b58943668f9ed7a7",
+      "size_bytes": 2935
     },
     {
       "path": "tests/test_cache.c",
@@ -9795,5 +9800,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32747144
+  "total_bytes": 32752380
 }
