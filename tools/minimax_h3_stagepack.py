@@ -245,6 +245,13 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
     progress_path = out_dir / f"minimax_h3.rank{rank:02d}.progress.json"
     ordered = sorted(directory, key=lambda e: (e["item"]["section"], e["item"]["shard"]))
     started = time.time()
+    running_offset = HEADER_BYTES
+    for entry in ordered:
+        entry["payload_offset"] = running_offset
+        running_offset += (entry["payload_bytes"] +
+            PAYLOAD_ALIGNMENT - 1) // PAYLOAD_ALIGNMENT * PAYLOAD_ALIGNMENT
+        entry["scale_offset"] = 0
+        entry["scale_bytes"] = 0
     resume = None
     if progress_path.exists():
         resume = json.loads(progress_path.read_text())
@@ -293,7 +300,7 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
         directory_offset = payload_offset
         for entry in ordered:
             out.write(struct.pack(
-                "<IIIIIQQQQ",
+                "<IIIIIIQQQQ",
                 entry["tensor_kind"], entry["layer_index"], entry["weight_format"],
                 entry["rows"], entry["columns"], 0,
                 entry["payload_offset"], entry["payload_bytes"],
