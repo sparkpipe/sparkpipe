@@ -203,6 +203,7 @@ static void bench_chain_initialize(BenchChain *chain,SparkTpDeviceCollective *co
 	chain->submission.descriptor_bytes = sizeof(chain->submission);
 	chain->submission.slot_index = lane;
 	chain->submission.active_sequence_count = rows;
+	chain->submission.logical_sequence_count = rows;
 	chain->submission.local_device = chain->submission.full_device = payload;
 	chain->submission.cuda_stream = chain->stream;
 	chain->submission.completion_function = bench_chain_complete;
@@ -525,6 +526,7 @@ int main(int argc, char **argv)
         submission.descriptor_bytes = sizeof(submission);
         submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
         submission.active_sequence_count = rows;
+        submission.logical_sequence_count = rows;
         submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
         submission.ordinal = bench_wire_ordinal(ordinal);
         submission.local_device = payload[ordinal % 64u];
@@ -586,6 +588,7 @@ int main(int argc, char **argv)
         submission.descriptor_bytes = sizeof(submission);
         submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
         submission.active_sequence_count = rows;
+        submission.logical_sequence_count = rows;
         submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
         submission.ordinal = bench_wire_ordinal(ordinal);
         submission.local_device = payload[ordinal % 64u];

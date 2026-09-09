@@ -705,6 +705,29 @@ keeps ordinary hidden reductions direct through eight execution rows. The B3
 measurement of 40.6141 aggregate tok/s on `df24e05` therefore does not qualify
 the requested B2+ tree policy.
 
+## Logical-batch collective policy
+
+Device collective ABI 14 requires `logical_sequence_count`, separate from the
+existing execution-row count. Hidden transport selects direct exchange only
+for logical B1 within registered payload capacity. B2+ uses tree even if a
+driver splits execution into a single-row chunk. NCCL also rejects missing
+logical metadata. Its existing element-count override is preserved separately.
+
+GLM carries the original batch count through both hidden and head reductions.
+Other existing producers and standalone probes carry explicit metadata as
+part of this API migration: per-slot frame counts for split-capable wrappers,
+dispatch counts for K3 and original batch counts for GLM52. K3 no longer
+replaces a missing dispatch request count with row count.
+
+The common submission test exercises B1, split B3/B100, multi-row B1 prefill
+and missing metadata. The GLM submission test verifies the original count
+survives a one-row execution wave. Tree-fold, credit-flow and NCCL host tests
+pass, including missing-metadata rejection. GLM and DSV4 host syntax checks
+pass. Qwen38 27B syntax checking of the changed signatures requires allowing
+warnings for existing CUDA APIs absent from the host stub; full CUDA compilation
+and merged-main fleet validation remain required. These migrations do not
+qualify the other model drivers or resolve GLM numerical acceptance.
+
 ## Required model EOS metadata
 
 Resident deployment ABI 3 carries `eos_token_ids`. Common batch-engine startup

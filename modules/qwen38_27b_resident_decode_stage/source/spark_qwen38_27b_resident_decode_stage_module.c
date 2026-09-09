@@ -46,6 +46,7 @@ static inline uint16_t SparkQwen38_27bModuleFloatToBf16(float f)
 
 typedef struct SparkQwen38_27bModuleSlot
 {
+	uint32_t logical_sequence_count;
 	void *cuda_stream;
 	uint32_t *input_token_ids;
 	uint32_t *output_token_ids;
@@ -782,7 +783,7 @@ static SparkStatus SparkQwen38_27bModuleTpReduceDelta(SparkQwen38_27bModuleState
 			(void)cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
 		return(SPARK_STATUS_OK);
 	}
-	status = SparkQwen38_27bTpReduceHidden(&state->tp,slot->delta_bf16,rows,slot->cuda_stream);
+	status = SparkQwen38_27bTpReduceHidden(&state->tp,slot->delta_bf16,rows,slot->logical_sequence_count,slot->cuda_stream);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "%s tp_reduce_delta_failed status=%d rows=%u\n", SPARK_QWEN38_27B_MODULE_TAG, (int)status, rows);
 	return status;
@@ -1806,7 +1807,7 @@ static cudaError_t SparkQwen38_27bModuleEmitHead(SparkQwen38_27bModuleState *sta
 		error = SparkQwen38_27bLaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->output_token_ids,slot->head_maxloc_u64,head_rows);
 	{
 		uint64_t spin_start = state->profile_enabled != 0u ? SparkQwen38_27bProfileNow() : 0ull;
-		if ( error == cudaSuccess && SparkQwen38_27bTpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows,stream) != SPARK_STATUS_OK )
+		if ( error == cudaSuccess && SparkQwen38_27bTpReduceU64Max(&state->tp,slot->head_maxloc_u64,head_rows,slot->logical_sequence_count,stream) != SPARK_STATUS_OK )
 			error = cudaErrorUnknown;
 		if ( state->profile_enabled != 0u )
 		{
@@ -1867,7 +1868,7 @@ static SparkStatus SparkQwen38_27bModuleRunMtpArgmaxRow(SparkQwen38_27bModuleSta
 	if ( error == cudaSuccess && state->tp_degree > 1u )
 	{
 		error = SparkQwen38_27bLaunchHeadMaxLocPack(stream,slot->head_scores_f32,slot->mtp_draft_ids + draft_index,slot->head_maxloc_u64,1u);
-		if ( error == cudaSuccess && SparkQwen38_27bTpReduceU64Max(&state->tp,slot->head_maxloc_u64,1u,stream) != SPARK_STATUS_OK )
+		if ( error == cudaSuccess && SparkQwen38_27bTpReduceU64Max(&state->tp,slot->head_maxloc_u64,1u,slot->logical_sequence_count,stream) != SPARK_STATUS_OK )
 			error = cudaErrorUnknown;
 		if ( error == cudaSuccess )
 			error = SparkQwen38_27bLaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->mtp_draft_ids + draft_index,1u);
@@ -2951,6 +2952,7 @@ static SparkStatus SparkQwen38_27bModuleExecuteFrame(
         return status;
     }
     slot = &state->slots[slot_index];
+    slot->logical_sequence_count = frame->active_slot_count;
 
     for (row = 0u; status == SPARK_STATUS_OK && row < claimed_lane_count; row++)
     {

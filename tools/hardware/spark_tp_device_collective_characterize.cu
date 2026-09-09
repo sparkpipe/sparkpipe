@@ -382,6 +382,7 @@ static SparkStatus SparkTpCharacterizeRun(
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
 	submission.active_sequence_count = 1u;
+	submission.logical_sequence_count = 1u;
 	submission.cuda_stream = stream;
 	submission.completion_function = SparkTpCharacterizeComplete;
 	submission.completion_context = completion;

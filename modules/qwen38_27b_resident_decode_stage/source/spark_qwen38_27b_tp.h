@@ -61,12 +61,14 @@ SparkStatus SparkQwen38_27bTpReduceHidden(
 	SparkQwen38_27bTpState *tp,
 	void *buffer,
 	uint32_t rows,
+	uint32_t logical_count,
 	void *cuda_stream);
 
 SparkStatus SparkQwen38_27bTpReduceU64Max(
 	SparkQwen38_27bTpState *tp,
 	uint64_t *buffer,
 	uint32_t count,
+	uint32_t logical_count,
 	void *cuda_stream);
 
 #ifdef __cplusplus

@@ -239,6 +239,14 @@ changes to common code. Track implementation evidence in
   completes the request through common release and slot-lifetime handling.
   No environment variable or driver option enables no-EOS serving.
 
+- **I50 — Collective policy preserves the logical batch.** Every collective
+  submission carries the full logical request count separately from its
+  execution-row count. Missing logical metadata is an error. Splitting a
+  B2+ batch into one-row chunks must not select the B1 direct algorithm.
+  Direct B1 transfers must fit registered payload capacity; larger prefill
+  transfers use the bounded tree path. Algorithm selection belongs in common
+  collective code, and callers carry the count from the original frame.
+
 ## Applying this document
 
 For each affected invariant, a PR states the behavior changed and the evidence

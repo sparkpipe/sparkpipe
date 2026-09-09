@@ -547,8 +547,7 @@ static SparkStatus K3ServingInitialize(
 	dispatch.sequence_position = submission->sequence_position;
 	dispatch.deadline_time_ns = submission->deadline_time_ns;
 	dispatch.row_count = rows;
-	dispatch.active_sequence_count = submission->active_sequence_count != 0u
-		? submission->active_sequence_count : rows;
+	dispatch.active_sequence_count = submission->active_sequence_count;
 	dispatch.token_ids = submission->token_ids;
 	dispatch.positions = state->positions_device.pointer;
 	dispatch.context_length = state->context_device.pointer;

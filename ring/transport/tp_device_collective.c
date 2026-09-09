@@ -2461,6 +2461,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
         submission->cuda_stream == 0 ||
         submission->completion_function == 0 ||
         submission->active_sequence_count == 0u ||
+        submission->logical_sequence_count == 0u ||
         submission->active_sequence_count >
             collective->max_active_sequence_count ||
         submission->ordinal == UINT64_MAX)
@@ -2531,6 +2532,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitHiddenInner(
     operation->completion_context = submission->completion_context;
     operation->direct_all_to_all =
         implementation->d2a_route_count != 0u &&
+        submission->logical_sequence_count == 1u &&
         SparkTpDeviceCollectiveOperationBytes(collective,operation) <=
             (uint64_t)collective->direct_all_to_all_max_payload_bytes ?
         1u : 0u;

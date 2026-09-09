@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 13u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 14u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 30u
@@ -102,6 +102,7 @@ typedef struct SparkTpDeviceCollectiveSubmission
     uint32_t slot_index;
     uint32_t active_sequence_count;
     uint32_t flags;
+    uint32_t logical_sequence_count;
     uint32_t reserved0;
     uint64_t ordinal;
     const void *local_device;
