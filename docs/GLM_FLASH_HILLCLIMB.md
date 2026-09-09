@@ -1042,3 +1042,33 @@ this check. Existing ownership, ACK, tree arrival-order and logical-batch
 tests remain applicable. A later coordinated ABI change is still required
 for FP32 payloads, checked external binding capacities and new arithmetic
 hooks; this migration does not enable FP32 transport by itself.
+
+### KDA write-gate rounding boundary
+
+The saved PR893 GPU capture exposed another missing BF16 boundary. Upstream
+computes sigmoid on the BF16 beta projection and rounds its result to BF16
+before converting it to FP32 for recurrence. The Flash driver retained the
+unrounded sigmoid in its FP32 write-gate storage. LmBf16SigmoidRowsKernel
+now performs that rounding inside the existing single kernel launch;
+storage, recurrence and replay layouts remain unchanged. The ordinary
+FP32 sigmoid kernel retains its existing contract for other callers.
+
+With identical captured Q/K/V inputs at layer 0, rank 0, position 0, all
+four beta values differ from the rounded reference. Reconstructing the
+zero-initial-state recurrence with the reference beta produces relative
+state error 0.00145577 against the capture and changes 103 of 512 BF16 core
+outputs. This local attribution does not establish the cause of B8 token
+divergence or full-model error. The receipt and reproducer are
+`/private/tmp/ds4_glm_beta_attribution.json` and
+`/private/tmp/ds4_glm_beta_attribution.py`; input capture SHA256 is
+`6b40e07593957153f6b74335c0b650778b8dcc49a713210214b284f8f88107ff`.
+
+The earlier state comparison consumed the captured write gate and therefore
+could not detect this missing boundary. Compare each intermediate with its
+reference operation as well as checking the next operation with matched
+inputs. `python3 tests/test_bf16_sigmoid_host.py` runs the actual shared
+kernel for nine row/width combinations, including the captured logits,
+odd batches, saturation and buffer guards. Removing BF16 rounding fails
+the first case on all four logits. A host arithmetic pass is not GPU or
+serving qualification; repeat capture and batch consistency after a clean
+merged-main build and restart before accepting performance.
