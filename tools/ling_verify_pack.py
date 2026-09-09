@@ -138,8 +138,9 @@ def verify_pack(path: Path, tp_degree: int) -> Dict[str, Any]:
         for index in range(tensor_count):
             (kind, layer, payload_type, weight_codec, scale_encoding,
              group_count, rows, columns, payload_offset, payload_bytes,
-             scale_offset, scale_bytes) = struct.unpack("<IIIIIIIQQQQ",
-                                                        directory[index * ENTRY_BYTES:(index + 1) * ENTRY_BYTES])
+             scale_offset, scale_bytes) = struct.unpack_from("<IIIIIIIIQQQQ",
+                                                             directory,
+                                                             index * ENTRY_BYTES)
             entries.append(dict(kind=kind, layer=layer, payload_type=payload_type,
                                 weight_codec=weight_codec, scale_encoding=scale_encoding,
                                 group_count=group_count, rows=rows, columns=columns,
