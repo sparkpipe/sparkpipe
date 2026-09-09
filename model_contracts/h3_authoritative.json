@@ -183,8 +183,8 @@
    "arm": "h3.bf16.tp4pp4",
    "ranks": 16,
    "topology": "TP4 x PP4 on 16 sparks (operator topology ruling; TP4xPP1 4-spark island dropped)",
-   "port_base": 65160,
-   "port_base_note": "session_ports[a][b] = BASE + a*TP + b is degree^2 wide; TP4 reserves 16 ports (65160..65175). 65000 collided with ling TP16 @ 64900 (64900..65155).",
+   "port_base": "env-parameterized, pending fleet renumber",
+   "port_base_note": "session_ports[a][b] = BASE + a*TP + b is degree^2 wide (TP4 reserves 16 ports) and route-kind offsets (D2A +256 / TREE_ACK +512 / D2A_ACK +768, hard 65535 rejection) apply on top; 65000 collided with ling TP16 (64900..65155) and 65160 overflows via ACK offsets. The deployment generator reads the base from the environment with no frozen default; allocation is being re-planned with coredev.",
    "stagepacks": "h3.bf16.tp4pp4.rank<h>.sp for h in 0..15 + .sha256 sidecars",
    "collective": "tree allreduce SUM_BF16 within each TP4 stage group; PP boundaries carry bf16 activations"
   }
