@@ -177,10 +177,9 @@ static int embed_token(int id, float *out) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s allranks_dir [gen] [promptfile] [dumpfile dumptlayer]\n", argv[0]); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: %s allranks_dir [gen] [promptfile] [dumpprefix]\n", argv[0]); return 2; }
     int gen = argc > 2 ? atoi(argv[2]) : GEN;
     const char *dump_path = argc > 4 ? argv[4] : NULL;
-    int dump_layer = argc > 5 ? atoi(argv[5]) : -1;
 
     /* prompt ids come from the verified GGUF tokenizer (hy4_tokenize.py
      * encode, BOS prepended); the C side stays arithmetic-only */
@@ -479,9 +478,9 @@ int main(int argc, char **argv) {
                         il, ffn[0], ffn[1], ffn[2]);
             hc_distribute(streams[t], ffn, fpost);
             } /* end sparse-MoE branch */
-            if (dump_path && il == dump_layer) {
+            if (dump_path) {
                 char dname[1200];
-                snprintf(dname, sizeof(dname), "%s.t%d", dump_path, t);
+                snprintf(dname, sizeof(dname), "%s_L%d_t%d", dump_path, il, t);
                 FILE *df = fopen(dname, "wb");
                 if (df) {
                     fwrite(streams[t], 4, (size_t)HC * N_EMBD, df);
@@ -552,6 +551,8 @@ int main(int argc, char **argv) {
             for (int k = 0; k < 5; ++k)
                 fprintf(stderr, "MY_REFLOGIT %d %.6f\n", refids[k],
                         alllogits[refids[k]]);
+        }
+        {
             int top[5]; float tvv[5];
             for (int k = 0; k < 5; ++k) {
                 int bi = 0; float bv = -1e30f;

@@ -324,8 +324,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    const int T = 4;
-    const int tokens[4] = {802, 5466, 19405, 63357};
+    const int T = 5;
+    const int tokens[5] = {802, 5466, 19405, 63357, 299};
 
     float *d_streams_all, *d_flat, *d_mixes, *d_pre, *d_post, *d_red,
           *d_cur, *d_ss, *d_branch, *d_q, *d_qr, *d_qh_all, *d_gatev,
@@ -802,10 +802,10 @@ int main(int argc, char** argv) {
         }
         if (il % 10 == 0)
             printf("layer %d done\n", il), fflush(stdout);
-        if (il == 1 || il == 2 || il == 20 || il == 60) {
+        {
             const char* pfx = getenv("HY4_DUMP_PFX");
             if (pfx) {
-                for (int tk = 0; tk < T; tk += 3) {
+                for (int tk = 0; tk < T; ++tk) {
                     std::vector<float> slab((size_t)HC * N_EMBD);
                     cudaMemcpy(slab.data(),
                                d_streams_all + (size_t)tk * HC * N_EMBD,
