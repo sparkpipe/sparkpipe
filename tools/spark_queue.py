@@ -137,7 +137,7 @@ def terminal(reply):
 def conflicts(left, right):
     return bool((set(left["nodes"]) - set(left.get("released_nodes", []))) &
                 (set(right["nodes"]) - set(right.get("released_nodes", [])))) and (
-        left.get("resources", "gpu") == right.get("resources", "gpu") or
+        left.get("resources", "gpu") == right.get("resources", "gpu") == "gpu" or
         "exclusive" in {left.get("resources"), right.get("resources")})
 
 
