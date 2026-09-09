@@ -1,0 +1,3 @@
+#pragma once
+#define LAGUNA_LAYER_THREADS 256u
+#define LAGUNA_ATTN_THREADS 256u
