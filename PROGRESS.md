@@ -128,6 +128,22 @@ differ. They bind the kernels (criterion 4+).
   receipts, all component configs, transformer≡FL2VA/transformer digest proof, per-file
   digests, python env + minimax-h3 library revision discovery, publisher scripts,
   tokenizer location. Feeds criterion 1 (h3_authoritative.json pins).
+- 2026-09-10 (round 2): C3 closed (d07e51a receipt + audio-count reconciliation;
+  PROGRESS.md table updated). Slice geometry reconciled to the pinned contract
+  (fe80d68) — DESIGN §6's 480x832/96f guess was pre-source and the header asserts now
+  bind the 17n+5 law itself. C4 landed: oracle full V2 surface (9c88261), kernels +
+  validator + module host source (098502f), then three sparke-driven fixes: sha256sum
+  portability (ee28237), nvcc C++17 header compatibility + gate-residual shadow
+  (6786e8e), oracle include cleanup (2366558), scheduler extern-C guard (f3d86d3),
+  honest input scale + 2-ulp scheduler gate (c090041). V2 green as minimax-c4-v2-gate6.
+  Lane flow note: source now stages via /mnt/model-warm/staging/minimax-lane/<sha>.tgz
+  (scp + git archive) instead of ~100KB base64 cmd payloads — queue cmds stay tiny and
+  the 15-min TTL no longer bounds payload transfer. The TTL cap (15 min, queue rejects
+  anything larger) remains the binding constraint for long jobs and is the C9 data
+  point: a multi-minute video job cannot own a 15-min window end-to-end with setup;
+  the detached-chain/cursor pattern (round 1) or an idle-window reservation is needed.
+  C4 sparke runs observed: core+runtime lib build ~fast on GB10 (-j4, well under TTL);
+  module archive + validator run well under TTL.
 
 ## Criterion status (DESIGN.md §10)
 
@@ -135,10 +151,13 @@ differ. They bind the kernels (criterion 4+).
 | --- | --- | --- |
 | 1 | h3_authoritative.json + identity proof | **DONE** — commit c590436; identity REFUTED and recorded (per-tensor proof, pack top-level transformer/ only); revisions pinned (HF 42ed227e cross-evidenced, diffusers 3c221246, transformers 4.57.0.dev0); text_encoder shard digests still to append at pack time |
 | 2 | family headers compile, static asserts | **DONE** — 8ecf333 + 39081ce; cc -Werror clean; 61 kinds resolve; counts bind measured census (705+638+585+936) |
-| 3 | stagepack format + synthesize + real-shard rank-0 pack ≤1GB RSS | **IN PROGRESS** — format header + pack_synthesize (45GB synth smoke OK, SPARK_FAIL sites) + packer committed; real-shard rank-0 DiT pack running as detached chain minimax-c3-pack-010..014 (warm pool measured 2.8 MB/s under cross-lane contention — 15-min ttl forced the resume/cursor design, commit 176f66a); dry-run census confirmed on sparke: encoder 705, dit 638 (stage split 187/156/156/139), video 585, audio 936; fix pending: SparkMinimaxH3StagePackAudioTensorCount must return 936 (measured), not 937 |
-| 4 | CPU oracle + V2 gate | **PARTIAL** — oracle primitives committed (bc68a8f), self-check green; CUDA kernels + validation not started |
-| 5-8 | V3/V4/V5 gates, module build | pending |
-| 9 | cell E2E | pending — 16-spark TP4×PP4, port base env-parameterized pending fleet renumber |
+| 3 | stagepack format + synthesize + real-shard rank-0 pack ≤1GB RSS | **DONE** — format header + pack_synthesize + packer committed; rank-0 DiT-section pack from real shards: 187 tensors, 12378247520 bytes, sha256 9edfe594…, peak RSS 617.0 MiB (≤1GB law), 19.6s elapsed (~590 MB/s once cross-lane pool contention cleared; the 2.8 MB/s probe was contention, not the pool's rate). Audio count reconciled: packer-measured 936 is authoritative, 937 overcounted the pre_block norms (d07e51a) |
+| 4 | CPU oracle + V2 gate | **DONE** — oracle full V2 surface (adaLN affine, gate-residual, silu-mul, conv2d 3x3 reflect, dilated conv1d, snake + round-1 rope/attention/scheduler) with self-check green; 8 module-local CUDA kernels (rope3d, dense bidirectional flash-style attention with DETERMINISTIC accumulation — no atomics, adaln affine, gate-residual, silu-mul, conv2d3x3 reflect, conv1d dil 1/3, snake) + validator; **V2 gate GREEN on sparke GB10** (queue minimax-c4-v2-gate6, exit 0): all 9 kernel comparisons within rel_l2≤2e-2 / cosine≥0.9999 (worst rel_l2 0.0018, worst max_abs 0.0077 at unit scale); scheduler parity shift 3.0 bit-identical, shift 12.0 within 2 ulp (cc vs nvcc host fma contraction — honest-labeled, not memcmp-faked); slice geometry reconciled to pinned contract 480x864/124f/37x15x27/414 audio rows (fe80d68) |
+| 5 | V3 real-weights block gate | **BLOCKED ON ANCHORS** — the independent anchor-debugger lane (batch-minimax-val) has staged `validation/anchors/{pinned_source,landed_snapshot}` but no diffusers-derived fixture tensors yet. Fixture contract (proposed, for that lane to produce; do NOT let this lane write its own diffusers reference — independence is the point): `validation/anchors/fixtures/h3_v3/` containing `block0_io.npz` (keys: `hidden_in` [S,5376] bf16/f32, `temb` [2688] f32, `hidden_out` [S,5376] f32, for one real DiT block 0 forward at a stated seed/timestep) + `encoder_last_hidden.npz` (prompt ids + `hidden_states[50]` harvest) + a `manifest.json` (diffusers commit, input hashes, tolerances). Our consumer gate: load fixture, run OUR block-0 path on the same bf16 inputs, rel ≤ 1e-2. Structure the validator to read these files when present; until then V3 stays blocked and every other criterion proceeds. |
+| 6 | V4 VAE decode gates | pending (video ≤2/255, audio stated tolerance; needs V3-class anchors for the decode path + our decode kernels) |
+| 7 | module build + offline-gates | **PARTIAL** — module archive builds through the repo flow on sparke (`make archive`, nvcc sm_121a object in archive, proven by the V2 runs); remaining: root module_library wiring + `make offline-gates` exit 0 + code-size ratchet |
+| 8 | V5 determinism | pending — attention kernel accumulation order is deterministic by construction (per-element serial tile sums, no atomics); 2x same-seed latents + TP4-vs-TP1 mini-DiT need the cell |
+| 9 | cell E2E | pending — 16-spark TP4×PP4, port base env-parameterized pending fleet renumber; ABI seam instrumentation numbers to be captured at the live run |
 | 10 | fail-closed tests + report + manifest | pending |
 
 ## ABI seam instrumentation (ruling 3) — to be filled with measured numbers
