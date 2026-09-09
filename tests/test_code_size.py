@@ -1479,6 +1479,16 @@ CEILING = 240999
 # at degree 16), keepalive gains the optional tile_k pass-through for the
 # expert_tile_k=32 TP16 pack builds (+31/-18 with concurrent-lane in-flight
 # growth in the shared checkout). Measured exact: 233574.
+# dsv4flash lane (2026-09-09 late, 90862a3): consolidation onto the family
+# .experts manifest producer (from #824) DELETES the flash-specific variant
+# (-302 raw) in favor of the shared comment-free producer (+254 raw) + the
+# Makefile rule (+3). Authored lines net +63 because the deleted file's raw
+# count was dominated by doc comments; the replacement's extra counted lines
+# are load-bearing checks the flash variant lacked (family-geometry pack
+# rejection, range-cap precheck, shared-loader self-verify before the atomic
+# rename). Shrinking further would delete named failure modes, not fat.
+# Measured exact at this tip: 241062.
+CEILING = 241062
 
 
 ROOT = Path(__file__).resolve().parent.parent
