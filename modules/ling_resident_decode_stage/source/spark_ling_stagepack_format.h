@@ -363,11 +363,21 @@ static inline int32_t SparkLingStagePackExpectedShape(uint32_t tensor_kind,uint3
         return(-6);
     if ( spec->codec_from_arg != 0u )
     {
-        if ( expert_codec < SPARK_WEIGHT_CODEC_INT6 || expert_codec > SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
+        if ( expert_codec != SPARK_WEIGHT_CODEC_BF16 &&
+            (expert_codec < SPARK_WEIGHT_CODEC_INT6 || expert_codec > SPARK_WEIGHT_CODEC_MXFP4_E2M1) )
             return(-5);
-        shape->payload_type = spec->payload_type;
-        shape->weight_codec = expert_codec;
-        shape->scale_encoding = SparkWeightCodecScaleEncoding(expert_codec);
+        if ( expert_codec == SPARK_WEIGHT_CODEC_BF16 )
+        {
+            shape->payload_type = SPARK_LING_STAGEPACK_PAYLOAD_BF16;
+            shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
+            shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
+        }
+        else
+        {
+            shape->payload_type = spec->payload_type;
+            shape->weight_codec = expert_codec;
+            shape->scale_encoding = SparkWeightCodecScaleEncoding(expert_codec);
+        }
     }
     else
     {

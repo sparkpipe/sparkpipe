@@ -2,6 +2,7 @@
 #define _FILE_OFFSET_BITS 64
 
 #include "spark_ling_stagepack_format.h"
+#include "sparkpipe/spark_error_site.h"
 
 
 #define SPARK_LING_SYNTHESIZE_MAX_TENSORS 2048u
@@ -31,7 +32,9 @@ typedef struct SparkLingSynthesizeContext
 #define SPARK_SYNTH_PACKED_NAN_MASK 0x7Fu
 #define SPARK_SYNTH_F32_FORMAT SPARK_LING_STAGEPACK_PAYLOAD_F32
 #define SPARK_SYNTH_FILL_SCALE(entry, buffer, bytes, state) \
-	SparkSynthFillScaleF32Blocks((buffer),(bytes),(state))
+	((entry)->scale_encoding == SPARK_WEIGHT_SCALE_ENCODING_F32 ? \
+		SparkSynthFillScaleF32Blocks((buffer),(bytes),(state)) : \
+		SparkSynthFillScaleBytes((buffer),(bytes),(state)))
 
 #include "sparkpipe/spark_pack_synthesize_common.h"
 
@@ -127,7 +130,7 @@ int main(int argc, char **argv)
 {
 	SparkLingStagePackHeader header;
 	SparkLingSynthesizeContext context;
-	const char *output = "ling_stage.g5nsp";
+	const char *output = "ling_stage.lspk";
 	const char *revision = "synthesized";
 	const char *contract = 0;
 	FILE *file;
@@ -161,7 +164,8 @@ int main(int argc, char **argv)
 		else if ( strcmp(argument,"--expert-codec") == 0 && index + 1u < (uint32_t)argc )
 		{
 			const char *name = argv[++index];
-			context.expert_codec = strcmp(name,"int6") == 0 ? SPARK_WEIGHT_CODEC_INT6 :
+			context.expert_codec = strcmp(name,"bf16") == 0 ? SPARK_WEIGHT_CODEC_BF16 :
+				strcmp(name,"int6") == 0 ? SPARK_WEIGHT_CODEC_INT6 :
 				strcmp(name,"int7") == 0 ? SPARK_WEIGHT_CODEC_INT7 :
 				strcmp(name,"int8") == 0 ? SPARK_WEIGHT_CODEC_INT8 :
 				strcmp(name,"fp8") == 0 ? SPARK_WEIGHT_CODEC_FP8_E4M3 :
@@ -203,19 +207,19 @@ int main(int argc, char **argv)
 	if ( status != 0 )
 	{
 		fprintf(stderr,"inventory build failed: %d\n",status);
-		return(1);
+		return(11);
 	}
 	file = fopen(output,"wb");
 	if ( file == 0 )
 	{
 		fprintf(stderr,"cannot open '%s' for writing\n",output);
-		return(1);
+		return(12);
 	}
 	chunk = (uint8_t *)malloc(SPARK_LING_SYNTHESIZE_CHUNK_BYTES);
 	if ( chunk == 0 )
 	{
 		fclose(file);
-		return(1);
+		SPARK_FAIL(13);
 	}
 	memset(&header,0,sizeof(header));
 	header.magic = SPARK_LING_STAGEPACK_MAGIC;
@@ -249,7 +253,7 @@ int main(int argc, char **argv)
 		fprintf(stderr,"header write failed\n");
 		free(chunk);
 		fclose(file);
-		return(1);
+		SPARK_FAIL(14);
 	}
 	for (index = 0; index < context.entry_count; index++)
 		if ( fwrite(&context.entries[index],sizeof(context.entries[index]),1,file) != 1u )
@@ -257,20 +261,20 @@ int main(int argc, char **argv)
 			fprintf(stderr,"directory write failed at %u\n",index);
 			free(chunk);
 			fclose(file);
-			return(1);
+			SPARK_FAIL(15);
 		}
 	if ( SparkSynthWriteEntries(&context,file,chunk) < 0 )
 	{
 		fprintf(stderr,"payload write failed\n");
 		free(chunk);
 		fclose(file);
-		return(1);
+		SPARK_FAIL(16);
 	}
 	if ( fseeko(file,0,SEEK_END) != 0 )
 	{
 		free(chunk);
 		fclose(file);
-		return(1);
+		SPARK_FAIL(17);
 	}
 	header.file_bytes = (uint64_t)ftello(file);
 	if ( fseeko(file,0,SEEK_SET) != 0 ||
@@ -278,7 +282,7 @@ int main(int argc, char **argv)
 	{
 		free(chunk);
 		fclose(file);
-		return(1);
+		SPARK_FAIL(18);
 	}
 	free(chunk);
 	fclose(file);
