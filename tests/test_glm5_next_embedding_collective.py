@@ -15,10 +15,12 @@ typedef struct
     SparkTpDeviceCollective tp_device_collective,tp_device_collective_hc;
 } SparkGlm5NextModuleState;
 typedef struct { void *stream; } TestSlot;
+typedef struct { uint32_t active_sequence_count; } TestBatch;
 typedef struct
 {
     SparkGlm5NextModuleState *state;
     TestSlot *slot;
+    TestBatch *batch;
     uint32_t tp_hc_op_index,tp_op_index,slot_index,wave_rows;
 } SparkGlm5NextTpChain;
 static uint32_t advanced,enqueued;
@@ -56,6 +58,7 @@ int main(void)
 {
     SparkGlm5NextModuleState state = {0};
     TestSlot slot = {0};
+    TestBatch batch = {0};
     SparkGlm5NextTpChain chain = {0};
     SparkTpDeviceCollectiveCompletion completion = {0};
     uint16_t hidden[16] = {0};
@@ -65,10 +68,12 @@ int main(void)
     state.tp_device_collective_hc_initialized = 1u;
     chain.state = &state;
     chain.slot = &slot;
+    chain.batch = &batch;
     slot.stream = hidden;
     for (rows=1u; rows<=3u; rows+=2u)
     {
         chain.wave_rows = rows;
+        batch.active_sequence_count = 3u;
         advanced = enqueued = 0u;
         chain.tp_hc_op_index = 0u;
         if ( SparkGlm5NextModuleReduceHiddenWide(&chain,hidden,1u) != SPARK_STATUS_OK )
@@ -79,6 +84,8 @@ int main(void)
             return(3);
         if ( observed.completion_function == 0 || observed.completion_context != &chain )
             return(4);
+        if ( observed.logical_sequence_count != 3u )
+            return(8);
         observed.completion_function(observed.completion_context,&completion);
         if ( advanced != 1u )
             return(5);

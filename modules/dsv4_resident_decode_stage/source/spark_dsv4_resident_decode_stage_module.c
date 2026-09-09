@@ -93,6 +93,7 @@ typedef struct SparkDsv4CompressorScratch
 
 struct SparkDsv4ModuleSlot
 {
+	uint32_t logical_sequence_count;
 	void *cuda_stream;
 	SparkStageModuleCudaFork compute_fork;
 	SparkStageModuleCudaReadAhead weight_read_ahead;
@@ -2446,6 +2447,7 @@ static SparkStatus SparkDsv4ModuleStageRows(
 	uint32_t lane_count)
 {
 	SparkStatus status;
+	slot->logical_sequence_count = lane_count;
 	status = SparkDsv4ModuleStageRowValues(state,slot,token_ids,row_lane_indices,row_positions,row_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleStageRowCopies(state,slot,row_count,lane_count);
@@ -2883,6 +2885,7 @@ static SparkStatus SparkDsv4ModuleReduceHidden(
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = (uint32_t)(slot - state->slots);
 	submission.active_sequence_count = rows;
+	submission.logical_sequence_count = slot->logical_sequence_count;
 	submission.flags =
 		SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
@@ -3732,6 +3735,7 @@ static SparkStatus SparkDsv4ModuleReduceHeadMax(
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = (uint32_t)(slot - state->slots);
 	submission.active_sequence_count = continuation->rows;
+	submission.logical_sequence_count = slot->logical_sequence_count;
 	submission.flags =
 		SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;

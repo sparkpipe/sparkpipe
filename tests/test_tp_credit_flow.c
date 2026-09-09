@@ -124,6 +124,7 @@ static void test_pending(uint32_t failure)
 	submission.slot_index = 1u;
 	submission.ordinal = 8u;
 	submission.active_sequence_count = 1u;
+	submission.logical_sequence_count = 1u;
 	submission.local_device = submission.full_device = payload;
 	submission.cuda_stream = stream;
 	submission.completion_function = test_pending_completion;
@@ -207,6 +208,18 @@ static void test_tree_topology(uint32_t degree)
 		assert(stages[rank] == TREE_STAGES && values[rank] == (1u << degree) - 1u);
 }
 
+static SparkStatus test_group_combine(void *context,void *destination,const void *const ranks[SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT],uint32_t local,uint32_t rows,uint32_t width,void *stream)
+{
+	(void)context;
+	(void)destination;
+	(void)ranks;
+	(void)local;
+	(void)rows;
+	(void)width;
+	(void)stream;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
 static void test_configuration(uint32_t credits,uint32_t degree)
 {
 	SparkTpDeviceCollectiveConfig config;
@@ -228,6 +241,7 @@ static void test_configuration(uint32_t credits,uint32_t degree)
 	config.local_host = "rank0";
 	config.registration_cuda_stream = &config;
 	config.combine_bf16_function = test_combine;
+	config.combine_tp4_bf16_function = test_group_combine;
 	for (index=0u; index<16u; index++)
 		config.rank_hosts[index] = "test";
 	for (route=0u; route<tree_route_count(0u,degree); route++)

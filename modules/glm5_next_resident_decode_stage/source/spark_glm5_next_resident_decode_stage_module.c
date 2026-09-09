@@ -2107,6 +2107,7 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = chain->slot_index;
 	submission.active_sequence_count = chain->wave_rows;
+	submission.logical_sequence_count = chain->batch->active_sequence_count;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
 	submission.local_device = device_bf16;
@@ -2151,6 +2152,7 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = chain->slot_index;
 	submission.active_sequence_count = chain->wave_rows;
+	submission.logical_sequence_count = chain->batch->active_sequence_count;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
 	submission.local_device = chain->slot->head_maxloc_u64;

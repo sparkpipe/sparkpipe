@@ -104,6 +104,9 @@ static void TestNcclRank(uint32_t rank,uint16_t port)
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = rank;
 	submission.active_sequence_count = 2u;
+	submission.logical_sequence_count = 0u;
+	assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.logical_sequence_count = 2u;
 	submission.ordinal = 0u;
 	submission.local_device = values;
 	submission.full_device = values;
@@ -118,6 +121,7 @@ static void TestNcclRank(uint32_t rank,uint16_t port)
 		SPARK_STATUS_VALIDATION_FAILED);
 	submission.ordinal = 1u;
 	submission.active_sequence_count = 1u;
+	submission.logical_sequence_count = 1u;
 	maxloc[0] = UINT64_C(0xbf800000ffffffd5);
 	maxloc[1] = UINT64_C(0x3f800000ffffffea);
 	reduced[0] = 0u;
@@ -130,6 +134,7 @@ static void TestNcclRank(uint32_t rank,uint16_t port)
 	assert(reduced[0] == maxloc[0] && reduced[1] == 0u);
 	submission.ordinal = 2u;
 	submission.active_sequence_count = 2u;
+	submission.logical_sequence_count = 2u;
 	submission.local_device = values;
 	submission.full_device = values;
 	assert(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==

@@ -121,6 +121,7 @@ int main(int argc, char **argv)
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = 0u;
 	submission.active_sequence_count = 1u;
+	submission.logical_sequence_count = 1u;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.local_device = partial;
 	submission.full_device = partial;
