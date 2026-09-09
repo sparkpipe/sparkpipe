@@ -42,6 +42,7 @@ build/sparkpipe_model_compile \
     --cc-arg -L/usr/local/cuda/targets/sbsa-linux/lib \
     --cc-arg build/obj/src/spark_speculation_policy.o \
     --cc-arg build/obj/src/spark_speculation_seam.o \
+    --cc-arg build/obj/ring/transport/draft_bridge.o \
     --cc-arg -lcuda --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm \
     --cc-arg -ldl --cc-arg -pthread
 mkdir -p "$output/bin" "$output/lib" "$output/config"
