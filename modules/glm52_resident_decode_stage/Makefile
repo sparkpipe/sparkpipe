@@ -1,3 +1,5 @@
+include ../../runtime/weightd_sources.mk
+
 ifndef EXPERT_CODEC
 $(error EXPERT_CODEC is required: int6, int7, int8, fp8, nvfp4, or mxfp4)
 endif
@@ -51,7 +53,8 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
-	../../ring/transport/tp_device_collective.c
+	../../ring/transport/tp_device_collective.c \
+	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES))
 MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DGLM52_EXPERT_WEIGHT_CODEC=$(GLM52_EXPERT_CODEC_ID) -DGLM52_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM52_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM52_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
 

@@ -18,6 +18,9 @@
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
+#include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd_lazy_pack.h"
+#include "sparkpipe/spark_weightd_manifest.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
 
@@ -114,6 +117,7 @@ struct SparkGlm52ModuleState
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
 	char kv_backing_default[256];
+	SparkWeightdLazyPack *lazy_pack;
 	SparkGlm52ExecutionSlot slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm52AsyncCompletion completions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -367,10 +371,11 @@ static void SparkGlm52PackMarkSeen(
 
 static SparkStatus SparkGlm52PackAssignLayer(
 	SparkGlm52LayerWeights *weights,
-	uint32_t tensor_kind,
+	const SparkGlm52StagePackEntry *entry,
 	const void *payload,
 	const void *scale)
 {
+	uint32_t tensor_kind = entry->tensor_kind;
 	switch ( tensor_kind )
 	{
 	case SPARK_GLM52_STAGEPACK_TENSOR_ATTN_NORM: weights->attn_norm_bf16 = payload; break;
@@ -392,8 +397,8 @@ static SparkStatus SparkGlm52PackAssignLayer(
 	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN: weights->dense_down_bf16 = payload; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_ROUTER: weights->router_bf16 = payload; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_ROUTER_CORRECTION: weights->router_correction_f32 = (const float *)payload; break;
-	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; break;
-	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; weights->expert_up_gate_payload_offset = entry->payload_offset; weights->expert_up_gate_scale_offset = entry->scale_offset; break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; weights->expert_down_payload_offset = entry->payload_offset; weights->expert_down_scale_offset = entry->scale_offset; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP: weights->shared_gate_up_bf16 = payload; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN: weights->shared_down_bf16 = payload; break;
 	default: return(SPARK_STATUS_SCHEMA_ERROR);
@@ -408,7 +413,7 @@ static SparkStatus SparkGlm52PackAssign(
 	const void *scale)
 {
 	if ( entry->layer_index != SPARK_GLM52_STAGEPACK_GLOBAL_LAYER )
-		return(SparkGlm52PackAssignLayer(&state->layers[entry->layer_index - state->first_layer_index],entry->tensor_kind,payload,scale));
+		return(SparkGlm52PackAssignLayer(&state->layers[entry->layer_index - state->first_layer_index],entry,payload,scale));
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_GLM52_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
@@ -416,6 +421,103 @@ static SparkStatus SparkGlm52PackAssign(
 	case SPARK_GLM52_STAGEPACK_TENSOR_LM_HEAD: state->lm_head_bf16 = payload; return(SPARK_STATUS_OK);
 	default: return(SPARK_STATUS_SCHEMA_ERROR);
 	}
+}
+
+typedef struct SparkGlm52ManifestContext
+{
+	const SparkGlm52StagePackEntry *entries;
+	uint32_t count;
+} SparkGlm52ManifestContext;
+
+/* FP8-only on the lazy path: the shared lazy pack currently qualifies
+ * the FP8 codec; BF16 keeps the resident eager load. */
+static SparkStatus SparkGlm52ManifestPlane(const SparkWeightdManifest *manifest,const SparkGlm52StagePackEntry *entry,uint32_t plane)
+{
+	const SparkWeightdRangeGroup *group = 0;
+	const SparkWeightdRange *ranges = manifest->ranges;
+	uint64_t per,base;
+	uint32_t expert,index;
+	for (index=0u; index<manifest->group_count; index++)
+	{
+		if ( manifest->groups[index].layer == entry->layer_index &&
+			manifest->groups[index].expert < entry->group_count )
+		{
+			group = &manifest->groups[index];
+			break;
+		}
+	}
+	if ( group == 0 || group->range_count != entry->group_count )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	base = plane == 0u ? entry->payload_offset : entry->scale_offset;
+	per = (plane == 0u ? entry->payload_bytes : entry->scale_bytes) / entry->group_count;
+	if ( per == 0u )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (expert=0u; expert<entry->group_count; expert++)
+	{
+		uint32_t first = group->first_range + expert;
+		if ( expert >= group->range_count || first >= manifest->range_count )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		if ( ranges[first].layer != entry->layer_index || ranges[first].expert != expert ||
+			ranges[first].offset != (base + ((uint64_t)expert * per)) || ranges[first].bytes != per )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm52ManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
+{
+	const SparkGlm52ManifestContext *context = (const SparkGlm52ManifestContext *)opaque;
+	const SparkGlm52StagePackEntry *entry;
+	SparkStatus status;
+	uint64_t expected = 0u;
+	uint32_t index,plane;
+	for (index=0u; index<context->count; index++)
+	{
+		entry = &context->entries[index];
+		if ( entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
+			continue;
+		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
+			return(SPARK_STATUS_UNSUPPORTED);
+		for (plane=0u; plane<2u; plane++)
+		{
+			status = SparkGlm52ManifestPlane(manifest,entry,plane);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			expected += entry->group_count;
+		}
+	}
+	return(expected == manifest->range_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
+}
+
+static SparkStatus SparkGlm52LazyOpen(SparkGlm52ModuleState *state,const char *path,uint64_t bytes,const SparkGlm52StagePackEntry *entries,uint32_t count)
+{
+	SparkWeightdLazyAttachRequest request;
+	SparkGlm52ManifestContext context = {entries,count};
+	SparkStatus status;
+	const char *digest;
+	uint64_t spine_budget;
+	status = SparkWeightdAttachRequested();
+	if ( status == SPARK_STATUS_BUSY )
+		return(SPARK_STATUS_OK);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&request,0,sizeof(request));
+	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memcpy(request.identity.pack_sha256,digest,65u);
+	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_GLM52_MODULE_TAG);
+	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);
+	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+	request.identity.arena_bytes = bytes;
+	request.identity.topology = state->tp_degree;
+	memcpy(request.pack_path,path,strlen(path) + 1u);
+	status = SparkStageModuleEnvironmentUnsigned64(SPARK_GLM52_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned64(SPARK_GLM52_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,&spine_budget);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm52ManifestCheck,&context,&state->lazy_pack);
+	return(status);
 }
 
 static SparkStatus SparkGlm52PackLoadEntry(
@@ -427,6 +529,21 @@ static SparkStatus SparkGlm52PackLoadEntry(
 	SparkStatus status;
 	payload = 0;
 	scale = 0;
+	if ( state->lazy_pack != 0 )
+	{
+		/* Lazy: routed experts stay in the arena's sparse address space
+		 * and materialize through per-wave acquisition; retain pack
+		 * offsets for lease binding. Non-expert tensors come from the
+		 * compact spine. */
+		if ( entry->tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry->tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
+			return(SparkGlm52PackAssign(state,entry,0,0));
+		status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->payload_offset,entry->payload_bytes,(const void **)&payload);
+		if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
+			status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->scale_offset,entry->scale_bytes,(const void **)&scale);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm52PackAssign(state,entry,payload,scale);
+		return(status);
+	}
 	status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,entry->payload_bytes,&payload);
 	if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
 		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,entry->scale_bytes,&scale);
@@ -504,6 +621,8 @@ static SparkStatus SparkGlm52PackLoad(
 		status = SparkGlm52PackValidateRanges(entries,header.tensor_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52PackValidateInventory(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52LazyOpen(state,path,file_bytes,entries,header.tensor_count);
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
 		status = SparkGlm52PackLoadEntry(state,file,&entries[index]);
 	if ( fclose(file) != 0 && status == SPARK_STATUS_OK )
@@ -571,6 +690,12 @@ static void SparkGlm52ReleaseSlotHost(SparkGlm52ModuleState *state)
 		if ( state->slots[index].host_staging != 0 )
 			(void)cudaFreeHost(state->slots[index].host_staging);
 		state->slots[index].host_staging = 0;
+		if ( state->slots[index].group_row_offset_host != 0 )
+			(void)cudaFreeHost(state->slots[index].group_row_offset_host);
+		state->slots[index].group_row_offset_host = 0;
+		if ( state->slots[index].route_ready_event != 0 )
+			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].route_ready_event);
+		state->slots[index].route_ready_event = 0;
 	}
 }
 
@@ -636,6 +761,18 @@ static SparkStatus SparkGlm52AllocateSlotMlp(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_row_offset);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_tile_prefix_w1);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_tile_prefix_w2);
+	if ( status == SPARK_STATUS_OK )
+	{
+		cudaError_t error = cudaHostAlloc((void **)&slot->group_row_offset_host,(SPARK_GLM52_MODEL_MOE_EXPERT_COUNT + 1u) * sizeof(uint32_t),cudaHostAllocPortable);
+		if ( error != cudaSuccess )
+			status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"group_row_offset_host");
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		cudaError_t error = cudaEventCreateWithFlags(&slot->route_ready_event,cudaEventDisableTiming);
+		if ( error != cudaSuccess )
+			status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"route_ready_event");
+	}
 	SPARK_RETURN(status);
 }
 
@@ -1096,10 +1233,19 @@ typedef struct SparkGlm52TpChain
 	uint32_t stage;
 	uint32_t next_layer;
 	uint32_t active;
+	uint64_t expert_lease;
+	uint32_t expert_lease_begun;
+	uint32_t expert_lease_recorded;
+	SparkStatus retained_status;
 } SparkGlm52TpChain;
+
+/* Retained lazy chains awaiting lease recovery, keyed by pipeline slot. */
+static SparkGlm52TpChain *SparkGlm52LazyRetained[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status);
 static void CUDART_CB SparkGlm52CompleteAsync(void *context);
+static SparkStatus SparkGlm52LazyRelease(SparkGlm52TpChain *chain);
+static void SparkGlm52LazyRetryRetained(void *context);
 static SparkStatus SparkGlm52EnqueueAsyncCompletion(
 	SparkGlm52ModuleState *state,
 	SparkGlm52ExecutionSlot *slot,
@@ -1250,7 +1396,7 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
+		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 		if ( credit_bytes == 0u || total_bytes > UINT64_MAX - credit_bytes * configuration.credit_count )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		total_bytes += credit_bytes * configuration.credit_count;
@@ -1291,7 +1437,7 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
+		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 		for (credit=0u; credit<configuration.credit_count; credit++)
 		{
 			SparkTpDeviceCollectiveCreditBinding *binding;
@@ -1413,6 +1559,109 @@ static void SparkGlm52TpChainFail(SparkGlm52TpChain *chain,SparkStatus status)
 	free(chain);
 }
 
+static SparkStatus SparkGlm52LazyRelease(SparkGlm52TpChain *chain)
+{
+	SparkWeightdMap *map = chain->state->lazy_pack->map;
+	SparkStatus status;
+	if ( chain->expert_lease == 0u )
+		return(SPARK_STATUS_OK);
+	if ( chain->expert_lease_begun != 0u )
+	{
+		if ( chain->expert_lease_recorded == 0u )
+		{
+			status = SparkWeightdMapRecordCompletion(map,chain->expert_lease,(cudaStream_t)chain->slot->stream);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			chain->expert_lease_recorded = 1u;
+			chain->wave.expert_lease_base = 0;
+		}
+		if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
+			return(SPARK_STATUS_IO_ERROR);
+	}
+	status = SparkWeightdMapRelease(map,chain->expert_lease,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK )
+	{
+		chain->expert_lease = 0u;
+		chain->expert_lease_begun = 0u;
+		chain->expert_lease_recorded = 0u;
+		chain->wave.expert_lease_base = 0;
+	}
+	return(status);
+}
+
+static SparkStatus SparkGlm52LazyRecoverLease(SparkGlm52ModuleState *state,uint32_t slot,SparkGlm52TpChain **out)
+{
+	(void)state;
+	SparkGlm52TpChain *chain;
+	SparkStatus status = SPARK_STATUS_OK;
+	*out = 0;
+	chain = __atomic_exchange_n(&SparkGlm52LazyRetained[slot],0,__ATOMIC_ACQ_REL);
+	if ( chain == 0 )
+		return(SPARK_STATUS_NOT_FOUND);
+	if ( chain->expert_lease != 0u )
+		status = SparkGlm52LazyRelease(chain);
+	if ( status != SPARK_STATUS_OK )
+		__atomic_store_n(&SparkGlm52LazyRetained[slot],chain,__ATOMIC_RELEASE);
+	else
+		*out = chain;
+	return(status);
+}
+
+static void SparkGlm52LazyRetryRetained(void *context)
+{
+	SparkGlm52ModuleState *state = (SparkGlm52ModuleState *)context;
+	SparkGlm52TpChain *chain;
+	uint32_t slot;
+	for (slot=0u; slot<state->pipeline_slot_count; slot++)
+		if ( SparkGlm52LazyRecoverLease(state,slot,&chain) == SPARK_STATUS_OK )
+			SparkGlm52TpChainFail(chain,chain->retained_status);
+}
+
+static SparkStatus SparkGlm52LazyExperts(SparkGlm52TpChain *chain)
+{
+	SparkWeightdExpertKey keys[SPARK_GLM52_MODEL_MOE_EXPERT_COUNT];
+	SparkWeightdMap *map = chain->state->lazy_pack->map;
+	SparkStatus status;
+	void *address = 0;
+	uint32_t count = 0u;
+	if ( chain->slot->route_recorded == 0u || cudaEventSynchronize((cudaEvent_t)chain->slot->route_ready_event) != cudaSuccess )
+		return(SPARK_STATUS_IO_ERROR);
+	status = SparkWeightdRouteKeys(chain->wave.first_layer_index + chain->next_layer,chain->slot->group_row_offset_host,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT,chain->wave.row_count * SPARK_GLM52_MODEL_MOE_TOP_K,keys,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT,&count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdMapAcquire(map,keys,count,&chain->expert_lease,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdMapBeginUse(map,chain->expert_lease,&address);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	chain->expert_lease_begun = 1u;
+	chain->wave.expert_lease_base = (const uint8_t *)address;
+	chain->wave.expert_lease_local_layer = chain->next_layer;
+	if ( SparkGlm52LaunchCudaLayerMlpExperts(&chain->wave,chain->next_layer) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm52LazyWork(void *context)
+{
+	SparkGlm52TpChain *chain = (SparkGlm52TpChain *)context;
+	SparkStatus status,cleanup;
+	status = SparkGlm52LazyExperts(chain);
+	cleanup = SparkGlm52LazyRelease(chain);
+	if ( cleanup == SPARK_STATUS_IO_ERROR || cleanup == SPARK_STATUS_BUSY )
+		cleanup = SparkGlm52LazyRelease(chain);
+	if ( cleanup != SPARK_STATUS_OK )
+	{
+		chain->retained_status = status != SPARK_STATUS_OK ? status : cleanup;
+		fprintf(stderr,"GLM expert cleanup failed: slot=%u lease=%llu status=%d; retaining slot and lease for teardown retry\n",chain->slot_index,(unsigned long long)chain->expert_lease,(int32_t)cleanup);
+		__atomic_store_n(&SparkGlm52LazyRetained[chain->slot_index],chain,__ATOMIC_RELEASE);
+		return;
+	}
+	if ( status != SPARK_STATUS_OK )
+		SparkGlm52TpChainFail(chain,status);
+	else
+		SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
+}
+
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 {
 	SparkGlm52TpChain *chain;
@@ -1459,6 +1708,18 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM52_CHAIN_STAGE_MLP:
+		if ( state->lazy_pack != 0 && (chain->wave.first_layer_index + chain->next_layer) >= SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER )
+		{
+			if ( SparkGlm52LaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 )
+			{
+				SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+				return;
+			}
+			launch_status = SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm52LazyWork,chain);
+			if ( launch_status != SPARK_STATUS_OK )
+				SparkGlm52TpChainFail(chain,launch_status);
+			return;
+		}
 		if ( SparkGlm52LaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1822,8 +2083,25 @@ static void SparkGlm52ModuleSnapshotExtend(
 static void SparkGlm52ModuleStateTeardown(void *module_state)
 {
 	SparkGlm52ModuleState *state;
+	uint32_t slot;
 	state = (SparkGlm52ModuleState *)module_state;
 	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
+	for (slot=0u; slot<state->pipeline_slot_count; slot++)
+	{
+		SparkGlm52TpChain *chain = 0;
+		(void)SparkGlm52LazyRecoverLease(state,slot,&chain);
+	}
+	if ( state->lazy_pack != 0 )
+	{
+		if ( state->lazy_pack->worker != 0 )
+		{
+			if ( SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm52LazyRetryRetained,state) == SPARK_STATUS_OK )
+				(void)SparkWeightdWorkerWaitIdle(state->lazy_pack->worker,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS);
+		}
+		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
+			fprintf(stderr,"glm52 lazy pack teardown incomplete; retaining resources\n");
+		state->lazy_pack = 0;
+	}
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )

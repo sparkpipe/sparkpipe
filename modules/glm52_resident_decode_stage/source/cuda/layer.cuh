@@ -769,15 +769,13 @@ static int32_t Glm52LayerDenseMlp(
 }
 
 template<uint32_t ExpertCodec>
-static int32_t Glm52LayerMoe(
+static int32_t Glm52LayerMoeValidate(
     const Glm52LayerBuffers *buffers,
     uint32_t rows,
     uint32_t packed_rows,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
+    uint32_t require_expert_weights)
 {
     using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
-    LmGemmArguments gemm;
     int32_t status;
 
     static_assert(ExpertFormat::kScaleGroup == 0u ||
@@ -796,10 +794,6 @@ static int32_t Glm52LayerMoe(
         buffers->group_row_offset == 0 ||
         buffers->group_tile_prefix_w1 == 0 ||
         buffers->group_tile_prefix_w2 == 0 ||
-        buffers->expert_w1_weight == 0 ||
-        (ExpertCodec != SPARK_WEIGHT_CODEC_BF16 && buffers->expert_w1_scale == 0) ||
-        buffers->expert_w2_weight == 0 ||
-        (ExpertCodec != SPARK_WEIGHT_CODEC_BF16 && buffers->expert_w2_scale == 0) ||
         buffers->expert_out_bf16 == 0 || buffers->gate_up_bf16 == 0 ||
         buffers->intermediate_bf16 == 0 || buffers->hidden_bf16 == 0 ||
         buffers->shared_gate_up_weight == 0 ||
@@ -807,6 +801,38 @@ static int32_t Glm52LayerMoe(
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
+    if (require_expert_weights != 0u)
+    {
+        /* Lazy execution binds expert pointers from the acquired lease
+         * immediately before this call; a missing pointer means the
+         * route was not materialized and must fail the submission. */
+        if (buffers->expert_w1_weight == 0 ||
+            (ExpertCodec != SPARK_WEIGHT_CODEC_BF16 && buffers->expert_w1_scale == 0) ||
+            buffers->expert_w2_weight == 0 ||
+            (ExpertCodec != SPARK_WEIGHT_CODEC_BF16 && buffers->expert_w2_scale == 0))
+        {
+            return LM_LAUNCH_ERR_SHAPE;
+        }
+    }
+    (void)status;
+    return LM_LAUNCH_OK;
+}
+
+/* Route half: post-attention RMS norm, router GEMM, top-k selection and
+ * route grouping. Reads no expert weights, so lazy execution can run it
+ * before acquisition and acquire the routed working set between this and
+ * the experts half. */
+static int32_t Glm52LayerMoeRoute(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    LmGemmArguments gemm;
+    int32_t status = Glm52LayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows,0u);
+    if (status != LM_LAUNCH_OK)
+        return status;
 
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS, uint16_t>),
@@ -822,6 +848,92 @@ static int32_t Glm52LayerMoe(
         GLM52_HIDDEN,
         GLM52_HIDDEN,
         GLM52_RMS_EPSILON);
+
+    memset(&gemm, 0, sizeof(gemm));
+    gemm.scale_a = LmScaleTensorNone();
+    gemm.scale_b = LmScaleTensorNone();
+    gemm.group_row_offset = buffers->dense_row_offset;
+    gemm.group_tile_prefix = buffers->dense_tile_prefix;
+    gemm.output_f32 = buffers->router_logits;
+    status = LmGemmLaunch<
+        LmBf16Format,
+        GLM52_LAYER_TILE_N,
+        LmBf16Format::kTileK,
+        GLM52_LAYER_STAGES,
+        GLM52_LAYER_WARPS>(
+            &gemm,
+            buffers->normed_bf16,
+            buffers->router_weight,
+            rows,
+            rows,
+            1u,
+            1u,
+            GLM52_HIDDEN,
+            GLM52_EXPERTS,
+            multiprocessors,
+            false,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmTopkSmallKernel<
+            GLM52_LAYER_THREADS,
+            GLM52_TOP_K,
+            true,
+            1u,
+            1u,
+            LM_TOPK_SCORE_SIGMOID>),
+        rows,
+        GLM52_LAYER_THREADS,
+        2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),
+        stream,
+        buffers->router_logits,
+        GLM52_EXPERTS,
+        buffers->route_expert,
+        buffers->route_weight,
+        buffers->router_correction_bias,
+        0,
+        GLM52_ROUTED_SCALE);
+    status = LmRouteBuild<GLM52_LAYER_THREADS, GLM52_EXPERTS>(
+        buffers->route_expert,
+        rows,
+        packed_rows,
+        GLM52_TOP_K,
+        buffers->group_row_offset,
+        buffers->route_packed_row,
+        buffers->route_source_token,
+        buffers->expert_w1_rows,
+        GLM52_HIDDEN,
+        GLM52_LAYER_TILE_N,
+        buffers->group_tile_prefix_w1,
+        buffers->group_tile_prefix_w2,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+/* Experts half: routed W1/W2 GEMMs, activation, finalize and shared
+ * expert. Expert weights must be bound (resident arena or acquired
+ * lease) before this runs. */
+static int32_t Glm52LayerMoeExperts(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
+    LmGemmArguments gemm;
+    int32_t status = Glm52LayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows,1u);
+    if (status != LM_LAUNCH_OK)
+        return status;
 
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
@@ -1045,6 +1157,23 @@ static int32_t Glm52LayerMoe(
     return cudaPeekAtLastError() == cudaSuccess
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;
+}
+
+/* Resident execution retains the same submission order. Lazy execution
+ * acquires/imports the routed working set between these two calls on
+ * this stream. */
+template<uint32_t ExpertCodec>
+static int32_t Glm52LayerMoe(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status = Glm52LayerMoeRoute<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    return Glm52LayerMoeExperts<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
 }
 
 static int32_t Glm52Head(
