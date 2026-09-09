@@ -59,3 +59,13 @@ Result: fallback lines GONE, ladder PASS rc=0 wall=70s (vs 84-123s eager), no
 - Follow-up PR (common code, coordinator review): load-and-ignore MTP —
   module compiled MTP=0 accepts MTP-carrying packs (skips the entries),
   removing the need to compile the draft chain when unused.
+
+## Re-aligned publication cell (post-astra, post-#900) — PASS
+
+- main 8f3a6f2 (astra wave + manifest fix), synced checkout on spark5
+  (queue v2 sync --id qwen-flash-cuda5b), ladder 17/17 vs placed
+  qwen3flash.bf16.tp8 rank5 pack, wall 140s, job budget 10240 MiB.
+- decode_vs_prefill bit_exact=1, module_determinism bit_exact=1,
+  mtp_draft in_vocab.
+- The publication property survives the astra module/adapter/transport
+  changes.

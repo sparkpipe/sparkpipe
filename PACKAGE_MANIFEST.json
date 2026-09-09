@@ -638,8 +638,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-publication-smoke-2026-09-08.md",
-      "sha256": "68fb19bc59ef8bc110a637c71778017990f85d950c4fb73864fa8c6396fb70ba",
-      "size_bytes": 3109
+      "sha256": "e3750bc2c1002aebc9322659c28935206a8fac85557c187da3083672bc9e3e49",
+      "size_bytes": 3546
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/qwen-flash-s6-2026-08-29.md",
@@ -9825,5 +9825,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32772356
+  "total_bytes": 32772793
 }
