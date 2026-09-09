@@ -2,6 +2,7 @@
 #define _FILE_OFFSET_BITS 64
 
 #include "spark_laguna_stagepack_format.h"
+#include "sparkpipe/spark_laguna_resident_decode_stage_firmware.h"
 
 
 #define SPARK_LAGUNA_SYNTHESIZE_MAX_TENSORS 2048u
@@ -16,7 +17,7 @@ typedef struct SparkLagunaSynthesizeContext
 	uint32_t tp_degree;
 	uint32_t owns_embedding;
 	uint32_t owns_head;
-	uint32_t include_mtp;
+	uint32_t include_dflash;
 	uint32_t expert_codec;
 	uint64_t payload_cursor;
 	uint64_t seed;
@@ -67,13 +68,34 @@ static int32_t SparkLagunaSynthesizeAppend(SparkLagunaSynthesizeContext *context
 static int32_t SparkLagunaSynthesizeAppendLayer(SparkLagunaSynthesizeContext *context, uint32_t layer_index)
 {
 	uint32_t kind;
-	for (kind = SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_NORM;
+	for (kind = SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_INPUT_NORM;
 	     kind < SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT; kind++)
 	{
 		int32_t appended = SparkLagunaSynthesizeAppend(context,kind,layer_index);
 		if ( appended == -1 || appended == -3 )
 			return(-(int32_t)kind);
 	}
+	return(0);
+}
+
+static int32_t SparkLagunaSynthesizeAppendDFlash(SparkLagunaSynthesizeContext *context)
+{
+	SparkLagunaStagePackEntry *entry;
+	if ( context->entry_count >= SPARK_LAGUNA_SYNTHESIZE_MAX_TENSORS )
+		return(-1);
+	entry = &context->entries[context->entry_count];
+	memset(entry,0,sizeof(*entry));
+	entry->tensor_kind = SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT + 1u;
+	entry->layer_index = 0u;
+	entry->payload_type = SPARK_LAGUNA_STAGEPACK_PAYLOAD_BF16;
+	entry->weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	entry->group_count = 1u;
+	entry->rows = 1u;
+	entry->columns = 2048u;
+	entry->payload_bytes = (uint64_t)entry->rows * entry->columns * 2u;
+	entry->payload_offset = SparkSynthAlign(context->payload_cursor);
+	context->payload_cursor = entry->payload_offset + entry->payload_bytes;
+	context->entry_count++;
 	return(0);
 }
 
@@ -84,9 +106,6 @@ static int32_t SparkLagunaSynthesizeBuild(SparkLagunaSynthesizeContext *context)
 	for (layer = context->first_layer_index; layer < last; layer++)
 		if ( SparkLagunaSynthesizeAppendLayer(context,layer) < 0 )
 			return(-1);
-	if ( context->include_mtp != 0u && last == SPARK_LAGUNA_MODEL_MTP_LAYER_INDEX )
-		if ( SparkLagunaSynthesizeAppendLayer(context,SPARK_LAGUNA_MODEL_MTP_LAYER_INDEX) < 0 )
-			return(-2);
 	if ( context->owns_embedding != 0u )
 		if ( SparkLagunaSynthesizeAppend(context,SPARK_LAGUNA_STAGEPACK_TENSOR_EMBEDDING,SPARK_LAGUNA_STAGEPACK_GLOBAL_LAYER) < 0 )
 			return(-3);
@@ -97,6 +116,9 @@ static int32_t SparkLagunaSynthesizeBuild(SparkLagunaSynthesizeContext *context)
 		if ( SparkLagunaSynthesizeAppend(context,SPARK_LAGUNA_STAGEPACK_TENSOR_LM_HEAD,SPARK_LAGUNA_STAGEPACK_GLOBAL_LAYER) < 0 )
 			return(-5);
 	}
+	if ( context->include_dflash != 0u )
+		if ( SparkLagunaSynthesizeAppendDFlash(context) < 0 )
+			return(-6);
 	return(0);
 }
 
@@ -127,7 +149,7 @@ int main(int argc, char **argv)
 {
 	SparkLagunaStagePackHeader header;
 	SparkLagunaSynthesizeContext context;
-	const char *output = "laguna_stage.g5nsp";
+	const char *output = "laguna_stage.lgsp";
 	const char *revision = "synthesized";
 	const char *contract = 0;
 	FILE *file;
@@ -140,7 +162,7 @@ int main(int argc, char **argv)
 
 	memset(&context,0,sizeof(context));
 	context.tp_degree = 1u;
-	context.expert_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+	context.expert_codec = SPARK_WEIGHT_CODEC_BF16;
 	context.seed = 1u;
 	context.layer_count = SPARK_LAGUNA_MODEL_LAYER_COUNT;
 	for (index = 1u; index < (uint32_t)argc; index++)
@@ -161,7 +183,8 @@ int main(int argc, char **argv)
 		else if ( strcmp(argument,"--expert-codec") == 0 && index + 1u < (uint32_t)argc )
 		{
 			const char *name = argv[++index];
-			context.expert_codec = strcmp(name,"int6") == 0 ? SPARK_WEIGHT_CODEC_INT6 :
+			context.expert_codec = strcmp(name,"bf16") == 0 ? SPARK_WEIGHT_CODEC_BF16 :
+				strcmp(name,"int6") == 0 ? SPARK_WEIGHT_CODEC_INT6 :
 				strcmp(name,"int7") == 0 ? SPARK_WEIGHT_CODEC_INT7 :
 				strcmp(name,"int8") == 0 ? SPARK_WEIGHT_CODEC_INT8 :
 				strcmp(name,"fp8") == 0 ? SPARK_WEIGHT_CODEC_FP8_E4M3 :
@@ -177,8 +200,8 @@ int main(int argc, char **argv)
 			context.owns_embedding = 1u;
 		else if ( strcmp(argument,"--owns-head") == 0 )
 			context.owns_head = 1u;
-		else if ( strcmp(argument,"--mtp") == 0 )
-			context.include_mtp = 1u;
+		else if ( strcmp(argument,"--dflash") == 0 )
+			context.include_dflash = 1u;
 		else if ( strcmp(argument,"--seed") == 0 && index + 1u < (uint32_t)argc )
 			context.seed = strtoull(argv[++index],0,10);
 		else if ( strcmp(argument,"--revision") == 0 && index + 1u < (uint32_t)argc )
@@ -192,10 +215,10 @@ int main(int argc, char **argv)
 		}
 	}
 	if ( context.tp_degree == 0u || context.layer_count == 0u ||
-	     context.first_layer_index + context.layer_count > SPARK_LAGUNA_MODEL_MTP_LAYER_INDEX ||
-	     (context.include_mtp != 0u && context.first_layer_index + context.layer_count != SPARK_LAGUNA_MODEL_MTP_LAYER_INDEX) )
+	     context.first_layer_index + context.layer_count > SPARK_LAGUNA_MODEL_LAYER_COUNT ||
+	     !SparkLagunaResidentDecodeStageSpanIsValid(stage_count,stage_index,context.first_layer_index,context.layer_count) )
 	{
-		fprintf(stderr,"slice out of range (first %u count %u, model layers %u + MTP)\n",
+		fprintf(stderr,"slice out of range (first %u count %u, model layers %u)\n",
 			context.first_layer_index,context.layer_count,(uint32_t)SPARK_LAGUNA_MODEL_LAYER_COUNT);
 		return(2);
 	}
@@ -223,7 +246,7 @@ int main(int argc, char **argv)
 	header.header_bytes = SPARK_LAGUNA_STAGEPACK_HEADER_BYTES;
 	header.directory_entry_bytes = SPARK_LAGUNA_STAGEPACK_ENTRY_BYTES;
 	header.codec_abi_version = 1u;
-	header.flags = context.include_mtp != 0u ? SPARK_LAGUNA_STAGEPACK_FLAG_MTP : 0u;
+	header.flags = context.include_dflash != 0u ? SPARK_LAGUNA_STAGEPACK_FLAG_DFLASH : 0u;
 	header.tensor_count = context.entry_count;
 	header.stage_count = stage_count;
 	header.stage_index = stage_index;
@@ -285,6 +308,6 @@ int main(int argc, char **argv)
 	printf("%s: %u tensors, %llu bytes (layers %u..%u%s, tp%u, codec %u)\n",
 		output,context.entry_count,(unsigned long long)header.file_bytes,
 		context.first_layer_index,context.first_layer_index + context.layer_count - 1u,
-		context.include_mtp != 0u ? " +MTP" : "",context.tp_degree,context.expert_codec);
+		context.include_dflash != 0u ? " +DFLASH" : "",context.tp_degree,context.expert_codec);
 	return(0);
 }

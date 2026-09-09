@@ -513,7 +513,7 @@ static uint64_t SparkLagunaExpectedLayerMask(
 	uint64_t mask;
 	uint32_t kind;
 	mask = 0u;
-	for (kind=SPARK_LAGUNA_STAGEPACK_TENSOR_FUSED_QKV; kind<SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT; kind++)
+	for (kind=SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_INPUT_NORM; kind<SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT; kind++)
 		if ( SparkLagunaStagePackExpectedShape(kind,layer_index,state->expert_weight_codec,state->tp_degree,&shape) == 0 )
 			mask |= UINT64_C(1) << kind;
 	return(mask);
