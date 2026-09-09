@@ -28,20 +28,18 @@ using LagunaExpertWeightFormat =
 
 static_assert(
     LagunaKv::kSlotBytes == LAGUNA_KV_SLOT_BYTES,
-    "config.h and the GLM 5.2 KV geometry disagree");
+    "config.h and the laguna KV geometry disagree");
 static_assert(
     LAGUNA_UNITY_TILE_K % LmBf16Format::kMmaK == 0u,
-    "GLM 5.2 BF16 tile depth must contain complete MMA steps");
-static_assert(LAGUNA_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_BF16,
-    "GLM 5.2 routed experts require a compressed package codec");
+    "laguna BF16 tile depth must contain complete MMA steps");
 static_assert(LAGUNA_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_NONE,
-    "GLM 5.2 routed experts require a package codec");
+    "laguna routed experts require a package codec");
 static_assert(
     LagunaExpertWeightFormat::kMmaK == LmBf16Format::kMmaK,
-    "GLM 5.2 expert codec must decode to the BF16 MMA geometry");
+    "laguna expert codec must decode to the BF16 MMA geometry");
 static_assert(
     LmTileKIsSwizzleable(LAGUNA_UNITY_TILE_K, LmBf16Format::kStoredBits),
-    "GLM 5.2 BF16 activation tile must be TMA-swizzleable");
+    "laguna BF16 activation tile must be TMA-swizzleable");
 
 extern "C" uint32_t LagunaExpertWeightCodec(void)
 {
@@ -121,7 +119,6 @@ extern "C" int32_t LagunaLayerAttentionBf16(
     const LagunaLayerBuffers *buffers,
     uint32_t rows,
     uint32_t context,
-    uint32_t layer_in_group,
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
@@ -129,7 +126,6 @@ extern "C" int32_t LagunaLayerAttentionBf16(
         buffers,
         rows,
         context,
-        layer_in_group,
         multiprocessors,
         stream);
 }
@@ -174,23 +170,9 @@ extern "C" int32_t LagunaHeadFullVocab(
         norm_weight_bf16,
         head_weight_bf16,
         0,
-        buffers->head_vocabulary,
+        LAGUNA_VOCAB,
         rows,
         stream);
-}
-
-extern "C" cudaError_t SparkLagunaLaunchHeadCertifiedQuantize(
-    cudaStream_t stream,
-    const void *head_bf16,
-    uint8_t *certified_payload,
-    float *certified_scale_f32,
-    float *certified_norm_f32,
-    uint32_t vocabulary,
-    uint32_t hidden_dimension)
-{
-    return SparkLmHostLaunchHeadCertifiedFp8Quantize(
-        stream, head_bf16, certified_payload, certified_scale_f32,
-        certified_norm_f32, vocabulary, hidden_dimension);
 }
 
 extern "C" int32_t LagunaHeadRestricted(
@@ -222,7 +204,6 @@ extern "C" int32_t LagunaLayerAttentionBf16Graphed(
     const LagunaLayerBuffers *buffers,
     uint32_t rows,
     uint32_t context,
-    uint32_t layer_in_group,
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
@@ -235,16 +216,15 @@ extern "C" int32_t LagunaLayerAttentionBf16Graphed(
             buffers,
             rows,
             context,
-            layer_in_group,
             multiprocessors,
             stream);
     }
 
     key.rows = rows;
-    key.layer_kind = 0u;
+    key.layer_kind = LAGUNA_LAYER_IS_SLIDING(buffers->layer_index) ? 1u : 0u;
     key.format = 0u;
-    key.sparse = context > LAGUNA_DSA_SELECTED ? 1u : 0u;
-    key.context_bucket = LmGraphContextBucket(context, LAGUNA_DSA_SELECTED);
+    key.sparse = LAGUNA_LAYER_IS_SLIDING(buffers->layer_index) ? 1u : 0u;
+    key.context_bucket = LmGraphContextBucket(context, LAGUNA_WINDOW);
     if (LmGraphReplay(graphs, &key, stream) == LM_GRAPH_OK)
     {
         return LM_LAUNCH_OK;
@@ -255,7 +235,6 @@ extern "C" int32_t LagunaLayerAttentionBf16Graphed(
             buffers,
             rows,
             context,
-            layer_in_group,
             multiprocessors,
             stream);
     }
@@ -263,7 +242,6 @@ extern "C" int32_t LagunaLayerAttentionBf16Graphed(
         buffers,
         rows,
         context,
-        layer_in_group,
         multiprocessors,
         stream);
     if ( status != LM_LAUNCH_OK )
@@ -277,7 +255,6 @@ extern "C" int32_t LagunaLayerAttentionBf16Graphed(
             buffers,
             rows,
             context,
-            layer_in_group,
             multiprocessors,
             stream);
     }

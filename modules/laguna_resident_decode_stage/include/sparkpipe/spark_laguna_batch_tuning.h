@@ -23,7 +23,7 @@
 
 #define SPARK_LAGUNA_BATCH_VARIANT_MODULE_ID_PREFIX \
 	"spark.laguna.resident_decode_stage.bf16.expert_" LAGUNA_EXPERT_CODEC_NAME \
-	".h4096.l45.kda34.e288.k8"
+	".h3072.l48.gqa.e256.k10"
 #define SPARK_LAGUNA_BATCH_VARIANT_MODULE_ID_SUFFIX \
 	"v2"
 
