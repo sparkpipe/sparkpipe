@@ -1381,10 +1381,16 @@ static cudaError_t SparkQwen38MaxModuleRunGdnCoreDecode(SparkQwen38MaxModuleStat
 	SparkQwen38MaxGdnStatePool pool = state->gdn_pool;
 	pool.state_cold_by_row = slot->row_cold;
 	error = SparkQwen38MaxLaunchConvUpdate(stream,slot->qkv_bf16,weights,slot->conv_out_bf16,&pool,slot->row_lane_indices,rows,ordinal);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"%s DIAG gdn conv_update failed: %s\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error));
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchDecayBeta(stream,slot->decay_pre_bf16,slot->beta_pre_bf16,weights,slot->log_decay_f32,slot->beta_f32,rows);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"%s DIAG gdn decay_beta failed: %s\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error));
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchGdnStep(stream,slot->conv_out_bf16,slot->log_decay_f32,slot->beta_f32,&pool,slot->core_bf16,slot->row_lane_indices,rows,ordinal);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"%s DIAG gdn gdn_step failed: %s\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error));
 	return(error);
 }
 
@@ -1395,12 +1401,20 @@ static SparkStatus SparkQwen38MaxModuleRunGdnLayer(SparkQwen38MaxModuleState *st
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
 	error = SparkQwen38MaxLaunchLinear(stream,&weights->qkv,slot->normalized_bf16,slot->qkv_bf16,rows);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"%s DIAG gdn linear qkv failed: %s\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error));
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchLinear(stream,&weights->gate,slot->normalized_bf16,slot->z_bf16,rows);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"%s DIAG gdn linear gate failed: %s layer=%u view in=%u out=%u payload=%p rows=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error),layer,weights->gate.input_dimension,weights->gate.output_dimension,weights->gate.weight_payload,rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchLinear(stream,&weights->beta,slot->normalized_bf16,slot->beta_pre_bf16,rows);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"%s DIAG gdn linear beta failed: %s\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error));
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchLinear(stream,&weights->decay,slot->normalized_bf16,slot->decay_pre_bf16,rows);
+	if ( error != cudaSuccess )
+		fprintf(stderr,"%s DIAG gdn linear decay failed: %s\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error));
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
 	if ( error == cudaSuccess )
