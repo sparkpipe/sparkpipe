@@ -166,7 +166,7 @@ static SparkStatus SparkTpCollectiveLoadRailHosts(
 					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
 			free(host);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	}
 	return(SPARK_STATUS_OK);
@@ -187,7 +187,7 @@ static SparkStatus SparkTpCollectiveLoadThresholds(
 			"split_ring_min_payload_bytes",
 			&topology->split_ring_min_payload_bytes);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( policy->thresholds == SPARK_TP_COLLECTIVE_THRESHOLDS_ORDERED_NONZERO )
 	{
 		if ( topology->direct_all_to_all_max_payload_bytes == 0u ||
@@ -273,7 +273,7 @@ static SparkStatus SparkTpCollectiveLoadAdaptiveFabric(
 		policy->require_session_ports != 0u )
 		status = SparkTpCollectiveLoadSessionPorts(document,object,
 			"session_ports_hc",policy->peer_count,config->session_ports_hc);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkTpCollectiveLoadPeerHosts(
@@ -373,7 +373,7 @@ static SparkStatus SparkTpCollectiveLoadBackend(
 	status = SparkTpCollectiveValidateMembers(document,object,
 		config->backend_kind);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	relative_backend_path = 0;
 	token = SparkServingAdapterTemplateJsonMember(document,object,
 		"backend_module_path");
@@ -385,7 +385,7 @@ static SparkStatus SparkTpCollectiveLoadBackend(
 			config->backend_module_path_bytes);
 	free(relative_backend_path);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	token = SparkServingAdapterTemplateJsonMember(document,object,
 		"collective_identifier");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
@@ -448,7 +448,7 @@ SparkStatus SparkServingAdapterTemplateLoadTpCollective(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpCollectiveLoadAdaptiveFabric(document,object,policy,
 			config);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkServingAdapterTemplateLoadDriver(
@@ -475,7 +475,7 @@ SparkStatus SparkServingAdapterTemplateLoadDriver(
 	{
 		(void)fprintf(stderr, "serving load driver '%s' failed: %s\n",
 			configuration->driver_shared_object_path, error_buffer);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	descriptor = driver->interface->descriptor;
 	if ( descriptor == 0 ||

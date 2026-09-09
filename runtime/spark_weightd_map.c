@@ -54,7 +54,7 @@ static SparkStatus map_remaining(uint64_t deadline,uint64_t *remaining)
 	if ( now >= deadline )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	*remaining = (deadline - now);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus map_context(const SparkWeightdMap *map)
@@ -143,10 +143,10 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 	if ( status != SPARK_STATUS_OK )
 	{
 		map_free_initial(map);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*out = map;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map)
@@ -154,7 +154,7 @@ SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map)
 	uint32_t i;
 	SparkStatus status = map_context(map);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
 		if ( map->slots[i].state != MAP_EMPTY )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
@@ -170,7 +170,7 @@ SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map)
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	map->base = 0u;
 	map_free_initial(map);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus map_drop_slot(SparkWeightdMap *map,uint32_t slot)
@@ -200,7 +200,7 @@ static SparkStatus map_drop_slot(SparkWeightdMap *map,uint32_t slot)
 		}
 		map->owners[i] = 0u;
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout)
@@ -210,7 +210,7 @@ SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint
 	cudaError_t ready;
 	SparkStatus status = map_context(map);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	slot = map_slot(map,identifier);
 	if ( slot == 0 )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
@@ -227,14 +227,14 @@ SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint
 	if ( status != SPARK_STATUS_OK )
 	{
 		map->failure = status;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	status = SparkWeightdClientRelease(map->client,map->generation,identifier,&result,timeout);
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
-		return(status);
+		SPARK_RETURN(status);
 	slot->identifier = 0u;
 	slot->state = MAP_EMPTY;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus map_import_chunk(SparkWeightdMap *map,uint32_t slot,uint32_t chunk,int32_t fd)
@@ -246,7 +246,7 @@ static SparkStatus map_import_chunk(SparkWeightdMap *map,uint32_t slot,uint32_t 
 		if ( map->mapped[chunk] == 0u || map->handles[chunk] == 0 )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		map->owners[chunk] |= bit;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	map->owners[chunk] = bit;
 	if ( cuMemImportFromShareableHandle(&map->handles[chunk],(void *)(intptr_t)fd,CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) != CUDA_SUCCESS )
@@ -280,7 +280,7 @@ static SparkStatus map_import_batch(SparkWeightdMap *map,uint32_t slot,SparkWeig
 		(void)close(batch->fds[i]);
 		*last = chunk;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus map_import_lease(SparkWeightdMap *map,uint32_t slot,uint64_t deadline)
@@ -293,15 +293,15 @@ static SparkStatus map_import_lease(SparkWeightdMap *map,uint32_t slot,uint64_t 
 	{
 		status = map_remaining(deadline,&timeout);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		status = SparkWeightdClientExportLeaseBatch(map->client,map->generation,map->slots[slot].identifier,offset,&batch,timeout);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		if ( batch.status != SPARK_STATUS_OK )
 			return(batch.status);
 		status = map_import_batch(map,slot,&batch,&last,offset,total,deadline);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		total = batch.lease_chunk_count;
 		offset += batch.batch_count;
 	} while ( offset < total );
@@ -319,7 +319,7 @@ SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpert
 	*identifier = 0u;
 	status = map_context(map);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( map->failure != SPARK_STATUS_OK )
 		return(map->failure);
 	for (slot=0u; slot<SPARK_WEIGHTD_LEASE_COUNT_MAX; slot++)
@@ -337,7 +337,7 @@ SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpert
 	deadline = (now + timeout);
 	status = SparkWeightdClientAcquire(map->client,map->generation,keys,count,&result,timeout);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	map->slots[slot].identifier = result.lease_identifier;
 	map->slots[slot].state = MAP_ACQUIRED;
 	*identifier = result.lease_identifier;
@@ -348,7 +348,7 @@ SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpert
 		if ( map_remaining(deadline,&remaining) == SPARK_STATUS_OK && SparkWeightdMapRelease(map,*identifier,remaining) == SPARK_STATUS_OK )
 			*identifier = 0u;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,void **address)
@@ -360,7 +360,7 @@ SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,voi
 	*address = 0;
 	status = map_context(map);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( map->failure != SPARK_STATUS_OK )
 		return(map->failure);
 	slot = map_slot(map,identifier);
@@ -370,7 +370,7 @@ SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,voi
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	slot->state = MAP_INFLIGHT;
 	*address = (void *)(uintptr_t)map->base;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identifier,cudaStream_t stream)
@@ -378,7 +378,7 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 	SparkWeightdMapSlot *slot;
 	SparkStatus status = map_context(map);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	slot = map_slot(map,identifier);
 	if ( slot == 0 )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
@@ -387,5 +387,5 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 	if ( cudaEventRecord(slot->event,stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	slot->state = MAP_RECORDED;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }

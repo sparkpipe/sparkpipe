@@ -17,5 +17,5 @@ SparkStatus SparkModelResidentEndpointValidate(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (unix_endpoint | tcp_endpoint) == 0u || endpoint->reserved0 != 0u || endpoint->reserved1 != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }

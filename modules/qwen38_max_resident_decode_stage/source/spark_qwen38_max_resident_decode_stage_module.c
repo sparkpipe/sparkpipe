@@ -191,7 +191,7 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_RANK",0u,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT - 1u,SPARK_QWEN38_MAX_MODULE_TP_RANK_REPLICATED,&state->tp_rank);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		if ( state->tp_rank >= state->tp_degree || state->tp_degree > SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % state->tp_degree) != 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		state->tp_collective_identifier = 0u;
@@ -222,7 +222,7 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 			if ( status == SPARK_STATUS_OK )
 				status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_QWEN38_MAX_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_connect_timeout_milli);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 			snprintf(state->tp_backend_path,sizeof(state->tp_backend_path),"%s",tp_backend);
 			snprintf(state->tp_local_host,sizeof(state->tp_local_host),"%s",tp_local_host);
 			state->tp_collective_identifier = tp_identifier;
@@ -249,7 +249,7 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 				unsigned long cell_value;
 				status = SparkStageModuleEnvironmentText(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_SESSION_PORTS",&tp_session_ports);
 				if ( status != SPARK_STATUS_OK )
-					return(status);
+					SPARK_RETURN(status);
 				cell_scan = tp_session_ports;
 				for (row_index = 0u; row_index < state->tp_degree; row_index++)
 					for (column_index = 0u; column_index < state->tp_degree; column_index++)
@@ -285,7 +285,7 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_KV_BLOCKS",1u,1u << 20u,&state->kv_block_count);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( state->stage_index >= state->stage_count || state->first_layer_index + state->layer_count > SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT )
 	{
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_QWEN38_MAX_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
@@ -303,7 +303,7 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 		fprintf(stderr,"%s config_position_mismatch stage=%u/%u slice=%u+%u\n",SPARK_QWEN38_MAX_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 #define SPARK_PACK_LOAD_FN(name) SparkQwen38MaxModule##name
@@ -382,17 +382,17 @@ static SparkStatus SparkQwen38MaxModuleBindGlobal(SparkQwen38MaxModuleState *sta
 		if ( state->owns_embedding == 0u && state->owns_final_head == 0u )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->token_embedding_bf16 = payload;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_FINAL_NORM:
 		if ( state->owns_final_head == 0u )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->final_norm_weight_bf16 = payload;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_LM_HEAD:
 		if ( state->owns_final_head == 0u )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->lm_head_weight_bf16 = payload;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_EMBED_NORM: state->mtp.embed_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_HIDDEN_NORM: state->mtp.hidden_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.final_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
@@ -427,7 +427,7 @@ static SparkStatus SparkQwen38MaxModuleBindLayer(SparkQwen38MaxModuleState *stat
 	default:
 		status = SparkQwen38MaxModuleBindMoe(&state->moe_by_layer[layer],entry,payload,scale);
 		if ( status == SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 }
@@ -500,7 +500,7 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_KV_WORKERS",1u,64u,&workers);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	SparkQwen38MaxStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
 	model_fp = SparkQwen38MaxModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	
@@ -525,7 +525,7 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 	state->kv_plan.staging_block_capacity = SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS;
 	status = SparkStageKvClientOpen(&state->kv_client,SPARK_QWEN38_MAX_MODULE_TAG,provider,state->stage_index,state->first_layer_index,state->layer_count,model_fp,layout_fp,service,socket_path,pool_bytes,workers);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state->kv_slot_lane = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
 	state->kv_slot_logical = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
 	state->kv_slot_sequence = (uint64_t *)malloc((size_t)state->kv_block_count * sizeof(uint64_t));
@@ -547,7 +547,7 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 	state->kv_evict_cursor = 0u;
 	state->kv_tier_active = 1u;
 	fprintf(stderr,"%s kv_tier_open provider=%s window=%u logical=%u physical=%u backing_bytes=%llu\n",SPARK_QWEN38_MAX_MODULE_TAG,provider,state->kv_block_count,state->kv_logical_page_capacity,state->kv_physical_page_capacity,(unsigned long long)state->kv_backing_maximum_bytes);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38MaxModuleKvWaitBatch(SparkQwen38MaxModuleState *state, SparkQwen38MaxWorkControlKvBatchState *batch)
@@ -561,7 +561,7 @@ static SparkStatus SparkQwen38MaxModuleKvWaitBatch(SparkQwen38MaxModuleState *st
 	{
 		status = SparkQwen38MaxWorkControlProgress(&state->kv_client,&state->kv_work);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		if ( batch->state == SPARK_QWEN38_MAX_WORK_CONTROL_BATCH_READY )
 			break;
 		if ( ++polls >= SPARK_QWEN38_MAX_MODULE_KV_POLL_BOUND )
@@ -597,7 +597,7 @@ static SparkStatus SparkQwen38MaxModuleKvEvictSlot(SparkQwen38MaxModuleState *st
 		if ( status == SPARK_STATUS_OK )
 			status = SparkQwen38MaxModuleKvWaitBatch(state,batch);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 	if ( state->kv_logical_to_slot != 0 && state->kv_slot_lane[slot] != UINT32_MAX &&
 		state->kv_slot_logical[slot] != UINT32_MAX && state->kv_logical_stride != 0u )
@@ -613,7 +613,7 @@ static SparkStatus SparkQwen38MaxModuleKvEvictSlot(SparkQwen38MaxModuleState *st
 	state->kv_slot_logical[slot] = UINT32_MAX;
 	state->kv_slot_sequence[slot] = 0u;
 	state->kv_slot_free_stack[state->kv_slot_free_count++] = slot;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot, SparkQwen38MaxResidentDecodeStageFrameContext *context, SparkQwen38MaxKvBlockTableView *table, uint32_t rows)
@@ -633,7 +633,7 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 	uint32_t unwind_index;
 	SparkStatus fail_status;
 	if ( state->kv_tier_active == 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	if ( context == 0 || context->decode_batch == 0 || context->decode_batch->row_sequence_ids == 0 || table == 0 || table->host_physical_block_indices == 0 || table->host_lane_physical_block_counts == 0 || table->physical_block_indices == 0 || table->lane_physical_block_counts == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	logical_capacity = (uint64_t)table->lane_count * table->lane_stride;
@@ -849,7 +849,7 @@ static SparkStatus SparkQwen38MaxModuleKvPrepareFrame(SparkQwen38MaxModuleState 
 				state->kv_slot_pinned[slot_index - 1u] = 0u;
 		}
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 fail:
 	for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
 		state->kv_slot_free_stack[state->kv_slot_free_count++] = uncommitted[unwind_index];
@@ -907,7 +907,7 @@ static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModu
 	cudaError_t error;
 	SparkStatus status;
 	if ( state->tp_degree == 1u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	memset(&topology,0,sizeof(topology));
 	topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
 	topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
@@ -942,18 +942,18 @@ static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModu
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"%s tp_apply_topology_failed status=%d\n",SPARK_QWEN38_MAX_MODULE_TAG,(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	status = SparkTpDeviceCollectiveCreditBindingRouteCount(&configuration,&route_count);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	status = SparkTpDeviceCollectiveProbeMemoryMode(
 		configuration.backend_kind,configuration.backend_module_path,
 		&memory_mode);
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"%s tp_probe_memory_mode_failed status=%d\n",SPARK_QWEN38_MAX_MODULE_TAG,(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,configuration.local_hidden_dimension);
 	total_bytes = credit_bytes * configuration.credit_count * route_count;
@@ -961,7 +961,7 @@ static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModu
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,&state->tp_collective_credit_receive_bf16);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
 	{
 		mapped_send = 0;
@@ -1000,11 +1000,11 @@ static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModu
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"%s tp_create_failed status=%d\n",SPARK_QWEN38_MAX_MODULE_TAG,(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	state->tp_collective_initialized = 1u;
 	fprintf(stderr,"%s tp_collective_open degree=%u rank=%u port_base=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,state->tp_degree,state->tp_rank,state->tp_control_port_base);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38MaxModuleTpAllReduceHidden(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot, void *device_bf16, uint32_t rows)
@@ -1014,7 +1014,7 @@ static SparkStatus SparkQwen38MaxModuleTpAllReduceHidden(SparkQwen38MaxModuleSta
 	uint32_t polls,flag;
 	SparkStatus status;
 	if ( state->tp_degree == 1u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	if ( state->tp_collective_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	atomic_store_explicit(&state->tp_completion_flag,0u,memory_order_relaxed);
@@ -1033,14 +1033,14 @@ static SparkStatus SparkQwen38MaxModuleTpAllReduceHidden(SparkQwen38MaxModuleSta
 	submission.completion_context = &state->tp_completion_flag;
 	status = SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	pause.tv_sec = 0u;
 	pause.tv_nsec = 100000;
 	for (polls = 0u; polls < 100000u; polls++)
 	{
 		flag = atomic_load_explicit(&state->tp_completion_flag,memory_order_acquire);
 		if ( flag == 1u )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		if ( flag == 2u )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		nanosleep(&pause,0);
@@ -1057,7 +1057,7 @@ static SparkStatus SparkQwen38MaxModuleInitializeGate(void)
 	allow_unqualified_execution = 0u;
 	if ( SparkStageModuleEnvironmentUnsigned(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution) != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
 		SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkQwen38MaxModuleDescribe(void *module_state, SparkStageModuleLifecycle *lifecycle)
@@ -1128,7 +1128,7 @@ static SparkStatus SparkQwen38MaxModulePrepare(
 	}
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"%s initialize_failed status=%d\n",SPARK_QWEN38_MAX_MODULE_TAG,(int)status);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkQwen38MaxModuleReportReady(void *module_state)
@@ -1357,7 +1357,7 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 	{
 		status = SparkQwen38MaxModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchLinear(stream,&weights->shared_gate,slot->normalized_bf16,slot->shared_gate_bf16,rows);
@@ -1391,7 +1391,7 @@ static SparkStatus SparkQwen38MaxModuleRunLayer(SparkQwen38MaxModuleState *state
 		status = SPARK_QWEN38_MAX_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen38MaxModuleRunGdnLayer(state,slot,layer,rows) : SparkQwen38MaxModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
 	if ( status == SPARK_STATUS_OK && state->debug_skip_moe == 0u )
 		status = SparkQwen38MaxModuleRunMoe(state,slot,state->mlp_norm_by_layer[layer],&state->moe_by_layer[layer],rows);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen38MaxModuleAllocatePools(SparkQwen38MaxModuleState *state)
@@ -1430,7 +1430,7 @@ static SparkStatus SparkQwen38MaxModuleAllocatePools(SparkQwen38MaxModuleState *
 		cache_elements = state->cache_block_stride * state->kv_block_count;
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES,&state->kv_cache_bf16);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot)
@@ -1454,7 +1454,7 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 	cudaStream_t stream = 0;
 	status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,cudaStreamCreate(&stream),"cudaStreamCreate");
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	slot->cuda_stream = stream;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->input_token_ids);
 	if ( status == SPARK_STATUS_OK )
@@ -1539,7 +1539,7 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 		status = SparkStageModuleDeviceAllocate(&state->ledger,expert_bytes,&slot->shared_up_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->shared_down_bf16);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen38MaxModuleAllocateSlotHostMirrors(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot)
@@ -1555,7 +1555,7 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlotHostMirrors(SparkQwen38MaxMod
 		slot->host_row_cold == 0 || slot->host_slot_mapping == 0 ||
 		slot->host_context_lengths == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen38MaxModuleUploadRows(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot, const SparkModelDriverFrame *frame, uint32_t rows)
@@ -1626,7 +1626,7 @@ static SparkStatus SparkQwen38MaxModuleValidateFrameContext(SparkQwen38MaxModule
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (context->flags & SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) != 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38MaxModuleConsumeHiddenInput(SparkQwen38MaxModuleSlot *slot, SparkQwen38MaxResidentDecodeStageFrameContext *context, uint32_t rows)
@@ -1638,7 +1638,7 @@ static SparkStatus SparkQwen38MaxModuleConsumeHiddenInput(SparkQwen38MaxModuleSl
 	memset(packet,0,sizeof(*packet));
 	status = context->hidden_input_post_receive_function(context->hidden_input_transport_session,packet);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( packet->hidden_bf16 == 0 || packet->active_sequence_count < rows ||
 		packet->hidden_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION ||
 		packet->bytes_per_sequence < SPARK_QWEN38_MAX_MODEL_HIDDEN_BF16_BYTES )
@@ -1702,7 +1702,7 @@ static SparkStatus SparkQwen38MaxModuleRunDecode(SparkQwen38MaxModuleState *stat
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38MaxModuleKvPrepareFrame(state,slot,context,&table,rows);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	wants_input = context != 0 && (context->flags & SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u ? 1u : 0u;
 	if ( state->owns_embedding != 0u )
 	{
@@ -1712,11 +1712,11 @@ static SparkStatus SparkQwen38MaxModuleRunDecode(SparkQwen38MaxModuleState *stat
 	else if ( wants_input != 0u )
 		status = SparkQwen38MaxModuleConsumeHiddenInput(slot,context,rows);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 		status = SparkQwen38MaxModuleRunLayer(state,slot,&table,layer,rows);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( state->owns_final_head != 0u )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,SparkQwen38MaxModuleEmitHead(state,slot,frame,rows),"head_emit");
 	wants_output = context != 0 && (context->flags & SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u ? 1u : 0u;
@@ -1727,7 +1727,7 @@ static SparkStatus SparkQwen38MaxModuleRunDecode(SparkQwen38MaxModuleState *stat
 		status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"stream_sync");
 	if ( status == SPARK_STATUS_OK )
 		SparkQwen38MaxModuleKvMarkWritten(state,slot,rows);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen38MaxModuleExecuteFrame(
@@ -1744,7 +1744,7 @@ static SparkStatus SparkQwen38MaxModuleExecuteFrame(
 	context = (SparkQwen38MaxResidentDecodeStageFrameContext *)frame->user_context;
 	status = SparkQwen38MaxModuleValidateFrameContext(state,context);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	rows = frame->active_slot_count;
 	if ( rows == 0u || rows > state->max_active_sequence_count )
 	{
@@ -1771,5 +1771,5 @@ static SparkStatus SparkQwen38MaxModuleExecuteFrame(
 	}
 	else
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
-	return(status);
+	SPARK_RETURN(status);
 }

@@ -427,7 +427,7 @@ static SparkStatus K3ServingInitializeSpeculationSeam(SparkK3ServingState *state
 	{
 		fprintf(stderr, "k3_serving speculation seam init failed: status=%d\n",
 			(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -452,7 +452,7 @@ static SparkStatus K3ServingBindSpeculationProvider(SparkK3ServingState *state)
 	{
 		fprintf(stderr, "k3_serving drafter pack refused: %s\n",
 			state->speculation_refusal);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	state->drafter_pack_bound = 1u;
 	state->provider.descriptor = &K3DsparkProviderDescriptor;
@@ -463,7 +463,7 @@ static SparkStatus K3ServingBindSpeculationProvider(SparkK3ServingState *state)
 	{
 		fprintf(stderr, "k3_serving speculation provider invalid: status=%d\n",
 			(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	fprintf(stderr, "k3_serving drafter bound pack=%s block=%u draft_depth=%u "
 		"taps=[%u,%u,%u,%u,%u] tensors=%u draft_forward=%s\n",

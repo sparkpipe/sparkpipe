@@ -87,7 +87,7 @@ static SparkStatus SparkDsv4StageRunnerValidatePrefillRows(
 	SparkStatus status;
 	status = SparkRowLayoutDirectLaneMapInitialize(&direct,SparkDsv4StageRunnerLaneOrdinals,runner->resident_sequence_capacity,dispatch->row_lane_indices,dispatch->active_sequence_count);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(SparkRowLayoutValidateRoundMajor(dispatch->row_count,dispatch->active_sequence_count,dispatch->row_lane_indices,SparkRowLayoutDirectLaneOrdinal,&direct,SparkDsv4StageRunnerOccurrences,SparkDsv4StageRunnerLastRows));
 }
 

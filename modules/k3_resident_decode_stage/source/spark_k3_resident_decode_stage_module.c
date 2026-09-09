@@ -13,7 +13,7 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 	memset(state, 0, sizeof(*state));
 	status = SparkK3PackOpen(pack_path, &state->pack);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( first_layer == SPARK_K3_MODULE_DERIVE_SLICE ||
 		layer_count == SPARK_K3_MODULE_DERIVE_SLICE )
 	{
@@ -42,11 +42,11 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 		if ( status != SPARK_STATUS_OK )
 		{
 			SparkK3ModuleDestroy(state);
-			return(status);
+			SPARK_RETURN(status);
 		}
 		state->bound_count++;
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkK3ModuleDestroy(SparkK3ModuleState *state)

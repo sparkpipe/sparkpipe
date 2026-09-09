@@ -94,13 +94,13 @@ SparkStatus SparkK3BindLayer(SparkK3Pack *pack, uint32_t layer_index,
 	bound->layer_is_dense = (layer_index == 0u);
 	status = SparkK3BindEveryLayer(pack, bound);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( bound->layer_is_gdn )
 		status = SparkK3BindKda(pack, bound);
 	else
 		status = SparkK3BindMla(pack, bound);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	BIND_ONE(bound, pack, "mlp_norm_weight");
 	BIND_ONE(bound, pack, "attnres_mlp_weight");
 	if ( bound->layer_is_dense )

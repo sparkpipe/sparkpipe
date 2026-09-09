@@ -156,7 +156,7 @@ static SparkStatus SparkModelBatchParseTokenArray(
 		*tokens_out = tokens;
 		*count_out = count;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchParseRequest(
@@ -189,7 +189,7 @@ static SparkStatus SparkModelBatchParseRequest(
 	request->prompt_token_ids = file_request->prompt_token_ids;
 	if ( status == SPARK_STATUS_OK && (request->request_id == 0u || request->sequence_id == 0u || request->output_token_budget == 0u || request->output_token_budget > max_context_tokens - request->prompt_token_count) )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchValidateUniqueIds(
@@ -219,7 +219,7 @@ static SparkStatus SparkModelBatchValidateUniqueIds(
 			status = SPARK_STATUS_DUPLICATE;
 	free(sequence_ids);
 	free(request_ids);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchParseRequests(
@@ -278,7 +278,7 @@ static SparkStatus SparkModelBatchParseStopTokens(
 		for (left=0u; left<index; left++)
 			if ( file->engine.stop_token_ids[left] == file->engine.stop_token_ids[index] )
 				status = SPARK_STATUS_DUPLICATE;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchLoadFile(
@@ -322,7 +322,7 @@ static SparkStatus SparkModelBatchLoadFile(
 	SparkJsonDocumentDestroy(&document);
 	if ( status != SPARK_STATUS_OK )
 		SparkModelBatchFileDestroy(file);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static const char *SparkModelBatchEventName(uint32_t kind)
@@ -517,7 +517,7 @@ static SparkStatus SparkModelBatchSubmitAll(
 	status = SPARK_STATUS_OK;
 	for (index=first; status==SPARK_STATUS_OK && index<first+count; index++)
 		status = SparkModelBatchEngineSubmit(engine,&file->requests[index].request,&handle);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchContinuousInitialize(
@@ -554,7 +554,7 @@ static SparkStatus SparkModelBatchSubmitOne(
 		file->requests[index].submitted = 1u;
 		*submitted_count += 1u;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchContinuousRequest(
@@ -569,7 +569,7 @@ static SparkStatus SparkModelBatchContinuousRequest(
 	continuous->request_id = request->request_id;
 	continuous->prompt_row_count = request->prompt_token_count;
 	continuous->output_token_budget = request->output_token_budget;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelBatchOfferAll(
@@ -601,7 +601,7 @@ static SparkStatus SparkModelBatchOfferAll(
 				(void)SparkContinuousBatchWithdraw(output->admission,file->requests[index].request.request_id);
 		}
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchReleaseReady(
@@ -624,7 +624,7 @@ static SparkStatus SparkModelBatchReleaseReady(
 			break;
 		}
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static int32_t SparkModelBatchPoll(
@@ -703,7 +703,7 @@ static SparkStatus SparkModelBatchRun(
 		status = SparkModelBatchEngineGetView(engine,&view);
 	if ( status == SPARK_STATUS_OK && (view.live_request_count != 0u || view.inflight_submission_count != 0u) )
 		status = SPARK_STATUS_BUSY;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static int32_t SparkModelBatchParseArguments(

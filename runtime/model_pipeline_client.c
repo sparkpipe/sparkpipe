@@ -251,7 +251,7 @@ static SparkStatus SparkModelPipelineClientUpdateLeases(
 	uint32_t lane;
 	if ( (pipeline->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	lanes = SparkModelPipelineClientTransactionLanes(pipeline,transaction);
 	for (lane=0u; lane<transaction->lane_count; lane++)
 	{
@@ -278,16 +278,16 @@ static SparkStatus SparkModelPipelineClientUpdateLeases(
 				lanes[lane].context_token_count,
 				completed_tokens,&next_sequence_position);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 		status = SparkModelContinuationLeaseEstablish(&slot->lease,
 			pipeline->lease_generation,transaction->control_generation,
 			next_sequence_position,
 			lanes[lane].step_generation);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelPipelineClientReportResult(
@@ -362,7 +362,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 	SparkStatus status;
 	uint32_t rank;
 	if ( transaction->result_mask != pipeline->all_rank_mask || transaction->decision_kind != 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	if ( transaction->continued != 0u )
 	{
 		if ( transaction->status != SPARK_STATUS_OK )
@@ -374,7 +374,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 		}
 		SparkModelPipelineClientReportResult(pipeline,transaction);
 		SparkModelPipelineClientReportCompletion(pipeline,transaction);
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	status = SPARK_STATUS_OK;
 	if ( transaction->status == SPARK_STATUS_OK )
@@ -388,7 +388,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 		{
 			SparkModelPipelineClientRecordFailure(transaction,status);
 			SparkModelPipelineClientSetFailure(pipeline,status,rank - 1u);
-			return(status);
+			SPARK_RETURN(status);
 		}
 		transaction->decision_kind = SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT;
 		transaction->decision_expected_mask = pipeline->all_rank_mask;
@@ -399,7 +399,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 		{
 			SparkModelPipelineClientRecordFailure(transaction,status);
 			SparkModelPipelineClientSetFailure(pipeline,status,rank);
-			return(status);
+			SPARK_RETURN(status);
 		}
 	}
 	else
@@ -413,7 +413,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 		if ( status != SPARK_STATUS_OK )
 		{
 			SparkModelPipelineClientSetFailure(pipeline,status,rank - 1u);
-			return(status);
+			SPARK_RETURN(status);
 		}
 		transaction->decision_kind = SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT;
 		transaction->decision_expected_mask = transaction->prepared_mask;
@@ -424,7 +424,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 		if ( status != SPARK_STATUS_OK )
 		{
 			SparkModelPipelineClientSetFailure(pipeline,status,rank - 1u);
-			return(status);
+			SPARK_RETURN(status);
 		}
 	}
 	if ( transaction->decision_expected_mask == 0u )
@@ -436,7 +436,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 			SparkModelPipelineClientReportCompletion(pipeline,transaction);
 		}
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelPipelineClientRankDecisionResult(
@@ -605,7 +605,7 @@ static SparkStatus SparkModelPipelineClientValidateConfiguration(
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( configuration->deployment == 0 || configuration->runtime_root == 0 || configuration->connect_timeout_ms == 0u || configuration->completion_function == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelPipelineClientInitializeState(
@@ -620,7 +620,7 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentValidateForAdapter(configuration->deployment,pipeline->adapter_library.adapter_interface.descriptor);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	pipeline->rank_count = configuration->deployment->node_count;
 	pipeline->transaction_capacity = configuration->deployment->runtime_limits.max_inflight_submission_count;
 	pipeline->lease_generation = 1u;
@@ -630,7 +630,7 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	pipeline->adapter_descriptor = pipeline->adapter_library.adapter_interface.descriptor;
 	status = SparkModelServingAdapterValidateRuntimeLimits(pipeline->adapter_descriptor,&pipeline->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	pipeline->submit_result_function = configuration->submit_result_function;
 	pipeline->submit_result_context = configuration->submit_result_context;
 	pipeline->completion_function = configuration->completion_function;
@@ -695,7 +695,7 @@ SparkStatus SparkModelPipelineClientConnect(
 	*pipeline_out = 0;
 	status = SparkModelPipelineClientValidateConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	pipeline = (SparkModelPipelineClient *)calloc(1u,sizeof(*pipeline));
 	if ( pipeline == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -705,10 +705,10 @@ SparkStatus SparkModelPipelineClientConnect(
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkModelPipelineClientDestroy(pipeline);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*pipeline_out = pipeline;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkModelPipelineClientDestroy(SparkModelPipelineClient *pipeline)
@@ -747,7 +747,7 @@ static SparkStatus SparkModelPipelineClientPreflight(
 		if ( view.queued_message_count >= view.queue_capacity || view.pending_submission_count >= view.queue_capacity )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelPipelineClientSubmit(
@@ -763,7 +763,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 		return((SparkStatus)pipeline->failed_status);
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(pipeline->adapter_descriptor,&pipeline->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( submission->submission_id <= pipeline->last_submission_id )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelPipelineClientPreflight(pipeline,&failed_stage_index);
@@ -771,7 +771,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 	{
 		if ( failed_stage_index != SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX )
 			SparkModelPipelineClientSetFailure(pipeline,status,failed_stage_index);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	continuation = SparkModelPipelineClientCanContinue(pipeline,submission);
 	if ( continuation != 0u )
@@ -781,7 +781,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 			status = SparkModelResidentClientCanQueueContinuation(
 				pipeline->clients[rank],submission);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 	transaction = SparkModelPipelineClientReserve(pipeline,submission);
 	if ( transaction == 0 )
@@ -803,7 +803,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 	pipeline->submitted_count++;
 	if ( continuation != 0u )
 		pipeline->continued_count++;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelPipelineClientFailTransactions(
@@ -868,7 +868,7 @@ SparkStatus SparkModelPipelineClientProgress(
 		SparkModelPipelineClientFailTransactions(pipeline,(SparkStatus)pipeline->failed_status);
 		return((SparkStatus)pipeline->failed_status);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelPipelineClientGetPollDescriptors(
@@ -885,7 +885,7 @@ SparkStatus SparkModelPipelineClientGetPollDescriptors(
 	for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count; rank++)
 		status = SparkModelResidentClientGetPollDescriptor(pipeline->clients[rank],&descriptors[rank]);
 	*descriptor_count_out = status == SPARK_STATUS_OK ? pipeline->rank_count : 0u;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkModelPipelineClientGetView(
@@ -913,7 +913,7 @@ SparkStatus SparkModelPipelineClientGetView(
 	for (rank=0u; rank<pipeline->rank_count; rank++)
 		if ( SparkModelResidentClientGetView(pipeline->clients[rank],&client_view) == SPARK_STATUS_OK && client_view.connected != 0u )
 			view->connected_rank_count++;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 const SparkModelServingAdapterDescriptor *SparkModelPipelineClientGetAdapterDescriptor(

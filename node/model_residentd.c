@@ -271,7 +271,7 @@ static SparkStatus SparkModelResidentdParseUnsigned(
 	if ( errno != 0 || end == text || end[0] != '\0' || parsed > UINT32_MAX )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*value = (uint32_t)parsed;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelResidentdUsage(const char *program)
@@ -286,7 +286,7 @@ static SparkStatus SparkModelResidentdSetText(
 	if ( destination == 0 || *destination != 0 || value == 0 || value[0] == '\0' )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*destination = value;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdParseLaunch(
@@ -341,7 +341,7 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentResolvePath(node,deployment->transport_shared_object_path,configuration->transport_path,sizeof(configuration->transport_path));
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	configuration->driver_program_name = deployment->driver_program_name;
 	configuration->transport_mode = deployment->transport_mode;
 	configuration->node_target = node->node_target;
@@ -363,7 +363,7 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	configuration->kv_physical_page_capacity =
 		deployment->runtime_limits.kv_physical_page_capacity;
 	configuration->port_base = deployment->transport_control_port_base;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdValidateDirectories(
@@ -375,7 +375,7 @@ static SparkStatus SparkModelResidentdValidateDirectories(
 	if ( configuration->kv_backing_directory != 0 &&
 		!SparkPathIsRealDirectoryTree(configuration->kv_backing_directory) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdTransportContract(
@@ -400,7 +400,7 @@ static SparkStatus SparkModelResidentdTransportContract(
 	}
 	else
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static int32_t SparkModelResidentdSetNonblocking(int32_t fd)
@@ -424,7 +424,7 @@ static SparkStatus SparkModelResidentdOpenWakePipe(
 	}
 	runtime->wake_read_fd = fds[0];
 	runtime->wake_write_fd = fds[1];
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdOpenUnixListenSocket(
@@ -459,7 +459,7 @@ static SparkStatus SparkModelResidentdOpenUnixListenSocket(
 	}
 	(void)chmod(socket_path,0600);
 	runtime->listen_fd = fd;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdOpenTcpListenSocket(
@@ -507,7 +507,7 @@ static SparkStatus SparkModelResidentdOpenTcpListenSocket(
 			close(fd);
 	}
 	freeaddrinfo(addresses);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdOpenControlListener(
@@ -527,7 +527,7 @@ static SparkStatus SparkModelResidentdOpenControlListener(
 		if ( status == SPARK_STATUS_OK )
 			runtime->control_endpoint_kind = SPARK_MODEL_RESIDENT_ENDPOINT_KIND_TCP;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdOpenTransports(
@@ -551,7 +551,7 @@ static SparkStatus SparkModelResidentdOpenTransports(
 		if ( status == SPARK_STATUS_OK )
 			status = SparkHiddenTransportOpen(&endpoint,&runtime->transport_library.transport_interface,required_capabilities,&runtime->output_transport);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdAllocateBoundary(
@@ -610,7 +610,7 @@ static SparkStatus SparkModelResidentdAllocateCuda(
 		if ( status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u )
 			status = SparkModelResidentdAllocateBoundary(&runtime->slots[index].output,memory_mode,runtime->rank_plan.output_max_packet_bytes);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static uint32_t SparkModelResidentdMaximumU32(uint32_t left,uint32_t right)
@@ -630,7 +630,7 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcCalculateCompletionBytes(descriptor->max_output_token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&completion_bytes);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	runtime->route_capacity = runtime->runtime_limits.max_inflight_submission_count;
 	runtime->route_message_capacity = submit_bytes;
 	runtime->client.input_capacity = SparkModelResidentdMaximumU32(submit_bytes,SPARK_MODEL_RESIDENT_IPC_HELLO_BYTES);
@@ -654,7 +654,7 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 		runtime->slots[index].message = runtime->route_messages + ((size_t)index * runtime->route_message_capacity);
 	for (index=0u; index<runtime->client.output_capacity; index++)
 		runtime->client.output[index].message = runtime->client.output_storage + ((size_t)index * runtime->client.output_message_capacity);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelResidentdWake(void *wake_context)
@@ -705,7 +705,7 @@ static SparkStatus SparkModelResidentdValidatePersistentSlot(
 		return(SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( slot->bound == 0u || SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
@@ -725,12 +725,12 @@ static SparkStatus SparkModelResidentdClaimResidentSlotsLocked(
 			return(slot < runtime->runtime_limits.resident_sequence_capacity ? SPARK_STATUS_BUSY : SPARK_STATUS_CAPACITY_EXCEEDED);
 		status = SparkModelResidentdValidatePersistentSlot(runtime,route,lane);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 	for (lane=0u; lane<route->submission.active_sequence_count; lane++)
 		runtime->sequence_slots[route->submission.lanes[lane].resident_sequence_slot].active_owner = owner;
 	route->resident_slots_claimed = 1u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
@@ -739,7 +739,7 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 {
 	uint32_t lane,owner,slot;
 	if ( route->resident_slots_claimed == 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	owner = route->slot_index + 1u;
 	for (lane=0u; lane<route->submission.active_sequence_count; lane++)
 	{
@@ -753,7 +753,7 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 	for (lane=0u; lane<route->submission.active_sequence_count; lane++)
 		runtime->sequence_slots[route->submission.lanes[lane].resident_sequence_slot].active_owner = 0u;
 	route->resident_slots_claimed = 0u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdCompleteContinuationLease(
@@ -768,7 +768,7 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 		SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		SparkModelContinuationLeaseInvalidate(&slot->lease);
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	next_sequence_position = lane->context_token_count;
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
@@ -782,7 +782,7 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 				lane->context_token_count,
 				completed_tokens,&next_sequence_position);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	}
 	return(SparkModelContinuationLeaseEstablish(&slot->lease,
@@ -811,7 +811,7 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = SparkModelResidentdValidatePersistentSlot(runtime,route,lane_index);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 	for (lane_index=0u; lane_index<route->submission.active_sequence_count; lane_index++)
 	{
@@ -826,12 +826,12 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 		{
 			status = SparkModelResidentdCompleteContinuationLease(runtime,route,lane,slot);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 		slot->active_owner = 0u;
 	}
 	route->resident_slots_claimed = 0u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdEnqueueCommittedLocked(
@@ -850,7 +850,7 @@ static SparkStatus SparkModelResidentdEnqueueCommittedLocked(
 	runtime->committed_fifo_tail = encoded_index;
 	route->committed_fifo_queued = 1u;
 	route->committed_fifo_next = 0u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdRemoveCommittedLocked(
@@ -860,7 +860,7 @@ static SparkStatus SparkModelResidentdRemoveCommittedLocked(
 	SparkModelResidentdRoute *previous;
 	uint32_t encoded_index,index,next,previous_index;
 	if ( route->committed_fifo_queued == 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	encoded_index = route->slot_index + 1u;
 	previous_index = 0u;
 	index = runtime->committed_fifo_head;
@@ -883,7 +883,7 @@ static SparkStatus SparkModelResidentdRemoveCommittedLocked(
 		runtime->committed_fifo_tail = previous_index;
 	route->committed_fifo_queued = 0u;
 	route->committed_fifo_next = 0u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdDeactivateRouteLocked(
@@ -899,7 +899,7 @@ static SparkStatus SparkModelResidentdDeactivateRouteLocked(
 		route->active = 0u;
 		route->state = SPARK_MODEL_RESIDENTD_ROUTE_IDLE;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdQueueRawLocked(
@@ -917,7 +917,7 @@ static SparkStatus SparkModelResidentdQueueRawLocked(
 	output->message_bytes = message_bytes;
 	output->sent_bytes = 0u;
 	runtime->client.output_count++;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdQueueDeadlineCompletionLocked(
@@ -931,7 +931,7 @@ static SparkStatus SparkModelResidentdQueueDeadlineCompletionLocked(
 	if ( route->deadline_completion_queued != 0u || route->abandoned != 0u ||
 		runtime->client.fd < 0 ||
 		route->client_generation != runtime->client.generation )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	if ( route->result_queued == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( runtime->client.output_count >= runtime->client.output_capacity )
@@ -956,12 +956,12 @@ static SparkStatus SparkModelResidentdQueueDeadlineCompletionLocked(
 	status = SparkModelResidentIpcEncodeCompletion(&completion,route->message_id,
 		output->message,runtime->client.output_message_capacity,&message_bytes);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	output->message_bytes = message_bytes;
 	output->sent_bytes = 0u;
 	runtime->client.output_count++;
 	route->deadline_completion_queued = 1u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdExpireTransportRouteLocked(
@@ -973,12 +973,12 @@ static SparkStatus SparkModelResidentdExpireTransportRouteLocked(
 	if ( route->deadline_expired == 0u )
 	{
 		if ( route->submission.deadline_time_ns == 0u )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		now = SparkModelResidentdMonotonicTimeNs();
 		if ( now == 0u )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( now < route->submission.deadline_time_ns )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		route->deadline_expired = 1u;
 		route->deadline_wait_state = wait_state;
 	}
@@ -1000,13 +1000,13 @@ static SparkStatus SparkModelResidentdQueueCompletionLocked(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdCompleteResidentSlotsLocked(runtime,route);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	output->message_bytes = message_bytes;
 	output->sent_bytes = 0u;
 	runtime->client.output_count++;
 	route->active = 0u;
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_IDLE;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelResidentdCompletion(
@@ -1254,7 +1254,7 @@ static SparkStatus SparkModelResidentdInitializePlan(
 		else
 			status = SparkHiddenTransportLoadInterfaceFromSharedObject(configuration->transport_path,*transport_capabilities,&runtime->transport_library);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdInitializeResources(
@@ -1295,7 +1295,7 @@ static SparkStatus SparkModelResidentdInitializeResources(
 		runtime->initialize_phase = "control_listener";
 		status = SparkModelResidentdOpenControlListener(runtime,configuration);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdInitialize(
@@ -1310,7 +1310,7 @@ static SparkStatus SparkModelResidentdInitialize(
 	status = SparkModelResidentdInitializePlan(runtime,configuration,&transport_capabilities,&transport_module_id,&memory_mode);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdInitializeResources(runtime,configuration,transport_capabilities,memory_mode);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkModelResidentdCloseClientLocked(
@@ -1462,7 +1462,7 @@ static SparkStatus SparkModelResidentdQuiesceAdapter(
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( runtime->transport_stream != 0 && cudaStreamSynchronize(runtime->transport_stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelResidentdDestroy(
@@ -1656,7 +1656,7 @@ static SparkStatus SparkModelResidentdBindRoute(
 		pthread_mutex_unlock(&runtime->mutex);
 	}
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u )
 	{
 		input_sideband_address = runtime->rank_plan.input_sideband_bytes_per_sequence != 0u ? SparkModelResidentdSidebandAddress(&slot->input,&runtime->rank_plan) : 0;
@@ -1681,7 +1681,7 @@ static SparkStatus SparkModelResidentdBindRoute(
 	route->decision_required = decision_required;
 	route->prepared_cache = decision_required;
 	route->state = decision_required != 0u ? SPARK_MODEL_RESIDENTD_ROUTE_RESERVED : route->ready_state;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdProcessHello(
@@ -1712,7 +1712,7 @@ static SparkStatus SparkModelResidentdProcessHello(
 	}
 	else
 		runtime->client.close_after_output = 1u;
-	return(queue_status);
+	SPARK_RETURN(queue_status);
 }
 
 static SparkStatus SparkModelResidentdQueueSubmitResult(
@@ -1729,7 +1729,7 @@ static SparkStatus SparkModelResidentdQueueSubmitResult(
 		status = SparkModelResidentdQueueRawLocked(runtime,&result,sizeof(result));
 	if ( route != 0 && submit_status == SPARK_STATUS_OK && status == SPARK_STATUS_OK )
 		route->result_queued = 1u;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdProcessSubmission(
@@ -1843,9 +1843,9 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		}
 		pthread_mutex_unlock(&runtime->mutex);
 		if ( cleanup_status != SPARK_STATUS_OK )
-			return(cleanup_status);
+			SPARK_RETURN(cleanup_status);
 	}
-	return(queue_status);
+	SPARK_RETURN(queue_status);
 }
 
 static SparkStatus SparkModelResidentdValidateContinuationLease(
@@ -1874,9 +1874,9 @@ static SparkStatus SparkModelResidentdValidateContinuationLease(
 			wire->client_generation,submission->control_generation,
 			lane->sequence_position,lane->step_generation);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdProcessContinuation(
@@ -1911,7 +1911,7 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 		SparkModelResidentdFailLocked(runtime,status,
 			SPARK_MODEL_RESIDENTD_FAILURE_CONTINUE_LEASE,0);
 		pthread_mutex_unlock(&runtime->mutex);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( route == 0 )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
@@ -1931,7 +1931,7 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 			SPARK_MODEL_RESIDENTD_FAILURE_CONTINUE_LEASE,route);
 	}
 	pthread_mutex_unlock(&runtime->mutex);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdProcessDecision(
@@ -1945,7 +1945,7 @@ static SparkStatus SparkModelResidentdProcessDecision(
 	uint32_t resolution,slot_index;
 	status = SparkModelResidentIpcValidateDecision(decision,message_bytes);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	pthread_mutex_lock(&runtime->mutex);
 	route = SparkModelResidentdFindRoute(runtime,decision->submission_id);
 	if ( route == 0 )
@@ -1993,7 +1993,7 @@ static SparkStatus SparkModelResidentdProcessDecision(
 	if ( queue_status == SPARK_STATUS_OK )
 		queue_status = SparkModelResidentdQueueRawLocked(runtime,&result,sizeof(result));
 	pthread_mutex_unlock(&runtime->mutex);
-	return(queue_status);
+	SPARK_RETURN(queue_status);
 }
 
 static SparkStatus SparkModelResidentdProcessMessage(
@@ -2010,11 +2010,11 @@ static SparkStatus SparkModelResidentdProcessMessage(
 	{
 		status = SparkModelResidentIpcValidateHeader(header,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_HELLO,SPARK_MODEL_RESIDENT_IPC_HELLO_BYTES);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		status = runtime->client.hello_complete == 0u ? SparkModelResidentdProcessHello(runtime,message,message_bytes) : SPARK_STATUS_DUPLICATE;
 		if ( status == SPARK_STATUS_OK )
 			runtime->client.last_message_id = header->message_id;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( runtime->client.hello_complete == 0u || header->message_id <= runtime->client.last_message_id )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
@@ -2024,7 +2024,7 @@ static SparkStatus SparkModelResidentdProcessMessage(
 	{
 		status = SparkModelResidentIpcValidateHeader(header,message_bytes,header->kind,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
 			status = SparkModelResidentdProcessContinuation(runtime,message,
 				message_bytes);
@@ -2039,7 +2039,7 @@ static SparkStatus SparkModelResidentdProcessMessage(
 		status = SPARK_STATUS_UNSUPPORTED;
 	if ( status == SPARK_STATUS_OK )
 		runtime->client.last_message_id = header->message_id;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdReadClient(
@@ -2058,7 +2058,7 @@ static SparkStatus SparkModelResidentdReadClient(
 		if ( bytes_read == 0 )
 		{
 			SparkModelResidentdCloseClient(runtime);
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		}
 		if ( bytes_read < 0 )
 			return(errno == EAGAIN || errno == EWOULDBLOCK ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
@@ -2082,10 +2082,10 @@ static SparkStatus SparkModelResidentdReadClient(
 			runtime->client.input_bytes = 0u;
 			runtime->client.target_bytes = SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES;
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdWriteClient(SparkModelResidentdRuntime *runtime)
@@ -2115,7 +2115,7 @@ static SparkStatus SparkModelResidentdWriteClient(SparkModelResidentdRuntime *ru
 	pthread_mutex_unlock(&runtime->mutex);
 	if ( close_client != 0u )
 		SparkModelResidentdCloseClient(runtime);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkModelResidentdTransportCompletionMatches(
@@ -2169,7 +2169,7 @@ static SparkStatus SparkModelResidentdFinishRoute(
 			status = SPARK_STATUS_OK;
 	}
 	pthread_mutex_unlock(&runtime->mutex);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdApplyTransportCompletionLocked(
@@ -2207,12 +2207,12 @@ static SparkStatus SparkModelResidentdApplyTransportCompletionLocked(
 	if ( matched->deadline_expired != 0u )
 	{
 		matched->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( completion->status != SPARK_STATUS_OK )
 		return(completion->status);
 	matched->state = input != 0u ? SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER : SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdProgressTransport(
@@ -2224,20 +2224,20 @@ static SparkStatus SparkModelResidentdProgressTransport(
 	SparkStatus status;
 	uint32_t step;
 	if ( session == 0 )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	for (step=0u; step<runtime->route_capacity; step++)
 	{
 		memset(&completion,0,sizeof(completion));
 		status = SparkHiddenTransportPoll(session,&completion);
 		if ( status != SPARK_STATUS_OK || completion.status == SPARK_STATUS_BUSY )
-			return(status);
+			SPARK_RETURN(status);
 		pthread_mutex_lock(&runtime->mutex);
 		status = SparkModelResidentdApplyTransportCompletionLocked(runtime,&completion,input);
 		pthread_mutex_unlock(&runtime->mutex);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdSubmitAdapter(
@@ -2250,13 +2250,13 @@ static SparkStatus SparkModelResidentdSubmitAdapter(
 	if ( route->active == 0u || route->state != SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER )
 	{
 		pthread_mutex_unlock(&runtime->mutex);
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( runtime->committed_fifo_head != 0u &&
 		runtime->committed_fifo_head != route->slot_index + 1u )
 	{
 		pthread_mutex_unlock(&runtime->mutex);
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( runtime->committed_fifo_head == 0u &&
 		route->committed_fifo_queued != 0u )
@@ -2304,7 +2304,7 @@ static SparkStatus SparkModelResidentdFailContinuationLocked(
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_FENCED;
 	SparkModelResidentdFailLocked(runtime,status,
 		SPARK_MODEL_RESIDENTD_FAILURE_CONTINUE_LEASE,route);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdCommitContinuation(
@@ -2333,7 +2333,7 @@ static SparkStatus SparkModelResidentdCommitContinuation(
 	else
 		status = SparkModelResidentdFailContinuationLocked(runtime,route,status);
 	pthread_mutex_unlock(&runtime->mutex);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdPrepareContinuation(
@@ -2354,13 +2354,13 @@ static SparkStatus SparkModelResidentdPrepareContinuation(
 		&runtime->adapter_library.adapter_interface,runtime->adapter_state,
 		&route->submission);
 	if ( status == SPARK_STATUS_BUSY )
-		return(status);
+		SPARK_RETURN(status);
 	if ( status != SPARK_STATUS_OK )
 	{
 		pthread_mutex_lock(&runtime->mutex);
 		status = SparkModelResidentdFailContinuationLocked(runtime,route,status);
 		pthread_mutex_unlock(&runtime->mutex);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	route->prepared_cache = 1u;
 	return(SparkModelResidentdCommitContinuation(runtime,route));
@@ -2383,7 +2383,7 @@ static SparkStatus SparkModelResidentdPostTransport(
 	if ( route->active == 0u || route->state != ready_state )
 	{
 		pthread_mutex_unlock(&runtime->mutex);
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	route->state = wait_state;
 	pthread_mutex_unlock(&runtime->mutex);
@@ -2395,7 +2395,7 @@ static SparkStatus SparkModelResidentdPostTransport(
 			route->state = ready_state;
 		pthread_mutex_unlock(&runtime->mutex);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 typedef struct SparkModelResidentdAdapterBudget
@@ -2423,21 +2423,21 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			state == SPARK_MODEL_RESIDENTD_ROUTE_RESOLVING ||
 			state == SPARK_MODEL_RESIDENTD_ROUTE_FENCED ||
 			state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_CONTINUATION_PREPARING )
 		{
 			if ( budget == 0 || budget->allowed == 0u ||
 				budget->refused != 0u ||
 				(budget->serial != 0u && budget->ops != 0u) )
-				SPARK_FAIL(SPARK_STATUS_OK);
+				return(SPARK_STATUS_OK);
 			status = SparkModelResidentdPrepareContinuation(runtime,route);
 			if ( status == SPARK_STATUS_BUSY )
 			{
 				budget->refused = 1u;
-				SPARK_FAIL(SPARK_STATUS_OK);
+				return(SPARK_STATUS_OK);
 			}
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 			budget->ops++;
 			runtime->adapter_op_count++;
 			SparkModelResidentdWake(runtime);
@@ -2466,12 +2466,12 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			if ( budget == 0 || budget->allowed == 0u ||
 				budget->refused != 0u ||
 				(budget->serial != 0u && budget->ops != 0u) )
-				SPARK_FAIL(SPARK_STATUS_OK);
+				return(SPARK_STATUS_OK);
 			status = SparkModelResidentdSubmitAdapter(runtime,route);
 			if ( status == SPARK_STATUS_BUSY )
 			{
 				budget->refused = 1u;
-				SPARK_FAIL(SPARK_STATUS_OK);
+				return(SPARK_STATUS_OK);
 			}
 			if ( status != SPARK_STATUS_OK )
 			{
@@ -2511,7 +2511,7 @@ static SparkStatus SparkModelResidentdProgressRoute(
 						SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
 				}
 				pthread_mutex_unlock(&runtime->mutex);
-				SPARK_FAIL(SPARK_STATUS_OK);
+				return(SPARK_STATUS_OK);
 			}
 			budget->ops++;
 			runtime->adapter_op_count++;
@@ -2527,7 +2527,7 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			return(SparkModelResidentdFinishRoute(runtime,route));
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdProgressRoutes(
@@ -2555,7 +2555,7 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 		if ( budget.ops != 0u )
 			runtime->next_adapter_route = (index + 1u) % runtime->route_capacity;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runtime)
@@ -2610,7 +2610,7 @@ static SparkStatus SparkModelResidentdProgress(SparkModelResidentdRuntime *runti
 		status = SparkModelResidentdProgressRoutes(runtime,0u);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd progress stage=routes-final status=%s rank=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdAppendTransportFds(
@@ -2623,7 +2623,7 @@ static SparkStatus SparkModelResidentdAppendTransportFds(
 	SparkStatus status;
 	uint32_t descriptor_count,index;
 	if ( session == 0 )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	descriptor_count = 0u;
 	status = SparkHiddenTransportGetPollDescriptors(session,descriptors,SPARK_MODEL_RESIDENTD_TRANSPORT_POLL_CAPACITY,&descriptor_count);
 	for (index=0u; status == SPARK_STATUS_OK && index<descriptor_count; index++)
@@ -2638,7 +2638,7 @@ static SparkStatus SparkModelResidentdAppendTransportFds(
 			fds[*count].events |= POLLOUT;
 		(*count)++;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdBuildPollFds(
@@ -2667,7 +2667,7 @@ static SparkStatus SparkModelResidentdBuildPollFds(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentdAppendTransportFds(runtime->output_transport,fds,capacity,&count);
 	*count_out = count;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkModelResidentdDrainWake(SparkModelResidentdRuntime *runtime)

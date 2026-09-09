@@ -630,7 +630,7 @@ static SparkStatus SparkModelBatchAcceptToken(
 		SparkModelBatchQueueTerminal(engine,request,SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED,SPARK_STATUS_OK);
 	else
 		request->state = SPARK_MODEL_BATCH_REQUEST_READY_DECODE;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelBatchSetFailed(
@@ -696,7 +696,7 @@ static SparkStatus SparkModelBatchPublishCompletedBlocks(
 	uint32_t *tokens;
 	completed_block_tokens = (completed_token_count / engine->cache_block_token_count) * engine->cache_block_token_count;
 	if ( completed_block_tokens <= request->cache_published_token_count )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	tokens = SparkModelBatchRequestTokens(engine,request_slot);
 	SparkModelBatchDigestTokens(
 		&request->cache_published_digest_context,
@@ -709,7 +709,7 @@ static SparkStatus SparkModelBatchPublishCompletedBlocks(
 		completed_block_tokens,
 		&committed);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	request->cache_published_token_count = committed.matched_token_count;
 	SparkModelBatchFinalizeIdentity(
 		&request->cache_published_digest_context,
@@ -717,7 +717,7 @@ static SparkStatus SparkModelBatchPublishCompletedBlocks(
 	engine->cache_publication_epoch++;
 	if ( engine->cache_publication_epoch == 0u )
 		engine->cache_publication_epoch = 1u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelBatchHandlePrefillCompletion(
@@ -738,13 +738,13 @@ static SparkStatus SparkModelBatchHandlePrefillCompletion(
 		request->resident_bound = 1u;
 		status = SparkModelBatchPublishCompletedBlocks(engine,request,request_slots[lane],request->computed_prompt_token_count);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		if ( request->computed_prompt_token_count < request->prompt_token_count )
 			request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
 		else if ( SparkModelBatchAcceptToken(engine,request,completion->token_ids[lane]) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelBatchHandleDecodeCompletion(
@@ -784,7 +784,7 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 				request_slots[lane],request->prompt_token_count +
 				request->generated_token_count);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 			token_index = lane * completion->tokens_per_sequence + step;
 			if ( SparkModelBatchAcceptToken(engine,request,
 				completion->token_ids[token_index]) != SPARK_STATUS_OK )
@@ -793,7 +793,7 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 				break;
 		}
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelBatchHandleReleaseCompletion(
@@ -842,7 +842,7 @@ static SparkStatus SparkModelBatchApplyCompletion(
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		return(SparkModelBatchHandleDecodeCompletion(engine,submission,completion));
 	SparkModelBatchHandleReleaseCompletion(engine,submission);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelBatchFailSubmissionRequests(
@@ -912,7 +912,7 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 			if ( configuration->deployment->eos_token_ids[left] == configuration->deployment->eos_token_ids[right] )
 				SPARK_FAIL(SPARK_STATUS_DUPLICATE);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelBatchAllocate(
@@ -980,7 +980,7 @@ static SparkStatus SparkModelBatchAllocate(
 	prefix_configuration.binding_lookup_hash_bucket_heads = engine->prefix_binding_lookup_hash_heads;
 	prefix_configuration.binding_sequence_hash_bucket_heads = engine->prefix_binding_sequence_hash_heads;
 	status = SparkPrefixCacheInitialize(&engine->prefix_cache,&prefix_configuration);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkModelBatchInitializeFreeList(
@@ -1050,7 +1050,7 @@ static SparkStatus SparkModelBatchInitialize(
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkModelBatchConnectPipeline(configuration,engine);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	engine->adapter_descriptor = SparkModelPipelineClientGetAdapterDescriptor(engine->pipeline);
 	if ( engine->adapter_descriptor == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1064,8 +1064,8 @@ static SparkStatus SparkModelBatchInitialize(
 	if ( engine->requests != 0 && engine->resident_slot_next != 0 )
 		SparkModelBatchInitializeFreeList(engine);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
-	SPARK_FAIL(SPARK_STATUS_OK);
+		SPARK_RETURN(status);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelBatchEngineConnect(
@@ -1079,7 +1079,7 @@ SparkStatus SparkModelBatchEngineConnect(
 	*engine_out = 0;
 	status = SparkModelBatchValidateConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	engine = (SparkModelBatchEngine *)calloc(1u,sizeof(*engine));
 	if ( engine == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1087,10 +1087,10 @@ SparkStatus SparkModelBatchEngineConnect(
 	if ( status != SPARK_STATUS_OK )
 	{
 		(void)SparkModelBatchEngineDestroy(engine);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*engine_out = engine;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelBatchEngineDestroy(SparkModelBatchEngine *engine)
@@ -1098,7 +1098,7 @@ SparkStatus SparkModelBatchEngineDestroy(SparkModelBatchEngine *engine)
 	SparkModelPipelineClientView pipeline_view;
 	SparkStatus status;
 	if ( engine == 0 )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	if ( engine->live_request_count != 0u || engine->inflight_submission_count != 0u )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	if ( engine->requests != 0 && engine->resident_slot_next != 0 && engine->free_resident_slot_count != engine->resident_sequence_capacity )
@@ -1130,7 +1130,7 @@ SparkStatus SparkModelBatchEngineDestroy(SparkModelBatchEngine *engine)
 	free(engine->submissions);
 	free(engine->requests);
 	free(engine);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkModelBatchRequestIdExists(
@@ -1163,7 +1163,7 @@ static SparkStatus SparkModelBatchValidateSubmit(
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( SparkModelBatchRequestIdExists(engine,request->request_id,request->sequence_id) != 0u )
 		SPARK_FAIL(SPARK_STATUS_DUPLICATE);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelBatchEngineSubmit(
@@ -1199,7 +1199,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 	engine->submitted_request_count++;
 	*request_handle_out = state->handle;
 	SparkModelBatchEmit(engine,state,SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED,SPARK_STATUS_OK,0u,0u);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelBatchEngineCancel(
@@ -1219,10 +1219,10 @@ SparkStatus SparkModelBatchEngineCancel(
 	{
 		request->terminal_event_kind = SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED;
 		request->terminal_status = SPARK_STATUS_OK;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	SparkModelBatchQueueTerminal(engine,request,SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED,SPARK_STATUS_OK);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkModelBatchStateForWork(uint32_t work_kind)
@@ -1916,11 +1916,11 @@ static SparkStatus SparkModelBatchDispatchKind(
 	if ( status != SPARK_STATUS_OK )
 	{
 		state->active = 0u;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	SparkModelBatchRecordSubmission(engine,state,lane_count);
 	*dispatched_out = 1u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkModelBatchChooseWorkKind(
@@ -1992,7 +1992,7 @@ SparkStatus SparkModelBatchEngineProgress(
 	{
 		SparkModelBatchSetFailed(engine,status);
 		SparkModelBatchFailIdleRequests(engine,status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( engine->failed_status != SPARK_STATUS_OK )
 	{
@@ -2019,12 +2019,12 @@ SparkStatus SparkModelBatchEngineProgress(
 		{
 			SparkModelBatchSetFailed(engine,status);
 			SparkModelBatchFailIdleRequests(engine,status);
-			return(status);
+			SPARK_RETURN(status);
 		}
 		step++;
 		misses = 0u;
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelBatchEngineCloseAdmission(
@@ -2033,7 +2033,7 @@ SparkStatus SparkModelBatchEngineCloseAdmission(
 	if ( engine == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	engine->admission_open = 0u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelBatchEngineReopenAdmission(
@@ -2043,7 +2043,7 @@ SparkStatus SparkModelBatchEngineReopenAdmission(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	engine->admission_open = 1u;
 	engine->failed_status = SPARK_STATUS_OK;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelBatchEngineBeginShutdown(
@@ -2129,7 +2129,7 @@ SparkStatus SparkModelBatchEngineGetView(
 	view->emitted_token_count = engine->emitted_token_count;
 	SparkModelBatchCountStates(engine,view);
 	status = SparkModelPipelineClientGetView(engine->pipeline,&view->pipeline);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 const SparkModelServingAdapterDescriptor *SparkModelBatchEngineGetAdapterDescriptor(

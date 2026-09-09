@@ -50,7 +50,7 @@ static int32_t SparkWeightdReadDigestPath(const char *path,char digest[65])
 	}
 	status = SparkWeightdReadDigest(file,digest);
 	(void)fclose(file);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static int32_t SparkWeightdFindDigest(DIR *directory,const char *root,char digest[65])
@@ -72,7 +72,7 @@ static int32_t SparkWeightdFindDigest(DIR *directory,const char *root,char diges
 			return(-6);
 		status = SparkWeightdReadDigestPath(path,digest);
 		if ( status != 0 )
-			return(status);
+			SPARK_RETURN(status);
 		found = 1u;
 		errno = 0;
 	}
@@ -94,7 +94,7 @@ static int32_t SparkWeightdResolveDigest(const char *root,char digest[65])
 		return(-11);
 	status = SparkWeightdFindDigest(directory,root,digest);
 	(void)closedir(directory);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 int32_t SparkModelResidentdPrepareWeightd(const char *root,const char *socket_path)
@@ -108,7 +108,7 @@ int32_t SparkModelResidentdPrepareWeightd(const char *root,const char *socket_pa
 		return(-13);
 	status = SparkWeightdResolveDigest(root,digest);
 	if ( status != 0 )
-		return(status);
+		SPARK_RETURN(status);
 	fd = socket(AF_UNIX,SOCK_STREAM,0);
 	if ( fd < 0 )
 		return(-15);

@@ -399,7 +399,7 @@ SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
 	SparkStatus status;
 	status = SparkWeightdAttachPack(slice,pack_path,timeout_nanoseconds,outcome,reason);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( outcome->client == 0 || outcome->arena_bytes != slice->pack_bytes )
 	{
 		SparkWeightdAttachRelease(outcome);
@@ -412,7 +412,7 @@ SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
 		SparkWeightdAttachRelease(outcome);
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome)

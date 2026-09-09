@@ -256,7 +256,7 @@ static SparkStatus SparkQwen38MaxServingBindMtpProvider(
 	state->provider.provider_state = 0;
 	status = SparkSpeculationProviderValidate(&state->provider);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state->provider_bound = 1u;
 	return(SPARK_STATUS_OK);
 }
@@ -330,7 +330,7 @@ static SparkStatus SparkQwen38MaxServingBindFamily(
 	SparkStatus status;
 	status = SparkQwen38MaxServingBindMtpProvider(state);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(SparkQwen38MaxServingBindSpeculationSeam(state));
 }
 

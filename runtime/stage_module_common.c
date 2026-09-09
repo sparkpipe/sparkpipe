@@ -758,7 +758,7 @@ static SparkStatus SparkStageModulePackArenaEnsure(
 	}
 	status = SparkWeightdAttachRequested();
 	if (status != SPARK_STATUS_OK)
-		return(status);
+		SPARK_RETURN(status);
 	arena = (SparkStageModulePackArena *)calloc(1u,sizeof(*arena));
 	if (arena == 0)
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -816,7 +816,7 @@ static SparkStatus SparkStageModulePackArenaSlice(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageModulePackArenaEnsure(ledger,file);
 	if (status != SPARK_STATUS_OK)
-		return(status);
+		SPARK_RETURN(status);
 	arena = (SparkStageModulePackArena *)ledger->pack_arena;
 	if (offset > arena->pack_bytes || bytes > arena->pack_bytes - offset)
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1367,7 +1367,7 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     if (status != SPARK_STATUS_BUSY)
     {
         fprintf(stderr,"stage-module invalid weightd configuration: SPARK_WEIGHTD_ATTACH must be 0 or 1; a configured socket requires attach, and attach=1 requires a socket\n");
-        return(status);
+        SPARK_RETURN(status);
     }
     if (SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK &&
         bytes >= SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES)
@@ -1385,7 +1385,7 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
             SparkStageModuleLoadPipelineDestroy(pipeline);
             return status;
         }
-        return(status);
+        SPARK_RETURN(status);
     }
     return SparkStageModuleLoadRegionSynchronous(
         ledger, file, offset, bytes, pointer);

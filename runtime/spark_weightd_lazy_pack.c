@@ -20,14 +20,14 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 	{
 		status = SparkWeightdWorkerDestroy(pack->worker);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		pack->worker = 0;
 	}
 	if ( pack->map != 0 )
 	{
 		status = SparkWeightdMapDestroy(pack->map);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		pack->map = 0;
 	}
 	if ( pack->spine_allocation != 0 )
@@ -41,7 +41,7 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 		SparkWeightdClientClose(pack->client);
 	SparkWeightdManifestDestroy(&pack->manifest);
 	free(pack);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const SparkWeightdLazyAttachRequest *request,uint64_t budget)
@@ -67,7 +67,7 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	(void)snprintf(path,sizeof(path),"%s.experts",request->pack_path);
 	status = SparkWeightdManifestLoad(path,request->identity.arena_bytes,&pack->manifest);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( check != 0 )
 		status = check(&pack->manifest,context);
 	if ( status == SPARK_STATUS_OK )
@@ -91,7 +91,7 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 		status = SparkWeightdMapCreate(pack->client,&pack->attached,&pack->map);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdWorkerCreate(&pack->worker);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t spine_budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context,SparkWeightdLazyPack **out)
@@ -131,7 +131,7 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 	if ( status == SPARK_STATUS_OK )
 		pack->ready = 1u;
 	*out = pack;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t spine_budget,uint64_t timeout,SparkWeightdLazyPack **out)
@@ -151,5 +151,5 @@ SparkStatus SparkWeightdLazyPackSlice(const SparkWeightdLazyPack *pack,uint64_t 
 	status = SparkWeightdManifestSpineSlice(&pack->manifest,offset,bytes,&compact);
 	if ( status == SPARK_STATUS_OK )
 		*pointer = ((uint8_t *)pack->spine + compact);
-	return(status);
+	SPARK_RETURN(status);
 }

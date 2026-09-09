@@ -191,7 +191,7 @@ static SparkStatus SparkQwen4FlashServingInitializeSeam(
 	status = SparkSpeculationSeamParseControl(control_value,
 		SPARK_QWEN4_FLASH_SERVING_SEAM_AVAILABLE_SOURCES,&enabled_source_mask);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	(void)enabled_source_mask;
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
@@ -234,13 +234,13 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitializeWithSeam)(
 	SparkStatus status;
 	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitialize)(configuration,adapter_state);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)*adapter_state;
 	status = SparkQwen4FlashServingInitializeSeam(state);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(state);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }

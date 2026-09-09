@@ -423,7 +423,7 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static uint32_t SparkQwen38_27bServingFirstLayer(uint32_t stage_index)
@@ -502,7 +502,7 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	SparkStatus status;
 	status = SparkQwen38_27bServingRejectRetiredSpeculationEnvironment();
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	available_sources = SPARK_QWEN38_27B_SERVING_AVAILABLE_SOURCES;
 	if ( state->bridge_host == 0 )
 		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
@@ -515,12 +515,12 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 		if ( status != SPARK_STATUS_OK )
 		{
 			fprintf(stderr,"qwen38_27b_serving %s control value rejected: status=%d available=0x%x\n",SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV,(int)status,available_sources);
-			return(status);
+			SPARK_RETURN(status);
 		}
 	}
 	status = SparkQwen38_27bServingResolveSpeculationMethods(enabled_sources,&state->spec_method,&state->speculation_enabled);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( state->spec_method == SPARK_QWEN38_27B_SERVING_SPEC_METHOD_REMOTE && state->speculative_draft_count > SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u )
 	{
 		fprintf(stderr,"qwen38_27b_serving remote drafting needs one verify row for the committed bonus: speculative_draft_count must be <= %u\n",(unsigned)(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u));
@@ -563,7 +563,7 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"qwen38_27b_serving speculation seam init failed: status=%d\n",(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -734,7 +734,7 @@ static SparkStatus SparkQwen38_27bServingValidateSubmissionBase(
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"qwen38_27b_debug validate_runtime status=%d kind=%u rows=%u lanes=%u act=%u tps=%u new_tokens=%u pos=%llu ctx=%llu\\n",(int)status,submission->work_kind,submission->row_count,submission->lane_count,submission->active_sequence_count,submission->tokens_per_sequence,submission->new_token_count,(unsigned long long)submission->sequence_position,(unsigned long long)(submission->active_sequence_count > 0u ? submission->lanes[0].context_token_count : 0u));
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -742,7 +742,7 @@ static SparkStatus SparkQwen38_27bServingValidateSubmissionBase(
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"qwen38_27b_debug row_order status=%d\\n",(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( submission->model_extension_bytes != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -759,7 +759,7 @@ static SparkStatus SparkQwen38_27bServingValidateSubmission(
 	state = (SparkQwen38_27bServingState *)adapter_state;
 	status = SparkQwen38_27bServingValidateSubmissionBase(state,submission);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		return(SPARK_STATUS_OK);
 	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
@@ -982,7 +982,7 @@ static SparkStatus SparkQwen38_27bServingCoverSubmission(
 		if ( status != SPARK_STATUS_OK )
 		{
 			SparkQwen38_27bServingDropSubmission(state,submission);
-			return(status);
+			SPARK_RETURN(status);
 		}
 	}
 	return(SPARK_STATUS_OK);
@@ -1046,7 +1046,7 @@ static SparkStatus SparkQwen38_27bServingUploadBlockTable(
 		destination = state->device_block_counts;
 		status = SparkMemoryBufferCopy(&destination,&host_counts,counts_bytes,0);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen38_27bServingExtendSpeculativeCoverage(
@@ -1087,7 +1087,7 @@ static SparkStatus SparkQwen38_27bServingExtendSpeculativeCoverage(
 		end_position = position + (uint64_t)SparkQwen38_27bServingActiveDraftCount(state,state->spec_method) + 2u;
 		status = SparkQwen38_27bServingCoverLane(state,slot,end_position);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1289,7 +1289,7 @@ static SparkStatus SparkQwen38_27bServingRunFrame(
 				pending->output_token_ids[submission->row_lane_indices[row]] = pending->frame_output_ids[row];
 		}
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkQwen38_27bServingBuildSpeculativeFrame(
@@ -1445,7 +1445,7 @@ static SparkStatus SparkQwen38_27bServingRunSpeculativeFrame(
 		status = state->program->submit(state->driver_instance,&frame);
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
@@ -1798,7 +1798,7 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 		for (lane=0u; lane<submission->active_sequence_count; lane++)
 			if ( pending->spec[lane].engine_staged != 0u )
 				(void)SparkSpeculationSeamCancelSequence(state->speculation_seam,pending->spec[lane].sequence_id);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkQwen38_27bServingComplete(
@@ -1875,7 +1875,7 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr, "qwen38_27b_submit_reject status=%d kind=%u rows=%u lanes=%u pos=%llu slot=%u\n", (int)status, submission->work_kind, submission->row_count, submission->active_sequence_count, (unsigned long long)(submission->row_count != 0u ? submission->row_positions[0] : 0u), submission->row_count != 0u ? submission->lanes[0].resident_sequence_slot : 0u);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	pending = SparkQwen38_27bServingReservePending(state,submission);
 	if ( pending == 0 )
@@ -1963,7 +1963,7 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 	{
 		SparkQwen38_27bServingDropSubmission(state,submission);
 		pending->common.active = 0u;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( pending->spec_active != 0u )
 	{
@@ -2037,7 +2037,7 @@ static SparkStatus SparkQwen38_27bServingLoadDriver(
 		&state->driver,&program,SparkQwen38_27bServingAcceptsProgram,state,
 		&state->driver_instance);
 	state->program = program;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen38_27bServingAllocatePools(
@@ -2115,7 +2115,7 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 	*adapter_state = 0;
 	status = SparkQwen38_27bServingValidateConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state = (SparkQwen38_27bServingState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -2154,7 +2154,7 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkQwen38_27bServingDestroy(state);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*adapter_state = state;
 	return(SPARK_STATUS_OK);

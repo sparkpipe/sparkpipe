@@ -22,7 +22,7 @@ SparkStatus SparkWeightdLeaseTableCreate(const SparkWeightdManifest *manifest,Sp
 	table->manifest = manifest;
 	table->next_identifier = 1u;
 	*out = table;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdLeaseTableDestroy(SparkWeightdLeaseTable *table)
@@ -35,7 +35,7 @@ SparkStatus SparkWeightdLeaseTableDestroy(SparkWeightdLeaseTable *table)
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 	free(table->pins);
 	free(table);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void sift_groups(uint32_t *groups,uint32_t root,uint32_t count)
@@ -90,7 +90,7 @@ static SparkStatus prepare_groups(SparkWeightdLeaseTable *table,SparkWeightdLeas
 	for (i=0u; i<*unique; i++)
 		if ( table->pins[lease->groups[i]] == UINT32_MAX )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owner,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier)
@@ -115,14 +115,14 @@ SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owne
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	status = prepare_groups(table,lease,keys,count,&unique);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	for (i=0u; i<unique; i++)
 		table->pins[lease->groups[i]]++;
 	lease->count = unique;
 	lease->owner = owner;
 	lease->identifier = table->next_identifier++;
 	*identifier = lease->identifier;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 const SparkWeightdLease *SparkWeightdLeaseFind(const SparkWeightdLeaseTable *table,uint64_t owner,uint64_t identifier)
@@ -153,7 +153,7 @@ SparkStatus SparkWeightdLeaseRelease(SparkWeightdLeaseTable *table,uint64_t owne
 	lease->count = 0u;
 	lease->owner = 0u;
 	lease->identifier = 0u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_t expert_count,uint32_t packed_rows,SparkWeightdExpertKey *keys,uint32_t capacity,uint32_t *count)
@@ -182,5 +182,5 @@ SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_
 			keys[*count].expert = i;
 			(*count)++;
 		}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }

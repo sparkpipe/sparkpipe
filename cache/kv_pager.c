@@ -386,7 +386,7 @@ SparkStatus SparkKvPagerInitialize(
 		memcpy(pager->park_worker_handle,&worker,sizeof(worker));
 		pager->park_worker_active = 1u;
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 uint64_t SparkKvPagerBlockBytes(const SparkKvPager *pager)
@@ -456,7 +456,7 @@ SparkStatus SparkKvPagerAdmit(
 			decision.outcome = SPARK_KV_PAGER_QUEUED;
 			pager->statistics.admission_queued_device += 1u;
 			*decision_out = decision;
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		}
 		{
 			uint32_t park_headroom =
@@ -467,7 +467,7 @@ SparkStatus SparkKvPagerAdmit(
 				decision.outcome = SPARK_KV_PAGER_QUEUED;
 				pager->statistics.admission_queued_backing += 1u;
 				*decision_out = decision;
-				SPARK_FAIL(SPARK_STATUS_OK);
+				return(SPARK_STATUS_OK);
 			}
 		}
 	}
@@ -487,7 +487,7 @@ SparkStatus SparkKvPagerAdmit(
 				decision.outcome = SPARK_KV_PAGER_QUEUED;
 				pager->statistics.admission_queued_bandwidth += 1u;
 				*decision_out = decision;
-				SPARK_FAIL(SPARK_STATUS_OK);
+				return(SPARK_STATUS_OK);
 			}
 		}
 	}
@@ -513,10 +513,10 @@ SparkStatus SparkKvPagerAdmit(
 	}
 	else
 	{
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*decision_out = decision;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkKvPagerCommitAdmission(
@@ -595,12 +595,12 @@ SparkStatus SparkKvPagerEvictWriteback(
 	status = pager->configuration.module_save(pager->configuration.module_context,
 		&view);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	SparkKvPagerDigestOf(staging,pager->block_bytes,digest);
 	status = SparkNvmeTierReserveWrite(pager->configuration.tier,
 		SparkKvPagerHashFromDigest(digest),digest,&reservation);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( asynchronous != 0u && reservation.already_present == 0u )
 	{
 		entry.logical_block_index = logical_block_index;
@@ -610,7 +610,7 @@ SparkStatus SparkKvPagerEvictWriteback(
 		entry.payload_bytes = (uint64_t)pager->block_bytes;
 		if ( SparkKvPagerParkQueuePush(pager,&entry) != 0u )
 		{
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		}
 	}
 	if ( reservation.already_present == 0u )
@@ -622,17 +622,17 @@ SparkStatus SparkKvPagerEvictWriteback(
 		if ( status != SPARK_STATUS_OK )
 		{
 			(void)SparkNvmeTierAbortWrite(pager->configuration.tier,&reservation);
-			return(status);
+			SPARK_RETURN(status);
 		}
 		SparkKvPagerFoldBandwidthSample(pager,(uint64_t)pager->block_bytes,
 			SparkKvPagerClockNow(pager) - write_started);
 	}
 	status = SparkNvmeTierCommitWrite(pager->configuration.tier,&reservation);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	SparkKvPagerRecordPageOut(pager,logical_block_index,
 		reservation.already_present);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkKvPagerRestoreBlock(
@@ -674,7 +674,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 		if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) == 0u )
 			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
@@ -703,7 +703,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 				break;
 			}
 			if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
-				return(status);
+				SPARK_RETURN(status);
 			if ( status == SPARK_STATUS_BUSY && deadline_step != 0u &&
 				demand.ordered != 0u )
 			{
@@ -721,7 +721,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 			}
 			status = SparkNvmeTierPump(pager->configuration.tier,attempt);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 		if ( attempt == SPARK_KV_PAGER_RESTORE_POLL_LIMIT )
 		{
@@ -749,7 +749,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 		SparkKvPagerHashFromDigest(content_digest),content_digest);
 	status = SparkKvCacheArenaMarkParkedBlockResident(arena,logical_block_index);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	status = SparkKvCacheArenaResolveBlock(arena,logical_block_index,&block_view);
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -779,7 +779,7 @@ static SparkStatus SparkKvPagerRestoreBlockDeadlineEx(
 			pager->statistics.page_in_bytes += pager->block_bytes;
 		}
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkKvPagerRestoreBlockDeadline(
@@ -857,7 +857,7 @@ SparkStatus SparkKvPagerDispatchBlock(
 	}
 	if ( status == SPARK_STATUS_OK )
 		*decision_out = decision;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkKvPagerAssertDeviceBudget(const SparkKvPager *pager)
@@ -881,7 +881,7 @@ SparkStatus SparkKvPagerAssertDeviceBudget(const SparkKvPager *pager)
 	resident_bytes = arena->resident_block_count * (uint64_t)pager->block_bytes;
 	if ( resident_bytes > pager->configuration.device_budget_bytes )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkKvPagerGetStatistics(
@@ -901,7 +901,7 @@ SparkStatus SparkKvPagerPollParkCompletions(SparkKvPager *pager)
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	while ( SparkKvPagerParkCompletionPop(pager,&completion) != 0u )
 		SparkKvPagerPublishCompletion(pager,&completion);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkKvPagerShutdown(SparkKvPager *pager)
@@ -913,7 +913,7 @@ SparkStatus SparkKvPagerShutdown(SparkKvPager *pager)
 	if ( SparkKvPagerIsValid(pager) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pager->park_worker_active == 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	atomic_store_explicit(&pager->park_worker_stop,1u,memory_order_seq_cst);
 	memcpy(&worker,pager->park_worker_handle,sizeof(worker));
 	pthread_join(worker,0);

@@ -412,7 +412,7 @@ SparkStatus SparkNvmeTierInitialize(
 	if ( tier->transfer_steps == 0u )
 		tier->transfer_steps = 1u;
 	tier->statistics.slot_count = slot_count;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void NvmeTierStagingRelease(SparkNvmeTier *tier, uint32_t staging_index)
@@ -613,7 +613,7 @@ SparkStatus SparkNvmeTierReserveWrite(
 		reservation_out->slot_index = slot_index;
 		reservation_out->generation = slots[slot_index].generation;
 		reservation_out->already_present = 1u;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 
 	for ( index = 0u; index < tier->slot_count; ++index )
@@ -659,7 +659,7 @@ SparkStatus SparkNvmeTierReserveWrite(
 	reservation_out->slot_index = slot_index;
 	reservation_out->generation = slots[slot_index].generation;
 	reservation_out->already_present = 0u;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvmeTierCommitWrite(
@@ -681,7 +681,7 @@ SparkStatus SparkNvmeTierCommitWrite(
 			|| existing >= tier->slot_count
 			|| slots[existing].generation != reservation->generation )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( reservation->slot_index >= tier->slot_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -698,7 +698,7 @@ SparkStatus SparkNvmeTierCommitWrite(
 	slot->state = NVME_TIER_SLOT_PRESENT;
 	NvmeTierBucketInsert(tier,reservation->slot_index);
 	tier->statistics.publishes++;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvmeTierAbortWrite(
@@ -711,7 +711,7 @@ SparkStatus SparkNvmeTierAbortWrite(
 	if ( tier == 0 || reservation == 0 || reservation->content_hash == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( reservation->already_present != 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	if ( reservation->slot_index >= tier->slot_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	slots = (NvmeTierSlot *)tier->slots;
@@ -722,7 +722,7 @@ SparkStatus SparkNvmeTierAbortWrite(
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	NvmeTierReleaseReservedSlot(tier,reservation->slot_index);
 	tier->statistics.write_aborts++;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvmeTierOffsetOf(
@@ -738,10 +738,10 @@ SparkStatus SparkNvmeTierOffsetOf(
 	slot_index = NvmeTierLookupVerified(tier,content_hash,content_digest,
 		&status);
 	if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
-		return(status);
+		SPARK_RETURN(status);
 	*device_offset_out = tier->configuration.base_offset
 		+ (uint64_t)slot_index * tier->configuration.block_bytes;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 
@@ -952,7 +952,7 @@ SparkStatus SparkNvmeTierPlanLookahead(
 	}
 	if ( report_out != 0 )
 		*report_out = report;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void NvmeTierPrefetchRequeue(SparkNvmeTier *tier, uint32_t slot_index, uint32_t need_by_step)
@@ -1084,7 +1084,7 @@ static SparkStatus NvmeTierIssueRead(
 	{
 		tier->statistics.io_errors++;
 		NvmeTierStagingRelease(tier,staging_index);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	staging_states[staging_index].ticket = ticket;
 	staging_states[staging_index].slot = slot_index;
@@ -1097,7 +1097,7 @@ static SparkStatus NvmeTierIssueRead(
 	slots[slot_index].staging_index = staging_index;
 	slots[slot_index].issued_step = step_now;
 	tier->statistics.read_bytes += tier->configuration.block_bytes;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvmeTierRequestDemand(
@@ -1141,7 +1141,7 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 	{
 		tier->statistics.demand_misses++;
 		result_out->state = SPARK_NVME_TIER_DEMAND_MISS;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	slot = &slots[slot_index];
 	slot->last_use = tier->tick++;
@@ -1155,7 +1155,7 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 		result_out->state = SPARK_NVME_TIER_DEMAND_READY;
 		result_out->staging_pointer = tier->staging
 			+ (uint64_t)slot->staging_index * tier->configuration.block_bytes;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( slot->state == NVME_TIER_SLOT_FILLING )
 	{
@@ -1178,7 +1178,7 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 		held->holder = NVME_TIER_HOLDER_DEMAND;
 		tier->statistics.demand_joins++;
 		result_out->state = SPARK_NVME_TIER_DEMAND_IN_FLIGHT;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( deadline_step != 0u )
 	{
@@ -1219,10 +1219,10 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 		status = NvmeTierIssueRead(tier,slot_index,staging_index,
 			NVME_TIER_HOLDER_DEMAND,deadline_step,step_now);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		tier->statistics.demand_loads++;
 		result_out->state = SPARK_NVME_TIER_DEMAND_STARTED;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( slot->queued != 0u )
 	{
@@ -1240,11 +1240,11 @@ SparkStatus SparkNvmeTierRequestDemandDeadline(
 		status = NvmeTierIssueRead(tier,slot_index,staging_index,
 			NVME_TIER_HOLDER_DEMAND,step_now,step_now);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 	tier->statistics.demand_loads++;
 	result_out->state = SPARK_NVME_TIER_DEMAND_STARTED;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void NvmeTierQuarantineSlot(SparkNvmeTier *tier, uint32_t slot_index)
@@ -1289,7 +1289,7 @@ static SparkStatus NvmeTierVerifyLanding(
 		tier->statistics.digest_mismatches++;
 		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
@@ -1400,7 +1400,7 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 			continue;
 		tier->statistics.prefetch_issues++;
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvmeTierConsume(
@@ -1421,14 +1421,14 @@ SparkStatus SparkNvmeTierConsume(
 	{
 		if ( status == SPARK_STATUS_HASH_MISMATCH )
 			tier->statistics.digest_mismatches++;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( slots[slot_index].state != NVME_TIER_SLOT_READY )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	slots[slot_index].last_use = tier->tick++;
 	slots[slot_index].referenced = 1u;
 	NvmeTierStagingRelease(tier,slots[slot_index].staging_index);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvmeTierPin(
@@ -1449,13 +1449,13 @@ SparkStatus SparkNvmeTierPin(
 	{
 		if ( status == SPARK_STATUS_HASH_MISMATCH )
 			tier->statistics.digest_mismatches++;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( pin )
 		slots[slot_index].pin_count++;
 	else if ( slots[slot_index].pin_count != 0u )
 		slots[slot_index].pin_count--;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvmeTierWillBeResidentBy(
@@ -1535,7 +1535,7 @@ SparkStatus SparkNvmeTierWillBeResidentBy(
 		assessment_out->confidence = SPARK_NVME_TIER_CONFIDENCE_NONE;
 	else
 		assessment_out->confidence = SPARK_NVME_TIER_CONFIDENCE_PARTIAL;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkNvmeTierGetStatistics(

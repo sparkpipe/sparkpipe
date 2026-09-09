@@ -97,10 +97,10 @@ SparkStatus SparkWeightdWorkerCreate(SparkWeightdWorker **out)
 	{
 		pthread_join(worker->thread,0);
 		worker_free(worker);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*out = worker;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWorkFunction function,void *context)
@@ -120,7 +120,7 @@ SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWork
 	worker->count++;
 	pthread_cond_signal(&worker->changed);
 	pthread_mutex_unlock(&worker->mutex);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkWeightdWorkerWaitIdle(SparkWeightdWorker *worker,uint64_t timeout_nanoseconds)
@@ -139,7 +139,7 @@ SparkStatus SparkWeightdWorkerWaitIdle(SparkWeightdWorker *worker,uint64_t timeo
 		idle = worker->count == 0u && worker->active == 0u;
 		pthread_mutex_unlock(&worker->mutex);
 		if ( idle != 0u )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		current = (((uint64_t)now.tv_sec * UINT64_C(1000000000)) + (uint64_t)now.tv_nsec);
@@ -168,5 +168,5 @@ SparkStatus SparkWeightdWorkerDestroy(SparkWeightdWorker *worker)
 	if ( pthread_join(worker->thread,0) != 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	worker_free(worker);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }

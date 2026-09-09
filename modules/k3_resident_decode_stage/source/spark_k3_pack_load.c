@@ -129,7 +129,7 @@ SparkStatus SparkK3PackOpen(const char *path, SparkK3Pack *pack)
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkK3PackClose(pack);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	root = SparkJsonGetRootToken(&pack->private_state->document);
 	config_token = SparkJsonFindObjectMember(&pack->private_state->document, root, "config");
@@ -138,7 +138,7 @@ SparkStatus SparkK3PackOpen(const char *path, SparkK3Pack *pack)
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkK3PackClose(pack);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -480,7 +480,7 @@ SparkStatus SparkK3DsparkPackBind(const char *path, SparkK3DsparkPack *pack,
 		if ( status != SPARK_STATUS_OK )
 		{
 			SparkK3DsparkPackRelease(pack);
-			return(status);
+			SPARK_RETURN(status);
 		}
 		cursor += SPARK_K3_DSPARK_ENTRY_BYTES;
 	}

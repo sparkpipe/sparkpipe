@@ -73,7 +73,7 @@ static SparkStatus read_ranges(FILE *file,uint64_t pack_bytes,SparkWeightdManife
 	}
 	if ( fgetc(file) != EOF || ferror(file) != 0 )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus build_spine(SparkWeightdManifest *out,uint64_t pack_bytes)
@@ -104,7 +104,7 @@ static SparkStatus build_spine(SparkWeightdManifest *out,uint64_t pack_bytes)
 		if ( i < out->range_count )
 			cursor = (out->ranges[i].offset + out->ranges[i].bytes);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus group_ranges(SparkWeightdManifest *out,uint64_t pack_bytes)
@@ -122,7 +122,7 @@ static SparkStatus group_ranges(SparkWeightdManifest *out,uint64_t pack_bytes)
 	}
 	status = build_spine(out,pack_bytes);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	qsort(out->ranges,out->range_count,sizeof(*out->ranges),compare_group);
 	for (i=0u; i<out->range_count; i++)
 	{
@@ -140,7 +140,7 @@ static SparkStatus group_ranges(SparkWeightdManifest *out,uint64_t pack_bytes)
 		if ( group->range_count > SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus load_manifest(FILE *file,uint64_t pack_bytes,SparkWeightdManifest *out)
@@ -161,7 +161,7 @@ static SparkStatus load_manifest(FILE *file,uint64_t pack_bytes,SparkWeightdMani
 	status = read_ranges(file,pack_bytes,out);
 	if ( status == SPARK_STATUS_OK )
 		status = group_ranges(out,pack_bytes);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkWeightdManifestLoad(const char *path,uint64_t pack_bytes,SparkWeightdManifest *out)
@@ -194,7 +194,7 @@ SparkStatus SparkWeightdManifestLoad(const char *path,uint64_t pack_bytes,SparkW
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK )
 		SparkWeightdManifestDestroy(out);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 const SparkWeightdRangeGroup *SparkWeightdManifestFind(const SparkWeightdManifest *manifest,uint32_t layer,uint32_t expert)
@@ -243,7 +243,7 @@ SparkStatus SparkWeightdManifestSpineSlice(const SparkWeightdManifest *manifest,
 			if ( bytes > (span->bytes - relative) )
 				SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 			*compact_offset = (span->compact_offset + relative);
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 		}
 	}
 	SPARK_FAIL(SPARK_STATUS_NOT_FOUND);

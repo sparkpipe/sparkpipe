@@ -22,7 +22,7 @@ static SparkStatus spine_read(int32_t fd,uint8_t *buffer,uint64_t offset,uint32_
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		done += (uint32_t)count;
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *index,const uint8_t *buffer,uint64_t offset,uint32_t bytes,uint8_t *destination)
@@ -44,7 +44,7 @@ static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *ind
 			break;
 		(*index)++;
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,uint64_t pack_bytes,const char *expected,uint8_t *destination)
@@ -61,11 +61,11 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 		bytes = (uint32_t)((pack_bytes - offset) < sizeof(buffer) ? (pack_bytes - offset) : sizeof(buffer));
 		status = spine_read(fd,buffer,offset,bytes);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		SparkSha256Update(&hash,buffer,bytes);
 		status = spine_copy(manifest,&index,buffer,offset,bytes,destination);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		offset += bytes;
 	}
 	SparkSha256Finalize(&hash,digest);
@@ -98,8 +98,8 @@ SparkStatus SparkWeightdSpineLoad(int32_t fd,const SparkWeightdManifest *manifes
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = spine_stream(fd,manifest,pack_bytes,sha256,destination);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( fstat(fd,&after) != 0 || spine_unchanged(&before,&after) == 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }

@@ -1094,7 +1094,7 @@ static SparkStatus SparkWeightdExpertManifestLoad(const char *pack_path,uint64_t
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkWeightdManifestLoad(path,arena_bytes,manifest);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	entries = calloc(manifest->group_count,sizeof(*entries));
 	if ( entries == 0 )
 	{
@@ -1387,7 +1387,7 @@ static SparkStatus SparkWeightdEvictGroup(SparkWeightdServer *server,SparkWeight
 			{
 				status = SparkWeightdFreeChunk(server,arena,j);
 				if ( status != SPARK_STATUS_OK )
-					return(status);
+					SPARK_RETURN(status);
 			}
 		}
 		arena->expert_present_bytes -= range->bytes;
@@ -1437,7 +1437,7 @@ static SparkStatus SparkWeightdAcquireBudget(SparkWeightdServer *server,SparkWei
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		status = SparkWeightdEvictGroup(server,arena,victim);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 }
 
@@ -1484,7 +1484,7 @@ static SparkStatus SparkWeightdLoadLease(SparkWeightdArena *arena,int32_t fd,con
 		{
 			status = SparkWeightdLoadRange(arena,fd,&arena->manifest.ranges[group->first_range + j]);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	}
 	if ( fstat(fd,&info) != 0 || info.st_size != arena->pack_stat.st_size || SparkWeightdStatMtimeNs(&info) != SparkWeightdStatMtimeNs(&arena->pack_stat) )
@@ -1526,13 +1526,13 @@ static SparkStatus SparkWeightdAcquireLoad(SparkWeightdServer *server,SparkWeigh
 	memset(arena->created_chunks,0,arena->chunk_count);
 	status = SparkWeightdAcquireBudget(server,arena);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	for (i=0u; i<arena->chunk_count; i++)
 		if ( arena->needed_chunks[i] != 0u && arena->chunk_handles[i] == 0 )
 		{
 			status = SparkWeightdArenaChunkEnsure(server,arena,i,i);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	fd = open(arena->pack_path,O_RDONLY | O_NONBLOCK);
 	if ( fd < 0 )
@@ -1541,7 +1541,7 @@ static SparkStatus SparkWeightdAcquireLoad(SparkWeightdServer *server,SparkWeigh
 	(void)close(fd);
 	if ( status == SPARK_STATUS_OK )
 		SparkWeightdCommitLease(arena,lease);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkWeightdAcquireWorkingSet(SparkWeightdServer *server,SparkWeightdConnection *connection,SparkWeightdArena *arena,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier)
@@ -1555,17 +1555,17 @@ static SparkStatus SparkWeightdAcquireWorkingSet(SparkWeightdServer *server,Spar
 		return(arena->failure_status);
 	status = SparkWeightdLeaseAcquire(arena->leases,connection->owner,keys,count,identifier);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	lease = SparkWeightdLeaseFind(arena->leases,connection->owner,*identifier);
 	status = SparkWeightdAcquireLoad(server,arena,lease);
 	if ( status == SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	for (i=0u; i<arena->chunk_count; i++)
 		if ( arena->created_chunks[i] != 0u && SparkWeightdFreeChunk(server,arena,i) != SPARK_STATUS_OK )
 			status = SPARK_STATUS_IO_ERROR;
 	(void)SparkWeightdLeaseRelease(arena->leases,connection->owner,*identifier);
 	*identifier = 0u;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkWeightdServerCloseStagedFds(SparkWeightdConnection *connection)
@@ -2859,7 +2859,7 @@ static SparkStatus SparkWeightdClientExportExchange(SparkWeightdClient *client,c
 		(void)close(client->fd);
 		client->fd = -1;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
@@ -2931,7 +2931,7 @@ static SparkStatus SparkWeightdValidateLeaseExport(const SparkWeightdIpcExportLe
 	SparkStatus status;
 	status = SparkWeightdIpcValidateHeader(&base->header,sizeof(*response),SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( base->header.request_id != request->header.request_id || base->arena_generation != request->arena_generation || response->lease_identifier != request->lease_identifier || base->batch_offset != request->batch_offset || base->batch_count != fds_received || base->batch_count > SPARK_WEIGHTD_EXPORT_BATCH_MAX || base->reserved0 != 0u || response->reserved1 != 0u || base->status > SPARK_STATUS_UNSUPPORTED )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( base->status != SPARK_STATUS_OK )
@@ -2968,7 +2968,7 @@ SparkStatus SparkWeightdClientExportLeaseBatch(SparkWeightdClient *client,uint64
 	request.batch_offset = batch_offset;
 	status = SparkWeightdClientExportExchange(client,&request,sizeof(request),&response,sizeof(response),batch->fds,&received,timeout_nanoseconds);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	status = SparkWeightdValidateLeaseExport(&request,&response,received);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -2976,7 +2976,7 @@ SparkStatus SparkWeightdClientExportLeaseBatch(SparkWeightdClient *client,uint64
 			(void)close(batch->fds[--received]);
 		(void)close(client->fd);
 		client->fd = -1;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	batch->status = SparkWeightdStatusFromWire(response.base.status);
 	batch->arena_generation = response.base.arena_generation;
@@ -3086,7 +3086,7 @@ static SparkStatus SparkWeightdWorkingSetExchange(SparkWeightdClient *client,voi
 	status = SparkWeightdClientExchange(client,wire,bytes,&response,sizeof(response),timeout);
 	result->status = status;
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( response.arena_generation != generation || (response.status == SPARK_STATUS_OK && header->kind == SPARK_WEIGHTD_IPC_KIND_ACQUIRE && response.lease_identifier == 0u) )
 	{
 		result->status = SPARK_STATUS_SCHEMA_ERROR;

@@ -30,7 +30,7 @@ SparkStatus SparkModelContinuationLeaseEstablish(
 	lease->lease_control_generation = control_generation;
 	lease->next_sequence_position = next_sequence_position;
 	lease->last_step_generation = step_generation;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelContinuationLeaseDecodePosition(
@@ -45,7 +45,7 @@ SparkStatus SparkModelContinuationLeaseDecodePosition(
 	if ( context_token_count > UINT64_MAX - advance )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	*next_sequence_position = context_token_count + advance;
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelContinuationLeaseValidate(
@@ -65,5 +65,5 @@ SparkStatus SparkModelContinuationLeaseValidate(
 		lease->next_sequence_position != sequence_position ||
 		step_generation <= lease->last_step_generation )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }

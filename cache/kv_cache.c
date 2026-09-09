@@ -672,12 +672,12 @@ SparkStatus SparkKvCacheArenaReserveUnassignedResidentBlocks(
 		{
 			status = SparkKvCacheArenaTrimResidentBlocks(arena,0,0u,target,0);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 		next = current + block_count;
 		if ( atomic_compare_exchange_weak(
 			&arena->unassigned_resident_block_count,&current,next) )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 	}
 }
 
@@ -699,7 +699,7 @@ static SparkStatus SparkKvCacheArenaRemoveUnassignedResidentBlocks(
 		next = current - block_count;
 		if ( atomic_compare_exchange_weak(
 			&arena->unassigned_resident_block_count,&current,next) )
-			SPARK_FAIL(SPARK_STATUS_OK);
+			return(SPARK_STATUS_OK);
 	}
 }
 
@@ -2325,9 +2325,9 @@ SparkStatus SparkKvCacheArenaPinResidentTable(
 	SparkStatus status,rollback_status;
 	status = SparkKvCacheArenaValidate(arena);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( block_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	if ( logical_block_indices == 0 || resident_slot_indices == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	input = (uintptr_t)logical_block_indices;
@@ -2352,7 +2352,7 @@ SparkStatus SparkKvCacheArenaPinResidentTable(
 		resident_slot_indices[page] = view.resident_slot_index;
 	}
 	if ( status == SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	rollback_status = SparkKvCacheArenaUnpinResidentTable(arena,logical_block_indices,pinned_count);
 	return(rollback_status == SPARK_STATUS_OK ? status : rollback_status);
 }

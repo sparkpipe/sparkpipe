@@ -126,11 +126,11 @@ static SparkStatus SparkModelResidentDeploymentNullableString(
 		return(SparkJsonCopyString(document,token,value));
 	status = SparkJsonCopyRawValue(document,token,&raw,&raw_bytes);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	status = raw_bytes == 4u && strcmp(raw,"null") == 0 ?
 		SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
 	free(raw);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentDeploymentParseEndpoint(
@@ -228,7 +228,7 @@ static SparkStatus SparkModelResidentDeploymentParseRuntime(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,
 			"kv_physical_page_capacity",&limits->kv_physical_page_capacity);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentDeploymentParseAdapter(
@@ -350,7 +350,7 @@ static SparkStatus SparkModelResidentDeploymentParseEos(
 	SparkStatus status;
 	array = SparkModelResidentDeploymentMember(document,root,"eos_token_ids");
 	if ( array < 0 )
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	if ( SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) == 0 )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	deployment->eos_token_count = SparkJsonGetArrayElementCount(document,array);
@@ -361,13 +361,13 @@ static SparkStatus SparkModelResidentDeploymentParseEos(
 	{
 		status = SparkJsonGetUInt32(document,element,&deployment->eos_token_ids[index]);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		for (prior=0u; prior<index; prior++)
 			if ( deployment->eos_token_ids[index] == deployment->eos_token_ids[prior] )
 				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		element = SparkJsonGetArrayElementNext(document,array,element);
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentDeploymentParseTokenizer(
@@ -381,13 +381,13 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	if ( object < 0 )
 	{
 		deployment->tokenizer_asset_path = 0;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentTokenizerMembers,3u);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	status = SparkModelResidentDeploymentString(document,object,"path",&deployment->tokenizer_asset_path);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"vocabulary_size",&deployment->tokenizer_vocabulary_size);
@@ -396,7 +396,7 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	if ( status == SPARK_STATUS_OK && (deployment->tokenizer_vocabulary_size == 0u ||
 			!SparkModelRuntimeArtifactSha256IsValid(deployment->tokenizer_asset_sha256)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentDeploymentParseWeightd(
@@ -411,7 +411,7 @@ static SparkStatus SparkModelResidentDeploymentParseWeightd(
 	if ( object < 0 )
 	{
 		deployment->weightd_socket_path = 0;
-		SPARK_FAIL(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
 	}
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
@@ -439,7 +439,7 @@ static SparkStatus SparkModelResidentDeploymentParseNodes(
 		object = SparkJsonGetArrayElement(document,array,index);
 		status = SparkModelResidentDeploymentParseNode(document,object,&deployment->nodes[index]);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static uint32_t SparkModelResidentDeploymentHasText(const char *text)
@@ -510,7 +510,7 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 		ranks[node->rank_index] = 1u;
 		stages[node->stage_index] = 1u;
 	}
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkModelResidentDeploymentReset(
@@ -596,7 +596,7 @@ SparkStatus SparkModelResidentDeploymentLoad(
 	SparkJsonDocumentDestroy(&document);
 	if ( status != SPARK_STATUS_OK )
 		SparkModelResidentDeploymentDestroy(deployment);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkModelResidentDeploymentValidateForAdapter(
@@ -610,10 +610,10 @@ SparkStatus SparkModelResidentDeploymentValidateForAdapter(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterValidateRuntimeLimits(descriptor,&deployment->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( deployment->node_count != descriptor->stage_count || strcmp(deployment->driver_program_name,descriptor->driver_program_name) != 0 )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-	SPARK_FAIL(SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 const SparkModelResidentDeploymentNode *SparkModelResidentDeploymentFindRank(
