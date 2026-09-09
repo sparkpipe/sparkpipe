@@ -15,19 +15,9 @@ extern "C" {
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION 1u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MTP_DRAFT_VIEW_ABI_VERSION 1u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION 1u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS 8u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS 8u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION 1u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION 1u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
-
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_GEMMA4_MODEL_LAYER_COUNT
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT 32u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP 4096u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT 512u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS 64u
@@ -37,9 +27,6 @@ extern "C" {
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 0u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 1u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 2u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 3u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 4u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 6u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64 7u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED 8u
 
@@ -55,104 +42,39 @@ typedef struct SparkGemma4LinearView
 	uint64_t weight_scale_bytes;
 } SparkGemma4LinearView;
 
-typedef struct SparkGemma4GdnLayerWeights
-{
-	SparkGemma4LinearView qkv;
-	SparkGemma4LinearView gate;
-	SparkGemma4LinearView beta;
-	SparkGemma4LinearView decay;
-	SparkGemma4LinearView output;
-	const void *conv_weight_bf16;
-	const float *a_log_f32;
-	const float *dt_bias_f32;
-	const void *gdn_norm_weight_bf16;
-} SparkGemma4GdnLayerWeights;
-
-typedef struct SparkGemma4AttnLayerWeights
+typedef struct SparkGemma4SlidingLayerWeights
 {
 	SparkGemma4LinearView query;
-	SparkGemma4LinearView key;
-	SparkGemma4LinearView value;
+	SparkGemma4LinearView kv_fused;
 	SparkGemma4LinearView output;
 	const void *query_norm_weight_bf16;
 	const void *key_norm_weight_bf16;
-} SparkGemma4AttnLayerWeights;
+} SparkGemma4SlidingLayerWeights;
 
-typedef struct SparkGemma4MoeWeights
+typedef struct SparkGemma4FullLayerWeights
 {
-	SparkGemma4LinearView gate;
-	SparkGemma4LinearView experts_w1;
-	SparkGemma4LinearView experts_w3;
-	SparkGemma4LinearView experts_w2;
-	SparkGemma4LinearView shared_gate;
-	SparkGemma4LinearView shared_up;
-	SparkGemma4LinearView shared_down;
-	const void *shared_gate_weight_bf16;
-} SparkGemma4MoeWeights;
+	SparkGemma4LinearView query;
+	SparkGemma4LinearView key;
+	SparkGemma4LinearView output;
+	const void *query_norm_weight_bf16;
+	const void *key_norm_weight_bf16;
+} SparkGemma4FullLayerWeights;
 
-typedef struct SparkGemma4HcWeights
+typedef struct SparkGemma4DenseMlpWeights
 {
-	const void *hc_norm_weight_bf16;
-	SparkGemma4LinearView mix_down;
-	SparkGemma4LinearView mix_up;
-	SparkGemma4LinearView block_inject;
-} SparkGemma4HcWeights;
+	SparkGemma4LinearView gate_up;
+	SparkGemma4LinearView down;
+} SparkGemma4DenseMlpWeights;
 
-typedef struct SparkGemma4HcMixer
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
+typedef struct SparkGemma4MoeLayerWeights
 {
-	const void *hc_norm_weight_bf16;
-	SparkGemma4LinearView mix_down;
-	SparkGemma4LinearView mix_up;
-} SparkGemma4HcMixer;
-
-typedef struct SparkGemma4IndexerWeights
-{
-	SparkGemma4LinearView index_qk;
-	const void *q_norm_weight_bf16;
-	const void *k_norm_weight_bf16;
-} SparkGemma4IndexerWeights;
-
-typedef struct SparkGemma4PleWeights
-{
-	SparkGemma4LinearView key_proj;
-	SparkGemma4LinearView value_proj;
-	const void *norm_key_weight_bf16;
-	const void *norm_query_weight_bf16;
-	const void *norm_conv_weight_bf16;
-	const void *conv_weight_bf16;
-	const int64_t *layer_multipliers;
-	const int64_t *head_vocab_sizes;
-	const int64_t *head_offsets;
-	const void *ngram_embedding_bf16;
-} SparkGemma4PleWeights;
-
-typedef struct SparkGemma4MtpWeights
-{
-	SparkGemma4LinearView fc;
-	const void *embed_norm_weight_bf16;
-	const void *hidden_norm_weight_bf16;
-	SparkGemma4HcMixer readout_mixer;
-	SparkGemma4HcWeights attention_hc;
-	SparkGemma4HcWeights mlp_hc;
-	SparkGemma4IndexerWeights indexer;
-	SparkGemma4AttnLayerWeights attention;
-	SparkGemma4MoeWeights moe;
-} SparkGemma4MtpWeights;
-
-typedef struct SparkGemma4GdnStatePool
-{
-	uint32_t abi_version;
-	uint32_t lane_capacity;
-	uint32_t gdn_layer_count;
-	uint32_t reserved0;
-	float *state_f32;
-	uint64_t state_lane_stride_elements;
-	uint64_t state_layer_stride_elements;
-	void *conv_tail_bf16;
-	uint64_t conv_tail_lane_stride_elements;
-	uint64_t conv_tail_layer_stride_elements;
-	uint32_t *state_cold_by_row;
-} SparkGemma4GdnStatePool;
+	SparkGemma4LinearView router_proj;
+	const float *per_expert_scale_f32;
+	SparkGemma4LinearView experts_gate_up;
+	SparkGemma4LinearView experts_down;
+} SparkGemma4MoeLayerWeights;
+#endif
 
 typedef struct SparkGemma4KvBlockTableView
 {
@@ -178,40 +100,29 @@ typedef struct SparkGemma4PipelineSlot
 	const uint32_t *context_lengths;
 	void *hidden_input_bf16;
 	void *hidden_bf16;
+	void *residual_bf16;
 	void *normalized_bf16;
-	void *attn_query_bf16;
-	void *attn_key_bf16;
-	void *attn_value_bf16;
-	void *attn_gate_bf16;
+	void *sliding_query_bf16;
+	void *sliding_kv_bf16;
+	void *full_query_bf16;
+	void *full_key_bf16;
 	void *attn_head_output_bf16;
 	void *attn_output_bf16;
-	void *gdn_conv_workspace_bf16;
-	void *gdn_query_bf16;
-	void *gdn_key_bf16;
-	void *gdn_value_bf16;
-	void *gdn_gate_bf16;
-	void *gdn_ba_bf16;
-	void *gdn_log_decay_f32;
-	void *gdn_beta_f32;
-	void *gdn_core_output_bf16;
+	void *mlp_gate_up_bf16;
+	void *mlp_down_bf16;
+	void *branch_bf16;
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
 	void *moe_slot_up_bf16;
 	void *moe_slot_out_bf16;
-	void *moe_indices_u32;
+	uint32_t *moe_indices_u32;
 	float *moe_weights_f32;
 	uint32_t *moe_inverse_u32;
 	uint32_t *moe_grouped_rows_u32;
 	uint32_t *moe_tile_prefix_w1_u32;
 	uint32_t *moe_tile_prefix_w2_u32;
+#endif
 	void *argmax_score_f32;
 	void *argmax_token_ids;
-	float *chunk_qn_f32;
-	float *chunk_kn_f32;
-	float *chunk_cum_g_f32;
-	float *chunk_decay_f32;
-	float *chunk_attn_f32;
-	float *chunk_w_f32;
-	float *chunk_kg_f32;
-	uint32_t *mtp_draft_token_ids;
 } SparkGemma4PipelineSlot;
 
 typedef struct SparkGemma4ResidentDecodeStageNodeContext
@@ -231,14 +142,21 @@ typedef struct SparkGemma4ResidentDecodeStageNodeContext
 	float rms_norm_epsilon;
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
-	const void *lm_head_weight_bf16;
-	const void *attention_norm_weights_by_layer_bf16[SPARK_GEMMA4_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	const void *mlp_norm_weights_by_layer_bf16[SPARK_GEMMA4_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	const SparkGemma4GdnLayerWeights *gdn_weights_by_layer;
-	const SparkGemma4AttnLayerWeights *attn_weights_by_layer;
-	const SparkGemma4MoeWeights *moe_weights_by_layer;
-	SparkGemma4GdnStatePool gdn_state_pool;
-	void *kv_cache_bf16;
+	const void *full_rope_table_f32;
+	const void *layer_input_norms_by_layer_bf16[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+	const void *layer_post_attention_norms_by_layer_bf16[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+	const void *layer_pre_feedforward_norms_by_layer_bf16[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+	const void *layer_post_feedforward_norms_by_layer_bf16[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+	const SparkGemma4SlidingLayerWeights *sliding_weights_by_layer;
+	const SparkGemma4FullLayerWeights *full_weights_by_layer;
+	const SparkGemma4DenseMlpWeights *mlp_weights_by_layer;
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
+	const SparkGemma4MoeLayerWeights *moe_weights_by_layer;
+#endif
+	void *sliding_kv_cache_bf16;
+	void *full_kv_cache_bf16;
+	uint64_t sliding_kv_layer_stride;
+	uint64_t full_kv_layer_stride;
 	const SparkGemma4PipelineSlot *pipeline_slots;
 	uint64_t estimated_service_time_ns;
 } SparkGemma4ResidentDecodeStageNodeContext;
@@ -264,33 +182,11 @@ typedef struct SparkGemma4PrefillFrameView
 	uint64_t sequence_id;
 } SparkGemma4PrefillFrameView;
 
-typedef struct SparkGemma4MtpDraftView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t draft_token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-	const uint32_t *row_token_ids;
-} SparkGemma4MtpDraftView;
-
-typedef struct SparkGemma4GdnSnapshotView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t snapshot_index;
-	uint32_t reserved0;
-} SparkGemma4GdnSnapshotView;
-
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE 0x00000001u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000002u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT 0x00000004u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000008u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000010u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER 0x00000020u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY 0x00000040u
-#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST 0x00000080u
 
 typedef SparkStatus (*SparkGemma4HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
 typedef SparkStatus (*SparkGemma4HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
@@ -304,8 +200,6 @@ typedef struct SparkGemma4ResidentDecodeStageFrameContext
 	const SparkGemma4KvBlockTableView *kv_block_table;
 	const SparkGemma4DecodeBatchView *decode_batch;
 	const SparkGemma4PrefillFrameView *prefill_frame;
-	const SparkGemma4MtpDraftView *mtp_draft;
-	const SparkGemma4GdnSnapshotView *gdn_snapshot;
 	SparkHiddenTransportSession *hidden_input_transport_session;
 	SparkHiddenTransportSession *hidden_output_transport_session;
 	SparkGemma4HiddenTransportPostReceiveFunction hidden_input_post_receive_function;
