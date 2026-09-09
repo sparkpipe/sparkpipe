@@ -238,7 +238,6 @@ def main():
     win_q = np.zeros((RANK_QK, CONV), dtype=np.uint16)
     win_k = np.zeros((RANK_QK, CONV), dtype=np.uint16)
     win_v = np.zeros((RANK_V, CONV), dtype=np.uint16)
-    attn_norm_kind = None
 
     for p in got:
         d = passes[p]
@@ -259,12 +258,7 @@ def main():
 
         # 0) the attn-norm mapping: rmsnorm(collapsed*w) == normed?
         cx = bf16_to_f32(collapsed).astype(np.float32)
-        if attn_norm_kind is None:
-            for nm, w in (("input_layernorm", attn_norm_w),):
-                if np.array_equal(f32_to_bf16_u16(rmsnorm(cx, w, RMS_EPS)), normed):
-                    attn_norm_kind = nm
-        if attn_norm_kind:
-            rep.add("attn_norm", p, f32_to_bf16_u16(rmsnorm(cx, attn_norm_w, RMS_EPS)), normed, "bf16")
+        rep.add("attn_norm", p, f32_to_bf16_u16(rmsnorm(cx, attn_norm_w, RMS_EPS)), normed, "bf16")
 
         # 1) fused q|k|v|beta projection: MY GEMM vs the dump (bf16 patterns)
         q_raw = bf16_round_f32(x @ q_w.T)
@@ -327,7 +321,7 @@ def main():
         gs = (1.0 / (1.0 + np.exp(-bf16_to_f32(kda_gate)))).astype(np.float32)
         o32 = bf16_to_f32(delta_out).astype(np.float32).reshape(RANK_HEADS, VD)
         rms = np.sqrt((o32 * o32).sum(axis=1) / VD + RMS_EPS)
-        normed_o = (o32 / rms[:, None] * o_norm_w[None, :])
+        normed_o = bf16_round_f32(o32 / rms[:, None] * o_norm_w[None, :])
         gated = (normed_o * gs.reshape(RANK_HEADS, VD)).reshape(-1)
         rep.add("delta_gated", p, f32_to_bf16_u16(gated), delta_gated, "bf16")
 

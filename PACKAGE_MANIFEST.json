@@ -8798,8 +8798,8 @@
     },
     {
       "path": "tools/glm5_next_kda_host_oracle.py",
-      "sha256": "83509eda53501d914b107158f47f5f8ee38e005ea5cbe5c1f27a6c57fc5513e0",
-      "size_bytes": 17190
+      "sha256": "4a6ca7c89a0deac55f5897a3de3bb7d694d61a2a277ec06e73b34b9d7b111334",
+      "size_bytes": 16925
     },
     {
       "path": "tools/glm5_next_m5_batch.py",
@@ -9715,5 +9715,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32641816
+  "total_bytes": 32641551
 }
