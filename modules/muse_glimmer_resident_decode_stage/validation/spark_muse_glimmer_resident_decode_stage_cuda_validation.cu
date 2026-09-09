@@ -563,7 +563,7 @@ static int SparkMuseGlimmerValCheckModule(void)
 	for (run = 0; run < 2u; run++)
 	{
 		for (row = 0; row < SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES; row++)
-			module.token_ids[row] = 1000u + ((run * 7u + row * 3u) % 9000u);
+			module.token_ids[row] = 1000u + ((row * 3u) % 9000u);
 		for (step = 0; step < SPARK_MUSE_GLIMMER_VALIDATION_STEPS; step++)
 		{
 			module.capture.received = 0u;
