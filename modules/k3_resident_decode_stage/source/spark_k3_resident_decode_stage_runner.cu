@@ -9,10 +9,14 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
+#ifdef __cplusplus
+#define _Static_assert(expr, msg) static_assert(expr, msg)
+#endif
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_weightd_map.h"
 #include "sparkpipe/spark_weightd_lease.h"
 #include "sparkpipe/spark_weightd_attach.h"
+#undef _Static_assert
 #include "sparkpipe/spark_error_site.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 

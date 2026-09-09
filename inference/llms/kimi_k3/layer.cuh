@@ -553,11 +553,11 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	int32_t status;
 	if ( phase == 0u )
 	{
-		status = K3LayerMoeRoute(b,rows,packed_rows,multiprocessors,stream);
+		status = K3LayerMoeRoute<Format>(b,rows,packed_rows,multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 	}
-	return(K3LayerMoeWeighted(b,rows,packed_rows,multiprocessors,stream,phase));
+	return(K3LayerMoeWeighted<Format>(b,rows,packed_rows,multiprocessors,stream,phase));
 }
 
 template<class Format>
