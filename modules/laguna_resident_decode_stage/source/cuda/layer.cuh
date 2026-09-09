@@ -544,8 +544,9 @@ static int32_t LagunaLayerMoeValidate(
 {
 	using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
 
-	static_assert(LAGUNA_HIDDEN % ExpertFormat::kScaleGroup == 0u &&
-		LAGUNA_EXPERT_INTERMEDIATE % ExpertFormat::kScaleGroup == 0u,
+	static_assert((ExpertFormat::kScaleGroup == 0u ||
+			(LAGUNA_HIDDEN % ExpertFormat::kScaleGroup == 0u &&
+			 LAGUNA_EXPERT_INTERMEDIATE % ExpertFormat::kScaleGroup == 0u)),
 		"laguna expert dimensions must contain complete codec scale groups");
 
 	if (buffers == 0 || rows == 0u ||
