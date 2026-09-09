@@ -1,10 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-#include "sparkpipe/spark_error_site.h"
 
 #define SPARK_H3_REF_HIDDEN 64u
 #define SPARK_H3_REF_HEADS 4u

@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_minimax_h3_model.h"
+#include "sparkpipe/spark_minimax_h3_scheduler.h"
 #include "sparkpipe/spark_numerical_metrics.h"
 
 #define SPARK_H3_REF_EMBED 1
@@ -210,8 +211,9 @@ int main(int argc, char **argv)
 		cudaMemcpy(sin_device,sin_angles,(size_t)seq * rope_dim * 4u,
 			cudaMemcpyHostToDevice);
 		cudaMemcpy(q_in,packed_a,slots * 2u,cudaMemcpyHostToDevice);
-		if ( SparkMinimaxH3ValCuda(SparkMinimaxH3Rope3d(stream,q_in,cos_device,
-			sin_device,seq,heads,head_dim,rope_dim,q_out),"rope3d") == 0 )
+		if ( SparkMinimaxH3ValCuda(SparkMinimaxH3Rope3d(stream,q_in,
+			(const float *)cos_device,(const float *)sin_device,seq,heads,
+			head_dim,rope_dim,q_out),"rope3d") == 0 )
 		{
 			device_values = SparkMinimaxH3ValReadBf16(q_out,slots);
 			if ( device_values == 0 )
