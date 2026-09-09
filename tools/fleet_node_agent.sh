@@ -31,19 +31,37 @@ root_state() {
 }
 
 report() {
+    local boot_id
+    boot_id=$(awk '{print $1}' /proc/sys/kernel/random/boot_id 2>/dev/null | cut -c1-8)
     {
-        printf '{"host":"%s","time":"%s"' "$HOST" "$(date -Is)"
+        printf '{"host":"%s","time":"%s","boot":"%s","epoch":%s' \
+            "$HOST" "$(date -Is)" "${boot_id:-?}" "$(date +%s)"
+        printf ',"load":%.2f,"mem_avail_gb":%d' \
+            "$(awk '{print $1}' /proc/loadavg)" \
+            "$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)"
         printf ',"weightd":"%s"' "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)"
         local r first=1 states=""
         IFS=, read -ra RA <<< "$ROOTS"
         for r in "${RA[@]}"; do
             local rr="$HOME/sparkdata/$r"
             [ -d "$rr" ] || continue
-            local st; st=$(root_state "$r")
+            local st pid etime rss_mb log_age
+            st=$(root_state "$r")
+            pid=0; etime="-"; rss_mb=0; log_age=-1
+            for l in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model_residentd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
+                [ "$(readlink /proc/$l/cwd 2>/dev/null)" = "$rr" ] || continue
+                pid=$l
+                etime=$(ps -o etimes= -p "$l" 2>/dev/null | tr -d ' ')
+                rss_mb=$(awk '/VmRSS/ {print int($2/1024)}' "/proc/$l/status" 2>/dev/null)
+                break
+            done
+            if [ "$pid" != 0 ] && [ -f "$rr/residentd.log" ]; then
+                log_age=$(( $(date +%s) - $(stat -c %Y "$rr/residentd.log" 2>/dev/null || echo 0) ))
+            fi
             states="$states$r=$st;"
-            printf '%s"%s":{"state":"%s","residentd":"%s","driver":"%s"}' \
+            printf '%s"%s":{"state":"%s","pid":%s,"age_s":%s,"rss_mb":%s,"log_age_s":%s,"residentd":"%s","driver":"%s"}' \
                 "$([ $first = 1 ] && echo ,roots:{ || echo ,)" "$r" \
-                "${st//\"/\\\"}" \
+                "${st//\"/\\\"}" "$pid" "${etime:--1}" "$rss_mb" "$log_age" \
                 "$(sha16 "$rr/bin/sparkpipe_model_residentd")" \
                 "$(sha16 "$rr/stages/stage_000/model_driver.so")"
             first=0
@@ -145,7 +163,7 @@ restart_root() {
 }
 
 FLEET_SIZE=16
-HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
+HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
 
 hub_has() {
     $HUBSSH "${REF_BASE%%:*}" "test -f '${REF_BASE#*:}/$1' && echo yes" 2>/dev/null || true
