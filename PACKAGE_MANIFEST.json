@@ -1,5 +1,5 @@
 {
-  "file_count": 1943,
+  "file_count": 1944,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "9358c56d75ac0968c5b86961b2ec3d88bc8d129e041f7c8a89c423671af83b10",
-      "size_bytes": 96153
+      "sha256": "036d4ff949e80a47e8eba96afc890727632feed9687cc848f7e8f1ff8299f3ed",
+      "size_bytes": 96186
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "8291acee5cb5807149510c4274b103eba09c9ae5a345b1a19954c82ebda67a65",
-      "size_bytes": 37620
+      "sha256": "0e59b798655465cde292086c677764f76f22e63239ccfae577ffd3fa03da1bd4",
+      "size_bytes": 38972
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -3253,8 +3253,8 @@
     },
     {
       "path": "inference/kernels/norm.cuh",
-      "sha256": "f0996b65b4a1b9643c3f8ae8ea3caec9763f92fcaa503a0da66b708be92dbe3b",
-      "size_bytes": 15623
+      "sha256": "1e1671c521f63f63784ae98e7d76bd144ebac0813d348034f4ecb3d66e95581b",
+      "size_bytes": 16325
     },
     {
       "path": "inference/kernels/project.cuh",
@@ -4043,8 +4043,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "190cb9f1c8d69fee5cb7d7098d0e3b83f7737b172850834fd933e51402ddb938",
-      "size_bytes": 88211
+      "sha256": "ca554d4824fbaf7e6bf67c2b85e0c768ca0e7eec163c464cb8816fa7ab30dc22",
+      "size_bytes": 88316
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -4093,8 +4093,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu",
-      "sha256": "6c63e86f54b472eaac101aef8184258b929d5b42f476b50a1617a28aa6d8d74a",
-      "size_bytes": 85718
+      "sha256": "875b847db0de777293bacbe4b740254aeabd31bcd4a9d6fb04d640d260e2e657",
+      "size_bytes": 85873
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu",
@@ -6680,6 +6680,11 @@
       "path": "tests/test_cache.c",
       "sha256": "6ad830930c2a8cd27cbd739fc86e52212c00fe1047bdc3d239d490defc1d8170",
       "size_bytes": 9208
+    },
+    {
+      "path": "tests/test_clamped_up_gate.py",
+      "sha256": "799245981b12425a6986ba5951634e63ecf7a2cab6d2e332b6eb90c9b6abe88a",
+      "size_bytes": 3294
     },
     {
       "path": "tests/test_code_size.py",
@@ -9720,5 +9725,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32647467
+  "total_bytes": 32653108
 }

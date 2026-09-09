@@ -1687,6 +1687,8 @@ static void SparkGlm5NextValOracleTier1Token(SparkGlm5NextValOracleWalk *walk,co
 		{
 			float up = gate_up[index];
 			float gate = gate_up[SPARK_GLM5_NEXT_VDENSE_INTER + index];
+			gate = fminf(gate,SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
+			up = fmaxf(-SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT,fminf(up,SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT));
 			intermediate[index] = (gate * SparkGlm5NextValSigmoid(gate)) * up;
 		}
 		for (index = 0u; index < SPARK_GLM5_NEXT_VHIDDEN; index++)

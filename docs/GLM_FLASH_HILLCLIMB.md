@@ -1,5 +1,25 @@
 # GLM 5.3 Flash hill-climbing log
 
+2026-09-09 MLP formula audit: the checkpoint's `swiglu_limit=10.0` was
+generated into the model header but unused by dense, routed and shared MLP
+activation launches. All three used an unclamped SiLU multiplication. The
+[Transformers GLM reference](https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm5_next/modeling_glm5_next.py)
+limits gate to at most 10 and up to [-10,10] before activation. A shared
+`LmClampedUpGateKernel` now implements this formula for the existing up|gate
+pack layout. All three launches pass the model constant; the synthetic dense
+reference also applies the limits. Host and CUDA fixtures exercise the same
+production kernel with signs, boundary values, negative gates, multiple rows
+and output guards. GPU and full-model results must be recorded after deployment.
+
+The preceding DSA layer-three capture on `dc48e0c` checked eight single-row
+steps. Attention latent and value outputs matched bitwise at every step;
+output-projection differences were at most one BF16 ULP. FP32 hyperconnection
+comparisons still failed the oracle's 90% exact-bit requirement, with most
+relative differences around 1e-6. This is stage-local evidence using captured
+upstream inputs, not a full-model reference result. Queue attempt:
+`c66a0c5afdcf4564b0510d1a9d5e2a64`; receipts:
+`/private/tmp/ds4_glm_dsa_dc48e0c`.
+
 2026-09-09 embedding diagnosis: rank-zero captures on main `dd57197`
 contained zero layer-zero inputs for tokens outside its vocabulary shard.
 The embedding kernel intentionally emits zeros on non-owning ranks, but the

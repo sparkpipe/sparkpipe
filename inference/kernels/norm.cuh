@@ -118,6 +118,23 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmClampedUpGateKernel(const uint16_t *__restrict__ up_gate_bf16,uint16_t *__restrict__ output_bf16,uint32_t dimension,float limit)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u,out_base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	float gate,up;
+	for (index=threadIdx.x; index<dimension; index+=THREADS)
+	{
+		up = LmBf16ToFloat(up_gate_bf16[base + index]);
+		gate = LmBf16ToFloat(up_gate_bf16[base + dimension + index]);
+		gate = gate > limit ? limit : gate;
+		up = up > limit ? limit : (up < -limit ? -limit : up);
+		output_bf16[out_base + index] = LmFloatToBf16((gate / (1.0f + __expf(-gate))) * up);
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float beta, float linear_beta)
 {
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
