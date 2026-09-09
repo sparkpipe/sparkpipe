@@ -13,7 +13,8 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c
 MINIMAX_H3_MODEL_REVISION := 42ed227ee7df40d41602854ae760620d6eb651fe
 MINIMAX_H3_DIFFUSERS_COMMIT := 3c22124636a332a0df02910f609315d4c2898f57
-MINIMAX_H3_CONTRACT_SHA256 := $(shell shasum -a 256 $(CURDIR)/../../model_contracts/h3_authoritative.json | awk '{print $$1}')
+MINIMAX_H3_SHA256 := $(shell command -v shasum >/dev/null 2>&1 && echo "shasum -a 256" || echo "sha256sum")
+MINIMAX_H3_CONTRACT_SHA256 := $(shell $(MINIMAX_H3_SHA256) $(CURDIR)/../../model_contracts/h3_authoritative.json | awk '{print $$1}')
 MODULE_COMPILE_FLAGS := \
 	-DSPARK_MINIMAX_H3_MODULE_BUILD=1 \
 	-DMINIMAX_H3_MODEL_REVISION=\"$(MINIMAX_H3_MODEL_REVISION)\" \
@@ -43,8 +44,8 @@ ALLOW_UNQUALIFIED_EXECUTION ?= 0
 TP_DEGREE ?= 4
 TP_RANK ?= 0
 TP_STANDALONE ?= 0
-override MINIMAX_H3_CUDA_VALIDATOR_SHA256 := $(shell shasum -a 256 validation/spark_minimax_h3_resident_media_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
-override MINIMAX_H3_CPU_ORACLE_SHA256 := $(shell shasum -a 256 validation/spark_minimax_h3_reference.c 2>/dev/null | awk '{print $$1}')
+override MINIMAX_H3_CUDA_VALIDATOR_SHA256 := $(shell $(MINIMAX_H3_SHA256) validation/spark_minimax_h3_resident_media_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
+override MINIMAX_H3_CPU_ORACLE_SHA256 := $(shell $(MINIMAX_H3_SHA256) validation/spark_minimax_h3_reference.c 2>/dev/null | awk '{print $$1}')
 
 RUNTIME_CONFIGURATION := \
 	SPARK_MINIMAX_H3_ALLOW_UNQUALIFIED_EXECUTION=$(ALLOW_UNQUALIFIED_EXECUTION) \
