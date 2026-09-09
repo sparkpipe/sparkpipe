@@ -190,15 +190,19 @@
   }
  },
  "slice": {
-  "duration_seconds": 4,
+  "duration_seconds": 5,
   "fps": 24,
   "short_edge": 480,
   "aspect_ratio": "16:9",
-  "frames": 96,
-  "latent_grid": [25, 15, 26],
-  "video_tokens": 9750,
-  "audio_tokens": 160,
+  "width": 864,
+  "height": 480,
+  "frames": 124,
+  "frame_law": "num_frames snaps UP to 17n+5 (clip_length 17, tokens_chunk 5); latent frames 5n+2; canvas_multiple 32 short_edge 480 gives 480x864",
+  "latent_grid": [37, 15, 27],
+  "video_tokens": 14985,
+  "audio_latents": 207,
+  "audio_tokens": 414,
   "max_prompt_tokens": 512,
-  "tokens_per_step_approx": 10470
+  "tokens_per_step_approx": 15911
  }
 }
