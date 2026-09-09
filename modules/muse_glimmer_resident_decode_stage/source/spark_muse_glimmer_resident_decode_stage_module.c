@@ -93,6 +93,7 @@ typedef struct SparkMuseGlimmerModuleState
 	uint32_t multiprocessor_count;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
+	uint32_t tp_passive;
 	SparkTpDeviceCollective tp_device_collective;
 	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[8u];
 	uint32_t tp_credit_binding_count;
@@ -184,6 +185,15 @@ static SparkStatus SparkMuseGlimmerModuleConfigure(SparkMuseGlimmerModuleState *
 		for (uint32_t host_clear = 0u; host_clear < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; host_clear++)
 			state->tp_hosts[host_clear][0] = '\0';
 		if ( state->tp_degree > 1u )
+		{
+			const char *tp_backend;
+			if ( SparkStageModuleEnvironmentText(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_BACKEND_PATH",&tp_backend) != SPARK_STATUS_OK )
+			{
+				state->tp_passive = 1u;
+				fprintf(stderr,"%s tp_passive degree=%u rank=%u (single-rank replay of a tp-sliced pack; no hidden combine)\n",SPARK_MUSE_GLIMMER_MODULE_TAG,state->tp_degree,state->tp_rank);
+			}
+		}
+		if ( state->tp_degree > 1u && state->tp_passive == 0u )
 		{
 			const char *tp_backend;
 			const char *tp_hosts;
@@ -1012,7 +1022,7 @@ static SparkStatus SparkMuseGlimmerModuleTpAllReduceHidden(SparkMuseGlimmerModul
 	struct timespec pause;
 	uint32_t polls,flag;
 	SparkStatus status;
-	if ( state->tp_degree == 1u )
+	if ( state->tp_degree == 1u || state->tp_passive != 0u )
 		return(SPARK_STATUS_OK);
 	if ( state->tp_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
@@ -1054,7 +1064,7 @@ static SparkStatus SparkMuseGlimmerModuleTpMaxloc(SparkMuseGlimmerModuleState *s
 	struct timespec pause;
 	uint32_t polls,flag;
 	SparkStatus status;
-	if ( state->tp_degree == 1u )
+	if ( state->tp_degree == 1u || state->tp_passive != 0u )
 		return(SPARK_STATUS_OK);
 	if ( state->tp_collective_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1148,7 +1158,7 @@ static SparkStatus SparkMuseGlimmerModulePrepare(
 		status = SparkMuseGlimmerModuleAllocateSlot(state,&state->slots[0]);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMuseGlimmerModuleAllocateSlotHostMirrors(state,&state->slots[0]);
-	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u )
+	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u && state->tp_passive == 0u )
 		status = SparkMuseGlimmerModuleInitializeTpCollective(state);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"%s initialize_failed status=%d\n",SPARK_MUSE_GLIMMER_MODULE_TAG,(int)status);

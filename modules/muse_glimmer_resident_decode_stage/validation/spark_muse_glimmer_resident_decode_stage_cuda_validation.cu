@@ -252,6 +252,7 @@ static int SparkMuseGlimmerValCheckNorms(void)
 	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"head_norm_sync") != 0 )
 		return(1);
 	SparkMuseGlimmerValReferenceHeadNorm(head_input,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_NORM_EPSILON,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_SCALE_FACTOR);
+	fprintf(stderr,"muse_glimmer_validation qk_debug input0=%04x input1=%04x input2=%04x kernel0=%04x reference0=%04x\n",head_input[0],head_input[1],head_input[2],head_output[0],head_reference[0]);
 	failures += SparkMuseGlimmerValCompareNearby("qk_norm_3_87",head_output,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,1u);
 	cudaFree(input);
 	cudaFree(weight);
