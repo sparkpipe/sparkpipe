@@ -438,7 +438,7 @@ static void SparkLingBindLayer(
 	buffers->kda_retention = slot->kda_retention;
 	buffers->kda_write_gate = slot->kda_write_gate;
 	buffers->kda_state_index = wave->kda_state_index;
-	buffers->sequence_row_begin = 0;
+	buffers->sequence_row_begin = wave->sequence_row_begin;
 	kda_ordinal = wave->kda_ordinal_by_local_layer[local_layer];
 	if ( kda_ordinal != UINT32_MAX )
 	{
@@ -465,7 +465,9 @@ static int32_t SparkLingRunLayerAttention(const SparkLingCudaWave *wave,uint32_t
 	SparkLingBindLayer(wave,local_layer,&buffers);
 	if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
 	{
-		return(LingLayerKda(&buffers,wave->row_count,wave->row_count,1u,wave->multiprocessor_count,stream));
+		return(LingLayerKda(&buffers,wave->row_count,
+			wave->run_count != 0u ? wave->run_count : wave->row_count,1u,
+			wave->multiprocessor_count,stream));
 	}
 	status = LingLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
