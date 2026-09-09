@@ -162,34 +162,12 @@ static int32_t SparkHy4ConvertKindAndLayer(const char *name,
 	return -1;
 }
 
-static int32_t SparkHy4ConvertCopyRegion(FILE *source, FILE *out,
-	uint64_t offset, uint64_t bytes)
-{
-	static uint8_t buffer[1u << 20];
-	if ( fseeko(source,(off_t)offset,SEEK_SET) != 0 )
-		return -1;
-	while ( bytes != 0ull )
-	{
-		uint64_t piece = bytes > sizeof(buffer) ? sizeof(buffer) :
-		    bytes;
-		if ( fread(buffer,1u,(size_t)piece,source) != piece )
-			return -2;
-		if ( fwrite(buffer,1u,(size_t)piece,out) != piece )
-			return -3;
-		bytes -= piece;
-	}
-	return 0;
-}
-
 int main(int argc, char **argv)
 {
 	FILE *source;
-	FILE *out;
 	uint8_t *json;
-	char path[4600];
 	char name[SPARK_HY4_CONVERT_NAME_MAX];
 	SparkHy4ConvertEntry entries[SPARK_HY4_CONVERT_MAX_TENSORS];
-	SparkHy4StagePackHeader header;
 	unsigned long long json_bytes;
 	uint32_t converted = 0u;
 	uint32_t index;
