@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -466,7 +467,7 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 	if ( deployment == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( deployment->abi_version != SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION || deployment->descriptor_bytes != SPARK_MODEL_RESIDENT_DEPLOYMENT_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( deployment->schema_version != SPARK_MODEL_RESIDENT_DEPLOYMENT_SCHEMA_VERSION || deployment->node_count == 0u || deployment->node_count > SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT || deployment->coordinator_rank_index >= deployment->node_count )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( !SparkPathIsNormalized(deployment->adapter_shared_object_path,false) || !SparkPathIsNormalized(deployment->driver_shared_object_path,false) || SparkModelResidentDeploymentHasText(deployment->driver_program_name) == 0u || !SparkPathIsNormalized(deployment->transport_shared_object_path,false) || SparkModelResidentDeploymentHasText(deployment->transport_mode) == 0u )
