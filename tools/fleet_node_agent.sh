@@ -252,23 +252,17 @@ ensure_root() {
     local st; st=$(root_state "$name")
     [ "$st" = "down" ] || return 0
     local now=$(date +%s)
-    local stamp="$HOME/sparkdata/$name/.boot_times"
-    local last_ok
-    last_ok=$(stat -c %Y "$HOME/sparkdata/$name/.applied_manifest" 2>/dev/null || echo 0)
-    local boots
-    boots=$(wc -l < "$stamp" 2>/dev/null || echo 0)
-    if [ "$boots" -ge 3 ] && [ $((now - last_ok)) -lt 900 ]; then
-        echo "$(date +%T) $name: boot-loop guard active ($boots failed boots since last good manifest); NOT starting"
+    local stamp="$HOME/sparkdata/$name/.last_boot"
+    local last_boot
+    last_boot=$(cat "$stamp" 2>/dev/null || echo 0)
+    if [ $((now - last_boot)) -lt 900 ]; then
+        [ $((now - last_boot)) -gt 840 ] || echo "$(date +%T) $name: last boot $((now - last_boot))s ago (<15min); autospawn blocked"
         return 0
     fi
-    [ $((now - LAST_START)) -lt 15 ] && return 0
     LAST_START=$now
+    date +%s > "$stamp" 2>/dev/null || true
     echo "$(date +%T) $name: down; starting"
-    date +%s >> "$stamp" 2>/dev/null || true
     restart_root "$name"
-    if [ "$(root_state "$name")" = "ready" ]; then
-        : > "$stamp" 2>/dev/null || true
-    fi
 }
 
 while true; do
