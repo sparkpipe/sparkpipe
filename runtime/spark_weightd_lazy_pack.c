@@ -101,11 +101,20 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 	SparkStatus status;
 	struct stat info;
 	int32_t fd;
+	char absolute[4096];
 	if ( out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*out = 0;
 	if ( socket == 0 || request == 0 || request->expert_pool_bytes == 0u || request->pack_path[0] == 0 || memchr(request->pack_path,0,sizeof(request->pack_path)) == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->pack_path[0] != '/' )
+	{
+		if ( realpath(request->pack_path,absolute) == 0 )
+			return(errno == ENOENT ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_IO_ERROR);
+		if ( strlen(absolute) >= sizeof(request->pack_path) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		memcpy(request->pack_path,absolute,strlen(absolute) + 1u);
+	}
 	identity = request->identity;
 	if ( SparkWeightdIdentityPrepare(&identity) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
