@@ -23,6 +23,7 @@ HARNESS = r"""
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
+#include "sparkpipe/spark_model_resident_deployment.h"
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c"
 #define main SparkCacheAdmissionFixtureMain
 #include "tests/test_serving_cache_admission.c"
@@ -278,6 +279,21 @@ static int32_t TestServingReset(void)
     return(0);
 }
 
+static int32_t TestDeployment(const char *path,uint32_t positions)
+{
+    SparkModelResidentDeployment deployment = {0};
+    SparkStatus status = SparkModelResidentDeploymentLoad(path,&deployment);
+    uint32_t pages;
+    if ( status != SPARK_STATUS_OK )
+        return(-31);
+    pages = deployment.runtime_limits.resident_sequence_capacity * ((positions + SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS - 1u) / SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS);
+    status = SparkModelResidentDeploymentValidateForAdapter(&deployment,&SparkGlm5NextServingDescriptor);
+    if ( deployment.runtime_limits.kv_logical_page_capacity != pages || deployment.runtime_limits.kv_physical_page_capacity != pages )
+        status = SPARK_STATUS_VALIDATION_FAILED;
+    SparkModelResidentDeploymentDestroy(&deployment);
+    return(status == SPARK_STATUS_OK ? 0 : -32);
+}
+
 int main(int argc, char **argv)
 {
     if ( TestAdapterCacheAdmission() != 0 )
@@ -295,6 +311,8 @@ int main(int argc, char **argv)
         argv[1], argv[2], &state, &msp, &erc, &dsct, &tpd, &tpr);
     printf("rc=%d msp=%u erc=%u dsct=%u tpd=%u tpr=%u\n",
         (int)rc, msp, erc, dsct, tpd, tpr);
+    if ( argc != 5 || TestDeployment(argv[3],msp) != 0 || TestDeployment(argv[4],msp) != 0 )
+        return(9);
     return rc == 0 ? 0 : 1;
 }
 """
@@ -312,6 +330,8 @@ def main() -> int:
             print(gen.stderr[-400:])
             return 1
         config = tmpdir / "deploy/config/stage_00.json"
+        subprocess.run([sys.executable, str(ROOT / "tools/glm5_next_gen_tp4pp4_deployment.py"),
+                        "--output", str(tmpdir / "tp4pp4")], check=True, capture_output=True)
         contract = json.load(
             open(ROOT / "model_contracts/glm53_flash_authoritative.json")) \
             if (ROOT / "model_contracts/glm53_flash_authoritative.json").exists() \
@@ -346,7 +366,9 @@ def main() -> int:
             print("FAIL adapter harness did not compile")
             print(build.stderr[-600:])
             return 1
-        run = subprocess.run([str(binary), str(config), str(ROOT)],
+        run = subprocess.run([str(binary), str(config), str(ROOT),
+                              str(tmpdir / "deploy/model_resident.json"),
+                              str(tmpdir / "tp4pp4/model_resident.json")],
                              capture_output=True, text=True)
         print(run.stdout.strip())
         print(run.stderr.strip()[-300:] if run.stderr else "", file=sys.stderr)
