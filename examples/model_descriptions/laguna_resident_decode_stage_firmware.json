@@ -1,0 +1,41 @@
+{
+ "schema_version": 1,
+ "model": {
+  "id": "laguna.laguna-s-2-1.resident-decode-stage-firmware",
+  "revision": "PRE-FREEZE"
+ },
+ "metadata": {
+  "architecture": "laguna_resident_decode_stage",
+  "purpose": "Poolside Laguna-S-2.1 text decode firmware: GQA/SWA hybrid MoE, per-layer head counts, two rope regimes (full-attention yarn, sliding theta 1e4), softplus per-head output gate, sigmoid top-10 router with correction bias and 2.5 routed scaling",
+  "generated_from": "model_contracts/laguna_authoritative.json",
+  "provenance": {
+   "checkpoint_config": "poolside/Laguna-S-2.1 config.json + modeling_laguna.py (pinned at freeze)",
+   "status": "source-integrated, CUDA and target-hardware qualification not measured"
+  },
+  "module_geometry": {
+   "hidden_dimension": 3072,
+   "layer_count": 48,
+   "attention_head_dimension": 128,
+   "attention_kv_head_count": 8,
+   "q_head_count_full": 48,
+   "q_head_count_sliding": 72,
+   "full_attention_layers": 12,
+   "sliding_attention_layers": 36,
+   "sliding_window": 512,
+   "moe_expert_count": 256,
+   "moe_top_k": 10,
+   "moe_intermediate_dimension": 1024,
+   "dense_intermediate_dimension": 12288,
+   "rotary_dim_full": 64,
+   "rotary_dim_sliding": 128
+  },
+  "fleet_shape": {
+   "tp_degree": 8,
+   "pipeline_stages": 2,
+   "stage_layer_counts": [
+    24,
+    24
+   ]
+  }
+ }
+}
