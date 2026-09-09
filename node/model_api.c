@@ -41,6 +41,10 @@ typedef struct ApiRequest
 	char tokens_json[API_TOKEN_BUF_BYTES];
 	volatile uint32_t tokens_json_len;
 	uint32_t *output_token_ids;
+	uint64_t token_ready_ns[API_MAX_OUTPUT_TOKENS];
+	uint64_t accepted_ns;
+	uint32_t cached_prompt_token_count;
+	uint32_t engine_completed;
 	volatile uint32_t output_token_count;
 	volatile int done;
 	volatile int submitted;
@@ -103,6 +107,17 @@ static void api_term_signal(int signal_number)
 	_exit(0);
 }
 
+static void api_log_request_measurements(const ApiRequest *request)
+{
+	uint32_t index;
+	flockfile(stderr);
+	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,request->prompt_count,request->cached_prompt_token_count);
+	for (index=0u; index<request->output_token_count; index++)
+		fprintf(stderr,"%s[%u,%llu]",index == 0u ? "" : ",",request->output_token_ids[index],(unsigned long long)request->token_ready_ns[index]);
+	fputs("]}\n",stderr);
+	funlockfile(stderr);
+}
+
 static void api_request_destroy(ApiRequest *req)
 {
 	pthread_mutex_destroy(&req->mutex);
@@ -150,6 +165,9 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 	{
 		if (r->id != ev->request_id)
 			continue;
+		r->cached_prompt_token_count = ev->cached_prompt_token_count;
+		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
+			r->accepted_ns = ev->monotonic_ns;
 		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN)
 		{
 			uint32_t stop_index;
@@ -187,6 +205,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					sizeof(r->tokens_json) - r->tokens_json_len,
 					"%s%u", r->tokens_json_len ? "," : "",
 					(unsigned)ev->token_id);
+				r->token_ready_ns[r->output_token_count] = ev->monotonic_ns;
 				r->output_token_ids[r->output_token_count++] = ev->token_id;
 			}
 		}
@@ -195,6 +214,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 		{
 			pthread_mutex_lock(&r->mutex);
 			r->status = ev->status;
+			r->engine_completed = ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ? 1u : 0u;
 			r->done = 1;
 			S.served++;
 			pthread_cond_signal(&r->cond);
@@ -913,6 +933,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			req->status, req->status);
 		send_response(fd, 500, err);
 	}
+	api_log_request_measurements(req);
 	pthread_mutex_lock(&S.queue_mutex);
 	if (req->inflight)
 	{

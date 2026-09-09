@@ -2,6 +2,7 @@ import importlib.util
 import pathlib
 import sys
 import unittest
+import copy
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("bench", ROOT / "tools/glm5_next_bench_wrap.py")
@@ -15,6 +16,24 @@ def event(kind, request, index=0):
 
 
 class BenchTests(unittest.TestCase):
+    def test_api_timestamps_separate_prefill_and_completion_arrival(self):
+        records = [dict(boot_pid=7,request_id=i,status=0,engine_completed=1,
+                        accepted_ns=1000000000,prompt_tokens=69,cached_prompt_tokens=64,
+                        tokens=[[i*10+j,int(stamp*1e9)] for j,stamp in enumerate(stamps)])
+                   for i,stamps in ((1,[2,3,12,14]),(2,[11,13,15]))]
+        result = bench.summarize_api_measurements(records[::-1])
+        self.assertTrue(result['valid'])
+        self.assertTrue(result['all_requests_have_prefix_hits'])
+        self.assertEqual(result['all_sequences_decode_window']['aggregate_tokens_per_second'],1.)
+        self.assertEqual(result['cached_prompt_tokens'],{'2':64,'1':64})
+        for key,value in (('engine_completed',0),('status',7),('accepted_ns',0),('boot_pid',8),('cached_prompt_tokens',70)):
+            bad = copy.deepcopy(records)
+            bad[0][key] = value
+            self.assertFalse(bench.summarize_api_measurements(bad)['valid'])
+        bad = copy.deepcopy(records)
+        bad[0]['tokens'][1][1] = 1
+        self.assertFalse(bench.summarize_api_measurements(bad)['valid'])
+
     def test_decode_window_excludes_remaining_prefill_and_completion_tail(self):
         events = [(1., event("token", 1, 0)), (2., event("token", 1, 1)),
                   (10., event("token", 2, 0)), (11., event("token", 1, 2)),

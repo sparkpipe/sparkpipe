@@ -688,3 +688,27 @@ Startup tests reject missing metadata even when a caller stop token is supplied.
 Parser tests load valid metadata and reject empty lists, repeated IDs, repeated
 JSON keys and oversized lists. These tests do not establish GLM GPU completion;
 that requires the merged-main deployment and repeated chat/lifecycle requests.
+
+## Persistent-engine decode measurements
+
+Batch-engine ABI 6 events expose coordinator monotonic nanoseconds and the
+request's reused prompt-prefix token count. The count comes from common prefix
+lookup, not an inference from faster elapsed time. The API records token event
+timestamps in the request and writes one JSON `request_measurements` record
+after responding. It performs no per-token logging. CLI batch events expose
+the same metadata.
+
+Use `python3 tools/glm5_next_bench_wrap.py --api-log CAPTURE` on records from
+the intended measurement requests in one API process. Preserve the source,
+configuration, prompt and output receipts separately. The parser rejects
+failed/incomplete requests, invalid timestamps and mixed process identities.
+It reuses the existing all-sequences decode window: after the latest first
+token, through the earliest final token. This excludes remaining prefill and
+completion tails. Per-request timings begin at common engine acceptance;
+they do not include earlier HTTP handling. Generated-token counts include EOS.
+
+A prefix-hit count is cache-path evidence, not proof that every restored KV,
+index, recurrent and convolution value is correct. Compare cached output with
+the corresponding uncached numerical reference. Likewise, a calculated rate
+does not confer numerical or SOTA performance qualification. Short or empty
+overlap windows are unsuitable for performance acceptance.
