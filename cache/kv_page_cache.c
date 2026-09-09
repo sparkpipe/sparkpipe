@@ -544,17 +544,17 @@ SparkStatus SparkKvPageCacheResolveLanePages(
 		logical_page_indices,logical_page_capacity,&page_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-		sequence = &cache->sequences[lane->resident_sequence_slot];
-		if ( sequence->sequence_id == lane->sequence_id &&
-			sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
-		{
-			if ( page_count >= logical_page_capacity )
-				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-			logical_page_indices[page_count++] =
-				sequence->mutable_logical_page_index;
-		}
-		*logical_page_count_out = page_count;
-		return(SPARK_STATUS_OK);
+	sequence = &cache->sequences[lane->resident_sequence_slot];
+	if ( sequence->sequence_id == lane->sequence_id &&
+		sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
+	{
+		if ( page_count >= logical_page_capacity )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		logical_page_indices[page_count++] =
+			sequence->mutable_logical_page_index;
+	}
+	*logical_page_count_out = page_count;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkKvPageCacheGetLaneMutablePageDemand(
