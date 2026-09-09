@@ -670,7 +670,7 @@ def emit(packer: Packer, path: Path, revision: str, contract_sha: bytes) -> int:
     if path.exists():
         raise PackFailure(f"output already exists; the two-pass proof requires a "
                           f"fresh artifact path: {path}")
-    directory_offset = ALIGNMENT
+    directory_offset = (HEADER_BYTES + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
     cursor = directory_offset + len(packer.plan) * ENTRY_BYTES
     for item in packer.plan:
         e = item.entry

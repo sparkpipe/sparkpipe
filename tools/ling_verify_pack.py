@@ -128,8 +128,10 @@ def verify_pack(path: Path, tp_degree: int) -> Dict[str, Any]:
                            f"layers {first_layer}+{layer_count}/{total_layers}")
         if file_bytes != size:
             fail("extent", f"{path.name}: header {file_bytes}, stat {size}")
-        if directory_offset != ALIGNMENT:
-            fail("directory_offset", f"{path.name}: {directory_offset}")
+        if directory_offset != 512:
+            fail("directory_offset", f"{path.name}: {directory_offset} "
+                                     f"(header of {HEADER_BYTES} bytes "
+                                     f"aligns to 512)")
         if directory_offset + tensor_count * ENTRY_BYTES > size:
             fail("directory", f"{path.name}: directory exceeds file")
         file.seek(directory_offset)
