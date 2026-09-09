@@ -226,15 +226,6 @@ static inline int32_t SparkGemma4StagePackShapeGlobal(uint32_t tensor_kind, Spar
 		shape->columns = SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS;
 		shape->natural_format = SPARK_STAGEPACK_FORMAT_WEIGHT_F32;
 		return(0);
-	case SPARK_GEMMA4_STAGEPACK_TENSOR_PER_EXPERT_SCALE:
-#if SPARK_GEMMA4_MODEL_MOE_BLOCK
-		shape->rows = 1u;
-		shape->columns = SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT;
-		shape->natural_format = SPARK_STAGEPACK_FORMAT_WEIGHT_F32;
-		return(0);
-#else
-		return(-1);
-#endif
 	default:
 		return(-1);
 	}
@@ -328,6 +319,11 @@ static inline int32_t SparkGemma4StagePackShapeEveryLayerMatmul(uint32_t tensor_
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_ROUTER_PROJ:
 		shape->rows = SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT;
 		shape->columns = SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION;
+		return(0);
+	case SPARK_GEMMA4_STAGEPACK_TENSOR_PER_EXPERT_SCALE:
+		shape->rows = 1u;
+		shape->columns = SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT;
+		shape->natural_format = SPARK_STAGEPACK_FORMAT_WEIGHT_F32;
 		return(0);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_EXPERT_GATE_UP:
 		shape->rows = SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT * SPARK_GEMMA4_MODEL_EXPERT_INTERMEDIATE_DIMENSION * 2u;
