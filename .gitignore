@@ -14,3 +14,4 @@ deployment/rtx5090_speculation/*.local.json
 staging/
 tools/fleet/lanes/*.log
 tools/fleet/lanes/*.state.md
+staging/
