@@ -6,25 +6,25 @@
 
 typedef struct SparkErrorSiteRecord
 {
-	int32_t error_status;
+	int32_t code;
 	const char *file;
 	uint32_t line;
 } SparkErrorSiteRecord;
 
 extern _Thread_local SparkErrorSiteRecord spark_last_error_site;
 
-#define SPARK_ERR_REPORT(error_status) \
+#define SPARK_ERR_REPORT(code_value) \
 	((void)fprintf(stderr,"ERRSITE %s:%d status=%d\n", \
-		__FILE__,__LINE__,(int)(error_status)))
+		__FILE__,__LINE__,(int)(code_value)))
 
-#define SPARK_FAIL(error_status) \
+#define SPARK_FAIL(status_value) \
 	do { \
-		int32_t spark_fail_status = (int32_t)(error_status); \
-		spark_last_error_site.error_status = spark_fail_status; \
+		int32_t spark_fail_code = (int32_t)(status_value); \
+		spark_last_error_site.code = spark_fail_code; \
 		spark_last_error_site.file = __FILE__; \
 		spark_last_error_site.line = (uint32_t)__LINE__; \
-		SPARK_ERR_REPORT(spark_fail_status); \
-		return spark_fail_status; \
+		SPARK_ERR_REPORT(spark_fail_code); \
+		return spark_fail_code; \
 	} while (0)
 
 #endif
