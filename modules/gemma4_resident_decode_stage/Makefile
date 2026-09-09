@@ -1,0 +1,87 @@
+MODULE_FAMILY := gemma4
+MODULE_IDENTIFIER := spark.gemma4.resident_decode_stage.fp8.h2560.l48.gdn36.e512k10.v1
+MODULE_TARGET := cuda.sm121.gemma4.resident_decode_stage.fp8
+MODEL_HEADER := ../../model-families/gemma4/include/sparkpipe/spark_gemma4_model.h
+MODULE_ENTRY_PREFIX := SparkGemma4ResidentDecodeStage
+MODULE_HOST_SOURCE := $(CURDIR)/source/spark_gemma4_resident_decode_stage_module.c
+MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_gemma4_resident_decode_stage_cuda.cu
+MODULE_ADDITIONAL_HOST_SOURCES = \
+	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
+	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
+	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
+	$(REPOSITORY_ROOT)/model-families/gemma4/src/spark_gemma4_work_control.c \
+	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c
+# Adapter provenance pins: the Qwen3.8-Flash-Next checkpoint revision and the
+# exact package contract, checked at adapter compile time.
+GEMMA4_MODEL_REVISION := f5d08274bafd880402bd16f5e3e6c514136ec06c
+# CURDIR-relative (not REPOSITORY_ROOT): the rules file that defines
+# REPOSITORY_ROOT is included below, and MODULE_COMPILE_FLAGS below expands
+# immediately - with REPOSITORY_ROOT the sha256sum ran against
+# "/model_contracts/..." and pinned an EMPTY contract hash into the adapter
+# provenance.
+GEMMA4_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/gemma4_authoritative.json | awk '{print $$1}')
+MODULE_COMPILE_FLAGS := \
+	-DSPARK_GEMMA4_MODULE_BUILD=1 \
+	-DSPARK_GEMMA4_MODEL_MTP_LAYER_COUNT=$(MTP_LAYER_COUNT)u \
+	-DGEMMA4_MODEL_REVISION=\"$(GEMMA4_MODEL_REVISION)\" \
+	-DGEMMA4_CONTRACT_SHA256=\"$(GEMMA4_CONTRACT_SHA256)\"
+MODULE_INCLUDE_FLAGS = \
+	-I"$(REPOSITORY_ROOT)/include" \
+	-I"$(REPOSITORY_ROOT)/src" \
+	-I"$(REPOSITORY_ROOT)/model-families/common/include" \
+	-I"$(REPOSITORY_ROOT)/model-families/gemma4/include" \
+	-I"$(REPOSITORY_ROOT)/modules/gemma4_resident_decode_stage/include" \
+	-I"$(REPOSITORY_ROOT)/modules/gemma4_resident_decode_stage/source" \
+	-I"$(REPOSITORY_ROOT)"
+
+STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/gemma4_stage.gemma4sp
+STAGE_COUNT ?= 12
+STAGE_INDEX ?= 0
+STAGE_FIRST_LAYER ?= 0
+STAGE_LAYER_COUNT ?= 4
+MAX_ACTIVE_SEQUENCES ?= 32
+PIPELINE_SLOT_COUNT ?= 2
+KV_BLOCK_COUNT ?= 4096
+MTP_LAYER_COUNT ?= 0
+GDN_SNAPSHOT_SLOT_COUNT ?= 0
+KV_PROVIDER ?= none
+KV_SERVICE_ADDRESS ?= none
+KV_SOCKET_PATH ?= none
+KV_POOL_BYTES ?= 0
+KV_WORKER_COUNT ?= 0
+ALLOW_UNQUALIFIED_EXECUTION ?= 0
+TP_DEGREE ?= 1
+TP_RANK ?= 0
+TP_STANDALONE ?= 0
+override GEMMA4_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_gemma4_resident_decode_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
+override GEMMA4_CPU_ORACLE_SHA256 := $(shell sha256sum validation/spark_gemma4_reference.c 2>/dev/null | awk '{print $$1}')
+
+RUNTIME_CONFIGURATION := \
+	SPARK_GEMMA4_ALLOW_UNQUALIFIED_EXECUTION=$(ALLOW_UNQUALIFIED_EXECUTION) \
+	SPARK_GEMMA4_TP_DEGREE=$(TP_DEGREE) \
+	SPARK_GEMMA4_TP_RANK=$(TP_RANK) \
+	SPARK_GEMMA4_TP_STANDALONE=$(TP_STANDALONE) \
+	SPARK_GEMMA4_STAGE_PACK_PATH=$(STAGE_PACK_PATH) \
+	SPARK_GEMMA4_STAGE_COUNT=$(STAGE_COUNT) \
+	SPARK_GEMMA4_STAGE_INDEX=$(STAGE_INDEX) \
+	SPARK_GEMMA4_STAGE_FIRST_LAYER=$(STAGE_FIRST_LAYER) \
+	SPARK_GEMMA4_STAGE_LAYER_COUNT=$(STAGE_LAYER_COUNT) \
+	SPARK_GEMMA4_STAGE_MAX_ACTIVE_SEQUENCES=$(MAX_ACTIVE_SEQUENCES) \
+	SPARK_GEMMA4_STAGE_PIPELINE_SLOTS=$(PIPELINE_SLOT_COUNT) \
+	SPARK_GEMMA4_STAGE_KV_BLOCKS=$(KV_BLOCK_COUNT) \
+	SPARK_GEMMA4_STAGE_KV_STORE=$(KV_PROVIDER) \
+	SPARK_GEMMA4_STAGE_KV_SERVICE=$(KV_SERVICE_ADDRESS) \
+	SPARK_GEMMA4_STAGE_KV_SOCKET=$(KV_SOCKET_PATH) \
+	SPARK_GEMMA4_STAGE_KV_POOL_BYTES=$(KV_POOL_BYTES) \
+	SPARK_GEMMA4_STAGE_KV_WORKERS=$(KV_WORKER_COUNT) \
+	SPARK_GEMMA4_STAGE_MTP=$(MTP_LAYER_COUNT) \
+	SPARK_GEMMA4_STAGE_GDN_SNAPSHOT_SLOTS=$(GDN_SNAPSHOT_SLOT_COUNT) \
+	SPARK_GEMMA4_CUDA_VALIDATOR_SHA256=$(GEMMA4_CUDA_VALIDATOR_SHA256) \
+	SPARK_GEMMA4_CPU_ORACLE_SHA256=$(GEMMA4_CPU_ORACLE_SHA256)
+
+GPU_VALIDATOR := validation/validate_gemma4_resident_decode_stage_cuda.sh
+
+include ../resident_decode_stage_rules.mk
