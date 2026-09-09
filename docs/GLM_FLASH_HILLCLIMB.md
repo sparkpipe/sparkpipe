@@ -959,3 +959,36 @@ Removing the intermediate BF16 round fails the first weighted case.
 This is a mathematical dtype contract, not a driver-selectable debug or
 performance mode. GPU and end-to-end numerical qualification still follow
 the merged-main deployment; do not infer them from the host harness.
+
+## Causal convolution dtype boundary and remaining tree precision
+
+On merged e5a595d, a matched-input layer-0 rank-0 diagnostic found Q/K/V
+convolution deviations of 0.3113%, 0.4573% and 0.3043% relative L2 against
+the upstream BF16 convolution followed by SiLU. All three captured outputs
+exactly matched applying SiLU to the unrounded FP32 accumulator instead.
+The shared causal convolution now rounds to BF16 before SiLU when its
+weights are BF16. FP32-weight convolution retains its FP32 intermediate,
+matching the upstream conversion to the weight dtype before convolution.
+This adds no launch, tensor allocation or driver option.
+
+The actual common kernel is exercised against an independent FP64 dot
+product and activation reference in 24 cases: BF16/FP32 weights, B1/B3/B17,
+7/257 channels, ragged rows, empty sequences, permuted state slots, padding
+and committed/uncommitted history. Removing the BF16 intermediate round
+fails the first case. These are component checks; merged-main GPU captures
+and end-to-end acceptance remain necessary.
+
+The preceding e5a595d B8 run remains a failed consistency check: all eight
+requests diverge from B1 at zero-based token 55; the following B1 matches
+the original B1. Its 91.8586 aggregate output tokens/sec is unqualified.
+Captured B1 operands simulated through the existing BF16 tree introduce
+0.3382% attention and 0.2922% dense relative L2 deviation from the direct
+sum. This is a candidate explanation, not a captured B8 attribution.
+
+Tree FP32 correction must update payload sizing, registered buffers,
+credit offsets and nonce positions together, retaining credits until GPU
+consumption completes. The existing F32 seed/add/round config fields have
+no implementation users and only accept BF16 input contributions; they
+do not provide FP32-to-FP32 tree folding. B2+ tree selection remains
+mandatory. Do not hide this failure by switching B2+ to the direct path
+or accepting the B8 output as a new reference.

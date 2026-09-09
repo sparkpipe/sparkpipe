@@ -1,5 +1,5 @@
 {
-  "file_count": 1955,
+  "file_count": 1956,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "3b623ea6e53a261537c73390c0eafdd44edb7b3671e6bef3d0de01ae58f7296b",
-      "size_bytes": 97099
+      "sha256": "a2500184497e4cbf4d81a44ca2b46490b96c47466f16b02e911a77494815714d",
+      "size_bytes": 97131
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "fd4923b5af29b9ed4b6bbf99bff06d82c18d1f9cf9284167a95d600b53124493",
-      "size_bytes": 65519
+      "sha256": "a87809668778bdc495a4cd9ebcae25afb4293fee16773994bb76b707535980f8",
+      "size_bytes": 67484
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -3248,8 +3248,8 @@
     },
     {
       "path": "inference/kernels/linear_attn.cuh",
-      "sha256": "fd5d2734180f84b2acd15f37c335eec35d488c668ba5f77356981ae146defde7",
-      "size_bytes": 11698
+      "sha256": "ae83eaa4dfb27bf7d3b17e581ac6136e4bbe6cae065c9223903784f706d38c56",
+      "size_bytes": 11800
     },
     {
       "path": "inference/kernels/mma.cuh",
@@ -6692,6 +6692,11 @@
       "size_bytes": 23669
     },
     {
+      "path": "tests/test_bf16_conv_host.py",
+      "sha256": "872d00d8bc79e68a6707b369d44a59cffd61f371ef0a801fca657355ba2860fb",
+      "size_bytes": 5140
+    },
+    {
       "path": "tests/test_bf16_rms_host.py",
       "sha256": "6a827eedfb276f3792b21c06de31fa744de788450e3fc886e34ff55e0c42ceba",
       "size_bytes": 3457
@@ -9780,5 +9785,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32726610
+  "total_bytes": 32733849
 }
