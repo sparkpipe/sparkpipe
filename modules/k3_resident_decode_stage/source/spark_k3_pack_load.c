@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_k3_pack_load.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_k3_dspark_pack.h"
 #include "sparkpipe/spark_json.h"
 

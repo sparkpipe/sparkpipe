@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <dirent.h>
+#include "sparkpipe/spark_error_site.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>

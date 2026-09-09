@@ -1,4 +1,5 @@
 #include "spark_dsv4_paged_cache.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <limits.h>
 #include <stdlib.h>

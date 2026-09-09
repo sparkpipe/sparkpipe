@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_k3_bind.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_k3_pool_sizing.h"
 
 #include <stdio.h>

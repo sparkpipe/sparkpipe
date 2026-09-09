@@ -30,6 +30,7 @@
 #endif
 
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <errno.h>
 #include <fcntl.h>

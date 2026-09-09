@@ -1,5 +1,6 @@
 
 #include <string.h>
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_stagepack_format.h"
 

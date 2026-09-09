@@ -1,4 +1,5 @@
 #include <string.h>
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_dsv4_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_admission.h"

@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_pipeline_runtime.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdio.h>
 #include <string.h>

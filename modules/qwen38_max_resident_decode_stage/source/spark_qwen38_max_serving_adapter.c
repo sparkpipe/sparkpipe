@@ -1,5 +1,6 @@
 
 #include <stdio.h>
+#include "sparkpipe/spark_error_site.h"
 #include <stdlib.h>
 #include <string.h>
 

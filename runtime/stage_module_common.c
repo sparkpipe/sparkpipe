@@ -1,6 +1,7 @@
 #define _FILE_OFFSET_BITS 64
 
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_attach.h"
 #include <sys/stat.h>
 #include <sys/types.h>
