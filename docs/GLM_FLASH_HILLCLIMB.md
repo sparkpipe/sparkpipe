@@ -681,6 +681,30 @@ tail. Restoring the previous local-first BF16 arithmetic makes that test fail.
 GPU execution and the full-model discrepancy must still be measured on a
 merged-main deployment; this fix alone is not numerical qualification.
 
+## TP16 tree subgroup fold ordering
+
+The common tree stage exchanging four subgroup partials previously folded
+peers as their arrival nonces appeared, starting from each root's own subgroup.
+This allowed both network arrival order and local root identity to change BF16
+addition order. The stage now waits for all three peer nonces, places all four
+partials at their global root indices, and invokes the shared all-contribution
+callback once before packing the next stage. TP16 creation requires this
+callback; missing support fails explicitly. Earlier pairwise tree stages and
+U64 maximum operations retain their existing behavior.
+
+`test_tp_tree_fold` executes the production readiness/fold helper for all six
+arrival permutations on each of the four roots. It verifies no fold before
+all inputs arrive, one fold only, local-pointer placement and equal sums under
+cancellation. This is host orchestration coverage, not GPU or full transport
+qualification. The broader `test_tp_device_collective` currently fails at its
+`TestCreate` initialization assertion on unchanged `df24e05` as well; that
+baseline failure must not be reported as a passing suite.
+
+Logical-batch selection remains outstanding: the current payload threshold
+keeps ordinary hidden reductions direct through eight execution rows. The B3
+measurement of 40.6141 aggregate tok/s on `df24e05` therefore does not qualify
+the requested B2+ tree policy.
+
 ## Required model EOS metadata
 
 Resident deployment ABI 3 carries `eos_token_ids`. Common batch-engine startup
