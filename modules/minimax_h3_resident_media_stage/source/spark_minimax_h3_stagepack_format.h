@@ -521,7 +521,7 @@ static inline uint32_t SparkMinimaxH3StagePackVideoTensorCount(void)
 
 static inline uint32_t SparkMinimaxH3StagePackAudioTensorCount(void)
 {
-	return(937u);
+	return(936u);
 }
 
 static inline void SparkMinimaxH3StagePackExpectedGeometry(
