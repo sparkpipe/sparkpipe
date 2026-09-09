@@ -52,6 +52,60 @@ Numeric reasoning (single media job, batch=1, S≈10.5k tokens, hidden 5376):
 - The 4-spark TP4×PP1 island is dropped (weights at 32 GB/rank × 4, 12 sparks empty —
   exactly the flagged case).
 
+## Pinned-source contract (diffusers 3c221246, minimax_h3 modular pipeline) — read line-by-line
+
+These facts come from the pinned source and OVERRIDE the design's guesses where they
+differ. They bind the kernels (criterion 4+).
+
+- **No CFG.** The checkpoint is guidance-distilled: no negative prompt, no unconditional
+  branch, one forward per step (`denoise.py`, `modular_pipeline.py`).
+- **Packed sequence order**: `[text | keyframe conditions | target audio | target video]`
+  — audio BEFORE video. t2va has zero conditioning rows. Audio rows are channel-major:
+  channel 0 latents then channel 1 latents (stereo = 2 mono batch items at the VAE).
+- **Modality tags**: text=1, video=0, audio=2.
+- **t convention**: t=1 clean, t=0 noise; `x_t = t·x0 + (1−t)·noise`. Scheduler: sigma
+  grid = linspace(1,0,N) → σ' = s·σ/(1+(s−1)·σ), s=12 video / 3 audio; timesteps =
+  1−σ[:-1]; N sigma points ⇒ N−1 model evals. Step: `x0 = x_t + (1−t)·v` (data-ward
+  velocity, PLUS sign), then `x_next = r·x_t + (1−r)·x0`, r = σ_next/σ, in float32.
+- **Text conditioning**: prompt verbatim, no chat template, no special tokens
+  (add_special_tokens=False); harvest = `hidden_states[50]` (output of the 50th decoder
+  layer; the final layer is post-norm and NOT the conditioning).
+- **Rope**: one fp32 inv_freq[16] = 1/θ^(arange(0,32,2)/32), θ=1e4, shared by t/h/w.
+  Per row: freqs = fp64 positions (cast fp32) × inv_freq per axis → concat(t,h,w)[48] →
+  concat(self)[96] cos/sin. Rotates the FIRST 96 of 128 head channels, rotate-half
+  convention (x1=[:48], x2=[48:96], out = x·cos + cat(−x2,x1)·sin). Positions fp64:
+  text rows t=row index; video t from non-uniform grid 5/3·(1,4,4,4,4) cumulative from
+  num_text_tokens; spatial axes aspect-normalized: linspace((1−ratio)/2, +ratio,
+  dim/patch, endpoint=False)·32 with ratio = dim/sqrt(h·w); audio rows t = num_text +
+  arange(latents) repeated per channel, h=0, w pinned to width grid extremes.
+- **adaLN**: per block `adaln_proj.linear` [96768,2688]+bias on `silu(temb)` cast to
+  bf16; output [T,96768] → [T·3, 6·5376] → six [T·3,5376] (shift_msa, scale_msa,
+  gate_msa, shift_mlp, scale_mlp, gate_mlp); row = timestep_idx·3 + tag. temb:
+  diffusers Timesteps(256, flip_sin_to_cos, shift 0) on UNSCALED t∈[0,1] → fp32
+  TimestepEmbedding (linear_1 [5376,256] → silu → linear_2 [2688,5376]).
+  `norm_out`: RMS(h)·(1+scale)+shift with shift FIRST chunk of [10752,2688] linear on
+  silu(temb), indexed by timestep_idx (no modality).
+- **Attention**: no biases, RMS q/k per head BEFORE rope, softmax scale 1/sqrt(128),
+  non-causal, no mask, one document.
+- **Mixed precision is part of the checkpoint**: proj_in, audio_proj_in, time_embedder,
+  proj_out, audio_proj_out (+ the whole video/audio VAE) are FLOAT32; block stack +
+  context_embedder bf16. Packs carry F32 entries for those tensors — never requantize.
+- **Token refiner**: 2 plain pre-norm blocks (no rope, no adaln) + final RMSNorm,
+  applied to context_embedder(text) before the scatter.
+- **Noise**: video randn [1,24,T,H,W] fp32 drawn FIRST from the request generator,
+  then audio randn [latents·2, 32] fp32 in row layout. Initial state = pure noise
+  (first timestep t=0).
+- **Canvas/frame law**: canvas_multiple = 32; short_edge 480 → 480×864 (not 832).
+  num_frames snaps UP to 17n+5 (clip_length 17, tokens_chunk 5); latent frames =
+  5n+2; duration floor is 5s. Slice: request 5s → 120 → 124 frames → 37 latent
+  frames → grid 37×15×27 = 14985 video rows; audio 207 latents × 2 = 414 rows;
+  ≈15.9k tokens/step with a 512-token prompt. Artifact: 124 frames @ 24 fps,
+  480×864, ~165.6k audio samples/channel.
+- **Decode**: denorm latents (×std+mean) → VAE decode (reference runs fp16 autocast;
+  we keep bf16 compute with fp32 accumulation and gate on tolerance) → ImageNet
+  denorm → clamp [0,1]. Audio: denorm → mono decode ×2 batch → interleave to stereo
+  at 32 kHz.
+
 ## Work log
 
 - 2026-09-09: lane start. Previous coder died pre-write (verified: `git status` clean at
