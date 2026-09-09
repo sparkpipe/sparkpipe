@@ -127,12 +127,66 @@ def measure(command, timeout):
         return result
 
 
+def summarize_api_measurements(records):
+    try:
+        if not records or len({r['boot_pid'] for r in records}) != 1:
+            raise ValueError('measurements must come from one persistent engine process')
+        base = min(r['accepted_ns'] for r in records)
+        if type(base) is not int or base <= 0:
+            raise ValueError('missing engine acceptance timestamp')
+        events, identities = [], set()
+        for record in records:
+            identity = record['request_id']
+            if identity in identities or record['status'] != 0 or record['engine_completed'] != 1:
+                raise ValueError('duplicate, failed or incomplete request')
+            identities.add(identity)
+            cached, prompt = record['cached_prompt_tokens'], record['prompt_tokens']
+            if type(cached) is not int or type(prompt) is not int or not 0 <= cached <= prompt:
+                raise ValueError('invalid cached prompt count')
+            previous = record['accepted_ns']
+            if type(previous) is not int or previous <= 0:
+                raise ValueError('invalid engine acceptance timestamp')
+            common = {'request_id':identity,'sequence_id':identity,'status':0}
+            events.append(((previous-base)/1e9,dict(common,event='accepted')))
+            if not record['tokens']:
+                raise ValueError('no generated tokens')
+            for index, (token, stamp) in enumerate(record['tokens']):
+                if type(stamp) is not int or stamp <= 0 or stamp < previous:
+                    raise ValueError('invalid or decreasing token timestamp')
+                events.append(((stamp-base)/1e9,dict(common,event='token',token_index=index,token_id=token)))
+                previous = stamp
+            events.append(((previous-base)/1e9,dict(common,event='completed')))
+        result = summarize(sorted(events,key=lambda event:event[0]),0)
+        result.update(measurement='common engine token event timestamps; API records emitted after completion',
+                      boot_pid=records[0]['boot_pid'],cached_prompt_tokens={str(r['request_id']):r['cached_prompt_tokens'] for r in records},
+                      all_requests_have_prefix_hits=all(r['cached_prompt_tokens'] > 0 for r in records))
+        by_id = {r['request_id']:r for r in records}
+        for sequence in result.get('sequences',[]):
+            record = by_id[sequence['request_id']]
+            stamps = [stamp for _,stamp in record['tokens']]
+            sequence.update(cached_prompt_tokens=record['cached_prompt_tokens'],
+                            engine_ttft_seconds=(stamps[0]-record['accepted_ns'])/1e9,
+                            decode_tokens_per_second=(len(stamps)-1)*1e9/(stamps[-1]-stamps[0]) if stamps[-1]>stamps[0] else None)
+        return result
+    except (KeyError, TypeError, ValueError) as error:
+        return {'valid':False,'errors':[str(error)]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout-seconds", type=float, default=600)
+    parser.add_argument("--api-log")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if args.api_log:
+        if command:
+            parser.error('provide an API log or a command, not both')
+        with open(args.api_log) as source:
+            records = [json.loads(line) for line in source if line.startswith('{')]
+        result = summarize_api_measurements([r for r in records if r.get('event') == 'request_measurements'])
+        print(json.dumps(result,indent=1))
+        return 0 if result['valid'] else 1
     if not command or not 0 < args.timeout_seconds <= 900:
         parser.error("provide a command and a finite timeout in (0, 900] seconds")
     result = measure(command, args.timeout_seconds)

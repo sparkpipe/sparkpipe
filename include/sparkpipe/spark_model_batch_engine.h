@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 5u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 6u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 
@@ -35,6 +35,8 @@ typedef struct SparkModelBatchEvent
 	uint32_t token_id;
 	uint32_t token_index;
 	uint32_t generated_token_count;
+	uint32_t cached_prompt_token_count;
+	uint64_t monotonic_ns;
 	uint64_t request_id;
 	uint64_t sequence_id;
 	SparkModelBatchRequestHandle request_handle;

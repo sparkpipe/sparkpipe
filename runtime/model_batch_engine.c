@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "model_batch_scheduler.h"
 #include "sparkpipe/spark_prefix_cache.h"
@@ -489,7 +490,10 @@ static void SparkModelBatchEmit(
 	uint32_t token_id)
 {
 	SparkModelBatchEvent event;
+	struct timespec timestamp = {0,0};
 	memset(&event,0,sizeof(event));
+	if ( clock_gettime(CLOCK_MONOTONIC,&timestamp) == 0 )
+		event.monotonic_ns = (uint64_t)timestamp.tv_sec * UINT64_C(1000000000) + (uint64_t)timestamp.tv_nsec;
 	event.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	event.descriptor_bytes = SPARK_MODEL_BATCH_EVENT_BYTES;
 	event.kind = kind;
@@ -498,6 +502,7 @@ static void SparkModelBatchEmit(
 	event.token_id = token_id;
 	event.token_index = request->generated_token_count != 0u ? request->generated_token_count - 1u : 0u;
 	event.generated_token_count = request->generated_token_count;
+	event.cached_prompt_token_count = request->cache_prefix_token_count;
 	event.request_id = request->request_id;
 	event.sequence_id = request->sequence_id;
 	event.request_handle = request->handle;

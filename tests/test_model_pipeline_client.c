@@ -59,6 +59,8 @@ typedef struct TestModelPipelineState
 
 typedef struct TestModelBatchState
 {
+	uint64_t last_event_ns;
+	uint32_t cached_prompt_tokens;
 	uint32_t accepted_count;
 	uint32_t token_count;
 	uint32_t completed_count;
@@ -251,6 +253,10 @@ static void TestModelBatchEvent(
 	assert(event != 0);
 	assert(event->abi_version == SPARK_MODEL_BATCH_ENGINE_ABI_VERSION);
 	assert(event->descriptor_bytes == SPARK_MODEL_BATCH_EVENT_BYTES);
+	assert(event->monotonic_ns != 0u && event->monotonic_ns >= state->last_event_ns);
+	state->last_event_ns = event->monotonic_ns;
+	if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
+		state->cached_prompt_tokens = event->cached_prompt_token_count;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
 		state->accepted_count++;
 	else if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
@@ -1302,6 +1308,23 @@ static void TestModelBatchEnginePrefixReuse(
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 }
 
+static void TestModelBatchEnginePrefixTelemetry(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	uint32_t prompt[13] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u};
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnect(deployment,&state,0u,0u,4u);
+	(void)TestModelBatchSubmit(engine,9001u,9101u,prompt,13u,1u);
+	TestModelBatchWaitIdle(engine,1u);
+	assert(state.cached_prompt_tokens == 0u);
+	(void)TestModelBatchSubmit(engine,9002u,9102u,prompt,13u,1u);
+	TestModelBatchWaitIdle(engine,2u);
+	assert(state.cached_prompt_tokens == 12u);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+}
+
 static void TestModelBatchEngineCachePageBudget(
 	const SparkModelResidentDeployment *deployment)
 {
@@ -1701,6 +1724,7 @@ int main(void)
 	TestModelBatchEngineContinuous(&deployment);
 	TestModelBatchEnginePrefixReuse(&deployment);
 	TestModelBatchEngineCachePageBudget(&deployment);
+	TestModelBatchEnginePrefixTelemetry(&deployment);
 	TestModelBatchEngineShutdown(&deployment);
 	TestModelBatchProcess(deployment_path,0u);
 	TestModelBatchProcess(deployment_path,1u);

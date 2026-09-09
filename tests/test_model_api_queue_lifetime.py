@@ -2,6 +2,7 @@
 from pathlib import Path
 import subprocess
 import tempfile
+import json
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r'''
@@ -58,7 +59,11 @@ static void TestComplete(TestClient *client,uint64_t id,uint32_t token)
 	char response[1024] = {0},expected[64];
 	int32_t bytes,total = 0;
 	event.request_id = id;
+	event.kind = SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED;
+	event.monotonic_ns = id * 100u;
+	api_event(0,&event);
 	event.kind = SPARK_MODEL_BATCH_EVENT_TOKEN;
+	event.monotonic_ns += 50u;
 	event.token_id = token;
 	api_event(0,&event);
 	event.kind = SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED;
@@ -104,7 +109,15 @@ def main():
             "build/libsparkpipe_model_common.a", "build/libsparkpipe_core.a",
             "-ldl", "-lpthread", "-o", str(binary),
         ], cwd=ROOT, check=True)
-        subprocess.run([str(binary)], cwd=ROOT, check=True, timeout=15)
+        result = subprocess.run([str(binary)], cwd=ROOT, check=True, timeout=15, capture_output=True, text=True)
+        records = [json.loads(line) for line in result.stderr.splitlines() if line.startswith('{')]
+        assert len(records) == 3
+        for record, token in zip(records, (22, 11, 33)):
+            assert record['event'] == 'request_measurements'
+            assert record['engine_completed'] == 1 and record['status'] == 0
+            assert record['accepted_ns'] == record['request_id'] * 100
+            assert record['tokens'] == [[token, record['accepted_ns'] + 50]]
+            assert record['cached_prompt_tokens'] == 0
     print("PASS real API enqueue, tail completion, enqueue again, remaining replies and empty queue")
 
 
