@@ -76,6 +76,20 @@ muse_glimmer_validation PASS
   is delegated to the anchor oracle's fp32-unrounded variants per the
   anchor report.
 
+## Offline-gates status (important)
+
+`make offline-gates` (build-all) is RED at pristine origin/main 8f3a6f2,
+independent of this lane: `modules/k3_resident_decode_stage/source/
+spark_k3_serving_adapter.c` is a half-committed refactor (orphaned
+`if ( status == SPARK_STATUS_OK )` at line 516, undeclared
+`seqslot_device/seqslot_host/dispatch/rows/submission`) - reproduced on
+the untouched synced main checkout on sparkc (job muse-gates-001 and a
+direct pristine-tree make). The manager should bounce the k3 lane.
+Targeted gates on the muse tree all pass (job muse-gates-003, exit 0):
+verify_package_manifest (with the lane DESIGN.md present), the header
+bindings test, and the muse module archive (nvcc sm_121a). The manifest
+covers the lane-local DESIGN.md by intent; the file ships with the tree.
+
 ## Environment notes
 
 - The shared spark_pack_load/synthesize commons are MTP/GDN-entangled past
