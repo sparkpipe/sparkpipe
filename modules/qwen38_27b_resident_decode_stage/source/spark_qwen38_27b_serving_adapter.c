@@ -26,6 +26,7 @@ static double clock_gettime_mono_ns(void)
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_qwen38_27b_serving_adapter.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_speculation_seam.h"
 
 #ifndef QWEN38_27B_MODEL_REVISION
@@ -47,6 +48,11 @@ static double clock_gettime_mono_ns(void)
 #define SPARK_QWEN38_27B_SERVING_ADAPTER_ID "spark.qwen38_27b.serving-adapter.tp4.v1"
 #define SPARK_QWEN38_27B_SERVING_STAGE_COUNT 4u
 #define SPARK_QWEN38_27B_SERVING_STAGE_LAYER_COUNTS {64u,64u,64u,64u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u}
+#endif
+#if SPARK_QWEN38_27B_SERVING_TP_DEGREE > 1u
+#define SPARK_QWEN38_27B_SERVING_TP_MEMBERS "tp_degree","tp_rank","tp_collective",
+#else
+#define SPARK_QWEN38_27B_SERVING_TP_MEMBERS
 #endif
 #define SPARK_QWEN38_27B_SERVING_MODEL_ID "Qwen/Qwen3.8-27B"
 #define SPARK_QWEN38_27B_SERVING_DRIVER_MODEL_ID \
@@ -125,7 +131,8 @@ static const char *const SparkQwen38_27bServingConfigurationMembers[] =
 	"schema_version",
 	"model_revision",
 	"stage_pack_path",
-	"max_sequence_positions"
+	"max_sequence_positions",
+	SPARK_QWEN38_27B_SERVING_TP_MEMBERS
 };
 
 static const char *const SparkQwen38_27bServingConfigurationMembersDraft[] =
@@ -134,7 +141,8 @@ static const char *const SparkQwen38_27bServingConfigurationMembersDraft[] =
 	"model_revision",
 	"stage_pack_path",
 	"max_sequence_positions",
-	"speculative_draft_count"
+	"speculative_draft_count",
+	SPARK_QWEN38_27B_SERVING_TP_MEMBERS
 };
 
 static const char *const SparkQwen38_27bServingConfigurationMembersBridge[] =
@@ -144,7 +152,8 @@ static const char *const SparkQwen38_27bServingConfigurationMembersBridge[] =
 	"stage_pack_path",
 	"max_sequence_positions",
 	"draft_bridge_host",
-	"draft_bridge_port"
+	"draft_bridge_port",
+	SPARK_QWEN38_27B_SERVING_TP_MEMBERS
 };
 
 static const char *const SparkQwen38_27bServingConfigurationMembersBridgeDraft[] =
@@ -155,7 +164,8 @@ static const char *const SparkQwen38_27bServingConfigurationMembersBridgeDraft[]
 	"max_sequence_positions",
 	"draft_bridge_host",
 	"draft_bridge_port",
-	"speculative_draft_count"
+	"speculative_draft_count",
+	SPARK_QWEN38_27B_SERVING_TP_MEMBERS
 };
 
 typedef struct SparkQwen38_27bServingSpecState
@@ -345,6 +355,32 @@ static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor
 
 #include "sparkpipe/spark_qwen38_serving_adapter_common.h"
 
+#if SPARK_QWEN38_27B_SERVING_TP_DEGREE > 1u
+static const SparkTpCollectiveConfigPolicy SparkQwen38_27bServingTpCollectivePolicy =
+{
+	.peer_count = SPARK_QWEN38_27B_SERVING_TP_DEGREE,
+	.allow_zero_collective_identifier = 1u,
+	.require_contiguous_peer_ports = 1u,
+	.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY,
+	.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED,
+	.require_session_ports = 0u
+};
+
+static SparkStatus SparkQwen38_27bServingLoadTpCollective(
+	const SparkJsonDocument *document,
+	int32_t root,
+	const char *runtime_root)
+{
+	SparkTpCollectiveAdapterConfig config;
+	char backend_path[SPARK_INTERNAL_PATH_BYTES];
+	memset(&config,0,sizeof(config));
+	config.backend_module_path_buffer = backend_path;
+	config.backend_module_path_bytes = sizeof(backend_path);
+	return(SparkServingAdapterTemplateLoadTpCollective(document,root,
+		runtime_root,&SparkQwen38_27bServingTpCollectivePolicy,&config));
+}
+#endif
+
 static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 	const char *path,
 	const char *runtime_root,
@@ -355,6 +391,9 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 	int32_t root,token;
 	int32_t bridge_host_token,bridge_port_token,draft_count_token;
 	uint32_t schema_version;
+#if SPARK_QWEN38_27B_SERVING_TP_DEGREE > 1u
+	uint32_t tp_degree,tp_rank;
+#endif
 	char *relative_stage_pack_path;
 	SparkStatus status;
 	relative_stage_pack_path = 0;
@@ -414,6 +453,16 @@ static SparkStatus SparkQwen38_27bServingLoadConfiguration(
 		status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(&document,token,&relative_stage_pack_path);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"max_sequence_positions",max_sequence_positions);
+#if SPARK_QWEN38_27B_SERVING_TP_DEGREE > 1u
+	if ( status == SPARK_STATUS_OK )
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"tp_degree",&tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"tp_rank",&tp_rank);
+	if ( status == SPARK_STATUS_OK && (tp_degree != SPARK_QWEN38_27B_SERVING_TP_DEGREE || tp_rank >= tp_degree) )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen38_27bServingLoadTpCollective(&document,root,runtime_root);
+#endif
 	if ( status == SPARK_STATUS_OK && bridge_host_token >= 0 )
 	{
 		status = SparkJsonCopyString(&document,bridge_host_token,&state->bridge_host);
