@@ -402,17 +402,19 @@ static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_
 	status = Glm52LayerMoeRoute<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	/* Publish the group offsets to host storage so the acquisition
-	 * worker can derive the routed key set, then mark readiness. */
+	/* Publish the group offsets to host storage and mark readiness only
+	 * when the slot is wired for lazy acquisition (event + pinned host
+	 * mirror). Resident and validator slots skip this entirely. */
 	wave->slot->route_recorded = 0u;
-	if ( wave->slot->group_row_offset_host == 0 || wave->slot->route_ready_event == 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
-	error = cudaMemcpyAsync(wave->slot->group_row_offset_host,wave->slot->group_row_offset,(GLM52_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
-	if ( error == cudaSuccess )
-		error = cudaEventRecord((cudaEvent_t)wave->slot->route_ready_event,(cudaStream_t)wave->slot->stream);
-	if ( error != cudaSuccess )
-		return(LM_LAUNCH_ERR_LAUNCH);
-	wave->slot->route_recorded = 1u;
+	if ( wave->slot->group_row_offset_host != 0 && wave->slot->route_ready_event != 0 )
+	{
+		error = cudaMemcpyAsync(wave->slot->group_row_offset_host,wave->slot->group_row_offset,(GLM52_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
+		if ( error == cudaSuccess )
+			error = cudaEventRecord((cudaEvent_t)wave->slot->route_ready_event,(cudaStream_t)wave->slot->stream);
+		if ( error != cudaSuccess )
+			return(LM_LAUNCH_ERR_LAUNCH);
+		wave->slot->route_recorded = 1u;
+	}
 	return(LM_LAUNCH_OK);
 }
 
