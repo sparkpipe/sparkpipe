@@ -769,7 +769,7 @@ static SparkStatus SparkGlm52AllocateSlotMlp(
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
-		cudaError_t error = cudaEventCreateWithFlags(&slot->route_ready_event,cudaEventDisableTiming);
+		cudaError_t error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->route_ready_event,cudaEventDisableTiming);
 		if ( error != cudaSuccess )
 			status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"route_ready_event");
 	}
