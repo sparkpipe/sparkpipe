@@ -28,7 +28,7 @@ SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 echo "== host build"
 rm -f build/sparkpipe_model_compile build/libhidden_transport_spark_host_rdma_verbs.so
 make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/libhidden_transport_spark_host_rdma_verbs.so
-strings build/libhidden_transport_spark_host_rdma_verbs.so | grep -q QP-WIRE || { echo "DSO stale"; exit 1; }
+strings build/libhidden_transport_spark_host_rdma_verbs.so | grep QP-WIRE > /dev/null || { echo "DSO stale"; exit 1; }
 
 echo "== park local agent + daemon (validator needs the GPU; UPDATE restores the fleet)"
 systemctl --user stop fleet-agent 2>/dev/null || true
