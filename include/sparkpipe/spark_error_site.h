@@ -10,7 +10,7 @@ typedef struct SparkErrorSiteRecord
 	uint32_t line;
 } SparkErrorSiteRecord;
 
-static _Thread_local __attribute__((unused)) SparkErrorSiteRecord
+static __thread __attribute__((unused)) SparkErrorSiteRecord
     spark_last_error_site = {0,0,0};
 
 #define SPARK_ERR_REPORT(code_value) \
