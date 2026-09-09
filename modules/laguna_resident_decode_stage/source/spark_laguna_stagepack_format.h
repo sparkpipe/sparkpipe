@@ -162,6 +162,7 @@ static inline uint32_t SparkLagunaStagePackTpShardsRows(uint32_t tensor_kind)
     case SPARK_LAGUNA_STAGEPACK_TENSOR_FUSED_QKV:
     case SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_GATE:
     case SPARK_LAGUNA_STAGEPACK_TENSOR_DENSE_GATE_UP:
+    case SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP:
     case SPARK_LAGUNA_STAGEPACK_TENSOR_SHARED_GATE_UP:
         return(1u);
     default:
@@ -175,6 +176,7 @@ static inline uint32_t SparkLagunaStagePackTpShardsCols(uint32_t tensor_kind)
     {
     case SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_OUTPUT:
     case SPARK_LAGUNA_STAGEPACK_TENSOR_DENSE_DOWN:
+    case SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN:
     case SPARK_LAGUNA_STAGEPACK_TENSOR_SHARED_DOWN:
         return(1u);
     default:
@@ -242,12 +244,6 @@ static const SparkLagunaStagePackShapeSpec SPARK_LAGUNA_STAGEPACK_SHAPE_TABLE[SP
         {SPARK_LAGUNA_STAGEPACK_PAYLOAD_BF16, SPARK_WEIGHT_CODEC_BF16, SPARK_WEIGHT_SCALE_ENCODING_NONE, 1u, SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION, SPARK_LAGUNA_MODEL_MOE_INTERMEDIATE_DIMENSION, 0u},
 };
 
-static inline uint32_t SparkLagunaStagePackKindIsExpertPartition(uint32_t tensor_kind)
-{
-    return(tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP ||
-           tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN ? 1u : 0u);
-}
-
 static inline int32_t SparkLagunaStagePackCheckLayerKind(uint32_t layer_index,uint32_t tensor_kind)
 {
     if ( SparkLagunaStagePackKindIsDense(tensor_kind) !=
@@ -278,7 +274,8 @@ static inline int32_t SparkLagunaStagePackExpectedShape(uint32_t tensor_kind,uin
     spec = &SPARK_LAGUNA_STAGEPACK_SHAPE_TABLE[tensor_kind];
     if ( spec->payload_type == 0u )
         return(-6);
-    if ( SparkLagunaStagePackKindIsExpertPartition(tensor_kind) != 0u &&
+    if ( (tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP ||
+          tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN) &&
          expert_codec == SPARK_WEIGHT_CODEC_BF16 )
     {
         shape->payload_type = SPARK_LAGUNA_STAGEPACK_PAYLOAD_BF16;
@@ -314,12 +311,6 @@ static inline int32_t SparkLagunaStagePackExpectedShape(uint32_t tensor_kind,uin
             shape->columns = heads * SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION;
         else
             shape->rows = heads;
-    }
-    if ( SparkLagunaStagePackKindIsExpertPartition(tensor_kind) != 0u )
-    {
-        if ( shape->group_count % tp_degree != 0u )
-            return(-7);
-        shape->group_count /= tp_degree;
     }
     if ( SparkLagunaStagePackTpShardsRows(tensor_kind) != 0u )
     {
