@@ -1460,10 +1460,11 @@ CEILING = 233150
 # hy4 lane M1 (contract freeze) rebased onto this lineage: the family's
 # authoritative JSON, generator, generated header, host test and
 # references are MAIN-side since the #810 harvest; this rebase re-adds
-# only the Makefile PYTHON_TESTS registration (2 lines). Ratchet rule:
+# only the Makefile PYTHON_TESTS registration (1 line). Ratchet rule:
 # re-pin from MEASURED reality on the rebased tree, never carry either
-# side's number.
-CEILING = 233152
+# side's number. +1 exact (the ledger file itself is the ratchet and
+# does not double-count, per the prior conflict resolutions above).
+CEILING = 233151
 
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
