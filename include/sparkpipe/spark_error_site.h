@@ -11,7 +11,8 @@ typedef struct SparkErrorSiteRecord
 	uint32_t line;
 } SparkErrorSiteRecord;
 
-extern _Thread_local SparkErrorSiteRecord spark_last_error_site;
+static _Thread_local __attribute__((unused)) SparkErrorSiteRecord
+    spark_last_error_site = {0,0,0};
 
 #define SPARK_ERR_REPORT(code_value) \
 	((void)fprintf(stderr,"ERRSITE %s:%d status=%d\n", \
