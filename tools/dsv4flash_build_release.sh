@@ -25,8 +25,9 @@ rm -f "$output/ARTIFACT_SHA256SUMS" "$output/SOURCE_COMMIT"
 echo "queue=$SPARK_QUEUE_ID source=$(git rev-parse HEAD) contract=$contract_sha"
 make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd \
     build/sparkpipe_model_api hidden_transport_spark_host_rdma_verbs \
+    build/libdsv4_tp16_serving_adapter.so \
     NVCC=/usr/local/cuda/bin/nvcc
-make -j4 -C modules/dsv4_resident_decode_stage publish adapter \
+make -j4 -C modules/dsv4_resident_decode_stage publish \
     STAGE_PACK_PATH="${DSV4_VALIDATION_PACK:?set DSV4_VALIDATION_PACK to a readable validation pack}" \
     STAGE_COUNT="${DSV4_PUBLISH_STAGE_COUNT:-16}" \
     STAGE_INDEX="${DSV4_PUBLISH_STAGE_INDEX:-0}" \
