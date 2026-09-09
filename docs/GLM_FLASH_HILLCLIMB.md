@@ -423,6 +423,23 @@ or unrecoverable failure. HTTP completion latency includes prefill and is not
 a decode-throughput metric. The 0f2b0a3 outputs remain incoherent, so matching
 tokens between runs establish consistency only, not numerical correctness.
 
+Merged `f1f7825` was rebuilt on all 16 Sparks (queue attempt
+`1f5a1455a3d544da93a67ede58b44d8e`, all exits zero and reservations released).
+The versioned resident/API services then passed B1, three concurrent requests,
+and B1 again: five requests, 64 matching tokens each, one unchanged API process,
+and all ranks still active afterward. HTTP elapsed times were 8.98 seconds,
+approximately 12.71 seconds for each concurrent request, and 8.76 seconds.
+These include prefill and are not decode throughput. Output remains incoherent.
+Receipts: `/private/tmp/ds4_glm_persistent_f1f7825/` on the controller.
+Persistent services still need integration with queue memory accounting.
+
+The API queue-lifetime test previously searched source strings and compiled a
+binary without running its claimed queue scenario. Its replacement executes
+the real HTTP connection/enqueue/completion path over socket pairs, supplies
+controlled completion events, finishes B before A, enqueues C, and verifies
+the A/C replies and empty queue. It does not run an inference engine. A separate
+negative control removed tail recovery and was rejected by the test deadline.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed
