@@ -2,6 +2,7 @@
 import http.server
 import json
 import os
+import re
 import socketserver
 import threading
 import time
@@ -11,6 +12,13 @@ CURRENT = os.environ.get("FLEET_VIEW_DIR", os.path.expanduser("~/current"))
 PORT = int(os.environ.get("FLEET_VIEW_PORT", "8801"))
 AGG_EVERY = 2.0
 STATE = {"agg": {}, "stamp": 0.0, "lock": threading.Lock()}
+HOST_RE = re.compile(r"^spark[a-z0-9]{1,4}$")
+
+
+def host_file(host):
+    if not HOST_RE.fullmatch(host or ""):
+        return None
+    return CURRENT + os.sep + host + ".json"
 
 
 def aggregate():
