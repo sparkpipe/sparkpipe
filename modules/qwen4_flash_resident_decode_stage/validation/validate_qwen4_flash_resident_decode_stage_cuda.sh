@@ -21,6 +21,7 @@ validation_include_dirs() {
 
 validation_nvcc_extra_args() {
     printf '%s\n' "-DSPARK_QWEN4_FLASH_STAGE_MAX_ACTIVE_SEQUENCES=${SPARK_QWEN4_FLASH_STAGE_MAX_ACTIVE_SEQUENCES:-8}"
+    printf '%s\n' "-DSPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT=${SPARK_QWEN4_FLASH_STAGE_MTP:-0}u"
 }
 
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
