@@ -221,20 +221,6 @@ static float SparkLingValE2m1Decode(uint8_t nibble)
 	return((nibble & 8u) != 0u ? -magnitude : magnitude);
 }
 
-static int32_t SparkLingValCodeMinimum(uint32_t codec)
-{
-	return(codec == SPARK_LING_VAL_CODEC_INT6 ? -31 :
-		codec == SPARK_LING_VAL_CODEC_INT7 ? -63 :
-		codec == SPARK_LING_VAL_CODEC_INT8 ? -127 : 0);
-}
-
-static int32_t SparkLingValCodeMaximum(uint32_t codec)
-{
-	return(codec == SPARK_LING_VAL_CODEC_INT6 ? 31 :
-		codec == SPARK_LING_VAL_CODEC_INT7 ? 63 :
-		codec == SPARK_LING_VAL_CODEC_INT8 ? 127 : 255);
-}
-
 static uint64_t SparkLingValScaleGroupsPerRow(uint32_t codec,uint32_t columns)
 {
 	uint32_t group = SparkLingValCodecScaleGroup(codec);
@@ -899,13 +885,6 @@ static int SparkLingValAllocMatrix(SparkLingValMatrix *matrix,uint32_t rows,uint
 	return(0);
 }
 
-static void SparkLingValFreeMatrix(SparkLingValMatrix *matrix)
-{
-	free(matrix->host);
-	cudaFree(matrix->device);
-	memset(matrix,0,sizeof(*matrix));
-}
-
 static void *SparkLingValAllocZeroed(uint64_t bytes)
 {
 	void *pointer;
@@ -1133,7 +1112,7 @@ static int SparkLingValOracleSelftest(void)
 
 typedef struct SparkLingValFixture
 {
-	SparkLingLayerWeights layer_weights[1];
+	SparkLingLayerWeights layer_weights[2];
 	SparkLingExecutionSlot slot;
 	SparkLingCudaWave wave;
 	cudaStream_t stream;
