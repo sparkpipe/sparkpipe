@@ -2056,7 +2056,7 @@ static int32_t Glm5NextLayerDenseMlp(
     }
 
     LM_LAUNCH(
-        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -2064,7 +2064,7 @@ static int32_t Glm5NextLayerDenseMlp(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->dense_intermediate,
-        false);
+        SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
 
     return Glm5NextLaunchBf16Linear(
         buffers->intermediate_bf16,
@@ -2265,7 +2265,7 @@ static int32_t Glm5NextLayerMoeExperts(
     }
 
     LM_LAUNCH(
-        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>),
         packed_rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -2273,7 +2273,7 @@ static int32_t Glm5NextLayerMoeExperts(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->expert_intermediate,
-        false);
+        SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
 
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
@@ -2342,7 +2342,7 @@ static int32_t Glm5NextLayerMoeExperts(
         return status;
     }
     LM_LAUNCH(
-        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -2350,7 +2350,7 @@ static int32_t Glm5NextLayerMoeExperts(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->shared_intermediate,
-        false);
+        SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
     status = Glm5NextLaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,
