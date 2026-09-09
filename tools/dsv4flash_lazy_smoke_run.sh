@@ -9,9 +9,10 @@ export PATH="/usr/local/cuda/bin:$PATH"
 
 echo "== build sparkpipe_weightd + weightd_smoke"
 make -j4 build/sparkpipe_weightd NVCC=/usr/local/cuda/bin/nvcc
-cc -O2 -Wall -Wextra -Werror -I. -Iinclude \
+cc -O2 -Wall -Wextra -Werror -I. -Iinclude -I/usr/local/cuda/include \
     tools/weightd_smoke.c build/libsparkpipe_runtime.a \
-    build/libsparkpipe_core.a -pthread -o build/weightd_smoke
+    build/libsparkpipe_core.a -L/usr/local/cuda/lib64 -lcudart -lcuda \
+    -pthread -o build/weightd_smoke
 
 SOCKET=/tmp/dsv4flash_lane_weightd.sock
 rm -f "$SOCKET"
