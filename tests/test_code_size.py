@@ -1457,12 +1457,12 @@ CEILING = 237507
 # PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
 # Re-pinned from measured reality per the ratchet rule.
 CEILING = 233150
-# dsv4flash v2 lane (2026-09-09, re-measured on main@7b02473 = 240456):
-# this lane's delta is +506 (the dsv4 .experts family manifest producer,
+# dsv4flash v2 lane (2026-09-09, re-measured on main@8f3a6f2 = 240502):
+# this lane's delta is +497 (the dsv4 .experts family manifest producer,
 # the manifest selftest, the queue-run release script, the validator TP
-# envs). Measured exact at this tip: 240962. The stale pins above are
+# envs). Measured exact at this tip: 240999. The stale pins above are
 # superseded; lanes owning the intermediate drift re-pin their own deltas.
-CEILING = 240962
+CEILING = 240999
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
