@@ -7,7 +7,7 @@ import threading
 import time
 import urllib.parse
 
-CURRENT = os.path.expanduser("~/current")
+CURRENT = os.environ.get("FLEET_VIEW_DIR", os.path.expanduser("~/current"))
 PORT = int(os.environ.get("FLEET_VIEW_PORT", "8801"))
 AGG_EVERY = 2.0
 STATE = {"agg": {}, "stamp": 0.0, "lock": threading.Lock()}
