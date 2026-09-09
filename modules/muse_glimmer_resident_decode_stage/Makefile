@@ -1,6 +1,6 @@
-MODULE_FAMILY := qwen38
-MODULE_IDENTIFIER := spark.qwen38.resident_decode_stage.fp8.h8192.l92.gdn69.e512k10.v1
-MODULE_TARGET := cuda.sm121.qwen38.resident_decode_stage.fp8
+MODULE_FAMILY := muse
+MODULE_IDENTIFIER := spark.muse.resident_decode_stage.bf16.h6656.l52.a52.v1
+MODULE_TARGET := cuda.sm121.muse.resident_decode_stage.bf16
 MODEL_HEADER := ../../model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h
 MODULE_ENTRY_PREFIX := SparkMuseGlimmerResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_muse_glimmer_resident_decode_stage_module.c
@@ -14,10 +14,10 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c
-# Adapter provenance pins: the vendor FP8 checkpoint revision and the exact
+# Provenance pins: the pinned HF modeling-source revision and the exact
 # package contract, checked at adapter compile time.
-MUSE_MODEL_REVISION := d2dc35658bcf77e66643428cb52e774cc3b5bd29
-MUSE_CONTRACT_SHA256 := $(shell sha256sum $(REPOSITORY_ROOT)/model_contracts/qwen38_authoritative.json | awk '{print $$1}')
+MUSE_MODEL_REVISION := 4177486a9f199bd7be520eff14431071d5d41ec5
+MUSE_CONTRACT_SHA256 := $(shell sha256sum $(REPOSITORY_ROOT)/model_contracts/muse_glimmer_authoritative.json | awk '{print $$1}')
 MODULE_COMPILE_FLAGS := \
 	-DSPARK_MUSE_GLIMMER_MODULE_BUILD=1 \
 	-DMUSE_MODEL_REVISION=\"$(MUSE_MODEL_REVISION)\" \
@@ -31,16 +31,14 @@ MODULE_INCLUDE_FLAGS = \
 	-I"$(REPOSITORY_ROOT)/modules/muse_glimmer_resident_decode_stage/source" \
 	-I"$(REPOSITORY_ROOT)"
 
-STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/muse_stage.qwen38sp
-STAGE_COUNT ?= 16
+STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/muse_stage.gsmu
+STAGE_COUNT ?= 1
 STAGE_INDEX ?= 0
 STAGE_FIRST_LAYER ?= 0
-STAGE_LAYER_COUNT ?= 23
+STAGE_LAYER_COUNT ?= 52
 MAX_ACTIVE_SEQUENCES ?= 32
 PIPELINE_SLOT_COUNT ?= 2
 KV_BLOCK_COUNT ?= 4096
-MTP_LAYER_COUNT ?= 0
-GDN_SNAPSHOT_SLOT_COUNT ?= 0
 KV_PROVIDER ?= none
 KV_SERVICE_ADDRESS ?= none
 KV_SOCKET_PATH ?= none
@@ -62,8 +60,6 @@ RUNTIME_CONFIGURATION := \
 	SPARK_MUSE_GLIMMER_STAGE_KV_SERVICE=$(KV_SERVICE_ADDRESS) \
 	SPARK_MUSE_GLIMMER_STAGE_KV_SOCKET=$(KV_SOCKET_PATH) \
 	SPARK_MUSE_GLIMMER_STAGE_KV_POOL_BYTES=$(KV_POOL_BYTES) \
-	SPARK_MUSE_GLIMMER_STAGE_KV_WORKERS=$(KV_WORKER_COUNT) \
-	SPARK_MUSE_GLIMMER_STAGE_MTP=$(MTP_LAYER_COUNT) \
-	SPARK_MUSE_GLIMMER_STAGE_GDN_SNAPSHOT_SLOTS=$(GDN_SNAPSHOT_SLOT_COUNT)
+	SPARK_MUSE_GLIMMER_STAGE_KV_WORKERS=$(KV_WORKER_COUNT)
 
 include $(REPOSITORY_ROOT)/modules/resident_decode_stage_rules.mk

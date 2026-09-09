@@ -25,17 +25,17 @@
 #endif
 
 #define SPARK_MUSE_GLIMMER_SERVING_ADAPTER_ID \
-	"spark.qwen38.serving-adapter.tp4-pp4.v1"
-#define SPARK_MUSE_GLIMMER_SERVING_MODEL_ID "Qwen/Qwen3.8-2.4T-A95B"
+	"spark.muse.serving-adapter.tp16.v1"
+#define SPARK_MUSE_GLIMMER_SERVING_MODEL_ID "meta-models/Muse-Glimmer-30B"
 #define SPARK_MUSE_GLIMMER_SERVING_DRIVER_MODEL_ID \
-	"qwen38.2.4t-a95b.resident-decode-stage-firmware"
-#define SPARK_MUSE_GLIMMER_SERVING_STAGE_NAME "qwen38_resident_decode_stage"
+	"muse_glimmer.30b.resident-decode-stage-firmware"
+#define SPARK_MUSE_GLIMMER_SERVING_STAGE_NAME "muse_glimmer_resident_decode_stage"
 #define SPARK_MUSE_GLIMMER_SERVING_TARGET \
-	"cuda.sm121.qwen38.resident_decode_stage.fp8"
+	"cuda.sm121.muse_glimmer.resident_decode_stage.bf16"
 #define SPARK_MUSE_GLIMMER_SERVING_PROGRAM_NAME "resident_decode"
-#define SPARK_MUSE_GLIMMER_SERVING_STAGE_COUNT 16u
-#define SPARK_MUSE_GLIMMER_SERVING_DEFAULT_TP_DEGREE 4u
-#define SPARK_MUSE_GLIMMER_SERVING_MAX_PP_STAGE_COUNT 4u
+#define SPARK_MUSE_GLIMMER_SERVING_STAGE_COUNT 1u
+#define SPARK_MUSE_GLIMMER_SERVING_DEFAULT_TP_DEGREE 16u
+#define SPARK_MUSE_GLIMMER_SERVING_MAX_PP_STAGE_COUNT 1u
 #define SPARK_MUSE_GLIMMER_SERVING_MAX_SEQUENCE_POSITIONS_CAP \
 	SPARK_MUSE_GLIMMER_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_MUSE_GLIMMER_SERVING_REQUIRED_PROGRAM_FLAGS \
@@ -160,7 +160,7 @@ static SparkStatus SparkMuseGlimmerMtpCapabilityQuery(
 	{
 		if ( refusal_buffer != 0 && refusal_buffer_bytes != 0u )
 			(void)snprintf(refusal_buffer, refusal_buffer_bytes,
-				"qwen38 max mtp provider requires the max target geometry "
+				"muse speculation provider requires the muse geometry "
 				"(hidden %u, %u layers), got hidden %u layers %u",
 				SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,
 				SPARK_MUSE_GLIMMER_MODEL_LAYER_COUNT,
@@ -240,7 +240,7 @@ static const SparkSpeculationProviderDescriptor SparkMuseGlimmerMtpProviderDescr
 	.abi_version = SPARK_SPECULATION_PROVIDER_ABI_VERSION,
 	.descriptor_bytes = SPARK_SPECULATION_PROVIDER_DESCRIPTOR_BYTES,
 	.kind = SPARK_SPECULATION_PROVIDER_MTP,
-	.provider_id = "qwen38max.mtp-head.v1",
+	.provider_id = "muse.greedy.v0",
 	.max_draft_token_count = SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT,
 	.default_draft_token_count = SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT,
 	.environment_schema = SparkMuseGlimmerMtpEnvironmentSchema,
@@ -276,7 +276,7 @@ static void SparkMuseGlimmerServingWriteSeamModelContract(
 		SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	model_contract->hidden_dimension = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION;
 	model_contract->intermediate_dimension =
-		SPARK_MUSE_GLIMMER_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
+		SPARK_MUSE_GLIMMER_MODEL_INTERMEDIATE_DIMENSION;
 	model_contract->attention_head_count =
 		SPARK_MUSE_GLIMMER_MODEL_ATTENTION_HEAD_COUNT;
 	model_contract->kv_head_count = SPARK_MUSE_GLIMMER_MODEL_KV_HEAD_COUNT;
@@ -358,7 +358,7 @@ static const SparkModelServingAdapterDescriptor SparkMuseGlimmerServingDescripto
 	.boundary_element_count = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,
 	.boundary_element_bytes = SPARK_MUSE_GLIMMER_MODEL_BF16_ELEMENT_BYTES,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 1u,
 	.max_active_sequence_count = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
@@ -370,4 +370,5 @@ static const SparkModelServingAdapterDescriptor SparkMuseGlimmerServingDescripto
 	.minimum_efficient_submission_row_count = 0u
 };
 
+#define SPARK_MUSE_GLIMMER_MODEL_LAYER_IS_GDN(layer) 0
 #include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"
