@@ -18,6 +18,12 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_qwen38_max_work_control.h"
 #include "spark_qwen38_max_stagepack_format.h"
+#include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd_lazy_pack.h"
+#include "sparkpipe/spark_weightd_map.h"
+#include "sparkpipe/spark_weightd_lease.h"
+
+#include <sys/stat.h>
 
 #define SPARK_QWEN38_MAX_MODULE_TAG "qwen38_stage"
 
@@ -330,9 +336,6 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 #define SPARK_PACK_LOAD_REGION_HOOK SparkQwen38MaxModuleRegionHook
 
 #include "sparkpipe/spark_pack_load_common.h"
-#include "sparkpipe/spark_weightd_lazy_pack.h"
-#include "sparkpipe/spark_weightd_map.h"
-#include "sparkpipe/spark_weightd_lease.h"
 
 static SparkStatus SparkQwen38MaxModuleValidateEntry(SparkQwen38MaxModuleState *state, const SparkQwen38MaxStagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)
 {
@@ -411,8 +414,9 @@ static int SparkQwen38MaxModuleRegionHook(
  * the manifest must match the family geometry. Attach-not-requested keeps
  * the eager path (a different deployment mode, not a fallback). */
 static SparkStatus SparkQwen38MaxModuleLazyOpen(SparkQwen38MaxModuleState *state,
-	const char *pack_path,uint64_t pack_bytes)
+	const char *pack_path)
 {
+	struct stat pack_info;
 	SparkWeightdLazyAttachRequest request;
 	const char *digest;
 	uint64_t spine_budget;
@@ -437,7 +441,9 @@ static SparkStatus SparkQwen38MaxModuleLazyOpen(SparkQwen38MaxModuleState *state
 	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_QWEN38_MAX_MODULE_TAG);
 	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",QWEN38_MODEL_REVISION);
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-	request.identity.arena_bytes = pack_bytes;
+	if ( stat(pack_path,&pack_info) != 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	request.identity.arena_bytes = (uint64_t)pack_info.st_size;
 	request.identity.topology = state->tp_degree;
 	status = SparkStageModuleEnvironmentUnsigned64(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
 	if ( status != SPARK_STATUS_OK )
@@ -1208,7 +1214,7 @@ static SparkStatus SparkQwen38MaxModulePrepare(
 	{
 		SparkQwen38MaxModuleBuildOrdinals(state);
 		status = SparkQwen38MaxModuleLazyOpen(state,pack_path);
-		if ( status == SPARK_STATUS_OK && state->lazy_pack == 0u )
+		if ( status == SPARK_STATUS_OK && state->lazy_pack != 0 )
 			status = SparkQwen38MaxModuleLoadPack(state,pack_path);
 	}
 	if ( status == SPARK_STATUS_OK )
@@ -1449,15 +1455,15 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 		 * packed-row partition; its host mirror names the routed experts. */
 		uint32_t host_offsets[SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT + 1u];
 		SparkWeightdExpertKey keys[SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT];
-		uint32_t key_count = 0u,layer = layer_ordinal_arg;
+		uint32_t key_count = 0u;
 		SparkWeightdMap *map = state->lazy_pack->map;
 		void *address = 0;
 		if ( cudaMemcpy(host_offsets,slot->moe_group_offset_u32,(SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess )
 			error = cudaErrorInvalidValue;
 		if ( error == cudaSuccess )
-			error = SparkWeightdRouteKeys(layer_ordinal_arg,host_offsets,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,keys,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,&key_count);
-		if ( error == cudaSuccess )
-			error = SparkWeightdMapAcquire(map,keys,key_count,&state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+			error = SparkWeightdRouteKeys(layer_ordinal_arg,host_offsets,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,keys,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,&key_count) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+		if ( error == cudaSuccess && SparkWeightdMapAcquire(map,keys,key_count,&state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) != SPARK_STATUS_OK )
+			error = cudaErrorInvalidValue;
 		if ( error == cudaSuccess )
 		{
 			state->lazy_lease_active = 1u;
