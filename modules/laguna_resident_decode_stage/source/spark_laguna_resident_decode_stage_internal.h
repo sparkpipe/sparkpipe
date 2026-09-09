@@ -139,6 +139,7 @@ cudaError_t SparkLagunaLaunchDirectSum(cudaStream_t stream,void *destination,con
 cudaError_t SparkLagunaLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
 cudaError_t SparkLagunaLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 int32_t SparkLagunaConfigureCudaModule(uint32_t *multiprocessor_count);
+SparkStatus SparkLagunaStageYarnTableUpload(float *device_inv_freq,void *stream);
 
 #ifdef __cplusplus
 }

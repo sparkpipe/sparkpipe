@@ -8,6 +8,7 @@
 #include "spark_laguna_resident_decode_stage_internal.h"
 #include "inference/kernels/tp_reduce.cuh"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_status.h"
 
 #define SPARK_LAGUNA_CUDA_THREADS 256u
 
@@ -601,4 +602,21 @@ extern "C" int32_t SparkLagunaConfigureCudaModule(uint32_t *multiprocessor_count
 		return(LM_LAUNCH_ERR_LAUNCH);
 	*multiprocessor_count = (uint32_t)properties.multiProcessorCount;
 	return(LM_LAUNCH_OK);
+}
+
+extern "C" SparkStatus SparkLagunaStageYarnTableUpload(float *device_inv_freq,void *stream)
+{
+	float host_inv_freq[SPARK_LAGUNA_MODEL_ROPE_FULL_ROTARY_DIMENSION / 2u];
+	if ( device_inv_freq == 0 || stream == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	LagunaBuildYarnInvFrequency(host_inv_freq,
+		SPARK_LAGUNA_MODEL_ROPE_FULL_ROTARY_DIMENSION,
+		SPARK_LAGUNA_MODEL_ROPE_FULL_THETA,
+		SPARK_LAGUNA_MODEL_ROPE_FULL_FACTOR,
+		SPARK_LAGUNA_MODEL_ROPE_FULL_ORIGINAL_POSITIONS,
+		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_FAST,
+		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_SLOW);
+	if ( cudaMemcpy(device_inv_freq,host_inv_freq,sizeof(host_inv_freq),cudaMemcpyHostToDevice) != cudaSuccess )
+		return SPARK_STATUS_DRIVER_LOAD_ERROR;
+	return SPARK_STATUS_OK;
 }

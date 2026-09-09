@@ -13,15 +13,6 @@
 
 #include "sparkpipe/spark_laguna_resident_decode_stage_firmware.h"
 
-#define SPARK_LAGUNA_PROBE_CONNECT_TIMEOUT_SCALE 4u
-#define SPARK_LAGUNA_PROBE_OPERATION_TIMEOUT_SCALE 8u
-static int SparkLagunaProbeEnabled(void)
-{
-	static int probe_enabled = -1;
-	if ( probe_enabled < 0 )
-		probe_enabled = getenv("SPARK_LAGUNA_PROBE") != 0 ? 1 : 0;
-	return(probe_enabled);
-}
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_kv_model_table.h"
@@ -31,8 +22,6 @@ static int SparkLagunaProbeEnabled(void)
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_weightd_lease.h"
-#include "sparkpipe/spark_head_screen.h"
-#include "sparkpipe/spark_speculation_policy.h"
 #include "spark_laguna_resident_decode_stage_internal.h"
 #include "spark_laguna_stagepack_format.h"
 
@@ -48,6 +37,10 @@ static int SparkLagunaProbeEnabled(void)
 #define SPARK_LAGUNA_HEAD_TILE 1024u
 #define SPARK_LAGUNA_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_LAGUNA_KV_ACCESS_ERROR_WORD_COUNT 6u
+#define LAGUNA_HEAD_TILE_COUNT 1024u
+#define LAGUNA_MAX_QKV_ROWS \
+	(SPARK_LAGUNA_MODEL_TP8_Q_HEAD_COUNT_SLIDING * SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION + \
+	 2u * SPARK_LAGUNA_MODEL_TP8_KV_HEAD_COUNT * SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION)
 
 _Static_assert(SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT <= SPARK_WEIGHTD_WORK_QUEUE_CAPACITY,"completion worker must hold one job per occupied slot");
 
@@ -80,8 +73,6 @@ typedef struct SparkLagunaAsyncCompletion
 	uint64_t lane_next_positions[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t *output_token_destination;
 	uint32_t burst_token_count;
-	uint64_t mtp_cache_extra;
-	uint32_t mtp_draft_tokens[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
 	SparkModelDriverCompletion completion;
 } SparkLagunaAsyncCompletion;
 
@@ -106,58 +97,27 @@ struct SparkLagunaModuleState
 	uint32_t decode_split_context_threshold;
 	uint32_t pages_per_sequence;
 	uint32_t page_count;
-	uint32_t index_layer_count;
 	uint32_t multiprocessor_count;
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
 	void *execution_stream;
+	const float *yarn_inv_freq;
 	char model_revision[SPARK_LAGUNA_STAGEPACK_MODEL_REVISION_BYTES];
 	SparkLagunaLayerWeights layers[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
-	uint32_t index_ordinal_by_local_layer[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
-	uint32_t kv_ordinal_by_local_layer[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
-	uint32_t kda_ordinal_by_local_layer[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
-	uint32_t kv_layer_count;
-	uint32_t kda_layer_count;
-	uint8_t *kda_state_pools;
-	uint64_t kda_state_layer_stride_bytes;
-	uint8_t *kda_window_pools;
-	uint8_t *kda_q_window_pool;
-	uint8_t *kda_k_window_pool;
-	uint8_t *kda_v_window_pool;
-	uint64_t kda_window_layer_stride_bytes;
-	uint32_t *kda_state_index_device;
-	uint32_t *kda_state_index_host;
 	uint64_t layer_seen[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint64_t global_seen;
-	uint64_t mtp_seen;
-	uint32_t pack_has_mtp;
-	SparkLagunaLayerWeights mtp_layer;
-	const void *mtp_eh_proj_bf16;
-	const void *mtp_enorm_bf16;
-	const void *mtp_hnorm_bf16;
-	const void *mtp_shared_norm_bf16;
-	uint32_t mtp_enabled;
-	uint16_t *mtp_lane_hidden_bf16;
-	uint8_t *mtp_lane_armed;
-	uint64_t kda_replay_layer_bytes;
+	uint32_t dflash_sections;
+	uint64_t dflash_bytes;
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
-	uint8_t *head_certified_fp8_payload;
-	float *head_certified_fp8_scale_f32;
-	float *head_certified_fp8_norm_f32;
 	uint8_t *kv_cache;
 	uint64_t kv_layer_stride_bytes;
-	uint8_t *index_cache;
-	uint64_t index_layer_stride_bytes;
 	uint32_t *page_table;
 	uint32_t *page_table_shadow;
 	SparkKvCacheArena kv_arena;
 	SparkKvPageCache kv_page_cache;
 	SparkKvPageStore kv_page_store;
-	SparkKvPageStore recurrent_store;
-	uint8_t *recurrent_staging;
-	uint64_t recurrent_page_bytes;
 	SparkKvCacheBlock *kv_blocks;
 	uint32_t *kv_resident_slot_logical_block_indices;
 	SparkKvPageCacheEntry *kv_entries;
@@ -189,8 +149,6 @@ struct SparkLagunaModuleState
 	atomic_ullong failed_count;
 	atomic_ullong host_callback_completion_count;
 	SparkTpDeviceCollective tp_device_collective;
-	SparkTpDeviceCollective tp_device_collective_hc;
-	uint32_t tp_device_collective_hc_initialized;
 	uint32_t tp_device_collective_initialized;
 	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
 	uint32_t tp_credit_binding_count;
@@ -198,14 +156,7 @@ struct SparkLagunaModuleState
 	void *tp_credit_receive_bf16;
 	void *tp_host_credit_send_bf16;
 	void *tp_host_credit_receive_bf16;
-	SparkTpDeviceCollectiveCreditBinding tp_hc_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
-	uint32_t tp_hc_credit_binding_count;
-	void *tp_hc_credit_send_bf16;
-	void *tp_hc_credit_receive_bf16;
-	void *tp_hc_host_credit_send_bf16;
-	void *tp_hc_host_credit_receive_bf16;
 	atomic_ullong nccl_next_ordinal;
-	atomic_ullong nccl_next_ordinal_hc;
 };
 
 
@@ -223,11 +174,9 @@ static SparkStatus SparkLagunaModuleConfigure(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( SparkLagunaResidentDecodeStageSpanIsValid(context->stage_count,context->stage_index,context->first_layer_index,context->layer_count) == 0u || context->layer_count > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != LAGUNA_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_LAGUNA_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || context->decode_split_context_threshold > context->max_sequence_positions || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || (context->flags & ~SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS) != 0u || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
+	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
-	if ( (context->flags & SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP) != 0u && (context->stage_index + 1u) != context->stage_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( context->tp_degree != 1u && (SPARK_LAGUNA_MODEL_HEAD_COUNT % context->tp_degree != 0u || SPARK_LAGUNA_MODEL_OUTPUT_VOCAB_COUNT % context->tp_degree != 0u || SPARK_LAGUNA_MODEL_DENSE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u || SPARK_LAGUNA_MODEL_MOE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u) )
+	if ( context->tp_degree != SPARK_LAGUNA_MODEL_TENSOR_PARALLEL_DEGREE || context->tp_degree == 0u || SPARK_LAGUNA_MODEL_OUTPUT_VOCAB_COUNT % context->tp_degree != 0u || SPARK_LAGUNA_MODEL_DENSE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u || SPARK_LAGUNA_MODEL_MOE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -248,7 +197,6 @@ static SparkStatus SparkLagunaModuleConfigure(
 	state->execution_row_capacity = context->execution_row_capacity;
 	state->owns_embedding = context->stage_index == 0u ? 1u : 0u;
 	state->owns_final_head = context->stage_index + 1u == context->stage_count ? 1u : 0u;
-	state->mtp_enabled = (context->flags & SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP) != 0u ? 1u : 0u;
 	state->execution_stream = host_services->execution_stream;
 	(void)snprintf(state->model_revision,sizeof(state->model_revision),"%s",context->model_revision);
 	*pack_path = context->stage_pack_path;
@@ -300,30 +248,32 @@ static SparkStatus SparkLagunaPackValidateHeader(
 }
 
 static SparkStatus SparkLagunaPackValidateEntryGeometry(
-	const SparkLagunaModuleState *state,
+	SparkLagunaModuleState *state,
 	const SparkLagunaStagePackHeader *header,
 	const SparkLagunaStagePackEntry *entry,
 	SparkLagunaStagePackTensorShape *shape)
 {
 	uint64_t payload_bytes,scale_bytes,directory_end;
 	uint32_t local_layer;
+	if ( entry->tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT )
+	{
+		if ( (header->flags & SPARK_LAGUNA_STAGEPACK_FLAG_DFLASH) == 0u || entry->layer_index >= SPARK_LAGUNA_MODEL_LAYER_COUNT )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		if ( entry->payload_offset % SPARK_LAGUNA_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->payload_offset > header->file_bytes || entry->payload_bytes > header->file_bytes - entry->payload_offset )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		state->dflash_sections += 1u;
+		state->dflash_bytes += entry->payload_bytes + entry->scale_bytes;
+		return(SPARK_STATUS_OK);
+	}
 	if ( SparkLagunaStagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,shape) < 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	if ( entry->layer_index != SPARK_LAGUNA_STAGEPACK_GLOBAL_LAYER )
 	{
-		if ( entry->layer_index == SPARK_LAGUNA_MODEL_MTP_LAYER_INDEX )
-		{
-			if ( (state->mtp_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
-				return(SPARK_STATUS_DUPLICATE);
-		}
-		else
-		{
-			if ( entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count )
-				return(SPARK_STATUS_SCHEMA_ERROR);
-			local_layer = entry->layer_index - state->first_layer_index;
-			if ( (state->layer_seen[local_layer] & (UINT64_C(1) << entry->tensor_kind)) != 0u )
-				return(SPARK_STATUS_DUPLICATE);
-		}
+		if ( entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		local_layer = entry->layer_index - state->first_layer_index;
+		if ( (state->layer_seen[local_layer] & (UINT64_C(1) << entry->tensor_kind)) != 0u )
+			return(SPARK_STATUS_DUPLICATE);
 	}
 	else if ( (state->global_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
 		return(SPARK_STATUS_DUPLICATE);
@@ -385,8 +335,6 @@ static void SparkLagunaPackMarkSeen(
 {
 	if ( entry->layer_index == SPARK_LAGUNA_STAGEPACK_GLOBAL_LAYER )
 		state->global_seen |= UINT64_C(1) << entry->tensor_kind;
-	else if ( entry->layer_index == SPARK_LAGUNA_MODEL_MTP_LAYER_INDEX )
-		state->mtp_seen |= UINT64_C(1) << entry->tensor_kind;
 	else
 		state->layer_seen[entry->layer_index - state->first_layer_index] |= UINT64_C(1) << entry->tensor_kind;
 }
@@ -400,52 +348,21 @@ static SparkStatus SparkLagunaPackAssignLayer(
 {
 	switch ( entry->tensor_kind )
 	{
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_NORM: weights->attn_norm_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_Q_A: weights->q_a_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_Q_A_NORM: weights->q_a_norm_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_Q_B: weights->q_b_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KV_A: weights->kv_a_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KV_A_NORM: weights->kv_a_norm_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KV_B_KEY_TRANSPOSED: weights->kv_b_key_transposed_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KV_B_VALUE: weights->kv_b_value_bf16 = payload; break;
+	case SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_INPUT_NORM: weights->attn_norm_bf16 = payload; break;
+	case SPARK_LAGUNA_STAGEPACK_TENSOR_FUSED_QKV: weights->fused_qkv_bf16 = payload; break;
+	case SPARK_LAGUNA_STAGEPACK_TENSOR_Q_NORM: weights->q_norm_bf16 = payload; break;
+	case SPARK_LAGUNA_STAGEPACK_TENSOR_K_NORM: weights->k_norm_bf16 = payload; break;
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_OUTPUT: weights->attn_output_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_POST_ATTN_NORM: weights->post_attn_norm_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_INDEX_Q: weights->index_q_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_INDEX_K: weights->index_k_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_INDEX_HEAD: weights->index_head_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_INDEX_NORM_WEIGHT: weights->index_norm_weight_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_INDEX_NORM_BIAS: weights->index_norm_bias_bf16 = payload; break;
+	case SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_GATE: weights->attn_gate_bf16 = payload; break;
+	case SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_POST_NORM: weights->post_attn_norm_bf16 = payload; break;
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_DENSE_GATE_UP: weights->dense_gate_up_bf16 = payload; break;
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_DENSE_DOWN: weights->dense_down_bf16 = payload; break;
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_ROUTER: weights->router_bf16 = payload; break;
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_ROUTER_CORRECTION: weights->router_correction_f32 = (const float *)payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; weights->expert_up_gate_payload_offset = entry->payload_offset; weights->expert_up_gate_scale_offset = entry->scale_offset; break;
+	case SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP: weights->expert_gate_up_payload = payload; weights->expert_gate_up_scale = scale; weights->expert_gate_up_payload_offset = entry->payload_offset; weights->expert_gate_up_scale_offset = entry->scale_offset; break;
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; weights->expert_down_payload_offset = entry->payload_offset; weights->expert_down_scale_offset = entry->scale_offset; break;
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_SHARED_GATE_UP: weights->shared_gate_up_bf16 = payload; break;
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_SHARED_DOWN: weights->shared_down_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_QKV_BETA: weights->kda_qkv_beta_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_DECAY_GATE_DOWN: weights->kda_decay_gate_down_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_DECAY_UP: weights->kda_decay_up_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_GATE_UP: weights->kda_gate_up_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_Q_CONV: weights->kda_q_conv_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_K_CONV: weights->kda_k_conv_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_V_CONV: weights->kda_v_conv_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_DECAY_BIAS: weights->kda_decay_bias_f32 = (const float *)payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE: weights->kda_head_log_scale_f32 = (const float *)payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_OUT_NORM: weights->kda_out_norm_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_KDA_OUT: weights->kda_out_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_HC_ATTN_FN: weights->hc_attn_fn_f32 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_HC_ATTN_BASE: weights->hc_attn_base_f32 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_HC_ATTN_SCALE: weights->hc_attn_scale_f32 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_HC_FFN_FN: weights->hc_ffn_fn_f32 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_HC_FFN_BASE: weights->hc_ffn_base_f32 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_HC_FFN_SCALE: weights->hc_ffn_scale_f32 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_INDEX_COMPRESS_APE: weights->index_compress_ape_f32 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_INDEX_COMPRESS_GATE: weights->index_compress_gate_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_MTP_EH_PROJ: state->mtp_eh_proj_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_MTP_ENORM: state->mtp_enorm_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_MTP_HNORM: state->mtp_hnorm_bf16 = payload; break;
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_MTP_SHARED_NORM: state->mtp_shared_norm_bf16 = payload; break;
 	default: return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return(SPARK_STATUS_OK);
@@ -457,8 +374,6 @@ static SparkStatus SparkLagunaPackAssign(
 	const void *payload,
 	const void *scale)
 {
-	if ( entry->layer_index == SPARK_LAGUNA_MODEL_MTP_LAYER_INDEX )
-		return(SparkLagunaPackAssignLayer(state,&state->mtp_layer,entry,payload,scale));
 	if ( entry->layer_index != SPARK_LAGUNA_STAGEPACK_GLOBAL_LAYER )
 		return(SparkLagunaPackAssignLayer(state,&state->layers[entry->layer_index - state->first_layer_index],entry,payload,scale));
 	switch ( entry->tensor_kind )
@@ -515,7 +430,7 @@ static SparkStatus SparkLagunaManifestCheck(const SparkWeightdManifest *manifest
 	for (index=0u; index<context->count; index++)
 	{
 		entry = &context->entries[index];
-		if ( entry->tensor_kind != SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN )
+		if ( entry->tensor_kind != SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP && entry->tensor_kind != SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN )
 			continue;
 		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
 			return(SPARK_STATUS_UNSUPPORTED);
@@ -542,8 +457,6 @@ static SparkStatus SparkLagunaLazyOpen(SparkLagunaModuleState *state,const char 
 		return(SPARK_STATUS_OK);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( state->mtp_enabled != 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
 	memset(&request,0,sizeof(request));
 	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
 	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
@@ -574,7 +487,7 @@ static SparkStatus SparkLagunaPackLoadEntry(
 	scale = 0;
 	if ( state->lazy_pack != 0 )
 	{
-		if ( entry->tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry->tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN )
+		if ( entry->tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP || entry->tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN )
 			return(SparkLagunaPackAssign(state,entry,0,0));
 		status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->payload_offset,entry->payload_bytes,(const void **)&payload);
 		if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
@@ -599,7 +512,7 @@ static uint64_t SparkLagunaExpectedLayerMask(
 	uint64_t mask;
 	uint32_t kind;
 	mask = 0u;
-	for (kind=SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_NORM; kind<SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT; kind++)
+	for (kind=SPARK_LAGUNA_STAGEPACK_TENSOR_FUSED_QKV; kind<SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT; kind++)
 		if ( SparkLagunaStagePackExpectedShape(kind,layer_index,state->expert_weight_codec,state->tp_degree,&shape) == 0 )
 			mask |= UINT64_C(1) << kind;
 	return(mask);
@@ -618,13 +531,8 @@ static uint64_t SparkLagunaExpectedGlobalMask(const SparkLagunaModuleState *stat
 
 static SparkStatus SparkLagunaPackValidateInventory(const SparkLagunaModuleState *state)
 {
-	uint64_t expected_mtp;
 	uint32_t local;
 	if ( state->global_seen != SparkLagunaExpectedGlobalMask(state) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	expected_mtp = state->pack_has_mtp != 0u ?
-		SparkLagunaExpectedLayerMask(state,SPARK_LAGUNA_MODEL_MTP_LAYER_INDEX) : 0u;
-	if ( state->mtp_seen != expected_mtp )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	for (local=0u; local<state->layer_count; local++)
 		if ( state->layer_seen[local] != SparkLagunaExpectedLayerMask(state,state->first_layer_index + local) )
@@ -654,8 +562,6 @@ static SparkStatus SparkLagunaPackLoad(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLagunaPackValidateHeader(state,&header,file_bytes);
 	if ( status == SPARK_STATUS_OK )
-		state->pack_has_mtp = (header.flags & SPARK_LAGUNA_STAGEPACK_FLAG_MTP) != 0u ? 1u : 0u;
-	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_LAGUNA_MODULE_TAG,file,header.directory_offset,entries,(uint64_t)header.tensor_count * sizeof(entries[0]));
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
 	{
@@ -663,6 +569,9 @@ static SparkStatus SparkLagunaPackLoad(
 		if ( status == SPARK_STATUS_OK )
 			SparkLagunaPackMarkSeen(state,&entries[index]);
 	}
+	if ( status == SPARK_STATUS_OK && state->dflash_sections != 0u )
+		fprintf(stderr,"laguna pack carries %u DFlash payload sections (%llu bytes); recorded and skipped\n",
+			state->dflash_sections,(unsigned long long)state->dflash_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLagunaPackValidateRanges(entries,header.tensor_count);
 	if ( status == SPARK_STATUS_OK )
@@ -725,18 +634,6 @@ static SparkStatus SparkLagunaAllocateSlotHost(SparkLagunaExecutionSlot *slot)
 	slot->host_kv_access_error = cursor;
 	cursor += SPARK_LAGUNA_KV_ACCESS_ERROR_WORD_COUNT;
 	slot->host_group_row_offset = cursor;
-	bytes = ((rows + 1u) * 2u + rows) * sizeof(uint32_t);
-	error = cudaHostAlloc((void **)&slot->host_run_begin,bytes,cudaHostAllocPortable);
-	if ( error != cudaSuccess )
-	{
-		(void)cudaFreeHost(slot->host_staging);
-		slot->host_staging = 0;
-		return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"host_run_staging"));
-	}
-	memset(slot->host_run_begin,0,bytes);
-	cursor = (uint32_t *)slot->host_run_begin;
-	cursor += rows + 1u;
-	slot->host_run_state_index = cursor;
 	error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->route_ready_event,cudaEventDisableTiming);
 	return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"route_ready_event"));
 }
@@ -755,10 +652,6 @@ static void SparkLagunaReleaseSlotHost(SparkLagunaModuleState *state)
 		if ( state->slots[index].host_staging != 0 )
 			(void)cudaFreeHost(state->slots[index].host_staging);
 		state->slots[index].host_staging = 0;
-		if ( state->slots[index].host_run_begin != 0 )
-			(void)cudaFreeHost(state->slots[index].host_run_begin);
-		state->slots[index].host_run_begin = 0;
-		state->slots[index].host_run_state_index = 0;
 	}
 }
 
@@ -770,8 +663,6 @@ static SparkStatus SparkLagunaAllocateSlotMetadata(
 	status = SparkLagunaAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->token_ids);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->resident_slots);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->positions);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,state->execution_row_capacity + 1u,1u,sizeof(uint32_t),(void **)&slot->run_begin);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->run_state_index);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,state->resident_sequence_capacity,1u,sizeof(uint32_t),(void **)&slot->context_lengths);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_row_offset);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_tile_prefix);
@@ -786,40 +677,17 @@ static SparkStatus SparkLagunaAllocateSlotHidden(
 	uint64_t rows;
 	SparkStatus status;
 	rows = state->execution_row_capacity;
-	status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HC_MULT * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->hidden_bf16);
+	status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->hidden_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->residual_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->normed_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->hc_collapsed_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HC_MULT * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->hc_snapshot_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->hc_mean_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_HC_MIX_DIMENSION,sizeof(float),(void **)&slot->hc_mixes_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_HC_MULT,sizeof(float),(void **)&slot->hc_pre_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_HC_MULT,sizeof(float),(void **)&slot->hc_post_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_HC_MULT * SPARK_LAGUNA_MODEL_HC_MULT,sizeof(float),(void **)&slot->hc_comb_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_QUERY_A_DIMENSION,(void **)&slot->q_compressed_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_QUERY_B_DIMENSION,(void **)&slot->q_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HEAD_COUNT * SPARK_LAGUNA_MODEL_LATENT_DIMENSION,(void **)&slot->query_latent_bf16);
-	slot->query_rope_bf16 = 0;
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_DSA_INDEX_QUERY_DIMENSION,(void **)&slot->index_query_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_DSA_INDEX_HEAD_DIMENSION,(void **)&slot->index_key_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_DSA_INDEX_HEAD_COUNT,(void **)&slot->index_head_weight_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_DSA_INDEX_HEAD_DIMENSION,(void **)&slot->index_gate_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_INDEX_PACKED_TOKEN_DIMENSION,(void **)&slot->index_packed_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_INDEX_TOP_K / SPARK_LAGUNA_MODEL_INDEX_KPOOL,sizeof(uint32_t),(void **)&slot->selected_pools);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,2u * SPARK_LAGUNA_MODEL_KDA_QKV_DIMENSION + SPARK_LAGUNA_MODEL_KDA_QKV_DIMENSION + SPARK_LAGUNA_MODEL_KDA_HEAD_COUNT,(void **)&slot->fused_qkvb_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,2u * SPARK_LAGUNA_MODEL_KDA_LOW_RANK_GATE_BOTTLENECK,(void **)&slot->fused_decay_gate_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_KDA_LOW_RANK_GATE_BOTTLENECK,(void **)&slot->kda_decay_latent_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_KDA_LOW_RANK_GATE_BOTTLENECK,(void **)&slot->kda_gate_latent_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_KDA_HEAD_COUNT,(void **)&slot->kda_beta_logit);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_KDA_QKV_DIMENSION,(void **)&slot->kda_gate_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_KDA_QKV_DIMENSION,(void **)&slot->kda_decay_logit_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->kda_output_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_KDA_QKV_DIMENSION,sizeof(float),(void **)&slot->kda_retention);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_KDA_HEAD_COUNT,sizeof(float),(void **)&slot->kda_write_gate);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_CACHE_TOKEN_ELEMENTS,(void **)&slot->kv_slot_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HEAD_COUNT * SPARK_LAGUNA_MODEL_LATENT_DIMENSION,(void **)&slot->attention_latent_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HEAD_COUNT * SPARK_LAGUNA_MODEL_VALUE_HEAD_DIMENSION,(void **)&slot->attention_value_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,LAGUNA_MAX_QKV_ROWS,(void **)&slot->qkv_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_TP8_Q_HEAD_COUNT_SLIDING * SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION,(void **)&slot->q_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_TP8_KV_HEAD_COUNT * SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION,(void **)&slot->k_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_TP8_KV_HEAD_COUNT * SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION,(void **)&slot->v_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_TP8_Q_HEAD_COUNT_SLIDING * SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION,(void **)&slot->attention_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->attention_out_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_TP8_Q_HEAD_COUNT_SLIDING,(void **)&slot->gate_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_SLIDING_WINDOW,sizeof(uint32_t),(void **)&slot->window_positions);
 	return(status);
 }
 
@@ -827,50 +695,26 @@ static SparkStatus SparkLagunaAllocateSlotMlp(
 	SparkLagunaModuleState *state,
 	SparkLagunaExecutionSlot *slot)
 {
-	uint64_t rows,packed_rows;
+	uint64_t rows;
 	SparkStatus status;
 	rows = state->execution_row_capacity;
-	packed_rows = rows * SPARK_LAGUNA_MODEL_MOE_TOP_K;
 	status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_MOE_ROUTED_GATE_UP_DIMENSION,(void **)&slot->gate_up_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_MOE_TOP_K * SPARK_LAGUNA_MODEL_MOE_INTERMEDIATE_DIMENSION,(void **)&slot->intermediate_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,packed_rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->expert_out_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_MOE_INTERMEDIATE_DIMENSION,(void **)&slot->intermediate_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->expert_out_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->shared_out_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_MOE_EXPERT_COUNT,sizeof(float),(void **)&slot->router_logits_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,state->max_sequence_positions / SPARK_LAGUNA_MODEL_INDEX_KPOOL,sizeof(float),(void **)&slot->selection_scores_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,SPARK_LAGUNA_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(rows,SPARK_LAGUNA_MODEL_HEAD_COUNT / state->tp_degree),SPARK_LAGUNA_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS,sizeof(float),(void **)&slot->attention_split_partials_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,SPARK_LAGUNA_MODEL_INDEX_OUTPUT_WIDTH,sizeof(uint32_t),(void **)&slot->selected_positions);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_expert);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,packed_rows,1u,sizeof(float),(void **)&slot->route_weight);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_source_token);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_packed_row);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows * SPARK_LAGUNA_MODEL_MOE_TOP_K,1u,sizeof(uint32_t),(void **)&slot->route_expert);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows * SPARK_LAGUNA_MODEL_MOE_TOP_K,1u,sizeof(float),(void **)&slot->route_weight);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows * SPARK_LAGUNA_MODEL_MOE_TOP_K,1u,sizeof(uint32_t),(void **)&slot->route_source_token);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows * SPARK_LAGUNA_MODEL_MOE_TOP_K,1u,sizeof(uint32_t),(void **)&slot->route_packed_row);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,SPARK_LAGUNA_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_row_offset);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,SPARK_LAGUNA_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_tile_prefix_w1);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,SPARK_LAGUNA_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_tile_prefix_w2);
-	return(status);
-}
-
-static SparkStatus SparkLagunaAllocateSlotHead(
-	SparkLagunaModuleState *state,
-	SparkLagunaExecutionSlot *slot)
-{
-	uint64_t rows,tiles;
-	SparkStatus status;
-	rows = state->execution_row_capacity;
-	tiles = SparkCeilDivU64(SPARK_LAGUNA_MODEL_OUTPUT_VOCAB_COUNT,SPARK_LAGUNA_HEAD_TILE);
-	status = SparkLagunaAllocateBytes(state,rows,tiles,sizeof(float),(void **)&slot->head_candidate_score);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,tiles,sizeof(uint32_t),(void **)&slot->head_candidate_token);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,2u * SPARK_LAGUNA_MODEL_MOE_EXPERT_COUNT,1u,sizeof(uint32_t),(void **)&slot->group_tile_prefix_w1);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,2u * SPARK_LAGUNA_MODEL_MOE_EXPERT_COUNT,1u,sizeof(uint32_t),(void **)&slot->group_tile_prefix_w2);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,LAGUNA_HEAD_TILE_COUNT,sizeof(float),(void **)&slot->head_candidate_score);
+	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,LAGUNA_HEAD_TILE_COUNT,sizeof(uint32_t),(void **)&slot->head_candidate_token);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,1u,sizeof(uint32_t),(void **)&slot->output_token);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,1u,sizeof(float),(void **)&slot->output_score);
 	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,rows,1u,sizeof(uint64_t),(void **)&slot->head_maxloc_u64);
-	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
-	{
-		uint64_t shard_rows = SPARK_LAGUNA_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
-		status = SparkLagunaAllocateBytes(state,1u,SparkHeadCertifiedFp8ScratchBytes(shard_rows,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION),1u,(void **)&slot->head_certified_scratch);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLagunaAllocateBytes(state,1u,SparkHeadCertifiedFp8CandidateBytes(shard_rows),1u,(void **)&slot->head_certified_candidates);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLagunaAllocateBytes(state,1u,1u,sizeof(uint32_t),(void **)&slot->head_screened_count);
-	}
 	return(status);
 }
 
@@ -886,70 +730,10 @@ static SparkStatus SparkLagunaAllocateSlots(SparkLagunaModuleState *state)
 		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateSlotMetadata(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateSlotHidden(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateSlotMlp(state,&state->slots[index]);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateSlotHead(state,&state->slots[index]);
 	}
 	return(status);
 }
 
-static SparkStatus SparkLagunaAllocateMtp(SparkLagunaModuleState *state)
-{
-	SparkLagunaKdaReplayLayout layout;
-	uint64_t kv_pool_bytes,index_pool_bytes,replay_bytes,steps_bytes,conv_bytes;
-	uint32_t index,rank_heads,step;
-	SparkStatus status;
-	if ( state->mtp_enabled == 0u )
-		return(SPARK_STATUS_OK);
-	if ( state->execution_row_capacity < SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	rank_heads = SPARK_LAGUNA_MODEL_KDA_HEAD_COUNT / state->tp_degree;
-	layout = SparkLagunaKdaReplayLayoutFor(rank_heads,SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u);
-	state->kda_replay_layer_bytes = layout.layer_bytes;
-	kv_pool_bytes = (uint64_t)SPARK_LAGUNA_MODEL_KV_PAGE_SLOTS * SPARK_LAGUNA_MODEL_KV_SLOT_BYTES;
-	index_pool_bytes = (uint64_t)SPARK_LAGUNA_MODEL_KV_PAGE_SLOTS * SPARK_LAGUNA_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u * SPARK_LAGUNA_MODEL_DSA_LAYER_COUNT;
-	replay_bytes = layout.layer_bytes * state->kda_layer_count;
-	steps_bytes = (uint64_t)state->kda_layer_count * (SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u) * SPARK_LAGUNA_MTP_REPLAY_STEP_BYTES;
-	conv_bytes = (uint64_t)(SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u) * rank_heads * SPARK_LAGUNA_MODEL_KDA_HEAD_KEY_DIMENSION * SPARK_LAGUNA_MODEL_BF16_ELEMENT_BYTES;
-	state->mtp_lane_armed = (uint8_t *)calloc(state->resident_sequence_capacity,1u);
-	if ( state->mtp_lane_armed == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkLagunaAllocateBytes(state,state->resident_sequence_capacity,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,sizeof(uint16_t),(void **)&state->mtp_lane_hidden_bf16);
-	for (index=0u; status==SPARK_STATUS_OK && index<state->pipeline_slot_count; index++)
-	{
-		SparkLagunaExecutionSlot *slot = &state->slots[index];
-		status = SparkLagunaAllocateRows(state,1u,SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->mtp_hidden_bf16);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateRows(state,1u,2u * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,(void **)&slot->mtp_concat_bf16);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,kv_pool_bytes,1u,(void **)&slot->mtp_kv_pool);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,index_pool_bytes,1u,(void **)&slot->mtp_index_pool);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,sizeof(uint32_t),1u,(void **)&slot->mtp_positions);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,sizeof(uint32_t),1u,(void **)&slot->mtp_context);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_page_table);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_sequence);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_committed);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,steps_bytes,1u,&slot->mtp_replay_steps);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,conv_bytes,1u,(void **)&slot->mtp_conv_scratch);
-		if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,replay_bytes,1u,(void **)&slot->kda_replay_pool);
-		if ( status != SPARK_STATUS_OK )
-			break;
-		{
-			uint32_t meta[2u * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
-			cudaError_t error;
-			for ( step = 0u; step < SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH; ++step )
-			{
-				meta[step] = step;
-				meta[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + step] = step + 1u;
-			}
-			error = cudaMemcpy(slot->mtp_positions,meta,SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH * sizeof(uint32_t),cudaMemcpyHostToDevice);
-			if ( error == cudaSuccess )
-				error = cudaMemcpy(slot->mtp_context,meta + SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH * sizeof(uint32_t),cudaMemcpyHostToDevice);
-			if ( error == cudaSuccess )
-				error = cudaMemset(slot->mtp_page_table,0,sizeof(uint32_t));
-			if ( error == cudaSuccess )
-				error = cudaMemset(slot->mtp_sequence,0,sizeof(uint32_t));
-			status = SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"mtp_meta_init");
-		}
-	}
-	return(status);
-}
 
 static SparkStatus SparkLagunaBuildPageTable(SparkLagunaModuleState *state)
 {
@@ -995,54 +779,6 @@ static SparkStatus SparkLagunaDevicePageCopy(
 	return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"kv_page_copy"));
 }
 
-// Checkpoints pack all KDA layers, then all Q, K and V convolution layers.
-// The caller owns the resident slot until the complete transfer succeeds.
-static inline SparkStatus SparkLagunaRecurrentCopy(SparkLagunaModuleState *state,uint32_t direction,uint32_t slot,void *host,uint64_t bytes)
-{
-	SparkKvLayeredPageLayout layout;
-	uint8_t *pools[4];
-	uint64_t strides[4],payloads[4],total = 0u,offset = 0u;
-	uint32_t part;
-	SparkStatus status;
-	if ( state == 0 || host == 0 || state->resident_sequence_capacity == 0u || state->kda_layer_count == 0u || slot >= state->resident_sequence_capacity )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( direction != SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST && direction != SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	pools[0] = state->kda_state_pools;
-	pools[1] = state->kda_q_window_pool;
-	pools[2] = state->kda_k_window_pool;
-	pools[3] = state->kda_v_window_pool;
-	strides[0] = state->kda_state_layer_stride_bytes;
-	strides[1] = strides[2] = strides[3] = state->kda_window_layer_stride_bytes;
-	for (part=0u; part<4u; part++)
-	{
-		if ( pools[part] == 0 || strides[part] == 0u || strides[part] % state->resident_sequence_capacity != 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( strides[part] > (UINTPTR_MAX - (uintptr_t)pools[part]) / state->kda_layer_count )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		payloads[part] = (strides[part] / state->resident_sequence_capacity) * state->kda_layer_count;
-		if ( payloads[part] > UINT64_MAX - total )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		total += payloads[part];
-	}
-	if ( bytes != total || bytes > UINTPTR_MAX - (uintptr_t)host )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	layout.layer_count = state->kda_layer_count;
-	layout.page_count = state->resident_sequence_capacity;
-	for (part=0u; part<4u; part++)
-	{
-		layout.device_base = (uintptr_t)pools[part];
-		layout.device_bytes = strides[part] * layout.layer_count;
-		layout.layer_stride_bytes = strides[part];
-		layout.layer_page_bytes = strides[part] / layout.page_count;
-		status = SparkKvPageStoreCopyLayered(&layout,direction,slot,(uint8_t *)host + offset,payloads[part],SparkLagunaDevicePageCopy,state);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-		offset += payloads[part];
-	}
-	return(SPARK_STATUS_OK);
-}
-
 static SparkStatus SparkLagunaPageCopy(
 	void *context,
 	uint32_t direction,
@@ -1056,18 +792,10 @@ static SparkStatus SparkLagunaPageCopy(
 	state = (SparkLagunaModuleState *)context;
 	if ( state == 0 || state->page_count == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->index_layer_count != 0u && state->index_layer_stride_bytes > UINT64_MAX / state->index_layer_count )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	layout.device_base = (uintptr_t)state->kv_cache;
 	layout.layer_stride_bytes = state->kv_layer_stride_bytes;
-	layout.layer_count = state->kv_layer_count;
+	layout.layer_count = state->layer_count;
 	layout.page_count = state->page_count;
-	if ( device_address >= (uintptr_t)state->index_cache && device_address - (uintptr_t)state->index_cache < state->index_layer_stride_bytes * state->index_layer_count )
-	{
-		layout.device_base = (uintptr_t)state->index_cache;
-		layout.layer_stride_bytes = state->index_layer_stride_bytes;
-		layout.layer_count = state->index_layer_count;
-	}
 	if ( layout.layer_count == 0u || layout.layer_stride_bytes % layout.page_count != 0u || layout.layer_stride_bytes > UINT64_MAX / layout.layer_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	layout.device_bytes = layout.layer_stride_bytes * layout.layer_count;
@@ -1075,8 +803,6 @@ static SparkStatus SparkLagunaPageCopy(
 	packed_page_bytes = layout.layer_page_bytes * layout.layer_count;
 	if ( device_address < layout.device_base || device_address - layout.device_base >= layout.device_bytes || packed_page_bytes == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	// Arena block addresses name packed payloads. Translate their page index
-	// to the native layer-major allocation before a device copy dereferences it.
 	offset = device_address - layout.device_base;
 	if ( offset % packed_page_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1085,80 +811,36 @@ static SparkStatus SparkLagunaPageCopy(
 
 static SparkStatus SparkLagunaBackingCapacity(SparkLagunaModuleState *state,uint64_t kv_page_bytes)
 {
-	uint64_t window_bytes,state_bytes,total;
+	uint64_t total;
 	if ( state->page_count == 0u || state->resident_sequence_capacity == 0u || kv_page_bytes == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->recurrent_page_bytes = 0u;
-	if ( state->kda_layer_count != 0u )
-	{
-		if ( state->kda_state_layer_stride_bytes % state->resident_sequence_capacity != 0u || state->kda_window_layer_stride_bytes % state->resident_sequence_capacity != 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		state_bytes = state->kda_state_layer_stride_bytes / state->resident_sequence_capacity;
-		window_bytes = state->kda_window_layer_stride_bytes / state->resident_sequence_capacity;
-		if ( state_bytes == 0u || window_bytes == 0u || window_bytes > (UINT64_MAX - state_bytes) / 3u )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		state_bytes += 3u * window_bytes;
-		if ( state_bytes > (UINT64_MAX - kv_page_bytes) / state->kda_layer_count )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		state->recurrent_page_bytes = state_bytes * state->kda_layer_count;
-	}
-	total = kv_page_bytes + state->recurrent_page_bytes;
-	if ( total > INT64_MAX / state->page_count || state->recurrent_page_bytes > SIZE_MAX / 2u )
+	total = kv_page_bytes;
+	if ( total > INT64_MAX / state->page_count )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	total *= state->page_count;
 	if ( state->kv_backing_maximum_bytes != 0u && state->kv_backing_maximum_bytes < total )
 	{
-		fprintf(stderr,"GLM cache backing budget insufficient: need %llu bytes for %u pages, configured %llu\n",(unsigned long long)total,state->page_count,(unsigned long long)state->kv_backing_maximum_bytes);
+		fprintf(stderr,"laguna cache backing budget insufficient: need %llu bytes for %u pages, configured %llu\n",(unsigned long long)total,state->page_count,(unsigned long long)state->kv_backing_maximum_bytes);
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLagunaRecurrentInitialize(SparkLagunaModuleState *state,const char *backing_path)
-{
-	SparkKvPageStoreConfiguration config = {0};
-	SparkStatus status;
-	if ( state->kda_layer_count == 0u )
-		return(SPARK_STATUS_OK);
-	if ( state->recurrent_page_bytes == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cudaHostAlloc((void **)&state->recurrent_staging,2u * state->recurrent_page_bytes,cudaHostAllocPortable) != cudaSuccess )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
-	config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
-	config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
-	config.logical_page_capacity = state->page_count;
-	config.transfer_capacity = 1u;
-	config.page_bytes = state->recurrent_page_bytes;
-	config.maximum_backing_bytes = state->page_count * state->recurrent_page_bytes;
-	config.backing_path = backing_path;
-	// First half is caller-owned gather/scatter storage; the worker uses the second.
-	config.staging_address = state->recurrent_staging + state->recurrent_page_bytes;
-	config.staging_bytes = state->recurrent_page_bytes;
-	status = SparkKvPageStoreInitialize(&state->recurrent_store,&config);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkKvPageCacheAttachStateStore(&state->kv_page_cache,&state->recurrent_store);
-	return(status);
-}
 
 static SparkStatus SparkLagunaKvInitialize(SparkLagunaModuleState *state)
 {
 	SparkKvModelTable table;
-	uint64_t block_bytes,index_block_bytes,payload_bytes;
+	uint64_t block_bytes,payload_bytes;
 	uint64_t lane_page_entries;
 	SparkStatus status;
 	if ( pthread_mutex_init(&state->kv_mutex,0) != 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	state->kv_mutex_initialized = 1u;
-	if ( state->kv_layer_count == 0u )
+	if ( state->layer_count == 0u )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	block_bytes = (uint64_t)SPARK_LAGUNA_KV_BLOCK_TOKEN_COUNT *
-		(uint64_t)state->kv_layer_count * SPARK_LAGUNA_KV_ARENA_HEAD_DIM *
-		SPARK_LAGUNA_KV_BYTES_PER_SCALAR;
-	index_block_bytes = (uint64_t)SPARK_LAGUNA_KV_BLOCK_TOKEN_COUNT * state->index_layer_count * SPARK_LAGUNA_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
-	if ( index_block_bytes > UINT64_MAX - block_bytes )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	payload_bytes = block_bytes + index_block_bytes;
+	block_bytes = (uint64_t)SPARK_LAGUNA_MODEL_KV_PAGE_SLOTS *
+		(uint64_t)state->layer_count * SPARK_LAGUNA_MODEL_KV_SLOT_BYTES_TP8;
+	payload_bytes = block_bytes;
 	status = SparkLagunaBackingCapacity(state,payload_bytes);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -1187,23 +869,19 @@ static SparkStatus SparkLagunaKvInitialize(SparkLagunaModuleState *state)
 	table.abi_version = SPARK_KV_MODEL_TABLE_ABI_VERSION;
 	table.descriptor_bytes = SPARK_KV_MODEL_TABLE_BYTES;
 	SparkLagunaKvFillCapacityRequest(&table.capacity_request);
-	table.capacity_request.layer_count = state->kv_layer_count;
-	table.capacity_request.index_key_layer_count = state->index_layer_count;
-	table.capacity_request.index_key_dimension = SPARK_LAGUNA_MODEL_INDEX_PACKED_TOKEN_DIMENSION;
-	table.capacity_request.index_key_bytes_per_scalar = 2u;
+	table.capacity_request.layer_count = state->layer_count;
 
 	table.arena_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	table.arena_configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
 	table.arena_configuration.logical_block_count = state->page_count;
-	table.arena_configuration.block_token_count = SPARK_LAGUNA_KV_BLOCK_TOKEN_COUNT;
+	table.arena_configuration.block_token_count = SPARK_LAGUNA_MODEL_KV_PAGE_SLOTS;
 	table.arena_configuration.resident_block_capacity = state->page_count;
-	table.arena_configuration.layer_count = state->kv_layer_count;
-	table.arena_configuration.kv_head_count = SPARK_LAGUNA_KV_ARENA_KV_HEAD_COUNT;
-	table.arena_configuration.head_dim = SPARK_LAGUNA_KV_ARENA_HEAD_DIM;
-	table.arena_configuration.bytes_per_scalar = SPARK_LAGUNA_KV_BYTES_PER_SCALAR;
+	table.arena_configuration.layer_count = state->layer_count;
+	table.arena_configuration.kv_head_count = 1u;
+	table.arena_configuration.head_dim =
+		2u * SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION;
+	table.arena_configuration.bytes_per_scalar = SPARK_LAGUNA_MODEL_KV_BITS / 8u;
 	table.arena_configuration.key_device_base = state->kv_cache;
-	table.arena_configuration.value_device_base = state->index_cache;
-	table.arena_configuration.value_block_stride_bytes = index_block_bytes;
 	table.arena_configuration.blocks = state->kv_blocks;
 	table.arena_configuration.resident_slot_logical_block_indices = state->kv_resident_slot_logical_block_indices;
 
@@ -1237,108 +915,35 @@ static SparkStatus SparkLagunaKvInitialize(SparkLagunaModuleState *state)
 	table.entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
 	table.model_id = "laguna";
 	table.model_revision = state->model_revision;
-	table.cache_layout_fingerprint = "kv-bf16-index-packed-layer-major-gather-v1";
+	table.cache_layout_fingerprint = "kv-bf16-full-gqa-layer-major-gather-v1";
 
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->kv_arena.key_block_stride_bytes != block_bytes ||
-		state->kv_arena.value_block_stride_bytes != index_block_bytes ||
 		state->kv_arena.logical_block_count != state->page_count ||
 		state->kv_layer_stride_bytes == 0u ||
 		block_bytes != ( state->kv_layer_stride_bytes /
 				(uint64_t)state->page_count ) *
-			(uint64_t)state->kv_layer_count ||
+			(uint64_t)state->layer_count ||
 		(uint64_t)state->page_count * block_bytes !=
-			state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count )
+			state->kv_layer_stride_bytes * (uint64_t)state->layer_count )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	return(SparkLagunaRecurrentInitialize(state,table.page_store_config.backing_path));
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkLagunaAllocateCaches(SparkLagunaModuleState *state)
 {
-	uint64_t main_page_bytes,index_page_bytes;
-	uint64_t main_total,index_total;
-	uint32_t local;
+	uint64_t main_page_bytes;
+	uint64_t main_total;
 	SparkStatus status;
-	uint64_t kda_window_stride;
-	uint64_t kda_total,window_total;
-	state->index_layer_count = 0u;
-	state->kv_layer_count = 0u;
-	state->kda_layer_count = 0u;
-	for (local=0u; local<state->layer_count; local++)
-	{
-		uint32_t layer = state->first_layer_index + local;
-		state->index_ordinal_by_local_layer[local] = SPARK_LAGUNA_NO_INDEX_ORDINAL;
-		state->kv_ordinal_by_local_layer[local] = SPARK_LAGUNA_NO_INDEX_ORDINAL;
-		state->kda_ordinal_by_local_layer[local] = SPARK_LAGUNA_NO_INDEX_ORDINAL;
-		if ( layer < SPARK_LAGUNA_MODEL_LAYER_COUNT )
-		{
-			if ( SparkLagunaStagePackLayerIsDsa(layer) != 0u )
-			{
-				state->kv_ordinal_by_local_layer[local] = state->kv_layer_count++;
-				state->index_ordinal_by_local_layer[local] = state->index_layer_count++;
-			}
-			else if ( SparkLagunaStagePackLayerIsKda(layer) != 0u )
-				state->kda_ordinal_by_local_layer[local] = state->kda_layer_count++;
-		}
-	}
 	status = SparkLagunaBuildPageTable(state);
-	main_page_bytes = (uint64_t)64u * SPARK_LAGUNA_MODEL_KV_SLOT_BYTES;
-	index_page_bytes = (uint64_t)64u *
-		SPARK_LAGUNA_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
-	// The model constant includes all three windows; each pool owns one rank-local window.
-	kda_window_stride = (uint64_t)state->resident_sequence_capacity *
-		(SPARK_LAGUNA_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / (3u * state->tp_degree));
+	main_page_bytes = (uint64_t)SPARK_LAGUNA_MODEL_KV_PAGE_SLOTS * SPARK_LAGUNA_MODEL_KV_SLOT_BYTES_TP8;
 	state->kv_layer_stride_bytes = (uint64_t)state->page_count * main_page_bytes;
-	state->index_layer_stride_bytes = (uint64_t)state->page_count * index_page_bytes;
-	state->kda_state_layer_stride_bytes = (uint64_t)state->resident_sequence_capacity *
-		(SPARK_LAGUNA_MODEL_KDA_STATE_BYTES_PER_LAYER / state->tp_degree);
-	state->kda_window_layer_stride_bytes = kda_window_stride;
 	if ( status != SPARK_STATUS_OK || state->kv_layer_stride_bytes == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_CAPACITY_EXCEEDED : status);
-	main_total = state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count;
+	main_total = state->kv_layer_stride_bytes * (uint64_t)state->layer_count;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,main_total,(void **)&state->kv_cache);
-	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u )
-	{
-		if ( state->index_layer_stride_bytes > UINT64_MAX / state->index_layer_count )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		index_total = state->index_layer_stride_bytes * state->index_layer_count;
-		status = SparkStageModuleDeviceAllocate(&state->ledger,index_total,(void **)&state->index_cache);
-	}
-	kda_total = state->kda_state_layer_stride_bytes * (uint64_t)state->kda_layer_count;
-	if ( status == SPARK_STATUS_OK && state->kda_layer_count != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,kda_total,(void **)&state->kda_state_pools);
-	window_total = kda_window_stride * 3u * (uint64_t)state->kda_layer_count;
-	if ( status == SPARK_STATUS_OK && state->kda_layer_count != 0u )
-	{
-		status = SparkStageModuleDeviceAllocate(&state->ledger,window_total,(void **)&state->kda_window_pools);
-		if ( status == SPARK_STATUS_OK )
-		{
-			state->kda_q_window_pool = state->kda_window_pools;
-			state->kda_k_window_pool = state->kda_q_window_pool + kda_window_stride * (uint64_t)state->kda_layer_count;
-			state->kda_v_window_pool = state->kda_k_window_pool + kda_window_stride * (uint64_t)state->kda_layer_count;
-		}
-	}
-	if ( status == SPARK_STATUS_OK && state->kda_layer_count != 0u )
-	{
-		uint32_t sequence;
-		cudaError_t error;
-		state->kda_state_index_host = (uint32_t *)malloc((size_t)state->resident_sequence_capacity * sizeof(uint32_t));
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)state->resident_sequence_capacity * sizeof(uint32_t),(void **)&state->kda_state_index_device);
-		if ( status == SPARK_STATUS_OK && state->kda_state_index_host != 0 )
-		{
-			for (sequence=0u; sequence<state->resident_sequence_capacity; sequence++)
-				state->kda_state_index_host[sequence] = sequence;
-			error = cudaMemcpy(state->kda_state_index_device,state->kda_state_index_host,(size_t)state->resident_sequence_capacity * sizeof(uint32_t),cudaMemcpyHostToDevice);
-			if ( error != cudaSuccess )
-				status = SPARK_STATUS_INTERNAL_ERROR;
-		}
-		else if ( state->kda_state_index_host == 0 )
-		{
-			status = SPARK_STATUS_CAPACITY_EXCEEDED;
-		}
-	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLagunaKvInitialize(state);
 	return(status);
@@ -1364,8 +969,6 @@ static SparkStatus SparkLagunaAdmissionPredicate(
 		{
 			slot = request->cache_lanes[lane].resident_sequence_slot;
 			atomic_store_explicit(&state->lane_bound[slot],0u,memory_order_release);
-			if ( state->mtp_lane_armed != 0 )
-				state->mtp_lane_armed[slot] = 0u;
 		}
 	(void)pthread_mutex_unlock(&state->kv_mutex);
 	if ( status != SPARK_STATUS_OK )
@@ -1516,10 +1119,6 @@ static SparkStatus SparkLagunaValidateFrameBuffers(
 	buffer = &frame->buffers[0];
 	if ( buffer->flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || buffer->address == 0 || buffer->bytes < (uint64_t)row_count * sizeof(uint32_t) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( state->mtp_enabled != 0u && row_count == 1u &&
-		(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u &&
-		buffer->bytes < (uint64_t)(SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u) * sizeof(uint32_t) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1531,7 +1130,7 @@ static SparkStatus SparkLagunaValidateFrame(
 	const SparkLagunaResidentDecodeStageFrameContext *context;
 	const SparkLagunaResidentDecodeStageBatchView *batch;
 	uint32_t expected_flags,prefill;
-	uint64_t boundary_bytes,sideband_bytes;
+	uint64_t boundary_bytes;
 	SparkStatus status;
 	if ( state == 0 || frame == 0 || context_out == 0 || frame->user_context == 0 || frame->execution_stream != state->execution_stream || frame->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1551,15 +1150,10 @@ static SparkStatus SparkLagunaValidateFrame(
 	expected_flags = prefill != 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
 	expected_flags |= state->owns_embedding == 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
 	expected_flags |= state->owns_final_head == 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
-	expected_flags |= SparkLagunaResidentDecodeStageRequiresSidebandInput(state->stage_index) != 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT : 0u;
-	expected_flags |= SparkLagunaResidentDecodeStageRequiresSidebandOutput(state->stage_index) != 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT : 0u;
 	if ( context->flags != expected_flags )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	boundary_bytes = (uint64_t)batch->row_count * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	sideband_bytes = (uint64_t)batch->row_count * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_BYTES_PER_ROW;
 	if ( (state->owns_embedding == 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < boundary_bytes)) || (state->owns_embedding != 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) || (state->owns_final_head == 0u && (context->hidden_output_bf16 == 0 || context->hidden_output_bytes < boundary_bytes)) || (state->owns_final_head != 0u && (context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u)) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( (SparkLagunaResidentDecodeStageRequiresSidebandInput(state->stage_index) != 0u && (context->sideband_input == 0 || context->sideband_input_bytes < sideband_bytes)) || (SparkLagunaResidentDecodeStageRequiresSidebandInput(state->stage_index) == 0u && (context->sideband_input != 0 || context->sideband_input_bytes != 0u)) || (SparkLagunaResidentDecodeStageRequiresSidebandOutput(state->stage_index) != 0u && (context->sideband_output == 0 || context->sideband_output_bytes < sideband_bytes)) || (SparkLagunaResidentDecodeStageRequiresSidebandOutput(state->stage_index) == 0u && (context->sideband_output != 0 || context->sideband_output_bytes != 0u)) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkLagunaValidateRoundMajor(state,batch);
 	if ( status == SPARK_STATUS_OK )
@@ -1600,9 +1194,7 @@ typedef struct SparkLagunaTpChain
 	uint32_t stage;
 	uint32_t next_layer;
 	uint32_t active;
-	uint32_t spec_verify;
 	uint32_t tp_op_index;
-	uint32_t tp_hc_op_index;
 	uint64_t expert_lease;
 	uint32_t expert_lease_begun;
 	uint32_t expert_lease_recorded;
@@ -1611,7 +1203,6 @@ typedef struct SparkLagunaTpChain
 
 static void SparkLagunaTpChainAdvance(void *chain_context,SparkStatus status);
 static void CUDART_CB SparkLagunaCompleteAsync(void *context);
-static void CUDART_CB SparkLagunaMtpResolveHost(void *context);
 static SparkStatus SparkLagunaEnqueueAsyncCompletion(
 	SparkLagunaModuleState *state,
 	SparkLagunaExecutionSlot *slot,
@@ -1639,15 +1230,7 @@ static void SparkLagunaBuildWave(SparkLagunaTpChain *chain)
 	wave->tp_degree = state->tp_degree;
 	wave->tp_rank = state->tp_rank;
 	wave->row_count = chain->wave_rows;
-	wave->commit = chain->spec_verify != 0u ? 0u : 1u;
-	wave->mtp_verify = chain->spec_verify;
-	wave->mtp_draft_depth = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
-	wave->mtp_layer_weights = state->pack_has_mtp != 0u ? &state->mtp_layer : 0;
-	wave->mtp_eh_proj_bf16 = state->mtp_eh_proj_bf16;
-	wave->mtp_enorm_bf16 = state->mtp_enorm_bf16;
-	wave->mtp_hnorm_bf16 = state->mtp_hnorm_bf16;
-	wave->mtp_shared_norm_bf16 = state->mtp_shared_norm_bf16;
-	wave->kda_replay_layer_bytes = state->kda_replay_layer_bytes;
+	wave->commit = 1u;
 	wave->maximum_context = maximum_context;
 	wave->resident_sequence_capacity = state->resident_sequence_capacity;
 	wave->max_sequence_positions = state->max_sequence_positions;
@@ -1655,71 +1238,25 @@ static void SparkLagunaBuildWave(SparkLagunaTpChain *chain)
 	wave->pages_per_sequence = state->pages_per_sequence;
 	wave->owns_embedding = state->owns_embedding;
 	wave->owns_final_head = state->owns_final_head;
-	wave->sideband_input = SparkLagunaResidentDecodeStageRequiresSidebandInput(state->stage_index);
-	wave->sideband_output = SparkLagunaResidentDecodeStageRequiresSidebandOutput(state->stage_index);
 	wave->boundary_row_offset = chain->first_row;
-	wave->sideband_row_offset = chain->first_row;
 	wave->host_token_ids = state->owns_embedding != 0u ? slot->host_token_ids + chain->first_row : 0;
 	wave->host_resident_slots = slot->host_resident_slots + chain->first_row;
 	wave->host_positions = slot->host_positions + chain->first_row;
 	wave->hidden_input_bf16 = context->hidden_input_bf16;
 	wave->hidden_output_bf16 = context->hidden_output_bf16;
-	wave->sideband_input_u32 = context->sideband_input;
-	wave->sideband_output_u32 = context->sideband_output;
 	wave->host_output_token_ids = state->owns_final_head != 0u ? slot->host_output_token_ids + chain->first_row : 0;
 	wave->embedding_bf16 = state->embedding_bf16;
 	wave->final_norm_bf16 = state->final_norm_bf16;
 	wave->lm_head_bf16 = state->lm_head_bf16;
-	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
-	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
-	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
 	wave->layers = state->layers;
 	wave->lazy_experts = state->lazy_pack != 0 ? 1u : 0u;
 	wave->slot = slot;
+	wave->yarn_inv_freq = state->yarn_inv_freq;
 	wave->kv_cache = state->kv_cache;
 	wave->kv_layer_stride_bytes = state->kv_layer_stride_bytes;
-	wave->index_cache = state->index_cache;
-	wave->index_layer_stride_bytes = state->index_layer_stride_bytes;
-	wave->index_ordinal_by_local_layer = state->index_ordinal_by_local_layer;
-	wave->kda_ordinal_by_local_layer = state->kda_ordinal_by_local_layer;
-	wave->kda_state_pools = state->kda_state_pools;
-	wave->kda_state_layer_stride_bytes = state->kda_state_layer_stride_bytes;
-	wave->kda_q_window_pool = state->kda_q_window_pool;
-	wave->kda_k_window_pool = state->kda_k_window_pool;
-	wave->kda_v_window_pool = state->kda_v_window_pool;
-	wave->kda_window_layer_stride_bytes = state->kda_window_layer_stride_bytes;
-	wave->kda_state_index = state->kda_state_index_device;
-	wave->kda_layer_count = state->kda_layer_count;
 	wave->page_table = state->page_table;
 	wave->multiprocessor_count = state->multiprocessor_count;
 	wave->decode_split_context_threshold = state->decode_split_context_threshold;
-	wave->attention_split_partials_f32 = slot->attention_split_partials_f32;
-	wave->attention_split_partial_blocks = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(
-		state->execution_row_capacity,SPARK_LAGUNA_MODEL_HEAD_COUNT / state->tp_degree);
-	{
-		uint32_t run,row_of_run;
-		slot->host_run_begin[0] = 0u;
-		run = 0u;
-		for (row=1u; row<chain->wave_rows; row++)
-		{
-			if ( slot->host_resident_slots[chain->first_row + row] !=
-			     slot->host_resident_slots[chain->first_row + row - 1u] )
-			{
-				run++;
-				slot->host_run_begin[run] = row;
-			}
-		}
-		run++;
-		slot->host_run_begin[run] = chain->wave_rows;
-		for (row_of_run=0u; row_of_run<run; row_of_run++)
-			slot->host_run_state_index[row_of_run] =
-				slot->host_resident_slots[chain->first_row + slot->host_run_begin[row_of_run]];
-		wave->run_count = run;
-		wave->sequence_row_begin = slot->run_begin;
-		wave->run_state_index = slot->run_state_index;
-		wave->host_sequence_row_begin = slot->host_run_begin;
-		wave->host_run_state_index = slot->host_run_state_index;
-	}
 }
 
 static SparkStatus SparkLagunaModuleCombineBf16(
@@ -1769,10 +1306,10 @@ static SparkStatus SparkLagunaModuleInitializeTpCollective(
 	SparkLagunaModuleState *state,
 	const SparkLagunaResidentDecodeStageNodeContext *context)
 {
-	SparkTpDeviceCollectiveConfig configuration,configuration_hc;
+	SparkTpDeviceCollectiveConfig configuration;
 	uint32_t probe_connect_timeout_milli,probe_operation_timeout_milli;
 	uint64_t credit_bytes,offset,total_bytes;
-	uint32_t credit,hidden,memory_mode,route,route_count,hc_route_count;
+	uint32_t credit,hidden,memory_mode,route,route_count;
 	uint32_t d2a_route_count,tree_route_count;
 	void *mapped_receive,*mapped_send;
 	cudaError_t error;
@@ -1782,21 +1319,7 @@ static SparkStatus SparkLagunaModuleInitializeTpCollective(
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
 	probe_connect_timeout_milli = context->tp_connect_timeout_milli;
-	if ( SparkLagunaProbeEnabled() )
-	{
-		if ( probe_connect_timeout_milli >
-			UINT32_MAX / SPARK_LAGUNA_PROBE_CONNECT_TIMEOUT_SCALE )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		probe_connect_timeout_milli *= SPARK_LAGUNA_PROBE_CONNECT_TIMEOUT_SCALE;
-	}
 	probe_operation_timeout_milli = context->tp_operation_timeout_milli;
-	if ( SparkLagunaProbeEnabled() )
-	{
-		if ( probe_operation_timeout_milli >
-			UINT32_MAX / SPARK_LAGUNA_PROBE_OPERATION_TIMEOUT_SCALE )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		probe_operation_timeout_milli *= SPARK_LAGUNA_PROBE_OPERATION_TIMEOUT_SCALE;
-	}
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	configuration.backend_kind = context->tp_collective_backend_kind;
@@ -1821,37 +1344,12 @@ static SparkStatus SparkLagunaModuleInitializeTpCollective(
 		configuration.direct_all_to_all_max_payload_bytes =
 			SPARK_LAGUNA_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES;
 	}
-	memset(&configuration_hc,0,sizeof(configuration_hc));
-	configuration_hc.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	configuration_hc.backend_kind = context->tp_collective_backend_kind;
-	configuration_hc.tp_degree = state->tp_degree;
-	configuration_hc.tp_rank = state->tp_rank;
-	configuration_hc.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration_hc.credit_count = configuration.credit_count;
-	configuration_hc.local_hidden_dimension =
-		SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION * SPARK_LAGUNA_MODEL_HC_MULT;
-	configuration_hc.max_active_sequence_count = configuration.max_active_sequence_count;
-	configuration_hc.connect_timeout_milli = probe_connect_timeout_milli;
-	configuration_hc.operation_timeout_milli = probe_operation_timeout_milli;
-	configuration_hc.control_port_base = context->tp_collective_control_port_base +
-		SPARK_LAGUNA_TP_COLLECTIVE_HC_PORT_STRIDE;
-	configuration_hc.collective_identifier = context->tp_collective_identifier + 1u;
-	configuration_hc.backend_module_path = context->tp_collective_backend_module_path;
-	configuration_hc.registration_cuda_stream = state->execution_stream;
-	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration_hc);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	memcpy(configuration_hc.session_ports,context->tp_collective_session_ports_hc,
-		sizeof(configuration_hc.session_ports));
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
 		configuration.combine_bf16_function = SparkLagunaModuleCombineBf16;
 		configuration.combine_u64_max_function = SparkLagunaModuleCombineU64Max;
 		configuration.combine_tp4_bf16_function = SparkLagunaModuleCombineDirectBf16;
 		configuration.combine_context = state;
-		configuration_hc.combine_bf16_function = SparkLagunaModuleCombineBf16;
-		configuration_hc.combine_tp4_bf16_function = SparkLagunaModuleCombineDirectBf16;
-		configuration_hc.combine_context = state;
 	}
 	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.control_port_base == 0u || configuration.collective_identifier == 0u || configuration.backend_module_path == 0 || configuration.local_host == 0 || configuration.backend_module_path[0] == '\0' || configuration.local_host[0] == '\0' )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1861,9 +1359,6 @@ static SparkStatus SparkLagunaModuleInitializeTpCollective(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	status = SparkTpDeviceCollectiveCreditBindingRouteCount(&configuration,&route_count);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkTpDeviceCollectiveCreditBindingRouteCount(&configuration_hc,&hc_route_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	d2a_route_count = (configuration.algorithm_mask & SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) != 0u && configuration.direct_all_to_all_max_payload_bytes != 0u ? SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_MAX_PEERS : 0u;
@@ -1948,102 +1443,7 @@ static SparkStatus SparkLagunaModuleInitializeTpCollective(
 		return(status);
 	}
 	state->tp_device_collective_initialized = 1u;
-	{
-		uint32_t hc_credit_count = configuration_hc.credit_count;
-		uint64_t hc_credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration_hc.max_active_sequence_count,configuration_hc.local_hidden_dimension);
-		uint64_t hc_total;
-		void *hc_mapped_send,*hc_mapped_receive;
-		hc_total = 0u;
-		for (route=0u; route<hc_route_count; route++)
-		{
-			if ( hc_credit_bytes == 0u || hc_total > UINT64_MAX - hc_credit_bytes * hc_credit_count )
-				return(SPARK_STATUS_CAPACITY_EXCEEDED);
-			hc_total += hc_credit_bytes * hc_credit_count;
-		}
-		status = SPARK_STATUS_OK;
-		if ( hc_total != 0u )
-			status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&state->tp_hc_credit_send_bf16);
-		if ( status == SPARK_STATUS_OK && hc_total != 0u )
-			status = SparkStageModuleDeviceAllocate(&state->ledger,hc_total,&state->tp_hc_credit_receive_bf16);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-		if ( hc_total != 0u && memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
-		{
-			hc_mapped_receive = 0;
-			hc_mapped_send = 0;
-			error = cudaHostAlloc(&state->tp_hc_host_credit_send_bf16,hc_total,cudaHostAllocPortable | cudaHostAllocMapped);
-			if ( error == cudaSuccess )
-				error = cudaHostAlloc(&state->tp_hc_host_credit_receive_bf16,hc_total,cudaHostAllocPortable | cudaHostAllocMapped);
-			if ( error == cudaSuccess )
-				error = cudaHostGetDevicePointer(&hc_mapped_send,state->tp_hc_host_credit_send_bf16,0u);
-			if ( error == cudaSuccess )
-				error = cudaHostGetDevicePointer(&hc_mapped_receive,state->tp_hc_host_credit_receive_bf16,0u);
-			if ( error != cudaSuccess )
-			{
-				if ( state->tp_hc_host_credit_send_bf16 != 0 )
-					(void)cudaFreeHost(state->tp_hc_host_credit_send_bf16);
-				if ( state->tp_hc_host_credit_receive_bf16 != 0 )
-					(void)cudaFreeHost(state->tp_hc_host_credit_receive_bf16);
-				state->tp_hc_host_credit_send_bf16 = 0;
-				state->tp_hc_host_credit_receive_bf16 = 0;
-				return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"tp_hc_credit_alloc"));
-			}
-			state->tp_hc_credit_send_bf16 = hc_mapped_send;
-			state->tp_hc_credit_receive_bf16 = hc_mapped_receive;
-		}
-		offset = 0u;
-		state->tp_hc_credit_binding_count = 0u;
-		for (route=0u; route<hc_route_count; route++)
-		{
-			for (credit=0u; credit<hc_credit_count; credit++)
-			{
-				SparkTpDeviceCollectiveCreditBinding *binding;
-				if ( state->tp_hc_credit_binding_count >= SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT )
-					return(SPARK_STATUS_CAPACITY_EXCEEDED);
-				binding = &state->tp_hc_credit_bindings[state->tp_hc_credit_binding_count++];
-				binding->step_index = route;
-				binding->credit_index = credit;
-				binding->send_device = (uint8_t *)state->tp_hc_credit_send_bf16 + offset;
-				binding->receive_device = (uint8_t *)state->tp_hc_credit_receive_bf16 + offset;
-				binding->send_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_hc_host_credit_send_bf16 + offset : binding->send_device;
-				binding->receive_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_hc_host_credit_receive_bf16 + offset : binding->receive_device;
-				binding->flags = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (SPARK_TP_DEVICE_COLLECTIVE_BINDING_SEND_MAPPED_ALIAS | SPARK_TP_DEVICE_COLLECTIVE_BINDING_RECEIVE_MAPPED_ALIAS) : 0u;
-				binding->reserved0 = 0u;
-				offset += hc_credit_bytes;
-			}
-		}
-		if ( state->tp_hc_credit_binding_count != 0u )
-		{
-			configuration_hc.credit_bindings = state->tp_hc_credit_bindings;
-			configuration_hc.credit_binding_count = state->tp_hc_credit_binding_count;
-		}
-		status = SparkTpDeviceCollectiveCreate(&configuration_hc,&state->tp_device_collective_hc);
-		if ( status != SPARK_STATUS_OK )
-		{
-			if ( state->tp_hc_host_credit_send_bf16 != 0 )
-				(void)cudaFreeHost(state->tp_hc_host_credit_send_bf16);
-			if ( state->tp_hc_host_credit_receive_bf16 != 0 )
-				(void)cudaFreeHost(state->tp_hc_host_credit_receive_bf16);
-			state->tp_hc_host_credit_send_bf16 = 0;
-			state->tp_hc_host_credit_receive_bf16 = 0;
-			return(status);
-		}
-		state->tp_device_collective_hc_initialized = 1u;
-	}
 	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLagunaModuleReduceHiddenWide(SparkLagunaTpChain *chain,
-	void *device_bf16,uint32_t hc_wide);
-
-static SparkStatus SparkLagunaModuleReduceHidden(SparkLagunaTpChain *chain,void *device_bf16)
-{
-	return(SparkLagunaModuleReduceHiddenWide(chain,device_bf16,1u));
-}
-
-static SparkStatus SparkLagunaModuleReduceAttentionOut(SparkLagunaTpChain *chain,void *device_bf16)
-{
-	return(SparkLagunaModuleReduceHiddenWide(chain,device_bf16,0u));
 }
 
 static void SparkLagunaModuleTpCompletion(
@@ -2057,26 +1457,24 @@ static void SparkLagunaModuleTpCompletion(
 	SparkLagunaTpChainAdvance(chain,completion->status);
 }
 
-static SparkStatus SparkLagunaChainOrdinal(SparkLagunaTpChain *chain,uint32_t hc_wide,uint32_t operation,uint64_t *ordinal)
+static SparkStatus SparkLagunaChainOrdinal(SparkLagunaTpChain *chain,uint32_t operation,uint64_t *ordinal)
 {
 	SparkLagunaModuleState *state;
 	state = chain->state;
 	if ( state->tp_device_collective.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
 	{
-		*ordinal = atomic_fetch_add_explicit(hc_wide != 0u ? &state->nccl_next_ordinal_hc : &state->nccl_next_ordinal,1u,memory_order_relaxed);
+		*ordinal = atomic_fetch_add_explicit(&state->nccl_next_ordinal,1u,memory_order_relaxed);
 		return(SPARK_STATUS_OK);
 	}
 	return(SparkTpChainOrdinal(chain->frame->request_id,state->pipeline_slot_count,SPARK_LAGUNA_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_LAGUNA_TP_CHAIN_OPERATIONS,operation,ordinal));
 }
 
-static SparkStatus SparkLagunaModuleReduceHiddenWide(SparkLagunaTpChain *chain,
-	void *device_bf16,uint32_t hc_wide)
+static SparkStatus SparkLagunaModuleReduceHidden(SparkLagunaTpChain *chain,void *device_bf16)
 {
 	uint32_t *op_index;
 	SparkStatus ordinal_status;
 	SparkLagunaModuleState *state;
 	SparkTpDeviceCollectiveSubmission submission;
-	SparkTpDeviceCollective *collective;
 	uint64_t ordinal;
 	state = chain->state;
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
@@ -2086,19 +1484,8 @@ static SparkStatus SparkLagunaModuleReduceHiddenWide(SparkLagunaTpChain *chain,
 	}
 	if ( state->tp_device_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	if ( hc_wide != 0u )
-	{
-		if ( state->tp_device_collective_hc_initialized == 0u )
-			return(SPARK_STATUS_INTERNAL_ERROR);
-		collective = &state->tp_device_collective_hc;
-		op_index = &chain->tp_hc_op_index;
-	}
-	else
-	{
-		collective = &state->tp_device_collective;
-		op_index = &chain->tp_op_index;
-	}
-	ordinal_status = SparkLagunaChainOrdinal(chain,hc_wide,*op_index,&ordinal);
+	op_index = &chain->tp_op_index;
+	ordinal_status = SparkLagunaChainOrdinal(chain,*op_index,&ordinal);
 	if ( ordinal_status != SPARK_STATUS_OK )
 		return(ordinal_status);
 	memset(&submission,0,sizeof(submission));
@@ -2117,16 +1504,16 @@ static SparkStatus SparkLagunaModuleReduceHiddenWide(SparkLagunaTpChain *chain,
 	{
 		SparkStatus submit_status;
 		*op_index += 1u;
-		submit_status = SparkTpDeviceCollectiveEnqueue(collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+		submit_status = SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 		if ( submit_status != SPARK_STATUS_OK )
 			*op_index -= 1u;
-		if ( submit_status != SPARK_STATUS_OK )
-			fprintf(stderr,"G5N-DBG reduce submit -> %d (rows %u slot %u dev %p stream %p maxact %u)\n",
-				(int)submit_status,(unsigned)chain->wave_rows,(unsigned)chain->slot_index,
-				device_bf16,chain->slot->stream,
-				(unsigned)state->tp_device_collective.max_active_sequence_count);
 		return(submit_status);
 	}
+}
+
+static SparkStatus SparkLagunaModuleReduceAttentionOut(SparkLagunaTpChain *chain,void *device_bf16)
+{
+	return(SparkLagunaModuleReduceHidden(chain,device_bf16));
 }
 
 static SparkStatus SparkLagunaModuleReduceHeadMax(SparkLagunaTpChain *chain)
@@ -2143,7 +1530,7 @@ static SparkStatus SparkLagunaModuleReduceHeadMax(SparkLagunaTpChain *chain)
 	}
 	if ( state->tp_device_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkLagunaChainOrdinal(chain,0u,chain->tp_op_index,&ordinal);
+	status = SparkLagunaChainOrdinal(chain,chain->tp_op_index,&ordinal);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	memset(&submission,0,sizeof(submission));
@@ -2166,144 +1553,9 @@ static SparkStatus SparkLagunaModuleReduceHeadMax(SparkLagunaTpChain *chain)
 	return(status);
 }
 
-static void SparkLagunaBuildMtpDraftWave(
-	const SparkLagunaModuleState *state,
-	SparkLagunaExecutionSlot *slot,
-	SparkLagunaCudaWave *wave)
-{
-	memset(wave,0,sizeof(*wave));
-	wave->tp_degree = state->tp_degree;
-	wave->tp_rank = state->tp_rank;
-	wave->owns_final_head = state->owns_final_head;
-	wave->multiprocessor_count = state->multiprocessor_count;
-	wave->embedding_bf16 = state->embedding_bf16;
-	wave->lm_head_bf16 = state->lm_head_bf16;
-	wave->mtp_layer_weights = &state->mtp_layer;
-	wave->mtp_eh_proj_bf16 = state->mtp_eh_proj_bf16;
-	wave->mtp_enorm_bf16 = state->mtp_enorm_bf16;
-	wave->mtp_hnorm_bf16 = state->mtp_hnorm_bf16;
-	wave->mtp_shared_norm_bf16 = state->mtp_shared_norm_bf16;
-	wave->mtp_draft_depth = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
-	wave->slot = slot;
-}
 
-static SparkStatus SparkLagunaMtpDriveDraft(
-	SparkLagunaModuleState *state,
-	SparkModelDriverFrame *frame,
-	const SparkLagunaResidentDecodeStageBatchView *batch,
-	SparkLagunaExecutionSlot *slot,
-	SparkLagunaTpChain *chain)
-{
-	SparkLagunaAsyncCompletion *async;
-	SparkLagunaCudaWave draft_wave;
-	uint32_t lane,step;
-	uint64_t position;
-	if ( state->mtp_enabled == 0u ||
-		(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ||
-		batch->row_count != 1u || batch->active_sequence_count != 1u ||
-		batch->token_ids == 0 || state->owns_embedding == 0u || state->owns_final_head == 0u )
-		return(SPARK_STATUS_OK);
-	lane = batch->row_resident_slots[0];
-	position = batch->row_positions[0];
-	if ( lane >= state->resident_sequence_capacity ||
-		state->mtp_lane_armed[lane] == 0u ||
-		position + SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u > state->max_sequence_positions )
-		return(SPARK_STATUS_OK);
-	async = &state->completions[chain->slot_index];
-	SparkLagunaBuildMtpDraftWave(state,slot,&draft_wave);
-	if ( SparkLagunaLaunchCudaMtpDraft(&draft_wave,0,
-		state->mtp_lane_hidden_bf16 + (uint64_t)lane * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,
-		batch->token_ids[0],async->mtp_draft_tokens) != 0 )
-		return(SPARK_STATUS_INTERNAL_ERROR);
-	for ( step = 1u; step <= SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH; ++step )
-	{
-		slot->host_token_ids[step] = async->mtp_draft_tokens[step - 1u];
-		slot->host_positions[step] = (uint32_t)(position + step);
-		slot->host_resident_slots[step] = lane;
-	}
-	chain->wave_rows = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u;
-	chain->next_wave_row = chain->wave_rows;
-	chain->spec_verify = 1u;
-	return(SPARK_STATUS_OK);
-}
 
-static SparkStatus SparkLagunaMtpStashHidden(
-	SparkLagunaModuleState *state,
-	const SparkLagunaTpChain *chain)
-{
-	cudaError_t error;
-	uint32_t row,lane;
-	for ( row = 0u; row < chain->wave_rows; ++row )
-	{
-		lane = chain->slot->host_resident_slots[chain->first_row + row];
-		if ( row + 1u < chain->wave_rows &&
-			chain->slot->host_resident_slots[chain->first_row + row + 1u] == lane )
-			continue;
-		error = cudaMemcpyAsync(
-			state->mtp_lane_hidden_bf16 + (uint64_t)lane * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,
-			chain->slot->hc_mean_bf16 + (uint64_t)row * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,
-			(uint64_t)SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),
-			cudaMemcpyDeviceToDevice,(cudaStream_t)chain->slot->stream);
-		if ( error != cudaSuccess )
-			return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"mtp_stash"));
-		state->mtp_lane_armed[lane] = 1u;
-	}
-	return(SPARK_STATUS_OK);
-}
 
-static void CUDART_CB SparkLagunaMtpResolveHost(void *context)
-{
-	SparkLagunaTpChain *chain;
-	SparkLagunaModuleState *state;
-	SparkLagunaExecutionSlot *slot;
-	SparkLagunaAsyncCompletion *async;
-	SparkSpeculationPolicyVerifyResult result;
-	SparkStatus status;
-	cudaError_t error;
-	uint32_t lane;
-	int32_t launch;
-	chain = (SparkLagunaTpChain *)context;
-	if ( chain == 0 || chain->active == 0u )
-		return;
-	state = chain->state;
-	slot = chain->slot;
-	async = &state->completions[chain->slot_index];
-	lane = async->lane_indices[0];
-	status = SparkSpeculationPolicyResolveVerifierTokens(
-		async->mtp_draft_tokens,SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,
-		slot->host_output_token_ids,SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u,
-		SPARK_LAGUNA_MODEL_OUTPUT_VOCAB_COUNT,&result);
-	if ( status == SPARK_STATUS_OK &&
-		result.committed_token_count != result.accepted_draft_token_count + 1u )
-		status = SPARK_STATUS_INTERNAL_ERROR;
-	error = cudaSuccess;
-	launch = 0;
-	if ( status == SPARK_STATUS_OK )
-	{
-		async->completion.accepted_token_count = result.committed_token_count;
-		async->completion.tokens_per_sequence = result.committed_token_count;
-		async->burst_token_count = result.committed_token_count;
-		async->lane_next_positions[0] += result.accepted_draft_token_count;
-		async->mtp_cache_extra = result.accepted_draft_token_count;
-		error = cudaMemcpyAsync(
-			state->mtp_lane_hidden_bf16 + (uint64_t)lane * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,
-			slot->hc_mean_bf16 + (uint64_t)result.accepted_draft_token_count * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION,
-			(uint64_t)SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),
-			cudaMemcpyDeviceToDevice,(cudaStream_t)slot->stream);
-		if ( error == cudaSuccess )
-			launch = SparkLagunaLaunchCudaMtpCommit(&chain->wave,result.committed_token_count);
-	}
-	if ( status != SPARK_STATUS_OK || error != cudaSuccess || launch != 0 )
-		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-	if ( SparkLagunaEnqueueAsyncCompletion(state,slot,chain->slot_index) != SPARK_STATUS_OK )
-	{
-		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-		SparkLagunaCompleteAsync(async);
-	}
-	chain->stage = SPARK_LAGUNA_CHAIN_STAGE_FINISH;
-	chain->active = 0u;
-	free(chain);
-}
 
 static void SparkLagunaTpChainFail(SparkLagunaTpChain *chain,SparkStatus status)
 {
@@ -2546,25 +1798,6 @@ static void SparkLagunaTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkLagunaTpChainFail(chain,launch_status);
 			return;
 		}
-		if ( chain->spec_verify != 0u )
-		{
-			error = cudaLaunchHostFunc((cudaStream_t)chain->slot->stream,SparkLagunaMtpResolveHost,chain);
-			if ( error != cudaSuccess )
-			{
-				SparkLagunaTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
-				return;
-			}
-			return;
-		}
-		if ( state->mtp_enabled != 0u && state->owns_final_head != 0u )
-		{
-			launch_status = SparkLagunaMtpStashHidden(state,chain);
-			if ( launch_status != SPARK_STATUS_OK )
-			{
-				SparkLagunaTpChainFail(chain,launch_status);
-				return;
-			}
-		}
 		if ( chain->next_wave_row < chain->batch->row_count )
 		{
 			uint32_t next_wave;
@@ -2658,39 +1891,6 @@ static void SparkLagunaPrepareAsyncCompletion(
 	async->completion.device_memcpy_bytes = async->completion.host_staging_bytes;
 }
 
-static SparkStatus SparkLagunaCaptureRecurrent(SparkLagunaModuleState *state,uint32_t resident)
-{
-	SparkKvLaneTransaction *owner;
-	SparkKvPageCacheSequence *sequence;
-	uint32_t page;
-	uint64_t generation;
-	SparkStatus status;
-	if ( state->kda_layer_count == 0u )
-		return(SPARK_STATUS_OK);
-	if ( resident >= state->resident_sequence_capacity || state->kv_lane_transactions == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	owner = &state->kv_lane_transactions[resident];
-	if ( (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u )
-		return(SPARK_STATUS_OK);
-	if ( owner->phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	sequence = &state->kv_transactions.cache->sequences[resident];
-	page = sequence->mutable_logical_page_index;
-	if ( page >= state->page_count || state->kv_blocks[page].residency_reference_count == 0u )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	generation = state->kv_blocks[page].generation;
-	status = SparkLagunaRecurrentCopy(state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,resident,state->recurrent_staging,state->recurrent_page_bytes);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkKvPageStoreWriteback(&state->recurrent_store,page,resident,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes,0u,0u);
-	while ( status == SPARK_STATUS_BUSY )
-	{
-		if ( SparkKvPageStoreWaitForTransfers(&state->recurrent_store) != SPARK_STATUS_OK )
-			return(SPARK_STATUS_BUSY);
-		status = SparkKvPageStoreWriteback(&state->recurrent_store,page,resident,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes,0u,0u);
-	}
-	return(status);
-}
 
 static SparkStatus SparkLagunaFinishCacheLanes(SparkLagunaAsyncCompletion *async)
 {
@@ -2700,14 +1900,7 @@ static SparkStatus SparkLagunaFinishCacheLanes(SparkLagunaAsyncCompletion *async
 	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	result = async->completion.status;
-	for (lane=0u; lane<async->lane_count && result==SPARK_STATUS_OK; lane++)
-		result = SparkLagunaCaptureRecurrent(state,async->lane_indices[lane]);
-	if ( result == SPARK_STATUS_BUSY )
-	{
-		(void)pthread_mutex_unlock(&state->kv_mutex);
-		return(result);
-	}
-	result = SparkKvLaneTransactionsFinish(&state->kv_transactions,async->lane_indices,async->lane_count,result,(uint32_t)async->mtp_cache_extra);
+	result = SparkKvLaneTransactionsFinish(&state->kv_transactions,async->lane_indices,async->lane_count,result,0u);
 	for (lane=0u; lane<async->lane_count; lane++)
 	{
 		resident = async->lane_indices[lane];
@@ -2720,8 +1913,6 @@ static SparkStatus SparkLagunaFinishCacheLanes(SparkLagunaAsyncCompletion *async
 		else
 		{
 			memset(state->page_table_shadow + (uint64_t)resident * state->pages_per_sequence,0xff,(uint64_t)state->pages_per_sequence * sizeof(uint32_t));
-			if ( state->mtp_lane_armed != 0 )
-				state->mtp_lane_armed[resident] = 0u;
 		}
 	}
 	(void)pthread_mutex_unlock(&state->kv_mutex);
@@ -2831,47 +2022,7 @@ static SparkStatus SparkLagunaUploadPageTables(SparkLagunaModuleState *state,con
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLagunaRestoreRecurrent(SparkLagunaModuleState *state,uint32_t resident)
-{
-	const SparkKvLaneTransaction *owner = &state->kv_lane_transactions[resident];
-	SparkKvPageCache *cache = state->kv_transactions.cache;
-	uint32_t entry,page;
-	uint64_t generation;
-	SparkStatus status;
-	if ( SparkLagunaPrefixRestorePending(owner) == 0u || state->kda_layer_count == 0u )
-		return(SPARK_STATUS_OK);
-	if ( owner->phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	entry = cache->sequences[resident].terminal_entry_index;
-	if ( entry >= cache->entry_capacity || cache->entries[entry].token_count != owner->lane.sequence_position )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	page = cache->entries[entry].logical_page_index;
-	if ( page >= state->page_count || state->kv_blocks[page].residency_reference_count == 0u )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	generation = state->kv_blocks[page].generation;
-	status = SparkKvPageStoreReadback(&state->recurrent_store,page,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes);
-	while ( status == SPARK_STATUS_BUSY )
-	{
-		if ( SparkKvPageStoreWaitForTransfers(&state->recurrent_store) != SPARK_STATUS_OK )
-			return(SPARK_STATUS_BUSY);
-		status = SparkKvPageStoreReadback(&state->recurrent_store,page,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes);
-	}
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaRecurrentCopy(state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,resident,state->recurrent_staging,state->recurrent_page_bytes);
-	return(status);
-}
 
-static SparkStatus SparkLagunaRestoreCacheLanes(SparkLagunaModuleState *state,const SparkLagunaAsyncCompletion *async)
-{
-	SparkStatus status = SPARK_STATUS_OK;
-	uint32_t lane;
-	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
-		return(SPARK_STATUS_INTERNAL_ERROR);
-	for (lane=0u; lane<async->lane_count && status==SPARK_STATUS_OK; lane++)
-		status = SparkLagunaRestoreRecurrent(state,async->lane_indices[lane]);
-	(void)pthread_mutex_unlock(&state->kv_mutex);
-	return(status);
-}
 
 static SparkStatus SparkLagunaStartClaimedBatch(SparkLagunaModuleState *state,SparkModelDriverFrame *frame,const SparkLagunaResidentDecodeStageFrameContext *context,uint32_t slot_index)
 {
@@ -2899,9 +2050,7 @@ static SparkStatus SparkLagunaStartClaimedBatch(SparkLagunaModuleState *state,Sp
 	chain->stage = SPARK_LAGUNA_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	status = SparkLagunaRestoreCacheLanes(state,&state->completions[slot_index]);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaUploadPageTables(state,&state->completions[slot_index],slot->stream);
+	status = SparkLagunaUploadPageTables(state,&state->completions[slot_index],slot->stream);
 	if ( status == SPARK_STATUS_OK )
 	{
 		error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_LAGUNA_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
@@ -2909,8 +2058,6 @@ static SparkStatus SparkLagunaStartClaimedBatch(SparkLagunaModuleState *state,Sp
 	}
 	if ( status == SPARK_STATUS_OK && chain->wave_rows == 0u )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaMtpDriveDraft(state,frame,context->batch,slot,chain);
 	if ( status != SPARK_STATUS_OK )
 		SparkLagunaTpChainFail(chain,status);
 	else
@@ -2996,30 +2143,20 @@ static void SparkLagunaAdmissionCost(
 
 static SparkStatus SparkLagunaResetExecutionState(SparkLagunaModuleState *state)
 {
-	cudaError_t error = cudaSuccess,drain;
+	cudaError_t drain;
 	uint32_t lane;
-	if ( state->kda_layer_count != 0u )
-	{
-		error = cudaMemsetAsync(state->kda_state_pools,0,state->kda_state_layer_stride_bytes * state->kda_layer_count,(cudaStream_t)state->execution_stream);
-		if ( error == cudaSuccess )
-			error = cudaMemsetAsync(state->kda_window_pools,0,state->kda_window_layer_stride_bytes * state->kda_layer_count * 3u,(cudaStream_t)state->execution_stream);
-	}
 	drain = cudaStreamSynchronize((cudaStream_t)state->execution_stream);
 	if ( drain != cudaSuccess )
 	{
 		(void)SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,drain,"reset_stream_drain");
 		return(SPARK_STATUS_PENDING);
 	}
-	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"cache_reset"));
 	memset(state->page_table_shadow,0xff,(uint64_t)state->resident_sequence_capacity * state->pages_per_sequence * sizeof(uint32_t));
 	for (lane=0u; lane<state->resident_sequence_capacity; lane++)
 	{
 		atomic_store_explicit(&state->lane_bound[lane],0u,memory_order_release);
 		atomic_store_explicit(&state->lane_sequence_ids[lane],0u,memory_order_release);
 		atomic_store_explicit(&state->lane_next_positions[lane],0u,memory_order_release);
-		if ( state->mtp_lane_armed != 0 )
-			state->mtp_lane_armed[lane] = 0u;
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -3152,13 +2289,8 @@ SparkStatus SparkLagunaResidentDecodeStageSnapshot(
 
 static void SparkLagunaReleaseCaches(SparkLagunaModuleState *state)
 {
-	if ( state->recurrent_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
-		SparkKvPageStoreDestroy(&state->recurrent_store);
-	if ( state->recurrent_staging != 0 )
-		(void)cudaFreeHost(state->recurrent_staging);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
-	free(state->kda_state_index_host);
 	free(state->kv_blocks);
 	free(state->kv_resident_slot_logical_block_indices);
 	free(state->kv_entries);
@@ -3208,42 +2340,14 @@ void SparkLagunaResidentDecodeStageDestroy(void *module_state)
 			return;
 		state->lazy_pack = 0;
 	}
-	if ( state->tp_device_collective_hc_initialized != 0u )
-		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective_hc);
-	if ( state->tp_hc_host_credit_send_bf16 != 0 )
-		(void)cudaFreeHost(state->tp_hc_host_credit_send_bf16);
-	if ( state->tp_hc_host_credit_receive_bf16 != 0 )
-		(void)cudaFreeHost(state->tp_hc_host_credit_receive_bf16);
-	state->tp_hc_host_credit_send_bf16 = 0;
-	state->tp_hc_host_credit_receive_bf16 = 0;
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	SparkLagunaReleaseCaches(state);
 	SparkLagunaReleaseSlotHost(state);
 	SparkStageModuleLedgerRelease(&state->ledger);
-	free(state->mtp_lane_armed);
 	free(state);
 }
 
-static SparkStatus SparkLagunaBuildHeadShadow(SparkLagunaModuleState *state)
-{
-	uint64_t head_rows,dim;
-	SparkStatus status;
-	if ( state->owns_final_head == 0u || state->lm_head_bf16 == 0 )
-		return(SPARK_STATUS_OK);
-	head_rows = SPARK_LAGUNA_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
-	dim = SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION;
-	status = SparkLagunaAllocateBytes(state,head_rows,dim,1u,(void **)&state->head_certified_fp8_payload);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaAllocateBytes(state,head_rows,dim / 32u,sizeof(float),(void **)&state->head_certified_fp8_scale_f32);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaAllocateBytes(state,head_rows,dim / 32u,sizeof(float),(void **)&state->head_certified_fp8_norm_f32);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,SparkLagunaLaunchHeadCertifiedQuantize(0,state->lm_head_bf16,state->head_certified_fp8_payload,state->head_certified_fp8_scale_f32,state->head_certified_fp8_norm_f32,(uint32_t)head_rows,(uint32_t)dim),"head_certified_quantize");
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,cudaDeviceSynchronize(),"head_certified_sync");
-	return(status);
-}
 
 static SparkStatus SparkLagunaInitializeState(
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -3265,26 +2369,16 @@ static SparkStatus SparkLagunaInitializeState(
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLagunaPackLoad(state,pack_path);
-	if ( status == SPARK_STATUS_OK && state->mtp_enabled != 0u && state->pack_has_mtp == 0u )
-	{
-		fprintf(stderr,"G5N-DBG config: MTP flag set but the pack carries no layer-45 tensors\n");
-		status = SPARK_STATUS_SCHEMA_ERROR;
-	}
-	if ( status == SPARK_STATUS_OK && state->mtp_enabled != 0u && state->tp_degree != 1u )
-	{
-		fprintf(stderr,"G5N-DBG config: MTP speculation requires tp_degree 1 in this revision\n");
-		status = SPARK_STATUS_UNSUPPORTED;
-	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLagunaAllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLagunaAllocateSlots(state);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaAllocateMtp(state);
-	if ( status == SPARK_STATUS_OK )
 		status = SparkLagunaModuleInitializeTpCollective(state,(const SparkLagunaResidentDecodeStageNodeContext *)host_services->node_context);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaBuildHeadShadow(state);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_LAGUNA_MODEL_ROPE_FULL_ROTARY_DIMENSION / 2u * sizeof(float),(void **)&state->yarn_inv_freq);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLagunaStageYarnTableUpload(state->yarn_inv_freq,state->execution_stream);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdWorkerCreate(&state->completion_worker);
 	if ( status != SPARK_STATUS_OK )
@@ -3297,7 +2391,6 @@ static SparkStatus SparkLagunaInitializeState(
 		SparkLagunaReleaseCaches(state);
 		SparkLagunaReleaseSlotHost(state);
 		SparkStageModuleLedgerRelease(&state->ledger);
-		free(state->mtp_lane_armed);
 		free(state);
 		return(status);
 	}
@@ -3315,7 +2408,6 @@ static SparkStatus SparkLagunaInitializeState(
 	atomic_init(&state->failed_count,0u);
 	atomic_init(&state->host_callback_completion_count,0u);
 	atomic_init(&state->nccl_next_ordinal,0u);
-	atomic_init(&state->nccl_next_ordinal_hc,0u);
 	*state_out = state;
 	return(SPARK_STATUS_OK);
 }
