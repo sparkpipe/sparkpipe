@@ -7063,8 +7063,8 @@
     },
     {
       "path": "tests/test_glm5_next_head_offset.cu",
-      "sha256": "736f67b4dfbfc477a01471df936fc69db3a7c4ce6326611a51f3e600ab719511",
-      "size_bytes": 3358
+      "sha256": "6f9f1fa055134aeba7b0f31a1a8419f206667519dd6de93b7ebd318b7ec22dcd",
+      "size_bytes": 3427
     },
     {
       "path": "tests/test_glm5_next_index_kv.py",
@@ -9715,5 +9715,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32641747
+  "total_bytes": 32641816
 }

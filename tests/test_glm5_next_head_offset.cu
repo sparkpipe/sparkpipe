@@ -40,6 +40,7 @@ int32_t main(void)
 	float *scale = TestAllocate<float>((uint64_t)vocabulary * GLM5_NEXT_HIDDEN / 32u);
 	float *bound = TestAllocate<float>((uint64_t)vocabulary * GLM5_NEXT_HIDDEN / 32u);
 	slot.hidden_bf16 = TestAllocate<uint16_t>(3u * GLM5_NEXT_HC * GLM5_NEXT_HIDDEN);
+	slot.residual_bf16 = TestAllocate<uint16_t>(3u * GLM5_NEXT_HIDDEN);
 	slot.hc_mean_bf16 = TestAllocate<uint16_t>(3u * GLM5_NEXT_HIDDEN);
 	slot.normed_bf16 = TestAllocate<uint16_t>(3u * GLM5_NEXT_HIDDEN);
 	slot.head_candidate_score = TestAllocate<float>(3u * tiles);
