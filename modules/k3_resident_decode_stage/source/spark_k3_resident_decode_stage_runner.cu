@@ -1,6 +1,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <cstring>
 #include <vector>
 
@@ -12,7 +13,6 @@
 #include "sparkpipe/spark_weightd_map.h"
 #include "sparkpipe/spark_weightd_lease.h"
 #include "sparkpipe/spark_weightd_attach.h"
-#include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_error_site.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
@@ -726,6 +726,30 @@ static void SparkK3RunnerLazyRelease(void *context, uint32_t layer)
 	state->lease_inflight = 0u;
 }
 
+static SparkStatus K3RunnerEnvUnsigned64(const char *name, uint64_t minimum,
+	uint64_t maximum, uint64_t *value)
+{
+	const char *text;
+	char *end;
+	unsigned long long parsed;
+	if ( value == 0 || minimum > maximum )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	text = getenv(name);
+	if ( text == 0 || text[0] == '\0' )
+	{
+		fprintf(stderr, "sparkpipe_k3: config_missing name=%s\n", name);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	errno = 0;
+	parsed = strtoull(text, &end, 10);
+	if ( errno != 0 || end == text || *end != '\0' )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	if ( (uint64_t)parsed < minimum || (uint64_t)parsed > maximum )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	*value = (uint64_t)parsed;
+	return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkK3StageRunnerInitialize(
 	SparkK3StageRunner *runner,
 	const SparkK3StageRunnerConfiguration *configuration)
@@ -815,12 +839,10 @@ SparkStatus SparkK3StageRunnerInitialize(
 			delete state;
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
-		if ( SparkStageModuleEnvironmentUnsigned64("k3",
-			"SPARK_WEIGHTD_EXPERT_POOL_BYTES", 1u, UINT64_MAX,
-			&expert_pool) != SPARK_STATUS_OK ||
-			SparkStageModuleEnvironmentUnsigned64("k3",
-			"SPARK_WEIGHTD_SPINE_BUDGET_BYTES", 1u, UINT64_MAX,
-			&spine_budget) != SPARK_STATUS_OK )
+		if ( K3RunnerEnvUnsigned64("SPARK_WEIGHTD_EXPERT_POOL_BYTES",
+			1u, UINT64_MAX, &expert_pool) != SPARK_STATUS_OK ||
+			K3RunnerEnvUnsigned64("SPARK_WEIGHTD_SPINE_BUDGET_BYTES",
+			1u, UINT64_MAX, &spine_budget) != SPARK_STATUS_OK )
 		{
 			fprintf(stderr, "sparkpipe_k3: lazy load requires the weightd"
 				" pool and spine budget envs\n");
