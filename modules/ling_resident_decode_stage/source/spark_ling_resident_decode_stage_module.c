@@ -1132,7 +1132,7 @@ static SparkStatus SparkLingValidateFrame(
 	const SparkLingResidentDecodeStageBatchView *batch;
 	uint32_t expected_flags,prefill;
 	uint64_t boundary_bytes;
-	SparkStatus status;	SparkStatus status;
+	SparkStatus status;
 	if ( state == 0 || frame == 0 || context_out == 0 || frame->user_context == 0 || frame->execution_stream != state->execution_stream || frame->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (const SparkLingResidentDecodeStageFrameContext *)frame->user_context;
@@ -1151,11 +1151,12 @@ static SparkStatus SparkLingValidateFrame(
 	expected_flags = prefill != 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
 	expected_flags |= state->owns_embedding == 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
 	expected_flags |= state->owns_final_head == 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
-	if ( context->flags != expected_flags )	if ( context->flags != expected_flags )
+	if ( context->flags != expected_flags )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	boundary_bytes = (uint64_t)batch->row_count * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;	if ( (state->owns_embedding == 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < boundary_bytes)) || (state->owns_embedding != 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) || (state->owns_final_head == 0u && (context->hidden_output_bf16 == 0 || context->hidden_output_bytes < boundary_bytes)) || (state->owns_final_head != 0u && (context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u)) )
+	boundary_bytes = (uint64_t)batch->row_count * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
+	if ( (state->owns_embedding == 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < boundary_bytes)) || (state->owns_embedding != 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) || (state->owns_final_head == 0u && (context->hidden_output_bf16 == 0 || context->hidden_output_bytes < boundary_bytes)) || (state->owns_final_head != 0u && (context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u)) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkLingValidateRoundMajor(state,batch);	status = SparkLingValidateRoundMajor(state,batch);
+	status = SparkLingValidateRoundMajor(state,batch);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLingValidateFrameBuffers(state,frame,batch->row_count);
 	*context_out = status == SPARK_STATUS_OK ? context : 0;
@@ -1468,11 +1469,6 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLingModuleReduceAttentionOut(SparkLingTpChain *chain,void *device_bf16)
-{
-	return(SparkLingModuleReduceHidden(chain,device_bf16));
-}
-
 static void SparkLingModuleTpCompletion(
 	void *context,
 	const SparkTpDeviceCollectiveCompletion *completion)
@@ -1486,8 +1482,10 @@ static void SparkLingModuleTpCompletion(
 
 static SparkStatus SparkLingModuleReduceHidden(SparkLingTpChain *chain,void *device_bf16)
 {
+	SparkLingModuleState *state;
+	SparkTpDeviceCollectiveSubmission submission;
+	SparkTpDeviceCollective *collective;
 	atomic_ullong *wide_ordinal;
-	SparkTpDeviceCollective *collective;	SparkTpDeviceCollective *collective;
 	uint64_t ordinal;
 	state = chain->state;
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
@@ -1499,7 +1497,7 @@ static SparkStatus SparkLingModuleReduceHidden(SparkLingTpChain *chain,void *dev
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	collective = &state->tp_device_collective;
 	wide_ordinal = &state->tp_next_ordinal;
-	ordinal = atomic_fetch_add_explicit(	ordinal = atomic_fetch_add_explicit(wide_ordinal,1u,memory_order_relaxed);
+	ordinal = atomic_fetch_add_explicit(wide_ordinal,1u,memory_order_relaxed);
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
@@ -1512,16 +1510,12 @@ static SparkStatus SparkLingModuleReduceHidden(SparkLingTpChain *chain,void *dev
 	submission.cuda_stream = chain->slot->stream;
 	submission.completion_function = SparkLingModuleTpCompletion;
 	submission.completion_context = chain;
-	{
-		SparkStatus submit_status;
-		submit_status = SparkTpDeviceCollectiveSubmitBf16(collective,&submission);
-		if ( submit_status != SPARK_STATUS_OK )
-			fprintf(stderr,"G5N-DBG reduce submit -> %d (rows %u slot %u dev %p stream %p maxact %u)\n",
-				(int)submit_status,(unsigned)chain->wave_rows,(unsigned)chain->slot_index,
-				device_bf16,chain->slot->stream,
-				(unsigned)state->tp_device_collective.max_active_sequence_count);
-		return(submit_status);
-	}
+	return(SparkTpDeviceCollectiveSubmitBf16(collective,&submission));
+}
+
+static SparkStatus SparkLingModuleReduceAttentionOut(SparkLingTpChain *chain,void *device_bf16)
+{
+	return(SparkLingModuleReduceHidden(chain,device_bf16));
 }
 
 static SparkStatus SparkLingModuleReduceHeadMax(SparkLingTpChain *chain)
@@ -1595,7 +1589,8 @@ static void SparkLingTpChainAdvance(void *chain_context,SparkStatus status)
 		chain->stage = SPARK_LING_CHAIN_STAGE_ATTENTION;
 		chain->next_layer = 0u;
 		SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
-		return;	case SPARK_LING_CHAIN_STAGE_ATTENTION:
+		return;
+	case SPARK_LING_CHAIN_STAGE_ATTENTION:
 		if ( SparkLingLaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1606,7 +1601,11 @@ static void SparkLingTpChainAdvance(void *chain_context,SparkStatus status)
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkLingTpChainFail(chain,launch_status);
 		return;
-	case SPARK_LING_CHAIN_STAGE_MLP:	case SPARK_LING_CHAIN_STAGE_MLP:
+	case SPARK_LING_CHAIN_STAGE_REDUCE_ATTENTION:
+		chain->stage = SPARK_LING_CHAIN_STAGE_MLP;
+		SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+		return;
+	case SPARK_LING_CHAIN_STAGE_MLP:
 		if ( SparkLingLaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1617,7 +1616,14 @@ static void SparkLingTpChainAdvance(void *chain_context,SparkStatus status)
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkLingTpChainFail(chain,launch_status);
 		return;
-		chain->next_layer++;		else
+	case SPARK_LING_CHAIN_STAGE_REDUCE_MLP:
+		chain->next_layer++;
+		if ( chain->next_layer < chain->wave.layer_count )
+		{
+			chain->stage = SPARK_LING_CHAIN_STAGE_ATTENTION;
+			SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+		}
+		else
 		{
 			chain->stage = SPARK_LING_CHAIN_STAGE_HEAD;
 			SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);

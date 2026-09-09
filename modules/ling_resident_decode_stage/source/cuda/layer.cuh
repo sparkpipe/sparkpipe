@@ -397,7 +397,6 @@ static int32_t LingLayerAttention(
         LING_ROPE_DIM,
         LING_ROPE_THETA);
     LM_LAUNCH(
-        (LmKvStoreKernel<LingKv, LING_LAYER_THREADS>),    LM_LAUNCH(
         (LmKvStoreKernel<LingKv, LING_LAYER_THREADS>),
         rows,
         LING_LAYER_THREADS,
@@ -474,7 +473,7 @@ static int32_t LingLayerAttention(
         buffers->attn_heads,
         LING_VALUE_DIM);
 
-    return LingLaunchBf16Linear(    return LingLaunchBf16Linear(
+    return LingLaunchBf16Linear(
         buffers->attention_value_bf16,
         buffers->output_weight,
         buffers->attention_out_bf16,
@@ -688,7 +687,7 @@ static int32_t LingLayerKda(
         buffers->kda_qkv_beta_weight == 0 ||
         buffers->kda_decay_weight == 0 ||
         buffers->kda_gate_weight == 0 ||
-        buffers->kda_q_conv_weight == 0 ||        buffers->kda_q_conv_weight == 0 || buffers->kda_k_conv_weight == 0 ||
+        buffers->kda_q_conv_weight == 0 || buffers->kda_k_conv_weight == 0 ||
         buffers->kda_v_conv_weight == 0 || buffers->kda_decay_bias == 0 ||
         buffers->kda_head_log_scale == 0 ||
         buffers->kda_out_norm_weight == 0 ||
@@ -696,7 +695,7 @@ static int32_t LingLayerKda(
         buffers->fused_qkvb_bf16 == 0 ||
         buffers->kda_beta_logit == 0 ||
         buffers->kda_gate_bf16 == 0 ||
-        buffers->kda_decay_logit_bf16 == 0 ||        buffers->kda_decay_logit_bf16 == 0 ||
+        buffers->kda_decay_logit_bf16 == 0 ||
         buffers->kda_retention == 0 || buffers->kda_write_gate == 0 ||
         buffers->normed_bf16 == 0 || buffers->attention_out_bf16 == 0 ||
         buffers->q_bf16 == 0 || buffers->kv_slot_bf16 == 0)
@@ -735,7 +734,6 @@ static int32_t LingLayerKda(
         LING_KDA_PROBE_RAW(stream,buffers->layer_index,"normed",buffers->normed_bf16);
         LING_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
         LING_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
-    }        LING_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
     }
     status = LingLaunchBf16Linear(
         buffers->normed_bf16,
