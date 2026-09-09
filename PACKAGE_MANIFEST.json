@@ -23,8 +23,8 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "cd791455fbfc10ccd2b4dfbda958d1e53f53d97f105379ed8b3c260c7faf3365",
-      "size_bytes": 230
+      "sha256": "cc4491dfa6f650af08c03fbff9b6007be92293d52c6c51853d3aadc19f3d8a1d",
+      "size_bytes": 239
     },
     {
       "path": ".updaterepo-policy",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "dfbb1d88778c4516f7649b9d3e79322c0358d7d2de145e90ba870b755105576f",
-      "size_bytes": 97491
+      "sha256": "1422ac55a2994e68dc9c0e8fa0b87276ad882fa708fc0492e7e52dda9194ed72",
+      "size_bytes": 97622
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -2813,8 +2813,8 @@
     },
     {
       "path": "include/sparkpipe/spark_error_site.h",
-      "sha256": "51bd7b98cfe1e2e806ab8244eb592501c8f34d1e7f348ad64fafa99cc3b1bb1e",
-      "size_bytes": 760
+      "sha256": "cd0c0764d18dc8ad85e2068339b4cf5d391b961ba915b33184cb3bfcb60cc137",
+      "size_bytes": 798
     },
     {
       "path": "include/sparkpipe/spark_fabric_topology.h",
@@ -4078,8 +4078,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "bd4f9aa84a2a6a73b5d6c2117f3a8d05557c68bbd6d918dc24bc7b34e6aa84aa",
-      "size_bytes": 169002
+      "sha256": "fedd52ef71df4ab953a664ba6b5d4e3ae1d7f6edff9408cbe95204fe78a7a69a",
+      "size_bytes": 167164
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -5908,8 +5908,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "31f28d505b6d68694ed256af242cd109422669ae920ceeaf9a9efe63bd4dc77b",
-      "size_bytes": 143070
+      "sha256": "095e5d6668c09cfd5eaecbf610310dea412bcea56ed7f011df2da51989d0d971",
+      "size_bytes": 128423
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
@@ -5993,8 +5993,8 @@
     },
     {
       "path": "runtime/model_resident_deployment.c",
-      "sha256": "d226b5b343c484aff5582ad887f1df001d827c280422a7181ce3d727bda2c078",
-      "size_bytes": 28591
+      "sha256": "12c861debe0784e138beaa5a47787421fa1803e432ab6c1e01a90ee95ead9e94",
+      "size_bytes": 28635
     },
     {
       "path": "runtime/model_resident_endpoint.c",
@@ -6013,8 +6013,8 @@
     },
     {
       "path": "runtime/model_serving_adapter.c",
-      "sha256": "930f6e74fed3e86be98751fb240974c47994b70269a300bbe5b03f821a67776e",
-      "size_bytes": 38993
+      "sha256": "cf50934d0f79e6e301afbb0b73cf8b22a8e8ca0f6c22660cdea0d35f53688110",
+      "size_bytes": 39065
     },
     {
       "path": "runtime/net.h",
@@ -6210,16 +6210,6 @@
       "path": "src/spark_status.c",
       "sha256": "97804be3907b63a5e534e57e98e17f499e63134cd6dee9290cc4c4f78938afb3",
       "size_bytes": 2105
-    },
-    {
-      "path": "staging/fleet-release.service",
-      "sha256": "dd5254dc12c7202756e07d25ec08bef001c48c6377067dffd0ed9063c69992b8",
-      "size_bytes": 198
-    },
-    {
-      "path": "staging/fleet-view.service",
-      "sha256": "f4e7eae0ffa63994152af291ee8f49272bfe228bc5363996ca2f38c94d5081a4",
-      "size_bytes": 187
     },
     {
       "path": "tests/cuda_driver_stub/cuda.h",
@@ -8082,6 +8072,11 @@
       "size_bytes": 8830
     },
     {
+      "path": "tools/adapter_interface_probe.c",
+      "sha256": "57635a453436bc2fa93b5132650097cd4662b59ff3179c2c41494188ef484fcb",
+      "size_bytes": 1071
+    },
+    {
       "path": "tools/audit_core_boundaries.py",
       "sha256": "69b1e0e343712c9ebbae4269d467ffc5c7d86f6f8732427e8c79b8dad5142d8d",
       "size_bytes": 10218
@@ -8588,8 +8583,8 @@
     },
     {
       "path": "tools/fleet_node_agent.sh",
-      "sha256": "e3f49c3a89ea46f3fe39fde512cb7d1ea4621fa4ce7cb77fc3f31dd83ac0017a",
-      "size_bytes": 11578
+      "sha256": "347948a801f54a83c48fb4863b23a7d45dc5b6611d652385205d9c0a8ee04a1f",
+      "size_bytes": 9842
     },
     {
       "path": "tools/fleet_preflight.sh",
@@ -8602,9 +8597,14 @@
       "size_bytes": 789
     },
     {
+      "path": "tools/fleet_release_serve.py",
+      "sha256": "a608d9c0b76b030c8698649f65431c4d476d28518e1b6811bb423d22b39de72d",
+      "size_bytes": 741
+    },
+    {
       "path": "tools/fleet_serve.sh",
-      "sha256": "4c6f569bd1eaf7cf86cb1abf0d3eb2e9842b271c4f64d8e9e7c7b02fece9539d",
-      "size_bytes": 5318
+      "sha256": "c868fcfcec21fdba1fc468a29adcd3b48a867e544b4403d60d30a1a680324a56",
+      "size_bytes": 5277
     },
     {
       "path": "tools/fleet_swap.sh",
@@ -8830,11 +8830,6 @@
       "path": "tools/glm5_next_bench_wrap.py",
       "sha256": "1a186bf25ffdae8d8c0783568689bf666fdb5091f2ac2a110a9352b3c8958c7e",
       "size_bytes": 9449
-    },
-    {
-      "path": "tools/glm5_next_build_release.sh",
-      "sha256": "a1890af6287d7d25165823abb6de1eecc2c98095b859672b5dcc0e32fb126083",
-      "size_bytes": 2422
     },
     {
       "path": "tools/glm5_next_checkpoint_layer_reference.py",
@@ -9228,8 +9223,8 @@
     },
     {
       "path": "tools/module_build_release.sh",
-      "sha256": "81b18274d4387042620558f500451dd50fe6dc02fad9cb673efa8adb650727de",
-      "size_bytes": 2949
+      "sha256": "062b6c638d9b510ef978f3959dc21f1bb13bd6c164c7686ed1f81216de2f86e8",
+      "size_bytes": 2722
     },
     {
       "path": "tools/mtp_strip_audit.py",
@@ -9340,6 +9335,11 @@
       "path": "tools/prefill_cliff_probe.py",
       "sha256": "5b60635240141fe7dd142f7a9d6d7396b61fd9ae63c991437c3b7885e8be624d",
       "size_bytes": 812
+    },
+    {
+      "path": "tools/publish_local.sh",
+      "sha256": "de40af8d2af0dc52425bc103e0a2dceca9b0625d19f00baf5b59a9e162a95475",
+      "size_bytes": 1129
     },
     {
       "path": "tools/qwen36_dflash2_bisect.py",
@@ -9820,5 +9820,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32782887
+  "total_bytes": 32764826
 }
