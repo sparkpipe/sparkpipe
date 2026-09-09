@@ -285,10 +285,48 @@ static void test_credit(uint32_t direct,uint32_t route,uint32_t credit)
 	assert(SparkTpDeviceCollectiveAckGateOpen(&IMPLEMENTATION,direct,route,credit) == 1u);
 }
 
+static int32_t test_credit_payload_bounds(void)
+{
+	static uint8_t storage[3u * (97u * 4096u * 4u + 8u) + 16u];
+	SparkTpDeviceCollective collective = {0};
+	uint32_t widths[2] = {7u,4096u},rows[3] = {1u,3u,97u},w,r,c,index;
+	uint64_t payload,stride,offset,span,nonce,observed;
+	for (w=0u; w<2u; w++)
+		for (r=0u; r<3u; r++)
+		{
+			collective.max_active_sequence_count = rows[r]; collective.local_hidden_dimension = widths[w];
+			payload = (uint64_t)rows[r] * widths[w] * sizeof(uint16_t);
+			stride = SparkTpDeviceCollectiveCreditBytes(rows[r],widths[w]); span = 3u * stride;
+			if ( stride < payload || span + 16u > sizeof(storage) )
+				return(-1);
+			memset(storage,0xa5,sizeof(storage));
+			for (c=0u; c<3u; c++)
+			{
+				offset = SparkTpDeviceCollectiveCreditOffset(&collective,c); nonce = 1000u + c;
+				memset(storage + offset,0x30 + c,payload);
+				memcpy(storage + offset + payload,&nonce,sizeof(nonce));
+			}
+			for (c=0u; c<3u; c++)
+			{
+				memcpy(&observed,storage + c * stride + payload,sizeof(observed));
+				if ( observed != 1000u + c || storage[c * stride] != 0x30 + c )
+					return(-2);
+			}
+			for (index=0u; index<16u; index++)
+				if ( storage[span + index] != 0xa5 )
+					return(-3);
+		}
+	if ( SparkTpDeviceCollectiveCreditBytes(0u,4096u) != 0u || SparkTpDeviceCollectiveCreditBytes(1u,0u) != 0u || SparkTpDeviceCollectiveCreditBytes(UINT32_MAX,UINT32_MAX) != 0u )
+		return(-4);
+	return(0);
+}
+
 int main(void)
 {
 	uint32_t counts[] = {1u,3u,4u,8u,17u,64u};
 	uint32_t index,route,credit;
+	if ( test_credit_payload_bounds() != 0 )
+		return(1);
 	test_chain_ordinals();
 	test_pending(0u);
 	test_pending(1u);

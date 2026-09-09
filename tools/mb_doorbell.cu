@@ -287,7 +287,7 @@ int main(int argc, char **argv)
     uint32_t mode;
     uint32_t memory_mode;
     uint32_t route_count;
-    uint32_t credit_bytes;
+    uint64_t credit_bytes;
     uint32_t total_bytes;
     uint32_t binding_count;
     uint32_t offset;
@@ -436,8 +436,8 @@ int main(int argc, char **argv)
     }
     printf("doorbell rank=%u memory_mode=%u routes=%u connect_ms=%u d2a_max=%u\n", rank, memory_mode, route_count, config.connect_timeout_milli, BENCH_D2A_MAX);
 
-    credit_bytes = rows * BENCH_HIDDEN * 2u;
-    total_bytes = route_count * BENCH_CREDITS * (credit_bytes + 8u);
+    credit_bytes = SparkTpDeviceCollectiveCreditBytes(rows,BENCH_HIDDEN);
+    total_bytes = route_count * BENCH_CREDITS * credit_bytes;
     if (cudaHostAlloc(&host_send, total_bytes, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
         cudaHostAlloc(&host_receive, total_bytes, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess)
     {
@@ -473,7 +473,7 @@ int main(int argc, char **argv)
                         SPARK_TP_DEVICE_COLLECTIVE_BINDING_DIRECT_ALL_TO_ALL);
                 bindings[binding_count].reserved0 = 0u;
                 binding_count++;
-                offset += credit_bytes + 8u;
+                offset += credit_bytes;
             }
         }
     }

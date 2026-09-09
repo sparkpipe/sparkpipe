@@ -351,7 +351,7 @@ static SparkStatus SparkTpCharacterizeBindings(
 		for (credit=0u; credit<credit_count; credit++)
 		{
 			index = step * credit_count + credit;
-			offset = (uint64_t)index * payload_bytes;
+			offset = (uint64_t)index * SparkTpDeviceCollectiveCreditBytes(1u,payload_bytes / 2u);
 			bindings[index].step_index = step;
 			bindings[index].credit_index = credit;
 			bindings[index].send_device = (uint8_t *)send_device + offset;
@@ -475,7 +475,7 @@ int main(int argc,char **argv)
 		return((int)status + 10);
 	configuration.credit_binding_count =
 		options.credit_count * binding_route_count;
-	scratch_bytes = (uint64_t)options.payload_bytes *
+	scratch_bytes = SparkTpDeviceCollectiveCreditBytes(1u,options.payload_bytes / 2u) *
 		options.credit_count * binding_route_count;
 	if ( cudaMalloc(&local,(uint64_t)options.payload_bytes *
 			options.credit_count) != cudaSuccess ||
