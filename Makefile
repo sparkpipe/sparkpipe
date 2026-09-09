@@ -367,6 +367,7 @@ PYTHON_TESTS := \
 	tests/test_hc_post_host.py \
 	tests/test_bf16_rms_host.py \
 	tests/test_bf16_conv_host.py \
+	tests/test_tp_f32_tree_host.py \
 	tests/test_kv_failure_host.py \
 	tests/test_frame_error_host.py \
 	tests/test_kernel_frame_error_source.py \
@@ -627,6 +628,13 @@ hardware_cuda_tools:
 		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware -Xcompiler=-pthread tools/hardware/spark_nvme_characterize.cu -o build/spark_nvme_characterize -lpthread; \
 		$(MAKE) build/spark_tp_device_collective_characterize; \
 	fi
+
+.PHONY: test-tp-f32-arithmetic-gpu
+test-tp-f32-arithmetic-gpu: build/tp_f32_arithmetic
+	./build/tp_f32_arithmetic
+
+build/tp_f32_arithmetic: tools/hardware/tp_f32_arithmetic.cu inference/kernels/tp_reduce.cuh inference/kernels/dtype.cuh | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. $< -o $@
 
 build/spark_tp_device_collective_characterize: tools/hardware/spark_tp_device_collective_characterize.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@
