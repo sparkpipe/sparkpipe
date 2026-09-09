@@ -228,6 +228,18 @@ int main(int argc, char **argv)
 		fprintf(stderr,"inventory build failed: %d\n",status);
 		return(1);
 	}
+	context.payload_cursor = SparkSynthAlign(SPARK_LAGUNA_STAGEPACK_HEADER_BYTES) +
+		(uint64_t)context.entry_count * SPARK_LAGUNA_STAGEPACK_ENTRY_BYTES;
+	for (index = 0; index < context.entry_count; index++)
+	{
+		SparkLagunaStagePackEntry *entry = &context.entries[index];
+		entry->payload_offset = SparkSynthAlign(context.payload_cursor);
+		entry->scale_offset = entry->scale_bytes != 0u ?
+			SparkSynthAlign(entry->payload_offset + entry->payload_bytes) : 0u;
+		context.payload_cursor = entry->scale_bytes != 0u ?
+			(entry->scale_offset + entry->scale_bytes) :
+			(entry->payload_offset + entry->payload_bytes);
+	}
 	file = fopen(output,"wb");
 	if ( file == 0 )
 	{
