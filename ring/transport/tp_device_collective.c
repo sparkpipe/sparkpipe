@@ -550,6 +550,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateConfig(
         config->operation_kind !=
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ||
         config->combine_bf16_function == 0 ||
+        (config->tp_degree == 16u && config->combine_tp4_bf16_function == 0) ||
         !SparkTpDeviceCollectiveTextIsValid(config->backend_module_path) ||
         !SparkTpDeviceCollectiveTextIsValid(config->local_host) ||
         (config->tp_degree > 1u && config->registration_cuda_stream == 0))
@@ -1322,6 +1323,28 @@ static SparkStatus SparkTpDeviceCollectiveSendAcks(
     return status;
 }
 
+static SparkStatus SparkTpDeviceCollectiveTreeFoldGroups(SparkTpDeviceCollectiveImplementation *implementation,SparkTpDeviceCollectiveOperation *operation,uint32_t used,uint32_t recv_bits,uint64_t local_bytes)
+{
+	SparkTpDeviceCollective *collective = implementation->collective;
+	const SparkTpDeviceCollectiveCreditBinding *binding;
+	const void *rank_devices[SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT] = {0};
+	uint32_t bit,peer;
+	for (bit=4u; bit<7u; bit++)
+	{
+		binding = &implementation->bindings[tree_bit_route(used,bit)][operation->credit_index];
+		if ( *(volatile uint64_t *)((uint8_t *)binding->receive_transport + local_bytes) == operation->ordinal + 1u )
+			operation->arrived |= 1u << bit;
+		peer = tree_peer(collective->tp_rank,bit);
+		rank_devices[peer] = binding->receive_device;
+	}
+	if ( operation->arrived != recv_bits )
+		return(SPARK_STATUS_BUSY);
+	if ( operation->packed != 0u )
+		return(SPARK_STATUS_OK);
+	rank_devices[collective->tp_rank] = operation->full_device;
+	return(implementation->combine_all_bf16_function(implementation->combine_context,operation->full_device,rank_devices,collective->tp_rank,operation->active_sequence_count,collective->local_hidden_dimension,operation->cuda_stream));
+}
+
 static void SparkTpDeviceCollectiveTreeOperation(
     SparkTpDeviceCollectiveImplementation *implementation,
     SparkTpDeviceCollectiveOperation *operation)
@@ -1338,7 +1361,20 @@ static void SparkTpDeviceCollectiveTreeOperation(
         (stage + 1u < TREE_STAGES ? tree_send_mask(rank,stage + 1u,collective->tp_degree) : 0u);
     uint32_t bit;
 
-    for (bit = 0u; bit < 7u; bit++)
+    uint32_t group_sum = stage == 2u && recv_bits != 0u && operation->operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+
+    if (group_sum != 0u)
+    {
+        SparkStatus status = SparkTpDeviceCollectiveTreeFoldGroups(implementation,operation,used,recv_bits,local_bytes);
+        if (status == SPARK_STATUS_BUSY)
+            return;
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkTpDeviceCollectiveMarkOperationFailure(implementation,operation,operation->generation,status);
+            return;
+        }
+    }
+    for (bit = 0u; group_sum == 0u && bit < 7u; bit++)
     {
         const SparkTpDeviceCollectiveCreditBinding *binding;
         uint32_t mask = 1u << bit;

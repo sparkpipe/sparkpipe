@@ -1,5 +1,5 @@
 {
-  "file_count": 1950,
+  "file_count": 1951,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "fc0b04734e85334a1a23b476fda0b5374a51568b261838d3eb8f45c6c0780683",
-      "size_bytes": 96300
+      "sha256": "1280f5ddc82c61ffd4dc1b8d95649306b47893a05f14b8d1d2a24cf464f08b1c",
+      "size_bytes": 96663
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "0a28981f7eeed667470e05539d94edcc0f5c4d4326446c241759bd8e38ac3a53",
-      "size_bytes": 55405
+      "sha256": "9c5a4f1384f5720b80e51102a9f233293b41c3d082dbe23795f61326675a4fd9",
+      "size_bytes": 56823
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -5898,8 +5898,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "de46631edd5154fbc3a1bbd199419f759d42e679af3ec453f30109bcc68625ed",
-      "size_bytes": 126414
+      "sha256": "191da59be1cadc075317343a87a7b2d8e07405ebd12b86b3de4af9c6eeaf4ac3",
+      "size_bytes": 128303
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.c",
@@ -7942,6 +7942,11 @@
       "size_bytes": 567
     },
     {
+      "path": "tests/test_tp_tree_fold.c",
+      "sha256": "1f63ddf1c86d15339aead17590fe61fa9687294486ea3e8a18ccdc5b46ab587c",
+      "size_bytes": 2581
+    },
+    {
       "path": "tests/test_ue8m0_encoder_oracle.py",
       "sha256": "4d344cb3be50b58f0718931184bac23741bb209b7b9f92d67d2dfdf2cd77510a",
       "size_bytes": 7006
@@ -9755,5 +9760,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32694190
+  "total_bytes": 32700441
 }
