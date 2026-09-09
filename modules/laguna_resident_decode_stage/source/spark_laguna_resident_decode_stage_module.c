@@ -101,7 +101,7 @@ struct SparkLagunaModuleState
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
 	void *execution_stream;
-	const float *yarn_inv_freq;
+	float *yarn_inv_freq;
 	char model_revision[SPARK_LAGUNA_STAGEPACK_MODEL_REVISION_BYTES];
 	SparkLagunaLayerWeights layers[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint64_t layer_seen[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
