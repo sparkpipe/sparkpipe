@@ -500,25 +500,11 @@ static void SparkGlm5NextValKdaToken(
 			nq += qh[channel] * qh[channel];
 			nk += kh[channel] * kh[channel];
 		}
-		nq = 1.0f / sqrtf(nq + 1e-5f * 0.0f + (nq > 0.0f ? 0.0f : 1.0f));
-		nk = 1.0f / sqrtf(nk + (nk > 0.0f ? 0.0f : 1.0f));
-		(void)nq; (void)nk;
-	}
-	for (head = 0u; head < heads; head++)
-	{
-		float *qh = q + head * dim_per_head;
-		float *kh = k + head * dim_per_head;
-		float nq = 0.0f, nk = 0.0f;
-		for (channel = 0u; channel < dim_per_head; channel++)
-		{
-			nq += qh[channel] * qh[channel];
-			nk += kh[channel] * kh[channel];
-		}
 		nq = 1.0f / sqrtf(nq + 1e-6f);
 		nk = 1.0f / sqrtf(nk + 1e-6f);
 		for (channel = 0u; channel < dim_per_head; channel++)
 		{
-			qh[channel] *= nq;
+			qh[channel] *= nq / sqrtf((float)dim_per_head);
 			kh[channel] *= nk;
 		}
 	}

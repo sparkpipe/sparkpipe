@@ -192,7 +192,7 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 		{
 			shared_key[index] *= key_inverse;
-			shared_query[index] *= query_inverse;
+			shared_query[index] *= query_inverse * rsqrtf((float)KEY_DIM);
 		}
 		__syncthreads();
 		for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
