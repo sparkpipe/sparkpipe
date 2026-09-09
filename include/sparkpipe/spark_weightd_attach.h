@@ -78,11 +78,12 @@ void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome);
 // budget, and leaves *client_out connected for ACQUIRE / EXPORT_LEASE /
 // RELEASE working-set calls. Fail-closed: errors name the stage; no
 // direct-load fallback.
-SparkStatus SparkWeightdAttachPackLazyEnv(SparkWeightdClient **client_out,
+SparkStatus SparkWeightdAttachPackLazyEnv(const SparkWeightdPackSlice *slice,
     const char *pack_path,
     uint64_t expert_pool_bytes,
-    SparkWeightdLazyAttachResult *result,
+    SparkWeightdClient **client_out,
     uint64_t timeout_nanoseconds,
+    SparkWeightdLazyAttachResult *result,
     char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES]);
 
 #ifdef __cplusplus
