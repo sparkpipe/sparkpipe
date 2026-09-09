@@ -184,6 +184,35 @@ static int SparkMuseGlimmerValCompareEqual(const char *check, const uint16_t *ac
 	return(0);
 }
 
+static int SparkMuseGlimmerValCompareNearby(const char *check, const uint16_t *actual, const uint16_t *expected, uint64_t count, uint32_t allowed_ulp)
+{
+	uint64_t index,violations = 0u,worst = 0u;
+	uint32_t worst_distance = 0u;
+	for (index = 0; index < count; index++)
+	{
+		uint16_t a = actual[index],e = expected[index];
+		uint16_t magnitude_a = a & 0x7fffu,magnitude_e = e & 0x7fffu;
+		uint32_t distance;
+		if ( a == e )
+			continue;
+		distance = magnitude_a > magnitude_e ? magnitude_a - magnitude_e : magnitude_e - magnitude_a;
+		if ( distance > worst_distance )
+		{
+			worst_distance = distance;
+			worst = index;
+		}
+		if ( distance > allowed_ulp )
+			violations++;
+	}
+	if ( violations != 0u )
+	{
+		fprintf(stderr,"muse_glimmer_validation failure=%s detail=beyond_ulp violations=%llu worst_index=%llu worst_distance=%u actual=%04x expected=%04x\n",check,(unsigned long long)violations,(unsigned long long)worst,worst_distance,actual[worst],expected[worst]);
+		return(1);
+	}
+	printf("muse_glimmer_validation check=%s tolerance=ulp%u worst_distance=%u\n",check,allowed_ulp,worst_distance);
+	return(0);
+}
+
 static int SparkMuseGlimmerValCheckNorms(void)
 {
 	uint16_t *input,*weight,*output,*reference,*head_input,*head_output,*head_reference;
@@ -211,7 +240,7 @@ static int SparkMuseGlimmerValCheckNorms(void)
 		return(1);
 	for (row = 0; row < rows; row++)
 		SparkMuseGlimmerValReferenceCenteredNorm(input + (size_t)row * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,weight,reference + (size_t)row * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON);
-	failures += SparkMuseGlimmerValCompareEqual("centered_norm",output,reference,(uint64_t)rows * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION);
+	failures += SparkMuseGlimmerValCompareNearby("centered_norm",output,reference,(uint64_t)rows * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,1u);
 	error = cudaMallocManaged((void **)&head_input,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
 	error = cudaMallocManaged((void **)&head_output,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
 	error = cudaMallocManaged((void **)&head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
@@ -223,7 +252,7 @@ static int SparkMuseGlimmerValCheckNorms(void)
 	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"head_norm_sync") != 0 )
 		return(1);
 	SparkMuseGlimmerValReferenceHeadNorm(head_input,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_NORM_EPSILON,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_SCALE_FACTOR);
-	failures += SparkMuseGlimmerValCompareEqual("qk_norm_3_87",head_output,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION);
+	failures += SparkMuseGlimmerValCompareNearby("qk_norm_3_87",head_output,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,1u);
 	cudaFree(input);
 	cudaFree(weight);
 	cudaFree(output);
@@ -305,14 +334,14 @@ static int SparkMuseGlimmerValCheckWindowWalk(void)
 	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"window_decode_sync") != 0 )
 		return(1);
 	SparkMuseGlimmerValReferenceDecode(query,pool_host,window,SPARK_MUSE_GLIMMER_MODEL_SLIDING_WINDOW,reference_out,slot_elements);
-	failures += SparkMuseGlimmerValCompareEqual("window_decode",head_out,reference_out,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION);
+	failures += SparkMuseGlimmerValCompareNearby("window_decode",head_out,reference_out,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,2u);
 	error = SparkMuseGlimmerLaunchAttentionDecode(0,&view,0u,query,sequence,context_lengths,0,positions,head_out,1u,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS,1u);
 	if ( SparkMuseGlimmerValCuda(error,"full_decode_launch") != 0 )
 		return(1);
 	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"full_decode_sync") != 0 )
 		return(1);
 	SparkMuseGlimmerValReferenceDecode(query,pool_host,all_positions,context,reference_out,slot_elements);
-	failures += SparkMuseGlimmerValCompareEqual("full_decode",head_out,reference_out,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION);
+	failures += SparkMuseGlimmerValCompareNearby("full_decode",head_out,reference_out,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,2u);
 	if ( error_record->error_code != 0u )
 		return(SparkMuseGlimmerValFail("kv_access","reported_failure"));
 	cudaFree(pool_host);

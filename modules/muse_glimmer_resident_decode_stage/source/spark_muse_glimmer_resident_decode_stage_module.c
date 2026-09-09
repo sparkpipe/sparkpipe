@@ -439,7 +439,7 @@ static SparkStatus SparkMuseGlimmerModuleLoadPack(SparkMuseGlimmerModuleState *s
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkMuseGlimmerStagePackExpectedGeometry(&expected,state->first_layer_index,state->layer_count);
-		if ( SparkMuseGlimmerStagePackHeaderMatches(&header,&expected) == 0 || header.directory_offset != SPARK_MUSE_GLIMMER_STAGEPACK_HEADER_BYTES )
+		if ( SparkMuseGlimmerStagePackHeaderMatches(&header,&expected) != 0 || header.directory_offset != SPARK_MUSE_GLIMMER_STAGEPACK_HEADER_BYTES )
 		{
 			fprintf(stderr,"%s pack_geometry_mismatch\n",SPARK_MUSE_GLIMMER_MODULE_TAG);
 			status = SPARK_STATUS_VALIDATION_FAILED;
