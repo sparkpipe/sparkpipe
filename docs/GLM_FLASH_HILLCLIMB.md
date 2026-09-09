@@ -1,5 +1,24 @@
 # GLM 5.3 Flash hill-climbing log
 
+2026-09-09 routed-expert TP slicing: shard each up and gate projection over
+the same intermediate rows, then concatenate the local halves. Use that same
+range for down-projection columns. The previous packer sliced the concatenated
+stack, giving a rank only up or only gate rows; the local SwiGLU kernel then
+multiplied unrelated channels. Dense/shared packing already used paired slices.
+Payload and scale producers now share one slice iterator for routed experts.
+Old affected TP packs must be regenerated and verified against the corrected
+checkpoint plan before deployment; their unchanged sizes cannot prove validity.
+
+The new numerical pack test consumes actual produced BF16 payloads and compares
+summed sharded SwiGLU/down projections with the unsharded computation for TP1,
+TP4 and TP16, two experts and three inputs. It fails on the old TP4 packer for
+all 384 checked outputs and passes after the fix. The existing payload test
+incorrectly expected single-projection rank slabs; that expectation is removed.
+This host test establishes sharding semantics, not CUDA or full-model acceptance.
+Before correction, independent first-position error rose from 1.84% relative
+L2 at layer 3 input to 75.4% at layer 4 input. Preserve the comparison at
+`/private/tmp/ds4_glm_layer4_19bbc6e/comparison.json` for the corrected-pack rerun.
+
 The checkpoint layer reference accepts `--layers 3` to compute the entire
 initial KDA/dense prefix at position zero, including every residual transition.
 Each intermediate array is named `layerN_stage`; `next_attention_norm` is the

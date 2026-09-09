@@ -412,6 +412,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_index_kv.py \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \
+	tests/test_glm5_next_expert_shard_math.py \
 	tests/test_glm5_next_pack_regions.py \
 	tests/test_glm5_next_queue_build.py \
 	tests/test_glm5_next_hc_boundary.py \
