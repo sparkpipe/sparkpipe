@@ -140,6 +140,51 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	}
 }
 
+#define LM_GATE_SIGMOID 0u
+#define LM_GATE_SOFTPLUS 1u
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadRmsNormKernel(uint16_t *__restrict__ heads_bf16, const uint16_t *__restrict__ weight_bf16, uint32_t head_dimension, float epsilon, float epilogue)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint64_t base = (uint64_t)blockIdx.x * head_dimension;
+	uint32_t index;
+	float value,total = 0.0f,inverse;
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(heads_bf16[base + index]);
+		total += value * value;
+	}
+	inverse = rsqrtf(LmBlockSum<THREADS>(total,reduction) / (float)head_dimension + epsilon);
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(heads_bf16[base + index]) * inverse
+			* LmBf16ToFloat(weight_bf16[index]) * epilogue;
+		heads_bf16[base + index] = LmFloatToBf16(value);
+	}
+}
+
+template<uint32_t THREADS, uint32_t ACTIVATION>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadGateBroadcastKernel(uint16_t *__restrict__ heads_bf16, const uint16_t *__restrict__ gate_bf16, uint32_t heads, uint32_t head_dimension)
+{
+	uint32_t row = blockIdx.x,head = blockIdx.y,index;
+	uint64_t base,at;
+	float gate;
+	base = (((uint64_t)row * heads) + head) * head_dimension;
+	gate = LmBf16ToFloat(gate_bf16[((uint64_t)row * heads) + head]);
+	if ( ACTIVATION == LM_GATE_SOFTPLUS )
+		gate = gate > 20.0f ? gate : log1pf(__expf(gate));
+	if ( ACTIVATION == LM_GATE_SIGMOID )
+		gate = 1.0f / (1.0f + __expf(-gate));
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		at = base + index;
+		heads_bf16[at] = LmFloatToBf16(LmBf16ToFloat(heads_bf16[at]) * gate);
+	}
+}
+
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16,const uint16_t *__restrict__ gate_bf16,const float *__restrict__ weight,uint16_t *__restrict__ output_bf16,uint32_t dimension,float epsilon)

@@ -425,16 +425,18 @@ void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *_
 
 template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
 __global__ __launch_bounds__(THREADS, 1)
-void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t heads, uint32_t head_dimension, uint32_t rope_dimension, float theta)
+void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t heads, uint32_t head_dimension, uint32_t rope_dimension, float theta, const float *inv_freq_table = 0, float attention_scale = 1.0f, uint32_t rope_offset = 0xffffffffu)
 {
 	uint32_t row = blockIdx.x,head = blockIdx.y,index;
 	uint32_t half = rope_dimension / 2u;
 	uint64_t base = (((uint64_t)row * heads) + head) * head_dimension
-		+ (head_dimension - rope_dimension);
+		+ (rope_offset == 0xffffffffu ? (head_dimension - rope_dimension) : rope_offset);
 	float position = (float)positions[row];
 	for (index = threadIdx.x; index < half; index += THREADS)
 		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
-			position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
+			position * (inv_freq_table != 0 ? inv_freq_table[index]
+				: __powf(theta,-2.0f * (float)index / (float)rope_dimension)),
+			attention_scale);
 }
 
 template<
