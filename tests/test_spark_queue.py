@@ -73,13 +73,20 @@ class QueueTests(unittest.TestCase):
         self.dispatch()
         self.assertEqual([j["state"] for j in self.jobs().values()], ["running", "running"])
 
-    def test_cpu_and_gpu_each_retain_ownership(self):
+    def test_cpu_jobs_share_memory_budget_while_gpu_remains_exclusive(self):
         self.add("gpu")
         self.add("cpu", "spark0", "--resources", "cpu")
         self.add("cpu2", "spark0", "--resources", "cpu")
         self.add("gpu2")
         self.dispatch()
-        self.assertEqual({k for k,v in self.jobs().items() if v["state"] == "running"}, {"cpu","gpu"})
+        self.assertEqual({k for k,v in self.jobs().items() if v["state"] == "running"}, {"cpu","cpu2","gpu"})
+
+    def test_cpu_jobs_cannot_overcommit_declared_memory(self):
+        self.add("cpu", "spark0", "--resources", "cpu", "--memory-mib", "80000")
+        self.add("cpu2", "spark0", "--resources", "cpu", "--memory-mib", "80000")
+        self.dispatch()
+        self.assertEqual(self.jobs()["cpu"]["state"], "running")
+        self.assertEqual(self.jobs()["cpu2"]["state"], "queued")
 
     def test_exclusive_waiter_drains_both_resource_classes(self):
         self.add("cpu", "spark0", "--resources", "cpu")

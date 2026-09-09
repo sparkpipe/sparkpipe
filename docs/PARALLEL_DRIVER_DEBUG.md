@@ -24,7 +24,9 @@ Each queued command gets a unique attempt ID and a systemd unit on every
 participating node. Claims are durable before SSH. Lost launch acknowledgements
 are reconciled using the retained unit, not by blindly launching another process.
 Local transactions never wait for SSH; remote operations run concurrently with
-bounded timeouts. CPU and GPU ownership are independent. Exclusive jobs exclude
+bounded timeouts. CPU tasks may overlap within their summed declared memory
+budget; GPU ownership remains exclusive per node. CPU tasks must use independent
+outputs when they share a checkout. CPU and GPU ownership are independent. Exclusive jobs exclude
 both classes, and waiting exclusive jobs drain conflicting work before starting.
 
 `--after parent1,parent2` requires distinct existing job IDs; submit parents
