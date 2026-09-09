@@ -1402,7 +1402,7 @@ static SparkStatus SparkQwen38MaxModuleRunGdnLayer(SparkQwen38MaxModuleState *st
 	cudaError_t error;
 	error = SparkQwen38MaxLaunchLinear(stream,&weights->qkv,slot->normalized_bf16,slot->qkv_bf16,rows);
 	if ( error != cudaSuccess )
-		fprintf(stderr,"%s DIAG gdn linear qkv failed: %s\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error));
+		fprintf(stderr,"%s DIAG gdn linear qkv failed: %s layer=%u view in=%u out=%u payload=%p scale=%p fmt=%u input=%p output=%p rows=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,cudaGetErrorString(error),layer,weights->qkv.input_dimension,weights->qkv.output_dimension,weights->qkv.weight_payload,(const void *)weights->qkv.weight_scale_e8m0,weights->qkv.weight_format,slot->normalized_bf16,slot->qkv_bf16,rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchLinear(stream,&weights->gate,slot->normalized_bf16,slot->z_bf16,rows);
 	if ( error != cudaSuccess )
