@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "5f7ab8fb1bde4ad1931b118e26b13831fea6991bde09e242d9dde189c86f282d",
-      "size_bytes": 43346
+      "sha256": "7aafc2a3c18c62a82e8085ca88f0e2dbc5d5cea916f086463205222bc2455859",
+      "size_bytes": 44134
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -8768,8 +8768,8 @@
     },
     {
       "path": "tools/glm5_next_checkpoint_layer_reference.py",
-      "sha256": "8b712fa987f59bc4cc90cc01dfa5684c465fdbdacae66ce94d8007b0b0505fa4",
-      "size_bytes": 6694
+      "sha256": "fd920c2f61bffbccbf8d43fdb0ca70e7ae5048e78946a2c28147c07f803842ae",
+      "size_bytes": 9172
     },
     {
       "path": "tools/glm5_next_closeout_wave.sh",
@@ -9735,5 +9735,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32659007
+  "total_bytes": 32662273
 }

@@ -1,5 +1,16 @@
 # GLM 5.3 Flash hill-climbing log
 
+The checkpoint reference now accepts `--layers 45` to compute the first token's
+logits through the full text model. It adds first-position DSA, routed/shared
+experts, the final mean of HC streams, and the output head. DSA uses the single
+visible self token at position zero, so its value projection determines the
+attention result; this does not test index selection or attention over history.
+Routing retains FP32 checkpoint router weights, applies correction bias only to
+selection, and normalizes the selected sigmoid scores before expert reduction.
+The reference records per-layer arrays and progress. It remains independent of
+driver captures and does not model activation FP8 quantization or recurrent
+decode. Compare earlier saved prefix arrays before using its final prediction.
+
 2026-09-09 routed-expert TP slicing: shard each up and gate projection over
 the same intermediate rows, then concatenate the local halves. Use that same
 range for down-projection columns. The previous packer sliced the concatenated
