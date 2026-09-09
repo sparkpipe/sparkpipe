@@ -907,3 +907,13 @@ the independently evaluated operation, then compare the following dense
 collapse and normalization. Keep the upstream semantic oracle unchanged.
 Probe readback synchronizes the captured stream; exhaust the bounded capture
 before measuring warm decode, and reject missing or incomplete vectors.
+
+
+The selected layer-zero B1 vector capture also records all available rank
+contributions and the result of the first two hidden-width direct sums
+(attention and dense FFN). The HC-width embedding sum is excluded. These
+reduce_rank0 through reduce_rank15 vectors and reduce_result use passes
+1 and 2, respectively. Require all 16 operands when analyzing TP16. This
+allows independent fixed-order FP32 summation of actual GPU partials,
+separating collective arithmetic from a CPU approximation of projections.
+No arithmetic or launch-error handling is changed by the diagnostic.
