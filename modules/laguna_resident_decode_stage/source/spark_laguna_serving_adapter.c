@@ -5,6 +5,7 @@
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_laguna_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_laguna_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_serving_cache_admission.h"
@@ -26,14 +27,15 @@
 #define SPARK_LAGUNA_SERVING_ADAPTER_ID \
 	"spark.laguna.serving-adapter.tp8.expert_" LAGUNA_EXPERT_CODEC_NAME ".v1"
 #define SPARK_LAGUNA_SERVING_STAGE_COUNT 16u
-#define SPARK_LAGUNA_SERVING_TP_DEGREE 16u
+#define SPARK_LAGUNA_SERVING_TP_DEGREE 8u
+#define SPARK_LAGUNA_SERVING_PIPELINE_STAGES 2u
 #define SPARK_LAGUNA_SERVING_STAGE_LAYERS \
-	{45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u}
+	{24u,24u,24u,24u,24u,24u,24u,24u,24u,24u,24u,24u,24u,24u,24u,24u}
 #define SPARK_LAGUNA_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
-#define SPARK_LAGUNA_SERVING_MODEL_ID "zai-org/GLM-5.3-Flash"
+#define SPARK_LAGUNA_SERVING_MODEL_ID "poolside/Laguna-S-2.1"
 #define SPARK_LAGUNA_SERVING_DRIVER_MODEL_ID \
-	"zai.glm-5.3-flash.resident-decode-stage-firmware"
+	"laguna.laguna-s-2.1.resident-decode-stage-firmware"
 #define SPARK_LAGUNA_SERVING_STAGE_NAME "laguna_resident_decode_stage"
 #define SPARK_LAGUNA_SERVING_PROGRAM_NAME "resident_decode"
 #define SPARK_LAGUNA_SERVING_TARGET \
@@ -49,15 +51,6 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL)
 
-static int32_t SparkLagunaServingMtpEnvEnabled(void)
-{
-	const char *value = getenv("SPARK_LAGUNA_MTP");
-	if ( value == 0 || (value[0] == '1' && value[1] == '\0') )
-		return(1);
-	if ( value[0] == '0' && value[1] == '\0' )
-		return(0);
-	return(-1);
-}
 
 static const char *const SparkLagunaServingConfigurationMembers[] =
 {
@@ -120,7 +113,6 @@ typedef struct SparkLagunaServingState
 	uint32_t max_active_sequence_count;
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
-	uint32_t mtp_enabled;
 	atomic_uint quiescing;
 	atomic_uint reset_active;
 	atomic_uint_fast64_t reset_generation;
@@ -145,7 +137,6 @@ static const SparkModelServingAdapterDescriptor SparkLagunaServingDescriptor =
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
 	.capability_flags = SPARK_LAGUNA_SERVING_TOPOLOGY_FLAG |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
 	.stage_count = SPARK_LAGUNA_SERVING_STAGE_COUNT,
@@ -162,7 +153,6 @@ static const SparkModelServingAdapterDescriptor SparkLagunaServingDescriptor =
 	.max_input_row_count = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	.max_speculative_token_count = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,
 	.adapter_id = SPARK_LAGUNA_SERVING_ADAPTER_ID,
 	.model_id = SPARK_LAGUNA_SERVING_MODEL_ID,
 	.model_revision = LAGUNA_MODEL_REVISION,
@@ -202,7 +192,7 @@ static SparkStatus SparkLagunaServingLoadTpAlgorithms(
 	token = SparkLagunaServingJsonMember(document,object,"algorithms");
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
 	mask = 0u;
 	for (index=0u; index<count; index++)
@@ -218,7 +208,7 @@ static SparkStatus SparkLagunaServingLoadTpAlgorithms(
 		else if ( SparkJsonStringEquals(document,element,"tree") )
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 		else
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
 	{
@@ -238,7 +228,7 @@ static SparkStatus SparkLagunaServingLoadTpAlgorithms(
 	{
 	}
 	else
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	topology->algorithm_mask = mask;
 	return(SPARK_STATUS_OK);
 }
@@ -255,11 +245,11 @@ static SparkStatus SparkLagunaServingLoadTpStepRails(
 	token = SparkLagunaServingJsonMember(document,object,"step_rail_indices");
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
 	if ( count != SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT &&
 		count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
 	for (index=0u; index<count; index++)
 	{
@@ -268,7 +258,7 @@ static SparkStatus SparkLagunaServingLoadTpStepRails(
 			SparkJsonGetUInt32(document,element,&value);
 		if ( status != SPARK_STATUS_OK || value >=
 			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		topology->step_rail_indices[index] = value;
 	}
 	return(SPARK_STATUS_OK);
@@ -289,17 +279,17 @@ static SparkStatus SparkLagunaServingLoadTpRailHosts(
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
 		SparkJsonGetArrayElementCount(document,token) !=
 			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	topology->rail_count = SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT;
 	for (rail=0u; rail<topology->rail_count; rail++)
 	{
 		element = SparkJsonGetArrayElement(document,token,rail);
 		if ( element < 0 ||
 			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		host_count = SparkJsonGetArrayElementCount(document,element);
 		if ( host_count != tp_degree )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		for (index=0u; index<host_count; index++)
 		{
 			host_element = SparkJsonGetArrayElement(document,element,index);
@@ -332,17 +322,17 @@ static SparkStatus SparkLagunaServingLoadSessionPorts(
 	token = SparkLagunaServingJsonMember(document,object,name);
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
 	if ( count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	for (row=0u; row<count; row++)
 	{
 		element = SparkJsonGetArrayElement(document,token,row);
 		if ( element < 0 ||
 			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) ||
 			SparkJsonGetArrayElementCount(document,element) != tp_degree )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		for (column=0u; column<count; column++)
 		{
 			cell = SparkJsonGetArrayElement(document,element,column);
@@ -402,7 +392,7 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 	char *host,*relative_backend_path;
 	SparkStatus status;
 	if ( document == 0 || runtime_root == 0 || state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&state->tp_collective_topology,0,
 		sizeof(state->tp_collective_topology));
 	state->tp_collective_topology.abi_version =
@@ -411,10 +401,10 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
 	object = SparkLagunaServingJsonMember(document,root,"tp_collective");
 	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	token = SparkLagunaServingJsonMember(document,object,"backend");
 	if ( token < 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( SparkJsonStringEquals(document,token,"nccl") )
 		state->tp_collective_backend_kind =
 			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
@@ -422,7 +412,7 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 		state->tp_collective_backend_kind =
 			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
 	else
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	status = SparkLagunaServingValidateTpCollectiveMembers(document,object,
 		state->tp_collective_backend_kind);
 	if ( status != SPARK_STATUS_OK )
@@ -455,10 +445,10 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 	token = SparkLagunaServingJsonMember(document,object,"peer_hosts");
 	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
 	if ( count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	state->tp_collective_topology.rank_count = count;
 	for (index=0u; index<count; index++)
 	{
@@ -476,10 +466,10 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 	}
 	token = SparkLagunaServingJsonMember(document,object,"peer_ports");
 	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,token);
 	if ( count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	for (index=0u; index<count; index++)
 	{
 		element = SparkJsonGetArrayElement(document,token,index);
@@ -493,7 +483,7 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 	{
 		if ( state->tp_peer_ports[index] !=
 			(uint16_t)(state->tp_collective_control_port_base + index) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	if ( state->tp_collective_backend_kind ==
 		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
@@ -504,10 +494,6 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 			status = SparkLagunaServingLoadSessionPorts(document,object,
 				"session_ports",state->tp_collective_topology.session_ports,
 				tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLagunaServingLoadSessionPorts(document,object,
-				"session_ports_hc",state->node_context.
-					tp_collective_session_ports_hc,tp_degree);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkLagunaServingJsonUnsigned(document,object,
 				"direct_all_to_all_max_payload_bytes",
@@ -607,9 +593,9 @@ static SparkStatus SparkLagunaServingValidateRowOrder(
 	{
 		lane = submission->row_lane_indices[row];
 		if ( lane >= submission->active_sequence_count || submission->row_positions[row] >= state->node_context.max_sequence_positions )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( seen[lane] != 0u && submission->row_positions[row] != last_position[lane] + 1u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		seen[lane] = 1u;
 		last_position[lane] = submission->row_positions[row];
 		counts[lane]++;
@@ -624,7 +610,7 @@ static SparkStatus SparkLagunaServingValidateRowOrder(
 	for (wave=0u; wave<maximum; wave++)
 		for (lane=0u; lane<submission->active_sequence_count; lane++)
 			if ( counts[lane] > wave && (row >= submission->row_count || submission->row_lane_indices[row++] != lane) )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
@@ -731,8 +717,7 @@ static void SparkLagunaServingDriverCompletion(
 	{
 		uint32_t burst = driver_completion->tokens_per_sequence != 0u ?
 			driver_completion->tokens_per_sequence : 1u;
-		if ( burst > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u ||
-			(burst > 1u && (pending->active_sequence_count != 1u || state->mtp_enabled == 0u)) )
+		if ( burst > 1u )
 		{
 			completion.status = SPARK_STATUS_SCHEMA_ERROR;
 			completion.accepted_token_count = 0u;
@@ -808,12 +793,12 @@ static SparkStatus SparkLagunaServingLoadDriver(
 		return(status);
 	descriptor = state->driver.interface->descriptor;
 	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_LAGUNA_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,LAGUNA_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_LAGUNA_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_LAGUNA_SERVING_TARGET) != 0 )
-		return(SPARK_STATUS_TARGET_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
 	if ( state->program == 0 )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || SparkModelDriverProgramSupportsRuntimeLimits(state->program,SPARK_LAGUNA_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
-		return(SPARK_STATUS_TARGET_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	SparkModelDriverInitializeCreateRequest(&request);
 	request.node_id = configuration->node_id;
 	request.node_target = configuration->node_target;
@@ -840,14 +825,14 @@ static SparkStatus SparkLagunaServingValidateConfiguration(
 {
 	SparkStatus status;
 	if ( configuration == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkLagunaServingDescriptor,&configuration->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( configuration->stage_index >= SPARK_LAGUNA_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_LAGUNA_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -860,14 +845,14 @@ static SparkStatus SparkLagunaServingInitialize(
 	uint32_t decode_split_context_threshold,index;
 	SparkStatus status;
 	if ( adapter_state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*adapter_state = 0;
 	status = SparkLagunaServingValidateConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	state = (SparkLagunaServingState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	atomic_init(&state->orphan_completion_count,0u);
 	atomic_init(&state->quiescing,0u);
 	atomic_init(&state->reset_active,0u);
@@ -885,16 +870,6 @@ static SparkStatus SparkLagunaServingInitialize(
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
-	{
-		int32_t mtp_env = SparkLagunaServingMtpEnvEnabled();
-		if ( mtp_env < 0 )
-		{
-			(void)fprintf(stderr,"LAGUNA-ADAPTER SPARK_LAGUNA_MTP must be exactly 0 or 1\n");
-			SparkLagunaServingDestroy(state);
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		}
-		state->mtp_enabled = (uint32_t)mtp_env;
-	}
 	status = SparkLagunaServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_LAGUNA_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -904,10 +879,10 @@ static SparkStatus SparkLagunaServingInitialize(
 	{
 		state->node_context.abi_version = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 		state->node_context.descriptor_bytes = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES;
-		state->node_context.stage_count = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_STAGE_COUNT;
-		state->node_context.stage_index = 0u;
-		state->node_context.first_layer_index = 0u;
-		state->node_context.layer_count = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
+		state->node_context.stage_count = SPARK_LAGUNA_SERVING_PIPELINE_STAGES;
+		state->node_context.stage_index = state->stage_index / SPARK_LAGUNA_SERVING_TP_DEGREE;
+		state->node_context.first_layer_index = state->node_context.stage_index * SPARK_LAGUNA_MODEL_STAGE_LAYER_COUNT(SPARK_LAGUNA_SERVING_PIPELINE_STAGES,0u);
+		state->node_context.layer_count = SPARK_LAGUNA_MODEL_STAGE_LAYER_COUNT(SPARK_LAGUNA_SERVING_PIPELINE_STAGES,0u);
 		state->node_context.expert_weight_codec = LAGUNA_EXPERT_WEIGHT_CODEC;
 		state->node_context.resident_sequence_capacity = state->resident_sequence_capacity;
 		state->node_context.pipeline_slot_count = state->pipeline_slot_count;
@@ -916,7 +891,7 @@ static SparkStatus SparkLagunaServingInitialize(
 		state->node_context.decode_split_context_threshold = decode_split_context_threshold;
 		state->node_context.tp_degree = tp_degree;
 		state->node_context.tp_rank = tp_rank;
-		state->node_context.flags = state->mtp_enabled != 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP : 0u;
+		state->node_context.flags = 0u;
 		state->node_context.stage_pack_path = state->stage_pack_path;
 		state->node_context.model_revision = LAGUNA_MODEL_REVISION;
 		state->node_context.tp_collective_backend_kind = state->tp_collective_backend_kind;
@@ -946,7 +921,7 @@ static SparkStatus SparkLagunaServingValidateBoundaries(
 	uint64_t boundary_bytes;
 	boundary_bytes = (uint64_t)submission->row_count * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
 	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	(void)boundary_bytes;
 	(void)state;
 	return(SPARK_STATUS_OK);
@@ -960,11 +935,11 @@ static SparkStatus SparkLagunaServingValidateSubmission(
 	SparkStatus status;
 	state = (SparkLagunaServingState *)adapter_state;
 	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	if ( submission != 0 && submission->control_generation < atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
-		return(SPARK_STATUS_VALIDATION_FAILED);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkLagunaServingDescriptor,&state->runtime_limits,submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLagunaServingValidateBoundaries(state,submission);
@@ -994,7 +969,7 @@ static SparkStatus SparkLagunaServingPrefetch(void *adapter_state,const SparkMod
 	SparkServingCacheAdmission cache;
 	state = (SparkLagunaServingState *)adapter_state;
 	if ( state == 0 || state->program == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	cache = SparkLagunaServingCacheContext(state,SparkLagunaServingCacheScratch);
 	return(SparkServingCacheAdmissionRun(&cache,submissions,count,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
 }
@@ -1006,7 +981,7 @@ static SparkStatus SparkLagunaServingResolvePrefetch(void *adapter_state,const S
 	uint32_t flags;
 	state = (SparkLagunaServingState *)adapter_state;
 	if ( state == 0 || state->program == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
 	cache = SparkLagunaServingCacheContext(state,SparkLagunaServingCacheScratch);
 	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
@@ -1039,16 +1014,10 @@ static void SparkLagunaServingBuildFrame(
 	context->hidden_input_bytes = submission->hidden_input_bytes;
 	context->hidden_output_bf16 = submission->hidden_output_address;
 	context->hidden_output_bytes = submission->hidden_output_bytes;
-	context->sideband_input = submission->boundary_sideband_input_address;
-	context->sideband_input_bytes = submission->boundary_sideband_input_bytes;
-	context->sideband_output = submission->boundary_sideband_output_address;
-	context->sideband_output_bytes = submission->boundary_sideband_output_bytes;
 	memset(buffer,0,sizeof(*buffer));
 	buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 	buffer->address = pending->output_token_ids;
 	buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
-	if ( state->mtp_enabled != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		buffer->bytes *= SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u;
 	memset(frame,0,sizeof(*frame));
 	frame->request_id = submission->request_id;
 	frame->sequence_id = submission->sequence_id;
@@ -1103,7 +1072,7 @@ static SparkStatus SparkLagunaServingSubmit(
 		return(status);
 	pending = SparkLagunaServingReservePending(state,submission);
 	if ( pending == 0 )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	SparkLagunaServingBuildFrame(state,submission,pending);
 	status = SparkLagunaServingAdmit(state,submission,pending,&pending->frame);
 	if ( status != SPARK_STATUS_OK )
@@ -1146,10 +1115,10 @@ static SparkStatus SparkLagunaServingQuiesce(
 	SparkStatus status;
 	state = (SparkLagunaServingState *)adapter_state;
 	if ( state == 0 || deadline_time_ns == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state->quiescing = 1u;
 	if ( SparkLagunaServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	memset(&snapshot,0,sizeof(snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
 	if ( status != SPARK_STATUS_OK )
@@ -1167,7 +1136,7 @@ static SparkStatus SparkLagunaServingSnapshot(
 	SparkStatus status;
 	state = (SparkLagunaServingState *)adapter_state;
 	if ( state == 0 || snapshot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&driver_snapshot,0,sizeof(driver_snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&driver_snapshot);
 	if ( status != SPARK_STATUS_OK )
@@ -1198,7 +1167,7 @@ static SparkStatus SparkLagunaServingResetControl(void *adapter_state,uint64_t c
 	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
 	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkLagunaServingQuiesce(state,UINT64_MAX);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -1224,9 +1193,9 @@ static SparkStatus SparkLagunaServingReset(void *adapter_state,uint64_t control_
 	uint32_t expected = 0u;
 	SparkStatus status;
 	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	status = SparkLagunaServingResetControl(state,control_generation);
 	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
 	return(status);
