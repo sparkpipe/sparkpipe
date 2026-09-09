@@ -146,7 +146,7 @@ restart_root() {
 
 FLEET_SIZE=16
 HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
-RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://192.168.50.4:8802}"
+RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://10.10.100.25:8802}"
 
 hub_has() {
     curl -sf --max-time 5 "$RELEASE_HTTP/$1" > /dev/null 2>&1
