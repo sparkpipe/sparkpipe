@@ -1561,6 +1561,9 @@ static void SparkLingValBuildWave(SparkLingValFixture *fixture,
 	wave->run_state_index = run_count != 0u ? fixture->run_state_dev : 0;
 	wave->host_sequence_row_begin = fixture->host_run_begin;
 	wave->host_run_state_index = fixture->host_run_state;
+	wave->host_resident_slots = fixture->host_slots;
+	wave->host_positions = fixture->host_positions;
+	wave->host_token_ids = fixture->token_ids_dev;
 	wave->kv_ordinal_by_local_layer = fixture->host_kv_ordinals;
 	wave->kda_ordinal_by_local_layer = fixture->host_kda_ordinals;
 }
