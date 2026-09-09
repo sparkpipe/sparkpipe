@@ -538,10 +538,8 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	const char *digest;
 	uint64_t spine_budget;
 	status = SparkWeightdAttachRequested();
-	if ( status == SPARK_STATUS_BUSY )
-		return(SPARK_STATUS_OK);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		return(status == SPARK_STATUS_BUSY ? SPARK_STATUS_UNSUPPORTED : status);
 	if ( state->mtp_enabled != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	memset(&request,0,sizeof(request));
@@ -570,22 +568,16 @@ static SparkStatus SparkGlm5NextPackLoadEntry(
 {
 	void *payload,*scale;
 	SparkStatus status;
+	(void)file;
 	payload = 0;
 	scale = 0;
-	if ( state->lazy_pack != 0 )
-	{
-		if ( entry->tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry->tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
-			return(SparkGlm5NextPackAssign(state,entry,0,0));
-		status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->payload_offset,entry->payload_bytes,(const void **)&payload);
-		if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
-			status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->scale_offset,entry->scale_bytes,(const void **)&scale);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm5NextPackAssign(state,entry,payload,scale);
-		return(status);
-	}
-	status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,entry->payload_bytes,&payload);
+	if ( state->lazy_pack == 0 )
+		return(SPARK_STATUS_UNSUPPORTED);
+	if ( entry->tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry->tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
+		return(SparkGlm5NextPackAssign(state,entry,0,0));
+	status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->payload_offset,entry->payload_bytes,(const void **)&payload);
 	if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
-		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,entry->scale_bytes,&scale);
+		status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->scale_offset,entry->scale_bytes,(const void **)&scale);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextPackAssign(state,entry,payload,scale);
 	return(status);

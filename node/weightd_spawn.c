@@ -101,15 +101,11 @@ int32_t SparkModelResidentdPrepareWeightd(const char *root,const char *socket_pa
 {
 	struct sockaddr_un address;
 	char digest[65];
-	const char *setting;
 	int32_t fd,status;
 	if ( root == 0 || socket_path == 0 || root[0] == '\0' || socket_path[0] == '\0' )
 		return(-12);
 	if ( strlen(socket_path) >= sizeof(address.sun_path) )
 		return(-13);
-	setting = getenv("SPARK_WEIGHTD_ATTACH");
-	if ( setting != 0 && strcmp(setting,"0") == 0 )
-		return(-14);
 	status = SparkWeightdResolveDigest(root,digest);
 	if ( status != 0 )
 		return(status);
