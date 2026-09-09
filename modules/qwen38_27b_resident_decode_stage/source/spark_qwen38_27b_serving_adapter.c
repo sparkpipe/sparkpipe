@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <time.h>
 
 #include <cuda_runtime.h>
@@ -261,6 +262,9 @@ typedef struct SparkQwen38_27bServingState
 	char *bridge_host;
 	uint32_t bridge_port;
 	uint64_t orphan_completion_count;
+	SparkModelDriverCacheLane prefetch_lanes[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	atomic_uint reset_active;
+	atomic_uint_fast64_t reset_generation;
 	SparkModelServingRuntimeLimits runtime_limits;
 	SparkQwen38_27bKvBlockTableView block_table;
 	SparkMemoryBuffer host_block_indices;
@@ -1910,6 +1914,124 @@ static void SparkQwen38_27bServingComplete(
 	state->completion_function(state->completion_context,&completion);
 }
 
+static SparkStatus SparkQwen38_27bServingPrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submissions,
+	uint32_t submission_count)
+{
+	SparkQwen38_27bServingState *state;
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	uint32_t cache_lane_count,index;
+	SparkStatus status;
+	state = (SparkQwen38_27bServingState *)adapter_state;
+	if ( state == 0 || submissions == 0 || submission_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SPARK_STATUS_OK;
+	for (index=0u; status==SPARK_STATUS_OK && index<submission_count; index++)
+	{
+		status = SparkQwen38_27bServingValidateSubmission(state,&submissions[index]);
+		if ( status == SPARK_STATUS_OK && submissions[index].work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+			continue;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkModelServingAdapterBuildDriverCacheLanes(&submissions[index],
+				state->prefetch_lanes,
+				SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+				&cache_lane_count);
+		if ( status == SPARK_STATUS_OK )
+		{
+			status = SparkAdmissionRequestFromSubmission(state->program->program_id,
+				&submissions[index],state->prefetch_lanes,
+				SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,&request);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkAdmissionEvaluate(state->driver.interface,
+					state->driver_instance,&request,&decision);
+		}
+	}
+	return(status);
+}
+
+static SparkStatus SparkQwen38_27bServingResolvePrefetch(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	SparkQwen38_27bServingState *state;
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	uint32_t admission_flag,cache_lane_count;
+	SparkStatus status;
+	state = (SparkQwen38_27bServingState *)adapter_state;
+	if ( state == 0 || submission == 0 ||
+		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkQwen38_27bServingValidateSubmission(state,submission);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_STATUS_OK);
+	status = SparkModelServingAdapterBuildDriverCacheLanes(submission,
+		state->prefetch_lanes,
+		SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
+		&cache_lane_count);
+	if ( status != SPARK_STATUS_OK || cache_lane_count != submission->active_sequence_count )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INTERNAL_ERROR);
+	admission_flag = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	status = SparkAdmissionRequestFromSubmission(state->program->program_id,
+		submission,state->prefetch_lanes,admission_flag,&request);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkAdmissionEvaluate(state->driver.interface,
+		state->driver_instance,&request,&decision));
+}
+
+static SparkStatus SparkQwen38_27bServingResetControl(
+	SparkQwen38_27bServingState *state,
+	uint64_t control_generation)
+{
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status;
+	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkQwen38_27bServingQuiesce(state,UINT64_MAX);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = state->program->program_id;
+	request.control_generation = control_generation;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	SparkModelDriverInitializeAdmissionDecision(&decision);
+	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	if ( status == SPARK_STATUS_OK )
+	{
+		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
+		state->quiescing = 0u;
+	}
+	return(status);
+}
+
+static SparkStatus SparkQwen38_27bServingReset(
+	void *adapter_state,
+	uint64_t control_generation)
+{
+	SparkQwen38_27bServingState *state = (SparkQwen38_27bServingState *)adapter_state;
+	uint32_t expected = 0u;
+	SparkStatus status;
+	if ( state == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
+		return(SPARK_STATUS_BUSY);
+	status = SparkQwen38_27bServingResetControl(state,control_generation);
+	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
+	return(status);
+}
+
 static SparkStatus SparkQwen38_27bServingSubmit(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission)
@@ -2169,6 +2291,8 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 	state = (SparkQwen38_27bServingState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	atomic_init(&state->reset_active,0u);
+	atomic_init(&state->reset_generation,0u);
 	state->stage_index = configuration->stage_index;
 	state->first_layer_index = SparkQwen38_27bServingFirstLayer(configuration->stage_index);
 	state->stage_layer_count = SparkQwen38_27bServingDescriptor.stage_layer_counts[configuration->stage_index];
@@ -2219,9 +2343,12 @@ static const SparkModelServingAdapterInterface SparkQwen38_27bServingInterface =
 	.destroy = SparkQwen38_27bServingDestroy,
 	.validate_submission = SparkQwen38_27bServingValidateSubmission,
 	.submit = SparkQwen38_27bServingSubmit,
+	.prefetch = SparkQwen38_27bServingPrefetch,
+	.resolve_prefetch = SparkQwen38_27bServingResolvePrefetch,
 	.progress = SparkQwen38_27bServingProgress,
 	.quiesce = SparkQwen38_27bServingQuiesce,
-	.snapshot = SparkQwen38_27bServingSnapshot
+	.snapshot = SparkQwen38_27bServingSnapshot,
+	.reset = SparkQwen38_27bServingReset
 };
 
 __attribute__((visibility("default")))
