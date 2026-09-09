@@ -448,8 +448,6 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
 	if ( phase == 0u )
 	{
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
-		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,moe_in,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
