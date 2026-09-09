@@ -912,6 +912,8 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     file = fopen(request->pack_path, "rb");
     if (file == 0)
     {
+        fprintf(stderr, "WDATTACH fopen-fail path=%s errno=%d\n",
+            request->pack_path, errno);
         result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
         return;
     }
@@ -919,6 +921,9 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         pack_stat_before.st_size < 0 ||
         (uint64_t)pack_stat_before.st_size != identity.arena_bytes)
     {
+        fprintf(stderr, "WDATTACH size-mismatch path=%s size=%lld arena=%llu\n",
+            request->pack_path, (long long)pack_stat_before.st_size,
+            (unsigned long long)identity.arena_bytes);
         (void)fclose(file);
         result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
         return;
