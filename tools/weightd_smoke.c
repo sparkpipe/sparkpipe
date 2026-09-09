@@ -89,6 +89,7 @@ int main(int argc, char **argv)
     uint64_t touches;
     uint64_t spread;
     uint64_t index;
+    uint64_t count;
     uint64_t total_ns = 0ull;
     const char *socket;
 
