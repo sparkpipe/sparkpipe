@@ -1030,28 +1030,13 @@ int main(int argc, char **argv)
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.event_function = api_event;
 	cfg.event_context = 0;
+	EngineStopTokenCount = dep.eos_token_count;
+	if ( EngineStopTokenCount == 0u || EngineStopTokenCount > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
 	{
-		const char *eos_env = getenv("SPARK_EOS_TOKEN_IDS");
-		if ( eos_env != 0 && eos_env[0] != '\0' )
-		{
-			unsigned long value;
-			char *cursor = (char *)eos_env, *next;
-			while ( *cursor != '\0' &&
-				cfg.stop_token_count < SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
-			{
-				value = strtoul(cursor,&next,10);
-				if ( next == cursor )
-					break;
-				cfg.stop_token_ids[cfg.stop_token_count++] = (uint32_t)value;
-				cursor = ( *next == ',' ) ? next + 1 : next;
-				if ( *cursor == '\0' ) break;
-			}
-			fprintf(stderr,"model_api: %u EOS token(s) from env\n",cfg.stop_token_count);
-		}
+		fprintf(stderr,"model_api: required model EOS metadata missing or invalid\n");
+		return 1;
 	}
-	EngineStopTokenCount = cfg.stop_token_count;
-	memcpy(EngineStopTokens, cfg.stop_token_ids,
-		sizeof(uint32_t) * (size_t)cfg.stop_token_count);
+	memcpy(EngineStopTokens,dep.eos_token_ids,EngineStopTokenCount * sizeof(uint32_t));
 	if (dep.tokenizer_asset_path != 0)
 	{
 		char asset_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];

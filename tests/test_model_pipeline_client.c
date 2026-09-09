@@ -864,6 +864,32 @@ static void TestModelPipelineWriteDeployment(
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
 
+static void TestModelBatchRejectMissingEos(
+	const SparkModelBatchEngineConfiguration *valid)
+{
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelResidentDeployment deployment;
+	SparkModelBatchEngine *engine = 0;
+	configuration = *valid;
+	deployment = *valid->deployment;
+	configuration.deployment = &deployment;
+	deployment.eos_token_count = 0u;
+	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(engine == 0);
+	deployment.eos_token_count = SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT + 1u;
+	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(engine == 0);
+	deployment.eos_token_count = 2u;
+	deployment.eos_token_ids[0] = 7u;
+	deployment.eos_token_ids[1] = 7u;
+	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_DUPLICATE);
+	assert(engine == 0);
+	deployment.eos_token_count = 1u;
+	deployment.tokenizer_vocabulary_size = 7u;
+	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(engine == 0);
+}
+
 static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	const SparkModelResidentDeployment *deployment,
 	TestModelBatchState *state,
@@ -892,6 +918,7 @@ static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	configuration.event_context = state;
 	configuration.stage_completion_function = TestModelBatchStageCompletion;
 	configuration.stage_completion_context = state;
+	TestModelBatchRejectMissingEos(&configuration);
 	engine = 0;
 	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK);
 	assert(engine != 0);
@@ -1009,6 +1036,7 @@ static void TestModelBatchWaitShutdown(SparkModelBatchEngine *engine)
 static void TestModelBatchEngineRun(
 	const SparkModelResidentDeployment *deployment)
 {
+	SparkModelResidentDeployment eos_deployment;
 	SparkModelBatchEngineView view;
 	SparkModelBatchRequestHandle cancelled,first,reused,third;
 	SparkModelBatchEngine *engine;
@@ -1073,8 +1101,12 @@ static void TestModelBatchEngineRun(
 	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));
-	engine = TestModelBatchConnect(deployment,&state,1u,4203u,4u);
+	eos_deployment = *deployment;
+	eos_deployment.eos_token_ids[0] = 4203u;
+	engine = TestModelBatchConnect(&eos_deployment,&state,1u,4204u,4u);
+	prompt_c[0] = 4203u;
 	(void)TestModelBatchSubmit(engine,1005u,2005u,prompt_c,1u,4u);
+	prompt_c[0] = 31u;
 	TestModelBatchWaitIdle(engine,1u);
 	assert(state.accepted_count == 1u);
 	assert(state.token_count == 1u);
