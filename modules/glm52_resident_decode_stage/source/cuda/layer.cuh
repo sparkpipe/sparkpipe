@@ -822,6 +822,7 @@ static int32_t Glm52LayerMoeValidate(
  * route grouping. Reads no expert weights, so lazy execution can run it
  * before acquisition and acquire the routed working set between this and
  * the experts half. */
+template<uint32_t ExpertCodec>
 static int32_t Glm52LayerMoeRoute(
     const Glm52LayerBuffers *buffers,
     uint32_t rows,
@@ -922,6 +923,7 @@ static int32_t Glm52LayerMoeRoute(
 /* Experts half: routed W1/W2 GEMMs, activation, finalize and shared
  * expert. Expert weights must be bound (resident arena or acquired
  * lease) before this runs. */
+template<uint32_t ExpertCodec>
 static int32_t Glm52LayerMoeExperts(
     const Glm52LayerBuffers *buffers,
     uint32_t rows,
