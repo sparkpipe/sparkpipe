@@ -7,12 +7,15 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_weightd_lease.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 1u
+#define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
+
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 2u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
 #define SPARK_WEIGHTD_ID_BYTES 64u
@@ -21,7 +24,7 @@ extern "C" {
 #define SPARK_WEIGHTD_PATH_BYTES 1024u
 #define SPARK_WEIGHTD_SOCKET_PATH_BYTES 108u
 
-#define SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX 2048u
+#define SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX 8192u
 
 #define SPARK_WEIGHTD_ARENA_COUNT_MAX 16u
 #define SPARK_WEIGHTD_CONNECTION_COUNT_MAX 16u
@@ -45,6 +48,12 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_RESULT 12u
 #define SPARK_WEIGHTD_IPC_KIND_ENSURE 13u
 #define SPARK_WEIGHTD_IPC_KIND_ENSURE_RESULT 14u
+#define SPARK_WEIGHTD_IPC_KIND_ACQUIRE 15u
+#define SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT 16u
+#define SPARK_WEIGHTD_IPC_KIND_RELEASE 17u
+#define SPARK_WEIGHTD_IPC_KIND_RELEASE_RESULT 18u
+#define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE 19u
+#define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT 20u
 
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
@@ -188,6 +197,10 @@ typedef struct SparkWeightdIpcAttachLazyResult
     uint32_t refcount;
     uint32_t arena_count;
     uint32_t expert_count;
+    uint64_t chunk_bytes;
+    uint32_t chunk_count;
+    uint32_t reserved0;
+    uint8_t manifest_sha256[32];
 } SparkWeightdIpcAttachLazyResult;
 
 typedef struct SparkWeightdIpcEnsure
@@ -209,6 +222,54 @@ typedef struct SparkWeightdIpcEnsureResult
     uint32_t status;
     uint32_t loaded;
 } SparkWeightdIpcEnsureResult;
+
+typedef struct SparkWeightdIpcAcquire
+{
+	SparkWeightdIpcHeader header;
+	uint64_t arena_generation;
+	uint32_t count;
+	uint32_t reserved0;
+	SparkWeightdExpertKey keys[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
+} SparkWeightdIpcAcquire;
+
+typedef struct SparkWeightdIpcAcquireResult
+{
+	SparkWeightdIpcHeader header;
+	uint64_t arena_generation;
+	uint64_t lease_identifier;
+	uint64_t resident_bytes;
+	uint32_t status;
+	uint32_t reserved0;
+} SparkWeightdIpcAcquireResult;
+
+typedef struct SparkWeightdIpcRelease
+{
+	SparkWeightdIpcHeader header;
+	uint64_t arena_generation;
+	uint64_t lease_identifier;
+} SparkWeightdIpcRelease;
+
+typedef SparkWeightdIpcAcquireResult SparkWeightdIpcReleaseResult;
+
+typedef struct SparkWeightdIpcExportLease
+{
+	SparkWeightdIpcHeader header;
+	uint64_t arena_generation;
+	uint64_t lease_identifier;
+	uint32_t batch_offset;
+	uint32_t reserved0;
+} SparkWeightdIpcExportLease;
+
+typedef struct SparkWeightdIpcExportLeaseResult
+{
+	SparkWeightdIpcExportResult base;
+	uint64_t lease_identifier;
+	uint32_t lease_chunk_count;
+	uint32_t reserved1;
+	uint32_t chunk_indices[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+} SparkWeightdIpcExportLeaseResult;
+
+_Static_assert(sizeof(SparkWeightdIpcAcquire) <= SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX,"working set request exceeds IPC frame");
 
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
 #define SPARK_WEIGHTD_IPC_HELLO_BYTES ((uint32_t)sizeof(SparkWeightdIpcHello))
@@ -305,6 +366,9 @@ typedef struct SparkWeightdReclaimResult
     uint32_t arena_count;
 } SparkWeightdReclaimResult;
 
+// Canonical identity of a successfully loaded, grouped manifest.
+SparkStatus SparkWeightdManifestIdentity(const SparkWeightdManifest *manifest,uint8_t digest[32]);
+
 typedef struct SparkWeightdLazyAttachRequest
 {
     SparkWeightdIdentity identity;
@@ -323,6 +387,9 @@ typedef struct SparkWeightdLazyAttachResult
     uint32_t refcount;
     uint32_t arena_count;
     uint32_t expert_count;
+    uint64_t chunk_bytes;
+    uint32_t chunk_count;
+    uint8_t manifest_sha256[32];
 } SparkWeightdLazyAttachResult;
 
 typedef struct SparkWeightdEnsureResult
@@ -357,6 +424,18 @@ SparkStatus SparkWeightdClientEnsure(SparkWeightdClient *client,
     SparkWeightdEnsureResult *result,
     uint64_t timeout_nanoseconds);
 
+typedef struct SparkWeightdWorkingSetResult
+{
+	SparkStatus status;
+	uint64_t arena_generation;
+	uint64_t lease_identifier;
+	uint64_t resident_bytes;
+} SparkWeightdWorkingSetResult;
+
+SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *client,uint64_t arena_generation,const SparkWeightdExpertKey *keys,uint32_t count,SparkWeightdWorkingSetResult *result,uint64_t timeout_nanoseconds);
+// The caller must establish GPU completion and unmap before releasing.
+SparkStatus SparkWeightdClientRelease(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,SparkWeightdWorkingSetResult *result,uint64_t timeout_nanoseconds);
+
 typedef struct SparkWeightdExportBatch
 {
     SparkStatus status;
@@ -367,7 +446,14 @@ typedef struct SparkWeightdExportBatch
     uint32_t batch_count;
     uint32_t reserved0;
     int fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+    uint64_t lease_identifier;
+    uint32_t lease_chunk_count;
+    uint32_t chunk_indices[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
 } SparkWeightdExportBatch;
+
+// batch_offset indexes the sorted union of this lease's physical chunks.
+// chunk_count remains the arena's total virtual chunk count.
+SparkStatus SparkWeightdClientExportLeaseBatch(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,uint32_t batch_offset,SparkWeightdExportBatch *batch,uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
     uint64_t arena_generation,

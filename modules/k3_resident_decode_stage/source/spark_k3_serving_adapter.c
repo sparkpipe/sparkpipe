@@ -150,7 +150,7 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 				K3ServingJsonU32(&doc, dev, "operation_timeout_milli", 30000u);
 			state->device_config.operation_kind =
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-			state->device_config.credit_count = 4u;
+			state->device_config.credit_count = 8u;
 			state->device_config.local_hidden_dimension = 3u * hidden;
 			state->device_config.max_active_sequence_count =
 				state->runner_config.max_input_row_count;
@@ -161,6 +161,33 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 				peer_count > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE )
 				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
 			state->device_topology.rank_count = peer_count;
+			state->device_topology.algorithm_mask =
+				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
+			{
+				int32_t ports_token = SparkJsonFindObjectMember(&doc, dev, "session_ports");
+				uint32_t ports_rows = ports_token >= 0 ?
+					SparkJsonGetArrayElementCount(&doc, ports_token) : 0u;
+				if ( ports_rows != peer_count )
+					{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+				for ( uint32_t row = 0u; row < peer_count; ++row )
+				{
+					int32_t row_token = SparkJsonGetArrayElement(&doc, ports_token, row);
+					if ( row_token < 0 ||
+						!SparkJsonTokenIsType(&doc, row_token, SPARK_JSON_TOKEN_ARRAY) ||
+						SparkJsonGetArrayElementCount(&doc, row_token) != peer_count )
+						{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+					for ( uint32_t column = 0u; column < peer_count; ++column )
+					{
+						int32_t cell = SparkJsonGetArrayElement(&doc, row_token, column);
+						uint32_t value = 0u;
+						if ( cell < 0 || SparkJsonGetUInt32(&doc, cell, &value) != SPARK_STATUS_OK ||
+							value > 65535u ||
+							(row == column ? value != 0u : value == 0u) )
+							{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+						state->device_topology.session_ports[row][column] = (uint16_t)value;
+					}
+				}
+			}
 			for ( uint32_t i = 0u; i < peer_count; ++i )
 			{
 				int32_t peer = SparkJsonGetArrayElement(&doc, hosts_token, i);
@@ -520,8 +547,7 @@ static SparkStatus K3ServingInitialize(
 	dispatch.sequence_position = submission->sequence_position;
 	dispatch.deadline_time_ns = submission->deadline_time_ns;
 	dispatch.row_count = rows;
-	dispatch.active_sequence_count = submission->active_sequence_count != 0u
-		? submission->active_sequence_count : rows;
+	dispatch.active_sequence_count = submission->active_sequence_count;
 	dispatch.token_ids = submission->token_ids;
 	dispatch.positions = state->positions_device.pointer;
 	dispatch.context_length = state->context_device.pointer;
@@ -632,8 +658,6 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		"k3",
 		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"),
 	.capability_flags =
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
@@ -652,7 +676,6 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
 	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
-	.resident_sequence_slot_reuse = 0u,
 	.stage_layer_counts = { 24u, 24u, 24u, 24u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u },
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },

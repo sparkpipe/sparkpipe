@@ -1,5 +1,6 @@
 #include "spark_qwen38_27b_tp.h"
 
+#include <errno.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,7 +63,7 @@ static void SparkQwen38_27bTpPendingCompletion(void *context, const SparkTpDevic
 	atomic_store_explicit(&pending->done,1u,memory_order_release);
 }
 
-static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buffer, uint32_t count, void *cuda_stream, uint32_t u64_max)
+static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buffer, uint32_t count, uint32_t logical_count, void *cuda_stream, uint32_t u64_max)
 {
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkQwen38_27bTpPending pending;
@@ -75,6 +76,7 @@ static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buf
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = 0u;
 	submission.active_sequence_count = count;
+	submission.logical_sequence_count = logical_count;
 	submission.flags =
 		SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = tp->next_ordinal++;
@@ -152,12 +154,13 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	uint32_t pipeline_slot_count,
 	void *registration_cuda_stream)
 {
+	(void)pipeline_slot_count;
 	SparkTpDeviceCollectiveConfig configuration;
 	SparkTpDeviceCollectiveCreditBinding *bindings;
 	const char *backend_name;
 	const char *library_path;
 	uint32_t transport_backend;
-	uint32_t credit,route,route_count,hidden,credit_count,memory_mode;
+	uint32_t credit,route,route_count,hidden,memory_mode;
 	uint64_t credit_bytes,offset,total_bytes;
 	SparkStatus status;
 	uint32_t index;
@@ -226,15 +229,10 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		configuration.control_port_base =
 			SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_PORT_BASE;
 		configuration.algorithm_mask =
-			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
-			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL |
-			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
-		configuration.rail_count = 2u;
-		configuration.direct_all_to_all_max_payload_bytes = 655360u;
-		configuration.split_ring_min_payload_bytes = 8388608u;
-		configuration.step_rail_indices[0] = 0u;
-		configuration.step_rail_indices[1] = 1u;
-		configuration.step_rail_indices[2] = 1u;
+			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
+		configuration.rail_count = 0u;
+		configuration.direct_all_to_all_max_payload_bytes = 0u;
+		configuration.split_ring_min_payload_bytes = 0u;
 		configuration.combine_bf16_function = SparkQwen38_27bTpCombineBf16;
 		configuration.combine_relay_bf16_function = SparkQwen38_27bTpCombineRelayBf16;
 		configuration.combine_tp4_bf16_function = SparkQwen38_27bTpCombineTp4Bf16;
@@ -244,10 +242,31 @@ SparkStatus SparkQwen38_27bTpInitialize(
 			memcpy(configuration.rail_rank_hosts[index],SparkQwen38_27bTpRailHosts[index],sizeof(SparkQwen38_27bTpRailHosts[index]));
 		for (index = 0u; index < degree; index++)
 			configuration.rank_hosts[index] = SparkQwen38_27bTpRailHosts[0][index];
-		credit_count = pipeline_slot_count * 2u;
-		if ( credit_count == 0u || credit_count > SPARK_TP_DEVICE_COLLECTIVE_CREDIT_COUNT )
-			credit_count = 2u;
-		configuration.credit_count = credit_count;
+		configuration.credit_count = 8u;
+		{
+			const char *session_ports_text = getenv("SPARK_QWEN38_27B_TP_SESSION_PORTS");
+			const char *cell_scan;
+			uint32_t row_index,column_index;
+			unsigned long cell_value;
+			if ( session_ports_text == 0 )
+				return SPARK_STATUS_INVALID_ARGUMENT;
+			cell_scan = session_ports_text;
+			for (row_index = 0u; row_index < degree; row_index++)
+				for (column_index = 0u; column_index < degree; column_index++)
+				{
+					char *cell_end;
+					errno = 0;
+					cell_value = strtoul(cell_scan,&cell_end,10);
+					if ( cell_end == cell_scan || errno != 0 ||
+						cell_value > 65535u ||
+						(row_index == column_index ? cell_value != 0u : cell_value == 0u) )
+						return SPARK_STATUS_INVALID_ARGUMENT;
+					configuration.session_ports[row_index][column_index] = (uint16_t)cell_value;
+					cell_scan = cell_end;
+					while ( *cell_scan == ',' )
+						cell_scan++;
+				}
+		}
 	}
 	else
 	{
@@ -278,8 +297,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		for (route = 0u; route < route_count; route++)
 		{
 			hidden = configuration.local_hidden_dimension;
-			credit_bytes = (uint64_t)configuration.max_active_sequence_count *
-				hidden * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES;
+			credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 			if ( credit_bytes == 0u || total_bytes > UINT64_MAX -
 				credit_bytes * configuration.credit_count )
 				return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -301,8 +319,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		for (route = 0u; route < route_count; route++)
 		{
 			hidden = configuration.local_hidden_dimension;
-			credit_bytes = (uint64_t)configuration.max_active_sequence_count *
-				hidden * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES;
+			credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 			for (credit = 0u; credit < configuration.credit_count; credit++)
 			{
 				SparkTpDeviceCollectiveCreditBinding *binding =
@@ -380,6 +397,7 @@ SparkStatus SparkQwen38_27bTpReduceHidden(
 	SparkQwen38_27bTpState *tp,
 	void *buffer,
 	uint32_t rows,
+	uint32_t logical_count,
 	void *cuda_stream)
 {
 	if ( tp == 0 || buffer == 0 || rows == 0u || cuda_stream == 0 )
@@ -388,18 +406,19 @@ SparkStatus SparkQwen38_27bTpReduceHidden(
 		return SPARK_STATUS_OK;
 	if ( rows > tp->collective.max_active_sequence_count )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	return SparkQwen38_27bTpSubmit(tp,buffer,rows,cuda_stream,0u);
+	return SparkQwen38_27bTpSubmit(tp,buffer,rows,logical_count,cuda_stream,0u);
 }
 
 SparkStatus SparkQwen38_27bTpReduceU64Max(
 	SparkQwen38_27bTpState *tp,
 	uint64_t *buffer,
 	uint32_t count,
+	uint32_t logical_count,
 	void *cuda_stream)
 {
 	if ( tp == 0 || buffer == 0 || count == 0u || cuda_stream == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ( tp->degree <= 1u || tp->initialized == 0u )
 		return SPARK_STATUS_OK;
-	return SparkQwen38_27bTpSubmit(tp,buffer,count,cuda_stream,1u);
+	return SparkQwen38_27bTpSubmit(tp,buffer,count,logical_count,cuda_stream,1u);
 }

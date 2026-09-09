@@ -131,3 +131,82 @@ only after the async loop is measured. Next window's flash units, in
 order: (1) redeploy binaries+configs, measure prefill+decode; (2) the
 R1 screened-head port (shadow asset + dispatch); (3) the split-K
 qualification cell; (4) then the R5/R6/R7 hoists on the measured loop.
+
+## Fleet tooling audit (2026-09-07, after FLEET_RELEASE/DEVCYCLE landed)
+
+The fleet release machinery went in fast and the audit found it does not
+do what its two contract docs claim. Findings being fixed on
+lane/fleet-tooling-fixes (this wave): fleet_sync stop respawned by
+Restart=always; reinstall keeping old args; fleet_serve full launching a
+SECOND residentd per root without stopping the old one; stop() SIGKILLs
+after 1s with a drain check scoped to the whole host; agent rsync
+failures swallowed then restarting onto a half-synced tree; weightd
+UPDATE consumed by the first node so 15 never pull (the 106 piled-up
+UPDATE.* files in the hub release root are this bug's fingerprint);
+root_state can read the wrong root's daemon; duplicate-agent race
+defeats the two-phase UPDATE ledger (no flock, line-count not
+host-count). Contract drift recorded alongside: FLEET_RELEASE describes
+sha-convergence but the code is UPDATE-sentinel-driven; report() writes
+2 of the 4 promised shas; reload-time claims disagree between the docs.
+Verified HOLDING: weightd is never TERM'd anywhere; the agent's
+TERM/wait/one-instance root protocol matches the contract; the memory
+gate exists in the agent path.
+
+Also logged from the same audit: PR #812's model_api C fixes are real
+root-cause work (queue-tail, recv-buffer leak, completion latency,
+output_token_ids leak) BUT its regression test is theater — a source-text
+grep whose docstring claims it drives a live api over a socket pair (it
+does not); the P1 queue-tail bug has zero behavioral coverage. And
+graph-replay downgrade (finding 5) is a half-fix: fabricated error code,
+polluted plain-frame counters, frames 2..N still silently plain.
+
+DRY debt logged: fleet membership in 3 places (HOSTS twice + FLEET_SIZE);
+residentd launch recipe pasted twice; session_ports validation 4x (one
+shared loader exists) + derivation pasted in 4 generators with 4 magic
+bases that collide across models; credit_count=8 magic in 3 modules;
+qwen4_flash launch hardcodes tp=4 while taking tp as a parameter.
+
+## Continuous-batching verdict (2026-09-07)
+
+model_batch_engine IS a submission-wave continuous batcher (whole ready
+set admitted per wave, KV-page-aware, chunked prefill interleaves with
+decode), but: every shipped DSV4 spec config caps B at 1; DSV4 has never
+been measured above B1 (33.55 tok/s B1 is the only receipt); the batch
+ceiling is a compile-time bucket ladder (14 hand-maintained variants);
+admission is speculation-blind (effective rows undercount up to 8x under
+dspark); one failed submission terminal-fails ALL idle requests;
+B>=24 has an intermittent client-fatal defect and B>=lanes/2 collapses
+~770x per step for an unidentified mechanism (knee-sweep report);
+SparkContinuousBatchStep is test-only dead weight; scheduler/continuous
+_batch.c gates only the benchmark CLI, default off. B~100 amortization:
+the direction is proven (27B dense B1->B32 = 174x aggregate, still
+falling per-step at B32) but the wall is software defects, not bandwidth.
+
+## B4-serialize / B8-wedge root causes (2026-09-08, d2a serving analysis)
+
+The measured B4-no-gain / B8-timeout on glm5.3 TP16 d2a serving decompose
+to two distinct defects, neither in the collective engine:
+
+1. PREFILL IS ROW-SERIAL PER SEQUENCE: a wave carries one token-row per
+   sequence; a 512-token prompt = 512 sequential full-model waves (45
+   layers x 91 collectives each) ~= 37s. Four concurrent prompts = 2
+   serialized 1024-row submissions on one execution stream ~= the
+   measured 95.6s p50. THE fix is chunked multi-row prefill (waves
+   carrying many positions of one sequence) - which is exactly what the
+   multi-row machinery on main does for DSA layers MINUS the unresolved
+   multi-row DSA store nondeterminism (CONSULT_multirow_kv_nondeterminism.md);
+   the 1-row clamp in RoundMajorWaveRows stays until that bug dies.
+2. B8 WEDGE = TP ORDINAL DIVERGENCE: ordinals come from a per-rank
+   post-order atomic counter, so concurrent frame chains interleave
+   differently per rank; a rank whose ordinal N is another chain's op
+   never rendezvous-matches -> 30s operation_timeout -> OP-FAIL ->
+   latched collective-wide failure, and the api's unconditional
+   ReopenAdmission keeps feeding requests into the dead collective.
+   Fix in flight (lane/tp-ordinal-determinism): ordinals derived
+   deterministically from the broadcast dispatch generation + per-chain
+   op index; the ack gate stops assuming contiguous ordinals. Interim
+   mitigation if needed before it lands: max_inflight_submissions: 1.
+Secondary: ReopenAdmission unconditional retry converts a dead
+collective into infinite 30s stalls instead of failing loudly
+(node/model_api.c); the api worker's 10ms poll loop should be
+event-driven (completion wake).

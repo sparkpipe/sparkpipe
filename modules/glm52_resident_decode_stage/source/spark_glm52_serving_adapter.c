@@ -145,11 +145,8 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 		SPARK_GLM52_SERVING_PROGRAM_NAME,
 		GLM52_CONTRACT_SHA256),
 	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
-		SPARK_GLM52_SERVING_TOPOLOGY_FLAG |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV),
+		SPARK_GLM52_SERVING_TOPOLOGY_FLAG),
 	.stage_count = SPARK_GLM52_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -164,7 +161,6 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.max_resident_sequence_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.cache_block_token_count = 64u,
 	.stage_layer_counts = SPARK_GLM52_SERVING_STAGE_LAYERS,
 	.boundary_sideband_kinds = {0u},
@@ -184,7 +180,7 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 	policy.peer_count = tp_degree;
 	policy.allow_zero_collective_identifier = 1u;
 	policy.require_contiguous_peer_ports = 1u;
-	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_RECURSIVE_DOUBLING_ONLY;
+	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED;
 	memset(&config,0,sizeof(config));
 	config.backend_module_path_buffer = state->tp_collective_backend_path;

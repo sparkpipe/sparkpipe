@@ -36,8 +36,6 @@ static void TestTransportDeadlineQuarantinesUntilTerminal(uint32_t wait_state)
 	runtime.client.output_capacity = 1u;
 	runtime.client.output_message_capacity = sizeof(output_message);
 	output.message = output_message;
-	descriptor.resident_sequence_slot_reuse =
-		SPARK_MODEL_SERVING_SLOT_REUSE_NONE;
 	lane.request_id = 21u;
 	lane.request_generation = 22u;
 	lane.step_generation = 23u;
@@ -114,8 +112,40 @@ static void TestTransportDeadlineQuarantinesUntilTerminal(uint32_t wait_state)
 	assert(pthread_mutex_destroy(&runtime.mutex) == 0);
 }
 
+static void TestPersistentSlotRequiresRelease(void)
+{
+	SparkModelResidentdRuntime runtime = {0};
+	SparkModelResidentdRoute route = {0};
+	SparkModelResidentdSequenceSlot slot = {0};
+	SparkModelServingLane lane = {0};
+	runtime.sequence_slots = &slot;
+	route.submission.lanes = &lane;
+	route.submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	lane.request_id = 1u;
+	lane.request_generation = 1u;
+	lane.sequence_id = 1u;
+	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_OK);
+	slot.bound = 1u;
+	slot.request_id = 1u;
+	slot.request_generation = 1u;
+	slot.sequence_id = 1u;
+	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_OK);
+	lane.sequence_id = 2u;
+	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+	route.submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
+	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.sequence_id = 1u;
+	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_OK);
+	slot.bound = 0u;
+	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_NOT_FOUND);
+	route.submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	lane.sequence_id = 2u;
+	assert(SparkModelResidentdValidatePersistentSlot(&runtime,&route,0u) == SPARK_STATUS_OK);
+}
+
 int main(void)
 {
+	TestPersistentSlotRequiresRelease();
 	TestTransportDeadlineQuarantinesUntilTerminal(
 		SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT);
 	TestTransportDeadlineQuarantinesUntilTerminal(

@@ -37,7 +37,6 @@ from glm5_next_kda_host_oracle import (  # noqa: E402
     bf16_to_f32, f32_to_bf16_u16, bf16_round_f32, parse_log, rmsnorm,
 )
 
-LAYER = int(sys.argv[3]) if len(sys.argv) > 3 else 3
 HEADS = 64
 LATENT = 512
 NOPE = 256
@@ -107,6 +106,7 @@ def sinkhorn_comb(mixes_f32, scale3, base24):
 
 
 def main():
+    LAYER = int(sys.argv[3]) if len(sys.argv) > 3 else 3
     log = sys.argv[1]
     prompt_ids = json.load(open(sys.argv[2]))
     if isinstance(prompt_ids, dict):

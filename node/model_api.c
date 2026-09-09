@@ -18,6 +18,7 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tokenizer_sidecar.h"
 
 #define API_MAX_BODY		(8u * 1024u * 1024u)
@@ -40,6 +41,10 @@ typedef struct ApiRequest
 	char tokens_json[API_TOKEN_BUF_BYTES];
 	volatile uint32_t tokens_json_len;
 	uint32_t *output_token_ids;
+	uint64_t token_ready_ns[API_MAX_OUTPUT_TOKENS];
+	uint64_t accepted_ns;
+	uint32_t cached_prompt_token_count;
+	uint32_t engine_completed;
 	volatile uint32_t output_token_count;
 	volatile int done;
 	volatile int submitted;
@@ -77,12 +82,14 @@ static volatile uint32_t ApiSessionsAccepted;
 static void api_logf(const char *format, ...)
 {
 	va_list args;
+	flockfile(stderr);
 	fprintf(stderr, "model_api[%s] ", ApiBootTag);
 	va_start(args, format);
 	vfprintf(stderr, format, args);
 	va_end(args);
 	fputc('\n', stderr);
 	fflush(stderr);
+	funlockfile(stderr);
 }
 
 static uint64_t api_now_ms(void)
@@ -102,6 +109,52 @@ static void api_term_signal(int signal_number)
 	_exit(0);
 }
 
+static void api_log_request_measurements(const ApiRequest *request)
+{
+	uint32_t index;
+	flockfile(stderr);
+	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,request->prompt_count,request->cached_prompt_token_count);
+	for (index=0u; index<request->output_token_count; index++)
+		fprintf(stderr,"%s[%u,%llu]",index == 0u ? "" : ",",request->output_token_ids[index],(unsigned long long)request->token_ready_ns[index]);
+	fputs("]}\n",stderr);
+	funlockfile(stderr);
+}
+
+static void api_request_destroy(ApiRequest *req)
+{
+	pthread_mutex_destroy(&req->mutex);
+	pthread_cond_destroy(&req->cond);
+	free(req->stop_tokens);
+	free(req->prompt_tokens);
+	free(req->output_token_ids);
+	free(req);
+}
+
+static void api_queue_unlink(ApiRequest *req)
+{
+	ApiRequest **pp = &S.queue_head;
+	while (*pp != 0)
+	{
+		if (*pp == req)
+		{
+			*pp = req->next;
+			if (S.queue_tail == req)
+			{
+				ApiRequest *pred = S.queue_head;
+				S.queue_tail = 0;
+				while (pred != 0)
+				{
+					S.queue_tail = pred;
+					pred = pred->next;
+				}
+			}
+			req->next = 0;
+			return;
+		}
+		pp = &(*pp)->next;
+	}
+}
+
 
 static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 {
@@ -114,6 +167,9 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 	{
 		if (r->id != ev->request_id)
 			continue;
+		r->cached_prompt_token_count = ev->cached_prompt_token_count;
+		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
+			r->accepted_ns = ev->monotonic_ns;
 		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN)
 		{
 			uint32_t stop_index;
@@ -151,6 +207,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					sizeof(r->tokens_json) - r->tokens_json_len,
 					"%s%u", r->tokens_json_len ? "," : "",
 					(unsigned)ev->token_id);
+				r->token_ready_ns[r->output_token_count] = ev->monotonic_ns;
 				r->output_token_ids[r->output_token_count++] = ev->token_id;
 			}
 		}
@@ -159,6 +216,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 		{
 			pthread_mutex_lock(&r->mutex);
 			r->status = ev->status;
+			r->engine_completed = ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ? 1u : 0u;
 			r->done = 1;
 			S.served++;
 			pthread_cond_signal(&r->cond);
@@ -195,25 +253,20 @@ static void *api_worker(void *arg)
 			uint32_t i;
 			pthread_mutex_lock(&S.queue_mutex);
 			{
-				ApiRequest **pp = &S.queue_head;
-				while (*pp != 0)
+				ApiRequest *victim = S.queue_head;
+				while (victim != 0)
 				{
-					ApiRequest *victim = *pp;
 					if (victim->orphaned && !victim->inflight)
 					{
-						*pp = victim->next;
-						if (S.queue_tail == victim)
-							S.queue_tail = 0;
+						ApiRequest *next = victim->next;
+						api_queue_unlink(victim);
 						pthread_mutex_unlock(&S.queue_mutex);
-						pthread_mutex_destroy(&victim->mutex);
-						pthread_cond_destroy(&victim->cond);
-						free(victim->stop_tokens);
-						free(victim->prompt_tokens);
-						free(victim);
+						api_request_destroy(victim);
 						pthread_mutex_lock(&S.queue_mutex);
+						victim = next;
 						continue;
 					}
-					pp = &victim->next;
+					victim = victim->next;
 				}
 			}
 			for (r = S.queue_head; r != 0 && pending_count < API_MAX_INFLIGHT; r = r->next)
@@ -334,11 +387,16 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 	size_t total = 0, header_end = 0;
 	uint32_t content_length = 0;
 	ssize_t n;
+	if (buf == 0)
+		return 0;
 	while (total < buf_cap - 1)
 	{
 		n = recv(fd, buf + total, buf_cap - 1 - total, 0);
 		if (n <= 0)
+		{
+			free(buf);
 			return 0;
+		}
 		total += (size_t)n;
 		buf[total] = '\0';
 		{
@@ -723,35 +781,26 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	pthread_mutex_unlock(&S.queue_mutex);
 	while (!req->done && S.running)
 	{
-		struct pollfd disconnect_probe;
-		int poll_status;
-		disconnect_probe.fd = fd;
-		disconnect_probe.events = POLLIN;
-		poll_status = poll(&disconnect_probe, 1, 250);
-		if (poll_status > 0 && (disconnect_probe.revents & (POLLHUP | POLLERR)) != 0)
-			break;
-		if (poll_status > 0 && (disconnect_probe.revents & POLLIN) != 0)
 		{
 			char probe;
 			ssize_t received = recv(fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
 			if (received == 0)
 				break;
+			if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+				break;
 		}
-		if (!req->done)
 		{
+			struct timespec api_wait_until;
+			clock_gettime(CLOCK_REALTIME, &api_wait_until);
+			api_wait_until.tv_nsec += 250000000L;
+			if (api_wait_until.tv_nsec >= 1000000000L)
+			{
+				api_wait_until.tv_sec += 1u;
+				api_wait_until.tv_nsec -= 1000000000L;
+			}
 			pthread_mutex_lock(&req->mutex);
 			if (!req->done)
-				{
-					struct timespec api_wait_until;
-					clock_gettime(CLOCK_REALTIME, &api_wait_until);
-					api_wait_until.tv_nsec += 250000000L;
-					if (api_wait_until.tv_nsec >= 1000000000L)
-					{
-						api_wait_until.tv_sec += 1u;
-						api_wait_until.tv_nsec -= 1000000000L;
-					}
-					pthread_cond_timedwait(&req->cond, &req->mutex, &api_wait_until);
-				}
+				pthread_cond_timedwait(&req->cond, &req->mutex, &api_wait_until);
 			pthread_mutex_unlock(&req->mutex);
 		}
 	}
@@ -886,6 +935,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			req->status, req->status);
 		send_response(fd, 500, err);
 	}
+	api_log_request_measurements(req);
 	pthread_mutex_lock(&S.queue_mutex);
 	if (req->inflight)
 	{
@@ -893,26 +943,10 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		pthread_mutex_unlock(&S.queue_mutex);
 		return;
 	}
-	{
-		ApiRequest **pp = &S.queue_head;
-		while (*pp != 0)
-		{
-			if (*pp == req)
-			{
-				*pp = req->next;
-				if (S.queue_tail == req)
-					S.queue_tail = 0;
-				break;
-			}
-			pp = &(*pp)->next;
-		}
-	}
+	api_queue_unlink(req);
 	pthread_mutex_unlock(&S.queue_mutex);
-	pthread_mutex_destroy(&req->mutex);
-	pthread_cond_destroy(&req->cond);
-	free(req->stop_tokens);
-	free(req->prompt_tokens);
-	free(req);
+	api_request_destroy(req);
+	return;
 }
 
 static void *api_connection(void *arg)
@@ -1019,28 +1053,13 @@ int main(int argc, char **argv)
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.event_function = api_event;
 	cfg.event_context = 0;
+	EngineStopTokenCount = dep.eos_token_count;
+	if ( EngineStopTokenCount == 0u || EngineStopTokenCount > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
 	{
-		const char *eos_env = getenv("SPARK_EOS_TOKEN_IDS");
-		if ( eos_env != 0 && eos_env[0] != '\0' )
-		{
-			unsigned long value;
-			char *cursor = (char *)eos_env, *next;
-			while ( *cursor != '\0' &&
-				cfg.stop_token_count < SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
-			{
-				value = strtoul(cursor,&next,10);
-				if ( next == cursor )
-					break;
-				cfg.stop_token_ids[cfg.stop_token_count++] = (uint32_t)value;
-				cursor = ( *next == ',' ) ? next + 1 : next;
-				if ( *cursor == '\0' ) break;
-			}
-			fprintf(stderr,"model_api: %u EOS token(s) from env\n",cfg.stop_token_count);
-		}
+		fprintf(stderr,"model_api: required model EOS metadata missing or invalid\n");
+		return 1;
 	}
-	EngineStopTokenCount = cfg.stop_token_count;
-	memcpy(EngineStopTokens, cfg.stop_token_ids,
-		sizeof(uint32_t) * (size_t)cfg.stop_token_count);
+	memcpy(EngineStopTokens,dep.eos_token_ids,EngineStopTokenCount * sizeof(uint32_t));
 	if (dep.tokenizer_asset_path != 0)
 	{
 		char asset_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
@@ -1064,6 +1083,27 @@ int main(int argc, char **argv)
 				"(deployment promised text serving); refusing to start\n",
 				asset_path);
 			return 1;
+		}
+		{
+			char actual_sha256[SPARK_SHA256_HEX_BYTES];
+			uint32_t mismatch = 0u;
+			if (Sidecar.tokenizer.vocabulary_count != dep.tokenizer_vocabulary_size)
+				mismatch |= 1u;
+			if (SparkSha256File(asset_path, actual_sha256) != SPARK_STATUS_OK ||
+				strcmp(actual_sha256, dep.tokenizer_asset_sha256) != 0)
+				mismatch |= 2u;
+			if (mismatch != 0u)
+			{
+				fprintf(stderr, "model_api: tokenizer asset %s does not match the "
+					"deployment (%s%s): declared vocab=%u sha256=%s, actual vocab=%u; "
+					"refusing to start\n",
+					asset_path,
+					(mismatch & 1u) != 0u ? "vocabulary_size " : "",
+					(mismatch & 2u) != 0u ? "sha256" : "",
+					dep.tokenizer_vocabulary_size, dep.tokenizer_asset_sha256,
+					Sidecar.tokenizer.vocabulary_count);
+				return 1;
+			}
 		}
 		HaveSidecar = 1;
 		fprintf(stderr, "model_api: tokenizer sidecar ready format=%u "

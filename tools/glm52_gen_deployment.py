@@ -25,6 +25,9 @@ COLLECTIVE_ID = 8811223344556678
 MODEL_REVISION = "b4734de4facf877f85769a911abafc5283eab3d9"
 NODE_TARGET = "cuda.sm121.glm52.resident_decode_stage.bf16.expert_fp8"
 
+COLLECTIVE_SESSION_BASE = int(os.environ.get(
+    "GLM52_SESSION_BASE", "64500"))
+
 TP_COLLECTIVE = {
     "backend": "hidden_transport",
     "backend_module_path": "lib/hidden_transport.so",
@@ -34,11 +37,10 @@ TP_COLLECTIVE = {
     "operation_timeout_milli": 30000,
     "peer_hosts": list(HOSTS),
     "peer_ports": [COLLECTIVE_BASE + r for r in range(TP)],
-    "algorithms": ["recursive_doubling"],
-    "direct_all_to_all_max_payload_bytes": 0,
-    "split_ring_min_payload_bytes": 0,
-    "rail_peer_hosts": [list(HOSTS), list(HOSTS)],
-    "step_rail_indices": [0, 0, 1],
+    "algorithms": ["tree"],
+    "session_ports": [
+        [COLLECTIVE_SESSION_BASE + a * TP + b if a != b else 0
+         for b in range(TP)] for a in range(TP)],
 }
 
 

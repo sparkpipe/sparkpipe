@@ -59,6 +59,8 @@ typedef struct TestModelPipelineState
 
 typedef struct TestModelBatchState
 {
+	uint64_t last_event_ns;
+	uint32_t cached_prompt_tokens;
 	uint32_t accepted_count;
 	uint32_t token_count;
 	uint32_t completed_count;
@@ -251,6 +253,10 @@ static void TestModelBatchEvent(
 	assert(event != 0);
 	assert(event->abi_version == SPARK_MODEL_BATCH_ENGINE_ABI_VERSION);
 	assert(event->descriptor_bytes == SPARK_MODEL_BATCH_EVENT_BYTES);
+	assert(event->monotonic_ns != 0u && event->monotonic_ns >= state->last_event_ns);
+	state->last_event_ns = event->monotonic_ns;
+	if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
+		state->cached_prompt_tokens = event->cached_prompt_token_count;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
 		state->accepted_count++;
 	else if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
@@ -864,6 +870,32 @@ static void TestModelPipelineWriteDeployment(
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
 
+static void TestModelBatchRejectMissingEos(
+	const SparkModelBatchEngineConfiguration *valid)
+{
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelResidentDeployment deployment;
+	SparkModelBatchEngine *engine = 0;
+	configuration = *valid;
+	deployment = *valid->deployment;
+	configuration.deployment = &deployment;
+	deployment.eos_token_count = 0u;
+	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(engine == 0);
+	deployment.eos_token_count = SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT + 1u;
+	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(engine == 0);
+	deployment.eos_token_count = 2u;
+	deployment.eos_token_ids[0] = 7u;
+	deployment.eos_token_ids[1] = 7u;
+	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_DUPLICATE);
+	assert(engine == 0);
+	deployment.eos_token_count = 1u;
+	deployment.tokenizer_vocabulary_size = 7u;
+	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(engine == 0);
+}
+
 static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	const SparkModelResidentDeployment *deployment,
 	TestModelBatchState *state,
@@ -892,6 +924,7 @@ static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	configuration.event_context = state;
 	configuration.stage_completion_function = TestModelBatchStageCompletion;
 	configuration.stage_completion_context = state;
+	TestModelBatchRejectMissingEos(&configuration);
 	engine = 0;
 	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK);
 	assert(engine != 0);
@@ -1009,6 +1042,7 @@ static void TestModelBatchWaitShutdown(SparkModelBatchEngine *engine)
 static void TestModelBatchEngineRun(
 	const SparkModelResidentDeployment *deployment)
 {
+	SparkModelResidentDeployment eos_deployment;
 	SparkModelBatchEngineView view;
 	SparkModelBatchRequestHandle cancelled,first,reused,third;
 	SparkModelBatchEngine *engine;
@@ -1073,8 +1107,12 @@ static void TestModelBatchEngineRun(
 	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));
-	engine = TestModelBatchConnect(deployment,&state,1u,4203u,4u);
+	eos_deployment = *deployment;
+	eos_deployment.eos_token_ids[0] = 4203u;
+	engine = TestModelBatchConnect(&eos_deployment,&state,1u,4204u,4u);
+	prompt_c[0] = 4203u;
 	(void)TestModelBatchSubmit(engine,1005u,2005u,prompt_c,1u,4u);
+	prompt_c[0] = 31u;
 	TestModelBatchWaitIdle(engine,1u);
 	assert(state.accepted_count == 1u);
 	assert(state.token_count == 1u);
@@ -1267,6 +1305,23 @@ static void TestModelBatchEnginePrefixReuse(
 	assert(state.submission_row_counts[second_prefill] == 1u);
 	assert(state.completed_count == 2u);
 	assert(state.error_count == 0u);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+}
+
+static void TestModelBatchEnginePrefixTelemetry(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	uint32_t prompt[13] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u};
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnect(deployment,&state,0u,0u,4u);
+	(void)TestModelBatchSubmit(engine,9001u,9101u,prompt,13u,1u);
+	TestModelBatchWaitIdle(engine,1u);
+	assert(state.cached_prompt_tokens == 0u);
+	(void)TestModelBatchSubmit(engine,9002u,9102u,prompt,13u,1u);
+	TestModelBatchWaitIdle(engine,2u);
+	assert(state.cached_prompt_tokens == 12u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 }
 
@@ -1669,6 +1724,7 @@ int main(void)
 	TestModelBatchEngineContinuous(&deployment);
 	TestModelBatchEnginePrefixReuse(&deployment);
 	TestModelBatchEngineCachePageBudget(&deployment);
+	TestModelBatchEnginePrefixTelemetry(&deployment);
 	TestModelBatchEngineShutdown(&deployment);
 	TestModelBatchProcess(deployment_path,0u);
 	TestModelBatchProcess(deployment_path,1u);

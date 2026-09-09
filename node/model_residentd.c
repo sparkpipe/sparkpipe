@@ -26,6 +26,7 @@
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
 #include "sparkpipe/spark_pipeline_runtime.h"
+#include "weightd_spawn.h"
 
 #define SPARK_MODEL_RESIDENTD_TRANSPORT_POLL_CAPACITY 32u
 #define SPARK_MODEL_RESIDENTD_PROGRESS_STEPS 64u
@@ -687,32 +688,15 @@ static uint32_t SparkModelResidentdSequenceSlotMatches(
 	return(slot->bound != 0u && slot->request_id == lane->request_id && slot->request_generation == lane->request_generation && slot->sequence_id == lane->sequence_id ? 1u : 0u);
 }
 
-static uint32_t SparkModelResidentdLaneStartsAtPositionZero(
-	const SparkModelServingSubmission *submission,
-	uint32_t lane_index)
-{
-	uint32_t row;
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->lanes[lane_index].sequence_position != 0u )
-		return(0u);
-	for (row=0u; row<submission->row_count; row++)
-		if ( submission->row_lane_indices[row] == lane_index && submission->row_positions[row] == 0u )
-			return(1u);
-	return(0u);
-}
-
 static SparkStatus SparkModelResidentdValidatePersistentSlot(
 	const SparkModelResidentdRuntime *runtime,
 	const SparkModelResidentdRoute *route,
 	uint32_t lane_index)
 {
-	const SparkModelServingAdapterDescriptor *descriptor;
 	const SparkModelResidentdSequenceSlot *slot;
 	const SparkModelServingLane *lane;
-	descriptor = runtime->adapter_library.adapter_interface.descriptor;
 	lane = &route->submission.lanes[lane_index];
 	slot = &runtime->sequence_slots[lane->resident_sequence_slot];
-	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_NONE )
-		return(SPARK_STATUS_OK);
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		if ( slot->bound == 0u )
@@ -720,8 +704,6 @@ static SparkStatus SparkModelResidentdValidatePersistentSlot(
 		return(SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( slot->bound == 0u || SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u )
-		return(SPARK_STATUS_OK);
-	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO && SparkModelResidentdLaneStartsAtPositionZero(&route->submission,lane_index) != 0u )
 		return(SPARK_STATUS_OK);
 	return(SPARK_STATUS_INVALID_ARGUMENT);
 }
@@ -834,13 +816,10 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 	{
 		lane = &route->submission.lanes[lane_index];
 		slot = &runtime->sequence_slots[lane->resident_sequence_slot];
-		if ( descriptor->resident_sequence_slot_reuse != SPARK_MODEL_SERVING_SLOT_REUSE_NONE )
-		{
-			slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 1u : 0u;
-			slot->request_id = slot->bound != 0u ? lane->request_id : 0u;
-			slot->request_generation = slot->bound != 0u ? lane->request_generation : 0u;
-			slot->sequence_id = slot->bound != 0u ? lane->sequence_id : 0u;
-		}
+		slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 1u : 0u;
+		slot->request_id = slot->bound != 0u ? lane->request_id : 0u;
+		slot->request_generation = slot->bound != 0u ? lane->request_generation : 0u;
+		slot->sequence_id = slot->bound != 0u ? lane->sequence_id : 0u;
 		if ( (descriptor->capability_flags &
 			SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u )
 		{
@@ -1231,7 +1210,7 @@ static SparkStatus SparkModelResidentdInitializePlan(
 {
 	SparkStatus status;
 	runtime->initialize_phase = "adapter_load";
-	status = SparkModelServingAdapterLoadInterfaceFromSharedObject(configuration->adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE,&runtime->adapter_library);
+	status = SparkModelServingAdapterLoadInterfaceFromSharedObject(configuration->adapter_path,0u,&runtime->adapter_library);
 	if ( status == SPARK_STATUS_OK )
 	{
 		runtime->initialize_phase = "deployment_validation";
@@ -1762,7 +1741,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkModelServingSubmission submission;
 	SparkModelResidentdRoute *route;
 	SparkStatus cleanup_status,queue_status,resolution_status,status;
-	uint32_t cache_committed,cache_prepared,cache_transactional;
+	uint32_t cache_committed,cache_prepared;
 	wire = (const SparkModelResidentIpcSubmit *)message;
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
 	if ( status == SPARK_STATUS_OK && decision_required == 0u )
@@ -1774,14 +1753,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		status = submission.submission_id == runtime->client.last_submission_id ? SPARK_STATUS_DUPLICATE : SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterPrepareSubmission(&runtime->adapter_library.adapter_interface,runtime->adapter_state,&submission);
-	cache_transactional =
-		(runtime->adapter_library.adapter_interface.descriptor->capability_flags &
-		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH)) ==
-		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) ? 1u : 0u;
-	cache_prepared = status == SPARK_STATUS_OK && cache_transactional != 0u ?
-		1u : 0u;
+	cache_prepared = status == SPARK_STATUS_OK ? 1u : 0u;
 	cache_committed = 0u;
 	route = 0;
 	if ( status == SPARK_STATUS_OK )
@@ -2368,7 +2340,6 @@ static SparkStatus SparkModelResidentdPrepareContinuation(
 	SparkModelResidentdRoute *route)
 {
 	SparkStatus status;
-	uint32_t transactional;
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route->active == 0u || route->state !=
 		SPARK_MODEL_RESIDENTD_ROUTE_CONTINUATION_PREPARING ||
@@ -2390,13 +2361,7 @@ static SparkStatus SparkModelResidentdPrepareContinuation(
 		pthread_mutex_unlock(&runtime->mutex);
 		return(status);
 	}
-	transactional = (runtime->adapter_library.adapter_interface.descriptor->
-		capability_flags & (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH)) ==
-		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) ? 1u : 0u;
-	if ( transactional != 0u )
-		route->prepared_cache = 1u;
+	route->prepared_cache = 1u;
 	return(SparkModelResidentdCommitContinuation(runtime,route));
 }
 
@@ -2779,6 +2744,7 @@ int main(int argument_count,char **arguments)
 	SparkModelResidentdLaunch launch;
 	SparkModelResidentdRuntime runtime;
 	SparkStatus status;
+	int32_t weightd_status;
 	SparkModelResidentDeploymentReset(&deployment);
 	status = SparkModelResidentdParseLaunch(argument_count,arguments,&launch);
 	if ( status == SPARK_STATUS_OK )
@@ -2800,9 +2766,13 @@ int main(int argument_count,char **arguments)
 	if ( deployment.weightd_socket_path != 0 &&
 		deployment.weightd_socket_path[0] != '\0' )
 	{
-		extern void SparkModelResidentdEnsureWeightd(const char *,const char *);
-		SparkModelResidentdEnsureWeightd(configuration.runtime_root,
-			deployment.weightd_socket_path);
+		weightd_status = SparkModelResidentdPrepareWeightd(configuration.runtime_root,deployment.weightd_socket_path);
+		if ( weightd_status != 0 )
+		{
+			fprintf(stderr,"model_residentd weightd-required status=%d root=%s socket=%s: require one valid packs/*.sha256 and a supervised daemon; direct loading is disabled\n",weightd_status,configuration.runtime_root,deployment.weightd_socket_path);
+			SparkModelResidentDeploymentDestroy(&deployment);
+			return(1);
+		}
 	}
 	status = SparkModelResidentdInitialize(&runtime,&configuration);
 	if ( status == SPARK_STATUS_OK )

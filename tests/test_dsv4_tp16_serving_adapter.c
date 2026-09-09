@@ -48,12 +48,7 @@ int main(void)
 	SparkStatus status;
 	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(
 		TEST_DSV4_TP16_ADAPTER_PATH,
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT,
 		&library) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.descriptor->stage_count == 16u);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 16u);

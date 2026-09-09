@@ -62,6 +62,7 @@ int main(int argc, char **argv)
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = 0u;
 	submission.active_sequence_count = rows;
+	submission.logical_sequence_count = rows;
 	submission.local_device = buffer;
 	submission.full_device = buffer;
 	submission.cuda_stream = stream;

@@ -150,6 +150,7 @@ typedef struct SparkK3RunnerState
 	uint32_t fused_rows;
 	uint64_t tp_next_ordinal;
 	uint32_t rows;
+	uint32_t logical_sequence_count;
 	const uint16_t *embed_weight;
 	const uint16_t *head_norm_weight;
 	const uint16_t *head_weight;
@@ -338,6 +339,7 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 		submission.descriptor_bytes = sizeof(submission);
 		submission.slot_index = 0u;
 		submission.active_sequence_count = rows;
+		submission.logical_sequence_count = state->logical_sequence_count;
 		submission.flags =
 			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 		submission.ordinal = state->tp_next_ordinal++;
@@ -465,6 +467,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			submission.descriptor_bytes = sizeof(submission);
 			submission.slot_index = 0u;
 			submission.active_sequence_count = rows;
+			submission.logical_sequence_count = state->logical_sequence_count;
 			submission.flags =
 				SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 			submission.ordinal = state->tp_next_ordinal++;
@@ -509,6 +512,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		submission.descriptor_bytes = sizeof(submission);
 		submission.slot_index = 0u;
 		submission.active_sequence_count = rows;
+		submission.logical_sequence_count = state->logical_sequence_count;
 		submission.flags =
 			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 		submission.ordinal = state->tp_next_ordinal++;
@@ -819,11 +823,12 @@ SparkStatus SparkK3StageRunnerSubmit(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state = (SparkK3RunnerState *)runner->private_state;
 	rows = dispatch->row_count;
-	if ( rows == 0u || rows > state->max_rows ||
+	if ( rows == 0u || rows > state->max_rows || dispatch->active_sequence_count == 0u || dispatch->active_sequence_count > rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	stream = state->stream;
 	state->rows = rows;
+	state->logical_sequence_count = dispatch->active_sequence_count;
 	b = state->dispatch.buffers;
 	sequences = rows;
 	packed_rows = rows * K3_TOP_K;
@@ -894,6 +899,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 			submission.descriptor_bytes = sizeof(submission);
 			submission.slot_index = 0u;
 			submission.active_sequence_count = rows;
+			submission.logical_sequence_count = state->logical_sequence_count;
 			submission.flags =
 				SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 			submission.ordinal = state->tp_next_ordinal++;
@@ -1051,6 +1057,7 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	b = d->buffers;
 	stream = state->stream;
+	state->logical_sequence_count = 1u;
 	rows = 1u;
 	sequences = 1u;
 	packed_rows = rows * K3_TOP_K;

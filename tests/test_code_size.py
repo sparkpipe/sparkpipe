@@ -1450,6 +1450,13 @@ CEILING = 238773
 # S4 the conv window carry. +11 tracked: the Makefile rule + GNU-C++
 # probe. Measured exact: 237507 on main 201ff6c + this stack.
 CEILING = 237507
+# glm5next-spec merge onto main 2ab9ec6 (lane/glm5next-spec landing): the
+# MTP chain speculation path (draft/verify/accept/fold, wave commit flag,
+# layer-45 weight load, controllability) re-applied onto the multi-row
+# module lineage; diag knobs (FORCE_WAVE_ROWS, LAYERDUMP, SYNC_EVERY,
+# PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
+# Re-pinned from measured reality per the ratchet rule.
+CEILING = 233150
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

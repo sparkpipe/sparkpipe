@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_model_serving_adapter.h"
 
 #include <dlfcn.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sparkpipe/spark_model_driver_support.h"
@@ -89,46 +90,13 @@ static SparkStatus SparkDescriptorCheckSpeculationPairing(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkDescriptorCheckSlotReusePairing(
-	const SparkModelServingAdapterDescriptor *descriptor)
-{
-	if ( descriptor->resident_sequence_slot_reuse > SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV) != 0u) != (descriptor->resident_sequence_slot_reuse != SPARK_MODEL_SERVING_SLOT_REUSE_NONE) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE) == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkDescriptorCheckLeasePairing(
-	const SparkModelServingAdapterDescriptor *descriptor)
-{
-	if ( (descriptor->capability_flags &
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u &&
-		(descriptor->capability_flags &
-		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV) == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (descriptor->capability_flags &
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u &&
-		descriptor->resident_sequence_slot_reuse ==
-		SPARK_MODEL_SERVING_SLOT_REUSE_NONE )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
-}
-
 static SparkStatus SparkDescriptorCheckDecodeChainRequirements(
 	const SparkModelServingAdapterDescriptor *descriptor)
 {
 	if ( (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) != 0u &&
 		(descriptor->capability_flags &
-		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE)) !=
-		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) )
+		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) != 0u &&
@@ -151,10 +119,11 @@ static SparkStatus SparkDescriptorCheckCacheBlockFields(
 		 descriptor->parallel_group_size > descriptor->stage_count ||
 		 descriptor->stage_count % descriptor->parallel_group_size != 0u)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (descriptor->cache_block_token_count != 0u) != ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV) != 0u) )
+	if ( descriptor->cache_block_token_count == 0u )
+	{
+		fprintf(stderr,"serving adapter: required cache_block_token_count is zero\n");
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( descriptor->cache_block_token_count != 0u && (descriptor->capability_flags & (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV)) != (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	return(SPARK_STATUS_OK);
 }
 
@@ -226,8 +195,6 @@ static const SparkModelServingAdapterDescriptorCheck SPARK_MODEL_SERVING_ADAPTER
 	SparkDescriptorCheckBoundaryAndCodecFields,
 	SparkDescriptorCheckCapacityFields,
 	SparkDescriptorCheckSpeculationPairing,
-	SparkDescriptorCheckSlotReusePairing,
-	SparkDescriptorCheckLeasePairing,
 	SparkDescriptorCheckDecodeChainRequirements,
 	SparkDescriptorCheckCacheBlockFields,
 	SparkDescriptorCheckIdentityFields,
@@ -254,7 +221,7 @@ SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
 	const SparkModelServingRuntimeLimits *runtime_limits)
 {
 	SparkStatus status;
-	uint32_t index,jit_kv;
+	uint32_t index;
 	status = SparkModelServingAdapterValidateDescriptor(descriptor);
 	if ( status != SPARK_STATUS_OK || runtime_limits == 0 )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
@@ -262,24 +229,25 @@ SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( runtime_limits->max_inflight_submission_count == 0u || runtime_limits->max_inflight_submission_count > descriptor->max_inflight_submission_count || runtime_limits->max_active_sequence_count == 0u || runtime_limits->max_active_sequence_count > descriptor->max_active_sequence_count || runtime_limits->max_input_row_count < runtime_limits->max_active_sequence_count || runtime_limits->max_input_row_count > descriptor->max_input_row_count || runtime_limits->resident_sequence_capacity < runtime_limits->max_active_sequence_count || runtime_limits->resident_sequence_capacity > descriptor->max_resident_sequence_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	jit_kv = (descriptor->capability_flags &
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV) != 0u ? 1u : 0u;
-	if ( jit_kv != 0u &&
-		(runtime_limits->kv_physical_page_capacity <
+	if ( runtime_limits->kv_physical_page_capacity <
 		 runtime_limits->max_active_sequence_count ||
 		 runtime_limits->kv_logical_page_capacity <
 		 runtime_limits->resident_sequence_capacity ||
 		 runtime_limits->kv_physical_page_capacity >
-		 runtime_limits->kv_logical_page_capacity) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( jit_kv == 0u &&
-		(runtime_limits->kv_logical_page_capacity != 0u ||
-		 runtime_limits->kv_physical_page_capacity != 0u) )
+		 runtime_limits->kv_logical_page_capacity )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	for (index=0u; index<4u; index++)
 		if ( runtime_limits->reserved[index] != 0u )
 			return(SPARK_STATUS_ABI_MISMATCH);
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkModelServingAdapterMissingOperation(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const char *operation)
+{
+	fprintf(stderr,"serving adapter %s: missing required operation %s\n",descriptor->adapter_id,operation);
+	return(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 SparkStatus SparkModelServingAdapterValidateInterface(
@@ -294,19 +262,22 @@ SparkStatus SparkModelServingAdapterValidateInterface(
 	status = SparkModelServingAdapterValidateDescriptor(adapter_interface->descriptor);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( (adapter_interface->descriptor->capability_flags & required_capability_flags) != required_capability_flags || adapter_interface->initialize == 0 || adapter_interface->destroy == 0 || adapter_interface->validate_submission == 0 || adapter_interface->submit == 0 || adapter_interface->progress == 0 || adapter_interface->quiesce == 0 || adapter_interface->snapshot == 0 )
+	if ( (adapter_interface->descriptor->capability_flags & required_capability_flags) != required_capability_flags )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (adapter_interface->descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) != 0u && adapter_interface->prefetch == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (adapter_interface->descriptor->capability_flags &
-		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH)) ==
-		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) &&
-		adapter_interface->resolve_prefetch == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (adapter_interface->descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESET) != 0u && adapter_interface->reset == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+#define SPARK_REQUIRE_SERVING_OPERATION(member) \
+	if ( adapter_interface->member == 0 ) \
+		return(SparkModelServingAdapterMissingOperation(adapter_interface->descriptor,#member));
+	SPARK_REQUIRE_SERVING_OPERATION(initialize)
+	SPARK_REQUIRE_SERVING_OPERATION(destroy)
+	SPARK_REQUIRE_SERVING_OPERATION(validate_submission)
+	SPARK_REQUIRE_SERVING_OPERATION(submit)
+	SPARK_REQUIRE_SERVING_OPERATION(prefetch)
+	SPARK_REQUIRE_SERVING_OPERATION(resolve_prefetch)
+	SPARK_REQUIRE_SERVING_OPERATION(progress)
+	SPARK_REQUIRE_SERVING_OPERATION(quiesce)
+	SPARK_REQUIRE_SERVING_OPERATION(snapshot)
+	SPARK_REQUIRE_SERVING_OPERATION(reset)
+#undef SPARK_REQUIRE_SERVING_OPERATION
 	return(SPARK_STATUS_OK);
 }
 
@@ -452,7 +423,7 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	const SparkModelServingSubmission *submission)
 {
 	SparkStatus status;
-	uint32_t required_capability,total_output_tokens;
+	uint32_t total_output_tokens;
 	status = SparkModelServingAdapterValidateDescriptor(descriptor);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -462,9 +433,6 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( submission->flags != 0u || submission->submission_id == 0u || submission->control_generation == 0u || submission->transaction_id == 0u || submission->dispatch_generation == 0u || submission->request_generation == 0u || submission->step_generation == 0u || submission->work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind > SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->lane_count == 0u || submission->lane_count > descriptor->max_active_sequence_count || submission->active_sequence_count == 0u || submission->active_sequence_count > submission->lane_count || submission->lanes == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	required_capability = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE : SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE;
-	if ( (descriptor->capability_flags & required_capability) == 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
@@ -554,8 +522,6 @@ SparkStatus SparkModelServingAdapterPrepareSubmission(
 	status = adapter_interface->validate_submission(adapter_state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( (adapter_interface->descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) == 0u )
-		return(SPARK_STATUS_OK);
 	if ( adapter_interface->prefetch == 0 )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	return(adapter_interface->prefetch(adapter_state,submission,1u));
@@ -568,17 +534,11 @@ SparkStatus SparkModelServingAdapterResolvePrefetch(
 	uint32_t resolution)
 {
 	SparkStatus status;
-	uint32_t required_capabilities;
 	if ( adapter_interface == 0 || adapter_interface->descriptor == 0 ||
 		adapter_state == 0 || submission == 0 ||
 		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
 		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	required_capabilities = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH;
-	if ( (adapter_interface->descriptor->capability_flags &
-		required_capabilities) != required_capabilities )
-		return(SPARK_STATUS_OK);
 	if ( adapter_interface->resolve_prefetch == 0 )
 		return(SPARK_STATUS_ABI_MISMATCH);
 	status = adapter_interface->resolve_prefetch(adapter_state,submission,

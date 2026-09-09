@@ -46,7 +46,7 @@ static SparkStatus SparkTpCollectiveValidateMembers(
 		"peer_hosts","peer_ports","algorithms",
 		"direct_all_to_all_max_payload_bytes",
 		"split_ring_min_payload_bytes","rail_peer_hosts",
-		"step_rail_indices"
+		"step_rail_indices","session_ports","session_ports_hc"
 	};
 	const char *const *members;
 	uint32_t member_count;
@@ -76,13 +76,8 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 	for (index=0u; index<count; index++)
 	{
 		element = SparkJsonGetArrayElement(document,token,index);
-		if ( SparkJsonStringEquals(document,element,"recursive_doubling") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-		else if ( SparkJsonStringEquals(document,element,
-				"counter_rotating_split_ring") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
-		else if ( SparkJsonStringEquals(document,element,"direct_all_to_all") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
+		if ( SparkJsonStringEquals(document,element,"tree") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
@@ -93,18 +88,8 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 	}
 	else
 	{
-		if ( count != 1u ||
-			mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
-		{
-			if ( count != 1u ||
-				mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL )
-			{
-				if ( count != 2u ||
-					mask != (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
-						SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) )
-					return(SPARK_STATUS_SCHEMA_ERROR);
-			}
-		}
+		if ( count != 1u || mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE )
+			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	topology->algorithm_mask = mask;
 	return(SPARK_STATUS_OK);
@@ -220,6 +205,46 @@ static SparkStatus SparkTpCollectiveLoadThresholds(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkTpCollectiveLoadSessionPorts(
+	const SparkJsonDocument *document,
+	int32_t object,
+	const char *name,
+	uint32_t peer_count,
+	uint16_t table[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
+		[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE])
+{
+	int32_t token,element,cell;
+	uint32_t row,column,port,count;
+	SparkStatus status;
+	token = SparkServingAdapterTemplateJsonMember(document,object,name);
+	if ( token < 0 ||
+		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	count = SparkJsonGetArrayElementCount(document,token);
+	if ( count != peer_count )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (row=0u; row<count; row++)
+	{
+		element = SparkJsonGetArrayElement(document,token,row);
+		if ( element < 0 ||
+			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) ||
+			SparkJsonGetArrayElementCount(document,element) != peer_count )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		for (column=0u; column<count; column++)
+		{
+			cell = SparkJsonGetArrayElement(document,element,column);
+			status = cell < 0 ? SPARK_STATUS_SCHEMA_ERROR :
+				SparkJsonGetUInt32(document,cell,&port);
+			if ( status != SPARK_STATUS_OK || port > UINT16_MAX ||
+				(row == column ? port != 0u : port == 0u) )
+				return(status == SPARK_STATUS_OK ?
+					SPARK_STATUS_SCHEMA_ERROR : status);
+			table[row][column] = (uint16_t)port;
+		}
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkTpCollectiveLoadAdaptiveFabric(
 	const SparkJsonDocument *document,
 	int32_t object,
@@ -241,6 +266,13 @@ static SparkStatus SparkTpCollectiveLoadAdaptiveFabric(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpCollectiveLoadStepRails(document,object,policy->peer_count,
 			&config->topology);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpCollectiveLoadSessionPorts(document,object,
+			"session_ports",policy->peer_count,config->topology.session_ports);
+	if ( status == SPARK_STATUS_OK &&
+		policy->require_session_ports != 0u )
+		status = SparkTpCollectiveLoadSessionPorts(document,object,
+			"session_ports_hc",policy->peer_count,config->session_ports_hc);
 	return(status);
 }
 

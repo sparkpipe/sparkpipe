@@ -317,10 +317,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor
 		SPARK_QWEN38_27B_SERVING_PROGRAM_NAME,
 		QWEN38_27B_CONTRACT_SHA256),
 	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION),
 	.cache_block_token_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,
 	.stage_count = SPARK_QWEN38_27B_SERVING_STAGE_COUNT,
@@ -337,7 +334,6 @@ static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor
 	.max_resident_sequence_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.stage_layer_counts = SPARK_QWEN38_27B_SERVING_STAGE_LAYER_COUNTS,
 	.minimum_efficient_submission_row_count = 0u
 };
@@ -2164,28 +2160,6 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkQwen38_27bServingPrefetch(
-	void *adapter_state,
-	const SparkModelServingSubmission *submissions,
-	uint32_t submission_count)
-{
-	(void)adapter_state;
-	(void)submissions;
-	(void)submission_count;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bServingResolvePrefetch(
-	void *adapter_state,
-	const SparkModelServingSubmission *submission,
-	uint32_t resolution)
-{
-	(void)adapter_state;
-	(void)submission;
-	(void)resolution;
-	return(SPARK_STATUS_OK);
-}
-
 static const SparkModelServingAdapterInterface SparkQwen38_27bServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -2197,9 +2171,7 @@ static const SparkModelServingAdapterInterface SparkQwen38_27bServingInterface =
 	.submit = SparkQwen38_27bServingSubmit,
 	.progress = SparkQwen38_27bServingProgress,
 	.quiesce = SparkQwen38_27bServingQuiesce,
-	.snapshot = SparkQwen38_27bServingSnapshot,
-	.prefetch = SparkQwen38_27bServingPrefetch,
-	.resolve_prefetch = SparkQwen38_27bServingResolvePrefetch
+	.snapshot = SparkQwen38_27bServingSnapshot
 };
 
 __attribute__((visibility("default")))

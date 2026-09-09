@@ -450,6 +450,51 @@ def check_selection_contract():
     return 1
 
 
+def check_glm5_next_selection_contract():
+    module = pathlib.Path(ROOT) / "modules/glm5_next_resident_decode_stage"
+    makefile = (module / "Makefile").read_text()
+    prefix = re.search(r"^MODULE_IDENTIFIER_PREFIX := (.+)$", makefile, re.M).group(1)
+    suffix = re.search(r"^MODULE_IDENTIFIER_SUFFIX := (.+)$", makefile, re.M).group(1)
+    compiler = shutil.which("cc")
+    if compiler is None:
+        report("GLM Flash probe", str(module), "C compiler required")
+        return
+    source = r'''
+#include <assert.h>
+#include <stdio.h>
+#include "sparkpipe/spark_glm5_next_batch_tuning.h"
+int main(void)
+{
+    uint32_t request,bucket;
+    for (request=0u; request<=1025u; request++)
+    {
+        bucket = 1u;
+        while ( bucket < request && bucket < 1024u )
+            bucket *= 2u;
+        if ( request == 0u || request > 1024u )
+            bucket = 0u;
+        assert(SparkGlm5NextBatchVariantBucketCeiling(request) == bucket);
+    }
+    puts(SPARK_GLM5_NEXT_BATCH_TUNING_MODULE_ID);
+    return(0);
+}
+'''
+    with tempfile.TemporaryDirectory() as scratch:
+        path = pathlib.Path(scratch) / "probe.c"
+        binary = pathlib.Path(scratch) / "probe"
+        path.write_text(source)
+        for codec in ("bf16", "fp8", "nvfp4"):
+            for bucket in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024):
+                subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                    f'-DGLM5_NEXT_EXPERT_CODEC_NAME="{codec}"', f"-DSPARK_BATCH_BUCKET={bucket}u",
+                    "-Iinclude", "-Imodel-families/glm5_next/include", "-I" + str(module / "include"),
+                    str(path), "-o", str(binary)], cwd=ROOT, check=True)
+                actual = subprocess.check_output([str(binary)], text=True).strip()
+                expected = prefix.replace("$(EXPERT_CODEC)", codec) + f".b{bucket}.{suffix}"
+                if actual != expected:
+                    report("GLM Flash identifier", actual, "expected " + expected)
+
+
 def main():
     check_rules_makefile()
     check_family_makefile(GLM52_MODULE_MAKEFILE, "glm52")
@@ -462,7 +507,8 @@ def main():
     check_firmware_identity()
     check_top_level_makefile()
     check_selection_contract()
-    print("glm52 + dsv4 + k3 batch variants: one source, eleven buckets B1..B1024")
+    check_glm5_next_selection_contract()
+    print("glm52 + dsv4 + k3 + glm5_next batch variants: eleven buckets B1..B1024")
     if FAILURES:
         print(f"\n{len(FAILURES)} batch-variant contract failure(s):")
         print("\n".join(FAILURES))

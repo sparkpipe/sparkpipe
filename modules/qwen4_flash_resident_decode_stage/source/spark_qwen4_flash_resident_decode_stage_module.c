@@ -1,5 +1,6 @@
 #define _FILE_OFFSET_BITS 64
 
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -34,6 +35,7 @@
 
 typedef struct SparkQwen4FlashModuleSlot
 {
+	uint32_t logical_sequence_count;
 	void *cuda_stream;
 	uint32_t *host_row_lane_indices;
 	uint64_t *host_row_positions;
@@ -130,6 +132,7 @@ typedef struct SparkQwen4FlashModuleState
 	char tp_backend_path[SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
 	char tp_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE][SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
 	char tp_local_host[SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
+	uint16_t tp_session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE][SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
 	uint64_t tp_collective_identifier;
 	uint32_t tp_control_port_base;
 	uint32_t tp_connect_timeout_milli;
@@ -287,6 +290,35 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 			}
 			if ( host_index != state->tp_degree )
 				return(SPARK_STATUS_INVALID_ARGUMENT);
+			{
+				const char *tp_session_ports;
+				const char *cell_scan;
+				uint32_t row_index,column_index,parsed_count;
+				unsigned long cell_value;
+				status = SparkStageModuleEnvironmentText(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_TP_SESSION_PORTS",&tp_session_ports);
+				if ( status != SPARK_STATUS_OK )
+					return(status);
+				cell_scan = tp_session_ports;
+				parsed_count = 0u;
+				for (row_index = 0u; row_index < state->tp_degree; row_index++)
+					for (column_index = 0u; column_index < state->tp_degree; column_index++)
+					{
+						char *cell_end;
+						errno = 0;
+						cell_value = strtoul(cell_scan,&cell_end,10);
+						if ( cell_end == cell_scan || errno != 0 ||
+							cell_value > 65535u ||
+							(row_index == column_index ? cell_value != 0u : cell_value == 0u) )
+							return(SPARK_STATUS_INVALID_ARGUMENT);
+						state->tp_session_ports[row_index][column_index] = (uint16_t)cell_value;
+						parsed_count++;
+						cell_scan = cell_end;
+						while ( *cell_scan == ',' )
+							cell_scan++;
+					}
+				if ( parsed_count != state->tp_degree * state->tp_degree )
+					return(SPARK_STATUS_INVALID_ARGUMENT);
+			}
 		}
 	}
 	state->debug_skip_gdn = getenv("SPARK_QWEN4_FLASH_STAGE_DEBUG_SKIP_GDN") != 0 ? 1u : 0u;
@@ -1043,10 +1075,12 @@ static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashMo
 	topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
 	topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
 	topology.rank_count = state->tp_degree;
-	topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+	topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 	topology.rail_count = 0u;
 	topology.direct_all_to_all_max_payload_bytes = 0u;
 	topology.split_ring_min_payload_bytes = 0u;
+	memcpy(topology.session_ports,state->tp_session_ports,
+		sizeof(topology.session_ports));
 	for (rank = 0u; rank < state->tp_degree; rank++)
 		memcpy(topology.rank_hosts[rank],state->tp_hosts[rank],SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES);
 	memset(&configuration,0,sizeof(configuration));
@@ -1055,7 +1089,7 @@ static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashMo
 	configuration.tp_degree = state->tp_degree;
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.credit_count = 2u * state->pipeline_slot_count;
+	configuration.credit_count = 8u;
 	configuration.local_hidden_dimension = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
 	configuration.connect_timeout_milli = state->tp_connect_timeout_milli;
@@ -1085,7 +1119,7 @@ static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashMo
 		fprintf(stderr,"%s tp_probe_memory_mode_failed status=%d\n",SPARK_QWEN4_FLASH_MODULE_TAG,(int)status);
 		return(status);
 	}
-	credit_bytes = (uint64_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
+	credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,configuration.local_hidden_dimension);
 	total_bytes = credit_bytes * configuration.credit_count * route_count;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,&state->tp_collective_credit_send_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -1153,6 +1187,7 @@ static SparkStatus SparkQwen4FlashModuleTpSubmitOrdered(SparkQwen4FlashModuleSta
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = 0u;
 	submission.active_sequence_count = count;
+	submission.logical_sequence_count = slot->logical_sequence_count;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
 	submission.local_device = device_buffer;
@@ -2450,6 +2485,7 @@ static SparkStatus SparkQwen4FlashModuleExecuteFrame(
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		slot = &state->slots[0];
+		slot->logical_sequence_count = frame->active_slot_count;
 		if ( slot->cuda_stream == 0 )
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
@@ -2473,6 +2509,7 @@ static SparkStatus SparkQwen4FlashModuleExecuteFrame(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	slot = &state->slots[0];
+	slot->logical_sequence_count = frame->active_slot_count;
 	if ( slot->cuda_stream == 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	for (row = 0; row < rows; row++)

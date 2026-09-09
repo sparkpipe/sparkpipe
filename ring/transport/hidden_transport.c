@@ -925,6 +925,7 @@ SparkStatus SparkHiddenTransportSendFixed(
     SparkHiddenTransportSession *session,
     const void *local_buffer,
     uint64_t bytes,
+    uint64_t remote_offset,
     uint32_t sequence)
 {
     if (session == 0 || local_buffer == 0 ||
@@ -934,7 +935,7 @@ SparkStatus SparkHiddenTransportSendFixed(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     return session->transport_interface.send_fixed(
-        session->transport_state,local_buffer,bytes,sequence);
+        session->transport_state,local_buffer,bytes,remote_offset,sequence);
 }
 
 SparkStatus SparkHiddenTransportReservePersistentSend(

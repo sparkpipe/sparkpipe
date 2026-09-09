@@ -6,16 +6,19 @@
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_model_runtime.h"
 
 static const char *const SparkModelResidentDeploymentRootMembers[] =
 {
 	"schema_version","coordinator_rank_index","adapter","driver","transport",
-	"runtime_limits","nodes","tokenizer","weightd"
+	"runtime_limits","nodes","tokenizer","weightd","eos_token_ids"
 };
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT 7u
 static const char *const SparkModelResidentDeploymentTokenizerMembers[] =
 {
-	"path"
+	"path",
+	"vocabulary_size",
+	"sha256"
 };
 static const char *const SparkModelResidentDeploymentAdapterMembers[] =
 {
@@ -292,7 +295,7 @@ static SparkStatus SparkModelResidentDeploymentValidateRootMembers(
 	const SparkJsonDocument *document,
 	int32_t root)
 {
-	uint8_t seen[SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT];
+	uint8_t seen[sizeof(SparkModelResidentDeploymentRootMembers) / sizeof(SparkModelResidentDeploymentRootMembers[0])];
 	uint32_t required_seen_count;
 	int32_t key_token_index;
 	uint32_t child_index;
@@ -321,15 +324,11 @@ static SparkStatus SparkModelResidentDeploymentValidateRootMembers(
 			if ( SparkJsonStringEquals(document,key_token_index,SparkModelResidentDeploymentRootMembers[member_index]) )
 			{
 				match_count++;
-				if ( member_index < SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT )
-				{
-					if ( seen[member_index] != 0u )
-						return(SPARK_STATUS_SCHEMA_ERROR);
-					seen[member_index] = 1u;
-					required_seen_count++;
-				}
-				else if ( match_count > 1u )
+				if ( seen[member_index] != 0u )
 					return(SPARK_STATUS_SCHEMA_ERROR);
+				seen[member_index] = 1u;
+				if ( member_index < SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT )
+					required_seen_count++;
 			}
 		}
 		if ( match_count != 1u )
@@ -338,6 +337,36 @@ static SparkStatus SparkModelResidentDeploymentValidateRootMembers(
 	}
 	return(required_seen_count == SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT ?
 		SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
+}
+
+static SparkStatus SparkModelResidentDeploymentParseEos(
+	const SparkJsonDocument *document,
+	int32_t root,
+	SparkModelResidentDeployment *deployment)
+{
+	int32_t array,element;
+	uint32_t index,prior;
+	SparkStatus status;
+	array = SparkModelResidentDeploymentMember(document,root,"eos_token_ids");
+	if ( array < 0 )
+		return(SPARK_STATUS_OK);
+	if ( SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) == 0 )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	deployment->eos_token_count = SparkJsonGetArrayElementCount(document,array);
+	if ( deployment->eos_token_count == 0u || deployment->eos_token_count > SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	element = SparkJsonGetArrayElementFirst(document,array);
+	for (index=0u; index<deployment->eos_token_count; index++)
+	{
+		status = SparkJsonGetUInt32(document,element,&deployment->eos_token_ids[index]);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		for (prior=0u; prior<index; prior++)
+			if ( deployment->eos_token_ids[index] == deployment->eos_token_ids[prior] )
+				return(SPARK_STATUS_SCHEMA_ERROR);
+		element = SparkJsonGetArrayElementNext(document,array,element);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentDeploymentParseTokenizer(
@@ -355,8 +384,18 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	}
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentTokenizerMembers,1u);
-	return(status == SPARK_STATUS_OK ? SparkModelResidentDeploymentString(document,object,"path",&deployment->tokenizer_asset_path) : status);
+	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentTokenizerMembers,3u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkModelResidentDeploymentString(document,object,"path",&deployment->tokenizer_asset_path);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"vocabulary_size",&deployment->tokenizer_vocabulary_size);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentString(document,object,"sha256",&deployment->tokenizer_asset_sha256);
+	if ( status == SPARK_STATUS_OK && (deployment->tokenizer_vocabulary_size == 0u ||
+			!SparkModelRuntimeArtifactSha256IsValid(deployment->tokenizer_asset_sha256)) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	return(status);
 }
 
 static SparkStatus SparkModelResidentDeploymentParseWeightd(
@@ -495,6 +534,7 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->transport_shared_object_path);
 	free(deployment->transport_mode);
 	free(deployment->tokenizer_asset_path);
+	free(deployment->tokenizer_asset_sha256);
 	free(deployment->weightd_socket_path);
 	for (index=0u; index<deployment->node_count; index++)
 	{
@@ -540,6 +580,8 @@ SparkStatus SparkModelResidentDeploymentLoad(
 		status = SparkModelResidentDeploymentParseTransport(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseTokenizer(&document,root,deployment);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentParseEos(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseWeightd(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )

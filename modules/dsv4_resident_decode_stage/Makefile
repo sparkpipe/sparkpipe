@@ -1,3 +1,5 @@
+include ../../runtime/weightd_sources.mk
+
 MODULE_FAMILY := dsv4
 MODULE_IDENTIFIER_PREFIX := spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731
 MODULE_IDENTIFIER_SUFFIX := v4
@@ -12,8 +14,7 @@ MODULE_ENTRY_PREFIX := SparkDsv4ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_dsv4_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
-	../../runtime/spark_weightd.c \
-	../../runtime/spark_weightd_attach.c \
+	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
 	../../src/spark_ck128.c \

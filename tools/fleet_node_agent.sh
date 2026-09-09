@@ -31,37 +31,19 @@ root_state() {
 }
 
 report() {
-    local boot_id
-    boot_id=$(awk '{print $1}' /proc/sys/kernel/random/boot_id 2>/dev/null | cut -c1-8)
     {
-        printf '{"host":"%s","time":"%s","boot":"%s","epoch":%s' \
-            "$HOST" "$(date -Is)" "${boot_id:-?}" "$(date +%s)"
-        printf ',"load":%.2f,"mem_avail_gb":%d' \
-            "$(awk '{print $1}' /proc/loadavg)" \
-            "$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)"
+        printf '{"host":"%s","time":"%s"' "$HOST" "$(date -Is)"
         printf ',"weightd":"%s"' "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)"
         local r first=1 states=""
         IFS=, read -ra RA <<< "$ROOTS"
         for r in "${RA[@]}"; do
             local rr="$HOME/sparkdata/$r"
             [ -d "$rr" ] || continue
-            local st pid etime rss_mb log_age
-            st=$(root_state "$r")
-            pid=0; etime="-"; rss_mb=0; log_age=-1
-            for l in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model_residentd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
-                [ "$(readlink /proc/$l/cwd 2>/dev/null)" = "$rr" ] || continue
-                pid=$l
-                etime=$(ps -o etimes= -p "$l" 2>/dev/null | tr -d ' ')
-                rss_mb=$(awk '/VmRSS/ {print int($2/1024)}' "/proc/$l/status" 2>/dev/null)
-                break
-            done
-            if [ "$pid" != 0 ] && [ -f "$rr/residentd.log" ]; then
-                log_age=$(( $(date +%s) - $(stat -c %Y "$rr/residentd.log" 2>/dev/null || echo 0) ))
-            fi
+            local st; st=$(root_state "$r")
             states="$states$r=$st;"
-            printf '%s"%s":{"state":"%s","pid":%s,"age_s":%s,"rss_mb":%s,"log_age_s":%s,"residentd":"%s","driver":"%s"}' \
+            printf '%s"%s":{"state":"%s","residentd":"%s","driver":"%s"}' \
                 "$([ $first = 1 ] && echo ,roots:{ || echo ,)" "$r" \
-                "${st//\"/\\\"}" "$pid" "${etime:--1}" "$rss_mb" "$log_age" \
+                "${st//\"/\\\"}" \
                 "$(sha16 "$rr/bin/sparkpipe_model_residentd")" \
                 "$(sha16 "$rr/stages/stage_000/model_driver.so")"
             first=0
@@ -164,9 +146,10 @@ restart_root() {
 
 FLEET_SIZE=16
 HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
+RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://192.168.50.4:8802}"
 
 hub_has() {
-    $HUBSSH "${REF_BASE%%:*}" "test -f '${REF_BASE#*:}/$1' && echo yes" 2>/dev/null || true
+    curl -sf --max-time 5 "$RELEASE_HTTP/$1" > /dev/null 2>&1
 }
 
 sync_root() {
@@ -175,16 +158,48 @@ sync_root() {
     local refdir="${REF_BASE#*:}/$name"
     local root="$HOME/sparkdata/$name"
     mkdir -p "$root"
-    local exists
-    exists=$(hub_has "$name/UPDATE")
-    if [ "$exists" != yes ] && [ -x "$root/bin/sparkpipe_model_residentd" ]; then
+    local manifest_cur="/tmp/fleet_manifest_$name.txt"
+    local manifest_applied="$root/.applied_manifest"
+    if ! curl -sf --max-time 8 "$RELEASE_HTTP/$name/MANIFEST" -o "$manifest_cur"; then
+        [ -f "$manifest_applied" ] || echo "$(date +%T) $name: manifest unreachable" >&2
         return 0
     fi
-    for p in lib bin stages config model_resident.json; do
-        rsync -a -e "$HUBSSH" --checksum --omit-dir-times --exclude=stage.json "$REF_BASE/$name/$p" "$root/" 2>>"$HOME/fleet_agent_rsync.log" || true
-    done
-    [ "$exists" = yes ] || return 0
-    upd=$($HUBSSH "$refhost" "cat '$refdir/UPDATE'") || upd=""
+    if cmp -s "$manifest_cur" "$manifest_applied" 2>/dev/null; then
+        return 0
+    fi
+    echo "$(date +%T) $name: manifest changed; syncing"
+    local fetch_errors=0
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        local want="${line%% *}"
+        local rel="${line#*  }"
+        local tmp="$root/.fetch.tmp"
+        if ! curl -sf --max-time 120 "$RELEASE_HTTP/$name/$rel" -o "$tmp"; then
+            echo "$(date +%T) $name: fetch failed: $rel" >&2
+            fetch_errors=$((fetch_errors+1))
+            continue
+        fi
+        local got
+        got=$(sha256sum "$tmp" | cut -d' ' -f1)
+        if [ "$got" != "$want" ]; then
+            echo "$(date +%T) $name: checksum failed: $rel" >&2
+            fetch_errors=$((fetch_errors+1))
+            continue
+        fi
+        mkdir -p "$(dirname "$root/$rel")"
+        mv "$tmp" "$root/$rel"
+        case "$rel" in
+            bin/*) chmod 755 "$root/$rel" ;;
+        esac
+    done < "$manifest_cur"
+    if [ "$fetch_errors" != 0 ]; then
+        echo "$(date +%T) $name: $fetch_errors fetch errors; retrying next cycle" >&2
+        return 0
+    fi
+    cp "$manifest_cur" "$manifest_applied"
+    upd=$($HUBSSH "$refhost" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
+    [ -n "$upd" ] || return 0
     if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
         unload_root "$name" || return 0
         $HUBSSH "$refhost" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0

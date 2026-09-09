@@ -14,6 +14,9 @@ It exists so ten agents produce one coherent subsystem, not ten pastes.
 - No magic numbers: named `#define`s.
 - No comments in code. Rationale goes in the PR/commit.
 - Cyclomatic complexity down, not sideways.
+- Speculators are controllable, never disabled. Every built speculation path is individually
+  selectable (explicit config/env: exactly `0` or `1`, anything else fails loudly) and defaults to
+  on. A hard disable removes the path from test coverage — forbidden.
 
 ## The three layers (what is common vs per-model)
 
@@ -33,7 +36,9 @@ and the accounting; the per-model part is the state fold/rollback.
 ## Per-model customization — exactly three things
 
 1. A geometry/contract descriptor filled at runtime (token budget, vocab, dtype, depth envelope,
-   tap/anchor semantics). This replaces the `SPARK_DSPARK_TARGET_*` build switch and the
+   tap/anchor semantics). The hidden-tap specification (tap count, which layers, dtype, position
+   relation) is part of this descriptor, supplied per drafter from its contract — never hardcoded
+   in common or target code. This replaces the `SPARK_DSPARK_TARGET_*` build switch and the
    hardcoded-GLM52 validation. Validation becomes structural (ranges, coherence), never
    hard-equality to one model's constants.
 2. A draft function: committed prefix in, candidate token ids (+ optional parent indices and
