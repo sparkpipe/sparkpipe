@@ -813,7 +813,8 @@ these results do not locate the compute crossover near 100 requests.
 
 Timing evidence is valid for this fixture, but full numerical, functional and
 hardware-normalized SOTA acceptance remain incomplete. The previously observed
-1.21 percent layer-4 relative L2 discrepancy is still unexplained in aggregate.
+1.21 percent layer-4 relative L2 discrepancy remained unexplained at this revision;
+the later 1012d7a capture below supersedes that measurement.
 Neither matching repeated output nor correct answer 70 resolves it. TP4 and
 TP4xPP4 comparisons, diverse prompts, larger occupancy and profiling remain.
 
@@ -830,3 +831,60 @@ hardware metadata, cold/warm and occupancy request receipts, complete logs,
 `all-measurements.json`, and `cold-metrics.json`, `warm-metrics.json`,
 `b3-metrics.json`, `b5-metrics.json`, `b8-metrics.json`.
 Deployment provenance is `/private/tmp/ds4_glm_measure_deployment_receipt.json`.
+
+
+## 2026-09-09: merged logical-batch tree deployment and numerical recheck
+
+PR887 main `1012d7a72d74a2402d329547b8080580ec2e5bde` includes the fixed-order
+FP32 direct reduction, deterministic subgroup fold and mandatory original
+logical batch metadata. B2+ selects the tree even when execution splits into
+one-row chunks. Missing metadata fails submission. Preserve this distinction
+when moving work between common scheduling and driver math.
+
+All 16 clean queue-synced checkouts built with attempt
+`ceca0111f37341bdbe2b0a1ca0b9daf5`; release hashes and unchanged paired expert
+pack hashes were verified before startup. CI compile-sm121a passed independently.
+
+A first-position token-9880 capture against the same full reference measured
+layer-4 attention-normalized relative L2 `0.006067908835` (0.607 percent),
+versus the previous `0.012119631283` (1.212 percent). Maximum absolute error
+is 0.0078125. This B1 capture does not measure tree numerical error. It remains
+numerically unqualified; next isolate dense and HC operations with identical
+inputs, then check propagation across layers and token positions. Do not
+replace the upstream oracle with a production-arithmetic model or raise the
+tolerance to conceal unexplained drift.
+
+The 69-token math fixture produced the same 154-token EOS-terminated output
+as df24e05, with persistent API PID 1193892 throughout the sweep. Warm and
+concurrent requests reused 64 prompt tokens. All concurrent outputs and each
+following single request matched the cold output. Rates exclude prefill:
+
+| Occupancy | Aggregate output tok/s | Intervals | Fully occupied decode seconds |
+| --- | ---: | ---: | ---: |
+| B1 warm | 15.0934 | 153 | 10.13685 |
+| B3 | 38.9663 | 454 | 11.65110 |
+| B5 | 60.5417 | 751 | 12.40467 |
+| B8 | 93.7165 | 1196 | 12.76189 |
+
+Cold TTFT was 4.4310 seconds and warm TTFT 0.3397 seconds. B8 achieves about
+77.6 percent of linear scaling from warm B1; eight remains the configured
+capacity, not the measured compute crossover. The prior direct-path B3
+observation was 40.6141 aggregate tok/s. This single-run comparison suggests
+about 4 percent regression at B3 and requires profiling and repeat measurements;
+it does not establish exposed communication time or compute overlap.
+
+The initial deployment failed CUDA context allocation on ranks 1 and 6.
+NVIDIA kernel logs reported NV_ERR_NO_MEMORY while each node reported about
+90 GiB available; buddyinfo showed severe fragmentation. After stopping that
+failed deployment and requesting vm.compact_memory=1 on those two nodes,
+the identical build started on all 16. This is an observed recovery, not proof
+of a permanent remedy. Common startup diagnostics must retain the underlying
+CUDA error; the current cuda_storage/internal_error message conceals it.
+No automatic retry, eager fallback or unrelated daemon shutdown was added.
+
+Receipts: `/private/tmp/ds4_glm_tree_deployment_receipt.json`,
+`/private/tmp/ds4_glm_tree_layer4_comparison.json`, and
+`/private/tmp/ds4_glm_tree_chat/` (cold/warm requests, B3/B5/B8 lifecycle and
+metrics, complete API logs and summary). These results remain diagnostic:
+full numerical and lifecycle qualification, diverse traffic, occupancy near
+100, TP4 and TP4xPP4 comparisons, roofline and overlap profiling are outstanding.
