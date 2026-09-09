@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cerrno>
+#include <ctime>
 #include <vector>
 #include <cuda_runtime.h>
 
@@ -158,6 +159,46 @@ __global__ void k_axpy(float* acc, const float* h, float w, int n) {
 
 static uint16_t rd16h(const uint8_t* p) {
     return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+static int g_ckpt_save(const char* path, int il_next, const float* st,
+                       const float* kl, const float* kp, long ns, long nk,
+                       long np) {
+    char tmp[600];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE* f = fopen(tmp, "wb");
+    if (!f) return -1;
+    uint32_t hdr[4] = {0x48593444u, 2u, (uint32_t)il_next, 0u};
+    if (fwrite(hdr, 4, 4, f) != 4 ||
+        fwrite(st, 4, ns, f) != (size_t)ns ||
+        fwrite(kl, 4, nk, f) != (size_t)nk ||
+        fwrite(kp, 4, np, f) != (size_t)np) {
+        fclose(f);
+        return -2;
+    }
+    if (fclose(f)) return -3;
+    if (rename(tmp, path)) return -4;
+    return 0;
+}
+
+static int g_ckpt_load(const char* path, int* il_next, float* st, float* kl,
+                       float* kp, long ns, long nk, long np) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return 1;
+    uint32_t hdr[4];
+    if (fread(hdr, 4, 4, f) != 4 || hdr[0] != 0x48593444u || hdr[1] != 2u) {
+        fclose(f);
+        return -1;
+    }
+    *il_next = (int)hdr[2];
+    if (fread(st, 4, ns, f) != (size_t)ns ||
+        fread(kl, 4, nk, f) != (size_t)nk ||
+        fread(kp, 4, np, f) != (size_t)np) {
+        fclose(f);
+        return -2;
+    }
+    fclose(f);
+    return 0;
 }
 
 static void dequant_view(const uint8_t* src, uint32_t type, float* dst,
@@ -437,11 +478,33 @@ int main(int argc, char** argv) {
                    cudaMemcpyHostToDevice);
     }
 
+    int start_il = 0;
+    const char* ckpt = getenv("HY4_CKPT");
+    time_t started = time(NULL);
+    if (ckpt) {
+        std::vector<float> st((size_t)T * HC * N_EMBD);
+        std::vector<float> kl((size_t)LAYERS * T * KV_LORA);
+        std::vector<float> kp((size_t)LAYERS * T * ROT);
+        int rc = g_ckpt_load(ckpt, &start_il, st.data(), kl.data(), kp.data(),
+                             (long)st.size(), (long)kl.size(),
+                             (long)kp.size());
+        if (rc < 0) { fprintf(stderr, "CKPT CORRUPT %d\n", rc); return 1; }
+        if (rc == 0) {
+            cudaMemcpy(d_streams_all, st.data(), st.size() * 4,
+                       cudaMemcpyHostToDevice);
+            cudaMemcpy(d_klat_all, kl.data(), kl.size() * 4,
+                       cudaMemcpyHostToDevice);
+            cudaMemcpy(d_kpe_all, kp.data(), kp.size() * 4,
+                       cudaMemcpyHostToDevice);
+            fprintf(stderr, "CKPT RESUME il=%d\n", start_il);
+        }
+    }
+
     char nm[160];
     std::vector<float> hhost((size_t)HC * N_EMBD * 8);
     std::vector<float> sinks_h(64);
 
-    for (int il = 0; il < LAYERS; ++il) {
+    for (int il = start_il; il < LAYERS; ++il) {
         snprintf(nm, sizeof(nm), "blk.%d.hc_attn_fn.weight", il);
         load_f32(R[0], nm, hhost.data(), hhost.size());
         cudaMemcpy(d_hc_fn, hhost.data(), hhost.size() * 4,
@@ -822,6 +885,26 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        if (ckpt) {
+            std::vector<float> st((size_t)T * HC * N_EMBD);
+            std::vector<float> kl((size_t)LAYERS * T * KV_LORA);
+            std::vector<float> kp((size_t)LAYERS * T * ROT);
+            cudaMemcpy(st.data(), d_streams_all, st.size() * 4,
+                       cudaMemcpyDeviceToHost);
+            cudaMemcpy(kl.data(), d_klat_all, kl.size() * 4,
+                       cudaMemcpyDeviceToHost);
+            cudaMemcpy(kp.data(), d_kpe_all, kp.size() * 4,
+                       cudaMemcpyDeviceToHost);
+            int sv = g_ckpt_save(ckpt, il + 1, st.data(), kl.data(),
+                                 kp.data(), (long)st.size(), (long)kl.size(),
+                                 (long)kp.size());
+            if (sv) { fprintf(stderr, "CKPT SAVE FAIL %d\n", sv); return 1; }
+            if (time(NULL) - started > 660) {
+                fprintf(stderr, "CKPT STOP il=%d\n", il + 1);
+                fflush(stderr);
+                return 0;
+            }
+        }
     }
 
     // final: hc_head collapse + output norm + lm_head for the last token
@@ -891,5 +974,13 @@ int main(int argc, char** argv) {
     printf("TOP1 %d (expected %d) val %.4f\n", top1_id, expected_top1,
            top1_val);
     printf("FORWARD %s\n", top1_id == expected_top1 ? "PASS" : "FAIL");
+    if (ckpt) {
+        char dp[600];
+        snprintf(dp, sizeof(dp), "%s.done", ckpt);
+        FILE* df = fopen(dp, "wb");
+        if (!df) { fprintf(stderr, "DONE MARKER FAIL\n"); return 1; }
+        fclose(df);
+        return 0;
+    }
     return top1_id == expected_top1 ? 0 : 1;
 }

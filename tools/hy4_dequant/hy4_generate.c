@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 #include "hy4_rank_loader.h"
 #include "hy4_iq_dequant_vendor.h"
 
@@ -160,6 +161,54 @@ static float *loadt(const hy4_rank *rank, const char *name) {
 
 static hy4_rank *R[N_RANKS];
 
+static int ckpt_save(const char *path, int t, int il_next, const int *tokens,
+                     int generated, int n_tok, int total, const float *streams,
+                     const float *klat, const float *kpe) {
+    char tmp[1200];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return -1;
+    uint32_t hdr[8] = {0x48593443u, 1u, (uint32_t)t, (uint32_t)il_next,
+                       (uint32_t)generated, (uint32_t)n_tok, (uint32_t)total, 0u};
+    if (fwrite(hdr, 4, 8, f) != 8 ||
+        fwrite(tokens, 4, TOTAL_TOK, f) != TOTAL_TOK ||
+        fwrite(streams, 4, (long)TOTAL_TOK * HC * N_EMBD, f) != (long)TOTAL_TOK * HC * N_EMBD ||
+        fwrite(klat, 4, (long)LAYERS * TOTAL_TOK * KV_LORA, f) != (long)LAYERS * TOTAL_TOK * KV_LORA ||
+        fwrite(kpe, 4, (long)LAYERS * TOTAL_TOK * ROT, f) != (long)LAYERS * TOTAL_TOK * ROT) {
+        fclose(f);
+        return -2;
+    }
+    if (fclose(f)) return -3;
+    if (rename(tmp, path)) return -4;
+    return 0;
+}
+
+static int ckpt_load(const char *path, int *t, int *il_next, int *tokens,
+                     int *generated, int *n_tok, int *total, float *streams,
+                     float *klat, float *kpe) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 1;
+    uint32_t hdr[8];
+    if (fread(hdr, 4, 8, f) != 8 || hdr[0] != 0x48593443u || hdr[1] != 1u) {
+        fclose(f);
+        return -1;
+    }
+    *t = (int)hdr[2];
+    *il_next = (int)hdr[3];
+    *generated = (int)hdr[4];
+    *n_tok = (int)hdr[5];
+    *total = (int)hdr[6];
+    if (fread(tokens, 4, TOTAL_TOK, f) != TOTAL_TOK ||
+        fread(streams, 4, (long)TOTAL_TOK * HC * N_EMBD, f) != (long)TOTAL_TOK * HC * N_EMBD ||
+        fread(klat, 4, (long)LAYERS * TOTAL_TOK * KV_LORA, f) != (long)LAYERS * TOTAL_TOK * KV_LORA ||
+        fread(kpe, 4, (long)LAYERS * TOTAL_TOK * ROT, f) != (long)LAYERS * TOTAL_TOK * ROT) {
+        fclose(f);
+        return -2;
+    }
+    fclose(f);
+    return 0;
+}
+
 static float *load0(const char *name) { return loadt(R[0], name); }
 
 /* embedding row for token id: owned by rank id/VOC_PER_RANK */
@@ -217,7 +266,19 @@ int main(int argc, char **argv) {
     static float klat[LAYERS][TOTAL_TOK][KV_LORA];
     static float kpe[LAYERS][TOTAL_TOK][ROT];
 
-    for (int t = 0; t < total; ++t) {
+    int start_t = 0, start_il = 0;
+    const char *ckpt = getenv("HY4_CKPT");
+    time_t started = time(NULL);
+    if (ckpt) {
+        int rc = ckpt_load(ckpt, &start_t, &start_il, tokens, &generated,
+                           &n_tok, &total, &streams[0][0][0], &klat[0][0][0],
+                           &kpe[0][0][0]);
+        if (rc < 0) { fprintf(stderr, "CKPT CORRUPT %d\n", rc); return 1; }
+        if (rc == 0)
+            fprintf(stderr, "CKPT RESUME t=%d il=%d\n", start_t, start_il);
+    }
+
+    for (int t = start_t; t < total; ++t) {
         if (t >= n_tok) tokens[t] = generated;
         /* embedding from the owning rank */
         float x0[N_EMBD];
@@ -231,7 +292,7 @@ int main(int argc, char **argv) {
             for (int i = 0; i < N_EMBD; ++i)
                 streams[t][s][i] = x0[i];
 
-        for (int il = 0; il < LAYERS; ++il) {
+        for (int il = (t == start_t) ? start_il : 0; il < LAYERS; ++il) {
             if (il == 0 && t == 0) g_dump_hc = 1;
 
             char nm[160];
@@ -487,6 +548,18 @@ int main(int argc, char **argv) {
                     fclose(df);
                 }
             }
+            if (ckpt) {
+                int sv = ckpt_save(ckpt, t, il + 1, tokens, generated, n_tok,
+                                   total, &streams[0][0][0], &klat[0][0][0],
+                                   &kpe[0][0][0]);
+                if (sv) { fprintf(stderr, "CKPT SAVE FAIL %d\n", sv); return 1; }
+                if (time(NULL) - started > 660) {
+                    fprintf(stderr, "CKPT STOP t=%d il=%d\n", t, il + 1);
+                    printf("CKPT STOP t=%d il=%d\n", t, il + 1);
+                    fflush(stdout);
+                    return 0;
+                }
+            }
             if (t == 0)
                 fprintf(stderr, "post-ffn  L%d t0: sum %.6f nan=%d\n",
                         il, fsum(streams, (long)HC * N_EMBD),
@@ -576,5 +649,12 @@ int main(int argc, char **argv) {
     }
     printf("GENERATED TOKEN: %d\n", generated);
     printf("GENERATION DONE (simulated TP16, exact fp32 rank-order sums)\n");
+    if (ckpt) {
+        char dpath[1200];
+        snprintf(dpath, sizeof(dpath), "%s.done", ckpt);
+        FILE *df = fopen(dpath, "wb");
+        if (!df) { fprintf(stderr, "DONE MARKER FAIL\n"); return 1; }
+        fclose(df);
+    }
     return 0;
 }
