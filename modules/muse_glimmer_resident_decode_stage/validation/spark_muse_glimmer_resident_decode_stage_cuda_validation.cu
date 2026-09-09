@@ -11,43 +11,51 @@
 #include "sparkpipe/spark_model_driver_support.h"
 
 
-#define SPARK_MUSE_GLIMMER_VALIDATION_ROWS 4u
-#define SPARK_MUSE_GLIMMER_VALIDATION_ATTN_TOKENS 5u
-#define SPARK_MUSE_GLIMMER_VALIDATION_CHUNK_TOKENS 64u
-#define SPARK_MUSE_GLIMMER_VALIDATION_MOE_ROWS 5u
+#define SPARK_MUSE_GLIMMER_VALIDATION_ROWS 2u
+#define SPARK_MUSE_GLIMMER_VALIDATION_STEPS 8u
 #ifndef SPARK_MUSE_GLIMMER_STAGE_MAX_ACTIVE_SEQUENCES
 #define SPARK_MUSE_GLIMMER_STAGE_MAX_ACTIVE_SEQUENCES 8u
 #endif
 #define SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES SPARK_MUSE_GLIMMER_STAGE_MAX_ACTIVE_SEQUENCES
+#define SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS 2u
+#define SPARK_MUSE_GLIMMER_VALIDATION_WINDOW_CONTEXT 2049u
 
-#define SPARK_MUSE_GLIMMER_VAL_DK SPARK_MUSE_GLIMMER_MODEL_GDN_HEAD_KEY_DIMENSION
-#define SPARK_MUSE_GLIMMER_VAL_DV SPARK_MUSE_GLIMMER_MODEL_GDN_HEAD_VALUE_DIMENSION
-#define SPARK_MUSE_GLIMMER_VAL_HEADS SPARK_MUSE_GLIMMER_MODEL_GDN_VALUE_HEAD_COUNT
-#define SPARK_MUSE_GLIMMER_VAL_CONV SPARK_MUSE_GLIMMER_MODEL_GDN_CONV_CHANNELS
-#define SPARK_MUSE_GLIMMER_VAL_GVA (SPARK_MUSE_GLIMMER_MODEL_GDN_VALUE_HEAD_COUNT / SPARK_MUSE_GLIMMER_MODEL_GDN_KEY_HEAD_COUNT)
-#define SPARK_MUSE_GLIMMER_VAL_ATTN_GROUP (SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT / SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_HEAD_COUNT)
-
-extern "C" cudaError_t SparkMuseGlimmerConfigureCudaKernels(void);
-extern "C" cudaError_t SparkMuseGlimmerLaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkMuseGlimmerGdnLayerWeights *weights, void *conv_out_bf16, const SparkMuseGlimmerGdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree);
-extern "C" cudaError_t SparkMuseGlimmerLaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkMuseGlimmerGdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree);
-extern "C" cudaError_t SparkMuseGlimmerLaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkMuseGlimmerGdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree);
-extern "C" cudaError_t SparkMuseGlimmerLaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkMuseGlimmerGdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon, uint32_t tp_degree);
-extern "C" cudaError_t SparkMuseGlimmerLaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkMuseGlimmerAttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon, uint32_t tp_degree, uint32_t tp_rank);
-extern "C" cudaError_t SparkMuseGlimmerLaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkMuseGlimmerKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank);
-extern "C" cudaError_t SparkMuseGlimmerLaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkMuseGlimmerGdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree);
-extern "C" cudaError_t SparkMuseGlimmerLaunchGateScores(cudaStream_t stream, const SparkMuseGlimmerLinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count);
-extern "C" cudaError_t SparkMuseGlimmerLaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32);
-extern "C" cudaError_t SparkMuseGlimmerLaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t expert_mxfp4, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2);
-extern "C" cudaError_t SparkMuseGlimmerLaunchFusedExpertW13Act(cudaStream_t stream, const SparkMuseGlimmerLinearView *w1, const SparkMuseGlimmerLinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank);
-extern "C" cudaError_t SparkMuseGlimmerLaunchExpertDown(cudaStream_t stream, const SparkMuseGlimmerLinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank);
-extern "C" cudaError_t SparkMuseGlimmerLaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension);
+extern "C" cudaError_t SparkMuseGlimmerLaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t tp_degree, uint32_t tp_rank);
+extern "C" cudaError_t SparkMuseGlimmerLaunchCenteredRmsNorm(cudaStream_t stream, const void *input_bf16, const void *weight_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
+extern "C" cudaError_t SparkMuseGlimmerLaunchHeadRmsNorm(cudaStream_t stream, const void *input_bf16, const void *weight_bf16, void *output_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dimension, float epsilon, float head_multiply);
+extern "C" cudaError_t SparkMuseGlimmerLaunchKvStore(cudaStream_t stream, const void *views, uint32_t layer_index, const void *key_bf16, const void *value_bf16, const uint32_t *sequence_of_row, const uint32_t *positions, uint32_t row_count, uint32_t local_kv_head_count);
+extern "C" cudaError_t SparkMuseGlimmerLaunchWindowPositions(cudaStream_t stream, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *positions, uint32_t row_count, uint32_t *window_positions);
+extern "C" cudaError_t SparkMuseGlimmerLaunchAttentionDecode(cudaStream_t stream, const void *views, uint32_t layer_index, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *window_positions, const uint32_t *positions, void *head_out_bf16, uint32_t row_count, uint32_t local_head_count, uint32_t local_kv_head_count);
+extern "C" cudaError_t SparkMuseGlimmerLaunchOutputGate(cudaStream_t stream, void *head_out_bf16, const void *gate_bf16, uint32_t row_count, uint32_t local_query_dimension);
+extern "C" cudaError_t SparkMuseGlimmerLaunchSiluMul(cudaStream_t stream, const void *gate_up_bf16, void *intermediate_bf16, uint32_t row_count, uint32_t local_intermediate);
+extern "C" uint32_t SparkMuseGlimmerKvViewBytes(void);
 extern "C" SparkStatus SparkMuseGlimmerResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state);
 extern "C" SparkStatus SparkMuseGlimmerResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame);
 extern "C" SparkStatus SparkMuseGlimmerResidentDecodeStageAdmit(void *module_state, const SparkModelDriverAdmissionRequest *request, SparkModelDriverAdmissionDecision *decision);
 extern "C" SparkStatus SparkMuseGlimmerResidentDecodeStageSnapshot(void *module_state, uint32_t program_id, SparkModelDriverRuntimeSnapshot *snapshot);
 extern "C" void SparkMuseGlimmerResidentDecodeStageDestroy(void *module_state);
 
-static uint32_t SparkMuseGlimmerValRandomState;
+typedef struct SparkMuseGlimmerKvViewShim
+{
+	void *pool;
+	const uint32_t *page_table;
+	uint32_t page_table_stride;
+	uint32_t sequence_count;
+	uint32_t pool_page_count;
+	void *access_error;
+} SparkMuseGlimmerKvViewShim;
+
+typedef struct SparkMuseGlimmerFrameErrorShim
+{
+	uint32_t error_code;
+	uint32_t access_kind;
+	uint32_t row;
+	uint32_t sequence;
+	uint32_t position;
+	uint32_t page;
+} SparkMuseGlimmerFrameErrorShim;
+
+static uint32_t SparkMuseGlimmerValRandomState = 0x12345678u;
 
 static uint32_t SparkMuseGlimmerValNext(void)
 {
@@ -61,40 +69,27 @@ static uint32_t SparkMuseGlimmerValNext(void)
 
 static float SparkMuseGlimmerValUniform(float scale)
 {
-	return(((float)(SparkMuseGlimmerValNext() & 0xffffu) / 65535.0f - 0.5f) * 2.0f * scale);
+	return(((float)(SparkMuseGlimmerValNext() & 0xffffu) - 32768.0f) / 32768.0f) * scale;
 }
 
 static uint16_t SparkMuseGlimmerValBf16(float value)
 {
 	uint32_t bits;
 	memcpy(&bits,&value,sizeof(bits));
-	bits += 0x7fffu + ((bits >> 16) & 1u);
-	return((uint16_t)(bits >> 16));
+	return((uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
 }
 
 static float SparkMuseGlimmerValFromBf16(uint16_t value)
 {
-	float out = 0.0f;
-	uint32_t bits = ((uint32_t)value) << 16;
-	memcpy(&out,&bits,sizeof(out));
-	return(out);
-}
-
-static void SparkMuseGlimmerValFillBf16(uint16_t *packed, float *exact, uint64_t count, float scale)
-{
-	uint64_t index;
-	for (index = 0u; index < count; index++)
-	{
-		float value = SparkMuseGlimmerValUniform(scale);
-		if ( exact != 0 )
-			exact[index] = value;
-		packed[index] = SparkMuseGlimmerValBf16(value);
-	}
+	uint32_t bits = ((uint32_t)value) << 16u;
+	float result;
+	memcpy(&result,&bits,sizeof(result));
+	return(result);
 }
 
 static int SparkMuseGlimmerValFail(const char *check, const char *detail)
 {
-	printf("muse_glimmer_validation FAIL check=%s detail=%s\n",check,detail);
+	fprintf(stderr,"muse_glimmer_validation failure=%s detail=%s\n",check,detail);
 	return(1);
 }
 
@@ -102,879 +97,306 @@ static int SparkMuseGlimmerValCuda(cudaError_t error, const char *check)
 {
 	if ( error != cudaSuccess )
 	{
-		printf("muse_glimmer_validation FAIL check=%s cuda=%s\n",check,cudaGetErrorString(error));
+		fprintf(stderr,"muse_glimmer_validation failure=%s cuda=%s\n",check,cudaGetErrorString(error));
 		return(1);
 	}
 	return(0);
 }
 
-typedef struct SparkMuseGlimmerValMetrics
+static void SparkMuseGlimmerValReferenceCenteredNorm(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t dimension, float epsilon)
 {
-	double relative_l2;
-	double cosine;
-	double max_absolute;
-} SparkMuseGlimmerValMetrics;
+	uint32_t index;
+	float total = 0.0f,scale;
+	for (index = 0; index < dimension; index++)
+		total += SparkMuseGlimmerValFromBf16(input[index]) * SparkMuseGlimmerValFromBf16(input[index]);
+	scale = 1.0f / sqrtf(total / (float)dimension + epsilon);
+	for (index = 0; index < dimension; index++)
+		output[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValFromBf16(input[index]) * scale * (1.0f + SparkMuseGlimmerValFromBf16(weight[index])));
+}
 
-static void SparkMuseGlimmerValMeasure(SparkMuseGlimmerValMetrics *metrics, const float *actual, const float *reference, uint64_t count)
+static void SparkMuseGlimmerValReferenceHeadNorm(const uint16_t *input, uint16_t *output, uint32_t head_dimension, float epsilon, float multiply)
 {
-	double norm = 0.0,difference = 0.0,max_absolute = 0.0;
+	uint32_t index;
+	float total = 0.0f,scale;
+	for (index = 0; index < head_dimension; index++)
+		total += SparkMuseGlimmerValFromBf16(input[index]) * SparkMuseGlimmerValFromBf16(input[index]);
+	scale = 1.0f / sqrtf(total / (float)head_dimension + epsilon);
+	for (index = 0; index < head_dimension; index++)
+		output[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValBf16(SparkMuseGlimmerValFromBf16(input[index]) * scale) * multiply);
+}
+
+static void SparkMuseGlimmerValReferenceDecode(const uint16_t *query, const uint16_t *pool, const uint32_t *selected, uint32_t selected_count, uint16_t *output, uint64_t slot_elements)
+{
+	uint32_t head,element,step;
+	for (head = 0; head < SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS; head++)
+	{
+		const uint16_t *query_head = query + (uint64_t)head * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION;
+		float scores[4096];
+		uint32_t count = 0u,seen = 0u;
+		float maximum = -3.0e38f,total = 0.0f;
+		float accumulator[SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION];
+		for (step = 0; step < selected_count; step++)
+		{
+			uint32_t position = selected[step];
+			const uint16_t *key;
+			float score = 0.0f;
+			if ( position == 0xffffffffu )
+				continue;
+			key = pool + (uint64_t)position * slot_elements;
+			for (element = 0; element < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; element++)
+				score += SparkMuseGlimmerValFromBf16(query_head[element]) * SparkMuseGlimmerValFromBf16(key[element]);
+			scores[count++] = score * (1.0f / sqrtf((float)SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION));
+			if ( scores[count - 1u] > maximum )
+				maximum = scores[count - 1u];
+		}
+		for (element = 0; element < count; element++)
+		{
+			scores[element] = expf(scores[element] - maximum);
+			total += scores[element];
+		}
+		for (element = 0; element < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; element++)
+			accumulator[element] = 0.0f;
+		for (step = 0; step < selected_count; step++)
+		{
+			uint32_t position = selected[step];
+			const uint16_t *value;
+			if ( position == 0xffffffffu )
+				continue;
+			value = pool + (uint64_t)position * slot_elements + (uint64_t)SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION;
+			for (element = 0; element < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; element++)
+				accumulator[element] += scores[seen] * SparkMuseGlimmerValFromBf16(value[element]);
+			seen++;
+		}
+		for (element = 0; element < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; element++)
+			output[(uint64_t)head * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION + element] = SparkMuseGlimmerValBf16(accumulator[element] / total);
+	}
+}
+
+static int SparkMuseGlimmerValCompareEqual(const char *check, const uint16_t *actual, const uint16_t *expected, uint64_t count)
+{
 	uint64_t index;
-	for (index = 0u; index < count; index++)
-	{
-		double delta = (double)actual[index] - (double)reference[index];
-		norm += (double)reference[index] * (double)reference[index];
-		difference += delta * delta;
-		if ( delta < 0.0 )
-			delta = -delta;
-		if ( delta > max_absolute )
-			max_absolute = delta;
-	}
-	metrics->relative_l2 = norm > 0.0 ? sqrt(difference / norm) : sqrt(difference);
-	metrics->cosine = 1.0;
-	metrics->max_absolute = max_absolute;
-	if ( norm > 0.0 && difference > 0.0 )
-	{
-		double dot = 0.0,actual_norm = 0.0;
-		for (index = 0u; index < count; index++)
+	for (index = 0; index < count; index++)
+		if ( actual[index] != expected[index] )
 		{
-			dot += (double)actual[index] * (double)reference[index];
-			actual_norm += (double)actual[index] * (double)actual[index];
-		}
-		metrics->cosine = dot / sqrt(actual_norm * norm);
-	}
-}
-
-static int SparkMuseGlimmerValReport(const char *check, const SparkMuseGlimmerValMetrics *metrics, double max_relative_l2, double minimum_cosine)
-{
-	printf("muse_glimmer_validation check=%s elements=%llu relative_l2=%.9g cosine=%.9g max_abs=%.9g\n",
-		check,(unsigned long long)0,metrics->relative_l2,metrics->cosine,metrics->max_absolute);
-	if ( !(metrics->relative_l2 <= max_relative_l2) || !(metrics->cosine >= minimum_cosine) )
-	{
-		printf("muse_glimmer_validation FAIL check=%s threshold relative_l2<=%.3g cosine>=%.9g\n",check,max_relative_l2,minimum_cosine);
-		return(1);
-	}
-	return(0);
-}
-
-
-static float SparkMuseGlimmerValSilu(float value)
-{
-	return(value / (1.0f + expf(-value)));
-}
-
-static void SparkMuseGlimmerValL2Norm(const float *input, float *output, uint32_t dimension)
-{
-	uint32_t element;
-	float total = 0.0f;
-	for (element = 0u; element < dimension; element++)
-		total += input[element] * input[element];
-	total = 1.0f / sqrtf(total + 1e-6f);
-	for (element = 0u; element < dimension; element++)
-		output[element] = input[element] * total;
-}
-
-static void SparkMuseGlimmerValGdnRecurrence(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens)
-{
-	float qn[SPARK_MUSE_GLIMMER_VAL_DK],kn[SPARK_MUSE_GLIMMER_VAL_DK],delta[SPARK_MUSE_GLIMMER_VAL_DV];
-	float scale = 1.0f / sqrtf((float)SPARK_MUSE_GLIMMER_VAL_DK),decay,kv_mem;
-	uint32_t token,row,column;
-	for (token = 0u; token < tokens; token++)
-	{
-		SparkMuseGlimmerValL2Norm(q + ((uint64_t)token * SPARK_MUSE_GLIMMER_VAL_DK),qn,SPARK_MUSE_GLIMMER_VAL_DK);
-		SparkMuseGlimmerValL2Norm(k + ((uint64_t)token * SPARK_MUSE_GLIMMER_VAL_DK),kn,SPARK_MUSE_GLIMMER_VAL_DK);
-		for (row = 0u; row < SPARK_MUSE_GLIMMER_VAL_DK; row++)
-			qn[row] *= scale;
-		decay = expf(g[token]);
-		for (row = 0u; row < SPARK_MUSE_GLIMMER_VAL_DK; row++)
-			for (column = 0u; column < SPARK_MUSE_GLIMMER_VAL_DV; column++)
-				state[(row * SPARK_MUSE_GLIMMER_VAL_DV) + column] *= decay;
-		for (column = 0u; column < SPARK_MUSE_GLIMMER_VAL_DV; column++)
-		{
-			kv_mem = 0.0f;
-			for (row = 0u; row < SPARK_MUSE_GLIMMER_VAL_DK; row++)
-				kv_mem += state[(row * SPARK_MUSE_GLIMMER_VAL_DV) + column] * kn[row];
-			delta[column] = (v[((uint64_t)token * SPARK_MUSE_GLIMMER_VAL_DV) + column] - kv_mem) * beta[token];
-		}
-		for (row = 0u; row < SPARK_MUSE_GLIMMER_VAL_DK; row++)
-			for (column = 0u; column < SPARK_MUSE_GLIMMER_VAL_DV; column++)
-				state[(row * SPARK_MUSE_GLIMMER_VAL_DV) + column] += kn[row] * delta[column];
-		for (column = 0u; column < SPARK_MUSE_GLIMMER_VAL_DV; column++)
-		{
-			kv_mem = 0.0f;
-			for (row = 0u; row < SPARK_MUSE_GLIMMER_VAL_DK; row++)
-				kv_mem += state[(row * SPARK_MUSE_GLIMMER_VAL_DV) + column] * qn[row];
-			output[((uint64_t)token * SPARK_MUSE_GLIMMER_VAL_DV) + column] = kv_mem;
-		}
-	}
-}
-
-static void SparkMuseGlimmerValRope(float *vector, uint32_t rope_dim, uint32_t position, float theta)
-{
-	uint32_t pair,half = rope_dim / 2u;
-	float frequency,angle,cosine,sine,low,high;
-	for (pair = 0u; pair < half; pair++)
-	{
-		frequency = powf(theta,-((float)(2u * pair) / (float)rope_dim));
-		angle = (float)position * frequency;
-		cosine = cosf(angle);
-		sine = sinf(angle);
-		low = vector[pair];
-		high = vector[pair + half];
-		vector[pair] = (low * cosine) - (high * sine);
-		vector[pair + half] = (high * cosine) + (low * sine);
-	}
-}
-
-static void SparkMuseGlimmerValRmsNorm(const float *input, const float *weight, float *output, uint32_t dimension, float epsilon)
-{
-	uint32_t element;
-	float variance = 0.0f,inverse;
-	for (element = 0u; element < dimension; element++)
-		variance += input[element] * input[element];
-	inverse = 1.0f / sqrtf((variance / (float)dimension) + epsilon);
-	for (element = 0u; element < dimension; element++)
-		output[element] = input[element] * inverse * weight[element];
-}
-
-static void SparkMuseGlimmerValAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t tokens, float epsilon)
-{
-	float qh[SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION],scores[SPARK_MUSE_GLIMMER_VALIDATION_ATTN_TOKENS],probability;
-	float scale = 1.0f / sqrtf((float)SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION),maximum,total;
-	uint32_t head,element,token;
-	for (head = 0u; head < group; head++)
-	{
-		const float *fused = q_fused + ((uint64_t)head * 2u * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION);
-		SparkMuseGlimmerValRmsNorm(fused,q_norm_weight,qh,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,epsilon);
-		SparkMuseGlimmerValRope(qh,SPARK_MUSE_GLIMMER_MODEL_ATTN_ROPE_DIMENSION,tokens - 1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_ROPE_THETA);
-		maximum = -3.0e38f;
-		for (token = 0u; token < tokens; token++)
-		{
-			probability = 0.0f;
-			for (element = 0u; element < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; element++)
-				probability += qh[element] * k_cache[((uint64_t)token * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION) + element];
-			scores[token] = probability * scale;
-			if ( scores[token] > maximum )
-				maximum = scores[token];
-		}
-		total = 0.0f;
-		for (token = 0u; token < tokens; token++)
-		{
-			scores[token] = expf(scores[token] - maximum);
-			total += scores[token];
-		}
-		for (element = 0u; element < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; element++)
-		{
-			probability = 0.0f;
-			for (token = 0u; token < tokens; token++)
-				probability += (scores[token] / total) * v_cache[((uint64_t)token * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION) + element];
-			output[((uint64_t)head * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION) + element] =
-				probability * (1.0f / (1.0f + expf(-fused[SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION + element])));
-		}
-	}
-}
-
-static float SparkMuseGlimmerValDecodeE2m1(uint32_t nibble)
-{
-	static const float magnitude[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
-	float value = magnitude[nibble & 7u];
-	return((nibble & 8u) != 0u ? -value : value);
-}
-
-static float SparkMuseGlimmerValDecodeE8m0(uint32_t byte_value)
-{
-	return(byte_value == 255u ? 0.0f : exp2f((float)(int32_t)byte_value - 127.0f));
-}
-
-static float SparkMuseGlimmerValDequantMxfp4(const uint8_t *payload, const uint8_t *scales, uint64_t row, uint32_t columns, uint32_t column)
-{
-	uint8_t pair = payload[(row * (uint64_t)(columns / 2u)) + (column >> 1u)];
-	uint32_t nibble = (column & 1u) != 0u ? (pair >> 4u) : (pair & 0x0fu);
-	return(SparkMuseGlimmerValDecodeE2m1(nibble) * SparkMuseGlimmerValDecodeE8m0(scales[(row * (uint64_t)(columns / SPARK_MUSE_GLIMMER_MODEL_MXFP4_GROUP_SIZE)) + (column / SPARK_MUSE_GLIMMER_MODEL_MXFP4_GROUP_SIZE)]));
-}
-
-static float SparkMuseGlimmerValE4m3Quantize(float value)
-{
-	float sign = value < 0.0f ? -1.0f : 1.0f,magnitude = fabsf(value),grid;
-	if ( magnitude < 0.015625f )
-		grid = nearbyintf(magnitude / 0.001953125f) * 0.001953125f;
-	else
-	{
-		int exponent = (int)floorf(log2f(magnitude));
-		float unit,steps;
-		if ( exponent > 8 )
-			return(448.0f * sign);
-		unit = exp2f((float)(exponent - 3));
-		steps = nearbyintf(magnitude / unit);
-		if ( steps >= 16.0f )
-		{
-			exponent += 1;
-			unit = exp2f((float)(exponent - 3));
-			steps = 8.0f;
-		}
-		grid = steps * unit;
-		if ( grid > 448.0f )
-			grid = 448.0f;
-	}
-	return(sign * grid);
-}
-
-static void SparkMuseGlimmerValQdq128(float *row, uint32_t width)
-{
-	uint32_t base;
-	for (base = 0u; base < width; base += 128u)
-	{
-		float amax = 0.0f,scale;
-		uint32_t element;
-		uint32_t span = width - base < 128u ? width - base : 128u;
-		for (element = 0u; element < span; element++)
-			if ( fabsf(row[base + element]) > amax )
-				amax = fabsf(row[base + element]);
-		scale = exp2f(ceilf(log2f(fmaxf(amax,1.0e-4f) / 448.0f)));
-		for (element = 0u; element < span; element++)
-			row[base + element] = SparkMuseGlimmerValE4m3Quantize(row[base + element] / scale) * scale;
-	}
-}
-
-static float SparkMuseGlimmerValBf16Round(float value)
-{
-	return(SparkMuseGlimmerValFromBf16(SparkMuseGlimmerValBf16(value)));
-}
-
-
-typedef struct SparkMuseGlimmerValDevice
-{
-	SparkMuseGlimmerGdnLayerWeights gdn_weights;
-	SparkMuseGlimmerAttnLayerWeights attn_weights;
-	SparkMuseGlimmerGdnStatePool pool;
-	uint16_t *conv_weight;
-	float *a_log;
-	float *dt_bias;
-	uint16_t *gdn_norm_weight;
-	uint16_t *q_norm_weight;
-	uint16_t *k_norm_weight;
-	float *state;
-	uint16_t *conv_tail;
-	uint32_t *cold;
-	uint32_t *lane_indices;
-	uint16_t *qkv;
-	uint16_t *conv_out;
-	uint16_t *core_out;
-	uint16_t *z_bf16;
-	uint16_t *gated_out;
-	uint16_t *ba_bf16;
-	float *log_decay;
-	float *beta;
-	float *chunk_qn;
-	float *chunk_kn;
-	float *chunk_cum_g;
-	float *chunk_decay;
-	float *chunk_attn;
-	float *chunk_w;
-	float *chunk_kg;
-} SparkMuseGlimmerValDevice;
-
-static int SparkMuseGlimmerValDeviceSetup(SparkMuseGlimmerValDevice *device)
-{
-	uint64_t state_elements = 2ull * SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DK * SPARK_MUSE_GLIMMER_VAL_DV;
-	uint64_t vector_floats = (uint64_t)SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_GDN_CHUNK_TOKENS * SPARK_MUSE_GLIMMER_VAL_DK;
-	uint64_t matrix_floats = (uint64_t)SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_GDN_CHUNK_TOKENS * SPARK_MUSE_GLIMMER_MODEL_GDN_CHUNK_TOKENS;
-	uint32_t tokens = SPARK_MUSE_GLIMMER_VALIDATION_CHUNK_TOKENS;
-	cudaError_t error;
-	memset(device,0,sizeof(*device));
-	error = cudaMalloc((void **)&device->conv_weight,(uint64_t)SPARK_MUSE_GLIMMER_VAL_CONV * SPARK_MUSE_GLIMMER_MODEL_GDN_CONV_KERNEL * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->a_log,SPARK_MUSE_GLIMMER_VAL_HEADS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->dt_bias,SPARK_MUSE_GLIMMER_VAL_HEADS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->gdn_norm_weight,SPARK_MUSE_GLIMMER_VAL_DV * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->q_norm_weight,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->k_norm_weight,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->state,state_elements * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->conv_tail,2ull * SPARK_MUSE_GLIMMER_VAL_CONV * (SPARK_MUSE_GLIMMER_MODEL_GDN_CONV_KERNEL - 1u) * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->cold,2 * sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->lane_indices,2 * sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->qkv,(uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_CONV * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->conv_out,(uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_CONV * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->core_out,(uint64_t)tokens * SPARK_MUSE_GLIMMER_MODEL_GDN_VALUE_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->z_bf16,(uint64_t)tokens * SPARK_MUSE_GLIMMER_MODEL_GDN_VALUE_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->gated_out,(uint64_t)tokens * SPARK_MUSE_GLIMMER_MODEL_GDN_VALUE_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->ba_bf16,(uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_HEADS * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->log_decay,(uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_HEADS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->beta,(uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_HEADS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_qn,vector_floats * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_kn,vector_floats * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_cum_g,(uint64_t)SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_GDN_CHUNK_TOKENS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_decay,matrix_floats * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_attn,matrix_floats * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_w,(uint64_t)SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_GDN_CHUNK_TOKENS * SPARK_MUSE_GLIMMER_VAL_DV * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_kg,vector_floats * sizeof(float));
-	if (error != cudaSuccess)
-		return(SparkMuseGlimmerValCuda(error,"device_alloc"));
-	device->pool.abi_version = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
-	device->pool.lane_capacity = 2u;
-	device->pool.gdn_layer_count = 1u;
-	device->pool.state_f32 = device->state;
-	device->pool.state_layer_stride_elements = (uint64_t)SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DK * SPARK_MUSE_GLIMMER_VAL_DV;
-	device->pool.state_lane_stride_elements = device->pool.state_layer_stride_elements;
-	device->pool.conv_tail_bf16 = device->conv_tail;
-	device->pool.conv_tail_layer_stride_elements = (uint64_t)SPARK_MUSE_GLIMMER_VAL_CONV * (SPARK_MUSE_GLIMMER_MODEL_GDN_CONV_KERNEL - 1u);
-	device->pool.conv_tail_lane_stride_elements = device->pool.conv_tail_layer_stride_elements;
-	device->pool.state_cold_by_row = device->cold;
-	device->gdn_weights.conv_weight_bf16 = device->conv_weight;
-	device->gdn_weights.a_log_f32 = device->a_log;
-	device->gdn_weights.dt_bias_f32 = device->dt_bias;
-	device->gdn_weights.gdn_norm_weight_bf16 = device->gdn_norm_weight;
-	device->attn_weights.query_norm_weight_bf16 = device->q_norm_weight;
-	device->attn_weights.key_norm_weight_bf16 = device->k_norm_weight;
-	return(0);
-}
-
-
-static int SparkMuseGlimmerValCheckDecayBeta(SparkMuseGlimmerValDevice *device)
-{
-	uint16_t host_ba[SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS * 2u];
-	float host_a[SPARK_MUSE_GLIMMER_VAL_HEADS],host_bias[SPARK_MUSE_GLIMMER_VAL_HEADS];
-	float host_decay[SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS];
-	float host_beta[SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS];
-	float ref_decay[SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS];
-	float ref_beta[SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS];
-	SparkMuseGlimmerValMetrics metrics;
-	uint32_t row,head;
-	uint64_t index;
-	float shifted;
-	cudaError_t error;
-	SparkMuseGlimmerValRandomState = 11u;
-	SparkMuseGlimmerValFillBf16(host_ba,0,SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS * 2u,2.0f);
-	for (head = 0u; head < SPARK_MUSE_GLIMMER_VAL_HEADS; head++)
-	{
-		host_a[head] = SparkMuseGlimmerValUniform(1.0f);
-		host_bias[head] = SparkMuseGlimmerValUniform(1.0f);
-	}
-	error = cudaMemcpy(device->ba_bf16,host_ba,sizeof(host_ba),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->a_log,host_a,sizeof(host_a),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->dt_bias,host_bias,sizeof(host_bias),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess)
-		error = SparkMuseGlimmerLaunchDecayBeta(cudaStreamPerThread,device->ba_bf16,device->ba_bf16 + SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS,&device->gdn_weights,device->log_decay,device->beta,SPARK_MUSE_GLIMMER_VALIDATION_ROWS,1u);
-	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
-	if (error == cudaSuccess) error = cudaMemcpy(host_decay,device->log_decay,sizeof(host_decay),cudaMemcpyDeviceToHost);
-	if (error == cudaSuccess) error = cudaMemcpy(host_beta,device->beta,sizeof(host_beta),cudaMemcpyDeviceToHost);
-	if (SparkMuseGlimmerValCuda(error,"decay_beta") != 0)
-		return(1);
-	for (row = 0u; row < SPARK_MUSE_GLIMMER_VALIDATION_ROWS; row++)
-		for (head = 0u; head < SPARK_MUSE_GLIMMER_VAL_HEADS; head++)
-		{
-			index = ((uint64_t)row * SPARK_MUSE_GLIMMER_VAL_HEADS) + head;
-			shifted = SparkMuseGlimmerValFromBf16(host_ba[index]) + host_bias[head];
-			ref_decay[index] = -expf(host_a[head]) * (shifted > 20.0f ? shifted : logf(1.0f + expf(shifted)));
-			ref_beta[index] = 1.0f / (1.0f + expf(-SparkMuseGlimmerValFromBf16(host_ba[SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS + index])));
-		}
-	SparkMuseGlimmerValMeasure(&metrics,host_decay,ref_decay,SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS);
-	if (SparkMuseGlimmerValReport("decay_gate",&metrics,1e-5,0.99999999) != 0)
-		return(1);
-	SparkMuseGlimmerValMeasure(&metrics,host_beta,ref_beta,SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_VAL_HEADS);
-	return(SparkMuseGlimmerValReport("write_gate",&metrics,1e-5,0.99999999));
-}
-
-static int SparkMuseGlimmerValCheckGdnStep(SparkMuseGlimmerValDevice *device)
-{
-	uint64_t state_elements = (uint64_t)SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DK * SPARK_MUSE_GLIMMER_VAL_DV;
-	uint16_t *host_conv = (uint16_t *)calloc(2ull * SPARK_MUSE_GLIMMER_VAL_CONV,sizeof(uint16_t));
-	float *exact = (float *)calloc(2ull * SPARK_MUSE_GLIMMER_VAL_CONV,sizeof(float));
-	float *state_host = (float *)calloc(2ull * state_elements,sizeof(float));
-	float *state_reference = (float *)calloc(2ull * state_elements,sizeof(float));
-	float *oracle_out = (float *)calloc(2ull * SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-	float *actual = (float *)calloc(2ull * SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-	uint16_t *core_packed = (uint16_t *)calloc(2ull * SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(uint16_t));
-	uint32_t lanes[2] = {0u,1u};
-	uint32_t cold[2] = {1u,0u};
-	SparkMuseGlimmerValMetrics metrics;
-	uint32_t row,head;
-	cudaError_t error;
-	if (host_conv == 0 || exact == 0 || state_host == 0 || state_reference == 0 || oracle_out == 0 || actual == 0 || core_packed == 0)
-		return(SparkMuseGlimmerValFail("gdn_step","host_alloc"));
-	SparkMuseGlimmerValRandomState = 37u;
-	SparkMuseGlimmerValFillBf16(host_conv,exact,2ull * SPARK_MUSE_GLIMMER_VAL_CONV,1.0f);
-	{
-		uint64_t index;
-		for (index = 0u; index < 2ull * SPARK_MUSE_GLIMMER_VAL_CONV; index++)
-			exact[index] = SparkMuseGlimmerValFromBf16(host_conv[index]);
-	}
-	{
-		uint64_t index;
-		for (index = 0u; index < state_elements; index++)
-			state_host[state_elements + index] = SparkMuseGlimmerValUniform(0.25f);
-		memcpy(state_reference,state_host,2ull * state_elements * sizeof(float));
-	}
-	{
-		float host_log_decay[2 * SPARK_MUSE_GLIMMER_VAL_HEADS],host_beta[2 * SPARK_MUSE_GLIMMER_VAL_HEADS];
-		uint32_t head_index;
-		for (head_index = 0u; head_index < 2u * SPARK_MUSE_GLIMMER_VAL_HEADS; head_index++)
-		{
-			host_log_decay[head_index] = SparkMuseGlimmerValUniform(0.5f) - 0.5f;
-			host_beta[head_index] = 0.25f + fabsf(SparkMuseGlimmerValUniform(0.5f));
-		}
-		error = cudaMemcpy(device->state,state_host,2ull * state_elements * sizeof(float),cudaMemcpyHostToDevice);
-		if (error == cudaSuccess) error = cudaMemcpy(device->qkv,host_conv,2ull * SPARK_MUSE_GLIMMER_VAL_CONV * sizeof(uint16_t),cudaMemcpyHostToDevice);
-		if (error == cudaSuccess) error = cudaMemcpy(device->log_decay,host_log_decay,sizeof(host_log_decay),cudaMemcpyHostToDevice);
-		if (error == cudaSuccess) error = cudaMemcpy(device->beta,host_beta,sizeof(host_beta),cudaMemcpyHostToDevice);
-		if (error == cudaSuccess) error = cudaMemcpy(device->cold,cold,sizeof(cold),cudaMemcpyHostToDevice);
-		if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,lanes,sizeof(lanes),cudaMemcpyHostToDevice);
-		if (error == cudaSuccess)
-			error = SparkMuseGlimmerLaunchGdnStep(cudaStreamPerThread,device->qkv,device->log_decay,device->beta,&device->pool,device->core_out,device->lane_indices,2u,0u,1u);
-		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
-		if (error == cudaSuccess) error = cudaMemcpy(core_packed,device->core_out,2ull * SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DV * sizeof(uint16_t),cudaMemcpyDeviceToHost);
-		if (error == cudaSuccess) error = cudaMemcpy(state_host,device->state,2ull * state_elements * sizeof(float),cudaMemcpyDeviceToHost);
-		if (SparkMuseGlimmerValCuda(error,"gdn_step") != 0)
-		{
-			free(host_conv); free(exact); free(state_host); free(state_reference);
-			free(oracle_out); free(actual); free(core_packed);
+			fprintf(stderr,"muse_glimmer_validation failure=%s detail=bitwise_mismatch index=%llu actual=%04x expected=%04x\n",check,(unsigned long long)index,actual[index],expected[index]);
 			return(1);
 		}
-		for (row = 0u; row < 2u; row++)
-			for (head = 0u; head < SPARK_MUSE_GLIMMER_VAL_HEADS; head++)
-			{
-				uint32_t key_head = head / SPARK_MUSE_GLIMMER_VAL_GVA;
-				const float *q = exact + ((uint64_t)row * SPARK_MUSE_GLIMMER_VAL_CONV) + ((uint64_t)key_head * SPARK_MUSE_GLIMMER_VAL_DK);
-				const float *k = q + SPARK_MUSE_GLIMMER_MODEL_GDN_QK_DIMENSION;
-				const float *v = exact + ((uint64_t)row * SPARK_MUSE_GLIMMER_VAL_CONV) + (2ull * SPARK_MUSE_GLIMMER_MODEL_GDN_QK_DIMENSION) + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DV);
-				float g = cold[row] != 0u ? -30.0f : host_log_decay[(row * SPARK_MUSE_GLIMMER_VAL_HEADS) + head];
-				float beta = host_beta[(row * SPARK_MUSE_GLIMMER_VAL_HEADS) + head];
-				SparkMuseGlimmerValGdnRecurrence(q,k,v,&g,&beta,
-					state_reference + ((uint64_t)row * state_elements) + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DK * SPARK_MUSE_GLIMMER_VAL_DV),
-					oracle_out + ((uint64_t)row * SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DV) + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DV),1u);
-			}
-		{
-			uint64_t index;
-			for (index = 0u; index < 2ull * SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DV; index++)
-				actual[index] = SparkMuseGlimmerValFromBf16(core_packed[index]);
-		}
-	}
-	SparkMuseGlimmerValMeasure(&metrics,actual,oracle_out,2ull * SPARK_MUSE_GLIMMER_VAL_HEADS * SPARK_MUSE_GLIMMER_VAL_DV);
-	if (SparkMuseGlimmerValReport("gdn_step_output",&metrics,5e-3,0.99999) != 0)
-	{
-		free(host_conv); free(exact); free(state_host); free(state_reference);
-		free(oracle_out); free(actual); free(core_packed);
-		return(1);
-	}
-	SparkMuseGlimmerValMeasure(&metrics,state_host,state_reference,2ull * state_elements);
-	free(host_conv); free(exact); free(state_host); free(state_reference);
-	free(oracle_out); free(actual); free(core_packed);
-	return(SparkMuseGlimmerValReport("gdn_step_state",&metrics,1e-3,0.999999));
+	return(0);
 }
 
-static int SparkMuseGlimmerValCheckGdnStepTp4(void)
+static int SparkMuseGlimmerValCheckNorms(void)
 {
-	const uint32_t tp = 4u,local_heads = SPARK_MUSE_GLIMMER_VAL_HEADS / tp;
-	const uint32_t local_qk = (SPARK_MUSE_GLIMMER_MODEL_GDN_KEY_HEAD_COUNT / tp) * SPARK_MUSE_GLIMMER_VAL_DK;
-	const uint32_t local_conv = (2u * local_qk) + (local_heads * SPARK_MUSE_GLIMMER_VAL_DV);
-	uint64_t state_elements = (uint64_t)local_heads * SPARK_MUSE_GLIMMER_VAL_DK * SPARK_MUSE_GLIMMER_VAL_DV;
-	SparkMuseGlimmerValDevice device;
-	uint16_t *host_conv = (uint16_t *)calloc(local_conv,sizeof(uint16_t));
-	float *exact = (float *)calloc(local_conv,sizeof(float));
-	float *state_host = (float *)calloc(state_elements,sizeof(float));
-	float *oracle_out = (float *)calloc((uint64_t)local_heads * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-	float *actual = (float *)calloc((uint64_t)local_heads * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-	uint16_t *core_packed = (uint16_t *)calloc((uint64_t)local_heads * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(uint16_t));
-	uint32_t lanes[1] = {0u};
-	uint32_t cold[1] = {0u};
-	float host_log_decay[SPARK_MUSE_GLIMMER_VAL_HEADS / 4u],host_beta[SPARK_MUSE_GLIMMER_VAL_HEADS / 4u];
-	SparkMuseGlimmerValMetrics metrics;
-	uint32_t head;
+	uint16_t *input,*weight,*output,*reference,*head_input,*head_output,*head_reference;
+	const uint32_t rows = SPARK_MUSE_GLIMMER_VALIDATION_ROWS;
+	uint32_t row;
 	cudaError_t error;
-	if (host_conv == 0 || exact == 0 || state_host == 0 || oracle_out == 0 || actual == 0 || core_packed == 0)
-		return(SparkMuseGlimmerValFail("gdn_step_tp4","host_alloc"));
-	if (SparkMuseGlimmerValDeviceSetup(&device) != 0)
+	int failures = 0;
+	error = cudaMallocManaged((void **)&input,(size_t)rows * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&weight,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&output,(size_t)rows * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&reference,(size_t)rows * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION * 2u,cudaMemAttachGlobal);
+	if ( SparkMuseGlimmerValCuda(error,"norm_alloc") != 0 )
 		return(1);
-	device.pool.state_layer_stride_elements = state_elements;
-	device.pool.state_lane_stride_elements = state_elements;
-	device.pool.conv_tail_layer_stride_elements = (uint64_t)local_conv * (SPARK_MUSE_GLIMMER_MODEL_GDN_CONV_KERNEL - 1u);
-	device.pool.conv_tail_lane_stride_elements = device.pool.conv_tail_layer_stride_elements;
-	SparkMuseGlimmerValRandomState = 73u;
-	SparkMuseGlimmerValFillBf16(host_conv,exact,local_conv,1.0f);
-	{
-		uint32_t index;
-		for (index = 0u; index < local_conv; index++)
-			exact[index] = SparkMuseGlimmerValFromBf16(host_conv[index]);
-	}
-	{
-		uint64_t index;
-		for (index = 0u; index < state_elements; index++)
-			state_host[index] = SparkMuseGlimmerValUniform(0.25f);
-	}
-	for (head = 0u; head < local_heads; head++)
-	{
-		host_log_decay[head] = SparkMuseGlimmerValUniform(0.5f) - 0.5f;
-		host_beta[head] = 0.25f + fabsf(SparkMuseGlimmerValUniform(0.5f));
-	}
-	error = cudaMemcpy(device.state,state_host,state_elements * sizeof(float),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.qkv,host_conv,local_conv * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.log_decay,host_log_decay,sizeof(host_log_decay),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.beta,host_beta,sizeof(host_beta),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.cold,cold,sizeof(cold),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.lane_indices,lanes,sizeof(lanes),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess)
-		error = SparkMuseGlimmerLaunchGdnStep(cudaStreamPerThread,device.qkv,device.log_decay,device.beta,&device.pool,device.core_out,device.lane_indices,1u,0u,tp);
-	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
-	if (error == cudaSuccess) error = cudaMemcpy(core_packed,device.core_out,(uint64_t)local_heads * SPARK_MUSE_GLIMMER_VAL_DV * sizeof(uint16_t),cudaMemcpyDeviceToHost);
-	if (SparkMuseGlimmerValCuda(error,"gdn_step_tp4") != 0)
-	{
-		cudaFree(device.state); free(host_conv); free(exact); free(state_host); free(oracle_out); free(actual); free(core_packed);
+	for (row = 0; row < rows; row++)
+		for (uint32_t index = 0; index < SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION; index++)
+		{
+			input[row * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION + index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(1.0f));
+			if ( row == 0 )
+				weight[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(0.125f));
+		}
+	error = SparkMuseGlimmerLaunchCenteredRmsNorm(0,input,weight,output,rows,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON);
+	if ( SparkMuseGlimmerValCuda(error,"centered_norm_launch") != 0 )
 		return(1);
-	}
-	for (head = 0u; head < local_heads; head++)
-	{
-		uint32_t key_head = head / SPARK_MUSE_GLIMMER_VAL_GVA;
-		const float *q = exact + ((uint64_t)key_head * SPARK_MUSE_GLIMMER_VAL_DK);
-		const float *k = q + local_qk;
-		const float *v = exact + (2ull * local_qk) + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DV);
-		SparkMuseGlimmerValGdnRecurrence(q,k,v,&host_log_decay[head],&host_beta[head],
-			state_host + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DK * SPARK_MUSE_GLIMMER_VAL_DV),
-			oracle_out + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DV),1u);
-	}
-	{
-		uint64_t index;
-		for (index = 0u; index < (uint64_t)local_heads * SPARK_MUSE_GLIMMER_VAL_DV; index++)
-			actual[index] = SparkMuseGlimmerValFromBf16(core_packed[index]);
-	}
-	SparkMuseGlimmerValMeasure(&metrics,actual,oracle_out,(uint64_t)local_heads * SPARK_MUSE_GLIMMER_VAL_DV);
-	{
-		void *marks[] = {device.conv_weight,device.a_log,device.dt_bias,device.gdn_norm_weight,device.q_norm_weight,device.k_norm_weight,device.state,device.conv_tail,device.cold,device.lane_indices,device.qkv,device.conv_out,device.core_out,device.z_bf16,device.gated_out,device.ba_bf16,device.log_decay,device.beta,device.chunk_qn,device.chunk_kn,device.chunk_cum_g,device.chunk_decay,device.chunk_attn,device.chunk_w,device.chunk_kg};
-		uint32_t mark;
-		for (mark = 0u; mark < sizeof(marks) / sizeof(marks[0]); mark++)
-			if ( marks[mark] != 0 )
-				cudaFree(marks[mark]);
-	}
-	free(host_conv); free(exact); free(state_host); free(oracle_out); free(actual); free(core_packed);
-	return(SparkMuseGlimmerValReport("gdn_step_tp4",&metrics,5e-3,0.99999));
+	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"centered_norm_sync") != 0 )
+		return(1);
+	for (row = 0; row < rows; row++)
+		SparkMuseGlimmerValReferenceCenteredNorm(input + (size_t)row * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,weight,reference + (size_t)row * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON);
+	failures += SparkMuseGlimmerValCompareEqual("centered_norm",output,reference,(uint64_t)rows * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION);
+	error = cudaMallocManaged((void **)&head_input,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&head_output,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
+	for (uint32_t index = 0; index < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; index++)
+		head_input[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(1.0f));
+	error = SparkMuseGlimmerLaunchHeadRmsNorm(0,head_input,0,head_output,1u,1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_NORM_EPSILON,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_SCALE_FACTOR);
+	if ( SparkMuseGlimmerValCuda(error,"head_norm_launch") != 0 )
+		return(1);
+	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"head_norm_sync") != 0 )
+		return(1);
+	SparkMuseGlimmerValReferenceHeadNorm(head_input,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_NORM_EPSILON,SPARK_MUSE_GLIMMER_MODEL_ATTN_QK_SCALE_FACTOR);
+	failures += SparkMuseGlimmerValCompareEqual("qk_norm_3_87",head_output,head_reference,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION);
+	cudaFree(input);
+	cudaFree(weight);
+	cudaFree(output);
+	cudaFree(reference);
+	cudaFree(head_input);
+	cudaFree(head_output);
+	cudaFree(head_reference);
+	if ( failures == 0 )
+		printf("muse_glimmer_validation check=centered_norm_and_qk_norm rows=%u bitwise=exact\n",rows);
+	return(failures);
 }
 
-static int SparkMuseGlimmerValCheckGatedNorm(SparkMuseGlimmerValDevice *device)
+static int SparkMuseGlimmerValCheckWindowWalk(void)
 {
-	uint64_t elements = (uint64_t)SPARK_MUSE_GLIMMER_VALIDATION_ROWS * SPARK_MUSE_GLIMMER_MODEL_GDN_VALUE_DIMENSION;
-	uint16_t *packed = (uint16_t *)calloc(elements * 2u,sizeof(uint16_t));
-	float *exact = (float *)calloc(elements * 2u,sizeof(float));
-	float *expected = (float *)calloc(elements,sizeof(float));
-	float *actual = (float *)calloc(elements,sizeof(float));
-	uint16_t *norm_packed = (uint16_t *)calloc(SPARK_MUSE_GLIMMER_VAL_DV,sizeof(uint16_t));
-	float *norm_exact = (float *)calloc(SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-	SparkMuseGlimmerValMetrics metrics;
-	uint32_t row,head,column;
+	const uint32_t context = SPARK_MUSE_GLIMMER_VALIDATION_WINDOW_CONTEXT;
+	const uint64_t slot_elements = 2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION;
+	uint16_t *pool_host,*query,*head_out,*reference_out,*key,*value;
+	uint32_t *positions,*context_lengths,*window,*sequence,*all_positions,*page_table;
+	const uint32_t page_count = (context + SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	SparkMuseGlimmerKvViewShim view;
+	SparkMuseGlimmerFrameErrorShim *error_record;
+	uint32_t position = context - 1u;
+	uint64_t pool_elements = (uint64_t)context * slot_elements;
 	cudaError_t error;
-	if (packed == 0 || exact == 0 || expected == 0 || actual == 0 || norm_packed == 0 || norm_exact == 0)
-		return(SparkMuseGlimmerValFail("gated_norm","host_alloc"));
-	SparkMuseGlimmerValRandomState = 51u;
-	SparkMuseGlimmerValFillBf16(packed,exact,elements,1.0f);
-	SparkMuseGlimmerValFillBf16(packed + elements,exact + elements,elements,1.0f);
-	SparkMuseGlimmerValFillBf16(norm_packed,norm_exact,SPARK_MUSE_GLIMMER_VAL_DV,0.5f);
-	{
-		uint64_t index;
-		for (index = 0u; index < elements * 2u; index++)
-			exact[index] = SparkMuseGlimmerValFromBf16(packed[index]);
-	}
-	{
-		uint32_t index;
-		for (index = 0u; index < SPARK_MUSE_GLIMMER_VAL_DV; index++)
-			norm_exact[index] = SparkMuseGlimmerValFromBf16(norm_packed[index]);
-	}
-	error = cudaMemcpy(device->core_out,packed,elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->z_bf16,packed + elements,elements * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->gdn_norm_weight,norm_packed,SPARK_MUSE_GLIMMER_VAL_DV * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess)
-		error = SparkMuseGlimmerLaunchGatedNorm(cudaStreamPerThread,device->core_out,device->z_bf16,&device->gdn_weights,device->gated_out,SPARK_MUSE_GLIMMER_VALIDATION_ROWS,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON,1u);
-	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
-	if (error == cudaSuccess) error = cudaMemcpy(packed,device->gated_out,elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
-	if (SparkMuseGlimmerValCuda(error,"gated_norm") != 0)
-	{
-		free(packed); free(exact); free(expected); free(actual); free(norm_packed); free(norm_exact);
+	int failures = 0;
+	error = cudaMallocManaged((void **)&pool_host,pool_elements * 2u,cudaMemAttachGlobal);
+	if ( SparkMuseGlimmerValCuda(error,"window_alloc") != 0 )
 		return(1);
+	error = cudaMallocManaged((void **)&error_record,sizeof(*error_record),cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&page_table,page_count * sizeof(uint32_t),cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&query,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&head_out,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&reference_out,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&positions,sizeof(uint32_t),cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&context_lengths,sizeof(uint32_t),cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&sequence,sizeof(uint32_t),cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&window,SPARK_MUSE_GLIMMER_MODEL_SLIDING_WINDOW * sizeof(uint32_t),cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&all_positions,(size_t)context * sizeof(uint32_t),cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&key,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&value,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u,cudaMemAttachGlobal);
+	for (uint64_t index = 0; index < pool_elements; index++)
+		pool_host[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(0.5f));
+	for (uint32_t index = 0; index < SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; index++)
+		query[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(0.5f));
+	for (uint32_t index = 0; index < context; index++)
+		all_positions[index] = index;
+	*positions = position;
+	*context_lengths = context;
+	*sequence = 0u;
+	error_record->error_code = 0u;
+	for (uint32_t page = 0; page < page_count; page++)
+		page_table[page] = page;
+	view.pool = pool_host;
+	view.page_table = page_table;
+	view.page_table_stride = page_count;
+	view.sequence_count = 1u;
+	view.pool_page_count = page_count;
+	view.access_error = error_record;
+	for (uint32_t element = 0; element < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; element++)
+	{
+		key[element] = pool_host[((uint64_t)position * slot_elements) + element];
+		value[element] = pool_host[((uint64_t)position * slot_elements) + SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION + element];
 	}
-	for (row = 0u; row < SPARK_MUSE_GLIMMER_VALIDATION_ROWS; row++)
-		for (head = 0u; head < SPARK_MUSE_GLIMMER_VAL_HEADS; head++)
-		{
-			float variance = 0.0f,inverse;
-			for (column = 0u; column < SPARK_MUSE_GLIMMER_VAL_DV; column++)
-			{
-				uint64_t index = ((uint64_t)row * SPARK_MUSE_GLIMMER_MODEL_GDN_VALUE_DIMENSION) + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DV) + column;
-				variance += exact[index] * exact[index];
-			}
-			inverse = 1.0f / sqrtf((variance / (float)SPARK_MUSE_GLIMMER_VAL_DV) + SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON);
-			for (column = 0u; column < SPARK_MUSE_GLIMMER_VAL_DV; column++)
-			{
-				uint64_t index = ((uint64_t)row * SPARK_MUSE_GLIMMER_MODEL_GDN_VALUE_DIMENSION) + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DV) + column;
-				expected[index] = exact[index] * inverse * norm_exact[column] * SparkMuseGlimmerValSilu(exact[elements + index]);
-				actual[index] = SparkMuseGlimmerValFromBf16(packed[index]);
-			}
-		}
-	SparkMuseGlimmerValMeasure(&metrics,actual,expected,elements);
-	free(packed); free(exact); free(expected); free(actual); free(norm_packed); free(norm_exact);
-	return(SparkMuseGlimmerValReport("gated_norm",&metrics,2e-3,0.99999));
+	error = SparkMuseGlimmerLaunchKvStore(0,&view,0u,key,value,sequence,positions,1u,1u);
+	if ( SparkMuseGlimmerValCuda(error,"window_store_launch") != 0 )
+		return(1);
+	error = SparkMuseGlimmerLaunchWindowPositions(0,sequence,context_lengths,positions,1u,window);
+	if ( SparkMuseGlimmerValCuda(error,"window_build_launch") != 0 )
+		return(1);
+	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"window_sync") != 0 )
+		return(1);
+	if ( window[0] != position + 1u - SPARK_MUSE_GLIMMER_MODEL_SLIDING_WINDOW )
+		return(SparkMuseGlimmerValFail("window_walk","first_selected_position_wrong"));
+	if ( window[SPARK_MUSE_GLIMMER_MODEL_SLIDING_WINDOW - 1u] != position )
+		return(SparkMuseGlimmerValFail("window_walk","last_selected_position_wrong"));
+	error = SparkMuseGlimmerLaunchAttentionDecode(0,&view,0u,query,sequence,context_lengths,window,positions,head_out,1u,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS,1u);
+	if ( SparkMuseGlimmerValCuda(error,"window_decode_launch") != 0 )
+		return(1);
+	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"window_decode_sync") != 0 )
+		return(1);
+	SparkMuseGlimmerValReferenceDecode(query,pool_host,window,SPARK_MUSE_GLIMMER_MODEL_SLIDING_WINDOW,reference_out,slot_elements);
+	failures += SparkMuseGlimmerValCompareEqual("window_decode",head_out,reference_out,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION);
+	error = SparkMuseGlimmerLaunchAttentionDecode(0,&view,0u,query,sequence,context_lengths,0,positions,head_out,1u,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS,1u);
+	if ( SparkMuseGlimmerValCuda(error,"full_decode_launch") != 0 )
+		return(1);
+	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"full_decode_sync") != 0 )
+		return(1);
+	SparkMuseGlimmerValReferenceDecode(query,pool_host,all_positions,context,reference_out,slot_elements);
+	failures += SparkMuseGlimmerValCompareEqual("full_decode",head_out,reference_out,SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION);
+	if ( error_record->error_code != 0u )
+		return(SparkMuseGlimmerValFail("kv_access","reported_failure"));
+	cudaFree(pool_host);
+	cudaFree(query);
+	cudaFree(head_out);
+	cudaFree(reference_out);
+	cudaFree(positions);
+	cudaFree(context_lengths);
+	cudaFree(sequence);
+	cudaFree(window);
+	cudaFree(all_positions);
+	cudaFree(page_table);
+	cudaFree(key);
+	cudaFree(value);
+	cudaFree(error_record);
+	if ( failures == 0 )
+		printf("muse_glimmer_validation check=window_walk context=%u window=%u boundary_drop=verified decode=bitwise\n",context,SPARK_MUSE_GLIMMER_MODEL_SLIDING_WINDOW);
+	return(failures);
 }
 
-static int SparkMuseGlimmerValCheckAttention(SparkMuseGlimmerValDevice *device)
+static int SparkMuseGlimmerValCheckGateAndSilu(void)
 {
-	const uint32_t tokens = SPARK_MUSE_GLIMMER_VALIDATION_ATTN_TOKENS;
-	const uint32_t kv_heads = SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_HEAD_COUNT;
-	const uint64_t token_elements = 2ull * kv_heads * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION;
-	uint64_t cache_elements = (uint64_t)tokens * token_elements;
-	uint16_t *q_packed = (uint16_t *)calloc(2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION,sizeof(uint16_t));
-	float *q_exact = (float *)calloc(2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION,sizeof(float));
-	uint16_t *k_packed = (uint16_t *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION,sizeof(uint16_t));
-	float *k_exact = (float *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION,sizeof(float));
-	uint16_t *v_packed = (uint16_t *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION,sizeof(uint16_t));
-	uint16_t *qn_packed = (uint16_t *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,sizeof(uint16_t));
-	float *qn_exact = (float *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,sizeof(float));
-	uint16_t *kn_packed = (uint16_t *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,sizeof(uint16_t));
-	float *kn_exact = (float *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,sizeof(float));
-	uint16_t *cache = (uint16_t *)calloc(cache_elements,sizeof(uint16_t));
-	uint16_t *head_out = (uint16_t *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION,sizeof(uint16_t));
-	float *expected = (float *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION,sizeof(float));
-	float *actual = (float *)calloc(SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION,sizeof(float));
-	uint32_t slot_mapping[1];
-	uint64_t positions[1];
-	uint32_t context_lengths[1];
-	uint32_t lane_indices[1];
-	uint32_t zero_lane = 0u;
-	SparkMuseGlimmerValMetrics metrics;
+	uint16_t *head_out,*gate,*gate_up,*intermediate,*reference;
+	const uint32_t local_query = SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_QUERY_DIMENSION(16u);
+	const uint32_t local_intermediate = SPARK_MUSE_GLIMMER_MODEL_MLP_LOCAL_INTERMEDIATE(16u);
 	cudaError_t error;
-	if (q_packed == 0 || q_exact == 0 || k_packed == 0 || k_exact == 0 || v_packed == 0 || qn_packed == 0 || qn_exact == 0 || kn_packed == 0 || kn_exact == 0 || cache == 0 || head_out == 0 || expected == 0 || actual == 0)
-		return(SparkMuseGlimmerValFail("attn_decode","host_alloc"));
-	(void)k_exact;
-	SparkMuseGlimmerValRandomState = 67u;
-	SparkMuseGlimmerValFillBf16(q_packed,q_exact,2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION,1.0f);
-	SparkMuseGlimmerValFillBf16(k_packed,0,SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION,1.0f);
-	SparkMuseGlimmerValFillBf16(v_packed,0,SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION,1.0f);
-	SparkMuseGlimmerValFillBf16(qn_packed,qn_exact,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,0.5f);
-	SparkMuseGlimmerValFillBf16(kn_packed,kn_exact,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,0.5f);
-	{
-		uint64_t index;
-		for (index = 0u; index < 2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION; index++)
-			q_exact[index] = SparkMuseGlimmerValFromBf16(q_packed[index]);
-		for (index = 0u; index < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; index++)
-		{
-			qn_exact[index] = SparkMuseGlimmerValFromBf16(qn_packed[index]);
-			kn_exact[index] = SparkMuseGlimmerValFromBf16(kn_packed[index]);
-		}
-	}
-	error = cudaMemcpy(device->qkv,q_packed,2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->core_out,k_packed,SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->gated_out,v_packed,SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->q_norm_weight,qn_packed,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->k_norm_weight,kn_packed,SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	slot_mapping[0] = tokens - 1u;
-	positions[0] = tokens - 1u;
-	context_lengths[0] = tokens;
-	lane_indices[0] = 0u;
-	(void)lane_indices;
-	void *kv_cache = 0;
-	error = cudaMalloc(&kv_cache,cache_elements * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMemset(kv_cache,0,cache_elements * sizeof(uint16_t));
-	{
-		uint32_t token;
-		for (token = 0u; token < tokens && error == cudaSuccess; token++)
-		{
-			uint32_t slots[1];
-			uint64_t pos[1];
-			slots[0] = token;
-			pos[0] = token;
-			error = cudaMemcpy(device->qkv,q_packed,2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),cudaMemcpyHostToDevice);
-			if (error == cudaSuccess)
-				error = SparkMuseGlimmerLaunchAttnPrepare(cudaStreamPerThread,device->qkv,device->core_out,device->gated_out,&device->attn_weights,kv_cache,slots,pos,1u,0u,token_elements,cache_elements,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON,1u,0u);
-		}
-	}
-	if (error == cudaSuccess)
-	{
-		SparkMuseGlimmerKvBlockTableView table;
-		uint32_t blocks[1] = {0u};
-		uint32_t counts[1] = {1u};
-		uint32_t *device_blocks,*device_counts;
-		error = cudaMalloc((void **)&device_blocks,sizeof(blocks));
-		if (error == cudaSuccess) error = cudaMemcpy(device_blocks,blocks,sizeof(blocks),cudaMemcpyHostToDevice);
-		if (error == cudaSuccess) error = cudaMalloc((void **)&device_counts,sizeof(counts));
-		if (error == cudaSuccess) error = cudaMemcpy(device_counts,counts,sizeof(counts),cudaMemcpyHostToDevice);
-		memset(&table,0,sizeof(table));
-		table.abi_version = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
-		table.descriptor_bytes = sizeof(table);
-		table.block_token_count = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-		table.lane_count = 1u;
-		table.lane_stride = 1u;
-		table.lane_capacity = 1u;
-		table.physical_block_indices = device_blocks;
-		table.lane_physical_block_counts = device_counts;
-		table.host_physical_block_indices = blocks;
-		table.host_lane_physical_block_counts = counts;
-		if (error == cudaSuccess) error = cudaMemcpy(device->lane_indices,&zero_lane,sizeof(zero_lane),cudaMemcpyHostToDevice);
-		if (error == cudaSuccess)
-			error = SparkMuseGlimmerLaunchAttnDecode(cudaStreamPerThread,device->qkv,kv_cache,&table,device->lane_indices,context_lengths,device->conv_out,1u,0u,token_elements,cache_elements,1u,0u);
-		if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
-		if (error == cudaSuccess) error = cudaMemcpy(head_out,device->conv_out,SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION * sizeof(uint16_t),cudaMemcpyDeviceToHost);
-		if (error == cudaSuccess) error = cudaMemcpy(cache,kv_cache,cache_elements * sizeof(uint16_t),cudaMemcpyDeviceToHost);
-		if (error == cudaSuccess)
-		{
-			cudaFree(device_blocks);
-			cudaFree(device_counts);
-		}
-	}
-	if (SparkMuseGlimmerValCuda(error,"attn_decode") != 0)
-	{
-		if (kv_cache != 0) cudaFree(kv_cache);
-		free(q_packed); free(q_exact); free(k_packed); free(k_exact); free(v_packed); free(qn_packed); free(qn_exact); free(kn_packed); free(kn_exact); free(cache); free(head_out); free(expected); free(actual);
+	int failures = 0;
+	error = cudaMallocManaged((void **)&head_out,local_query * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&gate,local_query * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&gate_up,2u * local_intermediate * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&intermediate,local_intermediate * 2u,cudaMemAttachGlobal);
+	error = cudaMallocManaged((void **)&reference,local_intermediate * 2u,cudaMemAttachGlobal);
+	if ( SparkMuseGlimmerValCuda(error,"gate_silu_alloc") != 0 )
 		return(1);
-	}
+	for (uint32_t index = 0; index < local_query; index++)
 	{
-		uint32_t kv_head;
-		for (kv_head = 0u; kv_head < kv_heads; kv_head++)
-		{
-			float *k_rows = (float *)calloc((uint64_t)tokens * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,sizeof(float));
-			float *v_rows = (float *)calloc((uint64_t)tokens * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION,sizeof(float));
-			uint32_t token,element;
-			for (token = 0u; token < tokens; token++)
-				for (element = 0u; element < SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION; element++)
-				{
-					uint64_t base = ((uint64_t)token * token_elements) + ((uint64_t)kv_head * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION) + element;
-					k_rows[(uint64_t)token * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION + element] = SparkMuseGlimmerValFromBf16(cache[base]);
-					v_rows[(uint64_t)token * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION + element] = SparkMuseGlimmerValFromBf16(cache[base + ((uint64_t)kv_heads * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION)]);
-				}
-			SparkMuseGlimmerValAttention(
-				q_exact + ((uint64_t)kv_head * SPARK_MUSE_GLIMMER_VAL_ATTN_GROUP * 2u * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION),
-				k_rows,v_rows,qn_exact,
-				expected + ((uint64_t)kv_head * SPARK_MUSE_GLIMMER_VAL_ATTN_GROUP * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION),
-				SPARK_MUSE_GLIMMER_VAL_ATTN_GROUP,tokens,SPARK_MUSE_GLIMMER_MODEL_RMS_NORM_EPSILON);
-			free(k_rows); free(v_rows);
-		}
-		{
-			uint64_t index;
-			for (index = 0u; index < SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION; index++)
-				actual[index] = SparkMuseGlimmerValFromBf16(head_out[index]);
-		}
+		head_out[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(1.0f));
+		gate[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(1.0f));
 	}
-	SparkMuseGlimmerValMeasure(&metrics,actual,expected,SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION);
-	if (kv_cache != 0) cudaFree(kv_cache);
-	free(q_packed); free(q_exact); free(k_packed); free(k_exact); free(v_packed); free(qn_packed); free(qn_exact); free(kn_packed); free(kn_exact); free(cache); free(head_out); free(expected); free(actual);
-	return(SparkMuseGlimmerValReport("attn_decode",&metrics,5e-3,0.99999));
+	for (uint32_t index = 0; index < 2u * local_intermediate; index++)
+		gate_up[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValUniform(1.0f));
+	if ( SparkMuseGlimmerValCuda(SparkMuseGlimmerLaunchOutputGate(0,head_out,gate,1u,local_query),"gate_launch") != 0 )
+		return(1);
+	if ( SparkMuseGlimmerValCuda(SparkMuseGlimmerLaunchSiluMul(0,gate_up,intermediate,1u,local_intermediate),"silu_launch") != 0 )
+		return(1);
+	if ( SparkMuseGlimmerValCuda(cudaDeviceSynchronize(),"gate_silu_sync") != 0 )
+		return(1);
+	for (uint32_t index = 0; index < local_intermediate; index++)
+	{
+		float gate_value = SparkMuseGlimmerValFromBf16(gate_up[index]);
+		float up_value = SparkMuseGlimmerValFromBf16(gate_up[local_intermediate + index]);
+		reference[index] = SparkMuseGlimmerValBf16(up_value * (gate_value / (1.0f + expf(-gate_value))));
+	}
+	failures += SparkMuseGlimmerValCompareEqual("silu_mul",intermediate,reference,local_intermediate);
+	cudaFree(head_out);
+	cudaFree(gate);
+	cudaFree(gate_up);
+	cudaFree(intermediate);
+	cudaFree(reference);
+	if ( failures == 0 )
+		printf("muse_glimmer_validation check=output_gate_and_silu_mul bitwise=exact\n");
+	return(failures);
 }
-
-static int SparkMuseGlimmerValCheckGdnChunk(SparkMuseGlimmerValDevice *device)
-{
-	const uint32_t tokens = SPARK_MUSE_GLIMMER_VALIDATION_CHUNK_TOKENS;
-	const uint32_t heads = SPARK_MUSE_GLIMMER_VAL_HEADS;
-	uint64_t state_elements = (uint64_t)heads * SPARK_MUSE_GLIMMER_VAL_DK * SPARK_MUSE_GLIMMER_VAL_DV;
-	uint16_t *host_conv = (uint16_t *)calloc((uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_CONV,sizeof(uint16_t));
-	float *exact = (float *)calloc((uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_CONV,sizeof(float));
-	float *state_host = (float *)calloc(state_elements,sizeof(float));
-	float *state_reference = (float *)calloc(state_elements,sizeof(float));
-	float *oracle_out = (float *)calloc((uint64_t)tokens * heads * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-	float *actual = (float *)calloc((uint64_t)tokens * heads * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-	uint16_t *core_packed = (uint16_t *)calloc((uint64_t)tokens * heads * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(uint16_t));
-	float *host_log_decay = (float *)calloc((uint64_t)tokens * heads,sizeof(float));
-	float *host_beta = (float *)calloc((uint64_t)tokens * heads,sizeof(float));
-	uint32_t cold[2] = {0u,0u};
-	SparkMuseGlimmerValMetrics metrics;
-	uint32_t head;
-	cudaError_t error;
-	if (host_conv == 0 || exact == 0 || state_host == 0 || state_reference == 0 || oracle_out == 0 || actual == 0 || core_packed == 0 || host_log_decay == 0 || host_beta == 0)
-		return(SparkMuseGlimmerValFail("gdn_chunk","host_alloc"));
-	SparkMuseGlimmerValRandomState = 91u;
-	SparkMuseGlimmerValFillBf16(host_conv,exact,(uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_CONV,1.0f);
-	{
-		uint64_t index;
-		for (index = 0u; index < (uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_CONV; index++)
-			exact[index] = SparkMuseGlimmerValFromBf16(host_conv[index]);
-	}
-	{
-		uint64_t index;
-		for (index = 0u; index < state_elements; index++)
-			state_host[index] = SparkMuseGlimmerValUniform(0.25f);
-		memcpy(state_reference,state_host,state_elements * sizeof(float));
-		for (index = 0u; index < (uint64_t)tokens * heads; index++)
-		{
-			host_log_decay[index] = SparkMuseGlimmerValUniform(0.5f) - 0.75f;
-			host_beta[index] = 0.25f + fabsf(SparkMuseGlimmerValUniform(0.5f));
-		}
-	}
-	error = cudaMemcpy(device->state,state_host,state_elements * sizeof(float),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->conv_out,host_conv,(uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_CONV * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->log_decay,host_log_decay,(uint64_t)tokens * heads * sizeof(float),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->beta,host_beta,(uint64_t)tokens * heads * sizeof(float),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device->cold,cold,sizeof(cold),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess)
-		error = SparkMuseGlimmerLaunchGdnChunk(cudaStreamPerThread,device->conv_out,device->log_decay,device->beta,device->chunk_qn,device->chunk_kn,device->chunk_cum_g,device->chunk_decay,device->chunk_attn,device->chunk_w,device->chunk_kg,&device->pool,device->core_out,0u,tokens,0u,1u);
-	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
-	if (error == cudaSuccess) error = cudaMemcpy(core_packed,device->core_out,(uint64_t)tokens * heads * SPARK_MUSE_GLIMMER_VAL_DV * sizeof(uint16_t),cudaMemcpyDeviceToHost);
-	if (error == cudaSuccess) error = cudaMemcpy(state_host,device->state,state_elements * sizeof(float),cudaMemcpyDeviceToHost);
-	if (SparkMuseGlimmerValCuda(error,"gdn_chunk") != 0)
-	{
-		free(host_conv); free(exact); free(state_host); free(state_reference); free(oracle_out); free(actual); free(core_packed); free(host_log_decay); free(host_beta);
-		return(1);
-	}
-	for (head = 0u; head < heads; head++)
-	{
-		uint32_t key_head = head / SPARK_MUSE_GLIMMER_VAL_GVA;
-		uint32_t token;
-		float *q = (float *)calloc((uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_DK,sizeof(float));
-		float *k = (float *)calloc((uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_DK,sizeof(float));
-		float *v = (float *)calloc((uint64_t)tokens * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-		float *g = (float *)calloc(tokens,sizeof(float));
-		float *beta = (float *)calloc(tokens,sizeof(float));
-		for (token = 0u; token < tokens; token++)
-		{
-			uint64_t row = (uint64_t)token * SPARK_MUSE_GLIMMER_VAL_CONV;
-			uint32_t element;
-			for (element = 0u; element < SPARK_MUSE_GLIMMER_VAL_DK; element++)
-			{
-				q[(uint64_t)token * SPARK_MUSE_GLIMMER_VAL_DK + element] = exact[row + ((uint64_t)key_head * SPARK_MUSE_GLIMMER_VAL_DK) + element];
-				k[(uint64_t)token * SPARK_MUSE_GLIMMER_VAL_DK + element] = exact[row + SPARK_MUSE_GLIMMER_MODEL_GDN_QK_DIMENSION + ((uint64_t)key_head * SPARK_MUSE_GLIMMER_VAL_DK) + element];
-			}
-			for (element = 0u; element < SPARK_MUSE_GLIMMER_VAL_DV; element++)
-				v[(uint64_t)token * SPARK_MUSE_GLIMMER_VAL_DV + element] = exact[row + (2ull * SPARK_MUSE_GLIMMER_MODEL_GDN_QK_DIMENSION) + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DV) + element];
-			g[token] = host_log_decay[(uint64_t)token * heads + head];
-			beta[token] = host_beta[(uint64_t)token * heads + head];
-		}
-		SparkMuseGlimmerValGdnRecurrence(q,k,v,g,beta,
-			state_reference + ((uint64_t)head * SPARK_MUSE_GLIMMER_VAL_DK * SPARK_MUSE_GLIMMER_VAL_DV),
-			oracle_out + ((uint64_t)head * tokens * SPARK_MUSE_GLIMMER_VAL_DV),tokens);
-		free(q); free(k); free(v); free(g); free(beta);
-	}
-	{
-		uint64_t index;
-		for (index = 0u; index < (uint64_t)tokens * heads * SPARK_MUSE_GLIMMER_VAL_DV; index++)
-			actual[index] = SparkMuseGlimmerValFromBf16(core_packed[index]);
-	}
-	{
-		float *repacked = (float *)calloc((uint64_t)tokens * heads * SPARK_MUSE_GLIMMER_VAL_DV,sizeof(float));
-		uint32_t token;
-		for (token = 0u; token < tokens; token++)
-			for (head = 0u; head < heads; head++)
-				memcpy(repacked + ((uint64_t)token * heads + head) * SPARK_MUSE_GLIMMER_VAL_DV,
-					oracle_out + ((uint64_t)head * tokens + token) * SPARK_MUSE_GLIMMER_VAL_DV,
-					SPARK_MUSE_GLIMMER_VAL_DV * sizeof(float));
-		SparkMuseGlimmerValMeasure(&metrics,actual,repacked,(uint64_t)tokens * heads * SPARK_MUSE_GLIMMER_VAL_DV);
-		free(repacked);
-	}
-	if (SparkMuseGlimmerValReport("gdn_chunk_output",&metrics,5e-3,0.99999) != 0)
-	{
-		free(host_conv); free(exact); free(state_host); free(state_reference); free(oracle_out); free(actual); free(core_packed); free(host_log_decay); free(host_beta);
-		return(1);
-	}
-	SparkMuseGlimmerValMeasure(&metrics,state_host,state_reference,state_elements);
-	free(host_conv); free(exact); free(state_host); free(state_reference); free(oracle_out); free(actual); free(core_packed); free(host_log_decay); free(host_beta);
-	return(SparkMuseGlimmerValReport("gdn_chunk_state",&metrics,1e-3,0.999999));
-}
-
 
 typedef struct SparkMuseGlimmerValCapture
 {
-	uint16_t hidden[SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION];
-	uint32_t sends;
+	uint16_t hidden[SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION];
+	uint32_t received;
 } SparkMuseGlimmerValCapture;
 
 static SparkStatus SparkMuseGlimmerValCaptureSend(SparkHiddenTransportSession *session, const SparkHiddenTransportPacket *packet)
 {
 	SparkMuseGlimmerValCapture *capture = (SparkMuseGlimmerValCapture *)session;
-	uint64_t bytes = (uint64_t)packet->active_sequence_count * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION * 2u;
-	if (packet->hidden_bf16 == 0 || packet->active_sequence_count > SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES ||
-		packet->hidden_dimension != SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION)
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	if (cudaMemcpy(capture->hidden,packet->hidden_bf16,bytes,cudaMemcpyDeviceToHost) != cudaSuccess)
-		return(SPARK_STATUS_IO_ERROR);
-	capture->sends++;
+	if ( packet->hidden_bf16 == 0 || packet->active_sequence_count < 1u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (packet->flags & SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER) != 0u )
+	{
+		cudaError_t error = cudaMemcpy(capture->hidden,packet->hidden_bf16,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToHost);
+		if ( error != cudaSuccess )
+			return(SPARK_STATUS_IO_ERROR);
+	}
+	else
+		memcpy(capture->hidden,packet->hidden_bf16,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_BF16_BYTES);
+	capture->received++;
 	return(SPARK_STATUS_OK);
 }
 
@@ -1012,10 +434,13 @@ static int SparkMuseGlimmerValModuleInitialize(SparkMuseGlimmerValModule *module
 		module->host_counts[lane] = 1u;
 	}
 	error = cudaMalloc((void **)&module->device_blocks,sizeof(module->host_blocks));
-	if (error == cudaSuccess) error = cudaMemcpy(module->device_blocks,module->host_blocks,sizeof(module->host_blocks),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMalloc((void **)&module->device_counts,sizeof(module->host_counts));
-	if (error == cudaSuccess) error = cudaMemcpy(module->device_counts,module->host_counts,sizeof(module->host_counts),cudaMemcpyHostToDevice);
-	if (SparkMuseGlimmerValCuda(error,"module_table_alloc") != 0)
+	if ( error == cudaSuccess )
+		error = cudaMemcpy(module->device_blocks,module->host_blocks,sizeof(module->host_blocks),cudaMemcpyHostToDevice);
+	if ( error == cudaSuccess )
+		error = cudaMalloc((void **)&module->device_counts,sizeof(module->host_counts));
+	if ( error == cudaSuccess )
+		error = cudaMemcpy(module->device_counts,module->host_counts,sizeof(module->host_counts),cudaMemcpyHostToDevice);
+	if ( SparkMuseGlimmerValCuda(error,"module_table_alloc") != 0 )
 		return(1);
 	module->table.abi_version = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
 	module->table.descriptor_bytes = sizeof(module->table);
@@ -1030,7 +455,7 @@ static int SparkMuseGlimmerValModuleInitialize(SparkMuseGlimmerValModule *module
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
 	configuration.descriptor_bytes = sizeof(configuration);
-	configuration.model_id = "Qwen/Qwen3.8-2.4T-A95B";
+	configuration.model_id = "meta-models/Muse-Glimmer-30B";
 	configuration.model_revision = "validation";
 	configuration.stage_name = "muse_glimmer_resident_decode_stage";
 	configuration.program_name = "resident_decode";
@@ -1040,11 +465,11 @@ static int SparkMuseGlimmerValModuleInitialize(SparkMuseGlimmerValModule *module
 	memset(&host_services,0,sizeof(host_services));
 	host_services.abi_version = SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
 	host_services.descriptor_bytes = sizeof(host_services);
-	host_services.node_id = "spark-muse_glimmer-validator";
-	host_services.node_target = "cuda.sm121.qwen38.resident_decode_stage.fp8";
+	host_services.node_id = "spark-muse-validator";
+	host_services.node_target = "cuda.sm121.muse_glimmer.resident_decode_stage.bf16";
 	host_services.execution_stream = (void *)cudaStreamPerThread;
 	status = SparkMuseGlimmerResidentDecodeStageInitialize(&configuration,&host_services,&module->state);
-	if (status != SPARK_STATUS_OK)
+	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"muse_glimmer_validation failure=module_initialize status=%d\n",(int)status);
 		return(1);
@@ -1091,357 +516,74 @@ static int SparkMuseGlimmerValModuleExecute(SparkMuseGlimmerValModule *module, u
 		module->buffers[1].bytes = sizeof(module->output_token_ids);
 	}
 	status = SparkMuseGlimmerResidentDecodeStageExecute(module->state,&module->frame);
-	if (status != SPARK_STATUS_OK)
+	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"muse_glimmer_validation failure=module_execute rows=%u status=%d\n",rows,(int)status);
+		fprintf(stderr,"muse_glimmer_validation failure=module_execute rows=%u position=%u status=%d\n",rows,position,(int)status);
 		return(1);
 	}
-	return(0);
-}
-
-static int SparkMuseGlimmerValCheckFinite(const char *check, const uint16_t *hidden, uint64_t rows)
-{
-	uint64_t index,count = rows * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION;
-	for (index = 0u; index < count; index++)
-		if (isfinite(SparkMuseGlimmerValFromBf16(hidden[index])) == 0)
-			return(SparkMuseGlimmerValFail(check,"nonfinite"));
 	return(0);
 }
 
 static int SparkMuseGlimmerValCheckModule(void)
 {
 	SparkMuseGlimmerValModule module;
-	uint16_t decode_hidden[SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION];
-	uint16_t rerun_hidden[SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION];
-	uint32_t decode_token = 0u,rerun_token = 0u,row;
-	SparkModelDriverAdmissionRequest admission;
-	SparkModelDriverAdmissionDecision decision;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	SparkStatus status;
-	if (SparkMuseGlimmerValModuleInitialize(&module) != 0)
+	uint32_t run,step,row;
+	static uint32_t first_tokens[SPARK_MUSE_GLIMMER_VALIDATION_STEPS];
+	static uint32_t second_tokens[SPARK_MUSE_GLIMMER_VALIDATION_STEPS];
+	if ( SparkMuseGlimmerValModuleInitialize(&module) != 0 )
 		return(1);
-	memset(&admission,0,sizeof(admission));
-	admission.descriptor_bytes = sizeof(admission);
-	admission.program_id = 1u;
-	admission.frame_flags = 0u;
-	admission.new_token_count = 1u;
-	admission.active_slot_count = 1u;
-	memset(&decision,0,sizeof(decision));
-	decision.descriptor_bytes = sizeof(decision);
-	status = SparkMuseGlimmerResidentDecodeStageAdmit(module.state,&admission,&decision);
-	if (status != SPARK_STATUS_UNSUPPORTED)
-		return(SparkMuseGlimmerValFail("module_admit","expected_fail_closed"));
-	memset(&snapshot,0,sizeof(snapshot));
-	SparkModelDriverInitializeRuntimeSnapshot(&snapshot,1u);
-	status = SparkMuseGlimmerResidentDecodeStageSnapshot(module.state,1u,&snapshot);
-	if (status != SPARK_STATUS_UNSUPPORTED)
-		return(SparkMuseGlimmerValFail("module_snapshot","expected_fail_closed"));
-	printf("muse_glimmer_validation check=module_admit_snapshot admit=fail_closed snapshot=fail_closed\n");
-	for (row = 0u; row < SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES; row++)
-		module.token_ids[row] = 1000u + (row * 371u) % 200000u;
-	if (SparkMuseGlimmerValModuleExecute(&module,SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES,0u) != 0)
-		return(1);
-	if (module.capture.sends != (module.head_stage != 0u ? 0u : 1u))
-		return(SparkMuseGlimmerValFail("module_decode",module.head_stage != 0u ? "unexpected_hidden_send" : "no_hidden_send"));
-	if ( module.head_stage == 0u )
+	for (run = 0; run < 2u; run++)
 	{
-		if (SparkMuseGlimmerValCheckFinite("module_decode",module.capture.hidden,SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES) != 0)
-			return(1);
-		memcpy(decode_hidden,module.capture.hidden,sizeof(decode_hidden));
+		for (row = 0; row < SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES; row++)
+			module.token_ids[row] = 200000u + ((run * 7u + row * 3u) % 97u);
+		for (step = 0; step < SPARK_MUSE_GLIMMER_VALIDATION_STEPS; step++)
+		{
+			module.capture.received = 0u;
+			if ( SparkMuseGlimmerValModuleExecute(&module,1u,step) != 0 )
+				return(1);
+			if ( run == 0u )
+				first_tokens[step] = module.output_token_ids[0];
+			else
+				second_tokens[step] = module.output_token_ids[0];
+		}
 	}
-	else
+	for (step = 0; step < SPARK_MUSE_GLIMMER_VALIDATION_STEPS; step++)
 	{
-		decode_token = module.output_token_ids[0];
-		if ( decode_token >= SPARK_MUSE_GLIMMER_MODEL_OUTPUT_VOCAB_COUNT )
-			return(SparkMuseGlimmerValFail("module_decode","out_of_vocab"));
-		printf("muse_glimmer_validation check=module_decode token=%u in_vocab=1\n",decode_token);
+		if ( first_tokens[step] != second_tokens[step] )
+			return(SparkMuseGlimmerValFail("module_determinism","token_streams_diverge"));
+		if ( first_tokens[step] >= SPARK_MUSE_GLIMMER_MODEL_OUTPUT_VOCAB_COUNT )
+			return(SparkMuseGlimmerValFail("module_tokens","token_out_of_range"));
 	}
+	printf("muse_glimmer_validation check=module_decode steps=%u deterministic=exact tokens=",SPARK_MUSE_GLIMMER_VALIDATION_STEPS);
+	for (step = 0; step < SPARK_MUSE_GLIMMER_VALIDATION_STEPS; step++)
+		printf("%u ",first_tokens[step]);
+	printf("\n");
 	SparkMuseGlimmerResidentDecodeStageDestroy(module.state);
-	cudaFree(module.device_blocks);
-	cudaFree(module.device_counts);
-	{
-		SparkMuseGlimmerValModule rerun;
-		if (SparkMuseGlimmerValModuleInitialize(&rerun) != 0)
-			return(1);
-		for (row = 0u; row < SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES; row++)
-			rerun.token_ids[row] = 1000u + (row * 371u) % 200000u;
-		if (SparkMuseGlimmerValModuleExecute(&rerun,SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES,0u) != 0)
-			return(1);
-		if ( rerun.head_stage == 0u )
-		{
-			memcpy(rerun_hidden,rerun.capture.hidden,sizeof(rerun_hidden));
-			if (memcmp(decode_hidden,rerun_hidden,sizeof(decode_hidden)) != 0)
-				return(SparkMuseGlimmerValFail("module_determinism","fresh_instance_mismatch"));
-		}
-		else
-		{
-			rerun_token = rerun.output_token_ids[0];
-			if (rerun_token != decode_token)
-				return(SparkMuseGlimmerValFail("module_determinism","fresh_instance_token_mismatch"));
-		}
-		SparkMuseGlimmerResidentDecodeStageDestroy(rerun.state);
-		cudaFree(rerun.device_blocks);
-		cudaFree(rerun.device_counts);
-		printf("muse_glimmer_validation check=module_determinism bit_exact=1\n");
-	}
 	return(0);
-}
-
-static int SparkMuseGlimmerValCheckMoeMxfp4(SparkMuseGlimmerValDevice *device)
-{
-	const uint32_t tp = 4u,experts_per_rank = SPARK_MUSE_GLIMMER_MODEL_ROUTED_EXPERT_COUNT / tp;
-	const uint32_t rows = SPARK_MUSE_GLIMMER_VALIDATION_MOE_ROWS;
-	const uint32_t topk = SPARK_MUSE_GLIMMER_MODEL_EXPERTS_PER_TOKEN;
-	const uint32_t hidden = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION;
-	const uint32_t intermediate = SPARK_MUSE_GLIMMER_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-	uint64_t w13_rows = (uint64_t)experts_per_rank * intermediate;
-	uint64_t w2_rows = (uint64_t)experts_per_rank * hidden;
-	uint64_t w13_payload_bytes = w13_rows * hidden / 2u;
-	uint64_t w13_scale_bytes = w13_rows * hidden / SPARK_MUSE_GLIMMER_MODEL_MXFP4_GROUP_SIZE;
-	uint64_t w2_payload_bytes = w2_rows * intermediate / 2u;
-	uint64_t w2_scale_bytes = w2_rows * intermediate / SPARK_MUSE_GLIMMER_MODEL_MXFP4_GROUP_SIZE;
-	uint16_t *host_input = (uint16_t *)calloc((uint64_t)rows * hidden,sizeof(uint16_t));
-	float *input_exact = (float *)calloc((uint64_t)rows * hidden,sizeof(float));
-	uint8_t *w1_payload = (uint8_t *)calloc(w13_payload_bytes,1);
-	uint8_t *w1_scales = (uint8_t *)calloc(w13_scale_bytes,1);
-	uint8_t *w3_payload = (uint8_t *)calloc(w13_payload_bytes,1);
-	uint8_t *w3_scales = (uint8_t *)calloc(w13_scale_bytes,1);
-	uint8_t *w2_payload = (uint8_t *)calloc(w2_payload_bytes,1);
-	uint8_t *w2_scales = (uint8_t *)calloc(w2_scale_bytes,1);
-	uint32_t *route_expert = (uint32_t *)calloc((uint64_t)rows * topk,sizeof(uint32_t));
-	float *route_weights = (float *)calloc((uint64_t)rows * topk,sizeof(float));
-	float *expected = (float *)calloc((uint64_t)rows * hidden,sizeof(float));
-	float *actual = (float *)calloc((uint64_t)rows * hidden,sizeof(float));
-	uint16_t *host_delta = (uint16_t *)calloc((uint64_t)rows * hidden,sizeof(uint16_t));
-	SparkMuseGlimmerLinearView w1_view,w3_view,w2_view;
-	uint32_t *indices_u32 = 0,*inverse_u32 = 0,*grouped_rows_u32 = 0,*group_offset_u32 = 0,*prefix_w1_u32 = 0,*prefix_w2_u32 = 0;
-	float *weights_f32 = 0;
-	void *input_bf16 = 0,*activated_bf16 = 0,*slot_out_bf16 = 0,*delta_bf16 = 0;
-	uint8_t *w1_payload_d = 0,*w1_scales_d = 0,*w3_payload_d = 0,*w3_scales_d = 0,*w2_payload_d = 0,*w2_scales_d = 0;
-	uint64_t allocation_bytes = ((uint64_t)rows * topk + SPARK_MUSE_GLIMMER_MODEL_ROUTED_EXPERT_COUNT + 2u) * 4u;
-	uint32_t multiprocessor_count = 1u;
-	SparkMuseGlimmerValMetrics metrics;
-	uint32_t row,slot;
-	cudaError_t error = cudaSuccess;
-	(void)device;
-	if (host_input == 0 || input_exact == 0 || w1_payload == 0 || w1_scales == 0 || w3_payload == 0 || w3_scales == 0 || w2_payload == 0 || w2_scales == 0 || route_expert == 0 || route_weights == 0 || expected == 0 || actual == 0 || host_delta == 0)
-		return(SparkMuseGlimmerValFail("moe_mxfp4","host_alloc"));
-	SparkMuseGlimmerValRandomState = 131u;
-	SparkMuseGlimmerValFillBf16(host_input,input_exact,(uint64_t)rows * hidden,1.0f);
-	{
-		uint64_t index;
-		for (index = 0u; index < (uint64_t)rows * hidden; index++)
-			input_exact[index] = SparkMuseGlimmerValFromBf16(host_input[index]);
-	}
-	{
-		static uint8_t block[65536];
-		uint32_t state = 0x1234567u,index;
-		uint64_t offset;
-		for (index = 0u; index < sizeof(block); index++)
-		{
-			state ^= state << 13;
-			state ^= state >> 17;
-			state ^= state << 5;
-			block[index] = (uint8_t)(state >> 24);
-		}
-		for (index = 0u; index < 65536u; index += 2u)
-			block[index] = (uint8_t)(120u + (block[index] & 7u));
-		{
-			static uint8_t rotated[65536],shifted[65536];
-			memcpy(rotated,block + 32768u,32768u);
-			memcpy(rotated + 32768u,block,32768u);
-			memcpy(shifted,block + 17u,65519u);
-			memcpy(shifted + 65519u,block,17u);
-			for (offset = 0u; offset < w13_payload_bytes; offset += sizeof(block))
-			{
-				uint64_t step = w13_payload_bytes - offset < sizeof(block) ? w13_payload_bytes - offset : sizeof(block);
-				memcpy(w1_payload + offset,block,(size_t)step);
-				memcpy(w3_payload + offset,rotated,(size_t)step);
-			}
-			for (offset = 0u; offset < w2_payload_bytes; offset += sizeof(block))
-			{
-				uint64_t step = w2_payload_bytes - offset < sizeof(block) ? w2_payload_bytes - offset : sizeof(block);
-				memcpy(w2_payload + offset,shifted,(size_t)step);
-			}
-		}
-		memset(w1_scales,124u,(size_t)w13_scale_bytes);
-		memset(w3_scales,123u,(size_t)w13_scale_bytes);
-		memset(w2_scales,125u,(size_t)w2_scale_bytes);
-	}
-	for (row = 0u; row < rows; row++)
-		for (slot = 0u; slot < topk; slot++)
-		{
-			route_expert[(uint64_t)row * topk + slot] = ((row * 7u + slot * 13u) % (experts_per_rank / 2u)) + ((slot & 1u) * (experts_per_rank / 2u));
-			route_weights[(uint64_t)row * topk + slot] = 0.05f + 0.09f * (float)slot;
-		}
-	error = cudaMalloc(&input_bf16,(uint64_t)rows * hidden * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc(&activated_bf16,(uint64_t)rows * topk * intermediate * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc(&slot_out_bf16,(uint64_t)rows * topk * hidden * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc(&delta_bf16,(uint64_t)rows * hidden * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc(&indices_u32,(uint64_t)rows * topk * sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc(&inverse_u32,allocation_bytes);
-	if (error == cudaSuccess) error = cudaMalloc(&grouped_rows_u32,allocation_bytes);
-	if (error == cudaSuccess) error = cudaMalloc(&group_offset_u32,(SPARK_MUSE_GLIMMER_MODEL_ROUTED_EXPERT_COUNT + 1u) * sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc(&prefix_w1_u32,(SPARK_MUSE_GLIMMER_MODEL_ROUTED_EXPERT_COUNT + 1u) * sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc(&prefix_w2_u32,(SPARK_MUSE_GLIMMER_MODEL_ROUTED_EXPERT_COUNT + 1u) * sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc(&weights_f32,(uint64_t)rows * topk * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc(&w1_payload_d,w13_payload_bytes);
-	if (error == cudaSuccess) error = cudaMalloc(&w1_scales_d,w13_scale_bytes);
-	if (error == cudaSuccess) error = cudaMalloc(&w3_payload_d,w13_payload_bytes);
-	if (error == cudaSuccess) error = cudaMalloc(&w3_scales_d,w13_scale_bytes);
-	if (error == cudaSuccess) error = cudaMalloc(&w2_payload_d,w2_payload_bytes);
-	if (error == cudaSuccess) error = cudaMalloc(&w2_scales_d,w2_scale_bytes);
-	if (error == cudaSuccess) error = cudaMemcpy(input_bf16,host_input,(uint64_t)rows * hidden * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(indices_u32,route_expert,(uint64_t)rows * topk * sizeof(uint32_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(weights_f32,route_weights,(uint64_t)rows * topk * sizeof(float),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(w1_payload_d,w1_payload,w13_payload_bytes,cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(w1_scales_d,w1_scales,w13_scale_bytes,cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(w3_payload_d,w3_payload,w13_payload_bytes,cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(w3_scales_d,w3_scales,w13_scale_bytes,cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(w2_payload_d,w2_payload,w2_payload_bytes,cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(w2_scales_d,w2_scales,w2_scale_bytes,cudaMemcpyHostToDevice);
-	if (error == cudaSuccess)
-	{
-		int32_t sm_count = 0;
-		if (cudaDeviceGetAttribute(&sm_count,cudaDevAttrMultiProcessorCount,0) == cudaSuccess && sm_count > 0)
-			multiprocessor_count = (uint32_t)sm_count;
-	}
-	memset(&w1_view,0,sizeof(w1_view));
-	memset(&w3_view,0,sizeof(w3_view));
-	memset(&w2_view,0,sizeof(w2_view));
-	w1_view.abi_version = w3_view.abi_version = w2_view.abi_version = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION;
-	w1_view.weight_format = w3_view.weight_format = w2_view.weight_format = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1;
-	w1_view.input_dimension = w3_view.input_dimension = hidden;
-	w1_view.output_dimension = w3_view.output_dimension = (uint32_t)w13_rows;
-	w2_view.input_dimension = intermediate;
-	w2_view.output_dimension = (uint32_t)w2_rows;
-	w1_view.weight_payload = w1_payload_d;
-	w1_view.weight_scale_e8m0 = w1_scales_d;
-	w3_view.weight_payload = w3_payload_d;
-	w3_view.weight_scale_e8m0 = w3_scales_d;
-	w2_view.weight_payload = w2_payload_d;
-	w2_view.weight_scale_e8m0 = w2_scales_d;
-	w1_view.weight_payload_bytes = w13_payload_bytes;
-	w3_view.weight_payload_bytes = w13_payload_bytes;
-	w2_view.weight_payload_bytes = w2_payload_bytes;
-	w1_view.weight_scale_bytes = w13_scale_bytes;
-	w3_view.weight_scale_bytes = w13_scale_bytes;
-	w2_view.weight_scale_bytes = w2_scale_bytes;
-	if (error == cudaSuccess)
-		error = SparkMuseGlimmerLaunchMoeRoute(cudaStreamPerThread,indices_u32,rows,intermediate,1u,group_offset_u32,inverse_u32,grouped_rows_u32,prefix_w1_u32,prefix_w2_u32);
-	if (error == cudaSuccess)
-		error = SparkMuseGlimmerLaunchFusedExpertW13Act(cudaStreamPerThread,&w1_view,&w3_view,input_bf16,grouped_rows_u32,group_offset_u32,prefix_w1_u32,activated_bf16,rows,intermediate,SPARK_MUSE_GLIMMER_MODEL_SWIGLU_LIMIT,multiprocessor_count,tp,0u);
-	if (error == cudaSuccess)
-		error = SparkMuseGlimmerLaunchExpertDown(cudaStreamPerThread,&w2_view,activated_bf16,group_offset_u32,prefix_w2_u32,slot_out_bf16,rows,intermediate,hidden,multiprocessor_count,tp,0u);
-	if (error == cudaSuccess)
-		error = SparkMuseGlimmerLaunchMoePairReduceOverwrite(cudaStreamPerThread,slot_out_bf16,inverse_u32,weights_f32,delta_bf16,rows,hidden);
-	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
-	if (error == cudaSuccess) error = cudaMemcpy(host_delta,delta_bf16,(uint64_t)rows * hidden * sizeof(uint16_t),cudaMemcpyDeviceToHost);
-	if (SparkMuseGlimmerValCuda(error,"moe_mxfp4") != 0)
-	{
-		free(host_input); free(input_exact); free(w1_payload); free(w1_scales); free(w3_payload); free(w3_scales); free(w2_payload); free(w2_scales); free(route_expert); free(route_weights); free(expected); free(actual); free(host_delta);
-		return(1);
-	}
-	for (row = 0u; row < rows; row++)
-	{
-		float *x = (float *)calloc(hidden,sizeof(float));
-		float *y = expected + ((uint64_t)row * hidden);
-		uint32_t element;
-		for (element = 0u; element < hidden; element++)
-		{
-			x[element] = input_exact[(uint64_t)row * hidden + element];
-			y[element] = 0.0f;
-		}
-		SparkMuseGlimmerValQdq128(x,hidden);
-		for (slot = 0u; slot < topk; slot++)
-		{
-			uint32_t expert = route_expert[(uint64_t)row * topk + slot];
-			float weight = route_weights[(uint64_t)row * topk + slot];
-			float *activated = (float *)calloc(intermediate,sizeof(float));
-			float *down = (float *)calloc(hidden,sizeof(float));
-			uint32_t neuron;
-			for (neuron = 0u; neuron < intermediate; neuron++)
-			{
-				uint64_t w13_row = (uint64_t)expert * intermediate + neuron;
-				float gate = 0.0f,up = 0.0f;
-				uint32_t column;
-				for (column = 0u; column < hidden; column++)
-				{
-					gate = fmaf(SparkMuseGlimmerValDequantMxfp4(w1_payload,w1_scales,w13_row,hidden,column),x[column],gate);
-					up = fmaf(SparkMuseGlimmerValDequantMxfp4(w3_payload,w3_scales,w13_row,hidden,column),x[column],up);
-				}
-				gate = SparkMuseGlimmerValBf16Round(gate);
-				up = SparkMuseGlimmerValBf16Round(up);
-				gate = gate > SPARK_MUSE_GLIMMER_MODEL_SWIGLU_LIMIT ? SPARK_MUSE_GLIMMER_MODEL_SWIGLU_LIMIT : gate;
-				up = up > SPARK_MUSE_GLIMMER_MODEL_SWIGLU_LIMIT ? SPARK_MUSE_GLIMMER_MODEL_SWIGLU_LIMIT : (up < -SPARK_MUSE_GLIMMER_MODEL_SWIGLU_LIMIT ? -SPARK_MUSE_GLIMMER_MODEL_SWIGLU_LIMIT : up);
-				activated[neuron] = SparkMuseGlimmerValFromBf16(SparkMuseGlimmerValBf16(SparkMuseGlimmerValSilu(gate) * up));
-			}
-			SparkMuseGlimmerValQdq128(activated,intermediate);
-			for (element = 0u; element < hidden; element++)
-			{
-				uint64_t w2_row = (uint64_t)expert * hidden + element;
-				float sum = 0.0f;
-				uint32_t neuron;
-				for (neuron = 0u; neuron < intermediate; neuron++)
-					sum = fmaf(SparkMuseGlimmerValDequantMxfp4(w2_payload,w2_scales,w2_row,intermediate,neuron),activated[neuron],sum);
-				down[element] = SparkMuseGlimmerValFromBf16(SparkMuseGlimmerValBf16(sum));
-			}
-			for (element = 0u; element < hidden; element++)
-				y[element] += weight * down[element];
-			free(activated);
-			free(down);
-		}
-		free(x);
-	}
-	{
-		uint64_t index;
-		for (index = 0u; index < (uint64_t)rows * hidden; index++)
-			actual[index] = SparkMuseGlimmerValFromBf16(host_delta[index]);
-	}
-	SparkMuseGlimmerValMeasure(&metrics,actual,expected,(uint64_t)rows * hidden);
-	free(host_input); free(input_exact); free(w1_payload); free(w1_scales); free(w3_payload); free(w3_scales); free(w2_payload); free(w2_scales); free(route_expert); free(route_weights); free(expected); free(actual); free(host_delta);
-	if (indices_u32 != 0) cudaFree(indices_u32);
-	if (inverse_u32 != 0) cudaFree(inverse_u32);
-	if (grouped_rows_u32 != 0) cudaFree(grouped_rows_u32);
-	if (group_offset_u32 != 0) cudaFree(group_offset_u32);
-	if (prefix_w1_u32 != 0) cudaFree(prefix_w1_u32);
-	if (prefix_w2_u32 != 0) cudaFree(prefix_w2_u32);
-	if (weights_f32 != 0) cudaFree(weights_f32);
-	if (input_bf16 != 0) cudaFree(input_bf16);
-	if (activated_bf16 != 0) cudaFree(activated_bf16);
-	if (slot_out_bf16 != 0) cudaFree(slot_out_bf16);
-	if (delta_bf16 != 0) cudaFree(delta_bf16);
-	if (w1_payload_d != 0) cudaFree(w1_payload_d);
-	if (w1_scales_d != 0) cudaFree(w1_scales_d);
-	if (w3_payload_d != 0) cudaFree(w3_payload_d);
-	if (w3_scales_d != 0) cudaFree(w3_scales_d);
-	if (w2_payload_d != 0) cudaFree(w2_payload_d);
-	if (w2_scales_d != 0) cudaFree(w2_scales_d);
-	return(SparkMuseGlimmerValReport("moe_mxfp4",&metrics,2e-2,0.999));
 }
 
 int main(int argc, char **argv)
 {
-	SparkMuseGlimmerValDevice device;
-	int result = 0;
-	if (argc != 2 || strlen(argv[1]) != 64u)
+	int failures = 0;
+	uint32_t view_bytes;
+	if ( argc != 2 )
 	{
-		fprintf(stderr,"usage: %s VALIDATION_CONFIGURATION_SHA256\n",argv[0]);
+		fprintf(stderr,"usage: %s CONFIGURATION_SHA256\n",argv[0]);
 		return(2);
 	}
-	if (SparkMuseGlimmerValCuda(SparkMuseGlimmerConfigureCudaKernels(),"configure") != 0)
+	printf("muse_glimmer_validation configuration_sha256=%s\n",argv[1]);
+	view_bytes = SparkMuseGlimmerKvViewBytes();
+	if ( view_bytes != sizeof(SparkMuseGlimmerKvViewShim) )
+		return(SparkMuseGlimmerValFail("kv_view_abi","size_mismatch"));
+	failures += SparkMuseGlimmerValCheckNorms();
+	failures += SparkMuseGlimmerValCheckWindowWalk();
+	failures += SparkMuseGlimmerValCheckGateAndSilu();
+	failures += SparkMuseGlimmerValCheckModule();
+	if ( failures != 0 )
+	{
+		fprintf(stderr,"muse_glimmer_validation FAIL failures=%d\n",failures);
 		return(1);
-	if (SparkMuseGlimmerValDeviceSetup(&device) != 0)
-		return(1);
-	if (result == 0) result = SparkMuseGlimmerValCheckDecayBeta(&device);
-	if (result == 0) result = SparkMuseGlimmerValCheckGdnStep(&device);
-	if (result == 0) result = SparkMuseGlimmerValCheckGatedNorm(&device);
-	if (result == 0) result = SparkMuseGlimmerValCheckAttention(&device);
-	if (result == 0) result = SparkMuseGlimmerValCheckGdnChunk(&device);
-	if (result == 0) result = SparkMuseGlimmerValCheckMoeMxfp4(&device);
-	if (result == 0) result = SparkMuseGlimmerValCheckGdnStepTp4();
-	if (result == 0) result = SparkMuseGlimmerValCheckModule();
-	if (result == 0)
-		printf("muse_glimmer_validation PASS\n");
-	return(result);
+	}
+	printf("muse_glimmer_validation PASS\n");
+	return(0);
 }

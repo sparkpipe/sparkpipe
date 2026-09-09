@@ -460,7 +460,6 @@ static SparkStatus SparkMuseGlimmerModuleLoadPack(SparkMuseGlimmerModuleState *s
 }
 
 static SparkStatus SparkMuseGlimmerModuleAllocatePools(SparkMuseGlimmerModuleState *state);
-extern cudaError_t SparkMuseGlimmerConfigureCudaKernels(void);
 static SparkStatus SparkMuseGlimmerModuleAllocateSlot(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
 static SparkStatus SparkMuseGlimmerModuleAllocateSlotHostMirrors(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
 
@@ -1139,8 +1138,6 @@ static SparkStatus SparkMuseGlimmerModulePrepare(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMuseGlimmerModuleOpenKvTier(state,host_services);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,SparkMuseGlimmerConfigureCudaKernels(),"configure_cuda_kernels");
-	if ( status == SPARK_STATUS_OK )
 	{
 		int32_t sm_count = 0;
 		cudaError_t attr = cudaDeviceGetAttribute(&sm_count,cudaDevAttrMultiProcessorCount,0);
@@ -1381,7 +1378,6 @@ static SparkStatus SparkMuseGlimmerModuleAllocatePools(SparkMuseGlimmerModuleSta
 }
 
 extern uint32_t SparkMuseGlimmerKvViewBytes(void);
-extern cudaError_t SparkMuseGlimmerConfigureCudaKernels(void);
 static SparkStatus SparkMuseGlimmerModuleAllocateSlot(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
 static SparkStatus SparkMuseGlimmerModuleAllocateSlotHostMirrors(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
 
