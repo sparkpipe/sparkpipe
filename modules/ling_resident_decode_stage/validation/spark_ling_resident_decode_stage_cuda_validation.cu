@@ -944,17 +944,16 @@ static int SparkLingValOracleSelftest(void)
 			"bounded decay range (0,1]");
 	}
 	{
-		uint16_t packed[256];
-		float exact[256];
-		uint32_t back = 0u;
+		uint32_t mismatch = 0u;
 		for (uint32_t i = 0u; i < 256u; i++)
 		{
 			float value = ((float)(int32_t)(i % 31u) - 15.0f) * 0.1f;
-			packed[i] = SparkLingValBf16(value);
-			back += SparkLingValFromBf16(packed[i]) == 0.0f ? 1u : 0u;
+			float back = SparkLingValFromBf16(SparkLingValBf16(value));
+			if ( (back == 0.0f) != (value == 0.0f) )
+				mismatch += 1u;
 		}
-		failures += SparkLingValSelftestAssert(back == 1u,"bf16 round trip zeros only at zero");
-		(void)exact;
+		failures += SparkLingValSelftestAssert(mismatch == 0u,
+			"bf16 round trip preserves zero and nonzero");
 	}
 	{
 		float section[8] = {1.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f};
