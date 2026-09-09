@@ -661,6 +661,26 @@ Controller artifacts:
 - `/private/tmp/ds4_glm_layer4_e38ebb2/rms_rounding_analysis.json`
 - `/private/tmp/ds4_glm_chat_checks/math-receipt.json`
 
+## Deterministic direct TP reduction
+
+The GLM direct-all-to-all callback started with each rank's local contribution
+and folded all other ranks in ascending order, rounding to BF16 after every
+addition. Different local ranks therefore used different arithmetic orders.
+For contributions 256, 1 and -256 this can produce either 0 or 1, violating
+the requirement that an all-reduce return the same result on every rank.
+
+The shared `inference/kernels/tp_reduce.cuh` kernel reads contributions in
+ascending global rank order, accumulates in FP32, and rounds once to BF16.
+The local contribution occupies its global rank position even when it aliases
+the destination. The GLM callback launches this kernel once instead of issuing
+one pair-add launch per peer. Existing tree reductions are outside this change.
+
+The host execution test exercises the actual kernel with cancellation, every
+local rank at TP1/TP4/TP16, row counts 1/3/17, and a width with a thread-loop
+tail. Restoring the previous local-first BF16 arithmetic makes that test fail.
+GPU execution and the full-model discrepancy must still be measured on a
+merged-main deployment; this fix alone is not numerical qualification.
+
 ## Required model EOS metadata
 
 Resident deployment ABI 3 carries `eos_token_ids`. Common batch-engine startup
