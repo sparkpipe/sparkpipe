@@ -31,26 +31,6 @@
 #define DSV4_EXPERT_KIND_COUNT 3u
 #define DSV4_MANIFEST_LAYERS 43u
 
-static const uint32_t expert_kinds[DSV4_EXPERT_KIND_COUNT] = {
-	SPARK_DSV4_STAGEPACK_TENSOR_EXPERTS_W1,
-	SPARK_DSV4_STAGEPACK_TENSOR_EXPERTS_W2,
-	SPARK_DSV4_STAGEPACK_TENSOR_EXPERTS_W3,
-};
-
-static uint32_t read_u32(const uint8_t *p)
-{
-	uint32_t v;
-	memcpy(&v, p, 4u);
-	return v;
-}
-
-static uint64_t read_u64(const uint8_t *p)
-{
-	uint64_t v;
-	memcpy(&v, p, 8u);
-	return v;
-}
-
 static uint64_t plane_bytes(uint32_t weight_format, uint64_t rows, uint64_t columns, uint32_t plane)
 {
 	uint64_t elements = rows * columns;
@@ -176,7 +156,7 @@ static int32_t header_read(FILE *pack, SparkDsv4StagePackHeader *header)
 static int32_t manifest_write(FILE *pack, FILE *out,
 	const SparkDsv4StagePackHeader *header)
 {
-	uint8_t words[16] = {0};
+	uint32_t words[4] = {0u, 0u, 0u, 0u};
 	uint32_t i;
 	uint32_t covered[DSV4_MANIFEST_LAYERS];
 	int32_t err;
@@ -184,10 +164,7 @@ static int32_t manifest_write(FILE *pack, FILE *out,
 	uint32_t w1_seen = 0u, w2_seen = 0u, w3_seen = 0u;
 
 	words[0] = SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC;
-	{
-		uint32_t version = SPARK_WEIGHTD_RANGE_MANIFEST_VERSION;
-		memcpy(words + 4u, &version, 4u);
-	}
+	words[1] = SPARK_WEIGHTD_RANGE_MANIFEST_VERSION;
 	memset(covered, 0, sizeof(covered));
 	if (fwrite(words, 1u, sizeof(words), out) != sizeof(words))
 		return -8;
@@ -208,7 +185,7 @@ static int32_t manifest_write(FILE *pack, FILE *out,
 		SparkDsv4StagePackEntry entry;
 		memcpy(&entry, directory + (size_t)i * SPARK_DSV4_STAGEPACK_ENTRY_BYTES,
 			sizeof(entry));
-		err = entry_write(pack, out, header, &entry, (uint32_t *)(words + 8u));
+		err = entry_write(pack, out, header, &entry, &words[2]);
 		if (err < 0)
 		{
 			free(directory);
@@ -243,7 +220,7 @@ static int32_t manifest_write(FILE *pack, FILE *out,
 			return -10;
 		}
 	}
-	if (words[8] == 0u || w1_seen == 0u || w2_seen == 0u || w3_seen == 0u)
+	if (words[2] == 0u || w1_seen == 0u || w2_seen == 0u || w3_seen == 0u)
 		return -10;
 	if (fseeko(out, 0, SEEK_SET) != 0 ||
 		fwrite(words, 1u, sizeof(words), out) != sizeof(words))
