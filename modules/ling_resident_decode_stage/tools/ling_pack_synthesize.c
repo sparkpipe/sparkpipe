@@ -135,7 +135,7 @@ int main(int argc, char **argv)
 	const char *contract = 0;
 	FILE *file;
 	uint8_t *chunk;
-	uint64_t directory_offset;
+	uint64_t directory_offset,payload_base;
 	uint32_t stage_count = 1u;
 	uint32_t stage_index = 0u;
 	int32_t status;
@@ -209,6 +209,10 @@ int main(int argc, char **argv)
 		fprintf(stderr,"inventory build failed: %d\n",status);
 		return(11);
 	}
+	directory_offset = SparkSynthAlign(SPARK_LING_STAGEPACK_HEADER_BYTES);
+	payload_base = directory_offset + (uint64_t)context.entry_count * SPARK_LING_STAGEPACK_ENTRY_BYTES;
+	for (index = 0; index < context.entry_count; index++)
+		context.entries[index].payload_offset += payload_base;
 	file = fopen(output,"wb");
 	if ( file == 0 )
 	{
@@ -245,7 +249,6 @@ int main(int argc, char **argv)
 	snprintf(header.model_revision,sizeof(header.model_revision),"%s",revision);
 	if ( contract != 0 )
 		SparkLingSynthesizeHexParse(contract,header.contract_sha256,SPARK_LING_STAGEPACK_SHA256_BYTES);
-	directory_offset = SparkSynthAlign(SPARK_LING_STAGEPACK_HEADER_BYTES);
 	header.directory_offset = directory_offset;
 	if ( fwrite(&header,sizeof(header),1,file) != 1u ||
 	     fseeko(file,(off_t)directory_offset,SEEK_SET) != 0 )

@@ -744,7 +744,7 @@ def write_expert_manifest(pack_path: Path, plan: List[PlanItem]) -> int:
                               f"outside the weightd manifest contract")
         for expert in range(EXPERTS):
             ranges.append((entry.payload_offset + expert * per, per,
-                           entry.layer_index, expert, entry.kind * 2))
+                           entry.layer, expert, entry.kind * 2))
     ranges.sort()
     with pack_path.open("rb") as pack:
         records = bytearray()
