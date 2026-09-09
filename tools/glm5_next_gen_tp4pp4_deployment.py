@@ -67,6 +67,7 @@ def stage_config(rank):
 
 
 def resident_deployment():
+    page_capacity = 16 * ((stage_config(0)["max_sequence_positions"] + 63) // 64)
     nodes = []
     for rank, host in enumerate(HOSTS):
         nodes.append({
@@ -105,8 +106,8 @@ def resident_deployment():
             "max_active_sequences": 16,
             "max_input_rows": 1024,
             "resident_sequence_capacity": 16,
-            "kv_logical_page_capacity": 0,
-            "kv_physical_page_capacity": 0,
+            "kv_logical_page_capacity": page_capacity,
+            "kv_physical_page_capacity": page_capacity,
         },
         "nodes": nodes,
     }

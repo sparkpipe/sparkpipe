@@ -141,6 +141,7 @@ def stage_config(rank: int) -> dict:
 
 
 def resident_deployment() -> dict:
+    page_capacity = 16 * ((stage_config(0)["max_sequence_positions"] + 63) // 64)
     nodes = []
     for rank, host in enumerate(HOSTS):
         nodes.append({
@@ -185,12 +186,8 @@ def resident_deployment() -> dict:
             "max_active_sequences": 16,
             "max_input_rows": 1024,
             "resident_sequence_capacity": 16,
-            # The schema requires BOTH kv capacity members (exact-member
-            # validation) and the adapter (no JIT_KV) requires both ZERO;
-            # the module owns its KV pool internally (DRIVER_OWNS_KV).
-            # Adopting glm52's JIT_KV lane wiring is the follow-up.
-            "kv_logical_page_capacity": 0,
-            "kv_physical_page_capacity": 0,
+            "kv_logical_page_capacity": page_capacity,
+            "kv_physical_page_capacity": page_capacity,
         },
         "nodes": nodes,
     }

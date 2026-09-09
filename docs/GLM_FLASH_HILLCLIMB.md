@@ -377,6 +377,23 @@ its load-success assertion conflicts with mandatory rejection of its missing
 reset callback. This is an unresolved non-GLM acceptance failure. No stub or
 exception was added; the full host suite is not passing.
 
+Merged-main `3278d6c` passed the rank-local GPU prefix/reset comparison on
+Spark0: resident B1/B3, lazy B1 and two concurrent lazy B3 consumers produced
+836 matching token records. B3 prefix/reset also passed CUDA memcheck with zero
+errors. All three queue attempts exited 0 and released ownership. The exact
+source, pack/driver hashes, commands and scope are recorded in
+[the PR #861 receipt](https://github.com/sparkpipe/sparkpipe/pull/861#issuecomment-5593709181).
+Artifacts: `/private/tmp/ds4_glm_prefix_3278d6c/`. This does not qualify full-model
+numerical accuracy, distributed serving, continuous traffic or throughput.
+
+The next full TP16 run built successfully on all 16 nodes but failed before
+inference: generated runtime limits still contained zero KV page capacities.
+The mandatory validator correctly rejected them. Both GLM generators now
+derive capacities from resident slots and context length. The host regression
+loads the complete deployment through the C validator and checks its capacity
+against the firmware's page size; previously it loaded only the stage config.
+TP4xPP4 still needs adapter geometry and boundary integration beyond this fix.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed
