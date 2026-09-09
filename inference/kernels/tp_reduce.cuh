@@ -8,14 +8,14 @@ struct LmTpF32Contributions
 	const float *rank[MaxRanks];
 };
 
-__global__ void LmTpBf16ToF32Kernel(float *destination,const uint16_t *source,uint32_t elements)
+static __global__ void LmTpBf16ToF32Kernel(float *destination,const uint16_t *source,uint32_t elements)
 {
 	uint32_t index = (blockIdx.x * blockDim.x) + threadIdx.x;
 	if ( index < elements )
 		destination[index] = LmBf16ToFloat(source[index]);
 }
 
-__global__ void LmTpF32ToBf16Kernel(uint16_t *destination,const float *source,uint32_t elements)
+static __global__ void LmTpF32ToBf16Kernel(uint16_t *destination,const float *source,uint32_t elements)
 {
 	uint32_t index = (blockIdx.x * blockDim.x) + threadIdx.x;
 	if ( index < elements )

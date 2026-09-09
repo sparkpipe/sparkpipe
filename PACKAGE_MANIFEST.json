@@ -3303,8 +3303,8 @@
     },
     {
       "path": "inference/kernels/tp_reduce.cuh",
-      "sha256": "e9705cd6c9242920fcecb53519977896f70dfe004587777d27cf269e2a9f3037",
-      "size_bytes": 1680
+      "sha256": "328d9b00c5e9a772683790b698a9b914ce2356c5c92b7e98b83f40627673cbf6",
+      "size_bytes": 1694
     },
     {
       "path": "inference/kernels/weight_codec.cuh",
@@ -9795,5 +9795,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32744148
+  "total_bytes": 32744162
 }
