@@ -18,6 +18,7 @@ extern "C" {
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION 1u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
+#define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT 32u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT 512u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS 64u
@@ -170,6 +171,8 @@ typedef struct SparkGemma4DecodeBatchView
 	const uint32_t *row_lane_indices;
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
+	const uint32_t *row_token_ids;
+	const uint32_t *context_lengths;
 } SparkGemma4DecodeBatchView;
 
 typedef struct SparkGemma4PrefillFrameView

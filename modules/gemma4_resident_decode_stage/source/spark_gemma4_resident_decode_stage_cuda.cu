@@ -341,19 +341,32 @@ extern "C" cudaError_t SparkGemma4LaunchGateScores(cudaStream_t stream, const Sp
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkGemma4LaunchExpertGateUp(cudaStream_t stream, const SparkGemma4LinearView *stacked, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessor_count)
+extern "C" cudaError_t SparkGemma4LaunchGroupedExpertLinear(cudaStream_t stream, const SparkGemma4LinearView *view, const void *input_bf16, const uint32_t *source_row_map, const uint32_t *group_row_offset, const uint32_t *group_tile_prefix, void *output_bf16, uint32_t source_row_count, uint32_t multiprocessor_count, uint32_t tp_degree, uint32_t tp_rank, uint32_t route_group_base, const void *frame_error)
 {
-	if ( stacked == 0 || stacked->weight_format != SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 || stacked->weight_payload == 0 || input_bf16 == 0 || grouped_rows == 0 || expert_offsets == 0 || output_bf16 == 0 )
-		return(cudaErrorInvalidValue);
-	return(SparkLmHostLaunchGroupedExpertTileMloop(stream,stacked->weight_format,stacked->weight_payload,stacked->weight_scale_e8m0,(uint64_t)stacked->output_dimension * (uint64_t)SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES,0u,input_bf16,grouped_rows,expert_offsets,output_bf16,input_dimension,output_dimension,SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT));
-}
-
-extern "C" cudaError_t SparkGemma4LaunchExpertDown(cudaStream_t stream, const SparkGemma4LinearView *stacked, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessor_count)
-{
+	uint64_t rows_per_expert;
+	uint64_t payload_stride;
+	uint32_t experts_per_rank = SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	const uint8_t *payload;
+	const uint32_t *offsets;
+	const uint32_t *prefix;
 	(void)multiprocessor_count;
-	if ( stacked == 0 || stacked->weight_format != SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 || stacked->weight_payload == 0 || input_bf16 == 0 || grouped_rows == 0 || expert_offsets == 0 || output_bf16 == 0 )
+	(void)frame_error;
+	if ( view == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || view->weight_format != SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 || view->weight_payload == 0 || (source_row_map == 0 && source_row_count == 0u) || tp_degree == 0u || tp_rank >= tp_degree || (SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
-	return(SparkLmHostLaunchGroupedExpertTileMloop(stream,stacked->weight_format,stacked->weight_payload,stacked->weight_scale_e8m0,(uint64_t)stacked->output_dimension * (uint64_t)SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES,0u,input_bf16,grouped_rows,expert_offsets,output_bf16,input_dimension,output_dimension,SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT));
+	rows_per_expert = (uint64_t)view->output_dimension / experts_per_rank;
+	if ( rows_per_expert * experts_per_rank != view->output_dimension )
+		return(cudaErrorInvalidValue);
+	payload_stride = rows_per_expert * view->input_dimension * 2u;
+	payload = (const uint8_t *)view->weight_payload + ((uint64_t)tp_rank * experts_per_rank * payload_stride);
+	offsets = group_row_offset + route_group_base;
+	prefix = group_tile_prefix + route_group_base;
+	return(SparkLmHostLaunchGroupedScalarLinear<32u>(stream,
+		SPARK_LM_WEIGHT_FORMAT_BF16,
+		payload,(const uint8_t *)0,
+		payload_stride,0u,
+		input_bf16,source_row_map,source_row_count,offsets,prefix,
+		output_bf16,experts_per_rank,
+		view->input_dimension,(uint32_t)rows_per_expert,multiprocessor_count));
 }
 
 extern "C" cudaError_t SparkGemma4LaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension)
