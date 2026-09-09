@@ -1,0 +1,42 @@
+[
+ {
+  "dtype": "f32",
+  "file": "z__1x24x7x2x2.f32",
+  "name": "z",
+  "shape": [
+   1,
+   24,
+   7,
+   2,
+   2
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "decoded__1x3x22x32x32.f32",
+  "name": "decoded",
+  "shape": [
+   1,
+   3,
+   22,
+   32,
+   32
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "latents_mean__24.f32",
+  "name": "latents_mean",
+  "shape": [
+   24
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "latents_std__24.f32",
+  "name": "latents_std",
+  "shape": [
+   24
+  ]
+ }
+]

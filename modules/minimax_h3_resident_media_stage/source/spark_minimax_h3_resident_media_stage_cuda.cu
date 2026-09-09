@@ -275,6 +275,95 @@ static __global__ void SparkMinimaxH3SnakeKernel(const __nv_bfloat16 *input,
 	output[index] = __float2bfloat16(value + sine * sine / alpha_value);
 }
 
+static __global__ void SparkMinimaxH3RmsNormKernel(const __nv_bfloat16 *input,
+	const __nv_bfloat16 *weight, uint32_t width, float epsilon, __nv_bfloat16 *output)
+{
+	uint32_t row = blockIdx.x;
+	const __nv_bfloat16 *input_row = input + (uint64_t)row * width;
+	float sum = 0.0f;
+	uint32_t column;
+	for (column=threadIdx.x; column<width; column+=blockDim.x)
+	{
+		float value = __bfloat162float(input_row[column]);
+		sum += value * value;
+	}
+	__shared__ float scratch[32u];
+	sum = SparkMinimaxH3BlockReduceSumShared(sum,scratch);
+	float inverse = rsqrtf(sum / (float)width + epsilon);
+	for (column=threadIdx.x; column<width; column+=blockDim.x)
+		output[(uint64_t)row * width + column] = __float2bfloat16(
+			__bfloat162float(input_row[column]) * inverse *
+			__bfloat162float(weight[column]));
+}
+
+#define SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS 4u
+
+static __global__ void SparkMinimaxH3GemmKernel(const __nv_bfloat16 *activations,
+	const __nv_bfloat16 *weights, uint32_t rows, uint32_t width, uint32_t depth,
+	uint32_t segment_index, float *segments)
+{
+	uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+	uint32_t row = blockIdx.y;
+	if ( row >= rows || column >= width )
+		return;
+	const __nv_bfloat16 *activation_row = activations + (uint64_t)row * depth;
+	const __nv_bfloat16 *weight_column = weights + (uint64_t)column * depth;
+	uint32_t segment = depth / SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS;
+	uint32_t segment_index = base_segment_index + blockIdx.z;
+	uint32_t segment_start = segment_index * segment;
+	uint32_t segment_end = segment_index == SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS - 1u ?
+		depth : segment_start + segment;
+	float total = 0.0f;
+	uint32_t index;
+	for (index=segment_start; index<segment_end; index++)
+		total += __bfloat162float(activation_row[index]) *
+			__bfloat162float(weight_column[index]);
+	segments[(((uint64_t)row * width + column) * SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS) +
+		segment_index] = total;
+}
+
+static __global__ void SparkMinimaxH3GemmCombineKernel(const float *segments,
+	uint64_t count, __nv_bfloat16 *output)
+{
+	uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	if ( index >= count )
+		return;
+	uint64_t base = index * SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS;
+	float low = segments[base] + segments[base + 1u];
+	float high = segments[base + 2u] + segments[base + 3u];
+	output[index] = __float2bfloat16(low + high);
+}
+
+static __global__ void SparkMinimaxH3AdaLNIndexedKernel(const __nv_bfloat16 *input,
+	const __nv_bfloat16 *scale_rows, const __nv_bfloat16 *shift_rows,
+	const uint32_t *row_of, uint32_t width, uint64_t count, __nv_bfloat16 *output)
+{
+	uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	if ( index >= count )
+		return;
+	uint32_t column = (uint32_t)(index % (uint64_t)width);
+	uint32_t modulator = row_of[index / (uint64_t)width];
+	float value = __bfloat162float(input[index]);
+	float scale_value = __bfloat162float(scale_rows[(uint64_t)modulator * width + column]);
+	float shift_value = __bfloat162float(shift_rows[(uint64_t)modulator * width + column]);
+	output[index] = __float2bfloat16(value * (1.0f + scale_value) + shift_value);
+}
+
+static __global__ void SparkMinimaxH3GateResidualIndexedKernel(const __nv_bfloat16 *value,
+	const __nv_bfloat16 *gate_rows, const __nv_bfloat16 *residual,
+	const uint32_t *row_of, uint32_t width, uint64_t count, __nv_bfloat16 *output)
+{
+	uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	if ( index >= count )
+		return;
+	uint32_t column = (uint32_t)(index % (uint64_t)width);
+	uint32_t modulator = row_of[index / (uint64_t)width];
+	float gate_value = __bfloat162float(gate_rows[(uint64_t)modulator * width + column]);
+	float residual_value = __bfloat162float(residual[index]);
+	float element_value = __bfloat162float(value[index]);
+	output[index] = __float2bfloat16(residual_value + gate_value * element_value);
+}
+
 extern "C" cudaError_t SparkMinimaxH3Rope3d(cudaStream_t stream, const void *input_bf16,
 	const float *cos_angles, const float *sin_angles, uint32_t rows, uint32_t heads,
 	uint32_t head_dim, uint32_t rope_dim, void *output_bf16)
@@ -398,5 +487,105 @@ extern "C" cudaError_t SparkMinimaxH3Snake(cudaStream_t stream, const void *inpu
 	SparkMinimaxH3SnakeKernel<<<grid,SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS,0,stream>>>(
 		(const __nv_bfloat16 *)input_bf16,(const __nv_bfloat16 *)alpha_bf16,length,
 		count,(__nv_bfloat16 *)output_bf16);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkMinimaxH3RmsNorm(cudaStream_t stream, const void *input_bf16,
+	const void *weight_bf16, uint32_t rows, uint32_t width, float epsilon,
+	void *output_bf16)
+{
+	if ( input_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 )
+		return(cudaErrorInvalidValue);
+	if ( width > SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS * 32u )
+		return(cudaErrorInvalidValue);
+	SparkMinimaxH3RmsNormKernel<<<rows,SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS,0,stream>>>(
+		(const __nv_bfloat16 *)input_bf16,(const __nv_bfloat16 *)weight_bf16,width,
+		epsilon,(__nv_bfloat16 *)output_bf16);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkMinimaxH3Gemm(cudaStream_t stream, const void *activations_bf16,
+	const void *weights_bf16, uint32_t rows, uint32_t width, uint32_t depth,
+	void *segments_f32, void *output_bf16)
+{
+	uint64_t count = (uint64_t)rows * width;
+	uint32_t threads = SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS;
+	dim3 grid((width + threads - 1u) / threads, rows,
+		SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS);
+	if ( activations_bf16 == 0 || weights_bf16 == 0 || segments_f32 == 0 ||
+		output_bf16 == 0 )
+		return(cudaErrorInvalidValue);
+	if ( depth == 0u || depth % SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS != 0u )
+		return(cudaErrorInvalidValue);
+	SparkMinimaxH3GemmKernel<<<grid,threads,0,stream>>>(
+		(const __nv_bfloat16 *)activations_bf16,(const __nv_bfloat16 *)weights_bf16,
+		rows,width,depth,0u,(float *)segments_f32);
+	SparkMinimaxH3GemmCombineKernel<<<(uint32_t)((count + threads - 1u) / threads),
+		threads,0,stream>>>((const float *)segments_f32,count,
+		(__nv_bfloat16 *)output_bf16);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkMinimaxH3GemmSegment(cudaStream_t stream,
+	const void *activations_bf16, const void *weights_bf16, uint32_t rows,
+	uint32_t width, uint32_t depth, uint32_t segment_index, float *partials_f32)
+{
+	uint32_t threads = SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS;
+	dim3 grid((width + threads - 1u) / threads, rows, 1u);
+	if ( activations_bf16 == 0 || weights_bf16 == 0 || partials_f32 == 0 )
+		return(cudaErrorInvalidValue);
+	if ( depth == 0u || depth % SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS != 0u ||
+		segment_index >= SPARK_MINIMAX_H3_CUDA_GEMM_SEGMENTS )
+		return(cudaErrorInvalidValue);
+	SparkMinimaxH3GemmKernel<<<grid,threads,0,stream>>>(
+		(const __nv_bfloat16 *)activations_bf16,(const __nv_bfloat16 *)weights_bf16,
+		rows,width,depth,segment_index,partials_f32);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkMinimaxH3GemmCombinePartials(cudaStream_t stream,
+	const float *partials_f32, uint64_t count, void *output_bf16)
+{
+	uint32_t threads = SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS;
+	if ( partials_f32 == 0 || output_bf16 == 0 )
+		return(cudaErrorInvalidValue);
+	SparkMinimaxH3GemmCombineKernel<<<(uint32_t)((count + threads - 1u) / threads),
+		threads,0,stream>>>(partials_f32,count,(__nv_bfloat16 *)output_bf16);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkMinimaxH3AdaLNIndexed(cudaStream_t stream,
+	const void *input_bf16, const void *scale_rows_bf16, const void *shift_rows_bf16,
+	const uint32_t *row_of, uint32_t rows, uint32_t width, void *output_bf16)
+{
+	uint64_t count = (uint64_t)rows * width;
+	dim3 grid((uint32_t)((count + SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS - 1u) /
+		SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS));
+	if ( input_bf16 == 0 || scale_rows_bf16 == 0 || shift_rows_bf16 == 0 ||
+		row_of == 0 || output_bf16 == 0 )
+		return(cudaErrorInvalidValue);
+	SparkMinimaxH3AdaLNIndexedKernel<<<grid,
+		SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS,0,stream>>>(
+		(const __nv_bfloat16 *)input_bf16,(const __nv_bfloat16 *)scale_rows_bf16,
+		(const __nv_bfloat16 *)shift_rows_bf16,row_of,width,count,
+		(__nv_bfloat16 *)output_bf16);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkMinimaxH3GateResidualIndexed(cudaStream_t stream,
+	const void *value_bf16, const void *gate_rows_bf16, const void *residual_bf16,
+	const uint32_t *row_of, uint32_t rows, uint32_t width, void *output_bf16)
+{
+	uint64_t count = (uint64_t)rows * width;
+	dim3 grid((uint32_t)((count + SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS - 1u) /
+		SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS));
+	if ( value_bf16 == 0 || gate_rows_bf16 == 0 || residual_bf16 == 0 ||
+		row_of == 0 || output_bf16 == 0 )
+		return(cudaErrorInvalidValue);
+	SparkMinimaxH3GateResidualIndexedKernel<<<grid,
+		SPARK_MINIMAX_H3_CUDA_ELEMENTWISE_THREADS,0,stream>>>(
+		(const __nv_bfloat16 *)value_bf16,(const __nv_bfloat16 *)gate_rows_bf16,
+		(const __nv_bfloat16 *)residual_bf16,row_of,width,count,
+		(__nv_bfloat16 *)output_bf16);
 	return(cudaGetLastError());
 }

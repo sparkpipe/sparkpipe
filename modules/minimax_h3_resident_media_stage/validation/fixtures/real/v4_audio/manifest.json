@@ -1,0 +1,22 @@
+[
+ {
+  "dtype": "f32",
+  "file": "latents__2x32x4.f32",
+  "name": "latents",
+  "shape": [
+   2,
+   32,
+   4
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "waveform__2x1x3200.f32",
+  "name": "waveform",
+  "shape": [
+   2,
+   1,
+   3200
+  ]
+ }
+]

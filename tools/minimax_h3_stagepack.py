@@ -155,9 +155,10 @@ def component_inventory(component: str, warm: Path, patterns: list[dict], codes:
         with (directory / shard).open("rb") as file:
             header_len = struct.unpack("<Q", file.read(8))[0]
             headers[shard] = json.loads(file.read(header_len))
-    names = sorted(headers[shard]) if COMPONENT_INDEX[component] is None else sorted(
+    names = sorted(name for name in headers[shards[0]]) if COMPONENT_INDEX[component] is None else sorted(
         (name for name, shard in json.loads((directory / COMPONENT_INDEX[component]).read_text())[
             "weight_map"].items() if shard in headers))
+    names = [name for name in names if name != "__metadata__"]
     weight_map = None
     if COMPONENT_INDEX[component] is not None:
         weight_map = json.loads((directory / COMPONENT_INDEX[component]).read_text())["weight_map"]
