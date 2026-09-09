@@ -1,7 +1,7 @@
 include ../../runtime/weightd_sources.mk
 
 ifndef EXPERT_CODEC
-$(error EXPERT_CODEC is required: int6, int7, int8, fp8, nvfp4, or mxfp4)
+$(error EXPERT_CODEC is required: bf16, int6, int7, int8, fp8, nvfp4, or mxfp4)
 endif
 ifndef MODEL_REVISION
 $(error MODEL_REVISION is required and must be the exact source snapshot revision)
@@ -10,11 +10,14 @@ ifndef CONTRACT_SHA256
 $(error CONTRACT_SHA256 is required and must identify the exact model package contract)
 endif
 
-LAGUNA_EXPERT_CODECS := int6 int7 int8 fp8 nvfp4 mxfp4
+LAGUNA_EXPERT_CODECS := bf16 int6 int7 int8 fp8 nvfp4 mxfp4
 ifeq ($(filter $(EXPERT_CODEC),$(LAGUNA_EXPERT_CODECS)),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': choose $(LAGUNA_EXPERT_CODECS))
 endif
 
+ifeq ($(EXPERT_CODEC),bf16)
+LAGUNA_EXPERT_CODEC_ID := 1
+endif
 ifeq ($(EXPERT_CODEC),int6)
 LAGUNA_EXPERT_CODEC_ID := 2
 endif
@@ -35,7 +38,7 @@ LAGUNA_EXPERT_CODEC_ID := 7
 endif
 
 MODULE_FAMILY := laguna
-MODULE_IDENTIFIER_PREFIX := spark.laguna.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h4096.l45.kda34.e288.k8
+MODULE_IDENTIFIER_PREFIX := spark.laguna.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h3072.l48.gqa.e256.k10
 MODULE_IDENTIFIER_SUFFIX := v2
 MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
 # The batch-variant ladder: one archive per power of two, emitted by
@@ -48,7 +51,6 @@ MODULE_ENTRY_PREFIX := SparkLagunaResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_laguna_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
-	../../src/spark_speculation_policy.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
@@ -90,16 +92,8 @@ RUNTIME_CONFIGURATION := \
 	SPARK_LAGUNA_STAGE_PIPELINE_SLOTS=$(PIPELINE_SLOT_COUNT)
 
 GPU_VALIDATOR := validation/validate_laguna_resident_decode_stage_cuda.sh
-MTP_PARITY_VALIDATOR := validation/validate_laguna_resident_decode_stage_mtp_parity.sh
 
 include ../resident_decode_stage_rules.mk
-
-.PHONY: validate_mtp_parity
-validate_mtp_parity: require_cuda_target $(MODULE_ARCHIVE)
-	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
-		$(MTP_PARITY_VALIDATOR) \
-		$(VALIDATION_CONFIGURATION_SHA256) \
-		$(MODULE_ARCHIVE)
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
