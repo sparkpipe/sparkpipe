@@ -4,7 +4,7 @@
 #include <cstring>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
-#include "sparkpipe/spark_weightd_lazy_pack.h"
+#include "sparkpipe/spark_k3_weightd_include.h"
 
 extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_state,
 	void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows,
