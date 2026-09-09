@@ -77,7 +77,7 @@ def resident_deployment():
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory": f"/home/{host}/kvcache/{ARM}",
-            "kv_backing_maximum_bytes": 8589934592,
+            "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,

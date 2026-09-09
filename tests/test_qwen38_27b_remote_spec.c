@@ -448,7 +448,7 @@ int main(void)
 	memset(&test_state,0,sizeof(test_state));
 	if ( cudaStreamCreate((cudaStream_t *)&test_state.execution_stream) != cudaSuccess )
 		return(1);
-	if ( SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_QWEN38_27B_REMOTE_SPEC_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE,&library) != SPARK_STATUS_OK )
+	if ( SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_QWEN38_27B_REMOTE_SPEC_ADAPTER_PATH,0u,&library) != SPARK_STATUS_OK )
 		return(1);
 	if ( getcwd(runtime_root,sizeof(runtime_root)) == 0 )
 		return(1);

@@ -193,7 +193,7 @@ int main(int argc, char **argv)
 	if ( status != SPARK_STATUS_OK ) { fprintf(stderr, "deployment load status=%d\n", (int)status); return(1); }
 	status = SparkResolveRuntimePath(argv[2], deployment.adapter_shared_object_path, adapter_path, sizeof(adapter_path));
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelServingAdapterLoadInterfaceFromSharedObject(adapter_path, SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE, &adapter_library);
+		status = SparkModelServingAdapterLoadInterfaceFromSharedObject(adapter_path, 0u, &adapter_library);
 	if ( status != SPARK_STATUS_OK ) { fprintf(stderr, "adapter load status=%d\n", (int)status); return(1); }
 	memset(clients, 0, sizeof(clients));
 	memset(collects, 0, sizeof(collects));

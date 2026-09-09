@@ -154,7 +154,7 @@ int main(void)
 	char runtime_root[4096];
 	memset(&test_state,0,sizeof(test_state));
 	assert(cudaStreamCreate((cudaStream_t *)&test_state.execution_stream) == cudaSuccess);
-	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_QWEN38_27B_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE,&library) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_QWEN38_27B_SERVING_ADAPTER_PATH,0u,&library) == SPARK_STATUS_OK);
 	assert(strcmp(library.adapter_interface.descriptor->adapter_id,"spark.qwen38_27b.serving-adapter.tp4.v1") == 0);
 	assert(strcmp(library.adapter_interface.descriptor->model_id,"Qwen/Qwen3.8-27B") == 0);
 	assert(library.adapter_interface.descriptor->stage_count == 4u);

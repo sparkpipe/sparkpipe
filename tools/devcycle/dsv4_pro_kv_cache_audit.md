@@ -96,3 +96,7 @@ Sizing notes:
   history.
 - The head-certified B1 path's shadow buffers are vocab-screening state,
   unrelated to the KV cache.
+# ABI 21 update
+
+The JIT_KV capability declaration described in this historical audit has been
+retired. Cache transactions are mandatory; see docs/DRIVER_ACCEPTANCE.md.

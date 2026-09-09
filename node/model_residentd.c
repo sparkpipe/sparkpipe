@@ -1221,7 +1221,7 @@ static SparkStatus SparkModelResidentdInitializePlan(
 {
 	SparkStatus status;
 	runtime->initialize_phase = "adapter_load";
-	status = SparkModelServingAdapterLoadInterfaceFromSharedObject(configuration->adapter_path,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE,&runtime->adapter_library);
+	status = SparkModelServingAdapterLoadInterfaceFromSharedObject(configuration->adapter_path,0u,&runtime->adapter_library);
 	if ( status == SPARK_STATUS_OK )
 	{
 		runtime->initialize_phase = "deployment_validation";
@@ -1752,7 +1752,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkModelServingSubmission submission;
 	SparkModelResidentdRoute *route;
 	SparkStatus cleanup_status,queue_status,resolution_status,status;
-	uint32_t cache_committed,cache_prepared,cache_transactional;
+	uint32_t cache_committed,cache_prepared;
 	wire = (const SparkModelResidentIpcSubmit *)message;
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
 	if ( status == SPARK_STATUS_OK && decision_required == 0u )
@@ -1764,14 +1764,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		status = submission.submission_id == runtime->client.last_submission_id ? SPARK_STATUS_DUPLICATE : SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterPrepareSubmission(&runtime->adapter_library.adapter_interface,runtime->adapter_state,&submission);
-	cache_transactional =
-		(runtime->adapter_library.adapter_interface.descriptor->capability_flags &
-		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH)) ==
-		 (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) ? 1u : 0u;
-	cache_prepared = status == SPARK_STATUS_OK && cache_transactional != 0u ?
-		1u : 0u;
+	cache_prepared = status == SPARK_STATUS_OK ? 1u : 0u;
 	cache_committed = 0u;
 	route = 0;
 	if ( status == SPARK_STATUS_OK )
@@ -2358,7 +2351,6 @@ static SparkStatus SparkModelResidentdPrepareContinuation(
 	SparkModelResidentdRoute *route)
 {
 	SparkStatus status;
-	uint32_t transactional;
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route->active == 0u || route->state !=
 		SPARK_MODEL_RESIDENTD_ROUTE_CONTINUATION_PREPARING ||
@@ -2380,13 +2372,7 @@ static SparkStatus SparkModelResidentdPrepareContinuation(
 		pthread_mutex_unlock(&runtime->mutex);
 		return(status);
 	}
-	transactional = (runtime->adapter_library.adapter_interface.descriptor->
-		capability_flags & (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH)) ==
-		(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV |
-		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH) ? 1u : 0u;
-	if ( transactional != 0u )
-		route->prepared_cache = 1u;
+	route->prepared_cache = 1u;
 	return(SparkModelResidentdCommitContinuation(runtime,route));
 }
 

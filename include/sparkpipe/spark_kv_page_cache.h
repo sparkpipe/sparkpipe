@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 3u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 4u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE UINT32_C(0x00000001)
@@ -75,6 +75,7 @@ typedef struct SparkKvPageCache
 	uint32_t live_sequence_count;
 	SparkKvCacheArena *kv_cache_arena;
 	SparkKvPageStore *page_store;
+	SparkKvPageStore *state_store;
 	SparkKvPageCacheEntry *entries;
 	SparkKvPageCacheSequence *sequences;
 	uint32_t *hash_bucket_heads;
@@ -97,6 +98,11 @@ SparkKvPageCache;
 SparkStatus SparkKvPageCacheInitialize(
 	SparkKvPageCache *cache,
 	const SparkKvPageCacheConfiguration *configuration);
+// Attach before admitting lanes. State records use the corresponding logical
+// page generation; transfers must retain that page's residency pin until done.
+SparkStatus SparkKvPageCacheAttachStateStore(SparkKvPageCache *cache,SparkKvPageStore *store);
+// Reclaim one unreferenced, unpinned prefix using the common LRU policy.
+SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCachePrepareLane(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane,
@@ -140,6 +146,66 @@ SparkStatus SparkKvPageCacheBuildLaneTable(
 	uint32_t *logical_page_indices,
 	uint32_t logical_page_capacity,
 	uint32_t *logical_page_count_out);
+
+/* Caller holds exclusive lane ownership and serializes cache/arena access.
+ * On success both tables remain caller-owned and every page is pinned until
+ * device completion. Unpin before CompleteLane (which may deduplicate/free a
+ * mutable page), or before RollbackLaneTransaction on abort. On failure this
+ * operation undoes its pins and lane mutations; outputs count/flags are zero. */
+SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
+	SparkKvPageCache *cache,
+	const SparkModelDriverCacheLane *lane,
+	uint32_t *logical_pages,
+	uint32_t *physical_pages,
+	uint32_t page_capacity,
+	uint32_t *page_count_out,
+	uint32_t *mutation_flags_out);
+
+#define SPARK_KV_LANE_TRANSACTION_EMPTY 0u
+#define SPARK_KV_LANE_TRANSACTION_PREPARED 1u
+#define SPARK_KV_LANE_TRANSACTION_COMMITTED 2u
+#define SPARK_KV_LANE_TRANSACTION_EXECUTING 3u
+
+typedef struct SparkKvLaneTransaction
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverCacheLane lane;
+	uint64_t validation_epoch;
+	uint32_t phase;
+	uint32_t page_count;
+	uint32_t mutation_flags;
+} SparkKvLaneTransaction;
+
+/* Startup-owned storage; zero-initialize records and epoch. Caller serializes
+ * every operation with admission/completion, and drains device work before
+ * Finish. Tables have sequence_capacity * page_capacity elements. */
+typedef struct SparkKvLaneTransactions
+{
+	SparkKvPageCache *cache;
+	SparkKvLaneTransaction *lanes;
+	uint32_t *logical_pages;
+	uint32_t *physical_pages;
+	uint32_t page_capacity;
+	uint64_t validation_epoch;
+} SparkKvLaneTransactions;
+
+SparkStatus SparkKvLaneTransactionsAdmit(
+	SparkKvLaneTransactions *transactions,
+	const SparkModelDriverAdmissionRequest *request);
+/* Dispatch binds generation=control_generation, cookie0=transaction_id,
+ * cookie1=submission_id. Claim checks these and the complete lane payload. */
+SparkStatus SparkKvLaneTransactionsClaim(
+	SparkKvLaneTransactions *transactions,
+	const SparkModelDriverFrame *frame);
+// Quiescent reset: executing lanes prevent any mutation. On a later busy/error
+// result keep admission stopped and retry; completed cleanup is preserved.
+SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions);
+SparkStatus SparkKvLaneTransactionsFinish(
+	SparkKvLaneTransactions *transactions,
+	const uint32_t *resident_slots,
+	uint32_t lane_count,
+	SparkStatus execution_status,
+	uint32_t extra_tokens);
 
 #ifdef __cplusplus
 }

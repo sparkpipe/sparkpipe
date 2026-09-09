@@ -151,7 +151,7 @@ def resident_deployment() -> dict:
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory": "/home/%s/kvcache/glm53flash.bf16.tp16" % host,
-            "kv_backing_maximum_bytes": 8589934592,
+            "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,
