@@ -1,0 +1,31 @@
+#ifndef SPARKPIPE_SPARK_ERROR_SITE_H
+#define SPARKPIPE_SPARK_ERROR_SITE_H
+
+#include <stdint.h>
+#include <stdio.h>
+
+typedef struct SparkErrorSiteRecord
+{
+	int32_t code;
+	const char *file;
+	uint32_t line;
+} SparkErrorSiteRecord;
+
+static _Thread_local __attribute__((unused)) SparkErrorSiteRecord
+    spark_last_error_site = {0,0,0};
+
+#define SPARK_ERR_REPORT(code_value) \
+	((void)fprintf(stderr,"ERRSITE %s:%d status=%d\n", \
+		__FILE__,__LINE__,(int)(code_value)))
+
+#define SPARK_FAIL(status_value) \
+	do { \
+		int32_t spark_fail_code = (int32_t)(status_value); \
+		spark_last_error_site.code = spark_fail_code; \
+		spark_last_error_site.file = __FILE__; \
+		spark_last_error_site.line = (uint32_t)__LINE__; \
+		SPARK_ERR_REPORT(spark_fail_code); \
+		return spark_fail_code; \
+	} while (0)
+
+#endif

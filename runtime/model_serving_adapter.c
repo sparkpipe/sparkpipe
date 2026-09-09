@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
 _Static_assert(sizeof(SparkModelServingCacheIdentity) ==
@@ -32,7 +33,7 @@ static SparkStatus SparkDescriptorCheckAbi(
 	const SparkModelServingAdapterDescriptor *descriptor)
 {
 	if ( descriptor->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || descriptor->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	return(SPARK_STATUS_OK);
 }
 
@@ -226,7 +227,7 @@ SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
 	if ( status != SPARK_STATUS_OK || runtime_limits == 0 )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( runtime_limits->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || runtime_limits->descriptor_bytes != SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( runtime_limits->max_inflight_submission_count == 0u || runtime_limits->max_inflight_submission_count > descriptor->max_inflight_submission_count || runtime_limits->max_active_sequence_count == 0u || runtime_limits->max_active_sequence_count > descriptor->max_active_sequence_count || runtime_limits->max_input_row_count < runtime_limits->max_active_sequence_count || runtime_limits->max_input_row_count > descriptor->max_input_row_count || runtime_limits->resident_sequence_capacity < runtime_limits->max_active_sequence_count || runtime_limits->resident_sequence_capacity > descriptor->max_resident_sequence_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( runtime_limits->kv_physical_page_capacity <
@@ -238,7 +239,7 @@ SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	for (index=0u; index<4u; index++)
 		if ( runtime_limits->reserved[index] != 0u )
-			return(SPARK_STATUS_ABI_MISMATCH);
+			SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	return(SPARK_STATUS_OK);
 }
 
@@ -258,7 +259,7 @@ SparkStatus SparkModelServingAdapterValidateInterface(
 	if ( adapter_interface == 0 || (required_capability_flags & ~SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( adapter_interface->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || adapter_interface->interface_bytes != SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	status = SparkModelServingAdapterValidateDescriptor(adapter_interface->descriptor);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -430,7 +431,7 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	if ( submission == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || submission->descriptor_bytes != SPARK_MODEL_SERVING_SUBMISSION_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( submission->flags != 0u || submission->submission_id == 0u || submission->control_generation == 0u || submission->transaction_id == 0u || submission->dispatch_generation == 0u || submission->request_generation == 0u || submission->step_generation == 0u || submission->work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind > SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->lane_count == 0u || submission->lane_count > descriptor->max_active_sequence_count || submission->active_sequence_count == 0u || submission->active_sequence_count > submission->lane_count || submission->lanes == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
@@ -523,7 +524,7 @@ SparkStatus SparkModelServingAdapterPrepareSubmission(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( adapter_interface->prefetch == 0 )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	return(adapter_interface->prefetch(adapter_state,submission,1u));
 }
 
@@ -540,7 +541,7 @@ SparkStatus SparkModelServingAdapterResolvePrefetch(
 		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( adapter_interface->resolve_prefetch == 0 )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	status = adapter_interface->resolve_prefetch(adapter_state,submission,
 		resolution);
 	if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
@@ -608,7 +609,7 @@ SparkStatus SparkModelServingAdapterValidateCompletion(
 	if ( status != SPARK_STATUS_OK || completion == 0 )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( completion->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || completion->descriptor_bytes != SPARK_MODEL_SERVING_COMPLETION_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( completion->submission_id == 0u || completion->control_generation == 0u || completion->transaction_id == 0u || completion->dispatch_generation == 0u || completion->request_generation == 0u || completion->step_generation == 0u || completion->status > SPARK_STATUS_UNSUPPORTED || (completion->completion_flags & ~SPARK_MODEL_SERVING_COMPLETION_KNOWN_FLAGS) != 0u || completion->token_count > descriptor->max_output_token_count || completion->tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE || completion->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	has_tokens = (completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS) != 0u;
