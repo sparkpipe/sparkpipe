@@ -1,19 +1,34 @@
 /* weightd_smoke — the pure-lazy driver prover: ATTACH_LAZY a pack with a
- * bounded expert pool, ENSURE a spread of segments (exactly what a smoke
- * test touches - nothing else loads), then detach. Nothing is preloaded
- * and no whole-file pass runs; RSS stays at one expert staging range.
+ * bounded expert pool, then exercise the sanctioned lease tier: ACQUIRE a
+ * spread of manifest groups (the daemon commits chunks and copies the
+ * ranges H2D under an owner-scoped lease), RELEASE each after the
+ * synchronous acquire copy (no GPU work here), then detach. Nothing is
+ * preloaded and no whole-file pass runs; RSS stays at one expert staging
+ * range.
  *
  *   weightd_smoke <pack> <model> <revision> <pool-mib> <touches>
- * requires <pack>.experts (weightd_expert_segments) and
+ * requires <pack>.experts (v2 range manifest) and
  * SPARK_WEIGHTD_SOCKET / SPARK_WEIGHTD_ATTACH in the environment.
  */
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd_manifest.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+static uint64_t smoke_monotonic_ns(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    {
+        return 0ull;
+    }
+    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
 
 static uint64_t file_bytes(const char *path)
 {
@@ -63,17 +78,17 @@ int main(int argc, char **argv)
     char sha_hex[SPARK_SHA256_HEX_BYTES];
     SparkWeightdLazyAttachRequest request;
     SparkWeightdLazyAttachResult attach;
-    SparkWeightdEnsureResult ensure;
+    SparkWeightdWorkingSetResult working;
     SparkWeightdDetachResult detach;
     SparkWeightdHelloResult hello;
+    SparkWeightdManifest manifest;
+    SparkWeightdExpertKey key;
     SparkWeightdClient *client = 0;
     uint64_t pool_bytes;
     uint64_t pool_mib;
     uint64_t touches;
     uint64_t spread;
     uint64_t index;
-    uint64_t count;
-    uint64_t expert;
     uint64_t total_ns = 0ull;
     const char *socket;
 
@@ -108,10 +123,12 @@ int main(int argc, char **argv)
         return 1;
     }
     memset(&request, 0, sizeof(request));
-    if (copy_bounded(request.identity.model, SPARK_WEIGHTD_ID_BYTES,
+    if (copy_bounded(request.identity.model, sizeof(request.identity.model),
             argv[2]) != 0 ||
-        copy_bounded(request.identity.revision, SPARK_WEIGHTD_REVISION_BYTES,
-            argv[3]) != 0 ||
+        copy_bounded(request.identity.revision,
+            sizeof(request.identity.revision), argv[3]) != 0 ||
+        copy_bounded(request.identity.pack_sha256,
+            sizeof(request.identity.pack_sha256), sha_hex) != 0 ||
         copy_bounded(request.pack_path, SPARK_WEIGHTD_PATH_BYTES, argv[1]) != 0)
     {
         SparkWeightdClientClose(client);
@@ -140,31 +157,56 @@ int main(int argc, char **argv)
         SparkWeightdClientClose(client);
         return 1;
     }
-    count = attach.expert_count;
+    if (SparkWeightdManifestLoad(manifest_path,
+            request.identity.arena_bytes, &manifest) != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "weightd_smoke: manifest load failed\n");
+        SparkWeightdClientClose(client);
+        return 1;
+    }
+    if (manifest.group_count == 0u)
+    {
+        fprintf(stderr, "weightd_smoke: manifest has no expert groups\n");
+        SparkWeightdManifestDestroy(&manifest);
+        SparkWeightdClientClose(client);
+        return 1;
+    }
+    count = manifest.group_count;
     spread = count > 1ull ? count - 1ull : 1ull;
     for (index = 0ull; index < touches; index++)
     {
-        expert = touches > 1ull ? (index * spread) / (touches - 1ull) : 0ull;
-        if (expert >= count)
+        uint64_t group = touches > 1ull ? (index * spread) / (touches - 1ull)
+            : 0ull;
+        uint64_t touch_start;
+        if (group >= count)
         {
-            expert = count - 1ull;
+            group = count - 1ull;
         }
-        memset(&ensure, 0, sizeof(ensure));
-        if (SparkWeightdClientEnsure(client, attach.arena_generation, 0u,
-                (uint32_t)expert, &ensure, timeout_ns) != SPARK_STATUS_OK ||
-            ensure.status != SPARK_STATUS_OK)
+        key.layer = manifest.groups[group].layer;
+        key.expert = manifest.groups[group].expert;
+        touch_start = smoke_monotonic_ns();
+        memset(&working, 0, sizeof(working));
+        if (SparkWeightdClientAcquire(client, attach.arena_generation, &key,
+                1u, &working, timeout_ns) != SPARK_STATUS_OK ||
+            working.status != SPARK_STATUS_OK)
         {
-            fprintf(stderr, "weightd_smoke: ensure failed %d\n",
-                (int)ensure.status);
+            fprintf(stderr, "weightd_smoke: acquire failed %d\n",
+                (int)working.status);
+            SparkWeightdManifestDestroy(&manifest);
             SparkWeightdClientClose(client);
             return 1;
         }
-        total_ns += ensure.load_ns;
+        /* the acquire copy is synchronous; releasing right away satisfies
+         * the lease contract for a consumer with no GPU work in flight */
+        (void)SparkWeightdClientRelease(client, attach.arena_generation,
+            working.lease_identifier, &working, timeout_ns);
+        total_ns += smoke_monotonic_ns() - touch_start;
     }
+    SparkWeightdManifestDestroy(&manifest);
     memset(&detach, 0, sizeof(detach));
     (void)SparkWeightdClientDetach(client, attach.arena_generation, &detach,
         timeout_ns);
-    printf("SMOKE experts=%llu touches=%llu ensure_ns=%llu pool_mib=%llu\n",
+    printf("SMOKE groups=%llu touches=%llu acquire_ns=%llu pool_mib=%llu\n",
         (unsigned long long)count, (unsigned long long)touches,
         (unsigned long long)total_ns, (unsigned long long)pool_mib);
     SparkWeightdClientClose(client);
