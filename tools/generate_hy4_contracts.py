@@ -149,6 +149,26 @@ def render_header(contract: dict[str, Any]) -> str:
         f"({prefix}_INDEX_HEAD_COUNT * {prefix}_INDEX_HEAD_DIMENSION)",
         f"#define {prefix}_IS_INDEXER_FULL_LAYER(layer) "
         f"(((layer) % {prefix}_INDEXER_FULL_PERIOD) == 0u)",
+        "/* Layer 0 and 1 are indexer-full in addition to the period "
+        "pattern (the checkpoint's is_full sequence is 1,1,0,0,0,1,...). "
+        "*/",
+        f"#define {prefix}_IS_INDEXER_ACTIVE_LAYER(layer) \\",
+        f"	(((layer) < 2u) || {prefix}_IS_INDEXER_FULL_LAYER(layer))",
+        f"#define {prefix}_ATTN_KV_HEADS_PER_RANK \\",
+        f"	({prefix}_ATTN_KV_HEAD_COUNT / {prefix}_TP_RANKS)",
+        f"#define {prefix}_EXPERT_GROUPS_PER_LAYER \\",
+        f"	({prefix}_ROUTED_EXPERT_COUNT / {prefix}_EXPERTS_PER_RANK)",
+        "/* hc_attn_fn/hc_ffn_fn mix the flattened stream vector down to "
+        "2*HC outputs (per-stream gate+scale pairs); hc_*_base has 2*HC "
+        "biases and hc_*_scale has 2 scalars. */",
+        f"#define {prefix}_HC_FN_OUTPUT_ROWS (2u * {prefix}_HC_STREAM_COUNT)",
+        f"#define {prefix}_HC_FLAT_WIDTH "
+        f"({prefix}_HC_STREAM_COUNT * {prefix}_HIDDEN_DIMENSION)",
+        "/* FP8 execution arm: F8_E4M3 payloads with U8 E8M0 group-32 "
+        "scales. */",
+        f"#define {prefix}_EXPERT_SCALE_GROUP_SIZE 32u",
+        f"#define {prefix}_ROUTE_GROUP_MAX \\",
+        f"	({prefix}_EXPERTS_PER_TOKEN * {prefix}_HC_STREAM_COUNT)",
         "",
     ])
     return "\n".join(lines)
