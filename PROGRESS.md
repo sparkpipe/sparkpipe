@@ -6,7 +6,13 @@ Weights: `/mnt/model-warm/minimax-h3` on sparke (465G, PUBLISHED, WARM-COPY-COMP
 
 Manager rulings applied on top of DESIGN.md:
 
-1. Port base **65000** (DESIGN text says 64800; ledger: 64800 laguna, 64900 ling, 65000 minimax).
+1. Port base: originally 65000 per ledger; **moved to 65160** (coordinator correction,
+   verified against the on-main generators: session_ports[a][b] = BASE + a*TP + b is a
+   degree²-wide matrix, so ling TP16 @ 64900 occupies 64900..65155 and plain 65000..65015
+   sat INSIDE it — a live collision). Minimax TP4×PP4 cells = **65160..65175** (16 ports),
+   clear of gemma-4 31B at 65200..65455. Collective LISTEN base stays out of the
+   63640/63700 zone (glm5_next/glm53full) per the donor convention. Ledger entries are
+   width-aware from here on: a TP4 deployment reserves TP² = 16 session ports.
 2. New kernels (bidirectional S×S flash attention, 3D axial rope, adaLN glue, VAE conv heads,
    flow-match scheduler math) are module-local in
    `modules/minimax_h3_resident_media_stage/` with clean generic names; promotable later,
