@@ -132,7 +132,10 @@ def run(checkpoint_path, token, output, layers=1):
         if config['layer_types'][layer] not in ('linear_attention','deepseek_sparse_attention') or config['mlp_layer_types'][layer] not in ('dense','sparse'):
             raise ValueError(f'unsupported layer {layer}')
     checkpoint = Checkpoint(str(checkpoint_path))
-    embedding = checkpoint.tensor('model.language_model.embed_tokens.weight')[token].copy()
+    raw = checkpoint.raw_rows('model.language_model.embed_tokens.weight',token,1)
+    if raw.dtype != np.uint16:
+        raise ValueError('reference embedding must be BF16')
+    embedding = bf16_to_f32(raw[0])
     streams = np.tile(embedding,(config['hc_mult'],1))
     receipt = {'embedding':embedding}
     for layer in range(layers):

@@ -1,5 +1,5 @@
 {
-  "file_count": 1946,
+  "file_count": 1947,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "f419b3925bedeb9c32595ce3088a3fea5e36b606dc40e2397c1035eaeb9d58d0",
-      "size_bytes": 96231
+      "sha256": "395f2ce9734bb8978bcd7b4cac006b42fc01cb871840982153f369bfca19d11a",
+      "size_bytes": 96268
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "7aafc2a3c18c62a82e8085ca88f0e2dbc5d5cea916f086463205222bc2455859",
-      "size_bytes": 44134
+      "sha256": "287911e52bab5882666128ea2dc07e4ab586eff1b1a0586d43c585c61973b644",
+      "size_bytes": 44536
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -6682,6 +6682,11 @@
       "size_bytes": 9208
     },
     {
+      "path": "tests/test_checkpoint_row_read.py",
+      "sha256": "dc3a999e852caabad1ac39f341585d616df296c7e7e180661988b5aaeeb5274e",
+      "size_bytes": 1314
+    },
+    {
       "path": "tests/test_clamped_up_gate.py",
       "sha256": "799245981b12425a6986ba5951634e63ecf7a2cab6d2e332b6eb90c9b6abe88a",
       "size_bytes": 3294
@@ -8768,8 +8773,8 @@
     },
     {
       "path": "tools/glm5_next_checkpoint_layer_reference.py",
-      "sha256": "fd920c2f61bffbccbf8d43fdb0ca70e7ae5048e78946a2c28147c07f803842ae",
-      "size_bytes": 9172
+      "sha256": "06c25bc0b735ef449a95d1dda7c8e5f808402e319afef7aff423c2e5eebc77bd",
+      "size_bytes": 9290
     },
     {
       "path": "tools/glm5_next_closeout_wave.sh",
@@ -8818,8 +8823,8 @@
     },
     {
       "path": "tools/glm5_next_kda_host_oracle.py",
-      "sha256": "5551686d23b8c702c38a65e9b2be0db1772ece3839aea5907a6bef5e1c6c8575",
-      "size_bytes": 13852
+      "sha256": "373bc78468e9b543d25cfb2dca52738260fa8e3f4d8cf682ca45081e57437f25",
+      "size_bytes": 14724
     },
     {
       "path": "tools/glm5_next_m5_batch.py",
@@ -9735,5 +9740,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32662273
+  "total_bytes": 32665016
 }
