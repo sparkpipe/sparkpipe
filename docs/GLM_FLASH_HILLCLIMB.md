@@ -712,3 +712,54 @@ index, recurrent and convolution value is correct. Compare cached output with
 the corresponding uncached numerical reference. Likewise, a calculated rate
 does not confer numerical or SOTA performance qualification. Short or empty
 overlap windows are unsuitable for performance acceptance.
+
+### TP16 measurements on bc679ff
+
+All 16 Sparks rebuilt clean merged main
+`bc679ffa7374d4bed158930a89392346248aac1b` in queue attempt
+`c09daf0eb745420fa78bde187ceff6bd`. Artifact and corrected expert-pack hashes
+were checked before deployment. One persistent API process served all 21
+requests. Hardware: 16 NVIDIA GB10 nodes, driver 580.159.03; non-speculative
+GLM Flash, FP8 expert weights and BF16 spine/activations. These measurements
+use the same 69-token math prompt, 151 generated tokens including EOS, and
+the current 512-position context / 8-active-request configuration.
+
+| Concurrent requests | Aggregate decode tok/s | Relative to warm B1 |
+|---|---:|---:|
+| 1 | 13.8191 | 1.00x |
+| 3 | 37.7776 | 2.73x |
+| 5 | 59.7353 | 4.32x |
+| 8 | 87.2346 | 6.31x |
+
+The cold request reported zero reused prompt tokens and 5.1986 seconds from
+engine acceptance to first token. The repeated request reported 64 reused
+tokens and 0.3683 seconds. Its decode-only window covered 150 intervals in
+10.8545 seconds. All concurrent requests reported 64-token prefix hits and
+matched the cold output token-for-token. Single requests after each concurrent
+group also matched, with the API PID unchanged.
+
+This is a shared-prompt, high-reuse workload, not a diverse serving-capacity
+benchmark. The overlap windows contain 445 tokens / 11.7795 seconds at B3,
+736 / 12.3210 at B5, and 1172 / 13.4350 at B8. B8 reaches about 79 percent of
+ideal scaling from this B1 baseline. B8 is the configured occupancy limit;
+these results do not locate the compute crossover near 100 requests.
+
+Timing evidence is valid for this fixture, but full numerical, functional and
+hardware-normalized SOTA acceptance remain incomplete. The previously observed
+1.21 percent layer-4 relative L2 discrepancy is still unexplained in aggregate.
+Neither matching repeated output nor correct answer 70 resolves it. TP4 and
+TP4xPP4 comparisons, diverse prompts, larger occupancy and profiling remain.
+
+The B8 run exposed interleaving between ordinary status logging and an atomic
+measurement record. One complete JSON record followed a plain-text prefix on
+the same line. A JSON decoder recovered it, and all 21 consecutive unique
+request IDs were verified before calculating B8. The line-oriented reader
+alone had found only 20 records. Lock the complete ordinary log message as
+well; the concurrent logging test rejects the old unlocked implementation and
+accepts the fix. Do not silently accept a benchmark missing expected requests.
+
+Controller receipts are under `/private/tmp/ds4_glm_measure_chat/`, including
+hardware metadata, cold/warm and occupancy request receipts, complete logs,
+`all-measurements.json`, and `cold-metrics.json`, `warm-metrics.json`,
+`b3-metrics.json`, `b5-metrics.json`, `b8-metrics.json`.
+Deployment provenance is `/private/tmp/ds4_glm_measure_deployment_receipt.json`.

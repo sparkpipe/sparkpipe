@@ -82,12 +82,14 @@ static volatile uint32_t ApiSessionsAccepted;
 static void api_logf(const char *format, ...)
 {
 	va_list args;
+	flockfile(stderr);
 	fprintf(stderr, "model_api[%s] ", ApiBootTag);
 	va_start(args, format);
 	vfprintf(stderr, format, args);
 	va_end(args);
 	fputc('\n', stderr);
 	fflush(stderr);
+	funlockfile(stderr);
 }
 
 static uint64_t api_now_ms(void)
