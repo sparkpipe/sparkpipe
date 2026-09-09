@@ -1,5 +1,5 @@
 {
-  "file_count": 1944,
+  "file_count": 1945,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "917a34882c4811110d2f270ee411d598c5202cc53253cd85d7f1e5825ed908df",
-      "size_bytes": 40615
+      "sha256": "5196e5d742c1a73511bc669fae0d95c1264f7c8d56161bfb69f5649296316f13",
+      "size_bytes": 41319
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -8762,6 +8762,11 @@
       "size_bytes": 2422
     },
     {
+      "path": "tools/glm5_next_checkpoint_layer_reference.py",
+      "sha256": "d4d1e3e3588f860e0debe75dc0925ad384dd3ab3be361f6257d1792d380c5f42",
+      "size_bytes": 6117
+    },
+    {
       "path": "tools/glm5_next_closeout_wave.sh",
       "sha256": "9eb6d96ac9e1d478d10f4f9f3f2e8ce7227e3aa03ea5e289cd8f51120d691bbd",
       "size_bytes": 4057
@@ -8783,8 +8788,8 @@
     },
     {
       "path": "tools/glm5_next_dsa_host_oracle.py",
-      "sha256": "10ab6a45f20ba5a98eef93cea66c7a7dfc69f27c872c93dab063548eb5bc00ab",
-      "size_bytes": 11618
+      "sha256": "7ed6a4d6c7174a873f56ee7eb0cd2a42e6113c7dc5d1f6bdf0feda7d66ff45cb",
+      "size_bytes": 11622
     },
     {
       "path": "tools/glm5_next_experts_manifest.c",
@@ -9725,5 +9730,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32649377
+  "total_bytes": 32656202
 }
