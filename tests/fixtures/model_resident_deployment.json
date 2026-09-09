@@ -18,8 +18,8 @@
     "max_active_sequences": 2,
     "max_input_rows": 4,
     "resident_sequence_capacity": 8,
-    "kv_logical_page_capacity": 0,
-    "kv_physical_page_capacity": 0
+    "kv_logical_page_capacity": 32,
+    "kv_physical_page_capacity": 8
   },
   "nodes": [
     {

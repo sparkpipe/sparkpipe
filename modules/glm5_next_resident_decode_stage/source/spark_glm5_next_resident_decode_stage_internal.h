@@ -30,6 +30,10 @@ typedef struct SparkGlm5NextLayerWeights
 	const void *expert_up_gate_scale;
 	const void *expert_down_payload;
 	const void *expert_down_scale;
+	uint64_t expert_up_gate_payload_offset;
+	uint64_t expert_up_gate_scale_offset;
+	uint64_t expert_down_payload_offset;
+	uint64_t expert_down_scale_offset;
 	const void *shared_gate_up_bf16;
 	const void *shared_down_bf16;
 	const void *kda_qkv_beta_bf16;
@@ -56,12 +60,15 @@ typedef struct SparkGlm5NextLayerWeights
 typedef struct SparkGlm5NextExecutionSlot
 {
 	void *stream;
+	void *route_ready_event;
+	uint32_t route_recorded;
 	void *host_staging;
 	uint32_t *host_token_ids;
 	uint32_t *host_resident_slots;
 	uint32_t *host_positions;
 	uint32_t *host_output_token_ids;
 	uint32_t *host_kv_access_error;
+	uint32_t *host_group_row_offset;
 	uint32_t *token_ids;
 	uint32_t *resident_slots;
 	uint32_t *positions;
@@ -184,6 +191,10 @@ typedef struct SparkGlm5NextCudaWave
 	const float *head_certified_fp8_scale_f32;
 	const float *head_certified_fp8_norm_f32;
 	const SparkGlm5NextLayerWeights *layers;
+	// A lazy wave must bind its current layer lease before expert submission.
+	uint32_t lazy_experts;
+	uint32_t expert_lease_local_layer;
+	const uint8_t *expert_lease_base;
 	SparkGlm5NextExecutionSlot *slot;
 	uint8_t *kv_cache;
 	uint64_t kv_layer_stride_bytes;
@@ -240,12 +251,22 @@ int32_t SparkGlm5NextLaunchCudaWave(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+// Split path: Route completes dense layers; routed layers require Experts after
+// route readiness and working-set acquisition on the same slot/stream. Route
+// queues group offsets into slot host_group_row_offset; record/wait an event
+// on that stream before inspecting them or calling SparkWeightdRouteKeys.
+int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+// cudaSuccess means the current routing readback is complete; cudaErrorNotReady
+// means pending. Calling before a successful Route returns cudaErrorInvalidValue.
+cudaError_t SparkGlm5NextPollCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave);
+int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
+cudaError_t SparkGlm5NextLaunchDirectSum(cudaStream_t stream,void *destination,const void *const *rank_devices,uint32_t local_rank,uint32_t rows,uint32_t width);
 cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
 cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const SparkGlm5NextMtpDraftOps *ops,uint16_t *committed_hidden_bf16,uint32_t first_token,uint32_t *host_draft_tokens);

@@ -93,6 +93,7 @@ typedef struct SparkDsv4CompressorScratch
 
 struct SparkDsv4ModuleSlot
 {
+	uint32_t logical_sequence_count;
 	void *cuda_stream;
 	SparkStageModuleCudaFork compute_fork;
 	SparkStageModuleCudaReadAhead weight_read_ahead;
@@ -646,8 +647,7 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count *
-			hidden * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 		if ( credit_bytes == 0u || total_bytes > UINT64_MAX -
 			credit_bytes * configuration.credit_count )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -698,8 +698,7 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count *
-			hidden * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 		for (credit=0u; credit<configuration.credit_count;
 			credit++)
 		{
@@ -1326,34 +1325,11 @@ static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, con
 	slice.topology = state->tp_configuration_hash;
 	slice.geometry_fingerprint = geometry;
 	slice.pack_bytes = header->file_bytes;
-	status = SparkWeightdAttachPack(&slice,path,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&outcome,reason);
+	status = SparkWeightdAttachMappedPack(&slice,path,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&outcome,reason);
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"%s weightd_attach_error status=%s\n",SPARK_DSV4_MODULE_TAG,SparkStatusToString(status));
-		return(SPARK_STATUS_OK);
-	}
-	if ( outcome.client == 0 )
-	{
-		fprintf(stderr,"%s weightd_fallback reason=%s\n",SPARK_DSV4_MODULE_TAG,reason);
-		return(SPARK_STATUS_OK);
-	}
-	if ( outcome.arena_bytes != (uint64_t)header->file_bytes )
-	{
-		SparkWeightdAttachRelease(&outcome);
-		fprintf(stderr,"%s weightd_fallback reason=arena_mismatch\n",SPARK_DSV4_MODULE_TAG);
-		return(SPARK_STATUS_OK);
-	}
-	status = SparkWeightdAttachImportMap(&outcome,(uint64_t)header->file_bytes,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,reason);
-	if ( status != SPARK_STATUS_OK )
-	{
-		SparkWeightdAttachRelease(&outcome);
-		fprintf(stderr,"%s weightd_attach_error status=%s\n",SPARK_DSV4_MODULE_TAG,SparkStatusToString(status));
-		return(SPARK_STATUS_OK);
-	}
-	if ( outcome.client != 0 || outcome.map_base == 0 )
-	{
-		fprintf(stderr,"%s weightd_fallback reason=%s\n",SPARK_DSV4_MODULE_TAG,reason);
-		return(SPARK_STATUS_OK);
+		fprintf(stderr,"%s weightd_attach_error pack=%s status=%s reason=%s\n",SPARK_DSV4_MODULE_TAG,path,SparkStatusToString(status),reason);
+		return(status);
 	}
 	state->weightd_outcome = outcome;
 	state->weightd_arena_base = outcome.map_base;
@@ -2469,6 +2445,7 @@ static SparkStatus SparkDsv4ModuleStageRows(
 	uint32_t lane_count)
 {
 	SparkStatus status;
+	slot->logical_sequence_count = lane_count;
 	status = SparkDsv4ModuleStageRowValues(state,slot,token_ids,row_lane_indices,row_positions,row_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleStageRowCopies(state,slot,row_count,lane_count);
@@ -2906,6 +2883,7 @@ static SparkStatus SparkDsv4ModuleReduceHidden(
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = (uint32_t)(slot - state->slots);
 	submission.active_sequence_count = rows;
+	submission.logical_sequence_count = slot->logical_sequence_count;
 	submission.flags =
 		SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
@@ -3755,6 +3733,7 @@ static SparkStatus SparkDsv4ModuleReduceHeadMax(
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = (uint32_t)(slot - state->slots);
 	submission.active_sequence_count = continuation->rows;
+	submission.logical_sequence_count = slot->logical_sequence_count;
 	submission.flags =
 		SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;

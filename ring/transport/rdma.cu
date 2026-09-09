@@ -5684,13 +5684,12 @@ static void SparkHiddenSparkHostRdmaDestroy(void *transport_state)
 }
 
 
-#define SPARK_HIDDEN_SPARK_FIXED_DEPTH 8u
-#define SPARK_HIDDEN_SPARK_FIXED_MASK (SPARK_HIDDEN_SPARK_FIXED_DEPTH - 1u)
 
 static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     void *transport_state,
     const void *local_buffer,
     uint64_t bytes,
+    uint64_t remote_offset,
     uint32_t sequence)
 {
     SparkHiddenSparkHostRdmaState *state;
@@ -5701,7 +5700,6 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     struct ibv_sge scatter_entries[1];
     SparkStatus status;
     uint32_t lane_index;
-    uint32_t slot;
     uint32_t region_index;
     uint32_t region_lkey;
 
@@ -5717,6 +5715,10 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
         fprintf(stderr,"SFX-EXIT no-remote-addr\n");
         return SPARK_STATUS_BUSY;
     }
+    if (remote_offset > state->fixed_remote.bytes ||
+        bytes > state->fixed_remote.bytes - remote_offset ||
+        remote_offset > UINT64_MAX - state->fixed_remote.address)
+        return SPARK_STATUS_INVALID_ARGUMENT;
     status = SparkHiddenSparkHostRdmaRegisterReceiveRegion(state,local_buffer,
         bytes,&descriptor,&region_index);
     if (status != SPARK_STATUS_OK)
@@ -5725,9 +5727,8 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     region_lkey = state->cached_regions[region_index].memory_region->lkey;
-    slot = (sequence >> 8u) & SPARK_HIDDEN_SPARK_FIXED_MASK;
     lane_index = state->lane_count != 0u ?
-        slot % state->lane_count : 0u;
+        (sequence >> 8u) % state->lane_count : 0u;
     if (state->outstanding_send_wr_counts[lane_index] >=
             SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_SEND_WR_PER_LANE)
     {
@@ -5770,9 +5771,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
     work_requests[0].sg_list = scatter_entries;
     work_requests[0].num_sge = 1;
     work_requests[0].send_flags = IBV_SEND_SIGNALED;
-    work_requests[0].wr.rdma.remote_addr = state->fixed_remote.address +
-        (uint64_t)slot * (state->fixed_remote.bytes /
-            SPARK_HIDDEN_SPARK_FIXED_DEPTH);
+    work_requests[0].wr.rdma.remote_addr = state->fixed_remote.address + remote_offset;
     work_requests[0].wr.rdma.rkey = state->fixed_remote.rkey;
     work_requests[0].next = 0;
     if (ibv_post_send(state->lanes[lane_index].queue_pair,

@@ -1,145 +1,136 @@
+#define _POSIX_C_SOURCE 200809L
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/un.h>
-#include <sys/wait.h>
-#include <dirent.h>
-#include <time.h>
 #include <unistd.h>
+#include "weightd_spawn.h"
 
-#include "sparkpipe/spark_model_resident_endpoint.h"
-#include "sparkpipe/spark_weightd.h"
-
-static const char *SparkWeightdSpawnResolvePackDigest(
-	const char *runtime_root)
+static int32_t SparkWeightdReadDigest(FILE *file,char digest[65])
 {
-	static char digest[65];
-	char dir_path[512];
-	const char *candidate = 0;
-	DIR *directory;
+	uint32_t i;
+	int32_t tail;
+	if ( fread(digest,1u,64u,file) != 64u )
+		return(-1);
+	for (i=0u; i<64u; i++)
+		if ( (digest[i] < '0' || digest[i] > '9') && (digest[i] < 'a' || digest[i] > 'f') )
+			return(-2);
+	tail = fgetc(file);
+	if ( tail != EOF && tail != ' ' && tail != '\t' && tail != '\n' )
+		return(-3);
+	if ( ferror(file) != 0 )
+		return(-4);
+	digest[64] = '\0';
+	return(0);
+}
+
+static int32_t SparkWeightdReadDigestPath(const char *path,char digest[65])
+{
+	struct stat info;
+	FILE *file;
+	int32_t fd,status;
+	fd = open(path,O_RDONLY | O_NONBLOCK);
+	if ( fd < 0 )
+		return(-7);
+	if ( fstat(fd,&info) != 0 || S_ISREG(info.st_mode) == 0 )
+	{
+		(void)close(fd);
+		return(-20);
+	}
+	file = fdopen(fd,"rb");
+	if ( file == 0 )
+	{
+		(void)close(fd);
+		return(-21);
+	}
+	status = SparkWeightdReadDigest(file,digest);
+	(void)fclose(file);
+	return(status);
+}
+
+static int32_t SparkWeightdFindDigest(DIR *directory,const char *root,char digest[65])
+{
 	struct dirent *entry;
-	FILE *sidecar;
-	size_t read_bytes;
-	(void)snprintf(dir_path,sizeof(dir_path),"%s/packs",runtime_root);
-	directory = opendir(dir_path);
-	if ( directory == 0 )
-		return 0;
+	char path[1024];
+	uint32_t found = 0u;
+	int32_t bytes,status;
+	errno = 0;
 	while ( (entry = readdir(directory)) != 0 )
 	{
-		size_t name_bytes = strlen(entry->d_name);
-		if ( name_bytes > 7u && strcmp(entry->d_name + name_bytes - 7u,
-			".sha256") == 0 )
-		{
-			if ( candidate != 0 )
-			{
-				(void)closedir(directory);
-				return 0;
-			}
-			candidate = (const char *)entry->d_name;
-		}
+		bytes = (int32_t)strlen(entry->d_name);
+		if ( bytes <= 7 || strcmp(entry->d_name + bytes - 7,".sha256") != 0 )
+			continue;
+		if ( found != 0u )
+			return(-5);
+		bytes = snprintf(path,sizeof(path),"%s/packs/%s",root,entry->d_name);
+		if ( bytes < 0 || (uint32_t)bytes >= sizeof(path) )
+			return(-6);
+		status = SparkWeightdReadDigestPath(path,digest);
+		if ( status != 0 )
+			return(status);
+		found = 1u;
+		errno = 0;
 	}
-	(void)closedir(directory);
-	if ( candidate == 0 )
-		return 0;
-	{
-		char sidecar_path[512];
-		(void)snprintf(sidecar_path,sizeof(sidecar_path),"%s/packs/%s",
-			runtime_root,candidate);
-		sidecar = fopen(sidecar_path,"rb");
-		if ( sidecar == 0 )
-			return 0;
-		read_bytes = fread(digest,sizeof(char),SPARK_WEIGHTD_SHA256_HEX_BYTES - 1u,sidecar);
-		(void)fclose(sidecar);
-		if ( read_bytes != 64u )
-			return 0;
-		digest[64] = '\0';
-	}
-	return digest;
+	if ( errno != 0 )
+		return(-8);
+	return(found != 0u ? 0 : -9);
 }
 
-void SparkModelResidentdEnsureWeightd(
-	const char *runtime_root_argument,
-	const char *socket_path_argument)
+static int32_t SparkWeightdResolveDigest(const char *root,char digest[65])
 {
-	const char *socket_path;
-	const char *runtime_root;
-	struct sockaddr_un address;
-	struct stat binary_stat;
-	struct timespec pause;
-	int probe_fd;
-	int attempts;
-	char binary_path[512];
-	pid_t child;
-
-	if ( socket_path_argument == 0 || socket_path_argument[0] == '\0' )
-		return;
-	socket_path = socket_path_argument;
-	runtime_root = runtime_root_argument;
-	(void)setenv("SPARK_WEIGHTD_SOCKET",socket_path,1);
-	if ( strlen(socket_path) >= sizeof(address.sun_path) )
-		return;
-	{
-		const char *digest = SparkWeightdSpawnResolvePackDigest(runtime_root);
-		if ( digest != 0 )
-			(void)setenv("SPARK_WEIGHTD_PACK_SHA256",digest,1);
-		else
-			fprintf(stderr,"model_residentd weightd-no-digest-sidecar "
-				"root=%s (seam falls back to direct load)\n",runtime_root);
-	}
-	probe_fd = socket(AF_UNIX,SOCK_STREAM,0);
-	if ( probe_fd >= 0 )
-	{
-		memset(&address,0,sizeof(address));
-		address.sun_family = AF_UNIX;
-		(void)snprintf(address.sun_path,sizeof(address.sun_path),"%s",socket_path);
-		if ( connect(probe_fd,(struct sockaddr *)&address,sizeof(address)) == 0 )
-		{
-			(void)close(probe_fd);
-			return;
-		}
-		(void)close(probe_fd);
-	}
-	(void)snprintf(binary_path,sizeof(binary_path),"%s/bin/sparkpipe_weightd",runtime_root);
-	if ( stat(binary_path,&binary_stat) != 0 )
-	{
-		fprintf(stderr,"model_residentd weightd-not-staged path=%s (seam falls back to direct load)\n",binary_path);
-		return;
-	}
-	child = fork();
-	if ( child < 0 )
-		return;
-	if ( child == 0 )
-	{
-		char *const argv[] = { (char *)"sparkpipe_weightd",
-			(char *)"--socket",(char *)socket_path, 0 };
-		(void)setsid();
-		(void)execv(binary_path,argv);
-		_exit(127);
-	}
-	for ( attempts = 0; attempts < 100; attempts++ )
-	{
-		probe_fd = socket(AF_UNIX,SOCK_STREAM,0);
-		if ( probe_fd >= 0 )
-		{
-			memset(&address,0,sizeof(address));
-			address.sun_family = AF_UNIX;
-			(void)snprintf(address.sun_path,sizeof(address.sun_path),"%s",socket_path);
-			if ( connect(probe_fd,(struct sockaddr *)&address,sizeof(address)) == 0 )
-			{
-				(void)close(probe_fd);
-				fprintf(stderr,"model_residentd weightd-started pid=%ld socket=%s\n",(long)child,socket_path);
-				return;
-			}
-			(void)close(probe_fd);
-		}
-		pause.tv_sec = 0;
-		pause.tv_nsec = 100000000L;
-		nanosleep(&pause,0);
-	}
-	(void)waitpid(child,0,WNOHANG);
-	fprintf(stderr,"model_residentd weightd-start-timeout socket=%s (seam falls back to direct load)\n",socket_path);
+	DIR *directory;
+	char path[1024];
+	int32_t bytes,status;
+	bytes = snprintf(path,sizeof(path),"%s/packs",root);
+	if ( bytes < 0 || (uint32_t)bytes >= sizeof(path) )
+		return(-10);
+	directory = opendir(path);
+	if ( directory == 0 )
+		return(-11);
+	status = SparkWeightdFindDigest(directory,root,digest);
+	(void)closedir(directory);
+	return(status);
 }
 
+int32_t SparkModelResidentdPrepareWeightd(const char *root,const char *socket_path)
+{
+	struct sockaddr_un address;
+	char digest[65];
+	const char *setting;
+	int32_t fd,status;
+	if ( root == 0 || socket_path == 0 || root[0] == '\0' || socket_path[0] == '\0' )
+		return(-12);
+	if ( strlen(socket_path) >= sizeof(address.sun_path) )
+		return(-13);
+	setting = getenv("SPARK_WEIGHTD_ATTACH");
+	if ( setting != 0 && strcmp(setting,"0") == 0 )
+		return(-14);
+	status = SparkWeightdResolveDigest(root,digest);
+	if ( status != 0 )
+		return(status);
+	fd = socket(AF_UNIX,SOCK_STREAM,0);
+	if ( fd < 0 )
+		return(-15);
+	if ( fcntl(fd,F_SETFL,O_NONBLOCK) != 0 )
+	{
+		(void)close(fd);
+		return(-19);
+	}
+	memset(&address,0,sizeof(address));
+	address.sun_family = AF_UNIX;
+	memcpy(address.sun_path,socket_path,strlen(socket_path) + 1u);
+	status = connect(fd,(struct sockaddr *)&address,sizeof(address));
+	(void)close(fd);
+	if ( status != 0 )
+		return(-16);
+	if ( setenv("SPARK_WEIGHTD_SOCKET",socket_path,1) != 0 )
+		return(-17);
+	if ( setenv("SPARK_WEIGHTD_PACK_SHA256",digest,1) != 0 )
+		return(-18);
+	return(0);
+}

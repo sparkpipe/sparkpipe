@@ -2,6 +2,7 @@
 
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/hc.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/topk.cuh"
@@ -13,6 +14,7 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/config.h"
+#include "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
 
 struct Glm5NextKv
 {
@@ -27,23 +29,6 @@ struct Glm5NextKv
     { return position % GLM5_NEXT_KV_PAGE_SLOTS; }
     static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
     { return (tokens + GLM5_NEXT_KV_PAGE_SLOTS - 1u) / GLM5_NEXT_KV_PAGE_SLOTS; }
-    static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
-    { return pages * (uint64_t)kPageBytes; }
-};
-struct Glm5NextIndexKv
-{
-    static constexpr uint32_t kSlotBytes =
-        SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
-    static constexpr uint32_t kPageSlots = GLM5_NEXT_KV_PAGE_SLOTS;
-    static constexpr uint32_t kPageBytes =
-        kSlotBytes * kPageSlots * SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
-    static constexpr bool kGrows = true;
-    static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
-    { return position / kPageSlots; }
-    static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position)
-    { return position % kPageSlots; }
-    static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
-    { return (tokens + kPageSlots - 1u) / kPageSlots; }
     static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
     { return pages * (uint64_t)kPageBytes; }
 };
@@ -756,15 +741,13 @@ static int32_t Glm5NextLayerAttention(
     }
 
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_collapsed_bf16,
-        0,
         (const uint16_t *)buffers->attn_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -791,15 +774,13 @@ static int32_t Glm5NextLayerAttention(
         return status;
     }
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_QUERY_A_DIM + 8u) * sizeof(float),
         stream,
         buffers->q_compressed_bf16,
-        0,
         (const uint16_t *)buffers->q_a_norm_weight,
-        0,
         buffers->q_compressed_bf16,
         GLM5_NEXT_QUERY_A_DIM,
         GLM5_NEXT_QUERY_A_DIM,
@@ -856,15 +837,13 @@ static int32_t Glm5NextLayerAttention(
         return status;
     }
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_LATENT + 8u) * sizeof(float),
         stream,
         buffers->kv_slot_bf16,
-        0,
         (const uint16_t *)buffers->kv_a_norm_weight,
-        0,
         buffers->kv_slot_bf16,
         GLM5_NEXT_LATENT,
         GLM5_NEXT_LATENT_ROW,
@@ -1145,10 +1124,9 @@ static int Glm5NextKdaProbeVecLayer(const Glm5NextLayerBuffers *buffers)
     return(vec_layer);
 }
 
-static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
+static int32_t Glm5NextLayerProbeVecPass(const Glm5NextLayerBuffers *buffers,uint32_t *vec_pass,uint32_t calls_per_layer)
 {
     static int vec_enabled = -1;
-    static uint32_t vec_pass = 0u;
     uint32_t cap;
     if ( vec_enabled < 0 )
         vec_enabled = getenv("SPARK_GLM5_NEXT_PROBE_VEC") != 0 ? 1 : 0;
@@ -1161,10 +1139,10 @@ static int Glm5NextKdaProbeVecPass(const Glm5NextLayerBuffers *buffers)
         if ( cap_env != 0 && *cap_env != 0 )
             cap = (uint32_t)atoi(cap_env);
     }
-    if ( vec_pass >= cap )
+    if ( *vec_pass / calls_per_layer >= cap )
         return(0);
-    vec_pass += 1u;
-    return((int)vec_pass);
+    *vec_pass += 1u;
+    return((int32_t)*vec_pass);
 }
 
 static int32_t Glm5NextKdaReplayRecord(
@@ -1215,12 +1193,13 @@ static int32_t Glm5NextLayerKda(
     const uint32_t rank_heads = buffers->kda_heads;
     const uint32_t rank_qk = rank_heads * GLM5_NEXT_KDA_KEY_DIM;
     const uint32_t rank_v = rank_heads * GLM5_NEXT_KDA_VALUE_DIM;
-    const int32_t vec_pass = (int32_t)Glm5NextKdaProbeVecPass(buffers);
+    static uint32_t probe_count = 0u;
+    const int32_t vec_pass = Glm5NextLayerProbeVecPass(buffers,&probe_count,1u);
     int32_t status;
 
     if (buffers == 0 || rows == 0u || sequences == 0u ||
         buffers->kda_state_pool == 0 ||
-        buffers->kda_state_slot_bytes != GLM5_NEXT_KDA_STATE_BYTES_PER_LAYER ||
+        buffers->kda_state_slot_bytes != rank_heads * GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float) ||
         buffers->kda_qkv_beta_weight == 0 ||
         buffers->kda_decay_gate_down_weight == 0 ||
         buffers->kda_decay_up_weight == 0 ||
@@ -1245,15 +1224,13 @@ static int32_t Glm5NextLayerKda(
     }
 
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_collapsed_bf16,
-        0,
         (const uint16_t *)buffers->attn_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -1420,27 +1397,6 @@ static int32_t Glm5NextLayerKda(
         rank_v,
         sequences,
         commit);
-    LM_LAUNCH(
-        (LmL2NormalisePerHeadKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
-        dim3(rows,rank_heads),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->q_bf16,
-        rank_heads,
-        rows,
-        GLM5_NEXT_RMS_EPSILON);
-    LM_LAUNCH(
-        (LmL2NormalisePerHeadKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
-        dim3(rows,rank_heads),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->kv_slot_bf16,
-        rank_heads,
-        rows,
-        GLM5_NEXT_RMS_EPSILON);
-
     if ( Glm5NextKdaProbeActive(buffers) )
     {
         GLM5_NEXT_KDA_PROBE(stream,"q_postconv",buffers->q_bf16,256u);
@@ -1512,7 +1468,7 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_GATE_LOWER_BOUND,
         rows);
     LM_LAUNCH(
-        (LmSigmoidRowsKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmBf16SigmoidRowsKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -1586,28 +1542,17 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_VALUE_DIM);
 #endif
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,float>),
+        (LmRmsNormSigmoidGateKernel<GLM5_NEXT_LAYER_THREADS>),
         dim3((uint64_t)rows * rank_heads),
-        GLM5_NEXT_LAYER_THREADS,
-        (GLM5_NEXT_KDA_VALUE_DIM + 8u) * sizeof(float),
-        stream,
-        buffers->attention_out_bf16,
-        0,
-        (const float *)buffers->kda_out_norm_weight,
-        0,
-        buffers->attention_out_bf16,
-        GLM5_NEXT_KDA_VALUE_DIM,
-        GLM5_NEXT_KDA_VALUE_DIM,
-        GLM5_NEXT_RMS_EPSILON);
-    LM_LAUNCH(
-        (LmOutputGateKernel<GLM5_NEXT_LAYER_THREADS>),
-        rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
         stream,
         buffers->attention_out_bf16,
         buffers->kda_gate_bf16,
-        rank_v);
+        (const float *)buffers->kda_out_norm_weight,
+        buffers->attention_out_bf16,
+        GLM5_NEXT_KDA_VALUE_DIM,
+        GLM5_NEXT_RMS_EPSILON);
     if ( Glm5NextKdaProbeActive(buffers) )
     {
         GLM5_NEXT_KDA_PROBE(stream,"delta_out_gated",buffers->attention_out_bf16,256u);
@@ -1830,47 +1775,6 @@ __global__ void Glm5NextHcPreReduceKernel(
     }
 }
 
-__global__ void Glm5NextHcPostKernel(
-    const uint16_t *__restrict__ out_bf16,
-    const uint16_t *__restrict__ snapshot_bf16,
-    const float *__restrict__ post_f32,
-    const float *__restrict__ comb_f32,
-    uint16_t *__restrict__ streams_bf16,
-    uint32_t row_count,
-    uint32_t hc,
-    uint32_t dimension)
-{
-    __shared__ float post[4];
-    __shared__ float comb[16];
-    uint32_t row = blockIdx.x;
-    uint32_t element, stream, source;
-    float residual[4], out, value;
-    if (row >= row_count || hc > 4u)
-        return;
-    if (threadIdx.x < hc)
-        post[threadIdx.x] = post_f32[(uint64_t)row * hc + threadIdx.x];
-    if (threadIdx.x < hc * hc)
-        comb[threadIdx.x] = comb_f32[(uint64_t)row * hc * hc + threadIdx.x];
-    __syncthreads();
-    for (element = threadIdx.x; element < dimension; element += blockDim.x)
-    {
-        out = LmBf16ToFloat(out_bf16[(uint64_t)row * dimension + element]);
-        for (source = 0u; source < hc; ++source)
-            residual[source] = LmBf16ToFloat(
-                snapshot_bf16[((uint64_t)row * hc + source) * dimension +
-                              element]);
-        for (stream = 0u; stream < hc; ++stream)
-        {
-            value = post[stream] * out;
-            for (source = 0u; source < hc; ++source)
-                value = __fmaf_rn(comb[source * hc + stream],
-                                  residual[source], value);
-            streams_bf16[((uint64_t)row * hc + stream) * dimension + element] =
-                LmFloatToBf16(value);
-        }
-    }
-}
-
 __global__ void Glm5NextHcHeadMeanKernel(
     const uint16_t *__restrict__ streams_bf16,
     uint16_t *__restrict__ reduced_bf16,
@@ -1962,8 +1866,17 @@ static int32_t Glm5NextHcPost(
     uint32_t rows,
     cudaStream_t stream)
 {
+    static uint32_t probe_count = 0u;
+    int32_t pass = Glm5NextLayerProbeVecPass(buffers,&probe_count,2u);
+    if ( pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,sublayer_out,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"hc_sublayer_out");
+        Glm5NextProbeVecU16(stream,buffers->hc_snapshot_bf16,GLM5_NEXT_HC_FLAT,buffers->layer_index,(uint32_t)pass,"hc_snapshot");
+        Glm5NextProbeVecF32(stream,buffers->hc_post_f32,GLM5_NEXT_HC,buffers->layer_index,(uint32_t)pass,"hc_post_weights");
+        Glm5NextProbeVecF32(stream,buffers->hc_comb_f32,GLM5_NEXT_HC * GLM5_NEXT_HC,buffers->layer_index,(uint32_t)pass,"hc_comb_weights");
+    }
     LM_LAUNCH(
-        (Glm5NextHcPostKernel),
+        (LmHcPostBf16Kernel),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -1976,6 +1889,8 @@ static int32_t Glm5NextHcPost(
         rows,
         GLM5_NEXT_HC,
         GLM5_NEXT_HIDDEN);
+    if ( pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->hidden_bf16,GLM5_NEXT_HC_FLAT,buffers->layer_index,(uint32_t)pass,"hc_result");
     return LM_LAUNCH_OK;
 }
 
@@ -1986,7 +1901,8 @@ static int32_t Glm5NextLayerDenseMlp(
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    int32_t status;
+    static uint32_t probe_count = 0u;
+    int32_t status,pass = Glm5NextLayerProbeVecPass(buffers,&probe_count,1u);
 
     if (buffers == 0 || rows == 0u || buffers->attention_out_bf16 == 0 ||
         buffers->residual_bf16 == 0 || buffers->mlp_norm_weight == 0 ||
@@ -1999,20 +1915,23 @@ static int32_t Glm5NextLayerDenseMlp(
     }
 
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_collapsed_bf16,
-        0,
         (const uint16_t *)buffers->mlp_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
 
+    if ( pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->hc_collapsed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"dense_collapsed");
+        Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"dense_normed");
+    }
     if (buffers->dense_gate_up_fused != 0u)
     {
         status = Glm5NextLaunchBf16Linear(
@@ -2072,7 +1991,7 @@ static int32_t Glm5NextLayerDenseMlp(
     }
 
     LM_LAUNCH(
-        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -2080,9 +1999,14 @@ static int32_t Glm5NextLayerDenseMlp(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->dense_intermediate,
-        false);
+        SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
 
-    return Glm5NextLaunchBf16Linear(
+    if ( pass != 0 )
+    {
+        Glm5NextProbeVecU16(stream,buffers->gate_up_bf16,buffers->dense_gate_up_rows,buffers->layer_index,(uint32_t)pass,"dense_gate_up");
+        Glm5NextProbeVecU16(stream,buffers->intermediate_bf16,buffers->dense_intermediate,buffers->layer_index,(uint32_t)pass,"dense_intermediate");
+    }
+    status = Glm5NextLaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->dense_down_weight,
         buffers->attention_out_bf16,
@@ -2095,19 +2019,18 @@ static int32_t Glm5NextLayerDenseMlp(
         0u,
         multiprocessors,
         stream);
+    if ( status == LM_LAUNCH_OK && pass != 0 )
+        Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"dense_down_partial");
+    return(status);
 }
 
 template<uint32_t ExpertCodec>
-static int32_t Glm5NextLayerMoe(
+static int32_t Glm5NextLayerMoeValidate(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
-    uint32_t packed_rows,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
+    uint32_t packed_rows)
 {
     using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
-    LmGemmArguments gemm;
-    int32_t status;
 
     static_assert(ExpertCodec != SPARK_WEIGHT_CODEC_BF16,
         "GLM 5.2 routed experts require an explicit compressed codec");
@@ -2126,8 +2049,6 @@ static int32_t Glm5NextLayerMoe(
         buffers->group_row_offset == 0 ||
         buffers->group_tile_prefix_w1 == 0 ||
         buffers->group_tile_prefix_w2 == 0 ||
-        buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
-        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 ||
         buffers->expert_out_bf16 == 0 || buffers->gate_up_bf16 == 0 ||
         buffers->intermediate_bf16 == 0 || buffers->hidden_bf16 == 0 ||
         buffers->shared_gate_up_weight == 0 ||
@@ -2136,16 +2057,29 @@ static int32_t Glm5NextLayerMoe(
         return LM_LAUNCH_ERR_SHAPE;
     }
 
+    return LM_LAUNCH_OK;
+}
+
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoeRoute(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    LmGemmArguments gemm;
+    int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
+    if (status != LM_LAUNCH_OK)
+        return status;
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_collapsed_bf16,
-        0,
         (const uint16_t *)buffers->mlp_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -2218,6 +2152,25 @@ static int32_t Glm5NextLayerMoe(
         return status;
     }
 
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoeExperts(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
+    LmGemmArguments gemm;
+    int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
+        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
+        return(LM_LAUNCH_ERR_SHAPE);
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(
@@ -2253,7 +2206,7 @@ static int32_t Glm5NextLayerMoe(
     }
 
     LM_LAUNCH(
-        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>),
         packed_rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -2261,7 +2214,7 @@ static int32_t Glm5NextLayerMoe(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->expert_intermediate,
-        false);
+        SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
 
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
@@ -2330,7 +2283,7 @@ static int32_t Glm5NextLayerMoe(
         return status;
     }
     LM_LAUNCH(
-        (LmSiluMulKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -2338,7 +2291,7 @@ static int32_t Glm5NextLayerMoe(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
         buffers->shared_intermediate,
-        false);
+        SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
     status = Glm5NextLaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,
@@ -2375,6 +2328,22 @@ static int32_t Glm5NextLayerMoe(
         : LM_LAUNCH_ERR_LAUNCH;
 }
 
+// Resident execution retains the same submission order. Lazy execution can
+// acquire/import the routed working set between these two calls on this stream.
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoe(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status = Glm5NextLayerMoeRoute<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    return Glm5NextLayerMoeExperts<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
+}
+
 static int32_t Glm5NextHead(
     const Glm5NextLayerBuffers *buffers,
     const void *head_norm_weight,
@@ -2398,15 +2367,13 @@ static int32_t Glm5NextHead(
 
     tiles = (vocabulary + GLM5_NEXT_HEAD_TILE - 1u) / GLM5_NEXT_HEAD_TILE;
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_mean_bf16,
-        0,
         (const uint16_t *)head_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -2467,15 +2434,13 @@ static int32_t Glm5NextHeadCertifiedB1(
         return LM_LAUNCH_ERR_SHAPE;
     }
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         1u,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_mean_bf16,
-        0,
         (const uint16_t *)head_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,

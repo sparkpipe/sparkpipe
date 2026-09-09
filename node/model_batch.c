@@ -390,10 +390,12 @@ static void SparkModelBatchWriteEvent(
 	const SparkModelBatchEvent *event)
 {
 	SparkModelBatchOutput *output;
-	char line[512];
+	char line[768];
 	int32_t length;
 	output = (SparkModelBatchOutput *)event_context;
 	length = snprintf(line,sizeof(line),"{\"schema_version\":1,\"event\":\"%s\",\"status\":%u,\"request_id\":%llu,\"sequence_id\":%llu,\"request_handle\":%llu,\"token_id\":%u,\"token_index\":%u,\"generated_token_count\":%u,\"stop_token\":%s",SparkModelBatchEventName(event->kind),event->status,(unsigned long long)event->request_id,(unsigned long long)event->sequence_id,(unsigned long long)event->request_handle,event->token_id,event->token_index,event->generated_token_count,(event->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u ? "true" : "false");
+	if ( length >= 0 && (size_t)length < sizeof(line) )
+		length += snprintf(line + length,sizeof(line) - (size_t)length,",\"monotonic_ns\":%llu,\"cached_prompt_tokens\":%u",(unsigned long long)event->monotonic_ns,event->cached_prompt_token_count);
 	if ( length >= 0 && event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED && (size_t)length < sizeof(line) )
 		length += snprintf(line + length,sizeof(line) - (size_t)length,",\"model_extension_kind\":%u,\"first_draft_miss\":%u,\"first_draft_policy\":%u",event->model_extension_kind,event->first_draft_miss_count,event->first_draft_policy);
 	if ( length >= 0 && (size_t)length < sizeof(line) )

@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "spark_filesystem.h"
@@ -6,7 +7,7 @@
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm5_next_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
-#include "sparkpipe/spark_admission.h"
+#include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
@@ -75,10 +76,11 @@ static const char *const SparkGlm5NextServingConfigurationMembers[] =
 typedef struct SparkGlm5NextServingPending
 {
 	struct SparkGlm5NextServingState *owner;
-	uint32_t active;
+	atomic_uint active;
 	uint32_t row_count;
 	uint32_t lane_count;
 	uint32_t active_sequence_count;
+	uint32_t work_kind;
 	uint64_t submission_id;
 	uint64_t request_id;
 	uint64_t sequence_id;
@@ -88,8 +90,16 @@ typedef struct SparkGlm5NextServingPending
 	uint64_t dispatch_generation;
 	uint64_t request_generation;
 	uint64_t step_generation;
+	SparkGlm5NextResidentDecodeStageBatchView batch;
+	SparkGlm5NextResidentDecodeStageFrameContext context;
+	SparkModelDriverBuffer buffer;
+	SparkModelDriverFrame frame;
+	SparkModelDriverCacheLane cache_lanes[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t last_row_by_lane[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint32_t input_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint64_t row_positions[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint64_t row_sequence_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 } SparkGlm5NextServingPending;
 
@@ -111,8 +121,10 @@ typedef struct SparkGlm5NextServingState
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
 	uint32_t mtp_enabled;
-	uint32_t quiescing;
-	uint64_t orphan_completion_count;
+	atomic_uint quiescing;
+	atomic_uint reset_active;
+	atomic_uint_fast64_t reset_generation;
+	atomic_uint_fast64_t orphan_completion_count;
 	uint16_t tp_listen_port;
 	uint16_t tp_peer_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
 	uint32_t tp_connect_timeout_milli;
@@ -126,16 +138,14 @@ typedef struct SparkGlm5NextServingState
 	SparkGlm5NextServingPending pending[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkGlm5NextServingState;
 
+static _Thread_local SparkModelDriverCacheLane SparkGlm5NextServingCacheScratch[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+
 static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
-		SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG |
+	.capability_flags = SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
 	.stage_count = SPARK_GLM5_NEXT_SERVING_STAGE_COUNT,
@@ -146,13 +156,13 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.expert_weight_codec = GLM5_NEXT_EXPERT_WEIGHT_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
+	.cache_block_token_count = SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS,
 	.max_inflight_submission_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.max_active_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.adapter_id = SPARK_GLM5_NEXT_SERVING_ADAPTER_ID,
 	.model_id = SPARK_GLM5_NEXT_SERVING_MODEL_ID,
 	.model_revision = GLM5_NEXT_MODEL_REVISION,
@@ -623,18 +633,25 @@ static SparkGlm5NextServingPending *SparkGlm5NextServingReservePending(
 	const SparkModelServingSubmission *submission)
 {
 	SparkGlm5NextServingPending *pending;
-	uint32_t index,lane,row;
+	uint32_t index,lane,row,expected;
+	if ( atomic_load_explicit(&state->quiescing,memory_order_acquire) != 0u )
+		return(0);
 	for (index=0u; index<state->pipeline_slot_count; index++)
 	{
 		pending = &state->pending[index];
-		if ( pending->active == 0u )
+		expected = 0u;
+		if ( atomic_compare_exchange_strong_explicit(&pending->active,&expected,1u,memory_order_acquire,memory_order_relaxed) != 0 )
 		{
-			memset(pending,0,sizeof(*pending));
+			if ( atomic_load_explicit(&state->quiescing,memory_order_acquire) != 0u )
+			{
+				atomic_store_explicit(&pending->active,0u,memory_order_release);
+				return(0);
+			}
 			pending->owner = state;
-			pending->active = 1u;
 			pending->row_count = submission->row_count;
 			pending->lane_count = submission->lane_count;
 			pending->active_sequence_count = submission->active_sequence_count;
+			pending->work_kind = submission->work_kind;
 			pending->submission_id = submission->submission_id;
 			pending->request_id = submission->request_id;
 			pending->sequence_id = submission->sequence_id;
@@ -649,6 +666,9 @@ static SparkGlm5NextServingPending *SparkGlm5NextServingReservePending(
 				lane = submission->row_lane_indices[row];
 				pending->last_row_by_lane[lane] = row;
 				pending->resident_slots[row] = submission->lanes[lane].resident_sequence_slot;
+				pending->input_token_ids[row] = submission->token_ids[row];
+				pending->row_positions[row] = submission->row_positions[row];
+				pending->row_sequence_ids[row] = submission->row_sequence_ids[row];
 			}
 			return(pending);
 		}
@@ -664,7 +684,7 @@ static void SparkGlm5NextServingOrphanDriverCompletion(
 	(void)driver_completion;
 	state = (SparkGlm5NextServingState *)completion_context;
 	if ( state != 0 )
-		state->orphan_completion_count++;
+		atomic_fetch_add_explicit(&state->orphan_completion_count,1u,memory_order_relaxed);
 }
 
 static void SparkGlm5NextServingDriverCompletion(
@@ -674,12 +694,11 @@ static void SparkGlm5NextServingDriverCompletion(
 	SparkGlm5NextServingPending *pending;
 	SparkGlm5NextServingState *state;
 	SparkModelServingCompletion completion;
-	uint32_t index,matches,raw_accepted;
+	uint32_t index,matches;
 	pending = (SparkGlm5NextServingPending *)completion_context;
 	state = pending != 0 ? pending->owner : 0;
-	if ( state == 0 || pending->active == 0u || driver_completion == 0 )
+	if ( state == 0 || atomic_load_explicit(&pending->active,memory_order_acquire) == 0u || driver_completion == 0 )
 		return;
-	raw_accepted = driver_completion->accepted_token_count;
 	matches = driver_completion->request_id == pending->request_id && driver_completion->sequence_id == pending->sequence_id && driver_completion->sequence_position == pending->sequence_position && driver_completion->program_id == state->program->program_id;
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
@@ -702,13 +721,13 @@ static void SparkGlm5NextServingDriverCompletion(
 	if ( matches != 0u )
 		completion.residency = driver_completion->residency;
 	else
-		state->orphan_completion_count++;
+		atomic_fetch_add_explicit(&state->orphan_completion_count,1u,memory_order_relaxed);
 	if ( completion.status != SPARK_STATUS_OK )
 	{
 		completion.accepted_token_count = 0u;
 		completion.completion_flags = 0u;
 	}
-	if ( completion.status == SPARK_STATUS_OK )
+	if ( completion.status == SPARK_STATUS_OK && pending->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		uint32_t burst = driver_completion->tokens_per_sequence != 0u ?
 			driver_completion->tokens_per_sequence : 1u;
@@ -718,7 +737,7 @@ static void SparkGlm5NextServingDriverCompletion(
 			completion.status = SPARK_STATUS_SCHEMA_ERROR;
 			completion.accepted_token_count = 0u;
 			completion.completion_flags = 0u;
-			pending->active = 0u;
+			atomic_store_explicit(&pending->active,0u,memory_order_release);
 			state->completion_function(state->completion_context,&completion);
 			return;
 		}
@@ -732,15 +751,7 @@ static void SparkGlm5NextServingDriverCompletion(
 			for (index=0u; index<completion.token_count; index++)
 				completion.token_ids[index] = pending->output_token_ids[index];
 	}
-	fprintf(stderr,"G5N-DBG completion emit: sub %llu status %u flags %u tokcnt %u tps %u acc %u raw_acc %u ext %u resid_zero %d\n",
-		(unsigned long long)completion.submission_id,(unsigned)completion.status,
-		(unsigned)completion.completion_flags,(unsigned)completion.token_count,
-		(unsigned)completion.tokens_per_sequence,
-		(unsigned)completion.accepted_token_count,
-		(unsigned)raw_accepted,
-		(unsigned)completion.model_extension_bytes,
-		(int)(completion.residency.word0 == 0u));
-	pending->active = 0u;
+	atomic_store_explicit(&pending->active,0u,memory_order_release);
 	state->completion_function(state->completion_context,&completion);
 }
 
@@ -758,7 +769,7 @@ static uint32_t SparkGlm5NextServingAvailableSubmissionCount(
 	uint32_t available,index;
 	available = 0u;
 	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += state->pending[index].active == 0u ? 1u : 0u;
+		available += atomic_load_explicit(&state->pending[index].active,memory_order_acquire) == 0u ? 1u : 0u;
 	return(available);
 }
 
@@ -846,7 +857,7 @@ static SparkStatus SparkGlm5NextServingInitialize(
 {
 	SparkGlm5NextServingState *state;
 	uint32_t max_sequence_positions,execution_row_capacity,tp_degree,tp_rank;
-	uint32_t decode_split_context_threshold;
+	uint32_t decode_split_context_threshold,index;
 	SparkStatus status;
 	if ( adapter_state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -857,6 +868,12 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	state = (SparkGlm5NextServingState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	atomic_init(&state->orphan_completion_count,0u);
+	atomic_init(&state->quiescing,0u);
+	atomic_init(&state->reset_active,0u);
+	atomic_init(&state->reset_generation,0u);
+	for (index=0u; index<SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; index++)
+		atomic_init(&state->pending[index].active,0u);
 	state->stage_index = configuration->stage_index;
 	state->pipeline_slot_count = configuration->runtime_limits.max_inflight_submission_count;
 	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
@@ -946,45 +963,73 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
+	if ( submission != 0 && submission->control_generation < atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		return(SPARK_STATUS_VALIDATION_FAILED);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkGlm5NextServingDescriptor,&state->runtime_limits,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: runtime_submission -> %d (kind %u rows %u lanes %u ext %u)\n",
-			(int)status,submission->work_kind,submission->row_count,submission->active_sequence_count,submission->model_extension_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingValidateBoundaries(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: boundaries -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingValidateRowOrder(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: row_order -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
-	{
-		fprintf(stderr,"G5N-DBG validate: model_extension_bytes=%u kind=%u\n",
-			submission->model_extension_bytes,submission->model_extension_kind);
 		status = SPARK_STATUS_UNSUPPORTED;
-	}
 	return(status);
+}
+
+static SparkServingCacheAdmission SparkGlm5NextServingCacheContext(SparkGlm5NextServingState *state,SparkModelDriverCacheLane *lanes)
+{
+	SparkServingCacheAdmission cache;
+	cache.program_id = state->program->program_id;
+	cache.lane_capacity = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	cache.lanes = lanes;
+	cache.driver = state->driver.interface;
+	cache.driver_instance = state->driver_instance;
+	cache.validate = SparkGlm5NextServingValidateSubmission;
+	cache.adapter_state = state;
+	return(cache);
+}
+
+static SparkStatus SparkGlm5NextServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t count)
+{
+	SparkGlm5NextServingState *state;
+	SparkServingCacheAdmission cache;
+	state = (SparkGlm5NextServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = SparkGlm5NextServingCacheContext(state,SparkGlm5NextServingCacheScratch);
+	return(SparkServingCacheAdmissionRun(&cache,submissions,count,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
+}
+
+static SparkStatus SparkGlm5NextServingResolvePrefetch(void *adapter_state,const SparkModelServingSubmission *submission,uint32_t resolution)
+{
+	SparkGlm5NextServingState *state;
+	SparkServingCacheAdmission cache;
+	uint32_t flags;
+	state = (SparkGlm5NextServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	cache = SparkGlm5NextServingCacheContext(state,SparkGlm5NextServingCacheScratch);
+	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
 }
 
 static void SparkGlm5NextServingBuildFrame(
 	const SparkGlm5NextServingState *state,
 	const SparkModelServingSubmission *submission,
-	SparkGlm5NextServingPending *pending,
-	SparkGlm5NextResidentDecodeStageBatchView *batch,
-	SparkGlm5NextResidentDecodeStageFrameContext *context,
-	SparkModelDriverBuffer *buffer,
-	SparkModelDriverFrame *frame)
+	SparkGlm5NextServingPending *pending)
 {
+	SparkGlm5NextResidentDecodeStageBatchView *batch = &pending->batch;
+	SparkGlm5NextResidentDecodeStageFrameContext *context = &pending->context;
+	SparkModelDriverBuffer *buffer = &pending->buffer;
+	SparkModelDriverFrame *frame = &pending->frame;
 	memset(batch,0,sizeof(*batch));
 	batch->abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION;
 	batch->descriptor_bytes = sizeof(*batch);
 	batch->row_count = submission->row_count;
 	batch->active_sequence_count = submission->active_sequence_count;
-	batch->token_ids = submission->token_ids;
+	batch->token_ids = pending->input_token_ids;
 	batch->row_resident_slots = pending->resident_slots;
-	batch->row_positions = submission->row_positions;
-	batch->row_sequence_ids = submission->row_sequence_ids;
+	batch->row_positions = pending->row_positions;
+	batch->row_sequence_ids = pending->row_sequence_ids;
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
@@ -1028,17 +1073,20 @@ static void SparkGlm5NextServingBuildFrame(
 static SparkStatus SparkGlm5NextServingAdmit(
 	SparkGlm5NextServingState *state,
 	const SparkModelServingSubmission *submission,
+	SparkGlm5NextServingPending *pending,
 	SparkModelDriverFrame *frame)
 {
+	SparkServingCacheAdmission cache;
 	SparkModelDriverAdmissionRequest request;
 	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
-	status = SparkAdmissionRequestFromSubmission(
-		state->program->program_id,submission,0,0u,&request);
+	cache = SparkGlm5NextServingCacheContext(state,pending->cache_lanes);
+	status = SparkServingCacheBuildRequest(&cache,submission,0u,&request);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	return(SparkAdmissionEvaluateAndApply(
-		state->driver.interface,state->driver_instance,&request,frame,&decision));
+	frame->cache_lanes = pending->cache_lanes;
+	frame->cache_lane_count = request.cache_lane_count;
+	return(SparkAdmissionEvaluateAndApply(state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
 static SparkStatus SparkGlm5NextServingSubmit(
@@ -1047,10 +1095,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 {
 	SparkGlm5NextServingState *state;
 	SparkGlm5NextServingPending *pending;
-	SparkGlm5NextResidentDecodeStageBatchView batch;
-	SparkGlm5NextResidentDecodeStageFrameContext context;
-	SparkModelDriverBuffer buffer;
-	SparkModelDriverFrame frame;
+	SparkModelDriverCompletion released = {0};
 	SparkStatus status;
 	state = (SparkGlm5NextServingState *)adapter_state;
 	status = SparkGlm5NextServingValidateSubmission(state,submission);
@@ -1059,18 +1104,28 @@ static SparkStatus SparkGlm5NextServingSubmit(
 	pending = SparkGlm5NextServingReservePending(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
-	SparkGlm5NextServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
-	status = SparkGlm5NextServingAdmit(state,submission,&frame);
+	SparkGlm5NextServingBuildFrame(state,submission,pending);
+	status = SparkGlm5NextServingAdmit(state,submission,pending,&pending->frame);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"G5N-DBG submit: admit -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 	{
-		status = state->program->submit(state->driver_instance,&frame);
+		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		{
+			released.request_id = pending->request_id;
+			released.sequence_id = pending->sequence_id;
+			released.sequence_position = pending->sequence_position;
+			released.program_id = state->program->program_id;
+			released.residency = submission->residency;
+			SparkGlm5NextServingDriverCompletion(pending,&released);
+		}
+		else
+			status = state->program->submit(state->driver_instance,&pending->frame);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr,"G5N-DBG submit: program->submit -> %d\n",(int)status);
 	}
 	if ( status != SPARK_STATUS_OK )
-		pending->active = 0u;
+		atomic_store_explicit(&pending->active,0u,memory_order_release);
 	return(status);
 }
 
@@ -1127,13 +1182,54 @@ static SparkStatus SparkGlm5NextServingSnapshot(
 	snapshot->active_submission_count = state->pipeline_slot_count - SparkGlm5NextServingAvailableSubmissionCount(state);
 	snapshot->submitted_count = driver_snapshot.submitted_count;
 	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + state->orphan_completion_count;
+	snapshot->rejected_count = driver_snapshot.rejected_count + atomic_load_explicit(&state->orphan_completion_count,memory_order_relaxed);
 	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
 	snapshot->resident_token_count = driver_snapshot.resident_token_count;
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
 	snapshot->device_memcpy_bytes_per_submit = driver_snapshot.device_memcpy_bytes_per_submit;
 	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextServingResetControl(void *adapter_state,uint64_t control_generation)
+{
+	SparkGlm5NextServingState *state = (SparkGlm5NextServingState *)adapter_state;
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status;
+	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkGlm5NextServingQuiesce(state,UINT64_MAX);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = state->program->program_id;
+	request.control_generation = control_generation;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	SparkModelDriverInitializeAdmissionDecision(&decision);
+	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	if ( status == SPARK_STATUS_OK )
+	{
+		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
+		atomic_store_explicit(&state->quiescing,0u,memory_order_release);
+	}
+	return(status);
+}
+
+static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t control_generation)
+{
+	SparkGlm5NextServingState *state = (SparkGlm5NextServingState *)adapter_state;
+	uint32_t expected = 0u;
+	SparkStatus status;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
+		return(SPARK_STATUS_BUSY);
+	status = SparkGlm5NextServingResetControl(state,control_generation);
+	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
+	return(status);
 }
 
 static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
@@ -1145,9 +1241,12 @@ static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 	.destroy = SparkGlm5NextServingDestroy,
 	.validate_submission = SparkGlm5NextServingValidateSubmission,
 	.submit = SparkGlm5NextServingSubmit,
+	.prefetch = SparkGlm5NextServingPrefetch,
+	.resolve_prefetch = SparkGlm5NextServingResolvePrefetch,
 	.progress = SparkGlm5NextServingProgress,
 	.quiesce = SparkGlm5NextServingQuiesce,
-	.snapshot = SparkGlm5NextServingSnapshot
+	.snapshot = SparkGlm5NextServingSnapshot,
+	.reset = SparkGlm5NextServingReset
 };
 
 __attribute__((visibility("default")))

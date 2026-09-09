@@ -49,7 +49,7 @@ def stage_config(rank):
         "tp_collective": {
             "backend": "hidden_transport",
             "backend_module_path": "lib/hidden_transport.so",
-            "algorithms": ["recursive_doubling", "direct_all_to_all"],
+            "algorithms": ["tree", "direct_all_to_all"],
             "collective_identifier": COLLECTIVE_ID_BASE + group,
             "listen_port": collective_base + tp_rank,
             "connect_timeout_milli": 30000,
@@ -67,6 +67,7 @@ def stage_config(rank):
 
 
 def resident_deployment():
+    page_capacity = 16 * ((stage_config(0)["max_sequence_positions"] + 63) // 64)
     nodes = []
     for rank, host in enumerate(HOSTS):
         nodes.append({
@@ -77,7 +78,7 @@ def resident_deployment():
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory": f"/home/{host}/kvcache/{ARM}",
-            "kv_backing_maximum_bytes": 8589934592,
+            "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,
@@ -105,8 +106,8 @@ def resident_deployment():
             "max_active_sequences": 16,
             "max_input_rows": 1024,
             "resident_sequence_capacity": 16,
-            "kv_logical_page_capacity": 0,
-            "kv_physical_page_capacity": 0,
+            "kv_logical_page_capacity": page_capacity,
+            "kv_physical_page_capacity": page_capacity,
         },
         "nodes": nodes,
     }

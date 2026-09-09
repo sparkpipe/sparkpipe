@@ -96,6 +96,13 @@ static SparkStatus TestSnapshot(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus TestReset(void *adapter_state,uint64_t control_generation)
+{
+	if ( adapter_state == 0 || control_generation == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
 static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 {
 	static const uint32_t layer_counts[13] = {3u,3u,3u,3u,3u,3u,3u,4u,4u,4u,4u,4u,2u};
@@ -103,7 +110,8 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	memset(descriptor,0,sizeof(*descriptor));
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
+	descriptor->cache_block_token_count = 4u;
 	descriptor->stage_count = 13u;
 	descriptor->layer_count = 43u;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
@@ -117,7 +125,6 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->max_input_row_count = 256u;
 	descriptor->max_resident_sequence_count = 512u;
 	descriptor->max_output_token_count = 1u;
-	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO;
 	descriptor->minimum_efficient_submission_row_count = 16u;
 	descriptor->adapter_id = "spark.dsv4.flash.serving.v1";
 	descriptor->model_id = "deepseek-ai/DeepSeek-V4-Flash-0731";
@@ -139,20 +146,14 @@ static void TestDescriptor(void)
 	descriptor.stage_layer_counts[12] = 1u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
 	TestBuildDescriptor(&descriptor);
-	descriptor.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE;
-	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
-	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
 	TestBuildDescriptor(&descriptor);
 	descriptor.capability_flags |=
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
-	descriptor.capability_flags &=
-		~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV;
-	descriptor.resident_sequence_slot_reuse =
-		SPARK_MODEL_SERVING_SLOT_REUSE_NONE;
+	descriptor.abi_version = 21u;
 	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) ==
-		SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_STATUS_ABI_MISMATCH);
 }
 
 static void TestHybridDescriptor(void)
@@ -193,6 +194,8 @@ static void TestRuntimeLimits(void)
 	limits.max_active_sequence_count = 32u;
 	limits.max_input_row_count = 128u;
 	limits.resident_sequence_capacity = 256u;
+	limits.kv_logical_page_capacity = 1024u;
+	limits.kv_physical_page_capacity = 64u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) == SPARK_STATUS_OK);
 	limits.max_inflight_submission_count = 5u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -218,6 +221,8 @@ static void TestIndependentPrefillCapacity(void)
 	limits.max_active_sequence_count = 128u;
 	limits.max_input_row_count = 32768u;
 	limits.resident_sequence_capacity = 128u;
+	limits.kv_logical_page_capacity = 512u;
+	limits.kv_physical_page_capacity = 128u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) == SPARK_STATUS_OK);
 }
 
@@ -226,9 +231,6 @@ static void TestJitKvRuntimeLimits(void)
 	SparkModelServingAdapterDescriptor descriptor;
 	SparkModelServingRuntimeLimits limits;
 	TestBuildDescriptor(&descriptor);
-	descriptor.capability_flags |=
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV;
 	descriptor.cache_block_token_count = 128u;
 	memset(&limits,0,sizeof(limits));
 	limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
@@ -237,6 +239,8 @@ static void TestJitKvRuntimeLimits(void)
 	limits.max_active_sequence_count = 32u;
 	limits.max_input_row_count = 128u;
 	limits.resident_sequence_capacity = 256u;
+	limits.kv_logical_page_capacity = 1024u;
+	limits.kv_physical_page_capacity = 64u;
 	limits.kv_logical_page_capacity = 1024u;
 	limits.kv_physical_page_capacity = 64u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) ==
@@ -249,10 +253,6 @@ static void TestJitKvRuntimeLimits(void)
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
 	limits.kv_logical_page_capacity = 1024u;
-	descriptor.capability_flags &=
-		~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV;
-	descriptor.capability_flags &=
-		~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH;
 	descriptor.cache_block_token_count = 0u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
@@ -260,9 +260,12 @@ static void TestJitKvRuntimeLimits(void)
 
 static void TestInterfaceValidation(void)
 {
+	static const uint32_t retired_bits[7] = {1u,2u,4u,32u,64u,128u,256u};
+	uint32_t index;
 	SparkModelServingAdapterDescriptor descriptor;
-	SparkModelServingAdapterInterface adapter_interface;
+	SparkModelServingAdapterInterface adapter_interface,missing;
 	TestBuildDescriptor(&descriptor);
+	descriptor.capability_flags = 0u;
 	memset(&adapter_interface,0,sizeof(adapter_interface));
 	adapter_interface.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	adapter_interface.interface_bytes = SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES;
@@ -271,27 +274,36 @@ static void TestInterfaceValidation(void)
 	adapter_interface.destroy = TestDestroy;
 	adapter_interface.validate_submission = TestValidateSubmission;
 	adapter_interface.submit = TestSubmit;
+	adapter_interface.prefetch = TestPrefetch;
+	adapter_interface.resolve_prefetch = TestResolvePrefetch;
 	adapter_interface.progress = TestProgress;
 	adapter_interface.quiesce = TestQuiesce;
 	adapter_interface.snapshot = TestSnapshot;
-	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE) == SPARK_STATUS_OK);
-	adapter_interface.quiesce = 0;
-	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_INVALID_ARGUMENT);
-	adapter_interface.quiesce = TestQuiesce;
-	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE) == SPARK_STATUS_INVALID_ARGUMENT);
-	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH;
-	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_INVALID_ARGUMENT);
-	adapter_interface.prefetch = TestPrefetch;
-	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) ==
-		SPARK_STATUS_OK);
-	descriptor.capability_flags |=
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV;
-	descriptor.cache_block_token_count = 4u;
-	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) ==
-		SPARK_STATUS_INVALID_ARGUMENT);
-	adapter_interface.resolve_prefetch = TestResolvePrefetch;
-	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) ==
-		SPARK_STATUS_OK);
+	adapter_interface.reset = TestReset;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_OK);
+#define TEST_MISSING_OPERATION(member) \
+	missing = adapter_interface; \
+	missing.member = 0; \
+	assert(SparkModelServingAdapterValidateInterface(&missing,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+	TEST_MISSING_OPERATION(initialize)
+	TEST_MISSING_OPERATION(destroy)
+	TEST_MISSING_OPERATION(validate_submission)
+	TEST_MISSING_OPERATION(submit)
+	TEST_MISSING_OPERATION(prefetch)
+	TEST_MISSING_OPERATION(resolve_prefetch)
+	TEST_MISSING_OPERATION(progress)
+	TEST_MISSING_OPERATION(quiesce)
+	TEST_MISSING_OPERATION(snapshot)
+	TEST_MISSING_OPERATION(reset)
+#undef TEST_MISSING_OPERATION
+	adapter_interface.abi_version--;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_ABI_MISMATCH);
+	adapter_interface.abi_version++;
+	for (index=0u; index<7u; index++)
+	{
+		descriptor.capability_flags = retired_bits[index];
+		assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) != SPARK_STATUS_OK);
+	}
 }
 
 static void TestPreparedResolution(void)
@@ -301,9 +313,6 @@ static void TestPreparedResolution(void)
 	SparkModelServingSubmission submission;
 	uint32_t adapter_state;
 	TestBuildDescriptor(&descriptor);
-	descriptor.capability_flags |=
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_JIT_KV;
 	descriptor.cache_block_token_count = 4u;
 	memset(&adapter_interface,0,sizeof(adapter_interface));
 	adapter_interface.descriptor = &descriptor;
@@ -318,6 +327,10 @@ static void TestPreparedResolution(void)
 	assert(TestResolveCallCount == 1u);
 	assert(TestLastResolution ==
 		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT);
+	adapter_interface.resolve_prefetch = 0;
+	descriptor.capability_flags = 0u;
+	assert(SparkModelServingAdapterResolvePrefetch(&adapter_interface,&adapter_state,&submission,SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) == SPARK_STATUS_ABI_MISMATCH);
+	adapter_interface.resolve_prefetch = TestResolvePrefetch;
 	TestResolveStatus = SPARK_STATUS_BUSY;
 	assert(SparkModelServingAdapterResolvePrefetch(&adapter_interface,
 		&adapter_state,&submission,
@@ -380,12 +393,10 @@ static void TestSubmissionValidation(void)
 	submission.row_count = 0u;
 	submission.token_count = 0u;
 	submission.new_token_count = 0u;
-	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
-	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
 }
 
-static void TestPreparationInvokesOptionalPrefetch(void)
+static void TestPreparationRequiresPrefetch(void)
 {
 	SparkModelServingAdapterDescriptor descriptor;
 	SparkModelServingAdapterInterface adapter_interface;
@@ -401,11 +412,10 @@ static void TestPreparationInvokesOptionalPrefetch(void)
 	TestPrefetchCallCount = 0u;
 	TestPrefetchStatus = SPARK_STATUS_OK;
 	assert(SparkModelServingAdapterPrepareSubmission(&adapter_interface,&adapter_state,&submission) == SPARK_STATUS_OK);
-	assert(TestPrefetchCallCount == 0u);
-	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFETCH;
+	assert(TestPrefetchCallCount == 1u);
 	TestPrefetchStatus = SPARK_STATUS_BUSY;
 	assert(SparkModelServingAdapterPrepareSubmission(&adapter_interface,&adapter_state,&submission) == SPARK_STATUS_BUSY);
-	assert(TestPrefetchCallCount == 1u);
+	assert(TestPrefetchCallCount == 2u);
 	adapter_interface.prefetch = 0;
 	assert(SparkModelServingAdapterPrepareSubmission(&adapter_interface,&adapter_state,&submission) == SPARK_STATUS_ABI_MISMATCH);
 }
@@ -519,6 +529,8 @@ static void TestRuntimeSubmissionValidation(void)
 	limits.max_active_sequence_count = 2u;
 	limits.max_input_row_count = 2u;
 	limits.resident_sequence_capacity = 8u;
+	limits.kv_logical_page_capacity = 32u;
+	limits.kv_physical_page_capacity = 8u;
 	memset(lanes,0,sizeof(lanes));
 	lanes[0].request_id = 10u;
 	lanes[0].request_generation = 1u;
@@ -705,7 +717,7 @@ static void TestCompletionValidation(void)
 static void TestDynamicLoader(void)
 {
 	SparkModelServingAdapterDynamicLibrary library;
-	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_MODEL_SERVING_ADAPTER_MODULE_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE,&library) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_MODEL_SERVING_ADAPTER_MODULE_PATH,0u,&library) == SPARK_STATUS_OK);
 	assert(strcmp(library.adapter_interface.descriptor->model_id,"test/model") == 0);
 	SparkModelServingAdapterUnloadInterface(&library);
 	assert(library.dynamic_library == 0);
@@ -721,7 +733,7 @@ int main(void)
 	TestInterfaceValidation();
 	TestPreparedResolution();
 	TestSubmissionValidation();
-	TestPreparationInvokesOptionalPrefetch();
+	TestPreparationRequiresPrefetch();
 	TestDriverCacheLaneMapping();
 	TestDriverCacheAdmissionIdentity();
 	TestRuntimeSubmissionValidation();

@@ -47,6 +47,8 @@ typedef struct SparkWeightdAttachOutcome
     uint32_t map_mapped_count;
 } SparkWeightdAttachOutcome;
 
+// BUSY means unconfigured direct loading. A configured socket cannot be
+// disabled; conflicting or malformed settings return INVALID_ARGUMENT.
 SparkStatus SparkWeightdAttachRequested(void);
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
@@ -58,6 +60,13 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
 SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     uint64_t expected_arena_bytes,
     uint64_t timeout_nanoseconds,
+    char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES]);
+
+// Success owns a valid consumer mapping; every failure releases partial state.
+SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
+    const char *pack_path,
+    uint64_t timeout_nanoseconds,
+    SparkWeightdAttachOutcome *outcome,
     char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES]);
 
 void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome);

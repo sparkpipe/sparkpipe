@@ -36,7 +36,7 @@ int main(int argc, char **argv)
 	void *send_device, *recv_device, *send_transport, *recv_transport;
 	void *host_send, *host_recv;
 	uint32_t rank, route, credit, route_count, memory_mode, iterations, i;
-	uint64_t start, elapsed;
+	uint64_t start, elapsed, credit_bytes;
 	struct timespec ts;
 	SparkStatus status;
 	if ( argc != 3 ) return(2);
@@ -77,10 +77,11 @@ int main(int argc, char **argv)
 	if ( status != SPARK_STATUS_OK ) { fprintf(stderr, "probe %d\n", (int)status); return(1); }
 	host_send = 0;
 	host_recv = 0;
+	credit_bytes = SparkTpDeviceCollectiveCreditBytes(config.max_active_sequence_count,config.local_hidden_dimension);
 	if ( memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
 	{
-		if ( cudaHostAlloc(&host_send, 131072u * 64u, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
-			cudaHostAlloc(&host_recv, 131072u * 64u, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
+		if ( cudaHostAlloc(&host_send, credit_bytes * 64u, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
+			cudaHostAlloc(&host_recv, credit_bytes * 64u, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
 			return(1);
 		if ( cudaHostGetDevicePointer(&send_device, host_send, 0u) != cudaSuccess ||
 			cudaHostGetDevicePointer(&recv_device, host_recv, 0u) != cudaSuccess )
@@ -92,8 +93,8 @@ int main(int argc, char **argv)
 	}
 	else
 	{
-		cudaMalloc(&send_buf, 131072u * 64u);
-		cudaMalloc(&recv_buf, 131072u * 64u);
+		cudaMalloc(&send_buf, credit_bytes * 64u);
+		cudaMalloc(&recv_buf, credit_bytes * 64u);
 		send_transport = send_buf;
 		recv_transport = recv_buf;
 	}
@@ -105,10 +106,10 @@ int main(int argc, char **argv)
 			memset(b, 0, sizeof(*b));
 			b->step_index = route;
 			b->credit_index = credit;
-			b->send_device = (uint8_t *)send_buf + (route * config.credit_count + credit) * 131072u;
-			b->receive_device = (uint8_t *)recv_buf + (route * config.credit_count + credit) * 131072u;
-			b->send_transport = (uint8_t *)send_transport + (route * config.credit_count + credit) * 131072u;
-			b->receive_transport = (uint8_t *)recv_transport + (route * config.credit_count + credit) * 131072u;
+			b->send_device = (uint8_t *)send_buf + (route * config.credit_count + credit) * credit_bytes;
+			b->receive_device = (uint8_t *)recv_buf + (route * config.credit_count + credit) * credit_bytes;
+			b->send_transport = (uint8_t *)send_transport + (route * config.credit_count + credit) * credit_bytes;
+			b->receive_transport = (uint8_t *)recv_transport + (route * config.credit_count + credit) * credit_bytes;
 			b->flags = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS : 0u;
 		}
 	config.credit_bindings = bindings;
@@ -121,6 +122,7 @@ int main(int argc, char **argv)
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = 0u;
 	submission.active_sequence_count = 1u;
+	submission.logical_sequence_count = 1u;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.local_device = partial;
 	submission.full_device = partial;

@@ -13,8 +13,8 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 6u
-#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP UINT32_C(0x00000001)
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS \
@@ -32,7 +32,7 @@ extern "C" {
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 65536u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT \
-	SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION
+	(SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION)
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES 2u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_KIND 1u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_BYTES_PER_ROW \
@@ -126,9 +126,15 @@ typedef struct SparkGlm5NextResidentDecodeStageFrameContext
 	uint64_t sideband_output_bytes;
 } SparkGlm5NextResidentDecodeStageFrameContext;
 
-static inline uint32_t SparkGlm5NextResidentDecodeStageFirstLayer(uint32_t stage_index)
+static inline uint32_t SparkGlm5NextResidentDecodeStageSpanIsValid(uint32_t stage_count,uint32_t stage_index,uint32_t first_layer,uint32_t layer_count)
 {
-	return(stage_index * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE);
+	uint32_t end;
+	if ( (stage_count != 1u && stage_count != 4u) || stage_index >= stage_count || first_layer >= SPARK_GLM5_NEXT_MODEL_LAYER_COUNT || layer_count == 0u || layer_count > (SPARK_GLM5_NEXT_MODEL_LAYER_COUNT - first_layer) )
+		return(0u);
+	end = (first_layer + layer_count);
+	if ( (stage_index == 0u) != (first_layer == 0u) || ((stage_index + 1u) == stage_count) != (end == SPARK_GLM5_NEXT_MODEL_LAYER_COUNT) )
+		return(0u);
+	return(1u);
 }
 
 typedef struct SparkGlm5NextKdaReplayLayout
@@ -185,7 +191,9 @@ static inline SparkGlm5NextKdaReplayLayout SparkGlm5NextKdaReplayLayoutFor(
 
 static inline uint32_t SparkGlm5NextResidentDecodeStageBoundaryCarriesDsa(uint32_t source_stage_index)
 {
-	return(source_stage_index + 1u < SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_STAGE_COUNT && (source_stage_index & 1u) != 0u ? 1u : 0u);
+	// Every complete DSA layer executes its own indexer; no cross-layer index state.
+	(void)source_stage_index;
+	return(0u);
 }
 
 static inline uint32_t SparkGlm5NextResidentDecodeStageRequiresSidebandInput(uint32_t stage_index)

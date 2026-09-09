@@ -63,7 +63,7 @@ static void SparkQwen38_27bTpPendingCompletion(void *context, const SparkTpDevic
 	atomic_store_explicit(&pending->done,1u,memory_order_release);
 }
 
-static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buffer, uint32_t count, void *cuda_stream, uint32_t u64_max)
+static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buffer, uint32_t count, uint32_t logical_count, void *cuda_stream, uint32_t u64_max)
 {
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkQwen38_27bTpPending pending;
@@ -76,6 +76,7 @@ static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buf
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = 0u;
 	submission.active_sequence_count = count;
+	submission.logical_sequence_count = logical_count;
 	submission.flags =
 		SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = tp->next_ordinal++;
@@ -296,8 +297,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		for (route = 0u; route < route_count; route++)
 		{
 			hidden = configuration.local_hidden_dimension;
-			credit_bytes = (uint64_t)configuration.max_active_sequence_count *
-				hidden * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES;
+			credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 			if ( credit_bytes == 0u || total_bytes > UINT64_MAX -
 				credit_bytes * configuration.credit_count )
 				return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -319,8 +319,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		for (route = 0u; route < route_count; route++)
 		{
 			hidden = configuration.local_hidden_dimension;
-			credit_bytes = (uint64_t)configuration.max_active_sequence_count *
-				hidden * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES;
+			credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 			for (credit = 0u; credit < configuration.credit_count; credit++)
 			{
 				SparkTpDeviceCollectiveCreditBinding *binding =
@@ -398,6 +397,7 @@ SparkStatus SparkQwen38_27bTpReduceHidden(
 	SparkQwen38_27bTpState *tp,
 	void *buffer,
 	uint32_t rows,
+	uint32_t logical_count,
 	void *cuda_stream)
 {
 	if ( tp == 0 || buffer == 0 || rows == 0u || cuda_stream == 0 )
@@ -406,18 +406,19 @@ SparkStatus SparkQwen38_27bTpReduceHidden(
 		return SPARK_STATUS_OK;
 	if ( rows > tp->collective.max_active_sequence_count )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	return SparkQwen38_27bTpSubmit(tp,buffer,rows,cuda_stream,0u);
+	return SparkQwen38_27bTpSubmit(tp,buffer,rows,logical_count,cuda_stream,0u);
 }
 
 SparkStatus SparkQwen38_27bTpReduceU64Max(
 	SparkQwen38_27bTpState *tp,
 	uint64_t *buffer,
 	uint32_t count,
+	uint32_t logical_count,
 	void *cuda_stream)
 {
 	if ( tp == 0 || buffer == 0 || count == 0u || cuda_stream == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ( tp->degree <= 1u || tp->initialized == 0u )
 		return SPARK_STATUS_OK;
-	return SparkQwen38_27bTpSubmit(tp,buffer,count,cuda_stream,1u);
+	return SparkQwen38_27bTpSubmit(tp,buffer,count,logical_count,cuda_stream,1u);
 }

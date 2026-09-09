@@ -623,6 +623,7 @@ static void TestSubmitAndWait(
     submission.descriptor_bytes = sizeof(submission);
     submission.slot_index = slot_index;
     submission.active_sequence_count = 2u;
+    submission.logical_sequence_count = 1u;
     submission.ordinal = ordinal;
     submission.local_device = TestLocalBuffers[credit_index];
     submission.full_device = TestFullBuffers[credit_index];
@@ -742,6 +743,7 @@ static void TestAllReduceSumAndBoundedCredits(
     submission.descriptor_bytes = sizeof(submission);
     submission.slot_index = 2u;
     submission.active_sequence_count = 2u;
+    submission.logical_sequence_count = 1u;
     submission.flags =
         SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
     submission.ordinal = 0u;
@@ -795,6 +797,7 @@ static void TestAllReduceU64Max(TestTransportControls *controls)
     submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
     submission.descriptor_bytes = sizeof(submission);
     submission.active_sequence_count = 2u;
+    submission.logical_sequence_count = 1u;
     submission.ordinal = 0u;
     submission.local_device = values;
     submission.full_device = values;
@@ -894,6 +897,7 @@ static void TestAdaptiveSplitRing(TestTransportControls *controls)
     submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
     submission.descriptor_bytes = sizeof(submission);
     submission.active_sequence_count = 2u;
+    submission.logical_sequence_count = 1u;
     submission.ordinal = 0u;
     submission.local_device = values;
     submission.full_device = values;
@@ -917,6 +921,7 @@ static void TestAdaptiveSplitRing(TestTransportControls *controls)
         values[element] = 3u;
     TestCompletionInitialize(&completion);
     submission.active_sequence_count = 1u;
+    submission.logical_sequence_count = 1u;
     submission.ordinal = 1u;
     submission.local_device = values;
     submission.full_device = values;
@@ -1061,6 +1066,7 @@ static void TestAdaptiveDirectAllToAll(TestTransportControls *controls)
     submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
     submission.descriptor_bytes = sizeof(submission);
     submission.active_sequence_count = 2u;
+    submission.logical_sequence_count = 1u;
     submission.flags =
         SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
     submission.ordinal = 0u;
@@ -1092,6 +1098,7 @@ static void TestAdaptiveDirectAllToAll(TestTransportControls *controls)
         values[element] = 3u;
     TestCompletionInitialize(&completion);
     submission.active_sequence_count = 3u;
+    submission.logical_sequence_count = 1u;
     submission.ordinal = 1u;
     submission.local_device = values;
     submission.full_device = values;
@@ -1201,6 +1208,7 @@ static void TestDirectAllToAll16(TestTransportControls *controls)
     submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
     submission.descriptor_bytes = sizeof(submission);
     submission.active_sequence_count = 2u;
+    submission.logical_sequence_count = 1u;
     submission.flags =
         SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
     submission.ordinal = 0u;
@@ -1268,6 +1276,7 @@ static void TestMappedHostStaging(TestTransportControls *controls)
     submission.descriptor_bytes = sizeof(submission);
     submission.slot_index = 3u;
     submission.active_sequence_count = 2u;
+    submission.logical_sequence_count = 1u;
     submission.ordinal = 0u;
     submission.local_device = values;
     submission.full_device = values;
@@ -1327,6 +1336,7 @@ static void TestDirectBf16Relay(TestTransportControls *controls)
     submission.descriptor_bytes = sizeof(submission);
     submission.slot_index = 3u;
     submission.active_sequence_count = 2u;
+    submission.logical_sequence_count = 1u;
     submission.flags =
         SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
     submission.ordinal = 0u;

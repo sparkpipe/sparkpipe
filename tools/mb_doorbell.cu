@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_tp_chain_ordinal.h"
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <stdio.h>
@@ -19,8 +20,17 @@ static uint32_t BENCH_PORT_BASE = BENCH_PORT_BASE_DEFAULT;
 static uint32_t BENCH_CREDITS = 64u;
 static uint32_t BENCH_D2A_MAX = 0u;
 static uint32_t BENCH_SKEW_US = 0u;
+static uint32_t BENCH_ORDINAL_JUMP = 0u;
+#define BENCH_ORDINAL_JUMP_AFTER 100u
+#define BENCH_ORDINAL_JUMP_DELTA (1ull << 20)
 #define BENCH_MAX_TIMED_ITERS 4096u
 static double bench_latency_us[BENCH_MAX_TIMED_ITERS];
+
+static uint64_t bench_wire_ordinal(uint64_t ordinal)
+{
+    return BENCH_ORDINAL_JUMP != 0u && ordinal >= BENCH_ORDINAL_JUMP_AFTER ?
+        ordinal + BENCH_ORDINAL_JUMP_DELTA : ordinal;
+}
 
 static int bench_compare_double(const void *left, const void *right)
 {
@@ -83,7 +93,7 @@ struct BenchFoldDevices
 };
 
 static __global__ void bench_fold_all_kernel(
-    __nv_bfloat16 *destination, const __nv_bfloat16 *const *rank_devices,
+    __nv_bfloat16 *destination, BenchFoldDevices rank_devices,
     uint32_t tp_rank, uint32_t elements)
 {
     uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -94,26 +104,25 @@ static __global__ void bench_fold_all_kernel(
     total = __bfloat162float(destination[index]);
     for (rank_index = 0u; rank_index < 16u; rank_index++)
     {
-        if (rank_index != tp_rank && rank_devices[rank_index] != 0)
-            total += __bfloat162float(rank_devices[rank_index][index]);
+        if (rank_index != tp_rank && rank_devices.devices[rank_index] != 0)
+            total += __bfloat162float(rank_devices.devices[rank_index][index]);
     }
     destination[index] = __float2bfloat16(total);
 }
-
-static BenchFoldDevices *bench_fold_context = 0;
 
 static SparkStatus bench_combine_all_bf16(
     void *context, void *destination, const void *const *rank_devices,
     uint32_t tp_rank, uint32_t rows, uint32_t hidden, void *stream)
 {
-    BenchFoldDevices *devices = (BenchFoldDevices *)context;
+    BenchFoldDevices devices;
     uint32_t elements = rows * hidden;
     uint32_t index;
+    (void)context;
     for (index = 0u; index < 16u; index++)
-        devices->devices[index] =
+        devices.devices[index] =
             (const __nv_bfloat16 *)rank_devices[index];
     bench_fold_all_kernel<<<(elements + 255u) / 256u, 256u, 0, (cudaStream_t)stream>>>(
-        (__nv_bfloat16 *)destination, devices->devices, tp_rank, elements);
+        (__nv_bfloat16 *)destination, devices, tp_rank, elements);
     return cudaGetLastError() == cudaSuccess ?
         SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -124,8 +133,8 @@ static volatile uint32_t bench_last_status;
 static void bench_completion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
 {
     (void)context;
-    if (completion != 0)
-        bench_last_status = completion->status;
+    if (completion != 0 && completion->status != SPARK_STATUS_OK)
+        (void)__sync_val_compare_and_swap(&bench_last_status,0u,(uint32_t)completion->status);
     __sync_fetch_and_add(&bench_completions, 1);
 }
 
@@ -134,6 +143,120 @@ static uint64_t bench_now_ns(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+struct BenchChain
+{
+	SparkTpDeviceCollective *collective;
+	SparkTpDeviceCollectiveSubmission submission;
+	cudaStream_t stream;
+	uint32_t rank,lane,rows,iterations,next;
+	volatile uint32_t done,status;
+};
+
+static void bench_chain_complete(void *context,const SparkTpDeviceCollectiveCompletion *completion);
+
+static SparkStatus bench_chain_submit(BenchChain *chain)
+{
+	SparkStatus status;
+	uint64_t ordinal;
+	status = SparkTpChainOrdinal(4u + chain->lane,4u,1u,BENCH_MAX_TIMED_ITERS,chain->next,&ordinal);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bench_fill_bf16_kernel<<<(chain->rows * BENCH_HIDDEN + 255u) / 256u,256u,0,chain->stream>>>((__nv_bfloat16 *)chain->submission.local_device,(float)(chain->rank + 1u + chain->lane * 4u + chain->next % 4u),chain->rows * BENCH_HIDDEN);
+	if ( cudaGetLastError() != cudaSuccess )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	chain->submission.ordinal = ordinal;
+	chain->next++;
+	return(SparkTpDeviceCollectiveEnqueue(chain->collective,&chain->submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16));
+}
+
+static void bench_chain_complete(void *context,const SparkTpDeviceCollectiveCompletion *completion)
+{
+	BenchChain *chain = (BenchChain *)context;
+	SparkStatus status = completion->status;
+	if ( status == SPARK_STATUS_OK && chain->next < chain->iterations )
+		status = bench_chain_submit(chain);
+	else
+	{
+		chain->status = status;
+		__sync_lock_test_and_set(&chain->done,1u);
+		return;
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		chain->status = status;
+		__sync_lock_test_and_set(&chain->done,1u);
+	}
+}
+
+static void bench_chain_initialize(BenchChain *chain,SparkTpDeviceCollective *collective,__nv_bfloat16 *payload,uint32_t rank,uint32_t lane,uint32_t rows,uint32_t iterations)
+{
+	chain->collective = collective;
+	chain->rank = rank;
+	chain->lane = lane;
+	chain->rows = rows;
+	chain->iterations = iterations;
+	if ( cudaStreamCreateWithFlags(&chain->stream,cudaStreamNonBlocking) != cudaSuccess )
+		_exit(2);
+	chain->submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	chain->submission.descriptor_bytes = sizeof(chain->submission);
+	chain->submission.slot_index = lane;
+	chain->submission.active_sequence_count = rows;
+	chain->submission.logical_sequence_count = rows;
+	chain->submission.local_device = chain->submission.full_device = payload;
+	chain->submission.cuda_stream = chain->stream;
+	chain->submission.completion_function = bench_chain_complete;
+	chain->submission.completion_context = chain;
+	if ( bench_chain_submit(chain) != SPARK_STATUS_OK )
+		_exit(3);
+}
+
+static int32_t bench_chains(SparkTpDeviceCollective *collective,__nv_bfloat16 **payload,uint32_t rank,uint32_t degree,uint32_t rows,uint32_t iterations)
+{
+	BenchChain chains[4] = {};
+	uint64_t start = bench_now_ns();
+	uint32_t lane,done,index,bits,selected;
+	uint16_t *verify = (uint16_t *)malloc((uint64_t)rows * BENCH_HIDDEN * sizeof(uint16_t));
+	float expected;
+	if ( collective->credit_count != 4u || verify == 0 )
+		return(1);
+	for (lane=0u; lane<4u; lane++)
+	{
+		selected = rank % 2u != 0u ? 3u - lane : lane;
+		bench_chain_initialize(&chains[selected],collective,payload[selected],rank,selected,rows,iterations);
+	}
+	for (;;)
+	{
+		done = 0u;
+		for (lane=0u; lane<4u; lane++)
+			done += __sync_fetch_and_add(&chains[lane].done,0u);
+		if ( done == 4u )
+			break;
+		if ( bench_now_ns() - start > 60000000000ull )
+		{
+			fprintf(stderr,"chain timeout rank=%u completed_lanes=%u\n",rank,done);
+			SparkTpDeviceCollectiveDumpOperations(collective);
+			_exit(4);
+		}
+		usleep(100u);
+	}
+	for (lane=0u; lane<4u; lane++)
+	{
+		expected = (float)(degree * (degree + 1u) / 2u + degree * (lane * 4u + (iterations - 1u) % 4u));
+		memcpy(&bits,&expected,sizeof(bits));
+		if ( chains[lane].status != SPARK_STATUS_OK || cudaStreamSynchronize(chains[lane].stream) != cudaSuccess )
+			return(5);
+		if ( cudaMemcpy(verify,payload[lane],(uint64_t)rows * BENCH_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+			return(6);
+		for (index=0u; index<rows * BENCH_HIDDEN; index++)
+			if ( verify[index] != (bits >> 16u) )
+				return(7);
+		cudaStreamDestroy(chains[lane].stream);
+	}
+	free(verify);
+	printf("chains rank=%u lanes=4 rows=%u per_lane=%u status=0 OK\n",rank,rows,iterations);
+	return(0);
 }
 
 int main(int argc, char **argv)
@@ -164,7 +287,7 @@ int main(int argc, char **argv)
     uint32_t mode;
     uint32_t memory_mode;
     uint32_t route_count;
-    uint32_t credit_bytes;
+    uint64_t credit_bytes;
     uint32_t total_bytes;
     uint32_t binding_count;
     uint32_t offset;
@@ -174,20 +297,25 @@ int main(int argc, char **argv)
     uint32_t bad;
     uint32_t step;
     SparkStatus status;
-    int retry;
 
     {
         const char *credits_env = getenv("BENCH_CREDITS");
         if (credits_env != 0 && credits_env[0] >= '0' && credits_env[0] <= '9')
             BENCH_CREDITS = (uint32_t)strtoul(credits_env,0,10);
         if (BENCH_CREDITS == 0u || BENCH_CREDITS > 64u)
-            BENCH_CREDITS = 64u;
+        {
+            fprintf(stderr,"BENCH_CREDITS must be between 1 and 64\n");
+            return 2;
+        }
         const char *d2a_env = getenv("BENCH_D2A_MAX_BYTES");
         if (d2a_env != 0 && d2a_env[0] >= '0' && d2a_env[0] <= '9')
             BENCH_D2A_MAX = (uint32_t)strtoul(d2a_env,0,10);
         const char *skew_env = getenv("BENCH_SKEW_US");
         if (skew_env != 0 && skew_env[0] >= '0' && skew_env[0] <= '9')
             BENCH_SKEW_US = (uint32_t)strtoul(skew_env,0,10);
+        const char *jump_env = getenv("BENCH_ORDINAL_BASE_JUMP");
+        if (jump_env != 0 && jump_env[0] == '1')
+            BENCH_ORDINAL_JUMP = 1u;
         const char *port_env = getenv("BENCH_PORT_BASE");
         if (port_env != 0 && port_env[0] >= '0' && port_env[0] <= '9')
         {
@@ -200,7 +328,7 @@ int main(int argc, char **argv)
         BENCH_CREDITS, BENCH_D2A_MAX);
     if (argc < 6)
     {
-        printf("usage: rank degree iters rows mode(0 async 1 sync) [transport]\n");
+        printf("usage: rank degree iters rows mode(0 async 1 sync 2 chains) [transport]\n");
         return 2;
     }
     rank = (uint32_t)strtoul(argv[1], 0, 10);
@@ -210,9 +338,9 @@ int main(int argc, char **argv)
     mode = (uint32_t)strtoul(argv[5], 0, 10);
     transport_path = argc > 6 ? argv[6] :
         "/home/spark0/sparkdata/glm5_next.tp16/lib/hidden_transport.so";
-    if (degree != 16u || rank >= degree)
+    if ((degree != 4u && degree != 16u) || rank >= degree || iters == 0u || iters > BENCH_MAX_TIMED_ITERS || rows == 0u || rows > 1024u || mode > 2u)
     {
-        printf("doorbell bench requires degree 16\n");
+        printf("doorbell bench requires degree 4 or 16\n");
         return 2;
     }
 
@@ -290,13 +418,8 @@ int main(int argc, char **argv)
     config.registration_cuda_stream = 0;
     config.combine_bf16_function = bench_combine_bf16;
     config.combine_u64_max_function = bench_combine_u64_max;
-    if (cudaMallocManaged(&bench_fold_context, sizeof(BenchFoldDevices)) != cudaSuccess)
-    {
-        printf("fold context alloc failed\n");
-        return 1;
-    }
     config.combine_tp4_bf16_function = bench_combine_all_bf16;
-    config.combine_context = bench_fold_context;
+    config.combine_context = 0;
 
     status = SparkTpDeviceCollectiveProbeMemoryMode(config.backend_kind,
         config.backend_module_path, &memory_mode);
@@ -313,8 +436,8 @@ int main(int argc, char **argv)
     }
     printf("doorbell rank=%u memory_mode=%u routes=%u connect_ms=%u d2a_max=%u\n", rank, memory_mode, route_count, config.connect_timeout_milli, BENCH_D2A_MAX);
 
-    credit_bytes = rows * BENCH_HIDDEN * 2u;
-    total_bytes = route_count * BENCH_CREDITS * (credit_bytes + 8u);
+    credit_bytes = SparkTpDeviceCollectiveCreditBytes(rows,BENCH_HIDDEN);
+    total_bytes = route_count * BENCH_CREDITS * credit_bytes;
     if (cudaHostAlloc(&host_send, total_bytes, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
         cudaHostAlloc(&host_receive, total_bytes, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess)
     {
@@ -330,7 +453,7 @@ int main(int argc, char **argv)
     binding_count = 0u;
     offset = 0u;
     {
-        uint32_t d2a_routes = BENCH_D2A_MAX != 0u ? 15u : 0u;
+        uint32_t d2a_routes = BENCH_D2A_MAX != 0u ? degree - 1u : 0u;
         uint32_t tree_routes = route_count - d2a_routes;
         for (route = 0u; route < route_count; route++)
         {
@@ -350,7 +473,7 @@ int main(int argc, char **argv)
                         SPARK_TP_DEVICE_COLLECTIVE_BINDING_DIRECT_ALL_TO_ALL);
                 bindings[binding_count].reserved0 = 0u;
                 binding_count++;
-                offset += credit_bytes + 8u;
+                offset += credit_bytes;
             }
         }
     }
@@ -397,14 +520,15 @@ int main(int argc, char **argv)
     {
         uint64_t wait_started = bench_now_ns();
         bench_fill_bf16_kernel<<<(rows * BENCH_HIDDEN + 255u) / 256u, 256u, 0, stream>>>(
-            payload[ordinal % 64u], (float)(rank + 1u), rows * BENCH_HIDDEN);
+            payload[ordinal % 64u], (float)(rank + 1u + ((ordinal / 64u) % 4u)), rows * BENCH_HIDDEN);
         memset(&submission, 0, sizeof(submission));
         submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
         submission.descriptor_bytes = sizeof(submission);
         submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
         submission.active_sequence_count = rows;
+        submission.logical_sequence_count = rows;
         submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-        submission.ordinal = ordinal;
+        submission.ordinal = bench_wire_ordinal(ordinal);
         submission.local_device = payload[ordinal % 64u];
         submission.full_device = payload[ordinal % 64u];
         submission.cuda_stream = stream;
@@ -443,26 +567,35 @@ int main(int argc, char **argv)
             }
             usleep(1000u);
         }
+        if (__sync_fetch_and_add(&bench_last_status,0u) != SPARK_STATUS_OK)
+        {
+            fprintf(stderr,"warmup completion failed ordinal=%llu status=%u\n",(unsigned long long)ordinal,bench_last_status);
+            SparkTpDeviceCollectiveDumpOperations(&collective);
+            return 1;
+        }
     }
+
+    if (mode == 2u)
+        return bench_chains(&collective,payload,rank,degree,rows,iters);
 
     started_ns = bench_now_ns();
     for (ordinal = 68u; ordinal < 68u + iters; ordinal++)
     {
         bench_fill_bf16_kernel<<<(rows * BENCH_HIDDEN + 255u) / 256u, 256u, 0, stream>>>(
-            payload[ordinal % 64u], (float)(rank + 1u), rows * BENCH_HIDDEN);
+            payload[ordinal % 64u], (float)(rank + 1u + ((ordinal / 64u) % 4u)), rows * BENCH_HIDDEN);
         memset(&submission, 0, sizeof(submission));
         submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
         submission.descriptor_bytes = sizeof(submission);
         submission.slot_index = (uint32_t)(ordinal % BENCH_CREDITS);
         submission.active_sequence_count = rows;
+        submission.logical_sequence_count = rows;
         submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-        submission.ordinal = ordinal;
+        submission.ordinal = bench_wire_ordinal(ordinal);
         submission.local_device = payload[ordinal % 64u];
         submission.full_device = payload[ordinal % 64u];
         submission.cuda_stream = stream;
         submission.completion_function = bench_completion;
         submission.completion_context = 0;
-        retry = 0;
         {
             uint64_t op_started = bench_now_ns();
             for (;;)
@@ -470,9 +603,10 @@ int main(int argc, char **argv)
                 status = SparkTpDeviceCollectiveSubmitBf16(&collective, &submission);
                 if (status == SPARK_STATUS_OK)
                     break;
-                if (status != SPARK_STATUS_BUSY || ++retry > 100)
+                if (status != SPARK_STATUS_BUSY ||
+                    bench_now_ns() - op_started >= (uint64_t)config.operation_timeout_milli * 1000000ull)
                 {
-                    printf("submit %llu -> %u\n", (unsigned long long)ordinal, (unsigned)status);
+                    printf("submit %llu -> %u after %.3f ms completions=%lld\n", (unsigned long long)ordinal, (unsigned)status, (bench_now_ns() - op_started) / 1e6, (long long)__sync_fetch_and_add(&bench_completions,0));
                     SparkTpDeviceCollectiveDumpOperations(&collective);
                     return 1;
                 }
@@ -524,22 +658,28 @@ int main(int argc, char **argv)
     }
     elapsed_us = (double)(bench_now_ns() - started_ns) / 1000.0;
 
-    if (cudaMemcpy(verify_host, payload[(19u + iters) % 64u], (size_t)rows * BENCH_HIDDEN * 2u,
-            cudaMemcpyDeviceToHost) != cudaSuccess)
-    {
-        printf("verify copy failed\n");
-        return 1;
-    }
     bad = 0u;
-    for (index = 0u; index < rows * BENCH_HIDDEN; index++)
+    for (uint32_t buffer = 0u; buffer < 64u; buffer++)
     {
-        uint32_t value = (uint32_t)verify_host[index];
-        if (value != 17160u)
+        uint64_t last = 67u + iters;
+        last -= (last + 64u - buffer) % 64u;
+        float expected = (float)(degree * (degree + 1u) / 2u + degree * ((last / 64u) % 4u));
+        uint32_t expected_bits;
+        memcpy(&expected_bits,&expected,sizeof(expected_bits));
+        if (cudaMemcpy(verify_host,payload[buffer],(size_t)rows * BENCH_HIDDEN * 2u,
+                cudaMemcpyDeviceToHost) != cudaSuccess)
         {
-            bad++;
-            if (bad < 4u)
-                printf("el%u=%u ", index, value);
+            printf("verify copy failed buffer=%u\n",buffer);
+            return 1;
         }
+        for (index = 0u; index < rows * BENCH_HIDDEN; index++)
+            if ((uint32_t)verify_host[index] != (expected_bits >> 16u))
+            {
+                bad++;
+                if (bad < 4u)
+                    printf("buffer%u el%u=%u expected=%u ",buffer,index,
+                        (unsigned)verify_host[index],expected_bits >> 16u);
+            }
     }
     printf("doorbell rank=%u rows=%u mode=%u iters=%u per_op_us=%.1f completions=%lld status=%u %s\n",
         rank, rows, mode, iters, elapsed_us / (double)iters,
@@ -556,5 +696,5 @@ int main(int argc, char **argv)
             bench_latency_us[0],
             bench_latency_us[iters - 1u]);
     }
-    return bad != 0u ? 3 : 0;
+    return bad != 0u || bench_last_status != SPARK_STATUS_OK ? 3 : 0;
 }

@@ -35,6 +35,7 @@
 
 typedef struct SparkQwen4FlashModuleSlot
 {
+	uint32_t logical_sequence_count;
 	void *cuda_stream;
 	uint32_t *host_row_lane_indices;
 	uint64_t *host_row_positions;
@@ -1118,7 +1119,7 @@ static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashMo
 		fprintf(stderr,"%s tp_probe_memory_mode_failed status=%d\n",SPARK_QWEN4_FLASH_MODULE_TAG,(int)status);
 		return(status);
 	}
-	credit_bytes = (uint64_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
+	credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,configuration.local_hidden_dimension);
 	total_bytes = credit_bytes * configuration.credit_count * route_count;
 	status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,&state->tp_collective_credit_send_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -1186,6 +1187,7 @@ static SparkStatus SparkQwen4FlashModuleTpSubmitOrdered(SparkQwen4FlashModuleSta
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = 0u;
 	submission.active_sequence_count = count;
+	submission.logical_sequence_count = slot->logical_sequence_count;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
 	submission.local_device = device_buffer;
@@ -2483,6 +2485,7 @@ static SparkStatus SparkQwen4FlashModuleExecuteFrame(
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		slot = &state->slots[0];
+		slot->logical_sequence_count = frame->active_slot_count;
 		if ( slot->cuda_stream == 0 )
 			return(SPARK_STATUS_INTERNAL_ERROR);
 		atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
@@ -2506,6 +2509,7 @@ static SparkStatus SparkQwen4FlashModuleExecuteFrame(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	slot = &state->slots[0];
+	slot->logical_sequence_count = frame->active_slot_count;
 	if ( slot->cuda_stream == 0 )
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	for (row = 0; row < rows; row++)

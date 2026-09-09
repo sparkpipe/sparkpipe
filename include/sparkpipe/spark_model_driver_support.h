@@ -110,6 +110,12 @@ static inline uint32_t SparkModelDriverAdmissionRequestIsValid(
     const SparkModelDriverAdmissionRequest *request)
 {
     uint32_t index,releasing;
+    if (request != 0 && request->descriptor_bytes >= sizeof(*request) &&
+        request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET)
+        return request->program_id != 0u && request->control_generation != 0u &&
+            request->cache_lanes == 0 && request->cache_lane_count == 0u &&
+            request->active_slot_count == 0u && request->new_token_count == 0u &&
+            request->frame_flags == 0u;
     if (request == 0 || request->descriptor_bytes < sizeof(*request) ||
         (request->admission_flags & ~SPARK_MODEL_DRIVER_ADMISSION_KNOWN_FLAGS) != 0u ||
         ((request->cache_lane_count != 0u) != (request->cache_lanes != 0)) ||
