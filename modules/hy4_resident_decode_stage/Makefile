@@ -12,6 +12,14 @@ MODULE_COMPILE_FLAGS := \
 	-DSPARK_HY4_MODULE_BUILD=1 \
 	-DHY4_MODEL_REVISION=\"$(HY4_MODEL_REVISION)\" \
 	-DHY4_CONTRACT_SHA256=\"$(HY4_CONTRACT_SHA256)\"
+MODULE_INCLUDE_FLAGS = \
+	-I"$(REPOSITORY_ROOT)/include" \
+	-I"$(REPOSITORY_ROOT)/src" \
+	-I"$(REPOSITORY_ROOT)/model-families/common/include" \
+	-I"$(REPOSITORY_ROOT)/model-families/$(MODULE_FAMILY)/include" \
+	-I"$(REPOSITORY_ROOT)/modules/$(MODULE_FAMILY)_resident_decode_stage/include" \
+	-I"$(REPOSITORY_ROOT)/modules/$(MODULE_FAMILY)_resident_decode_stage/source" \
+	-I"$(REPOSITORY_ROOT)"
 
 STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/hy4_stage.qwen4sp
 TP_DEGREE ?= 16
@@ -33,3 +41,4 @@ RUNTIME_CONFIGURATION := \
 GPU_VALIDATOR ?=
 
 include ../resident_decode_stage_rules.mk
+NVCCFLAGS += -fmad=false

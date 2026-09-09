@@ -3,21 +3,6 @@
 #include "sparkpipe/spark_hy4_resident_decode_stage_firmware.h"
 #include "runtime/launch.h"
 
-/* hy4 TP16 resident decode stage — CUDA unity, kernel layer.
- *
- * The kernels are the exactness-proven set from the lane's forward
- * cell (TOP1 299 val 15.2826 vs the committed CPU reference, 5-decimal
- * match, head mixes to 1e-4): fma-free contraction disabled by build
- * flags, interleaved rope, sink-softmax attention, HYV4 swiglu clamp
- * group, hyper-connection gates/reduce/distribute. New for the module
- * milestone: the FP8-native load path (E4M3 payload decoded straight
- * to f32 with the U8 E8M0 group-32 scale applied per group — the pack
- * format IS the kernel format, no host dequant).
- *
- * Rung-1 scope: compile into the module archive on the shared rules.
- * The stream-ordered execute wiring (route, cache, collectives) is
- * rung 3+; Execute reports UNSUPPORTED until that lands. */
-
 #define SPARK_HY4_CUDA_HIDDEN SPARK_HY4_MODEL_HIDDEN_DIMENSION
 #define SPARK_HY4_CUDA_HC SPARK_HY4_MODEL_HC_STREAM_COUNT
 #define SPARK_HY4_CUDA_HC_FLAT (SPARK_HY4_CUDA_HC * SPARK_HY4_CUDA_HIDDEN)
@@ -35,22 +20,16 @@
 #define SPARK_HY4_CUDA_ROUTE_MAX \
 	(SPARK_HY4_MODEL_EXPERTS_PER_TOKEN * SPARK_HY4_MODEL_HC_STREAM_COUNT)
 
-/* E4M3 payload bytes decode straight to f32 values (no exponent bias
- * games): the FP8 plane is the kernel's native weight format. */
 static __device__ __forceinline__ float SparkHy4Fp8ToFloat(uint8_t raw)
 {
 	return (float)(int8_t)raw;
 }
 
-/* E8M0 scale byte: power-of-two exponent, bias 127. */
 static __device__ __forceinline__ float SparkHy4E8m0ToFloat(uint8_t raw)
 {
-	return exp2f((float)(int8_t)raw);
+	return exp2f((float)raw - 127.0f);
 }
 
-/* Dot one f32 query against an FP8 payload row with its E8M0 group-32
- * scales: scale[g] applies to payload elements [g*32, (g+1)*32); each
- * group's partial is scaled by its own scale before accumulating. */
 static __device__ __forceinline__ float SparkHy4DotFp8Grouped(
 	const uint8_t *payload, const uint8_t *scales, const float *query,
 	int columns)
@@ -131,16 +110,13 @@ __global__ void SparkHy4RmsScaleKernel(const float *x, const float *weight,
 	y[index] = x[index] * inverse * (weight != 0 ? weight[index] : 1.0f);
 }
 
-/* Interleaved rope (is_neox_style false): pairs (2i, 2i+1) rotate by
- * position * theta^(-2i/rot). The exactness receipt (q_pe at nonzero
- * positions) fixed this convention. */
 __global__ void SparkHy4RopeKernel(float *v, int rot, float position)
 {
 	int pair = threadIdx.x;
 	if (pair * 2 + 1 >= rot)
 		return;
-	float angle = position * exp2f(
-	    -((float)(2 * pair) / (float)rot) * log2f(10000000.0f));
+	float angle = position * powf(10000000.0f,
+	    -(float)(2 * pair) / (float)rot);
 	float cos_value = cosf(angle);
 	float sin_value = sinf(angle);
 	float a = v[pair * 2];
@@ -154,32 +130,38 @@ __global__ void SparkHy4HyperGatesKernel(const float *mixes,
 	float magnitude, float *pre, float *post)
 {
 	int index = threadIdx.x;
-	float scaled = mixes[index] * scale[index % 2] + base[index];
-	float gate = 1.0f / (1.0f + expf(-scaled)) + epsilon;
-	pre[index] = gate * magnitude;
-	post[index] = gate * magnitude;
+	if (index < SPARK_HY4_CUDA_HC)
+		pre[index] = 1.0f / (1.0f +
+		    expf(-(mixes[index] * scale[0] + base[index]))) + epsilon;
+	else
+	{
+		int j = index - SPARK_HY4_CUDA_HC;
+		post[j] = magnitude / (1.0f +
+		    expf(-(mixes[SPARK_HY4_CUDA_HC + j] * scale[1] +
+		    base[SPARK_HY4_CUDA_HC + j]))) + epsilon;
+	}
 }
 
 __global__ void SparkHy4HyperReduceKernel(const float *streams,
-	const float *pre, float *out, int hidden, int streams)
+	const float *pre, float *out, int hidden, int hc)
 {
 	int element = blockIdx.x * blockDim.x + threadIdx.x;
 	float accumulator = 0.0f;
 	if (element >= hidden)
 		return;
-	for (int s = 0; s < streams; ++s)
+	for (int s = 0; s < hc; ++s)
 		accumulator += streams[(size_t)s * (size_t)hidden + element] *
 		    pre[s];
 	out[element] = accumulator;
 }
 
 __global__ void SparkHy4HyperDistributeKernel(float *streams,
-	const float *branch, const float *post, int hidden, int streams)
+	const float *branch, const float *post, int hidden, int hc)
 {
 	int element = blockIdx.x * blockDim.x + threadIdx.x;
 	if (element >= hidden)
 		return;
-	for (int s = 0; s < streams; ++s)
+	for (int s = 0; s < hc; ++s)
 		streams[(size_t)s * (size_t)hidden + element] +=
 		    branch[element] * post[s];
 }
@@ -216,12 +198,6 @@ __global__ void SparkHy4AxpyKernel(float *acc, const float *h, float w,
 		acc[index] += h[index] * w;
 }
 
-/* Absorbed MLA single head over the packed KV cache: scores carry the
- * nope dot and the roped dot at the token position, the sink joins
- * the softmax denominator only, and the value latent accumulates the
- * probability-weighted cache rows (top-k sparse selection arrives
- * with the indexer wiring in rung 3; this kernel scans the cached
- * window). */
 __global__ void SparkHy4AttnHeadKernel(const float *q_absorbed,
 	const float *q_pe, const float *k_latent, const float *k_pe,
 	float sink, int context, float scale, float *value_latent)
@@ -256,9 +232,6 @@ __global__ void SparkHy4AttnHeadKernel(const float *q_absorbed,
 	}
 }
 
-/* Router: sigmoid probabilities + e_score correction bias, top-8
- * selection, weights = probability / max(sum, 6.1e-5) * 2.827, in
- * selection order (the exactness receipt's combine order). */
 __global__ void SparkHy4RouteKernel(const float *router_logits,
 	const float *router_bias, uint32_t *selected, float *weights,
 	int routed_experts, int experts_per_token)
