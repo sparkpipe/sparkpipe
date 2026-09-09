@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
 static uint64_t SparkKvPageCacheHashIdentity(
@@ -344,7 +345,7 @@ static SparkStatus SparkKvPageCacheAcquireEntry(
 	{
 		entry_index = SparkKvPageCacheEvictionCandidate(cache,0u);
 		if ( entry_index == SPARK_KV_PAGE_CACHE_NO_INDEX )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		status = SparkKvPageCacheEvictEntry(cache,entry_index);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
@@ -500,7 +501,7 @@ static SparkStatus SparkKvPageCacheAppendEntryPages(
 	page_count = terminal_entry_index == SPARK_KV_PAGE_CACHE_NO_INDEX ? 0u :
 		cache->entries[terminal_entry_index].page_count;
 	if ( page_count > logical_page_capacity )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	cursor = page_count;
 	while ( terminal_entry_index != SPARK_KV_PAGE_CACHE_NO_INDEX )
 	{
@@ -543,17 +544,17 @@ SparkStatus SparkKvPageCacheResolveLanePages(
 		logical_page_indices,logical_page_capacity,&page_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	sequence = &cache->sequences[lane->resident_sequence_slot];
-	if ( sequence->sequence_id == lane->sequence_id &&
-		sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
-	{
-		if ( page_count >= logical_page_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		logical_page_indices[page_count++] =
-			sequence->mutable_logical_page_index;
-	}
-	*logical_page_count_out = page_count;
-	return(SPARK_STATUS_OK);
+		sequence = &cache->sequences[lane->resident_sequence_slot];
+		if ( sequence->sequence_id == lane->sequence_id &&
+			sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
+		{
+			if ( page_count >= logical_page_capacity )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			logical_page_indices[page_count++] =
+				sequence->mutable_logical_page_index;
+		}
+		*logical_page_count_out = page_count;
+		return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkKvPageCacheGetLaneMutablePageDemand(
@@ -628,7 +629,7 @@ SparkStatus SparkKvPageCachePrepareLane(
 		sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
 	{
 		if ( page_count >= logical_page_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		logical_page_indices[page_count++] = sequence->mutable_logical_page_index;
 	}
 	status = SparkKvPageCacheEnsureResidentPages(cache,logical_page_indices,
@@ -1032,7 +1033,7 @@ SparkStatus SparkKvPageCacheBuildLaneTable(
 	if ( sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
 	{
 		if ( page_count >= logical_page_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		logical_page_indices[page_count++] = sequence->mutable_logical_page_index;
 	}
 	*logical_page_count_out = page_count;
