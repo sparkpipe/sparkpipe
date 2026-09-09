@@ -1,5 +1,15 @@
 # GLM 5.3 Flash hill-climbing log
 
+The checkpoint layer reference (`tools/glm5_next_checkpoint_layer_reference.py`)
+computes layer zero at position zero from a token and checkpoint weights only.
+It covers embedding, full-width KDA, dense MLP, both hyperconnection sites and
+the next layer's normalized input. It reuses the existing checkpoint decoder
+and BF16 conversion helpers. It does not consume driver intermediates, perform
+TP reductions, or qualify a complete sequence. FP8 checkpoint weights are
+expanded to BF16 and matrix products accumulate in FP32; this diagnostic does
+not emulate activation quantization in an upstream FP8 runtime. Compare its
+outputs with the first captured step before interpreting subsequent recurrence.
+
 2026-09-09 KDA reference audit: remove the extra BF16 Q/K normalization
 between convolution and the shared delta-rule kernel. The recurrence already
 normalizes Q/K in FP32 with epsilon 1e-6. Apply the missing query scale
